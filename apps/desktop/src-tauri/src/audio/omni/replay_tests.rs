@@ -332,6 +332,7 @@ impl ReplayHarness {
                 glossary: &glossary,
                 audio_mode: self.audio_mode,
                 output_mode: self.output_mode,
+                source_language: "en",
                 target_language: "zh-CN",
                 buffer_size: 0,
                 pre_session_audio_queue_len: 0,

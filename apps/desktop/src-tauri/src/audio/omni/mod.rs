@@ -380,7 +380,11 @@ fn build_dashscope_ws_request(
 mod unit_tests {
     use super::*;
     use super::audio_pump::manual_turn_has_audible_input;
-    use super::protocol::{is_session_ready_event, should_use_native_output_fallback};
+    use super::protocol::{
+        build_livetranslate_session_update_with_languages, is_session_ready_event,
+        resolve_livetranslate_language, resolve_livetranslate_output_mode,
+        should_use_native_output_fallback,
+    };
     use base64::Engine;
 
     #[test]
@@ -585,6 +589,61 @@ mod unit_tests {
                 .pointer("/session/input_audio_format")
                 .and_then(Value::as_str),
             Some("pcm")
+        );
+    }
+
+    #[test]
+    fn livetranslate_session_normalizes_explicit_source_and_target_languages() {
+        let session = build_livetranslate_session_update_with_languages(
+            "Cherry",
+            "translate naturally",
+            RealtimeAudioMode::ServerVad,
+            "en-US",
+            "zh-Hans",
+            OmniOutputMode::TextOnly,
+        );
+
+        assert_eq!(
+            session
+                .pointer("/session/input_audio_transcription/language")
+                .and_then(Value::as_str),
+            Some("en")
+        );
+        assert_eq!(
+            session
+                .pointer("/session/translation/language")
+                .and_then(Value::as_str),
+            Some("zh")
+        );
+    }
+
+    #[test]
+    fn livetranslate_language_contract_defaults_auto_source_and_rejects_unknown_codes() {
+        assert_eq!(
+            resolve_livetranslate_language(
+                "qwen3.5-livetranslate-flash-realtime",
+                "auto",
+                "en",
+            ),
+            Ok("en".to_string())
+        );
+        assert!(resolve_livetranslate_language(
+            "qwen3.5-livetranslate-flash-realtime",
+            "xx-Unknown",
+            "en",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn livetranslate_audio_output_falls_back_to_text_for_unsupported_target() {
+        assert_eq!(
+            resolve_livetranslate_output_mode(
+                "qwen3.5-livetranslate-flash-realtime",
+                "sw",
+                OmniOutputMode::TextAndAudio,
+            ),
+            Ok(OmniOutputMode::TextOnly)
         );
     }
 

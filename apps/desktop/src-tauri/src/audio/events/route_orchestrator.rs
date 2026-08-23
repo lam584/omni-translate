@@ -365,7 +365,6 @@ fn start_omni_inbound_route(
         SubtitleFallbackPolicy::Native => "native",
     };
     let subtitle_translate_model_id = plan.subtitle_translation_model_id.clone();
-    let target_lang = plan.target_language.clone();
     let speech_dispatch_state = state.snapshot().speech.dispatch_state;
     let mut st_active = false;
     if let Some(text_provider) = plan.secondary_subtitle_provider.clone() {
@@ -460,7 +459,6 @@ fn start_omni_inbound_route(
     let translation_audio_source = plan.translation_audio_source;
     let should_start_speech_dispatch = plan.speech_dispatch_policy
         == SpeechDispatchPolicy::SubtitleTtsWhenIdle
-        && st_active
         && speech_dispatch_state == "idle";
     let _ = append_diagnostics_log(
         &app,
@@ -491,12 +489,14 @@ fn start_omni_inbound_route(
         &direction,
         "route",
         st_active,
-        &target_lang,
+        &plan.session_reuse_key.source_language,
+        &plan.session_reuse_key.target_language,
         &plan.realtime_audio_mode,
         plan.voice.clone(),
         plan.instructions.clone(),
         plan.glossary.clone(),
-        plan.session_reuse_key.glossary_signature,
+        plan.session_reuse_key.contract_signature,
+        plan.session_reuse_key.output_mode,
         plan.omni_speech_config.clone(),
         OMNI_ROUTE_SESSION_READINESS_TIMEOUT,
     )?;

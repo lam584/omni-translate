@@ -47,6 +47,7 @@ pub(super) fn try_reconnect<C: RealtimeSocketConnector, R: tauri::Runtime>(
     instructions: &str,
     audio_mode: RealtimeAudioMode,
     output_mode: OmniOutputMode,
+    source_language: &str,
     target_language: &str,
     buffer_size: u64,
     disconnect_reason: &str,
@@ -74,9 +75,10 @@ pub(super) fn try_reconnect<C: RealtimeSocketConnector, R: tauri::Runtime>(
             provider,
             active_voice,
             instructions,
-            audio_mode,
-            output_mode,
-            target_language,
+                audio_mode,
+                output_mode,
+                source_language,
+                target_language,
         ) {
             Ok(socket) => {
                 *reconnect_count = 0;
@@ -1750,6 +1752,25 @@ fn has_terminal_subtitle_boundary(text: &str) -> bool {
         || text.ends_with('\n')
 }
 
+const LIVETRANSLATE_LANGUAGE_TABLE_V2026_07_08: &[&str] = &[
+    "zh", "en", "ar", "de", "fr", "es", "pt", "id", "it", "ko", "ru", "th",
+    "vi", "ja", "tr", "hi", "ms", "nl", "ur", "nb", "sv", "da", "he", "fi",
+    "pl", "is", "cs", "fil", "fa", "yue", "el", "af", "ast", "be", "bg", "bn",
+    "bs", "ca", "ceb", "et", "gl", "gu", "hr", "hu", "jv", "kk", "kn", "ky",
+    "lv", "mk", "ml", "mr", "pa", "ro", "sk", "sl", "sw", "tg", "az", "uk",
+];
+
+const LIVETRANSLATE_LEGACY_LANGUAGE_TABLE: &[&str] = &[
+    "en", "zh", "ru", "fr", "de", "pt", "es", "it", "id", "ko", "ja", "vi",
+    "th", "ar", "yue", "hi", "el", "tr",
+];
+
+const LIVETRANSLATE_AUDIO_OUTPUT_LANGUAGES: &[&str] = &[
+    "zh", "en", "ar", "de", "fr", "es", "pt", "id", "it", "ko", "ru", "th",
+    "vi", "ja", "tr", "hi", "ms", "nl", "ur", "nb", "sv", "da", "he", "fi",
+    "pl", "is", "cs", "fil", "fa",
+];
+
 fn normalize_livetranslate_language(language: &str, fallback: &str) -> String {
     let trimmed = language.trim();
     if trimmed.is_empty() {
@@ -1757,6 +1778,7 @@ fn normalize_livetranslate_language(language: &str, fallback: &str) -> String {
     }
     let lower = trimmed.to_ascii_lowercase();
     match lower.as_str() {
+        "auto" => fallback.to_string(),
         "zh-cn" | "zh-hans" | "zh_cn" | "zh" | "chinese" => "zh".to_string(),
         "en-us" | "en-gb" | "en" | "english" => "en".to_string(),
         _ => lower
@@ -1766,6 +1788,43 @@ fn normalize_livetranslate_language(language: &str, fallback: &str) -> String {
             .unwrap_or(fallback)
             .to_string(),
     }
+}
+
+pub(crate) fn resolve_livetranslate_language(
+    model: &str,
+    language: &str,
+    fallback: &str,
+) -> Result<String, String> {
+    let normalized = normalize_livetranslate_language(language, fallback);
+    let supported = if model
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("qwen3.5-livetranslate")
+    {
+        LIVETRANSLATE_LANGUAGE_TABLE_V2026_07_08
+    } else {
+        LIVETRANSLATE_LEGACY_LANGUAGE_TABLE
+    };
+    supported.contains(&normalized.as_str()).then_some(normalized).ok_or_else(|| {
+        format!(
+            "LiveTranslate model {model} does not support language '{language}' (normalized '{normalized}')"
+        )
+    })
+}
+
+pub(crate) fn resolve_livetranslate_output_mode(
+    model: &str,
+    target_language: &str,
+    requested: OmniOutputMode,
+) -> Result<OmniOutputMode, String> {
+    let target = resolve_livetranslate_language(model, target_language, "zh")?;
+    Ok(if requested == OmniOutputMode::TextAndAudio
+        && !LIVETRANSLATE_AUDIO_OUTPUT_LANGUAGES.contains(&target.as_str())
+    {
+        OmniOutputMode::TextOnly
+    } else {
+        requested
+    })
 }
 
 /// Provider output requested for the lifetime of one realtime session.
@@ -1803,6 +1862,7 @@ fn build_omni_session_update_with_dialect(
     voice: &str,
     instructions: &str,
     audio_mode: RealtimeAudioMode,
+    source_language: &str,
     target_language: &str,
     output_mode: OmniOutputMode,
 ) -> Value {
@@ -1830,7 +1890,7 @@ fn build_omni_session_update_with_dialect(
         }
     }
     if is_livetranslate {
-        let source_language = "en";
+        let source_language = normalize_livetranslate_language(source_language, "en");
         let target_language = normalize_livetranslate_language(target_language, "zh");
         session_cfg["session"]["input_audio_transcription"] = json!({
           "model": "qwen3-asr-flash-realtime",
@@ -1868,6 +1928,26 @@ pub(crate) fn build_dashscope_session_update_with_output_mode(
     target_language: &str,
     output_mode: OmniOutputMode,
 ) -> Result<Value, String> {
+    build_dashscope_session_update_with_languages_and_output_mode(
+        protocol,
+        voice,
+        instructions,
+        audio_mode,
+        "en",
+        target_language,
+        output_mode,
+    )
+}
+
+fn build_dashscope_session_update_with_languages_and_output_mode(
+    protocol: crate::audio::events::RealtimeProtocol,
+    voice: &str,
+    instructions: &str,
+    audio_mode: RealtimeAudioMode,
+    source_language: &str,
+    target_language: &str,
+    output_mode: OmniOutputMode,
+) -> Result<Value, String> {
     let is_livetranslate = match protocol {
         crate::audio::events::RealtimeProtocol::DashscopeOmni => false,
         crate::audio::events::RealtimeProtocol::DashscopeLivetranslate => true,
@@ -1878,6 +1958,7 @@ pub(crate) fn build_dashscope_session_update_with_output_mode(
         voice,
         instructions,
         audio_mode,
+        source_language,
         target_language,
         output_mode,
     ))
@@ -1911,23 +1992,45 @@ pub(crate) fn build_omni_session_update_for_provider_with_output_mode(
     voice: &str,
     instructions: &str,
     audio_mode: RealtimeAudioMode,
+    source_language: &str,
     target_language: &str,
     output_mode: OmniOutputMode,
 ) -> Value {
     let protocol = crate::audio::events::resolve_realtime_profile(provider, &provider.model)
         .protocol_dialect
         .expect("Omni session builder requires an explicit or compatibility-resolved protocol");
-    let mut session_update = build_dashscope_session_update_with_output_mode(
+    let mut session_update = build_dashscope_session_update_with_languages_and_output_mode(
         protocol,
         voice,
         instructions,
         audio_mode,
+        source_language,
         target_language,
         output_mode,
     )
     .expect("Omni session builder requires a DashScope Omni/LiveTranslate protocol");
     apply_model_specific_turn_detection(&mut session_update, &provider.model, audio_mode);
     session_update
+}
+
+#[cfg(test)]
+pub(crate) fn build_livetranslate_session_update_with_languages(
+    voice: &str,
+    instructions: &str,
+    audio_mode: RealtimeAudioMode,
+    source_language: &str,
+    target_language: &str,
+    output_mode: OmniOutputMode,
+) -> Value {
+    build_omni_session_update_with_dialect(
+        true,
+        voice,
+        instructions,
+        audio_mode,
+        source_language,
+        target_language,
+        output_mode,
+    )
 }
 
 fn apply_model_specific_turn_detection(
@@ -1966,6 +2069,7 @@ pub(super) fn build_omni_session_update(
         voice,
         instructions,
         audio_mode,
+        "en",
         target_language,
         OmniOutputMode::TextAndAudio,
     )

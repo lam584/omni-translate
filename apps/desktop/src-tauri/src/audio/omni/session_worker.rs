@@ -221,6 +221,7 @@ impl OmniSessionWorker {
             self.config.glossary,
             self.config.audio_mode,
             self.config.output_mode,
+            self.config.source_language,
             self.config.target_language,
             self.config.subtitle_translate_active,
             self.config.speech_config,
@@ -242,6 +243,8 @@ pub(crate) fn start_omni(
     instructions: String,
     glossary: GlossaryContext,
     audio_mode: RealtimeAudioMode,
+    output_mode: OmniOutputMode,
+    source_language: String,
     target_language: String,
     subtitle_translate_active: bool,
     speech_config: OmniSpeechConfig,
@@ -253,7 +256,6 @@ pub(crate) fn start_omni(
     ),
     String,
 > {
-    let output_mode = OmniOutputMode::from_speech_config(&speech_config);
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let stop_requested = Arc::new(AtomicBool::new(false));
@@ -301,6 +303,7 @@ pub(crate) fn start_omni(
                     glossary,
                     audio_mode,
                     output_mode,
+                    source_language,
                     target_language,
                     subtitle_translate_active,
                     speech_config,
@@ -406,6 +409,7 @@ fn run_omni_worker(
     glossary: GlossaryContext,
     audio_mode: RealtimeAudioMode,
     output_mode: OmniOutputMode,
+    source_language: String,
     target_language: String,
     subtitle_translate_active: bool,
     speech_config: OmniSpeechConfig,
@@ -450,6 +454,7 @@ fn run_omni_worker(
         &instructions,
         audio_mode,
         output_mode,
+        &source_language,
         &target_language,
         subtitle_translate_active,
         speech_config,
@@ -607,6 +612,7 @@ fn run_omni_worker(
             &instructions,
             audio_mode,
             output_mode,
+            &source_language,
             &target_language,
             &session_started_at,
             audio_mode.uses_manual_commit() && manual_response_pending,
@@ -898,6 +904,7 @@ fn run_omni_worker(
                 glossary: &glossary,
                 audio_mode,
                 output_mode,
+                source_language: &source_language,
                 target_language: &target_language,
                 buffer_size,
                 pre_session_audio_queue_len: pre_session_audio_queue.len(),

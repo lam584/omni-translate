@@ -138,6 +138,7 @@ impl OmniAudioPump {
         instructions: &str,
         audio_mode: RealtimeAudioMode,
         output_mode: OmniOutputMode,
+        source_language: &str,
         target_language: &str,
         session_started_at: &SystemTime,
         defer_audio_until_response_done: bool,
@@ -333,6 +334,7 @@ impl OmniAudioPump {
                     &instructions,
                     audio_mode,
                     output_mode,
+                    source_language,
                     &target_language,
                     buffer_size,
                     &format!("audio send failed: {error}"),
@@ -490,6 +492,7 @@ mod tests {
             _instructions: &str,
             _audio_mode: RealtimeAudioMode,
             _output_mode: OmniOutputMode,
+            _source_language: &str,
             _target_language: &str,
         ) -> Result<Self::Socket, String> {
             self.attempts.fetch_add(1, Ordering::SeqCst);
@@ -583,6 +586,7 @@ mod tests {
             "translate",
             RealtimeAudioMode::Manual,
             OmniOutputMode::TextAndAudio,
+            "en",
             "zh-CN",
             &SystemTime::now(),
             false,

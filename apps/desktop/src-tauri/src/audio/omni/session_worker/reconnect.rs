@@ -7,6 +7,7 @@ pub(in crate::audio::omni) fn reconnect_socket<R: tauri::Runtime>(
     instructions: &str,
     audio_mode: RealtimeAudioMode,
     output_mode: OmniOutputMode,
+    source_language: &str,
     target_language: &str,
 ) -> Result<tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>, String> {
     if provider.kind != "dashscope" {
@@ -21,7 +22,7 @@ pub(in crate::audio::omni) fn reconnect_socket<R: tauri::Runtime>(
     set_socket_write_timeout(&mut socket);
     set_socket_read_timeout(&mut socket);
     let session_cfg = build_omni_session_update_for_provider_with_output_mode(
-        provider, voice, instructions, audio_mode, target_language, output_mode,
+        provider, voice, instructions, audio_mode, source_language, target_language, output_mode,
     );
     socket
         .send(Message::Text(session_cfg.to_string().into()))

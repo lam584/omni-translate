@@ -174,6 +174,7 @@ fn execute_realtime_websocket(
         "",
         &instructions,
         audio_mode,
+        context.source_language,
         context.target_language,
         crate::audio::omni::OmniOutputMode::TextOnly,
     );

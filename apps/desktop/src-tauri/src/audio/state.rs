@@ -114,10 +114,12 @@ pub(crate) struct OmniSessionMetadata {
     pub direction: String,
     pub session_generation: u64,
     pub model_id: String,
+    pub source_language: String,
+    pub target_language: String,
     pub realtime_audio_mode: String,
     pub subtitle_translate_active: bool,
     pub output_mode: OmniOutputMode,
-    pub glossary_signature: u64,
+    pub contract_signature: u64,
     pub state: OmniSessionLifecycle,
     pub last_error: Option<String>,
 }

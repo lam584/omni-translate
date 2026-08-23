@@ -1,3 +1,6 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use serde_json::Value;
 use tauri::AppHandle;
 
@@ -122,10 +125,12 @@ pub(super) enum SpeechDispatchPolicy {
 pub(super) struct SessionReuseKey {
     pub(super) direction: String,
     pub(super) model: String,
+    pub(super) source_language: String,
+    pub(super) target_language: String,
     pub(super) realtime_audio_mode: String,
     pub(super) subtitle_translate_active: bool,
     pub(super) output_mode: omni::OmniOutputMode,
-    pub(super) glossary_signature: u64,
+    pub(super) contract_signature: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +138,7 @@ pub(super) struct ResolvedRoutePlan {
     pub(super) direction: String,
     pub(super) requested_voice_model: String,
     pub(super) target_language: String,
+    pub(super) source_language: String,
     pub(super) voice: String,
     pub(super) instructions: String,
     pub(super) glossary: GlossaryContext,
@@ -160,6 +166,7 @@ impl ResolvedRoutePlan {
         provider: ProviderDraftInput,
     ) -> Self {
         let target_language = resolve_route_target_language(direction, config);
+        let source_language = subtitle_source_language_or_english(config);
         let realtime_profile = resolve_realtime_profile(&provider, &provider.model);
         let realtime_audio_mode = realtime_profile.realtime_audio_mode.clone();
         let legacy_vad_bypass = resolve_legacy_vad_bypass_for_route(direction, config);
@@ -188,7 +195,7 @@ impl ResolvedRoutePlan {
         let secondary_subtitle_provider = secondary_requested
             .then(|| resolve_model_provider_from_config_value(config, subtitle_model_id))
             .flatten();
-        let configuration_error = (secondary_requested && secondary_subtitle_provider.is_none()).then(|| {
+        let mut configuration_error = (secondary_requested && secondary_subtitle_provider.is_none()).then(|| {
             super::super::omni::session_errors::with_error_markers(
                 &format!("Configured subtitle translation model '{subtitle_model_id}' cannot be resolved to an enabled provider"),
                 super::super::omni::session_errors::SessionErrorCode::ModelReferenceInvalid,
@@ -202,8 +209,7 @@ impl ResolvedRoutePlan {
         };
         let speech_output_enabled = speech::speech_output_enabled(config);
         let translation_audio_source = speech::resolve_translation_audio_source(config, true);
-        let speech_dispatch_policy = if subtitle_translate_active
-            && speech_output_enabled
+        let speech_dispatch_policy = if speech_output_enabled
             && translation_audio_source == speech::TranslationAudioSource::SubtitleTts
         {
             SpeechDispatchPolicy::SubtitleTtsWhenIdle
@@ -218,7 +224,53 @@ impl ResolvedRoutePlan {
         };
         let reuse_model = provider.model.clone();
         let omni_speech_config = omni::OmniSpeechConfig::from_config(config);
-        let omni_output_mode = omni::OmniOutputMode::from_speech_config(&omni_speech_config);
+        let requested_output_mode = if translation_audio_source
+            == speech::TranslationAudioSource::SubtitleTts
+        {
+            omni::OmniOutputMode::TextOnly
+        } else {
+            omni::OmniOutputMode::from_speech_config(&omni_speech_config)
+        };
+        let mut omni_output_mode = requested_output_mode;
+        let mut session_source_language = source_language.clone();
+        let mut session_target_language = target_language.clone();
+        if is_livetranslate_route_model(&provider, &provider.model) {
+            let language_contract = omni::resolve_livetranslate_language(
+                &provider.model,
+                &source_language,
+                "en",
+            )
+            .and_then(|source| {
+                omni::resolve_livetranslate_language(
+                    &provider.model,
+                    &target_language,
+                    "zh",
+                )
+                .map(|target| (source, target))
+            })
+            .and_then(|(source, target)| {
+                omni::resolve_livetranslate_output_mode(
+                    &provider.model,
+                    &target,
+                    requested_output_mode,
+                )
+                .map(|output_mode| (source, target, output_mode))
+            });
+            match language_contract {
+                Ok((source, target, output_mode)) => {
+                    session_source_language = source;
+                    session_target_language = target;
+                    omni_output_mode = output_mode;
+                }
+                Err(error) if configuration_error.is_none() => {
+                    configuration_error = Some(super::super::omni::session_errors::with_error_markers(
+                        &error,
+                        super::super::omni::session_errors::SessionErrorCode::ModelReferenceInvalid,
+                    ));
+                }
+                Err(_) => {}
+            }
+        }
         let default_instructions = if kind == ResolvedRouteKind::Omni {
             if direction == "outbound" {
                 // The microphone route translates the local speaker's voice for
@@ -240,7 +292,6 @@ impl ResolvedRoutePlan {
         let voice = resolve_realtime_voice(&provider.model, configured_voice);
         let glossary = GlossaryCatalog::from_config(config)
             .for_languages("auto", &target_language);
-        let glossary_signature = glossary.signature();
         let base_instructions = config
             .pointer("/subtitles/instructions")
             .and_then(Value::as_str)
@@ -253,14 +304,32 @@ impl ResolvedRoutePlan {
         // fixture hint: preserve every number, unit, date and monetary amount
         // exactly in the target language for every Omni route.
         let numeric_fidelity_instruction = "Preserve every numerical value, date, unit, currency amount, percentage, and magnitude exactly. Never round, shorten, or change a number's scale. For Chinese output, retain the monetary scale explicitly: one billion dollars = 十亿美元, one hundred million dollars = 一亿美元, and five hundred million dollars = 五亿美元.";
+        let instructions = glossary.with_instructions(&format!(
+            "{base_instructions}\n{numeric_fidelity_instruction}"
+        ));
+        let translation_owner = match subtitle_fallback_policy {
+            SubtitleFallbackPolicy::Native => "native",
+            SubtitleFallbackPolicy::Secondary => "secondary",
+        };
+        let contract_signature = realtime_session_contract_signature(
+            &provider,
+            &realtime_profile,
+            &session_source_language,
+            &session_target_language,
+            &effective_audio_mode,
+            omni_output_mode,
+            translation_owner,
+            &voice,
+            &instructions,
+            glossary.signature(),
+        );
         Self {
             direction: direction.to_string(),
             requested_voice_model: requested_voice_model.clone(),
             target_language,
+            source_language: session_source_language.clone(),
             voice,
-            instructions: glossary.with_instructions(&format!(
-                "{base_instructions}\n{numeric_fidelity_instruction}"
-            )),
+            instructions,
             glossary,
             omni_speech_config,
             provider,
@@ -277,14 +346,61 @@ impl ResolvedRoutePlan {
             session_reuse_key: SessionReuseKey {
                 direction: direction.to_string(),
                 model: reuse_model,
+                source_language: session_source_language,
+                target_language: session_target_language,
                 realtime_audio_mode: effective_audio_mode.clone(),
                 subtitle_translate_active,
                 output_mode: omni_output_mode,
-                glossary_signature,
+                contract_signature,
             },
             kind,
         }
     }
+}
+
+fn realtime_session_contract_signature(
+    provider: &ProviderDraftInput,
+    profile: &ResolvedRealtimeProfile,
+    source_language: &str,
+    target_language: &str,
+    realtime_audio_mode: &str,
+    output_mode: omni::OmniOutputMode,
+    translation_owner: &str,
+    voice: &str,
+    instructions: &str,
+    glossary_signature: u64,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    provider.template_id.hash(&mut hasher);
+    provider.provider_id.hash(&mut hasher);
+    provider.kind.hash(&mut hasher);
+    provider.template_realtime_protocol.hash(&mut hasher);
+    provider.realtime_protocol.hash(&mut hasher);
+    provider.model.hash(&mut hasher);
+    provider.base_url.hash(&mut hasher);
+    provider.transport.hash(&mut hasher);
+    provider.auth_ref.kind.hash(&mut hasher);
+    provider.auth_ref.reference.hash(&mut hasher);
+    provider.auth_ref.header_name.hash(&mut hasher);
+    provider.auth_ref.scheme.hash(&mut hasher);
+    provider.region.hash(&mut hasher);
+    provider.timeout_ms.hash(&mut hasher);
+    provider.response_modalities.hash(&mut hasher);
+    for header in &provider.custom_headers {
+        header.name.hash(&mut hasher);
+        header.value.hash(&mut hasher);
+        header.enabled.hash(&mut hasher);
+    }
+    profile.protocol_dialect.map(RealtimeProtocol::as_str).hash(&mut hasher);
+    source_language.hash(&mut hasher);
+    target_language.hash(&mut hasher);
+    realtime_audio_mode.hash(&mut hasher);
+    output_mode.as_str().hash(&mut hasher);
+    translation_owner.hash(&mut hasher);
+    voice.hash(&mut hasher);
+    instructions.hash(&mut hasher);
+    glossary_signature.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Qwen Audio's automatic VAD is designed for duplex conversation: a new

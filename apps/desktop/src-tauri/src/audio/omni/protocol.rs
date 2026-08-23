@@ -218,6 +218,10 @@ pub(super) fn is_session_ready_event(event_type: &str) -> bool {
 pub(super) struct OmniEventDiagnostics {
     pub(super) readiness_event: Option<String>,
     pub(super) current_cue_origin: Option<String>,
+    /// Provider item announced by the current server-VAD speech segment. This
+    /// is authoritative when present and lets speech_stopped bind a response
+    /// even when no ASR delta has arrived yet.
+    pub(super) current_vad_item_id: Option<String>,
     /// Input cue owned by the native response that is currently streaming (or
     /// most recently completed). Server VAD may open the next input cue before
     /// the prior response.done arrives, so response output must not use the
@@ -1087,6 +1091,7 @@ pub(super) fn reset_manual_turn_input_state(
     pending_source_text.clear();
     *current_cue_id = None;
     event_diagnostics.current_cue_origin = None;
+    event_diagnostics.current_vad_item_id = None;
     event_diagnostics.last_asr_delta_item_id = None;
     event_diagnostics.source_started_during_playback = None;
     event_diagnostics.source_continuity_active = false;
@@ -1480,29 +1485,20 @@ pub(super) fn update_native_response_cue_source(
         .recent_cues
         .iter()
         .find(|cue| cue.cue_id == cue_id);
-    let committed = existing.is_some_and(|cue| cue.committed);
     let translated_text = existing
         .map(|cue| cue.translated_text.clone())
         .unwrap_or_default();
-    if translated_text.trim().is_empty() {
-        store.update_or_push_stt_cue(cue_id, source_text, committed);
-    } else if translated_text.starts_with("[翻译失败]") {
-        // A late ASR final may arrive just after an empty response.done. Keep
-        // the explicit failure terminal while replacing its provisional source
-        // with the authoritative transcript; do not record the marker as model
-        // output through the native-translation writer.
-        store.update_or_push_stt_cue(cue_id, source_text, true);
-        store.update_subtitle_cue_translation(cue_id, translated_text, true);
-    } else if committed {
-        write_committed_native_translation_to_cue(store, cue_id, source_text, &translated_text);
-    } else {
-        write_native_translation_to_cue(
-            store,
+    let translation_committed = existing.is_some_and(|cue| cue.translation_committed);
+    // A transcription.completed event is the authoritative source terminal
+    // even when native response output is still streaming. Preserve any
+    // translation already attached to the cue, but publish the source update
+    // as final so cue-local evidence does not remain a delta-only tail.
+    store.update_or_push_stt_cue(cue_id, source_text, true);
+    if !translated_text.trim().is_empty() {
+        store.update_subtitle_cue_translation(
             cue_id,
-            source_text,
-            &translated_text,
-            false,
-            false,
+            translated_text,
+            translation_committed,
         );
     }
 }

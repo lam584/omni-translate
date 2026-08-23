@@ -33,10 +33,11 @@ export const assertRustCoverage = (name, reportPath, thresholds = { lines: 100, 
     functions: Number(totals.functions.percent),
     branches: Number(totals.branches.percent),
   };
-  for (const [metric, value] of Object.entries(metrics)) {
-    if (value < thresholds[metric]) {
-      throw new Error(`${name} ${metric} coverage is ${value}%, below ${thresholds[metric]}%.`);
-    }
+  const violations = Object.entries(metrics)
+    .filter(([metric, value]) => value < thresholds[metric])
+    .map(([metric, value]) => `${metric}=${value}% (minimum ${thresholds[metric]}%)`);
+  if (violations.length > 0) {
+    throw new Error(`${name} coverage is below baseline: ${violations.join('; ')}`);
   }
 };
 

@@ -418,7 +418,28 @@ impl SentenceSplitter {
 }
 
 fn normalize_hypothesis(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    let mut normalized = String::with_capacity(text.len());
+    let mut pending_space = false;
+    for character in text.chars() {
+        if matches!(character, '\r' | '\n') {
+            while normalized.ends_with(' ') {
+                normalized.pop();
+            }
+            if !normalized.is_empty() && !normalized.ends_with('\n') {
+                normalized.push('\n');
+            }
+            pending_space = false;
+        } else if character.is_whitespace() {
+            pending_space = true;
+        } else {
+            if pending_space && !normalized.is_empty() && !normalized.ends_with('\n') {
+                normalized.push(' ');
+            }
+            normalized.push(character);
+            pending_space = false;
+        }
+    }
+    normalized.trim_end().to_string()
 }
 
 fn grapheme_common_prefix(left: &str, right: &str) -> String {
@@ -1057,6 +1078,62 @@ mod tests {
         assert!(!results
             .iter()
             .any(|result| result.sentence == "million dollar construction budget."));
+    }
+
+    #[test]
+    fn decimal_numbers_and_units_remain_in_the_same_segment() {
+        let mut splitter = SentenceSplitter::new();
+        let results = splitter.feed(
+            "The package weighs 12.5 kg, measures 20.25 cm, and costs 30.00 USD.",
+        );
+
+        assert!(results
+            .iter()
+            .any(|result| result.sentence.contains("12.5 kg")));
+        assert!(results
+            .iter()
+            .any(|result| result.sentence.contains("20.25 cm")));
+        assert!(results
+            .iter()
+            .any(|result| result.sentence.contains("30.00 USD")));
+    }
+
+    #[test]
+    fn source_segments_obey_word_and_grapheme_caps() {
+        let english = (1..=48)
+            .map(|index| format!("word{index}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+            + ".";
+        let mut english_splitter = SentenceSplitter::new();
+        let english_results = english_splitter.feed(&english);
+        assert!(english_results.len() >= 3);
+        assert!(english_results
+            .iter()
+            .all(|result| result.sentence.split_whitespace().count() <= MAX_SUBTITLE_WORDS));
+
+        let cjk = "字幕".repeat(50) + "。";
+        let mut cjk_splitter = SentenceSplitter::new();
+        let cjk_results = cjk_splitter.feed(&cjk);
+        assert!(cjk_results.len() >= 3);
+        assert!(cjk_results
+            .iter()
+            .all(|result| result.sentence.graphemes(true).count() <= MAX_CJK_SUBTITLE_CHARS));
+    }
+
+    #[test]
+    fn normalization_preserves_semantic_newlines_and_ignores_spacing_jitter() {
+        assert_eq!(
+            normalize_hypothesis("first   line\r\n  second\tline"),
+            "first line\nsecond line"
+        );
+
+        let mut splitter = SentenceSplitter::new();
+        let first = splitter.feed_with_revision("First   line.\r\nSecond line.");
+        assert_eq!(first.sentences.len(), 2);
+        let spacing_update = splitter.feed_with_revision("First line.\nSecond   line.");
+        assert!(!spacing_update.revision_reset);
+        assert!(spacing_update.sentences.is_empty());
     }
 
     #[test]

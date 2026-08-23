@@ -1,51 +1,24 @@
+[CmdletBinding()]
+param()
+
 $ErrorActionPreference = 'Stop'
+$git = Get-Command git.exe -ErrorAction Stop
 
-$sshDir = Join-Path $env:USERPROFILE '.ssh'
-$keyPath = Join-Path $sshDir 'id_ed25519_github'
-$configPath = Join-Path $sshDir 'config'
-$knownHostsPath = Join-Path $sshDir 'known_hosts'
-$publicKeyPath = $keyPath + '.pub'
-$verificationPath = 'C:\ProgramData\Win11VmBootstrap\github-ssh-verify.log'
-
-New-Item -ItemType Directory -Path $sshDir -Force | Out-Null
-if (-not (Test-Path -LiteralPath $keyPath -PathType Leaf)) {
-    throw "GitHub private key is missing: $keyPath"
+# Kept under the historical filename so existing operator shortcuts do not fail.
+# The previous private-key import workflow was intentionally replaced with Git
+# Credential Manager over HTTPS. Authentication remains interactive and secrets
+# stay in the platform credential store instead of the guest filesystem.
+& $git.Source config --global credential.helper manager
+if ($LASTEXITCODE -ne 0) {
+    throw 'Unable to configure Git Credential Manager.'
 }
 
-$config = @(
-    'Host github.com',
-    '    HostName github.com',
-    '    User git',
-    '    IdentityFile C:/Users/VMUser/.ssh/id_ed25519_github',
-    '    IdentitiesOnly yes',
-    '    StrictHostKeyChecking accept-new'
-)
-Set-Content -LiteralPath $configPath -Value $config -Encoding ASCII
-
-$sshKeygen = Get-Command ssh-keygen.exe -ErrorAction SilentlyContinue
-if ($sshKeygen) {
-    $publicKey = & $sshKeygen.Source -y -f $keyPath 2>$null
-    if ($LASTEXITCODE -eq 0 -and $publicKey) {
-        Set-Content -LiteralPath $publicKeyPath -Value $publicKey -Encoding ASCII
-    }
+& $git.Source config --global --unset-all core.sshCommand 2>$null
+& $git.Source config --global --unset-all 'url.https://github.com/.insteadOf' 2>$null
+& $git.Source config --global --add 'url.https://github.com/.insteadOf' 'git@github.com:'
+& $git.Source config --global --add 'url.https://github.com/.insteadOf' 'ssh://git@github.com/'
+if ($LASTEXITCODE -ne 0) {
+    throw 'Unable to configure GitHub HTTPS URL rewriting.'
 }
 
-$icacls = Join-Path $env:SystemRoot 'System32\icacls.exe'
-& $icacls $keyPath /inheritance:r /grant:r "$env:USERNAME`:(F)" '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' | Out-Null
-& $icacls $configPath /inheritance:r /grant:r "$env:USERNAME`:(F)" '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' | Out-Null
-if (Test-Path -LiteralPath $publicKeyPath) {
-    & $icacls $publicKeyPath /inheritance:r /grant:r "$env:USERNAME`:(F)" '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' | Out-Null
-}
-
-$sshKeyscan = Get-Command ssh-keyscan.exe -ErrorAction SilentlyContinue
-if ($sshKeyscan) {
-    & $sshKeyscan.Source -H github.com 2>$null | Set-Content -LiteralPath $knownHostsPath -Encoding ASCII
-}
-
-$ssh = Get-Command ssh.exe -ErrorAction SilentlyContinue
-if ($ssh) {
-    & $ssh.Source -T -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 'git@github.com' *>&1 | Tee-Object -FilePath $verificationPath
-    Add-Content -LiteralPath $verificationPath -Value ('SSH_EXIT=' + $LASTEXITCODE) -Encoding ASCII
-}
-
-Write-Output "GitHub SSH configuration written to $configPath"
+Write-Output 'GitHub remotes now use HTTPS with Git Credential Manager. Authenticate interactively on the next Git operation.'

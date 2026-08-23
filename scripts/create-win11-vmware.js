@@ -1,33 +1,114 @@
 'use strict';
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
-
-const vmwareDir = 'E:\\VMware';
-const vmrun = path.join(vmwareDir, 'vmrun.exe');
-const vdiskManager = path.join(vmwareDir, 'vmware-vdiskmanager.exe');
-const mkisofs = path.join(vmwareDir, 'mkisofs.exe');
-const windowsToolsIso = path.join(vmwareDir, 'windows.iso');
-const windowsIso = 'E:\\DownLoads\\zh-cn_windows_11_consumer_editions_version_25h2_updated_june_2026_x64_dvd_2045a41c.iso';
-
-const vmRootArgIndex = process.argv.indexOf('--vm-root');
-const vmRoot = vmRootArgIndex >= 0 && process.argv[vmRootArgIndex + 1]
-  ? process.argv[vmRootArgIndex + 1]
-  : 'E:\\VMs\\Win11_25H2_2026';
-const vmName = 'Win11_25H2_2026_LocalNoPassword';
-const vmxPath = path.join(vmRoot, `${vmName}.vmx`);
-const vmdkPath = path.join(vmRoot, `${vmName}.vmdk`);
-const answerDir = path.join(vmRoot, 'answer-files');
-const answerIso = path.join(vmRoot, `${vmName}-answer.iso`);
-const hostShareDir = path.join(vmRoot, 'host-share');
 
 function fail(message) {
   throw new Error(message);
 }
 
+function optionValue(name, environmentName, { required = false, defaultValue = '' } = {}) {
+  const optionIndex = process.argv.indexOf(name);
+  if (optionIndex >= 0 && (!process.argv[optionIndex + 1] || process.argv[optionIndex + 1].startsWith('--'))) {
+    fail(`${name} requires a value.`);
+  }
+  const option = optionIndex >= 0 ? process.argv[optionIndex + 1] : '';
+  const value = option || process.env[environmentName] || defaultValue;
+  if (required && !value) {
+    fail(`Missing ${name}. Pass it explicitly or set ${environmentName}.`);
+  }
+  return value;
+}
+
+function resolvedOption(name, environmentName, options) {
+  const value = optionValue(name, environmentName, options);
+  return value ? path.resolve(value) : '';
+}
+
+function validateName(value, description) {
+  if (!/^[A-Za-z0-9._ -]+$/.test(value)) {
+    fail(`${description} contains unsupported characters.`);
+  }
+  return value;
+}
+
+function xmlEscape(value) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
+}
+
+if (process.argv.includes('--help')) {
+  console.log([
+    'Usage: node scripts/create-win11-vmware.js --vmware-dir <dir> --vm-root <dir> [options]',
+    '',
+    'Creation also requires --windows-iso <file>, --authorized-key <public-key-file>,',
+    'and OMNI_VM_GUEST_PASSWORD in the process environment. Paths can instead use',
+    'OMNI_VMWARE_DIR, OMNI_VM_ROOT, OMNI_WINDOWS_ISO, and OMNI_VM_AUTHORIZED_KEY_PATH.',
+    'Use a unique one-time setup password; the script never prints it and Windows will',
+    'require it to be changed after bootstrap completes.',
+    '',
+    'After Windows setup and a password change, power off the VM and run this command',
+    'again with --cleanup-answer-media to detach and delete the credential-bearing ISO.',
+  ].join('\n'));
+  process.exit(0);
+}
+
+const startExistingRequested = process.argv.includes('--start-existing');
+const cleanupRequested = process.argv.includes('--cleanup-answer-media');
+const createRequested = !startExistingRequested && !cleanupRequested;
+
+const vmwareDir = resolvedOption('--vmware-dir', 'OMNI_VMWARE_DIR', { required: true });
+const vmrun = path.join(vmwareDir, 'vmrun.exe');
+const vdiskManager = path.join(vmwareDir, 'vmware-vdiskmanager.exe');
+const mkisofs = path.join(vmwareDir, 'mkisofs.exe');
+const windowsToolsIso = resolvedOption('--tools-iso', 'OMNI_VMWARE_TOOLS_ISO', {
+  defaultValue: path.join(vmwareDir, 'windows.iso'),
+});
+const windowsIso = resolvedOption('--windows-iso', 'OMNI_WINDOWS_ISO', {
+  required: createRequested,
+});
+const authorizedKeyPath = resolvedOption('--authorized-key', 'OMNI_VM_AUTHORIZED_KEY_PATH', {
+  required: createRequested,
+});
+const vmRoot = resolvedOption('--vm-root', 'OMNI_VM_ROOT', { required: true });
+const vmName = validateName(
+  optionValue('--vm-name', 'OMNI_VM_NAME', { defaultValue: 'Win11_Development_VM' }),
+  'VM name',
+);
+const guestUser = validateName(
+  optionValue('--guest-user', 'OMNI_VM_GUEST_USER', { defaultValue: 'VMUser' }),
+  'Guest user name',
+);
+const guestPassword = createRequested ? process.env.OMNI_VM_GUEST_PASSWORD : '';
+delete process.env.OMNI_VM_GUEST_PASSWORD;
+if (createRequested && (!guestPassword || guestPassword.length < 14)) {
+  fail('OMNI_VM_GUEST_PASSWORD must contain at least 14 characters. It is never accepted on the command line.');
+}
+const vmxPath = path.join(vmRoot, `${vmName}.vmx`);
+const vmdkPath = path.join(vmRoot, `${vmName}.vmdk`);
+const answerIso = path.join(vmRoot, `${vmName}-answer.iso`);
+const hostShareDir = path.join(vmRoot, 'host-share');
+
 function assertFile(filePath, description) {
   if (!fs.existsSync(filePath)) fail(`${description} not found: ${filePath}`);
+}
+
+function readAuthorizedKey(filePath) {
+  assertFile(filePath, 'SSH public key');
+  const publicKey = fs.readFileSync(filePath, 'utf8').trim();
+  if (!/^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp(256|384|521))\s+[A-Za-z0-9+/=]+(?:\s+.*)?$/.test(publicKey)) {
+    fail('The authorized-key file must contain exactly one supported OpenSSH public key.');
+  }
+  if (/\r|\n/.test(publicKey)) {
+    fail('The authorized-key file must not contain multiple lines.');
+  }
+  return publicKey;
 }
 
 function run(executable, args, options = {}) {
@@ -67,7 +148,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Start-Sleep -Milliseconds 700
 for ($i = 0; $i -lt 12; $i++) {
     $vmware = Get-Process -Name vmware -ErrorAction SilentlyContinue |
-        Where-Object { $_.MainWindowTitle -like '*Win11_25H2_2026_LocalNoPassword*' } |
+        Where-Object { $_.MainWindowTitle -like '*${vmName}*' } |
         Select-Object -First 1
     if ($vmware) {
         try {
@@ -98,12 +179,13 @@ function sendBootKeySoon() {
   ], vmRoot);
 }
 
-const bootstrapPs1 = String.raw`# Windows guest bootstrap for the Win11_25H2_2026 VM.
+const bootstrapPs1 = String.raw`# Windows guest bootstrap generated by create-win11-vmware.js.
 $ErrorActionPreference = 'Continue'
 $Base = 'C:\ProgramData\Win11VmBootstrap'
 $Log = Join-Path $Base 'bootstrap.log'
 $TaskName = 'Win11VmBootstrap'
 $ScriptPath = Join-Path $Base 'bootstrap.ps1'
+$GuestUser = '${guestUser}'
 $Mutex = New-Object System.Threading.Mutex($false, 'Global\Win11VmBootstrapMutex')
 
 New-Item -ItemType Directory -Path $Base -Force | Out-Null
@@ -140,8 +222,8 @@ function MarkDone([string]$Name) {
 function EnsureBootstrapTask {
     try {
         $action = New-ScheduledTaskAction -Execute 'PowerShell.exe' -Argument ('-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $ScriptPath + '"')
-        $trigger = New-ScheduledTaskTrigger -AtLogOn -User ($env:COMPUTERNAME + '\VMUser')
-        $principal = New-ScheduledTaskPrincipal -UserId ($env:COMPUTERNAME + '\VMUser') -LogonType Interactive -RunLevel Highest
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User ($env:COMPUTERNAME + '\' + $GuestUser)
+        $principal = New-ScheduledTaskPrincipal -UserId ($env:COMPUTERNAME + '\' + $GuestUser) -LogonType Interactive -RunLevel Highest
         Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
         Log 'Bootstrap scheduled task is installed.'
     } catch {
@@ -224,7 +306,7 @@ function Install-VMwareTools {
 }
 
 function Configure-OpenSSH {
-    Log 'Installing and configuring OpenSSH Client and Server.'
+    Log 'Installing and configuring OpenSSH for public-key-only access.'
     $client = Get-WindowsCapability -Online -Name 'OpenSSH.Client~~~~0.0.1.0' -ErrorAction SilentlyContinue
     if ($client -and $client.State -ne 'Installed') {
         Add-WindowsCapability -Online -Name 'OpenSSH.Client~~~~0.0.1.0' | Out-Null
@@ -235,37 +317,64 @@ function Configure-OpenSSH {
         $capResult = Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0'
         if ($capResult.RestartNeeded) { $restartNeeded = $true }
     }
-    $sshdConfig = 'C:\ProgramData\ssh\sshd_config'
-    if (Test-Path -LiteralPath $sshdConfig) {
-        $configLines = @(Get-Content -LiteralPath $sshdConfig -ErrorAction SilentlyContinue)
-        $configLines = @($configLines | ForEach-Object {
-            if ($_ -match '^\s*#?\s*PermitEmptyPasswords\s+') {
-                'PermitEmptyPasswords yes'
-            } elseif ($_ -match '^\s*#?\s*PasswordAuthentication\s+') {
-                'PasswordAuthentication yes'
-            } else {
-                $_
-            }
-        })
-        if (-not ($configLines -match '^PermitEmptyPasswords\s+yes$')) {
-            $configLines += 'PermitEmptyPasswords yes'
-        }
-        if (-not ($configLines -match '^PasswordAuthentication\s+yes$')) {
-            $configLines += 'PasswordAuthentication yes'
-        }
-        Set-Content -LiteralPath $sshdConfig -Value $configLines -Encoding UTF8
-        Log 'sshd_config allows password authentication with the requested empty-password local account.'
+
+    $authorizedKeySource = 'C:\Windows\Setup\Scripts\authorized_key.pub'
+    if (-not (Test-Path -LiteralPath $authorizedKeySource -PathType Leaf)) {
+        throw 'The required SSH public key was not copied from the answer media.'
     }
+    $publicLine = (Get-Content -Raw -LiteralPath $authorizedKeySource).Trim()
+    if ($publicLine -notmatch '^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp(256|384|521))\s+[A-Za-z0-9+/=]+(?:\s+.*)?$') {
+        throw 'The authorized key file does not contain one supported OpenSSH public key.'
+    }
+    $adminAuthorized = 'C:\ProgramData\ssh\administrators_authorized_keys'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $adminAuthorized) -Force | Out-Null
+    $existingKeys = if (Test-Path -LiteralPath $adminAuthorized) {
+        @(Get-Content -LiteralPath $adminAuthorized)
+    } else {
+        @()
+    }
+    if ($existingKeys -notcontains $publicLine) {
+        Add-Content -LiteralPath $adminAuthorized -Value $publicLine -Encoding ASCII
+    }
+    & (Join-Path $env:SystemRoot 'System32\icacls.exe') $adminAuthorized /inheritance:r /grant:r 'SYSTEM:(F)' 'BUILTIN\Administrators:(F)' | Out-Null
+
+    $sshdConfig = 'C:\ProgramData\ssh\sshd_config'
+    if (-not (Test-Path -LiteralPath $sshdConfig -PathType Leaf)) {
+        $defaultConfig = Join-Path $env:SystemRoot 'System32\OpenSSH\sshd_config_default'
+        if (-not (Test-Path -LiteralPath $defaultConfig -PathType Leaf)) {
+            throw 'OpenSSH Server did not provide an sshd_config template.'
+        }
+        Copy-Item -LiteralPath $defaultConfig -Destination $sshdConfig
+    }
+    $configLines = @(Get-Content -LiteralPath $sshdConfig -ErrorAction Stop | Where-Object {
+        $_ -notmatch '^\s*#?\s*(AuthenticationMethods|PubkeyAuthentication|PasswordAuthentication|KbdInteractiveAuthentication|PermitEmptyPasswords)\s+'
+    })
+    $hardenedSettings = @(
+        'AuthenticationMethods publickey',
+        'PubkeyAuthentication yes',
+        'PasswordAuthentication no',
+        'KbdInteractiveAuthentication no',
+        'PermitEmptyPasswords no'
+    )
+    Set-Content -LiteralPath $sshdConfig -Value @($hardenedSettings + $configLines) -Encoding ASCII
+    $sshd = Get-Command sshd.exe -ErrorAction Stop
+    & $sshd.Source -t -f $sshdConfig
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The hardened sshd_config failed validation.'
+    }
+    Log 'sshd_config now requires a public key and rejects password authentication.'
     Set-Service -Name sshd -StartupType Automatic -ErrorAction Stop
     Start-Service -Name sshd -ErrorAction SilentlyContinue
     Restart-Service -Name sshd -Force -ErrorAction SilentlyContinue
     $sshFirewallRule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
     if (-not $sshFirewallRule) {
-        New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Profile Any -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
+        $sshFirewallRule = New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Profile Private -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -RemoteAddress LocalSubnet
     } else {
-        Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -Enabled True -Profile Any -Direction Inbound -Action Allow -ErrorAction SilentlyContinue
+        Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -Enabled True -Profile Private -Direction Inbound -Action Allow -ErrorAction Stop
+        $sshFirewallRule | Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter -RemoteAddress LocalSubnet | Out-Null
+        $sshFirewallRule | Get-NetFirewallPortFilter | Set-NetFirewallPortFilter -Protocol TCP -LocalPort 22 | Out-Null
     }
-    Log 'OpenSSH Server is configured to start automatically and TCP/22 is allowed.'
+    Log 'OpenSSH Server is limited to local-subnet clients on Private network profiles.'
     return $restartNeeded
 }
 
@@ -377,20 +486,25 @@ function Disable-WindowsUpdates {
     Log 'Windows Update policy and services are disabled. Re-enable the policy and services to update later.'
 }
 
-function Set-VMUserBlankPassword {
-    Log 'Clearing the temporary setup password from VMUser.'
-    # Passing an empty native argument through cmd.exe is unreliable here. Use
-    # the LocalAccounts API with an actual empty SecureString instead. The
-    # PasswordRequired property is a policy flag and does not prove whether a
-    # particular local account currently has a password, so do not use it as a
-    # postcondition.
-    $emptyPassword = New-Object System.Security.SecureString
-    Set-LocalUser -Name VMUser -Password $emptyPassword -ErrorAction Stop
-    & (Join-Path $env:SystemRoot 'System32\net.exe') user VMUser /active:yes | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw ('Unable to activate VMUser after clearing its password; net.exe exit code ' + $LASTEXITCODE)
+function Enforce-SecureLocalAccount {
+    Log ('Enforcing password policy and disabling automatic logon for ' + $GuestUser + '.')
+    $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    Set-ItemProperty -Path $winlogon -Name 'AutoAdminLogon' -Value '0' -ErrorAction Stop
+    foreach ($propertyName in @('DefaultPassword', 'DefaultUserName', 'DefaultDomainName', 'AutoLogonCount')) {
+        Remove-ItemProperty -Path $winlogon -Name $propertyName -ErrorAction SilentlyContinue
     }
-    Log 'VMUser now has an empty password.'
+
+    Set-LocalUser -Name $GuestUser -PasswordNeverExpires $false -ErrorAction Stop
+    & (Join-Path $env:SystemRoot 'System32\net.exe') user $GuestUser /active:yes /passwordreq:yes | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw ('Unable to enforce the local account password policy; net.exe exit code ' + $LASTEXITCODE)
+    }
+    & (Join-Path $env:SystemRoot 'System32\net.exe') user $GuestUser /logonpasswordchg:yes | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw ('Unable to require a password change at the next sign-in; net.exe exit code ' + $LASTEXITCODE)
+    }
+
+    Log 'Automatic logon is disabled and the setup password must be changed at the next sign-in.'
 }
 
 try {
@@ -428,15 +542,9 @@ try {
         MarkDone 'updates-disabled'
     }
 
-    Set-VMUserBlankPassword
-
-    $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
-    Set-ItemProperty -Path $winlogon -Name 'AutoAdminLogon' -Value '1'
-    Set-ItemProperty -Path $winlogon -Name 'DefaultUserName' -Value 'VMUser'
-    Set-ItemProperty -Path $winlogon -Name 'DefaultDomainName' -Value $env:COMPUTERNAME
-    Set-ItemProperty -Path $winlogon -Name 'DefaultPassword' -Value ''
+    Enforce-SecureLocalAccount
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-    Log 'Bootstrap completed. VMUser remains a local administrator with an empty password and automatic logon enabled.'
+    Log 'Bootstrap completed with public-key-only SSH and automatic logon disabled.'
     Publish-Log
 } catch {
     Log ('BOOTSTRAP ERROR: ' + $_.Exception.ToString())
@@ -505,6 +613,7 @@ const unattendXml = String.raw`<?xml version="1.0" encoding="utf-8"?>
       <RunSynchronous>
         <RunSynchronousCommand wcm:action="add"><Order>1</Order><Path>cmd.exe /c md C:\Windows\Setup\Scripts</Path></RunSynchronousCommand>
         <RunSynchronousCommand wcm:action="add"><Order>2</Order><Path>cmd.exe /c for %D in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do if exist %D:\bootstrap.ps1 copy /Y %D:\bootstrap.ps1 C:\Windows\Setup\Scripts\bootstrap.ps1</Path></RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add"><Order>3</Order><Path>cmd.exe /c for %D in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do if exist %D:\authorized_key.pub copy /Y %D:\authorized_key.pub C:\Windows\Setup\Scripts\authorized_key.pub</Path></RunSynchronousCommand>
       </RunSynchronous>
     </component>
   </settings>
@@ -516,12 +625,6 @@ const unattendXml = String.raw`<?xml version="1.0" encoding="utf-8"?>
       <UserLocale>zh-CN</UserLocale>
     </component>
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
-      <AutoLogon>
-        <Enabled>true</Enabled>
-        <LogonCount>999</LogonCount>
-        <Username>VMUser</Username>
-        <Password><Value>VmSetup!2026</Value><PlainText>true</PlainText></Password>
-      </AutoLogon>
       <OOBE>
         <HideEULAPage>true</HideEULAPage>
         <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
@@ -534,11 +637,11 @@ const unattendXml = String.raw`<?xml version="1.0" encoding="utf-8"?>
       <UserAccounts>
         <LocalAccounts>
           <LocalAccount wcm:action="add">
-            <Password><Value>VmSetup!2026</Value><PlainText>true</PlainText></Password>
+            <Password><Value>${xmlEscape(guestPassword)}</Value><PlainText>true</PlainText></Password>
             <Description>Local administrator for the VMware guest</Description>
-            <DisplayName>VM User</DisplayName>
+            <DisplayName>${xmlEscape(guestUser)}</DisplayName>
             <Group>Administrators</Group>
-            <Name>VMUser</Name>
+            <Name>${xmlEscape(guestUser)}</Name>
           </LocalAccount>
         </LocalAccounts>
       </UserAccounts>
@@ -562,6 +665,7 @@ function createVm() {
   assertFile(mkisofs, 'mkisofs');
   assertFile(windowsToolsIso, 'VMware Tools ISO');
   assertFile(windowsIso, 'Windows ISO');
+  const authorizedKey = readAuthorizedKey(authorizedKeyPath);
 
   if (fs.existsSync(vmRoot)) {
     const entries = fs.readdirSync(vmRoot);
@@ -571,13 +675,17 @@ function createVm() {
   } else {
     fs.mkdirSync(vmRoot, { recursive: true });
   }
-  fs.mkdirSync(answerDir, { recursive: true });
   fs.mkdirSync(hostShareDir, { recursive: true });
 
-  writeUtf8(path.join(answerDir, 'autounattend.xml'), unattendXml);
-  writeUtf8(path.join(answerDir, 'bootstrap.ps1'), bootstrapPs1);
-
-  run(mkisofs, ['-o', answerIso, '-V', 'WIN11AUTO', '-J', '-R', answerDir], { cwd: vmRoot });
+  const answerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-win11-answer-'));
+  try {
+    writeUtf8(path.join(answerDir, 'autounattend.xml'), unattendXml);
+    writeUtf8(path.join(answerDir, 'bootstrap.ps1'), bootstrapPs1);
+    writeUtf8(path.join(answerDir, 'authorized_key.pub'), `${authorizedKey}\n`);
+    run(mkisofs, ['-o', answerIso, '-V', 'WIN11AUTO', '-J', '-R', answerDir], { cwd: vmRoot });
+  } finally {
+    fs.rmSync(answerDir, { recursive: true, force: true });
+  }
   run(vdiskManager, ['-c', '-s', '40GB', '-a', 'lsilogic', '-t', '0', vmdkPath], { cwd: vmRoot });
 
   const vmx = [
@@ -663,16 +771,18 @@ function createVm() {
 
   console.log(`Created VM configuration: ${vmxPath}`);
   console.log('Disk: 40 GB, monolithicSparse (-t 0), single VMDK file');
-  console.log('Windows account: VMUser (local administrator, empty password, automatic logon)');
+  console.log(`Windows account: ${guestUser} (local administrator, password required, automatic logon disabled)`);
   console.log('Secure Boot: disabled; Windows 11 compatibility checks are bypassed in WinPE for this VM.');
-  console.log('Starting the VM. Guest bootstrap will continue after Windows first logon.');
+  console.log('Starting the VM. Sign in manually once so the guest bootstrap can run.');
   startDetached(vmrun, ['-T', 'ws', 'start', vmxPath, 'gui'], vmRoot);
   sendBootKeySoon();
   console.log('VMware start command detached successfully.');
   console.log('VM started successfully. Bootstrap log will be inside the guest at C:\\ProgramData\\Win11VmBootstrap\\bootstrap.log.');
+  console.log('After the required password change, power off the VM and run --cleanup-answer-media.');
 }
 
 function startExistingVm() {
+  assertFile(vmrun, 'vmrun');
   assertFile(vmxPath, 'existing VMX');
   console.log(`Starting existing VM: ${vmxPath}`);
   startDetached(vmrun, ['-T', 'ws', 'start', vmxPath, 'gui'], vmRoot);
@@ -680,8 +790,36 @@ function startExistingVm() {
   console.log('VMware start command detached successfully.');
 }
 
+function cleanupAnswerMedia() {
+  assertFile(vmrun, 'vmrun');
+  assertFile(vmxPath, 'existing VMX');
+
+  const running = run(vmrun, ['-T', 'ws', 'list'], { stdio: 'pipe' }).stdout || '';
+  const normalizedVmxPath = path.resolve(vmxPath).toLowerCase();
+  const runningVms = running.split(/\r?\n/).map((entry) => path.resolve(entry).toLowerCase());
+  if (runningVms.includes(normalizedVmxPath)) {
+    fail('Power off the VM before removing its answer media.');
+  }
+
+  let vmx = fs.readFileSync(vmxPath, 'utf8');
+  const replacements = new Map([
+    ['ide1:1.present', 'FALSE'],
+    ['ide1:1.startConnected', 'FALSE'],
+  ]);
+  for (const [key, value] of replacements) {
+    const pattern = new RegExp(`^${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=.*$`, 'm');
+    if (!pattern.test(vmx)) fail(`VMX does not contain the expected ${key} setting.`);
+    vmx = vmx.replace(pattern, `${key} = "${value}"`);
+  }
+  writeUtf8(vmxPath, vmx);
+  fs.rmSync(answerIso, { force: true });
+  console.log('Answer media detached and deleted. The generated setup credential is no longer stored beside the VM.');
+}
+
 try {
-  if (process.argv.includes('--start-existing')) {
+  if (cleanupRequested) {
+    cleanupAnswerMedia();
+  } else if (startExistingRequested) {
     startExistingVm();
   } else {
     createVm();

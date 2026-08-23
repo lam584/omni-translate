@@ -27,6 +27,9 @@ jobs:
       - name: Audit tracked files
         run: npm run audit:repository-hygiene
 
+      - name: Audit VM provisioning security
+        run: node --test ./scripts/testing/vm-provisioning-security.test.mjs
+
   secrets:
     name: Full-history secret scan
     runs-on: ubuntu-latest

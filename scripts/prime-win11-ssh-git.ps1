@@ -1,7 +1,17 @@
-$ErrorActionPreference = 'Stop'
+[CmdletBinding()]
+param(
+    [ValidatePattern('^[A-Za-z0-9._ -]+$')]
+    [string]$GuestUser = $(if ($env:OMNI_VM_GUEST_USER) { $env:OMNI_VM_GUEST_USER } else { 'VMUser' }),
 
-$guestUser = 'VMUser'
-$temporaryPassword = 'VmSetup!2026'
+    [string]$AuthorizedKeyPath = $env:OMNI_VM_AUTHORIZED_KEY_PATH,
+
+    [Security.SecureString]$GuestPassword,
+
+    [ValidateNotNullOrEmpty()]
+    [string]$FirewallRemoteAddress = $(if ($env:OMNI_VM_SSH_REMOTE_ADDRESS) { $env:OMNI_VM_SSH_REMOTE_ADDRESS } else { 'LocalSubnet' })
+)
+
+$ErrorActionPreference = 'Stop'
 $programDataRoot = Join-Path $env:ProgramData 'Win11VmBootstrap'
 $logPath = Join-Path $programDataRoot 'prime-ssh-git.log'
 
@@ -13,13 +23,158 @@ function Write-Log([string]$Message) {
     Write-Output $line
 }
 
-try {
-    Write-Log 'Starting SSH/Git bootstrap.'
+function Get-RequiredGuestPassword {
+    if ($GuestPassword) {
+        return $GuestPassword
+    }
 
-    $securePassword = ConvertTo-SecureString $temporaryPassword -AsPlainText -Force
-    Set-LocalUser -Name $guestUser -Password $securePassword -ErrorAction Stop
-    Enable-LocalUser -Name $guestUser -ErrorAction SilentlyContinue
-    Write-Log 'Temporary password set for VMUser.'
+    $environmentPassword = [Environment]::GetEnvironmentVariable('OMNI_VM_BOOTSTRAP_PASSWORD', 'Process')
+    if ($environmentPassword) {
+        if ($environmentPassword.Length -lt 14) {
+            throw 'OMNI_VM_BOOTSTRAP_PASSWORD must contain at least 14 characters.'
+        }
+        try {
+            return ConvertTo-SecureString $environmentPassword -AsPlainText -Force
+        } finally {
+            $environmentPassword = $null
+            [Environment]::SetEnvironmentVariable('OMNI_VM_BOOTSTRAP_PASSWORD', $null, 'Process')
+        }
+    }
+
+    if (-not [Environment]::UserInteractive) {
+        throw 'Supply -GuestPassword as a SecureString or set OMNI_VM_BOOTSTRAP_PASSWORD for this process.'
+    }
+    return Read-Host 'Enter a new strong password for the existing VM account' -AsSecureString
+}
+
+function Assert-StrongSecurePassword([Security.SecureString]$Password) {
+    if (-not $Password) {
+        throw 'A new VM account password is required.'
+    }
+    $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
+    try {
+        $passwordLength = [Runtime.InteropServices.Marshal]::ReadInt32($passwordPointer, -4) / 2
+        if ($passwordLength -lt 14) {
+            throw 'The new VM account password must contain at least 14 characters.'
+        }
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPointer)
+    }
+}
+
+function Read-AuthorizedPublicKey([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw 'Supply -AuthorizedKeyPath or set OMNI_VM_AUTHORIZED_KEY_PATH to a public-key file.'
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw 'The SSH public-key file does not exist.'
+    }
+    $publicLine = (Get-Content -Raw -LiteralPath $Path).Trim()
+    if ($publicLine -notmatch '^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp(256|384|521))\s+[A-Za-z0-9+/=]+(?:\s+.*)?$' -or $publicLine -match "`r|`n") {
+        throw 'The authorized-key file must contain exactly one supported OpenSSH public key.'
+    }
+    return $publicLine
+}
+
+function Disable-AutomaticLogon {
+    $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    Set-ItemProperty -Path $winlogon -Name 'AutoAdminLogon' -Value '0'
+    foreach ($propertyName in @('DefaultPassword', 'DefaultUserName', 'DefaultDomainName', 'AutoLogonCount')) {
+        Remove-ItemProperty -Path $winlogon -Name $propertyName -ErrorAction SilentlyContinue
+    }
+    Write-Log 'Automatic logon is disabled and stored logon values were removed.'
+}
+
+function Set-AuthorizedKeys([string]$PublicLine) {
+    $localUser = Get-LocalUser -Name $GuestUser -ErrorAction Stop
+    $profile = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction SilentlyContinue |
+        Where-Object { $_.SID -eq $localUser.SID.Value } |
+        Select-Object -First 1
+    $userProfile = if ($profile -and $profile.LocalPath) {
+        $profile.LocalPath
+    } else {
+        Join-Path $env:SystemDrive ('Users\' + $GuestUser)
+    }
+    $userSsh = Join-Path $userProfile '.ssh'
+    $userAuthorized = Join-Path $userSsh 'authorized_keys'
+    $adminAuthorized = Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
+
+    foreach ($authorizedPath in @($userAuthorized, $adminAuthorized)) {
+        New-Item -ItemType Directory -Path (Split-Path -Parent $authorizedPath) -Force | Out-Null
+        $existing = if (Test-Path -LiteralPath $authorizedPath) {
+            @(Get-Content -LiteralPath $authorizedPath)
+        } else {
+            @()
+        }
+        if ($existing -notcontains $PublicLine) {
+            Add-Content -LiteralPath $authorizedPath -Value $PublicLine -Encoding ASCII
+        }
+    }
+
+    $icacls = Join-Path $env:SystemRoot 'System32\icacls.exe'
+    & $icacls $userSsh /inheritance:r /grant:r ($env:COMPUTERNAME + '\' + $GuestUser + ':(OI)(CI)(F)') 'SYSTEM:(OI)(CI)(F)' | Out-Null
+    & $icacls $adminAuthorized /inheritance:r /grant:r 'SYSTEM:(F)' 'BUILTIN\Administrators:(F)' | Out-Null
+    Write-Log 'The requested public key was installed without importing a private credential.'
+}
+
+function Set-PublicKeyOnlySsh {
+    $sshdConfig = Join-Path $env:ProgramData 'ssh\sshd_config'
+    if (-not (Test-Path -LiteralPath $sshdConfig -PathType Leaf)) {
+        $defaultConfig = Join-Path $env:SystemRoot 'System32\OpenSSH\sshd_config_default'
+        if (-not (Test-Path -LiteralPath $defaultConfig -PathType Leaf)) {
+            throw 'OpenSSH Server did not provide an sshd_config template.'
+        }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $sshdConfig) -Force | Out-Null
+        Copy-Item -LiteralPath $defaultConfig -Destination $sshdConfig
+    }
+
+    $configLines = @(Get-Content -LiteralPath $sshdConfig -ErrorAction Stop | Where-Object {
+        $_ -notmatch '^\s*#?\s*(AuthenticationMethods|PubkeyAuthentication|PasswordAuthentication|KbdInteractiveAuthentication|PermitEmptyPasswords)\s+'
+    })
+    $hardenedSettings = @(
+        'AuthenticationMethods publickey',
+        'PubkeyAuthentication yes',
+        'PasswordAuthentication no',
+        'KbdInteractiveAuthentication no',
+        'PermitEmptyPasswords no'
+    )
+    Set-Content -LiteralPath $sshdConfig -Value @($hardenedSettings + $configLines) -Encoding ASCII
+
+    $sshd = Get-Command sshd.exe -ErrorAction Stop
+    & $sshd.Source -t -f $sshdConfig
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The hardened sshd_config failed validation.'
+    }
+    Write-Log 'OpenSSH now requires a public key and rejects password authentication.'
+}
+
+function Set-RestrictedSshFirewall {
+    $firewallRule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
+    if (-not $firewallRule) {
+        New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Profile Private -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -RemoteAddress $FirewallRemoteAddress | Out-Null
+    } else {
+        Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -Enabled True -Profile Private -Direction Inbound -Action Allow -ErrorAction Stop
+        $firewallRule | Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter -RemoteAddress $FirewallRemoteAddress | Out-Null
+        $firewallRule | Get-NetFirewallPortFilter | Set-NetFirewallPortFilter -Protocol TCP -LocalPort 22 | Out-Null
+    }
+    Write-Log 'The SSH firewall rule is enabled only for the configured source on Private profiles.'
+}
+
+try {
+    Write-Log 'Starting existing-VM SSH/Git hardening.'
+    $publicLine = Read-AuthorizedPublicKey $AuthorizedKeyPath
+    $newPassword = Get-RequiredGuestPassword
+    Assert-StrongSecurePassword $newPassword
+
+    Set-LocalUser -Name $GuestUser -Password $newPassword -PasswordNeverExpires $false -ErrorAction Stop
+    Enable-LocalUser -Name $GuestUser -ErrorAction SilentlyContinue
+    Disable-AutomaticLogon
+    & (Join-Path $env:SystemRoot 'System32\net.exe') user $GuestUser /active:yes /passwordreq:yes | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw ('Unable to enforce the local account password policy; net.exe exit code ' + $LASTEXITCODE)
+    }
+    $newPassword = $null
+    Write-Log 'The existing VM account password was rotated and password-required policy is enabled.'
 
     $client = Get-WindowsCapability -Online -Name 'OpenSSH.Client~~~~0.0.1.0' -ErrorAction SilentlyContinue
     if ($client -and $client.State -ne 'Installed') {
@@ -30,123 +185,12 @@ try {
         Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' | Out-Null
     }
 
-    $shareCandidates = @(
-        (Join-Path $PSScriptRoot 'host-share'),
-        'E:\VMs\Win11_25H2_1\host-share',
-        '\\vmware-host\Shared Folders\HostShare'
-    )
-    $share = $shareCandidates | Where-Object {
-        (Test-Path -LiteralPath (Join-Path $_ 'host_admin.pub')) -or
-        (Test-Path -LiteralPath (Join-Path $_ 'id_ed25519_github'))
-    } | Select-Object -First 1
-
-    $userProfile = Join-Path $env:SystemDrive 'Users\VMUser'
-    $userSsh = Join-Path $userProfile '.ssh'
-    New-Item -ItemType Directory -Path $userSsh -Force | Out-Null
-
-    if ($share) {
-        $hostPublic = Join-Path $share 'host_admin.pub'
-        if (Test-Path -LiteralPath $hostPublic) {
-            $publicLine = (Get-Content -Raw -LiteralPath $hostPublic).Trim()
-            $adminAuthorized = Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
-            $userAuthorized = Join-Path $userSsh 'authorized_keys'
-            foreach ($authorizedPath in @($adminAuthorized, $userAuthorized)) {
-                New-Item -ItemType Directory -Path (Split-Path -Parent $authorizedPath) -Force | Out-Null
-                $existing = if (Test-Path -LiteralPath $authorizedPath) { @(Get-Content -LiteralPath $authorizedPath) } else { @() }
-                if ($existing -notcontains $publicLine) {
-                    Add-Content -LiteralPath $authorizedPath -Value $publicLine -Encoding ASCII
-                }
-                & (Join-Path $env:SystemRoot 'System32\icacls.exe') $authorizedPath /inheritance:r /grant:r 'SYSTEM:(F)' 'BUILTIN\Administrators:(F)' | Out-Null
-            }
-            Write-Log 'Host public key installed for SSH administration.'
-        }
-
-        $githubKeySource = Join-Path $share 'id_ed25519_github'
-        if (Test-Path -LiteralPath $githubKeySource) {
-            $githubKeyTarget = Join-Path $userSsh 'id_ed25519_github'
-            Copy-Item -LiteralPath $githubKeySource -Destination $githubKeyTarget -Force
-            & (Join-Path $env:SystemRoot 'System32\icacls.exe') $githubKeyTarget /inheritance:r /grant:r ($env:COMPUTERNAME + '\' + $guestUser + ':(F)') 'SYSTEM:(F)' | Out-Null
-            Write-Log 'GitHub private key copied into VMUser SSH profile.'
-        }
-    }
-
-    $sshdConfig = Join-Path $env:ProgramData 'ssh\sshd_config'
-    if (Test-Path -LiteralPath $sshdConfig) {
-        $configLines = @(Get-Content -LiteralPath $sshdConfig -ErrorAction SilentlyContinue)
-        $seenPassword = $false
-        $seenEmpty = $false
-        $seenPubkey = $false
-        $normalized = foreach ($line in $configLines) {
-            if ($line -match '^\s*#?\s*PasswordAuthentication\s+') {
-                $seenPassword = $true
-                'PasswordAuthentication yes'
-            } elseif ($line -match '^\s*#?\s*PermitEmptyPasswords\s+') {
-                $seenEmpty = $true
-                'PermitEmptyPasswords no'
-            } elseif ($line -match '^\s*#?\s*PubkeyAuthentication\s+') {
-                $seenPubkey = $true
-                'PubkeyAuthentication yes'
-            } else {
-                $line
-            }
-        }
-        if (-not $seenPassword) { $normalized += 'PasswordAuthentication yes' }
-        if (-not $seenEmpty) { $normalized += 'PermitEmptyPasswords no' }
-        if (-not $seenPubkey) { $normalized += 'PubkeyAuthentication yes' }
-        Set-Content -LiteralPath $sshdConfig -Value $normalized -Encoding ASCII
-    }
-
-    $sshConfig = Join-Path $userSsh 'config'
-    @(
-        'Host github.com'
-        '    HostName github.com'
-        '    User git'
-        '    IdentityFile C:/Users/VMUser/.ssh/id_ed25519_github'
-        '    IdentitiesOnly yes'
-        '    StrictHostKeyChecking accept-new'
-    ) | Set-Content -LiteralPath $sshConfig -Encoding ASCII
-    & (Join-Path $env:SystemRoot 'System32\icacls.exe') $sshConfig /inheritance:r /grant:r ($env:COMPUTERNAME + '\' + $guestUser + ':(F)') 'SYSTEM:(F)' | Out-Null
-
-    $sshKeyscan = Get-Command ssh-keyscan.exe -ErrorAction SilentlyContinue
-    if ($sshKeyscan) {
-        $knownHostsPath = Join-Path $userSsh 'known_hosts'
-        try {
-            $scanInfo = New-Object System.Diagnostics.ProcessStartInfo
-            $scanInfo.FileName = $sshKeyscan.Source
-            $scanInfo.Arguments = '-H github.com'
-            $scanInfo.UseShellExecute = $false
-            $scanInfo.CreateNoWindow = $true
-            $scanInfo.RedirectStandardOutput = $true
-            $scanInfo.RedirectStandardError = $true
-            $scanProcess = New-Object System.Diagnostics.Process
-            $scanProcess.StartInfo = $scanInfo
-            [void]$scanProcess.Start()
-            $scanStdout = $scanProcess.StandardOutput.ReadToEnd()
-            [void]$scanProcess.StandardError.ReadToEnd()
-            $scanProcess.WaitForExit()
-            $scanLines = @($scanStdout -split "`r?`n" | Where-Object {
-                $_ -and $_ -notmatch '^\s*#'
-            })
-            if ($scanLines.Count -gt 0) {
-                $scanLines | Set-Content -LiteralPath $knownHostsPath -Encoding ASCII
-                Write-Log 'GitHub host keys saved to known_hosts.'
-            } else {
-                Write-Log ('ssh-keyscan returned no host keys (exit code ' + $scanProcess.ExitCode + '); continuing.')
-            }
-        } catch {
-            Write-Log ('ssh-keyscan skipped: ' + $_.Exception.Message)
-        }
-    }
-
+    Set-AuthorizedKeys $publicLine
+    Set-PublicKeyOnlySsh
     Set-Service -Name sshd -StartupType Automatic -ErrorAction Stop
     Start-Service -Name sshd -ErrorAction SilentlyContinue
-    Restart-Service -Name sshd -Force -ErrorAction SilentlyContinue
-    $firewallRule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
-    if (-not $firewallRule) {
-        New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Profile Any -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
-    } else {
-        Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -Enabled True -Profile Any -Direction Inbound -Protocol TCP -Action Allow | Out-Null
-    }
+    Restart-Service -Name sshd -Force -ErrorAction Stop
+    Set-RestrictedSshFirewall
 
     $gitPath = (Get-Command git.exe -ErrorAction SilentlyContinue).Source
     if (-not $gitPath) {
@@ -156,30 +200,16 @@ try {
             $gitPath = (Get-Command git.exe -ErrorAction SilentlyContinue).Source
         }
     }
-    if (-not $gitPath) {
-        foreach ($candidate in @(
-            'C:\Program Files\Git\cmd\git.exe',
-            'C:\Program Files\Git\bin\git.exe'
-        )) {
-            if (Test-Path -LiteralPath $candidate) {
-                $gitPath = $candidate
-                break
-            }
-        }
-    }
     if ($gitPath) {
-        & $gitPath config --global core.sshCommand 'ssh -F C:/Users/VMUser/.ssh/config'
-        Write-Log 'Git configured to use the VMUser SSH config.'
+        Write-Log 'Git is available. Authenticate outbound Git operations interactively with Git Credential Manager.'
     } else {
-        Write-Log 'Git executable was not found; SSH bootstrap completed.'
+        Write-Log 'Git was not found; SSH hardening completed.'
     }
 
-    $ip = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
-        Select-Object -ExpandProperty IPAddress -First 1
-    Write-Log ('SSH ready. Guest IPv4=' + $ip)
-    Write-Log 'Leave the temporary password in place until host-side SSH verification completes.'
+    Write-Log 'Existing-VM hardening completed. No private key was copied into the guest.'
 } catch {
     Write-Log ('ERROR: ' + $_.Exception.Message)
     exit 1
+} finally {
+    [Environment]::SetEnvironmentVariable('OMNI_VM_BOOTSTRAP_PASSWORD', $null, 'Process')
 }

@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
   [switch]$Execute,
-  [switch]$IncludeLegacyCargoRegistry
+  [switch]$IncludeLegacyCargoRegistry,
+  [switch]$IncludeLegacyVcpkgArchives
 )
 
 $ErrorActionPreference = 'Stop'
@@ -9,6 +10,7 @@ $workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $tempRoot = Join-Path $env:LOCALAPPDATA 'Temp'
 $eCargoHome = Join-Path $workspaceRoot 'artifacts\testing\cargo-home'
 $legacyCargoRegistry = Join-Path $env:USERPROFILE '.cargo\registry'
+$legacyVcpkgArchives = Join-Path $env:LOCALAPPDATA 'vcpkg\archives'
 $cutoff = [DateTime]::UtcNow.AddDays(-1)
 
 function Get-DirectoryBytes([string]$Path) {
@@ -40,6 +42,12 @@ if ($IncludeLegacyCargoRegistry -and (Test-Path -LiteralPath $legacyCargoRegistr
     throw "Refusing to remove the legacy Cargo registry because the E: VM3 Cargo cache is empty: $eCargoHome"
   }
   $targets += [pscustomobject]@{ Path = (Resolve-Path -LiteralPath $legacyCargoRegistry).Path; Kind = 'legacy-cargo-registry' }
+}
+if ($IncludeLegacyVcpkgArchives -and (Test-Path -LiteralPath $legacyVcpkgArchives)) {
+  if (-not (Test-Path -LiteralPath (Join-Path $workspaceRoot 'target'))) {
+    throw "Refusing to remove the legacy vcpkg archives because the E: workspace target is unavailable"
+  }
+  $targets += [pscustomobject]@{ Path = (Resolve-Path -LiteralPath $legacyVcpkgArchives).Path; Kind = 'legacy-vcpkg-archives' }
 }
 
 $planned = $targets | ForEach-Object {

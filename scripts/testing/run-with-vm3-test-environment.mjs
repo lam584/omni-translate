@@ -7,6 +7,7 @@ import { isMain, repoRoot } from '../lib/testing-common.mjs';
 const TEMP_ROOT = path.join(repoRoot, 'artifacts', 'testing', 'temp');
 const CARGO_HOME = path.join(repoRoot, 'artifacts', 'testing', 'cargo-home');
 const CARGO_TARGET_DIR = path.join(repoRoot, 'target');
+const RUSTUP_HOME = path.join(repoRoot, 'artifacts', 'testing', 'rustup-home');
 
 function usage() {
   throw new Error('Usage: run-with-vm3-test-environment.mjs -- <command> [arguments...]');
@@ -21,6 +22,7 @@ export function createVm3TestEnvironment({ baseEnvironment = process.env, tempor
     NPM_CONFIG_CACHE: path.join(TEMP_ROOT, 'npm-cache'),
     CARGO_HOME,
     CARGO_TARGET_DIR,
+    RUSTUP_HOME,
   };
 }
 

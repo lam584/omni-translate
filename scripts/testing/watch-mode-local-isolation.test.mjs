@@ -277,7 +277,7 @@ test('local isolation creates its output root on a first clean-machine run', () 
 test('standalone local isolation rebuilds Bridge and driver from the exact clean HEAD', () => {
   const calls = [];
   let recordedAecGate = null;
-  let removedRelease = null;
+  let removedAuthorityExecutable = null;
   buildLocalIsolationRuntime({
     workspaceRoot: process.cwd(),
     provenance,
@@ -287,8 +287,8 @@ test('standalone local isolation rebuilds Bridge and driver from the exact clean
     recordAecGate: (result) => {
       recordedAecGate = result;
     },
-    removeRuntimeRelease: (releasePath) => {
-      removedRelease = releasePath;
+    removeRuntimeAuthorityExecutable: (executablePath) => {
+      removedAuthorityExecutable = executablePath;
     },
     run: (command, args, options) => {
       calls.push({ command, args, target: options.env.CARGO_TARGET_DIR });
@@ -309,7 +309,10 @@ test('standalone local isolation rebuilds Bridge and driver from the exact clean
   );
   assert.ok(calls.slice(1).every(({ target }) => target === path.join(process.cwd(), 'target')));
   assert.deepEqual(recordedAecGate, { status: 0 });
-  assert.equal(removedRelease, path.join(process.cwd(), 'target', 'release'));
+  assert.equal(
+    removedAuthorityExecutable,
+    path.join(process.cwd(), 'target', 'release', 'omni-desktop-shell.exe'),
+  );
 });
 
 test('local isolation stops before later runtime builds when the Desktop authority artifact is absent', () => {
@@ -320,7 +323,7 @@ test('local isolation stops before later runtime builds when the Desktop authori
       provenance,
       provenanceReader: () => provenance,
       runtimeArtifactExists: () => false,
-      removeRuntimeRelease: () => {},
+      removeRuntimeAuthorityExecutable: () => {},
       run: (command, args, options) => {
         calls.push({ command, args, options });
         return { status: 0 };

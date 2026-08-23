@@ -527,7 +527,7 @@ fn read_bridge_source_payload(source_pipe: &mut impl Read) -> Result<BridgeSourc
         .read_exact(&mut header_size)
         .map_err(|error| format!("Bridge source header size read failed: {error}"))?;
     let header_size = u32::from_le_bytes(header_size) as usize;
-    if header_size == 0 || header_size > 64 * 1024 {
+    if header_size == 0 || header_size > omni_bridge_protocol::MAX_AUDIO_FRAME_HEADER_BYTES {
         return Err("Bridge source header size is invalid.".to_string());
     }
     let mut header_bytes = vec![0_u8; header_size];
@@ -536,6 +536,9 @@ fn read_bridge_source_payload(source_pipe: &mut impl Read) -> Result<BridgeSourc
         .map_err(|error| format!("Bridge source header read failed: {error}"))?;
     let header: BridgeTranslationFrameHeader =
         serde_json::from_slice(&header_bytes).map_err_str()?;
+    if header.payload_bytes > omni_bridge_protocol::MAX_AUDIO_FRAME_PAYLOAD_BYTES {
+        return Err("Bridge source payload size is invalid.".to_string());
+    }
     let mut payload = vec![0_u8; header.payload_bytes];
     source_pipe
         .read_exact(&mut payload)

@@ -119,6 +119,12 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
         translated_audio_enhancement_applied: true,
     };
     let header_bytes = serde_json::to_vec(&header).map_err(|error| error.to_string())?;
+    if header_bytes.len() > omni_bridge_protocol::MAX_AUDIO_FRAME_HEADER_BYTES {
+        return Err("Bridge audio frame header exceeds protocol limit.".to_string());
+    }
+    if bytes.len() > omni_bridge_protocol::MAX_AUDIO_FRAME_PAYLOAD_BYTES {
+        return Err("Bridge audio frame payload exceeds protocol limit.".to_string());
+    }
     let mut audio_pipe = OpenOptions::new()
         .read(true)
         .write(true)
@@ -134,7 +140,11 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
     audio_pipe
         .read_exact(&mut ack_size)
         .map_err(|error| format!("Bridge audio pipe ack size read failed: {}", error))?;
-    let mut ack_bytes = vec![0_u8; u32::from_le_bytes(ack_size) as usize];
+    let ack_size = u32::from_le_bytes(ack_size) as usize;
+    if ack_size == 0 || ack_size > omni_bridge_protocol::MAX_AUDIO_FRAME_ACK_BYTES {
+        return Err("Bridge audio pipe ack size is invalid.".to_string());
+    }
+    let mut ack_bytes = vec![0_u8; ack_size];
     audio_pipe
         .read_exact(&mut ack_bytes)
         .map_err(|error| format!("Bridge audio pipe ack read failed: {}", error))?;

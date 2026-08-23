@@ -1,10 +1,10 @@
 use std::collections::VecDeque;
 use std::io::BufRead;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
-use std::path::Path;
 
 use serde_json::Value;
 use tauri::{AppHandle, State};
@@ -353,10 +353,19 @@ fn start_bridge_from_snapshot<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> Result<(), String> {
     cleanup_existing_bridge_process(snapshot, bridge_state)?;
-    BridgeProcessSupervisor::new(snapshot).ensure_runtime_root()?;
-    bridge_state.update_snapshot(|current| *current = snapshot.clone());
+    let mut started = snapshot.clone();
+    started.pipe_name = format!(
+        "{}-{}",
+        omni_bridge_protocol::DEFAULT_PIPE_NAME,
+        uuid::Uuid::new_v4().simple()
+    );
+    started.pipe_path = omni_bridge_protocol::control_pipe_path(&started.pipe_name);
+    started.audio_pipe_path = omni_bridge_protocol::audio_pipe_path(&started.pipe_name);
+    started.source_pipe_path = omni_bridge_protocol::source_pipe_path(&started.pipe_name);
+    BridgeProcessSupervisor::new(&started).ensure_runtime_root()?;
+    bridge_state.update_snapshot(|current| *current = started.clone());
 
-    let mut child = build_started_process(snapshot)?;
+    let mut child = build_started_process(&started)?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let stderr_lines = Arc::new(Mutex::new(VecDeque::<String>::new()));
@@ -459,7 +468,7 @@ fn start_bridge_from_snapshot<R: tauri::Runtime>(
     }
 
     bridge_state.set_process(child);
-    let initialized = BridgeIpcClient::new(snapshot).initialize()?;
+    let initialized = BridgeIpcClient::new(&started).initialize()?;
     bridge_state.update_snapshot(|current| *current = initialized);
     Ok(())
 }

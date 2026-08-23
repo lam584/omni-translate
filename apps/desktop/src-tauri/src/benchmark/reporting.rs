@@ -1,3 +1,5 @@
+use rodio::{Decoder, Source};
+
 #[derive(Default)]
 struct RawResult {
     first_asr_ms: Option<f64>,
@@ -357,34 +359,15 @@ fn read_audio_samples_with_info(path: &PathBuf) -> Result<AudioDecodeResult, Str
 fn read_mp3_samples(path: &PathBuf) -> Result<(Vec<i16>, u32, u16), String> {
     let file =
         std::fs::File::open(path).map_err(|e| format!("open MP3 '{}': {e}", path.display()))?;
-    let mut decoder = minimp3::Decoder::new(file);
-    let mut mono = Vec::new();
-    let mut sample_rate: Option<u32> = None;
-    let mut channels: u16 = 1;
-
-    loop {
-        match decoder.next_frame() {
-            Ok(frame) => {
-                sample_rate.get_or_insert(frame.sample_rate.max(1) as u32);
-                let ch = frame.channels.max(1);
-                if ch > 1 {
-                    channels = ch as u16;
-                }
-                mono.extend(frame.data.chunks(ch).map(|ch_slice| {
-                    ch_slice
-                        .iter()
-                        .copied()
-                        .map(|s| s as f32 / i16::MAX as f32)
-                        .sum::<f32>()
-                        / ch_slice.len().max(1) as f32
-                }));
-            }
-            Err(minimp3::Error::Eof) => break,
-            Err(e) => return Err(format!("MP3 decode '{}': {e}", path.display())),
-        }
-    }
-
-    let original_sample_rate = sample_rate.unwrap_or(16_000);
+    let decoder = Decoder::try_from(file)
+        .map_err(|e| format!("MP3 decode '{}': {e}", path.display()))?;
+    let original_sample_rate = decoder.sample_rate().get();
+    let channels = decoder.channels().get();
+    let interleaved = decoder.collect::<Vec<f32>>();
+    let mono = interleaved
+        .chunks(channels as usize)
+        .map(|frame| frame.iter().copied().sum::<f32>() / frame.len().max(1) as f32)
+        .collect::<Vec<_>>();
     let samples = resample_to_16k(&mono, original_sample_rate);
     Ok((samples, original_sample_rate, channels))
 }

@@ -501,7 +501,9 @@ fn extract_imported_config(document: Value) -> Result<Value, String> {
         .and_then(Value::as_i64)
     else {
         if document.is_object() {
-            return Ok(document);
+            let mut config = document;
+            clear_imported_credential_references(&mut config);
+            return Ok(config);
         }
         return Err("legacy config import must be a JSON object".to_string());
     };
@@ -512,14 +514,36 @@ fn extract_imported_config(document: Value) -> Result<Value, String> {
         ));
     }
 
-    let config = document
+    let mut config = document
         .get("config")
         .cloned()
         .ok_or_else(|| format!("config export version {version} is missing its config document"))?;
     if !config.is_object() {
         return Err("config export document must contain an object config".to_string());
     }
+    clear_imported_credential_references(&mut config);
     Ok(config)
+}
+
+fn clear_imported_credential_references(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            if let Some(auth_ref) = object.get_mut("authRef").and_then(Value::as_object_mut) {
+                auth_ref.insert("kind".to_string(), Value::String("credential-ref".to_string()));
+                auth_ref.insert("reference".to_string(), Value::String(String::new()));
+                auth_ref.insert("scheme".to_string(), Value::String("none".to_string()));
+            }
+            for child in object.values_mut() {
+                clear_imported_credential_references(child);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                clear_imported_credential_references(child);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -1055,6 +1079,47 @@ mod tests {
             .import_config(&future_path)
             .expect_err("future config should be rejected");
         assert!(error.contains("newer than supported"));
+    }
+
+    #[test]
+    fn imported_configs_cannot_reuse_local_credential_or_environment_references() {
+        let (temp_dir, repository) = test_repository();
+        repository.initialize().expect("repository should initialize");
+        let import_path = temp_dir.path().join("untrusted-config.json");
+        std::fs::write(
+            &import_path,
+            r#"{
+              "configContractVersion": 2,
+              "config": {
+                "providers": [{
+                  "baseUrl": "https://collector.example.test",
+                  "authRef": {
+                    "kind": "env-ref",
+                    "reference": "HIGH_VALUE_API_KEY",
+                    "headerName": "x-api-key",
+                    "scheme": "api-key"
+                  }
+                }]
+              }
+            }"#,
+        )
+        .expect("import fixture should write");
+
+        let imported = repository
+            .import_config(&import_path)
+            .expect("config should import without activating credentials");
+        assert_eq!(
+            imported.pointer("/providers/0/authRef/kind").and_then(Value::as_str),
+            Some("credential-ref")
+        );
+        assert_eq!(
+            imported.pointer("/providers/0/authRef/reference").and_then(Value::as_str),
+            Some("")
+        );
+        assert_eq!(
+            imported.pointer("/providers/0/authRef/scheme").and_then(Value::as_str),
+            Some("none")
+        );
     }
 
     #[test]

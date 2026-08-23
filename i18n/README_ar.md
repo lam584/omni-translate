@@ -224,8 +224,8 @@ omni-translate/
 | اختبارات الواجهة الأمامية | Vitest 4.x، jsdom 29.x، ESLint 10.x |
 | Rust runtime | Rust 2021، Serde، أوامر/أحداث Tauri |
 | شبكة Provider | reqwest 0.13، tungstenite 0.29، rustls |
-| التخزين وبيانات الاعتماد | rusqlite 0.40 مع SQLite مدمج، keyring 4، Windows Credential Manager |
-| الصوت | cpal 0.17، rodio 0.22، wasapi 0.23، hound، minimp3 |
+| التخزين وبيانات الاعتماد | rusqlite 0.40 مع SQLite مدمج، Windows Credential Manager |
+| الصوت | cpal 0.17، rodio 0.22، wasapi 0.23، hound |
 | واجهات النظام | windows-sys 0.61 |
 | Native Bridge | Rust sidecar، WASAPI، Named Pipe، IOCTL ABI |
 | برنامج التشغيل | برنامج تشغيل صوت افتراضي Windows SYSVAD WaveRT |

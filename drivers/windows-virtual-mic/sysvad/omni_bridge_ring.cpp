@@ -15,6 +15,7 @@ static ULONG g_OmniBridgeBufferedBytes = 0;
 static ULONGLONG g_OmniBridgeCapturedBytes = 0;
 static ULONGLONG g_OmniBridgeDeliveredBytes = 0;
 static ULONGLONG g_OmniBridgeDroppedBytes = 0;
+static PFILE_OBJECT g_OmniBridgeReaderOwner = nullptr;
 static PUCHAR g_OmniLoopbackRing = nullptr;
 static ULONG g_OmniLoopbackReadOffset = 0;
 static ULONG g_OmniLoopbackWriteOffset = 0;
@@ -149,6 +150,17 @@ static NTSTATUS DispatchCreateClose(_In_ PDEVICE_OBJECT DeviceObject, _In_ PIRP 
 {
     if (DeviceObject == g_OmniBridgeDevice)
     {
+        PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
+        if (stack->MajorFunction == IRP_MJ_CLOSE)
+        {
+            KIRQL oldIrql;
+            KeAcquireSpinLock(&g_OmniBridgeLock, &oldIrql);
+            if (g_OmniBridgeReaderOwner == stack->FileObject)
+            {
+                g_OmniBridgeReaderOwner = nullptr;
+            }
+            KeReleaseSpinLock(&g_OmniBridgeLock, oldIrql);
+        }
         return CompleteIrp(Irp, STATUS_SUCCESS, 0);
     }
 
@@ -186,6 +198,15 @@ static NTSTATUS DispatchDeviceControl(_In_ PDEVICE_OBJECT DeviceObject, _In_ PIR
             }
 
             KeAcquireSpinLock(&g_OmniBridgeLock, &oldIrql);
+            if (g_OmniBridgeReaderOwner == nullptr)
+            {
+                g_OmniBridgeReaderOwner = stack->FileObject;
+            }
+            if (g_OmniBridgeReaderOwner != stack->FileObject)
+            {
+                KeReleaseSpinLock(&g_OmniBridgeLock, oldIrql);
+                return CompleteIrp(Irp, STATUS_ACCESS_DENIED, 0);
+            }
             ULONG copied = ReadRingLocked(static_cast<PUCHAR>(systemBuffer), outputLength);
             KeReleaseSpinLock(&g_OmniBridgeLock, oldIrql);
             return CompleteIrp(Irp, STATUS_SUCCESS, copied);
@@ -214,6 +235,15 @@ static NTSTATUS DispatchDeviceControl(_In_ PDEVICE_OBJECT DeviceObject, _In_ PIR
         case IOCTL_OMNI_BRIDGE_RESET:
         {
             KeAcquireSpinLock(&g_OmniBridgeLock, &oldIrql);
+            if (g_OmniBridgeReaderOwner == nullptr)
+            {
+                g_OmniBridgeReaderOwner = stack->FileObject;
+            }
+            if (g_OmniBridgeReaderOwner != stack->FileObject)
+            {
+                KeReleaseSpinLock(&g_OmniBridgeLock, oldIrql);
+                return CompleteIrp(Irp, STATUS_ACCESS_DENIED, 0);
+            }
             ResetRingLocked();
             ResetLoopbackRingLocked();
             g_OmniBridgeCapturedBytes = 0;
@@ -233,6 +263,7 @@ NTSTATUS OmniBridgeInitialize(_In_ PDRIVER_OBJECT DriverObject)
     UNICODE_STRING symbolicLinkName;
 
     KeInitializeSpinLock(&g_OmniBridgeLock);
+    g_OmniBridgeReaderOwner = nullptr;
     g_OmniBridgeRing = static_cast<PUCHAR>(
         ExAllocatePool2(POOL_FLAG_NON_PAGED, OMNI_BRIDGE_RING_CAPACITY, OMNI_BRIDGE_POOL_TAG));
     if (g_OmniBridgeRing == nullptr)
@@ -288,6 +319,7 @@ VOID OmniBridgeCleanup()
 
     RtlInitUnicodeString(&symbolicLinkName, OMNI_BRIDGE_DOS_DEVICE_NAME);
     IoDeleteSymbolicLink(&symbolicLinkName);
+    g_OmniBridgeReaderOwner = nullptr;
 
     if (g_OmniBridgeDevice != nullptr)
     {

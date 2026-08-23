@@ -32,6 +32,11 @@
     "resources": {
       "../../../scripts/installer/": "scripts/installer/",
       "../../../drivers/windows-virtual-mic/package/": "drivers/windows-virtual-mic/package/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      }
     }
   }
 }

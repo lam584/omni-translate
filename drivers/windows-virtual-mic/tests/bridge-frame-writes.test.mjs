@@ -17,6 +17,19 @@ import {
 const contract = readFixture('bridge-ioctl-contract.json');
 const header = readRepoText('drivers', 'windows-virtual-mic', 'include', 'omni_bridge_ioctl.h');
 const bridgeMod = readRepoText('apps', 'bridge-service-native', 'src', 'windows', 'mod.rs');
+const bridgeRing = readRepoText(
+  'drivers',
+  'windows-virtual-mic',
+  'sysvad',
+  'omni_bridge_ring.cpp',
+);
+const componentInf = readRepoText(
+  'drivers',
+  'windows-virtual-mic',
+  'sysvad',
+  'TabletAudioSample',
+  'ComponentizedAudioSample.inx',
+);
 // The ioctl codes, device path and status base size live in probe_support
 // (src/lib.rs) since the bridge/probe dedup refactor.
 const bridgeProbeSupport = readRepoText('apps', 'bridge-service-native', 'src', 'lib.rs');
@@ -80,6 +93,26 @@ test('bridge service reimplements the exact same ioctl codes in user mode', () =
       `bridge lib.rs no longer derives the ${name} function ${expected.function}`,
     );
   }
+});
+
+test('driver control access excludes world and enforces one PCM reader owner', () => {
+  const securityLine = componentInf
+    .split(/\r?\n/)
+    .find((line) => line.startsWith('HKR,,Security,,'));
+  assert.ok(securityLine, 'component INF must declare an explicit device DACL');
+  assert.match(securityLine, /;;;SY\)/);
+  assert.match(securityLine, /;;;BA\)/);
+  assert.match(securityLine, /;;;IU\)/);
+  assert.doesNotMatch(securityLine, /;;;WD\)/, 'World must not access the control device');
+  assert.doesNotMatch(securityLine, /;;;RC\)/, 'restricted code must not access the control device');
+
+  assert.ok(bridgeRing.includes('static PFILE_OBJECT g_OmniBridgeReaderOwner = nullptr;'));
+  assert.ok(bridgeRing.includes('g_OmniBridgeReaderOwner = stack->FileObject;'));
+  assert.ok(bridgeRing.includes('return CompleteIrp(Irp, STATUS_ACCESS_DENIED, 0);'));
+  assert.ok(
+    bridgeRing.includes('if (g_OmniBridgeReaderOwner == stack->FileObject)'),
+    'closing the owner handle must release reader ownership',
+  );
 });
 
 test('status struct layout matches the header field-for-field', () => {

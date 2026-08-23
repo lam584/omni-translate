@@ -337,7 +337,8 @@ mod tests {
     use crate::provider::contracts::ProviderAuthRefInput;
     use crate::shared::time::now_unix_seconds_marker;
     use crate::provider::gateway_parts::transport::{
-        normalize_websocket_read_error, to_websocket_url, WebSocketTransport,
+        normalize_websocket_read_error, redirect_target_is_same_origin, to_websocket_url,
+        WebSocketTransport,
     };
     use rodio::{Decoder, Source};
     use serde::Deserialize;
@@ -965,6 +966,21 @@ mod tests {
     }
 
     #[test]
+    fn provider_redirects_are_limited_to_the_original_origin() {
+        let initial = Url::parse("https://api.example.test/v1/messages").unwrap();
+        let same_origin = Url::parse("https://api.example.test/v2/messages").unwrap();
+        let other_host = Url::parse("https://collector.example.test/capture").unwrap();
+        let downgrade = Url::parse("http://api.example.test/v2/messages").unwrap();
+        let other_port = Url::parse("https://api.example.test:8443/v2/messages").unwrap();
+
+        assert!(redirect_target_is_same_origin(&same_origin, &[initial.clone()]));
+        assert!(!redirect_target_is_same_origin(&other_host, &[initial.clone()]));
+        assert!(!redirect_target_is_same_origin(&downgrade, &[initial.clone()]));
+        assert!(!redirect_target_is_same_origin(&other_port, &[initial]));
+        assert!(!redirect_target_is_same_origin(&same_origin, &[]));
+    }
+
+    #[test]
     fn probe_marks_high_latency_as_realtime_risk() {
         let routing = build_routing_decision("realtime-risk", 1800, false);
 
@@ -1483,30 +1499,18 @@ mod tests {
     fn decode_mp3_file_to_mono_16k(path: &str) -> Vec<i16> {
         let file = fs::File::open(path)
             .unwrap_or_else(|error| panic!("failed to open integration MP3 file {path}: {error}"));
-        let mut decoder = minimp3::Decoder::new(file);
-        let mut mono = Vec::new();
-        let mut sample_rate: Option<u32> = None;
+        let decoder = Decoder::try_from(file).unwrap_or_else(|error| {
+            panic!("failed to decode integration MP3 file {path}: {error}")
+        });
+        let sample_rate = decoder.sample_rate().get();
+        let channels = decoder.channels().get() as usize;
+        let interleaved = decoder.collect::<Vec<f32>>();
+        let mono = interleaved
+            .chunks(channels)
+            .map(|frame| frame.iter().copied().sum::<f32>() / frame.len().max(1) as f32)
+            .collect::<Vec<_>>();
 
-        loop {
-            match decoder.next_frame() {
-                Ok(frame) => {
-                    sample_rate.get_or_insert(frame.sample_rate.max(1) as u32);
-                    let channels = frame.channels.max(1);
-                    mono.extend(frame.data.chunks(channels).map(|frame| {
-                        frame
-                            .iter()
-                            .copied()
-                            .map(|sample| sample as f32 / i16::MAX as f32)
-                            .sum::<f32>()
-                            / frame.len().max(1) as f32
-                    }));
-                }
-                Err(minimp3::Error::Eof) => break,
-                Err(error) => panic!("failed to decode integration MP3 file {path}: {error}"),
-            }
-        }
-
-        resample_mono_to_16k_i16(&mono, sample_rate.unwrap_or(16_000))
+        resample_mono_to_16k_i16(&mono, sample_rate)
     }
 
     fn resample_mono_to_16k_i16(samples: &[f32], source_rate: u32) -> Vec<i16> {

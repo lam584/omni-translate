@@ -1,13 +1,13 @@
-mod audio;
 mod api_v2;
+mod audio;
 mod benchmark;
 mod bridge;
 mod common;
 #[cfg(test)]
 mod contract_export;
+mod diagnostics;
 #[cfg(test)]
 mod ipc_boundary_tests;
-mod diagnostics;
 mod provider;
 mod runtime;
 mod shared;
@@ -15,8 +15,8 @@ mod storage;
 mod watch_mode_diagnostic;
 mod wiring;
 
-use audio::events::{preconnect_omni_realtime, start_audio_route, stop_audio_route};
 use api_v2::{bridge_v2, configuration_v2, diagnostics_v2, provider_v2, session_v2};
+use audio::events::{preconnect_omni_realtime, start_audio_route, stop_audio_route};
 use audio::state::AudioStateStore;
 use bridge::events::start_bridge_service;
 use bridge::state::BridgeStateStore;
@@ -30,20 +30,26 @@ use runtime::events::{
     emit_runtime_notification, emit_runtime_snapshot, show_subtitle_overlay,
     toggle_subtitle_overlay,
 };
-use runtime::windows::ensure_subtitle_overlay_window;
 use runtime::state::RuntimeStateStore;
-use shared::time::now_unix_seconds_marker;
 use runtime::tray::initialize_tray;
+use runtime::windows::ensure_subtitle_overlay_window;
+use shared::time::now_unix_seconds_marker;
+#[cfg(debug_assertions)]
 use storage::credential::{CredentialVault, KeyringCredentialVault};
 use storage::events::{bootstrap_storage, load_config_draft};
-use tauri::{AppHandle, Emitter, Listener, Manager};
+use tauri::{AppHandle, Listener, Manager};
+#[cfg(debug_assertions)]
+use tauri::Emitter;
 
+#[cfg(debug_assertions)]
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use storage::StorageStateStore;
+#[cfg(debug_assertions)]
 use uuid::Uuid;
 
+#[cfg(debug_assertions)]
 const CREDENTIAL_DIRECT_RESULT_EVENT: &str = "credential://direct-result";
 static IPC_PING_RECEIVED: AtomicBool = AtomicBool::new(false);
 
@@ -55,6 +61,7 @@ static IPC_PING_RECEIVED: AtomicBool = AtomicBool::new(false);
 // initialize, and destroying the sole main window quits/crashes the whole app.
 const IPC_WATCHDOG_GRACE: Duration = Duration::from_secs(65);
 
+#[cfg(debug_assertions)]
 #[derive(Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 struct CredentialDirectResultEvent {
@@ -68,6 +75,7 @@ struct CredentialDirectResultEvent {
 
 /// Emit the credential direct-write failure event. Shared by the vault-error
 /// and the join-error branches, which publish an identical failure payload.
+#[cfg(debug_assertions)]
 fn emit_credential_direct_failure(
     app_handle: &AppHandle,
     job_id: String,
@@ -118,6 +126,7 @@ async fn debug_ipc_ping<R: tauri::Runtime>(
 }
 
 #[tauri::command]
+#[cfg(debug_assertions)]
 async fn debug_cred_direct(
     app: AppHandle,
     reference: String,
@@ -233,6 +242,16 @@ async fn debug_cred_direct(
     Ok(job_id)
 }
 
+#[tauri::command]
+#[cfg(not(debug_assertions))]
+async fn debug_cred_direct(
+    _app: AppHandle,
+    _reference: String,
+    _secret: String,
+) -> Result<String, String> {
+    Err("debug_cred_direct is disabled in production builds".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 fn main() {
     let diagnostics_store = diagnostics::bootstrap_logging();
@@ -254,8 +273,8 @@ fn main() {
         // probe, the sub-second start_audio_route click path, and the
         // commands the live-matrix / IPC self-test scripts invoke over CLI
         // (start_bridge_service, preconnect_omni_realtime, stop_audio_route,
-        // bootstrap_storage, load_config_draft, debug_ipc_ping,
-        // debug_cred_direct). Removing a script-invoked command requires
+        // bootstrap_storage, load_config_draft, debug_ipc_ping, and the
+        // debug-build-only debug_cred_direct). Removing a script-invoked command requires
         // re-running the live matrix on real hardware.
         .invoke_handler(tauri::generate_handler![
             toggle_subtitle_overlay,

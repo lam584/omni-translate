@@ -77,10 +77,8 @@ Omni Translate 是一个基于 npm workspace + Cargo 的 monorepo 项目，包�
 | chrono | 0.4 | MIT OR Apache-2.0 |
 | cpal | 0.17.3 | Apache-2.0 |
 | hound | 3.5.1 | Apache-2.0 |
-| keyring | 4 | MIT OR Apache-2.0 |
 | log | 0.4 | MIT OR Apache-2.0 |
 | base64 | 0.22.1 | MIT OR Apache-2.0 |
-| minimp3 | 0.6.1 | MIT |
 | reqwest | 0.13 | MIT OR Apache-2.0 |
 | rodio | 0.22.2 | MIT OR Apache-2.0 |
 | rusqlite | 0.40 | MIT（捆绑的 SQLite3 为公共领域） |
@@ -101,7 +99,6 @@ Omni Translate 是一个基于 npm workspace + Cargo 的 monorepo 项目，包�
 | 依赖 | 版本 | 许可证 |
 |------|------|--------|
 | cpal | 0.17.3 | Apache-2.0 |
-| minimp3 | 0.6 | MIT |
 | rodio | 0.22.2 | MIT OR Apache-2.0 |
 | serde | 1 | MIT OR Apache-2.0 |
 | serde_json | 1 | MIT OR Apache-2.0 |
@@ -114,7 +111,7 @@ Omni Translate 是一个基于 npm workspace + Cargo 的 monorepo 项目，包�
 | 依赖 | 使用的 crate | 许可证 |
 |------|-------------|--------|
 | base64 | omni-realtime, omni-benchmark | MIT OR Apache-2.0 |
-| minimp3 | omni-realtime, omni-benchmark | MIT |
+| rodio（Symphonia MP3） | omni-realtime, omni-benchmark | MIT OR Apache-2.0 |
 | rustls | omni-realtime, omni-benchmark | Apache-2.0 OR ISC OR MIT |
 | serde | omni-benchmark | MIT OR Apache-2.0 |
 | serde_json | omni-realtime, omni-benchmark | MIT OR Apache-2.0 |

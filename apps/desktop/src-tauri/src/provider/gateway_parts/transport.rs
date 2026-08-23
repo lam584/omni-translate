@@ -3,6 +3,7 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use reqwest::blocking::{Client, Response};
+use reqwest::redirect;
 use serde_json::Value;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::stream::MaybeTlsStream;
@@ -123,10 +124,7 @@ pub(crate) fn send_json_frame(
     socket
         .send(Message::Text(payload.to_string().into()))
         .map_err(|error| {
-            ProviderRuntimeError::new(
-                "transport.unavailable",
-                format!("{error_context}: {error}"),
-            )
+            ProviderRuntimeError::new("transport.unavailable", format!("{error_context}: {error}"))
         })
 }
 
@@ -190,6 +188,16 @@ pub(crate) fn normalize_websocket_read_error(
 pub(super) fn build_client(timeout_ms: u64) -> Result<Client, ProviderRuntimeError> {
     Client::builder()
         .timeout(Duration::from_millis(timeout_ms.max(1000)))
+        .redirect(redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() > 10 {
+                return attempt.error("too many provider redirects");
+            }
+            if redirect_target_is_same_origin(attempt.url(), attempt.previous()) {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
         .build()
         .map_err(|error| {
             ProviderRuntimeError::new(
@@ -197,6 +205,15 @@ pub(super) fn build_client(timeout_ms: u64) -> Result<Client, ProviderRuntimeErr
                 format!("无法创建 HTTP client: {error}"),
             )
         })
+}
+
+pub(super) fn redirect_target_is_same_origin(next: &Url, previous: &[Url]) -> bool {
+    let Some(initial) = previous.first() else {
+        return false;
+    };
+    initial.scheme() == next.scheme()
+        && initial.host_str() == next.host_str()
+        && initial.port_or_known_default() == next.port_or_known_default()
 }
 
 pub(crate) fn resolve_transport(provider: &ProviderDraftInput) -> (String, bool) {
@@ -215,7 +232,8 @@ pub(crate) fn resolve_transport(provider: &ProviderDraftInput) -> (String, bool)
         },
         "dashscope" => match provider.transport.as_str() {
             "websocket" => {
-                let profile = crate::audio::events::resolve_realtime_profile(provider, &provider.model);
+                let profile =
+                    crate::audio::events::resolve_realtime_profile(provider, &provider.model);
                 if provider.stream_enabled
                     && matches!(
                         profile.protocol_dialect,

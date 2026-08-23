@@ -218,8 +218,8 @@ omni-translate/
 | 前端测试 | Vitest 4.x、jsdom 29.x、ESLint 10.x |
 | Rust runtime | Rust 2021、Serde、Tauri commands/events |
 | Provider 网络层 | reqwest 0.13、tungstenite 0.29、rustls |
-| 存储与凭据 | rusqlite 0.40 bundled SQLite、keyring 4、Windows Credential Manager |
-| 音频 | cpal 0.17、rodio 0.22、wasapi 0.23、hound、minimp3 |
+| 存储与凭据 | rusqlite 0.40 bundled SQLite、Windows Credential Manager |
+| 音频 | cpal 0.17、rodio 0.22（Symphonia MP3）、wasapi 0.23、hound |
 | 系统接口 | windows-sys 0.61 |
 | Native Bridge | Rust sidecar、WASAPI、Named Pipe、IOCTL ABI |
 | 驱动 | Windows SYSVAD WaveRT 虚拟音频驱动 |

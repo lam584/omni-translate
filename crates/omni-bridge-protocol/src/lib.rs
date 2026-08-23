@@ -9,6 +9,22 @@ pub const BRIDGE_PROTOCOL_VERSION: &str = "2026-07-27-smart-gain-v3";
 
 pub const DEFAULT_PIPE_NAME: &str = "omni-bridge-ipc";
 
+/// Maximum newline-delimited JSON command or response accepted over the
+/// control pipe. Keeping this bound in the shared protocol crate prevents the
+/// desktop and sidecar from silently drifting to different allocation limits.
+pub const MAX_CONTROL_MESSAGE_BYTES: usize = 64 * 1024;
+
+/// Maximum serialized JSON header accepted for a framed audio message.
+pub const MAX_AUDIO_FRAME_HEADER_BYTES: usize = 64 * 1024;
+
+/// Maximum PCM payload accepted for one framed audio message. Four MiB is far
+/// above the normal 20 ms frame size while preventing attacker-controlled
+/// length fields from causing unbounded allocations.
+pub const MAX_AUDIO_FRAME_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
+
+/// Maximum serialized acknowledgement returned for an audio frame.
+pub const MAX_AUDIO_FRAME_ACK_BYTES: usize = 64 * 1024;
+
 /// Stable bridge IPC error codes: every `errorCode` value the sidecar or the
 /// desktop bridge layer can attach to a nack, control-pipe error event or
 /// runtime snapshot. The list is mirrored in `contracts/error-codes.json`
@@ -216,7 +232,10 @@ mod tests {
     #[test]
     fn pcm16le_decode_rejects_odd_byte_payloads() {
         let error = decode_pcm16le(&[0x01, 0x02, 0x03]).unwrap_err();
-        assert_eq!(error, "pcm16le payload must contain an even number of bytes");
+        assert_eq!(
+            error,
+            "pcm16le payload must contain an even number of bytes"
+        );
         assert_eq!(decode_pcm16le(&[]).unwrap(), Vec::<i16>::new());
     }
 
@@ -226,8 +245,8 @@ mod tests {
         // deserializer must ignore them instead of rejecting the frame.
         let mut wire = base_translation_header_json();
         wire["someFutureField"] = serde_json::json!({ "nested": true });
-        let header: AudioFrameHeader = serde_json::from_value(wire)
-            .expect("headers with unknown fields must deserialize");
+        let header: AudioFrameHeader =
+            serde_json::from_value(wire).expect("headers with unknown fields must deserialize");
         assert_eq!(header.frame_count, 2);
 
         let mix: MixControl = serde_json::from_value(serde_json::json!({
@@ -241,7 +260,10 @@ mod tests {
             "someFutureKnob": 1
         }))
         .expect("mix control with unknown fields must deserialize");
-        assert!(mix.translated_audio_auto_gain_enabled, "missing optional field falls back to its default");
+        assert!(
+            mix.translated_audio_auto_gain_enabled,
+            "missing optional field falls back to its default"
+        );
     }
 
     #[test]
@@ -254,12 +276,18 @@ mod tests {
             .and_then(|codes| codes.as_array())
             .expect("contracts/error-codes.json must contain a bridge array")
             .iter()
-            .map(|code| code.as_str().expect("bridge codes must be strings").to_string())
+            .map(|code| {
+                code.as_str()
+                    .expect("bridge codes must be strings")
+                    .to_string()
+            })
             .collect();
         from_manifest.sort();
 
-        let mut from_crate: Vec<String> =
-            BRIDGE_ERROR_CODES.iter().map(|code| code.to_string()).collect();
+        let mut from_crate: Vec<String> = BRIDGE_ERROR_CODES
+            .iter()
+            .map(|code| code.to_string())
+            .collect();
         from_crate.sort();
 
         assert_eq!(
@@ -267,7 +295,10 @@ mod tests {
             "BRIDGE_ERROR_CODES and contracts/error-codes.json (bridge) drifted: update both sides together"
         );
         for code in BRIDGE_ERROR_CODES {
-            assert!(code.starts_with("bridge."), "bridge error code must carry the bridge. prefix: {code}");
+            assert!(
+                code.starts_with("bridge."),
+                "bridge error code must carry the bridge. prefix: {code}"
+            );
         }
     }
 

@@ -10,13 +10,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait};
-use omni_bridge_protocol::{audio_pipe_path, control_pipe_path, source_pipe_path, DEFAULT_PIPE_NAME};
+use omni_bridge_protocol::{
+    audio_pipe_path, control_pipe_path, source_pipe_path, DEFAULT_PIPE_NAME,
+    MAX_AUDIO_FRAME_HEADER_BYTES, MAX_AUDIO_FRAME_PAYLOAD_BYTES, MAX_CONTROL_MESSAGE_BYTES,
+};
 use omni_bridge_service::{
     accepted_audio_frame_ack, classify_driver_health_with_device_evidence, decode_pcm16le,
     mix_control_for_translation_frame, mix_for_monitor, mix_for_monitor_with_metrics,
-    should_exit_after_control_command, singleton_mutex_name,
-    validate_translation_frame, AudioFrameHeader, AudioFramePacer, DriverInstallState, MixControl,
-    BRIDGE_PROTOCOL_VERSION, INTERNAL_CHANNEL_COUNT, INTERNAL_SAMPLE_RATE_HZ,
+    should_exit_after_control_command, singleton_mutex_name, validate_translation_frame,
+    AudioFrameHeader, AudioFramePacer, DriverInstallState, MixControl, BRIDGE_PROTOCOL_VERSION,
+    INTERNAL_CHANNEL_COUNT, INTERNAL_SAMPLE_RATE_HZ,
 };
 use omni_logging::{panic_hook, LogLevel, Logger};
 use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, MixerDeviceSink, Player};
@@ -86,9 +89,15 @@ const OMNI_MONITOR_SOURCE_QUEUE_CAPACITY: usize = 25;
 const OMNI_MONITOR_SOURCE_BATCH_FRAMES: usize = 4_800;
 const OMNI_SOURCE_STALE_AFTER_MS: u64 = 500;
 const OMNI_SOURCE_SUMMARY_INTERVAL_SECS: u64 = 5;
-#[allow(dead_code, reason = "driverless WASAPI fallback diagnostics are retained for recovery builds")]
+#[allow(
+    dead_code,
+    reason = "driverless WASAPI fallback diagnostics are retained for recovery builds"
+)]
 const OMNI_CAPTURE_DIAGNOSTICS_INTERVAL_SECS: u64 = 5;
-#[allow(dead_code, reason = "driverless WASAPI fallback restart policy is retained for recovery builds")]
+#[allow(
+    dead_code,
+    reason = "driverless WASAPI fallback restart policy is retained for recovery builds"
+)]
 const OMNI_SOURCE_RESTART_BACKOFF_MS: [u64; 4] = [250, 500, 1_000, 2_000];
 const MONITOR_VIRTUAL_PLAYBACK_LOOP: &str = "monitor.virtual-playback-loop";
 
@@ -226,8 +235,11 @@ impl BridgeHost {
     fn from_args(args: &[String]) -> Self {
         Self {
             pipe_name: read_arg(args, "--pipe-name").unwrap_or_else(|| DEFAULT_PIPE_NAME.into()),
-            runtime_root: PathBuf::from(read_arg(args, "--runtime-root").unwrap_or_else(|| ".".to_string())),
-            bridge_version: read_arg(args, "--bridge-version").unwrap_or_else(|| "0.1.0".to_string()),
+            runtime_root: PathBuf::from(
+                read_arg(args, "--runtime-root").unwrap_or_else(|| ".".to_string()),
+            ),
+            bridge_version: read_arg(args, "--bridge-version")
+                .unwrap_or_else(|| "0.1.0".to_string()),
         }
     }
 
@@ -321,7 +333,13 @@ impl NamedPipeControlServer {
         runtime_root: PathBuf,
         pid_file: RuntimePidFile,
     ) -> Self {
-        Self { pipe_name, state, playback_tx, runtime_root, pid_file }
+        Self {
+            pipe_name,
+            state,
+            playback_tx,
+            runtime_root,
+            pid_file,
+        }
     }
 
     fn serve(self) {
@@ -409,7 +427,7 @@ fn handle_control_client(
     runtime_root: &Path,
     pid_path: &Path,
 ) {
-    let line = match read_line(handle) {
+    let line = match read_line(handle, MAX_CONTROL_MESSAGE_BYTES) {
         Ok(line) => line,
         Err(error) => {
             service_log(
@@ -637,12 +655,18 @@ fn handle_audio_client(
         return;
     };
     let header_len = u32::from_le_bytes(header_len_bytes.try_into().unwrap()) as usize;
+    if header_len == 0 || header_len > MAX_AUDIO_FRAME_HEADER_BYTES {
+        return;
+    }
     let Ok(header_bytes) = read_exact(handle, header_len) else {
         return;
     };
     let Ok(header) = serde_json::from_slice::<AudioFrameHeader>(&header_bytes) else {
         return;
     };
+    if header.payload_bytes > MAX_AUDIO_FRAME_PAYLOAD_BYTES {
+        return;
+    }
     let Ok(payload) = read_exact(handle, header.payload_bytes) else {
         return;
     };
@@ -750,7 +774,10 @@ mod tests {
         ]);
 
         assert_eq!(host.pipe_name, "test-control");
-        assert_eq!(host.runtime_root, std::path::PathBuf::from("C:\\bridge-runtime"));
+        assert_eq!(
+            host.runtime_root,
+            std::path::PathBuf::from("C:\\bridge-runtime")
+        );
         assert_eq!(host.bridge_version, "2.0.0-test");
     }
 

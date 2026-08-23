@@ -222,8 +222,8 @@ omni-translate/
 | 프런트엔드 테스트 | Vitest 4.x, jsdom 29.x, ESLint 10.x |
 | Rust runtime | Rust 2021, Serde, Tauri commands/events |
 | Provider 네트워크 계층 | reqwest 0.13, tungstenite 0.29, rustls |
-| 저장소 및 자격 증명 | rusqlite 0.40 bundled SQLite, keyring 4, Windows Credential Manager |
-| 오디오 | cpal 0.17, rodio 0.22, wasapi 0.23, hound, minimp3 |
+| 저장소 및 자격 증명 | rusqlite 0.40 bundled SQLite, Windows Credential Manager |
+| 오디오 | cpal 0.17, rodio 0.22, wasapi 0.23, hound |
 | 시스템 인터페이스 | windows-sys 0.61 |
 | Native Bridge | Rust sidecar, WASAPI, Named Pipe, IOCTL ABI |
 | 드라이버 | Windows SYSVAD WaveRT 가상 오디오 드라이버 |

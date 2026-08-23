@@ -4,8 +4,6 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-#[cfg(not(target_os = "windows"))]
-use keyring::{Entry, Error as KeyringError};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_NOT_FOUND};
 #[cfg(all(target_os = "windows", test))]
@@ -47,15 +45,8 @@ impl CredentialVault for KeyringCredentialVault {
 
         #[cfg(not(target_os = "windows"))]
         {
-            let secret = secret.to_string();
-
-            run_credential_operation("写入 API Key", move || {
-                let entry = Entry::new("OmniTranslate", &normalized_reference)
-                    .map_err(|error| error.to_string())?;
-                entry
-                    .set_password(&secret)
-                    .map_err(|error| error.to_string())
-            })
+            let _ = (normalized_reference, secret);
+            Err("Credential storage is only supported on Windows.".to_string())
         }
     }
 
@@ -78,16 +69,8 @@ impl CredentialVault for KeyringCredentialVault {
 
         #[cfg(not(target_os = "windows"))]
         {
-            run_credential_operation("读取 API Key", move || {
-                let entry = Entry::new("OmniTranslate", &normalized_reference)
-                    .map_err(|error| error.to_string())?;
-
-                match entry.get_password() {
-                    Ok(secret) => Ok(Some(secret)),
-                    Err(KeyringError::NoEntry) => Ok(None),
-                    Err(error) => Err(error.to_string()),
-                }
-            })
+            let _ = normalized_reference;
+            Err("Credential storage is only supported on Windows.".to_string())
         }
     }
 }
@@ -296,13 +279,19 @@ where
     }
 }
 
-#[allow(dead_code, reason = "in-memory vault is a deterministic test and non-Windows fallback")]
+#[allow(
+    dead_code,
+    reason = "in-memory vault is a deterministic test and non-Windows fallback"
+)]
 pub(crate) struct MemoryCredentialVault {
     inner: Mutex<HashMap<String, String>>,
 }
 
 impl MemoryCredentialVault {
-    #[allow(dead_code, reason = "constructor is used by tests and non-Windows fallback wiring")]
+    #[allow(
+        dead_code,
+        reason = "constructor is used by tests and non-Windows fallback wiring"
+    )]
     pub(crate) fn new() -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),

@@ -4,12 +4,45 @@ use crate::audio::glossary::GlossaryContext;
 use self::livetranslate_shutdown::LivetranslateShutdown;
 
 pub(crate) struct OmniHandle {
-    pub stop_tx: mpsc::Sender<()>,
+    pub stop_tx: OmniStopSender,
     #[allow(dead_code, reason = "join handle is retained for supervised shutdown on supported runners")]
     pub join_handle: JoinHandle<()>,
 }
 
+pub(crate) struct OmniStopSender {
+    inner: mpsc::Sender<()>,
+    stop_requested: Arc<AtomicBool>,
+}
+
+impl OmniStopSender {
+    pub(crate) fn send(&self, signal: ()) -> Result<(), mpsc::SendError<()>> {
+        // Every public Omni stop path uses this sender, including callers that
+        // do not join. Close the LiveTranslate reconnect gate before the
+        // worker can observe the channel message.
+        self.stop_requested.store(true, Ordering::SeqCst);
+        self.inner.send(signal)
+    }
+}
+
 impl OmniHandle {
+    pub(crate) fn new(stop_tx: mpsc::Sender<()>, join_handle: JoinHandle<()>) -> Self {
+        Self::with_stop_signal(stop_tx, join_handle, Arc::new(AtomicBool::new(false)))
+    }
+
+    fn with_stop_signal(
+        stop_tx: mpsc::Sender<()>,
+        join_handle: JoinHandle<()>,
+        stop_requested: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            stop_tx: OmniStopSender {
+                inner: stop_tx,
+                stop_requested,
+            },
+            join_handle,
+        }
+    }
+
     pub(crate) fn stop_and_join(self, direction: &str) -> Result<(), String> {
         let _ = self.stop_tx.send(());
         self.join_handle
@@ -28,14 +61,33 @@ mod handle_shutdown_tests {
         let (stop_tx, stop_rx) = mpsc::channel();
         let finalized = Arc::new(AtomicBool::new(false));
         let worker_finalized = finalized.clone();
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let worker_stop_requested = stop_requested.clone();
         let join_handle = thread::spawn(move || {
             stop_rx.recv().expect("stop signal");
+            assert!(
+                worker_stop_requested.load(Ordering::SeqCst),
+                "the reconnect gate must close before the worker consumes stop"
+            );
             worker_finalized.store(true, Ordering::SeqCst);
         });
-        OmniHandle { stop_tx, join_handle }
+        OmniHandle::with_stop_signal(stop_tx, join_handle, stop_requested)
             .stop_and_join("inbound")
             .expect("joined stop");
         assert!(finalized.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn successful_livetranslate_finish_is_the_only_tail_preserving_exit() {
+        assert!(!should_discard_uncommitted_after_worker(&Ok(
+            OmniWorkerShutdown::LivetranslateSessionFinished,
+        )));
+        assert!(should_discard_uncommitted_after_worker(&Ok(
+            OmniWorkerShutdown::Immediate,
+        )));
+        assert!(should_discard_uncommitted_after_worker(&Err(
+            "provider ended early".to_string(),
+        )));
     }
 }
 
@@ -47,6 +99,19 @@ struct OmniSessionWorker {
     trace: ModelTraceRecorder,
     audio_rx: mpsc::Receiver<Vec<u8>>,
     stop_rx: mpsc::Receiver<()>,
+    stop_requested: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OmniWorkerShutdown {
+    Immediate,
+    LivetranslateSessionFinished,
+}
+
+fn should_discard_uncommitted_after_worker(
+    result: &Result<OmniWorkerShutdown, String>,
+) -> bool {
+    !matches!(result, Ok(OmniWorkerShutdown::LivetranslateSessionFinished))
 }
 
 struct OmniSessionRuntime {
@@ -142,7 +207,7 @@ impl OmniSessionRuntime {
 }
 
 impl OmniSessionWorker {
-    fn run(self, store: &AudioStateStore) -> Result<(), String> {
+    fn run(self, store: &AudioStateStore) -> Result<OmniWorkerShutdown, String> {
         run_omni_worker(
             self.app,
             store,
@@ -162,6 +227,7 @@ impl OmniSessionWorker {
             self.trace,
             self.audio_rx,
             self.stop_rx,
+            self.stop_requested,
         )
     }
 }
@@ -190,6 +256,7 @@ pub(crate) fn start_omni(
     let output_mode = OmniOutputMode::from_speech_config(&speech_config);
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    let stop_requested = Arc::new(AtomicBool::new(false));
     let (readiness_tx, readiness_rx) = mpsc::channel::<Result<u64, String>>();
     let readiness_sent = Arc::new(AtomicBool::new(false));
 
@@ -207,6 +274,7 @@ pub(crate) fn start_omni(
     let worker_direction = direction.clone();
     let readiness_tx_for_worker = readiness_tx.clone();
     let readiness_sent_for_worker = readiness_sent.clone();
+    let stop_requested_for_worker = stop_requested.clone();
     let trace = ModelTraceRecorder::new(
         app.clone(),
         ModelTraceContext::new(
@@ -242,12 +310,15 @@ pub(crate) fn start_omni(
                 trace,
                 audio_rx,
                 stop_rx,
+                stop_requested: stop_requested_for_worker,
             };
             let result = worker.run(&audio_state);
             // Error exits and early provider shutdowns bypass the normal stop
             // branch inside run_omni_worker. Apply the same direction-scoped
             // tail cleanup here as a final lifecycle guard.
-            if audio_state.is_current_omni_session(&worker_direction, session_generation) {
+            if should_discard_uncommitted_after_worker(&result)
+                && audio_state.is_current_omni_session(&worker_direction, session_generation)
+            {
                 audio_state.discard_uncommitted_subtitle_cues_by_direction(&worker_direction);
             }
             if let Err(error) = result {
@@ -317,10 +388,7 @@ pub(crate) fn start_omni(
 
     Ok((
         audio_tx,
-        OmniHandle {
-            stop_tx,
-            join_handle,
-        },
+        OmniHandle::with_stop_signal(stop_tx, join_handle, stop_requested),
         readiness_rx,
     ))
 }
@@ -344,7 +412,8 @@ fn run_omni_worker(
     trace: ModelTraceRecorder,
     audio_rx: mpsc::Receiver<Vec<u8>>,
     stop_rx: mpsc::Receiver<()>,
-) -> Result<(), String> {
+    stop_requested: Arc<AtomicBool>,
+) -> Result<OmniWorkerShutdown, String> {
     let echo_guard_enabled = speech_config.echo_guard_enabled();
     // Strict diagnostic budget binding must be validated, and its ledger must
     // be exclusively created, before even the first provider connection.
@@ -431,9 +500,11 @@ fn run_omni_worker(
         mut first_audio_sent_ms,
         mut pending_audio_buffer,
     } = OmniSessionRuntime::new();
-    let mut livetranslate_shutdown = LivetranslateShutdown::for_provider(&provider);
+    let mut livetranslate_shutdown =
+        LivetranslateShutdown::for_provider(&provider, stop_requested);
     let mut socket = livetranslate_shutdown.wrap_socket(socket);
     let connector = livetranslate_shutdown.wrap_connector(TungsteniteConnector);
+    let mut shutdown_outcome = OmniWorkerShutdown::Immediate;
     loop {
         if stop_rx.try_recv().is_ok() {
             if livetranslate_shutdown.request(Instant::now()) {
@@ -911,6 +982,7 @@ fn run_omni_worker(
             // incomplete evidence rather than being silently erased.
             playback_worker.shutdown_gracefully()?;
             emit_audio_snapshot(&app, store)?;
+            shutdown_outcome = OmniWorkerShutdown::LivetranslateSessionFinished;
             break;
         }
         if poll.stop_worker {
@@ -954,7 +1026,7 @@ fn run_omni_worker(
     }
 
     provider_input_budget.finalize("worker-completed")?;
-    Ok(())
+    Ok(shutdown_outcome)
 }
 
 /// After a WebSocket reconnect the provider session and its input buffer are

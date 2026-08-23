@@ -17,9 +17,9 @@ use super::super::{
 const LIVETRANSLATE_AUDIO_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const LIVETRANSLATE_SESSION_FINISHED_TIMEOUT: Duration = Duration::from_secs(15);
 
-#[derive(Default)]
 struct LivetranslateShutdownShared {
-    shutdown_requested: AtomicBool,
+    enabled: bool,
+    shutdown_requested: Arc<AtomicBool>,
     session_finish_sent: AtomicBool,
     session_finished_received: AtomicBool,
 }
@@ -32,17 +32,32 @@ pub(super) struct LivetranslateShutdown {
 }
 
 impl LivetranslateShutdown {
-    pub(super) fn for_provider(provider: &ProviderDraftInput) -> Self {
-        Self::new(crate::audio::events::is_livetranslate_route_model(
-            provider,
-            &provider.model,
-        ))
+    pub(super) fn for_provider(
+        provider: &ProviderDraftInput,
+        stop_requested: Arc<AtomicBool>,
+    ) -> Self {
+        Self::with_stop_signal(
+            crate::audio::events::is_livetranslate_route_model(
+                provider,
+                &provider.model,
+            ),
+            stop_requested,
+        )
     }
 
     fn new(enabled: bool) -> Self {
+        Self::with_stop_signal(enabled, Arc::new(AtomicBool::new(false)))
+    }
+
+    fn with_stop_signal(enabled: bool, shutdown_requested: Arc<AtomicBool>) -> Self {
         Self {
             enabled,
-            shared: Arc::new(LivetranslateShutdownShared::default()),
+            shared: Arc::new(LivetranslateShutdownShared {
+                enabled,
+                shutdown_requested,
+                session_finish_sent: AtomicBool::new(false),
+                session_finished_received: AtomicBool::new(false),
+            }),
             requested_at: None,
             finish_sent_at: None,
         }
@@ -192,7 +207,9 @@ pub(super) struct LivetranslateConnector<C> {
 
 impl<C> LivetranslateConnector<C> {
     fn authorize_reconnect(&self) -> Result<(), String> {
-        if self.shared.shutdown_requested.load(Ordering::SeqCst) {
+        if self.shared.enabled
+            && self.shared.shutdown_requested.load(Ordering::SeqCst)
+        {
             Err(
                 "LiveTranslate fail-closed: reconnect is forbidden after shutdown begins"
                     .to_string(),
@@ -357,6 +374,35 @@ mod tests {
             connector.authorize_reconnect().expect_err("must fail closed"),
             "LiveTranslate fail-closed: reconnect is forbidden after shutdown begins"
         );
+    }
+
+    #[test]
+    fn external_stop_signal_closes_reconnect_before_worker_consumes_channel() {
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let shutdown = LivetranslateShutdown::with_stop_signal(
+            true,
+            stop_requested.clone(),
+        );
+        let connector = shutdown.wrap_connector(());
+        assert!(connector.authorize_reconnect().is_ok());
+
+        // OmniStopSender performs this store before its channel send. The
+        // worker has not called request(), but reconnect is already forbidden.
+        stop_requested.store(true, Ordering::SeqCst);
+
+        assert_eq!(
+            connector.authorize_reconnect().expect_err("must fail closed"),
+            "LiveTranslate fail-closed: reconnect is forbidden after shutdown begins"
+        );
+    }
+
+    #[test]
+    fn external_stop_signal_does_not_change_ordinary_omni_reconnects() {
+        let stop_requested = Arc::new(AtomicBool::new(true));
+        let shutdown = LivetranslateShutdown::with_stop_signal(false, stop_requested);
+        let connector = shutdown.wrap_connector(());
+
+        assert!(connector.authorize_reconnect().is_ok());
     }
 
     #[test]

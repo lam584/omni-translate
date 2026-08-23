@@ -85,6 +85,34 @@ export const STRICT_RUNTIME_BUILD_COMMANDS = Object.freeze([
   Object.freeze(['run', 'build:bridge-service-native']),
   Object.freeze(['run', 'driver:build-sysvad']),
 ]);
+const TRANSIENT_RENAME_ERROR_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
+const renameRetryWaitBuffer = new Int32Array(new SharedArrayBuffer(4));
+
+export function renameWithTransientRetrySync(
+  sourcePath,
+  destinationPath,
+  {
+    renameSync = fs.renameSync,
+    sleepSync = (delayMs) => Atomics.wait(renameRetryWaitBuffer, 0, 0, delayMs),
+    maxAttempts = 8,
+    initialDelayMs = 20,
+  } = {},
+) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      renameSync(sourcePath, destinationPath);
+      return { attempts: attempt };
+    } catch (error) {
+      if (
+        !TRANSIENT_RENAME_ERROR_CODES.has(error?.code)
+        || attempt === maxAttempts
+      ) throw error;
+      sleepSync(Math.min(initialDelayMs * (2 ** (attempt - 1)), 200));
+    }
+  }
+  throw new Error('atomic rename retry loop ended unexpectedly');
+}
+
 export const MATRIX_DEFAULTS = {
   outputRoot: 'artifacts/testing/watch-mode-live',
   mediaPath: 'scripts/testing/fixtures/watch-mode-en-original.wav',
@@ -864,7 +892,7 @@ export function stageShardMatrixIntegration({
         manifestPath: path.join(destinationRoot, manifestRelative),
       });
     }
-    fs.renameSync(temporaryRoot, finalExecutionRoot);
+    renameWithTransientRetrySync(temporaryRoot, finalExecutionRoot);
 
     const stagedPlanPath = path.join(finalExecutionRoot, SHARD_EXECUTION_PLAN_FILE);
     const plan = JSON.parse(fs.readFileSync(stagedPlanPath, 'utf8').replace(/^\uFEFF/, ''));
@@ -1219,7 +1247,7 @@ export const writeMatrixRunManifest = ({
   };
   const temporaryPath = `${manifestPath}.tmp`;
   fs.writeFileSync(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
-  fs.renameSync(temporaryPath, manifestPath);
+  renameWithTransientRetrySync(temporaryPath, manifestPath);
   return { manifestPath, manifest };
 };
 
@@ -1421,7 +1449,7 @@ export const publishSuccessfulStrictMatrixManifest = ({
   };
   const temporaryPath = `${canonicalPath}.${process.pid}.tmp`;
   fs.writeFileSync(temporaryPath, `${JSON.stringify(canonicalManifest, null, 2)}\n`, 'utf8');
-  fs.renameSync(temporaryPath, canonicalPath);
+  renameWithTransientRetrySync(temporaryPath, canonicalPath);
   return { canonicalPath, manifest: canonicalManifest };
 };
 

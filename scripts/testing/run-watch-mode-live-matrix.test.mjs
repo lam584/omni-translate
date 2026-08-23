@@ -28,6 +28,7 @@ import {
   lastRunDirectoryLine,
   parseMatrixCliArgs,
   publishSuccessfulStrictMatrixManifest,
+  renameWithTransientRetrySync,
   resolveDeviceProfiles,
   resolveReusableLocalIsolationManifest,
   resolveLiveRunnerTimeoutMs,
@@ -72,6 +73,41 @@ const CLEAN_PROVENANCE = Object.freeze({
   dirtyEntryCount: 0,
 });
 const TEST_RUNTIME_BINARY_HASHES = Object.freeze([]);
+
+test('atomic evidence rename retries only transient filesystem lock failures', () => {
+  const waits = [];
+  let attempts = 0;
+  const result = renameWithTransientRetrySync('staging', 'final', {
+    renameSync: () => {
+      attempts += 1;
+      if (attempts < 3) {
+        const error = new Error('transient filesystem lock');
+        error.code = attempts === 1 ? 'EPERM' : 'EBUSY';
+        throw error;
+      }
+    },
+    sleepSync: (delayMs) => waits.push(delayMs),
+    maxAttempts: 4,
+    initialDelayMs: 10,
+  });
+  assert.deepEqual(result, { attempts: 3 });
+  assert.deepEqual(waits, [10, 20]);
+
+  let permanentAttempts = 0;
+  assert.throws(
+    () => renameWithTransientRetrySync('staging', 'final', {
+      renameSync: () => {
+        permanentAttempts += 1;
+        const error = new Error('destination already exists');
+        error.code = 'EEXIST';
+        throw error;
+      },
+      sleepSync: () => assert.fail('permanent failures must not sleep'),
+    }),
+    /destination already exists/,
+  );
+  assert.equal(permanentAttempts, 1);
+});
 
 test('strict matrix refuses a failed cell report before another paid cell starts', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-strict-report-'));

@@ -37,4 +37,26 @@ mod detectability_tests {
         // Two full-level external/child tones plus the 50%-level Bridge tone.
         assert!(PROCESS_FINGERPRINT_AMPLITUDE * 2.5 < 1.0);
     }
+
+    #[test]
+    fn delivered_source_frame_is_already_process_capture_readiness() {
+        let state = json!({
+            "captureLifecycleState": "source-frame-delivered",
+            "captureFramesReceived": 960,
+            "sourceSubscriberActive": true,
+            "processLoopbackStatus": "ready",
+        });
+        assert!(process_capture_state_is_ready(&state));
+    }
+
+    #[test]
+    fn delivered_lifecycle_without_frames_is_not_process_capture_readiness() {
+        let state = json!({
+            "captureLifecycleState": "source-frame-delivered",
+            "captureFramesReceived": 0,
+            "sourceSubscriberActive": true,
+            "processLoopbackStatus": "ready",
+        });
+        assert!(!process_capture_state_is_ready(&state));
+    }
 }

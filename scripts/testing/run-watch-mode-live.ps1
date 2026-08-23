@@ -2240,6 +2240,40 @@ function Wait-WatchModeAppReadiness {
   )
 }
 
+function Write-TestMediaReferencePcm {
+  param([string]$PathToMedia, [string]$OutputDirectory)
+  if (-not $OutputDirectory) {
+    return $null
+  }
+  $injectorExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-watch-media-injector.exe"
+  if (-not (Test-Path -LiteralPath $injectorExe -PathType Leaf)) {
+    throw "watch media injector was not built: $injectorExe. Run npm run build:bridge-service-native first."
+  }
+  $referencePcmPath = Join-Path $OutputDirectory "source-media-reference-16k-mono.pcm"
+  $args = @(
+    "--media", (Resolve-Path -LiteralPath $PathToMedia).Path,
+    "--reference-pcm16k-mono-path", $referencePcmPath,
+    "--reference-only"
+  )
+  if ($PlaybackSeconds -gt 0) {
+    $args += @("--max-seconds", "$PlaybackSeconds")
+  }
+  $output = @(& $injectorExe @args)
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0 -or -not $output) {
+    throw "watch media reference decoder failed. ExitCode=$exitCode Output=$output"
+  }
+  try {
+    $result = ($output -join [Environment]::NewLine) | ConvertFrom-Json
+  } catch {
+    throw "watch media reference decoder returned invalid JSON: $($_.Exception.Message)"
+  }
+  if (-not $result.passed -or -not (Test-Path -LiteralPath $referencePcmPath -PathType Leaf)) {
+    throw "watch media reference decoder failed: $($result.detail)"
+  }
+  return $referencePcmPath
+}
+
 function Start-TestMediaPlayback {
   param([string]$PathToMedia, [string]$PlaybackEndpointId, [string]$OutputDirectory)
   if (-not (Test-Path -LiteralPath $PathToMedia -PathType Leaf)) {
@@ -2290,10 +2324,17 @@ function Start-TestMediaPlayback {
 }
 
 function Start-TestMediaPlaybackViaDefaultEndpoint {
-  param([string]$PathToMedia, [string]$PlaybackEndpointId)
+  param([string]$PathToMedia, [string]$PlaybackEndpointId, [string]$OutputDirectory)
   if (-not (Test-Path -LiteralPath $PathToMedia -PathType Leaf)) {
     throw "Test media file not found: $PathToMedia"
   }
+  $resolvedMediaPath = (Resolve-Path -LiteralPath $PathToMedia).Path
+  $mediaSha256 = (Get-FileHash -LiteralPath $resolvedMediaPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  # MCI exercises the Windows default-endpoint route but does not expose its
+  # decoded samples. Produce the same 16 kHz mono authority without opening a
+  # render stream, and do it before switching so a decoder failure cannot
+  # strand the machine on the temporary Watch playback endpoint.
+  $referencePcmPath = Write-TestMediaReferencePcm $resolvedMediaPath $OutputDirectory
   $previousEndpointId = $null
   $defaultEndpointSwitched = $false
   if ($PlaybackEndpointId) {
@@ -2326,8 +2367,6 @@ namespace OmniTranslate {
 "@
   }
   $alias = "omni_watch_test_$PID"
-  $resolvedMediaPath = (Resolve-Path -LiteralPath $PathToMedia).Path
-  $mediaSha256 = (Get-FileHash -LiteralPath $resolvedMediaPath -Algorithm SHA256).Hash.ToLowerInvariant()
   $playbackStartedAtMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   $durationSeconds = $null
   $volumeWarning = $null
@@ -2378,6 +2417,7 @@ namespace OmniTranslate {
     naturalDurationSeconds = $durationSeconds
     volumeWarning = $volumeWarning
     defaultEndpointSwitched = $defaultEndpointSwitched
+    referencePcmPath = $referencePcmPath
   }
 }
 
@@ -5068,7 +5108,7 @@ try {
       if (-not $criticalFailureMessage) {
         if ($UseDefaultEndpointPlayback) {
           $playbackStep = Invoke-Step "play watch-mode media via default endpoint" {
-            Start-TestMediaPlaybackViaDefaultEndpoint $MediaPath $watchPlaybackEndpointId
+            Start-TestMediaPlaybackViaDefaultEndpoint $MediaPath $watchPlaybackEndpointId $outputDir
           } -ContinueOnError
         } else {
           $playbackStep = Invoke-Step "play watch-mode media" { Start-TestMediaPlayback $MediaPath $watchPlaybackEndpointId $outputDir } -ContinueOnError

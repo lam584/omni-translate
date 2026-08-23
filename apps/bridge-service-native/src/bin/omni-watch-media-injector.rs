@@ -79,6 +79,7 @@ mod injector {
         endpoint_name: String,
         max_seconds: Option<f64>,
         reference_pcm16k_mono_path: Option<PathBuf>,
+        reference_only: bool,
     }
 
     struct DecodedAudio {
@@ -137,6 +138,33 @@ mod injector {
                 "media decoded to zero samples: {}",
                 args.media_path.display()
             ));
+        }
+        if args.reference_only {
+            let reference_path = args.reference_pcm16k_mono_path.as_ref().ok_or_else(|| {
+                "--reference-only requires --reference-pcm16k-mono-path <path>".to_string()
+            })?;
+            let reference_samples = resample_to_16k_mono(
+                &decoded.samples,
+                decoded.source_sample_rate_hz,
+                decoded.source_channels,
+                args.max_seconds,
+            );
+            write_pcm16le(reference_path, &reference_samples)?;
+            return Ok(InjectorResult {
+                passed: true,
+                media_path: args.media_path.display().to_string(),
+                endpoint_id: String::new(),
+                endpoint_name: String::new(),
+                process_id: std::process::id(),
+                started_at_ms,
+                finished_at_ms: unix_ms(),
+                source_sample_rate_hz: decoded.source_sample_rate_hz,
+                source_channels: decoded.source_channels,
+                render_sample_rate_hz: 0,
+                rendered_frames: 0,
+                rendered_seconds: 0.0,
+                detail: Some("reference-only; no render endpoint opened".to_string()),
+            });
         }
         initialize_mta().ok().map_err(error_text)?;
         let enumerator = DeviceEnumerator::new().map_err(error_text)?;
@@ -225,6 +253,7 @@ mod injector {
         let mut endpoint_name = "Omni Translate Virtual Speaker".to_string();
         let mut max_seconds = None;
         let mut reference_pcm16k_mono_path = None;
+        let mut reference_only = false;
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -237,6 +266,7 @@ mod injector {
                         "--reference-pcm16k-mono-path",
                     )?))
                 }
+                "--reference-only" => reference_only = true,
                 "--max-seconds" => {
                     let raw = next_arg(&mut args, "--max-seconds")?;
                     max_seconds = Some(
@@ -246,7 +276,7 @@ mod injector {
                 }
                 "--help" | "-h" => {
                     return Err(
-                        "Usage: omni-watch-media-injector --media <wav-or-mp3> [--endpoint-id <id>] [--endpoint-name <name>] [--max-seconds <seconds>] [--reference-pcm16k-mono-path <path>]".to_string(),
+                        "Usage: omni-watch-media-injector --media <wav-or-mp3> [--endpoint-id <id>] [--endpoint-name <name>] [--max-seconds <seconds>] [--reference-pcm16k-mono-path <path>] [--reference-only]".to_string(),
                     );
                 }
                 other => return Err(format!("unknown argument: {other}")),
@@ -258,6 +288,7 @@ mod injector {
             endpoint_name,
             max_seconds,
             reference_pcm16k_mono_path,
+            reference_only,
         })
     }
 

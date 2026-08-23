@@ -231,6 +231,7 @@ impl<C: RealtimeSocketConnector> RealtimeSocketConnector for LivetranslateConnec
         instructions: &str,
         audio_mode: RealtimeAudioMode,
         output_mode: OmniOutputMode,
+        source_language: &str,
         target_language: &str,
     ) -> Result<Self::Socket, String> {
         // This check happens before the inner connector, so a shutdown-time
@@ -244,6 +245,7 @@ impl<C: RealtimeSocketConnector> RealtimeSocketConnector for LivetranslateConnec
                 instructions,
                 audio_mode,
                 output_mode,
+                source_language,
                 target_language,
             )
             .map(|inner| LivetranslateSocket {

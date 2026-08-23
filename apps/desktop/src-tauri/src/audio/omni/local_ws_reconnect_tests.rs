@@ -123,6 +123,7 @@ fn real_client_survives_a_scripted_disconnect_and_replays_session_config() {
             "",
             RealtimeAudioMode::Manual,
             OmniOutputMode::TextOnly,
+            "en",
             "zh-CN",
         )
         .expect("first session establishes");

@@ -242,10 +242,7 @@ pub(crate) fn start_gemini_live(
 
     Ok((
         audio_tx,
-        OmniHandle {
-            stop_tx,
-            join_handle,
-        },
+        OmniHandle::new(stop_tx, join_handle),
     ))
 }
 

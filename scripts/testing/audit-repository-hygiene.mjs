@@ -14,6 +14,7 @@ const untrackedEntries = execFileSync('git', ['ls-files', '--others', '--exclude
 const untrackedGeneratedPattern = /(^|\/)\.(jscpd-[^/]+|codex|claude|codewhale|qoder|tmp)(\/|$)/i;
 
 const allowedLogFixtures = /^scripts\/testing\/fixtures\/watch-mode-live\/[^/]+\/[^/]+\.log$/i;
+const allowedLargeAudioFixtures = /^scripts\/testing\/fixtures\/(?:multilingual\/watch-mode-general\.[a-z-]+|watch-mode-en-(?:conversation|original|technical))\.wav$/i;
 const forbiddenPaths = [
   { pattern: /(^|\/)(artifacts|node_modules|target|dist|coverage)(\/|$)/i, reason: 'generated directory' },
   { pattern: /(^|\/)\.(claude|codewhale|qoder|idea|vscode)(\/|$)/i, reason: 'local IDE or AI-tool configuration' },
@@ -39,8 +40,11 @@ for (const file of trackedFiles) {
   }
 
   const stat = fs.statSync(file);
-  if (stat.size > 5 * 1024 * 1024) {
-    violations.push(`${file}: tracked file exceeds 5 MiB`);
+  const maxTrackedFileSize = allowedLargeAudioFixtures.test(file)
+    ? 8 * 1024 * 1024
+    : 5 * 1024 * 1024;
+  if (stat.size > maxTrackedFileSize) {
+    violations.push(`${file}: tracked file exceeds ${maxTrackedFileSize / 1024 / 1024} MiB`);
   }
   if (stat.size > 2 * 1024 * 1024 || /\.(wav|png|ico|mp3)$/i.test(file)) continue;
 

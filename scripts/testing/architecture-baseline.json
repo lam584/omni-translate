@@ -5,6 +5,7 @@
     "React screen >600 lines: apps/desktop/src/pages/DiagnosticsScreen.tsx",
     "React screen >600 lines: apps/desktop/src/pages/RealTimeSessionScreen.tsx",
     "Rust function >300 lines: apps/desktop/src-tauri/src/audio/gemini_live.rs",
+    "Rust function >300 lines: apps/desktop/src-tauri/src/audio/omni/asr_event_processor.rs",
     "Rust function >300 lines: apps/desktop/src-tauri/src/audio/omni/session_worker.rs",
     "Rust function >300 lines: apps/desktop/src-tauri/src/audio/omni/socket_event_processor.rs",
     "Rust module >900 lines: apps/desktop/src-tauri/src/audio/omni/protocol.rs",

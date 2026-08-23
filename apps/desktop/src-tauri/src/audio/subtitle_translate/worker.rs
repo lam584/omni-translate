@@ -286,6 +286,8 @@ fn process_translation_cues(
                 continue;
             }
 
+            let created_at = Instant::now();
+            let deadline_at = TranslationJob::deadline_for(result, created_at);
             let job = TranslationJob {
                 key: translation_job_key(&cue.cue_id, cue_state.revision, result),
                 sequence: *next_translation_sequence,
@@ -299,14 +301,36 @@ fn process_translation_cues(
                 provider: text_model_provider.clone(),
                 glossary: glossary_catalog.for_languages("auto", target_language),
                 trace: Some(trace.clone()),
+                created_at,
+                deadline_at,
             };
             *next_translation_sequence = next_translation_sequence.saturating_add(1);
 
-            if scheduler.enqueue(job) {
+            let enqueue_result = scheduler.enqueue_with_result(job);
+            if enqueue_result == TranslationEnqueueResult::Enqueued {
                 cue_state
                     .sentence_attempt_count
                     .insert(attempt_key, attempts + 1);
-                scheduler.dispatch_ready(|job| spawn_translation_job(translation_tx.clone(), job));
+            } else if matches!(
+                enqueue_result,
+                TranslationEnqueueResult::RejectedOverflow
+                    | TranslationEnqueueResult::RejectedExpired
+            ) && !result.is_forced
+            {
+                store.watch_session_report.record_model_error_for_cue(
+                    &cue.cue_id,
+                    "secondary-text-translation",
+                    "translation.queue-rejected",
+                    "translation queue capacity/deadline rejected a final segment",
+                    true,
+                    None,
+                );
+                store.update_subtitle_cue_translation(
+                    &cue.cue_id,
+                    "[翻译失败] 本地翻译队列过载".to_string(),
+                    true,
+                );
+                let _ = emit_audio_snapshot(app, store);
             }
         }
     }
@@ -406,6 +430,7 @@ impl SubtitleTranslationWorker {
             }
         }
         scheduler.dispatch_ready(|job| spawn_translation_job(translation_tx.clone(), job));
+        drain_expired_terminal_jobs(&app, store, &mut scheduler);
 
         if let Some(error) = fatal_provider_error.take() {
             let classified = super::omni::session_errors::classify_provider_error(
@@ -506,6 +531,8 @@ impl SubtitleTranslationWorker {
             &translation_tx,
             loop_count,
         );
+        scheduler.dispatch_ready(|job| spawn_translation_job(translation_tx.clone(), job));
+        drain_expired_terminal_jobs(&app, store, &mut scheduler);
 
         let is_idle = scheduler.queued.is_empty()
             && scheduler.in_flight.is_empty()

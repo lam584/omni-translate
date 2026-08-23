@@ -184,7 +184,7 @@ fn spawn_translation_job(tx: mpsc::Sender<TranslationUpdate>, job: TranslationJo
             let delta_job = job.clone();
             let mut partial_translation = String::new();
             let translated = gateway.translate_text_streaming_traced_with_glossary(
-                job.provider.clone(),
+                job.provider_with_remaining_timeout(),
                 job.full_prompt.clone(),
                 job.source_language.clone(),
                 job.target_language.clone(),

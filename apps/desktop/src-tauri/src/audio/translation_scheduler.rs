@@ -32,6 +32,11 @@ pub(crate) const MAX_RATE_LIMIT_ATTEMPTS: u32 = 12;
 /// Fixed interval between rate-limit retries. Keeping this shared makes the
 /// classic and secondary subtitle workers behave identically.
 pub(crate) const RATE_LIMIT_RETRY_INTERVAL: Duration = Duration::from_millis(250);
+pub(crate) const MAX_QUEUED_TRANSLATIONS: usize = 128;
+pub(crate) const MAX_QUEUED_TRANSLATIONS_PER_CUE: usize = 8;
+pub(crate) const FORCED_TRANSLATION_DEADLINE: Duration = Duration::from_millis(2_500);
+pub(crate) const FINAL_TRANSLATION_DEADLINE: Duration = Duration::from_millis(10_000);
+const MIN_PROVIDER_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub(crate) fn is_rate_limit_error(error: &ProviderRuntimeError) -> bool {
     error.code == "rate-limited" || error.http_status == Some(429)
@@ -142,6 +147,48 @@ pub(crate) struct TranslationJob {
     pub(crate) provider: ProviderDraftInput,
     pub(crate) glossary: GlossaryContext,
     pub(crate) trace: Option<ModelTraceRecorder>,
+    pub(crate) created_at: Instant,
+    pub(crate) deadline_at: Instant,
+}
+
+impl TranslationJob {
+    pub(crate) fn deadline_for(result: &SentenceResult, created_at: Instant) -> Instant {
+        created_at
+            + if result.is_forced && !result.is_replacement {
+                FORCED_TRANSLATION_DEADLINE
+            } else {
+                FINAL_TRANSLATION_DEADLINE
+            }
+    }
+
+    pub(crate) fn provider_with_remaining_timeout(&self) -> ProviderDraftInput {
+        let mut provider = self.provider.clone();
+        let remaining = self.deadline_at.saturating_duration_since(Instant::now());
+        let bounded = remaining
+            .min(Duration::from_millis(provider.timeout_ms))
+            .max(MIN_PROVIDER_TIMEOUT);
+        provider.timeout_ms = bounded.as_millis() as u64;
+        provider
+    }
+
+    pub(crate) fn retry_budget_remaining(&self) -> bool {
+        self.deadline_at.saturating_duration_since(Instant::now())
+            >= RATE_LIMIT_RETRY_INTERVAL
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TranslationEnqueueResult {
+    Enqueued,
+    Duplicate,
+    RejectedOverflow,
+    RejectedExpired,
+}
+
+impl TranslationEnqueueResult {
+    pub(crate) fn enqueued(self) -> bool {
+        self == Self::Enqueued
+    }
 }
 
 pub(crate) struct TranslationOutcome {
@@ -175,6 +222,7 @@ pub(crate) struct TranslationScheduler {
     max_concurrent: usize,
     max_concurrent_forced: usize,
     dispatch_not_before: Option<Instant>,
+    expired_terminal_jobs: VecDeque<TranslationJob>,
 }
 
 impl TranslationScheduler {
@@ -187,6 +235,7 @@ impl TranslationScheduler {
             max_concurrent,
             max_concurrent_forced,
             dispatch_not_before: None,
+            expired_terminal_jobs: VecDeque::new(),
         }
     }
 
@@ -212,6 +261,14 @@ impl TranslationScheduler {
     }
 
     pub(crate) fn enqueue(&mut self, job: TranslationJob) -> bool {
+        self.enqueue_with_result(job).enqueued()
+    }
+
+    pub(crate) fn enqueue_with_result(&mut self, job: TranslationJob) -> TranslationEnqueueResult {
+        self.drop_expired_queued();
+        if job.deadline_at <= Instant::now() {
+            return TranslationEnqueueResult::RejectedExpired;
+        }
         let sentence_work_key = translation_sentence_work_key(&job);
         if self.queued_keys.contains(&job.key)
             || self.in_flight.contains_key(&job.key)
@@ -221,23 +278,35 @@ impl TranslationScheduler {
                 .values()
                 .any(|in_flight| in_flight.sentence_work_key == sentence_work_key)
         {
-            return false;
+            return TranslationEnqueueResult::Duplicate;
         }
 
-        if job.result.is_forced {
-            self.drop_queued_forced_for_cue(&job.cue_id);
+        // A final/replacement owns the same display slot as its preview, so it
+        // supersedes queued preview work as well. In-flight work is left alone
+        // and rejected by the revision/rank/sequence write guard on return.
+        self.drop_superseded_preview(&job);
+
+        if self.queued.iter().filter(|queued| queued.cue_id == job.cue_id).count()
+            >= MAX_QUEUED_TRANSLATIONS_PER_CUE
+            && !self.evict_preview_for_cue(&job.cue_id)
+        {
+            return TranslationEnqueueResult::RejectedOverflow;
+        }
+        if self.queued.len() >= MAX_QUEUED_TRANSLATIONS && !self.evict_oldest_preview() {
+            return TranslationEnqueueResult::RejectedOverflow;
         }
 
         self.queued_keys.insert(job.key.clone());
         self.queued_sentence_keys.insert(sentence_work_key);
         self.queued.push_back(job);
-        true
+        TranslationEnqueueResult::Enqueued
     }
 
     /// Backfills free concurrency slots from the queue, launching each ready
     /// job through `spawn`. Callers own the actual provider call and result
     /// channel; the scheduler only tracks in-flight bookkeeping.
     pub(crate) fn dispatch_ready(&mut self, mut spawn: impl FnMut(TranslationJob)) {
+        self.drop_expired_queued();
         if self
             .dispatch_not_before
             .is_some_and(|not_before| Instant::now() < not_before)
@@ -274,15 +343,19 @@ impl TranslationScheduler {
         }
         self.queued
             .iter()
-            .position(|job| job.result.is_replacement)
-            .or_else(|| self.queued.iter().position(|job| !job.result.is_forced))
-            .or_else(|| {
-                if self.forced_in_flight_count() < self.max_concurrent_forced {
-                    self.queued.iter().position(|job| job.result.is_forced)
-                } else {
-                    None
-                }
+            .enumerate()
+            .filter(|(_, job)| {
+                !job.result.is_forced
+                    || self.forced_in_flight_count() < self.max_concurrent_forced
             })
+            .min_by_key(|(_, job)| {
+                (
+                    std::cmp::Reverse(translation_rank(&job.result)),
+                    job.deadline_at,
+                    job.sequence,
+                )
+            })
+            .map(|(index, _)| index)
     }
 
     fn forced_in_flight_count(&self) -> usize {
@@ -291,6 +364,10 @@ impl TranslationScheduler {
 
     pub(crate) fn finish(&mut self, key: &str) {
         self.in_flight.remove(key);
+    }
+
+    pub(crate) fn take_expired_terminal_jobs(&mut self) -> Vec<TranslationJob> {
+        self.expired_terminal_jobs.drain(..).collect()
     }
 
     pub(crate) fn has_work_for_cue(&self, cue_id: &str) -> bool {
@@ -331,18 +408,75 @@ impl TranslationScheduler {
         (forced, replacement, final_count)
     }
 
-    fn drop_queued_forced_for_cue(&mut self, cue_id: &str) {
-        let mut retained = VecDeque::new();
+    fn drop_expired_queued(&mut self) {
+        let now = Instant::now();
+        let mut retained = VecDeque::with_capacity(self.queued.len());
         while let Some(job) = self.queued.pop_front() {
-            if job.cue_id == cue_id && job.result.is_forced {
-                self.queued_keys.remove(&job.key);
-                self.queued_sentence_keys
-                    .remove(&translation_sentence_work_key(&job));
-            } else {
+            if job.deadline_at > now {
                 retained.push_back(job);
+                continue;
+            }
+            self.queued_keys.remove(&job.key);
+            self.queued_sentence_keys
+                .remove(&translation_sentence_work_key(&job));
+            if !job.result.is_forced {
+                self.expired_terminal_jobs.push_back(job);
             }
         }
         self.queued = retained;
+    }
+
+    fn drop_superseded_preview(&mut self, incoming: &TranslationJob) {
+        let supersession_key = translation_supersession_key(incoming);
+        let keys: Vec<String> = self
+            .queued
+            .iter()
+            .filter(|queued| {
+                translation_supersession_key(queued) == supersession_key
+                    && translation_rank(&queued.result) <= translation_rank(&incoming.result)
+                    && queued.result.is_forced
+            })
+            .map(|queued| queued.key.clone())
+            .collect();
+        for key in keys {
+            self.remove_queued_by_key(&key);
+        }
+    }
+
+    fn evict_preview_for_cue(&mut self, cue_id: &str) -> bool {
+        let key = self
+            .queued
+            .iter()
+            .find(|job| job.cue_id == cue_id && job.result.is_forced)
+            .map(|job| job.key.clone());
+        key.is_some_and(|key| {
+            self.remove_queued_by_key(&key);
+            true
+        })
+    }
+
+    fn evict_oldest_preview(&mut self) -> bool {
+        let key = self
+            .queued
+            .iter()
+            .filter(|job| job.result.is_forced)
+            .min_by_key(|job| (job.created_at, job.sequence))
+            .map(|job| job.key.clone());
+        key.is_some_and(|key| {
+            self.remove_queued_by_key(&key);
+            true
+        })
+    }
+
+    fn remove_queued_by_key(&mut self, key: &str) {
+        let Some(index) = self.queued.iter().position(|job| job.key == key) else {
+            return;
+        };
+        if let Some(job) = self.queued.remove(index) {
+            self.queued_keys.remove(&job.key);
+            self.queued_sentence_keys
+                .remove(&translation_sentence_work_key(&job));
+        }
     }
 
     #[cfg(test)]
@@ -375,4 +509,8 @@ impl TranslationScheduler {
             },
         );
     }
+}
+
+fn translation_supersession_key(job: &TranslationJob) -> (&str, u64, usize) {
+    (&job.cue_id, job.cue_revision, job.display_index)
 }

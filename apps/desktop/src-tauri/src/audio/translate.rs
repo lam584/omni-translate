@@ -18,7 +18,7 @@ use super::sentence::{detect_language, is_target_language, SentenceResult};
 use super::state::{AudioRouteHandle, AudioStateStore};
 use super::translation_scheduler::{
     max_translation_attempts, rate_limit_retry_delay, should_retry_translation,
-    translation_job_key, TranslationJob, TranslationScheduler,
+    translation_job_key, TranslationEnqueueResult, TranslationJob, TranslationScheduler,
 };
 
 /// Message sent from a per-cue translation thread back to the worker loop.
@@ -27,8 +27,7 @@ use super::translation_scheduler::{
 /// so the worker can free its slot or re-enqueue a retriable failure.
 enum TranslateUpdate {
     Delta {
-        cue_id: String,
-        source_text: String,
+        job: TranslationJob,
         raw_delta: String,
         partial_text: String,
     },
@@ -226,6 +225,7 @@ fn run_translate_loop(
         state
             .scheduler
             .dispatch_ready(|job| spawn_cue_translation(channels.result_tx.clone(), job));
+        drain_expired_translate_jobs(app, store, &mut state.scheduler)?;
 
         // Sleep until the next update or poll tick; streamed deltas and
         // finished jobs wake the loop immediately.
@@ -347,6 +347,47 @@ fn translation_source_is_current(store: &AudioStateStore, cue_id: &str, source_t
         .is_some_and(|cue| cue.source_text == source_text)
 }
 
+fn mark_translate_deadline(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    job: &TranslationJob,
+) -> Result<(), String> {
+    store.watch_session_report.record_model_error_for_cue(
+        &job.cue_id,
+        "classic-text-translation",
+        "translation.deadline-exceeded",
+        "translation did not finish before its terminal deadline",
+        true,
+        Some(&job.key),
+    );
+    store.update_subtitle_cue_translation(
+        &job.cue_id,
+        "[翻译失败] 翻译响应已过期".to_string(),
+        true,
+    );
+    let _ = append_diagnostics_log(
+        app,
+        "translate",
+        "error",
+        format!("翻译响应已过期，cue={}。", job.cue_id),
+        None,
+        None,
+        None,
+    );
+    emit_audio_snapshot(app, store)
+}
+
+fn drain_expired_translate_jobs(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    scheduler: &mut TranslationScheduler,
+) -> Result<(), String> {
+    for job in scheduler.take_expired_terminal_jobs() {
+        mark_translate_deadline(app, store, &job)?;
+    }
+    Ok(())
+}
+
 fn handle_translate_update(
     app: &AppHandle,
     store: &AudioStateStore,
@@ -355,19 +396,21 @@ fn handle_translate_update(
 ) -> Result<(), String> {
     match update {
         TranslateUpdate::Delta {
-            cue_id,
-            source_text,
+            job,
             raw_delta,
             partial_text,
         } => {
-            if !translation_source_is_current(store, &cue_id, &source_text) {
+            if job.deadline_at <= Instant::now() {
+                return Ok(());
+            }
+            if !translation_source_is_current(store, &job.cue_id, &job.result.sentence) {
                 let _ = append_diagnostics_log(
                     app,
                     "translate",
                     "debug",
                     format!(
                         "忽略过期翻译增量，cue={}，原文已发生变化。",
-                        cue_id
+                        job.cue_id
                     ),
                     None,
                     None,
@@ -375,8 +418,8 @@ fn handle_translate_update(
                 );
                 return Ok(());
             }
-            report_translation_delta(store, &cue_id, &raw_delta);
-            store.update_subtitle_cue_translation(&cue_id, partial_text, false);
+            report_translation_delta(store, &job.cue_id, &raw_delta);
+            store.update_subtitle_cue_translation(&job.cue_id, partial_text, false);
             emit_audio_snapshot(app, store)?;
         }
         TranslateUpdate::Done {
@@ -385,6 +428,11 @@ fn handle_translate_update(
             result,
         } => {
             state.scheduler.finish(&job.key);
+            if job.deadline_at <= Instant::now() {
+                state.attempt_counts.remove(&job.key);
+                mark_translate_deadline(app, store, &job)?;
+                return Ok(());
+            }
             if !translation_source_is_current(&store, &job.cue_id, &job.result.sentence) {
                 state.attempt_counts.remove(&job.key);
                 let _ = append_diagnostics_log(
@@ -440,7 +488,7 @@ fn handle_translate_error(
 ) -> Result<(), String> {
     let attempts = state.attempt_counts.get(&job.key).copied().unwrap_or(1);
     let max_attempts = max_translation_attempts(&error);
-    if should_retry_translation(&error, attempts) {
+    if should_retry_translation(&error, attempts) && job.retry_budget_remaining() {
         report_translation_retry(store, &job, attempts, &error);
         state.attempt_counts.insert(job.key.clone(), attempts + 1);
         let _ = append_diagnostics_log(
@@ -462,7 +510,8 @@ fn handle_translate_error(
         let retry_delay = rate_limit_retry_delay(&error);
         let retry_cue_id = job.cue_id.clone();
         let retry_error_code = error.code.clone();
-        if state.scheduler.enqueue(job) {
+        let enqueue_result = state.scheduler.enqueue_with_result(job);
+        if enqueue_result == TranslationEnqueueResult::Enqueued {
             if let Some(delay) = retry_delay {
                 state.scheduler.defer_dispatch_for(delay);
                 let _ = append_diagnostics_log(
@@ -480,6 +529,24 @@ fn handle_translate_error(
                     None,
                 );
             }
+        } else if matches!(
+            enqueue_result,
+            TranslationEnqueueResult::RejectedOverflow | TranslationEnqueueResult::RejectedExpired
+        ) {
+            store.watch_session_report.record_model_error_for_cue(
+                &retry_cue_id,
+                "classic-text-translation",
+                "translation.queue-rejected",
+                "translation queue capacity/deadline rejected a final cue",
+                true,
+                None,
+            );
+            store.update_subtitle_cue_translation(
+                &retry_cue_id,
+                "[翻译失败] 本地翻译队列过载".to_string(),
+                true,
+            );
+            emit_audio_snapshot(app, store)?;
         }
     } else {
         report_translation_error(store, &job, attempts, &error);
@@ -569,6 +636,8 @@ fn enqueue_pending_cues(
             .config
             .glossary_catalog
             .for_languages(&source_language, &target_language);
+        let created_at = Instant::now();
+        let deadline_at = TranslationJob::deadline_for(&result, created_at);
         let job = TranslationJob {
             key: job_key.clone(),
             sequence: state.next_sequence,
@@ -582,9 +651,12 @@ fn enqueue_pending_cues(
             provider: state.config.provider.clone(),
             glossary,
             trace: None,
+            created_at,
+            deadline_at,
         };
         state.next_sequence = state.next_sequence.saturating_add(1);
-        if state.scheduler.enqueue(job) {
+        let enqueue_result = state.scheduler.enqueue_with_result(job);
+        if enqueue_result == TranslationEnqueueResult::Enqueued {
             state.attempt_counts.insert(job_key, 1);
             let _ = append_diagnostics_log(
                 app,
@@ -601,6 +673,24 @@ fn enqueue_pending_cues(
                 None,
                 None,
             );
+        } else if matches!(
+            enqueue_result,
+            TranslationEnqueueResult::RejectedOverflow | TranslationEnqueueResult::RejectedExpired
+        ) {
+            store.watch_session_report.record_model_error_for_cue(
+                &cue.cue_id,
+                "classic-text-translation",
+                "translation.queue-rejected",
+                "translation queue capacity/deadline rejected a final cue",
+                true,
+                None,
+            );
+            store.update_subtitle_cue_translation(
+                &cue.cue_id,
+                "[翻译失败] 本地翻译队列过载".to_string(),
+                true,
+            );
+            emit_audio_snapshot(app, store)?;
         }
     }
     Ok(())
@@ -734,11 +824,10 @@ fn spawn_cue_translation(tx: mpsc::Sender<TranslateUpdate>, job: TranslationJob)
             let started_at = Instant::now();
             let gateway = ProviderGateway::new();
             let delta_tx = tx.clone();
-            let delta_cue_id = job.cue_id.clone();
-            let delta_source_text = job.result.sentence.clone();
+            let delta_job = job.clone();
             let mut partial_translation = String::new();
             let result = gateway.translate_text_streaming_traced_with_glossary(
-                job.provider.clone(),
+                job.provider_with_remaining_timeout(),
                 job.result.sentence.clone(),
                 job.source_language.clone(),
                 job.target_language.clone(),
@@ -747,8 +836,7 @@ fn spawn_cue_translation(tx: mpsc::Sender<TranslateUpdate>, job: TranslationJob)
                 |delta| {
                     partial_translation.push_str(delta);
                     let _ = delta_tx.send(TranslateUpdate::Delta {
-                        cue_id: delta_cue_id.clone(),
-                        source_text: delta_source_text.clone(),
+                        job: delta_job.clone(),
                         raw_delta: delta.to_string(),
                         partial_text: partial_translation.clone(),
                     });
@@ -1043,6 +1131,8 @@ mod tests {
             is_replacement: false,
             pending_id: None,
         };
+        let created_at = Instant::now();
+        let deadline_at = TranslationJob::deadline_for(&result, created_at);
         TranslationJob {
             key: translation_job_key(cue_id, 0, &result),
             sequence,
@@ -1056,6 +1146,8 @@ mod tests {
             provider,
             glossary: Default::default(),
             trace: None,
+            created_at,
+            deadline_at,
         }
     }
 

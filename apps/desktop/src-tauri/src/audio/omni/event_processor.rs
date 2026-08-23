@@ -73,6 +73,15 @@ impl OmniEventProcessor {
         }
     }
 
+    fn bridge_translation_owner<R: tauri::Runtime>(
+        app: &AppHandle<R>,
+    ) -> Option<crate::bridge::ipc::BridgeTranslationSinkOwner> {
+        app.try_state::<crate::bridge::state::BridgeStateStore>()
+            .and_then(|state| {
+                crate::bridge::ipc::BridgeTranslationSinkOwner::from_snapshot(&state.snapshot())
+            })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn process_session_ready<R: tauri::Runtime>(
         mut state: OmniReadinessState,
@@ -261,6 +270,7 @@ impl OmniEventProcessor {
                                         estimated_duration_ms: chunk_duration_ms,
                                         chunk_index: pending_audio_stream_chunk_index,
                                         stream_state,
+                                        bridge_owner: Self::bridge_translation_owner(app),
                                     });
                                     if matches!(
                                         &enqueue,
@@ -368,6 +378,7 @@ impl OmniEventProcessor {
                     estimated_duration_ms: duration_ms,
                     chunk_index: pending_audio_stream_chunk_index,
                     stream_state: omni_bridge_protocol::TranslationStreamState::Chunk,
+                    bridge_owner: Self::bridge_translation_owner(app),
                 });
                 if matches!(&result, OmniPlaybackEnqueueOutcome::Overflow { .. } | OmniPlaybackEnqueueOutcome::Stopped) {
                     playback_queue.abort_stream(
@@ -400,6 +411,7 @@ impl OmniEventProcessor {
                     estimated_duration_ms: 0,
                     chunk_index: pending_audio_stream_chunk_index,
                     stream_state: omni_bridge_protocol::TranslationStreamState::End,
+                    bridge_owner: Self::bridge_translation_owner(app),
                 });
                 if matches!(&result, OmniPlaybackEnqueueOutcome::Overflow { .. } | OmniPlaybackEnqueueOutcome::Stopped) {
                     playback_queue.abort_stream(

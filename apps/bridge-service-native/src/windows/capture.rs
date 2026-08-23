@@ -673,7 +673,6 @@ fn dispatch_source_frame(
     }
     current.source_frames_captured += frame_count;
     current.source_released_frames += 1;
-    current.last_frame_timestamp_ms = Some(unix_ms());
     let monitor_samples = mix_for_monitor(
         &samples,
         &[],
@@ -703,6 +702,14 @@ fn dispatch_source_frame(
     }
     if source_tx.try_send(payload.clone()).is_err() {
         current.dropped_frame_count += frame_count;
+    } else {
+        // A successful enqueue is the source worker's observable delivery
+        // progress. Driver reads alone can continue while the subscriber path
+        // is wedged, so watchdog evidence must retain this stronger signal.
+        let delivered_at_ms = unix_ms();
+        current.last_frame_timestamp_ms = Some(delivered_at_ms);
+        current.source_worker_phase = "source-frame-delivered".to_string();
+        current.source_worker_last_progress_timestamp_ms = Some(delivered_at_ms);
     }
     drop(current);
     true
@@ -748,13 +755,19 @@ fn source_watchdog_summary(state: &BridgeState, now_ms: u64) -> String {
         .source_worker_last_progress_timestamp_ms
         .map(|timestamp| now_ms.saturating_sub(timestamp))
         .unwrap_or(0);
+    let last_delivery_age_ms = state
+        .last_frame_timestamp_ms
+        .map(|timestamp| now_ms.saturating_sub(timestamp))
+        .map(|age| age.to_string())
+        .unwrap_or_else(|| "none".to_string());
     format!(
-        "event=source_watchdog captureBackend={} sourceSubscriberActive={} sourceGeneration={} workerPhase={} lastProgressAgeMs={} captureRestarts={} capturePackets={} captureFrames={} capturePeak={:.6} captureRms={:.6} captureSilentPackets={} captureInvalidSamples={} monitorBufferedMs={} monitorUnderruns={} monitorOverruns={} readCalls={} zeroByteReads={} bytesRead={} capturedBytes={} deliveredBytes={} bufferedBytes={} droppedBytes={} pacerQueuedFrames={} pendingBytes={} releasedFrames={} underruns={}",
+        "event=source_watchdog captureBackend={} sourceSubscriberActive={} sourceGeneration={} workerPhase={} lastProgressAgeMs={} lastDeliveryAgeMs={} captureRestarts={} capturePackets={} captureFrames={} capturePeak={:.6} captureRms={:.6} captureSilentPackets={} captureInvalidSamples={} monitorBufferedMs={} monitorUnderruns={} monitorOverruns={} readCalls={} zeroByteReads={} bytesRead={} capturedBytes={} deliveredBytes={} bufferedBytes={} droppedBytes={} pacerQueuedFrames={} pendingBytes={} releasedFrames={} underruns={}",
         state.capture_backend.as_str(),
         state.source_subscriber_active,
         state.source_generation,
         state.source_worker_phase,
         last_progress_age_ms,
+        last_delivery_age_ms,
         state.capture_restart_count,
         state.capture_packet_count,
         state.capture_frames_received,

@@ -40,7 +40,8 @@ mod bridge_worker_authority;
 mod echo_diagnostics;
 
 use self::bridge_source_io::{
-    bridge_source_identity_disposition, bridge_source_route_error,
+    apply_bridge_source_identity_observation, bridge_source_identity_disposition,
+    bridge_source_route_error,
     bridge_translation_status_disposition,
     read_bridge_source_payload, record_bridge_translation_status,
     write_bridge_translation_status_ack, BridgeSourceEnvelope,
@@ -1320,9 +1321,17 @@ mod tests {
             bridge_source_identity_disposition(&current, &new_subscription),
             BridgeSourceIdentityDisposition::Rebind
         );
-        current.source_generation = 101;
-        current.source_generation_token =
-            Some("bridge-instance-new:session-new:101".to_string());
+        let disposition = bridge_source_identity_disposition(&current, &new_subscription);
+        assert!(apply_bridge_source_identity_observation(
+            &mut current,
+            &new_subscription,
+            &disposition,
+            true,
+        ));
+        assert!(current.source_subscriber_active);
+        assert_eq!(current.source_worker_phase, "source-frame-delivered");
+        assert_eq!(current.source_worker_last_progress_timestamp_ms, Some(1_001));
+        assert_eq!(current.last_frame_timestamp_ms, Some(1_000));
         assert_eq!(
             bridge_source_identity_disposition(&current, &new_subscription),
             BridgeSourceIdentityDisposition::Current
@@ -1338,11 +1347,55 @@ mod tests {
             frame_timestamp_ms: 999,
             read_timestamp_ms: 1_002,
         };
+        let old_disposition = bridge_source_identity_disposition(&current, &old_process_frame);
         assert!(matches!(
-            bridge_source_identity_disposition(&current, &old_process_frame),
+            &old_disposition,
             BridgeSourceIdentityDisposition::Reject(reason)
                 if reason.contains("bridge-process-mismatch")
         ));
+        let generation = current.source_generation;
+        assert!(!apply_bridge_source_identity_observation(
+            &mut current,
+            &old_process_frame,
+            &old_disposition,
+            true,
+        ));
+        assert_eq!(current.source_generation, generation);
+    }
+
+    #[test]
+    fn bridge_source_heartbeat_reasserts_current_subscriber_without_faking_pcm_progress() {
+        let mut current = crate::bridge::contracts::BridgeRuntimeSnapshot {
+            bridge_process_id: Some(42),
+            bridge_instance_id: Some("bridge-instance".to_string()),
+            session_id: Some("session".to_string()),
+            source_generation: 7,
+            source_generation_token: Some("bridge-instance:session:7".to_string()),
+            source_subscriber_active: false,
+            source_worker_last_progress_timestamp_ms: Some(900),
+            last_frame_timestamp_ms: Some(800),
+            ..Default::default()
+        };
+        let heartbeat = BridgeSourceFrameIdentity {
+            bridge_process_id: 42,
+            bridge_instance_id: "bridge-instance".to_string(),
+            session_id: "session".to_string(),
+            source_generation: 7,
+            source_generation_token: "bridge-instance:session:7".to_string(),
+            frame_timestamp_ms: 1_000,
+            read_timestamp_ms: 1_001,
+        };
+        let disposition = bridge_source_identity_disposition(&current, &heartbeat);
+
+        assert!(apply_bridge_source_identity_observation(
+            &mut current,
+            &heartbeat,
+            &disposition,
+            false,
+        ));
+        assert!(current.source_subscriber_active);
+        assert_eq!(current.source_worker_last_progress_timestamp_ms, Some(900));
+        assert_eq!(current.last_frame_timestamp_ms, Some(800));
     }
 
     #[test]

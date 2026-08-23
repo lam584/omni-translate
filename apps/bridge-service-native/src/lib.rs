@@ -542,14 +542,16 @@ impl<T> AudioFramePacer<T> {
         }
 
         let frame = self.queue.pop();
-        self.next_deadline = frame.as_ref().map(|_| {
-            let scheduled = deadline + self.frame_interval;
-            if now >= scheduled {
-                now + self.frame_interval
-            } else {
-                scheduled
-            }
-        });
+        // Keep a continuously queued realtime source anchored to its original
+        // media clock. Rebasing every slightly-late poll onto `now` turns
+        // ordinary Windows scheduler jitter into a permanent rate deficit: the
+        // producer remains at 50 fps while the consumer slowly falls behind and
+        // eventually overflows the kernel driver ring. A bounded queue may catch
+        // up immediately after a late poll; an actual underrun still clears the
+        // deadline below and the next push starts from its new arrival time.
+        self.next_deadline = frame
+            .as_ref()
+            .map(|_| deadline + self.frame_interval);
         frame
     }
 
@@ -934,6 +936,22 @@ mod tests {
         for tick in 1..=250 {
             assert_eq!(pacer.poll(Duration::from_millis(tick * 20 + 1)), Some(tick));
         }
+    }
+
+    #[test]
+    fn pacer_catches_up_bounded_backlog_after_scheduler_delay() {
+        let mut pacer = AudioFramePacer::new(5, Duration::from_millis(20));
+        for frame in 1..=5 {
+            pacer.push(frame, Duration::ZERO);
+        }
+
+        assert_eq!(pacer.poll(Duration::ZERO), Some(1));
+        assert_eq!(pacer.poll(Duration::from_millis(65)), Some(2));
+        assert_eq!(pacer.poll(Duration::from_millis(65)), Some(3));
+        assert_eq!(pacer.poll(Duration::from_millis(65)), Some(4));
+        assert_eq!(pacer.poll(Duration::from_millis(65)), None);
+        assert_eq!(pacer.poll(Duration::from_millis(80)), Some(5));
+        assert_eq!(pacer.dropped_frame_count(), 0);
     }
 
     #[test]

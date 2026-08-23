@@ -87,6 +87,42 @@ pub(super) fn bridge_source_identity_disposition(
     BridgeSourceIdentityDisposition::Rebind
 }
 
+/// Applies evidence carried by an accepted source envelope to the cached
+/// runtime snapshot. Query snapshots can briefly lag the source pipe during a
+/// subscription handoff; a frame from the authoritative generation proves that
+/// the subscriber is active and that PCM delivery has progressed.
+pub(super) fn apply_bridge_source_identity_observation(
+    current: &mut crate::bridge::contracts::BridgeRuntimeSnapshot,
+    identity: &BridgeSourceFrameIdentity,
+    disposition: &BridgeSourceIdentityDisposition,
+    is_pcm_frame: bool,
+) -> bool {
+    if matches!(disposition, BridgeSourceIdentityDisposition::Reject(_)) {
+        return false;
+    }
+    if *disposition == BridgeSourceIdentityDisposition::Rebind {
+        current.source_generation = identity.source_generation;
+        current.source_generation_token = Some(identity.source_generation_token.clone());
+    }
+    current.source_subscriber_active = true;
+    if is_pcm_frame {
+        current.source_worker_phase = "source-frame-delivered".to_string();
+        current.source_worker_last_progress_timestamp_ms = Some(
+            current
+                .source_worker_last_progress_timestamp_ms
+                .unwrap_or_default()
+                .max(identity.read_timestamp_ms),
+        );
+        current.last_frame_timestamp_ms = Some(
+            current
+                .last_frame_timestamp_ms
+                .unwrap_or_default()
+                .max(identity.frame_timestamp_ms),
+        );
+    }
+    true
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum BridgeTranslationStatusDisposition {
     Apply,

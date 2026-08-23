@@ -1745,13 +1745,20 @@ mod tests {
         let mut state = BridgeState::new("0.1.0".to_string());
         let (gen_a, _) = begin_source_subscription(&mut state);
         assert!(gen_a > 0);
+        assert!(state.source_subscriber_active);
+        assert_eq!(state.source_worker_phase, "subscriber-connected");
+        let first_progress = state.source_worker_last_progress_timestamp_ms;
+        assert!(first_progress.is_some());
         let (gen_b, _) = begin_source_subscription(&mut state);
         assert_ne!(gen_a, gen_b);
         assert!(!source_subscription_is_owner(&state, gen_a));
         assert!(!end_source_subscription(&mut state, gen_a));
         assert!(source_subscription_is_owner(&state, gen_b));
+        assert_eq!(state.source_worker_phase, "subscriber-connected");
         assert!(end_source_subscription(&mut state, gen_b));
         assert!(!state.source_subscriber_active);
+        assert_eq!(state.source_worker_phase, "waiting-subscriber");
+        assert!(state.source_worker_last_progress_timestamp_ms >= first_progress);
     }
 
     #[test]
@@ -1921,6 +1928,10 @@ mod tests {
         ));
         assert_eq!(source_rx.try_recv().unwrap(), payload);
         assert!(matches!(playback_rx.try_recv(), Ok(PlaybackCommand::Play(_))));
+        let current = state.lock().unwrap();
+        assert_eq!(current.source_worker_phase, "source-frame-delivered");
+        assert!(current.source_worker_last_progress_timestamp_ms.is_some());
+        assert!(current.last_frame_timestamp_ms.is_some());
     }
 
     #[test]
@@ -2107,12 +2118,30 @@ mod tests {
         state.source_generation = 7;
         state.source_worker_phase = "reading-driver".to_string();
         state.source_worker_last_progress_timestamp_ms = Some(1000);
+        state.last_frame_timestamp_ms = Some(900);
         state.source_read_calls = 1;
         let summary = source_watchdog_summary(&state, 7000);
         assert!(summary.contains("event=source_watchdog"));
         assert!(summary.contains("sourceSubscriberActive=true"));
         assert!(summary.contains("workerPhase=reading-driver"));
         assert!(summary.contains("lastProgressAgeMs=6000"));
+        assert!(summary.contains("lastDeliveryAgeMs=6100"));
+    }
+
+    #[test]
+    fn source_watchdog_keeps_true_no_subscriber_distinct_from_delivery_stall() {
+        let mut state = BridgeState::new("0.1.0".to_string());
+        state.source_generation = 11;
+        state.source_subscriber_active = false;
+        state.source_worker_phase = "waiting-subscriber".to_string();
+        state.source_worker_last_progress_timestamp_ms = Some(1_000);
+
+        let summary = source_watchdog_summary(&state, 7_000);
+
+        assert!(summary.contains("sourceSubscriberActive=false"));
+        assert!(summary.contains("sourceGeneration=11"));
+        assert!(summary.contains("lastProgressAgeMs=6000"));
+        assert!(summary.contains("lastDeliveryAgeMs=none"));
     }
 
     #[test]

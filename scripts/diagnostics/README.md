@@ -88,3 +88,8 @@ Use `--audio` for format-agnostic input. Supported extensions are `.mp3`,
 `.wav`, `.pcm`, `.s16le`, and `.raw`. Raw PCM-style inputs are interpreted as
 16 kHz mono signed 16-bit little-endian audio. The old `--mp3` flag remains as
 a compatibility alias for `--audio`.
+
+Benchmark JSON is local diagnostic output and can include input paths, credential
+lookup names, provider errors, and raw model output. Keep `benchmark-report*.json`
+files local; the repository ignores them. If documentation needs an example, use
+a small hand-authored sample containing only synthetic paths, errors, and text.

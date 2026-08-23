@@ -4,6 +4,12 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import {
+  inspectPcm16MonoWav,
+  normalizeStreamingWavHeader,
+  resamplePcm16MonoWav,
+} from './wav-fixture-utils.mjs';
+
 const fixtureRoot = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(fixtureRoot, '..', '..', '..');
 const integrationConfigPath = path.join(repoRoot, 'scripts', 'testing', 'llm-integration.config.json');
@@ -22,6 +28,7 @@ const fixtures = Object.freeze({
     voice: 'longanlingxin',
     seed: 4101,
     instruction: 'Natural neutral American English, normal conversational pace, clear but not exaggerated.',
+    distribution: 'bundled',
   },
   conversation: {
     id: 'conversation',
@@ -33,6 +40,7 @@ const fixtures = Object.freeze({
     voice: 'longanlufeng',
     seed: 4102,
     instruction: 'Natural friendly American English, normal conversational pace, varied questions and quotations.',
+    distribution: 'generated-on-demand',
   },
   technical: {
     id: 'technical',
@@ -44,6 +52,7 @@ const fixtures = Object.freeze({
     voice: 'longanlingxin',
     seed: 4103,
     instruction: 'Natural professional American English, normal speaking pace, precise units and abbreviations.',
+    distribution: 'generated-on-demand',
   },
 });
 
@@ -78,60 +87,6 @@ async function readApiKey() {
     throw new Error('No DashScope API key was found in the environment or integration config.');
   }
   return apiKey.trim();
-}
-
-function parseWav(buffer) {
-  if (buffer.length < 44 || buffer.toString('ascii', 0, 4) !== 'RIFF'
-    || buffer.toString('ascii', 8, 12) !== 'WAVE') {
-    throw new Error('The downloaded payload is not a RIFF/WAVE file.');
-  }
-  let offset = 12;
-  let byteRate = 0;
-  let sampleRate = 0;
-  let channels = 0;
-  let bitsPerSample = 0;
-  let dataBytes = 0;
-  while (offset + 8 <= buffer.length) {
-    const chunkId = buffer.toString('ascii', offset, offset + 4);
-    const chunkSize = buffer.readUInt32LE(offset + 4);
-    const chunkStart = offset + 8;
-    if (chunkStart + chunkSize > buffer.length) break;
-    if (chunkId === 'fmt ' && chunkSize >= 16) {
-      channels = buffer.readUInt16LE(chunkStart + 2);
-      sampleRate = buffer.readUInt32LE(chunkStart + 4);
-      byteRate = buffer.readUInt32LE(chunkStart + 8);
-      bitsPerSample = buffer.readUInt16LE(chunkStart + 14);
-    } else if (chunkId === 'data') {
-      dataBytes += chunkSize;
-    }
-    offset = chunkStart + chunkSize + (chunkSize % 2);
-  }
-  if (!byteRate || !dataBytes) throw new Error('The WAV file has no readable format or data chunk.');
-  return {
-    durationSeconds: Number((dataBytes / byteRate).toFixed(3)),
-    sampleRate,
-    channels,
-    bitsPerSample,
-  };
-}
-
-function normalizeStreamingWavHeader(buffer) {
-  if (buffer.length < 44 || buffer.toString('ascii', 0, 4) !== 'RIFF'
-    || buffer.toString('ascii', 8, 12) !== 'WAVE') return;
-  buffer.writeUInt32LE(buffer.length - 8, 4);
-  let offset = 12;
-  while (offset + 8 <= buffer.length) {
-    const chunkId = buffer.toString('ascii', offset, offset + 4);
-    const declaredSize = buffer.readUInt32LE(offset + 4);
-    const chunkStart = offset + 8;
-    if (chunkId === 'data') {
-      const actualSize = buffer.length - chunkStart;
-      if (declaredSize > actualSize) buffer.writeUInt32LE(actualSize, offset + 4);
-      return;
-    }
-    if (chunkStart + declaredSize > buffer.length) return;
-    offset = chunkStart + declaredSize + (declaredSize % 2);
-  }
 }
 
 async function requestAudio(apiKey, fixture) {
@@ -194,11 +149,14 @@ async function writeAtomically(targetPath, buffer) {
 
 async function generateFixture(apiKey, fixture) {
   process.stdout.write(`Generating ${fixture.id} with ${model}/${fixture.voice}...\n`);
-  const buffer = await requestAudio(apiKey, fixture);
-  normalizeStreamingWavHeader(buffer);
+  const providerBuffer = await requestAudio(apiKey, fixture);
+  normalizeStreamingWavHeader(providerBuffer);
+  const buffer = fixture.distribution === 'bundled'
+    ? providerBuffer
+    : resamplePcm16MonoWav(providerBuffer);
   let wav;
   try {
-    wav = parseWav(buffer);
+    wav = inspectPcm16MonoWav(buffer);
   } catch (error) {
     const header = buffer.subarray(0, 96);
     throw new Error(

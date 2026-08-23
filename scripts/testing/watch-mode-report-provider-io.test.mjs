@@ -147,6 +147,51 @@ test('uses live source watchdog progress when the preflight snapshot was waiting
   assert.notEqual(report.failureReason, 'bridge source subscriber is not active');
 });
 
+test('does not treat post-session waiting-subscriber watchdog tails as a live source stall', () => {
+  const activeProgress = '2026-01-01 00:00:05.000 event=source_watchdog sourceSubscriberActive=true workerPhase=driver-read-returned lastProgressAgeMs=1 readCalls=48570 bytesRead=24253440 capturedBytes=24253440 releasedFrames=6316 droppedFrames=0';
+  const idleTail = Array.from({ length: 6 }, (_, index) => (
+    `2026-01-01 00:00:${String(20 + index).padStart(2, '0')}.000 event=source_watchdog sourceSubscriberActive=false workerPhase=waiting-subscriber lastProgressAgeMs=${10_000 + index * 5_000} readCalls=48570 bytesRead=24253440 capturedBytes=24253440 releasedFrames=6316 droppedFrames=0`
+  ));
+  const bridgeLogText = [healthyBridgeLog, activeProgress, ...idleTail].join('\n');
+  const watchSessionReport = {
+    ...healthyWatchSessionReport,
+    status: 'completed',
+    startedAt: '2026-01-01T00:00:00',
+    endedAt: '2026-01-01T00:00:10',
+  };
+  const report = classify({
+    bridge: {
+      ...healthyBridge,
+      sourceSubscriberActive: false,
+      sourceReadCalls: 30,
+      sourceFramePayloadBytes: 0,
+    },
+    watchSessionReport,
+    bridgeLogText,
+  });
+  const parsedLog = parseBridgeLog(bridgeLogText, { watchSessionReport });
+
+  assert.notEqual(report.failureLayer, 'bridge');
+  assert.equal(parsedLog.watchdogLines.length, 1);
+  assert.equal(parsedLog.watchdogSummaries.length, 1);
+  assert.equal(parsedLog.watchdogSummaries[0].sourceSubscriberActive, 'true');
+});
+
+test('keeps an inactive waiting-subscriber watchdog fail-closed inside an active session', () => {
+  const report = classify({
+    bridgeLogText: '2026-01-01 00:00:05.000 event=source_watchdog sourceSubscriberActive=false workerPhase=waiting-subscriber lastProgressAgeMs=6000 readCalls=20 bytesRead=38400 releasedFrames=10',
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      status: 'completed',
+      startedAt: '2026-01-01T00:00:00',
+      endedAt: '2026-01-01T00:00:10',
+    },
+  });
+
+  assert.equal(report.failureLayer, 'bridge');
+  assert.match(report.failureReason, /watchdog|subscriber|source frames/);
+});
+
 test('keeps an explicitly skipped physical-content STT layer out of balanced diagnostics', () => {
   const report = classify({
     physicalOutputContent: {

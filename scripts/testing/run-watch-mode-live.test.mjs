@@ -156,6 +156,19 @@ function extractedStrictPaidSourceAuthorityFunctions() {
   );
 }
 
+function extractedMediaReferenceFunctions() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$function = $ast.Find({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -eq 'Write-TestMediaReferencePcm' ` +
+    `}, $true); ` +
+    `. ([scriptblock]::Create($function.Extent.Text)); `
+  );
+}
+
 function extractedStrictPaidProviderFunctions() {
   return (
     `$errors = $null; ` +
@@ -263,6 +276,46 @@ test('paid source authorities use canonical hashes, fixture texts, and injector 
     assert.match(rejectedAuthority.error, /not byte-for-byte the injector reconstruction/);
   } finally {
     fs.rmSync(outputDirectory, { recursive: true, force: true });
+  }
+});
+
+test('default-endpoint playback materializes reference PCM without opening a render stream', { skip: !isWindows }, () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-reference-only-'));
+  const mediaPath = path.join(tempRoot, 'source.wav');
+  const fakeInjector = path.join(tempRoot, 'fake-injector.cmd');
+  const argsPath = path.join(tempRoot, 'injector-args.txt');
+  fs.writeFileSync(mediaPath, 'fixture');
+  fs.writeFileSync(fakeInjector, [
+    '@echo off',
+    `echo %* > "${argsPath}"`,
+    ':loop',
+    'if "%~1"=="" goto done',
+    'if /I "%~1"=="--reference-pcm16k-mono-path" (',
+    '  > "%~2" echo pcm',
+    '  shift',
+    ')',
+    'shift',
+    'goto loop',
+    ':done',
+    'echo {"passed":true,"detail":"reference-only"}',
+    'exit /b 0',
+  ].join('\r\n'));
+  try {
+    const command = `${extractedMediaReferenceFunctions()} ` +
+      `$PlaybackSeconds = 0; ` +
+      `function Resolve-OmniBuiltExecutable { ${quotePowerShell(fakeInjector)} }; ` +
+      `$path = Write-TestMediaReferencePcm ${quotePowerShell(mediaPath)} ${quotePowerShell(tempRoot)}; ` +
+      `[pscustomobject]@{ path = $path; bytes = (Get-Item -LiteralPath $path).Length } | ConvertTo-Json -Compress`;
+    const result = runPowerShell(['-Command', command]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const receipt = JSON.parse(result.stdout.trim());
+    assert.equal(receipt.path, path.join(tempRoot, 'source-media-reference-16k-mono.pcm'));
+    assert(receipt.bytes > 0);
+    const args = fs.readFileSync(argsPath, 'utf8');
+    assert.match(args, /--reference-only/);
+    assert.match(args, /--reference-pcm16k-mono-path/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
 

@@ -227,12 +227,59 @@ function parseKeyValueLine(line) {
   return output;
 }
 
-export function parseBridgeLog(text) {
+function parseSessionTimeMs(value) {
+  const unixMatch = /^unix-ms:(\d+)$/.exec(String(value ?? '').trim());
+  if (unixMatch) {
+    const parsed = Number(unixMatch[1]);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  const parsed = Date.parse(String(value ?? ''));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseLocalBridgeLogTimeMs(line) {
+  const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d{3})\b/.exec(line);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second, millisecond] = match;
+  const parsed = new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+    Number(millisecond),
+  ).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function scopeWatchdogLinesToCompletedSession(lines, watchSessionReport) {
+  if (watchSessionReport?.status !== 'completed') return lines;
+  const startedAtMs = parseSessionTimeMs(watchSessionReport.startedAt);
+  const endedAtMs = parseSessionTimeMs(watchSessionReport.endedAt);
+  if (startedAtMs == null || endedAtMs == null || endedAtMs < startedAtMs) return lines;
+  const scoped = lines.filter((line) => {
+    const lineTimeMs = parseLocalBridgeLogTimeMs(line);
+    // Untimestamped legacy/fixture lines remain fail-closed evidence.
+    return lineTimeMs == null || (lineTimeMs >= startedAtMs && lineTimeMs <= endedAtMs);
+  });
+  // A clock/format mismatch must not silently turn failed source evidence into
+  // a pass merely because every timestamped line fell outside the window.
+  return scoped.length > 0 ? scoped : lines;
+}
+
+export function parseBridgeLog(text, { watchSessionReport } = {}) {
   const sourceSummaryLines = tailLines(text, 'source pacer summary', 5);
   const lastSourceSummary = sourceSummaryLines.at(-1) ?? '';
   const summary = parseKeyValueLine(lastSourceSummary);
-  const watchdogLines = tailLines(text, 'source_watchdog', 5);
-  const watchdogSummaries = watchdogLines.map(parseKeyValueLine);
+  const allWatchdogLines = scopeWatchdogLinesToCompletedSession(
+    matchingLines(text, 'source_watchdog'),
+    watchSessionReport,
+  );
+  const watchdogLines = allWatchdogLines.slice(-5);
+  // Keep every session-scoped summary so a real mid-session stall cannot be
+  // hidden by later progress. The last five lines remain the diagnostic tail.
+  const watchdogSummaries = allWatchdogLines.map(parseKeyValueLine);
   const errorLines = tailLines(text, /error|failed|blocked/i, 20);
   return {
     sourceSummaryLines,
@@ -1915,7 +1962,9 @@ export function classifyWatchModeRun(input) {
   );
   const echoCancelVariant = feedbackLoopPrevention === 'echo-cancel';
   const processExclusionVariant = feedbackLoopPrevention === 'process-exclusion';
-  const bridgeLog = parseBridgeLog(input.bridgeLogText ?? '');
+  const bridgeLog = parseBridgeLog(input.bridgeLogText ?? '', {
+    watchSessionReport: input.watchSessionReport,
+  });
   const appLog = parseAppLog(input.appLogText ?? '');
   const translationRoute = inferTranslationRoute(input, appLog);
   const speechSegmentation = input.speechSegmentation ?? parseSpeechSegmentation(appLog);

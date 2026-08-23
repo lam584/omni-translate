@@ -695,10 +695,7 @@
                         .unwrap_or("no detail"),
                 ));
             }
-            if state["captureLifecycleState"] == "process-loopback-running"
-                && state["sourceSubscriberActive"] == true
-                && state["processLoopbackStatus"] == "ready"
-            {
+            if process_capture_state_is_ready(&state) {
                 return Ok(state);
             }
             if Instant::now() >= deadline {
@@ -708,6 +705,16 @@
             }
             thread::sleep(Duration::from_millis(25));
         }
+    }
+
+    fn process_capture_state_is_ready(state: &Value) -> bool {
+        let lifecycle = state["captureLifecycleState"].as_str().unwrap_or_default();
+        let lifecycle_ready = lifecycle == "process-loopback-running"
+            || (lifecycle == "source-frame-delivered"
+                && state["captureFramesReceived"].as_u64().unwrap_or(0) > 0);
+        lifecycle_ready
+            && state["sourceSubscriberActive"] == true
+            && state["processLoopbackStatus"] == "ready"
     }
 
     fn collect_bridge_source_pipe(

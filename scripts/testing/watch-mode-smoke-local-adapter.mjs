@@ -8,6 +8,7 @@ import { currentGitProvenance } from './git-provenance.mjs';
 import {
   buildRunnerArgv,
   lastRunDirectoryLine,
+  resolveLiveRunnerTimeoutMs,
   resolveWatchRealtimeProtocol,
 } from './run-watch-mode-live-matrix.mjs';
 import {
@@ -37,7 +38,8 @@ const VM3_PREFLIGHT_CACHE_FILE = path.join(VM3_PREFLIGHT_CACHE_ROOT, 'vm3-runtim
 const VM3_PREFLIGHT_CACHE_SCHEMA_VERSION = 1;
 const VM3_SHORT_LIVE_ROOT = path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-smoke-runtime');
 export const VM3_SMOKE_START_MIN_C_FREE_BYTES = 7 * 1024 ** 3;
-const VM3_SMOKE_STOP_MIN_C_FREE_BYTES = 5 * 1024 ** 3;
+export const VM3_SMOKE_STOP_MIN_C_FREE_BYTES = 5 * 1024 ** 3;
+export const VM3_SMOKE_LIVE_TIMEOUT_HARD_CAP_MS = 15 * 60 * 1_000;
 const VM3_PREFLIGHT_BUILD_SETTINGS = Object.freeze({
   cargoRegistryProtocol: 'sparse',
   cargoOffline: true,
@@ -50,6 +52,22 @@ const VM3_PREFLIGHT_BUILD_SETTINGS = Object.freeze({
   runtimeBuildTimeoutMs: 1_800_000,
   regressionCommandTimeoutMs: 900_000,
 });
+
+export function resolveVm3SmokeLiveTimeoutMs({
+  durationSeconds,
+  warmupSeconds,
+  playbackSeconds,
+  postPlaybackWaitSeconds,
+  sessionReadyTimeoutSeconds,
+}) {
+  const derivedTimeoutMs = resolveLiveRunnerTimeoutMs({
+    playbackSeconds,
+    postPlaybackWaitSeconds,
+    sessionReadyTimeoutSeconds,
+    watchAutoStopAfterSeconds: durationSeconds,
+  }) + warmupSeconds * 1_000;
+  return Math.min(derivedTimeoutMs, VM3_SMOKE_LIVE_TIMEOUT_HARD_CAP_MS);
+}
 
 function sameJson(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
@@ -70,6 +88,14 @@ function readVm3CFreeBytes(run = spawnSync) {
   });
   if (probe?.error || probe?.status !== 0) return Number.NaN;
   return Number.parseInt(String(probe.stdout ?? '').trim(), 10);
+}
+
+export function sampleDiskSpace() {
+  return {
+    drive: 'C:',
+    freeBytes: readVm3CFreeBytes(),
+    stopMinFreeBytes: VM3_SMOKE_STOP_MIN_C_FREE_BYTES,
+  };
 }
 
 function shortLiveOutputRoot(executionRoot) {
@@ -339,6 +365,9 @@ export async function runPreflight({ executionRoot }) {
       checks: reusable.cached.checks,
       runtimeBinaryCount: runtimeAuthority.length,
       deviceProfile: PROFILE,
+      provenance: reusable.cached.provenance,
+      buildSettings: reusable.cached.buildSettings,
+      runtimeAuthority,
       preflightReuse: {
         reused: true,
         cacheFile: VM3_PREFLIGHT_CACHE_FILE,
@@ -431,6 +460,9 @@ export async function runPreflight({ executionRoot }) {
     checks,
     runtimeBinaryCount: runtimeAuthority.length,
     deviceProfile: PROFILE,
+    provenance: cache.provenance,
+    buildSettings: cache.buildSettings,
+    runtimeAuthority,
     preflightReuse: {
       reused: false,
       cacheFile: VM3_PREFLIGHT_CACHE_FILE,
@@ -562,17 +594,24 @@ export async function runCell({ cell, executionRoot }) {
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name),
   );
+  const liveTiming = Object.freeze({
+    durationSeconds: cell.durationSeconds,
+    warmupSeconds: 5,
+    playbackSeconds: 0,
+    postPlaybackWaitSeconds: 20,
+    sessionReadyTimeoutSeconds: 60,
+  });
   const argv = buildRunnerArgv({
     model: cell.modelId,
     watchRealtimeProtocol: resolveWatchRealtimeProtocol(cell.modelId),
     subtitleTranslationMode: 'native',
     feedbackMode: cell.feedbackLoopPrevention,
     outputRoot,
-    warmupSeconds: 5,
-    playbackSeconds: 0,
-    postPlaybackWaitSeconds: 20,
-    sessionReadyTimeoutSeconds: 60,
-    watchAutoStopAfterSeconds: cell.durationSeconds,
+    warmupSeconds: liveTiming.warmupSeconds,
+    playbackSeconds: liveTiming.playbackSeconds,
+    postPlaybackWaitSeconds: liveTiming.postPlaybackWaitSeconds,
+    sessionReadyTimeoutSeconds: liveTiming.sessionReadyTimeoutSeconds,
+    watchAutoStopAfterSeconds: liveTiming.durationSeconds,
     physicalPlaybackDeviceId: PROFILE.physicalPlaybackDeviceId,
     physicalPlaybackDeviceClass: PROFILE.deviceClass,
     physicalPlaybackDeviceProfileId: PROFILE.profileId,
@@ -582,7 +621,11 @@ export async function runCell({ cell, executionRoot }) {
     stopDesktopAfterPlayback: true,
     cellId: cell.cellId,
   });
-  const processResult = await runPowerShell(argv, 5 * 60 * 1_000);
+  // Reuse the strict matrix lifecycle budget: readiness plus the longer of
+  // Watch report completion and recorder completion, followed by STT/report
+  // post-processing. Smoke adds its explicit warmup and enforces a final hard
+  // cap so a degraded elevated process tree still cannot run indefinitely.
+  const processResult = await runPowerShell(argv, resolveVm3SmokeLiveTimeoutMs(liveTiming));
   const outputRunDirectory = lastRunDirectoryLine(processResult.stdout, repoRoot);
   // The elevated launcher can exit before the child-side report writer flushes
   // its final JSON. This is completion waiting, not a cell retry: retain the
@@ -601,6 +644,7 @@ export async function runCell({ cell, executionRoot }) {
   const passed = report?.verdict === 'passed';
   return {
     passed,
+    providerCalls: 1,
     ...(passed ? {} : { classification: report ? classifyReport(report) : 'orchestration' }),
     evidence: runDirectory
       ? path.join(logicalOutputRoot, path.basename(runDirectory))

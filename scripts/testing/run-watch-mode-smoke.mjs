@@ -11,6 +11,8 @@ import {
 
 export const SMOKE_OUTPUT_ROOT = path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-smoke');
 export const SMOKE_MANIFEST_FILE = 'smoke-manifest.json';
+export const SMOKE_PREFLIGHT_RESULT_FILE = 'preflight-result.json';
+export const VM3_SMOKE_STOP_MIN_C_FREE_BYTES = 5 * 1024 ** 3;
 export const SMOKE_FAILURE_CLASSES = Object.freeze([
   'product', 'device', 'orchestration', 'ci', 'provider-external',
 ]);
@@ -66,6 +68,8 @@ export async function runWatchModeSmoke({
   outputRoot = SMOKE_OUTPUT_ROOT,
   runCell,
   runPreflight = async () => ({ passed: true, providerCalls: 0 }),
+  sampleDiskSpace,
+  stopMinFreeBytes = VM3_SMOKE_STOP_MIN_C_FREE_BYTES,
   cellIds,
   selectionReason,
   now = () => new Date(),
@@ -85,18 +89,126 @@ export async function runWatchModeSmoke({
   if (fs.existsSync(executionRoot)) throw new Error(`smoke execution directory already exists: ${executionRoot}`);
   fs.mkdirSync(executionRoot, { recursive: true });
   const outcomes = [];
+  const diskSpace = {
+    monitoringEnabled: typeof sampleDiskSpace === 'function',
+    drive: 'C:',
+    stopMinFreeBytes,
+    samples: [],
+    minimumFreeBytes: null,
+  };
+  const recordDiskSpace = async (stage) => {
+    if (typeof sampleDiskSpace !== 'function') return null;
+    let value;
+    try {
+      value = await sampleDiskSpace({ stage, plan, executionRoot });
+    } catch (error) {
+      value = { error: String(error?.message ?? error) };
+    }
+    const freeBytes = Number(typeof value === 'number' ? value : value?.freeBytes);
+    const sample = {
+      stage,
+      sampledAt: now().toISOString(),
+      freeBytes: Number.isFinite(freeBytes) ? freeBytes : null,
+      ...(typeof value === 'object' && value?.error ? { error: String(value.error) } : {}),
+    };
+    diskSpace.samples.push(sample);
+    if (Number.isFinite(freeBytes)) {
+      diskSpace.minimumFreeBytes = diskSpace.minimumFreeBytes === null
+        ? freeBytes
+        : Math.min(diskSpace.minimumFreeBytes, freeBytes);
+    }
+    if (!Number.isFinite(freeBytes)) return `C: free-space sample failed before ${stage}`;
+    if (freeBytes <= stopMinFreeBytes) {
+      return `C: free space is at or below the smoke stop floor before ${stage} (${freeBytes} bytes)`;
+    }
+    return null;
+  };
   let preflight;
-  try {
-    preflight = await runPreflight({ plan, executionRoot });
-  } catch (error) {
-    // A preflight crash is still an execution result.  Persisting it prevents
-    // a stalled build from being mistaken for an unrecorded smoke run.
-    preflight = { passed: false, providerCalls: 0, failure: String(error?.message ?? error), classification: 'orchestration' };
+  let stopReason = await recordDiskSpace('preflight');
+  if (stopReason) {
+    preflight = { passed: false, providerCalls: 0, failure: stopReason, classification: 'orchestration' };
+  } else {
+    try {
+      preflight = await runPreflight({ plan, executionRoot });
+    } catch (error) {
+      // A preflight crash is still an execution result. Persisting it prevents
+      // a stalled build from being mistaken for an unrecorded smoke run.
+      preflight = { passed: false, providerCalls: 0, failure: String(error?.message ?? error), classification: 'orchestration' };
+    }
   }
+  atomicWriteJson(path.join(executionRoot, SMOKE_PREFLIGHT_RESULT_FILE), {
+    schemaVersion: 1,
+    artifactKind: WATCH_MODE_SMOKE_ARTIFACT_KIND,
+    smokeOnly: true,
+    executionId: plan.executionId,
+    completedAt: now().toISOString(),
+    result: preflight,
+  });
   const preflightPassed = preflight?.passed === true && Number(preflight?.providerCalls ?? 0) === 0;
-  if (preflightPassed) {
+  if (preflightPassed && !stopReason) stopReason = await recordDiskSpace('first-cell');
+
+  const selection = {
+    mode: selectedCells.length === plan.cells.length ? 'full' : 'targeted',
+    cellIds: selectedCellIds,
+    reason: String(selectionReason ?? '').trim()
+      || (selectedCells.length === plan.cells.length ? 'full 17-cell VM3 smoke' : 'unspecified'),
+  };
+  const manifestPath = path.join(executionRoot, SMOKE_MANIFEST_FILE);
+  const writeManifest = ({ executionStatus, completedAt = null, activeCellId = null } = {}) => {
+    const providerCalls = outcomes.reduce((sum, entry) => sum + Number(entry.providerCalls ?? 0), 0);
+    const allSelectedCellsCompleted = outcomes.length === selectedCells.length;
+    const manifest = {
+      schemaVersion: 1,
+      artifactKind: WATCH_MODE_SMOKE_ARTIFACT_KIND,
+      smokeOnly: true,
+      executionId: plan.executionId,
+      executionStatus,
+      startedAt,
+      completedAt,
+      totalBudgetSeconds: WATCH_MODE_SMOKE_BUDGET_SECONDS,
+      plan,
+      selection,
+      assignments,
+      preflight,
+      provenance: {
+        git: preflight?.provenance ?? null,
+        deviceProfile: preflight?.deviceProfile ?? null,
+        runtimeAuthority: preflight?.runtimeAuthority ?? null,
+        buildSettings: preflight?.buildSettings ?? null,
+      },
+      diskSpace,
+      outcomes,
+      providerCalls,
+      dispatch: {
+        completedCount: outcomes.length,
+        duplicateCellIds: outcomes
+          .map((entry) => entry.cellId)
+          .filter((cellId, index, values) => values.indexOf(cellId) !== index),
+      },
+      ...(activeCellId ? { activeCellId } : {}),
+      ...(stopReason ? { stopReason } : {}),
+      passed: executionStatus === 'completed'
+        && preflightPassed
+        && !stopReason
+        && allSelectedCellsCompleted
+        && outcomes.every((entry) => entry.status === 'passed'),
+      blocksAuthoritativeRun: executionStatus !== 'completed'
+        || !preflightPassed
+        || Boolean(stopReason)
+        || !allSelectedCellsCompleted
+        || outcomes.some((entry) => entry.status !== 'passed'),
+      nonAuthoritativeReason: 'Smoke artifacts cannot be used for release, closeout, or PR merge evidence.',
+    };
+    atomicWriteJson(manifestPath, manifest);
+    return manifest;
+  };
+  writeManifest({ executionStatus: 'in-progress' });
+
+  if (preflightPassed && !stopReason) {
     for (const waveIndex of [...new Set(assignments.map((entry) => entry.waveIndex))]) {
       const wave = assignments.filter((entry) => entry.waveIndex === waveIndex);
+      const activeCellId = wave[0]?.cellId ?? null;
+      writeManifest({ executionStatus: 'in-progress', activeCellId });
       const settled = await Promise.allSettled(wave.map(async (assignment) => {
         const cell = selectedCells.find((entry) => entry.cellId === assignment.cellId);
         const result = await runCell({ plan, cell, assignment, executionRoot });
@@ -105,43 +217,34 @@ export async function runWatchModeSmoke({
       // Continue independent waves, retaining all failure evidence for one diagnostic pass.
       outcomes.push(...settled.map((entry, index) => {
         if (entry.status === 'rejected') {
-          return { ...wave[index], status: 'failed', classification: 'orchestration', error: String(entry.reason?.message ?? entry.reason) };
+          return { ...wave[index], status: 'failed', classification: 'orchestration', providerCalls: 0, error: String(entry.reason?.message ?? entry.reason) };
         }
         const passed = entry.value.result?.passed === true;
         const classification = entry.value.result?.classification;
-        if (!passed && !SMOKE_FAILURE_CLASSES.includes(classification)) {
-          return { ...entry.value, status: 'failed', classification: 'orchestration', error: 'runner returned a failed cell without a valid failure classification' };
+        const expectedProviderCalls = selectedCells.find((cell) => cell.cellId === entry.value.cellId)?.providerMode === 'disabled' ? 0 : 1;
+        const providerCalls = Number(entry.value.result?.providerCalls);
+        if (!Number.isInteger(providerCalls) || providerCalls !== expectedProviderCalls) {
+          return {
+            ...entry.value,
+            status: 'failed',
+            classification: 'orchestration',
+            providerCalls: Number.isInteger(providerCalls) ? providerCalls : 0,
+            error: `runner recorded ${Number.isInteger(providerCalls) ? providerCalls : 'no'} Provider calls; expected ${expectedProviderCalls}`,
+          };
         }
-        return { ...entry.value, status: passed ? 'passed' : 'failed', ...(passed ? {} : { classification }) };
+        if (!passed && !SMOKE_FAILURE_CLASSES.includes(classification)) {
+          return { ...entry.value, status: 'failed', classification: 'orchestration', providerCalls, error: 'runner returned a failed cell without a valid failure classification' };
+        }
+        return { ...entry.value, providerCalls, status: passed ? 'passed' : 'failed', ...(passed ? {} : { classification }) };
       }));
+      writeManifest({ executionStatus: 'in-progress' });
+      stopReason = await recordDiskSpace(`cell:${activeCellId}:complete`);
+      if (stopReason) break;
     }
   }
   const completedAt = now().toISOString();
-  const manifest = {
-    schemaVersion: 1,
-    artifactKind: WATCH_MODE_SMOKE_ARTIFACT_KIND,
-    smokeOnly: true,
-    executionId: plan.executionId,
-    startedAt,
-    completedAt,
-    totalBudgetSeconds: WATCH_MODE_SMOKE_BUDGET_SECONDS,
-    plan,
-    selection: {
-      mode: selectedCells.length === plan.cells.length ? 'full' : 'targeted',
-      cellIds: selectedCellIds,
-      ...(selectedCells.length === plan.cells.length ? {} : { reason: String(selectionReason ?? '').trim() || 'unspecified' }),
-    },
-    assignments,
-    preflight,
-    outcomes,
-    passed: preflightPassed && outcomes.length === selectedCells.length && outcomes.every((entry) => entry.status === 'passed'),
-    blocksAuthoritativeRun: !preflightPassed || outcomes.some((entry) => (
-      entry.status === 'failed' && entry.classification !== 'provider-external'
-    )),
-    nonAuthoritativeReason: 'Smoke artifacts cannot be used for release, closeout, or PR merge evidence.',
-  };
-  atomicWriteJson(path.join(executionRoot, SMOKE_MANIFEST_FILE), manifest);
-  return { executionRoot, manifestPath: path.join(executionRoot, SMOKE_MANIFEST_FILE), manifest };
+  const manifest = writeManifest({ executionStatus: 'completed', completedAt });
+  return { executionRoot, manifestPath, manifest };
 }
 
 if (isMain(import.meta.url)) {
@@ -171,6 +274,7 @@ if (isMain(import.meta.url)) {
       ...(cellsFlag < 0 ? {} : { cellIds: String(args[cellsFlag + 1] ?? '').split(',').map((entry) => entry.trim()).filter(Boolean) }),
       ...(selectionReasonFlag < 0 ? {} : { selectionReason: args[selectionReasonFlag + 1] }),
       ...(typeof adapter.runPreflight === 'function' ? { runPreflight: adapter.runPreflight } : {}),
+      ...(typeof adapter.sampleDiskSpace === 'function' ? { sampleDiskSpace: adapter.sampleDiskSpace } : {}),
     });
     console.log(JSON.stringify({ manifestPath: result.manifestPath, passed: result.manifest.passed }, null, 2));
     process.exitCode = result.manifest.passed ? 0 : 1;

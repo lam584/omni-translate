@@ -136,10 +136,8 @@ impl OmniAudioPump {
         provider: &ProviderDraftInput,
         active_voice: &str,
         instructions: &str,
-        audio_mode: RealtimeAudioMode,
-        output_mode: OmniOutputMode,
-        source_language: &str,
-        target_language: &str,
+        audio_mode: RealtimeAudioMode, output_mode: OmniOutputMode,
+        source_language: &str, target_language: &str,
         session_started_at: &SystemTime,
         defer_audio_until_response_done: bool,
     ) -> Result<OmniAudioPumpState, String> {
@@ -168,8 +166,7 @@ impl OmniAudioPump {
             chunks_sent_this_tick: _,
             socket_reconnected: _,
         } = self.state;
-        let mut chunks_sent_this_tick: usize = 0;
-        let mut socket_reconnected = false;
+        let mut chunks_sent_this_tick: usize = 0; let mut socket_reconnected = false;
         let mut pre_session_chunks_drained_this_tick = 0usize;
         loop {
             let raw_chunk = if provider_input_is_writable(session_ready_for_audio, defer_audio_until_response_done) {
@@ -332,10 +329,8 @@ impl OmniAudioPump {
                     &provider,
                     &active_voice,
                     &instructions,
-                    audio_mode,
-                    output_mode,
-                    source_language,
-                    &target_language,
+                    audio_mode, output_mode,
+                    source_language, &target_language,
                     buffer_size,
                     &format!("audio send failed: {error}"),
                 ) {

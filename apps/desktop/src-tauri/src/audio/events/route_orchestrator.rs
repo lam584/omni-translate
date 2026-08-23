@@ -457,8 +457,7 @@ fn start_omni_inbound_route(
     }
     let speech_enabled = plan.speech_output_enabled;
     let translation_audio_source = plan.translation_audio_source;
-    let should_start_speech_dispatch = plan.speech_dispatch_policy
-        == SpeechDispatchPolicy::SubtitleTtsWhenIdle
+    let should_start_speech_dispatch = plan.speech_dispatch_policy == SpeechDispatchPolicy::SubtitleTtsWhenIdle
         && speech_dispatch_state == "idle";
     let _ = append_diagnostics_log(
         &app,
@@ -486,18 +485,11 @@ fn start_omni_inbound_route(
         &app,
         &state,
         voice_provider.clone(),
-        &direction,
-        "route",
-        st_active,
-        &plan.session_reuse_key.source_language,
-        &plan.session_reuse_key.target_language,
-        &plan.realtime_audio_mode,
-        plan.voice.clone(),
-        plan.instructions.clone(),
-        plan.glossary.clone(),
-        plan.session_reuse_key.contract_signature,
-        plan.session_reuse_key.output_mode,
-        plan.omni_speech_config.clone(),
+        &direction, "route", st_active,
+        &plan.session_reuse_key.source_language, &plan.session_reuse_key.target_language,
+        &plan.realtime_audio_mode, plan.voice.clone(), plan.instructions.clone(),
+        plan.glossary.clone(), plan.session_reuse_key.contract_signature,
+        plan.session_reuse_key.output_mode, plan.omni_speech_config.clone(),
         OMNI_ROUTE_SESSION_READINESS_TIMEOUT,
     )?;
     state.watch_session_report.record_milestone_now("route_started");

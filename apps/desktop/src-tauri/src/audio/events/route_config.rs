@@ -1,12 +1,12 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
 use serde_json::Value;
 use tauri::AppHandle;
 
 use super::super::{glossary::{GlossaryCatalog, GlossaryContext}, omni, speech};
 use crate::diagnostics::events::append_diagnostics_log;
 use crate::provider::contracts::{ProviderDraftInput, ProviderModelCapabilityRegistryEntryInput};
+
+#[path = "route_config/session_contract.rs"]
+mod session_contract;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolvedRouteKind {
@@ -235,27 +235,12 @@ impl ResolvedRoutePlan {
         let mut session_source_language = source_language.clone();
         let mut session_target_language = target_language.clone();
         if is_livetranslate_route_model(&provider, &provider.model) {
-            let language_contract = omni::resolve_livetranslate_language(
+            let language_contract = session_contract::resolve_livetranslate_contract(
                 &provider.model,
                 &source_language,
-                "en",
-            )
-            .and_then(|source| {
-                omni::resolve_livetranslate_language(
-                    &provider.model,
-                    &target_language,
-                    "zh",
-                )
-                .map(|target| (source, target))
-            })
-            .and_then(|(source, target)| {
-                omni::resolve_livetranslate_output_mode(
-                    &provider.model,
-                    &target,
-                    requested_output_mode,
-                )
-                .map(|output_mode| (source, target, output_mode))
-            });
+                &target_language,
+                requested_output_mode,
+            );
             match language_contract {
                 Ok((source, target, output_mode)) => {
                     session_source_language = source;
@@ -311,7 +296,7 @@ impl ResolvedRoutePlan {
             SubtitleFallbackPolicy::Native => "native",
             SubtitleFallbackPolicy::Secondary => "secondary",
         };
-        let contract_signature = realtime_session_contract_signature(
+        let contract_signature = session_contract::realtime_session_contract_signature(
             &provider,
             &realtime_profile,
             &session_source_language,
@@ -356,51 +341,6 @@ impl ResolvedRoutePlan {
             kind,
         }
     }
-}
-
-fn realtime_session_contract_signature(
-    provider: &ProviderDraftInput,
-    profile: &ResolvedRealtimeProfile,
-    source_language: &str,
-    target_language: &str,
-    realtime_audio_mode: &str,
-    output_mode: omni::OmniOutputMode,
-    translation_owner: &str,
-    voice: &str,
-    instructions: &str,
-    glossary_signature: u64,
-) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    provider.template_id.hash(&mut hasher);
-    provider.provider_id.hash(&mut hasher);
-    provider.kind.hash(&mut hasher);
-    provider.template_realtime_protocol.hash(&mut hasher);
-    provider.realtime_protocol.hash(&mut hasher);
-    provider.model.hash(&mut hasher);
-    provider.base_url.hash(&mut hasher);
-    provider.transport.hash(&mut hasher);
-    provider.auth_ref.kind.hash(&mut hasher);
-    provider.auth_ref.reference.hash(&mut hasher);
-    provider.auth_ref.header_name.hash(&mut hasher);
-    provider.auth_ref.scheme.hash(&mut hasher);
-    provider.region.hash(&mut hasher);
-    provider.timeout_ms.hash(&mut hasher);
-    provider.response_modalities.hash(&mut hasher);
-    for header in &provider.custom_headers {
-        header.name.hash(&mut hasher);
-        header.value.hash(&mut hasher);
-        header.enabled.hash(&mut hasher);
-    }
-    profile.protocol_dialect.map(RealtimeProtocol::as_str).hash(&mut hasher);
-    source_language.hash(&mut hasher);
-    target_language.hash(&mut hasher);
-    realtime_audio_mode.hash(&mut hasher);
-    output_mode.as_str().hash(&mut hasher);
-    translation_owner.hash(&mut hasher);
-    voice.hash(&mut hasher);
-    instructions.hash(&mut hasher);
-    glossary_signature.hash(&mut hasher);
-    hasher.finish()
 }
 
 /// Qwen Audio's automatic VAD is designed for duplex conversation: a new

@@ -44,6 +44,35 @@ mod tests {
         assert!(!store.is_current("inbound", generation));
         assert!(store.is_current("inbound", replacement));
     }
+
+    #[test]
+    fn language_change_invalidates_ready_session_reuse() {
+        let store = OmniSessionStore::new();
+        let generation = store.begin(
+            "inbound", "livetranslate", "en", "zh", "server_vad", false,
+            OmniOutputMode::TextOnly, 42,
+        );
+        assert!(store.mark_ready("inbound", generation));
+        assert_eq!(
+            store.matching_ready(
+                "inbound", "livetranslate", "en", "zh", "server_vad", false,
+                OmniOutputMode::TextOnly, 42,
+            ),
+            Some(generation),
+        );
+        assert!(store
+            .matching_ready(
+                "inbound", "livetranslate", "ja", "zh", "server_vad", false,
+                OmniOutputMode::TextOnly, 42,
+            )
+            .is_none());
+        assert!(store
+            .matching_ready(
+                "inbound", "livetranslate", "en", "ja", "server_vad", false,
+                OmniOutputMode::TextOnly, 42,
+            )
+            .is_none());
+    }
 }
 
 impl OmniSessionStore {

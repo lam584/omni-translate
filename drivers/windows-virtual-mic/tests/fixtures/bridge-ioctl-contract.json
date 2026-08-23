@@ -52,6 +52,9 @@
     "frameIntervalMs": 20,
     "chunkBytes": 3840
   },
+  "bridgeSourceGeometry": {
+    "maxBufferedMilliseconds": 500
+  },
   "virtualMicGeometry": {
     "sampleRateHz": 48000,
     "channelCount": 1,

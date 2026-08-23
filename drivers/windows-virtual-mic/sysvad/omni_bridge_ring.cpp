@@ -3,8 +3,12 @@
 #include "omni_bridge_ring.h"
 
 #define OMNI_BRIDGE_RING_CAPACITY (4 * 1024 * 1024)
-#define OMNI_BRIDGE_MAX_BUFFERED_BYTES 19200
-#define OMNI_LOOPBACK_RING_CAPACITY OMNI_BRIDGE_MAX_BUFFERED_BYTES
+// Keep 500 ms of 48 kHz stereo PCM16 so event-mode startup pre-roll can be
+// drained by the bridge without discarding the beginning of the source. This
+// is only an overflow budget: normal reads still drain the ring immediately.
+#define OMNI_BRIDGE_MAX_BUFFERED_BYTES 96000
+// The standard loopback pin retains its original 100 ms latency budget.
+#define OMNI_LOOPBACK_RING_CAPACITY 19200
 #define OMNI_VIRTUAL_MIC_RING_CAPACITY (1024 * 1024)
 #define OMNI_VIRTUAL_MIC_MAX_BUFFERED_BYTES \
     (OMNI_VIRTUAL_MIC_SAMPLE_RATE_HZ * OMNI_VIRTUAL_MIC_BLOCK_ALIGN_BYTES * 5)

@@ -197,7 +197,7 @@ pub(super) fn build_client(timeout_ms: u64) -> Result<Client, ProviderRuntimeErr
             if redirect_target_is_same_origin(attempt.url(), attempt.previous()) {
                 attempt.follow()
             } else {
-                attempt.stop()
+                attempt.error("cross-origin provider redirect blocked")
             }
         }))
         .build()
@@ -325,6 +325,14 @@ pub(super) fn normalize_transport_error(error: reqwest::Error) -> ProviderRuntim
         return ProviderRuntimeError::new("timeout", format!("上游请求超时: {error}"))
             .retriable(true)
             .with_suggestion("可适当提高 timeoutMs，或优先保留字幕优先模式。");
+    }
+
+    if error.is_redirect() {
+        return ProviderRuntimeError::new(
+            "transport.unavailable",
+            "上游重定向被安全策略阻止：仅允许同源重定向，且最多跟随 10 次。",
+        )
+        .with_suggestion("请检查 baseUrl 是否指向最终的同源 HTTPS 端点。");
     }
 
     ProviderRuntimeError::new("transport.unavailable", format!("上游传输不可用: {error}"))

@@ -22,6 +22,8 @@ const MODEL_ENV: &str = "OMNI_WATCH_MODE_MODEL_ID";
 const PROTOCOL_ENV: &str = "OMNI_WATCH_MODE_REALTIME_PROTOCOL";
 const STRICT_PAID_AUTHORITY_ENV: &str = "OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY";
 const INCIDENT_REPLAY_AUTHORITY_ENV: &str = "OMNI_WATCH_MODE_INCIDENT_REPLAY_AUTHORITY";
+const LOCAL_SINGLE_SESSION_AUTHORITY_ENV: &str =
+    "OMNI_WATCH_MODE_LOCAL_SINGLE_SESSION_AUTHORITY";
 const INCIDENT_ID_ENV: &str = "OMNI_WATCH_MODE_INCIDENT_ID";
 const EXPECTED_PROVIDER_ID_ENV: &str = "OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID";
 const EXPECTED_TEMPLATE_ID_ENV: &str = "OMNI_WATCH_MODE_EXPECTED_PROVIDER_TEMPLATE_ID";
@@ -58,6 +60,7 @@ struct EnabledProviderInputBudget {
     session_generation: u64,
     strict_paid_authority: bool,
     incident_replay_authority: bool,
+    local_single_session_authority: bool,
     incident_id: Option<String>,
     provider_id: String,
     template_id: String,
@@ -138,9 +141,28 @@ impl ProviderInputBudget {
                 ))
             }
         };
-        if strict_paid_authority && incident_replay_authority {
+        let local_single_session_authority =
+            match read_env(LOCAL_SINGLE_SESSION_AUTHORITY_ENV) {
+                None => false,
+                Some(value) if value.trim() == "1" => true,
+                Some(_) => {
+                    return Err(format!(
+                        "{LOCAL_SINGLE_SESSION_AUTHORITY_ENV} must be exactly 1 when present"
+                    ))
+                }
+            };
+        if [
+            strict_paid_authority,
+            incident_replay_authority,
+            local_single_session_authority,
+        ]
+        .into_iter()
+        .filter(|enabled| *enabled)
+        .count()
+            > 1
+        {
             return Err(
-                "strict paid and incident replay provider authorities are mutually exclusive".to_string(),
+                "strict paid, incident replay, and local single-session provider authorities are mutually exclusive".to_string(),
             );
         }
         // CELL_ID/AUTOSTART/RUN_MARKER are shared by ordinary Watch Mode runs.
@@ -150,6 +172,7 @@ impl ProviderInputBudget {
         // removing every budget-specific variable.
         if !strict_paid_authority
             && !incident_replay_authority
+            && !local_single_session_authority
             && max_samples.is_none()
             && ledger_path.is_none()
             && lease_id.is_none()
@@ -225,6 +248,51 @@ impl ProviderInputBudget {
         } else {
             None
         };
+        if local_single_session_authority {
+            if session_generation == 0 {
+                return Err(
+                    "local single-session provider authority requires a non-zero session generation"
+                        .to_string(),
+                );
+            }
+            required(PCM_PATH_ENV, read_env(PCM_PATH_ENV))?;
+            let expected_model = required(MODEL_ENV, read_env(MODEL_ENV))?;
+            let expected_protocol = required(PROTOCOL_ENV, read_env(PROTOCOL_ENV))?;
+            if !matches!(
+                (expected_model.as_str(), expected_protocol.as_str()),
+                (STRICT_OMNI_MODEL, STRICT_OMNI_PROTOCOL)
+                    | (STRICT_LIVETRANSLATE_MODEL, STRICT_LIVETRANSLATE_PROTOCOL)
+                    | (INCIDENT_PLUS_MODEL, INCIDENT_PLUS_PROTOCOL)
+            ) {
+                return Err(format!(
+                    "local single-session provider authority rejected model/protocol pair {expected_model}/{expected_protocol}"
+                ));
+            }
+            if model != expected_model || protocol != expected_protocol {
+                return Err(format!(
+                    "local single-session provider authority runtime pair mismatch: expected={expected_model}/{expected_protocol} actual={model}/{protocol}"
+                ));
+            }
+            if provider_id != STRICT_PROVIDER_ID
+                || template_id != STRICT_TEMPLATE_ID
+                || provider_kind != STRICT_PROVIDER_KIND
+                || endpoint_host != STRICT_ENDPOINT_HOST
+                || provider.auth_ref.kind != "credential-ref"
+                || credential_reference != STRICT_CREDENTIAL_REFERENCE
+                || auth_header_name != "Authorization"
+                || auth_scheme != "bearer"
+                || custom_header_count != 0
+                || provider.transport != "websocket"
+                || !matches!(endpoint.scheme(), "https" | "wss")
+                || !endpoint.username().is_empty()
+                || endpoint.password().is_some()
+                || endpoint.port().is_some()
+            {
+                return Err(
+                    "local single-session provider authority requires the canonical DashScope TLS websocket provider and credential reference".to_string(),
+                );
+            }
+        }
         if strict_paid_authority || incident_replay_authority {
             if session_generation == 0 {
                 return Err(
@@ -354,6 +422,7 @@ impl ProviderInputBudget {
                 session_generation,
                 strict_paid_authority,
                 incident_replay_authority,
+                local_single_session_authority,
                 incident_id,
                 provider_id: provider_id.to_string(),
                 template_id: template_id.to_string(),
@@ -391,7 +460,9 @@ impl ProviderInputBudget {
         self.enabled
             .as_ref()
             .is_some_and(|budget| {
-                budget.strict_paid_authority || budget.incident_replay_authority
+                budget.strict_paid_authority
+                    || budget.incident_replay_authority
+                    || budget.local_single_session_authority
             })
     }
 
@@ -560,7 +631,11 @@ impl Drop for ProviderInputBudget {
 impl EnabledProviderInputBudget {
     fn record_initial_connect_attempt(&self) -> Result<(), String> {
         let current = self.initial_connect_attempts.load(Ordering::SeqCst);
-        if (self.strict_paid_authority || self.incident_replay_authority) && current >= 1 {
+        if (self.strict_paid_authority
+            || self.incident_replay_authority
+            || self.local_single_session_authority)
+            && current >= 1
+        {
             self.set_terminal_reason("initial-connect-retry-forbidden");
             self.write_final_snapshot(false)?;
             return Err(
@@ -607,7 +682,10 @@ impl EnabledProviderInputBudget {
     }
 
     fn authorize_reconnect_before_connect(&self, trigger: &str) -> Result<(), String> {
-        if !self.strict_paid_authority && !self.incident_replay_authority {
+        if !self.strict_paid_authority
+            && !self.incident_replay_authority
+            && !self.local_single_session_authority
+        {
             return Ok(());
         }
         let trigger = trigger.trim();
@@ -669,9 +747,14 @@ impl EnabledProviderInputBudget {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
+        let artifact_kind = if self.local_single_session_authority {
+            "watch-mode-smoke-provider-session-ledger"
+        } else {
+            "watch-mode-provider-input-budget-ledger"
+        };
         let record = json!({
             "schemaVersion": 1,
-            "artifactKind": "watch-mode-provider-input-budget-ledger",
+            "artifactKind": artifact_kind,
             "event": event,
             "sequence": sequence,
             "occurredAtMs": now_unix_ms(),
@@ -682,6 +765,8 @@ impl EnabledProviderInputBudget {
             "direction": "inbound",
             "strictPaidAuthority": self.strict_paid_authority,
             "incidentReplayAuthority": self.incident_replay_authority,
+            "localSingleSessionAuthority": self.local_single_session_authority,
+            "nonAuthoritative": self.local_single_session_authority,
             "incidentId": self.incident_id,
             "providerId": self.provider_id,
             "templateId": self.template_id,
@@ -727,9 +812,14 @@ impl EnabledProviderInputBudget {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
+        let artifact_kind = if self.local_single_session_authority {
+            "watch-mode-smoke-provider-session-ledger"
+        } else {
+            "watch-mode-provider-input-budget-ledger"
+        };
         let record = json!({
             "schemaVersion": 1,
-            "artifactKind": "watch-mode-provider-input-budget-ledger",
+            "artifactKind": artifact_kind,
             "cellId": self.cell_id,
             "leaseId": self.lease_id,
             "runMarker": self.run_marker,
@@ -737,6 +827,8 @@ impl EnabledProviderInputBudget {
             "direction": "inbound",
             "strictPaidAuthority": self.strict_paid_authority,
             "incidentReplayAuthority": self.incident_replay_authority,
+            "localSingleSessionAuthority": self.local_single_session_authority,
+            "nonAuthoritative": self.local_single_session_authority,
             "incidentId": self.incident_id,
             "providerId": self.provider_id,
             "templateId": self.template_id,
@@ -894,6 +986,24 @@ mod tests {
         provider.template_realtime_protocol = Some(INCIDENT_PLUS_PROTOCOL.to_string());
         provider.realtime_protocol = Some(INCIDENT_PLUS_PROTOCOL.to_string());
         provider
+    }
+
+    fn local_single_session_environment(
+        path: &Path,
+        max_samples: &str,
+    ) -> HashMap<String, String> {
+        let mut environment = enabled_environment(path, max_samples);
+        environment.remove(STRICT_PAID_AUTHORITY_ENV);
+        environment.insert(
+            LOCAL_SINGLE_SESSION_AUTHORITY_ENV.to_string(),
+            "1".to_string(),
+        );
+        environment.insert(MODEL_ENV.to_string(), INCIDENT_PLUS_MODEL.to_string());
+        environment.insert(
+            PROTOCOL_ENV.to_string(),
+            INCIDENT_PLUS_PROTOCOL.to_string(),
+        );
+        environment
     }
 
     fn final_record(path: &Path) -> Value {
@@ -1157,7 +1267,7 @@ mod tests {
     }
 
     #[test]
-    fn paid_authority_modes_cannot_be_combined() {
+    fn provider_authority_modes_cannot_be_combined() {
         let directory = tempdir().expect("tempdir");
         let path = directory.path().join("combined-authority.json");
         let mut environment = incident_environment(&path, "10");
@@ -1168,6 +1278,95 @@ mod tests {
 
         assert!(error.contains("mutually exclusive"), "{error}");
         assert!(!path.exists(), "combined authority rejection must precede ledger creation");
+
+        let local_path = directory.path().join("combined-local-authority.json");
+        let mut local_environment = local_single_session_environment(&local_path, "10");
+        local_environment.insert(STRICT_PAID_AUTHORITY_ENV.to_string(), "1".to_string());
+        let local_error = budget_from_map_with_provider(&local_environment, &incident_provider())
+            .expect_err("local and production authority modes must fail closed");
+        assert!(local_error.contains("mutually exclusive"), "{local_error}");
+        assert!(
+            !local_path.exists(),
+            "local/production authority rejection must precede ledger creation"
+        );
+    }
+
+    #[test]
+    fn local_single_session_authority_accepts_only_known_watch_model_protocol_pairs() {
+        let directory = tempdir().expect("tempdir");
+        for (index, (model, protocol)) in [
+            (STRICT_OMNI_MODEL, STRICT_OMNI_PROTOCOL),
+            (STRICT_LIVETRANSLATE_MODEL, STRICT_LIVETRANSLATE_PROTOCOL),
+            (INCIDENT_PLUS_MODEL, INCIDENT_PLUS_PROTOCOL),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let path = directory.path().join(format!("known-smoke-{index}.json"));
+            let mut environment = local_single_session_environment(&path, "10");
+            environment.insert(MODEL_ENV.to_string(), model.to_string());
+            environment.insert(PROTOCOL_ENV.to_string(), protocol.to_string());
+            let mut selected_provider = provider(STRICT_PROVIDER_ID);
+            selected_provider.model = model.to_string();
+            selected_provider.template_realtime_protocol = Some(protocol.to_string());
+            selected_provider.realtime_protocol = Some(protocol.to_string());
+            let budget = ProviderInputBudget::from_environment(
+                &selected_provider,
+                "inbound",
+                7,
+                model,
+                protocol,
+                |name| environment.get(name).cloned(),
+            )
+            .expect("known smoke model/protocol pair is accepted");
+            drop(budget);
+            let ledger = final_record(&path);
+            assert_eq!(ledger["model"], model);
+            assert_eq!(ledger["protocol"], protocol);
+            assert_eq!(ledger["localSingleSessionAuthority"], true);
+        }
+    }
+
+    #[test]
+    fn local_single_session_authority_blocks_retry_and_reconnect_before_network() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("smoke-ledger.json");
+        let environment = local_single_session_environment(&path, "10");
+        let budget = budget_from_map_with_provider(&environment, &incident_provider())
+            .expect("local smoke authority accepts a known Watch model");
+
+        budget
+            .record_initial_connect_attempt()
+            .expect("first connection is authorized");
+        let second = budget
+            .record_initial_connect_attempt()
+            .expect_err("second connection must be blocked before network access");
+        let reconnect = budget
+            .authorize_reconnect_before_connect("socket-close")
+            .expect_err("reconnect must be blocked before network access");
+        assert!(second.contains("second initial WebSocket attempt"), "{second}");
+        assert!(reconnect.contains("before connector network access"), "{reconnect}");
+        drop(budget);
+
+        let ledger = final_record(&path);
+        assert_eq!(ledger["artifactKind"], "watch-mode-smoke-provider-session-ledger");
+        assert_eq!(ledger["localSingleSessionAuthority"], true);
+        assert_eq!(ledger["nonAuthoritative"], true);
+        assert_eq!(ledger["strictPaidAuthority"], false);
+        assert_eq!(ledger["incidentReplayAuthority"], false);
+        assert_eq!(ledger["initialConnectAttempts"], 1);
+        assert_eq!(ledger["reconnects"], 0);
+    }
+
+    #[test]
+    fn local_single_session_sentinel_without_budget_binding_fails_closed() {
+        let environment = HashMap::from([(
+            LOCAL_SINGLE_SESSION_AUTHORITY_ENV.to_string(),
+            "1".to_string(),
+        )]);
+        let error = budget_from_map(&environment)
+            .expect_err("local authority without its complete binding must fail");
+        assert!(error.contains(MAX_SAMPLES_ENV), "{error}");
     }
 
     #[test]

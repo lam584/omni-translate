@@ -33,6 +33,9 @@ param(
   # A signed Plus incident replay uses the same audio budget boundary but is
   # deliberately distinct from the immutable eight-cell release matrix.
   [switch]$IncidentReplayAuthority,
+  # Non-authoritative smoke uses the same canonical PCM/text and physical cue
+  # correlation gates without borrowing strict/incident production authority.
+  [switch]$LocalCanonicalContentAuthority,
   [string]$MatrixCellId = "",
   # A production shard has already validated this signed, zero-provider
   # readiness receipt before claiming its lease. Virtual-driver cells consume
@@ -69,14 +72,17 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 $OutputEncoding = [Console]::OutputEncoding
 
-if ($StrictPaidAuthority -and $IncidentReplayAuthority) {
-  throw "StrictPaidAuthority and IncidentReplayAuthority are mutually exclusive."
+if (@($StrictPaidAuthority, $IncidentReplayAuthority, $LocalCanonicalContentAuthority).Where({ $_ }).Count -gt 1) {
+  throw "StrictPaidAuthority, IncidentReplayAuthority, and LocalCanonicalContentAuthority are mutually exclusive."
 }
 $paidAuthorityEnabled = [bool]$StrictPaidAuthority -or [bool]$IncidentReplayAuthority
+$localContentAuthorityEnabled = $paidAuthorityEnabled -or [bool]$LocalCanonicalContentAuthority
 $providerAuthorityMode = if ($StrictPaidAuthority) {
   "strict-paid"
 } elseif ($IncidentReplayAuthority) {
   "incident-replay-plus"
+} elseif ($LocalCanonicalContentAuthority) {
+  "local-canonical-smoke"
 } else {
   "none"
 }
@@ -809,7 +815,8 @@ function Ensure-ValueProperty {
 function Enter-StrictPaidProviderEnvironment {
   param(
     [bool]$Enabled,
-    [bool]$IncidentReplay = $false
+    [bool]$IncidentReplay = $false,
+    [bool]$LocalSingleSession = $false
   )
   $fixed = [ordered]@{
     OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID = "provider-dashscope"
@@ -825,13 +832,16 @@ function Enter-StrictPaidProviderEnvironment {
     $fixed.OMNI_WATCH_MODE_INCIDENT_REPLAY_AUTHORITY = "1"
     $fixed.OMNI_WATCH_MODE_INCIDENT_ID = "watch-mode-loss-incident-plus-v1"
   }
+  if ($LocalSingleSession) {
+    $fixed.OMNI_WATCH_MODE_LOCAL_SINGLE_SESSION_AUTHORITY = "1"
+  }
   $previous = [ordered]@{}
   foreach ($entry in $fixed.GetEnumerator()) {
     $previous[$entry.Key] = [Environment]::GetEnvironmentVariable(
       $entry.Key,
       [EnvironmentVariableTarget]::Process
     )
-    if ($Enabled -or $IncidentReplay) {
+    if ($Enabled -or $IncidentReplay -or $LocalSingleSession) {
       [Environment]::SetEnvironmentVariable(
         $entry.Key,
         [string]$entry.Value,
@@ -840,7 +850,7 @@ function Enter-StrictPaidProviderEnvironment {
     }
   }
   return [pscustomobject]@{
-    enabled = $Enabled -or $IncidentReplay
+    enabled = $Enabled -or $IncidentReplay -or $LocalSingleSession
     names = @($fixed.Keys)
     values = $fixed
     previous = $previous
@@ -1602,7 +1612,8 @@ function Start-WatchModeDesktopShell {
   try {
     $strictPaidProviderEnvironment = Enter-StrictPaidProviderEnvironment `
       -Enabled $StrictPaidAuthority `
-      -IncidentReplay $IncidentReplayAuthority
+      -IncidentReplay $IncidentReplayAuthority `
+      -LocalSingleSession $LocalCanonicalContentAuthority
     $env:OMNI_WATCH_MODE_AUTOSTART = "1"
     $env:OMNI_WATCH_MODE_RUN_MARKER = $RunMarker
     $diagnosticOutputDeviceId = if ($PhysicalDeviceId) { $PhysicalDeviceId } else { "default" }
@@ -1615,21 +1626,42 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE = $diagnosticSubtitleTranslationMode
     $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE = if ($SubtitleTranslationMode -eq "native") { "omni-native" } else { "subtitle-tts" }
     $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH = $providerInputPcmPath
-    if ($paidAuthorityEnabled) {
+    if ($localContentAuthorityEnabled) {
       $env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES = "$($WatchAutoStopAfterSeconds * 16000)"
-      $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH = Join-Path $OutputDirectory "provider-input-budget-ledger.json"
+      $ledgerFileName = if ($LocalCanonicalContentAuthority) {
+        "smoke-provider-session-ledger.json"
+      } else {
+        "provider-input-budget-ledger.json"
+      }
+      $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH = Join-Path $OutputDirectory $ledgerFileName
       $env:OMNI_WATCH_MODE_CELL_ID = $MatrixCellId
       $translatedPcmAuthorityDirectory = Join-Path $OutputDirectory "translated-cue-pcm"
       # The Rust authority owns exclusive creation of this directory. Creating
       # it here would turn a clean strict-paid launch into a deterministic
       # fail-closed collision before the first provider connection.
       $env:OMNI_WATCH_MODE_TRANSLATED_PCM_AUTHORITY_DIR = $translatedPcmAuthorityDirectory
-      # The matrix/shard coordinator must issue this lease before the paid
-      # process starts. Never mint or reuse an implicit ambient lease here.
-      $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID = $previousProviderInputLeaseId.Trim()
+      # Production workers consume a coordinator-issued lease. A local smoke
+      # cell mints a run-scoped non-authoritative lease that cannot be reused
+      # by the production matrix authority.
+      $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID = if ($LocalCanonicalContentAuthority) {
+        "smoke-$([guid]::NewGuid().ToString('N'))"
+      } else {
+        $previousProviderInputLeaseId.Trim()
+      }
+      $leaseArtifactKind = if ($LocalCanonicalContentAuthority) {
+        "watch-mode-smoke-provider-session-lease"
+      } else {
+        "watch-mode-provider-input-budget-lease"
+      }
+      $leaseFileName = if ($LocalCanonicalContentAuthority) {
+        "smoke-provider-session-lease.json"
+      } else {
+        "provider-input-budget-lease.json"
+      }
       $leaseReceipt = [ordered]@{
         schemaVersion = 1
-        artifactKind = "watch-mode-provider-input-budget-lease"
+        artifactKind = $leaseArtifactKind
+        nonAuthoritative = [bool]$LocalCanonicalContentAuthority
         cellId = $MatrixCellId
         leaseId = $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID
         runMarker = $RunMarker
@@ -1637,7 +1669,7 @@ function Start-WatchModeDesktopShell {
       }
       $leaseReceiptJson = $leaseReceipt | ConvertTo-Json -Depth 3
       [System.IO.File]::WriteAllText(
-        (Join-Path $OutputDirectory "provider-input-budget-lease.json"),
+        (Join-Path $OutputDirectory $leaseFileName),
         $leaseReceiptJson,
         [System.Text.UTF8Encoding]::new($false)
       )
@@ -1664,7 +1696,7 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS = $liveScenarioEnvironment.autoStopAfterMs
     $env:OMNI_WATCH_MODE_REPORT_PATH = $watchSessionReportPath
     $env:OMNI_WATCH_MODE_EXIT_AFTER_REPORT = "1"
-    if ($paidAuthorityEnabled) {
+    if ($localContentAuthorityEnabled) {
       # Debug model-trace summaries and the PCM dump cross-check the Rust
       # send-boundary ledger, which remains the paid-input authority.
       $env:OMNI_LOG_LEVEL = "debug"
@@ -1697,7 +1729,7 @@ function Start-WatchModeDesktopShell {
         "OMNI_WATCH_MODE_EXIT_AFTER_REPORT",
         "OMNI_LOG_LEVEL"
       )
-      if ($paidAuthorityEnabled) {
+      if ($localContentAuthorityEnabled) {
         $watchEnvironmentNames += @($strictPaidProviderEnvironment.names)
       }
       $launchEnvironment = @{}
@@ -3881,7 +3913,12 @@ function Read-TranslatedCuePlaybackAuthority {
 function Get-TranslatedPcmLoopbackAuthority {
   param([string]$OutputDirectory, $Recording, $PlaybackAuthority)
   $matcherPath = Join-Path $workspaceRoot "scripts/testing/watch-mode-translated-pcm-loopback.mjs"
-  $leasePath = Join-Path $OutputDirectory "provider-input-budget-lease.json"
+  $leaseFileName = if ($LocalCanonicalContentAuthority) {
+    "smoke-provider-session-lease.json"
+  } else {
+    "provider-input-budget-lease.json"
+  }
+  $leasePath = Join-Path $OutputDirectory $leaseFileName
   if (-not (Test-Path -LiteralPath $leasePath -PathType Leaf)) {
     return [pscustomobject]@{ passed = $false; authorityMode = "translated-pcm-loopback-correlation-v1"; error = "provider input budget lease is missing" }
   }
@@ -4035,7 +4072,7 @@ function Get-SourceMediaReferenceTranscript {
   # Both paid authorities must remain self-contained: the Plus incident replay
   # has the same zero-auxiliary-provider-audio rule as the strict release
   # matrix, while retaining a separate signing and result authority.
-  if ($StrictPaidAuthority -or $IncidentReplayAuthority) {
+  if ($StrictPaidAuthority -or $IncidentReplayAuthority -or $LocalCanonicalContentAuthority) {
     return Get-CanonicalSourceMediaReference $OutputDirectory $MediaPath
   }
   $resultPath = Join-Path $OutputDirectory "source-media-transcript.json"
@@ -4124,7 +4161,7 @@ function Invoke-PhysicalOutputContentStt {
     [pscustomobject]@{ passed = $false; error = "physical output recording did not run" } | ConvertTo-Json -Depth 8 | Set-Content -Path $resultPath -Encoding UTF8
     return Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
   }
-  if ($paidAuthorityEnabled) {
+  if ($StrictPaidAuthority -or $IncidentReplayAuthority -or $LocalCanonicalContentAuthority) {
     return Get-LocalPhysicalOutputContentAuthority `
       $OutputDirectory `
       $Recording `
@@ -4542,16 +4579,119 @@ function Write-StrictPaidCellBudget {
   return $ledger
 }
 
+function Write-LocalSmokeProviderSessionAuthority {
+  param([string]$OutputDirectory, [string]$RunMarker)
+  $leasePath = Join-Path $OutputDirectory "smoke-provider-session-lease.json"
+  $ledgerPath = Join-Path $OutputDirectory "smoke-provider-session-ledger.json"
+  $sourcePath = Join-Path $OutputDirectory "source-media-transcript.json"
+  $physicalPath = Join-Path $OutputDirectory "physical-output-content.json"
+  $authorityPath = Join-Path $OutputDirectory "smoke-provider-session-authority.json"
+  $requiredPaths = @($leasePath, $ledgerPath)
+  if ($FeedbackLoopPrevention -ne "echo-cancel") {
+    $requiredPaths += @($sourcePath, $physicalPath)
+  }
+  foreach ($requiredPath in $requiredPaths) {
+    if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+      throw "local smoke provider-session authority input is missing: $requiredPath"
+    }
+  }
+  $lease = Get-Content -LiteralPath $leasePath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $ledger = Get-Content -LiteralPath $ledgerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $source = if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {
+    Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8 | ConvertFrom-Json
+  } else { $null }
+  $physical = if (Test-Path -LiteralPath $physicalPath -PathType Leaf) {
+    Get-Content -LiteralPath $physicalPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  } else { $null }
+  $violations = @()
+  if ($lease.schemaVersion -ne 1 -or $ledger.schemaVersion -ne 1) { $violations += "smoke lease and ledger schema versions must both be 1" }
+  if ($lease.artifactKind -cne "watch-mode-smoke-provider-session-lease") { $violations += "smoke lease artifact kind is invalid" }
+  if ($ledger.artifactKind -cne "watch-mode-smoke-provider-session-ledger") { $violations += "smoke ledger artifact kind is invalid" }
+  $requiredLedgerFields = @(
+    "cellId", "leaseId", "runMarker", "maxSamples", "sessionGeneration",
+    "totalAttemptedSamples", "initialConnectAttempts", "reconnects",
+    "appendAttempts", "sendFailures", "budgetExceeded", "finalized", "terminalReason",
+    "model", "protocol", "localSingleSessionAuthority",
+    "strictPaidAuthority", "incidentReplayAuthority", "nonAuthoritative",
+    "direction", "providerId", "templateId", "providerKind", "endpointHost",
+    "credentialReference", "authHeaderName", "authScheme", "customHeaderCount"
+  )
+  foreach ($field in $requiredLedgerFields) {
+    if ($ledger.PSObject.Properties.Name -notcontains $field) { $violations += "smoke ledger field is missing: $field" }
+  }
+  if ($lease.nonAuthoritative -ne $true -or $ledger.nonAuthoritative -ne $true) { $violations += "smoke lease and ledger must be explicitly non-authoritative" }
+  if ($ledger.localSingleSessionAuthority -ne $true -or $ledger.strictPaidAuthority -ne $false -or $ledger.incidentReplayAuthority -ne $false) { $violations += "smoke ledger authority sentinels are invalid" }
+  if (
+    [string]$ledger.direction -cne "inbound" -or
+    [string]$ledger.providerId -cne "provider-dashscope" -or
+    [string]$ledger.templateId -cne "template-dashscope-realtime" -or
+    [string]$ledger.providerKind -cne "dashscope" -or
+    [string]$ledger.endpointHost -cne "dashscope.aliyuncs.com" -or
+    [string]$ledger.credentialReference -cne "credential://provider/dashscope/default" -or
+    [string]$ledger.authHeaderName -cne "Authorization" -or
+    [string]$ledger.authScheme -cne "bearer" -or
+    [long]$ledger.customHeaderCount -ne 0
+  ) { $violations += "smoke ledger Provider identity is not canonical" }
+  if ([string]$lease.cellId -cne $MatrixCellId -or [string]$ledger.cellId -cne $MatrixCellId) { $violations += "smoke authority cellId mismatch" }
+  if ([string]$lease.leaseId -cne [string]$ledger.leaseId -or [string]::IsNullOrWhiteSpace([string]$ledger.leaseId)) { $violations += "smoke authority leaseId mismatch" }
+  if ([string]$lease.runMarker -cne $RunMarker -or [string]$ledger.runMarker -cne $RunMarker) { $violations += "smoke authority run marker mismatch" }
+  if ([long]$lease.maxSamples -ne [long]$ledger.maxSamples -or [long]$ledger.maxSamples -ne ($WatchAutoStopAfterSeconds * 16000)) { $violations += "smoke authority sample ceiling mismatch" }
+  if ([long]$ledger.sessionGeneration -le 0) { $violations += "smoke ledger session generation is invalid" }
+  if ([long]$ledger.totalAttemptedSamples -le 0 -or [long]$ledger.totalAttemptedSamples -gt [long]$ledger.maxSamples) { $violations += "smoke provider input samples are outside the lease" }
+  if ([long]$ledger.appendAttempts -le 0) { $violations += "smoke Provider ledger contains no append attempts" }
+  if ([long]$ledger.initialConnectAttempts -ne 1) { $violations += "smoke must perform exactly one initial Provider connection" }
+  if ([long]$ledger.reconnects -ne 0) { $violations += "smoke must not reconnect to the Provider" }
+  if ([long]$ledger.sendFailures -ne 0) { $violations += "smoke Provider send boundary recorded failures" }
+  if ($ledger.budgetExceeded -ne $false -or $ledger.finalized -ne $true) { $violations += "smoke Provider ledger is not a finalized in-budget session" }
+  if ([string]$ledger.terminalReason -cne "worker-completed") { $violations += "smoke Provider worker did not reach its normal completion terminal" }
+  if ([string]$ledger.model -cne $WatchModelId -or [string]$ledger.protocol -cne $WatchRealtimeProtocol) { $violations += "smoke Provider model/protocol mismatch" }
+  if ($FeedbackLoopPrevention -ne "echo-cancel") {
+    $sourceHasZeroCallFields = $source.PSObject.Properties.Name -contains "remoteProviderCalls" -and $source.PSObject.Properties.Name -contains "externalAudioSeconds"
+    $physicalHasZeroCallFields = $physical.PSObject.Properties.Name -contains "remoteProviderCalls" -and $physical.PSObject.Properties.Name -contains "externalAudioSeconds"
+    if ($source.schemaVersion -ne 2 -or $source.authorityMode -cne "canonical-fixture-local-v2" -or -not $sourceHasZeroCallFields -or $source.passed -ne $true -or [long]$source.remoteProviderCalls -ne 0 -or [double]$source.externalAudioSeconds -ne 0) { $violations += "canonical source authority used or required an auxiliary Provider" }
+    if ($physical.schemaVersion -ne 1 -or $physical.authorityMode -cne "local-pcm-cue-playback-v1" -or -not $physicalHasZeroCallFields -or $physical.passed -ne $true -or [long]$physical.remoteProviderCalls -ne 0 -or [double]$physical.externalAudioSeconds -ne 0) { $violations += "physical-output authority used or required an auxiliary Provider" }
+  }
+  $authority = [ordered]@{
+    schemaVersion = 1
+    artifactKind = "watch-mode-smoke-provider-session-authority"
+    nonAuthoritative = $true
+    passed = ($violations.Count -eq 0)
+    cellId = $MatrixCellId
+    leaseId = [string]$ledger.leaseId
+    runMarker = $RunMarker
+    model = $WatchModelId
+    protocol = $WatchRealtimeProtocol
+    providerSessions = [long]$ledger.initialConnectAttempts
+    auxiliaryProviderSessions = 0
+    totalAttemptedSamples = [long]$ledger.totalAttemptedSamples
+    maxSamples = [long]$ledger.maxSamples
+    reconnects = [long]$ledger.reconnects
+    finalized = [bool]$ledger.finalized
+    violations = @($violations)
+  }
+  [System.IO.File]::WriteAllText(
+    $authorityPath,
+    ($authority | ConvertTo-Json -Depth 5),
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  if ($violations.Count -gt 0) {
+    throw "local smoke provider-session authority failed: $($violations -join '; ')"
+  }
+  return [pscustomobject]$authority
+}
+
 $workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 Set-Location $workspaceRoot
 
-if ($paidAuthorityEnabled) {
-  if ($DryRun) { throw "$providerAuthorityMode authority is only valid for a live paid cell" }
-  if ($RecoverPhysicalOutputContentRunDirectory) { throw "$providerAuthorityMode authority forbids paid physical-output STT recovery" }
+if ($localContentAuthorityEnabled) {
+  if ($DryRun) { throw "$providerAuthorityMode authority is only valid for a live cell" }
+  if ($RecoverPhysicalOutputContentRunDirectory) { throw "$providerAuthorityMode authority forbids physical-output authority recovery" }
   $approvedAuthorityModels = if ($StrictPaidAuthority) {
     @("qwen3.5-omni-flash-realtime", "qwen3.5-livetranslate-flash-realtime")
-  } else {
+  } elseif ($IncidentReplayAuthority) {
     @("qwen3.5-omni-plus-realtime")
+  } else {
+    @("qwen3.5-omni-flash-realtime", "qwen3.5-livetranslate-flash-realtime", "qwen3.5-omni-plus-realtime")
   }
   if ($WatchModelId -notin $approvedAuthorityModels) {
     throw "$providerAuthorityMode allows only its signed Watch models; got '$WatchModelId'"
@@ -4559,8 +4699,22 @@ if ($paidAuthorityEnabled) {
   if ([string]::IsNullOrWhiteSpace($MatrixCellId)) {
     throw "$providerAuthorityMode requires MatrixCellId before provider launch"
   }
-  if ([string]::IsNullOrWhiteSpace($env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID)) {
+  if ($paidAuthorityEnabled -and [string]::IsNullOrWhiteSpace($env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID)) {
     throw "$providerAuthorityMode requires a coordinator-issued OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID before provider launch"
+  }
+  if ($LocalCanonicalContentAuthority -and (
+    -not [string]::IsNullOrWhiteSpace($env:OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY) -or
+    -not [string]::IsNullOrWhiteSpace($env:OMNI_WATCH_MODE_INCIDENT_REPLAY_AUTHORITY)
+  )) {
+    throw "$providerAuthorityMode refuses ambient production authority sentinels"
+  }
+  $approvedAuthorityProtocol = if ($WatchModelId -eq "qwen3.5-livetranslate-flash-realtime") {
+    "dashscope-livetranslate"
+  } else {
+    "dashscope-omni"
+  }
+  if ($WatchRealtimeProtocol -cne $approvedAuthorityProtocol) {
+    throw "$providerAuthorityMode model/protocol mismatch: expected $approvedAuthorityProtocol for $WatchModelId"
   }
   if ($SubtitleTranslationMode -ne "native") {
     throw "$providerAuthorityMode forbids secondary translation/TTS; SubtitleTranslationMode must be native"
@@ -5240,6 +5394,16 @@ try {
   Assert-WatchSessionReportFile $requiredWatchReportPath | Out-Null
   if ($reportWaitStep -and -not $reportWaitStep.ok) {
     throw "same-process Watch report did not complete within the desktop launch deadline: $($reportWaitStep.error)"
+  }
+
+  if ($LocalCanonicalContentAuthority) {
+    $localSessionAuthorityStep = Invoke-Step "validate local smoke Provider session authority" {
+      Write-LocalSmokeProviderSessionAuthority $outputDir $runMarker
+    } -ContinueOnError
+    $steps += $localSessionAuthorityStep
+    if (-not $localSessionAuthorityStep.ok) {
+      throw $localSessionAuthorityStep.error
+    }
   }
 
   if ($paidAuthorityEnabled) {

@@ -156,6 +156,19 @@ function extractedStrictPaidSourceAuthorityFunctions() {
   );
 }
 
+function extractedLocalSmokeProviderSessionAuthorityFunction() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$function = $ast.Find({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -eq 'Write-LocalSmokeProviderSessionAuthority' ` +
+    `}, $true); ` +
+    `. ([scriptblock]::Create($function.Extent.Text)); `
+  );
+}
+
 function extractedMediaReferenceFunctions() {
   return (
     `$errors = $null; ` +
@@ -228,8 +241,9 @@ test('paid source authorities use canonical hashes, fixture texts, and injector 
   try {
     const canonicalMedia = path.resolve('scripts/testing/fixtures/watch-mode-en-original.wav');
     for (const authorityVariables of [
-      '$StrictPaidAuthority = $true; $IncidentReplayAuthority = $false;',
-      '$StrictPaidAuthority = $false; $IncidentReplayAuthority = $true;',
+      '$StrictPaidAuthority = $true; $IncidentReplayAuthority = $false; $LocalCanonicalContentAuthority = $false;',
+      '$StrictPaidAuthority = $false; $IncidentReplayAuthority = $true; $LocalCanonicalContentAuthority = $false;',
+      '$StrictPaidAuthority = $false; $IncidentReplayAuthority = $false; $LocalCanonicalContentAuthority = $true;',
     ]) {
       const command = `${extractedStrictPaidSourceAuthorityFunctions()} ` +
         `$workspaceRoot = ${quotePowerShell(path.resolve('.'))}; ` +
@@ -265,7 +279,7 @@ test('paid source authorities use canonical hashes, fixture texts, and injector 
     fs.writeFileSync(referencePcmPath, forged);
     const command = `${extractedStrictPaidSourceAuthorityFunctions()} ` +
       `$workspaceRoot = ${quotePowerShell(path.resolve('.'))}; ` +
-      `$StrictPaidAuthority = $false; $IncidentReplayAuthority = $true; ` +
+      `$StrictPaidAuthority = $false; $IncidentReplayAuthority = $true; $LocalCanonicalContentAuthority = $false; ` +
       `function Get-PhysicalOutputSttApiKey { throw 'remote credential path must not execute' }; ` +
       `function Build-OmniRealtimeDiagnostic { throw 'remote diagnostic path must not execute' }; ` +
       `Get-SourceMediaReferenceTranscript ${quotePowerShell(outputDirectory)} ${quotePowerShell(canonicalMedia)} | ConvertTo-Json -Depth 4 -Compress`;
@@ -276,6 +290,123 @@ test('paid source authorities use canonical hashes, fixture texts, and injector 
     assert.match(rejectedAuthority.error, /not byte-for-byte the injector reconstruction/);
   } finally {
     fs.rmSync(outputDirectory, { recursive: true, force: true });
+  }
+});
+
+test('local smoke Provider-session authority binds one non-authoritative session and zero auxiliary calls', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-smoke-provider-authority-'));
+  const writeInputs = (directory, feedbackMode) => {
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, 'smoke-provider-session-lease.json'), JSON.stringify({
+      schemaVersion: 1,
+      artifactKind: 'watch-mode-smoke-provider-session-lease',
+      nonAuthoritative: true,
+      cellId: 'smoke-cell',
+      leaseId: 'smoke-lease',
+      runMarker: 'smoke-marker',
+      maxSamples: 2_880_000,
+    }));
+    fs.writeFileSync(path.join(directory, 'smoke-provider-session-ledger.json'), JSON.stringify({
+      schemaVersion: 1,
+      artifactKind: 'watch-mode-smoke-provider-session-ledger',
+      nonAuthoritative: true,
+      localSingleSessionAuthority: true,
+      strictPaidAuthority: false,
+      incidentReplayAuthority: false,
+      cellId: 'smoke-cell',
+      leaseId: 'smoke-lease',
+      runMarker: 'smoke-marker',
+      maxSamples: 2_880_000,
+      sessionGeneration: 7,
+      totalAttemptedSamples: 2_000_000,
+      appendAttempts: 2_000,
+      initialConnectAttempts: 1,
+      reconnects: 0,
+      sendFailures: 0,
+      budgetExceeded: false,
+      finalized: true,
+      terminalReason: 'worker-completed',
+      direction: 'inbound',
+      providerId: 'provider-dashscope',
+      templateId: 'template-dashscope-realtime',
+      providerKind: 'dashscope',
+      endpointHost: 'dashscope.aliyuncs.com',
+      credentialReference: 'credential://provider/dashscope/default',
+      authHeaderName: 'Authorization',
+      authScheme: 'bearer',
+      customHeaderCount: 0,
+      model: 'qwen3.5-omni-plus-realtime',
+      protocol: 'dashscope-omni',
+    }));
+    if (feedbackMode !== 'echo-cancel') {
+      fs.writeFileSync(path.join(directory, 'source-media-transcript.json'), JSON.stringify({
+        schemaVersion: 2,
+        authorityMode: 'canonical-fixture-local-v2',
+        passed: true,
+        remoteProviderCalls: 0,
+        externalAudioSeconds: 0,
+      }));
+      fs.writeFileSync(path.join(directory, 'physical-output-content.json'), JSON.stringify({
+        schemaVersion: 1,
+        authorityMode: 'local-pcm-cue-playback-v1',
+        passed: true,
+        remoteProviderCalls: 0,
+        externalAudioSeconds: 0,
+      }));
+    }
+  };
+  try {
+    for (const feedbackMode of ['virtual-driver', 'echo-cancel']) {
+      const directory = path.join(root, feedbackMode);
+      writeInputs(directory, feedbackMode);
+      const command = extractedLocalSmokeProviderSessionAuthorityFunction() +
+        `$MatrixCellId = 'smoke-cell'; $WatchAutoStopAfterSeconds = 180; ` +
+        `$WatchModelId = 'qwen3.5-omni-plus-realtime'; $WatchRealtimeProtocol = 'dashscope-omni'; ` +
+        `$FeedbackLoopPrevention = '${feedbackMode}'; ` +
+        `Write-LocalSmokeProviderSessionAuthority ${quotePowerShell(directory)} 'smoke-marker' | ConvertTo-Json -Depth 5 -Compress`;
+      const result = runPowerShell(['-Command', command]);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const authority = readJsonArtifact(path.join(directory, 'smoke-provider-session-authority.json'));
+      assert.equal(authority.passed, true);
+      assert.equal(authority.nonAuthoritative, true);
+      assert.equal(authority.providerSessions, 1);
+      assert.equal(authority.auxiliaryProviderSessions, 0);
+    }
+    const retryDirectory = path.join(root, 'retry-forbidden');
+    writeInputs(retryDirectory, 'virtual-driver');
+    const retryLedgerPath = path.join(retryDirectory, 'smoke-provider-session-ledger.json');
+    const retryLedger = readJsonArtifact(retryLedgerPath);
+    retryLedger.terminalReason = 'initial-connect-retry-forbidden';
+    fs.writeFileSync(retryLedgerPath, JSON.stringify(retryLedger));
+    const retryCommand = extractedLocalSmokeProviderSessionAuthorityFunction() +
+      `$MatrixCellId = 'smoke-cell'; $WatchAutoStopAfterSeconds = 180; ` +
+      `$WatchModelId = 'qwen3.5-omni-plus-realtime'; $WatchRealtimeProtocol = 'dashscope-omni'; ` +
+      `$FeedbackLoopPrevention = 'virtual-driver'; ` +
+      `try { Write-LocalSmokeProviderSessionAuthority ${quotePowerShell(retryDirectory)} 'smoke-marker' | Out-Null; exit 2 } catch { exit 0 }`;
+    const retryResult = runPowerShell(['-Command', retryCommand]);
+    assert.equal(retryResult.status, 0, retryResult.stderr || retryResult.stdout);
+    const rejected = readJsonArtifact(path.join(retryDirectory, 'smoke-provider-session-authority.json'));
+    assert.equal(rejected.passed, false);
+    assert.match(rejected.violations.join(' '), /normal completion terminal/);
+
+    const incompleteDirectory = path.join(root, 'incomplete-local-content');
+    writeInputs(incompleteDirectory, 'virtual-driver');
+    const incompleteSourcePath = path.join(incompleteDirectory, 'source-media-transcript.json');
+    const incompleteSource = readJsonArtifact(incompleteSourcePath);
+    delete incompleteSource.remoteProviderCalls;
+    fs.writeFileSync(incompleteSourcePath, JSON.stringify(incompleteSource));
+    const incompleteCommand = extractedLocalSmokeProviderSessionAuthorityFunction() +
+      `$MatrixCellId = 'smoke-cell'; $WatchAutoStopAfterSeconds = 180; ` +
+      `$WatchModelId = 'qwen3.5-omni-plus-realtime'; $WatchRealtimeProtocol = 'dashscope-omni'; ` +
+      `$FeedbackLoopPrevention = 'virtual-driver'; ` +
+      `try { Write-LocalSmokeProviderSessionAuthority ${quotePowerShell(incompleteDirectory)} 'smoke-marker' | Out-Null; exit 2 } catch { exit 0 }`;
+    const incompleteResult = runPowerShell(['-Command', incompleteCommand]);
+    assert.equal(incompleteResult.status, 0, incompleteResult.stderr || incompleteResult.stdout);
+    const incompleteAuthority = readJsonArtifact(path.join(incompleteDirectory, 'smoke-provider-session-authority.json'));
+    assert.equal(incompleteAuthority.passed, false);
+    assert.match(incompleteAuthority.violations.join(' '), /canonical source authority/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -410,7 +541,7 @@ test('strict paid provider selection ignores a preceding alternate and rejects f
   }
 });
 
-test('strict paid provider environment is exact, elevation-forwardable, non-strict inert, and restored', { skip: !isWindows }, () => {
+test('paid and local smoke provider environments are exact, elevation-forwardable, inert when disabled, and restored', { skip: !isWindows }, () => {
   const command = `${extractedStrictPaidProviderFunctions()} ` +
     `$names = @(` +
       `'OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY',` +
@@ -428,14 +559,20 @@ test('strict paid provider environment is exact, elevation-forwardable, non-stri
     `$normal = @{}; foreach ($name in $strict.names) { $normal[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }; ` +
     `$elevatedLaunchEnvironment = @{}; foreach ($name in $strict.names) { $elevatedLaunchEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }; ` +
     `Exit-StrictPaidProviderEnvironment $strict; ` +
+    `$local = Enter-StrictPaidProviderEnvironment $false $false $true; ` +
+    `$localValues = @{}; foreach ($name in $local.names) { $localValues[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }; ` +
+    `Exit-StrictPaidProviderEnvironment $local; ` +
     `$restored = @{}; foreach ($name in $names) { $restored[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }; ` +
-    `[pscustomobject]@{ names=@($strict.names); expected=$strict.values; nonStrict=$nonStrictValues; normal=$normal; elevated=$elevatedLaunchEnvironment; restored=$restored } | ConvertTo-Json -Depth 8 -Compress`;
+    `[pscustomobject]@{ names=@($strict.names); expected=$strict.values; nonStrict=$nonStrictValues; normal=$normal; elevated=$elevatedLaunchEnvironment; restored=$restored; localNames=@($local.names); localExpected=$local.values; local=$localValues } | ConvertTo-Json -Depth 8 -Compress`;
   const result = runPowerShell(['-Command', command]);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const authority = JSON.parse(result.stdout.trim());
   assert.equal(authority.names.length, 6);
   assert.deepEqual(authority.normal, authority.expected);
   assert.deepEqual(authority.elevated, authority.expected);
+  assert.equal(authority.localNames.length, 6);
+  assert.deepEqual(authority.local, authority.localExpected);
+  assert.equal(authority.local.OMNI_WATCH_MODE_LOCAL_SINGLE_SESSION_AUTHORITY, '1');
   for (const name of authority.names) {
     assert.equal(authority.nonStrict[name], `before-${name}`);
     assert.equal(authority.restored[name], `before-${name}`);

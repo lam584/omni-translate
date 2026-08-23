@@ -183,6 +183,9 @@ pub(crate) async fn start_audio_route(
         None,
         None,
     );
+    if let Err(error) = app.state::<crate::history::HistoryStateStore>().begin_session() {
+        log::warn!("[omni][history] session archive could not start: {error}");
+    }
     // Watch capture initialization is worker-owned. A Tauri command must
     // acknowledge acceptance immediately; the renderer then waits for the
     // later snapshot that confirms the route actually owns a capture stream.
@@ -900,6 +903,12 @@ pub(crate) async fn stop_audio_route(
             let snapshot = state.snapshot();
             if !snapshot.inbound.stream_bound && !snapshot.outbound.stream_bound {
                 state.watch_session_report.complete();
+                if let Err(error) = app
+                    .state::<crate::history::HistoryStateStore>()
+                    .finish_active_session()
+                {
+                    log::warn!("[omni][history] session archive could not finalize: {error}");
+                }
             }
             Ok(state.snapshot())
         })();

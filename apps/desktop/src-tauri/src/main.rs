@@ -8,6 +8,7 @@ mod contract_export;
 #[cfg(test)]
 mod ipc_boundary_tests;
 mod diagnostics;
+mod history;
 mod overlay_release_evidence;
 mod provider;
 mod release_evidence_diagnostic;
@@ -18,13 +19,14 @@ mod watch_mode_diagnostic;
 mod wiring;
 
 use audio::events::{preconnect_omni_realtime, start_audio_route, stop_audio_route};
-use api_v2::{bridge_v2, configuration_v2, diagnostics_v2, provider_v2, session_v2};
+use api_v2::{bridge_v2, configuration_v2, diagnostics_v2, history_v2, provider_v2, session_v2};
 use audio::state::AudioStateStore;
 use bridge::events::start_bridge_service;
 use bridge::state::BridgeStateStore;
 use diagnostics::events::{
     append_diagnostics_log, append_frontend_diagnostics_logs, set_diagnostics_log_level,
 };
+use history::HistoryStateStore;
 use overlay_release_evidence::collect_overlay_click_through_release_evidence;
 use runtime::contracts::RuntimeNotification;
 use runtime::events::sync_subtitle_overlay_window_state;
@@ -248,11 +250,14 @@ fn main() {
     }
     let diagnostics_store = diagnostics::bootstrap_logging();
     let diagnostics_store_for_notifications = diagnostics_store.clone();
+    let history_store = HistoryStateStore::new();
+    let audio_store = AudioStateStore::with_history(history_store.clone());
 
     tauri::Builder::default()
-        .manage(AudioStateStore::new())
+        .manage(audio_store)
         .manage(BridgeStateStore::new())
         .manage(diagnostics_store)
+        .manage(history_store)
         .manage(RuntimeStateStore::new())
         .manage(provider::state::ProviderStateStore::new())
         .manage(StorageStateStore::new())
@@ -288,6 +293,7 @@ fn main() {
             session_v2,
             bridge_v2,
             diagnostics_v2,
+            history_v2,
             configuration_v2,
             collect_overlay_click_through_release_evidence,
             unlock_subtitle_overlay
@@ -327,6 +333,17 @@ fn main() {
             let storage_snapshot = storage
                 .ensure_initialized(&app_handle)
                 .map_err(std::io::Error::other)?;
+
+            let history_path = app
+                .state::<HistoryStateStore>()
+                .ensure_initialized(&app_handle)
+                .map_err(std::io::Error::other)?;
+            log_info!(
+                &app_handle,
+                "runtime",
+                "加密字幕历史初始化完成",
+                format!("db={history_path}")
+            );
 
             log_info!(
                 &app_handle,

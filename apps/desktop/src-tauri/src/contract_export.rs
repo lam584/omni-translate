@@ -177,6 +177,7 @@ fn generated_files() -> Vec<GeneratedFile> {
                     decl::<crate::api_v2::SessionCommandV2>(),
                     decl::<crate::api_v2::BridgeCommandV2>(),
                     decl::<crate::api_v2::DiagnosticsCommandV2>(),
+                    decl::<crate::api_v2::HistoryCommandV2>(),
                     decl::<crate::api_v2::ConfigurationCommandV2>(),
                 ],
             ),

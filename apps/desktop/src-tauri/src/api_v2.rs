@@ -18,6 +18,7 @@ use crate::bridge::events as bridge_events;
 use crate::bridge::state::BridgeStateStore;
 use crate::diagnostics::events as diagnostics_events;
 use crate::diagnostics::state::DiagnosticsStateStore;
+use crate::history::HistoryStateStore;
 use crate::provider::contracts::ProviderDraftInput;
 use crate::provider::events as provider_events;
 use crate::runtime::events as runtime_events;
@@ -143,6 +144,63 @@ fn finish_v2<T, R: tauri::Runtime>(
             Err(attach_request_id(error, &request_id))
         }
     }
+}
+
+#[derive(Debug, Deserialize, ts_rs::TS)]
+#[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub(crate) enum HistoryCommandV2 {
+    ListSessions {
+        #[ts(optional)]
+        cursor: Option<String>,
+        #[ts(optional)]
+        limit: Option<u32>,
+    },
+    GetSession { session_id: String },
+    ListCues {
+        session_id: String,
+        #[ts(optional)]
+        cursor: Option<String>,
+        #[ts(optional)]
+        limit: Option<u32>,
+    },
+    GetStats,
+    DeleteSession { session_id: String },
+    ClearHistory,
+}
+
+#[tauri::command]
+pub(crate) fn history_v2(
+    app: AppHandle,
+    command: HistoryCommandV2,
+) -> Result<ServiceResult<Value>, ServiceErrorV2> {
+    let request_id = new_request_id();
+    let started = std::time::Instant::now();
+    log_v2_entry(&app, "history_v2", &request_id);
+    let history = app.state::<HistoryStateStore>();
+    let outcome = match command {
+        HistoryCommandV2::ListSessions { cursor, limit } => {
+            history.list_sessions(cursor.as_deref(), limit.unwrap_or(25)).and_then(|value| {
+                to_value(value).map_err(|error| error.to_string())
+            })
+        }
+        HistoryCommandV2::GetSession { session_id } => history
+            .get_session(&session_id)
+            .and_then(|value| to_value(value).map_err(|error| error.to_string())),
+        HistoryCommandV2::ListCues { session_id, cursor, limit } => history
+            .list_cues(&session_id, cursor.as_deref(), limit.unwrap_or(50))
+            .and_then(|value| to_value(value).map_err(|error| error.to_string())),
+        HistoryCommandV2::GetStats => history
+            .statistics()
+            .and_then(|value| to_value(value).map_err(|error| error.to_string())),
+        HistoryCommandV2::DeleteSession { session_id } => history
+            .delete_session(&session_id)
+            .map(|deleted| json!({ "deleted": deleted })),
+        HistoryCommandV2::ClearHistory => history
+            .clear()
+            .map(|deleted_count| json!({ "deletedCount": deleted_count })),
+    }
+    .map_err(ServiceErrorV2::from);
+    finish_v2(&app, "history_v2", request_id, started, outcome)
 }
 
 /// Stable event shape for renderer subscriptions.  Individual producers can

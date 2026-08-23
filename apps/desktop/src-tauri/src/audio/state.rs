@@ -169,9 +169,14 @@ pub(crate) struct AudioStateStore {
     /// `snapshot()` call so the frontend can discard stale out-of-order events.
     snapshot_seq: std::sync::atomic::AtomicU64,
     pub watch_session_report: WatchSessionReportStore,
+    history: crate::history::HistoryStateStore,
 }
 impl AudioStateStore {
     pub(crate) fn new() -> Self {
+        Self::with_history(crate::history::HistoryStateStore::new())
+    }
+
+    pub(crate) fn with_history(history: crate::history::HistoryStateStore) -> Self {
         let preview = AudioRuntimeSnapshot::preview();
         let subtitle_preview = preview.subtitle_overlay.clone();
         Self {
@@ -199,6 +204,7 @@ impl AudioStateStore {
             ),
             snapshot_seq: std::sync::atomic::AtomicU64::new(0),
             watch_session_report: WatchSessionReportStore::new(),
+            history,
         }
     }
     /// Shared pre-warmer that pre-opens capture devices during idle time so a
@@ -623,6 +629,9 @@ impl AudioStateStore {
         let display_segments = cue.display_segments.clone();
         let translation_final = cue.translation_committed || cue.committed;
         let source_final = cue.committed;
+        if let Err(error) = self.history.persist_cue(&cue) {
+            log::warn!("[omni][history] subtitle cue archive skipped: {error}");
+        }
         self.subtitles.update(|overlay| {
             overlay.active_cue = Some(cue.clone());
             overlay.recent_cues.insert(0, cue);

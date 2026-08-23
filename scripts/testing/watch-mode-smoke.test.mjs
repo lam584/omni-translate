@@ -6,7 +6,12 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { readRunManifest } from './verify-watch-mode-evidence.mjs';
-import { runWatchModeSmoke, createSmokeAssignments } from './run-watch-mode-smoke.mjs';
+import {
+  SMOKE_PREFLIGHT_RESULT_FILE,
+  VM3_SMOKE_STOP_MIN_C_FREE_BYTES,
+  runWatchModeSmoke,
+  createSmokeAssignments,
+} from './run-watch-mode-smoke.mjs';
 import {
   SMOKE_LOCAL_CELLS,
   SMOKE_PLUS_CELLS,
@@ -19,6 +24,8 @@ import {
 import {
   classifyReport,
   currentVm3Profile,
+  resolveVm3SmokeLiveTimeoutMs,
+  VM3_SMOKE_LIVE_TIMEOUT_HARD_CAP_MS,
   VM3_SMOKE_START_MIN_C_FREE_BYTES,
   vm3SmokeStartSpaceFailure,
   workerCapabilities as localWorkerCapabilities,
@@ -70,6 +77,7 @@ test('smoke retains partial failures, does not retry, and writes a non-authorita
           passed: cell.cellId !== SMOKE_PLUS_CELLS[0].cellId,
           ...(cell.cellId === SMOKE_PLUS_CELLS[0].cellId ? { classification: 'product' } : {}),
           evidence: `evidence/${cell.cellId}`,
+          providerCalls: cell.providerMode === 'disabled' ? 0 : 1,
         };
       },
     });
@@ -80,6 +88,9 @@ test('smoke retains partial failures, does not retry, and writes a non-authorita
     assert.equal(result.manifest.outcomes.filter((entry) => entry.status === 'failed').length, 1);
     assert.equal(result.manifest.artifactKind, WATCH_MODE_SMOKE_ARTIFACT_KIND);
     assert.equal(result.manifest.smokeOnly, true);
+    assert.equal(result.manifest.selection.reason, 'full 17-cell VM3 smoke');
+    assert.equal(result.manifest.providerCalls, 11);
+    assert.deepEqual(result.manifest.dispatch.duplicateCellIds, []);
     assert.throws(() => readRunManifest(result.manifestPath), /smoke manifest is non-authoritative/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -134,7 +145,7 @@ test('smoke targeted execution dispatches only selected cells and records its re
       selectionReason: 'verify bridge lifecycle repair',
       runCell: async ({ cell }) => {
         calls.push(cell.cellId);
-        return { passed: true, evidence: `evidence/${cell.cellId}` };
+        return { passed: true, evidence: `evidence/${cell.cellId}`, providerCalls: 1 };
       },
     });
     assert.deepEqual(calls, selected);
@@ -142,6 +153,97 @@ test('smoke targeted execution dispatches only selected cells and records its re
     assert.deepEqual(result.manifest.selection.cellIds, selected);
     assert.equal(result.manifest.selection.reason, 'verify bridge lifecycle repair');
     assert.equal(result.manifest.passed, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('smoke persists preflight provenance before dispatch and records C-drive minimum space', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-ledger-'));
+  const selected = [SMOKE_LOCAL_CELLS[0].cellId];
+  const runtimeAuthority = [{ path: 'target/release/omni-desktop-shell.exe', sha256: 'a'.repeat(64) }];
+  try {
+    const result = await runWatchModeSmoke({
+      executionId: 'smoke-ledger-test',
+      workerCapabilities: workers,
+      outputRoot: root,
+      cellIds: selected,
+      selectionReason: 'prove execution ledger',
+      sampleDiskSpace: async () => 8 * 1024 ** 3,
+      runPreflight: async () => ({
+        passed: true,
+        providerCalls: 0,
+        provenance: { headCommit: '0123456789abcdef', worktreeClean: true },
+        deviceProfile: { profileId: 'vm3-hda-default' },
+        buildSettings: { cargoOffline: true },
+        runtimeAuthority,
+      }),
+      runCell: async ({ executionRoot }) => {
+        const preflightPath = path.join(executionRoot, SMOKE_PREFLIGHT_RESULT_FILE);
+        assert.equal(fs.existsSync(preflightPath), true, 'preflight receipt must exist before dispatch');
+        const receipt = JSON.parse(fs.readFileSync(preflightPath, 'utf8'));
+        assert.equal(receipt.result.provenance.headCommit, '0123456789abcdef');
+        return { passed: true, providerCalls: 0, evidence: 'evidence/local' };
+      },
+    });
+    assert.equal(result.manifest.passed, true);
+    assert.equal(result.manifest.executionStatus, 'completed');
+    assert.equal(result.manifest.diskSpace.samples.length, 3);
+    assert.equal(result.manifest.diskSpace.minimumFreeBytes, 8 * 1024 ** 3);
+    assert.deepEqual(result.manifest.provenance.runtimeAuthority, runtimeAuthority);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('smoke does not dispatch another cell after the C-drive stop floor is reached', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-disk-stop-'));
+  const selected = [SMOKE_LOCAL_CELLS[0].cellId, SMOKE_LOCAL_CELLS[1].cellId];
+  const freeBytes = [8 * 1024 ** 3, 8 * 1024 ** 3, VM3_SMOKE_STOP_MIN_C_FREE_BYTES];
+  const calls = [];
+  try {
+    const result = await runWatchModeSmoke({
+      executionId: 'smoke-disk-stop-test',
+      workerCapabilities: workers,
+      outputRoot: root,
+      cellIds: selected,
+      selectionReason: 'prove runtime disk stop',
+      sampleDiskSpace: async () => freeBytes.shift(),
+      runCell: async ({ cell }) => {
+        calls.push(cell.cellId);
+        return { passed: true, providerCalls: 0, evidence: 'evidence/local' };
+      },
+    });
+    assert.deepEqual(calls, [selected[0]]);
+    assert.equal(result.manifest.passed, false);
+    assert.equal(result.manifest.blocksAuthoritativeRun, true);
+    assert.equal(result.manifest.outcomes.length, 1);
+    assert.equal(result.manifest.diskSpace.minimumFreeBytes, VM3_SMOKE_STOP_MIN_C_FREE_BYTES);
+    assert.match(result.manifest.stopReason, /at or below the smoke stop floor/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('an external Provider failure remains non-passing and blocks authoritative execution', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-provider-stop-'));
+  try {
+    const result = await runWatchModeSmoke({
+      executionId: 'smoke-provider-stop-test',
+      workerCapabilities: workers,
+      outputRoot: root,
+      cellIds: [SMOKE_PLUS_CELLS[0].cellId],
+      selectionReason: 'prove external failures cannot pass',
+      runCell: async () => ({
+        passed: false,
+        classification: 'provider-external',
+        providerCalls: 1,
+        evidence: 'evidence/provider-failure',
+      }),
+    });
+    assert.equal(result.manifest.passed, false);
+    assert.equal(result.manifest.blocksAuthoritativeRun, true);
+    assert.equal(result.manifest.providerCalls, 1);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -161,6 +263,26 @@ test('VM3 smoke preflight requires the seven-GiB C-drive start buffer', () => {
   assert.match(vm3SmokeStartSpaceFailure(VM3_SMOKE_START_MIN_C_FREE_BYTES - 1), /7 GB smoke start buffer/);
   assert.match(vm3SmokeStartSpaceFailure(Number.NaN), /free space is unavailable/);
   assert.equal(vm3SmokeStartSpaceFailure(VM3_SMOKE_START_MIN_C_FREE_BYTES), null);
+});
+
+test('VM3 live smoke timeout covers a 180-second cell lifecycle and remains hard-capped', () => {
+  const timeoutMs = resolveVm3SmokeLiveTimeoutMs({
+    durationSeconds: 180,
+    warmupSeconds: 5,
+    playbackSeconds: 0,
+    postPlaybackWaitSeconds: 20,
+    sessionReadyTimeoutSeconds: 60,
+  });
+  assert.equal(timeoutMs, 545_000);
+  assert.ok(timeoutMs > 5 * 60 * 1_000, 'the live cell must retain post-capture processing time');
+  assert.equal(VM3_SMOKE_LIVE_TIMEOUT_HARD_CAP_MS, 15 * 60 * 1_000);
+  assert.equal(resolveVm3SmokeLiveTimeoutMs({
+    durationSeconds: 7_200,
+    warmupSeconds: 5,
+    playbackSeconds: 0,
+    postPlaybackWaitSeconds: 20,
+    sessionReadyTimeoutSeconds: 60,
+  }), VM3_SMOKE_LIVE_TIMEOUT_HARD_CAP_MS);
 });
 
 test('smoke adapter classifies provider 50002 cue evidence as external even when the runner layer is app', () => {

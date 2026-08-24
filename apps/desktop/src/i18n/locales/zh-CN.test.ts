@@ -92,6 +92,9 @@ function supportsEnglishFallback(key: string): boolean {
     || key === 'session.feedbackRouteRequired'
     || key === 'sceneReadiness.aecUnavailable'
     || key === 'sceneReadiness.feedbackRouteRequired'
+    || key === 'nav.history'
+    || key === 'nav.historyHint'
+    || key.startsWith('history.')
     || key.startsWith('diagnostics.status.captureBackend')
     || key.startsWith('diagnostics.status.processLoopback')
     || key === 'diagnostics.issues.processLoopbackUnavailable'

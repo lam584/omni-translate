@@ -26,6 +26,12 @@ export const navItems: NavItem[] = [
     path: '/glossary',
   },
   {
+    id: 'history',
+    label: '字幕历史',
+    hint: '',
+    path: '/history',
+  },
+  {
     id: 'diagnostics',
     label: '诊断与日志',
     hint: '',

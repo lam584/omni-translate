@@ -45,6 +45,8 @@ pub(crate) struct HistoryCue {
     pub translation_committed: bool,
     pub started_at_ms: i64,
     pub ended_at_ms: i64,
+    pub source_audio_available: bool,
+    pub translated_audio_available: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -706,7 +708,11 @@ impl HistoryRepository {
             .prepare(
                 "SELECT id, cue_id, sequence, revision, route_direction, source_text_enc,
                         translated_text_enc, source_committed, translation_committed,
-                        started_at_ms, ended_at_ms
+                        started_at_ms, ended_at_ms,
+                        EXISTS(SELECT 1 FROM subtitle_cue_audio_refs refs
+                               WHERE refs.cue_id = subtitle_cues.id AND refs.track = 'source'),
+                        EXISTS(SELECT 1 FROM subtitle_cue_audio_refs refs
+                               WHERE refs.cue_id = subtitle_cues.id AND refs.track = 'translated')
                  FROM subtitle_cues
                  WHERE session_id = ?1 AND (?2 IS NULL OR sequence > ?2)
                  ORDER BY sequence ASC LIMIT ?3",
@@ -726,13 +732,16 @@ impl HistoryRepository {
                     row.get::<_, bool>(8)?,
                     row.get::<_, i64>(9)?,
                     row.get::<_, i64>(10)?,
+                    row.get::<_, bool>(11)?,
+                    row.get::<_, bool>(12)?,
                 ))
             })
             .map_err(|error| error.to_string())?;
         let mut cues = Vec::new();
         for row in rows {
             let (id, cue_id, sequence, revision, route_direction, source, translated,
-                source_committed, translation_committed, started_at_ms, ended_at_ms) =
+                source_committed, translation_committed, started_at_ms, ended_at_ms,
+                source_audio_available, translated_audio_available) =
                 row.map_err(|error| error.to_string())?;
             let source_aad = format!("history/v1:{session_id}:{cue_id}:source");
             let translated_aad = format!("history/v1:{session_id}:{cue_id}:translated");
@@ -752,6 +761,8 @@ impl HistoryRepository {
                 translation_committed,
                 started_at_ms,
                 ended_at_ms,
+                source_audio_available,
+                translated_audio_available,
             });
         }
         let has_more = cues.len() > limit as usize;

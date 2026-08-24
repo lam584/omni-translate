@@ -4,6 +4,7 @@ import AppLayout from './components/layout/AppLayout';
 import AudioRoutingPage from './pages/AudioRoutingPage';
 import DiagnosticsPage from './pages/DiagnosticsPage';
 import GlossaryPage from './pages/GlossaryPage';
+import SubtitleHistoryPage from './pages/SubtitleHistoryPage';
 import ProvidersPage from './pages/ProvidersPage';
 import SettingsPage from './pages/SettingsPage';
 import SubtitleOverlaySettingsPage from './pages/SubtitleOverlaySettingsPage';
@@ -48,6 +49,10 @@ export const router = createHashRouter([
       {
         path: 'glossary',
         element: <GlossaryPage />,
+      },
+      {
+        path: 'history',
+        element: <SubtitleHistoryPage />,
       },
       {
         path: 'diagnostics',

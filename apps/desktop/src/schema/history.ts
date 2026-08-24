@@ -35,6 +35,8 @@ export type HistoryCue = {
   translationCommitted: boolean;
   startedAtMs: number;
   endedAtMs: number;
+  sourceAudioAvailable: boolean;
+  translatedAudioAvailable: boolean;
 };
 
 export type HistoryCuePage = { items: HistoryCue[]; nextCursor: string | null };

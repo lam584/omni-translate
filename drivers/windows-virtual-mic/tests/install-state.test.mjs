@@ -307,7 +307,10 @@ test('explicit DevCon accepts a workspace-local valid Microsoft signer', {
       signature: { status: 'Valid', subject: 'CN=Microsoft Corporation, O=Microsoft Corporation' },
     });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    assert.equal(result.stdout.trim(), candidatePath);
+    assert.equal(
+      fs.realpathSync.native(result.stdout.trim()).toLowerCase(),
+      fs.realpathSync.native(candidatePath).toLowerCase(),
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

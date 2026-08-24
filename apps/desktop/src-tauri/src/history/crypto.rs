@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use ring::rand::{SecureRandom, SystemRandom};
 
-use crate::storage::credential::{CredentialVault, KeyringCredentialVault};
+use crate::storage::credential::{CredentialVault, HistoryCredentialVault};
 
 const MASTER_KEY_REFERENCE: &str = "credential://history/content-key/v1";
 const ENVELOPE_MAGIC: &[u8; 7] = b"OMNIH01";
@@ -15,7 +15,7 @@ pub(super) struct HistoryCipher {
 
 impl HistoryCipher {
     pub(super) fn from_system_credentials(existing_archive: bool) -> Result<Self, String> {
-        let vault = KeyringCredentialVault::new();
+        let vault = HistoryCredentialVault::new();
         let encoded = match vault.read_secret(MASTER_KEY_REFERENCE)? {
             Some(value) if !value.trim().is_empty() => value,
             _ if existing_archive => {
@@ -37,7 +37,7 @@ impl HistoryCipher {
     }
 
     pub(super) fn reinitialize_system_credentials() -> Result<Self, String> {
-        let vault = KeyringCredentialVault::new();
+        let vault = HistoryCredentialVault::new();
         let encoded = generate_and_store_key(&vault)?;
         let key: [u8; 32] = STANDARD_NO_PAD
             .decode(encoded)

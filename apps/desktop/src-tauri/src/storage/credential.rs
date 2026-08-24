@@ -16,6 +16,9 @@ use windows_sys::Win32::Security::Credentials::{
 };
 
 const CREDENTIAL_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
+const PUBLIC_CREDENTIAL_SERVICE: &str = "OmniTranslate";
+const HISTORY_CREDENTIAL_SERVICE: &str = "OmniTranslateHistory";
+const HISTORY_REFERENCE_PREFIX: &str = "credential://history/";
 #[cfg(target_os = "windows")]
 const CREDENTIAL_BLOB_MAX_BYTES: usize = 5 * 512;
 
@@ -27,7 +30,15 @@ pub(crate) trait CredentialVault: Send + Sync {
 
 pub(crate) struct KeyringCredentialVault;
 
+pub(crate) struct HistoryCredentialVault;
+
 impl KeyringCredentialVault {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+}
+
+impl HistoryCredentialVault {
     pub(crate) fn new() -> Self {
         Self
     }
@@ -35,13 +46,18 @@ impl KeyringCredentialVault {
 
 impl CredentialVault for KeyringCredentialVault {
     fn upsert_secret(&self, reference: &str, secret: &str) -> Result<(), String> {
+        ensure_public_credential_reference(reference)?;
         let normalized_reference = normalize_reference(reference);
 
         #[cfg(target_os = "windows")]
         {
             let secret = secret.to_string();
             run_credential_operation("写入 API Key", move || {
-                write_windows_credential(&normalized_reference, &secret)
+                write_windows_credential(
+                    PUBLIC_CREDENTIAL_SERVICE,
+                    &normalized_reference,
+                    &secret,
+                )
             })
         }
 
@@ -50,7 +66,7 @@ impl CredentialVault for KeyringCredentialVault {
             let secret = secret.to_string();
 
             run_credential_operation("写入 API Key", move || {
-                let entry = Entry::new("OmniTranslate", &normalized_reference)
+                let entry = Entry::new(PUBLIC_CREDENTIAL_SERVICE, &normalized_reference)
                     .map_err(|error| error.to_string())?;
                 entry
                     .set_password(&secret)
@@ -67,19 +83,20 @@ impl CredentialVault for KeyringCredentialVault {
     }
 
     fn read_secret(&self, reference: &str) -> Result<Option<String>, String> {
+        ensure_public_credential_reference(reference)?;
         let normalized_reference = normalize_reference(reference);
 
         #[cfg(target_os = "windows")]
         {
             run_credential_operation("读取 API Key", move || {
-                read_windows_credential(&normalized_reference)
+                read_windows_credential(PUBLIC_CREDENTIAL_SERVICE, &normalized_reference)
             })
         }
 
         #[cfg(not(target_os = "windows"))]
         {
             run_credential_operation("读取 API Key", move || {
-                let entry = Entry::new("OmniTranslate", &normalized_reference)
+                let entry = Entry::new(PUBLIC_CREDENTIAL_SERVICE, &normalized_reference)
                     .map_err(|error| error.to_string())?;
 
                 match entry.get_password() {
@@ -92,9 +109,65 @@ impl CredentialVault for KeyringCredentialVault {
     }
 }
 
+impl CredentialVault for HistoryCredentialVault {
+    fn upsert_secret(&self, reference: &str, secret: &str) -> Result<(), String> {
+        let normalized_reference = normalize_reference(reference);
+
+        #[cfg(target_os = "windows")]
+        {
+            let secret = secret.to_string();
+            run_credential_operation("写入字幕历史密钥", move || {
+                write_windows_credential(
+                    HISTORY_CREDENTIAL_SERVICE,
+                    &normalized_reference,
+                    &secret,
+                )
+            })
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let secret = secret.to_string();
+            run_credential_operation("写入字幕历史密钥", move || {
+                let entry = Entry::new(HISTORY_CREDENTIAL_SERVICE, &normalized_reference)
+                    .map_err(|error| error.to_string())?;
+                entry.set_password(&secret).map_err(|error| error.to_string())
+            })
+        }
+    }
+
+    fn has_secret(&self, reference: &str) -> Result<bool, String> {
+        Ok(self.read_secret(reference)?.is_some_and(|secret| !secret.is_empty()))
+    }
+
+    fn read_secret(&self, reference: &str) -> Result<Option<String>, String> {
+        let normalized_reference = normalize_reference(reference);
+
+        #[cfg(target_os = "windows")]
+        {
+            run_credential_operation("读取字幕历史密钥", move || {
+                read_windows_credential(HISTORY_CREDENTIAL_SERVICE, &normalized_reference)
+            })
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            run_credential_operation("读取字幕历史密钥", move || {
+                let entry = Entry::new(HISTORY_CREDENTIAL_SERVICE, &normalized_reference)
+                    .map_err(|error| error.to_string())?;
+                match entry.get_password() {
+                    Ok(secret) => Ok(Some(secret)),
+                    Err(KeyringError::NoEntry) => Ok(None),
+                    Err(error) => Err(error.to_string()),
+                }
+            })
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
-fn credential_target_name(reference: &str) -> String {
-    format!("OmniTranslate:{}", reference)
+fn credential_target_name(service: &str, reference: &str) -> String {
+    format!("{service}:{reference}")
 }
 
 #[cfg(target_os = "windows")]
@@ -112,8 +185,8 @@ fn format_windows_credential_error(action: &str, error_code: u32) -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn write_windows_credential(reference: &str, secret: &str) -> Result<(), String> {
-    let target_name_display = credential_target_name(reference);
+fn write_windows_credential(service: &str, reference: &str, secret: &str) -> Result<(), String> {
+    let target_name_display = credential_target_name(service, reference);
     log::info!(
         "[omni][credential] calling CredWriteW target={} blobBytes={}",
         target_name_display,
@@ -171,8 +244,8 @@ fn write_windows_credential(reference: &str, secret: &str) -> Result<(), String>
 }
 
 #[cfg(target_os = "windows")]
-fn read_windows_credential(reference: &str) -> Result<Option<String>, String> {
-    let target_name_display = credential_target_name(reference);
+fn read_windows_credential(service: &str, reference: &str) -> Result<Option<String>, String> {
+    let target_name_display = credential_target_name(service, reference);
     log::info!(
         "[omni][credential] calling CredReadW target={}",
         target_name_display
@@ -254,7 +327,7 @@ fn decode_windows_credential_blob(blob: &[u8]) -> Result<String, std::string::Fr
 
 #[cfg(all(target_os = "windows", test))]
 fn delete_windows_credential(reference: &str) -> Result<bool, String> {
-    let target_name = credential_target_name(reference);
+    let target_name = credential_target_name(PUBLIC_CREDENTIAL_SERVICE, reference);
     let target_name = to_utf16_null(&target_name);
     let result = unsafe { CredDeleteW(target_name.as_ptr(), CRED_TYPE_GENERIC, 0) };
 
@@ -369,12 +442,22 @@ fn normalize_reference(reference: &str) -> String {
         .collect()
 }
 
+pub(crate) fn ensure_public_credential_reference(reference: &str) -> Result<(), String> {
+    let normalized = normalize_reference(reference.trim()).to_ascii_lowercase();
+    let reserved_prefix = normalize_reference(HISTORY_REFERENCE_PREFIX).to_ascii_lowercase();
+    if normalized.starts_with(&reserved_prefix) {
+        return Err("内部历史加密凭据不能通过通用配置或 provider API 访问".to_string());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(target_os = "windows")]
     use super::{decode_windows_credential_blob, delete_windows_credential, KeyringCredentialVault};
     use super::{
-        normalize_reference, run_credential_operation, CredentialVault, MemoryCredentialVault,
+        ensure_public_credential_reference, normalize_reference, run_credential_operation,
+        CredentialVault, MemoryCredentialVault,
     };
     use std::thread;
     use std::time::Duration;
@@ -420,6 +503,19 @@ mod tests {
             normalize_reference("credential://provider/dashscope/default path"),
             "credential___provider_dashscope_default_path"
         );
+    }
+
+    #[test]
+    fn public_vault_rejects_history_namespace_and_normalized_aliases() {
+        assert!(ensure_public_credential_reference(
+            "credential://history/content-key/v1"
+        )
+        .is_err());
+        assert!(ensure_public_credential_reference(
+            "credential___history_content-key_v1"
+        )
+        .is_err());
+        assert!(ensure_public_credential_reference("credential://dashscope/default").is_ok());
     }
 
     #[cfg(target_os = "windows")]

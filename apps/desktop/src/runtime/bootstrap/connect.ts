@@ -101,9 +101,26 @@ export async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Pro
     }
   };
   let subtitleResyncInFlight: Promise<void> | null = null;
+  let subtitleResyncRequestedGeneration = 0;
+  let subtitleResyncCompletedGeneration = 0;
   const resyncSubtitleBaseline = () => {
+    if (disposed) return;
+    subtitleResyncRequestedGeneration += 1;
     if (subtitleResyncInFlight) return;
-    subtitleResyncInFlight = fetchAudioSnapshotIntoStore().finally(() => {
+    subtitleResyncInFlight = (async () => {
+      // A second gap can arrive while the first invoke is still returning its
+      // baseline. Remember that request generation and immediately fetch
+      // again after the in-flight snapshot settles; otherwise the newer final
+      // delta can remain missing forever when no later delta follows it.
+      while (
+        !disposed
+        && subtitleResyncCompletedGeneration < subtitleResyncRequestedGeneration
+      ) {
+        const requestedGeneration = subtitleResyncRequestedGeneration;
+        await fetchAudioSnapshotIntoStore();
+        subtitleResyncCompletedGeneration = requestedGeneration;
+      }
+    })().finally(() => {
       subtitleResyncInFlight = null;
     });
   };

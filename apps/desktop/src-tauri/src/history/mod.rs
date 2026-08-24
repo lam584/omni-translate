@@ -1,5 +1,6 @@
 mod audio;
 mod crypto;
+mod cue_ingress;
 mod fs_safety;
 mod playback;
 mod repository;
@@ -26,6 +27,9 @@ pub(crate) use playback::{
 };
 pub(crate) use playback::emit_changed;
 use audio::AudioTrack;
+use cue_ingress::{
+    drain_cue_overflow, drain_latest_cues, insert_latest_cue, QueuedCue,
+};
 use repository::{AudioCueRefWrite, AudioSegmentWrite, CueWrite, HistoryRepository};
 
 struct HistoryState {
@@ -93,13 +97,6 @@ const AUDIO_MUTATION_CAPACITY: usize = 512;
 const AUDIO_INGRESS_MAX_MS: u64 = 10_000;
 const CUE_BATCH_INTERVAL: Duration = Duration::from_millis(100);
 const STOP_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
-
-#[derive(Clone)]
-struct QueuedCue {
-    session_id: String,
-    cue: SubtitleCueRuntime,
-    updated_at_ms: i64,
-}
 
 struct QueuedAudio {
     session_id: String,
@@ -671,56 +668,6 @@ fn archive_worker(
             }
         }
     }
-}
-
-fn drain_latest_cues(
-    receiver: &Receiver<QueuedCue>,
-    overflow: &Mutex<HashMap<(String, String), QueuedCue>>,
-    pending: &mut HashMap<(String, String), QueuedCue>,
-) {
-    while let Ok(cue) = receiver.try_recv() {
-        insert_latest_cue(pending, cue);
-    }
-    drain_cue_overflow(overflow, pending);
-}
-
-fn drain_cue_overflow(
-    overflow: &Mutex<HashMap<(String, String), QueuedCue>>,
-    pending: &mut HashMap<(String, String), QueuedCue>,
-) {
-    let Ok(mut overflow) = overflow.lock() else {
-        return;
-    };
-    for (_, cue) in overflow.drain() {
-        insert_latest_cue(pending, cue);
-    }
-}
-
-fn insert_latest_cue(
-    pending: &mut HashMap<(String, String), QueuedCue>,
-    cue: QueuedCue,
-) {
-    let key = (cue.session_id.clone(), cue.cue.cue_id.clone());
-    let incoming_order = cue_order(&cue);
-    match pending.entry(key) {
-        std::collections::hash_map::Entry::Vacant(entry) => {
-            entry.insert(cue);
-        }
-        std::collections::hash_map::Entry::Occupied(mut entry)
-            if incoming_order >= cue_order(entry.get()) =>
-        {
-            entry.insert(cue);
-        }
-        std::collections::hash_map::Entry::Occupied(_) => {}
-    }
-}
-
-fn cue_order(cue: &QueuedCue) -> (u64, u64, i64) {
-    (
-        cue.cue.revision.unwrap_or(0),
-        cue.cue.sequence.unwrap_or(0),
-        cue.updated_at_ms,
-    )
 }
 
 fn drain_audio(

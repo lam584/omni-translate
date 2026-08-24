@@ -15,7 +15,9 @@ use crate::common::MapErrToString;
 use crate::runtime::events::{emit_runtime_notification, emit_runtime_snapshot};
 use crate::runtime::state::RuntimeStateStore;
 
-use super::contracts::{AudioRuntimeSnapshot, SubtitleCueRuntime};
+use super::contracts::{
+    AudioRuntimeSnapshot, SubtitleCueRuntime, SubtitleTranslationStateRuntime,
+};
 use super::events::AUDIO_RUNTIME_SNAPSHOT_EVENT;
 use super::state::{
     AudioRouteHandle, AudioStateStore, BridgeSourceFrameIdentity, CapturedSegmentAudio,
@@ -859,6 +861,8 @@ impl RouteProcessor {
 
         let cue = SubtitleCueRuntime {
             cue_id: format!("cue-{}-{}", self.spec.direction, self.segment_index),
+            revision: None,
+            sequence: None,
             route_direction: self.spec.direction.clone(),
             source_text,
             display_source_text: String::new(),
@@ -868,6 +872,7 @@ impl RouteProcessor {
             ended_at: ms_marker(ended_at_ms),
             committed: false,
             translation_committed: false,
+            translation_state: Some(SubtitleTranslationStateRuntime::Pending),
         };
 
         Some(FinalizedSegment {
@@ -1948,6 +1953,8 @@ mod tests {
         for index in 0..16 {
             store.push_subtitle_cue(SubtitleCueRuntime {
                 cue_id: format!("cue-{index}"),
+                revision: None,
+                sequence: None,
                 route_direction: "inbound".to_string(),
                 source_text: format!("source-{index}"),
                 display_source_text: String::new(),
@@ -1957,6 +1964,7 @@ mod tests {
                 ended_at: "unix-ms:2".to_string(),
                 committed: true,
                 translation_committed: true,
+                translation_state: Some(SubtitleTranslationStateRuntime::Final),
             });
         }
 

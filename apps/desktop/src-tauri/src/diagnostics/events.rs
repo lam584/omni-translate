@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
-use crate::audio::contracts::SubtitleCueRuntime;
+use crate::audio::contracts::{SubtitleCueRuntime, SubtitleTranslationStateRuntime};
 use crate::audio::state::AudioStateStore;
 use crate::bridge::contracts::BridgeRuntimeSnapshot;
 use crate::bridge::state::BridgeStateStore;
@@ -410,6 +410,8 @@ pub(crate) fn push_overlay_self_check_cue(audio_state: &AudioStateStore) {
     let emitted_at = now_unix_millis_marker();
     audio_state.push_subtitle_cue(SubtitleCueRuntime {
         cue_id: format!("overlay-self-check-{emitted_at}-{seq}"),
+        revision: None,
+        sequence: None,
         route_direction: "diagnostics".to_string(),
         source_text: "Subtitle overlay self-check".to_string(),
         display_source_text: "Subtitle overlay self-check".to_string(),
@@ -419,6 +421,7 @@ pub(crate) fn push_overlay_self_check_cue(audio_state: &AudioStateStore) {
         ended_at: emitted_at,
         committed: true,
         translation_committed: true,
+        translation_state: Some(SubtitleTranslationStateRuntime::Final),
     });
 }
 

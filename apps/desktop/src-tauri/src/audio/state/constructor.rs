@@ -33,6 +33,7 @@ impl AudioStateStore {
                 BridgeSourceRuntimeEvidence::default(),
             ),
             snapshot_seq: std::sync::atomic::AtomicU64::new(0),
+            subtitle_sequence: std::sync::atomic::AtomicU64::new(0),
             watch_session_report: WatchSessionReportStore::new(),
             history,
         }

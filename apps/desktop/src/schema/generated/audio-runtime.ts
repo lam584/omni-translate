@@ -8,7 +8,20 @@ export type AudioRouteRuntimeSnapshot = { routeId: string, direction: 'inbound' 
 
 export type SubtitleDisplaySegmentRuntime = { sourceText: string, translatedText: string, pending: boolean, };
 
-export type SubtitleCueRuntime = { cueId: string, routeDirection: 'inbound' | 'outbound', sourceText: string, displaySourceText?: string, displaySegments?: Array<SubtitleDisplaySegmentRuntime>, translatedText: string, startedAt: string, endedAt: string,
+export type SubtitleTranslationStateRuntime = "pending" | "streaming" | "final" | "error" | "superseded";
+
+export type SubtitleCueRuntime = { cueId: string,
+/**
+ * Source-hypothesis generation. Append-only growth stays in the same
+ * revision; a replacement of already published source content advances
+ * it so late translation callbacks can be rejected.
+ */
+revision?: number | null,
+/**
+ * Monotonic runtime mutation order used by delta consumers to reject
+ * out-of-order cue updates without comparing wall clocks.
+ */
+sequence?: number | null, routeDirection: 'inbound' | 'outbound', sourceText: string, displaySourceText?: string, displaySegments?: Array<SubtitleDisplaySegmentRuntime>, translatedText: string, startedAt: string, endedAt: string,
 /**
  * Transcription lifecycle: `true` once the ASR transcript for this cue is
  * finalized (ASR-commit). Independent from translation completion.
@@ -21,7 +34,7 @@ committed: boolean,
  * committed text. Serialized only when `true` to keep the wire lean and the
  * TypeScript field optional.
  */
-translationCommitted?: boolean, };
+translationCommitted?: boolean, translationState?: SubtitleTranslationStateRuntime | null, };
 
 export type SubtitleOverlayRuntimeSnapshot = { queueDepth: number, droppedCueCount: number, firstTranslationAverageMs: number | null, firstTranslationLastMs: number | null, firstTranslationSampleCount: number,
 /**
@@ -34,7 +47,7 @@ export type WatchTimelineEventRuntime = { eventId: string, stage: 'source' | 'mo
 
 export type WatchIssueRuntime = { category: 'model' | 'publish' | 'render' | 'content' | 'timing' | 'output' | 'data' | 'session', code: string, severity: 'warning' | 'error', message: string, cueId: string | null, elapsedMs: number | null, occurrenceCount: number, };
 
-export type WatchCueComparisonRuntime = { cueId: string, revision: number, routeDirection: 'inbound' | 'outbound', translationPath: string, sourceText: string, llmText: string, publishedText: string, publishedSegments: Array<SubtitleDisplaySegmentRuntime>, renderedSourceText: string, renderedText: string, comparisonStatus: 'exact' | 'formatting-only' | 'different' | 'not-published' | 'not-rendered' | 'model-error' | 'pending' | 'superseded', audioStartedAtMs?: number | null, audioStartOrigin?: 'provider-offset' | 'manual-audible' | 'local-rms' | 'provider-event' | null, sourceStableAtMs?: number | null, sourceAtMs: number | null, llmFirstAtMs: number | null, llmFinalAtMs: number | null, publishedFirstAtMs: number | null, publishedFinalAtMs: number | null, renderedFirstAtMs: number | null, renderedFinalAtMs: number | null, sourceToLlmFirstMs: number | null, sourceToRenderMs: number | null, llmFirstToPublishMs: number | null, publishToRenderMs: number | null, llmFirstToRenderMs: number | null, llmFinalToPublishMs: number | null, publishedFinalToRenderMs: number | null, llmFinalToRenderMs: number | null, audioToSourceFirstMs?: number | null, audioToLlmFirstMs?: number | null, audioToRenderFirstMs?: number | null, audioToRenderFinalMs?: number | null, events: Array<WatchTimelineEventRuntime>, issues: Array<WatchIssueRuntime>, droppedEventCount: number, };
+export type WatchCueComparisonRuntime = { cueId: string, revision?: number, sequence?: number, translationState?: SubtitleTranslationStateRuntime | null, routeDirection: 'inbound' | 'outbound', translationPath: string, sourceText: string, llmText: string, publishedText: string, publishedSegments: Array<SubtitleDisplaySegmentRuntime>, renderedSourceText: string, renderedText: string, comparisonStatus: 'exact' | 'formatting-only' | 'different' | 'not-published' | 'not-rendered' | 'model-error' | 'pending' | 'superseded', audioStartedAtMs?: number | null, audioStartOrigin?: 'provider-offset' | 'manual-audible' | 'local-rms' | 'provider-event' | null, sourceStableAtMs?: number | null, sourceAtMs: number | null, llmFirstAtMs: number | null, llmFinalAtMs: number | null, publishedFirstAtMs: number | null, publishedFinalAtMs: number | null, renderedFirstAtMs: number | null, renderedFinalAtMs: number | null, sourceToLlmFirstMs: number | null, sourceToRenderMs: number | null, llmFirstToPublishMs: number | null, publishToRenderMs: number | null, llmFirstToRenderMs: number | null, llmFinalToPublishMs: number | null, publishedFinalToRenderMs: number | null, llmFinalToRenderMs: number | null, audioToSourceFirstMs?: number | null, audioToLlmFirstMs?: number | null, audioToRenderFirstMs?: number | null, audioToRenderFinalMs?: number | null, events: Array<WatchTimelineEventRuntime>, issues: Array<WatchIssueRuntime>, droppedEventCount: number, };
 
 export type WatchSessionReportSummaryRuntime = { durationMs: number, cueCount: number, completeCueCount: number, visibleRenderCueCount: number, unrenderedCueCount: number, issueCount: number, issueOccurrenceCount: number, averageSourceToLlmFirstMs: number | null, p95SourceToLlmFirstMs: number | null, maxSourceToLlmFirstMs: number | null, averageSourceToRenderMs: number | null, p95SourceToRenderMs: number | null, maxSourceToRenderMs: number | null, averageAudioToRenderFirstMs?: number | null, p95AudioToRenderFirstMs?: number | null, maxAudioToRenderFirstMs?: number | null, averageAudioToRenderFinalMs?: number | null, p95AudioToRenderFinalMs?: number | null, maxAudioToRenderFinalMs?: number | null, averageLlmFirstToRenderMs: number | null, p95LlmFirstToRenderMs: number | null, maxLlmFirstToRenderMs: number | null, averageLlmFinalToRenderMs: number | null, p95LlmFinalToRenderMs: number | null, maxLlmFinalToRenderMs: number | null, slowestCueId: string | null, };
 

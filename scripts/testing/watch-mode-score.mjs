@@ -294,7 +294,9 @@ function normalizeRuns({ report, evidence, sourceText }) {
   const fallbackText = textFromContent(evidence?.content, evidence?.watchSessionReport);
   const queueExtraResponses = optionalNonNegativeNumber(evidence?.queue?.duplicateFinalTranslations);
   const representativeCue = Array.isArray(evidence?.watchSessionReport?.cues)
-    ? evidence.watchSessionReport.cues.find((cue) => highConfidenceAudioOrigin(cue?.audioStartOrigin))
+    ? evidence.watchSessionReport.cues.find((cue) => (
+      cue?.translationState === 'final' && highConfidenceAudioOrigin(cue?.audioStartOrigin)
+    ))
     : null;
   const runs = rawRuns
     ? rawRuns.map((raw, index) => normalizeRun(raw, index, { sourceText }))

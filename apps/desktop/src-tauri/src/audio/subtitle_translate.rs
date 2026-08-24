@@ -10,7 +10,10 @@ use crate::diagnostics::model_trace::{ModelTraceContext, ModelTraceRecorder};
 use crate::provider::contracts::{ProviderDraftInput, ProviderRuntimeError};
 use crate::provider::gateway::ProviderGateway;
 
-use super::contracts::{AudioRuntimeSnapshot, SubtitleCueRuntime, SubtitleDisplaySegmentRuntime};
+use super::contracts::{
+    AudioRuntimeSnapshot, SubtitleCueRuntime, SubtitleDisplaySegmentRuntime,
+    SubtitleTranslationStateRuntime,
+};
 use super::engine::emit_audio_snapshot;
 use super::glossary::GlossaryCatalog;
 use super::sentence::{
@@ -22,8 +25,8 @@ use super::translation_scheduler::{
     should_accept_translation, should_dedupe_written_translation, should_retry_translation,
     translation_attempt_key, translation_job_key, translation_rank, TranslationDelta,
     TranslationEnqueueResult, TranslationJob, TranslationOutcome, TranslationRank,
-    TranslationScheduler, TranslationUpdate, TranslationWriteState, MAX_RATE_LIMIT_ATTEMPTS,
-    MAX_RETRIABLE_SENTENCE_ATTEMPTS,
+    TranslationScheduler, TranslationUpdate, TranslationWriteState, FINAL_TRANSLATION_DEADLINE,
+    FORCED_TRANSLATION_DEADLINE, MAX_RATE_LIMIT_ATTEMPTS, MAX_RETRIABLE_SENTENCE_ATTEMPTS,
 };
 
 const POLL_INTERVAL_MS: u64 = 50;
@@ -141,6 +144,14 @@ fn mark_terminal_translation_deadline(
         log_translation_skip(app, &job.cue_id, "expired_forced_preview");
         return;
     }
+    if !store.mark_subtitle_translation_error(
+        &job.cue_id,
+        job.cue_revision,
+        "[翻译失败] 翻译响应已过期".to_string(),
+    ) {
+        log_translation_skip(app, &job.cue_id, "expired_stale_revision");
+        return;
+    }
     store.watch_session_report.record_model_error_for_cue(
         &job.cue_id,
         "secondary-text-translation",
@@ -148,11 +159,6 @@ fn mark_terminal_translation_deadline(
         "translation did not finish before its terminal deadline",
         true,
         Some(&job.key),
-    );
-    store.update_subtitle_cue_translation(
-        &job.cue_id,
-        "[翻译失败] 翻译响应已过期".to_string(),
-        true,
     );
     let _ = emit_audio_snapshot(app, store);
 }
@@ -171,29 +177,24 @@ fn is_stale_translation_job(job: &TranslationJob, cue_state: &CueTranslationStat
     job.cue_revision != cue_state.revision
 }
 
-fn stale_job_reusable_display_index(
-    job: &TranslationJob,
-    cue_state: &CueTranslationState,
-) -> Option<usize> {
-    if !is_stale_translation_job(job, cue_state) || job.result.is_forced {
-        return None;
-    }
-
-    cue_state.find_matching_untranslated_slot(&job.result.sentence)
-}
-
 fn sync_cue_display(
     app: &AppHandle,
     store: &AudioStateStore,
     cue_id: &str,
     cue_state: &CueTranslationState,
 ) {
-    store.update_subtitle_cue_display_segments(
+    let state = if cue_state.translated_text().trim().is_empty() {
+        SubtitleTranslationStateRuntime::Pending
+    } else {
+        SubtitleTranslationStateRuntime::Streaming
+    };
+    store.update_subtitle_cue_display_segments_for_revision(
         cue_id,
+        cue_state.revision,
         cue_state.display_source_text(),
         cue_state.display_segments(),
         cue_state.translated_text(),
-        false,
+        state,
     );
     let _ = emit_audio_snapshot(app, store);
 }
@@ -302,7 +303,7 @@ fn handle_translation_delta(
     let job = delta.job;
     let cue_state = cue_states
         .entry(job.cue_id.clone())
-        .or_insert_with(CueTranslationLedger::new);
+        .or_insert_with(|| CueTranslationLedger::new_for_revision(job.cue_revision));
     let stale = is_stale_translation_job(&job, cue_state);
     let exists = cue_exists(store, &job.cue_id);
     // A completed final/replacement may still have a late streaming callback
@@ -396,6 +397,7 @@ fn handle_translation_error(
         Some(&attempt_id),
     );
     let level = if should_retry { "warning" } else { "error" };
+    let terminal_message = format!("[翻译失败] {}", error.message);
     let _ = diag_log_detail(
         app,
         "subtitle-translate",
@@ -415,7 +417,11 @@ fn handle_translation_error(
     );
     if fatal_error {
         *fatal_provider_error = Some(error);
-        store.commit_subtitle_cue(&job.cue_id);
+        store.mark_subtitle_translation_error(
+            &job.cue_id,
+            job.cue_revision,
+            terminal_message,
+        );
         let _ = emit_audio_snapshot(app, store);
     } else if should_retry {
         let retry_attempt_id = format!("{}-attempt-{}", job.key, attempts + 1);
@@ -474,13 +480,20 @@ fn handle_translation_error(
                 true,
                 None,
             );
-            store.update_subtitle_cue_translation(
+            store.mark_subtitle_translation_error(
                 &retry_cue_id,
+                cue_state.revision,
                 "[翻译失败] 翻译重试已过期".to_string(),
-                true,
             );
             let _ = emit_audio_snapshot(app, store);
         }
+    } else if !job.result.is_forced {
+        store.mark_subtitle_translation_error(
+            &job.cue_id,
+            job.cue_revision,
+            terminal_message,
+        );
+        let _ = emit_audio_snapshot(app, store);
     }
 }
 
@@ -504,9 +517,8 @@ fn handle_translation_outcome(
     let attempt_key = translation_attempt_key(&job.cue_id, &job.result.sentence);
     let cue_state = cue_states
         .entry(job.cue_id.clone())
-        .or_insert_with(CueTranslationLedger::new);
-    let stale_display_index = stale_job_reusable_display_index(&job, cue_state);
-    if is_stale_translation_job(&job, cue_state) && stale_display_index.is_none() {
+        .or_insert_with(|| CueTranslationLedger::new_for_revision(job.cue_revision));
+    if is_stale_translation_job(&job, cue_state) {
         if let Ok(text) = &translated {
             store.watch_session_report.record_model_segment_final_for_cue(
                 &job.cue_id,
@@ -596,7 +608,7 @@ fn handle_translation_outcome(
                 rank,
                 sequence: job.sequence,
             };
-            let display_index = stale_display_index.unwrap_or(job.display_index);
+            let display_index = job.display_index;
 
             if job.result.is_replacement {
                 let mut target_cue_id = job.cue_id.clone();
@@ -1209,11 +1221,16 @@ mod tests {
     #[test]
     fn expired_final_is_returned_for_visible_terminal_error() {
         let mut scheduler = scheduler_for_test();
-        let job = job_for_test("cue-expired", 1, sentence_result("final.", false, false));
-        assert!(scheduler.enqueue(job));
-        scheduler.queued.front_mut().unwrap().deadline_at = Instant::now();
+        let clock = Instant::now();
+        let mut job = job_for_test("cue-expired", 1, sentence_result("final.", false, false));
+        job.created_at = clock;
+        job.deadline_at = clock + FINAL_TRANSLATION_DEADLINE;
+        assert_eq!(
+            scheduler.enqueue_with_result_at(job, clock),
+            TranslationEnqueueResult::Enqueued
+        );
 
-        scheduler.dispatch_ready(|_| panic!("expired work must not dispatch"));
+        scheduler.expire_queued_at(clock + FINAL_TRANSLATION_DEADLINE);
         let expired = scheduler.take_expired_terminal_jobs();
 
         assert_eq!(expired.len(), 1);
@@ -1224,11 +1241,16 @@ mod tests {
     #[test]
     fn expired_forced_preview_is_dropped_without_becoming_terminal() {
         let mut scheduler = scheduler_for_test();
-        let job = job_for_test("cue-expired", 1, sentence_result("preview", true, false));
-        assert!(scheduler.enqueue(job));
-        scheduler.queued.front_mut().unwrap().deadline_at = Instant::now();
+        let clock = Instant::now();
+        let mut job = job_for_test("cue-expired", 1, sentence_result("preview", true, false));
+        job.created_at = clock;
+        job.deadline_at = clock + FORCED_TRANSLATION_DEADLINE;
+        assert_eq!(
+            scheduler.enqueue_with_result_at(job, clock),
+            TranslationEnqueueResult::Enqueued
+        );
 
-        scheduler.dispatch_ready(|_| panic!("expired work must not dispatch"));
+        scheduler.expire_queued_at(clock + FORCED_TRANSLATION_DEADLINE);
 
         assert!(scheduler.take_expired_terminal_jobs().is_empty());
         assert_eq!(scheduler.queued_len(), 0);
@@ -1519,34 +1541,6 @@ mod tests {
 
         assert_eq!(substantive_translation_dedupe_key("Oh!"), None);
         assert!(!cue_state.has_written_final_translation(0, "Oh!"));
-    }
-
-    #[test]
-    fn stale_final_job_can_fill_matching_untranslated_slot() {
-        let mut cue_state = CueTranslationState::new();
-        let result = sentence_result("Late sentence.", false, false);
-        let mut job = job_for_test_with_revision("cue-1", 1, 0, result.clone());
-
-        cue_state.reset_for_revision();
-        let display_index = cue_state.ensure_display_slot(&result);
-        job.display_index = 99;
-
-        assert_eq!(
-            stale_job_reusable_display_index(&job, &cue_state),
-            Some(display_index)
-        );
-    }
-
-    #[test]
-    fn stale_forced_job_cannot_fill_matching_untranslated_slot() {
-        let mut cue_state = CueTranslationState::new();
-        let result = sentence_result("Late partial fragment", true, false);
-        let job = job_for_test_with_revision("cue-1", 1, 0, result.clone());
-
-        cue_state.reset_for_revision();
-        cue_state.ensure_display_slot(&result);
-
-        assert_eq!(stale_job_reusable_display_index(&job, &cue_state), None);
     }
 
     #[test]

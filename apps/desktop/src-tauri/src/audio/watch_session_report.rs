@@ -5,9 +5,9 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use super::contracts::{
-    OverlayRenderReceiptRuntime, SubtitleDisplaySegmentRuntime, WatchCueComparisonRuntime,
-    WatchIssueRuntime, WatchSessionReportRuntime, WatchSessionReportSummaryRuntime,
-    WatchTimelineEventRuntime,
+    OverlayRenderReceiptRuntime, SubtitleDisplaySegmentRuntime, SubtitleTranslationStateRuntime,
+    WatchCueComparisonRuntime, WatchIssueRuntime, WatchSessionReportRuntime,
+    WatchSessionReportSummaryRuntime, WatchTimelineEventRuntime,
 };
 use super::time_utils::{ms_marker, unix_ms};
 
@@ -300,6 +300,36 @@ impl WatchSessionReportStore {
         display_segments: &[SubtitleDisplaySegmentRuntime],
         final_event: bool,
     ) {
+        self.record_publish_runtime(
+            cue_id,
+            route_direction,
+            source_text,
+            translated_text,
+            display_segments,
+            final_event,
+            0,
+            0,
+            Some(if final_event {
+                SubtitleTranslationStateRuntime::Final
+            } else {
+                SubtitleTranslationStateRuntime::Streaming
+            }),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_publish_runtime(
+        &self,
+        cue_id: &str,
+        route_direction: &str,
+        source_text: &str,
+        translated_text: &str,
+        display_segments: &[SubtitleDisplaySegmentRuntime],
+        final_event: bool,
+        revision: u64,
+        sequence: u64,
+        translation_state: Option<SubtitleTranslationStateRuntime>,
+    ) {
         if is_internal_status_cue(cue_id) {
             return;
         }
@@ -310,6 +340,13 @@ impl WatchSessionReportStore {
         let elapsed = session.elapsed_ms();
         let index = session.ensure_cue(cue_id, route_direction, Some(source_text));
         let cue = &mut session.cues[index];
+        if revision > 0 {
+            cue.revision = revision;
+        }
+        cue.sequence = cue.sequence.max(sequence);
+        if translation_state.is_some() {
+            cue.translation_state = translation_state;
+        }
         if !source_text.is_empty() {
             cue.source_text = source_text.to_string();
             cue.source_at_ms.get_or_insert(elapsed);

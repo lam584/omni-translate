@@ -265,8 +265,16 @@ impl TranslationScheduler {
     }
 
     pub(crate) fn enqueue_with_result(&mut self, job: TranslationJob) -> TranslationEnqueueResult {
-        self.drop_expired_queued();
-        if job.deadline_at <= Instant::now() {
+        self.enqueue_with_result_at(job, Instant::now())
+    }
+
+    pub(crate) fn enqueue_with_result_at(
+        &mut self,
+        job: TranslationJob,
+        now: Instant,
+    ) -> TranslationEnqueueResult {
+        self.drop_expired_queued_at(now);
+        if job.deadline_at <= now {
             return TranslationEnqueueResult::RejectedExpired;
         }
         let sentence_work_key = translation_sentence_work_key(&job);
@@ -409,7 +417,10 @@ impl TranslationScheduler {
     }
 
     fn drop_expired_queued(&mut self) {
-        let now = Instant::now();
+        self.drop_expired_queued_at(Instant::now());
+    }
+
+    fn drop_expired_queued_at(&mut self, now: Instant) {
         let mut retained = VecDeque::with_capacity(self.queued.len());
         while let Some(job) = self.queued.pop_front() {
             if job.deadline_at > now {
@@ -424,6 +435,11 @@ impl TranslationScheduler {
             }
         }
         self.queued = retained;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expire_queued_at(&mut self, now: Instant) {
+        self.drop_expired_queued_at(now);
     }
 
     fn drop_superseded_preview(&mut self, incoming: &TranslationJob) {

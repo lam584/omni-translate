@@ -15,7 +15,10 @@ use crate::provider::contracts::ProviderDraftInput;
 use crate::provider::gateway::ProviderGateway;
 use crate::storage::StorageStateStore;
 
-use super::contracts::{AudioRuntimeSnapshot, SpeechDispatchEventRuntime, SubtitleCueRuntime};
+use super::contracts::{
+    AudioRuntimeSnapshot, SpeechDispatchEventRuntime, SubtitleCueRuntime,
+    SubtitleTranslationStateRuntime,
+};
 use super::engine::emit_audio_snapshot;
 use super::state::{AudioRouteHandle, AudioStateStore, CachedTtsAudio, CapturedSegmentAudio};
 
@@ -302,6 +305,8 @@ mod tests {
     ) -> SubtitleCueRuntime {
         SubtitleCueRuntime {
             cue_id: cue_id.to_string(),
+            revision: None,
+            sequence: None,
             route_direction: "inbound".to_string(),
             source_text: source_text.to_string(),
             display_source_text: display_source_text.to_string(),
@@ -311,6 +316,11 @@ mod tests {
             ended_at: "unix-ms:2".to_string(),
             committed,
             translation_committed,
+            translation_state: Some(if translation_committed {
+                SubtitleTranslationStateRuntime::Final
+            } else {
+                SubtitleTranslationStateRuntime::Pending
+            }),
         }
     }
 
@@ -349,6 +359,8 @@ mod tests {
     fn build_mix_plan_adds_prompt_and_original_audio() {
         let cue = SubtitleCueRuntime {
             cue_id: "cue-outbound-1".to_string(),
+            revision: None,
+            sequence: None,
             route_direction: "outbound".to_string(),
             source_text: "source".to_string(),
             display_source_text: String::new(),
@@ -358,6 +370,7 @@ mod tests {
             ended_at: "unix-ms:2".to_string(),
             committed: true,
             translation_committed: true,
+            translation_state: Some(SubtitleTranslationStateRuntime::Final),
         };
         let config = SpeechConfig {
             provider: provider_input(),
@@ -901,7 +914,7 @@ mod tests {
     #[test]
     fn terminal_translation_error_is_never_enqueued_for_tts() {
         let config = secondary_subtitle_tts_config();
-        let cue = subtitle_cue_runtime(
+        let mut cue = subtitle_cue_runtime(
             "cue-error",
             "hello",
             "hello",
@@ -912,11 +925,32 @@ mod tests {
             )],
             "[翻译失败] 本地翻译队列过载",
             true,
-            true,
+            false,
         );
+        cue.translation_state = Some(SubtitleTranslationStateRuntime::Error);
 
         assert!(!is_speech_ready_cue(&cue));
         assert!(speech_dispatch_tasks_for_cue(&cue, &config, &HashSet::new()).is_empty());
+    }
+
+    #[test]
+    fn final_translation_text_is_not_classified_by_failure_prefix() {
+        let config = secondary_subtitle_tts_config();
+        let cue = subtitle_cue_runtime(
+            "cue-quoted-error",
+            "say the label",
+            "say the label",
+            vec![subtitle_segment("say the label", "[翻译失败] 是界面标签。", false)],
+            "[翻译失败] 是界面标签。",
+            true,
+            true,
+        );
+
+        assert!(is_speech_ready_cue(&cue));
+        assert_eq!(
+            speech_dispatch_tasks_for_cue(&cue, &config, &HashSet::new()).len(),
+            1
+        );
     }
 
     #[test]
@@ -1388,6 +1422,8 @@ mod tests {
     ) -> SubtitleCueRuntime {
         SubtitleCueRuntime {
             cue_id: cue_id.to_string(),
+            revision: None,
+            sequence: None,
             route_direction: "inbound".to_string(),
             source_text: "hello".to_string(),
             display_source_text: "hello".to_string(),
@@ -1397,6 +1433,11 @@ mod tests {
             ended_at: "unix-ms:2".to_string(),
             committed,
             translation_committed,
+            translation_state: Some(if translation_committed {
+                SubtitleTranslationStateRuntime::Final
+            } else {
+                SubtitleTranslationStateRuntime::Pending
+            }),
         }
     }
 

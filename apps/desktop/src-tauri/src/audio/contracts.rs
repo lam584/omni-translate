@@ -63,12 +63,23 @@ impl AudioRouteRuntimeSnapshot {
     }
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SubtitleDisplaySegmentRuntime {
     pub source_text: String,
     pub translated_text: String,
     pub pending: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(rename_all = "kebab-case")]
+pub(crate) enum SubtitleTranslationStateRuntime {
+    Pending,
+    Streaming,
+    Final,
+    Error,
+    Superseded,
 }
 
 /// serde `skip_serializing_if` predicate: omit `false` booleans from the wire
@@ -77,10 +88,25 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SubtitleCueRuntime {
     pub cue_id: String,
+    /// Source-hypothesis generation. Append-only growth stays in the same
+    /// revision; a replacement of already published source content advances
+    /// it so late translation callbacks can be rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub revision: Option<u64>,
+    /// Monotonic runtime mutation order used by delta consumers to reject
+    /// out-of-order cue updates without comparing wall clocks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sequence: Option<u64>,
     #[ts(type = "'inbound' | 'outbound'")]
     pub route_direction: String,
     pub source_text: String,
@@ -107,6 +133,9 @@ pub(crate) struct SubtitleCueRuntime {
     #[ts(as = "Option<bool>")]
     #[ts(optional)]
     pub translation_committed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub translation_state: Option<SubtitleTranslationStateRuntime>,
 }
 
 #[derive(Clone, Serialize, TS)]
@@ -174,7 +203,17 @@ pub(crate) struct WatchIssueRuntime {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WatchCueComparisonRuntime {
     pub cue_id: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    #[ts(as = "Option<u64>")]
+    #[ts(optional)]
     pub revision: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    #[ts(as = "Option<u64>")]
+    #[ts(optional)]
+    pub sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub translation_state: Option<SubtitleTranslationStateRuntime>,
     #[ts(type = "'inbound' | 'outbound'")]
     pub route_direction: String,
     pub translation_path: String,
@@ -501,6 +540,8 @@ mod tests {
     fn empty_cue() -> SubtitleCueRuntime {
         SubtitleCueRuntime {
             cue_id: "cue-1".to_string(),
+            revision: None,
+            sequence: None,
             route_direction: "inbound".to_string(),
             source_text: "hello".to_string(),
             display_source_text: String::new(),
@@ -510,6 +551,7 @@ mod tests {
             ended_at: "2026-07-30T00:00:01Z".to_string(),
             committed: true,
             translation_committed: false,
+            translation_state: None,
         }
     }
 
@@ -521,6 +563,9 @@ mod tests {
         assert!(!object.contains_key("displaySourceText"));
         assert!(!object.contains_key("displaySegments"));
         assert!(!object.contains_key("translationCommitted"));
+        assert!(!object.contains_key("revision"));
+        assert!(!object.contains_key("sequence"));
+        assert!(!object.contains_key("translationState"));
     }
 
     #[test]
@@ -529,6 +574,9 @@ mod tests {
 
         assert!(declaration.contains("displaySourceText?: string"));
         assert!(declaration.contains("displaySegments?: Array<SubtitleDisplaySegmentRuntime>"));
+        assert!(declaration.contains("revision?: number"));
+        assert!(declaration.contains("sequence?: number"));
+        assert!(declaration.contains("translationState?: SubtitleTranslationStateRuntime"));
         assert!(declaration.contains("translationCommitted?: boolean"));
     }
 

@@ -11,7 +11,7 @@ use serde_json::Value;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::WebSocket;
 
-use super::contracts::SubtitleCueRuntime;
+use super::contracts::{SubtitleCueRuntime, SubtitleTranslationStateRuntime};
 use super::state::AudioStateStore;
 use super::time_utils::{ms_marker, unix_ms};
 
@@ -69,6 +69,8 @@ pub(crate) fn push_reconnecting_cue(
 ) {
     let cue = SubtitleCueRuntime {
         cue_id: format!("{cue_id_prefix}-{}", unix_ms()),
+        revision: None,
+        sequence: None,
         route_direction: "inbound".to_string(),
         source_text,
         display_source_text: String::new(),
@@ -78,6 +80,7 @@ pub(crate) fn push_reconnecting_cue(
         ended_at: ms_marker(unix_ms()),
         committed: true,
         translation_committed: true,
+        translation_state: Some(SubtitleTranslationStateRuntime::Final),
     };
     store.push_subtitle_cue(cue);
 }

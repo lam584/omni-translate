@@ -6,6 +6,7 @@ use super::contracts::{
     AudioDeviceRuntime, AudioRuntimeSnapshot, EchoCaptureDiagnosticsRuntime,
     SpeechRuntimeSnapshot,
     SubtitleCueRuntime, SubtitleDisplaySegmentRuntime, SubtitleOverlayRuntimeSnapshot,
+    SubtitleTranslationStateRuntime,
 };
 use super::echo_cancel::{
     create_production_echo_canceller, EchoCancellationResult, EchoCancellerEngineStats,
@@ -25,6 +26,8 @@ mod report_publish;
 mod deferred_translation;
 mod echo_backend;
 mod source_finality;
+mod source_publish;
+mod translation_lifecycle;
 
 use self::source_finality::SourceFinalityStore;
 mod bridge_source_evidence;
@@ -49,6 +52,7 @@ use metrics::AudioMetricsStore;
 use route_state::route_mut;
 use route_state::{clear_session_start_if_idle, reset_route_to_idle};
 use subtitle_store::SubtitleStore;
+use translation_lifecycle::cue_revision;
 pub(crate) struct AudioRouteHandle {
     pub stop_tx: Sender<()>,
     pub join_handle: JoinHandle<()>,
@@ -174,6 +178,7 @@ pub(crate) struct AudioStateStore {
     /// Monotonically increasing snapshot sequence number. Incremented on every
     /// `snapshot()` call so the frontend can discard stale out-of-order events.
     snapshot_seq: std::sync::atomic::AtomicU64,
+    subtitle_sequence: std::sync::atomic::AtomicU64,
     pub watch_session_report: WatchSessionReportStore,
     history: crate::history::HistoryStateStore,
 }
@@ -197,6 +202,12 @@ impl AudioStateStore {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             .wrapping_add(1);
         snapshot
+    }
+
+    fn next_subtitle_sequence(&self) -> u64 {
+        self.subtitle_sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(1)
     }
 
     pub(crate) fn lock_inbound_pipeline(&self) -> MutexGuard<'_, ()> {
@@ -368,109 +379,6 @@ impl AudioStateStore {
         self.omni_sessions.take_handle(direction)
     }
 
-    pub(crate) fn update_or_push_stt_cue(&self, cue_id: &str, source_text: &str, committed: bool) {
-        self.source_final_cues.set(cue_id, committed);
-        let route_direction = route_direction_from_cue_id(cue_id).to_string();
-        self.subtitles.update(|overlay| {
-            let exists = overlay.recent_cues.iter().any(|c| c.cue_id == cue_id);
-            if exists {
-                for cue in overlay.recent_cues.iter_mut() {
-                    if cue.cue_id == cue_id {
-                        if cue.committed && !committed {
-                            let new_len = source_text.len();
-                            let old_len = cue.source_text.len();
-                            if !source_text.is_empty() && new_len < old_len {
-                                break;
-                            }
-                        }
-                        if cue.source_text != source_text {
-                            // Source changed: any prior translation no longer
-                            // matches, so reopen it for (re)translation.
-                            cue.translation_committed = false;
-                        }
-                        cue.source_text = source_text.to_string();
-                        cue.committed = committed;
-                        if committed {
-                            finalize_cue_display_segments(cue);
-                        }
-                        break;
-                    }
-                }
-                if let Some(active) = overlay.active_cue.as_mut() {
-                    if active.cue_id == cue_id
-                        && (!active.committed
-                            || committed
-                            || source_text.is_empty()
-                            || source_text.len() >= active.source_text.len())
-                    {
-                        if active.source_text != source_text {
-                            active.translation_committed = false;
-                        }
-                        active.source_text = source_text.to_string();
-                        active.committed = committed;
-                        if committed {
-                            finalize_cue_display_segments(active);
-                        }
-                    }
-                }
-            } else {
-                let cue = new_subtitle_cue(cue_id, &route_direction, source_text, committed);
-                overlay.active_cue = Some(cue.clone());
-                overlay.recent_cues.insert(0, cue);
-                trim_recent_subtitle_cues(overlay);
-            }
-        });
-        self.note_first_translation_source(cue_id, source_text);
-        self.watch_session_report
-            .record_source(cue_id, &route_direction, source_text, committed);
-    }
-
-    pub(crate) fn commit_stt_cue(&self, cue_id: &str, source_text: &str, direction: &str) {
-        self.source_final_cues.insert(cue_id);
-        self.subtitles.update(|overlay| {
-            let exists = overlay.recent_cues.iter().any(|c| c.cue_id == cue_id);
-            if exists {
-                for cue in overlay.recent_cues.iter_mut() {
-                    if cue.cue_id == cue_id {
-                        if cue.source_text != source_text {
-                            // Final transcript overwrote the source: reopen
-                            // translation so it reflects the committed text
-                            // (转写终稿覆盖原文后允许重译).
-                            cue.translation_committed = false;
-                        }
-                        cue.source_text = source_text.to_string();
-                        cue.committed = true;
-                        finalize_cue_display_segments(cue);
-                        cue.ended_at = ms_marker(unix_ms());
-                        break;
-                    }
-                }
-                if let Some(active) = overlay.active_cue.as_mut() {
-                    if active.cue_id == cue_id {
-                        if active.source_text != source_text {
-                            active.translation_committed = false;
-                        }
-                        active.source_text = source_text.to_string();
-                        active.committed = true;
-                        finalize_cue_display_segments(active);
-                        active.ended_at = ms_marker(unix_ms());
-                    }
-                }
-            } else {
-                let cue = new_subtitle_cue(cue_id, direction, source_text, true);
-                overlay.active_cue = Some(cue.clone());
-                overlay.recent_cues.insert(0, cue);
-                trim_recent_subtitle_cues(overlay);
-            }
-        });
-        self.note_first_translation_source(cue_id, source_text);
-        self.watch_session_report
-            .record_source(cue_id, direction, source_text, true);
-        let mut state = self.inner.lock().expect("audio state poisoned");
-        let inbound = &mut state.inbound;
-        inbound.segment_count += 1;
-    }
-
     pub(crate) fn replace_devices(
         &self,
         render_devices: Vec<AudioDeviceRuntime>,
@@ -568,6 +476,18 @@ impl AudioStateStore {
     }
 
     pub(crate) fn push_subtitle_cue(&self, mut cue: SubtitleCueRuntime) {
+        let sequence = self.next_subtitle_sequence();
+        cue.revision.get_or_insert(1);
+        cue.sequence.get_or_insert(sequence);
+        cue.translation_state.get_or_insert(if cue.translation_committed {
+            SubtitleTranslationStateRuntime::Final
+        } else if cue.translated_text.trim().is_empty() {
+            SubtitleTranslationStateRuntime::Pending
+        } else {
+            SubtitleTranslationStateRuntime::Streaming
+        });
+        cue.translation_committed =
+            cue.translation_state == Some(SubtitleTranslationStateRuntime::Final);
         self.source_final_cues.set(&cue.cue_id, cue.committed);
         if cue.committed {
             finalize_cue_display_segments(&mut cue);
@@ -577,8 +497,17 @@ impl AudioStateStore {
         let route_direction = cue.route_direction.clone();
         let translated_text = cue.translated_text.clone();
         let display_segments = cue.display_segments.clone();
-        let translation_final = cue.translation_committed || cue.committed;
+        let translation_terminal = matches!(
+            cue.translation_state,
+            Some(
+                SubtitleTranslationStateRuntime::Final
+                    | SubtitleTranslationStateRuntime::Error
+            )
+        );
         let source_final = cue.committed;
+        let revision = cue_revision(&cue);
+        let cue_sequence = cue.sequence.unwrap_or(sequence);
+        let translation_state = cue.translation_state;
         self.history.archive_cue(&cue);
         self.subtitles.update(|overlay| {
             overlay.active_cue = Some(cue.clone());
@@ -586,20 +515,26 @@ impl AudioStateStore {
             trim_recent_subtitle_cues(overlay);
         });
         self.note_first_translation_source(&cue_id, &source_text);
-        self.watch_session_report.record_source(
+        self.watch_session_report.record_source_runtime(
             &cue_id,
             &route_direction,
             &source_text,
             source_final,
+            revision,
+            cue_sequence,
+            translation_state,
         );
         if !translated_text.is_empty() {
-            self.watch_session_report.record_publish(
+            self.watch_session_report.record_publish_runtime(
                 &cue_id,
                 &route_direction,
                 &source_text,
                 &translated_text,
                 &display_segments,
-                translation_final,
+                translation_terminal,
+                revision,
+                cue_sequence,
+                translation_state,
             );
         }
     }
@@ -1067,6 +1002,8 @@ mod tests {
         for index in 0..14 {
             store.push_subtitle_cue(SubtitleCueRuntime {
                 cue_id: format!("done-{index}"),
+                revision: None,
+                sequence: None,
                 route_direction: "inbound".to_string(),
                 source_text: format!("done source {index}"),
                 display_source_text: String::new(),
@@ -1076,11 +1013,14 @@ mod tests {
                 ended_at: "unix-ms:2".to_string(),
                 committed: true,
                 translation_committed: true,
+                translation_state: Some(SubtitleTranslationStateRuntime::Final),
             });
         }
 
         store.push_subtitle_cue(SubtitleCueRuntime {
             cue_id: "unfinished".to_string(),
+            revision: None,
+            sequence: None,
             route_direction: "inbound".to_string(),
             source_text: "unfinished source".to_string(),
             display_source_text: "unfinished source".to_string(),
@@ -1094,6 +1034,7 @@ mod tests {
             ended_at: "unix-ms:2".to_string(),
             committed: false,
             translation_committed: false,
+            translation_state: Some(SubtitleTranslationStateRuntime::Pending),
         });
 
         let snapshot = store.snapshot();
@@ -1211,6 +1152,55 @@ mod tests {
     }
 
     #[test]
+    fn queue_failure_preserves_source_final_and_rejects_late_result() {
+        let store = AudioStateStore::new();
+        let cue_id = "queue-failure-cue";
+        store.commit_stt_cue(cue_id, "source final", "inbound");
+        let revision = store.snapshot().subtitle_overlay.recent_cues[0]
+            .revision
+            .expect("runtime revision");
+
+        assert!(store.mark_subtitle_translation_error(
+            cue_id,
+            revision,
+            "[翻译失败] 本地翻译队列过载".to_string(),
+        ));
+        assert!(!store.update_subtitle_cue_translation_for_revision(
+            cue_id,
+            revision,
+            "late provider result".to_string(),
+            SubtitleTranslationStateRuntime::Final,
+        ));
+
+        let cue = store.snapshot().subtitle_overlay.recent_cues[0].clone();
+        assert_eq!(cue.source_text, "source final");
+        assert!(cue.committed);
+        assert!(!cue.translation_committed);
+        assert_eq!(
+            cue.translation_state,
+            Some(SubtitleTranslationStateRuntime::Error)
+        );
+        assert_eq!(cue.translated_text, "[翻译失败] 本地翻译队列过载");
+    }
+
+    #[test]
+    fn cue_sequence_is_monotonic_and_revision_only_advances_on_replacement() {
+        let store = AudioStateStore::new();
+        store.update_or_push_stt_cue("cue-sequence", "hello", false);
+        let first = store.snapshot().subtitle_overlay.recent_cues[0].clone();
+        store.update_or_push_stt_cue("cue-sequence", "hello world", false);
+        let appended = store.snapshot().subtitle_overlay.recent_cues[0].clone();
+        store.update_or_push_stt_cue("cue-sequence", "goodbye world", true);
+        let replaced = store.snapshot().subtitle_overlay.recent_cues[0].clone();
+
+        assert_eq!(first.revision, Some(1));
+        assert_eq!(appended.revision, Some(1));
+        assert_eq!(replaced.revision, Some(2));
+        assert!(first.sequence < appended.sequence);
+        assert!(appended.sequence < replaced.sequence);
+    }
+
+    #[test]
     fn first_translation_latency_resets_with_cues_and_sessions() {
         let store = AudioStateStore::new();
 
@@ -1241,6 +1231,8 @@ mod tests {
         let store = AudioStateStore::new();
         let cue = |id: &str, committed: bool| SubtitleCueRuntime {
             cue_id: id.to_string(),
+            revision: None,
+            sequence: None,
             route_direction: "outbound".to_string(),
             source_text: id.to_string(),
             display_source_text: String::new(),
@@ -1250,6 +1242,11 @@ mod tests {
             ended_at: "0".to_string(),
             committed,
             translation_committed: committed,
+            translation_state: Some(if committed {
+                SubtitleTranslationStateRuntime::Final
+            } else {
+                SubtitleTranslationStateRuntime::Pending
+            }),
         };
 
         store.push_subtitle_cue(cue("finished", true));
@@ -1268,6 +1265,8 @@ mod tests {
         let store = AudioStateStore::new();
         let cue = |id: &str, direction: &str, committed: bool| SubtitleCueRuntime {
             cue_id: id.to_string(),
+            revision: None,
+            sequence: None,
             route_direction: direction.to_string(),
             source_text: id.to_string(),
             display_source_text: String::new(),
@@ -1277,6 +1276,7 @@ mod tests {
             ended_at: "0".to_string(),
             committed,
             translation_committed: false,
+            translation_state: Some(SubtitleTranslationStateRuntime::Pending),
         };
 
         // inbound uncommitted, inbound committed, outbound uncommitted

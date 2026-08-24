@@ -191,6 +191,7 @@ fn generated_files() -> Vec<GeneratedFile> {
                     decl::<audio::AudioDeviceRuntime>(),
                     decl::<audio::AudioRouteRuntimeSnapshot>(),
                     decl::<audio::SubtitleDisplaySegmentRuntime>(),
+                    decl::<audio::SubtitleTranslationStateRuntime>(),
                     decl::<audio::SubtitleCueRuntime>(),
                     decl::<audio::SubtitleOverlayRuntimeSnapshot>(),
                     decl::<audio::WatchTimelineEventRuntime>(),

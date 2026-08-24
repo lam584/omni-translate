@@ -27,7 +27,13 @@ fn mark_translation_queue_rejection(
     app: &AppHandle,
     store: &AudioStateStore,
     cue_id: &str,
+    cue_revision: u64,
 ) {
+    if !publish_terminal_translation_error(
+        app, store, cue_id, cue_revision, "[翻译失败] 本地翻译队列过载",
+    ) {
+        return;
+    }
     store.watch_session_report.record_model_error_for_cue(
         cue_id,
         "secondary-text-translation",
@@ -36,12 +42,64 @@ fn mark_translation_queue_rejection(
         true,
         None,
     );
-    store.update_subtitle_cue_translation(
+}
+
+fn publish_terminal_translation_error(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    cue_id: &str,
+    cue_revision: u64,
+    message: &str,
+) -> bool {
+    let accepted = store.mark_subtitle_translation_error(
         cue_id,
-        "[翻译失败] 本地翻译队列过载".to_string(),
-        true,
+        cue_revision,
+        message.to_string(),
     );
-    let _ = emit_audio_snapshot(app, store);
+    if accepted {
+        let _ = emit_audio_snapshot(app, store);
+    }
+    accepted
+}
+
+fn sync_ledger_revision(cue: &SubtitleCueRuntime, cue_state: &mut CueTranslationLedger) {
+    cue_state.revision = cue
+        .revision
+        .unwrap_or_else(|| cue_state.revision.saturating_add(1));
+    cue_state.reset_for_revision_state();
+}
+
+fn terminalize_fatal_provider_cue(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    cue: &SubtitleCueRuntime,
+    cue_revision: u64,
+    error: Option<&ProviderRuntimeError>,
+) -> bool {
+    let Some(error) = error else {
+        return false;
+    };
+    let _ = diag_log_detail(
+        app,
+        "subtitle-translate",
+        "error",
+        format!(
+            "[FATAL_PROVIDER] cue_id={} provider translation disabled: code={} provider_code={:?}",
+            cue.cue_id, error.code, error.provider_code
+        ),
+        error
+            .suggestion
+            .clone()
+            .unwrap_or_else(|| error.message.clone()),
+    );
+    let _ = publish_terminal_translation_error(
+        app,
+        store,
+        &cue.cue_id,
+        cue_revision,
+        &format!("[翻译失败] {}", error.message),
+    );
+    true
 }
 
 fn process_translation_cues(
@@ -57,7 +115,6 @@ fn process_translation_cues(
     text_model_provider: &ProviderDraftInput,
     glossary_catalog: &GlossaryCatalog,
     trace: &ModelTraceRecorder,
-    translation_tx: &mpsc::Sender<TranslationUpdate>,
     loop_count: u64,
 ) {
     for cue in cues {
@@ -70,24 +127,11 @@ fn process_translation_cues(
 
         let cue_state = cue_states
             .entry(cue.cue_id.clone())
-            .or_insert_with(CueTranslationLedger::new);
+            .or_insert_with(|| CueTranslationLedger::new_for_revision(cue.revision.unwrap_or(1)));
 
-        if let Some(error) = fatal_provider_error.as_ref() {
-            let _ = diag_log_detail(
-                &app,
-                "subtitle-translate",
-                "error",
-                format!(
-                    "[FATAL_PROVIDER] cue_id={} provider translation disabled: code={} provider_code={:?}",
-                    cue.cue_id, error.code, error.provider_code
-                ),
-                error
-                    .suggestion
-                    .clone()
-                    .unwrap_or_else(|| error.message.clone()),
-            );
-            store.commit_subtitle_cue(&cue.cue_id);
-            let _ = emit_audio_snapshot(&app, store);
+        if terminalize_fatal_provider_cue(
+            app, store, cue, cue_state.revision, fatal_provider_error.as_ref(),
+        ) {
             continue;
         }
 
@@ -117,8 +161,9 @@ fn process_translation_cues(
                         cue_state.source_stable_since.elapsed()
                     ),
                 );
-                store.commit_subtitle_cue(&cue.cue_id);
-                let _ = emit_audio_snapshot(&app, store);
+                let _ = publish_terminal_translation_error(
+                    app, store, &cue.cue_id, cue_state.revision, "[翻译失败] 翻译响应超时",
+                );
                 continue;
             }
             cue_state.stable_retry_count = cue_state.stable_retry_count.saturating_add(1);
@@ -154,7 +199,7 @@ fn process_translation_cues(
             .splitter
             .feed_hypothesis(&source_text, finality);
         if feed_result.revision_reset {
-            cue_state.reset_for_revision();
+            sync_ledger_revision(cue, cue_state);
             scheduler.drop_queued_for_cue(&cue.cue_id);
             let _ = diag_log(
                 &app,
@@ -338,7 +383,12 @@ fn process_translation_cues(
                     | TranslationEnqueueResult::RejectedExpired
             ) && !result.is_forced
             {
-                mark_translation_queue_rejection(app, store, &cue.cue_id);
+                mark_translation_queue_rejection(
+                    app,
+                    store,
+                    &cue.cue_id,
+                    cue_state.revision,
+                );
             }
         }
     }
@@ -536,7 +586,6 @@ impl SubtitleTranslationWorker {
             &text_model_provider,
             &glossary_catalog,
             &trace,
-            &translation_tx,
             loop_count,
         );
         scheduler.dispatch_ready(|job| spawn_translation_job(translation_tx.clone(), job));

@@ -11,7 +11,9 @@ use crate::provider::contracts::{ProviderDraftInput, ProviderRuntimeError};
 use crate::provider::gateway::ProviderGateway;
 use crate::storage::StorageStateStore;
 
-use super::contracts::{AudioRuntimeSnapshot, SubtitleCueRuntime};
+use super::contracts::{
+    AudioRuntimeSnapshot, SubtitleCueRuntime, SubtitleTranslationStateRuntime,
+};
 use super::engine::emit_audio_snapshot;
 use super::glossary::GlossaryCatalog;
 use super::sentence::{detect_language, is_target_language, SentenceResult};
@@ -370,6 +372,7 @@ fn handle_translate_error(
         );
         let retry_delay = rate_limit_retry_delay(&error);
         let retry_cue_id = job.cue_id.clone();
+        let retry_cue_revision = job.cue_revision;
         let retry_error_code = error.code.clone();
         let enqueue_result = state.scheduler.enqueue_with_result(job);
         if enqueue_result == TranslationEnqueueResult::Enqueued {
@@ -402,20 +405,20 @@ fn handle_translate_error(
                 true,
                 None,
             );
-            store.update_subtitle_cue_translation(
+            store.mark_subtitle_translation_error(
                 &retry_cue_id,
+                retry_cue_revision,
                 "[翻译失败] 本地翻译队列过载".to_string(),
-                true,
             );
             emit_audio_snapshot(app, store)?;
         }
     } else {
         report_translation_error(store, &job, attempts, &error);
         state.attempt_counts.remove(&job.key);
-        store.update_subtitle_cue_translation(
+        store.mark_subtitle_translation_error(
             &job.cue_id,
+            job.cue_revision,
             format!("[翻译失败] {}", error.message),
-            true,
         );
         let _ = append_diagnostics_log(
             app,
@@ -471,7 +474,12 @@ fn enqueue_pending_cues(
             .unwrap_or(false);
         if same_lang {
             report_same_language_translation(store, cue);
-            store.update_subtitle_cue_translation(&cue.cue_id, cue.source_text.clone(), true);
+            store.update_subtitle_cue_translation_for_revision(
+                &cue.cue_id,
+                cue.revision.unwrap_or(1),
+                cue.source_text.clone(),
+                SubtitleTranslationStateRuntime::Final,
+            );
             let _ = append_diagnostics_log(
                 app,
                 "audio",
@@ -492,7 +500,8 @@ fn enqueue_pending_cues(
             is_replacement: false,
             pending_id: None,
         };
-        let job_key = translation_job_key(&cue.cue_id, 0, &result);
+        let cue_revision = cue.revision.unwrap_or(1);
+        let job_key = translation_job_key(&cue.cue_id, cue_revision, &result);
         let glossary = state
             .config
             .glossary_catalog
@@ -502,7 +511,7 @@ fn enqueue_pending_cues(
         let job = TranslationJob {
             key: job_key.clone(),
             sequence: state.next_sequence,
-            cue_revision: 0,
+            cue_revision,
             display_index: 0,
             cue_id: cue.cue_id.clone(),
             result,
@@ -546,10 +555,10 @@ fn enqueue_pending_cues(
                 true,
                 None,
             );
-            store.update_subtitle_cue_translation(
+            store.mark_subtitle_translation_error(
                 &cue.cue_id,
+                cue_revision,
                 "[翻译失败] 本地翻译队列过载".to_string(),
-                true,
             );
             emit_audio_snapshot(app, store)?;
         }
@@ -672,6 +681,14 @@ fn log_initial_translate_config(app: &AppHandle, config: &TranslateConfig) {
 fn cue_needs_translation(cue: &SubtitleCueRuntime, dispatched_source: Option<&str>) -> bool {
     cue.committed
         && !cue.translation_committed
+        && matches!(
+            cue.translation_state,
+            None
+                | Some(
+                    SubtitleTranslationStateRuntime::Pending
+                        | SubtitleTranslationStateRuntime::Streaming
+                )
+        )
         && dispatched_source != Some(cue.source_text.as_str())
 }
 
@@ -889,6 +906,8 @@ mod tests {
     fn cue(committed: bool, translation_committed: bool, source: &str) -> SubtitleCueRuntime {
         SubtitleCueRuntime {
             cue_id: "stt-cue-inbound-1".to_string(),
+            revision: Some(1),
+            sequence: Some(1),
             route_direction: "inbound".to_string(),
             source_text: source.to_string(),
             display_source_text: String::new(),
@@ -898,6 +917,11 @@ mod tests {
             ended_at: "0".to_string(),
             committed,
             translation_committed,
+            translation_state: Some(if translation_committed {
+                SubtitleTranslationStateRuntime::Final
+            } else {
+                SubtitleTranslationStateRuntime::Pending
+            }),
         }
     }
 

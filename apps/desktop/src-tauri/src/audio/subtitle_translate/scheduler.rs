@@ -45,6 +45,13 @@ impl CueTranslationLedger {
         }
     }
 
+    fn new_for_revision(revision: u64) -> Self {
+        Self {
+            revision,
+            ..Self::new()
+        }
+    }
+
     fn display_source_text(&self) -> String {
         self.display_slots
             .iter()
@@ -121,6 +128,10 @@ impl CueTranslationLedger {
 
     fn reset_for_revision(&mut self) {
         self.revision = self.revision.saturating_add(1);
+        self.reset_for_revision_state();
+    }
+
+    fn reset_for_revision_state(&mut self) {
         self.forced_pending.clear();
         self.completed_replacements.clear();
         self.pending_display_index = None;
@@ -160,12 +171,6 @@ impl CueTranslationLedger {
         }
     }
 
-    fn find_matching_untranslated_slot(&self, sentence: &str) -> Option<usize> {
-        let key = normalize_sentence_key(sentence);
-        self.display_slots.iter().position(|slot| {
-            normalize_sentence_key(&slot.source) == key && slot.translated.trim().is_empty()
-        })
-    }
 }
 
 type CueTranslationState = CueTranslationLedger;

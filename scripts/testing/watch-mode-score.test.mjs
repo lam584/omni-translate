@@ -190,6 +190,41 @@ test('provider-event fallback is not treated as high-confidence scoring evidence
   assert.deepEqual(deterministic.dimensions.latency.missingEvidence, ['run-0-audioToRenderFirst', 'run-0-audioToRenderFinal']);
 });
 
+test('Watch scoring ignores terminal translation errors and selects a final cue', () => {
+  const deterministic = scoreDeterministic({
+    report: passedReport,
+    sourceText: 'Hello world',
+    referenceText: '你好世界',
+    evidence: {
+      content: { translation: '你好世界' },
+      queue: { duplicateFinalTranslations: 0 },
+      watchSessionReport: {
+        sessionId: 'watch-session',
+        cues: [
+          {
+            translationState: 'error',
+            audioStartedAtMs: 0,
+            audioStartOrigin: 'provider-offset',
+            audioToRenderFirstMs: 100,
+            audioToRenderFinalMs: 200,
+          },
+          {
+            translationState: 'final',
+            audioStartedAtMs: 0,
+            audioStartOrigin: 'provider-offset',
+            audioToRenderFirstMs: 2_000,
+            audioToRenderFinalMs: 5_000,
+          },
+        ],
+      },
+    },
+  });
+
+  assert.equal(deterministic.runContributions[0].audioToRenderFirstMs, 2_000);
+  assert.equal(deterministic.runContributions[0].audioToRenderFinalMs, 5_000);
+  assert.equal(deterministic.dimensions.latency.score, 100);
+});
+
 test('missing response-count telemetry is evidence-insufficient instead of an invented stability score', () => {
   const runs = [completeRun(0, { responseCount: null })];
   const deterministic = scoreDeterministic({

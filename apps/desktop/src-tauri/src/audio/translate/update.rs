@@ -1,11 +1,14 @@
-fn translation_source_is_current(store: &AudioStateStore, cue_id: &str, source_text: &str) -> bool {
+fn translation_job_is_current(store: &AudioStateStore, job: &TranslationJob) -> bool {
     store
         .snapshot()
         .subtitle_overlay
         .recent_cues
         .iter()
-        .find(|cue| cue.cue_id == cue_id)
-        .is_some_and(|cue| cue.source_text == source_text)
+        .find(|cue| cue.cue_id == job.cue_id)
+        .is_some_and(|cue| {
+            cue.source_text == job.result.sentence
+                && cue.revision.unwrap_or(1) == job.cue_revision
+        })
 }
 
 fn mark_translate_deadline(
@@ -13,6 +16,13 @@ fn mark_translate_deadline(
     store: &AudioStateStore,
     job: &TranslationJob,
 ) -> Result<(), String> {
+    if !store.mark_subtitle_translation_error(
+        &job.cue_id,
+        job.cue_revision,
+        "[翻译失败] 翻译响应已过期".to_string(),
+    ) {
+        return Ok(());
+    }
     store.watch_session_report.record_model_error_for_cue(
         &job.cue_id,
         "classic-text-translation",
@@ -20,11 +30,6 @@ fn mark_translate_deadline(
         "translation did not finish before its terminal deadline",
         true,
         Some(&job.key),
-    );
-    store.update_subtitle_cue_translation(
-        &job.cue_id,
-        "[翻译失败] 翻译响应已过期".to_string(),
-        true,
     );
     let _ = append_diagnostics_log(
         app,
@@ -64,7 +69,7 @@ fn handle_translate_update(
             if job.deadline_at <= Instant::now() {
                 return Ok(());
             }
-            if !translation_source_is_current(store, &job.cue_id, &job.result.sentence) {
+            if !translation_job_is_current(store, &job) {
                 let _ = append_diagnostics_log(
                     app,
                     "translate",
@@ -77,8 +82,14 @@ fn handle_translate_update(
                 return Ok(());
             }
             report_translation_delta(store, &job.cue_id, &raw_delta);
-            store.update_subtitle_cue_translation(&job.cue_id, partial_text, false);
-            emit_audio_snapshot(app, store)?;
+            if store.update_subtitle_cue_translation_for_revision(
+                &job.cue_id,
+                job.cue_revision,
+                partial_text,
+                SubtitleTranslationStateRuntime::Streaming,
+            ) {
+                emit_audio_snapshot(app, store)?;
+            }
         }
         TranslateUpdate::Done {
             job,
@@ -91,7 +102,7 @@ fn handle_translate_update(
                 mark_translate_deadline(app, store, &job)?;
                 return Ok(());
             }
-            if !translation_source_is_current(store, &job.cue_id, &job.result.sentence) {
+            if !translation_job_is_current(store, &job) {
                 state.attempt_counts.remove(&job.key);
                 let _ = append_diagnostics_log(
                     app,
@@ -112,7 +123,12 @@ fn handle_translate_update(
                         .calibrate(&job.result.sentence, &translated_text);
                     report_translation_final(store, &job, &translated_text, &state.attempt_counts);
                     state.attempt_counts.remove(&job.key);
-                    store.update_subtitle_cue_translation(&job.cue_id, translated_text, true);
+                    let accepted = store.update_subtitle_cue_translation_for_revision(
+                        &job.cue_id,
+                        job.cue_revision,
+                        translated_text,
+                        SubtitleTranslationStateRuntime::Final,
+                    );
                     let _ = append_diagnostics_log(
                         app,
                         "audio",
@@ -122,7 +138,9 @@ fn handle_translate_update(
                         None,
                         None,
                     );
-                    emit_audio_snapshot(app, store)?;
+                    if accepted {
+                        emit_audio_snapshot(app, store)?;
+                    }
                 }
                 Err(error) => {
                     handle_translate_error(app, store, state, job, error, elapsed_ms)?;

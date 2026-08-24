@@ -4,6 +4,8 @@ pub(super) fn empty_cue(cue_id: &str, revision: u64, route_direction: &str) -> W
     WatchCueComparisonRuntime {
         cue_id: cue_id.to_string(),
         revision,
+        sequence: 0,
+        translation_state: Some(SubtitleTranslationStateRuntime::Pending),
         route_direction: if route_direction == "outbound" {
             "outbound".to_string()
         } else {
@@ -96,6 +98,9 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
                 .map_or(true, |representative| cue.revision != *representative);
         cue.events.sort_by_key(|event| event.elapsed_ms);
         let superseded = superseded_revision;
+        if superseded {
+            cue.translation_state = Some(SubtitleTranslationStateRuntime::Superseded);
+        }
         cue.source_to_llm_first_ms = duration_between(cue.source_at_ms, cue.llm_first_at_ms);
         cue.source_to_render_ms = duration_between(cue.source_at_ms, cue.rendered_first_at_ms);
         cue.llm_first_to_publish_ms =
@@ -114,10 +119,14 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
             duration_between(cue.audio_started_at_ms, cue.source_at_ms);
         cue.audio_to_llm_first_ms =
             duration_between(cue.audio_started_at_ms, cue.llm_first_at_ms);
-        cue.audio_to_render_first_ms =
-            duration_between(cue.audio_started_at_ms, cue.rendered_first_at_ms);
-        cue.audio_to_render_final_ms =
-            duration_between(cue.audio_started_at_ms, cue.rendered_final_at_ms);
+        let translation_final =
+            cue.translation_state == Some(SubtitleTranslationStateRuntime::Final);
+        cue.audio_to_render_first_ms = translation_final
+            .then(|| duration_between(cue.audio_started_at_ms, cue.rendered_first_at_ms))
+            .flatten();
+        cue.audio_to_render_final_ms = translation_final
+            .then(|| duration_between(cue.audio_started_at_ms, cue.rendered_final_at_ms))
+            .flatten();
         cue.comparison_status = comparison_status(cue, completed, superseded);
         attribute_dynamic_issues(cue, completed && !superseded, session_elapsed_ms);
         if cue.llm_text.is_empty()
@@ -186,7 +195,10 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
     let high_confidence_cues = latest_cues
         .iter()
         .copied()
-        .filter(|cue| is_high_confidence_audio_origin(cue.audio_start_origin.as_deref()))
+        .filter(|cue| {
+            cue.translation_state == Some(SubtitleTranslationStateRuntime::Final)
+                && is_high_confidence_audio_origin(cue.audio_start_origin.as_deref())
+        })
         .collect::<Vec<_>>();
     let audio_to_render_first = high_confidence_cues
         .iter()
@@ -453,12 +465,12 @@ fn attribute_dynamic_issues(
             cue.published_final_at_ms.or(cue.published_first_at_ms),
         );
     }
-    if cue.published_text.contains("翻译失败") {
+    if cue.translation_state == Some(SubtitleTranslationStateRuntime::Error) {
         push(
             "publish",
-            "translation-failure-marker",
+            "translation-terminal-error",
             "error",
-            "发布文本包含翻译失败标记。",
+            "字幕翻译进入明确的错误终态。",
             cue.published_final_at_ms.or(cue.published_first_at_ms),
         );
     }

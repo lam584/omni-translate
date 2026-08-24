@@ -279,7 +279,13 @@ function hasExplicitTranslationFailure(cue: SubtitleCueRuntime) {
 
 function resolveCueTranslationState(cue: SubtitleCueRuntime): CueTranslationState {
   if (isReconnectNoticeCue(cue)) return 'notice';
-  if (hasExplicitTranslationFailure(cue)) return 'failed';
+  if (cue.translationState === 'error') return 'failed';
+  if (cue.translationState === 'final') {
+    return cue.translationCommitted === true && cue.translatedText.trim() ? 'translated' : 'failed';
+  }
+  if (cue.translationState === 'pending'
+    || cue.translationState === 'streaming'
+    || cue.translationState === 'superseded') return 'pending';
   if (cue.translationCommitted === true) {
     return cue.translatedText.trim() ? 'translated' : 'failed';
   }

@@ -195,6 +195,55 @@ function Log([string]$Message) {
     Add-Content -LiteralPath $Log -Value $line -Encoding UTF8
 }
 
+function Invoke-CheckedNative([string]$FilePath, [string[]]$ArgumentList, [string]$Description) {
+    $global:LASTEXITCODE = $null
+    try {
+        & $FilePath @ArgumentList | Out-Null
+    } catch {
+        throw ($Description + ' failed to start: ' + $_.Exception.Message)
+    }
+    $exitCode = $global:LASTEXITCODE
+    if ($null -eq $exitCode) {
+        throw ($Description + ' failed to start or did not return an exit code.')
+    }
+    if ($exitCode -ne 0) {
+        throw ($Description + ' failed with exit code ' + $exitCode + '.')
+    }
+}
+
+function Assert-AuthorizedKeyAcl([string]$Path, [string[]]$AllowedSidValues) {
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    if (-not $acl.AreAccessRulesProtected) {
+        throw ('The authorized-key ACL still inherits permissions: ' + $Path)
+    }
+
+    $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+    $fullControl = [System.Security.AccessControl.FileSystemRights]::FullControl
+    foreach ($rule in $rules) {
+        $sidValue = $rule.IdentityReference.Value
+        if ($rule.IsInherited -or
+            $rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+            $AllowedSidValues -notcontains $sidValue) {
+            throw ('The authorized-key ACL contains an unexpected access rule for ' + $sidValue + ': ' + $Path)
+        }
+    }
+
+    foreach ($requiredSid in $AllowedSidValues) {
+        $hasFullControl = $false
+        foreach ($rule in $rules) {
+            if ($rule.IdentityReference.Value -eq $requiredSid -and
+                $rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+                (([int]$rule.FileSystemRights -band [int]$fullControl) -eq [int]$fullControl)) {
+                $hasFullControl = $true
+                break
+            }
+        }
+        if (-not $hasFullControl) {
+            throw ('The authorized-key ACL is missing full control for SID ' + $requiredSid + ': ' + $Path)
+        }
+    }
+}
+
 function Publish-Log {
     $share = '\\vmware-host\Shared Folders\HostShare'
     if (Test-Path -LiteralPath $share) {
@@ -234,7 +283,9 @@ function EnsureBootstrapTask {
 
 function RequestReboot([string]$Reason) {
     Log ('Reboot requested: ' + $Reason)
-    shutdown.exe /r /t 30 /c ('Win11 VM bootstrap: ' + $Reason) | Out-Null
+    Invoke-CheckedNative (Join-Path $env:SystemRoot 'System32\shutdown.exe') @(
+        '/r', '/t', '30', '/c', ('Win11 VM bootstrap: ' + $Reason)
+    ) 'Scheduling the bootstrap reboot'
     exit 0
 }
 
@@ -305,16 +356,68 @@ function Install-VMwareTools {
     return $p.ExitCode -eq 3010
 }
 
+function Restore-SshdConfigurationAndService(
+    [string]$SshdConfig,
+    [bool]$ConfigExisted,
+    [byte[]]$PreviousConfig,
+    [string]$PreviousStartupType,
+    [bool]$WasRunning
+) {
+    $rollbackFailures = New-Object 'System.Collections.Generic.List[string]'
+    try {
+        if ($ConfigExisted) {
+            [System.IO.File]::WriteAllBytes($SshdConfig, $PreviousConfig)
+        } elseif (Test-Path -LiteralPath $SshdConfig) {
+            Remove-Item -LiteralPath $SshdConfig -Force -ErrorAction Stop
+        }
+    } catch {
+        $rollbackFailures.Add('config: ' + $_.Exception.Message)
+    }
+
+    try {
+        $service = Get-Service -Name sshd -ErrorAction Stop
+        if ($WasRunning) {
+            if ($service.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Running) {
+                Restart-Service -Name sshd -Force -ErrorAction Stop
+            } else {
+                Start-Service -Name sshd -ErrorAction Stop
+            }
+            (Get-Service -Name sshd -ErrorAction Stop).WaitForStatus(
+                [System.ServiceProcess.ServiceControllerStatus]::Running,
+                [TimeSpan]::FromSeconds(30)
+            )
+        } elseif ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
+            Stop-Service -Name sshd -Force -ErrorAction Stop
+            (Get-Service -Name sshd -ErrorAction Stop).WaitForStatus(
+                [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+                [TimeSpan]::FromSeconds(30)
+            )
+        }
+    } catch {
+        $rollbackFailures.Add('service state: ' + $_.Exception.Message)
+    }
+
+    try {
+        Set-Service -Name sshd -StartupType $PreviousStartupType -ErrorAction Stop
+    } catch {
+        $rollbackFailures.Add('startup type: ' + $_.Exception.Message)
+    }
+
+    if ($rollbackFailures.Count -gt 0) {
+        throw ('Rollback failures: ' + [string]::Join('; ', $rollbackFailures))
+    }
+}
+
 function Configure-OpenSSH {
     Log 'Installing and configuring OpenSSH for public-key-only access.'
     $client = Get-WindowsCapability -Online -Name 'OpenSSH.Client~~~~0.0.1.0' -ErrorAction SilentlyContinue
     if ($client -and $client.State -ne 'Installed') {
-        Add-WindowsCapability -Online -Name 'OpenSSH.Client~~~~0.0.1.0' | Out-Null
+        Add-WindowsCapability -Online -Name 'OpenSSH.Client~~~~0.0.1.0' -ErrorAction Stop | Out-Null
     }
     $server = Get-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' -ErrorAction SilentlyContinue
     $restartNeeded = $false
     if ($server -and $server.State -ne 'Installed') {
-        $capResult = Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0'
+        $capResult = Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' -ErrorAction Stop
         if ($capResult.RestartNeeded) { $restartNeeded = $true }
     }
 
@@ -334,38 +437,79 @@ function Configure-OpenSSH {
         @()
     }
     if ($existingKeys -notcontains $publicLine) {
-        Add-Content -LiteralPath $adminAuthorized -Value $publicLine -Encoding ASCII
+        Add-Content -LiteralPath $adminAuthorized -Value $publicLine -Encoding ASCII -ErrorAction Stop
     }
-    & (Join-Path $env:SystemRoot 'System32\icacls.exe') $adminAuthorized /inheritance:r /grant:r 'SYSTEM:(F)' 'BUILTIN\Administrators:(F)' | Out-Null
+    $systemSid = 'S-1-5-18'
+    $administratorsSid = 'S-1-5-32-544'
+    Invoke-CheckedNative (Join-Path $env:SystemRoot 'System32\icacls.exe') @(
+        $adminAuthorized,
+        '/inheritance:r',
+        '/grant:r',
+        ('*' + $systemSid + ':(F)'),
+        ('*' + $administratorsSid + ':(F)')
+    ) 'Securing administrators_authorized_keys with icacls.exe'
+    Assert-AuthorizedKeyAcl $adminAuthorized @($systemSid, $administratorsSid)
 
     $sshdConfig = 'C:\ProgramData\ssh\sshd_config'
-    if (-not (Test-Path -LiteralPath $sshdConfig -PathType Leaf)) {
-        $defaultConfig = Join-Path $env:SystemRoot 'System32\OpenSSH\sshd_config_default'
-        if (-not (Test-Path -LiteralPath $defaultConfig -PathType Leaf)) {
-            throw 'OpenSSH Server did not provide an sshd_config template.'
+    $configExisted = Test-Path -LiteralPath $sshdConfig -PathType Leaf
+    [byte[]]$previousConfig = if ($configExisted) {
+        [System.IO.File]::ReadAllBytes($sshdConfig)
+    } else {
+        $null
+    }
+    $serviceInfo = Get-CimInstance -ClassName Win32_Service -Filter "Name='sshd'" -ErrorAction Stop
+    $previousStartupType = switch ($serviceInfo.StartMode) {
+        'Auto' { 'Automatic' }
+        'Manual' { 'Manual' }
+        'Disabled' { 'Disabled' }
+        default { throw ('Unsupported prior sshd startup mode: ' + $serviceInfo.StartMode) }
+    }
+    $wasRunning = (Get-Service -Name sshd -ErrorAction Stop).Status -eq [System.ServiceProcess.ServiceControllerStatus]::Running
+
+    try {
+        if (-not $configExisted) {
+            $defaultConfig = Join-Path $env:SystemRoot 'System32\OpenSSH\sshd_config_default'
+            if (-not (Test-Path -LiteralPath $defaultConfig -PathType Leaf)) {
+                throw 'OpenSSH Server did not provide an sshd_config template.'
+            }
+            Copy-Item -LiteralPath $defaultConfig -Destination $sshdConfig -ErrorAction Stop
         }
-        Copy-Item -LiteralPath $defaultConfig -Destination $sshdConfig
+
+        $configLines = @(Get-Content -LiteralPath $sshdConfig -ErrorAction Stop | Where-Object {
+            $_ -notmatch '^\s*#?\s*(AuthenticationMethods|PubkeyAuthentication|PasswordAuthentication|KbdInteractiveAuthentication|PermitEmptyPasswords)\s+'
+        })
+        $hardenedSettings = @(
+            'AuthenticationMethods publickey',
+            'PubkeyAuthentication yes',
+            'PasswordAuthentication no',
+            'KbdInteractiveAuthentication no',
+            'PermitEmptyPasswords no'
+        )
+        Set-Content -LiteralPath $sshdConfig -Value @($hardenedSettings + $configLines) -Encoding ASCII -ErrorAction Stop
+        $sshd = Get-Command sshd.exe -ErrorAction Stop
+        Invoke-CheckedNative $sshd.Source @('-t', '-f', $sshdConfig) 'Validating the hardened sshd_config'
+        Set-Service -Name sshd -StartupType Automatic -ErrorAction Stop
+        $service = Get-Service -Name sshd -ErrorAction Stop
+        if ($service.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Running) {
+            Restart-Service -Name sshd -Force -ErrorAction Stop
+        } else {
+            Start-Service -Name sshd -ErrorAction Stop
+        }
+        (Get-Service -Name sshd -ErrorAction Stop).WaitForStatus(
+            [System.ServiceProcess.ServiceControllerStatus]::Running,
+            [TimeSpan]::FromSeconds(30)
+        )
+        Log 'OpenSSH is running with public-key-only authentication.'
+    } catch {
+        $hardeningFailure = $_.Exception.Message
+        try {
+            Restore-SshdConfigurationAndService $sshdConfig $configExisted $previousConfig $previousStartupType $wasRunning
+        } catch {
+            throw ('SSH hardening failed: ' + $hardeningFailure + ' Rollback also failed: ' + $_.Exception.Message)
+        }
+        throw ('SSH hardening failed; the prior sshd_config and service state were restored: ' + $hardeningFailure)
     }
-    $configLines = @(Get-Content -LiteralPath $sshdConfig -ErrorAction Stop | Where-Object {
-        $_ -notmatch '^\s*#?\s*(AuthenticationMethods|PubkeyAuthentication|PasswordAuthentication|KbdInteractiveAuthentication|PermitEmptyPasswords)\s+'
-    })
-    $hardenedSettings = @(
-        'AuthenticationMethods publickey',
-        'PubkeyAuthentication yes',
-        'PasswordAuthentication no',
-        'KbdInteractiveAuthentication no',
-        'PermitEmptyPasswords no'
-    )
-    Set-Content -LiteralPath $sshdConfig -Value @($hardenedSettings + $configLines) -Encoding ASCII
-    $sshd = Get-Command sshd.exe -ErrorAction Stop
-    & $sshd.Source -t -f $sshdConfig
-    if ($LASTEXITCODE -ne 0) {
-        throw 'The hardened sshd_config failed validation.'
-    }
-    Log 'sshd_config now requires a public key and rejects password authentication.'
-    Set-Service -Name sshd -StartupType Automatic -ErrorAction Stop
-    Start-Service -Name sshd -ErrorAction SilentlyContinue
-    Restart-Service -Name sshd -Force -ErrorAction SilentlyContinue
+
     $sshFirewallRule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
     if (-not $sshFirewallRule) {
         $sshFirewallRule = New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Profile Private -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -RemoteAddress LocalSubnet
@@ -421,10 +565,9 @@ function Install-JetBrainsAir {
     Log ('Downloading current JetBrains Air ' + $build + ' ZIP from the official JetBrains endpoint.')
     Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
     New-Item -ItemType Directory -Path $airRoot -Force | Out-Null
-    & "$env:SystemRoot\System32\tar.exe" -xf $archive -C $airRoot
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0 -or -not (Test-Path -LiteralPath $airExe)) {
-        throw ('JetBrains Air ZIP installation failed with exit code ' + $exitCode)
+    Invoke-CheckedNative (Join-Path $env:SystemRoot 'System32\tar.exe') @('-xf', $archive, '-C', $airRoot) 'Extracting the JetBrains Air archive'
+    if (-not (Test-Path -LiteralPath $airExe)) {
+        throw 'JetBrains Air ZIP installation did not produce Air.exe.'
     }
     $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\JetBrains'
     New-Item -ItemType Directory -Path $startMenu -Force | Out-Null
@@ -495,14 +638,12 @@ function Enforce-SecureLocalAccount {
     }
 
     Set-LocalUser -Name $GuestUser -PasswordNeverExpires $false -ErrorAction Stop
-    & (Join-Path $env:SystemRoot 'System32\net.exe') user $GuestUser /active:yes /passwordreq:yes | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw ('Unable to enforce the local account password policy; net.exe exit code ' + $LASTEXITCODE)
-    }
-    & (Join-Path $env:SystemRoot 'System32\net.exe') user $GuestUser /logonpasswordchg:yes | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw ('Unable to require a password change at the next sign-in; net.exe exit code ' + $LASTEXITCODE)
-    }
+    Invoke-CheckedNative (Join-Path $env:SystemRoot 'System32\net.exe') @(
+        'user', $GuestUser, '/active:yes', '/passwordreq:yes'
+    ) 'Enforcing the local account password policy'
+    Invoke-CheckedNative (Join-Path $env:SystemRoot 'System32\net.exe') @(
+        'user', $GuestUser, '/logonpasswordchg:yes'
+    ) 'Requiring a password change at the next sign-in'
 
     Log 'Automatic logon is disabled and the setup password must be changed at the next sign-in.'
 }

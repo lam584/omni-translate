@@ -23,6 +23,55 @@ function Write-Log([string]$Message) {
     Write-Output $line
 }
 
+function Invoke-CheckedNative([string]$FilePath, [string[]]$ArgumentList, [string]$Description) {
+    $global:LASTEXITCODE = $null
+    try {
+        & $FilePath @ArgumentList | Out-Null
+    } catch {
+        throw ($Description + ' failed to start: ' + $_.Exception.Message)
+    }
+    $exitCode = $global:LASTEXITCODE
+    if ($null -eq $exitCode) {
+        throw ($Description + ' failed to start or did not return an exit code.')
+    }
+    if ($exitCode -ne 0) {
+        throw ($Description + ' failed with exit code ' + $exitCode + '.')
+    }
+}
+
+function Assert-AuthorizedKeyAcl([string]$Path, [string[]]$AllowedSidValues) {
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    if (-not $acl.AreAccessRulesProtected) {
+        throw ('The authorized-key ACL still inherits permissions: ' + $Path)
+    }
+
+    $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+    $fullControl = [System.Security.AccessControl.FileSystemRights]::FullControl
+    foreach ($rule in $rules) {
+        $sidValue = $rule.IdentityReference.Value
+        if ($rule.IsInherited -or
+            $rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+            $AllowedSidValues -notcontains $sidValue) {
+            throw ('The authorized-key ACL contains an unexpected access rule for ' + $sidValue + ': ' + $Path)
+        }
+    }
+
+    foreach ($requiredSid in $AllowedSidValues) {
+        $hasFullControl = $false
+        foreach ($rule in $rules) {
+            if ($rule.IdentityReference.Value -eq $requiredSid -and
+                $rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+                (([int]$rule.FileSystemRights -band [int]$fullControl) -eq [int]$fullControl)) {
+                $hasFullControl = $true
+                break
+            }
+        }
+        if (-not $hasFullControl) {
+            throw ('The authorized-key ACL is missing full control for SID ' + $requiredSid + ': ' + $Path)
+        }
+    }
+}
+
 function Get-RequiredGuestPassword {
     if ($GuestPassword) {
         return $GuestPassword
@@ -112,40 +161,151 @@ function Set-AuthorizedKeys([string]$PublicLine) {
     }
 
     $icacls = Join-Path $env:SystemRoot 'System32\icacls.exe'
-    & $icacls $userSsh /inheritance:r /grant:r ($env:COMPUTERNAME + '\' + $GuestUser + ':(OI)(CI)(F)') 'SYSTEM:(OI)(CI)(F)' | Out-Null
-    & $icacls $adminAuthorized /inheritance:r /grant:r 'SYSTEM:(F)' 'BUILTIN\Administrators:(F)' | Out-Null
+    $userSid = $localUser.SID.Value
+    $systemSid = 'S-1-5-18'
+    $administratorsSid = 'S-1-5-32-544'
+    Invoke-CheckedNative $icacls @(
+        $userSsh,
+        '/inheritance:r',
+        '/grant:r',
+        ('*' + $userSid + ':(OI)(CI)(F)'),
+        ('*' + $systemSid + ':(OI)(CI)(F)')
+    ) 'Securing the user SSH directory with icacls.exe'
+    Invoke-CheckedNative $icacls @(
+        $userAuthorized,
+        '/inheritance:r',
+        '/grant:r',
+        ('*' + $userSid + ':(F)'),
+        ('*' + $systemSid + ':(F)')
+    ) 'Securing the user authorized_keys file with icacls.exe'
+    Invoke-CheckedNative $icacls @(
+        $adminAuthorized,
+        '/inheritance:r',
+        '/grant:r',
+        ('*' + $systemSid + ':(F)'),
+        ('*' + $administratorsSid + ':(F)')
+    ) 'Securing administrators_authorized_keys with icacls.exe'
+
+    Assert-AuthorizedKeyAcl $userSsh @($userSid, $systemSid)
+    Assert-AuthorizedKeyAcl $userAuthorized @($userSid, $systemSid)
+    Assert-AuthorizedKeyAcl $adminAuthorized @($systemSid, $administratorsSid)
     Write-Log 'The requested public key was installed without importing a private credential.'
+}
+
+function Restore-SshdConfigurationAndService(
+    [string]$SshdConfig,
+    [bool]$ConfigExisted,
+    [byte[]]$PreviousConfig,
+    [string]$PreviousStartupType,
+    [bool]$WasRunning
+) {
+    $rollbackFailures = New-Object 'System.Collections.Generic.List[string]'
+    try {
+        if ($ConfigExisted) {
+            [System.IO.File]::WriteAllBytes($SshdConfig, $PreviousConfig)
+        } elseif (Test-Path -LiteralPath $SshdConfig) {
+            Remove-Item -LiteralPath $SshdConfig -Force -ErrorAction Stop
+        }
+    } catch {
+        $rollbackFailures.Add('config: ' + $_.Exception.Message)
+    }
+
+    try {
+        $service = Get-Service -Name sshd -ErrorAction Stop
+        if ($WasRunning) {
+            if ($service.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Running) {
+                Restart-Service -Name sshd -Force -ErrorAction Stop
+            } else {
+                Start-Service -Name sshd -ErrorAction Stop
+            }
+            (Get-Service -Name sshd -ErrorAction Stop).WaitForStatus(
+                [System.ServiceProcess.ServiceControllerStatus]::Running,
+                [TimeSpan]::FromSeconds(30)
+            )
+        } elseif ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
+            Stop-Service -Name sshd -Force -ErrorAction Stop
+            (Get-Service -Name sshd -ErrorAction Stop).WaitForStatus(
+                [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+                [TimeSpan]::FromSeconds(30)
+            )
+        }
+    } catch {
+        $rollbackFailures.Add('service state: ' + $_.Exception.Message)
+    }
+
+    try {
+        Set-Service -Name sshd -StartupType $PreviousStartupType -ErrorAction Stop
+    } catch {
+        $rollbackFailures.Add('startup type: ' + $_.Exception.Message)
+    }
+
+    if ($rollbackFailures.Count -gt 0) {
+        throw ('Rollback failures: ' + [string]::Join('; ', $rollbackFailures))
+    }
 }
 
 function Set-PublicKeyOnlySsh {
     $sshdConfig = Join-Path $env:ProgramData 'ssh\sshd_config'
-    if (-not (Test-Path -LiteralPath $sshdConfig -PathType Leaf)) {
-        $defaultConfig = Join-Path $env:SystemRoot 'System32\OpenSSH\sshd_config_default'
-        if (-not (Test-Path -LiteralPath $defaultConfig -PathType Leaf)) {
-            throw 'OpenSSH Server did not provide an sshd_config template.'
+    $configExisted = Test-Path -LiteralPath $sshdConfig -PathType Leaf
+    [byte[]]$previousConfig = if ($configExisted) {
+        [System.IO.File]::ReadAllBytes($sshdConfig)
+    } else {
+        $null
+    }
+    $serviceInfo = Get-CimInstance -ClassName Win32_Service -Filter "Name='sshd'" -ErrorAction Stop
+    $previousStartupType = switch ($serviceInfo.StartMode) {
+        'Auto' { 'Automatic' }
+        'Manual' { 'Manual' }
+        'Disabled' { 'Disabled' }
+        default { throw ('Unsupported prior sshd startup mode: ' + $serviceInfo.StartMode) }
+    }
+    $wasRunning = (Get-Service -Name sshd -ErrorAction Stop).Status -eq [System.ServiceProcess.ServiceControllerStatus]::Running
+
+    try {
+        if (-not $configExisted) {
+            $defaultConfig = Join-Path $env:SystemRoot 'System32\OpenSSH\sshd_config_default'
+            if (-not (Test-Path -LiteralPath $defaultConfig -PathType Leaf)) {
+                throw 'OpenSSH Server did not provide an sshd_config template.'
+            }
+            New-Item -ItemType Directory -Path (Split-Path -Parent $sshdConfig) -Force | Out-Null
+            Copy-Item -LiteralPath $defaultConfig -Destination $sshdConfig -ErrorAction Stop
         }
-        New-Item -ItemType Directory -Path (Split-Path -Parent $sshdConfig) -Force | Out-Null
-        Copy-Item -LiteralPath $defaultConfig -Destination $sshdConfig
-    }
 
-    $configLines = @(Get-Content -LiteralPath $sshdConfig -ErrorAction Stop | Where-Object {
-        $_ -notmatch '^\s*#?\s*(AuthenticationMethods|PubkeyAuthentication|PasswordAuthentication|KbdInteractiveAuthentication|PermitEmptyPasswords)\s+'
-    })
-    $hardenedSettings = @(
-        'AuthenticationMethods publickey',
-        'PubkeyAuthentication yes',
-        'PasswordAuthentication no',
-        'KbdInteractiveAuthentication no',
-        'PermitEmptyPasswords no'
-    )
-    Set-Content -LiteralPath $sshdConfig -Value @($hardenedSettings + $configLines) -Encoding ASCII
+        $configLines = @(Get-Content -LiteralPath $sshdConfig -ErrorAction Stop | Where-Object {
+            $_ -notmatch '^\s*#?\s*(AuthenticationMethods|PubkeyAuthentication|PasswordAuthentication|KbdInteractiveAuthentication|PermitEmptyPasswords)\s+'
+        })
+        $hardenedSettings = @(
+            'AuthenticationMethods publickey',
+            'PubkeyAuthentication yes',
+            'PasswordAuthentication no',
+            'KbdInteractiveAuthentication no',
+            'PermitEmptyPasswords no'
+        )
+        Set-Content -LiteralPath $sshdConfig -Value @($hardenedSettings + $configLines) -Encoding ASCII -ErrorAction Stop
 
-    $sshd = Get-Command sshd.exe -ErrorAction Stop
-    & $sshd.Source -t -f $sshdConfig
-    if ($LASTEXITCODE -ne 0) {
-        throw 'The hardened sshd_config failed validation.'
+        $sshd = Get-Command sshd.exe -ErrorAction Stop
+        Invoke-CheckedNative $sshd.Source @('-t', '-f', $sshdConfig) 'Validating the hardened sshd_config'
+        Set-Service -Name sshd -StartupType Automatic -ErrorAction Stop
+        $service = Get-Service -Name sshd -ErrorAction Stop
+        if ($service.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Running) {
+            Restart-Service -Name sshd -Force -ErrorAction Stop
+        } else {
+            Start-Service -Name sshd -ErrorAction Stop
+        }
+        (Get-Service -Name sshd -ErrorAction Stop).WaitForStatus(
+            [System.ServiceProcess.ServiceControllerStatus]::Running,
+            [TimeSpan]::FromSeconds(30)
+        )
+        Write-Log 'OpenSSH is running with public-key-only authentication.'
+    } catch {
+        $hardeningFailure = $_.Exception.Message
+        try {
+            Restore-SshdConfigurationAndService $sshdConfig $configExisted $previousConfig $previousStartupType $wasRunning
+        } catch {
+            throw ('SSH hardening failed: ' + $hardeningFailure + ' Rollback also failed: ' + $_.Exception.Message)
+        }
+        throw ('SSH hardening failed; the prior sshd_config and service state were restored: ' + $hardeningFailure)
     }
-    Write-Log 'OpenSSH now requires a public key and rejects password authentication.'
 }
 
 function Set-RestrictedSshFirewall {
@@ -169,10 +329,9 @@ try {
     Set-LocalUser -Name $GuestUser -Password $newPassword -PasswordNeverExpires $false -ErrorAction Stop
     Enable-LocalUser -Name $GuestUser -ErrorAction SilentlyContinue
     Disable-AutomaticLogon
-    & (Join-Path $env:SystemRoot 'System32\net.exe') user $GuestUser /active:yes /passwordreq:yes | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw ('Unable to enforce the local account password policy; net.exe exit code ' + $LASTEXITCODE)
-    }
+    Invoke-CheckedNative (Join-Path $env:SystemRoot 'System32\net.exe') @(
+        'user', $GuestUser, '/active:yes', '/passwordreq:yes'
+    ) 'Enforcing the local account password policy'
     $newPassword = $null
     Write-Log 'The existing VM account password was rotated and password-required policy is enabled.'
 
@@ -187,16 +346,20 @@ try {
 
     Set-AuthorizedKeys $publicLine
     Set-PublicKeyOnlySsh
-    Set-Service -Name sshd -StartupType Automatic -ErrorAction Stop
-    Start-Service -Name sshd -ErrorAction SilentlyContinue
-    Restart-Service -Name sshd -Force -ErrorAction Stop
     Set-RestrictedSshFirewall
 
     $gitPath = (Get-Command git.exe -ErrorAction SilentlyContinue).Source
     if (-not $gitPath) {
         $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
         if ($winget) {
-            & $winget.Source install --id Git.Git --exact --source winget --accept-source-agreements --accept-package-agreements --silent
+            try {
+                Invoke-CheckedNative $winget.Source @(
+                    'install', '--id', 'Git.Git', '--exact', '--source', 'winget',
+                    '--accept-source-agreements', '--accept-package-agreements', '--silent'
+                ) 'Installing Git with WinGet'
+            } catch {
+                Write-Log ('Git installation warning: ' + $_.Exception.Message)
+            }
             $gitPath = (Get-Command git.exe -ErrorAction SilentlyContinue).Source
         }
     }

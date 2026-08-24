@@ -172,7 +172,7 @@ impl AudioStateStore {
     ) {
         let revision = self
             .subtitles
-            .snapshot()
+            .snapshot(usize::MAX)
             .recent_cues
             .iter()
             .find(|cue| cue.cue_id == cue_id)

@@ -363,7 +363,7 @@ fn load_cue_audio_from_repository(
         .collect()
 }
 
-pub(super) fn emit_changed<R: Runtime>(
+pub(crate) fn emit_changed<R: Runtime>(
     app: &AppHandle<R>,
     reason: &str,
     session_id: Option<String>,

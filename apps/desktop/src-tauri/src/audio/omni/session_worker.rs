@@ -621,6 +621,17 @@ fn run_omni_worker(
             );
         }
 
+        let shutdown_failure_tail = livetranslate_shutdown.is_requested().then(|| {
+            (
+                event_diagnostics.unfinished_native_response_cue_ids(),
+                current_cue_id.clone(),
+                pending_source_text.clone(),
+                pending_audio_stream_cue_id.clone(),
+                pending_audio_stream_chunk_index,
+                pending_audio_stream_created_at_ms,
+            )
+        });
+
         let poll = OmniSocketEventProcessor::poll(
             OmniSocketEventState {
                 socket,
@@ -695,7 +706,30 @@ fn run_omni_worker(
                     "error",
                     "event=livetranslate_shutdown action=fail_closed reason=poll_failed",
                 );
-                terminalize_livetranslate_shutdown!();
+                if let Some((
+                    native_cue_ids,
+                    shutdown_cue_id,
+                    shutdown_source_text,
+                    shutdown_audio_cue_id,
+                    shutdown_audio_chunk_index,
+                    shutdown_audio_created_at_ms,
+                )) = shutdown_failure_tail.as_ref()
+                {
+                    terminalize_livetranslate_shutdown_failure(
+                        LivetranslateShutdownFailure {
+                            store,
+                            direction: &direction,
+                            current_cue_id: shutdown_cue_id.as_deref(),
+                            pending_source_text: shutdown_source_text,
+                            native_cue_ids,
+                            native_translation_reuse_active,
+                            playback_tx: &playback_tx,
+                            pending_audio_stream_cue_id: shutdown_audio_cue_id.as_deref(),
+                            pending_audio_stream_chunk_index: *shutdown_audio_chunk_index,
+                            pending_audio_stream_created_at_ms: *shutdown_audio_created_at_ms,
+                        },
+                    );
+                }
                 let _ = playback_worker.shutdown_gracefully();
                 let _ = emit_audio_snapshot(&app, store);
                 return Err(format!(

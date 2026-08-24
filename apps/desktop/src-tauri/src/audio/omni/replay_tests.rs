@@ -896,9 +896,27 @@ fn replay_gate_timeout_then_late_completed() {
         .expect("late cue remains visible");
     assert_eq!(late_cue.source_text, "the user's last sentence");
     assert!(late_cue.committed, "the late ASR final remains authoritative");
-    assert!(snapshot.subtitle_overlay.recent_cues.iter().any(|cue| {
-        cue.cue_id != late_cue_id
-            && cue.source_text == "the current turn"
-            && !cue.committed
-    }));
+    assert!(harness.store().subtitle_source_is_final(&late_cue_id));
+    assert!(!late_cue.translation_committed);
+    assert!(late_cue.translated_text.is_empty());
+    assert_eq!(
+        late_cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Pending)
+    );
+    let current_cue = snapshot
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .find(|cue| cue.cue_id != late_cue_id && cue.source_text == "the current turn")
+        .expect("current source final remains separate from the timed-out cue");
+    assert!(current_cue.committed);
+    assert!(harness
+        .store()
+        .subtitle_source_is_final(&current_cue.cue_id));
+    assert!(!current_cue.translation_committed);
+    assert!(current_cue.translated_text.is_empty());
+    assert_eq!(
+        current_cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Pending)
+    );
 }

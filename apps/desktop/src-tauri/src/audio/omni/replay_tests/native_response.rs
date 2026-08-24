@@ -610,11 +610,16 @@ fn replay_cancelled_response_without_item_lineage_preserves_both_cues() {
         late_source_cue.cue_id, terminal_cue.cue_id,
         "unresolved cues: {cue_debug:?}",
     );
-    assert!(
-        !late_source_cue.committed,
-        "without response lineage the source has no native translation terminal",
-    );
+    assert!(late_source_cue.committed, "Provider ASR completed owns source finality");
+    assert!(harness
+        .store()
+        .subtitle_source_is_final(&late_source_cue.cue_id));
+    assert!(!late_source_cue.translation_committed);
     assert!(late_source_cue.translated_text.is_empty());
+    assert_eq!(
+        late_source_cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Pending)
+    );
 }
 
 /// Some OpenAI-compatible realtime providers put the final text only in the

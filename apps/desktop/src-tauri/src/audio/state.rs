@@ -37,6 +37,7 @@ mod session_registry;
 mod metrics;
 mod route_state;
 mod subtitle_store;
+mod subtitle_delta;
 pub(crate) use audio_cache::{CachedTtsAudio, CapturedSegmentAudio};
 pub(crate) use bridge_source_evidence::BridgeSourceFrameIdentity;
 use bridge_source_evidence::BridgeSourceRuntimeEvidence;
@@ -179,6 +180,7 @@ pub(crate) struct AudioStateStore {
     /// `snapshot()` call so the frontend can discard stale out-of-order events.
     snapshot_seq: std::sync::atomic::AtomicU64,
     subtitle_sequence: std::sync::atomic::AtomicU64,
+    subtitle_delta_stream: Mutex<subtitle_delta::SubtitleDeltaStream>,
     pub watch_session_report: WatchSessionReportStore,
     history: crate::history::HistoryStateStore,
 }
@@ -195,8 +197,14 @@ impl AudioStateStore {
 
     pub(crate) fn snapshot(&self) -> AudioRuntimeSnapshot {
         let mut snapshot = self.inner.lock().expect("audio state poisoned").clone();
-        snapshot.subtitle_overlay = self.subtitles.snapshot();
+        snapshot.subtitle_overlay = self
+            .subtitles
+            .snapshot(subtitle_delta::SUBTITLE_BASELINE_LIMIT);
         snapshot.subtitle_overlay.report_session_id = self.watch_session_report.session_id();
+        self.subtitle_delta_stream
+            .lock()
+            .expect("subtitle delta stream poisoned")
+            .apply_cursor(&mut snapshot.subtitle_overlay, true);
         snapshot.snapshot_seq = self
             .snapshot_seq
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -208,6 +216,39 @@ impl AudioStateStore {
         self.subtitle_sequence
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             .wrapping_add(1)
+    }
+
+    pub(crate) fn prepare_event_dispatch(
+        &self,
+    ) -> (
+        AudioRuntimeSnapshot,
+        Vec<super::contracts::SubtitleDeltaRuntime>,
+        bool,
+        bool,
+    ) {
+        let mut snapshot = self.inner.lock().expect("audio state poisoned").clone();
+        let overlay = self
+            .subtitles
+            .snapshot(subtitle_delta::SUBTITLE_BASELINE_LIMIT);
+        snapshot.subtitle_overlay = overlay.clone();
+        snapshot.subtitle_overlay.report_session_id = self.watch_session_report.session_id();
+        snapshot.snapshot_seq = self
+            .snapshot_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(1);
+
+        let mut stream = self
+            .subtitle_delta_stream
+            .lock()
+            .expect("subtitle delta stream poisoned");
+        let batch = stream.prepare_dispatch(&overlay, &snapshot, Instant::now());
+        stream.apply_cursor(&mut snapshot.subtitle_overlay, false);
+        (
+            snapshot,
+            batch.deltas,
+            batch.emit_audio_snapshot,
+            batch.emit_runtime_snapshot,
+        )
     }
 
     pub(crate) fn lock_inbound_pipeline(&self) -> MutexGuard<'_, ()> {

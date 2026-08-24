@@ -431,10 +431,19 @@ pub(crate) fn emit_audio_snapshot<R: tauri::Runtime>(
     app: &AppHandle<R>,
     store: &AudioStateStore,
 ) -> Result<(), String> {
-    app.emit(AUDIO_RUNTIME_SNAPSHOT_EVENT, store.snapshot())
-        .map_err_str()?;
-    if let Some(runtime_state) = app.try_state::<RuntimeStateStore>() {
-        emit_runtime_snapshot(app, &runtime_state).map_err_str()?;
+    let (snapshot, subtitle_deltas, emit_audio, emit_runtime) = store.prepare_event_dispatch();
+    for delta in subtitle_deltas {
+        app.emit(super::events::SUBTITLE_DELTA_EVENT, delta)
+            .map_err_str()?;
+    }
+    if emit_audio {
+        app.emit(AUDIO_RUNTIME_SNAPSHOT_EVENT, snapshot)
+            .map_err_str()?;
+    }
+    if emit_runtime {
+        if let Some(runtime_state) = app.try_state::<RuntimeStateStore>() {
+            emit_runtime_snapshot(app, &runtime_state).map_err_str()?;
+        }
     }
     Ok(())
 }

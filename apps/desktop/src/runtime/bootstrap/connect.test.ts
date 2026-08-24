@@ -166,6 +166,38 @@ describe('connectDesktopRuntimeBridge failure and sync edges', () => {
     }
   });
 
+  it('resynchronizes through session_v2 when a subtitle delta sequence has a gap', async () => {
+    const reconciled = structuredClone(audioRuntimeSnapshotMock);
+    reconciled.subtitleOverlay.streamId = 'gap-stream';
+    reconciled.subtitleOverlay.generation = 2;
+    reconciled.subtitleOverlay.seq = 8;
+    reconciled.subtitleOverlay.recentCues = [];
+    reconciled.subtitleOverlay.activeCue = null;
+    happyInvoke({ 'session_v2:snapshot': { data: reconciled, warnings: [] } });
+    const listeners = captureRegisteredListeners();
+
+    const cleanup = await connectDesktopRuntimeBridge();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    invokeMock.mockClear();
+    listeners.get('audio://subtitle-delta')?.({
+      payload: {
+        streamId: useAppStore.getState().subtitleStreamId,
+        generation: useAppStore.getState().subtitleGeneration,
+        seq: useAppStore.getState().subtitleSeq + 2,
+        operation: 'upsert',
+        cue: null,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(invokeMock.mock.calls.some(
+      ([command, args]) => command === 'session_v2' && (args as V2Args)?.command?.action === 'snapshot',
+    )).toBe(true);
+    expect(useAppStore.getState().subtitleStreamId).toBe('gap-stream');
+    expect(useAppStore.getState().subtitleSeq).toBe(8);
+    cleanup();
+  });
+
   it('degrades to the runtime-error snapshot when bootstrapRuntime fails after the ping', async () => {
     happyInvoke({ 'configuration_v2:bootstrapRuntime': new Error('runtime store exploded') });
 

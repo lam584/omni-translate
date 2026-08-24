@@ -92,7 +92,7 @@ fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
-#[derive(Clone, Serialize, TS)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SubtitleCueRuntime {
     pub cue_id: String,
@@ -141,6 +141,16 @@ pub(crate) struct SubtitleCueRuntime {
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SubtitleOverlayRuntimeSnapshot {
+    /// Identifies one desktop process' subtitle event stream. A renderer must
+    /// resync when this changes rather than applying deltas from an old shell.
+    pub stream_id: String,
+    /// Bumped whenever the live cue window is reset.
+    pub generation: u64,
+    /// Last subtitle delta included in this baseline.
+    pub seq: u64,
+    /// `true` for invoke/bootstrap baselines and `false` for aggregate push
+    /// snapshots, which deliberately omit the cue collection.
+    pub baseline_included: bool,
     pub queue_depth: usize,
     pub dropped_cue_count: u64,
     pub first_translation_average_ms: Option<u64>,
@@ -156,6 +166,10 @@ pub(crate) struct SubtitleOverlayRuntimeSnapshot {
 impl SubtitleOverlayRuntimeSnapshot {
     pub(crate) fn empty() -> Self {
         Self {
+            stream_id: String::new(),
+            generation: 0,
+            seq: 0,
+            baseline_included: true,
             queue_depth: 0,
             dropped_cue_count: 0,
             first_translation_average_ms: None,
@@ -166,6 +180,18 @@ impl SubtitleOverlayRuntimeSnapshot {
             recent_cues: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubtitleDeltaRuntime {
+    pub stream_id: String,
+    pub generation: u64,
+    pub seq: u64,
+    #[ts(type = "'upsert' | 'remove' | 'reset'")]
+    pub operation: String,
+    /// Upserts and removals carry exactly one cue. Reset carries none.
+    pub cue: Option<SubtitleCueRuntime>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]

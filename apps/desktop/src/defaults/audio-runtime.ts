@@ -94,6 +94,10 @@ export const audioRuntimeSnapshotMock: AudioRuntimeSnapshot = {
     recommendedAction: null,
   },
   subtitleOverlay: {
+    streamId: 'preview-subtitle-stream',
+    generation: 1,
+    seq: 0,
+    baselineIncluded: true,
     queueDepth: 1,
     droppedCueCount: 0,
     firstTranslationAverageMs: null,

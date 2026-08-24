@@ -197,6 +197,10 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
     lastDisconnectReason: null,
   };
   audio.subtitleOverlay = {
+    streamId: 'fake-subtitle-stream',
+    generation: 1,
+    seq: 0,
+    baselineIncluded: true,
     queueDepth: 0,
     droppedCueCount: 0,
     firstTranslationAverageMs: null,

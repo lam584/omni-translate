@@ -34,6 +34,7 @@ impl AudioStateStore {
             ),
             snapshot_seq: std::sync::atomic::AtomicU64::new(0),
             subtitle_sequence: std::sync::atomic::AtomicU64::new(0),
+            subtitle_delta_stream: Mutex::new(subtitle_delta::SubtitleDeltaStream::new()),
             watch_session_report: WatchSessionReportStore::new(),
             history,
         }

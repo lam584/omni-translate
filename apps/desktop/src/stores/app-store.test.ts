@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import type { RuntimeNotification } from '../schema/runtime-core';
+import type { SubtitleDeltaRuntime } from '../schema/audio-runtime';
 import { appStoreTestHelpers, useAppStore } from './app-store';
 
 const initialState = useAppStore.getState();
@@ -194,6 +195,72 @@ describe('app store', () => {
     expect(useAppStore.getState().runtimeSnapshot.notifications).toEqual(
       useAppStore.getState().runtimeNotifications,
     );
+  });
+
+  it('applies ten thousand subtitle deltas through a bounded indexed window', () => {
+    const baseline = structuredClone(audioRuntimeSnapshotMock);
+    baseline.subtitleOverlay.streamId = 'stream-10k';
+    baseline.subtitleOverlay.generation = 7;
+    baseline.subtitleOverlay.seq = 0;
+    baseline.subtitleOverlay.recentCues = [];
+    baseline.subtitleOverlay.activeCue = null;
+    useAppStore.getState().setAudioRuntimeSnapshot(baseline);
+
+    for (let index = 1; index <= 10_000; index += 1) {
+      const delta: SubtitleDeltaRuntime = {
+        streamId: 'stream-10k',
+        generation: 7,
+        seq: index,
+        operation: 'upsert',
+        cue: {
+          cueId: `cue-${index}`,
+          routeDirection: 'inbound',
+          sourceText: `source ${index}`,
+          translatedText: `translated ${index}`,
+          startedAt: 'unix:1',
+          endedAt: 'unix:2',
+          committed: true,
+          translationCommitted: true,
+        },
+      };
+      expect(useAppStore.getState().applySubtitleDelta(delta)).toBe('applied');
+    }
+
+    const state = useAppStore.getState();
+    expect(state.subtitleOrderedCueIds).toHaveLength(32);
+    expect(Object.keys(state.subtitleCueById)).toHaveLength(32);
+    expect(state.subtitleOrderedCueIds[0]).toBe('cue-10000');
+    expect(state.audioRuntimeSnapshot.subtitleOverlay.recentCues).toHaveLength(32);
+    expect(state.audioRuntimeSnapshot.subtitleOverlay.recentCues[31]?.cueId).toBe('cue-9969');
+  });
+
+  it('requests resync for subtitle sequence gaps without mutating indexed cues', () => {
+    const baseline = structuredClone(audioRuntimeSnapshotMock);
+    baseline.subtitleOverlay.streamId = 'stream-gap';
+    baseline.subtitleOverlay.generation = 3;
+    baseline.subtitleOverlay.seq = 40;
+    useAppStore.getState().setAudioRuntimeSnapshot(baseline);
+    const before = useAppStore.getState().subtitleOrderedCueIds;
+
+    const result = useAppStore.getState().applySubtitleDelta({
+      streamId: 'stream-gap',
+      generation: 3,
+      seq: 42,
+      operation: 'upsert',
+      cue: {
+        cueId: 'gap-cue',
+        routeDirection: 'inbound',
+        sourceText: 'gap',
+        translatedText: 'gap',
+        startedAt: 'unix:1',
+        endedAt: 'unix:2',
+        committed: true,
+      },
+    });
+
+    expect(result).toBe('resync');
+    expect(useAppStore.getState().subtitleOrderedCueIds).toBe(before);
+    expect(useAppStore.getState().subtitleSeq).toBe(40);
   });
 
   it('updates runtime snapshots and each nested configuration section', () => {

@@ -1,6 +1,11 @@
 import { emit, listen } from '@tauri-apps/api/event';
 import i18n from '../../i18n/config';
-import { AUDIO_RUNTIME_SNAPSHOT_EVENT, type AudioRuntimeSnapshot } from '../../schema/audio-runtime';
+import {
+  AUDIO_RUNTIME_SNAPSHOT_EVENT,
+  SUBTITLE_DELTA_EVENT,
+  type AudioRuntimeSnapshot,
+  type SubtitleDeltaRuntime,
+} from '../../schema/audio-runtime';
 import type { AppConfigDraft } from '../../schema/config';
 import {
   RUNTIME_NOTIFICATION_EVENT,
@@ -95,6 +100,13 @@ export async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Pro
       // Best-effort reconciliation; the next push or poll tick retries.
     }
   };
+  let subtitleResyncInFlight: Promise<void> | null = null;
+  const resyncSubtitleBaseline = () => {
+    if (subtitleResyncInFlight) return;
+    subtitleResyncInFlight = fetchAudioSnapshotIntoStore().finally(() => {
+      subtitleResyncInFlight = null;
+    });
+  };
 
   // The reconciliation fetch below must run after BOTH the listener
   // registration and the foreground `bootstrap_audio` write: reconciling
@@ -121,10 +133,15 @@ export async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Pro
     registerListener<AudioRuntimeSnapshot>(AUDIO_RUNTIME_SNAPSHOT_EVENT, (event) => {
       useAppStore.getState().setAudioRuntimeSnapshot(event.payload);
     }),
-  ]).then(async ([, , audioListenerRegistered]) => {
+    registerListener<SubtitleDeltaRuntime>(SUBTITLE_DELTA_EVENT, (event) => {
+      if (useAppStore.getState().applySubtitleDelta(event.payload) === 'resync') {
+        resyncSubtitleBaseline();
+      }
+    }),
+  ]).then(async ([, , audioListenerRegistered, subtitleListenerRegistered]) => {
     await audioBootstrapSettled;
     if (disposed) return;
-    if (audioListenerRegistered) {
+    if (audioListenerRegistered && subtitleListenerRegistered) {
       // Any audio push emitted between `bootstrap_audio` and this registration
       // is gone; reconcile once against the authoritative native snapshot so
       // the store cannot keep pre-registration state until the next push.

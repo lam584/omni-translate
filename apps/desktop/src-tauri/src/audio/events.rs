@@ -54,6 +54,7 @@ use route_orchestrator::{
 };
 
 pub(crate) const AUDIO_RUNTIME_SNAPSHOT_EVENT: &str = "audio://snapshot";
+pub(crate) const SUBTITLE_DELTA_EVENT: &str = "audio://subtitle-delta";
 const AUDIO_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(6);
 const OMNI_PRECONNECT_SESSION_READINESS_TIMEOUT: Duration = Duration::from_secs(45);
 const OMNI_ROUTE_SESSION_READINESS_TIMEOUT: Duration = Duration::from_secs(90);

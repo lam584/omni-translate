@@ -220,6 +220,10 @@ export class PreviewDesktopApi {
     stopRoute: async (direction: 'inbound' | 'outbound') => this.stopRoute(direction),
     clearCues: async () => {
       this.audio.subtitleOverlay = {
+        streamId: 'preview-subtitle-stream',
+        generation: this.audio.subtitleOverlay.generation + 1,
+        seq: 0,
+        baselineIncluded: true,
         queueDepth: 0,
         droppedCueCount: 0,
         firstTranslationAverageMs: null,

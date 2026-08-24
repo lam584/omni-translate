@@ -41,7 +41,13 @@ function SubtitleOverlayPage() {
   const resizeDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [hovered, setHovered] = useState(false);
   const { recentCues, reportSessionId } = audioRuntimeSnapshot.subtitleOverlay;
-  const displayCues = useMemo(() => [...recentCues].filter((cue) => getCueDisplaySegments(cue).length > 0).reverse(), [recentCues]);
+  const displayCues = useMemo(
+    () => recentCues
+      .filter((cue) => getCueDisplaySegments(cue).length > 0)
+      .slice(0, 12)
+      .reverse(),
+    [recentCues],
+  );
   useOverlayRenderReceipt({
     desktopApi,
     displayCues,

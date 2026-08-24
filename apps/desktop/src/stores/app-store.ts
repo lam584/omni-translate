@@ -3,7 +3,11 @@ import { audioRuntimeSnapshotMock } from '../defaults/audio-runtime';
 import { appConfigDraftMock } from '../defaults/app-config';
 import { navItems, presets } from '../defaults/app-content';
 import { runtimeSnapshotMock } from '../defaults/runtime-shell';
-import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
+import type {
+  AudioRuntimeSnapshot,
+  SubtitleCueRuntime,
+  SubtitleDeltaRuntime,
+} from '../schema/audio-runtime';
 import type {
   AppConfigDraft,
   DeviceDraft,
@@ -28,12 +32,18 @@ type AppStoreState = {
   configDraft: AppConfigDraft;
   runtimeSnapshot: RuntimeSnapshot;
   audioRuntimeSnapshot: AudioRuntimeSnapshot;
+  subtitleCueById: Record<string, SubtitleCueRuntime>;
+  subtitleOrderedCueIds: string[];
+  subtitleStreamId: string;
+  subtitleGeneration: number;
+  subtitleSeq: number;
   runtimeNotifications: RuntimeNotification[];
   setActivePageByPath: (path: string) => void;
   setActivePresetId: (presetId: string) => void;
   setConfigDraft: (configDraft: AppConfigDraft) => void;
   setRuntimeSnapshot: (snapshot: RuntimeSnapshot) => void;
   setAudioRuntimeSnapshot: (snapshot: AudioRuntimeSnapshot) => void;
+  applySubtitleDelta: (delta: SubtitleDeltaRuntime) => SubtitleDeltaApplyResult;
   pushRuntimeNotification: (notification: RuntimeNotification) => void;
   updateActiveProviderDraft: (patch: Partial<ProviderDraft>) => void;
   updateDeviceDraft: (patch: Partial<DeviceDraft>) => void;
@@ -46,6 +56,111 @@ type AppStoreState = {
   updateActiveProviderTemplateId: (templateId: string) => void;
   updateProviders: (providers: ProviderDraft[]) => void;
 };
+
+const SUBTITLE_WINDOW_LIMIT = 32;
+
+type SubtitleCueIndex = {
+  cueById: Record<string, SubtitleCueRuntime>;
+  orderedCueIds: string[];
+  streamId: string;
+  generation: number;
+  seq: number;
+};
+
+export type SubtitleDeltaApplyResult = 'applied' | 'ignored' | 'resync';
+
+function indexSubtitleBaseline(snapshot: AudioRuntimeSnapshot): SubtitleCueIndex {
+  const recentCues = snapshot.subtitleOverlay.recentCues.slice(0, SUBTITLE_WINDOW_LIMIT);
+  const cueById: Record<string, SubtitleCueRuntime> = {};
+  const orderedCueIds: string[] = [];
+  for (const cue of recentCues) {
+    if (cueById[cue.cueId]) continue;
+    cueById[cue.cueId] = cue;
+    orderedCueIds.push(cue.cueId);
+  }
+  return {
+    cueById,
+    orderedCueIds,
+    streamId: snapshot.subtitleOverlay.streamId,
+    generation: snapshot.subtitleOverlay.generation,
+    seq: snapshot.subtitleOverlay.seq,
+  };
+}
+
+export function applySubtitleDeltaToIndex(
+  current: SubtitleCueIndex,
+  delta: SubtitleDeltaRuntime,
+): { result: SubtitleDeltaApplyResult; index: SubtitleCueIndex } {
+  if (!current.streamId) return { result: 'resync', index: current };
+  if (delta.streamId !== current.streamId) return { result: 'resync', index: current };
+
+  const isExpectedReset = delta.operation === 'reset'
+    && delta.generation === current.generation + 1
+    && delta.seq === 1;
+  if (delta.generation !== current.generation && !isExpectedReset) {
+    return { result: 'resync', index: current };
+  }
+  if (!isExpectedReset && delta.seq <= current.seq) {
+    return { result: 'ignored', index: current };
+  }
+  if (!isExpectedReset && delta.seq !== current.seq + 1) {
+    return { result: 'resync', index: current };
+  }
+  if (isExpectedReset) {
+    return {
+      result: 'applied',
+      index: {
+        cueById: {},
+        orderedCueIds: [],
+        streamId: delta.streamId,
+        generation: delta.generation,
+        seq: delta.seq,
+      },
+    };
+  }
+  if (!delta.cue) return { result: 'resync', index: current };
+
+  const cueById = { ...current.cueById };
+  let orderedCueIds = current.orderedCueIds;
+  if (delta.operation === 'remove') {
+    if (!cueById[delta.cue.cueId]) {
+      return {
+        result: 'applied',
+        index: { ...current, seq: delta.seq },
+      };
+    }
+    delete cueById[delta.cue.cueId];
+    orderedCueIds = orderedCueIds.filter((cueId) => cueId !== delta.cue?.cueId);
+  } else if (delta.operation === 'upsert') {
+    const isNew = !cueById[delta.cue.cueId];
+    cueById[delta.cue.cueId] = delta.cue;
+    if (isNew) orderedCueIds = [delta.cue.cueId, ...orderedCueIds];
+  } else {
+    return { result: 'resync', index: current };
+  }
+
+  if (orderedCueIds.length > SUBTITLE_WINDOW_LIMIT) {
+    const removedIds = orderedCueIds.slice(SUBTITLE_WINDOW_LIMIT);
+    orderedCueIds = orderedCueIds.slice(0, SUBTITLE_WINDOW_LIMIT);
+    for (const cueId of removedIds) delete cueById[cueId];
+  }
+  return {
+    result: 'applied',
+    index: {
+      cueById,
+      orderedCueIds,
+      streamId: current.streamId,
+      generation: current.generation,
+      seq: delta.seq,
+    },
+  };
+}
+
+function indexedCues(index: SubtitleCueIndex) {
+  return index.orderedCueIds
+    .map((cueId) => index.cueById[cueId])
+    .filter((cue): cue is SubtitleCueRuntime => Boolean(cue));
+}
 
 function resolveInitialPageId(items: typeof navItems) {
   return items[0]?.id ?? 'dashboard';
@@ -62,6 +177,7 @@ function resolvePageIdByPath(items: typeof navItems, path: string, fallbackPageI
 
 const defaultPageId = resolveInitialPageId(navItems);
 const defaultPresetId = resolveInitialPresetId(appConfigDraftMock.onboarding.activePresetId, presets);
+const initialSubtitleIndex = indexSubtitleBaseline(audioRuntimeSnapshotMock);
 
 function mergeConfigDraftWithDefaults(configDraft: AppConfigDraft): AppConfigDraft {
   const incomingSubtitles = configDraft.subtitles as Partial<SubtitleDraft>;
@@ -145,6 +261,11 @@ export const useAppStore = create<AppStoreState>((set) => ({
   configDraft: appConfigDraftMock,
   runtimeSnapshot: runtimeSnapshotMock,
   audioRuntimeSnapshot: audioRuntimeSnapshotMock,
+  subtitleCueById: initialSubtitleIndex.cueById,
+  subtitleOrderedCueIds: initialSubtitleIndex.orderedCueIds,
+  subtitleStreamId: initialSubtitleIndex.streamId,
+  subtitleGeneration: initialSubtitleIndex.generation,
+  subtitleSeq: initialSubtitleIndex.seq,
   runtimeNotifications: runtimeSnapshotMock.notifications,
   setActivePageByPath: (path) => {
     set({ activePageId: resolvePageIdByPath(navItems, path, defaultPageId) });
@@ -201,17 +322,88 @@ export const useAppStore = create<AppStoreState>((set) => ({
       const previousSessionRunning =
         state.audioRuntimeSnapshot.inbound.streamBound || state.audioRuntimeSnapshot.outbound.streamBound;
 
+      const baselineIncluded = snapshot.subtitleOverlay.baselineIncluded !== false;
+      const subtitleIndex = baselineIncluded
+        ? indexSubtitleBaseline(snapshot)
+        : {
+            cueById: state.subtitleCueById,
+            orderedCueIds: state.subtitleOrderedCueIds,
+            streamId: state.subtitleStreamId,
+            generation: state.subtitleGeneration,
+            seq: state.subtitleSeq,
+          };
+      const recentCues = indexedCues(subtitleIndex);
+      const activeCueId = baselineIncluded
+        ? snapshot.subtitleOverlay.activeCue?.cueId
+        : state.audioRuntimeSnapshot.subtitleOverlay.activeCue?.cueId;
       return {
         audioRuntimeSnapshot: {
           ...snapshot,
+          subtitleOverlay: {
+            ...snapshot.subtitleOverlay,
+            streamId: subtitleIndex.streamId,
+            generation: subtitleIndex.generation,
+            seq: subtitleIndex.seq,
+            baselineIncluded,
+            recentCues,
+            activeCue: (activeCueId ? subtitleIndex.cueById[activeCueId] : undefined)
+              ?? recentCues[0]
+              ?? null,
+          },
           sessionStartedAt: sessionRunning
             ? snapshot.sessionStartedAt ?? state.audioRuntimeSnapshot.sessionStartedAt ?? new Date().toISOString()
             : previousSessionRunning
               ? null
               : snapshot.sessionStartedAt,
         },
+        subtitleCueById: subtitleIndex.cueById,
+        subtitleOrderedCueIds: subtitleIndex.orderedCueIds,
+        subtitleStreamId: subtitleIndex.streamId,
+        subtitleGeneration: subtitleIndex.generation,
+        subtitleSeq: subtitleIndex.seq,
       };
     }),
+  applySubtitleDelta: (delta) => {
+    let applyResult: SubtitleDeltaApplyResult = 'ignored';
+    set((state) => {
+      const applied = applySubtitleDeltaToIndex({
+        cueById: state.subtitleCueById,
+        orderedCueIds: state.subtitleOrderedCueIds,
+        streamId: state.subtitleStreamId,
+        generation: state.subtitleGeneration,
+        seq: state.subtitleSeq,
+      }, delta);
+      applyResult = applied.result;
+      if (applied.result !== 'applied') return state;
+      const recentCues = indexedCues(applied.index);
+      const previousActiveId = state.audioRuntimeSnapshot.subtitleOverlay.activeCue?.cueId;
+      const nextActive = delta.operation === 'upsert'
+        ? delta.cue
+        : (previousActiveId ? applied.index.cueById[previousActiveId] : undefined)
+          ?? recentCues[0]
+          ?? null;
+      return {
+        subtitleCueById: applied.index.cueById,
+        subtitleOrderedCueIds: applied.index.orderedCueIds,
+        subtitleStreamId: applied.index.streamId,
+        subtitleGeneration: applied.index.generation,
+        subtitleSeq: applied.index.seq,
+        audioRuntimeSnapshot: {
+          ...state.audioRuntimeSnapshot,
+          subtitleOverlay: {
+            ...state.audioRuntimeSnapshot.subtitleOverlay,
+            streamId: applied.index.streamId,
+            generation: applied.index.generation,
+            seq: applied.index.seq,
+            baselineIncluded: true,
+            recentCues,
+            activeCue: nextActive,
+          },
+        },
+      };
+    });
+    return applyResult;
+  },
   pushRuntimeNotification: (notification) =>
     set((state) => {
       const nextNotifications = [notification, ...state.runtimeNotifications.filter((item) => item.id !== notification.id)].slice(0, 6);

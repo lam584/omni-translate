@@ -36,12 +36,30 @@ committed: boolean,
  */
 translationCommitted?: boolean, translationState?: SubtitleTranslationStateRuntime | null, };
 
-export type SubtitleOverlayRuntimeSnapshot = { queueDepth: number, droppedCueCount: number, firstTranslationAverageMs: number | null, firstTranslationLastMs: number | null, firstTranslationSampleCount: number,
+export type SubtitleOverlayRuntimeSnapshot = {
+/**
+ * Identifies one desktop process' subtitle event stream. A renderer must
+ * resync when this changes rather than applying deltas from an old shell.
+ */
+streamId: string,
+/** Bumped whenever the live cue window is reset. */
+generation: number,
+/** Last subtitle delta included in this baseline. */
+seq: number,
+/**
+ * `true` for invoke/bootstrap baselines and `false` for aggregate push
+ * snapshots, which deliberately omit the cue collection.
+ */
+baselineIncluded: boolean, queueDepth: number, droppedCueCount: number, firstTranslationAverageMs: number | null, firstTranslationLastMs: number | null, firstTranslationSampleCount: number,
 /**
  * Stable in-memory Watch report id. The overlay echoes this value in its
  * post-render receipt so stale windows cannot mutate a newer session.
  */
 reportSessionId: string | null, activeCue: SubtitleCueRuntime | null, recentCues: Array<SubtitleCueRuntime>, };
+
+export type SubtitleDeltaRuntime = { streamId: string, generation: number, seq: number, operation: 'upsert' | 'remove' | 'reset',
+/** Upserts and removals carry exactly one cue. Reset carries none. */
+cue: SubtitleCueRuntime | null, };
 
 export type WatchTimelineEventRuntime = { eventId: string, stage: 'source' | 'model' | 'publish' | 'render' | 'error' | 'session', kind: string, elapsedMs: number, text: string, detail: string | null, finalEvent: boolean, accepted: boolean, visible: boolean | null, callId: string | null, attemptId: string | null, };
 

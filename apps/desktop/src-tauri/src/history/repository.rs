@@ -6,9 +6,13 @@ use serde::Serialize;
 use super::crypto::HistoryCipher;
 
 mod cursor;
+#[cfg(test)]
+mod cue_lineage_tests;
 use cursor::{decode_cue_cursor, decode_session_cursor};
 mod retention;
 use retention::RETENTION_MAX_BYTES;
+mod schema;
+use schema::{ensure_column, table_columns};
 #[cfg(test)]
 use retention::{RETENTION_MAX_AGE_MS, RETENTION_MAX_SESSIONS};
 
@@ -884,34 +888,6 @@ impl HistoryRepository {
     }
 }
 
-fn ensure_column(
-    connection: &Connection,
-    table: &str,
-    column: &str,
-    alter_statement: &str,
-) -> Result<(), String> {
-    let columns = table_columns(connection, table)?;
-    if !columns.iter().any(|value| value == column) {
-        connection
-            .execute(alter_statement, [])
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
-fn table_columns(connection: &Connection, table: &str) -> Result<Vec<String>, String> {
-    let mut statement = connection
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(|error| error.to_string())?;
-    let rows = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|error| error.to_string())?;
-    let columns = rows
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    Ok(columns)
-}
-
 fn migrate_legacy_audio_refs(connection: &mut Connection) -> Result<(), String> {
     if !table_columns(connection, "subtitle_cue_audio_refs")?
         .iter()
@@ -999,50 +975,6 @@ mod tests {
                 assert!(!raw.windows("私密译文".len()).any(|part| part == "私密译文".as_bytes()));
             }
         }
-    }
-
-    #[test]
-    fn cue_api_preserves_runtime_lineage_and_rejects_superseded_mutations() {
-        let directory = tempfile::tempdir().unwrap();
-        let repository = HistoryRepository::initialize(
-            directory.path().join("subtitle-history.db"),
-            HistoryCipher::for_test([13; 32]),
-        )
-        .unwrap();
-        repository.create_session("session-lineage", 100).unwrap();
-
-        for (sequence, revision, translated_text, updated_at_ms) in [
-            (10, 2, "preview", 101),
-            (10, 2, "same-lineage-latest", 102),
-            (11, 3, "final", 103),
-            (12, 2, "superseded-late-result", 104),
-        ] {
-            repository
-                .upsert_cue(
-                    CueWrite {
-                        session_id: "session-lineage",
-                        cue_id: "cue-1",
-                        sequence,
-                        revision,
-                        route_direction: "inbound",
-                        source_text: "source",
-                        translated_text,
-                        source_committed: true,
-                        translation_committed: revision == 3,
-                        started_at_ms: 100,
-                        ended_at_ms: updated_at_ms,
-                    },
-                    updated_at_ms,
-                )
-                .unwrap();
-        }
-
-        let cues = repository.list_cues("session-lineage", None, 50).unwrap();
-        assert_eq!(cues.items.len(), 1);
-        assert_eq!(cues.items[0].sequence, 11);
-        assert_eq!(cues.items[0].revision, 3);
-        assert_eq!(cues.items[0].translated_text, "final");
-        assert!(cues.items[0].translation_committed);
     }
 
     #[test]

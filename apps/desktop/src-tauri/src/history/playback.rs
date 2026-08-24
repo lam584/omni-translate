@@ -482,8 +482,8 @@ mod tests {
                 2_000,
             )
             .unwrap();
-        let first_samples = vec![10, 11, 12, 13];
-        let second_samples = vec![20, 21, 22, 23];
+        let first_samples = (10..74).collect::<Vec<i16>>();
+        let second_samples = (110..174).collect::<Vec<i16>>();
         let first = crate::history::audio::archive_flac_segment(
             directory.path(),
             &cipher,
@@ -535,7 +535,7 @@ mod tests {
         .unwrap();
         assert_eq!(pieces.len(), 2);
         assert_eq!(pieces[0].samples, vec![11, 12]);
-        assert_eq!(pieces[1].samples, vec![21, 22]);
+        assert_eq!(pieces[1].samples, vec![111, 112]);
 
         let mut tampered = std::fs::read(&second.path).unwrap();
         let last = tampered.len() - 1;

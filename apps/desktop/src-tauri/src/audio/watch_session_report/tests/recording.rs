@@ -24,6 +24,7 @@ use super::*;
             cue.llm_first_at_ms = Some(300);
             cue.rendered_first_at_ms = Some(500);
             cue.rendered_final_at_ms = Some(800);
+            cue.translation_state = Some(SubtitleTranslationStateRuntime::Final);
         }
 
         let report = store.snapshot().expect("report");

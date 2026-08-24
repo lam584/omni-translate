@@ -1012,7 +1012,7 @@ mod tests {
         let mut splitter = SentenceSplitter::new();
         let text = "This is a long enough fragment that should translate before punctuation";
         assert!(splitter.feed(text).is_empty());
-        splitter.age_pending_for_test(Duration::from_millis(700));
+        splitter.age_pending_for_test(splitter.soft_deadline());
         let forced = splitter.feed(text);
         assert_eq!(forced.len(), 1);
 

@@ -39,7 +39,7 @@
                 {
                   "scenario": "watch",
                   "modelIds": [
-                    "qwen3.5-omni-plus-realtime"
+                    "qwen3.5-livetranslate-flash-realtime"
                   ]
                 },
                 {
@@ -696,7 +696,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -715,7 +715,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -764,7 +764,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -783,7 +783,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -1410,7 +1410,7 @@
               }
             },
             "supportProfileId": "support-watch-system-audio",
-            "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+            "inboundVoiceModelId": "qwen3.5-livetranslate-flash-realtime",
             "outboundVoiceModelId": "qwen3.5-omni-plus-realtime",
             "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
             "subtitleTranslationMode": "native",
@@ -1553,7 +1553,7 @@
             "checklistStatus": "warning"
           }
         },
-        "modelReference": "qwen3.5-omni-plus-realtime"
+        "modelReference": "qwen3.5-livetranslate-flash-realtime"
       }
     }
   },
@@ -1594,7 +1594,7 @@
             {
               "scenario": "watch",
               "modelIds": [
-                "qwen3.5-omni-plus-realtime"
+                "qwen3.5-livetranslate-flash-realtime"
               ]
             },
             {
@@ -2251,7 +2251,7 @@
                 "speech-to-speech"
               ],
               "realtimeProtocol": "dashscope-omni",
-              "realtimeAudioMode": "manual",
+              "realtimeAudioMode": "semantic_vad",
               "interactionCapabilities": [
                 "auto_vad",
                 "manual_commit",
@@ -2270,7 +2270,7 @@
                 "speech-to-speech"
               ],
               "realtimeProtocol": "dashscope-omni",
-              "realtimeAudioMode": "manual",
+              "realtimeAudioMode": "semantic_vad",
               "interactionCapabilities": [
                 "auto_vad",
                 "manual_commit",
@@ -2319,7 +2319,7 @@
                 "speech-to-speech"
               ],
               "realtimeProtocol": "dashscope-omni",
-              "realtimeAudioMode": "manual",
+              "realtimeAudioMode": "semantic_vad",
               "interactionCapabilities": [
                 "auto_vad",
                 "manual_commit",
@@ -2338,7 +2338,7 @@
                 "speech-to-speech"
               ],
               "realtimeProtocol": "dashscope-omni",
-              "realtimeAudioMode": "manual",
+              "realtimeAudioMode": "semantic_vad",
               "interactionCapabilities": [
                 "auto_vad",
                 "manual_commit",
@@ -2893,7 +2893,7 @@
             {
               "scenario": "watch",
               "modelIds": [
-                "qwen3.5-omni-plus-realtime"
+                "qwen3.5-livetranslate-flash-realtime"
               ]
             },
             {
@@ -3550,7 +3550,7 @@
                 "speech-to-speech"
               ],
               "realtimeProtocol": "dashscope-omni",
-              "realtimeAudioMode": "manual",
+              "realtimeAudioMode": "semantic_vad",
               "interactionCapabilities": [
                 "auto_vad",
                 "manual_commit",
@@ -3569,7 +3569,7 @@
                 "speech-to-speech"
               ],
               "realtimeProtocol": "dashscope-omni",
-              "realtimeAudioMode": "manual",
+              "realtimeAudioMode": "semantic_vad",
               "interactionCapabilities": [
                 "auto_vad",
                 "manual_commit",
@@ -3618,7 +3618,7 @@
                 "speech-to-speech"
               ],
               "realtimeProtocol": "dashscope-omni",
-              "realtimeAudioMode": "manual",
+              "realtimeAudioMode": "semantic_vad",
               "interactionCapabilities": [
                 "auto_vad",
                 "manual_commit",
@@ -3637,7 +3637,7 @@
                 "speech-to-speech"
               ],
               "realtimeProtocol": "dashscope-omni",
-              "realtimeAudioMode": "manual",
+              "realtimeAudioMode": "semantic_vad",
               "interactionCapabilities": [
                 "auto_vad",
                 "manual_commit",
@@ -4192,7 +4192,7 @@
             {
               "scenario": "watch",
               "modelIds": [
-                "qwen3.5-omni-plus-realtime"
+                "qwen3.5-livetranslate-flash-realtime"
               ]
             },
             {
@@ -4849,7 +4849,7 @@
                 "speech-to-speech"
               ],
               "realtimeProtocol": "dashscope-omni",
-              "realtimeAudioMode": "manual",
+              "realtimeAudioMode": "semantic_vad",
               "interactionCapabilities": [
                 "auto_vad",
                 "manual_commit",
@@ -4868,7 +4868,7 @@
                 "speech-to-speech"
               ],
               "realtimeProtocol": "dashscope-omni",
-              "realtimeAudioMode": "manual",
+              "realtimeAudioMode": "semantic_vad",
               "interactionCapabilities": [
                 "auto_vad",
                 "manual_commit",
@@ -4917,7 +4917,7 @@
                 "speech-to-speech"
               ],
               "realtimeProtocol": "dashscope-omni",
-              "realtimeAudioMode": "manual",
+              "realtimeAudioMode": "semantic_vad",
               "interactionCapabilities": [
                 "auto_vad",
                 "manual_commit",
@@ -4936,7 +4936,7 @@
                 "speech-to-speech"
               ],
               "realtimeProtocol": "dashscope-omni",
-              "realtimeAudioMode": "manual",
+              "realtimeAudioMode": "semantic_vad",
               "interactionCapabilities": [
                 "auto_vad",
                 "manual_commit",
@@ -5537,7 +5537,7 @@
                 {
                   "scenario": "watch",
                   "modelIds": [
-                    "qwen3.5-omni-plus-realtime"
+                    "qwen3.5-livetranslate-flash-realtime"
                   ]
                 },
                 {
@@ -6194,7 +6194,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -6213,7 +6213,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -6262,7 +6262,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -6281,7 +6281,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -6908,7 +6908,7 @@
               }
             },
             "supportProfileId": "support-watch-system-audio",
-            "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+            "inboundVoiceModelId": "qwen3.5-livetranslate-flash-realtime",
             "outboundVoiceModelId": "qwen3.5-omni-plus-realtime",
             "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
             "subtitleTranslationMode": "native",
@@ -7103,7 +7103,7 @@
                 {
                   "scenario": "watch",
                   "modelIds": [
-                    "qwen3.5-omni-plus-realtime"
+                    "qwen3.5-livetranslate-flash-realtime"
                   ]
                 },
                 {
@@ -7760,7 +7760,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -7779,7 +7779,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -7828,7 +7828,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -7847,7 +7847,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -8474,7 +8474,7 @@
               }
             },
             "supportProfileId": "support-watch-system-audio",
-            "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+            "inboundVoiceModelId": "qwen3.5-livetranslate-flash-realtime",
             "outboundVoiceModelId": "qwen3.5-omni-plus-realtime",
             "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
             "subtitleTranslationMode": "native",
@@ -8661,7 +8661,7 @@
                 {
                   "scenario": "watch",
                   "modelIds": [
-                    "qwen3.5-omni-plus-realtime"
+                    "qwen3.5-livetranslate-flash-realtime"
                   ]
                 },
                 {
@@ -9318,7 +9318,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -9337,7 +9337,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -9386,7 +9386,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -9405,7 +9405,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -10032,7 +10032,7 @@
               }
             },
             "supportProfileId": "support-watch-system-audio",
-            "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+            "inboundVoiceModelId": "qwen3.5-livetranslate-flash-realtime",
             "outboundVoiceModelId": "qwen3.5-omni-plus-realtime",
             "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
             "subtitleTranslationMode": "native",
@@ -10237,7 +10237,7 @@
                 {
                   "scenario": "watch",
                   "modelIds": [
-                    "qwen3.5-omni-plus-realtime"
+                    "qwen3.5-livetranslate-flash-realtime"
                   ]
                 },
                 {
@@ -10894,7 +10894,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -10913,7 +10913,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -10962,7 +10962,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -10981,7 +10981,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -11608,7 +11608,7 @@
               }
             },
             "supportProfileId": "support-watch-system-audio",
-            "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+            "inboundVoiceModelId": "qwen3.5-livetranslate-flash-realtime",
             "outboundVoiceModelId": "qwen3.5-omni-plus-realtime",
             "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
             "subtitleTranslationMode": "native",
@@ -11803,7 +11803,7 @@
                 {
                   "scenario": "watch",
                   "modelIds": [
-                    "qwen3.5-omni-plus-realtime"
+                    "qwen3.5-livetranslate-flash-realtime"
                   ]
                 },
                 {
@@ -12460,7 +12460,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -12479,7 +12479,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -12528,7 +12528,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -12547,7 +12547,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -13174,7 +13174,7 @@
               }
             },
             "supportProfileId": "support-watch-system-audio",
-            "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+            "inboundVoiceModelId": "qwen3.5-livetranslate-flash-realtime",
             "outboundVoiceModelId": "qwen3.5-omni-plus-realtime",
             "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
             "subtitleTranslationMode": "native",
@@ -13509,7 +13509,7 @@
                 {
                   "scenario": "watch",
                   "modelIds": [
-                    "qwen3.5-omni-plus-realtime"
+                    "qwen3.5-livetranslate-flash-realtime"
                   ]
                 },
                 {
@@ -14166,7 +14166,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -14185,7 +14185,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -14234,7 +14234,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -14253,7 +14253,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -14880,7 +14880,7 @@
               }
             },
             "supportProfileId": "support-watch-system-audio",
-            "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+            "inboundVoiceModelId": "qwen3.5-livetranslate-flash-realtime",
             "outboundVoiceModelId": "qwen3.5-omni-plus-realtime",
             "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
             "subtitleTranslationMode": "native",
@@ -15075,7 +15075,7 @@
                 {
                   "scenario": "watch",
                   "modelIds": [
-                    "qwen3.5-omni-plus-realtime"
+                    "qwen3.5-livetranslate-flash-realtime"
                   ]
                 },
                 {
@@ -15732,7 +15732,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -15751,7 +15751,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -15800,7 +15800,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -15819,7 +15819,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -16446,7 +16446,7 @@
               }
             },
             "supportProfileId": "support-watch-system-audio",
-            "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+            "inboundVoiceModelId": "qwen3.5-livetranslate-flash-realtime",
             "outboundVoiceModelId": "qwen3.5-omni-plus-realtime",
             "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
             "subtitleTranslationMode": "native",
@@ -16642,7 +16642,7 @@
                 {
                   "scenario": "watch",
                   "modelIds": [
-                    "qwen3.5-omni-plus-realtime"
+                    "qwen3.5-livetranslate-flash-realtime"
                   ]
                 },
                 {
@@ -17299,7 +17299,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -17318,7 +17318,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -17367,7 +17367,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -17386,7 +17386,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -18013,7 +18013,7 @@
               }
             },
             "supportProfileId": "support-watch-system-audio",
-            "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+            "inboundVoiceModelId": "qwen3.5-livetranslate-flash-realtime",
             "outboundVoiceModelId": "qwen3.5-omni-plus-realtime",
             "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
             "subtitleTranslationMode": "native",
@@ -18336,7 +18336,7 @@
                 {
                   "scenario": "watch",
                   "modelIds": [
-                    "qwen3.5-omni-plus-realtime"
+                    "qwen3.5-livetranslate-flash-realtime"
                   ]
                 },
                 {
@@ -18993,7 +18993,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -19012,7 +19012,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -19061,7 +19061,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -19080,7 +19080,7 @@
                     "speech-to-speech"
                   ],
                   "realtimeProtocol": "dashscope-omni",
-                  "realtimeAudioMode": "manual",
+                  "realtimeAudioMode": "semantic_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "manual_commit",
@@ -19707,7 +19707,7 @@
               }
             },
             "supportProfileId": "support-watch-system-audio",
-            "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+            "inboundVoiceModelId": "qwen3.5-livetranslate-flash-realtime",
             "outboundVoiceModelId": "qwen3.5-omni-plus-realtime",
             "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
             "subtitleTranslationMode": "native",

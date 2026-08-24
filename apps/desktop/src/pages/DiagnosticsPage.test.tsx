@@ -487,10 +487,10 @@ describe('DiagnosticsPage monitoring boundary', () => {
     // The secret read above is what unlocks the run: it must reach the payload.
     expect(benchmarkCall?.args).toMatchObject({
       command: {
-        model: 'qwen3.5-omni-plus-realtime',
+        model: 'qwen3.5-livetranslate-flash-realtime',
         apiKey: 'fake-api-key',
         mp3Path: defaultBenchmarkMp3Path,
-        realtimeAudioMode: 'manual',
+        realtimeAudioMode: 'server_vad',
       },
     });
     expect(container.textContent).toContain('基准测试结果');

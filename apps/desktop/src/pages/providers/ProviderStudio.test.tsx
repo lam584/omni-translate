@@ -50,6 +50,7 @@ function baseProps(overrides: Partial<React.ComponentProps<typeof ProviderStudio
     sceneAssignments: structuredClone(activeProvider.sceneModelAssignments),
     modelLookup: new Map<string, ProviderModelRuntime>([
       ['qwen3.5-omni-plus-realtime', makeModel('qwen3.5-omni-plus-realtime', ['realtime-audio'])],
+      ['qwen3.5-livetranslate-flash-realtime', makeModel('qwen3.5-livetranslate-flash-realtime', ['realtime-audio'])],
     ]),
     localModelCapabilityRegistry: [],
     setSecretDraft: vi.fn() as Dispatch<SetStateAction<string>>,
@@ -159,7 +160,7 @@ describe('ProviderStudio', () => {
     expect(sceneCards.length).toBe(4);
 
     const watchCard = sceneCards[0];
-    expect(watchCard?.textContent).toContain('qwen3.5-omni-plus-realtime');
+    expect(watchCard?.textContent).toContain('qwen3.5-livetranslate-flash-realtime');
     const capabilityChip = watchCard?.querySelector('.provider-capability-chip');
     expect(capabilityChip).toBeInstanceOf(HTMLElement);
   });
@@ -230,7 +231,7 @@ describe('ProviderStudio', () => {
     const removeButton = container.querySelector('.provider-scene-model-actions .provider-header-icon-danger');
     expect(removeButton).toBeInstanceOf(HTMLButtonElement);
     await click(removeButton);
-    expect(props.onSceneModelRemove).toHaveBeenCalledWith('watch', 'qwen3.5-omni-plus-realtime');
+    expect(props.onSceneModelRemove).toHaveBeenCalledWith('watch', 'qwen3.5-livetranslate-flash-realtime');
   });
 
   it('shows model catalog endpoint footnote when provided', () => {

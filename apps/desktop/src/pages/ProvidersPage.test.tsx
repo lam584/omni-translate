@@ -930,8 +930,8 @@ describe('ProvidersPage', () => {
       error: null,
       models: [
         {
-          id: 'qwen3.5-omni-plus-realtime',
-          displayName: 'Qwen Realtime',
+          id: 'qwen3.5-livetranslate-flash-realtime',
+          displayName: 'Qwen LiveTranslate Realtime',
           ownedBy: null,
           createdAt: null,
           capabilities: ['speech-to-text'],
@@ -961,9 +961,9 @@ describe('ProvidersPage', () => {
     await renderPage();
     await click(Array.from(container.querySelectorAll<HTMLButtonElement>('.provider-action-row button')).at(-2));
     const dialog = modelCatalogDialog(container)!;
-    const existingRow = Array.from(dialog.querySelectorAll<HTMLElement>('.provider-model-item')).find((item) => item.textContent?.includes('qwen3.5-omni-plus-realtime'))!;
+    const existingRow = Array.from(dialog.querySelectorAll<HTMLElement>('.provider-model-item')).find((item) => item.textContent?.includes('qwen3.5-livetranslate-flash-realtime'))!;
     await click(existingRow.querySelector<HTMLButtonElement>('.provider-row-action'));
-    expect(useAppStore.getState().configDraft.providers[0].sceneModelAssignments[0]?.modelIds).not.toContain('qwen3.5-omni-plus-realtime');
+    expect(useAppStore.getState().configDraft.providers[0].sceneModelAssignments[0]?.modelIds).not.toContain('qwen3.5-livetranslate-flash-realtime');
 
     const uncategorizedRow = Array.from(dialog.querySelectorAll<HTMLElement>('.provider-model-item')).find((item) => item.textContent?.includes('uncategorized-runtime-model'))!;
     await click(uncategorizedRow.querySelector<HTMLButtonElement>('.provider-row-action'));

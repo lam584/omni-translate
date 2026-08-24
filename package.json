@@ -19,6 +19,8 @@
     "check:desktop": "npm run check --workspace @omni/desktop",
     "check:desktop-shell": "node ./scripts/testing/run-with-vm3-test-environment.mjs -- npm.cmd run check:tauri --workspace @omni/desktop",
     "test:desktop-shell": "node ./scripts/testing/run-with-vm3-test-environment.mjs -- cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",
+    "test:benchmark-core": "node ./scripts/testing/run-with-vm3-test-environment.mjs -- cargo test --locked -p omni-benchmark-core",
+    "test:diagnostics-benchmark": "node ./scripts/testing/run-with-vm3-test-environment.mjs -- cargo test --locked --manifest-path scripts/diagnostics/omni-benchmark/Cargo.toml",
     "test:aec3-msvc": "node ./scripts/testing/run-with-vm3-test-environment.mjs -- node ./scripts/testing/run-aec3-msvc-gate.mjs",
     "test:desktop-coverage": "npm run test:coverage --workspace @omni/desktop",
     "test:llm-integration": "node ./scripts/testing/run-llm-integration.mjs",

@@ -1,6 +1,8 @@
 export const coreTestSteps = [
   { name: 'workspace-tests', command: 'npm test --workspaces --if-present' },
   { name: 'desktop-shell-tests', command: 'npm run test:desktop-shell' },
+  { name: 'benchmark-core-tests', command: 'npm run test:benchmark-core' },
+  { name: 'diagnostics-benchmark-tests', command: 'npm run test:diagnostics-benchmark' },
   { name: 'bridge-service-native-tests', command: 'npm run test:bridge-service-native' },
   { name: 'contracts', command: 'npm run test:contracts' },
   { name: 'config-paths', command: 'npm run test:config-paths' },
@@ -14,6 +16,7 @@ export const coreTestSteps = [
 
 export const automatedGateSteps = [
   { name: 'audit-architecture', command: 'npm run audit:architecture' },
+  { name: 'audit-dead-code', command: 'npm run audit:dead-code' },
   { name: 'audit-error-handling', command: 'npm run audit:error-handling' },
   { name: 'audit-rust-warnings', command: 'npm run audit:rust-warnings' },
   { name: 'i18n-ratchet', command: 'npm run i18n:coverage:ratchet' },

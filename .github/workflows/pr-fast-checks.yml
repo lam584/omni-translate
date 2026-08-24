@@ -61,6 +61,12 @@ jobs:
       - name: Test desktop shell
         run: npm run test:desktop-shell
 
+      - name: Test benchmark core
+        run: npm run test:benchmark-core
+
+      - name: Test diagnostic benchmark CLI
+        run: npm run test:diagnostics-benchmark
+
       # The native bridge previously only got cargo *check* on PRs while its
       # sidecar integration tests ran nowhere in CI.
       - name: Test native bridge

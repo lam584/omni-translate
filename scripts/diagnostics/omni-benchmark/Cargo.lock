@@ -180,13 +180,21 @@ dependencies = [
 name = "omni-benchmark"
 version = "0.1.0"
 dependencies = [
- "base64",
  "minimp3",
+ "omni-benchmark-core",
  "rustls",
  "serde",
  "serde_json",
  "tungstenite",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "omni-benchmark-core"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "serde_json",
 ]
 
 [[package]]

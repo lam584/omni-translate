@@ -69,6 +69,27 @@ coreCodeRules:
       - command: "npm run test:bridge-service-native"
         description: "Rust bridge crate 完整测试"
 
+  - id: benchmark-core
+    boundaryKind: explicit-core-boundary
+    paths:
+      - "crates/omni-benchmark-core/**"
+      - "apps/desktop/src-tauri/src/benchmark/**"
+      - "scripts/diagnostics/omni-benchmark/**"
+    requiredReview: true
+    requiredValidation:
+      - command: "npm run test:benchmark-core"
+        description: "共享 benchmark 算法与状态机单元测试"
+      - command: "npm run test:diagnostics-benchmark"
+        description: "独立诊断 CLI 与独立锁文件完整测试"
+      - command: "npm run test:desktop-shell"
+        description: "桌面 benchmark 消费方完整测试"
+      - command: "npm run audit:dead-code"
+        description: "共享 core 与诊断 CLI 死代码豁免审计"
+      - command: "npm run audit:architecture"
+        description: "共享 core 与诊断 CLI 架构边界审计"
+      - command: "npm run coverage:gate:base"
+        description: "共享 Rust crates 覆盖率棘轮"
+
   - id: driver-interface
     boundaryKind: explicit-core-boundary
     paths:

@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use base64::Engine;
+use omni_benchmark_core::{
+    base64_encode_i16, collect_gemini_model_text, resample_to_16k, SessionRead,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};

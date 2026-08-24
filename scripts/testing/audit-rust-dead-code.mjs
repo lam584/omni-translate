@@ -4,8 +4,10 @@ import path from 'node:path';
 const roots = [
   'apps/desktop/src-tauri/src',
   'apps/bridge-service-native/src',
+  'crates/omni-benchmark-core/src',
   'crates/omni-bridge-protocol/src',
   'crates/omni-logging/src',
+  'scripts/diagnostics/omni-benchmark/src',
 ];
 
 async function rustFiles(directory) {

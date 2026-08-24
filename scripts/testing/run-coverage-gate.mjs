@@ -109,7 +109,7 @@ export const runCoverageGate = ({ outputRoot = defaultOutputRoot, full = false }
   runCoverageStep(
     outputDir,
     'shared-crates-rust',
-    `cargo +${nightlyToolchain} llvm-cov -p omni-audio-dsp -p omni-bridge-protocol -p omni-logging --branch --json --output-path "${sharedCratesReport}"`,
+    `cargo +${nightlyToolchain} llvm-cov -p omni-audio-dsp -p omni-benchmark-core -p omni-bridge-protocol -p omni-logging --branch --json --output-path "${sharedCratesReport}"`,
   );
   assertRustCoverage('shared-crates-rust', sharedCratesReport, coverageBaseline['shared-crates-rust']);
 

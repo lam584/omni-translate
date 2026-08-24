@@ -3281,12 +3281,19 @@ test('buildQualityGateSummary throws when the integration step is missing', () =
 });
 
 test('buildAutoSteps honors the skip switches', () => {
+  assert.equal(
+    buildAutoSteps().find((step) => step.name === 'audit-dead-code')?.command,
+    'npm run audit:dead-code',
+  );
   assert.deepEqual(buildAutoSteps().map((step) => step.name), [
     'audit-architecture',
+    'audit-dead-code',
     'audit-error-handling',
     'audit-rust-warnings',
     'i18n-ratchet',
     'verify-desktop',
+    'benchmark-core-tests',
+    'diagnostics-benchmark-tests',
     'contracts',
     'config-paths',
     'integration-bridge-contract',
@@ -3304,8 +3311,9 @@ test('buildAutoSteps honors the skip switches', () => {
   assert.deepEqual(
     buildAutoSteps({ skipDesktopShell: true, skipBridgeService: true }).map((step) => step.name),
     [
-      'audit-architecture', 'audit-error-handling', 'audit-rust-warnings', 'i18n-ratchet',
-      'verify-desktop', 'contracts', 'config-paths', 'integration-bridge-contract',
+      'audit-architecture', 'audit-dead-code', 'audit-error-handling', 'audit-rust-warnings', 'i18n-ratchet',
+      'verify-desktop', 'benchmark-core-tests', 'diagnostics-benchmark-tests',
+      'contracts', 'config-paths', 'integration-bridge-contract',
       'driver-boundaries', 'watch-mode-tooling', 'release-tooling', 'quality-gate-tooling',
       'startup-tooling', 'coverage-base',
     ],
@@ -3316,6 +3324,8 @@ test('test:all includes every deterministic cross-layer gate', () => {
   assert.deepEqual(buildSteps({ skipIntegration: true }).map((step) => step.name), [
     'workspace-tests',
     'desktop-shell-tests',
+    'benchmark-core-tests',
+    'diagnostics-benchmark-tests',
     'bridge-service-native-tests',
     'contracts',
     'config-paths',

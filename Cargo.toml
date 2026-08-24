@@ -4,6 +4,7 @@ members = [
   "apps/bridge-service-native",
   "apps/desktop/src-tauri",
   "crates/omni-audio-dsp",
+  "crates/omni-benchmark-core",
   "crates/omni-bridge-protocol",
   "crates/omni-logging",
   "crates/omni-webrtc-aec3",

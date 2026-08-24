@@ -3119,15 +3119,23 @@ test('system metrics collector records real process-tree samples', {
     const outputPath = path.join(dir, 'system-metrics.json');
     const collectorPath = path.resolve('scripts/testing/collect-watch-mode-system-metrics.ps1');
     const command = [
-      `$target = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-Command','Start-Sleep -Seconds 3') -WindowStyle Hidden -PassThru`,
+      `$ErrorActionPreference = 'Stop'`,
+      `$target = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-Command','Start-Sleep -Seconds 8') -WindowStyle Hidden -PassThru`,
       `& '${collectorPath.replaceAll("'", "''")}' -RootProcessId $target.Id -OutputPath '${outputPath.replaceAll("'", "''")}' -SampleIntervalMs 500`,
       'exit $LASTEXITCODE',
     ].join('; ');
-    const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', command], {
+    const result = spawnSync('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      command,
+    ], {
       encoding: 'utf8',
-      timeout: 15_000,
+      timeout: 30_000,
     });
-    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join('\n'));
     const metrics = readJson(outputPath);
     assert.equal(metrics.completionReason, 'root-process-exited');
     assert.equal(metrics.collectionErrors.length, 0);

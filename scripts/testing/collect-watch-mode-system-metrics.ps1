@@ -79,21 +79,37 @@ $processorCount = [Environment]::ProcessorCount
 $completionReason = 'collector-stopped'
 $previous = $null
 
+function Test-RootProcessIdentity {
+  param(
+    [int]$RootId,
+    [DateTime]$ExpectedStartTimeUtc
+  )
+
+  try {
+    $process = Get-Process -Id $RootId -ErrorAction Stop
+    return $process.StartTime.ToUniversalTime() -eq $ExpectedStartTimeUtc
+  } catch {
+    return $false
+  }
+}
+
 try {
-  if (-not (Get-Process -Id $RootProcessId -ErrorAction SilentlyContinue)) {
+  $rootProcess = Get-Process -Id $RootProcessId -ErrorAction SilentlyContinue
+  if (-not $rootProcess) {
     throw "root process $RootProcessId does not exist"
   }
+  $rootStartTimeUtc = $rootProcess.StartTime.ToUniversalTime()
   $previous = Get-ProcessTreeSnapshot $RootProcessId
   while ($true) {
     Start-Sleep -Milliseconds $SampleIntervalMs
-    if (-not (Get-Process -Id $RootProcessId -ErrorAction SilentlyContinue)) {
+    if (-not (Test-RootProcessIdentity $RootProcessId $rootStartTimeUtc)) {
       $completionReason = 'root-process-exited'
       break
     }
     try {
       $current = Get-ProcessTreeSnapshot $RootProcessId
       if ($current.processCount -le 0 -or $current.workingSetBytes -le 0) {
-        if (-not (Get-Process -Id $RootProcessId -ErrorAction SilentlyContinue)) {
+        if (-not (Test-RootProcessIdentity $RootProcessId $rootStartTimeUtc)) {
           $completionReason = 'root-process-exited'
           break
         }

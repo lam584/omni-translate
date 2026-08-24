@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   buildCanonicalReferencePcm,
+  buildCanonicalSpeechNegativeControls,
   buildPhysicalSourceWaveformAuthority,
   loadCanonicalFixtureAuthority,
   parseRiffWavePcm16,
@@ -159,6 +160,14 @@ function unrelatedTone(reference, frequencyHz) {
     output[index] = Math.trunc(Math.sin(2 * Math.PI * frequencyHz * index / 16_000) * envelope * 28_000);
   }
   return output;
+}
+
+function expectedReverseSamplesWithinBlocks(reference, blockSamples) {
+  const samples = new Int16Array(reference.length);
+  for (let start = 0; start < reference.length; start += blockSamples) {
+    samples.set(reference.slice(start, Math.min(reference.length, start + blockSamples)).reverse(), start);
+  }
+  return samples;
 }
 
 function physicalFixture({ recorded, reference = deterministicSpeechLike(), wrong = [] }) {
@@ -321,8 +330,19 @@ test('accepts three independent segments using one global lag and polarity with 
   assert.ok(authority.segments.every((entry) => entry.waveformCorrelation > 0.99 && entry.derivativeCorrelation > 0.99));
 });
 
-test('uses deterministic negative controls without optional WAV fixtures', () => {
+test('uses deterministic speech-derived negative controls without optional WAV fixtures', () => {
   const reference = deterministicSpeechLike();
+  const controls = buildCanonicalSpeechNegativeControls(reference);
+  assert.deepEqual(
+    controls.map((entry) => entry.label),
+    [
+      'canonical-speech-full-time-reversal',
+      'canonical-speech-250ms-block-time-reversal',
+    ],
+  );
+  assert.deepEqual(controls[0].samples, reference.slice().reverse());
+  assert.deepEqual(controls[1].samples, expectedReverseSamplesWithinBlocks(reference, 4_000));
+
   const fixture = physicalFixture({ reference, recorded: transformed(reference), wrong: [] });
   const authority = buildPhysicalSourceWaveformAuthority({
     runDirectory: fixture.directory,
@@ -332,8 +352,24 @@ test('uses deterministic negative controls without optional WAV fixtures', () =>
   assert.equal(authority.passed, true, authority.violations.join('; '));
   assert.deepEqual(
     authority.wrongReferences.map((entry) => entry.label),
-    ['deterministic-733hz-control', 'deterministic-1211hz-control'],
+    controls.map((entry) => entry.label),
   );
+  assert.ok(authority.maximumWrongReferenceScore > 0.5, JSON.stringify(authority.wrongReferences));
+});
+
+test('default speech-derived negative controls reject a reordered canonical source', () => {
+  const reference = deterministicSpeechLike();
+  const [wrongSource] = buildCanonicalSpeechNegativeControls(reference);
+  const fixture = physicalFixture({ reference, recorded: transformed(wrongSource.samples), wrong: [] });
+  const authority = buildPhysicalSourceWaveformAuthority({
+    runDirectory: fixture.directory,
+    referencePcmPath: fixture.referencePath,
+    sourceWindowPath: fixture.sourceWindowPath,
+  });
+  assert.equal(authority.passed, false);
+  assert.ok(authority.wrongReferences[0].score > 0.95, JSON.stringify(authority.wrongReferences));
+  assert.ok(authority.wrongReferenceMargin < authority.thresholds.wrongReferenceMargin);
+  assert.match(authority.violations.join('\n'), /wrong-reference margin/);
 });
 
 test('accepts distributed source fragments under bounded endpoint-clock drift and dense overlap', () => {

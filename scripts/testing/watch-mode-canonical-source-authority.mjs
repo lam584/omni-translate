@@ -616,15 +616,31 @@ function scoreWrongReference(wrong, recorded) {
   return Math.max(0, waveform) * 0.65 + Math.max(0, derivative) * 0.35;
 }
 
-function deterministicWrongReference(sampleCount, frequencyHz) {
-  const samples = new Int16Array(sampleCount);
-  for (let index = 0; index < samples.length; index += 1) {
-    const envelope = 0.7 + 0.3 * Math.sin((2 * Math.PI * 3 * index) / CANONICAL_SOURCE_SAMPLE_RATE_HZ);
-    samples[index] = Math.round(
-      Math.sin((2 * Math.PI * frequencyHz * index) / CANONICAL_SOURCE_SAMPLE_RATE_HZ) * 8_000 * envelope,
-    );
+function reverseSamplesWithinBlocks(reference, blockSamples) {
+  const samples = new Int16Array(reference.length);
+  for (let blockStart = 0; blockStart < reference.length; blockStart += blockSamples) {
+    const blockEnd = Math.min(reference.length, blockStart + blockSamples);
+    for (let offset = 0; offset < blockEnd - blockStart; offset += 1) {
+      samples[blockStart + offset] = reference[blockEnd - offset - 1];
+    }
   }
   return samples;
+}
+
+export function buildCanonicalSpeechNegativeControls(reference) {
+  if (!(reference instanceof Int16Array) || reference.length === 0) {
+    throw new Error('canonical speech negative controls require non-empty Int16Array samples');
+  }
+  return [
+    {
+      label: 'canonical-speech-full-time-reversal',
+      samples: reverseSamplesWithinBlocks(reference, reference.length),
+    },
+    {
+      label: 'canonical-speech-250ms-block-time-reversal',
+      samples: reverseSamplesWithinBlocks(reference, CANONICAL_SOURCE_SAMPLE_RATE_HZ / 4),
+    },
+  ];
 }
 
 export function buildPhysicalSourceWaveformAuthority({
@@ -700,10 +716,7 @@ export function buildPhysicalSourceWaveformAuthority({
   let wrongPaths = wrongReferencePcmPaths;
   let wrongBuffers = [];
   if (wrongPaths === undefined) {
-    wrongBuffers = [733, 1_211].map((frequencyHz) => ({
-      label: `deterministic-${frequencyHz}hz-control`,
-      samples: deterministicWrongReference(reference.samples.length, frequencyHz),
-    }));
+    wrongBuffers = buildCanonicalSpeechNegativeControls(reference.samples);
   } else {
     wrongBuffers = wrongPaths.map((filePath) => ({
       label: portableRunChild(path.resolve(filePath), 'wrong-reference PCM'),

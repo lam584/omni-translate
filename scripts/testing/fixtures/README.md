@@ -13,6 +13,11 @@ strict Watch Mode evidence, integration tests, and the desktop benchmark UI.
 The adjacent checksum and the `general` entry in
 `watch-mode-audio-fixtures.json` bind those bytes.
 
+The physical-source authority derives its wrong-source controls locally from
+that canonical PCM by deterministic speech time-order transformations. The
+controls remain speech-derived without storing more WAV files or calling a
+provider.
+
 The conversation, technical, and 19 localized variants are recipes rather
 than checked-in binaries. Their source/reference text and generation metadata
 remain in Git, while their WAV and checksum outputs are generated only when a

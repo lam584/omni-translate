@@ -288,6 +288,7 @@ pub(crate) async fn upsert_secret_ref<R: tauri::Runtime>(
     reference: String,
     secret: String,
 ) -> Result<CredentialRefStatus, String> {
+    ensure_public_credential_reference(&reference)?;
     let command_started_at = Instant::now();
     let secret_length = secret.len();
     log_storage_event(
@@ -381,6 +382,7 @@ pub(crate) async fn get_secret_ref_status<R: tauri::Runtime>(
     app: AppHandle<R>,
     reference: String,
 ) -> Result<CredentialRefStatus, String> {
+    ensure_public_credential_reference(&reference)?;
     let command_started_at = Instant::now();
     log_storage_event(
         &app,
@@ -448,6 +450,7 @@ pub(crate) async fn read_secret_ref<R: tauri::Runtime>(
     app: AppHandle<R>,
     reference: String,
 ) -> Result<CredentialSecretPayload, String> {
+    ensure_public_credential_reference(&reference)?;
     let command_started_at = Instant::now();
     log_storage_event(
         &app,
@@ -512,5 +515,34 @@ pub(crate) async fn read_secret_ref<R: tauri::Runtime>(
             );
             Err(error)
         }
+    }
+}
+
+fn ensure_public_credential_reference(reference: &str) -> Result<(), String> {
+    if reference
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("credential://history/")
+    {
+        return Err("内部历史加密凭据不能通过通用配置 API 访问".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod credential_namespace_tests {
+    use super::ensure_public_credential_reference;
+
+    #[test]
+    fn history_content_key_namespace_is_not_renderer_accessible() {
+        assert!(ensure_public_credential_reference(
+            "credential://history/content-key/v1"
+        )
+        .is_err());
+        assert!(ensure_public_credential_reference(
+            " CREDENTIAL://HISTORY/content-key/v1 "
+        )
+        .is_err());
+        assert!(ensure_public_credential_reference("credential://dashscope/default").is_ok());
     }
 }

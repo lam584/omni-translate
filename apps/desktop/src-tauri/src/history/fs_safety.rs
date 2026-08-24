@@ -151,6 +151,24 @@ fn remove_link_entry(path: &Path) -> Result<(), String> {
 }
 
 fn canonical_history_root(history_root: &Path) -> Result<PathBuf, String> {
+    let metadata = std::fs::symlink_metadata(history_root).map_err(|error| {
+        format!(
+            "无法读取字幕历史目录 {}：{error}",
+            history_root.display()
+        )
+    })?;
+    if is_link_or_reparse_point(&metadata) {
+        return Err(format!(
+            "字幕历史根目录不能是链接或 reparse point：{}",
+            history_root.display()
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "字幕历史根路径不是目录：{}",
+            history_root.display()
+        ));
+    }
     std::fs::canonicalize(history_root).map_err(|error| {
         format!(
             "无法解析字幕历史目录 {}：{error}",
@@ -231,6 +249,25 @@ mod tests {
 
         assert!(outside_file.exists());
         assert!(std::fs::read_dir(&history).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn linked_history_root_is_rejected_without_touching_target() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let outside = sandbox.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let outside_file = outside.join("keep.flac.enc");
+        std::fs::write(&outside_file, b"outside").unwrap();
+        let history_link = sandbox.path().join("history");
+        if let Err(error) = create_directory_link(&outside, &history_link) {
+            eprintln!("directory-link test unavailable on this host: {error}");
+            return;
+        }
+
+        assert!(walk_regular_archive_files(&history_link).is_err());
+        assert!(clear_history_contents(&history_link).is_err());
+        assert!(outside_file.exists());
+        remove_directory_link(&history_link).unwrap();
     }
 
     #[cfg(windows)]

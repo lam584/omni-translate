@@ -15,7 +15,8 @@ use tempfile::TempDir;
 use cpal::traits::{DeviceTrait, HostTrait};
 
 use omni_bridge_protocol::{
-    TranslationPlaybackStatusAck, BRIDGE_PROTOCOL_VERSION,
+    TranslationPlaybackStatusAck, BRIDGE_PROTOCOL_VERSION, MAX_AUDIO_FRAME_HEADER_BYTES,
+    MAX_AUDIO_FRAME_PAYLOAD_BYTES, MAX_CONTROL_MESSAGE_BYTES,
 };
 
 static PROCESS_LOOPBACK_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1205,6 +1206,91 @@ fn control_pipe_answers_invalid_json_with_a_typed_bridge_error() {
     drop(reader);
 
     // The control server keeps serving well-formed commands afterwards.
+    shutdown(&pipe_name);
+    assert!(sidecar.wait().unwrap().success());
+    fs::remove_dir_all(runtime_root.path()).ok();
+}
+
+
+#[test]
+fn oversized_control_message_is_dropped_without_killing_the_sidecar() {
+    let runtime_root = TempDir::new().unwrap();
+    let pipe_name = format!("omni-bridge-control-limit-{}", std::process::id());
+    let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
+    wait_until_ready(&mut sidecar);
+
+    {
+        let mut pipe = open_pipe(&format!(r"\\.\pipe\{pipe_name}"));
+        pipe.write_all(&vec![b'x'; MAX_CONTROL_MESSAGE_BYTES + 1])
+            .unwrap();
+        pipe.write_all(b"\n").unwrap();
+
+        let mut byte = [0u8; 1];
+        assert!(
+            pipe.read_exact(&mut byte).is_err(),
+            "an oversized command must be rejected by closing the connection"
+        );
+    }
+
+    // Rejecting one client must not stop the control server.
+    shutdown(&pipe_name);
+    assert!(sidecar.wait().unwrap().success());
+    fs::remove_dir_all(runtime_root.path()).ok();
+}
+
+#[test]
+fn invalid_audio_header_lengths_are_dropped_without_killing_the_sidecar() {
+    let runtime_root = TempDir::new().unwrap();
+    let pipe_name = format!("omni-bridge-header-limit-{}", std::process::id());
+    let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
+    wait_until_ready(&mut sidecar);
+    init_session(&pipe_name, "session-1");
+
+    for header_length in [0, MAX_AUDIO_FRAME_HEADER_BYTES + 1] {
+        let mut pipe = open_pipe(&format!(r"\\.\pipe\{pipe_name}-audio"));
+        pipe.write_all(&(header_length as u32).to_le_bytes()).unwrap();
+
+        let mut byte = [0u8; 1];
+        assert!(
+            pipe.read_exact(&mut byte).is_err(),
+            "invalid header length {header_length} must close the connection"
+        );
+    }
+
+    let valid = translation_header("session-1", "bridge.translation.frame", 2, 4);
+    let ack = exchange_audio_frame(&pipe_name, &valid, &[1, 0, 2, 0])
+        .expect("sidecar must keep serving after invalid header lengths");
+    assert_eq!(ack["type"], "bridge.translation.ack");
+
+    shutdown(&pipe_name);
+    assert!(sidecar.wait().unwrap().success());
+    fs::remove_dir_all(runtime_root.path()).ok();
+}
+
+#[test]
+fn oversized_audio_payload_declaration_is_dropped_before_allocation() {
+    let runtime_root = TempDir::new().unwrap();
+    let pipe_name = format!("omni-bridge-payload-limit-{}", std::process::id());
+    let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
+    wait_until_ready(&mut sidecar);
+    init_session(&pipe_name, "session-1");
+
+    let oversized = translation_header(
+        "session-1",
+        "bridge.translation.frame",
+        2,
+        (MAX_AUDIO_FRAME_PAYLOAD_BYTES + 1) as u64,
+    );
+    assert!(
+        exchange_audio_frame(&pipe_name, &oversized, &[]).is_none(),
+        "an oversized payload declaration must be rejected before reading or allocating the body"
+    );
+
+    let valid = translation_header("session-1", "bridge.translation.frame", 2, 4);
+    let ack = exchange_audio_frame(&pipe_name, &valid, &[1, 0, 2, 0])
+        .expect("sidecar must keep serving after an oversized payload declaration");
+    assert_eq!(ack["type"], "bridge.translation.ack");
+
     shutdown(&pipe_name);
     assert!(sidecar.wait().unwrap().success());
     fs::remove_dir_all(runtime_root.path()).ok();

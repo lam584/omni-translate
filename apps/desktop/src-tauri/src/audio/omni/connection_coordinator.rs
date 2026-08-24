@@ -1560,9 +1560,10 @@ impl OmniConnectionCoordinator {
             );
         }
 
-        let native_translation_reuse_active =
-            subtitle_translate_active
-                && crate::audio::events::is_livetranslate_route_model(provider, &provider.model);
+        // Secondary translation is the sole visible final owner. Native
+        // output remains control-plane data and must not publish previews or
+        // finals into the subtitle cue owned by the secondary worker.
+        let native_translation_reuse_active = false;
         // Register the speech config as the live shared instance: config saves
         // during the session update it in place, and the playback thread
         // re-reads it for every Play command.

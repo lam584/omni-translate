@@ -452,6 +452,54 @@ fn replay_turn_detected_response_uses_cancellation_terminal() {
         .any(|issue| issue.code == "native-empty-response"));
 }
 
+/// LiveTranslate may emit text.done for an interrupted/incomplete response.
+/// The candidate stays replaceable and the terminal status must publish an
+/// explicit failure instead of presenting the partial text as a final.
+#[test]
+fn replay_incomplete_text_candidate_never_becomes_translation_final() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    let mut slice = WorkerSlice::new();
+    let source = "an incomplete response";
+    let steps = vec![
+        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_started" })),
+        ScriptStep::Event(json!({
+            "type": "conversation.item.input_audio_transcription.delta",
+            "item_id": "item-incomplete",
+            "delta": source
+        })),
+        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_stopped" })),
+        ScriptStep::Event(json!({
+            "type": "response.text.done",
+            "response_id": "resp-incomplete",
+            "text": "不应提交的候选译文"
+        })),
+        ScriptStep::Event(json!({
+            "type": "response.done",
+            "response": {
+                "id": "resp-incomplete",
+                "status": "incomplete",
+                "status_details": { "reason": "max_output_tokens" },
+                "output": [{ "content": [{ "text": "不应提交的候选译文" }] }]
+            }
+        })),
+    ];
+    let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
+    for _ in 0..5 {
+        socket = harness.tick(socket, &mut slice);
+    }
+
+    let snapshot = harness.store().snapshot();
+    let cue = snapshot
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .find(|cue| cue.source_text == source)
+        .expect("incomplete response keeps its source cue");
+    assert!(cue.translation_committed);
+    assert_eq!(cue.translated_text, "[翻译失败] 实时模型未能完成本轮响应。");
+    assert_ne!(cue.translated_text, "不应提交的候选译文");
+}
+
 /// A cancelled response can beat both ASR delta and ASR final. Because that
 /// response owner has no provider item id, the later identified transcript is
 /// not structurally correlated: keep the terminal response cue and the late

@@ -161,8 +161,10 @@ fn execute_realtime_websocket(
         context.glossary_prompt,
     );
 
+    let realtime_profile =
+        crate::audio::events::resolve_realtime_profile(provider, &provider.model);
     let audio_mode = crate::audio::omni::RealtimeAudioMode::from_config_value(
-        Some(&crate::audio::events::resolve_realtime_profile(provider, &provider.model).realtime_audio_mode),
+        Some(&realtime_profile.realtime_audio_mode),
         &provider.model,
     )
     .map_err(|error| ProviderRuntimeError::new("request.invalid", error))?;
@@ -193,13 +195,17 @@ fn execute_realtime_websocket(
         "DashScope Realtime conversation.item.create 发送失败",
     )?;
 
-    let mut response_create = crate::audio::omni::build_dashscope_response_create();
-    response_create["event_id"] = json!(format!("evt_{}_resp", safe_id));
-    send_json_frame(
-        &mut socket,
-        &response_create,
-        "DashScope Realtime response.create 发送失败",
-    )?;
+    if let Some(mut response_create) = realtime_profile
+        .protocol_dialect
+        .and_then(crate::audio::omni::build_dashscope_response_create_for_protocol)
+    {
+        response_create["event_id"] = json!(format!("evt_{}_resp", safe_id));
+        send_json_frame(
+            &mut socket,
+            &response_create,
+            "DashScope Realtime response.create 发送失败",
+        )?;
+    }
 
     let started = Instant::now();
     let mut result = new_streaming_smoke_result(

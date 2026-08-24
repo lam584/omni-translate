@@ -14,8 +14,7 @@ use super::super::{
     OmniOutputMode, RealtimeAudioMode, RealtimeSocket, RealtimeSocketConnector,
 };
 
-const LIVETRANSLATE_AUDIO_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
-const LIVETRANSLATE_SESSION_FINISHED_TIMEOUT: Duration = Duration::from_secs(15);
+const LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
 
 struct LivetranslateShutdownShared {
     enabled: bool,
@@ -28,7 +27,6 @@ pub(super) struct LivetranslateShutdown {
     enabled: bool,
     shared: Arc<LivetranslateShutdownShared>,
     requested_at: Option<Instant>,
-    finish_sent_at: Option<Instant>,
 }
 
 impl LivetranslateShutdown {
@@ -45,6 +43,7 @@ impl LivetranslateShutdown {
         )
     }
 
+    #[cfg(test)]
     fn new(enabled: bool) -> Self {
         Self::with_stop_signal(enabled, Arc::new(AtomicBool::new(false)))
     }
@@ -59,7 +58,6 @@ impl LivetranslateShutdown {
                 session_finished_received: AtomicBool::new(false),
             }),
             requested_at: None,
-            finish_sent_at: None,
         }
     }
 
@@ -114,8 +112,7 @@ impl LivetranslateShutdown {
         })
     }
 
-    pub(super) fn record_finish_sent(&mut self, now: Instant) {
-        self.finish_sent_at = Some(now);
+    pub(super) fn record_finish_sent(&mut self, _now: Instant) {
         self.shared
             .session_finish_sent
             .store(true, Ordering::SeqCst);
@@ -133,32 +130,23 @@ impl LivetranslateShutdown {
         if self.session_finished_received() {
             return None;
         }
-        if let Some(finish_sent_at) = self.finish_sent_at {
-            if now.saturating_duration_since(finish_sent_at)
-                >= LIVETRANSLATE_SESSION_FINISHED_TIMEOUT
-            {
-                return Some((
-                    "livetranslate-session-finished-timeout",
-                    format!(
-                        "LiveTranslate fail-closed: session.finished was not received within {} seconds after session.finish",
-                        LIVETRANSLATE_SESSION_FINISHED_TIMEOUT.as_secs()
-                    ),
-                ));
-            }
-        } else if let Some(requested_at) = self.requested_at {
-            if now.saturating_duration_since(requested_at)
-                >= LIVETRANSLATE_AUDIO_DRAIN_TIMEOUT
-            {
-                return Some((
-                    "livetranslate-audio-drain-timeout",
-                    format!(
-                        "LiveTranslate fail-closed: local audio did not drain within {} seconds before session.finish",
-                        LIVETRANSLATE_AUDIO_DRAIN_TIMEOUT.as_secs()
-                    ),
-                ));
-            }
+        let requested_at = self.requested_at?;
+        if now.saturating_duration_since(requested_at) < LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT {
+            return None;
         }
-        None
+        let finish_sent = self.shared.session_finish_sent.load(Ordering::SeqCst);
+        let reason = if finish_sent {
+            "livetranslate-session-finished-timeout"
+        } else {
+            "livetranslate-audio-drain-timeout"
+        };
+        Some((
+            reason,
+            format!(
+                "LiveTranslate fail-closed: shutdown did not complete within {} seconds of the stop request (session.finish sent={finish_sent})",
+                LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT.as_secs()
+            ),
+        ))
     }
 }
 
@@ -444,13 +432,32 @@ mod tests {
         let now = Instant::now();
         let mut shutdown = LivetranslateShutdown::new(true);
         shutdown.request(now);
-        shutdown.record_finish_sent(now);
+        shutdown.record_finish_sent(now + Duration::from_secs(14));
+
+        assert!(shutdown
+            .deadline_error(now + LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT - Duration::from_millis(1))
+            .is_none());
 
         let (reason, error) = shutdown
-            .deadline_error(now + LIVETRANSLATE_SESSION_FINISHED_TIMEOUT)
+            .deadline_error(now + LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT)
             .expect("bounded terminal failure");
 
         assert_eq!(reason, "livetranslate-session-finished-timeout");
-        assert!(error.contains("session.finished was not received"));
+        assert!(error.contains("within 15 seconds of the stop request"));
+    }
+
+    #[test]
+    fn audio_drain_and_finish_share_the_same_total_deadline() {
+        let now = Instant::now();
+        let mut shutdown = LivetranslateShutdown::new(true);
+        shutdown.request(now);
+
+        assert!(shutdown
+            .deadline_error(now + LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT - Duration::from_millis(1))
+            .is_none());
+        let (reason, _) = shutdown
+            .deadline_error(now + LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT)
+            .expect("audio drain shares the total shutdown deadline");
+        assert_eq!(reason, "livetranslate-audio-drain-timeout");
     }
 }

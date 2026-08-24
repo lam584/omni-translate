@@ -48,6 +48,8 @@ mod event_processor;
 mod config;
 mod provider_input_budget;
 mod realtime_socket;
+mod response_lifecycle;
+mod response_ledger;
 pub(crate) use self::realtime_socket::{
     RealtimeSocket, RealtimeSocketConnector, TungsteniteConnector,
 };
@@ -830,11 +832,17 @@ mod unit_tests {
 }
 
 mod protocol;
+use self::response_lifecycle::{
+    ResponseDeadlineBudget, ResponseLifecycle, ResponseStallAction,
+};
+use self::response_ledger::ResponseLedger;
 
 pub(crate) use self::protocol::{
     build_dashscope_audio_append, build_dashscope_input_audio_commit,
-    build_dashscope_response_create, build_dashscope_session_update, build_dashscope_text_item,
+    build_dashscope_response_create_for_protocol, build_dashscope_session_update,
+    build_dashscope_text_item,
     build_omni_session_update_for_provider_with_output_mode, OmniOutputMode, OmniSpeechConfig,
+    resolve_livetranslate_language, resolve_livetranslate_output_mode,
 };
 use self::translated_pcm_authority::TranslatedPcmAuthority;
 use self::protocol::{
@@ -848,11 +856,13 @@ use self::protocol::{
     extract_response_done_text,
     set_socket_read_timeout, set_socket_write_timeout, start_omni_playback,
     try_reconnect, write_live_source_to_cue, write_native_output_final_to_cue,
-    write_native_output_preview_to_cue, write_native_translation_to_cue,
+    write_native_output_preview_to_cue,
     update_native_response_cue_source,
     OmniEventDiagnostics, OmniPlaybackCommand, OmniPlaybackEnqueueOutcome,
     OmniPlaybackOverflowReason, OmniPlaybackQueue, OmniPlaybackWorker,
 };
+#[cfg(test)]
+use self::protocol::write_native_translation_to_cue;
 #[cfg(test)]
 use protocol::{build_omni_session_update, build_omni_session_update_with_output_mode};
 #[cfg(test)]

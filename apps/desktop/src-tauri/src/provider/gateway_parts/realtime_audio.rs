@@ -65,7 +65,15 @@ pub(crate) fn synthesize(
         "realtime audio conversation.item.create failed",
     )?;
 
-    let mut response_create = crate::audio::omni::build_dashscope_response_create();
+    let mut response_create = crate::audio::omni::build_dashscope_response_create_for_protocol(
+        protocol,
+    )
+    .ok_or_else(|| {
+        ProviderRuntimeError::new(
+            "request.invalid",
+            "LiveTranslate does not support explicit text response control for speech synthesis.",
+        )
+    })?;
     response_create["event_id"] = json!(format!("evt_{}_resp", safe_id));
     send_json_frame(&mut socket, &response_create, "realtime audio response.create failed")?;
 

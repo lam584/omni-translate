@@ -586,7 +586,7 @@ impl OmniEventProcessor {
         evt: &Value,
         event_type: &str,
         subtitle_translate_active: bool,
-        native_translation_reuse_active: bool,
+        _native_translation_reuse_active: bool,
     ) -> OmniSubtitleEventState {
         let OmniSubtitleEventState {
             current_cue_id,
@@ -612,16 +612,14 @@ impl OmniEventProcessor {
             pending_translated_text.push_str(delta);
             delta
         };
-        event_diagnostics.claim_native_response_owner_for_response(
-            native_response_id_from_event(evt),
-            current_cue_id.as_deref(),
-        );
+        event_diagnostics
+            .claim_native_response_owner_for_event(evt, current_cue_id.as_deref());
         // In secondary subtitle mode the native realtime response is only a
         // control-plane transcript; the subtitle worker owns the visible
         // translation and publication. Do not record the native text as an
         // unpublished model output, otherwise every successful secondary cue
         // is reported as `model-output-not-published`.
-        if !subtitle_translate_active || native_translation_reuse_active {
+        if !subtitle_translate_active {
             if let Some(cue_id) = event_diagnostics
                 .native_response_cue_id
                 .as_deref()
@@ -645,35 +643,7 @@ impl OmniEventProcessor {
             current_cue_id.as_deref(),
             &pending_source_text,
         );
-        if native_translation_reuse_active {
-            let cue_id = ensure_transcription_cue_id(
-                direction,
-                &mut event_diagnostics.native_response_cue_id,
-            );
-            if event_diagnostics.current_cue_origin.is_none() {
-                event_diagnostics.current_cue_origin =
-                    Some("native_audio_transcript_delta".to_string());
-            }
-            write_native_translation_to_cue(
-                &store,
-                &cue_id,
-                &response_source_text,
-                &pending_translated_text,
-                false,
-                true,
-            );
-            if !st_skip_logged {
-                st_skip_logged = true;
-                let _ = diag_log(
-                    &app,
-                    "omni",
-                    "info",
-                    format!(
-                        "[TRANS_NATIVE_PREVIEW] subtitle_translate_active=true livetranslate=true using native response.audio_transcript for low-latency subtitle cue_id={cue_id}"
-                    ),
-                );
-            }
-        } else if subtitle_translate_active {
+        if subtitle_translate_active {
             if !st_skip_logged {
                 st_skip_logged = true;
                 let cue_id_str = event_diagnostics
@@ -729,7 +699,8 @@ impl OmniEventProcessor {
         event_type: &str,
         session_started_at: &SystemTime,
         subtitle_translate_active: bool,
-        native_translation_reuse_active: bool,
+        _native_translation_reuse_active: bool,
+        output_mode: OmniOutputMode,
     ) -> OmniSubtitleEventState {
         let OmniSubtitleEventState {
             current_cue_id,
@@ -746,11 +717,14 @@ impl OmniEventProcessor {
             pending_translated_text.clone();
         event_diagnostics.last_output_done_at_ms =
             Some(elapsed_ms_since(&session_started_at));
-        event_diagnostics.claim_native_response_owner_for_response(
-            native_response_id_from_event(evt),
-            current_cue_id.as_deref(),
-        );
-        if !subtitle_translate_active || native_translation_reuse_active {
+        event_diagnostics
+            .claim_native_response_owner_for_event(evt, current_cue_id.as_deref());
+        let authoritative_output_final = output_mode == OmniOutputMode::TextAndAudio
+            && matches!(
+                event_type,
+                "response.audio_transcript.done" | "response.output_audio_transcript.done"
+            );
+        if !subtitle_translate_active && authoritative_output_final {
             if let Some(cue_id) = event_diagnostics
                 .native_response_cue_id
                 .as_deref()
@@ -776,35 +750,10 @@ impl OmniEventProcessor {
             current_cue_id.as_deref(),
             &pending_source_text,
         );
-        if native_translation_reuse_active
+        if !subtitle_translate_active
+            && authoritative_output_final
             && !pending_translated_text.trim().is_empty()
         {
-            let cue_id = ensure_transcription_cue_id(
-                direction,
-                &mut event_diagnostics.native_response_cue_id,
-            );
-            if event_diagnostics.current_cue_origin.is_none() {
-                event_diagnostics.current_cue_origin =
-                    Some("native_audio_transcript_done".to_string());
-            }
-            write_native_translation_to_cue(
-                &store,
-                &cue_id,
-                &response_source_text,
-                &pending_translated_text,
-                false,
-                false,
-            );
-            let _ = diag_log(
-                &app,
-                "omni",
-                "info",
-                format!(
-                    "[TRANS_NATIVE_FINAL] subtitle_translate_active=true livetranslate=true native transcript ready for subtitle-tts cue_id={cue_id} translated_len={}",
-                    pending_translated_text.len()
-                ),
-            );
-        } else if !subtitle_translate_active && !pending_translated_text.trim().is_empty() {
             let cue_id = write_native_output_final_to_cue(
                 store,
                 direction,
@@ -824,6 +773,14 @@ impl OmniEventProcessor {
                     "[TRANS_NATIVE_FINAL] native transcript display segments finalized cue_id={cue_id} translated_len={}",
                     pending_translated_text.len()
                 ),
+            );
+        } else if !subtitle_translate_active && !pending_translated_text.trim().is_empty() {
+            write_native_output_preview_to_cue(
+                store,
+                direction,
+                &mut event_diagnostics.native_response_cue_id,
+                &response_source_text,
+                &pending_translated_text,
             );
         }
         let cue_id_str = event_diagnostics
@@ -874,6 +831,91 @@ mod audio_done_tests {
             pending_audio_stream_created_at_ms: None,
             pending_audio_stream_aborted: false,
         }
+    }
+
+    fn transcript_done_state(cue_id: &str) -> OmniSubtitleEventState {
+        let mut event_diagnostics = OmniEventDiagnostics::default();
+        event_diagnostics.capture_native_response_owner(
+            cue_id.to_string(),
+            Some(format!("item-{cue_id}")),
+        );
+        OmniSubtitleEventState {
+            current_cue_id: Some(cue_id.to_string()),
+            pending_source_text: "hello".to_string(),
+            pending_translated_text: String::new(),
+            st_skip_logged: false,
+            event_diagnostics,
+        }
+    }
+
+    #[test]
+    fn text_only_text_done_stays_replaceable_until_response_completed() {
+        let app = app();
+        let handle = app.handle().clone();
+        let store = handle.state::<AudioStateStore>();
+        store.update_or_push_stt_cue("cue-text", "hello", true);
+
+        OmniEventProcessor::process_transcript_done(
+            transcript_done_state("cue-text"),
+            &handle,
+            &store,
+            "inbound",
+            &json!({
+                "type": "response.text.done",
+                "response_id": "resp-text",
+                "text": "你好"
+            }),
+            "response.text.done",
+            &SystemTime::now(),
+            false,
+            false,
+            OmniOutputMode::TextOnly,
+        );
+
+        let snapshot = store.snapshot();
+        let cue = snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id == "cue-text")
+            .expect("text candidate cue");
+        assert!(!cue.translation_committed);
+        assert!(cue.display_segments.iter().any(|segment| segment.pending));
+    }
+
+    #[test]
+    fn text_and_audio_transcript_done_is_an_authoritative_final() {
+        let app = app();
+        let handle = app.handle().clone();
+        let store = handle.state::<AudioStateStore>();
+        store.update_or_push_stt_cue("cue-audio", "hello", true);
+
+        OmniEventProcessor::process_transcript_done(
+            transcript_done_state("cue-audio"),
+            &handle,
+            &store,
+            "inbound",
+            &json!({
+                "type": "response.audio_transcript.done",
+                "response_id": "resp-audio",
+                "transcript": "你好"
+            }),
+            "response.audio_transcript.done",
+            &SystemTime::now(),
+            false,
+            false,
+            OmniOutputMode::TextAndAudio,
+        );
+
+        let snapshot = store.snapshot();
+        let cue = snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id == "cue-audio")
+            .expect("audio transcript cue");
+        assert!(cue.translation_committed);
+        assert!(cue.display_segments.iter().all(|segment| !segment.pending));
     }
 
     #[test]
@@ -1113,6 +1155,7 @@ mod audio_done_tests {
             &SystemTime::now(),
             true,
             false,
+            OmniOutputMode::TextOnly,
         );
 
         assert_eq!(done.event_diagnostics.native_response_cue_id.as_deref(), Some("cue-original"));

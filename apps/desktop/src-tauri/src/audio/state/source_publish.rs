@@ -58,7 +58,8 @@ impl AudioStateStore {
             source_contract(overlay, cue_id, sequence)
         });
         self.note_first_translation_source(cue_id, source_text);
-        if let Some((revision, cue_sequence, translation_state)) = cue_contract {
+        if let Some((revision, cue_sequence, translation_state, cue)) = cue_contract {
+            self.history.archive_cue(&cue);
             self.watch_session_report.record_source_runtime(
                 cue_id,
                 &route_direction,
@@ -101,7 +102,8 @@ impl AudioStateStore {
             source_contract(overlay, cue_id, sequence)
         });
         self.note_first_translation_source(cue_id, source_text);
-        if let Some((revision, cue_sequence, translation_state)) = cue_contract {
+        if let Some((revision, cue_sequence, translation_state, cue)) = cue_contract {
+            self.history.archive_cue(&cue);
             self.watch_session_report.record_source_runtime(
                 cue_id,
                 direction,
@@ -121,7 +123,12 @@ fn source_contract(
     overlay: &SubtitleOverlayRuntimeSnapshot,
     cue_id: &str,
     fallback_sequence: u64,
-) -> Option<(u64, u64, Option<SubtitleTranslationStateRuntime>)> {
+) -> Option<(
+    u64,
+    u64,
+    Option<SubtitleTranslationStateRuntime>,
+    SubtitleCueRuntime,
+)> {
     overlay
         .recent_cues
         .iter()
@@ -131,6 +138,7 @@ fn source_contract(
                 cue_revision(cue),
                 cue.sequence.unwrap_or(fallback_sequence),
                 cue.translation_state,
+                cue.clone(),
             )
         })
 }

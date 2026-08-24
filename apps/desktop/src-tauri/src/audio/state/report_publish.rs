@@ -4,6 +4,7 @@ use super::translation_lifecycle::{
 use super::*;
 
 struct PublishContext {
+    cue: SubtitleCueRuntime,
     direction: String,
     source_text: String,
     display_segments: Vec<SubtitleDisplaySegmentRuntime>,
@@ -112,6 +113,7 @@ impl AudioStateStore {
                         cue.ended_at = ms_marker(unix_ms());
                     }
                     PublishContext {
+                        cue: cue.clone(),
                         direction: cue.route_direction.clone(),
                         source_text: cue.source_text.clone(),
                         display_segments: cue.display_segments.clone(),
@@ -143,6 +145,7 @@ impl AudioStateStore {
         translated_text: &str,
         context: PublishContext,
     ) {
+        self.history.archive_cue(&context.cue);
         self.watch_session_report.record_publish_runtime(
             cue_id,
             &context.direction,
@@ -242,6 +245,7 @@ impl AudioStateStore {
                 .iter()
                 .find(|cue| cue.cue_id == cue_id)
                 .map(|cue| PublishContext {
+                    cue: cue.clone(),
                     direction: cue.route_direction.clone(),
                     source_text: cue.source_text.clone(),
                     display_segments: cue.display_segments.clone(),
@@ -286,6 +290,7 @@ impl AudioStateStore {
                     (
                         cue.translated_text.clone(),
                         PublishContext {
+                            cue: cue.clone(),
                             direction: cue.route_direction.clone(),
                             source_text: cue.source_text.clone(),
                             display_segments: cue.display_segments.clone(),

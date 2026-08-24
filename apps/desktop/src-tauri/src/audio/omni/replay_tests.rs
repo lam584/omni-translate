@@ -451,9 +451,19 @@ fn replay_secondary_late_asr_final_stays_with_original_cue() {
             "item_id": "item-two",
             "transcript": "second sentence"
         })),
+        ScriptStep::Event(json!({
+            "type": "response.audio_transcript.delta",
+            "response_id": "native-preview-must-stay-hidden",
+            "delta": "不得写入的原生预览"
+        })),
+        ScriptStep::Event(json!({
+            "type": "response.audio_transcript.done",
+            "response_id": "native-preview-must-stay-hidden",
+            "transcript": "不得写入的原生终稿"
+        })),
     ];
     let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
-    for (index, _) in [0, 1, 2, 3, 4, 5].iter().enumerate() {
+    for (index, _) in [0, 1, 2, 3, 4, 5, 6, 7].iter().enumerate() {
         socket = harness.tick(socket, &mut slice);
         if index == 1 {
             // Cue ids use millisecond timestamps; ensure the second VAD
@@ -482,6 +492,16 @@ fn replay_secondary_late_asr_final_stays_with_original_cue() {
     assert!(cues.iter().all(|cue| {
         cue.source_text != "first sentence second sentence"
             && cue.source_text != "second sentence first sentence"
+    }));
+    assert!(cues.iter().all(|cue| cue.committed));
+    assert!(cues
+        .iter()
+        .all(|cue| harness.store().subtitle_source_is_final(&cue.cue_id)));
+    assert!(cues.iter().all(|cue| {
+        !cue.translation_committed
+            && cue.translated_text.is_empty()
+            && cue.translation_state
+                == Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Pending)
     }));
 }
 

@@ -285,6 +285,9 @@ impl OmniAsrEventProcessor {
         transcription_completed_at: &mut Option<SystemTime>,
         event_diagnostics: &mut OmniEventDiagnostics,
     ) {
+        // Provider `transcription.completed` is the authoritative source final
+        // in every topology. `subtitle_translate_active` changes only who owns
+        // the translation final; it must never downgrade source finality.
         if let Some(native_cue_id) = routed_native_response_cue {
             if merged_asr_cue_id == current_cue_id.as_deref() {
                 // The provider explicitly identified the current live cue as
@@ -307,12 +310,12 @@ impl OmniAsrEventProcessor {
             }
         } else if let Some(cue_id) = isolated_unmapped_cue_id {
             // A completed item that cannot be correlated to the live cue must
-            // never overwrite that cue. Keep the isolated final open only for
+            // never overwrite that cue. Its translation remains open only for
             // the secondary subtitle worker.
             store.update_or_push_stt_cue(
                 cue_id,
                 completion_source_text,
-                !subtitle_translate_active,
+                true,
             );
             let _ = diag_log(
                 app,
@@ -331,7 +334,7 @@ impl OmniAsrEventProcessor {
                 if defer_secondary_translation {
                     store.defer_subtitle_cue_translation(cue_id);
                 }
-                store.update_or_push_stt_cue(cue_id, completion_source_text, false);
+                store.update_or_push_stt_cue(cue_id, completion_source_text, true);
             } else {
                 update_native_response_cue_source(store, cue_id, completion_source_text);
             }
@@ -352,7 +355,7 @@ impl OmniAsrEventProcessor {
                 event_diagnostics.current_cue_origin =
                     Some("transcription_completed".to_string());
             }
-            store.update_or_push_stt_cue(&cue_id, completion_source_text, false);
+            store.update_or_push_stt_cue(&cue_id, completion_source_text, true);
             let _ = diag_log(
                 app,
                 "omni",
@@ -375,7 +378,7 @@ impl OmniAsrEventProcessor {
             *transcription_completed_at = Some(SystemTime::now());
             let cue_id_str = current_cue_id.as_deref().unwrap_or("(none)");
             if let Some(id) = current_cue_id.as_ref() {
-                store.update_or_push_stt_cue(id, completion_source_text, false);
+                store.update_or_push_stt_cue(id, completion_source_text, true);
             }
             let _ = diag_log(
                 app,

@@ -64,9 +64,15 @@ fn replay_new_delta_then_unmapped_old_final_isolates_cues() {
         .find(|cue| cue.source_text == "the late old final")
         .expect("isolated old final cue");
     assert_ne!(isolated_cue.cue_id, current_cue_id);
-    assert!(
-        !isolated_cue.committed,
-        "the secondary worker must be able to translate the isolated final"
+    assert!(isolated_cue.committed, "Provider ASR completed owns source finality");
+    assert!(harness
+        .store()
+        .subtitle_source_is_final(&isolated_cue.cue_id));
+    assert!(!isolated_cue.translation_committed);
+    assert!(isolated_cue.translated_text.is_empty());
+    assert_eq!(
+        isolated_cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Pending)
     );
     assert!(
         harness
@@ -110,7 +116,14 @@ fn replay_new_delta_then_unmapped_old_final_isolates_cues() {
         .find(|cue| cue.cue_id == current_cue_id)
         .expect("current cue is finalized in place");
     assert_eq!(current_cue.source_text, "the current turn final");
-    assert!(!current_cue.committed);
+    assert!(current_cue.committed, "the matching ASR completion is a source final");
+    assert!(harness.store().subtitle_source_is_final(&current_cue_id));
+    assert!(!current_cue.translation_committed);
+    assert!(current_cue.translated_text.is_empty());
+    assert_eq!(
+        current_cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Pending)
+    );
     assert_eq!(
         snapshot
             .subtitle_overlay

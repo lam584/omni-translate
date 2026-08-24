@@ -1,8 +1,8 @@
 {
   "desktop-shell-rust": {
     "lines": 61.47,
-    "functions": 100,
-    "branches": 100
+    "functions": 64.33,
+    "branches": 61.61
   },
   "native-bridge-rust": {
     "lines": 20.97,

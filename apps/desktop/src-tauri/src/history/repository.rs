@@ -5,6 +5,11 @@ use serde::Serialize;
 
 use super::crypto::HistoryCipher;
 
+mod retention;
+use retention::RETENTION_MAX_BYTES;
+#[cfg(test)]
+use retention::{RETENTION_MAX_AGE_MS, RETENTION_MAX_SESSIONS};
+
 const SCHEMA_VERSION: i64 = 1;
 const MAX_PAGE_SIZE: u32 = 100;
 
@@ -80,7 +85,29 @@ pub(super) struct CueWrite<'a> {
     pub ended_at_ms: i64,
 }
 
+pub(super) struct AudioSegmentWrite<'a> {
+    pub session_id: &'a str,
+    pub cue_refs: &'a [AudioCueRefWrite<'a>],
+    pub track: &'a str,
+    pub sequence: i64,
+    pub started_at_ms: i64,
+    pub duration_ms: i64,
+    pub sample_rate_hz: u32,
+    pub encrypted_path: &'a Path,
+    pub encrypted_bytes: i64,
+}
+
+pub(super) struct AudioCueRefWrite<'a> {
+    pub cue_id: &'a str,
+    pub offset_samples: i64,
+    pub length_samples: i64,
+}
+
 impl HistoryRepository {
+    pub(super) fn cipher(&self) -> HistoryCipher {
+        self.cipher.clone()
+    }
+
     pub(super) fn contains_encrypted_payload(database_path: &Path) -> Result<bool, String> {
         if !database_path.exists() {
             return Ok(false);
@@ -122,7 +149,7 @@ impl HistoryRepository {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
         let repository = Self { database_path, cipher };
-        let connection = repository.open()?;
+        let mut connection = repository.open()?;
         connection
             .execute_batch(
                 "PRAGMA journal_mode=WAL;
@@ -141,6 +168,7 @@ impl HistoryRepository {
                    status TEXT NOT NULL DEFAULT 'active',
                    cue_count INTEGER NOT NULL DEFAULT 0,
                    audio_bytes INTEGER NOT NULL DEFAULT 0,
+                   archive_gap_count INTEGER NOT NULL DEFAULT 0,
                    created_at_ms INTEGER NOT NULL
                  );
                  CREATE TABLE IF NOT EXISTS subtitle_cues (
@@ -172,16 +200,43 @@ impl HistoryRepository {
                    channels INTEGER NOT NULL,
                    encrypted_path TEXT NOT NULL,
                    byte_size INTEGER NOT NULL,
-                   created_at_ms INTEGER NOT NULL
+                   created_at_ms INTEGER NOT NULL,
+                   UNIQUE(session_id, track, sequence)
                  );
                  CREATE TABLE IF NOT EXISTS subtitle_cue_audio_refs (
                    cue_id TEXT NOT NULL REFERENCES subtitle_cues(id) ON DELETE CASCADE,
                    audio_segment_id TEXT NOT NULL REFERENCES subtitle_audio_segments(id) ON DELETE CASCADE,
-                   offset_ms INTEGER NOT NULL,
-                   duration_ms INTEGER NOT NULL,
+                   offset_samples INTEGER NOT NULL,
+                   length_samples INTEGER NOT NULL,
                    track TEXT NOT NULL,
                    PRIMARY KEY(cue_id, audio_segment_id, track)
                  );",
+            )
+            .map_err(|error| error.to_string())?;
+        migrate_legacy_audio_refs(&mut connection)?;
+        ensure_column(
+            &connection,
+            "subtitle_sessions",
+            "archive_gap_count",
+            "ALTER TABLE subtitle_sessions ADD COLUMN archive_gap_count INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &connection,
+            "subtitle_cue_audio_refs",
+            "offset_samples",
+            "ALTER TABLE subtitle_cue_audio_refs ADD COLUMN offset_samples INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &connection,
+            "subtitle_cue_audio_refs",
+            "length_samples",
+            "ALTER TABLE subtitle_cue_audio_refs ADD COLUMN length_samples INTEGER NOT NULL DEFAULT 0",
+        )?;
+        connection
+            .execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS subtitle_audio_segments_track_sequence
+                 ON subtitle_audio_segments(session_id, track, sequence)",
+                [],
             )
             .map_err(|error| error.to_string())?;
         connection
@@ -220,6 +275,179 @@ impl HistoryRepository {
             )
             .map_err(|error| error.to_string())?;
         Ok(())
+    }
+
+    pub(super) fn mark_archive_gap(&self, session_id: &str) -> Result<(), String> {
+        self.open()?
+            .execute(
+                "UPDATE subtitle_sessions
+                 SET archive_gap_count = archive_gap_count + 1
+                 WHERE id = ?1",
+                [session_id],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub(super) fn next_audio_sequence(&self, session_id: &str, track: &str) -> Result<i64, String> {
+        self.open()?
+            .query_row(
+                "SELECT COALESCE(MAX(sequence), 0) + 1
+                 FROM subtitle_audio_segments WHERE session_id = ?1 AND track = ?2",
+                params![session_id, track],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    pub(super) fn insert_audio_segment(&self, segment: AudioSegmentWrite<'_>) -> Result<(), String> {
+        let mut connection = self.open()?;
+        let transaction = connection.transaction().map_err(|error| error.to_string())?;
+        let segment_id = uuid::Uuid::now_v7().to_string();
+        transaction
+            .execute(
+                "INSERT INTO subtitle_audio_segments(
+                   id, session_id, track, sequence, started_at_ms, duration_ms,
+                   sample_rate, channels, encrypted_path, byte_size, created_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9,
+                           CAST(unixepoch('subsec') * 1000 AS INTEGER))",
+                params![
+                    segment_id,
+                    segment.session_id,
+                    segment.track,
+                    segment.sequence,
+                    segment.started_at_ms,
+                    segment.duration_ms,
+                    segment.sample_rate_hz,
+                    segment.encrypted_path.to_string_lossy(),
+                    segment.encrypted_bytes,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        if !segment.cue_refs.is_empty() {
+            for cue_ref in segment.cue_refs {
+                let internal_cue_id: Option<String> = transaction
+                    .query_row(
+                        "SELECT id FROM subtitle_cues WHERE session_id = ?1 AND cue_id = ?2",
+                        params![segment.session_id, cue_ref.cue_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?;
+                if let Some(internal_cue_id) = internal_cue_id {
+                    transaction
+                        .execute(
+                            "INSERT OR REPLACE INTO subtitle_cue_audio_refs(
+                               cue_id, audio_segment_id, offset_samples, length_samples, track
+                             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                            params![
+                                internal_cue_id,
+                                segment_id,
+                                cue_ref.offset_samples,
+                                cue_ref.length_samples,
+                                segment.track,
+                            ],
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+        } else {
+            let segment_end_ms = segment.started_at_ms.saturating_add(segment.duration_ms);
+            let mut statement = transaction
+                .prepare(
+                    "SELECT id, MAX(started_at_ms, ?2), MIN(ended_at_ms, ?3)
+                     FROM subtitle_cues
+                     WHERE session_id = ?1 AND started_at_ms < ?3 AND ended_at_ms > ?2",
+                )
+                .map_err(|error| error.to_string())?;
+            let overlaps = statement
+                .query_map(
+                    params![segment.session_id, segment.started_at_ms, segment_end_ms],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+                )
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            drop(statement);
+            for (cue_id, overlap_start, overlap_end) in overlaps {
+                let offset_samples = overlap_start
+                    .saturating_sub(segment.started_at_ms)
+                    .saturating_mul(i64::from(segment.sample_rate_hz))
+                    / 1_000;
+                let length_samples = overlap_end
+                    .saturating_sub(overlap_start)
+                    .saturating_mul(i64::from(segment.sample_rate_hz))
+                    / 1_000;
+                transaction
+                    .execute(
+                        "INSERT OR REPLACE INTO subtitle_cue_audio_refs(
+                           cue_id, audio_segment_id, offset_samples, length_samples, track
+                         ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![cue_id, segment_id, offset_samples, length_samples, segment.track],
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        transaction
+            .execute(
+                "UPDATE subtitle_sessions SET audio_bytes = audio_bytes + ?2 WHERE id = ?1",
+                params![segment.session_id, segment.encrypted_bytes],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())
+    }
+
+    pub(super) fn audio_archive_allowed(&self) -> Result<bool, String> {
+        let bytes: i64 = self.open()?.query_row(
+            "SELECT COALESCE(SUM(audio_bytes), 0) FROM subtitle_sessions",
+            [],
+            |row| row.get(0),
+        ).map_err(|error| error.to_string())?;
+        Ok(bytes < RETENTION_MAX_BYTES)
+    }
+
+    #[cfg(test)]
+    pub(super) fn audio_segments_for_test(
+        &self,
+        session_id: &str,
+        track: &str,
+    ) -> Result<Vec<(i64, u32, PathBuf)>, String> {
+        let connection = self.open()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT sequence, sample_rate, encrypted_path
+                 FROM subtitle_audio_segments
+                 WHERE session_id = ?1 AND track = ?2 ORDER BY sequence",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![session_id, track], |row| {
+                Ok((row.get(0)?, row.get(1)?, PathBuf::from(row.get::<_, String>(2)?)))
+            })
+            .map_err(|error| error.to_string())?;
+        rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    #[cfg(test)]
+    pub(super) fn cue_audio_ref_count_for_test(
+        &self,
+        session_id: &str,
+        cue_id: &str,
+        track: &str,
+    ) -> Result<i64, String> {
+        self.open()?
+            .query_row(
+                "SELECT COUNT(*) FROM subtitle_cue_audio_refs
+                 JOIN subtitle_cues ON subtitle_cues.id = subtitle_cue_audio_refs.cue_id
+                 WHERE subtitle_cues.session_id = ?1
+                   AND subtitle_cues.cue_id = ?2
+                   AND subtitle_cue_audio_refs.track = ?3",
+                params![session_id, cue_id, track],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())
     }
 
     #[cfg(test)]
@@ -466,8 +694,15 @@ impl HistoryRepository {
 
     pub(super) fn delete_session(&self, session_id: &str) -> Result<bool, String> {
         let changed = self.open()?
-            .execute("DELETE FROM subtitle_sessions WHERE id = ?1 AND ended_at_ms IS NOT NULL", [session_id])
+            .execute(
+                "UPDATE subtitle_sessions SET status = 'deleting'
+                 WHERE id = ?1 AND ended_at_ms IS NOT NULL",
+                [session_id],
+            )
             .map_err(|error| error.to_string())?;
+        if changed > 0 {
+            self.resume_deleting_sessions(self.history_dir()?)?;
+        }
         Ok(changed > 0)
     }
 
@@ -477,8 +712,13 @@ impl HistoryRepository {
             .query_row("SELECT COUNT(*) FROM subtitle_sessions WHERE ended_at_ms IS NOT NULL", [], |row| row.get(0))
             .map_err(|error| error.to_string())?;
         connection
-            .execute("DELETE FROM subtitle_sessions WHERE ended_at_ms IS NOT NULL", [])
+            .execute(
+                "UPDATE subtitle_sessions SET status = 'deleting' WHERE ended_at_ms IS NOT NULL",
+                [],
+            )
             .map_err(|error| error.to_string())?;
+        drop(connection);
+        self.resume_deleting_sessions(self.history_dir()?)?;
         Ok(count)
     }
 
@@ -489,6 +729,74 @@ impl HistoryRepository {
             .map_err(|error| error.to_string())?;
         Ok(connection)
     }
+
+    fn history_dir(&self) -> Result<&Path, String> {
+        self.database_path
+            .parent()
+            .ok_or_else(|| "字幕历史数据库缺少父目录".to_string())
+    }
+}
+
+fn ensure_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    alter_statement: &str,
+) -> Result<(), String> {
+    let columns = table_columns(connection, table)?;
+    if !columns.iter().any(|value| value == column) {
+        connection
+            .execute(alter_statement, [])
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn table_columns(connection: &Connection, table: &str) -> Result<Vec<String>, String> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| error.to_string())?;
+    let columns = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(columns)
+}
+
+fn migrate_legacy_audio_refs(connection: &mut Connection) -> Result<(), String> {
+    if !table_columns(connection, "subtitle_cue_audio_refs")?
+        .iter()
+        .any(|column| column == "offset_ms")
+    {
+        return Ok(());
+    }
+    let transaction = connection.transaction().map_err(|error| error.to_string())?;
+    transaction
+        .execute_batch(
+            "ALTER TABLE subtitle_cue_audio_refs RENAME TO subtitle_cue_audio_refs_legacy;
+             CREATE TABLE subtitle_cue_audio_refs (
+               cue_id TEXT NOT NULL REFERENCES subtitle_cues(id) ON DELETE CASCADE,
+               audio_segment_id TEXT NOT NULL REFERENCES subtitle_audio_segments(id) ON DELETE CASCADE,
+               offset_samples INTEGER NOT NULL,
+               length_samples INTEGER NOT NULL,
+               track TEXT NOT NULL,
+               PRIMARY KEY(cue_id, audio_segment_id, track)
+             );
+             INSERT INTO subtitle_cue_audio_refs(
+               cue_id, audio_segment_id, offset_samples, length_samples, track
+             )
+             SELECT legacy.cue_id, legacy.audio_segment_id,
+                    legacy.offset_ms * segments.sample_rate / 1000,
+                    legacy.duration_ms * segments.sample_rate / 1000,
+                    legacy.track
+             FROM subtitle_cue_audio_refs_legacy AS legacy
+             JOIN subtitle_audio_segments AS segments ON segments.id = legacy.audio_segment_id;
+             DROP TABLE subtitle_cue_audio_refs_legacy;",
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())
 }
 
 fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistorySessionSummary> {
@@ -565,6 +873,207 @@ mod tests {
                 assert!(!raw.windows(14).any(|part| part == b"private source"));
                 assert!(!raw.windows("私密译文".len()).any(|part| part == "私密译文".as_bytes()));
             }
+        }
+    }
+
+    #[test]
+    fn retention_removes_only_oldest_ended_sessions_and_recovers_orphans() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = HistoryRepository::initialize(
+            directory.path().join("subtitle-history.db"),
+            HistoryCipher::for_test([17; 32]),
+        )
+        .unwrap();
+        for index in 0..=RETENTION_MAX_SESSIONS {
+            let id = format!("ended-{index:04}");
+            repository.create_session(&id, index as i64).unwrap();
+            repository.end_session(&id, index as i64 + 1).unwrap();
+        }
+        repository.create_session("active", 9_999).unwrap();
+        let orphan = directory.path().join("orphan.flac.enc");
+        std::fs::write(&orphan, b"encrypted orphan").unwrap();
+        let part = directory.path().join("unfinished.flac.enc.part");
+        std::fs::write(&part, b"partial").unwrap();
+
+        let removed = repository
+            .run_retention(directory.path(), RETENTION_MAX_AGE_MS)
+            .unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(repository.get_session("ended-0000").unwrap().is_none());
+        assert!(repository.get_session("active").unwrap().is_some());
+        assert!(!orphan.exists());
+        assert!(!part.exists());
+    }
+
+    #[test]
+    fn retention_enforces_age_and_capacity_without_deleting_active_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = HistoryRepository::initialize(
+            directory.path().join("subtitle-history.db"),
+            HistoryCipher::for_test([19; 32]),
+        )
+        .unwrap();
+        let now_ms = RETENTION_MAX_AGE_MS.saturating_mul(2);
+        repository.create_session("expired", 1).unwrap();
+        repository.end_session("expired", 2).unwrap();
+        repository.create_session("capacity-oldest", now_ms - 20).unwrap();
+        repository.end_session("capacity-oldest", now_ms - 19).unwrap();
+        repository.create_session("capacity-newest", now_ms - 10).unwrap();
+        repository.end_session("capacity-newest", now_ms - 9).unwrap();
+        repository.create_session("active", now_ms).unwrap();
+        let connection = repository.open().unwrap();
+        connection
+            .execute(
+                "UPDATE subtitle_sessions SET audio_bytes = 100 WHERE id = 'capacity-oldest'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE subtitle_sessions SET audio_bytes = ?1 WHERE id = 'capacity-newest'",
+                [RETENTION_MAX_BYTES],
+            )
+            .unwrap();
+        drop(connection);
+
+        assert_eq!(repository.run_retention(directory.path(), now_ms).unwrap(), 2);
+        assert!(repository.get_session("expired").unwrap().is_none());
+        assert!(repository.get_session("capacity-oldest").unwrap().is_none());
+        assert!(repository.get_session("capacity-newest").unwrap().is_some());
+        assert!(repository.get_session("active").unwrap().is_some());
+    }
+
+    #[test]
+    fn active_capacity_pressure_pauses_audio_but_keeps_subtitle_writes() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = HistoryRepository::initialize(
+            directory.path().join("subtitle-history.db"),
+            HistoryCipher::for_test([23; 32]),
+        )
+        .unwrap();
+        repository.create_session("active", 100).unwrap();
+        repository
+            .open()
+            .unwrap()
+            .execute(
+                "UPDATE subtitle_sessions SET audio_bytes = ?1 WHERE id = 'active'",
+                [RETENTION_MAX_BYTES + 1],
+            )
+            .unwrap();
+
+        assert_eq!(repository.run_retention(directory.path(), 200).unwrap(), 0);
+        assert!(!repository.audio_archive_allowed().unwrap());
+        repository
+            .upsert_cue(
+                CueWrite {
+                    session_id: "active",
+                    cue_id: "cue-active",
+                    route_direction: "inbound",
+                    source_text: "source remains durable",
+                    translated_text: "字幕继续保存",
+                    source_committed: true,
+                    translation_committed: true,
+                    started_at_ms: 110,
+                    ended_at_ms: 120,
+                },
+                121,
+            )
+            .unwrap();
+        assert_eq!(repository.list_cues("active", None, 50).unwrap().items.len(), 1);
+    }
+
+    #[test]
+    fn retention_resumes_a_session_already_marked_deleting() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = HistoryRepository::initialize(
+            directory.path().join("subtitle-history.db"),
+            HistoryCipher::for_test([31; 32]),
+        )
+        .unwrap();
+        repository.create_session("victim", 1).unwrap();
+        repository.end_session("victim", 2).unwrap();
+        let audio_path = directory.path().join("victim").join("source").join("00000001.flac.enc");
+        std::fs::create_dir_all(audio_path.parent().unwrap()).unwrap();
+        std::fs::write(&audio_path, b"encrypted").unwrap();
+        repository
+            .insert_audio_segment(AudioSegmentWrite {
+                session_id: "victim",
+                cue_refs: &[],
+                track: "source",
+                sequence: 1,
+                started_at_ms: 1,
+                duration_ms: 1,
+                sample_rate_hz: 16_000,
+                encrypted_path: &audio_path,
+                encrypted_bytes: 9,
+            })
+            .unwrap();
+        repository
+            .open()
+            .unwrap()
+            .execute("UPDATE subtitle_sessions SET status = 'deleting' WHERE id = 'victim'", [])
+            .unwrap();
+
+        assert_eq!(repository.run_retention(directory.path(), 10).unwrap(), 0);
+        assert!(!audio_path.exists());
+        assert!(repository.get_session("victim").unwrap().is_none());
+    }
+
+    #[test]
+    fn initialization_upgrades_early_schema_v1_audio_columns_in_place() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("subtitle-history.db");
+        let connection = Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE subtitle_sessions (
+                   id TEXT PRIMARY KEY, started_at_ms INTEGER NOT NULL, ended_at_ms INTEGER,
+                   status TEXT NOT NULL DEFAULT 'active', cue_count INTEGER NOT NULL DEFAULT 0,
+                   audio_bytes INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER NOT NULL
+                 );
+                 CREATE TABLE subtitle_cues (
+                   id TEXT PRIMARY KEY, session_id TEXT NOT NULL, cue_id TEXT NOT NULL,
+                   sequence INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
+                   route_direction TEXT NOT NULL, source_text_enc BLOB NOT NULL,
+                   translated_text_enc BLOB NOT NULL, source_committed INTEGER NOT NULL,
+                   translation_committed INTEGER NOT NULL, started_at_ms INTEGER NOT NULL,
+                   ended_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+                   UNIQUE(session_id, cue_id)
+                 );
+                 CREATE TABLE subtitle_audio_segments (
+                   id TEXT PRIMARY KEY, session_id TEXT NOT NULL, track TEXT NOT NULL,
+                   sequence INTEGER NOT NULL, started_at_ms INTEGER NOT NULL,
+                   duration_ms INTEGER NOT NULL, sample_rate INTEGER NOT NULL,
+                   channels INTEGER NOT NULL, encrypted_path TEXT NOT NULL,
+                   byte_size INTEGER NOT NULL, created_at_ms INTEGER NOT NULL
+                 );
+                 CREATE TABLE subtitle_cue_audio_refs (
+                   cue_id TEXT NOT NULL, audio_segment_id TEXT NOT NULL,
+                   offset_ms INTEGER NOT NULL, duration_ms INTEGER NOT NULL,
+                   track TEXT NOT NULL, PRIMARY KEY(cue_id, audio_segment_id, track)
+                 );",
+            )
+            .unwrap();
+        drop(connection);
+
+        HistoryRepository::initialize(database_path.clone(), HistoryCipher::for_test([41; 32]))
+            .unwrap();
+        let connection = Connection::open(database_path).unwrap();
+        for (table, column) in [
+            ("subtitle_sessions", "archive_gap_count"),
+            ("subtitle_cue_audio_refs", "offset_samples"),
+            ("subtitle_cue_audio_refs", "length_samples"),
+        ] {
+            let mut statement = connection
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap();
+            let columns = statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(columns.iter().any(|value| value == column));
         }
     }
 }

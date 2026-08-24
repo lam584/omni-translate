@@ -648,6 +648,20 @@ impl AudioStateStore {
         });
     }
 
+    pub(crate) fn archive_source_pcm(&self, samples: &[i16], sample_rate_hz: u32) {
+        self.history.archive_source_pcm(samples, sample_rate_hz);
+    }
+
+    pub(crate) fn archive_translated_pcm(
+        &self,
+        cue_id: &str,
+        samples: &[i16],
+        sample_rate_hz: u32,
+    ) {
+        self.history
+            .archive_translated_pcm(cue_id, samples, sample_rate_hz);
+    }
+
     pub(crate) fn tts_audio(&self, cache_key: &str) -> Option<CachedTtsAudio> {
         self.audio_cache.tts(cache_key)
     }

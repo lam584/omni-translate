@@ -211,6 +211,13 @@ impl OmniEventProcessor {
                         pending_audio_buffer.extend_from_slice(&samples);
                     }
                     let audio_state = app.state::<AudioStateStore>();
+                    if let Some(cue_id) = cue_id.filter(|value| !value.trim().is_empty()) {
+                        audio_state.archive_translated_pcm(
+                            cue_id,
+                            &samples,
+                            OMNI_OUTPUT_SAMPLE_RATE_HZ,
+                        );
+                    }
                     if let (Some(cue_id), Some(config)) = (
                         cue_id.filter(|value| !value.trim().is_empty()),
                         audio_state.active_omni_speech_config(),

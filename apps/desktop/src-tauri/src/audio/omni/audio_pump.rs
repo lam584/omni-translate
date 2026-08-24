@@ -286,15 +286,7 @@ impl OmniAudioPump {
                 } else {
                     silence_chunks_skipped = silence_chunks_skipped.saturating_add(1);
                     if silence_chunks_skipped == 1 || silence_chunks_skipped.is_multiple_of(250) {
-                        let _ = diag_log(
-                            &app,
-                            "omni",
-                            "debug",
-                            format!(
-                                "event=omni.asr_silence_chunk_skipped skipped={} rms={:.6} threshold={:.6}",
-                                silence_chunks_skipped, chunk_rms, OMNI_ASR_MIN_CHUNK_RMS
-                            ),
-                        );
+                        log_skipped_silence(app, silence_chunks_skipped, chunk_rms);
                     }
                     continue;
                 }
@@ -365,6 +357,7 @@ impl OmniAudioPump {
                 },
                 || socket.send_message(Message::Text(append.to_string().into())),
             )?;
+            archive_successful_source_audio(store, &send_result, &asr_chunk);
             if let Err(error) = send_result {
                 *socket = reconnect_after_audio_send_failure(
                     connector,
@@ -455,6 +448,31 @@ impl OmniAudioPump {
             chunks_sent_this_tick,
             socket_reconnected,
         })
+    }
+}
+
+fn log_skipped_silence<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    skipped: u64,
+    chunk_rms: f32,
+) {
+    let _ = diag_log(
+        app,
+        "omni",
+        "debug",
+        format!(
+            "event=omni.asr_silence_chunk_skipped skipped={skipped} rms={chunk_rms:.6} threshold={OMNI_ASR_MIN_CHUNK_RMS:.6}"
+        ),
+    );
+}
+
+fn archive_successful_source_audio<E>(
+    store: &AudioStateStore,
+    send_result: &Result<(), E>,
+    samples: &[i16],
+) {
+    if send_result.is_ok() {
+        store.archive_source_pcm(samples, 16_000);
     }
 }
 

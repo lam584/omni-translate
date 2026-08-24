@@ -1,8 +1,10 @@
+mod audio;
 mod crypto;
 mod repository;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -15,10 +17,12 @@ use crate::audio::contracts::{AudioRuntimeSnapshot, SubtitleCueRuntime};
 pub(crate) use repository::{
     HistoryCuePage, HistorySessionDetail, HistorySessionPage, HistoryStatistics,
 };
-use repository::{CueWrite, HistoryRepository};
+use audio::AudioTrack;
+use repository::{AudioCueRefWrite, AudioSegmentWrite, CueWrite, HistoryRepository};
 
 struct HistoryState {
     database_path: PathBuf,
+    history_dir: PathBuf,
     repository: Option<Arc<HistoryRepository>>,
     unavailable_reason: Option<String>,
     active_session_id: Option<String>,
@@ -28,10 +32,15 @@ struct HistoryState {
 pub(crate) struct HistoryStateStore {
     inner: Arc<Mutex<Option<HistoryState>>>,
     cue_tx: SyncSender<QueuedCue>,
+    audio_tx: SyncSender<QueuedAudio>,
+    queued_audio_ms: Arc<AtomicU64>,
+    audio_gap_sessions: Arc<Mutex<HashSet<String>>>,
     control_tx: mpsc::Sender<ArchiveControl>,
 }
 
 const CUE_MUTATION_CAPACITY: usize = 1_024;
+const AUDIO_MUTATION_CAPACITY: usize = 512;
+const AUDIO_INGRESS_MAX_MS: u64 = 10_000;
 const CUE_BATCH_INTERVAL: Duration = Duration::from_millis(100);
 const STOP_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -42,6 +51,35 @@ struct QueuedCue {
     updated_at_ms: i64,
 }
 
+struct QueuedAudio {
+    session_id: String,
+    cue_id: Option<String>,
+    track: AudioTrack,
+    sample_rate_hz: u32,
+    started_at_ms: i64,
+    duration_ms: u64,
+    samples: Vec<i16>,
+}
+
+#[derive(Clone, Hash, Eq, PartialEq)]
+struct AudioAccumulatorKey {
+    session_id: String,
+    track: AudioTrack,
+    sample_rate_hz: u32,
+}
+
+struct AudioCueSpan {
+    cue_id: String,
+    offset_samples: i64,
+    length_samples: i64,
+}
+
+struct AudioAccumulator {
+    started_at_ms: i64,
+    samples: Vec<i16>,
+    cue_spans: Vec<AudioCueSpan>,
+}
+
 enum ArchiveControl {
     Begin { session_id: String, started_at_ms: i64 },
     Finish {
@@ -49,19 +87,41 @@ enum ArchiveControl {
         ended_at_ms: i64,
         acknowledged: mpsc::Sender<Result<(), String>>,
     },
+    AudioGap { session_id: String },
 }
 
 impl HistoryStateStore {
     pub(crate) fn new() -> Self {
         let inner = Arc::new(Mutex::new(None));
         let (cue_tx, cue_rx) = mpsc::sync_channel(CUE_MUTATION_CAPACITY);
+        let (audio_tx, audio_rx) = mpsc::sync_channel(AUDIO_MUTATION_CAPACITY);
+        let queued_audio_ms = Arc::new(AtomicU64::new(0));
+        let audio_gap_sessions = Arc::new(Mutex::new(HashSet::new()));
         let (control_tx, control_rx) = mpsc::channel();
         let worker_inner = inner.clone();
+        let worker_queued_audio_ms = queued_audio_ms.clone();
+        let worker_audio_gap_sessions = audio_gap_sessions.clone();
         std::thread::Builder::new()
             .name("subtitle-history-archive".to_string())
-            .spawn(move || archive_worker(worker_inner, cue_rx, control_rx))
+            .spawn(move || {
+                archive_worker(
+                    worker_inner,
+                    cue_rx,
+                    audio_rx,
+                    control_rx,
+                    worker_queued_audio_ms,
+                    worker_audio_gap_sessions,
+                )
+            })
             .expect("spawn subtitle history archive worker");
-        Self { inner, cue_tx, control_tx }
+        Self {
+            inner,
+            cue_tx,
+            audio_tx,
+            queued_audio_ms,
+            audio_gap_sessions,
+            control_tx,
+        }
     }
 
     pub(crate) fn ensure_initialized<R: tauri::Runtime>(&self, app: &AppHandle<R>) -> Result<String, String> {
@@ -86,7 +146,11 @@ impl HistoryStateStore {
         let repository = match preflight_error {
             Some(error) => Err(error),
             None => crypto::HistoryCipher::from_system_credentials(existing_archive)
-                .and_then(|cipher| HistoryRepository::initialize(database_path.clone(), cipher)),
+                .and_then(|cipher| HistoryRepository::initialize(database_path.clone(), cipher))
+                .and_then(|repository| {
+                    repository.run_retention(&history_dir, unix_ms())?;
+                    Ok(repository)
+                }),
         };
         let (repository, unavailable_reason) = match repository {
             Ok(repository) => (Some(Arc::new(repository)), None),
@@ -95,6 +159,7 @@ impl HistoryStateStore {
         let path = database_path.to_string_lossy().to_string();
         *inner = Some(HistoryState {
             database_path,
+            history_dir,
             repository,
             unavailable_reason,
             active_session_id: None,
@@ -112,6 +177,97 @@ impl HistoryStateStore {
     pub(crate) fn archive_cue(&self, cue: &SubtitleCueRuntime) {
         if let Err(error) = self.queue_cue(cue) {
             log::warn!("[omni][history] subtitle cue archive skipped: {error}");
+        }
+    }
+
+    pub(crate) fn archive_source_pcm(&self, samples: &[i16], sample_rate_hz: u32) {
+        self.queue_audio(None, AudioTrack::Source, samples, sample_rate_hz);
+    }
+
+    pub(crate) fn archive_translated_pcm(
+        &self,
+        cue_id: &str,
+        samples: &[i16],
+        sample_rate_hz: u32,
+    ) {
+        self.queue_audio(
+            Some(cue_id.to_string()),
+            AudioTrack::Translated,
+            samples,
+            sample_rate_hz,
+        );
+    }
+
+    fn queue_audio(
+        &self,
+        cue_id: Option<String>,
+        track: AudioTrack,
+        samples: &[i16],
+        sample_rate_hz: u32,
+    ) {
+        if samples.is_empty() || sample_rate_hz == 0 {
+            return;
+        }
+        let session_id = {
+            let mut inner = match self.inner.lock() {
+                Ok(inner) => inner,
+                Err(_) => return,
+            };
+            let Ok(state) = available_state_mut(&mut inner) else {
+                return;
+            };
+            let Some(session_id) = state.active_session_id.clone() else {
+                return;
+            };
+            session_id
+        };
+        let duration_ms = (samples.len() as u64)
+            .saturating_mul(1_000)
+            .div_ceil(u64::from(sample_rate_hz));
+        if self
+            .queued_audio_ms
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+                queued
+                    .checked_add(duration_ms)
+                    .filter(|next| *next <= AUDIO_INGRESS_MAX_MS)
+            })
+            .is_err()
+        {
+            self.report_audio_gap(session_id);
+            return;
+        }
+        let queued = QueuedAudio {
+            session_id: session_id.clone(),
+            cue_id,
+            track,
+            sample_rate_hz,
+            started_at_ms: unix_ms().saturating_sub(duration_ms as i64),
+            duration_ms,
+            samples: samples.to_vec(),
+        };
+        if self.audio_tx.try_send(queued).is_err() {
+            self.queued_audio_ms.fetch_sub(duration_ms, Ordering::AcqRel);
+            self.report_audio_gap(session_id);
+        }
+    }
+
+    fn report_audio_gap(&self, session_id: String) {
+        let should_report = self
+            .audio_gap_sessions
+            .lock()
+            .map(|mut sessions| sessions.insert(session_id.clone()))
+            .unwrap_or(false);
+        if should_report
+            && self
+                .control_tx
+                .send(ArchiveControl::AudioGap {
+                    session_id: session_id.clone(),
+                })
+                .is_err()
+        {
+            if let Ok(mut sessions) = self.audio_gap_sessions.lock() {
+                sessions.remove(&session_id);
+            }
         }
     }
 
@@ -309,14 +465,21 @@ fn contains_encrypted_audio(history_dir: &Path) -> Result<bool, String> {
 fn archive_worker(
     state: Arc<Mutex<Option<HistoryState>>>,
     cue_rx: Receiver<QueuedCue>,
+    audio_rx: Receiver<QueuedAudio>,
     control_rx: Receiver<ArchiveControl>,
+    queued_audio_ms: Arc<AtomicU64>,
+    audio_gap_sessions: Arc<Mutex<HashSet<String>>>,
 ) {
     let mut pending = HashMap::<(String, String), QueuedCue>::new();
+    let mut audio = HashMap::<AudioAccumulatorKey, AudioAccumulator>::new();
     let mut next_flush = Instant::now() + CUE_BATCH_INTERVAL;
     loop {
         while let Ok(control) = control_rx.try_recv() {
             match control {
                 ArchiveControl::Begin { session_id, started_at_ms } => {
+                    if let Ok(mut sessions) = audio_gap_sessions.lock() {
+                        sessions.remove(&session_id);
+                    }
                     with_worker_repository(&state, |repository| {
                         repository.create_session(&session_id, started_at_ms)
                     });
@@ -325,12 +488,24 @@ fn archive_worker(
                     drain_latest(&cue_rx, &mut pending, |cue| {
                         (cue.session_id.clone(), cue.cue.cue_id.clone())
                     });
-                    let result = flush_pending_cues(&state, &mut pending).and_then(|()| {
-                        worker_repository_result(&state, |repository| {
-                            repository.end_session(&session_id, ended_at_ms)
+                    drain_audio(&audio_rx, &mut audio, &state, &queued_audio_ms);
+                    let result = flush_pending_cues(&state, &mut pending)
+                        .and_then(|()| flush_session_audio(&state, &mut audio, &session_id))
+                        .and_then(|()| {
+                            worker_repository_result(&state, |repository| {
+                                repository.end_session(&session_id, ended_at_ms)
+                            })
                         })
-                    });
+                        .and_then(|()| run_worker_retention(&state));
+                    if let Ok(mut sessions) = audio_gap_sessions.lock() {
+                        sessions.remove(&session_id);
+                    }
                     let _ = acknowledged.send(result);
+                }
+                ArchiveControl::AudioGap { session_id } => {
+                    with_worker_repository(&state, |repository| {
+                        repository.mark_archive_gap(&session_id)
+                    });
                 }
             }
         }
@@ -341,6 +516,7 @@ fn archive_worker(
                 (cue.session_id.clone(), cue.cue.cue_id.clone())
             });
             let _ = flush_pending_cues(&state, &mut pending);
+            drain_audio(&audio_rx, &mut audio, &state, &queued_audio_ms);
             next_flush = now + CUE_BATCH_INTERVAL;
         }
         let wait = next_flush
@@ -352,7 +528,15 @@ fn archive_worker(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
+                drain_audio(&audio_rx, &mut audio, &state, &queued_audio_ms);
                 let _ = flush_pending_cues(&state, &mut pending);
+                let sessions = audio
+                    .keys()
+                    .map(|key| key.session_id.clone())
+                    .collect::<HashSet<_>>();
+                for session_id in sessions {
+                    let _ = flush_session_audio(&state, &mut audio, &session_id);
+                }
                 return;
             }
         }
@@ -369,6 +553,156 @@ fn drain_latest<T, K>(
     while let Ok(value) = receiver.try_recv() {
         pending.insert(key(&value), value);
     }
+}
+
+fn drain_audio(
+    receiver: &Receiver<QueuedAudio>,
+    accumulators: &mut HashMap<AudioAccumulatorKey, AudioAccumulator>,
+    state: &Arc<Mutex<Option<HistoryState>>>,
+    queued_audio_ms: &AtomicU64,
+) {
+    while let Ok(audio) = receiver.try_recv() {
+        queued_audio_ms.fetch_sub(audio.duration_ms, Ordering::AcqRel);
+        if let Err(error) = append_audio(accumulators, state, audio) {
+            log::warn!("[omni][history] audio archive mutation failed: {error}");
+        }
+    }
+}
+
+fn append_audio(
+    accumulators: &mut HashMap<AudioAccumulatorKey, AudioAccumulator>,
+    state: &Arc<Mutex<Option<HistoryState>>>,
+    audio: QueuedAudio,
+) -> Result<(), String> {
+    let key = AudioAccumulatorKey {
+        session_id: audio.session_id,
+        track: audio.track,
+        sample_rate_hz: audio.sample_rate_hz,
+    };
+    let max_samples = audio.sample_rate_hz as usize * 30;
+    let mut consumed = 0usize;
+    while consumed < audio.samples.len() {
+        let accumulator = accumulators.entry(key.clone()).or_insert_with(|| AudioAccumulator {
+            started_at_ms: audio.started_at_ms.saturating_add(
+                (consumed as i64).saturating_mul(1_000) / i64::from(audio.sample_rate_hz),
+            ),
+            samples: Vec::with_capacity(max_samples),
+            cue_spans: Vec::new(),
+        });
+        let take = (max_samples - accumulator.samples.len()).min(audio.samples.len() - consumed);
+        if let Some(cue_id) = audio.cue_id.as_deref() {
+            let offset_samples = accumulator.samples.len() as i64;
+            let length_samples = take as i64;
+            if let Some(span) = accumulator.cue_spans.last_mut().filter(|span| {
+                span.cue_id == cue_id
+                    && span.offset_samples.saturating_add(span.length_samples) == offset_samples
+            }) {
+                span.length_samples = span.length_samples.saturating_add(length_samples);
+            } else {
+                accumulator.cue_spans.push(AudioCueSpan {
+                    cue_id: cue_id.to_string(),
+                    offset_samples,
+                    length_samples,
+                });
+            }
+        }
+        accumulator.samples.extend_from_slice(&audio.samples[consumed..consumed + take]);
+        consumed += take;
+        if accumulator.samples.len() == max_samples {
+            flush_audio_key(state, accumulators, &key)?;
+        }
+    }
+    Ok(())
+}
+
+fn flush_session_audio(
+    state: &Arc<Mutex<Option<HistoryState>>>,
+    accumulators: &mut HashMap<AudioAccumulatorKey, AudioAccumulator>,
+    session_id: &str,
+) -> Result<(), String> {
+    let keys = accumulators
+        .keys()
+        .filter(|key| key.session_id == session_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    for key in keys {
+        flush_audio_key(state, accumulators, &key)?;
+    }
+    Ok(())
+}
+
+fn flush_audio_key(
+    state: &Arc<Mutex<Option<HistoryState>>>,
+    accumulators: &mut HashMap<AudioAccumulatorKey, AudioAccumulator>,
+    key: &AudioAccumulatorKey,
+) -> Result<(), String> {
+    let Some(accumulator) = accumulators.remove(key) else {
+        return Ok(());
+    };
+    if accumulator.samples.is_empty() {
+        return Ok(());
+    }
+    let (repository, history_dir) = worker_archive_context(state)?;
+    if !repository.audio_archive_allowed()? {
+        repository.mark_archive_gap(&key.session_id)?;
+        return Ok(());
+    }
+    let sequence = repository.next_audio_sequence(&key.session_id, key.track.as_str())?;
+    let archived = match audio::archive_flac_segment(
+        &history_dir,
+        &repository.cipher(),
+        &key.session_id,
+        key.track,
+        sequence,
+        key.sample_rate_hz,
+        &accumulator.samples,
+    ) {
+        Ok(archived) => archived,
+        Err(error) => {
+            let _ = repository.mark_archive_gap(&key.session_id);
+            return Err(error);
+        }
+    };
+    let cue_refs = accumulator
+        .cue_spans
+        .iter()
+        .map(|span| AudioCueRefWrite {
+            cue_id: &span.cue_id,
+            offset_samples: span.offset_samples,
+            length_samples: span.length_samples,
+        })
+        .collect::<Vec<_>>();
+    let insert_result = repository.insert_audio_segment(AudioSegmentWrite {
+        session_id: &key.session_id,
+        cue_refs: &cue_refs,
+        track: key.track.as_str(),
+        sequence,
+        started_at_ms: accumulator.started_at_ms,
+        duration_ms: archived.duration_ms,
+        sample_rate_hz: key.sample_rate_hz,
+        encrypted_path: &archived.path,
+        encrypted_bytes: i64::try_from(archived.encrypted_bytes).unwrap_or(i64::MAX),
+    });
+    if let Err(error) = insert_result {
+        let _ = std::fs::remove_file(&archived.path);
+        let _ = repository.mark_archive_gap(&key.session_id);
+        return Err(error);
+    }
+    repository.run_retention(&history_dir, unix_ms())?;
+    Ok(())
+}
+
+fn run_worker_retention(state: &Arc<Mutex<Option<HistoryState>>>) -> Result<(), String> {
+    let (repository, history_dir) = worker_archive_context(state)?;
+    repository.run_retention(&history_dir, unix_ms()).map(|_| ())
+}
+
+fn worker_archive_context(
+    state: &Arc<Mutex<Option<HistoryState>>>,
+) -> Result<(Arc<HistoryRepository>, PathBuf), String> {
+    let state = state.lock().map_err(|_| "history state poisoned".to_string())?;
+    let state = state.as_ref().ok_or_else(|| "字幕历史尚未初始化".to_string())?;
+    Ok((repository(state)?, state.history_dir.clone()))
 }
 
 fn flush_pending_cues(
@@ -435,9 +769,7 @@ fn parse_ms_marker(value: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::drain_latest;
-    use std::collections::HashMap;
-    use std::sync::mpsc;
+    use super::*;
 
     #[test]
     fn finish_drain_keeps_only_the_latest_revision_for_each_cue() {
@@ -452,5 +784,87 @@ mod tests {
         assert_eq!(pending.len(), 2);
         assert_eq!(pending["cue-1"].1, 2);
         assert_eq!(pending["cue-2"].1, 1);
+    }
+
+    #[test]
+    fn translated_track_splits_at_thirty_seconds_and_links_cue_across_segments() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("subtitle-history.db");
+        let repository = Arc::new(
+            HistoryRepository::initialize(
+                database_path.clone(),
+                crypto::HistoryCipher::for_test([37; 32]),
+            )
+            .unwrap(),
+        );
+        repository.create_session("session-30s", 1_000).unwrap();
+        repository
+            .upsert_cue(
+                CueWrite {
+                    session_id: "session-30s",
+                    cue_id: "cue-long",
+                    route_direction: "inbound",
+                    source_text: "source",
+                    translated_text: "translated",
+                    source_committed: true,
+                    translation_committed: true,
+                    started_at_ms: 1_000,
+                    ended_at_ms: 32_000,
+                },
+                32_000,
+            )
+            .unwrap();
+        let state = Arc::new(Mutex::new(Some(HistoryState {
+            database_path,
+            history_dir: directory.path().to_path_buf(),
+            repository: Some(repository.clone()),
+            unavailable_reason: None,
+            active_session_id: Some("session-30s".to_string()),
+        })));
+        let mut accumulators = HashMap::new();
+        append_audio(
+            &mut accumulators,
+            &state,
+            QueuedAudio {
+                session_id: "session-30s".to_string(),
+                cue_id: Some("cue-long".to_string()),
+                track: AudioTrack::Translated,
+                sample_rate_hz: 100,
+                started_at_ms: 1_000,
+                duration_ms: 31_000,
+                samples: vec![42; 3_100],
+            },
+        )
+        .unwrap();
+        flush_session_audio(&state, &mut accumulators, "session-30s").unwrap();
+
+        let segments = repository
+            .audio_segments_for_test("session-30s", "translated")
+            .unwrap();
+        assert_eq!(segments.len(), 2);
+        let (_, first) = audio::decrypt_flac_segment(
+            &repository.cipher(),
+            "session-30s",
+            AudioTrack::Translated,
+            segments[0].0,
+            &segments[0].2,
+        )
+        .unwrap();
+        let (_, second) = audio::decrypt_flac_segment(
+            &repository.cipher(),
+            "session-30s",
+            AudioTrack::Translated,
+            segments[1].0,
+            &segments[1].2,
+        )
+        .unwrap();
+        assert_eq!(first.len(), 3_000);
+        assert_eq!(second.len(), 100);
+        assert_eq!(
+            repository
+                .cue_audio_ref_count_for_test("session-30s", "cue-long", "translated")
+                .unwrap(),
+            2
+        );
     }
 }

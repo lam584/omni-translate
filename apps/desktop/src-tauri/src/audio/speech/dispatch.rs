@@ -602,6 +602,8 @@ impl<'a> SpeechTaskProcessor<'a> {
                 )
             };
 
+        store.archive_translated_pcm(&cue.cue_id, &translated_pcm, sample_rate_hz);
+
         let mix = SpeechMixPlanner::new(
             cue,
             store.segment_audio(&cue.cue_id),

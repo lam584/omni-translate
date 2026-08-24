@@ -654,7 +654,8 @@ fn replay_response_done_nested_output_commits_native_translation() {
         .iter()
         .find(|cue| cue.source_text == source)
         .expect("nested response output should create a cue");
-    assert!(cue.committed);
+    assert!(!cue.committed, "response final cannot own the missing ASR final");
+    assert!(cue.translation_committed);
     assert_eq!(cue.translated_text, translated);
 }
 

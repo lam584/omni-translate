@@ -487,7 +487,8 @@ fn replay_secondary_late_asr_final_stays_with_original_cue() {
 
 /// A provider item id is the only admissible merge key. Even if the native
 /// cue id looks arbitrarily old, a late ASR cue carrying that same item id is
-/// folded into it and the already committed translation survives unchanged.
+/// folded into it. A semantic source replacement still advances the revision,
+/// so the prior revision's translation must not be rebound to the new source.
 #[test]
 fn replay_same_provider_item_merges_by_lineage_without_a_time_window() {
     let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
@@ -542,8 +543,13 @@ fn replay_same_provider_item_merges_by_lineage_without_a_time_window() {
     let cue = &cues[0];
     assert_eq!(cue.cue_id, native_cue_id);
     assert_eq!(cue.source_text, "authoritative final source");
-    assert_eq!(cue.translated_text, "保留的最终译文");
+    assert!(cue.translated_text.is_empty());
     assert!(cue.committed);
+    assert!(!cue.translation_committed);
+    assert_eq!(
+        cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Pending)
+    );
     assert_eq!(
         slice
             .event_diagnostics
@@ -603,7 +609,9 @@ fn replay_same_text_with_different_provider_items_preserves_both_cues() {
 
     let cues = harness.store().snapshot().subtitle_overlay.recent_cues;
     assert_eq!(cues.len(), 2, "different item ids must never content-merge");
-    assert!(cues.iter().any(|cue| cue.cue_id == native_cue_id && cue.committed));
+    assert!(cues.iter().any(|cue| {
+        cue.cue_id == native_cue_id && !cue.committed && cue.translation_committed
+    }));
     assert_eq!(
         cues.iter()
             .filter(|cue| cue.source_text == "same visible text")
@@ -646,7 +654,9 @@ fn replay_same_text_without_provider_identity_preserves_both_cues() {
 
     let cues = harness.store().snapshot().subtitle_overlay.recent_cues;
     assert_eq!(cues.len(), 2, "missing item id must preserve both cue rows");
-    assert!(cues.iter().any(|cue| cue.cue_id == native_cue_id && cue.committed));
+    assert!(cues.iter().any(|cue| {
+        cue.cue_id == native_cue_id && !cue.committed && cue.translation_committed
+    }));
 }
 
 /// Production regression: a long idle after the previous commit must not make

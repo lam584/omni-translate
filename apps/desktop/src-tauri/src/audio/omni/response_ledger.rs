@@ -110,13 +110,20 @@ impl ResponseLedger {
                 return None;
             }
         }
-        let index = exact_index
-            .or_else(|| {
-                self.lineages.iter().position(|lineage| {
-                    fallback_cue_id.is_some_and(|cue_id| lineage.cue_id == cue_id)
-                })
+        let fifo_index = || self.lineages.iter().position(|lineage| !lineage.completed);
+        let fallback_index = || {
+            self.lineages.iter().position(|lineage| {
+                !lineage.completed
+                    && fallback_cue_id.is_some_and(|cue_id| lineage.cue_id == cue_id)
             })
-            .or_else(|| self.lineages.iter().position(|lineage| !lineage.completed));
+        };
+        let index = exact_index.or_else(|| {
+            if response_id.is_some() && !has_item_lineage {
+                fifo_index().or_else(fallback_index)
+            } else {
+                fallback_index().or_else(fifo_index)
+            }
+        });
         let lineage = index.and_then(|index| self.lineages.get_mut(index))?;
         if lineage.response_id.is_none() {
             lineage.response_id = response_id;
@@ -237,5 +244,23 @@ mod tests {
                 None,
             )
             .is_none());
+    }
+
+    #[test]
+    fn response_only_binding_keeps_fifo_order_when_fallback_is_newer() {
+        let mut ledger = ResponseLedger::default();
+        ledger.record_source("cue-one", Some("source-one"));
+        ledger.record_source("cue-two", Some("source-two"));
+
+        let first = ledger
+            .bind_response(Some("response-one"), None, None, Some("cue-two"))
+            .expect("first response");
+        assert_eq!(first.cue_id, "cue-one");
+        ledger.complete_response(Some("response-one"));
+
+        let second = ledger
+            .bind_response(Some("response-two"), None, None, Some("cue-two"))
+            .expect("second response");
+        assert_eq!(second.cue_id, "cue-two");
     }
 }

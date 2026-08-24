@@ -1470,6 +1470,32 @@ mod native_response_owner_tests {
         assert!(diagnostics.native_response_cue_id.is_none());
         assert_eq!(diagnostics.pending_native_response_owner_count(), 0);
     }
+
+    #[test]
+    fn replacement_source_revision_does_not_rebind_prior_native_final() {
+        let store = AudioStateStore::new();
+        let cue_id = "omni-cue-inbound-source-replacement";
+        store.update_or_push_stt_cue(cue_id, "old source", false);
+        store.update_subtitle_cue_translation(cue_id, "旧译文".to_string(), true);
+
+        update_native_response_cue_source(&store, cue_id, "entirely corrected source");
+
+        let snapshot = store.snapshot();
+        let cue = snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id == cue_id)
+            .expect("corrected source cue");
+        assert_eq!(cue.revision, Some(2));
+        assert!(cue.committed);
+        assert_eq!(
+            cue.translation_state,
+            Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Pending)
+        );
+        assert!(!cue.translation_committed);
+        assert!(cue.translated_text.is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -1696,21 +1722,60 @@ pub(super) fn update_native_response_cue_source(
         .recent_cues
         .iter()
         .find(|cue| cue.cue_id == cue_id);
+    let previous_revision = existing.and_then(|cue| cue.revision).unwrap_or(1);
     let translated_text = existing
         .map(|cue| cue.translated_text.clone())
         .unwrap_or_default();
-    let translation_committed = existing.is_some_and(|cue| cue.translation_committed);
+    // Preserve the exact terminal state. Reducing it to the legacy committed
+    // boolean would reopen an Error cue as Streaming when its late ASR final
+    // advances the source revision.
+    let translation_state = existing
+        .and_then(|cue| cue.translation_state)
+        .unwrap_or_else(|| {
+            if existing.is_some_and(|cue| cue.translation_committed) {
+                crate::audio::contracts::SubtitleTranslationStateRuntime::Final
+            } else {
+                crate::audio::contracts::SubtitleTranslationStateRuntime::Streaming
+            }
+        });
     // A transcription.completed event is the authoritative source terminal
     // even when native response output is still streaming. Preserve any
     // translation already attached to the cue, but publish the source update
     // as final so cue-local evidence does not remain a delta-only tail.
     store.update_or_push_stt_cue(cue_id, source_text, true);
     if !translated_text.trim().is_empty() {
-        store.update_subtitle_cue_translation(
-            cue_id,
-            translated_text,
-            translation_committed,
-        );
+        let revision = store
+            .snapshot()
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id == cue_id)
+            .and_then(|cue| cue.revision)
+            .unwrap_or(1);
+        if revision == previous_revision {
+            store.update_subtitle_cue_translation_for_revision(
+                cue_id,
+                revision,
+                translated_text,
+                translation_state,
+            );
+        } else if translation_state
+            == crate::audio::contracts::SubtitleTranslationStateRuntime::Error
+        {
+            // The failure belongs to the response itself, not to a particular
+            // wording of its source transcript. Re-terminalize the corrected
+            // source revision instead of reopening it as an endless pending cue.
+            store.mark_subtitle_translation_error(cue_id, revision, translated_text);
+        } else {
+            // A source replacement is a new semantic revision. Do not attach
+            // the prior revision's native translation to it.
+            store.update_subtitle_cue_translation_for_revision(
+                cue_id,
+                revision,
+                String::new(),
+                crate::audio::contracts::SubtitleTranslationStateRuntime::Pending,
+            );
+        }
     }
 }
 
@@ -1748,7 +1813,7 @@ pub(super) fn write_native_output_final_to_cue(
         &cue_id,
         source_text,
         translated_text,
-        false,
+        true,
         false,
         false,
         false,
@@ -1944,7 +2009,16 @@ fn write_native_translation_payload_to_cue(
             None,
         );
     }
-    store.update_or_push_stt_cue(cue_id, &display_source_text, false);
+    let source_committed = store
+        .snapshot()
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .find(|cue| cue.cue_id == cue_id)
+        .is_some_and(|cue| cue.committed);
+    // Translation finality is independent from the source-ASR owner. Native
+    // output must preserve an existing source final, but cannot create one.
+    store.update_or_push_stt_cue(cue_id, &display_source_text, source_committed);
     store.update_subtitle_cue_display_segments(
         cue_id,
         source_lines.join("\n"),

@@ -1041,7 +1041,8 @@ mod native_translation_tests {
             .find(|cue| cue.cue_id == "omni-cue-test")
             .expect("native translation cue");
 
-        assert!(cue.committed);
+        assert!(!cue.committed, "translation final must not synthesize a source final");
+        assert!(cue.translation_committed);
         assert_eq!(cue.source_text, "hello world");
         assert_eq!(cue.translated_text, "你好，世界。");
         assert_eq!(cue.display_segments.len(), 1);
@@ -1191,7 +1192,8 @@ mod native_translation_tests {
             .find(|cue| cue.cue_id == "omni-cue-partial")
             .expect("partial native translation cue");
 
-        assert!(cue.committed);
+        assert!(!cue.committed, "translation final must not synthesize a source final");
+        assert!(cue.translation_committed);
         assert_eq!(
             cue.translated_text.replace('\n', ""),
             translated.replace('\n', "")
@@ -1237,7 +1239,8 @@ mod native_translation_tests {
             .find(|cue| cue.cue_id == "omni-cue-aligned")
             .expect("aligned native translation cue");
 
-        assert!(cue.committed);
+        assert!(!cue.committed, "translation final must not synthesize a source final");
+        assert!(cue.translation_committed);
         assert_eq!(cue.display_segments.len(), 2);
         assert_eq!(cue.display_segments[0].source_text, "First source.");
         assert_eq!(cue.display_segments[0].translated_text, "第一句。");

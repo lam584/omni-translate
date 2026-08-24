@@ -120,7 +120,11 @@ mod tests {
             cue.translated_text,
             super::super::super::protocol::NATIVE_FAILED_TRANSLATION_FAILURE
         );
-        assert!(cue.translation_committed);
+        assert!(!cue.translation_committed);
+        assert_eq!(
+            cue.translation_state,
+            Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Error)
+        );
     }
 
     #[test]

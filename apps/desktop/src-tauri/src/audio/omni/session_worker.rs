@@ -268,6 +268,23 @@ fn run_omni_worker(
     let mut socket = livetranslate_shutdown.wrap_socket(socket);
     let connector = livetranslate_shutdown.wrap_connector(TungsteniteConnector);
     let mut shutdown_outcome = OmniWorkerShutdown::Immediate;
+    macro_rules! terminalize_livetranslate_shutdown {
+        () => {{
+            let native_cue_ids = event_diagnostics.unfinished_native_response_cue_ids();
+            terminalize_livetranslate_shutdown_failure(LivetranslateShutdownFailure {
+                store,
+                direction: &direction,
+                current_cue_id: current_cue_id.as_deref(),
+                pending_source_text: &pending_source_text,
+                native_cue_ids: &native_cue_ids,
+                native_translation_reuse_active,
+                playback_tx: &playback_tx,
+                pending_audio_stream_cue_id: pending_audio_stream_cue_id.as_deref(),
+                pending_audio_stream_chunk_index,
+                pending_audio_stream_created_at_ms,
+            });
+        }};
+    }
     loop {
         if stop_rx.try_recv().is_ok() {
             if livetranslate_shutdown.request(Instant::now()) {
@@ -329,19 +346,7 @@ fn run_omni_worker(
                 "error",
                 format!("event=livetranslate_shutdown action=fail_closed reason={reason}"),
             );
-            let native_cue_ids = event_diagnostics.unfinished_native_response_cue_ids();
-            terminalize_livetranslate_shutdown_failure(LivetranslateShutdownFailure {
-                store,
-                direction: &direction,
-                current_cue_id: current_cue_id.as_deref(),
-                pending_source_text: &pending_source_text,
-                native_cue_ids: &native_cue_ids,
-                native_translation_reuse_active,
-                playback_tx: &playback_tx,
-                pending_audio_stream_cue_id: pending_audio_stream_cue_id.as_deref(),
-                pending_audio_stream_chunk_index,
-                pending_audio_stream_created_at_ms,
-            });
+            terminalize_livetranslate_shutdown!();
             let _ = socket.close();
             let _ = playback_worker.shutdown_gracefully();
             let _ = emit_audio_snapshot(&app, store);
@@ -399,7 +404,10 @@ fn run_omni_worker(
                     "error",
                     "event=livetranslate_shutdown action=fail_closed reason=write_failed",
                 );
+                terminalize_livetranslate_shutdown!();
                 let _ = socket.close();
+                let _ = playback_worker.shutdown_gracefully();
+                let _ = emit_audio_snapshot(&app, store);
                 return Err(format!(
                     "LiveTranslate fail-closed while draining the existing session: {error}"
                 ));
@@ -449,7 +457,10 @@ fn run_omni_worker(
                         "event=livetranslate_shutdown action=fail_closed reason=session_finish_send_failed error={error}"
                     ),
                 );
+                terminalize_livetranslate_shutdown!();
                 let _ = socket.close();
+                let _ = playback_worker.shutdown_gracefully();
+                let _ = emit_audio_snapshot(&app, store);
                 return Err(format!(
                     "LiveTranslate fail-closed: session.finish send failed on the existing socket: {error}"
                 ));
@@ -684,6 +695,9 @@ fn run_omni_worker(
                     "error",
                     "event=livetranslate_shutdown action=fail_closed reason=poll_failed",
                 );
+                terminalize_livetranslate_shutdown!();
+                let _ = playback_worker.shutdown_gracefully();
+                let _ = emit_audio_snapshot(&app, store);
                 return Err(format!(
                     "LiveTranslate fail-closed while awaiting session.finished on the existing socket: {error}"
                 ));
@@ -756,7 +770,10 @@ fn run_omni_worker(
         if poll.stop_worker {
             if livetranslate_shutdown.is_requested() {
                 provider_input_budget.mark_terminal("livetranslate-session-ended-before-finished");
+                terminalize_livetranslate_shutdown!();
                 let _ = socket.close();
+                let _ = playback_worker.shutdown_gracefully();
+                let _ = emit_audio_snapshot(&app, store);
                 return Err(
                     "LiveTranslate fail-closed: provider ended the session before session.finished"
                         .to_string(),

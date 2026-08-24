@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -68,6 +69,64 @@ test('new and existing VMs reject SSH passwords and limit the firewall rule', ()
   }
   assert.match(createVm, /RemoteAddress LocalSubnet/);
   assert.match(primeExistingVm, /'LocalSubnet'/);
+});
+
+test('SSH hardening validates language-neutral ACLs and rolls back config or service failures', () => {
+  for (const source of [createVm, primeExistingVm]) {
+    assert.match(source, /function Invoke-CheckedNative/);
+    assert.match(source, /\$global:LASTEXITCODE = \$null/);
+    assert.match(source, /\$exitCode = \$global:LASTEXITCODE/);
+    assert.match(source, /if \(\$null -eq \$exitCode\)/);
+    assert.match(source, /if \(\$exitCode -ne 0\)/);
+    assert.match(source, /S-1-5-18/);
+    assert.match(source, /S-1-5-32-544/);
+    assert.doesNotMatch(source, /['"]SYSTEM:\(/);
+    assert.doesNotMatch(source, /BUILTIN\\Administrators:\(/);
+    assert.match(source, /Assert-AuthorizedKeyAcl \$adminAuthorized/);
+    assert.match(source, /\[System\.IO\.File\]::ReadAllBytes\(\$sshdConfig\)/);
+    assert.match(source, /Restore-SshdConfigurationAndService \$sshdConfig \$configExisted \$previousConfig \$previousStartupType \$wasRunning/);
+    assert.match(source, /the prior sshd_config and service state were restored/i);
+    assert.match(source, /Restart-Service -Name sshd -Force -ErrorAction Stop/);
+    assert.match(source, /Start-Service -Name sshd -ErrorAction Stop/);
+    assert.doesNotMatch(source, /(?:Start|Restart)-Service\s+-Name\s+sshd[^\r\n]*SilentlyContinue/);
+
+    const aclValidation = source.indexOf('Assert-AuthorizedKeyAcl $adminAuthorized');
+    const publicKeyOnlyWrite = source.indexOf('Set-Content -LiteralPath $sshdConfig');
+    assert.ok(aclValidation >= 0 && aclValidation < publicKeyOnlyWrite);
+
+    const directNativeInvocations = [...source.matchAll(/^\s*&\s+([^\r\n]+)/gm)]
+      .map((match) => match[1].trim());
+    assert.deepEqual(directNativeInvocations, ['$FilePath @ArgumentList | Out-Null']);
+  }
+
+  assert.match(primeExistingVm, /Assert-AuthorizedKeyAcl \$userAuthorized/);
+});
+
+test('checked native invocation accepts zero, rejects nonzero, and rejects a missing executable', () => {
+  const helperMatch = createVm.match(
+    /function Invoke-CheckedNative[\s\S]*?\r?\n}\r?\n\r?\nfunction Assert-AuthorizedKeyAcl/,
+  );
+  assert.ok(helperMatch, 'embedded Invoke-CheckedNative helper should be extractable');
+  const helper = helperMatch[0].replace(/\r?\nfunction Assert-AuthorizedKeyAcl$/, '');
+  const probe = [
+    "$ErrorActionPreference = 'Continue'",
+    helper,
+    "$command = Join-Path $env:SystemRoot 'System32\\cmd.exe'",
+    "try { Invoke-CheckedNative $command @('/d', '/c', 'exit 0') 'zero' } catch { Write-Error ('zero: ' + $_.Exception.Message); exit 2 }",
+    "$nonzeroRejected = $false",
+    "try { Invoke-CheckedNative $command @('/d', '/c', 'exit 9') 'nonzero' } catch { $nonzeroRejected = $_.Exception.Message -match 'exit code 9' }",
+    "if (-not $nonzeroRejected) { Write-Error 'nonzero exit was not rejected'; exit 3 }",
+    "$missingRejected = $false",
+    "try { Invoke-CheckedNative (Join-Path $env:TEMP 'omni-native-probe-missing.exe') @() 'missing' } catch { $missingRejected = $_.Exception.Message -match 'failed to start' }",
+    "if (-not $missingRejected) { Write-Error 'missing executable was not rejected'; exit 4 }",
+    'exit 0',
+  ].join('\n');
+  const result = spawnSync(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '-'],
+    { input: probe, encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
 test('automatic logon and blank-password transitions cannot return', () => {

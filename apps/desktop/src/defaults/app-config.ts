@@ -242,6 +242,11 @@ export const appConfigDraftMock: AppConfigDraft = {
     overlayHeight: 220,
     overlayX: 50,
     overlayY: 78,
+    history: {
+      enabled: true,
+      sourceAudioEnabled: true,
+      translatedAudioEnabled: true,
+    },
     status: 'ready',
   },
   speech: {

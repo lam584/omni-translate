@@ -1095,4 +1095,46 @@ mod tests {
             "missing fields should be supplied by defaults"
         );
     }
+
+    #[test]
+    fn load_enables_missing_history_without_overwriting_model_selections() {
+        let (_temp_dir, repository) = repository_with_config_document(
+            r#"{
+              "providers":[{"model":"persisted-provider-model"}],
+              "devices":{
+                "inboundVoiceModelId":"persisted-inbound-model",
+                "outboundVoiceModelId":"persisted-outbound-model",
+                "textToSpeechModelId":"persisted-tts-model"
+              },
+              "subtitles":{"targetLanguage":"ja"}
+            }"#,
+        );
+
+        let loaded = repository.load_config().expect("config should load");
+        assert_eq!(loaded.pointer("/subtitles/history/enabled").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            loaded.pointer("/subtitles/history/sourceAudioEnabled").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            loaded.pointer("/subtitles/history/translatedAudioEnabled").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            loaded.pointer("/providers/0/model").and_then(Value::as_str),
+            Some("persisted-provider-model")
+        );
+        assert_eq!(
+            loaded.pointer("/devices/inboundVoiceModelId").and_then(Value::as_str),
+            Some("persisted-inbound-model")
+        );
+        assert_eq!(
+            loaded.pointer("/devices/outboundVoiceModelId").and_then(Value::as_str),
+            Some("persisted-outbound-model")
+        );
+        assert_eq!(
+            loaded.pointer("/devices/textToSpeechModelId").and_then(Value::as_str),
+            Some("persisted-tts-model")
+        );
+    }
 }

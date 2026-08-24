@@ -94,6 +94,10 @@ function mergeConfigDraftWithDefaults(configDraft: AppConfigDraft): AppConfigDra
     subtitles: {
       ...appConfigDraftMock.subtitles,
       ...configDraft.subtitles,
+      history: {
+        ...appConfigDraftMock.subtitles.history,
+        ...incomingSubtitles.history,
+      },
       overlaySourceTextStyle: resolveOverlayTextStyle(
         incomingSubtitles.overlaySourceTextStyle,
         DEFAULT_SOURCE_TEXT_STYLE,

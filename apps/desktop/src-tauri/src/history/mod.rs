@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Manager};
+use serde_json::Value;
 
 use crate::audio::contracts::{AudioRuntimeSnapshot, SubtitleCueRuntime};
 
@@ -27,6 +28,43 @@ struct HistoryState {
     repository: Option<Arc<HistoryRepository>>,
     unavailable_reason: Option<String>,
     active_session_id: Option<String>,
+    archive_policy: HistoryArchivePolicy,
+}
+
+#[derive(Clone, Copy)]
+struct HistoryArchivePolicy {
+    enabled: bool,
+    source_audio_enabled: bool,
+    translated_audio_enabled: bool,
+}
+
+impl Default for HistoryArchivePolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            source_audio_enabled: true,
+            translated_audio_enabled: true,
+        }
+    }
+}
+
+impl HistoryArchivePolicy {
+    fn from_config(config: &Value) -> Self {
+        Self {
+            enabled: config
+                .pointer("/subtitles/history/enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            source_audio_enabled: config
+                .pointer("/subtitles/history/sourceAudioEnabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            translated_audio_enabled: config
+                .pointer("/subtitles/history/translatedAudioEnabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -164,6 +202,7 @@ impl HistoryStateStore {
             repository,
             unavailable_reason,
             active_session_id: None,
+            archive_policy: HistoryArchivePolicy::default(),
         });
         Ok(path)
     }
@@ -220,6 +259,13 @@ impl HistoryStateStore {
             let Some(session_id) = state.active_session_id.clone() else {
                 return;
             };
+            let track_enabled = match track {
+                AudioTrack::Source => state.archive_policy.source_audio_enabled,
+                AudioTrack::Translated => state.archive_policy.translated_audio_enabled,
+            };
+            if !state.archive_policy.enabled || !track_enabled {
+                return;
+            }
             session_id
         };
         let duration_ms = (samples.len() as u64)
@@ -275,6 +321,9 @@ impl HistoryStateStore {
     fn queue_cue(&self, cue: &SubtitleCueRuntime) -> Result<String, String> {
         let mut inner = self.inner.lock().map_err(|_| "history state poisoned".to_string())?;
         let state = available_state_mut(&mut inner)?;
+        if !state.archive_policy.enabled {
+            return Ok(String::new());
+        }
         let now = unix_ms();
         let session_id = match state.active_session_id.clone() {
             Some(id) => id,
@@ -303,11 +352,15 @@ impl HistoryStateStore {
         Ok(session_id)
     }
 
-    pub(crate) fn begin_session(&self) -> Result<String, String> {
+    fn begin_session(&self, archive_policy: HistoryArchivePolicy) -> Result<Option<String>, String> {
         let mut inner = self.inner.lock().map_err(|_| "history state poisoned".to_string())?;
         let state = available_state_mut(&mut inner)?;
         if let Some(session_id) = state.active_session_id.clone() {
-            return Ok(session_id);
+            return Ok(Some(session_id));
+        }
+        state.archive_policy = archive_policy;
+        if !archive_policy.enabled {
+            return Ok(None);
         }
         let session_id = uuid::Uuid::now_v7().to_string();
         let started_at_ms = unix_ms();
@@ -315,7 +368,7 @@ impl HistoryStateStore {
         self.control_tx
             .send(ArchiveControl::Begin { session_id: session_id.clone(), started_at_ms })
             .map_err(|_| "字幕历史写入 worker 已停止".to_string())?;
-        Ok(session_id)
+        Ok(Some(session_id))
     }
 
     pub(crate) fn finish_active_session(&self) -> Result<Option<String>, String> {
@@ -406,7 +459,18 @@ pub(crate) fn initialize<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), St
 }
 
 pub(crate) fn begin_route_session<R: tauri::Runtime>(app: &AppHandle<R>) {
-    if let Err(error) = app.state::<HistoryStateStore>().begin_session() {
+    let archive_policy = app
+        .state::<crate::storage::StorageStateStore>()
+        .load_config()
+        .map(|config| HistoryArchivePolicy::from_config(&config))
+        .unwrap_or_else(|error| {
+            log::warn!("[omni][history] history config unavailable; using secure enabled defaults: {error}");
+            HistoryArchivePolicy::default()
+        });
+    if let Err(error) = app
+        .state::<HistoryStateStore>()
+        .begin_session(archive_policy)
+    {
         log::warn!("[omni][history] session archive could not start: {error}");
     }
 }
@@ -808,6 +872,7 @@ mod tests {
             repository: Some(repository.clone()),
             unavailable_reason: None,
             active_session_id: Some("session-30s".to_string()),
+            archive_policy: HistoryArchivePolicy::default(),
         })));
         let mut accumulators = HashMap::new();
         append_audio(

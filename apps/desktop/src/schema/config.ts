@@ -217,7 +217,14 @@ export type SubtitleDraft = {
   overlayHeight: number;
   overlayX: number;
   overlayY: number;
+  history: SubtitleHistoryDraft;
   status: ConfigStatus;
+};
+
+export type SubtitleHistoryDraft = {
+  enabled: boolean;
+  sourceAudioEnabled: boolean;
+  translatedAudioEnabled: boolean;
 };
 
 export type SpeechDraft = {
@@ -360,6 +367,9 @@ export const appConfigFieldMappings: SQLiteFieldMapping[] = [
   { draftPath: 'subtitles.sourceLanguage', sqliteTable: 'subtitle_preferences', sqliteColumn: 'source_language', note: 'Subtitle source language.' },
   { draftPath: 'subtitles.mode', sqliteTable: 'subtitle_preferences', sqliteColumn: 'display_mode', note: 'Subtitle display mode.' },
   { draftPath: 'subtitles.captionDensity', sqliteTable: 'subtitle_preferences', sqliteColumn: 'caption_density', note: 'Caption density.' },
+  { draftPath: 'subtitles.history.enabled', sqliteTable: 'config_documents', sqliteColumn: 'config_json', note: 'Encrypted subtitle history enabled by default.' },
+  { draftPath: 'subtitles.history.sourceAudioEnabled', sqliteTable: 'config_documents', sqliteColumn: 'config_json', note: 'Encrypted source audio archive toggle.' },
+  { draftPath: 'subtitles.history.translatedAudioEnabled', sqliteTable: 'config_documents', sqliteColumn: 'config_json', note: 'Encrypted translated audio archive toggle.' },
   { draftPath: 'speech.enabled', sqliteTable: 'speech_preferences', sqliteColumn: 'speech_enabled', note: 'TTS feature toggle.' },
   { draftPath: 'speech.targetLanguage', sqliteTable: 'speech_preferences', sqliteColumn: 'target_language', note: 'TTS target language.' },
   { draftPath: 'speech.textToSpeechModelId', sqliteTable: 'speech_preferences', sqliteColumn: 'text_to_speech_model_id', note: 'Text-to-speech model for speech dispatch.' },

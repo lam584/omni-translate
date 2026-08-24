@@ -109,6 +109,27 @@ describe('app store', () => {
     expect(merged.subtitles.overlayTranslationTextStyle.fontWeight).toBe(700);
   });
 
+  it('enables missing history fields without changing persisted model selections', () => {
+    const legacyDraft = structuredClone(useAppStore.getState().configDraft);
+    legacyDraft.providers[0].model = 'persisted-provider-model';
+    legacyDraft.devices.inboundVoiceModelId = 'persisted-inbound-model';
+    legacyDraft.devices.outboundVoiceModelId = 'persisted-outbound-model';
+    legacyDraft.devices.textToSpeechModelId = 'persisted-tts-model';
+    delete (legacyDraft.subtitles as Partial<typeof legacyDraft.subtitles>).history;
+
+    const merged = appStoreTestHelpers.mergeConfigDraftWithDefaults(legacyDraft);
+
+    expect(merged.subtitles.history).toEqual({
+      enabled: true,
+      sourceAudioEnabled: true,
+      translatedAudioEnabled: true,
+    });
+    expect(merged.providers[0].model).toBe('persisted-provider-model');
+    expect(merged.devices.inboundVoiceModelId).toBe('persisted-inbound-model');
+    expect(merged.devices.outboundVoiceModelId).toBe('persisted-outbound-model');
+    expect(merged.devices.textToSpeechModelId).toBe('persisted-tts-model');
+  });
+
   it('fills missing inbound mix gains without replacing persisted mix settings', () => {
     const legacyDraft = structuredClone(useAppStore.getState().configDraft);
     const legacyMix = legacyDraft.devices.inboundRoute.mixControl as unknown as Record<string, unknown>;

@@ -9,7 +9,7 @@ use super::*;
 /// its `session.update` yet, so audio must buffer in the pre-session queue
 /// until the new `session.created`/`session.updated` arrives.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
+pub(in crate::audio::omni) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
     app: &AppHandle<R>,
     store: &AudioStateStore,
     audio_mode: RealtimeAudioMode,

@@ -49,13 +49,7 @@ impl ProviderGateway {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "keeps the no-glossary wrapper available to provider gateway tests"
-        )
-    )]
+    #[allow(dead_code, reason = "keeps the no-glossary wrapper available to provider gateway tests")]
     pub(crate) fn translate_text_streaming_traced<F>(
         &self,
         provider: ProviderDraftInput,

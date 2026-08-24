@@ -167,9 +167,9 @@ impl HistoryPlaybackController {
 }
 
 #[derive(Debug)]
-struct DecodedAudioPiece {
-    sample_rate_hz: u32,
-    samples: Vec<i16>,
+pub(super) struct DecodedAudioPiece {
+    pub(super) sample_rate_hz: u32,
+    pub(super) samples: Vec<i16>,
 }
 
 impl HistoryStateStore {
@@ -320,7 +320,7 @@ impl HistoryStateStore {
     }
 }
 
-fn load_cue_audio_from_repository(
+pub(super) fn load_cue_audio_from_repository(
     repository: &super::repository::HistoryRepository,
     history_dir: &std::path::Path,
     session_id: &str,
@@ -471,6 +471,8 @@ mod tests {
                 CueWrite {
                     session_id: "session-a",
                     cue_id: "cue-a",
+                    sequence: 1,
+                    revision: 1,
                     route_direction: "inbound",
                     source_text: "source",
                     translated_text: "translated",

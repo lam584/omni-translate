@@ -59,3 +59,7 @@ fn cue_order(cue: &QueuedCue) -> (u64, u64, i64) {
         cue.updated_at_ms,
     )
 }
+
+pub(super) fn parse_ms_marker(value: &str) -> Option<i64> {
+    value.strip_prefix("unix-ms:").unwrap_or(value).parse().ok()
+}

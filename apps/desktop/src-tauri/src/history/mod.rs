@@ -28,7 +28,7 @@ pub(crate) use playback::{
 pub(crate) use playback::emit_changed;
 use audio::AudioTrack;
 use cue_ingress::{
-    drain_cue_overflow, drain_latest_cues, insert_latest_cue, QueuedCue,
+    drain_cue_overflow, drain_latest_cues, insert_latest_cue, parse_ms_marker, QueuedCue,
 };
 use repository::{AudioCueRefWrite, AudioSegmentWrite, CueWrite, HistoryRepository};
 
@@ -616,9 +616,14 @@ fn archive_worker(
                 }
                 ArchiveControl::Finish { session_id, ended_at_ms, acknowledged } => {
                     drain_latest_cues(&cue_rx, &cue_overflow, &mut pending);
-                    drain_audio(&audio_rx, &mut audio, &state, &queued_audio_ms);
-                    let result = flush_pending_cues(&state, &mut pending)
-                        .and_then(|()| flush_session_audio(&state, &mut audio, &session_id))
+                    let result = flush_finished_session_payload(
+                        &state,
+                        &mut pending,
+                        &audio_rx,
+                        &mut audio,
+                        &queued_audio_ms,
+                        &session_id,
+                    )
                         .and_then(|()| {
                             worker_repository_result(&state, |repository| {
                                 repository.end_session(&session_id, ended_at_ms)
@@ -655,19 +660,33 @@ fn archive_worker(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 drain_cue_overflow(&cue_overflow, &mut pending);
-                drain_audio(&audio_rx, &mut audio, &state, &queued_audio_ms);
-                let _ = flush_pending_cues(&state, &mut pending);
-                let sessions = audio
-                    .keys()
-                    .map(|key| key.session_id.clone())
-                    .collect::<HashSet<_>>();
-                for session_id in sessions {
-                    let _ = flush_session_audio(&state, &mut audio, &session_id);
+                if flush_pending_cues(&state, &mut pending).is_ok() {
+                    drain_audio(&audio_rx, &mut audio, &state, &queued_audio_ms);
+                    let sessions = audio
+                        .keys()
+                        .map(|key| key.session_id.clone())
+                        .collect::<HashSet<_>>();
+                    for session_id in sessions {
+                        let _ = flush_session_audio(&state, &mut audio, &session_id);
+                    }
                 }
                 return;
             }
         }
     }
+}
+
+fn flush_finished_session_payload(
+    state: &Arc<Mutex<Option<HistoryState>>>,
+    pending: &mut HashMap<(String, String), QueuedCue>,
+    audio_rx: &Receiver<QueuedAudio>,
+    audio: &mut HashMap<AudioAccumulatorKey, AudioAccumulator>,
+    queued_audio_ms: &AtomicU64,
+    session_id: &str,
+) -> Result<(), String> {
+    flush_pending_cues(state, pending)?;
+    drain_audio(audio_rx, audio, state, queued_audio_ms);
+    flush_session_audio(state, audio, session_id)
 }
 
 fn drain_audio(
@@ -827,7 +846,7 @@ fn flush_pending_cues(
     if pending.is_empty() {
         return Ok(());
     }
-    let mut batch = pending.drain().map(|(_, cue)| cue).collect::<Vec<_>>();
+    let mut batch = pending.values().cloned().collect::<Vec<_>>();
     batch.sort_by_key(|cue| cue.updated_at_ms);
     worker_repository_result(state, |repository| {
         let writes = batch
@@ -835,6 +854,16 @@ fn flush_pending_cues(
             .map(|queued| CueWrite {
                 session_id: &queued.session_id,
                 cue_id: &queued.cue.cue_id,
+                sequence: queued
+                    .cue
+                    .sequence
+                    .map(|value| i64::try_from(value).unwrap_or(i64::MAX))
+                    .unwrap_or(0),
+                revision: queued
+                    .cue
+                    .revision
+                    .map(|value| i64::try_from(value).unwrap_or(i64::MAX))
+                    .unwrap_or(0),
                 route_direction: &queued.cue.route_direction,
                 source_text: &queued.cue.source_text,
                 translated_text: &queued.cue.translated_text,
@@ -844,7 +873,9 @@ fn flush_pending_cues(
                 ended_at_ms: parse_ms_marker(&queued.cue.ended_at).unwrap_or(queued.updated_at_ms),
             })
             .collect::<Vec<_>>();
-        repository.upsert_cues_batch(&writes, unix_ms())
+        repository.upsert_cues_batch(&writes, unix_ms())?;
+        pending.clear();
+        Ok(())
     })
 }
 
@@ -876,10 +907,6 @@ fn unix_ms() -> i64 {
         .as_millis()
         .try_into()
         .unwrap_or(i64::MAX)
-}
-
-fn parse_ms_marker(value: &str) -> Option<i64> {
-    value.strip_prefix("unix-ms:").unwrap_or(value).parse().ok()
 }
 
 #[cfg(test)]
@@ -963,6 +990,83 @@ mod tests {
     }
 
     #[test]
+    fn finish_flush_persists_cue_before_exact_thirty_second_audio_segment() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("subtitle-history.db");
+        let repository = Arc::new(
+            HistoryRepository::initialize(
+                database_path.clone(),
+                crypto::HistoryCipher::for_test([39; 32]),
+            )
+            .unwrap(),
+        );
+        repository.create_session("session-boundary", 1_000).unwrap();
+        let state = Arc::new(Mutex::new(Some(HistoryState {
+            database_path,
+            history_dir: directory.path().to_path_buf(),
+            repository: Some(repository.clone()),
+            unavailable_reason: None,
+            active_session_id: Some("session-boundary".to_string()),
+            archive_policy: HistoryArchivePolicy::default(),
+        })));
+        let mut pending = HashMap::new();
+        let mut boundary_cue = cue("cue-boundary");
+        boundary_cue.sequence = Some(17);
+        boundary_cue.revision = Some(4);
+        boundary_cue.ended_at = "unix-ms:31000".to_string();
+        insert_latest_cue(
+            &mut pending,
+            QueuedCue {
+                session_id: "session-boundary".to_string(),
+                cue: boundary_cue,
+                updated_at_ms: 31_000,
+            },
+        );
+        let samples = (0..3_000)
+            .map(|index| ((index % 101) as i16) - 50)
+            .collect::<Vec<_>>();
+        let (audio_tx, audio_rx) = mpsc::sync_channel(1);
+        audio_tx
+            .send(QueuedAudio {
+                session_id: "session-boundary".to_string(),
+                cue_id: Some("cue-boundary".to_string()),
+                track: AudioTrack::Translated,
+                sample_rate_hz: 100,
+                started_at_ms: 1_000,
+                duration_ms: 30_000,
+                samples: samples.clone(),
+            })
+            .unwrap();
+        let queued_audio_ms = AtomicU64::new(30_000);
+        let mut audio = HashMap::new();
+
+        flush_finished_session_payload(
+            &state,
+            &mut pending,
+            &audio_rx,
+            &mut audio,
+            &queued_audio_ms,
+            "session-boundary",
+        )
+        .unwrap();
+
+        assert!(pending.is_empty());
+        assert!(audio.is_empty());
+        assert_eq!(queued_audio_ms.load(Ordering::Acquire), 0);
+        let pieces = playback::load_cue_audio_from_repository(
+            &repository,
+            directory.path(),
+            "session-boundary",
+            "cue-boundary",
+            HistoryAudioTrack::Translated,
+        )
+        .unwrap();
+        assert_eq!(pieces.len(), 1);
+        assert_eq!(pieces[0].sample_rate_hz, 100);
+        assert_eq!(pieces[0].samples, samples);
+    }
+
+    #[test]
     fn disabled_route_config_never_creates_a_session_or_queues_content() {
         let directory = tempfile::tempdir().unwrap();
         let repository = Arc::new(
@@ -1004,6 +1108,8 @@ mod tests {
                 CueWrite {
                     session_id: "old-session",
                     cue_id: "old-cue",
+                    sequence: 1,
+                    revision: 1,
                     route_direction: "inbound",
                     source_text: "known secret source",
                     translated_text: "known secret translated",
@@ -1058,6 +1164,8 @@ mod tests {
                 CueWrite {
                     session_id: "session-30s",
                     cue_id: "cue-long",
+                    sequence: 1,
+                    revision: 1,
                     route_direction: "inbound",
                     source_text: "source",
                     translated_text: "translated",

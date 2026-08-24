@@ -5,12 +5,15 @@ use serde::Serialize;
 
 use super::crypto::HistoryCipher;
 
+mod cursor;
+use cursor::{decode_cue_cursor, decode_session_cursor};
 mod retention;
 use retention::RETENTION_MAX_BYTES;
 #[cfg(test)]
 use retention::{RETENTION_MAX_AGE_MS, RETENTION_MAX_SESSIONS};
 
-const SCHEMA_VERSION: i64 = 1;
+const INITIAL_SCHEMA_VERSION: i64 = 1;
+const RUNTIME_LINEAGE_SCHEMA_VERSION: i64 = 2;
 const MAX_PAGE_SIZE: u32 = 100;
 
 #[derive(Clone, Debug, Serialize)]
@@ -78,6 +81,8 @@ pub(super) struct HistoryRepository {
 pub(super) struct CueWrite<'a> {
     pub session_id: &'a str,
     pub cue_id: &'a str,
+    pub sequence: i64,
+    pub revision: i64,
     pub route_direction: &'a str,
     pub source_text: &'a str,
     pub translated_text: &'a str,
@@ -211,6 +216,8 @@ impl HistoryRepository {
                    cue_id TEXT NOT NULL,
                    sequence INTEGER NOT NULL,
                    revision INTEGER NOT NULL DEFAULT 1,
+                   runtime_sequence INTEGER NOT NULL DEFAULT 0,
+                   runtime_revision INTEGER NOT NULL DEFAULT 0,
                    route_direction TEXT NOT NULL,
                    source_text_enc BLOB NOT NULL,
                    translated_text_enc BLOB NOT NULL,
@@ -266,6 +273,18 @@ impl HistoryRepository {
             "length_samples",
             "ALTER TABLE subtitle_cue_audio_refs ADD COLUMN length_samples INTEGER NOT NULL DEFAULT 0",
         )?;
+        ensure_column(
+            &connection,
+            "subtitle_cues",
+            "runtime_sequence",
+            "ALTER TABLE subtitle_cues ADD COLUMN runtime_sequence INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &connection,
+            "subtitle_cues",
+            "runtime_revision",
+            "ALTER TABLE subtitle_cues ADD COLUMN runtime_revision INTEGER NOT NULL DEFAULT 0",
+        )?;
         connection
             .execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS subtitle_audio_segments_track_sequence
@@ -277,7 +296,14 @@ impl HistoryRepository {
             .execute(
                 "INSERT OR IGNORE INTO history_migrations(version, name, applied_at_ms)
                  VALUES (?1, 'initial-history-schema', CAST(unixepoch('subsec') * 1000 AS INTEGER))",
-                [SCHEMA_VERSION],
+                [INITIAL_SCHEMA_VERSION],
+            )
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO history_migrations(version, name, applied_at_ms)
+                 VALUES (?1, 'runtime-cue-lineage', CAST(unixepoch('subsec') * 1000 AS INTEGER))",
+                [RUNTIME_LINEAGE_SCHEMA_VERSION],
             )
             .map_err(|error| error.to_string())?;
         connection
@@ -574,35 +600,40 @@ impl HistoryRepository {
             .encrypt(cue.translated_text.as_bytes(), translated_aad.as_bytes())?;
         let existing: Option<(String, i64, i64)> = connection
             .query_row(
-                "SELECT id, sequence, revision FROM subtitle_cues WHERE session_id = ?1 AND cue_id = ?2",
+                "SELECT id, runtime_revision, runtime_sequence
+                 FROM subtitle_cues WHERE session_id = ?1 AND cue_id = ?2",
                 params![cue.session_id, cue.cue_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(|error| error.to_string())?;
-        if let Some((id, sequence, revision)) = existing {
-            connection
-                .execute(
-                    "UPDATE subtitle_cues SET revision = ?2, route_direction = ?3,
-                       source_text_enc = ?4, translated_text_enc = ?5,
-                       source_committed = ?6, translation_committed = ?7,
-                       started_at_ms = ?8, ended_at_ms = ?9, updated_at_ms = ?10
-                     WHERE id = ?1",
-                    params![
-                        id,
-                        revision + 1,
-                        cue.route_direction,
-                        source,
-                        translated,
-                        cue.source_committed,
-                        cue.translation_committed,
-                        cue.started_at_ms,
-                        cue.ended_at_ms,
-                        updated_at_ms,
-                    ],
-                )
-                .map_err(|error| error.to_string())?;
-            let _ = sequence;
+        if let Some((id, runtime_revision, runtime_sequence)) = existing {
+            if (cue.revision, cue.sequence) >= (runtime_revision, runtime_sequence) {
+                connection
+                    .execute(
+                        "UPDATE subtitle_cues SET revision = ?2,
+                           runtime_revision = ?2, runtime_sequence = ?3,
+                           route_direction = ?4, source_text_enc = ?5,
+                           translated_text_enc = ?6, source_committed = ?7,
+                           translation_committed = ?8, started_at_ms = ?9,
+                           ended_at_ms = ?10, updated_at_ms = ?11
+                         WHERE id = ?1",
+                        params![
+                            id,
+                            cue.revision,
+                            cue.sequence,
+                            cue.route_direction,
+                            source,
+                            translated,
+                            cue.source_committed,
+                            cue.translation_committed,
+                            cue.started_at_ms,
+                            cue.ended_at_ms,
+                            updated_at_ms,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
         } else {
             let sequence: i64 = connection
                 .query_row(
@@ -614,15 +645,19 @@ impl HistoryRepository {
             connection
                 .execute(
                     "INSERT INTO subtitle_cues(
-                       id, session_id, cue_id, sequence, revision, route_direction,
+                       id, session_id, cue_id, sequence, revision,
+                       runtime_sequence, runtime_revision, route_direction,
                        source_text_enc, translated_text_enc, source_committed,
                        translation_committed, started_at_ms, ended_at_ms, updated_at_ms
-                     ) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?7, ?8, ?9,
+                               ?10, ?11, ?12, ?13, ?14)",
                     params![
                         uuid::Uuid::now_v7().to_string(),
                         cue.session_id,
                         cue.cue_id,
                         sequence,
+                        cue.revision,
+                        cue.sequence,
                         cue.route_direction,
                         source,
                         translated,
@@ -706,7 +741,8 @@ impl HistoryRepository {
         let connection = self.open()?;
         let mut statement = connection
             .prepare(
-                "SELECT id, cue_id, sequence, revision, route_direction, source_text_enc,
+                "SELECT id, cue_id, sequence, runtime_sequence, runtime_revision,
+                        route_direction, source_text_enc,
                         translated_text_enc, source_committed, translation_committed,
                         started_at_ms, ended_at_ms,
                         EXISTS(SELECT 1 FROM subtitle_cue_audio_refs refs
@@ -725,24 +761,38 @@ impl HistoryRepository {
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, Vec<u8>>(5)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
                     row.get::<_, Vec<u8>>(6)?,
-                    row.get::<_, bool>(7)?,
+                    row.get::<_, Vec<u8>>(7)?,
                     row.get::<_, bool>(8)?,
-                    row.get::<_, i64>(9)?,
+                    row.get::<_, bool>(9)?,
                     row.get::<_, i64>(10)?,
-                    row.get::<_, bool>(11)?,
+                    row.get::<_, i64>(11)?,
                     row.get::<_, bool>(12)?,
+                    row.get::<_, bool>(13)?,
                 ))
             })
             .map_err(|error| error.to_string())?;
         let mut cues = Vec::new();
+        let mut archive_sequences = Vec::new();
         for row in rows {
-            let (id, cue_id, sequence, revision, route_direction, source, translated,
-                source_committed, translation_committed, started_at_ms, ended_at_ms,
-                source_audio_available, translated_audio_available) =
-                row.map_err(|error| error.to_string())?;
+            let (
+                id,
+                cue_id,
+                archive_sequence,
+                sequence,
+                revision,
+                route_direction,
+                source,
+                translated,
+                source_committed,
+                translation_committed,
+                started_at_ms,
+                ended_at_ms,
+                source_audio_available,
+                translated_audio_available,
+            ) = row.map_err(|error| error.to_string())?;
             let source_aad = format!("history/v1:{session_id}:{cue_id}:source");
             let translated_aad = format!("history/v1:{session_id}:{cue_id}:translated");
             let source_text = String::from_utf8(self.cipher.decrypt(&source, source_aad.as_bytes())?)
@@ -764,11 +814,13 @@ impl HistoryRepository {
                 source_audio_available,
                 translated_audio_available,
             });
+            archive_sequences.push(archive_sequence);
         }
         let has_more = cues.len() > limit as usize;
         cues.truncate(limit as usize);
+        archive_sequences.truncate(limit as usize);
         let next_cursor = if has_more {
-            cues.last().map(|cue| cue.sequence.to_string())
+            archive_sequences.last().map(i64::to_string)
         } else {
             None
         };
@@ -905,29 +957,6 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistorySessionS
     })
 }
 
-fn decode_session_cursor(cursor: Option<&str>) -> Result<(Option<i64>, Option<String>), String> {
-    let Some(cursor) = cursor.filter(|value| !value.is_empty()) else {
-        return Ok((None, None));
-    };
-    let (time, id) = cursor
-        .split_once('|')
-        .ok_or_else(|| "无效的历史 session 游标".to_string())?;
-    let time = time
-        .parse::<i64>()
-        .map_err(|_| "无效的历史 session 游标".to_string())?;
-    if id.is_empty() {
-        return Err("无效的历史 session 游标".to_string());
-    }
-    Ok((Some(time), Some(id.to_string())))
-}
-
-fn decode_cue_cursor(cursor: Option<&str>) -> Result<Option<i64>, String> {
-    cursor
-        .filter(|value| !value.is_empty())
-        .map(|value| value.parse::<i64>().map_err(|_| "无效的历史 cue 游标".to_string()))
-        .transpose()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -945,7 +974,8 @@ mod tests {
         repository
             .upsert_cue(
                 CueWrite {
-                    session_id: "session-1", cue_id: "cue-1", route_direction: "inbound",
+                    session_id: "session-1", cue_id: "cue-1", sequence: 1, revision: 1,
+                    route_direction: "inbound",
                     source_text: "private source", translated_text: "私密译文",
                     source_committed: true, translation_committed: true,
                     started_at_ms: 101, ended_at_ms: 102,
@@ -969,6 +999,50 @@ mod tests {
                 assert!(!raw.windows("私密译文".len()).any(|part| part == "私密译文".as_bytes()));
             }
         }
+    }
+
+    #[test]
+    fn cue_api_preserves_runtime_lineage_and_rejects_superseded_mutations() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = HistoryRepository::initialize(
+            directory.path().join("subtitle-history.db"),
+            HistoryCipher::for_test([13; 32]),
+        )
+        .unwrap();
+        repository.create_session("session-lineage", 100).unwrap();
+
+        for (sequence, revision, translated_text, updated_at_ms) in [
+            (10, 2, "preview", 101),
+            (10, 2, "same-lineage-latest", 102),
+            (11, 3, "final", 103),
+            (12, 2, "superseded-late-result", 104),
+        ] {
+            repository
+                .upsert_cue(
+                    CueWrite {
+                        session_id: "session-lineage",
+                        cue_id: "cue-1",
+                        sequence,
+                        revision,
+                        route_direction: "inbound",
+                        source_text: "source",
+                        translated_text,
+                        source_committed: true,
+                        translation_committed: revision == 3,
+                        started_at_ms: 100,
+                        ended_at_ms: updated_at_ms,
+                    },
+                    updated_at_ms,
+                )
+                .unwrap();
+        }
+
+        let cues = repository.list_cues("session-lineage", None, 50).unwrap();
+        assert_eq!(cues.items.len(), 1);
+        assert_eq!(cues.items[0].sequence, 11);
+        assert_eq!(cues.items[0].revision, 3);
+        assert_eq!(cues.items[0].translated_text, "final");
+        assert!(cues.items[0].translation_committed);
     }
 
     #[test]
@@ -1064,6 +1138,8 @@ mod tests {
                 CueWrite {
                     session_id: "active",
                     cue_id: "cue-active",
+                    sequence: 1,
+                    revision: 1,
                     route_direction: "inbound",
                     source_text: "source remains durable",
                     translated_text: "字幕继续保存",
@@ -1157,6 +1233,8 @@ mod tests {
         let connection = Connection::open(database_path).unwrap();
         for (table, column) in [
             ("subtitle_sessions", "archive_gap_count"),
+            ("subtitle_cues", "runtime_sequence"),
+            ("subtitle_cues", "runtime_revision"),
             ("subtitle_cue_audio_refs", "offset_samples"),
             ("subtitle_cue_audio_refs", "length_samples"),
         ] {

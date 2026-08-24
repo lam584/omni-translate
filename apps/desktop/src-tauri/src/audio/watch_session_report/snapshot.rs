@@ -17,6 +17,9 @@ pub(super) fn empty_cue(cue_id: &str, revision: u64, route_direction: &str) -> W
         rendered_source_text: String::new(),
         rendered_text: String::new(),
         comparison_status: "pending".to_string(),
+        audio_started_at_ms: None,
+        audio_start_origin: None,
+        source_stable_at_ms: None,
         source_at_ms: None,
         llm_first_at_ms: None,
         llm_final_at_ms: None,
@@ -32,6 +35,10 @@ pub(super) fn empty_cue(cue_id: &str, revision: u64, route_direction: &str) -> W
         llm_final_to_publish_ms: None,
         published_final_to_render_ms: None,
         llm_final_to_render_ms: None,
+        audio_to_source_first_ms: None,
+        audio_to_llm_first_ms: None,
+        audio_to_render_first_ms: None,
+        audio_to_render_final_ms: None,
         events: Vec::new(),
         issues: Vec::new(),
         dropped_event_count: 0,
@@ -103,6 +110,14 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
             duration_between(cue.published_final_at_ms, cue.rendered_final_at_ms);
         cue.llm_final_to_render_ms =
             duration_between(cue.llm_final_at_ms, cue.rendered_final_at_ms);
+        cue.audio_to_source_first_ms =
+            duration_between(cue.audio_started_at_ms, cue.source_at_ms);
+        cue.audio_to_llm_first_ms =
+            duration_between(cue.audio_started_at_ms, cue.llm_first_at_ms);
+        cue.audio_to_render_first_ms =
+            duration_between(cue.audio_started_at_ms, cue.rendered_first_at_ms);
+        cue.audio_to_render_final_ms =
+            duration_between(cue.audio_started_at_ms, cue.rendered_final_at_ms);
         cue.comparison_status = comparison_status(cue, completed, superseded);
         attribute_dynamic_issues(cue, completed && !superseded, session_elapsed_ms);
         if cue.llm_text.is_empty()
@@ -167,6 +182,19 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
     let source_to_render = latest_cues
         .iter()
         .filter_map(|cue| cue.source_to_render_ms)
+        .collect::<Vec<_>>();
+    let high_confidence_cues = latest_cues
+        .iter()
+        .copied()
+        .filter(|cue| is_high_confidence_audio_origin(cue.audio_start_origin.as_deref()))
+        .collect::<Vec<_>>();
+    let audio_to_render_first = high_confidence_cues
+        .iter()
+        .filter_map(|cue| cue.audio_to_render_first_ms)
+        .collect::<Vec<_>>();
+    let audio_to_render_final = high_confidence_cues
+        .iter()
+        .filter_map(|cue| cue.audio_to_render_final_ms)
         .collect::<Vec<_>>();
     let llm_to_render = latest_cues
         .iter()
@@ -235,6 +263,12 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
             average_source_to_render_ms: average(&source_to_render),
             p95_source_to_render_ms: percentile_95(&source_to_render),
             max_source_to_render_ms: source_to_render.iter().copied().max(),
+            average_audio_to_render_first_ms: average(&audio_to_render_first),
+            p95_audio_to_render_first_ms: percentile_95(&audio_to_render_first),
+            max_audio_to_render_first_ms: audio_to_render_first.iter().copied().max(),
+            average_audio_to_render_final_ms: average(&audio_to_render_final),
+            p95_audio_to_render_final_ms: percentile_95(&audio_to_render_final),
+            max_audio_to_render_final_ms: audio_to_render_final.iter().copied().max(),
             average_llm_first_to_render_ms: average(&llm_to_render),
             p95_llm_first_to_render_ms: percentile_95(&llm_to_render),
             max_llm_first_to_render_ms: llm_to_render.iter().copied().max(),
@@ -249,6 +283,10 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
         dropped_cue_count: session.dropped_cue_count,
         dropped_event_count: session.dropped_event_count,
     }
+}
+
+fn is_high_confidence_audio_origin(origin: Option<&str>) -> bool {
+    matches!(origin, Some("provider-offset" | "manual-audible" | "local-rms"))
 }
 
 fn duration_between(start: Option<u64>, end: Option<u64>) -> Option<u64> {

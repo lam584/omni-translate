@@ -29,6 +29,13 @@ export type BenchmarkRunResult = {
   audioSendMs: number;
   audioChunksSent: number;
   audioDurationSecs: number;
+  audioStartedAtMs?: number | null;
+  audioStartOrigin?: 'provider-offset' | 'manual-audible' | 'local-rms' | 'provider-event' | null;
+  sourceStableAtMs?: number | null;
+  audioToSourceFirstMs?: number | null;
+  audioToLlmFirstMs?: number | null;
+  audioToRenderFirstMs?: number | null;
+  audioToRenderFinalMs?: number | null;
   firstAsrMs: number | null;
   asrDeltas: BenchmarkAsrDelta[];
   asrFinal: string;

@@ -18107,14 +18107,14 @@
         "model": "fixture-judge-model",
         "runStatus": "completed",
         "scoreStatus": "final",
-        "scoreVersion": "benchmark-score/v1",
+        "scoreVersion": "benchmark-score/v2",
         "totalScore": 91,
         "grade": "A",
         "report": {
           "runs": []
         },
         "score": {
-          "version": "benchmark-score/v1"
+          "version": "benchmark-score/v2"
         },
         "error": null
       }

@@ -1,6 +1,57 @@
 use super::*;
 
     #[test]
+    fn audio_origin_uses_authority_priority_and_scores_only_high_confidence() {
+        let store = WatchSessionReportStore::new();
+        store.begin_or_reuse("test", "model");
+        store.record_audio_origin("cue-1", "inbound", 400, "provider-event");
+        store.record_audio_origin("cue-1", "inbound", 100, "local-rms");
+        store.record_audio_origin("cue-1", "inbound", 90, "manual-audible");
+        store.record_audio_origin("cue-1", "inbound", 80, "provider-offset");
+        store.record_audio_origin("cue-1", "inbound", 500, "provider-event");
+        store.record_source("cue-1", "inbound", "hello", true);
+        {
+            let mut guard = store.inner.lock().expect("report");
+            let cue = guard
+                .as_mut()
+                .expect("session")
+                .cues
+                .iter_mut()
+                .find(|cue| cue.cue_id == "cue-1")
+                .expect("cue");
+            cue.source_at_ms = Some(200);
+            cue.source_stable_at_ms = Some(250);
+            cue.llm_first_at_ms = Some(300);
+            cue.rendered_first_at_ms = Some(500);
+            cue.rendered_final_at_ms = Some(800);
+        }
+
+        let report = store.snapshot().expect("report");
+        let cue = &report.cues[0];
+        assert_eq!(cue.audio_started_at_ms, Some(80));
+        assert_eq!(cue.audio_start_origin.as_deref(), Some("provider-offset"));
+        assert_eq!(cue.audio_to_source_first_ms, Some(120));
+        assert_eq!(cue.audio_to_llm_first_ms, Some(220));
+        assert_eq!(cue.audio_to_render_first_ms, Some(420));
+        assert_eq!(cue.audio_to_render_final_ms, Some(720));
+        assert_eq!(report.summary.p95_audio_to_render_first_ms, Some(420));
+        assert_eq!(report.summary.p95_audio_to_render_final_ms, Some(720));
+    }
+
+    #[test]
+    fn staged_manual_audible_origin_is_claimed_by_the_next_source_cue() {
+        let store = WatchSessionReportStore::new();
+        store.begin_or_reuse("test", "model");
+        store.stage_manual_audio_origin(120);
+        store.record_source("manual-cue", "inbound", "hello", true);
+
+        let report = store.snapshot().expect("report");
+        let cue = &report.cues[0];
+        assert_eq!(cue.audio_started_at_ms, Some(120));
+        assert_eq!(cue.audio_start_origin.as_deref(), Some("manual-audible"));
+    }
+
+    #[test]
     fn retries_exhaustion_missing_publish_and_bad_stage_order_are_attributed() {
         let store = WatchSessionReportStore::new();
         store.begin_or_reuse("test", "model");
@@ -214,4 +265,3 @@ use super::*;
         }
         assert_eq!(store.snapshot().expect("report").cues.len(), 200);
     }
-

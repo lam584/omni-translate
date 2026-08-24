@@ -2,8 +2,8 @@
 //!
 //! The benchmark report and score are intentionally stored as JSON rather
 //! than being coupled to a particular scorer implementation.  This keeps the
-//! database useful across score-detail additions while the explicit v1 marker
-//! prevents old scoring systems from being compared with the new one.
+//! database useful across score-detail additions. Legacy v1 rows remain
+//! readable, while all new writes use the audio-origin v2 rubric.
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::Value;
@@ -17,7 +17,8 @@ use crate::storage::contracts::{
 
 use super::{current_timestamp, ConfigRepository};
 
-pub(crate) const BENCHMARK_SCORE_VERSION: &str = "benchmark-score/v1";
+pub(crate) const BENCHMARK_SCORE_VERSION: &str = "benchmark-score/v2";
+pub(crate) const LEGACY_BENCHMARK_SCORE_VERSION: &str = "benchmark-score/v1";
 const DEFAULT_PAGE_SIZE: u32 = 50;
 const MAX_PAGE_SIZE: u32 = 100;
 const INTERRUPTED_RUN_ERROR: &str = "Benchmark process was interrupted before completion.";
@@ -310,6 +311,11 @@ fn validate_history_input(input: &BenchmarkHistorySaveInput) -> Result<(), Strin
         ));
     }
     if let Some(score_version) = input.score_version.as_deref() {
+        if score_version == LEGACY_BENCHMARK_SCORE_VERSION {
+            return Err(format!(
+                "benchmark score version {LEGACY_BENCHMARK_SCORE_VERSION} is read-only"
+            ));
+        }
         if score_version != BENCHMARK_SCORE_VERSION {
             return Err(format!(
                 "unsupported benchmark score version: {score_version}; expected {BENCHMARK_SCORE_VERSION}"
@@ -501,7 +507,7 @@ mod tests {
 
     use super::{
         sanitize_error_text, strip_sensitive_json, BenchmarkHistorySaveInput, ConfigRepository,
-        BENCHMARK_SCORE_VERSION,
+        BENCHMARK_SCORE_VERSION, LEGACY_BENCHMARK_SCORE_VERSION,
     };
 
     fn repository() -> (TempDir, ConfigRepository) {
@@ -513,6 +519,17 @@ mod tests {
         );
         repository.initialize().expect("repository should initialize");
         (temp_dir, repository)
+    }
+
+    #[test]
+    fn legacy_v1_scores_are_read_only() {
+        let (_temp_dir, repository) = repository();
+        let mut input = save_input("legacy-v1");
+        input.score_version = Some(LEGACY_BENCHMARK_SCORE_VERSION.to_string());
+        let error = repository
+            .save_benchmark_history(input)
+            .expect_err("legacy score writes must be rejected");
+        assert!(error.contains("read-only"));
     }
 
     fn save_input(run_id: &str) -> BenchmarkHistorySaveInput {

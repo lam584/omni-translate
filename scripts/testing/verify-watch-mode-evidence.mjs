@@ -2970,17 +2970,17 @@ export function strictDeviceEvidenceFailure(report, expectedDeviceClass = null) 
 export const DEFAULT_MAX_EVIDENCE_AGE_DAYS = 14;
 
 /**
- * Strict-mode latency gate: threshold starting points come from historical
- * passing evidence reports (full runs measured firstVisible<=7s and
- * firstFinal<=7s; the live report generator already rejects secondary runs
- * above 8s/15s, so the evidence gate starts at those documented bounds).
+ * Strict-mode latency gate. Audio-origin p95s come only from cues whose
+ * origin is provider offset, an explicit manual audible boundary, or the
+ * local 20 ms RMS>=0.002 onset detector. Provider-event fallback samples are
+ * intentionally excluded by the Watch report producer.
  * firstTtsQueued/firstPlayback only have a non-representative 12s short
  * sample (1s/2s) as history, so they default to null and are asserted only
  * when configured via --latency-thresholds.
  */
 export const DEFAULT_STRICT_LATENCY_THRESHOLDS = {
-  firstVisibleTranslationLatencySeconds: 8,
-  firstFinalTranslationLatencySeconds: 15,
+  audioToRenderFirstSeconds: 8,
+  audioToRenderFinalSeconds: 15,
   firstTtsQueuedLatencySeconds: null,
   firstPlaybackLatencySeconds: null,
 };
@@ -3020,12 +3020,30 @@ export function normalizeLatencyThresholds(value) {
 export function strictLatencyFailure(report, options = {}) {
   const thresholds = normalizeLatencyThresholds(options.latencyThresholds);
   const subtitleQueue = report.layers?.app?.data?.subtitleQueue;
-  if (!subtitleQueue) return null;
+  const layerWatchReport = report.layers?.app?.data?.watchSessionReport;
+  const watchReport = report.watchSessionReport ?? layerWatchReport;
+  const layerWatchSummary = layerWatchReport?.summary;
+  const watchSummary = watchReport?.summary;
+  if (!subtitleQueue && !watchSummary && !layerWatchSummary) return null;
+  const requiresAudioOriginEvidence = watchReport?.status === 'completed'
+    && (Number(watchSummary?.cueCount) > 0 || (Array.isArray(watchReport?.cues) && watchReport.cues.length > 0));
   const violations = [];
   for (const [field, threshold] of Object.entries(thresholds)) {
     if (threshold == null) continue;
-    const measured = Number(subtitleQueue[field]);
-    if (!Number.isFinite(measured)) continue;
+    const rawMeasured = field === 'audioToRenderFirstSeconds'
+      ? layerWatchSummary?.p95AudioToRenderFirstMs ?? watchSummary?.p95AudioToRenderFirstMs
+      : field === 'audioToRenderFinalSeconds'
+        ? layerWatchSummary?.p95AudioToRenderFinalMs ?? watchSummary?.p95AudioToRenderFinalMs
+        : subtitleQueue?.[field];
+    const measured = rawMeasured == null
+      ? Number.NaN
+      : Number(rawMeasured) / (field.startsWith('audioToRender') ? 1_000 : 1);
+    if (!Number.isFinite(measured)) {
+      if (requiresAudioOriginEvidence && field.startsWith('audioToRender')) {
+        violations.push(`${field}=missing high-confidence audio-origin latency evidence`);
+      }
+      continue;
+    }
     if (measured > threshold) {
       violations.push(`${field}=${measured}s exceeds the ${threshold}s threshold`);
     }

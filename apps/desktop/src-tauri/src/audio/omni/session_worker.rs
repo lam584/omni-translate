@@ -744,6 +744,8 @@ fn run_omni_worker(
             &mut last_waiting_log_chunk_count,
         );
 
+        let pending_manual_audio_origin_ms =
+            audio_origin::manual_origin_ms(manual_turn_started_at.as_ref(), &session_started_at);
         let commit_state = OmniConnectionCoordinator::maintain_manual_commit(
             OmniCommitState {
                 last_commit_time,
@@ -778,25 +780,11 @@ fn run_omni_worker(
         manual_response_requested = commit_state.manual_response_requested;
         manual_response_item_id = commit_state.manual_response_item_id;
         manual_response_released_at = commit_state.manual_response_released_at;
-        if let Some(started_during_playback) =
-            commit_state.committed_source_started_during_playback
-        {
-            let source_started_ms = elapsed_ms_since(&session_started_at);
-            event_diagnostics.begin_manual_source_segment(
-                source_started_ms,
-                started_during_playback,
-            );
-            let _ = diag_log(
-                &app,
-                "omni",
-                "debug",
-                format!(
-                    "event=manual_source_segment action=begin sourceStartedDuringPlayback={started_during_playback} sourceContinuityId={} sourceContinuityActive={}",
-                    event_diagnostics.source_continuity_id,
-                    event_diagnostics.source_continuity_active,
-                ),
-            );
-        }
+        audio_origin::record_committed_manual_source_segment(
+            &app, store, pending_manual_audio_origin_ms,
+            commit_state.committed_source_started_during_playback,
+            &session_started_at, &mut event_diagnostics,
+        );
         if commit_state.manual_turn_timed_out {
             // A timed-out turn never issued response.create; buffered output
             // and, in native-reuse/audio-only modes, `current_cue_id` may still

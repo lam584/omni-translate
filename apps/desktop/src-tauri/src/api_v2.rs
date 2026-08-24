@@ -541,7 +541,7 @@ pub(crate) enum DiagnosticsCommandV2 {
     OpenExportDirectory { output_path: String },
     WriteExportArtifact { filename: String, content: String },
     OpenExternalUrl { url: String },
-    /// Creates a new `benchmark-score/v1` record when `recordId` is omitted,
+    /// Creates a new `benchmark-score/v2` record when `recordId` is omitted,
     /// or replaces the complete persisted snapshot for that record when it is
     /// supplied.  The report/score values are arbitrary JSON and are scrubbed
     /// for credentials before they reach SQLite.
@@ -554,7 +554,7 @@ pub(crate) enum DiagnosticsCommandV2 {
         run_status: String,
         #[ts(type = "'pending' | 'judging' | 'final' | 'evidence-insufficient' | 'judge-failed' | 'benchmark-failed'")]
         score_status: String,
-        #[ts(optional, type = "'benchmark-score/v1'")]
+        #[ts(optional, type = "'benchmark-score/v2'")]
         score_version: Option<String>,
         #[ts(optional = nullable)]
         total_score: Option<f64>,
@@ -810,7 +810,7 @@ mod tests {
                 .unwrap();
         assert!(matches!(configuration, ConfigurationCommandV2::CreateSnapshot { .. }));
         let history: DiagnosticsCommandV2 = serde_json::from_str(
-            r#"{"action":"saveBenchmarkHistory","runId":"run-1","model":"judge-model","runStatus":"completed","scoreStatus":"final","scoreVersion":"benchmark-score/v1","totalScore":91,"grade":"A","report":{"event":"done"},"score":{"version":"benchmark-score/v1"}}"#,
+            r#"{"action":"saveBenchmarkHistory","runId":"run-1","model":"judge-model","runStatus":"completed","scoreStatus":"final","scoreVersion":"benchmark-score/v2","totalScore":91,"grade":"A","report":{"event":"done"},"score":{"version":"benchmark-score/v2"}}"#,
         )
         .unwrap();
         assert!(matches!(

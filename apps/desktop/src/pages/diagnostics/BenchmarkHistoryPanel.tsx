@@ -1,5 +1,5 @@
 import i18n from '../../i18n/config';
-import type { BenchmarkHistorySummary } from './benchmarkHistory';
+import { groupBenchmarkHistoryByScoreVersion, type BenchmarkHistorySummary } from './benchmarkHistory';
 import { formatHistoryTime, historyScore } from './benchmarkHistoryFormat';
 
 export function BenchmarkHistoryPanel({
@@ -41,19 +41,22 @@ export function BenchmarkHistoryPanel({
       {records.length === 0 && !loading ? <p className="benchmark-history-empty">{i18n.t('diagnostics.benchmark.historyEmpty')}</p> : null}
       {records.length > 0 ? (
         <>
-          <div className="benchmark-history-list">
-            {records.map((record) => (
-              <article className="benchmark-history-row" key={record.recordId}>
-                <button className="benchmark-history-open" onClick={() => onOpen(record.recordId)} type="button">
-                  <strong>{record.model}</strong>
-                  <span>{formatHistoryTime(record.createdAt)}</span>
-                  <small>{i18n.t('diagnostics.benchmark.historyStatus', { run: record.runStatus, score: record.scoreStatus })}</small>
-                </button>
-                <strong className="benchmark-history-score">{historyScore(record)}</strong>
-                <button aria-label={i18n.t('diagnostics.benchmark.deleteHistory')} disabled={loading} onClick={() => onDelete(record.recordId)} type="button">×</button>
-              </article>
-            ))}
-          </div>
+          {groupBenchmarkHistoryByScoreVersion(records).map((group) => (
+            <div className="benchmark-history-list" key={group.scoreVersion ?? 'unversioned'}>
+              <h4>{group.scoreVersion ?? '—'}</h4>
+              {group.records.map((record) => (
+                <article className="benchmark-history-row" key={record.recordId}>
+                  <button className="benchmark-history-open" onClick={() => onOpen(record.recordId)} type="button">
+                    <strong>{record.model}</strong>
+                    <span>{formatHistoryTime(record.createdAt)}</span>
+                    <small>{i18n.t('diagnostics.benchmark.historyStatus', { run: record.runStatus, score: record.scoreStatus })}</small>
+                  </button>
+                  <strong className="benchmark-history-score">{historyScore(record)}</strong>
+                  <button aria-label={i18n.t('diagnostics.benchmark.deleteHistory')} disabled={loading} onClick={() => onDelete(record.recordId)} type="button">×</button>
+                </article>
+              ))}
+            </div>
+          ))}
           {hasMore ? <button className="benchmark-history-more" disabled={loading} onClick={onLoadMore} type="button">{i18n.t('diagnostics.benchmark.loadMoreHistory')}</button> : null}
         </>
       ) : null}

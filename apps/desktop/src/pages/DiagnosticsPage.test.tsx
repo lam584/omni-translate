@@ -541,7 +541,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     expect(container.querySelector('.benchmark-history-row')).toBeNull();
   });
 
-  it('automatically judges a completed reference fixture exactly once and persists the final v1 score', async () => {
+  it('automatically judges a completed reference fixture exactly once and persists the final v2 score', async () => {
     const state = useAppStore.getState();
     const provider = structuredClone(state.configDraft.providers[0]!);
     provider.sceneModelAssignments = provider.sceneModelAssignments.map((assignment) =>
@@ -557,6 +557,13 @@ describe('DiagnosticsPage monitoring boundary', () => {
     report.audioFile = defaultBenchmarkMp3Path;
     const run = report.runs[0]!;
     run.firstCommittedMs = 200;
+    run.audioStartedAtMs = 0;
+    run.audioStartOrigin = 'local-rms';
+    run.sourceStableAtMs = 100;
+    run.audioToSourceFirstMs = 80;
+    run.audioToLlmFirstMs = 120;
+    run.audioToRenderFirstMs = 150;
+    run.audioToRenderFinalMs = 200;
     run.responseDoneMs = 220;
     run.timeToFirstCommittedMs = 80;
     run.responseCount = 1;

@@ -26,7 +26,7 @@ import { useDiagnosticsWorkbenchController } from './diagnostics/useDiagnosticsA
 import { CUSTOM_AUDIO_VALUE } from './diagnostics/benchmark-audio-fixtures';
 import { useBenchmarkController, type BenchmarkVoiceModel } from './diagnostics/useBenchmarkController';
 import { formatSemanticJudgeError, runBenchmarkSemanticJudge, type BenchmarkJudgeModel, type BenchmarkSemanticJudgeResult } from './diagnostics/benchmarkSemanticJudge';
-import { scoreBenchmarkReport, type BenchmarkJudgeState, type BenchmarkRunState, type BenchmarkScoreV1 } from './diagnostics/benchmarkReportScore';
+import { scoreBenchmarkReport, type BenchmarkJudgeState, type BenchmarkRunState, type BenchmarkScoreV2 } from './diagnostics/benchmarkReportScore';
 import { resolveBenchmarkReferenceTranslation, resolveBenchmarkSourceText } from './diagnostics/benchmarkReferenceText';
 import { benchmarkScoreFromHistory, historyScoreStatus, type BenchmarkHistoryRecord } from './diagnostics/benchmarkHistory';
 import { formatHistoryTime } from './diagnostics/benchmarkHistoryFormat';
@@ -102,7 +102,7 @@ function buildBenchmarkScore(
     model?: string | null;
     rubricVersion?: string | null;
   } = {},
-): BenchmarkScoreV1 {
+): BenchmarkScoreV2 {
   return scoreBenchmarkReport(report, {
     benchmarkState,
     judgeError,
@@ -189,7 +189,7 @@ function DiagnosticsPage() {
     error?: string | null;
     report: BenchmarkReport;
     runStatus: 'running' | 'completed' | 'failed';
-    score: BenchmarkScoreV1;
+    score: BenchmarkScoreV2;
   }) => {
     if (!hasNativeShell) return;
     const runId = historyRunId.current;

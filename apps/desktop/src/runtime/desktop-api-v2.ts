@@ -99,7 +99,7 @@ export type BenchmarkHistorySavePayload = {
   model: string;
   runStatus: 'running' | 'completed' | 'failed' | 'interrupted';
   scoreStatus: 'pending' | 'judging' | 'final' | 'evidence-insufficient' | 'judge-failed' | 'benchmark-failed';
-  scoreVersion?: 'benchmark-score/v1';
+  scoreVersion?: 'benchmark-score/v2';
   totalScore?: number | null;
   grade?: string | null;
   report?: unknown | null;

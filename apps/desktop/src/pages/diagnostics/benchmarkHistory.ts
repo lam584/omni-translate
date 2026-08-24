@@ -6,7 +6,9 @@ import type {
   BenchmarkHistoryPage as NativeBenchmarkHistoryPage,
   BenchmarkHistoryRecord as NativeBenchmarkHistoryRecord,
 } from '../../schema/generated/runtime-core';
-import type { BenchmarkScoreV1 } from './benchmarkReportScore';
+import type { BenchmarkResultScore } from './benchmarkReportScore';
+
+export type BenchmarkStoredScore = BenchmarkResultScore;
 
 /**
  * Persisted, versioned benchmark result. The native diagnostics boundary owns
@@ -85,17 +87,19 @@ export function benchmarkHistoryPageFromNative(page: NativeBenchmarkHistoryPage)
   };
 }
 
-export function benchmarkScoreFromHistory(value: unknown): BenchmarkScoreV1 | null {
+export function benchmarkScoreFromHistory(value: unknown): BenchmarkStoredScore | null {
   if (!value || typeof value !== 'object') return null;
-  const candidate = value as Partial<BenchmarkScoreV1>;
-  return candidate.schemaVersion === 'benchmark-score/v1'
-    && candidate.version === 'benchmark-score/v1'
+  const candidate = value as Partial<BenchmarkStoredScore>;
+  const supported = candidate.schemaVersion === 'benchmark-score/v1'
+    || candidate.schemaVersion === 'benchmark-score/v2';
+  return supported
+    && candidate.version === candidate.schemaVersion
     && candidate.dimensions != null
-    ? candidate as BenchmarkScoreV1
+    ? candidate as BenchmarkStoredScore
     : null;
 }
 
-export function historyScoreStatus(score: BenchmarkScoreV1): BenchmarkScoreStatus {
+export function historyScoreStatus(score: BenchmarkStoredScore): BenchmarkScoreStatus {
   switch (score.status) {
     case 'official': return 'final';
     case 'judging': return 'judging';
@@ -116,13 +120,28 @@ export function benchmarkHistorySaveInput(
   // a recursive secret-key redaction as defense in depth before persistence.
   return {
     ...input,
-    scoreVersion: input.scoreVersion ?? 'benchmark-score/v1',
+    scoreVersion: input.scoreVersion ?? 'benchmark-score/v2',
     totalScore: input.totalScore ?? null,
     grade: input.grade ?? null,
     report: input.report ?? null,
     score: input.score ?? null,
     error: input.error ?? null,
   };
+}
+
+export function groupBenchmarkHistoryByScoreVersion(
+  records: readonly BenchmarkHistorySummary[],
+): Array<{ scoreVersion: string | null; records: BenchmarkHistorySummary[] }> {
+  const grouped = new Map<string | null, BenchmarkHistorySummary[]>();
+  for (const record of records) {
+    const group = grouped.get(record.scoreVersion) ?? [];
+    group.push(record);
+    grouped.set(record.scoreVersion, group);
+  }
+  const rank = (version: string | null) => version === 'benchmark-score/v2' ? 0 : version === 'benchmark-score/v1' ? 1 : 2;
+  return [...grouped.entries()]
+    .sort(([left], [right]) => rank(left) - rank(right) || String(left).localeCompare(String(right)))
+    .map(([scoreVersion, groupRecords]) => ({ scoreVersion, records: groupRecords }));
 }
 
 export function isFinalBenchmarkHistoryRecord(record: BenchmarkHistorySummary): boolean {

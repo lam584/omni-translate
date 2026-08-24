@@ -12,9 +12,9 @@ export type ConfigExportArtifact = { filePath: string, outputPath: string, fileC
 
 export type ConfigSnapshotRecord = { snapshotId: string, reason: string, createdAt: string, };
 
-export type BenchmarkHistoryRecord = { recordId: string, runId: string, createdAt: string, updatedAt: string, model: string, runStatus: 'running' | 'completed' | 'failed' | 'interrupted', scoreStatus: 'pending' | 'judging' | 'final' | 'evidence-insufficient' | 'judge-failed' | 'benchmark-failed', scoreVersion: 'benchmark-score/v1' | null, totalScore: number | null, grade: string | null, report: unknown | null, score: unknown | null, error: string | null, };
+export type BenchmarkHistoryRecord = { recordId: string, runId: string, createdAt: string, updatedAt: string, model: string, runStatus: 'running' | 'completed' | 'failed' | 'interrupted', scoreStatus: 'pending' | 'judging' | 'final' | 'evidence-insufficient' | 'judge-failed' | 'benchmark-failed', scoreVersion: 'benchmark-score/v1' | 'benchmark-score/v2' | null, totalScore: number | null, grade: string | null, report: unknown | null, score: unknown | null, error: string | null, };
 
-export type BenchmarkHistorySummary = { recordId: string, runId: string, createdAt: string, updatedAt: string, model: string, runStatus: 'running' | 'completed' | 'failed' | 'interrupted', scoreStatus: 'pending' | 'judging' | 'final' | 'evidence-insufficient' | 'judge-failed' | 'benchmark-failed', scoreVersion: 'benchmark-score/v1' | null, totalScore: number | null, grade: string | null, error: string | null, };
+export type BenchmarkHistorySummary = { recordId: string, runId: string, createdAt: string, updatedAt: string, model: string, runStatus: 'running' | 'completed' | 'failed' | 'interrupted', scoreStatus: 'pending' | 'judging' | 'final' | 'evidence-insufficient' | 'judge-failed' | 'benchmark-failed', scoreVersion: 'benchmark-score/v1' | 'benchmark-score/v2' | null, totalScore: number | null, grade: string | null, error: string | null, };
 
 export type BenchmarkHistoryPage = { records: Array<BenchmarkHistorySummary>, page: number, pageSize: number, totalCount: number, };
 
@@ -61,4 +61,3 @@ export type RuntimeSnapshot = { coreState: 'booting' | 'ready' | 'degraded', bri
  * handed to the renderer so frontend records correlate across processes.
  */
 sessionId: string, bridge: BridgeRuntimeSnapshot, diagnostics: DiagnosticsRuntimeSnapshot, storage: StorageRuntimeSnapshot, windows: Array<RuntimeWindowSnapshot>, notifications: Array<RuntimeNotification>, };
-

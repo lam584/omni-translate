@@ -3,10 +3,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const MODULE_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
-const RULES_PATH = path.resolve(MODULE_DIRECTORY, '../../contracts/benchmark-score-v1-rules.json');
+const RULES_PATH = path.resolve(MODULE_DIRECTORY, '../../contracts/benchmark-score-v2-rules.json');
 const DEFAULT_JUDGE_MODEL = 'qwen3.5-plus';
 
-export const BENCHMARK_SCORE_VERSION = 'benchmark-score/v1';
+export const BENCHMARK_SCORE_VERSION = 'benchmark-score/v2';
+export const LEGACY_BENCHMARK_SCORE_VERSION = 'benchmark-score/v1';
 export const LLM_JUDGE_RUBRIC_VERSION = 'translation-judge/v1';
 
 const FALLBACK_RULES = Object.freeze({
@@ -17,8 +18,8 @@ const FALLBACK_RULES = Object.freeze({
     judgeSubscores: ['adequacy', 'factsTerminology', 'omissionsAdditions', 'fluency'],
   },
   latencyMilliseconds: {
-    firstToken: { good: 2_000, bad: 8_000 },
-    firstCommitted: { good: 5_000, bad: 15_000 },
+    audioToRenderFirst: { good: 2_000, bad: 8_000 },
+    audioToRenderFinal: { good: 5_000, bad: 15_000 },
   },
   stability: { extraResponsePenalty: 5 },
   grades: [
@@ -60,7 +61,7 @@ function validateRules(rules) {
   if (Number(rules.semantic?.referenceWeight) + Number(rules.semantic?.judgeWeight) !== 100) {
     throw new Error(`${RULES_PATH} semantic weights must sum to 100`);
   }
-  for (const signal of ['firstToken', 'firstCommitted']) {
+  for (const signal of ['audioToRenderFirst', 'audioToRenderFinal']) {
     const threshold = rules.latencyMilliseconds?.[signal];
     if (!threshold || !Number.isFinite(Number(threshold.good)) || !Number.isFinite(Number(threshold.bad)) || threshold.good >= threshold.bad) {
       throw new Error(`${RULES_PATH} has invalid ${signal} latency thresholds`);
@@ -78,9 +79,8 @@ function loadRules() {
   return validateRules(fs.existsSync(RULES_PATH) ? readJson(RULES_PATH) : clone(FALLBACK_RULES));
 }
 
-export const BENCHMARK_SCORE_V1_RULES = Object.freeze(loadRules());
-// Alias is intentionally a rules alias, not an old score-format alias.
-export const BENCHMARK_SCORE_RULES = BENCHMARK_SCORE_V1_RULES;
+export const BENCHMARK_SCORE_V2_RULES = Object.freeze(loadRules());
+export const BENCHMARK_SCORE_RULES = BENCHMARK_SCORE_V2_RULES;
 
 function findEvidence(runDirectory, report) {
   const snapshotsPath = path.join(runDirectory, 'snapshots.json');
@@ -136,7 +136,7 @@ export function calculateChrF2(candidateText, referenceText) {
   const candidate = [...normalizeChrFText(candidateText)];
   const reference = [...normalizeChrFText(referenceText)];
   if (!candidate.length || !reference.length) return null;
-  const orderLimit = Math.min(BENCHMARK_SCORE_V1_RULES.semantic.characterNgramOrder, candidate.length, reference.length);
+  const orderLimit = Math.min(BENCHMARK_SCORE_V2_RULES.semantic.characterNgramOrder, candidate.length, reference.length);
   if (!orderLimit) return null;
 
   const orders = [];
@@ -158,13 +158,13 @@ export function calculateChrF2(candidateText, referenceText) {
   }
   const precision = average(orders.map(({ precision: value }) => value)) ?? 0;
   const recall = average(orders.map(({ recall: value }) => value)) ?? 0;
-  const beta = BENCHMARK_SCORE_V1_RULES.semantic.beta;
+  const beta = BENCHMARK_SCORE_V2_RULES.semantic.beta;
   const betaSquared = beta ** 2;
   const score = precision + recall === 0 ? 0 : (1 + betaSquared) * precision * recall / (betaSquared * precision + recall) * 100;
   return {
     metric: 'chrF2',
     normalization: 'Unicode NFKC; whitespace removed; case preserved',
-    characterNgramOrder: BENCHMARK_SCORE_V1_RULES.semantic.characterNgramOrder,
+    characterNgramOrder: BENCHMARK_SCORE_V2_RULES.semantic.characterNgramOrder,
     beta,
     candidateCharacters: candidate.length,
     referenceCharacters: reference.length,
@@ -235,6 +235,10 @@ function millisecondsFromSeconds(value) {
   return seconds == null ? null : seconds * 1_000;
 }
 
+function highConfidenceAudioOrigin(origin) {
+  return ['provider-offset', 'manual-audible', 'local-rms'].includes(String(origin ?? ''));
+}
+
 function normalizeRun(raw, index, defaults = {}) {
   const responseCreatedMs = optionalNonNegativeNumber(raw?.responseCreatedMs ?? raw?.responseCreatedAtMs);
   const firstTokenMs = optionalNonNegativeNumber(raw?.firstTokenMs ?? raw?.firstOutputMs ?? raw?.firstVisibleMs);
@@ -242,9 +246,12 @@ function normalizeRun(raw, index, defaults = {}) {
   // A producer may explicitly provide a response-relative duration, but the
   // legacy `timeToFirst*Ms` fields are whole-run clocks in desktop reports.
   // Never treat those legacy clocks as a substitute for responseCreated
-  // evidence in benchmark-score/v1.
+  // diagnostic evidence only; benchmark-score/v2 uses audio-origin latency.
   const firstTokenFallbackMs = optionalNonNegativeNumber(raw?.firstTokenLatencyMs);
   const firstCommittedFallbackMs = optionalNonNegativeNumber(raw?.firstCommittedLatencyMs);
+  const audioStartOrigin = String(raw?.audioStartOrigin ?? '').trim() || null;
+  const audioToRenderFirstMs = optionalNonNegativeNumber(raw?.audioToRenderFirstMs);
+  const audioToRenderFinalMs = optionalNonNegativeNumber(raw?.audioToRenderFinalMs);
   const responseCount = optionalNonNegativeNumber(raw?.responseCount);
   const extraResponses = optionalNonNegativeNumber(raw?.extraResponseCount ?? raw?.extraResponses ?? defaults.extraResponseCount);
   return {
@@ -261,6 +268,14 @@ function normalizeRun(raw, index, defaults = {}) {
     firstCommittedMs,
     firstTokenFallbackMs,
     firstCommittedFallbackMs,
+    audioStartedAtMs: optionalNonNegativeNumber(raw?.audioStartedAtMs),
+    audioStartOrigin,
+    sourceStableAtMs: optionalNonNegativeNumber(raw?.sourceStableAtMs),
+    audioToSourceFirstMs: optionalNonNegativeNumber(raw?.audioToSourceFirstMs),
+    audioToLlmFirstMs: optionalNonNegativeNumber(raw?.audioToLlmFirstMs),
+    audioToRenderFirstMs,
+    audioToRenderFinalMs,
+    highConfidenceAudioOrigin: highConfidenceAudioOrigin(audioStartOrigin),
     // The legacy Watch queue timers start at cue_started, not at
     // responseCreated. Preserve them for diagnosis but never score them as
     // response-relative v1 latency evidence.
@@ -278,6 +293,9 @@ function normalizeRuns({ report, evidence, sourceText }) {
       : null;
   const fallbackText = textFromContent(evidence?.content, evidence?.watchSessionReport);
   const queueExtraResponses = optionalNonNegativeNumber(evidence?.queue?.duplicateFinalTranslations);
+  const representativeCue = Array.isArray(evidence?.watchSessionReport?.cues)
+    ? evidence.watchSessionReport.cues.find((cue) => highConfidenceAudioOrigin(cue?.audioStartOrigin))
+    : null;
   const runs = rawRuns
     ? rawRuns.map((raw, index) => normalizeRun(raw, index, { sourceText }))
     : [normalizeRun({
@@ -286,6 +304,13 @@ function normalizeRuns({ report, evidence, sourceText }) {
       translationFinal: fallbackText,
       responseCompleted: state === 'completed',
       extraResponseCount: queueExtraResponses,
+      audioStartedAtMs: representativeCue?.audioStartedAtMs,
+      audioStartOrigin: representativeCue?.audioStartOrigin,
+      sourceStableAtMs: representativeCue?.sourceStableAtMs,
+      audioToSourceFirstMs: representativeCue?.audioToSourceFirstMs,
+      audioToLlmFirstMs: representativeCue?.audioToLlmFirstMs,
+      audioToRenderFirstMs: representativeCue?.audioToRenderFirstMs,
+      audioToRenderFinalMs: representativeCue?.audioToRenderFinalMs,
       legacyCueToFirstTokenLatencySeconds: evidence?.queue?.firstVisibleTranslationLatencySeconds,
       legacyCueToFirstCommittedLatencySeconds: evidence?.queue?.firstFinalTranslationLatencySeconds,
     }, 0, { sourceText, responseDone: state === 'completed', extraResponseCount: queueExtraResponses })];
@@ -326,7 +351,7 @@ function judgeStateFor({ semanticJudge, judgeState, judgeError }) {
 function formulas(rules) {
   return {
     semantic: `(${rules.semantic.referenceWeight}% × mean(chrF2)) + (${rules.semantic.judgeWeight}% × mean(judge score))`,
-    latency: 'mean(each run’s response-created → first-token and response-created → first-committed linear-ramp scores)',
+    latency: 'mean(each run’s high-confidence audio → visible-first and audio → visible-final linear-ramp scores)',
     completeness: '100 × completed runs with a final translation ÷ declared runs',
     stability: `100 × successful runs ÷ declared runs − ${rules.stability.extraResponsePenalty} points per extra response (clamped to 0–100)`,
     total: '0.40 × semantic + 0.30 × latency + 0.20 × completeness + 0.10 × stability; official only when all four dimensions have complete evidence',
@@ -334,11 +359,11 @@ function formulas(rules) {
 }
 
 /**
- * Common v1 score producer. Watch Mode converts its evidence into `runs` and
+ * Common v2 score producer. Watch Mode converts its evidence into `runs` and
  * then applies the exact same public rules object and total formula as desktop.
  */
 function scoreNormalized({ report, runs, declaredRuns, sourceText, referenceText, semanticJudge = null, judgeState = 'idle', judgeError = null, benchmarkState = 'running' }) {
-  const rules = BENCHMARK_SCORE_V1_RULES;
+  const rules = BENCHMARK_SCORE_V2_RULES;
   const completedRuns = runs.filter(isCompletedRun);
   const completedRunIndexes = completedRuns.map(({ runIndex }) => runIndex);
   const sourceTextAvailable = Boolean(String(sourceText ?? '').trim());
@@ -392,26 +417,30 @@ function scoreNormalized({ report, runs, declaredRuns, sourceText, referenceText
   };
 
   const latencySignals = runs.flatMap((run) => {
-    const firstTokenLatency = relativeResponseLatency(run.responseCreatedMs, run.firstTokenMs, run.firstTokenFallbackMs);
-    const firstCommittedLatency = relativeResponseLatency(run.responseCreatedMs, run.firstCommittedMs, run.firstCommittedFallbackMs);
-    const firstTokenThreshold = rules.latencyMilliseconds.firstToken;
-    const firstCommittedThreshold = rules.latencyMilliseconds.firstCommitted;
+    const firstLatency = run.highConfidenceAudioOrigin ? run.audioToRenderFirstMs : null;
+    const finalLatency = run.highConfidenceAudioOrigin ? run.audioToRenderFinalMs : null;
+    const firstThreshold = rules.latencyMilliseconds.audioToRenderFirst;
+    const finalThreshold = rules.latencyMilliseconds.audioToRenderFinal;
     return [
       {
         runIndex: run.runIndex,
-        signal: 'firstToken',
-        latencyMs: firstTokenLatency,
-        score: scoreLatencyRamp(firstTokenLatency, firstTokenThreshold.good, firstTokenThreshold.bad),
-        threshold: clone(firstTokenThreshold),
-        zone: latencyZone(firstTokenLatency, firstTokenThreshold),
+        signal: 'audioToRenderFirst',
+        audioStartOrigin: run.audioStartOrigin,
+        highConfidence: run.highConfidenceAudioOrigin,
+        latencyMs: firstLatency,
+        score: scoreLatencyRamp(firstLatency, firstThreshold.good, firstThreshold.bad),
+        threshold: clone(firstThreshold),
+        zone: latencyZone(firstLatency, firstThreshold),
       },
       {
         runIndex: run.runIndex,
-        signal: 'firstCommitted',
-        latencyMs: firstCommittedLatency,
-        score: scoreLatencyRamp(firstCommittedLatency, firstCommittedThreshold.good, firstCommittedThreshold.bad),
-        threshold: clone(firstCommittedThreshold),
-        zone: latencyZone(firstCommittedLatency, firstCommittedThreshold),
+        signal: 'audioToRenderFinal',
+        audioStartOrigin: run.audioStartOrigin,
+        highConfidence: run.highConfidenceAudioOrigin,
+        latencyMs: finalLatency,
+        score: scoreLatencyRamp(finalLatency, finalThreshold.good, finalThreshold.bad),
+        threshold: clone(finalThreshold),
+        zone: latencyZone(finalLatency, finalThreshold),
       },
     ];
   });
@@ -530,6 +559,14 @@ function scoreNormalized({ report, runs, declaredRuns, sourceText, referenceText
       firstCommittedMs: run.firstCommittedMs,
       firstTokenLatencyMs: relativeResponseLatency(run.responseCreatedMs, run.firstTokenMs, run.firstTokenFallbackMs),
       firstCommittedLatencyMs: relativeResponseLatency(run.responseCreatedMs, run.firstCommittedMs, run.firstCommittedFallbackMs),
+      audioStartedAtMs: run.audioStartedAtMs,
+      audioStartOrigin: run.audioStartOrigin,
+      sourceStableAtMs: run.sourceStableAtMs,
+      audioToSourceFirstMs: run.audioToSourceFirstMs,
+      audioToLlmFirstMs: run.audioToLlmFirstMs,
+      audioToRenderFirstMs: run.audioToRenderFirstMs,
+      audioToRenderFinalMs: run.audioToRenderFinalMs,
+      highConfidenceAudioOrigin: run.highConfidenceAudioOrigin,
       legacyCueToFirstTokenLatencyMs: run.legacyCueToFirstTokenLatencyMs,
       legacyCueToFirstCommittedLatencyMs: run.legacyCueToFirstCommittedLatencyMs,
     })),
@@ -537,11 +574,11 @@ function scoreNormalized({ report, runs, declaredRuns, sourceText, referenceText
 }
 
 export function gradeFor(score) {
-  return BENCHMARK_SCORE_V1_RULES.grades.find(({ minimum }) => score >= minimum)?.grade ?? 'F';
+  return BENCHMARK_SCORE_V2_RULES.grades.find(({ minimum }) => score >= minimum)?.grade ?? 'F';
 }
 
 export function calculateWeightedTotal(dimensions) {
-  return round(Object.entries(BENCHMARK_SCORE_V1_RULES.dimensionWeights).reduce((sum, [name, weight]) => {
+  return round(Object.entries(BENCHMARK_SCORE_V2_RULES.dimensionWeights).reduce((sum, [name, weight]) => {
     const candidate = dimensions?.[name];
     const score = typeof candidate === 'object' ? candidate?.score : candidate;
     if (!Number.isFinite(score)) throw new Error(`Cannot calculate ${BENCHMARK_SCORE_VERSION} total: ${name} is missing.`);
@@ -556,8 +593,8 @@ export function combineLlmSemanticScore(referenceScoreOrDimensions, llmSemanticS
     : referenceScoreOrDimensions;
   if (!Number.isFinite(referenceScore) || !Number.isFinite(llmSemanticScore)) return null;
   const blended = round(
-    clamp(referenceScore) * BENCHMARK_SCORE_V1_RULES.semantic.referenceWeight / 100
-      + clamp(llmSemanticScore) * BENCHMARK_SCORE_V1_RULES.semantic.judgeWeight / 100,
+    clamp(referenceScore) * BENCHMARK_SCORE_V2_RULES.semantic.referenceWeight / 100
+      + clamp(llmSemanticScore) * BENCHMARK_SCORE_V2_RULES.semantic.judgeWeight / 100,
   );
   return typeof referenceScoreOrDimensions === 'object'
     ? { ...referenceScoreOrDimensions, semantic: blended }
@@ -639,7 +676,7 @@ function normalizeCriticalErrors(value) {
 
 export function parseLlmJudgeResponse(content, { model, runIndex = 0 } = {}) {
   const judged = extractJson(content);
-  const fields = BENCHMARK_SCORE_V1_RULES.semantic.judgeSubscores;
+  const fields = BENCHMARK_SCORE_V2_RULES.semantic.judgeSubscores;
   const subscores = Object.fromEntries(fields.map((field) => [field, validJudgeScore(judged[field], field)]));
   const rationale = String(judged.rationale ?? '').trim();
   if (!rationale) throw new Error('LLM judge did not provide a rationale.');
@@ -684,7 +721,7 @@ export async function judgeWithLlm({ sourceText, referenceText, candidateText, t
       messages: [
         {
           role: 'system',
-          content: `You are a strict translation benchmark judge. Return JSON only with rubricVersion, ${BENCHMARK_SCORE_V1_RULES.semantic.judgeSubscores.join(', ')}, rationale, and criticalErrors. Each score must be 0-100. Each criticalErrors item must include category, description, sourceEvidence, and candidateEvidence. Rubric: ${JSON.stringify(rubric)}`,
+          content: `You are a strict translation benchmark judge. Return JSON only with rubricVersion, ${BENCHMARK_SCORE_V2_RULES.semantic.judgeSubscores.join(', ')}, rationale, and criticalErrors. Each score must be 0-100. Each criticalErrors item must include category, description, sourceEvidence, and candidateEvidence. Rubric: ${JSON.stringify(rubric)}`,
         },
         { role: 'user', content: JSON.stringify({ sourceText, referenceText, candidateText, targetLanguage }) },
       ],

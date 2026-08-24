@@ -121,8 +121,8 @@ describe('DesktopApiV2 configuration client', () => {
     await api.diagnostics.writeExportArtifact('report.json', '{}');
     const benchmarkHistory = {
       runId: 'benchmark-run-1', model: 'model-test', runStatus: 'completed' as const,
-      scoreStatus: 'final' as const, scoreVersion: 'benchmark-score/v1' as const,
-      totalScore: 88, grade: 'B', report: { runs: [] }, score: { schemaVersion: 'benchmark-score/v1' }, error: null,
+      scoreStatus: 'final' as const, scoreVersion: 'benchmark-score/v2' as const,
+      totalScore: 88, grade: 'B', report: { runs: [] }, score: { schemaVersion: 'benchmark-score/v2' }, error: null,
     };
     await api.diagnostics.saveBenchmarkHistory(benchmarkHistory);
     await api.diagnostics.listBenchmarkHistory();
@@ -357,11 +357,11 @@ async function collectEmittedCommands(): Promise<FixtureEntry[]> {
       model: 'fixture-judge-model',
       runStatus: 'completed',
       scoreStatus: 'final',
-      scoreVersion: 'benchmark-score/v1',
+      scoreVersion: 'benchmark-score/v2',
       totalScore: 91,
       grade: 'A',
       report: { runs: [] },
-      score: { version: 'benchmark-score/v1' },
+      score: { version: 'benchmark-score/v2' },
       error: null,
     })],
     ['diagnostics.listBenchmarkHistory', () => api.diagnostics.listBenchmarkHistory(1, 50)],

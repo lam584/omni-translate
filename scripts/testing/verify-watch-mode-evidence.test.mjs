@@ -137,6 +137,9 @@ const healthyWatchSessionReport = {
   summary: {
     durationMs: MIN_STRICT_SESSION_DURATION_MS,
     unrenderedCueCount: 0,
+    cueCount: 1,
+    p95AudioToRenderFirstMs: 7_000,
+    p95AudioToRenderFinalMs: 12_000,
   },
   cues: [{
     cueId: 'cue-1',
@@ -144,6 +147,10 @@ const healthyWatchSessionReport = {
     llmFirstAtMs: 100,
     publishedFirstAtMs: 150,
     renderedFirstAtMs: 166,
+    audioStartedAtMs: 0,
+    audioStartOrigin: 'local-rms',
+    audioToRenderFirstMs: 7_000,
+    audioToRenderFinalMs: 12_000,
     llmFirstToRenderMs: 66,
     publishToRenderMs: 16,
     issues: [],
@@ -4111,7 +4118,20 @@ function strictLayersWithSubtitleQueue(subtitleQueue) {
       data: layer === 'strictContent'
         ? { applicable: true, passed: true, coverage: 1 }
         : layer === 'app'
-          ? { routeState: 'capturing', subtitleQueue }
+          ? {
+              routeState: 'capturing',
+              subtitleQueue,
+              watchSessionReport: {
+                summary: {
+                  p95AudioToRenderFirstMs: subtitleQueue.audioToRenderFirstSeconds == null
+                    ? undefined
+                    : subtitleQueue.audioToRenderFirstSeconds * 1_000,
+                  p95AudioToRenderFinalMs: subtitleQueue.audioToRenderFinalSeconds == null
+                    ? undefined
+                    : subtitleQueue.audioToRenderFinalSeconds * 1_000,
+                },
+              },
+            }
           : undefined,
     },
   ]));
@@ -4121,8 +4141,8 @@ test('strict mode fails when a produced latency field exceeds the default thresh
   const root = makeTempRoot();
   writeReport(root, '20260605-191332', {
     layers: strictLayersWithSubtitleQueue({
-      firstVisibleTranslationLatencySeconds: 34,
-      firstFinalTranslationLatencySeconds: 7,
+      audioToRenderFirstSeconds: 34,
+      audioToRenderFinalSeconds: 7,
     }),
   });
 
@@ -4130,7 +4150,7 @@ test('strict mode fails when a produced latency field exceeds the default thresh
 
   assert.equal(result.ok, false);
   assert.match(result.reason, /latency evidence exceeded threshold/);
-  assert.match(result.reason, /firstVisibleTranslationLatencySeconds=34s exceeds the 8s threshold/);
+  assert.match(result.reason, /audioToRenderFirstSeconds=34s exceeds the 8s threshold/);
   assert.deepEqual(result.failedLayers, ['latency']);
 });
 
@@ -4138,8 +4158,8 @@ test('strict mode passes when produced latency fields stay within the thresholds
   const root = makeTempRoot();
   writeReport(root, '20260605-191332', {
     layers: strictLayersWithSubtitleQueue({
-      firstVisibleTranslationLatencySeconds: 7,
-      firstFinalTranslationLatencySeconds: 7,
+      audioToRenderFirstSeconds: 7,
+      audioToRenderFinalSeconds: 7,
       firstTtsQueuedLatencySeconds: 30,
       firstPlaybackLatencySeconds: 40,
     }),
@@ -4154,21 +4174,21 @@ test('strict latency gate honors configured thresholds, including opting fields 
   const root = makeTempRoot();
   writeReport(root, '20260605-191332', {
     layers: strictLayersWithSubtitleQueue({
-      firstVisibleTranslationLatencySeconds: 7,
+      audioToRenderFirstSeconds: 7,
       firstTtsQueuedLatencySeconds: 5,
     }),
   });
 
   const tightened = findScopedStrictEvidence(root, {
-    latencyThresholds: 'firstVisibleTranslationLatencySeconds=6,firstTtsQueuedLatencySeconds=3',
+    latencyThresholds: 'audioToRenderFirstSeconds=6,firstTtsQueuedLatencySeconds=3',
     ...provenanceOk,
   });
   assert.equal(tightened.ok, false);
-  assert.match(tightened.reason, /firstVisibleTranslationLatencySeconds=7s exceeds the 6s threshold/);
+  assert.match(tightened.reason, /audioToRenderFirstSeconds=7s exceeds the 6s threshold/);
   assert.match(tightened.reason, /firstTtsQueuedLatencySeconds=5s exceeds the 3s threshold/);
 
   const relaxed = findScopedStrictEvidence(root, {
-    latencyThresholds: 'firstVisibleTranslationLatencySeconds=off',
+    latencyThresholds: 'audioToRenderFirstSeconds=off',
     ...provenanceOk,
   });
   assert.equal(relaxed.ok, true);
@@ -4201,33 +4221,52 @@ test('strict latency gate skips fields the run did not produce and non-strict mo
 
 test('normalizeLatencyThresholds rejects unknown fields and invalid values', () => {
   assert.deepEqual(normalizeLatencyThresholds(undefined), {
-    firstVisibleTranslationLatencySeconds: 8,
-    firstFinalTranslationLatencySeconds: 15,
+    audioToRenderFirstSeconds: 8,
+    audioToRenderFinalSeconds: 15,
     firstTtsQueuedLatencySeconds: null,
     firstPlaybackLatencySeconds: null,
   });
   assert.throws(() => normalizeLatencyThresholds('bogusField=3'), /unknown latency threshold field/);
-  assert.throws(() => normalizeLatencyThresholds('firstVisibleTranslationLatencySeconds=-1'), /invalid latency threshold/);
-  assert.throws(() => normalizeLatencyThresholds('firstVisibleTranslationLatencySeconds=abc'), /invalid latency threshold/);
+  assert.throws(() => normalizeLatencyThresholds('audioToRenderFirstSeconds=-1'), /invalid latency threshold/);
+  assert.throws(() => normalizeLatencyThresholds('audioToRenderFirstSeconds=abc'), /invalid latency threshold/);
 });
 
 test('strictLatencyFailure returns the measured value for each violated field', () => {
   const report = {
+    watchSessionReport: {
+      summary: {
+        p95AudioToRenderFirstMs: 9_500,
+        p95AudioToRenderFinalMs: 16_000,
+      },
+    },
     layers: {
       app: {
         data: {
           subtitleQueue: {
-            firstVisibleTranslationLatencySeconds: 9.5,
-            firstFinalTranslationLatencySeconds: 16,
+            duplicateFinalTranslations: 0,
           },
         },
       },
     },
   };
   const reason = strictLatencyFailure(report);
-  assert.match(reason, /firstVisibleTranslationLatencySeconds=9\.5s exceeds the 8s threshold/);
-  assert.match(reason, /firstFinalTranslationLatencySeconds=16s exceeds the 15s threshold/);
+  assert.match(reason, /audioToRenderFirstSeconds=9\.5s exceeds the 8s threshold/);
+  assert.match(reason, /audioToRenderFinalSeconds=16s exceeds the 15s threshold/);
   assert.equal(strictLatencyFailure({ layers: { app: { data: {} } } }), null);
+});
+
+test('strictLatencyFailure rejects completed Watch evidence without high-confidence audio origins', () => {
+  const report = {
+    watchSessionReport: {
+      status: 'completed',
+      summary: { cueCount: 1 },
+      cues: [{ cueId: 'fallback', audioStartOrigin: 'provider-event' }],
+    },
+    layers: { app: { data: { subtitleQueue: {} } } },
+  };
+  const reason = strictLatencyFailure(report);
+  assert.match(reason, /audioToRenderFirstSeconds=missing high-confidence audio-origin latency evidence/);
+  assert.match(reason, /audioToRenderFinalSeconds=missing high-confidence audio-origin latency evidence/);
 });
 
 test('strictProvenanceFailure honors a custom age budget', () => {

@@ -44,6 +44,7 @@ impl WatchSessionReportStore {
             dropped_event_count: 0,
             next_event_id: 0,
             adopted_segments: HashMap::new(),
+            pending_manual_audio_origins: VecDeque::new(),
         });
         if let Some(session) = guard.as_mut() {
             let event = session.event(
@@ -194,6 +195,9 @@ impl WatchSessionReportStore {
         if !text.is_empty() {
             cue.source_text = text.to_string();
             cue.source_at_ms.get_or_insert(elapsed);
+            if final_event {
+                cue.source_stable_at_ms.get_or_insert(elapsed);
+            }
         }
         let event = session.event(
             "source",

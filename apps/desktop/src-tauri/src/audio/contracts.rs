@@ -186,6 +186,16 @@ pub(crate) struct WatchCueComparisonRuntime {
     pub rendered_text: String,
     #[ts(type = "'exact' | 'formatting-only' | 'different' | 'not-published' | 'not-rendered' | 'model-error' | 'pending' | 'superseded'")]
     pub comparison_status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub audio_started_at_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(type = "'provider-offset' | 'manual-audible' | 'local-rms' | 'provider-event' | null")]
+    pub audio_start_origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub source_stable_at_ms: Option<u64>,
     pub source_at_ms: Option<u64>,
     pub llm_first_at_ms: Option<u64>,
     pub llm_final_at_ms: Option<u64>,
@@ -201,6 +211,18 @@ pub(crate) struct WatchCueComparisonRuntime {
     pub llm_final_to_publish_ms: Option<u64>,
     pub published_final_to_render_ms: Option<u64>,
     pub llm_final_to_render_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub audio_to_source_first_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub audio_to_llm_first_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub audio_to_render_first_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub audio_to_render_final_ms: Option<u64>,
     pub events: Vec<WatchTimelineEventRuntime>,
     pub issues: Vec<WatchIssueRuntime>,
     pub dropped_event_count: u64,
@@ -222,6 +244,24 @@ pub(crate) struct WatchSessionReportSummaryRuntime {
     pub average_source_to_render_ms: Option<u64>,
     pub p95_source_to_render_ms: Option<u64>,
     pub max_source_to_render_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub average_audio_to_render_first_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub p95_audio_to_render_first_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub max_audio_to_render_first_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub average_audio_to_render_final_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub p95_audio_to_render_final_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub max_audio_to_render_final_ms: Option<u64>,
     pub average_llm_first_to_render_ms: Option<u64>,
     pub p95_llm_first_to_render_ms: Option<u64>,
     pub max_llm_first_to_render_ms: Option<u64>,

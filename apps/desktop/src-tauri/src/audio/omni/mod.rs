@@ -40,6 +40,7 @@ use crate::provider::gateway_parts::{
 };
 
 mod audio_pump;
+mod audio_origin;
 mod asr_event_processor;
 mod connection;
 mod connection_coordinator;

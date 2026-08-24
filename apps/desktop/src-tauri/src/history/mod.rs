@@ -77,6 +77,7 @@ impl HistoryArchivePolicy {
 pub(crate) struct HistoryStateStore {
     inner: Arc<Mutex<Option<HistoryState>>>,
     cue_tx: SyncSender<QueuedCue>,
+    cue_overflow: Arc<Mutex<HashMap<(String, String), QueuedCue>>>,
     audio_tx: SyncSender<QueuedAudio>,
     queued_audio_ms: Arc<AtomicU64>,
     audio_gap_sessions: Arc<Mutex<HashSet<String>>>,
@@ -143,6 +144,7 @@ impl HistoryStateStore {
     pub(crate) fn new() -> Self {
         let inner = Arc::new(Mutex::new(None));
         let (cue_tx, cue_rx) = mpsc::sync_channel(CUE_MUTATION_CAPACITY);
+        let cue_overflow = Arc::new(Mutex::new(HashMap::new()));
         let (audio_tx, audio_rx) = mpsc::sync_channel(AUDIO_MUTATION_CAPACITY);
         let queued_audio_ms = Arc::new(AtomicU64::new(0));
         let audio_gap_sessions = Arc::new(Mutex::new(HashSet::new()));
@@ -150,12 +152,14 @@ impl HistoryStateStore {
         let worker_inner = inner.clone();
         let worker_queued_audio_ms = queued_audio_ms.clone();
         let worker_audio_gap_sessions = audio_gap_sessions.clone();
+        let worker_cue_overflow = cue_overflow.clone();
         std::thread::Builder::new()
             .name("subtitle-history-archive".to_string())
             .spawn(move || {
                 archive_worker(
                     worker_inner,
                     cue_rx,
+                    worker_cue_overflow,
                     audio_rx,
                     control_rx,
                     worker_queued_audio_ms,
@@ -166,6 +170,7 @@ impl HistoryStateStore {
         Self {
             inner,
             cue_tx,
+            cue_overflow,
             audio_tx,
             queued_audio_ms,
             audio_gap_sessions,
@@ -369,10 +374,19 @@ impl HistoryStateStore {
             cue: cue.clone(),
             updated_at_ms: now,
         };
-        self.cue_tx.try_send(queued).map_err(|error| match error {
-            TrySendError::Full(_) => "字幕历史写入队列已满，本次 mutation 已跳过".to_string(),
-            TrySendError::Disconnected(_) => "字幕历史写入 worker 已停止".to_string(),
-        })?;
+        match self.cue_tx.try_send(queued) {
+            Ok(()) => {}
+            Err(TrySendError::Full(queued)) => {
+                let mut overflow = self
+                    .cue_overflow
+                    .lock()
+                    .map_err(|_| "字幕历史 overflow 队列已损坏".to_string())?;
+                insert_latest_cue(&mut overflow, queued);
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                return Err("字幕历史写入 worker 已停止".to_string());
+            }
+        }
         Ok(session_id)
     }
 
@@ -583,6 +597,7 @@ fn contains_encrypted_audio(history_dir: &Path) -> Result<bool, String> {
 fn archive_worker(
     state: Arc<Mutex<Option<HistoryState>>>,
     cue_rx: Receiver<QueuedCue>,
+    cue_overflow: Arc<Mutex<HashMap<(String, String), QueuedCue>>>,
     audio_rx: Receiver<QueuedAudio>,
     control_rx: Receiver<ArchiveControl>,
     queued_audio_ms: Arc<AtomicU64>,
@@ -603,9 +618,7 @@ fn archive_worker(
                     });
                 }
                 ArchiveControl::Finish { session_id, ended_at_ms, acknowledged } => {
-                    drain_latest(&cue_rx, &mut pending, |cue| {
-                        (cue.session_id.clone(), cue.cue.cue_id.clone())
-                    });
+                    drain_latest_cues(&cue_rx, &cue_overflow, &mut pending);
                     drain_audio(&audio_rx, &mut audio, &state, &queued_audio_ms);
                     let result = flush_pending_cues(&state, &mut pending)
                         .and_then(|()| flush_session_audio(&state, &mut audio, &session_id))
@@ -630,9 +643,7 @@ fn archive_worker(
 
         let now = Instant::now();
         if now >= next_flush {
-            drain_latest(&cue_rx, &mut pending, |cue| {
-                (cue.session_id.clone(), cue.cue.cue_id.clone())
-            });
+            drain_latest_cues(&cue_rx, &cue_overflow, &mut pending);
             let _ = flush_pending_cues(&state, &mut pending);
             drain_audio(&audio_rx, &mut audio, &state, &queued_audio_ms);
             next_flush = now + CUE_BATCH_INTERVAL;
@@ -642,10 +653,11 @@ fn archive_worker(
             .min(Duration::from_millis(20));
         match cue_rx.recv_timeout(wait) {
             Ok(cue) => {
-                pending.insert((cue.session_id.clone(), cue.cue.cue_id.clone()), cue);
+                insert_latest_cue(&mut pending, cue);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
+                drain_cue_overflow(&cue_overflow, &mut pending);
                 drain_audio(&audio_rx, &mut audio, &state, &queued_audio_ms);
                 let _ = flush_pending_cues(&state, &mut pending);
                 let sessions = audio
@@ -661,16 +673,54 @@ fn archive_worker(
     }
 }
 
-fn drain_latest<T, K>(
-    receiver: &Receiver<T>,
-    pending: &mut HashMap<K, T>,
-    key: impl Fn(&T) -> K,
-) where
-    K: std::hash::Hash + Eq,
-{
-    while let Ok(value) = receiver.try_recv() {
-        pending.insert(key(&value), value);
+fn drain_latest_cues(
+    receiver: &Receiver<QueuedCue>,
+    overflow: &Mutex<HashMap<(String, String), QueuedCue>>,
+    pending: &mut HashMap<(String, String), QueuedCue>,
+) {
+    while let Ok(cue) = receiver.try_recv() {
+        insert_latest_cue(pending, cue);
     }
+    drain_cue_overflow(overflow, pending);
+}
+
+fn drain_cue_overflow(
+    overflow: &Mutex<HashMap<(String, String), QueuedCue>>,
+    pending: &mut HashMap<(String, String), QueuedCue>,
+) {
+    let Ok(mut overflow) = overflow.lock() else {
+        return;
+    };
+    for (_, cue) in overflow.drain() {
+        insert_latest_cue(pending, cue);
+    }
+}
+
+fn insert_latest_cue(
+    pending: &mut HashMap<(String, String), QueuedCue>,
+    cue: QueuedCue,
+) {
+    let key = (cue.session_id.clone(), cue.cue.cue_id.clone());
+    let incoming_order = cue_order(&cue);
+    match pending.entry(key) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(cue);
+        }
+        std::collections::hash_map::Entry::Occupied(mut entry)
+            if incoming_order >= cue_order(entry.get()) =>
+        {
+            entry.insert(cue);
+        }
+        std::collections::hash_map::Entry::Occupied(_) => {}
+    }
+}
+
+fn cue_order(cue: &QueuedCue) -> (u64, u64, i64) {
+    (
+        cue.cue.revision.unwrap_or(0),
+        cue.cue.sequence.unwrap_or(0),
+        cue.updated_at_ms,
+    )
 }
 
 fn drain_audio(
@@ -892,6 +942,8 @@ mod tests {
     fn cue(cue_id: &str) -> SubtitleCueRuntime {
         SubtitleCueRuntime {
             cue_id: cue_id.to_string(),
+            revision: Some(1),
+            sequence: Some(1),
             route_direction: "inbound".to_string(),
             source_text: "source".to_string(),
             display_source_text: String::new(),
@@ -901,6 +953,9 @@ mod tests {
             ended_at: "unix-ms:2000".to_string(),
             committed: true,
             translation_committed: true,
+            translation_state: Some(
+                crate::audio::contracts::SubtitleTranslationStateRuntime::Final,
+            ),
         }
     }
 
@@ -922,17 +977,42 @@ mod tests {
 
     #[test]
     fn finish_drain_keeps_only_the_latest_revision_for_each_cue() {
-        let (sender, receiver) = mpsc::sync_channel(8);
-        sender.send(("cue-1", 1)).unwrap();
-        sender.send(("cue-2", 1)).unwrap();
-        sender.send(("cue-1", 2)).unwrap();
         let mut pending = HashMap::new();
-
-        drain_latest(&receiver, &mut pending, |mutation| mutation.0);
+        let mut cue_one_first = cue("cue-1");
+        cue_one_first.sequence = Some(1);
+        let mut cue_two = cue("cue-2");
+        cue_two.sequence = Some(2);
+        let mut cue_one_final = cue("cue-1");
+        cue_one_final.sequence = Some(3);
+        cue_one_final.translated_text = "latest".to_string();
+        for (updated_at_ms, cue) in [
+            (1, cue_one_first),
+            (2, cue_two),
+            (3, cue_one_final),
+        ] {
+            insert_latest_cue(
+                &mut pending,
+                QueuedCue {
+                    session_id: "session".to_string(),
+                    cue,
+                    updated_at_ms,
+                },
+            );
+        }
 
         assert_eq!(pending.len(), 2);
-        assert_eq!(pending["cue-1"].1, 2);
-        assert_eq!(pending["cue-2"].1, 1);
+        assert_eq!(
+            pending[&("session".to_string(), "cue-1".to_string())]
+                .cue
+                .translated_text,
+            "latest"
+        );
+        assert_eq!(
+            pending[&("session".to_string(), "cue-2".to_string())]
+                .cue
+                .sequence,
+            Some(2)
+        );
     }
 
     #[test]

@@ -183,6 +183,20 @@ fn generated_files() -> Vec<GeneratedFile> {
             ),
         },
         GeneratedFile {
+            name: "history.ts",
+            content: render(
+                "apps/desktop/src-tauri/src/history/playback.rs",
+                &[],
+                &[
+                    decl::<crate::history::HistoryAudioTrack>(),
+                    decl::<crate::history::HistoryChangedEventV2>(),
+                    decl::<crate::history::HistoryPlaybackEventV2>(),
+                    decl::<crate::history::HistoryPlaybackStartV2>(),
+                    decl::<crate::history::HistoryPlaybackStopV2>(),
+                ],
+            ),
+        },
+        GeneratedFile {
             name: "audio-runtime.ts",
             content: render(
                 "apps/desktop/src-tauri/src/audio/contracts.rs",

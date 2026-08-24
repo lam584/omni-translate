@@ -1,6 +1,7 @@
 mod audio;
 mod crypto;
 mod fs_safety;
+mod playback;
 mod repository;
 
 use std::collections::{HashMap, HashSet};
@@ -11,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use serde_json::Value;
 
 use crate::audio::contracts::{AudioRuntimeSnapshot, SubtitleCueRuntime};
@@ -19,6 +20,11 @@ use crate::audio::contracts::{AudioRuntimeSnapshot, SubtitleCueRuntime};
 pub(crate) use repository::{
     HistoryCuePage, HistorySessionDetail, HistorySessionPage, HistoryStatistics,
 };
+pub(crate) use playback::{
+    HistoryAudioTrack, HistoryChangedEventV2, HistoryPlaybackEventV2,
+    HistoryPlaybackStartV2, HistoryPlaybackStopV2,
+};
+pub(crate) use playback::emit_changed;
 use audio::AudioTrack;
 use repository::{AudioCueRefWrite, AudioSegmentWrite, CueWrite, HistoryRepository};
 
@@ -75,7 +81,11 @@ pub(crate) struct HistoryStateStore {
     queued_audio_ms: Arc<AtomicU64>,
     audio_gap_sessions: Arc<Mutex<HashSet<String>>>,
     control_tx: mpsc::Sender<ArchiveControl>,
+    playback: playback::HistoryPlaybackController,
+    changed_emitter: Arc<Mutex<Option<HistoryChangedEmitter>>>,
 }
+
+type HistoryChangedEmitter = Arc<dyn Fn(HistoryChangedEventV2) + Send + Sync>;
 
 const CUE_MUTATION_CAPACITY: usize = 1_024;
 const AUDIO_MUTATION_CAPACITY: usize = 512;
@@ -160,10 +170,18 @@ impl HistoryStateStore {
             queued_audio_ms,
             audio_gap_sessions,
             control_tx,
+            playback: playback::HistoryPlaybackController::default(),
+            changed_emitter: Arc::new(Mutex::new(None)),
         }
     }
 
     pub(crate) fn ensure_initialized<R: tauri::Runtime>(&self, app: &AppHandle<R>) -> Result<String, String> {
+        if let Ok(mut emitter) = self.changed_emitter.lock() {
+            let event_app = app.clone();
+            *emitter = Some(Arc::new(move |event| {
+                let _ = event_app.emit(playback::HISTORY_CHANGED_EVENT, event);
+            }));
+        }
         let mut inner = self.inner.lock().map_err(|_| "history state poisoned".to_string())?;
         if let Some(state) = inner.as_ref() {
             return Ok(state.database_path.to_string_lossy().to_string());
@@ -315,6 +333,12 @@ impl HistoryStateStore {
             if let Ok(mut sessions) = self.audio_gap_sessions.lock() {
                 sessions.remove(&session_id);
             }
+        } else if should_report {
+            if let Ok(emitter) = self.changed_emitter.lock() {
+                if let Some(emitter) = emitter.as_ref() {
+                    emitter(playback::changed_event("archiveGap", Some(session_id)));
+                }
+            }
         }
     }
 
@@ -419,12 +443,56 @@ impl HistoryStateStore {
         repository.delete_session(session_id)
     }
 
-    pub(crate) fn clear(&self) -> Result<i64, String> {
+    pub(crate) fn clear<R: tauri::Runtime>(&self, app: &AppHandle<R>) -> Result<i64, String> {
+        let snapshot = app.state::<crate::audio::state::AudioStateStore>().snapshot();
+        if snapshot.inbound.stream_bound || snapshot.outbound.stream_bound {
+            return Err("实时翻译 route 活跃时不能清空历史".to_string());
+        }
+        if self.playback.has_active() {
+            return Err("历史音频播放活跃时不能清空历史".to_string());
+        }
         let mut inner = self.inner.lock().map_err(|_| "history state poisoned".to_string())?;
-        let state = available_state_mut(&mut inner)?;
+        let state = inner
+            .as_mut()
+            .ok_or_else(|| "字幕历史尚未初始化".to_string())?;
+        if state.active_session_id.is_some() {
+            return Err("历史 session 活跃时不能清空历史".to_string());
+        }
+        if state.unavailable_reason.is_some() {
+            return self.recover_unavailable_locked(state);
+        }
         let repository = repository(state)?;
         drop(inner);
         repository.clear()
+    }
+
+    fn recover_unavailable_locked(&self, state: &mut HistoryState) -> Result<i64, String> {
+        let deleted_count = HistoryRepository::ended_session_count_at(&state.database_path)
+            .unwrap_or(0);
+        fs_safety::clear_history_contents(&state.history_dir)?;
+        let cipher = crypto::HistoryCipher::from_system_credentials(false)
+            .or_else(|_| crypto::HistoryCipher::reinitialize_system_credentials())?;
+        let repository = HistoryRepository::initialize(state.database_path.clone(), cipher)?;
+        state.repository = Some(Arc::new(repository));
+        state.unavailable_reason = None;
+        state.archive_policy = HistoryArchivePolicy::default();
+        Ok(deleted_count)
+    }
+
+    #[cfg(test)]
+    fn recover_unavailable_with_cipher_for_test(
+        &self,
+        cipher: crypto::HistoryCipher,
+    ) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|_| "history state poisoned".to_string())?;
+        let state = inner
+            .as_mut()
+            .ok_or_else(|| "字幕历史尚未初始化".to_string())?;
+        fs_safety::clear_history_contents(&state.history_dir)?;
+        let repository = HistoryRepository::initialize(state.database_path.clone(), cipher)?;
+        state.repository = Some(Arc::new(repository));
+        state.unavailable_reason = None;
+        Ok(())
     }
 
     fn with_repository<T>(&self, operation: impl FnOnce(&HistoryRepository) -> Result<T, String>) -> Result<T, String> {
@@ -458,20 +526,16 @@ pub(crate) fn initialize<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), St
     Ok(())
 }
 
-pub(crate) fn begin_route_session<R: tauri::Runtime>(app: &AppHandle<R>) {
-    let archive_policy = app
-        .state::<crate::storage::StorageStateStore>()
-        .load_config()
-        .map(|config| HistoryArchivePolicy::from_config(&config))
-        .unwrap_or_else(|error| {
-            log::warn!("[omni][history] history config unavailable; using secure enabled defaults: {error}");
-            HistoryArchivePolicy::default()
-        });
-    if let Err(error) = app
-        .state::<HistoryStateStore>()
-        .begin_session(archive_policy)
-    {
-        log::warn!("[omni][history] session archive could not start: {error}");
+pub(crate) fn begin_route_session<R: tauri::Runtime>(app: &AppHandle<R>, config: &Value) {
+    let history = app.state::<HistoryStateStore>();
+    if let Err(error) = history.stop_playback(app, "routeStarted") {
+        log::warn!("[omni][history] history playback could not stop before route start: {error}");
+    }
+    let archive_policy = HistoryArchivePolicy::from_config(config);
+    match history.begin_session(archive_policy) {
+        Ok(Some(session_id)) => playback::emit_changed(app, "sessionStarted", Some(session_id)),
+        Ok(None) => {}
+        Err(error) => log::warn!("[omni][history] session archive could not start: {error}"),
     }
 }
 
@@ -482,8 +546,10 @@ pub(crate) fn finalize_session_if_routes_idle<R: tauri::Runtime>(
     if snapshot.inbound.stream_bound || snapshot.outbound.stream_bound {
         return;
     }
-    if let Err(error) = app.state::<HistoryStateStore>().finish_active_session() {
-        log::warn!("[omni][history] session archive could not finalize: {error}");
+    match app.state::<HistoryStateStore>().finish_active_session() {
+        Ok(Some(session_id)) => playback::emit_changed(app, "sessionFinalized", Some(session_id)),
+        Ok(None) => {}
+        Err(error) => log::warn!("[omni][history] session archive could not finalize: {error}"),
     }
 }
 
@@ -823,6 +889,37 @@ fn parse_ms_marker(value: &str) -> Option<i64> {
 mod tests {
     use super::*;
 
+    fn cue(cue_id: &str) -> SubtitleCueRuntime {
+        SubtitleCueRuntime {
+            cue_id: cue_id.to_string(),
+            route_direction: "inbound".to_string(),
+            source_text: "source".to_string(),
+            display_source_text: String::new(),
+            display_segments: Vec::new(),
+            translated_text: "translated".to_string(),
+            started_at: "unix-ms:1000".to_string(),
+            ended_at: "unix-ms:2000".to_string(),
+            committed: true,
+            translation_committed: true,
+        }
+    }
+
+    fn install_test_state(
+        store: &HistoryStateStore,
+        directory: &Path,
+        repository: Option<Arc<HistoryRepository>>,
+        unavailable_reason: Option<String>,
+    ) {
+        *store.inner.lock().unwrap() = Some(HistoryState {
+            database_path: directory.join("subtitle-history.db"),
+            history_dir: directory.to_path_buf(),
+            repository,
+            unavailable_reason,
+            active_session_id: None,
+            archive_policy: HistoryArchivePolicy::default(),
+        });
+    }
+
     #[test]
     fn finish_drain_keeps_only_the_latest_revision_for_each_cue() {
         let (sender, receiver) = mpsc::sync_channel(8);
@@ -836,6 +933,85 @@ mod tests {
         assert_eq!(pending.len(), 2);
         assert_eq!(pending["cue-1"].1, 2);
         assert_eq!(pending["cue-2"].1, 1);
+    }
+
+    #[test]
+    fn disabled_route_config_never_creates_a_session_or_queues_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = Arc::new(
+            HistoryRepository::initialize(
+                directory.path().join("subtitle-history.db"),
+                crypto::HistoryCipher::for_test([41; 32]),
+            )
+            .unwrap(),
+        );
+        let store = HistoryStateStore::new();
+        install_test_state(&store, directory.path(), Some(repository.clone()), None);
+        let policy = HistoryArchivePolicy::from_config(&serde_json::json!({
+            "subtitles": { "history": { "enabled": false } }
+        }));
+
+        assert!(store.begin_session(policy).unwrap().is_none());
+        assert!(store.queue_cue(&cue("cue-disabled")).unwrap().is_empty());
+        store.archive_source_pcm(&[1; 160], 16_000);
+        store.archive_translated_pcm("cue-disabled", &[2; 160], 16_000);
+
+        let stats = repository.statistics().unwrap();
+        assert_eq!(stats.session_count, 0);
+        assert_eq!(stats.cue_count, 0);
+        assert_eq!(stats.audio_bytes, 0);
+        assert_eq!(store.queued_audio_ms.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn unavailable_archive_can_only_recover_by_clearing_then_writes_encrypted_cues() {
+        let directory = tempfile::tempdir().unwrap();
+        let old_repository = HistoryRepository::initialize(
+            directory.path().join("subtitle-history.db"),
+            crypto::HistoryCipher::for_test([43; 32]),
+        )
+        .unwrap();
+        old_repository.create_session("old-session", 1_000).unwrap();
+        old_repository
+            .upsert_cue(
+                CueWrite {
+                    session_id: "old-session",
+                    cue_id: "old-cue",
+                    route_direction: "inbound",
+                    source_text: "known secret source",
+                    translated_text: "known secret translated",
+                    source_committed: true,
+                    translation_committed: true,
+                    started_at_ms: 1_000,
+                    ended_at_ms: 2_000,
+                },
+                2_000,
+            )
+            .unwrap();
+        drop(old_repository);
+        let store = HistoryStateStore::new();
+        install_test_state(
+            &store,
+            directory.path(),
+            None,
+            Some("字幕历史密钥缺失".to_string()),
+        );
+        assert!(store.list_sessions(None, 25).is_err());
+        assert!(store.queue_cue(&cue("blocked-cue")).is_err());
+
+        store
+            .recover_unavailable_with_cipher_for_test(crypto::HistoryCipher::for_test([47; 32]))
+            .unwrap();
+        let repository = store
+            .with_repository(|repository| Ok(repository.cipher()))
+            .unwrap();
+        let encrypted = repository.encrypt(b"new secret", b"recovered").unwrap();
+        assert!(!encrypted.windows(10).any(|part| part == b"new secret"));
+        assert!(store
+            .begin_session(HistoryArchivePolicy::default())
+            .unwrap()
+            .is_some());
+        assert!(!store.queue_cue(&cue("new-cue")).unwrap().is_empty());
     }
 
     #[test]

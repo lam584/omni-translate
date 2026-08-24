@@ -182,7 +182,6 @@ pub(crate) async fn start_audio_route(
         None,
         None,
     );
-    crate::history::begin_route_session(&app);
     // Watch capture initialization is worker-owned. A Tauri command must
     // acknowledge acceptance immediately; the renderer then waits for the
     // later snapshot that confirms the route actually owns a capture stream.
@@ -217,6 +216,7 @@ pub(crate) async fn start_audio_route(
         // Freeze the accepted state before the worker can contend for the
         // pipeline/session locks. It is intentionally not a ready snapshot.
         let accepted_snapshot = state.snapshot();
+        crate::history::begin_route_session(&app, &config);
         let started_at = std::time::Instant::now();
         let _ = append_diagnostics_log(
             &app,
@@ -231,12 +231,6 @@ pub(crate) async fn start_audio_route(
         let task_app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
             let task_state = task_app.state::<AudioStateStore>();
-            // Take the pipeline lock *before* re-checking the generation: a
-            // stop command that raced this worker either already holds the
-            // lock (we block, then observe its bump and abort) or has already
-            // bumped and finished (we observe the bump immediately). Without
-            // this token a stop that won the lock was silently undone by the
-            // pending start.
             let pipeline_guard = task_state.lock_inbound_pipeline();
             if !fast_watch_start_still_current(&task_state, accepted_generation) {
                 let _ = append_diagnostics_log(
@@ -252,6 +246,7 @@ pub(crate) async fn start_audio_route(
                     None,
                     None,
                 );
+                crate::history::finalize_session_if_routes_idle(&task_app, &task_state.snapshot());
                 return;
             }
             // Capture both `Err` and panic so a failed background init is always
@@ -302,17 +297,19 @@ pub(crate) async fn start_audio_route(
                         None,
                         None,
                     );
+                    crate::history::finalize_session_if_routes_idle(&task_app, &task_state.snapshot());
                 }
             }
         });
         return Ok(accepted_snapshot);
     }
 
+    let history_config = config.clone();
     let timeout = route_command_timeout(&direction, &config);
     let timeout_message = route_command_timeout_message(&direction, &config, timeout);
     let app_for_task = app.clone();
     let direction_for_task = direction.clone();
-    match tokio::time::timeout(
+    let result = match tokio::time::timeout(
         timeout,
         tauri::async_runtime::spawn_blocking(move || {
             let app_for_state = app_for_task.clone();
@@ -345,7 +342,11 @@ pub(crate) async fn start_audio_route(
             }
             Err(timeout_message)
         }
+    };
+    if result.is_ok() {
+        crate::history::begin_route_session(&app, &history_config);
     }
+    result
 }
 
 fn start_omni_inbound_route(

@@ -166,6 +166,13 @@ pub(crate) enum HistoryCommandV2 {
     GetStats,
     DeleteSession { session_id: String },
     ClearHistory,
+    PlayCueAudio {
+        session_id: String,
+        cue_id: String,
+        #[ts(type = "'source' | 'translated'")]
+        track: crate::history::HistoryAudioTrack,
+    },
+    StopPlayback,
 }
 
 #[tauri::command]
@@ -194,10 +201,24 @@ pub(crate) fn history_v2(
             .and_then(|value| to_value(value).map_err(|error| error.to_string())),
         HistoryCommandV2::DeleteSession { session_id } => history
             .delete_session(&session_id)
-            .map(|deleted| json!({ "deleted": deleted })),
-        HistoryCommandV2::ClearHistory => history
-            .clear()
-            .map(|deleted_count| json!({ "deletedCount": deleted_count })),
+            .map(|deleted| {
+                if deleted {
+                    crate::history::emit_changed(&app, "sessionDeleted", Some(session_id));
+                }
+                json!({ "deleted": deleted })
+            }),
+        HistoryCommandV2::ClearHistory => history.clear(&app).map(|deleted_count| {
+            if deleted_count > 0 {
+                crate::history::emit_changed(&app, "historyCleared", None);
+            }
+            json!({ "deletedCount": deleted_count })
+        }),
+        HistoryCommandV2::PlayCueAudio { session_id, cue_id, track } => history
+            .play_cue_audio(&app, &session_id, &cue_id, track)
+            .and_then(|value| to_value(value).map_err(|error| error.to_string())),
+        HistoryCommandV2::StopPlayback => history
+            .stop_playback(&app, "user")
+            .and_then(|value| to_value(value).map_err(|error| error.to_string())),
     }
     .map_err(ServiceErrorV2::from);
     finish_v2(&app, "history_v2", request_id, started, outcome)

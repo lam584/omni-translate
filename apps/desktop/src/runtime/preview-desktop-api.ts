@@ -263,6 +263,22 @@ export class PreviewDesktopApi {
     startAudioRoute: async (direction: 'inbound' | 'outbound', _config: AppConfigDraft) => this.startRoute(direction),
   };
 
+  readonly history = {
+    listSessions: async (_cursor?: string, _limit = 25) => ({ items: [], nextCursor: null }),
+    getSession: async (_sessionId: string) => null,
+    listCues: async (_sessionId: string, _cursor?: string, _limit = 50) => ({
+      items: [],
+      nextCursor: null,
+    }),
+    getStats: async () => ({ sessionCount: 0, cueCount: 0, audioBytes: 0 }),
+    deleteSession: async (_sessionId: string) => ({ deleted: false }),
+    clear: async () => ({ deletedCount: 0 }),
+    playCueAudio: async (_sessionId: string, _cueId: string, _track: 'source' | 'translated') => {
+      throw previewUnavailable('history audio playback');
+    },
+    stopPlayback: async () => ({ stopped: false }),
+  };
+
   readonly bridge = {
     snapshot: async (): Promise<RuntimeSnapshot['bridge']> => structuredClone(this.runtimeSnapshot.bridge),
     refresh: async () => this.shellSnapshot(),

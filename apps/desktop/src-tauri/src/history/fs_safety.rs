@@ -93,6 +93,63 @@ pub(super) fn walk_regular_archive_files(history_root: &Path) -> Result<Vec<Path
     Ok(files)
 }
 
+/// Remove entries from the dedicated history root without ever traversing a
+/// link, junction, or other reparse point. Link entries themselves are
+/// unlinked; their targets are never touched.
+pub(super) fn clear_history_contents(history_root: &Path) -> Result<(), String> {
+    if !history_root.exists() {
+        std::fs::create_dir_all(history_root).map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    let canonical_root = canonical_history_root(history_root)?;
+    clear_directory_entries(history_root, &canonical_root)
+}
+
+fn clear_directory_entries(directory: &Path, canonical_root: &Path) -> Result<(), String> {
+    let canonical_directory = std::fs::canonicalize(directory).map_err(|error| error.to_string())?;
+    if !canonical_directory.starts_with(canonical_root) {
+        return Err(format!(
+            "历史清理目录逃逸历史目录：{}",
+            canonical_directory.display()
+        ));
+    }
+    for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if is_link_or_reparse_point(&metadata) {
+            remove_link_entry(&path)?;
+            continue;
+        }
+        if metadata.is_dir() {
+            clear_directory_entries(&path, canonical_root)?;
+            std::fs::remove_dir(&path).map_err(|error| error.to_string())?;
+        } else if metadata.is_file() {
+            let canonical_file = std::fs::canonicalize(&path).map_err(|error| error.to_string())?;
+            if !canonical_file.starts_with(canonical_root) {
+                return Err(format!(
+                    "历史清理文件逃逸历史目录：{}",
+                    canonical_file.display()
+                ));
+            }
+            std::fs::remove_file(&path).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_link_entry(path: &Path) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(file_error) => std::fs::remove_dir(path).map_err(|directory_error| {
+            format!(
+                "无法删除历史目录中的链接 {}：file={file_error}; directory={directory_error}",
+                path.display()
+            )
+        }),
+    }
+}
+
 fn canonical_history_root(history_root: &Path) -> Result<PathBuf, String> {
     std::fs::canonicalize(history_root).map_err(|error| {
         format!(
@@ -152,6 +209,28 @@ mod tests {
         assert!(canonical_archive_file(&history, &link.join("escaped.flac.enc")).is_err());
         assert!(escaped_file.exists());
         remove_directory_link(&link).unwrap();
+    }
+
+    #[test]
+    fn clear_does_not_delete_directory_link_target() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let history = sandbox.path().join("history");
+        let outside = sandbox.path().join("outside");
+        std::fs::create_dir_all(&history).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let outside_file = outside.join("keep.flac.enc");
+        std::fs::write(&outside_file, b"outside").unwrap();
+        std::fs::write(history.join("subtitle-history.db"), b"db").unwrap();
+        let link = history.join("linked");
+        if let Err(error) = create_directory_link(&outside, &link) {
+            eprintln!("directory-link test unavailable on this host: {error}");
+            return;
+        }
+
+        clear_history_contents(&history).unwrap();
+
+        assert!(outside_file.exists());
+        assert!(std::fs::read_dir(&history).unwrap().next().is_none());
     }
 
     #[cfg(windows)]

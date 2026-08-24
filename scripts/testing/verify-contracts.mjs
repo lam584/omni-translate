@@ -321,6 +321,8 @@ const EXPECTED_CROSS_PROCESS_EVENTS = [
   'benchmark://progress',
   'config://draft-updated',
   'credential://direct-result',
+  'history://changed',
+  'history://playback',
   'runtime://notification',
   'runtime://snapshot',
 ];

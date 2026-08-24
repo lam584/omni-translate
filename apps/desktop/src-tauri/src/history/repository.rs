@@ -103,7 +103,39 @@ pub(super) struct AudioCueRefWrite<'a> {
     pub length_samples: i64,
 }
 
+pub(super) struct AudioCueSegmentRead {
+    pub sequence: i64,
+    pub sample_rate_hz: u32,
+    pub encrypted_path: PathBuf,
+    pub offset_samples: usize,
+    pub length_samples: usize,
+}
+
 impl HistoryRepository {
+    pub(super) fn ended_session_count_at(database_path: &Path) -> Result<i64, String> {
+        if !database_path.exists() {
+            return Ok(0);
+        }
+        let connection = Connection::open(database_path).map_err(|error| error.to_string())?;
+        let sessions_table_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'subtitle_sessions')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if !sessions_table_exists {
+            return Ok(0);
+        }
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM subtitle_sessions WHERE ended_at_ms IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())
+    }
+
     pub(super) fn cipher(&self) -> HistoryCipher {
         self.cipher.clone()
     }
@@ -404,6 +436,58 @@ impl HistoryRepository {
             |row| row.get(0),
         ).map_err(|error| error.to_string())?;
         Ok(bytes < RETENTION_MAX_BYTES)
+    }
+
+    pub(super) fn cue_audio_segments(
+        &self,
+        session_id: &str,
+        cue_id: &str,
+        track: &str,
+    ) -> Result<Vec<AudioCueSegmentRead>, String> {
+        let connection = self.open()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT audio.sequence, audio.sample_rate, audio.encrypted_path,
+                        refs.offset_samples, refs.length_samples
+                 FROM subtitle_cues AS cues
+                 JOIN subtitle_cue_audio_refs AS refs ON refs.cue_id = cues.id
+                 JOIN subtitle_audio_segments AS audio ON audio.id = refs.audio_segment_id
+                 WHERE cues.session_id = ?1 AND cues.cue_id = ?2
+                   AND refs.track = ?3 AND audio.track = ?3
+                 ORDER BY audio.sequence ASC, refs.offset_samples ASC",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![session_id, cue_id, track], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, u32>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?;
+        let mut segments = Vec::new();
+        for row in rows {
+            let (sequence, sample_rate_hz, path, offset_samples, length_samples) =
+                row.map_err(|error| error.to_string())?;
+            if sample_rate_hz == 0 || offset_samples < 0 || length_samples <= 0 {
+                return Err(format!(
+                    "历史音频引用无效：sequence={sequence} offset={offset_samples} length={length_samples} sampleRate={sample_rate_hz}"
+                ));
+            }
+            segments.push(AudioCueSegmentRead {
+                sequence,
+                sample_rate_hz,
+                encrypted_path: PathBuf::from(path),
+                offset_samples: usize::try_from(offset_samples)
+                    .map_err(|_| "历史音频 offset 超出平台范围".to_string())?,
+                length_samples: usize::try_from(length_samples)
+                    .map_err(|_| "历史音频 length 超出平台范围".to_string())?,
+            });
+        }
+        Ok(segments)
     }
 
     #[cfg(test)]

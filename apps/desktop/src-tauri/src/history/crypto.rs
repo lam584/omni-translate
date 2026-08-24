@@ -24,15 +24,7 @@ impl HistoryCipher {
                         .to_string(),
                 );
             }
-            _ => {
-                let mut key = [0_u8; 32];
-                SystemRandom::new()
-                    .fill(&mut key)
-                    .map_err(|_| "无法生成字幕历史主密钥".to_string())?;
-                let encoded = STANDARD_NO_PAD.encode(key);
-                vault.upsert_secret(MASTER_KEY_REFERENCE, &encoded)?;
-                encoded
-            }
+            _ => generate_and_store_key(&vault)?,
         };
 
         let decoded = STANDARD_NO_PAD
@@ -41,6 +33,17 @@ impl HistoryCipher {
         let key: [u8; 32] = decoded
             .try_into()
             .map_err(|_| "系统凭据中的字幕历史主密钥长度无效".to_string())?;
+        Ok(Self { key })
+    }
+
+    pub(super) fn reinitialize_system_credentials() -> Result<Self, String> {
+        let vault = KeyringCredentialVault::new();
+        let encoded = generate_and_store_key(&vault)?;
+        let key: [u8; 32] = STANDARD_NO_PAD
+            .decode(encoded)
+            .map_err(|_| "新生成的字幕历史主密钥格式无效".to_string())?
+            .try_into()
+            .map_err(|_| "新生成的字幕历史主密钥长度无效".to_string())?;
         Ok(Self { key })
     }
 
@@ -98,6 +101,16 @@ impl HistoryCipher {
             .map_err(|_| "字幕历史解密失败：密文或关联数据已损坏".to_string())?;
         Ok(plaintext.to_vec())
     }
+}
+
+fn generate_and_store_key(vault: &impl CredentialVault) -> Result<String, String> {
+    let mut key = [0_u8; 32];
+    SystemRandom::new()
+        .fill(&mut key)
+        .map_err(|_| "无法生成字幕历史主密钥".to_string())?;
+    let encoded = STANDARD_NO_PAD.encode(key);
+    vault.upsert_secret(MASTER_KEY_REFERENCE, &encoded)?;
+    Ok(encoded)
 }
 
 #[cfg(test)]

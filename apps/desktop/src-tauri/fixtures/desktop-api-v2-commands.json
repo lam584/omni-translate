@@ -1475,6 +1475,11 @@
             "overlayHeight": 220,
             "overlayX": 50,
             "overlayY": 78,
+            "history": {
+              "enabled": true,
+              "sourceAudioEnabled": true,
+              "translatedAudioEnabled": true
+            },
             "status": "ready"
           },
           "speech": {
@@ -6968,6 +6973,11 @@
             "overlayHeight": 220,
             "overlayX": 50,
             "overlayY": 78,
+            "history": {
+              "enabled": true,
+              "sourceAudioEnabled": true,
+              "translatedAudioEnabled": true
+            },
             "status": "ready"
           },
           "speech": {
@@ -8529,6 +8539,11 @@
             "overlayHeight": 220,
             "overlayX": 50,
             "overlayY": 78,
+            "history": {
+              "enabled": true,
+              "sourceAudioEnabled": true,
+              "translatedAudioEnabled": true
+            },
             "status": "ready"
           },
           "speech": {
@@ -10082,6 +10097,11 @@
             "overlayHeight": 220,
             "overlayX": 50,
             "overlayY": 78,
+            "history": {
+              "enabled": true,
+              "sourceAudioEnabled": true,
+              "translatedAudioEnabled": true
+            },
             "status": "ready"
           },
           "speech": {
@@ -11653,6 +11673,11 @@
             "overlayHeight": 220,
             "overlayX": 50,
             "overlayY": 78,
+            "history": {
+              "enabled": true,
+              "sourceAudioEnabled": true,
+              "translatedAudioEnabled": true
+            },
             "status": "ready"
           },
           "speech": {
@@ -13214,6 +13239,11 @@
             "overlayHeight": 220,
             "overlayX": 50,
             "overlayY": 78,
+            "history": {
+              "enabled": true,
+              "sourceAudioEnabled": true,
+              "translatedAudioEnabled": true
+            },
             "status": "ready"
           },
           "speech": {
@@ -13327,6 +13357,88 @@
     "payload": {
       "command": {
         "action": "bootstrap"
+      }
+    }
+  },
+  {
+    "label": "history.listSessions",
+    "command": "history_v2",
+    "payload": {
+      "command": {
+        "action": "listSessions",
+        "cursor": "1710000000000|session-cursor",
+        "limit": 25
+      }
+    }
+  },
+  {
+    "label": "history.getSession",
+    "command": "history_v2",
+    "payload": {
+      "command": {
+        "action": "getSession",
+        "sessionId": "history-session-1"
+      }
+    }
+  },
+  {
+    "label": "history.listCues",
+    "command": "history_v2",
+    "payload": {
+      "command": {
+        "action": "listCues",
+        "sessionId": "history-session-1",
+        "cursor": "50",
+        "limit": 50
+      }
+    }
+  },
+  {
+    "label": "history.getStats",
+    "command": "history_v2",
+    "payload": {
+      "command": {
+        "action": "getStats"
+      }
+    }
+  },
+  {
+    "label": "history.deleteSession",
+    "command": "history_v2",
+    "payload": {
+      "command": {
+        "action": "deleteSession",
+        "sessionId": "history-session-1"
+      }
+    }
+  },
+  {
+    "label": "history.clear",
+    "command": "history_v2",
+    "payload": {
+      "command": {
+        "action": "clearHistory"
+      }
+    }
+  },
+  {
+    "label": "history.playCueAudio",
+    "command": "history_v2",
+    "payload": {
+      "command": {
+        "action": "playCueAudio",
+        "sessionId": "history-session-1",
+        "cueId": "cue-1",
+        "track": "translated"
+      }
+    }
+  },
+  {
+    "label": "history.stopPlayback",
+    "command": "history_v2",
+    "payload": {
+      "command": {
+        "action": "stopPlayback"
       }
     }
   },
@@ -14833,6 +14945,11 @@
             "overlayHeight": 220,
             "overlayX": 50,
             "overlayY": 78,
+            "history": {
+              "enabled": true,
+              "sourceAudioEnabled": true,
+              "translatedAudioEnabled": true
+            },
             "status": "ready"
           },
           "speech": {
@@ -16394,6 +16511,11 @@
             "overlayHeight": 220,
             "overlayX": 50,
             "overlayY": 78,
+            "history": {
+              "enabled": true,
+              "sourceAudioEnabled": true,
+              "translatedAudioEnabled": true
+            },
             "status": "ready"
           },
           "speech": {
@@ -17956,6 +18078,11 @@
             "overlayHeight": 220,
             "overlayX": 50,
             "overlayY": 78,
+            "history": {
+              "enabled": true,
+              "sourceAudioEnabled": true,
+              "translatedAudioEnabled": true
+            },
             "status": "ready"
           },
           "speech": {
@@ -19645,6 +19772,11 @@
             "overlayHeight": 220,
             "overlayX": 50,
             "overlayY": 78,
+            "history": {
+              "enabled": true,
+              "sourceAudioEnabled": true,
+              "translatedAudioEnabled": true
+            },
             "status": "ready"
           },
           "speech": {

@@ -1,16 +1,12 @@
-import { listen } from '@tauri-apps/api/event';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AppIcon from '../components/icons/AppIcon';
 import { useDesktopApiV2 } from '../runtime/desktop-api-context';
+import { subscribeHistoryEvents } from '../runtime/history-events';
 import {
-  HISTORY_CHANGED_EVENT,
-  HISTORY_PLAYBACK_EVENT,
   type HistoryAudioTrack,
-  type HistoryChangedEventV2,
   type HistoryCue,
-  type HistoryPlaybackEventV2,
   type HistorySessionSummary,
   type HistoryStatistics,
 } from '../schema/history';
@@ -105,27 +101,26 @@ export default function SubtitleHistoryPage() {
   useEffect(() => {
     if (!desktopApi.capabilities.hasNativeShell) return undefined;
     let disposed = false;
-    const unlisten: Array<() => void> = [];
-    void Promise.all([
-      listen<HistoryChangedEventV2>(HISTORY_CHANGED_EVENT, () => {
+    let unlisten: (() => void) | undefined;
+    void subscribeHistoryEvents({
+      enabled: desktopApi.capabilities.hasNativeShell,
+      onChanged: () => {
         void loadSessions();
         if (selectedSessionId) void loadCues(selectedSessionId);
-      }),
-      listen<HistoryPlaybackEventV2>(HISTORY_PLAYBACK_EVENT, (event) => {
-        if (event.payload.status === 'started') {
-          setPlaybackKey(`${event.payload.cueId}:${event.payload.track}`);
+      },
+      onPlayback: (event) => {
+        if (event.status === 'started') {
+          setPlaybackKey(`${event.cueId}:${event.track}`);
         } else {
           setPlaybackKey(null);
-          if (event.payload.status === 'failed') setError(event.payload.error ?? event.payload.reason);
+          if (event.status === 'failed') setError(event.error ?? event.reason);
         }
-      }),
-    ]).then((listeners) => {
-      if (disposed) listeners.forEach((stop) => stop());
-      else unlisten.push(...listeners);
-    }).catch((caught) => setError(describeError(caught)));
+      },
+    }).then((nextUnlisten) => disposed ? nextUnlisten() : (unlisten = nextUnlisten))
+      .catch((caught) => setError(describeError(caught)));
     return () => {
       disposed = true;
-      unlisten.forEach((stop) => stop());
+      unlisten?.();
     };
   }, [desktopApi, loadCues, loadSessions, selectedSessionId]);
 

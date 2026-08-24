@@ -1,5 +1,6 @@
 mod audio;
 mod crypto;
+mod fs_safety;
 mod repository;
 
 use std::collections::{HashMap, HashSet};
@@ -440,26 +441,13 @@ fn repository(state: &HistoryState) -> Result<Arc<HistoryRepository>, String> {
 }
 
 fn contains_encrypted_audio(history_dir: &Path) -> Result<bool, String> {
-    if !history_dir.exists() {
-        return Ok(false);
-    }
-    let mut directories = vec![history_dir.to_path_buf()];
-    while let Some(directory) = directories.pop() {
-        for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
-            let entry = entry.map_err(|error| error.to_string())?;
-            let path = entry.path();
-            if path.is_dir() {
-                directories.push(path);
-            } else if path
-                .file_name()
+    Ok(fs_safety::walk_regular_archive_files(history_dir)?
+        .iter()
+        .any(|path| {
+            path.file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.ends_with(".flac.enc"))
-            {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
+        }))
 }
 
 fn archive_worker(

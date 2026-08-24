@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::HistoryRepository;
+use crate::history::fs_safety::{canonical_archive_file, walk_regular_archive_files};
 
 pub(super) const RETENTION_MAX_AGE_MS: i64 = 90 * 24 * 60 * 60 * 1_000;
 pub(super) const RETENTION_MAX_SESSIONS: usize = 500;
@@ -107,16 +108,14 @@ impl HistoryRepository {
             session_ids.insert(session_id);
             if let Some(encrypted_path) = encrypted_path {
                 let encrypted_path = PathBuf::from(encrypted_path);
-                if !encrypted_path.starts_with(history_dir) {
-                    return Err(format!(
-                        "拒绝删除历史目录外的音频文件：{}",
-                        encrypted_path.display()
-                    ));
-                }
-                match std::fs::remove_file(&encrypted_path) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.to_string()),
+                if let Some(canonical_path) =
+                    canonical_archive_file(history_dir, &encrypted_path)?
+                {
+                    match std::fs::remove_file(&canonical_path) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error.to_string()),
+                    }
                 }
             }
         }
@@ -139,28 +138,32 @@ impl HistoryRepository {
         let mut statement = connection
             .prepare("SELECT encrypted_path FROM subtitle_audio_segments")
             .map_err(|error| error.to_string())?;
-        let known = statement
+        let stored_paths = statement
             .query_map([], |row| row.get::<_, String>(0))
             .map_err(|error| error.to_string())?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .map(PathBuf::from)
-            .collect::<HashSet<_>>();
-        let mut directories = vec![history_dir.to_path_buf()];
-        while let Some(directory) = directories.pop() {
-            for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
-                let entry = entry.map_err(|error| error.to_string())?;
-                let path = entry.path();
-                if path.is_dir() {
-                    directories.push(path);
-                    continue;
-                }
-                let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
-                let is_part = name.ends_with(".flac.enc.part");
-                let is_orphan = name.ends_with(".flac.enc") && !known.contains(&path);
-                if is_part || is_orphan {
-                    std::fs::remove_file(&path).map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?;
+        drop(statement);
+        let mut known = HashSet::new();
+        for stored_path in stored_paths {
+            if let Some(canonical_path) =
+                canonical_archive_file(history_dir, &PathBuf::from(stored_path))?
+            {
+                known.insert(canonical_path);
+            }
+        }
+        for path in walk_regular_archive_files(history_dir)? {
+            let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
+            let Some(canonical_path) = canonical_archive_file(history_dir, &path)? else {
+                continue;
+            };
+            let is_part = name.ends_with(".flac.enc.part");
+            let is_orphan = name.ends_with(".flac.enc") && !known.contains(&canonical_path);
+            if is_part || is_orphan {
+                match std::fs::remove_file(canonical_path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.to_string()),
                 }
             }
         }

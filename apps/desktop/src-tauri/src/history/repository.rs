@@ -1076,4 +1076,42 @@ mod tests {
             assert!(columns.iter().any(|value| value == column));
         }
     }
+
+    #[test]
+    fn deleting_session_rejects_parent_directory_path_from_database() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let history_dir = sandbox.path().join("history");
+        let repository = HistoryRepository::initialize(
+            history_dir.join("subtitle-history.db"),
+            HistoryCipher::for_test([43; 32]),
+        )
+        .unwrap();
+        repository.create_session("unsafe", 1).unwrap();
+        repository.end_session("unsafe", 2).unwrap();
+        let outside = sandbox.path().join("outside.flac.enc");
+        std::fs::write(&outside, b"outside ciphertext").unwrap();
+        let escaped_path = history_dir.join("..").join("outside.flac.enc");
+        repository
+            .insert_audio_segment(AudioSegmentWrite {
+                session_id: "unsafe",
+                cue_refs: &[],
+                track: "source",
+                sequence: 1,
+                started_at_ms: 1,
+                duration_ms: 1,
+                sample_rate_hz: 16_000,
+                encrypted_path: &escaped_path,
+                encrypted_bytes: 18,
+            })
+            .unwrap();
+        repository
+            .open()
+            .unwrap()
+            .execute("UPDATE subtitle_sessions SET status = 'deleting' WHERE id = 'unsafe'", [])
+            .unwrap();
+
+        assert!(repository.run_retention(&history_dir, 10).is_err());
+        assert!(outside.exists());
+        assert!(repository.get_session("unsafe").unwrap().is_some());
+    }
 }

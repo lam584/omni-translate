@@ -211,7 +211,6 @@ impl SentenceSplitter {
             .map(|start| now.saturating_duration_since(start))
             .unwrap_or_default();
         let soft_deadline = self.soft_deadline();
-        let hard_deadline = self.hard_deadline();
         let stable_suffix = self.buffer[last_split..stable_end].trim();
 
         if provider_final && stable_end > last_split {

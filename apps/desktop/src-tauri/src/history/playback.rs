@@ -9,8 +9,8 @@ use super::audio::{decrypt_flac_segment, AudioTrack};
 use super::fs_safety::canonical_archive_file;
 use super::{unix_ms, HistoryStateStore};
 
-pub const HISTORY_CHANGED_EVENT: &str = "history://changed";
-pub const HISTORY_PLAYBACK_EVENT: &str = "history://playback";
+pub(super) const HISTORY_CHANGED_EVENT: &str = "history://changed";
+pub(super) const HISTORY_PLAYBACK_EVENT: &str = "history://playback";
 const PLAYBACK_SOURCE: &str = "history-playback";
 const PLAYBACK_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 

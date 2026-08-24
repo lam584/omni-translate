@@ -52,6 +52,9 @@ fn render(header_source: &str, imports: &[&str], decls: &[String]) -> String {
             .join("\n");
         let _ = write!(out, "export {}\n\n", decl.trim_end());
     }
+    while out.ends_with("\n\n") {
+        out.pop();
+    }
     out
 }
 

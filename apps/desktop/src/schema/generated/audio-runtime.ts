@@ -16,12 +16,12 @@ export type SubtitleCueRuntime = { cueId: string,
  * revision; a replacement of already published source content advances
  * it so late translation callbacks can be rejected.
  */
-revision?: number | null,
+revision?: number,
 /**
  * Monotonic runtime mutation order used by delta consumers to reject
  * out-of-order cue updates without comparing wall clocks.
  */
-sequence?: number | null, routeDirection: 'inbound' | 'outbound', sourceText: string, displaySourceText?: string, displaySegments?: Array<SubtitleDisplaySegmentRuntime>, translatedText: string, startedAt: string, endedAt: string,
+sequence?: number, routeDirection: 'inbound' | 'outbound', sourceText: string, displaySourceText?: string, displaySegments?: Array<SubtitleDisplaySegmentRuntime>, translatedText: string, startedAt: string, endedAt: string,
 /**
  * Transcription lifecycle: `true` once the ASR transcript for this cue is
  * finalized (ASR-commit). Independent from translation completion.
@@ -34,7 +34,7 @@ committed: boolean,
  * committed text. Serialized only when `true` to keep the wire lean and the
  * TypeScript field optional.
  */
-translationCommitted?: boolean, translationState?: SubtitleTranslationStateRuntime | null, };
+translationCommitted?: boolean, translationState?: SubtitleTranslationStateRuntime, };
 
 export type SubtitleOverlayRuntimeSnapshot = {
 /**
@@ -42,9 +42,13 @@ export type SubtitleOverlayRuntimeSnapshot = {
  * resync when this changes rather than applying deltas from an old shell.
  */
 streamId: string,
-/** Bumped whenever the live cue window is reset. */
+/**
+ * Bumped whenever the live cue window is reset.
+ */
 generation: number,
-/** Last subtitle delta included in this baseline. */
+/**
+ * Last subtitle delta included in this baseline.
+ */
 seq: number,
 /**
  * `true` for invoke/bootstrap baselines and `false` for aggregate push
@@ -58,16 +62,18 @@ baselineIncluded: boolean, queueDepth: number, droppedCueCount: number, firstTra
 reportSessionId: string | null, activeCue: SubtitleCueRuntime | null, recentCues: Array<SubtitleCueRuntime>, };
 
 export type SubtitleDeltaRuntime = { streamId: string, generation: number, seq: number, operation: 'upsert' | 'remove' | 'reset',
-/** Upserts and removals carry exactly one cue. Reset carries none. */
+/**
+ * Upserts and removals carry exactly one cue. Reset carries none.
+ */
 cue: SubtitleCueRuntime | null, };
 
 export type WatchTimelineEventRuntime = { eventId: string, stage: 'source' | 'model' | 'publish' | 'render' | 'error' | 'session', kind: string, elapsedMs: number, text: string, detail: string | null, finalEvent: boolean, accepted: boolean, visible: boolean | null, callId: string | null, attemptId: string | null, };
 
 export type WatchIssueRuntime = { category: 'model' | 'publish' | 'render' | 'content' | 'timing' | 'output' | 'data' | 'session', code: string, severity: 'warning' | 'error', message: string, cueId: string | null, elapsedMs: number | null, occurrenceCount: number, };
 
-export type WatchCueComparisonRuntime = { cueId: string, revision?: number, sequence?: number, translationState?: SubtitleTranslationStateRuntime | null, routeDirection: 'inbound' | 'outbound', translationPath: string, sourceText: string, llmText: string, publishedText: string, publishedSegments: Array<SubtitleDisplaySegmentRuntime>, renderedSourceText: string, renderedText: string, comparisonStatus: 'exact' | 'formatting-only' | 'different' | 'not-published' | 'not-rendered' | 'model-error' | 'pending' | 'superseded', audioStartedAtMs?: number | null, audioStartOrigin?: 'provider-offset' | 'manual-audible' | 'local-rms' | 'provider-event' | null, sourceStableAtMs?: number | null, sourceAtMs: number | null, llmFirstAtMs: number | null, llmFinalAtMs: number | null, publishedFirstAtMs: number | null, publishedFinalAtMs: number | null, renderedFirstAtMs: number | null, renderedFinalAtMs: number | null, sourceToLlmFirstMs: number | null, sourceToRenderMs: number | null, llmFirstToPublishMs: number | null, publishToRenderMs: number | null, llmFirstToRenderMs: number | null, llmFinalToPublishMs: number | null, publishedFinalToRenderMs: number | null, llmFinalToRenderMs: number | null, audioToSourceFirstMs?: number | null, audioToLlmFirstMs?: number | null, audioToRenderFirstMs?: number | null, audioToRenderFinalMs?: number | null, events: Array<WatchTimelineEventRuntime>, issues: Array<WatchIssueRuntime>, droppedEventCount: number, };
+export type WatchCueComparisonRuntime = { cueId: string, revision?: number, sequence?: number, translationState?: SubtitleTranslationStateRuntime, routeDirection: 'inbound' | 'outbound', translationPath: string, sourceText: string, llmText: string, publishedText: string, publishedSegments: Array<SubtitleDisplaySegmentRuntime>, renderedSourceText: string, renderedText: string, comparisonStatus: 'exact' | 'formatting-only' | 'different' | 'not-published' | 'not-rendered' | 'model-error' | 'pending' | 'superseded', audioStartedAtMs?: number, audioStartOrigin?: 'provider-offset' | 'manual-audible' | 'local-rms' | 'provider-event' | null, sourceStableAtMs?: number, sourceAtMs: number | null, llmFirstAtMs: number | null, llmFinalAtMs: number | null, publishedFirstAtMs: number | null, publishedFinalAtMs: number | null, renderedFirstAtMs: number | null, renderedFinalAtMs: number | null, sourceToLlmFirstMs: number | null, sourceToRenderMs: number | null, llmFirstToPublishMs: number | null, publishToRenderMs: number | null, llmFirstToRenderMs: number | null, llmFinalToPublishMs: number | null, publishedFinalToRenderMs: number | null, llmFinalToRenderMs: number | null, audioToSourceFirstMs?: number, audioToLlmFirstMs?: number, audioToRenderFirstMs?: number, audioToRenderFinalMs?: number, events: Array<WatchTimelineEventRuntime>, issues: Array<WatchIssueRuntime>, droppedEventCount: number, };
 
-export type WatchSessionReportSummaryRuntime = { durationMs: number, cueCount: number, completeCueCount: number, visibleRenderCueCount: number, unrenderedCueCount: number, issueCount: number, issueOccurrenceCount: number, averageSourceToLlmFirstMs: number | null, p95SourceToLlmFirstMs: number | null, maxSourceToLlmFirstMs: number | null, averageSourceToRenderMs: number | null, p95SourceToRenderMs: number | null, maxSourceToRenderMs: number | null, averageAudioToRenderFirstMs?: number | null, p95AudioToRenderFirstMs?: number | null, maxAudioToRenderFirstMs?: number | null, averageAudioToRenderFinalMs?: number | null, p95AudioToRenderFinalMs?: number | null, maxAudioToRenderFinalMs?: number | null, averageLlmFirstToRenderMs: number | null, p95LlmFirstToRenderMs: number | null, maxLlmFirstToRenderMs: number | null, averageLlmFinalToRenderMs: number | null, p95LlmFinalToRenderMs: number | null, maxLlmFinalToRenderMs: number | null, slowestCueId: string | null, };
+export type WatchSessionReportSummaryRuntime = { durationMs: number, cueCount: number, completeCueCount: number, visibleRenderCueCount: number, unrenderedCueCount: number, issueCount: number, issueOccurrenceCount: number, averageSourceToLlmFirstMs: number | null, p95SourceToLlmFirstMs: number | null, maxSourceToLlmFirstMs: number | null, averageSourceToRenderMs: number | null, p95SourceToRenderMs: number | null, maxSourceToRenderMs: number | null, averageAudioToRenderFirstMs?: number, p95AudioToRenderFirstMs?: number, maxAudioToRenderFirstMs?: number, averageAudioToRenderFinalMs?: number, p95AudioToRenderFinalMs?: number, maxAudioToRenderFinalMs?: number, averageLlmFirstToRenderMs: number | null, p95LlmFirstToRenderMs: number | null, maxLlmFirstToRenderMs: number | null, averageLlmFinalToRenderMs: number | null, p95LlmFinalToRenderMs: number | null, maxLlmFinalToRenderMs: number | null, slowestCueId: string | null, };
 
 export type WatchSessionReportRuntime = { sessionId: string, status: 'active' | 'completed', routeMode: string, providerId: string, model: string, startedAt: string, endedAt: string | null, elapsedMs: number, summary: WatchSessionReportSummaryRuntime, cues: Array<WatchCueComparisonRuntime>, events: Array<WatchTimelineEventRuntime>, issues: Array<WatchIssueRuntime>, droppedCueCount: number, droppedEventCount: number, };
 

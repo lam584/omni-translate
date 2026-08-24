@@ -598,12 +598,21 @@ mod tests {
     fn cue_typescript_keeps_omitted_wire_fields_optional() {
         let declaration = SubtitleCueRuntime::decl(&ts_rs::Config::default());
 
-        assert!(declaration.contains("displaySourceText?: string"));
-        assert!(declaration.contains("displaySegments?: Array<SubtitleDisplaySegmentRuntime>"));
-        assert!(declaration.contains("revision?: number"));
-        assert!(declaration.contains("sequence?: number"));
-        assert!(declaration.contains("translationState?: SubtitleTranslationStateRuntime"));
-        assert!(declaration.contains("translationCommitted?: boolean"));
+        for field in [
+            "displaySourceText",
+            "displaySegments",
+            "revision",
+            "sequence",
+            "translationState",
+            "translationCommitted",
+        ] {
+            assert!(
+                declaration.contains(&format!("{field}?:")),
+                "{field} must remain optional in the renderer contract: {declaration}",
+            );
+        }
+        assert!(declaration.contains("Array<SubtitleDisplaySegmentRuntime>"));
+        assert!(declaration.contains("SubtitleTranslationStateRuntime"));
     }
 
     #[test]

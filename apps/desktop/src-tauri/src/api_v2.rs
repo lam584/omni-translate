@@ -906,6 +906,9 @@ mod tests {
                 "diagnostics_v2" => serde_json::from_value::<super::DiagnosticsCommandV2>(payload)
                     .map(|_| ())
                     .map_err(|error| error.to_string()),
+                "history_v2" => serde_json::from_value::<super::HistoryCommandV2>(payload)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
                 "configuration_v2" => serde_json::from_value::<ConfigurationCommandV2>(payload)
                     .map(|_| ())
                     .map_err(|error| error.to_string()),

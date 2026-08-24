@@ -11,4 +11,3 @@ export type HistoryPlaybackEventV2 = { playbackId: string, sessionId: string, cu
 export type HistoryPlaybackStartV2 = { playbackId: string, status: 'started', };
 
 export type HistoryPlaybackStopV2 = { stopped: boolean, };
-

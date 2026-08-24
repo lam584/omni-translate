@@ -1050,11 +1050,11 @@ mod tests {
             "dashscope",
         )).expect("provider should parse");
         let cases = [
-            ("watch", true, ResolvedVadPolicy::ManualCommit, false),
-            ("game", true, ResolvedVadPolicy::ManualCommit, true),
-            ("watch", false, ResolvedVadPolicy::ManualCommit, false),
+            ("watch", true, ResolvedVadPolicy::ServerVad, "semantic_vad", false),
+            ("game", true, ResolvedVadPolicy::ManualCommit, "manual", true),
+            ("watch", false, ResolvedVadPolicy::ServerVad, "semantic_vad", false),
         ];
-        for (route_mode, bypass, expected_policy, expected_legacy_bypass) in cases {
+        for (route_mode, bypass, expected_policy, expected_audio_mode, expected_legacy_bypass) in cases {
             let config = json!({
                 "devices": { "routeMode": route_mode },
                 "vad": { "bypass": bypass },
@@ -1064,6 +1064,7 @@ mod tests {
                 "inbound", &config, provider.model.clone(), provider.clone(),
             );
             assert_eq!(plan.vad_policy, expected_policy, "routeMode={route_mode}");
+            assert_eq!(plan.realtime_audio_mode, expected_audio_mode, "routeMode={route_mode}");
             assert_eq!(plan.legacy_vad_bypass, expected_legacy_bypass, "routeMode={route_mode}");
             assert_eq!(plan.target_language, "ja");
             assert_eq!(plan.session_reuse_key.model, provider.model);

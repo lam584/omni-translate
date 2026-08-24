@@ -78,13 +78,13 @@ impl ResponseLedger {
                         && lineage.translation_item_id == translation_item_id
                 })
             });
-        if has_item_lineage && item_index.is_none() {
-            return None;
-        }
         let response_index = self
             .lineages
             .iter()
             .position(|lineage| response_id.is_some() && lineage.response_id == response_id);
+        if has_item_lineage && item_index.is_none() && response_index.is_none() {
+            return None;
+        }
         if item_index.is_some() && response_index.is_some() && item_index != response_index {
             return None;
         }
@@ -209,5 +209,33 @@ mod tests {
             .bind_response(Some("response-one"), None, None, None)
             .expect("subsequent response events resolve by exact response id");
         assert_eq!(exact.cue_id, "cue-one");
+    }
+
+    #[test]
+    fn response_exact_match_can_bind_a_new_translation_item_once() {
+        let mut ledger = ResponseLedger::default();
+        ledger.set_generation(4);
+        ledger.record_source("cue-one", Some("source-one"));
+        ledger
+            .bind_response(Some("response-one"), None, None, None)
+            .expect("response.created binds the pending owner");
+
+        let output = ledger
+            .bind_response(
+                Some("response-one"),
+                None,
+                Some("translation-one"),
+                None,
+            )
+            .expect("the exact response may bind its first output item");
+        assert_eq!(output.translation_item_id.as_deref(), Some("translation-one"));
+        assert!(ledger
+            .bind_response(
+                Some("response-one"),
+                None,
+                Some("translation-other"),
+                None,
+            )
+            .is_none());
     }
 }

@@ -69,10 +69,9 @@ pub(super) fn terminalize_livetranslate_shutdown_failure(
                 .find(|cue| cue.cue_id == cue_id)
                 .is_some_and(|cue| cue.translation_committed);
             if !translation_is_final {
-                store.update_subtitle_cue_translation(
+                store.mark_current_subtitle_translation_error(
                     &cue_id,
                     super::super::protocol::NATIVE_FAILED_TRANSLATION_FAILURE.to_string(),
-                    true,
                 );
             }
         }

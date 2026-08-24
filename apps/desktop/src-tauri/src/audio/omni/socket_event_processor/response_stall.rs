@@ -194,10 +194,9 @@ fn terminalize_stalled_cue<R: tauri::Runtime>(
         .find(|cue| cue.cue_id == cue_id)
         .is_some_and(|cue| cue.translation_committed);
     if !context.subtitle_translate_active && !translation_is_final {
-        context.store.update_subtitle_cue_translation(
+        context.store.mark_current_subtitle_translation_error(
             cue_id,
             super::super::protocol::NATIVE_FAILED_TRANSLATION_FAILURE.to_string(),
-            true,
         );
     }
     if let Some(stream_cue_id) = context.pending_audio_stream_cue_id {

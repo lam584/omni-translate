@@ -56,6 +56,19 @@ impl AudioStateStore {
         )
     }
 
+    pub(crate) fn mark_current_subtitle_translation_error(
+        &self,
+        cue_id: &str,
+        message: String,
+    ) -> bool {
+        self.apply_subtitle_cue_translation(
+            cue_id,
+            None,
+            message,
+            SubtitleTranslationStateRuntime::Error,
+        )
+    }
+
     fn apply_subtitle_cue_translation(
         &self,
         cue_id: &str,

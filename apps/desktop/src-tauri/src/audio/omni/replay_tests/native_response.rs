@@ -292,6 +292,11 @@ fn replay_fast_next_speech_turn_detected_cancel_keeps_item_lineage() {
         .expect("completed second cue");
     assert_eq!(first.source_text, source_one);
     assert!(first.committed);
+    assert!(!first.translation_committed);
+    assert_eq!(
+        first.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Error)
+    );
     assert_eq!(first.translated_text, "[翻译失败] 实时响应被后续语音打断。");
     assert_eq!(second.source_text, source_two);
     assert!(second.committed);
@@ -355,7 +360,11 @@ fn replay_native_empty_response_reaches_failure_terminal_and_keeps_late_asr_fina
         .find(|cue| cue.source_text == final_source)
         .expect("source cue should remain visible");
     assert!(cue.committed);
-    assert!(cue.translation_committed);
+    assert!(!cue.translation_committed);
+    assert_eq!(
+        cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Error)
+    );
     assert_eq!(
         cue.translated_text,
         "[翻译失败] 实时模型已结束本轮响应，但没有返回可用译文。"
@@ -429,7 +438,11 @@ fn replay_turn_detected_response_uses_cancellation_terminal() {
         .find(|cue| cue.source_text == source)
         .expect("cancelled response should still terminalize its source cue");
     assert!(cue.committed);
-    assert!(cue.translation_committed);
+    assert!(!cue.translation_committed);
+    assert_eq!(
+        cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Error)
+    );
     assert_eq!(cue.translated_text, "[翻译失败] 实时响应被后续语音打断。");
     let report = harness
         .store()
@@ -495,7 +508,11 @@ fn replay_incomplete_text_candidate_never_becomes_translation_final() {
         .iter()
         .find(|cue| cue.source_text == source)
         .expect("incomplete response keeps its source cue");
-    assert!(cue.translation_committed);
+    assert!(!cue.translation_committed);
+    assert_eq!(
+        cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Error)
+    );
     assert_eq!(cue.translated_text, "[翻译失败] 实时模型未能完成本轮响应。");
     assert_ne!(cue.translated_text, "不应提交的候选译文");
 }
@@ -564,7 +581,11 @@ fn replay_cancelled_response_without_item_lineage_preserves_both_cues() {
         .find(|cue| cue.translated_text == "[翻译失败] 实时响应被后续语音打断。")
         .expect("cancelled response must retain its terminal cue");
     assert!(terminal_cue.committed);
-    assert!(terminal_cue.translation_committed);
+    assert!(!terminal_cue.translation_committed);
+    assert_eq!(
+        terminal_cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Error)
+    );
 
     let late_source_cue = snapshot
         .subtitle_overlay

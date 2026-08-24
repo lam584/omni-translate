@@ -986,7 +986,7 @@ fn terminalize_native_response_without_output<R: tauri::Runtime>(
             )
         };
     store.update_or_push_stt_cue(cue_id, response_source_text, true);
-    store.update_subtitle_cue_translation(cue_id, failure_text.to_string(), true);
+    store.mark_current_subtitle_translation_error(cue_id, failure_text.to_string());
     if response_metadata.is_cancelled() {
         store.watch_session_report.record_session_issue(
             "model",

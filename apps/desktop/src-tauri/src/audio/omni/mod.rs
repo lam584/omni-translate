@@ -336,7 +336,8 @@ impl RealtimeAudioMode {
             }),
             Self::SemanticVad => json!({
               "type": "semantic_vad",
-              "eagerness": "auto"
+              "threshold": 0.5,
+              "silence_duration_ms": 800
             }),
         }
     }
@@ -951,6 +952,36 @@ mod native_translation_tests {
                 .pointer("/session/turn_detection/silence_duration_ms")
                 .and_then(Value::as_u64),
             Some(400)
+        );
+    }
+
+    #[test]
+    fn qwen35_omni_semantic_vad_uses_watch_defaults() {
+        let session = build_omni_session_update(
+            "qwen3.5-omni-plus-realtime",
+            "longanqian",
+            "translate naturally",
+            RealtimeAudioMode::SemanticVad,
+            "zh-CN",
+        );
+
+        assert_eq!(
+            session
+                .pointer("/session/turn_detection/type")
+                .and_then(Value::as_str),
+            Some("semantic_vad")
+        );
+        assert_eq!(
+            session
+                .pointer("/session/turn_detection/threshold")
+                .and_then(Value::as_f64),
+            Some(0.5)
+        );
+        assert_eq!(
+            session
+                .pointer("/session/turn_detection/silence_duration_ms")
+                .and_then(Value::as_u64),
+            Some(800)
         );
     }
 

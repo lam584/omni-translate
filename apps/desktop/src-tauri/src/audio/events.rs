@@ -404,6 +404,12 @@ mod tests {
             resolve_realtime_audio_mode_for_route("inbound", &watch_config, &omni_provider)
                 .expect("mode")
                 .as_str(),
+            "semantic_vad"
+        );
+        assert_eq!(
+            resolve_realtime_audio_mode_for_route("outbound", &watch_config, &omni_provider)
+                .expect("PTT mode")
+                .as_str(),
             "manual"
         );
         assert_eq!(
@@ -438,6 +444,62 @@ mod tests {
                 .as_str(),
             "manual"
         );
+    }
+
+    #[test]
+    fn custom_registry_wins_over_official_seed_and_manual_only_watch_fails_early() {
+        let mut value = provider_value(
+            "template-dashscope-realtime",
+            "dashscope",
+            "dashscope",
+            "qwen3.5-omni-plus-realtime",
+            "https://dashscope.aliyuncs.com/api/v1",
+            "websocket",
+            "dashscope",
+        );
+        value["localModelCapabilityRegistry"] = json!([
+            {
+                "id": "seed-qwen3.5-omni-plus-realtime",
+                "modelId": "qwen3.5-omni-plus-realtime",
+                "capabilities": ["speech-to-speech"],
+                "realtimeProtocol": "dashscope-omni",
+                "realtimeAudioMode": "semantic_vad",
+                "interactionCapabilities": ["auto_vad"],
+                "source": "official"
+            },
+            {
+                "id": "custom-qwen3.5-omni-plus-realtime",
+                "modelId": "qwen3.5-omni-plus-realtime",
+                "capabilities": ["speech-to-speech"],
+                "realtimeProtocol": "dashscope-omni",
+                "realtimeAudioMode": "server_vad",
+                "interactionCapabilities": ["auto_vad"],
+                "source": "custom"
+            }
+        ]);
+        let custom: ProviderDraftInput = serde_json::from_value(value.clone()).expect("provider");
+        assert_eq!(
+            resolve_realtime_profile(&custom, &custom.model).realtime_audio_mode,
+            "server_vad"
+        );
+
+        value["localModelCapabilityRegistry"] = json!([{
+            "id": "custom-manual-only",
+            "modelId": "qwen3.5-omni-plus-realtime",
+            "capabilities": ["speech-to-speech"],
+            "realtimeProtocol": "dashscope-omni",
+            "realtimeAudioMode": "manual",
+            "interactionCapabilities": ["manual_commit"],
+            "source": "custom"
+        }]);
+        let manual_only: ProviderDraftInput = serde_json::from_value(value).expect("provider");
+        let error = resolve_realtime_audio_mode_for_route(
+            "inbound",
+            &json!({"devices": {"routeMode": "watch"}}),
+            &manual_only,
+        )
+        .expect_err("continuous Watch rejects manual-only models before connect");
+        assert!(error.contains("manual-only"));
     }
 
     #[test]

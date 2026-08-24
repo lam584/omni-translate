@@ -7,6 +7,10 @@ use crate::provider::contracts::{ProviderDraftInput, ProviderModelCapabilityRegi
 
 #[path = "route_config/session_contract.rs"]
 mod session_contract;
+#[path = "route_config/watch_audio_policy.rs"]
+mod watch_audio_policy;
+
+use self::watch_audio_policy::resolve_route_audio_mode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolvedRouteKind {
@@ -167,15 +171,14 @@ impl ResolvedRoutePlan {
         let target_language = resolve_route_target_language(direction, config);
         let source_language = subtitle_source_language_or_english(config);
         let realtime_profile = resolve_realtime_profile(&provider, &provider.model);
-        let realtime_audio_mode = realtime_profile.realtime_audio_mode.clone();
         let legacy_vad_bypass = resolve_legacy_vad_bypass_for_route(direction, config);
-        let serialize_continuous_media_turns =
-            should_serialize_qwen_audio_watch_turns(direction, config, &realtime_profile, &provider.model);
-        let effective_audio_mode = if legacy_vad_bypass || serialize_continuous_media_turns {
-            "manual".to_string()
-        } else {
-            realtime_audio_mode.clone()
-        };
+        let (effective_audio_mode, audio_mode_error) = resolve_route_audio_mode(
+            direction,
+            config,
+            &provider,
+            &realtime_profile,
+            legacy_vad_bypass,
+        );
         let kind = if realtime_profile.source != RealtimeProfileSource::None {
             realtime_profile.route_kind
         } else if is_openai_realtime_provider(&provider) {
@@ -200,6 +203,14 @@ impl ResolvedRoutePlan {
                 super::super::omni::session_errors::SessionErrorCode::ModelReferenceInvalid,
             )
         });
+        if configuration_error.is_none() {
+            configuration_error = audio_mode_error.map(|error| {
+                super::super::omni::session_errors::with_error_markers(
+                    &error,
+                    super::super::omni::session_errors::SessionErrorCode::ModelReferenceInvalid,
+                )
+            });
+        }
         let subtitle_translate_active = secondary_subtitle_provider.is_some();
         let subtitle_fallback_policy = if subtitle_translate_active {
             SubtitleFallbackPolicy::Secondary
@@ -341,29 +352,6 @@ impl ResolvedRoutePlan {
     }
 }
 
-/// Qwen Audio's automatic VAD is designed for duplex conversation: a new
-/// `speech_started` cancels the response currently being generated. Continuous
-/// video narration routinely starts the next phrase within a few dozen
-/// milliseconds, so server-VAD responses are cancelled before their first
-/// translation token and the following response can absorb the prior turn.
-/// The existing manual gate serializes commit -> ASR final -> response.create
-/// -> response.done while continuing to buffer incoming media, which preserves
-/// every source turn without allowing later narration to barge in.
-fn should_serialize_qwen_audio_watch_turns(
-    direction: &str,
-    config: &Value,
-    profile: &ResolvedRealtimeProfile,
-    model: &str,
-) -> bool {
-    direction == "inbound"
-        && super::configured_route_mode(config) == "watch"
-        && profile.protocol_dialect == Some(RealtimeProtocol::DashscopeOmni)
-        && model
-            .trim()
-            .to_ascii_lowercase()
-            .starts_with("qwen-audio-3.0-realtime")
-}
-
 fn resolve_realtime_voice(model: &str, configured_voice: &str) -> String {
     let model = model.trim().to_ascii_lowercase();
     let configured_voice = configured_voice.trim();
@@ -477,6 +465,30 @@ fn registry_protocol(
         .and_then(parse_realtime_protocol)
 }
 
+fn is_official_registry_seed(entry: &ProviderModelCapabilityRegistryEntryInput) -> bool {
+    entry.id.starts_with("seed-") && entry.source.as_deref() == Some("official")
+}
+
+fn selected_registry_entry<'a>(
+    provider: &'a ProviderDraftInput,
+    model: &str,
+) -> Option<&'a ProviderModelCapabilityRegistryEntryInput> {
+    let matches_model = |entry: &&ProviderModelCapabilityRegistryEntryInput| {
+        entry.model_id.trim().eq_ignore_ascii_case(model.trim())
+    };
+    provider
+        .local_model_capability_registry
+        .iter()
+        .filter(matches_model)
+        .find(|entry| !is_official_registry_seed(entry))
+        .or_else(|| {
+            provider
+                .local_model_capability_registry
+                .iter()
+                .find(|entry| entry.model_id.trim().eq_ignore_ascii_case(model.trim()))
+        })
+}
+
 fn infer_realtime_protocol(
     provider: &ProviderDraftInput,
     model: &str,
@@ -524,11 +536,13 @@ pub(crate) fn resolve_realtime_profile(
         .iter()
         .filter(|entry| entry.model_id.trim().eq_ignore_ascii_case(model.trim()))
         .collect::<Vec<_>>();
-    let registry_entry = registry_matches.first().copied();
+    let registry_entry = selected_registry_entry(provider, model);
     let diagnostics = if registry_matches.len() > 1 {
         vec![format!(
-            "duplicate realtime registry entries for '{model}'; first entry '{}' is effective",
-            registry_matches[0].id
+            "duplicate realtime registry entries for '{model}'; selected entry '{}' is effective",
+            registry_entry
+                .map(|entry| entry.id.as_str())
+                .unwrap_or("(none)")
         )]
     } else {
         Vec::new()
@@ -721,14 +735,19 @@ pub(super) fn resolve_realtime_audio_mode_for_route(
     config: &Value,
     provider: &ProviderDraftInput,
 ) -> Result<omni::RealtimeAudioMode, String> {
-    let configured_mode = resolve_realtime_audio_mode_value(provider, &provider.model);
+    let profile = resolve_realtime_profile(provider, &provider.model);
     let legacy_bypass = resolve_legacy_vad_bypass_for_route(direction, config);
-    let mode = if legacy_bypass {
-        Some("manual")
-    } else {
-        Some(configured_mode.as_str())
-    };
-    omni::RealtimeAudioMode::from_config_value(mode, &provider.model)
+    let (mode, error) = resolve_route_audio_mode(
+        direction,
+        config,
+        provider,
+        &profile,
+        legacy_bypass,
+    );
+    if let Some(error) = error {
+        return Err(error);
+    }
+    omni::RealtimeAudioMode::from_config_value(Some(&mode), &provider.model)
 }
 
 /// Tencent realtime speech translation rides on the openai-compatible kind

@@ -1137,4 +1137,41 @@ mod tests {
             Some("persisted-tts-model")
         );
     }
+
+    #[test]
+    fn load_keeps_existing_watch_model_choices_instead_of_migrating_new_defaults() {
+        let (_temp_dir, repository) = repository_with_config_document(
+            r#"{
+                "providers": [{
+                    "model": "saved-provider-model",
+                    "sceneModelAssignments": [{"scenario":"watch","modelIds":["saved-watch-model"]}]
+                }],
+                "devices": {
+                    "inboundVoiceModelId": "saved-inbound-model",
+                    "outboundVoiceModelId": "saved-outbound-model",
+                    "subtitleTranslationMode": "secondary"
+                }
+            }"#,
+        );
+
+        let loaded = repository.load_config().expect("config should load");
+        assert_eq!(
+            loaded.pointer("/devices/inboundVoiceModelId").and_then(Value::as_str),
+            Some("saved-inbound-model")
+        );
+        assert_eq!(
+            loaded.pointer("/devices/outboundVoiceModelId").and_then(Value::as_str),
+            Some("saved-outbound-model")
+        );
+        assert_eq!(
+            loaded.pointer("/devices/subtitleTranslationMode").and_then(Value::as_str),
+            Some("secondary")
+        );
+        assert_eq!(
+            loaded
+                .pointer("/providers/0/sceneModelAssignments/0/modelIds/0")
+                .and_then(Value::as_str),
+            Some("saved-watch-model")
+        );
+    }
 }

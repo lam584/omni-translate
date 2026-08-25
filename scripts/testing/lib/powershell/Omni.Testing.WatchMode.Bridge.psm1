@@ -1,6 +1,7 @@
 #requires -Version 5.1
 
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.IO.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Configuration.psm1') -Force
 
 function Write-NamedPipeJsonLine {
   param(

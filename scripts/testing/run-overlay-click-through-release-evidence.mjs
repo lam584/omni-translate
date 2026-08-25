@@ -708,14 +708,24 @@ export function buildOverlayReleaseBinaries({
   run = spawnSync,
 } = {}) {
   assertCleanProvenance(provenance);
-  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  const desktop = run(npm, ['run', 'build:desktop-shell'], {
+  const npmCommand = process.platform === 'win32'
+    ? {
+      command: process.env.ComSpec || 'cmd.exe',
+      args: ['/d', '/s', '/c', 'npm.cmd', 'run', 'build:desktop-shell'],
+    }
+    : { command: 'npm', args: ['run', 'build:desktop-shell'] };
+  const desktop = run(npmCommand.command, npmCommand.args, {
     cwd: workspaceRoot,
     env: { ...process.env, OMNI_BUILD_COMMIT: provenance.headCommit },
     stdio: 'inherit',
     windowsHide: true,
   });
-  if (desktop.status !== 0) throw new Error('release Desktop build failed');
+  if (desktop.status !== 0) {
+    const detail = desktop.error?.message
+      || String(desktop.stderr ?? desktop.stdout ?? '').trim()
+      || `exit code ${desktop.status}`;
+    throw new Error(`release Desktop build failed: ${detail}`);
+  }
   const target = run(
     'cargo',
     [

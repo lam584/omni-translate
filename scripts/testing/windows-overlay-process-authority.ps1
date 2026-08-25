@@ -16,6 +16,8 @@ $ErrorActionPreference = 'Stop'
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $securityModulePath = Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1'
 Import-Module $securityModulePath -ErrorAction Stop
+$utilityModulePath = Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1'
+Import-Module $utilityModulePath -ErrorAction Stop
 
 function Get-OmniFileAuthority {
   param([Parameter(Mandatory = $true)][string]$Path)

@@ -1,6 +1,5 @@
 #requires -Version 5.1
-Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.IO.psm1') -Force -DisableNameChecking
-Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Process.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.IO.psm1') -Force -DisableNameChecking; Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Process.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Windows.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Windows.Audio.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Windows.Elevation.psm1') -Force -DisableNameChecking
@@ -14,6 +13,7 @@ Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Provider.psm1') -
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.AudioCapture.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.DesktopLifecycle.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.RawContent.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Stt.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.EvidenceCollection.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Step.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.StateMachine.psm1') -Force -DisableNameChecking

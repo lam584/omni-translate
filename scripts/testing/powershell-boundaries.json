@@ -4,7 +4,7 @@
   "defaultModuleMaxLines": 600,
   "scripts": {
     "scripts/testing/clean-vm3-test-storage.ps1": { "role": "entrypoint", "maxLines": 76, "allowedImports": [], "capabilities": ["fileDeletion"] },
-    "scripts/testing/collect-install-release-state.ps1": { "role": "collector", "maxLines": 444, "allowedImports": ["lib/powershell/Omni.Testing.IO.psm1", "lib/powershell/Omni.Testing.Windows.psm1"], "capabilities": ["elevation"] },
+    "scripts/testing/collect-install-release-state.ps1": { "role": "collector", "maxLines": 445, "allowedImports": ["lib/powershell/Omni.Testing.IO.psm1", "lib/powershell/Omni.Testing.Windows.psm1"], "capabilities": ["elevation"] },
     "scripts/testing/collect-watch-mode-interactive-process-authority.ps1": { "role": "authority", "maxLines": 192, "allowedImports": ["lib/powershell/Omni.Testing.IO.psm1"], "capabilities": [] },
     "scripts/testing/collect-watch-mode-system-metrics.ps1": { "role": "collector", "maxLines": 164, "allowedImports": [], "capabilities": [] },
     "scripts/testing/fixtures/generate-watch-mode-audio.ps1": { "role": "entrypoint", "maxLines": 22, "allowedImports": [], "capabilities": [] },
@@ -53,7 +53,7 @@
     "scripts/testing/run-watch-mode-interactive-task.ps1": { "role": "entrypoint", "maxLines": 467, "allowedImports": ["lib/powershell/Omni.Testing.IO.psm1"], "capabilities": ["processTermination"] },
     "scripts/testing/run-watch-mode-live.ps1": { "role": "entrypoint", "maxLines": 19, "allowedImports": ["lib/powershell/Omni.Testing.WatchMode.Config.psm1", "lib/powershell/Omni.Testing.WatchMode.Runner.psm1"], "capabilities": [] },
     "scripts/testing/virtual-mic-capture-authority.ps1": { "role": "authority", "maxLines": 296, "allowedImports": [], "capabilities": [] },
-    "scripts/testing/windows-overlay-process-authority.ps1": { "role": "authority", "maxLines": 173, "allowedImports": [], "capabilities": [] }
+    "scripts/testing/windows-overlay-process-authority.ps1": { "role": "authority", "maxLines": 174, "allowedImports": [], "capabilities": [] }
   },
   "duplicateFunctionExemptions": {},
   "unsafeProcessExemptions": {},

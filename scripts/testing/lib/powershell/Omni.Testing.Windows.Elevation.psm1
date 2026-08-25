@@ -120,14 +120,13 @@ try {
     PassThru = `$true
   }
   `$desktopProcess = Start-Process @desktopStartArguments
+  Write-LaunchReceipt -Ok `$true
 
   while (-not `$desktopProcess.HasExited) {
     if (-not (Test-RunnerLease)) {
-      Start-Process -FilePath 'taskkill.exe' `
-        -ArgumentList @('/PID', "`$(`$desktopProcess.Id)", '/F', '/T') `
-        -WindowStyle Hidden `
-        -Wait `
-        -ErrorAction SilentlyContinue | Out-Null
+      `$taskkillArguments = @{ FilePath = 'taskkill.exe'; WindowStyle = 'Hidden'; Wait = `$true
+        ArgumentList = @('/PID', "`$(`$desktopProcess.Id)", '/F', '/T'); ErrorAction = 'SilentlyContinue' }
+      Start-Process @taskkillArguments | Out-Null
       exit 125
     }
     Start-Sleep -Milliseconds 200
@@ -140,11 +139,9 @@ try {
   } catch {
   }
   if (`$desktopProcess -and -not `$desktopProcess.HasExited) {
-    Start-Process -FilePath 'taskkill.exe' `
-      -ArgumentList @('/PID', "`$(`$desktopProcess.Id)", '/F', '/T') `
-      -WindowStyle Hidden `
-      -Wait `
-      -ErrorAction SilentlyContinue | Out-Null
+    `$taskkillArguments = @{ FilePath = 'taskkill.exe'; WindowStyle = 'Hidden'; Wait = `$true
+      ArgumentList = @('/PID', "`$(`$desktopProcess.Id)", '/F', '/T'); ErrorAction = 'SilentlyContinue' }
+    Start-Process @taskkillArguments | Out-Null
   }
   exit 1
 }

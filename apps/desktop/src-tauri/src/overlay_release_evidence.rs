@@ -376,7 +376,10 @@ fn collect_sync(
 
     position_overlay(&overlay, target_client)?;
     sync_subtitle_overlay_window_state(app.clone(), true, true, false)?;
-    std::thread::sleep(Duration::from_millis(300));
+    let visible_deadline = Instant::now() + Duration::from_secs(5);
+    while unsafe { IsWindowVisible(overlay_hwnd) } == 0 && Instant::now() < visible_deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
     if unsafe { IsWindowVisible(overlay_hwnd) } == 0 {
         return Err("production overlay is not visible after the WebDriver show handler".to_string());
     }

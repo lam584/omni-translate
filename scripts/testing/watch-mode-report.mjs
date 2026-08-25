@@ -1263,10 +1263,17 @@ export function watchSessionReportFailure(report, { required = true } = {}) {
 function appLayerFailed(app, appLog, options = {}) {
   const configReason = subtitleTranslateConfigLayerFailed(appLog);
   if (configReason) return configReason;
+  const watchSummary = options.watchSessionReport?.summary;
+  const structuredRouteEvidence = options.watchSessionReport?.status === 'completed'
+    && asNumber(watchSummary?.cueCount) > 0;
+  const structuredSubtitleEvidence = structuredRouteEvidence
+    && asNumber(watchSummary?.visibleRenderCueCount) > 0;
   if (app?.routeState && !['capturing', 'running', 'active'].includes(app.routeState)) return `routeState is ${app.routeState}`;
   if (app?.overlayVisible === false && appLog.overlayLines.length === 0) return 'subtitle overlay did not become visible';
-  if (app?.routeState == null && appLog.routeLines.length === 0) return 'no current watch route evidence was found';
-  if (asNumber(app?.subtitleCueCount ?? app?.subtitleCues) === 0 && appLog.subtitleLines.length === 0) {
+  if (app?.routeState == null && appLog.routeLines.length === 0 && !structuredRouteEvidence) return 'no current watch route evidence was found';
+  if (asNumber(app?.subtitleCueCount ?? app?.subtitleCues) === 0
+    && appLog.subtitleLines.length === 0
+    && !structuredSubtitleEvidence) {
     return 'no subtitle cue evidence was found';
   }
   const subtitleQueue = app?.subtitleQueue;

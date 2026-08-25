@@ -638,6 +638,7 @@ test('classifies missing subtitle evidence as app failure', () => {
   const report = classify({
     app: { routeState: 'capturing', overlayVisible: true, subtitleCueCount: 0 },
     appLogText: 'watch route ensured subtitle overlay visible',
+    watchSessionReport: null,
   });
 
   assert.equal(report.failureLayer, 'app');
@@ -703,10 +704,21 @@ test('does not count diagnostic run markers as watch route evidence', () => {
     app: { routeState: null, overlayVisible: null, subtitleCueCount: null },
     provider: { totalCalls: 0, failedCalls: 0 },
     appLogText: 'watch_mode_diagnostic.run_id=abc123',
+    watchSessionReport: null,
   });
 
   assert.equal(report.failureLayer, 'app');
   assert.equal(report.failureReason, 'no current watch route evidence was found');
+});
+
+test('uses the completed structured Watch session as route and subtitle evidence', () => {
+  const report = classify({
+    app: { routeState: null, overlayVisible: null, subtitleCueCount: null },
+    appLogText: 'watch_mode_diagnostic.run_id=abc123',
+  });
+
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.failureLayer, null);
 });
 
 test('infers secondary route from early route config after append summaries flood route tail', () => {

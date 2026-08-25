@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+  asPositiveInteger,
   compactTimestamp,
   echoLogTail,
   ensureDir,
@@ -29,6 +30,15 @@ test('compactTimestamp and sortableTimestamp format a fixed date', () => {
   const date = new Date(2026, 6, 27, 1, 5, 9);
   assert.equal(compactTimestamp(date), '20260727-010509');
   assert.equal(sortableTimestamp(date), '2026-07-27T01:05:09');
+});
+
+test('asPositiveInteger accepts positive integers and otherwise preserves the caller fallback', () => {
+  assert.equal(asPositiveInteger(3, null), 3);
+  assert.equal(asPositiveInteger('12', null), 12);
+  assert.equal(asPositiveInteger(0, 250), 250);
+  assert.equal(asPositiveInteger(-1, 250), 250);
+  assert.equal(asPositiveInteger(1.5, 250), 250);
+  assert.equal(asPositiveInteger('invalid', 0), 0);
 });
 
 test('writeText appends a trailing newline and writes without a BOM', () => {

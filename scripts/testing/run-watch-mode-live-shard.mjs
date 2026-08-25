@@ -4,6 +4,7 @@ import { spawn, spawnSync } from 'node:child_process';
 
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { currentGitProvenance } from './git-provenance.mjs';
+import { buildLiveWatchModeRunRequest } from './watch-mode-run-request.mjs';
 import {
   currentAuthorityImplementationHashes,
   currentAuthorityRuntimeBinaryHashes,
@@ -38,6 +39,7 @@ export const SHARD_LEASE_CLAIM_KIND = 'watch-mode-paid-shard-lease-claim';
 export const SHARD_LEASE_TERMINAL_KIND = 'watch-mode-paid-shard-lease-terminal';
 export const SHARD_WORKER_TIMEOUT_MS = 578_000;
 export const SHARD_LIVE_RUNNER_SCRIPT = path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.ps1');
+const SHARD_LIVE_RUNNER_ENTRY = path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.mjs');
 
 const WATCH_PROTOCOLS = Object.freeze({
   'qwen3.5-omni-flash-realtime': 'dashscope-omni',
@@ -194,34 +196,8 @@ export function buildShardCellExecutionRequest({
   };
 }
 
-export function buildPowerShellRunnerArgv(request) {
-  const options = request.runnerOptions;
-  const argv = [
-    '-NoProfile',
-    '-ExecutionPolicy', 'Bypass',
-    '-File', SHARD_LIVE_RUNNER_SCRIPT,
-    '-OutputRoot', options.outputRoot,
-    '-MediaPath', options.mediaPath,
-    '-WarmupSeconds', String(options.warmupSeconds),
-    '-WatchModelId', options.model,
-    '-WatchRealtimeProtocol', options.watchRealtimeProtocol,
-    '-SubtitleTranslationMode', options.subtitleTranslationMode,
-    '-PlaybackSeconds', String(options.playbackSeconds),
-    '-PostPlaybackWaitSeconds', String(options.postPlaybackWaitSeconds),
-    '-SessionReadyTimeoutSeconds', String(options.sessionReadyTimeoutSeconds),
-    '-WatchAutoStopAfterSeconds', String(options.watchAutoStopAfterSeconds),
-    '-PhysicalPlaybackDeviceId', options.physicalPlaybackDeviceId,
-    '-PhysicalPlaybackDeviceClass', options.physicalPlaybackDeviceClass,
-    '-PhysicalPlaybackDeviceProfileId', options.physicalPlaybackDeviceProfileId,
-    '-FeedbackLoopPrevention', options.feedbackMode,
-    '-ExpectedPhysicalPlaybackDeviceName', options.expectedPhysicalPlaybackDeviceName,
-    '-StrictPaidAuthority',
-    '-MatrixCellId', options.matrixCellId,
-  ];
-  if (options.readinessReceiptPath) {
-    argv.push('-WorkerReadinessReceiptPath', options.readinessReceiptPath);
-  }
-  return argv;
+export function buildPowerShellRunnerArgv(requestPath) {
+  return [SHARD_LIVE_RUNNER_ENTRY, '--request', path.resolve(requestPath)];
 }
 
 function lastExistingRunDirectory(text, rootDirectory) {
@@ -239,7 +215,13 @@ export function executePowerShellShardCell(request, {
   timeoutMs = SHARD_WORKER_TIMEOUT_MS,
 } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn('powershell.exe', buildPowerShellRunnerArgv(request), {
+    const runRequest = buildLiveWatchModeRunRequest(request.runnerOptions, {
+      authorityMode: 'strict-paid',
+      workerReadinessReceipt: request.runnerOptions.readinessReceiptPath,
+    });
+    const requestPath = path.join(request.runnerOptions.outputRoot, 'run-request.json');
+    atomicWriteJson(requestPath, runRequest);
+    const child = spawn(process.execPath, buildPowerShellRunnerArgv(requestPath), {
       cwd: repoRoot,
       env: { ...environment, ...request.environment },
       stdio: ['ignore', 'pipe', 'inherit'],

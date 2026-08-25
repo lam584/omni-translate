@@ -204,6 +204,8 @@ function functionSpans(path) {
 const rustRoots = [
   'apps/desktop/src-tauri/src',
   'apps/bridge-service-native/src',
+  'crates/omni-benchmark-core/src',
+  'scripts/diagnostics/omni-benchmark/src',
   'crates/omni-bridge-protocol/src',
   'crates/omni-logging/src',
 ];

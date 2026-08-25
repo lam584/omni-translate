@@ -10,11 +10,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-function Test-IsAdministrator {
-  $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-  $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
-  return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
-}
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.Windows.psm1') -Force
 
 function ConvertTo-CommandLineArgument([string]$Value) {
   if ($Value -notmatch '[\s"]') { return $Value }
@@ -48,7 +44,7 @@ if (-not [string]::IsNullOrWhiteSpace($CollectorOutputRoot)) {
   $nodeArguments += @('--collector-output-root', $CollectorOutputRoot)
 }
 
-if ($ScenarioId -eq 'INSTALL-RELEASE-LAYOUT' -or (Test-IsAdministrator)) {
+if ($ScenarioId -eq 'INSTALL-RELEASE-LAYOUT' -or (Test-OmniIsAdministrator)) {
   & $nodeCommand.Source @nodeArguments
   exit $LASTEXITCODE
 }

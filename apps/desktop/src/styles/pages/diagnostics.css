@@ -652,6 +652,10 @@
 .benchmark-history-actions button,
 .benchmark-history-more,
 .benchmark-history-row > button:last-child {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:5px;
   min-height:28px;
   border:1px solid #cbd5e1;
   border-radius:6px;
@@ -1076,4 +1080,3 @@
   gap:8px;
   margin-top:6px
 }
-

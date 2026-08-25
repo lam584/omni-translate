@@ -336,6 +336,13 @@ pub(crate) fn start_omni(
                         super::session_errors::SessionErrorCode::ProviderInternal,
                     )
                 };
+                if worker_direction == "inbound" {
+                    crate::watch_mode_diagnostic::readiness::fail(
+                        "provider",
+                        "watch.provider.session-failed",
+                        normalized_error.clone(),
+                    );
+                }
                 let (route_message, error_code, recommended_action) =
                     split_error_markers(&normalized_error);
                 audio_state.mark_route_last_error(

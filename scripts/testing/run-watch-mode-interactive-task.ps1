@@ -9,41 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-function Get-Sha256 {
-  param([Parameter(Mandatory = $true)][string]$Path)
-  $bytes = [IO.File]::ReadAllBytes([IO.Path]::GetFullPath($Path))
-  $sha = [Security.Cryptography.SHA256]::Create()
-  try {
-    return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
-  } finally {
-    $sha.Dispose()
-  }
-}
-
-function Write-ImmutableJson {
-  param(
-    [Parameter(Mandatory = $true)][string]$Path,
-    [Parameter(Mandatory = $true)]$Value
-  )
-  $resolved = [IO.Path]::GetFullPath($Path)
-  [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($resolved))
-  $encoding = New-Object Text.UTF8Encoding($false)
-  $bytes = $encoding.GetBytes((($Value | ConvertTo-Json -Depth 20 -Compress) + "`n"))
-  $stream = New-Object IO.FileStream(
-    $resolved,
-    [IO.FileMode]::CreateNew,
-    [IO.FileAccess]::Write,
-    [IO.FileShare]::Read,
-    4096,
-    [IO.FileOptions]::WriteThrough
-  )
-  try {
-    $stream.Write($bytes, 0, $bytes.Length)
-    $stream.Flush($true)
-  } finally {
-    $stream.Dispose()
-  }
-}
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.IO.psm1') -Force
 
 function Invoke-Utf8JsonProcess {
   param(
@@ -87,7 +53,7 @@ function Get-ProcessIdentity {
     parentPid = [int]$process.ParentProcessId
     sessionId = [int]$process.SessionId
     imagePath = [IO.Path]::GetFullPath($executable)
-    imageSha256 = Get-Sha256 $executable
+    imageSha256 = Get-OmniSha256 -LiteralPath $executable
     startedAt = (Get-Process -Id $ProcessId -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')
     ownerUser = [string]$owner.User
     ownerDomain = [string]$owner.Domain
@@ -228,7 +194,7 @@ if (-not (Test-Path -LiteralPath $resolvedRequestPath -PathType Leaf)) {
 if ((Get-Item -LiteralPath $resolvedRequestPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
   throw 'interactive task request may not be a reparse point'
 }
-$requestSha256 = Get-Sha256 $resolvedRequestPath
+$requestSha256 = Get-OmniSha256 -LiteralPath $resolvedRequestPath
 if ($requestSha256 -cne $ExpectedRequestSha256.ToLowerInvariant()) {
   throw 'interactive task request hash mismatch'
 }
@@ -236,7 +202,7 @@ $request = Get-Content -LiteralPath $resolvedRequestPath -Raw -Encoding UTF8 | C
 if ($request.schemaVersion -ne 1 -or $request.artifactKind -ne 'watch-mode-interactive-task-command') {
   throw 'unsupported interactive task request'
 }
-if ((Get-Sha256 ([IO.Path]::GetFullPath($MyInvocation.MyCommand.Path))) -cne [string]$request.launcherSha256) {
+if ((Get-OmniSha256 -LiteralPath ([IO.Path]::GetFullPath($MyInvocation.MyCommand.Path))) -cne [string]$request.launcherSha256) {
   throw 'interactive task launcher hash mismatch'
 }
 
@@ -340,7 +306,7 @@ if ($request.mode -eq 'endpoint-readiness') {
     credentialStatus = $credentialStatus
     profiles = $profileResults
   }
-  Write-ImmutableJson ([string]$request.interactiveAuthorityPath) $authority
+  Write-OmniImmutableJson -LiteralPath ([string]$request.interactiveAuthorityPath) -Value $authority
   $terminal = [ordered]@{
     schemaVersion = 1
     artifactKind = 'watch-mode-interactive-task-terminal'
@@ -354,15 +320,15 @@ if ($request.mode -eq 'endpoint-readiness') {
     authorityPath = [string]$request.interactiveAuthorityPath
     completedAt = [DateTime]::UtcNow.ToString('o')
   }
-  Write-ImmutableJson ([string]$request.terminalPath) $terminal
+  Write-OmniImmutableJson -LiteralPath ([string]$request.terminalPath) -Value $terminal
   exit 0
 }
 
 if ($request.mode -notin @('shard-cell', 'incident-plus-cell')) { throw 'interactive task mode is unsupported' }
-if ((Get-Sha256 ([string]$request.nodeExecutable)) -cne [string]$request.nodeSha256) {
+if ((Get-OmniSha256 -LiteralPath ([string]$request.nodeExecutable)) -cne [string]$request.nodeSha256) {
   throw 'interactive task Node executable hash mismatch'
 }
-if ((Get-Sha256 ([string]$request.shardRunnerPath)) -cne [string]$request.shardRunnerSha256) {
+if ((Get-OmniSha256 -LiteralPath ([string]$request.shardRunnerPath)) -cne [string]$request.shardRunnerSha256) {
   throw 'interactive task shard runner hash mismatch'
 }
 $env:OMNI_SHARD_ZERO_PROVIDER_READINESS_PATH = [string]$request.readinessPath
@@ -428,7 +394,7 @@ $launch = [ordered]@{
   launcherSha256 = [string]$request.launcherSha256
   shardRunnerSha256 = [string]$request.shardRunnerSha256
 }
-Write-ImmutableJson ([string]$request.launchPath) $launch
+Write-OmniImmutableJson -LiteralPath ([string]$request.launchPath) -Value $launch
 $release = [ordered]@{
   schemaVersion = 1
   artifactKind = 'watch-mode-interactive-shard-claim-release'
@@ -446,7 +412,7 @@ $release = [ordered]@{
   ownerSid = $common.ownerSid
   releasedAt = [DateTime]::UtcNow.ToString('o')
 }
-Write-ImmutableJson ([string]$request.releasePath) $release
+Write-OmniImmutableJson -LiteralPath ([string]$request.releasePath) -Value $release
 $traceArguments = @(
     '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-File', ('"' + [string]$request.processAuthorityCollectorPath + '"'),
@@ -497,5 +463,5 @@ $terminal = [ordered]@{
   executionReceiptObserved = $executionReceiptObserved
   completedAt = [DateTime]::UtcNow.ToString('o')
 }
-Write-ImmutableJson ([string]$request.terminalPath) $terminal
+Write-OmniImmutableJson -LiteralPath ([string]$request.terminalPath) -Value $terminal
 exit $node.ExitCode

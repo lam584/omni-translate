@@ -71,7 +71,7 @@ export function summarizeWarnings(compilerWarnings, procMacroDiagnostics) {
   return { packages, lints, procMacroDiagnostics: procMacroDiagnostics.length };
 }
 
-export function collectWorkspaceWarnings({ runner = spawnSync } = {}) {
+export function collectWorkspaceWarnings({ runner = spawnSync, environment = process.env } = {}) {
   const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-rust-warning-audit-'));
   try {
     const result = runner(
@@ -81,7 +81,11 @@ export function collectWorkspaceWarnings({ runner = spawnSync } = {}) {
         cwd: repoRoot,
         encoding: 'utf8',
         maxBuffer: 128 * 1024 * 1024,
-        env: { ...process.env, CARGO_TARGET_DIR: targetDir },
+        env: {
+          ...environment,
+          CARGO_BUILD_JOBS: environment.CARGO_BUILD_JOBS ?? '1',
+          CARGO_TARGET_DIR: targetDir,
+        },
       },
     );
     if (result.status !== 0) {

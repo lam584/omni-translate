@@ -3,13 +3,14 @@ import i18n from '../i18n/config';
 import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
 import type { AppConfigDraft } from '../schema/config';
 import type { RuntimeSnapshot } from '../schema/runtime-core';
+import type { ScenarioMode } from '../schema/scenario';
 import { resolveRuntimeBridgeStatus } from '../runtime/runtime-status';
 import { isPendingProbeCheckedAt } from './provider-probe';
 import { isProcessLoopbackReady, resolveProcessLoopbackCapability } from './process-loopback-capability';
 import { resolveAecCapability } from './aec-capability';
 import { resolveVirtualDriverCapability, type VirtualDriverCapability } from './virtual-driver-capability';
 
-export type SceneMode = 'watch' | 'game' | 'voice-room';
+export type SceneMode = ScenarioMode;
 
 export type SceneBlocker = {
   id: string;
@@ -25,7 +26,7 @@ export type SceneReadiness = {
   blockers: SceneBlocker[];
 };
 
-function isOverlayVisible(runtimeSnapshot: RuntimeSnapshot) {
+export function isOverlayVisible(runtimeSnapshot: RuntimeSnapshot) {
   return runtimeSnapshot.windows.find((item) => item.label === 'subtitle-overlay')?.visible === true;
 }
 

@@ -13,11 +13,12 @@ import type { ProviderProbeSnapshot } from './provider-probe';
 import type { ProviderTemplateSource } from './provider-template';
 import type { GlossaryInjectionSource, GlossaryInjectionStrategy, GlossaryProcessingMode, GlossaryScenario } from './glossary-template';
 import type { GlossaryLibrary } from './glossary-package';
+import type { ScenarioMode } from './scenario';
 import type { TtsDispatchState, TtsOutputTarget } from './tts-contract';
 
 export type ProviderMode = 'template' | 'advanced';
 
-export type AudioRouteMode = 'watch' | 'game' | 'voice-room';
+export type AudioRouteMode = ScenarioMode;
 
 export type ProviderScenario = 'watch' | 'game' | 'voice-room' | 'subtitle-translate';
 
@@ -303,7 +304,6 @@ export type AppConfigDraft = {
   onboarding: OnboardingDraft;
   lastActivePagePath?: string;
 };
-
 export type SQLiteFieldMapping = {
   draftPath: string;
   sqliteTable: string;

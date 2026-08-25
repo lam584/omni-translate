@@ -45,6 +45,7 @@ impl LivetranslateShutdown {
         )
     }
 
+    #[cfg(test)]
     fn new(enabled: bool) -> Self {
         Self::with_stop_signal(enabled, Arc::new(AtomicBool::new(false)))
     }

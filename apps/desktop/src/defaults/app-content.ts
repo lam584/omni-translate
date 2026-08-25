@@ -1,4 +1,4 @@
-import type { BrandContent, NavItem, Preset, QuickSetupReadinessItem, TextListItem } from '../schema/content';
+import type { BrandContent, NavItem, Preset } from '../schema/content';
 
 export const brandContent: BrandContent = {
   eyebrow: '',
@@ -30,49 +30,6 @@ export const navItems: NavItem[] = [
     label: '诊断与日志',
     hint: '',
     path: '/diagnostics',
-  },
-];
-
-export const quickSetupSteps: TextListItem[] = [
-  { id: 'check-system-audio', label: '确认系统音频、麦克风和输出设备。' },
-  { id: 'select-provider-template', label: '选服务，填好地址和密钥。' },
-  { id: 'choose-preset-mode', label: '选一个场景方案。' },
-  { id: 'review-diagnostics', label: '看一遍诊断结果。' },
-];
-
-export const quickSetupReadinessItems: QuickSetupReadinessItem[] = [
-  {
-    id: 'readiness-devices',
-    title: '音频路由先收敛',
-    status: 'pending',
-    description: '先把采集和输出设备定好。',
-    route: '/audio-routing',
-  },
-  {
-    id: 'readiness-provider-risk',
-    title: '模型接入单独验证',
-    status: 'risk',
-    description: '在这里填地址、存密钥、跑测试。',
-    route: '/providers',
-  },
-  {
-    id: 'readiness-return-flow',
-    title: '会话页负责运行态',
-    status: 'complete',
-    description: '运行时只看字幕、播报和事件。',
-    route: '/session',
-  },
-];
-
-export const providerRules: TextListItem[] = [
-  { id: 'provider-rule-template-first', label: '优先用模板，不够再改高级项。' },
-  {
-    id: 'provider-rule-shared-fields',
-    label: '常用服务共用基础项，差异项单独处理。',
-  },
-  {
-    id: 'provider-rule-probing',
-    label: '测试结果单独看，不和编辑区混在一起。',
   },
 ];
 

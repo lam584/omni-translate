@@ -19,6 +19,13 @@ const dashscopeChatEndpoint = 'https://dashscope.aliyuncs.com/compatible-mode/v1
 const translationModel = process.env.OMNI_FIXTURE_TRANSLATION_MODEL ?? 'qwen3.6-flash';
 const ttsModel = 'qwen-audio-3.0-tts-plus';
 const ttsVoice = 'longanlingxin';
+const generationReceiptFields = Object.freeze([
+  'sha256',
+  'durationSeconds',
+  'sampleRate',
+  'channels',
+  'bitsPerSample',
+]);
 
 const languages = Object.freeze([
   { code: 'zh-CN', name: 'Simplified Chinese', hint: 'zh', rate: 0.95 },
@@ -176,7 +183,12 @@ async function requestQwenAudio(apiKey, text, language) {
 async function writeChecksum(targetPath, buffer) {
   const digest = crypto.createHash('sha256').update(buffer).digest('hex');
   await fs.writeFile(`${targetPath}.sha256`, `${digest}  ${path.basename(targetPath)}\n`, 'ascii');
-  return digest;
+}
+
+function withoutGenerationReceipt(fixture) {
+  const recipe = { ...fixture };
+  for (const field of generationReceiptFields) delete recipe[field];
+  return recipe;
 }
 
 async function generateAudio(apiKey, text, language) {
@@ -187,7 +199,7 @@ async function generateAudio(apiKey, text, language) {
   const buffer = resamplePcm16MonoWav(providerBuffer);
   const audio = inspectPcm16MonoWav(buffer);
   await fs.writeFile(target, buffer);
-  const sha256 = await writeChecksum(target, buffer);
+  await writeChecksum(target, buffer);
   process.stdout.write(`Generated ${path.basename(target)}: ${audio.durationSeconds}s\n`);
   return {
     code: language.code,
@@ -197,11 +209,9 @@ async function generateAudio(apiKey, text, language) {
     provider: 'Alibaba Cloud Model Studio',
     model: ttsModel,
     voice: ttsVoice,
+    distribution: 'generated-on-demand',
     rate: language.rate ?? 0.95,
     languageHint: language.hint ?? null,
-    distribution: 'generated-on-demand',
-    sha256,
-    ...audio,
   };
 }
 
@@ -254,7 +264,6 @@ async function main() {
   const byCode = new Map(previous.map((fixture) => [fixture.code, fixture]));
   generated.forEach((fixture) => byCode.set(fixture.code, fixture));
   const manifest = {
-    generatedAt: new Date().toISOString(),
     template: '../watch-mode-en-original.txt',
     englishAudio: '../watch-mode-en-original.wav',
     audioDistribution: 'generated-on-demand',
@@ -262,7 +271,7 @@ async function main() {
     fixtures: languages.map((language) => {
       const fixture = byCode.get(language.code);
       return fixture ? {
-        ...fixture,
+        ...withoutGenerationReceipt(fixture),
         rate: language.rate ?? 0.95,
         languageHint: language.hint ?? null,
       } : null;

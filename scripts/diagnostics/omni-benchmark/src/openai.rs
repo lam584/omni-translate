@@ -13,14 +13,13 @@ use crate::audio::{base64_encode_i16, CHUNK_SEND_INTERVAL_MS};
 use crate::config::Config;
 use crate::protocol::BenchmarkProtocol;
 use crate::reporting::{
-    elapsed_ms, is_timeout, set_read_timeout, AsrDelta, OutputDelta, RunResult,
+    elapsed_ms, is_timeout, set_read_timeout, wait_session_ready, AsrDelta, OutputDelta, RunResult,
 };
 
 // ──────────────────────────────── Constants ────────────────────────────────
 
 const TOTAL_TIMEOUT_SECS: u64 = 180;
 const IDLE_TIMEOUT_SECS: u64 = 20;
-const SESSION_READY_TIMEOUT_SECS: u64 = 30;
 
 /// OpenAI 标准协议输入采样率 24kHz
 const OPENAI_INPUT_RATE: u32 = 24_000;
@@ -373,34 +372,6 @@ fn build_manual_commit_messages(dialect: OpenAiDialect) -> Vec<Value> {
         _ => {}
     }
     messages
-}
-
-// ──────────────────────────────── Session Ready ─────────────────────────────
-
-fn wait_session_ready(
-    socket: &mut tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
-) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(SESSION_READY_TIMEOUT_SECS);
-    while Instant::now() < deadline {
-        match socket.read() {
-            Ok(Message::Text(text)) => {
-                let event: Value = serde_json::from_str(&text)
-                    .map_err(|e| format!("JSON error during session setup: {e}"))?;
-                match event["type"].as_str().unwrap_or("?") {
-                    "session.created" | "session.updated" => return Ok(()),
-                    "error" => return Err(format!("server error: {}", event["error"])),
-                    _ => {}
-                }
-            }
-            Ok(Message::Close(_)) => {
-                return Err("server closed before session was ready".into());
-            }
-            Err(e) if is_timeout(&e.to_string()) => continue,
-            Err(e) => return Err(format!("read error during session setup: {e}")),
-            _ => {}
-        }
-    }
-    Err("timed out waiting for session.updated".into())
 }
 
 // ──────────────────────────────── Event Receiver ────────────────────────────

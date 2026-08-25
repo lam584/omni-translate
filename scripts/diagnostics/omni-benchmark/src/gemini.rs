@@ -9,6 +9,8 @@ use serde_json::{json, Value};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::{connect, Message};
 
+use omni_benchmark_core::collect_gemini_model_text;
+
 use crate::audio::{base64_encode_i16, CHUNK_SAMPLES, CHUNK_SEND_INTERVAL_MS};
 use crate::config::Config;
 use crate::reporting::{
@@ -358,7 +360,7 @@ fn handle_gemini_event(r: &mut RawResult, ms: f64, event: &Value) -> Result<(), 
     }
 
     // ── modelTurn 中的文本内容 ──
-    let model_text = collect_model_text(
+    let model_text = collect_gemini_model_text(
         event
             .pointer("/serverContent/modelTurn")
             .unwrap_or(&Value::Null),
@@ -400,30 +402,4 @@ fn push_output_delta(
         committed_text: String::new(),
         raw_text: text.to_string(),
     });
-}
-
-/// 递归收集 modelTurn 中所有 "text" 字段
-fn collect_model_text(value: &Value) -> String {
-    fn walk(value: &Value, out: &mut String) {
-        match value {
-            Value::Object(map) => {
-                if let Some(text) = map.get("text").and_then(Value::as_str) {
-                    out.push_str(text);
-                }
-                for child in map.values() {
-                    walk(child, out);
-                }
-            }
-            Value::Array(items) => {
-                for child in items {
-                    walk(child, out);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let mut out = String::new();
-    walk(value, &mut out);
-    out
 }

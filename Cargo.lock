@@ -3692,6 +3692,15 @@ name = "omni-audio-dsp"
 version = "0.1.0"
 
 [[package]]
+name = "omni-benchmark-core"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "omni-bridge-protocol"
 version = "0.1.0"
 dependencies = [
@@ -3733,6 +3742,7 @@ dependencies = [
  "log",
  "minimp3",
  "omni-audio-dsp",
+ "omni-benchmark-core",
  "omni-bridge-protocol",
  "omni-logging",
  "omni-webrtc-aec3",

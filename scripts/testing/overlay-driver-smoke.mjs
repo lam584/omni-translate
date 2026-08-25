@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
+  asPositiveInteger,
   isMain,
   sortableTimestamp,
 } from '../lib/testing-common.mjs';
@@ -72,11 +73,6 @@ export const REQUIRED_DRIVER_TOOLS = [
 ];
 
 const RELEASE_BUILD_HINT = 'npm run build:desktop-shell';
-
-const asPositiveInteger = (value, fallback) => {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-};
 
 /** Install hint for a tool name, or null when the tool is not a known requirement. */
 export function installHintFor(toolName) {

@@ -1,17 +1,8 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import AppIcon, { type AppIconName } from '../../components/icons/AppIcon';
-import zhCN from '../../i18n/locales/zh-CN.json';
+import { resolveChineseFallback } from '../../i18n/resolveChineseFallback';
 import { optionDomId, resolveSelectedModel, type RoutingModelOption, type ScenarioCapability } from './routingModelCatalog';
-
-export function resolveChineseFallback(key: string): string {
-  let value: unknown = zhCN;
-  for (const segment of key.split('.')) {
-    if (!value || typeof value !== 'object' || !(segment in value)) return key;
-    value = (value as Record<string, unknown>)[segment];
-  }
-  return typeof value === 'string' ? value : key;
-}
 
 export function tWithDefault(t: (key: string, options?: { defaultValue?: string }) => string, key: string): string {
   return t(key, { defaultValue: resolveChineseFallback(key) });

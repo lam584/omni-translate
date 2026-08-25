@@ -210,7 +210,7 @@ const waitForChild = (child, timeoutMs, { killTree = true } = {}) => new Promise
   });
 });
 
-export function validateDesktopReleaseEmitterOutput(plan, processId) {
+export function validateDesktopReleaseEmitterOutput(plan, processId, { now = Date.now() } = {}) {
   if (!fs.existsSync(plan.runDirectory) || !fs.statSync(plan.runDirectory).isDirectory()) {
     throw new Error(`Desktop emitter did not publish ${plan.runDirectory}`);
   }
@@ -234,6 +234,7 @@ export function validateDesktopReleaseEmitterOutput(plan, processId) {
   const raw = validateRawReleaseManualEvidence(plan.runDirectory, plan.scenarioId, {
     workspaceRoot: plan.workspaceRoot,
     currentProvenance: plan.provenance,
+    now,
   });
   if (raw.issues.length > 0 || !raw.summary) {
     throw new Error(`Desktop emitter output failed authority validation:\n- ${raw.issues.join('\n- ')}`);
@@ -252,6 +253,7 @@ export async function runDesktopReleaseEvidence({
   listRunning = () => runningDesktopProcesses(),
   wait = waitForChild,
   collectEvidence,
+  now = new Date(),
 } = {}) {
   if (!plan) throw new Error('desktop release evidence plan is required');
   const running = listRunning();
@@ -276,13 +278,14 @@ export async function runDesktopReleaseEvidence({
       : `signal=${terminal.signal ?? 'none'}`;
     throw new Error(`Desktop release evidence process failed with exit ${terminal.code}: ${detail}`);
   }
-  const checked = validateDesktopReleaseEmitterOutput(plan, terminal.processId);
+  const checked = validateDesktopReleaseEmitterOutput(plan, terminal.processId, { now: now.getTime() });
   const collected = await collectEvidence({
     source: plan.runDirectory,
     scenarioId: plan.scenarioId,
     outputRoot: plan.collectorOutputRoot,
     workspaceRoot: plan.workspaceRoot,
     provenance: plan.provenance,
+    now,
   });
   return {
     scenarioId: plan.scenarioId,

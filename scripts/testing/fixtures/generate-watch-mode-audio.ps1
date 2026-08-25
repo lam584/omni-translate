@@ -1,6 +1,7 @@
 param(
-  [ValidateSet("all", "general", "conversation", "technical")]
-  [string]$Fixture = "all"
+  [ValidateSet("optional", "all", "general", "conversation", "technical")]
+  [string]$Fixture = "optional",
+  [switch]$ConfirmCanonicalOverwrite
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,7 +11,12 @@ if (-not (Test-Path -LiteralPath $nodeScript -PathType Leaf)) {
   throw "Fixture generator was not found: $nodeScript"
 }
 
-& node $nodeScript --fixture $Fixture
+$nodeArguments = @($nodeScript, "--fixture", $Fixture)
+if ($ConfirmCanonicalOverwrite) {
+  $nodeArguments += "--confirm-canonical-overwrite"
+}
+
+& node @nodeArguments
 if ($LASTEXITCODE -ne 0) {
   throw "Audio fixture generation failed with exit code $LASTEXITCODE"
 }

@@ -530,7 +530,7 @@ function AudioRoutingPage() {
   const secondaryScenarioCards: ScenarioCardProps[] = [
     {
       caption: tWithDefault(t, 'audioRouting.scenarioSubtitleCaption'), enabled: configDraft.devices.outputSubtitlesEnabled,
-      enableLabel: tWithDefault(t, 'audioRouting.subtitleTranslationCardToggle'), icon: 'book',
+      enableLabel: tWithDefault(t, 'audioRouting.subtitleTranslationCardToggle'), icon: 'translate',
       modelName: subtitleModelOption?.displayName ?? '—', modelOptions: textModelOptions, modelProvider: subtitleModelOption?.description ?? '', mutedHint,
       onEnabledChange: handleSubtitleCardEnabledToggle,
       onSelect: (modelId) => selectModel('subtitle', modelId),
@@ -538,7 +538,7 @@ function AudioRoutingPage() {
     },
     {
       caption: tWithDefault(t, 'audioRouting.scenarioInboundSecondaryCaption'), enabled: configDraft.devices.outputSpeechEnabled,
-      enableLabel: tWithDefault(t, 'audioRouting.secondaryAudioCardToggle'), icon: 'subtitles',
+      enableLabel: tWithDefault(t, 'audioRouting.secondaryAudioCardToggle'), icon: 'wave',
       modelName: inboundSecondaryModelOption?.displayName ?? '—', modelOptions: secondarySttModelOptions, modelProvider: inboundSecondaryModelOption?.description ?? '', mutedHint,
       onEnabledChange: handleSecondaryAudioCardEnabledToggle,
       onSelect: (modelId) => selectModel('inboundSecondary', modelId),
@@ -557,7 +557,7 @@ function AudioRoutingPage() {
     },
     {
       active: configDraft.speech.enabled, caption: tWithDefault(t, 'audioRouting.scenarioTtsCaption'),
-      enableChecked: configDraft.speech.enabled, enableLabel: tWithDefault(t, 'audioRouting.scenarioTtsRole'), icon: 'spark',
+      enableChecked: configDraft.speech.enabled, enableLabel: tWithDefault(t, 'audioRouting.scenarioTtsRole'), icon: 'headphones',
       modelName: ttsModelOption?.displayName ?? '—', modelOptions: ttsModelOptions, modelProvider: ttsModelOption?.description ?? '',
       onEnabledChange: handleTtsEnabledToggle,
       onSelect: (modelId) => selectModel('tts', modelId),
@@ -751,6 +751,7 @@ function AudioRoutingPage() {
                 <span className="routing-feedback-radio" aria-hidden="true">
                   {configDraft.devices.feedbackLoopPrevention === 'echo-cancel' ? <AppIcon name="check" size={11} /> : null}
                 </span>
+                <AppIcon className="routing-feedback-option-icon" name="wave" size={15} />
                 <span className="routing-feedback-option-label">
                   <strong>{tWithDefault(t, 'audioRouting.feedbackEchoLabel')}</strong>
                   {!aecCapability.ready ? <small>{tWithDefault(t, 'audioRouting.feedbackUnavailable')}</small> : null}
@@ -772,6 +773,7 @@ function AudioRoutingPage() {
                 <span className="routing-feedback-radio" aria-hidden="true">
                   {configDraft.devices.feedbackLoopPrevention === 'virtual-driver' ? <AppIcon name="check" size={11} /> : null}
                 </span>
+                <AppIcon className="routing-feedback-option-icon" name="chip" size={15} />
                 <span className="routing-feedback-option-label">
                   <strong>{tWithDefault(t, 'audioRouting.feedbackVirtualDriverLabel')}</strong>
                   {!virtualDriverCapability.windowsBuildSupported
@@ -800,6 +802,7 @@ function AudioRoutingPage() {
                 <span className="routing-feedback-radio" aria-hidden="true">
                   {configDraft.devices.feedbackLoopPrevention === 'process-exclusion' ? <AppIcon name="check" size={11} /> : null}
                 </span>
+                <AppIcon className="routing-feedback-option-icon" name="route" size={15} />
                 <span className="routing-feedback-option-label">
                   <strong>{tWithDefault(t, 'audioRouting.feedbackProcessExclusionLabel')}</strong>
                   <small>{processExclusionReady

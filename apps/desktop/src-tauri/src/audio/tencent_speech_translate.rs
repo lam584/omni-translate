@@ -22,6 +22,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use omni_bridge_protocol::encode_pcm16le;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use tungstenite::client::IntoClientRequest;
@@ -161,21 +162,13 @@ fn parse_result(evt: &Value) -> Option<TencentResult> {
 // Audio framing
 // ---------------------------------------------------------------------------
 
-fn pcm16_to_le_bytes(samples: &[i16]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(samples.len() * 2);
-    for sample in samples {
-        bytes.extend_from_slice(&sample.to_le_bytes());
-    }
-    bytes
-}
-
 /// Drain as many full ~200 ms frames as the accumulator holds; the sub-frame
 /// remainder stays in place for the next capture chunk.
 fn drain_full_frames(accumulator: &mut Vec<i16>) -> Vec<Vec<u8>> {
     let mut frames = Vec::new();
     while accumulator.len() >= TENCENT_FRAME_SAMPLES {
         let remainder = accumulator.split_off(TENCENT_FRAME_SAMPLES);
-        frames.push(pcm16_to_le_bytes(accumulator));
+        frames.push(encode_pcm16le(accumulator));
         *accumulator = remainder;
     }
     frames
@@ -809,7 +802,7 @@ fn shutdown_session(
         }
     }
     if !sample_accumulator.is_empty() {
-        let frame = pcm16_to_le_bytes(sample_accumulator);
+        let frame = encode_pcm16le(sample_accumulator);
         sample_accumulator.clear();
         trace_call.record_ws_send("audio", json!({ "bytes": frame.len() }));
         let _ = socket.send(Message::Binary(frame.into()));
@@ -1086,7 +1079,7 @@ mod tests {
 
     #[test]
     fn pcm16_frames_serialize_little_endian() {
-        assert_eq!(pcm16_to_le_bytes(&[0x0102, -2]), vec![0x02, 0x01, 0xFE, 0xFF]);
+        assert_eq!(encode_pcm16le(&[0x0102, -2]), vec![0x02, 0x01, 0xFE, 0xFF]);
     }
 
     #[test]

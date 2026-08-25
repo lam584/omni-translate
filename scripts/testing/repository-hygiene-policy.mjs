@@ -4,7 +4,19 @@ import path from 'node:path';
 
 export const DEFAULT_TRACKED_FILE_LIMIT_BYTES = 5 * 1024 * 1024;
 export const AUTHORIZED_WATCH_AUDIO_LIMIT_BYTES = 8 * 1024 * 1024;
+export const EXPECTED_WATCH_AUDIO_FIXTURE_COUNTS = Object.freeze({
+  total: 22,
+  bundled: 1,
+  generatedOnDemand: 21,
+});
 const WATCH_AUDIO_DISTRIBUTIONS = new Set(['bundled', 'generated-on-demand']);
+const WATCH_AUDIO_RECEIPT_FIELDS = Object.freeze([
+  'sha256',
+  'durationSeconds',
+  'sampleRate',
+  'channels',
+  'bitsPerSample',
+]);
 
 const WATCH_AUDIO_MANIFESTS = Object.freeze([
   Object.freeze({
@@ -23,8 +35,9 @@ export function containsRetiredWorkspacePath(content) {
   return /(?:^|[^A-Za-z0-9])E:\\+omni-translate(?=$|[\\/"'\s])/iu.test(content);
 }
 
-export function loadAuthorizedWatchAudioFixtures({ workspaceRoot = process.cwd() } = {}) {
+export function loadWatchAudioFixtureInventory({ workspaceRoot = process.cwd() } = {}) {
   const authorized = new Map();
+  const counts = { total: 0, bundled: 0, generatedOnDemand: 0 };
   for (const definition of WATCH_AUDIO_MANIFESTS) {
     const manifestPath = path.join(workspaceRoot, ...definition.manifest.split('/'));
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -38,10 +51,31 @@ export function loadAuthorizedWatchAudioFixtures({ workspaceRoot = process.cwd()
       if (!WATCH_AUDIO_DISTRIBUTIONS.has(distribution)) {
         throw new Error(`${definition.manifest}: every fixture requires a supported distribution`);
       }
-      if (!/^[^/]+\.wav$/i.test(audio) || !/^[a-f0-9]{64}$/.test(sha256)) {
-        throw new Error(`${definition.manifest}: every fixture requires a basename-only WAV path and SHA256`);
+      if (!/^[^/]+\.wav$/i.test(audio)) {
+        throw new Error(`${definition.manifest}: every fixture requires a basename-only WAV path`);
       }
-      if (distribution !== 'bundled') continue;
+      counts.total += 1;
+      if (distribution === 'generated-on-demand') {
+        counts.generatedOnDemand += 1;
+        const receiptFields = WATCH_AUDIO_RECEIPT_FIELDS.filter((field) => Object.hasOwn(fixture, field));
+        if (receiptFields.length > 0) {
+          throw new Error(
+            `${definition.manifest}: generated-on-demand fixture ${audio} must not store receipt fields: ${receiptFields.join(', ')}`,
+          );
+        }
+        const missingRecipeFields = ['source', 'model', 'voice']
+          .filter((field) => typeof fixture?.[field] !== 'string' || fixture[field].trim() === '');
+        if (missingRecipeFields.length > 0) {
+          throw new Error(
+            `${definition.manifest}: generated-on-demand fixture ${audio} is missing recipe fields: ${missingRecipeFields.join(', ')}`,
+          );
+        }
+        continue;
+      }
+      counts.bundled += 1;
+      if (!/^[a-f0-9]{64}$/.test(sha256)) {
+        throw new Error(`${definition.manifest}: bundled fixture ${audio} requires a SHA256 receipt`);
+      }
       const repositoryPath = path.posix.join(definition.audioRoot, audio);
       if (authorized.has(repositoryPath)) {
         throw new Error(`${definition.manifest}: duplicate authorized fixture ${repositoryPath}`);
@@ -49,7 +83,16 @@ export function loadAuthorizedWatchAudioFixtures({ workspaceRoot = process.cwd()
       authorized.set(repositoryPath, sha256);
     }
   }
-  return authorized;
+  for (const [key, expected] of Object.entries(EXPECTED_WATCH_AUDIO_FIXTURE_COUNTS)) {
+    if (counts[key] !== expected) {
+      throw new Error(`Watch Mode audio fixture invariant failed: expected ${key}=${expected}, received ${counts[key]}`);
+    }
+  }
+  return { authorized, counts };
+}
+
+export function loadAuthorizedWatchAudioFixtures(options) {
+  return loadWatchAudioFixtureInventory(options).authorized;
 }
 
 export function trackedFileSizeViolation(file, size, authorizedWatchAudio) {

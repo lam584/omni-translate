@@ -7,6 +7,7 @@ import type { AudioRuntimeSnapshot } from '../../schema/audio-runtime';
 import type { RuntimeSnapshot } from '../../schema/runtime-core';
 import type { ProviderInteractionCapability } from '../../schema/provider-contract';
 import { isProcessLoopbackReady, resolveProcessLoopbackCapability } from '../../utils/process-loopback-capability';
+import { isOverlayVisible } from '../../utils/scene-readiness';
 
 export type RuntimeEnvironmentSummary = {
   mode: 'browser-preview' | 'runtime-error' | 'live-action-needed' | 'live-ready';
@@ -190,10 +191,6 @@ export function getIssueToneRank(tone: StatusTone) {
     default:
       return 0;
   }
-}
-
-export function isOverlayVisible(runtimeSnapshot: RuntimeSnapshot) {
-  return runtimeSnapshot.windows.find((item) => item.label === 'subtitle-overlay')?.visible === true;
 }
 
 export function getRuntimeEnvironmentSummary(

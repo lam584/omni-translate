@@ -403,7 +403,7 @@ test('interactive control projects readiness and paid-cell fields only inside th
   );
   assert.match(control, /\$mode -notin @\('endpoint-readiness', 'shard-cell', 'incident-plus-cell'\)/);
   const commandStart = control.indexOf('$command = [ordered]@{');
-  const commandEnd = control.indexOf('Write-ImmutableJson $commandPath $command');
+  const commandEnd = control.indexOf('Write-OmniImmutableJson -LiteralPath $commandPath -Value $command');
   assert.ok(commandStart >= 0 && commandEnd > commandStart);
   const commandProjection = control.slice(commandStart, commandEnd);
   assert.doesNotMatch(

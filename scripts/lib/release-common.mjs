@@ -128,7 +128,14 @@ export const releasePaths = (version) => {
 export const compressArchive = (sourceDir, zipPath) => {
   if (isWindows) {
     const psCommand = `Compress-Archive -Path '${sourceDir.replace(/'/g, "''")}\\*' -DestinationPath '${zipPath.replace(/'/g, "''")}' -Force`;
-    execFileSync('powershell.exe', ['-NoProfile', '-Command', psCommand], { stdio: 'inherit' });
+    execFileSync('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      psCommand,
+    ], { stdio: 'inherit' });
     return;
   }
   const absoluteZipPath = path.resolve(zipPath);

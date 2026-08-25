@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import AppIcon from '../components/icons/AppIcon';
+import AppIcon, { type AppIconName } from '../components/icons/AppIcon';
 import DriverManagementCard from '../components/driver/DriverManagementCard';
 import { getCurrentLanguage, resetWelcomeFlag, setUiLanguage } from '../i18n/config';
 import { supportedLanguages } from '../i18n/languages';
@@ -15,6 +15,26 @@ import { writeProviderTemplateCatalogPreferences } from '../utils/provider-templ
 
 const TRANSLATION_CUSTOM_VALUE = '__custom__';
 const OUTBOUND_LANGUAGE_AUTO_VALUE = '__auto__';
+
+type SettingsCardHeaderProps = {
+  description: string;
+  icon: AppIconName;
+  title: string;
+};
+
+function SettingsCardHeader({ description, icon, title }: SettingsCardHeaderProps) {
+  return (
+    <div className="settings-card-head">
+      <div className="settings-card-title">
+        <span className="settings-card-title-icon" aria-hidden="true">
+          <AppIcon name={icon} size={16} />
+        </span>
+        <h3>{title}</h3>
+      </div>
+      <p>{description}</p>
+    </div>
+  );
+}
 
 function SettingsPage() {
   const { t, i18n } = useTranslation();
@@ -119,10 +139,11 @@ function SettingsPage() {
   return (
     <section className="settings-workspace">
       <div className="settings-card">
-        <div className="settings-card-head">
-          <h3>{t('settings.sectionLanguage')}</h3>
-          <p>{t('settings.languageHint')}</p>
-        </div>
+        <SettingsCardHeader
+          description={t('settings.languageHint')}
+          icon="globe"
+          title={t('settings.sectionLanguage')}
+        />
 
         <div className="settings-card-body">
           <label className="settings-field">
@@ -140,10 +161,11 @@ function SettingsPage() {
       </div>
 
       <div className="settings-card">
-        <div className="settings-card-head">
-          <h3>{t('settings.sectionTranslationPreference')}</h3>
-          <p>{t('settings.translationPreferenceHint')}</p>
-        </div>
+        <SettingsCardHeader
+          description={t('settings.translationPreferenceHint')}
+          icon="translate"
+          title={t('settings.sectionTranslationPreference')}
+        />
 
         <div className="settings-card-body">
           <label className="settings-field">
@@ -192,55 +214,60 @@ function SettingsPage() {
       </div>
 
       <div className="settings-card">
-        <div className="settings-card-head">
-          <h3>{t('settings.sectionOverlay')}</h3>
-          <p>{t('settings.overlayHint')}</p>
-        </div>
+        <SettingsCardHeader
+          description={t('settings.overlayHint')}
+          icon="subtitles"
+          title={t('settings.sectionOverlay')}
+        />
 
         <div className="settings-card-body settings-card-body-row">
           <Link className="settings-action" to="/settings/overlay-style">
             <AppIcon name="subtitles" size={14} />
-            <span style={{ marginInlineStart: 6 }}>{t('settings.overlayAction')}</span>
+            <span>{t('settings.overlayAction')}</span>
           </Link>
         </div>
       </div>
 
       <div className="settings-card">
-        <div className="settings-card-head">
-          <h3>{t('settings.sectionProviders')}</h3>
-          <p>{t('settings.providersHint')}</p>
-        </div>
+        <SettingsCardHeader
+          description={t('settings.providersHint')}
+          icon="server"
+          title={t('settings.sectionProviders')}
+        />
 
         <div className="settings-card-body settings-card-body-row">
           <Link className="settings-action" to="/settings/providers">
-            <AppIcon name="cloud" size={14} />
-            <span style={{ marginInlineStart: 6 }}>{t('settings.providersAction')}</span>
+            <AppIcon name="server" size={14} />
+            <span>{t('settings.providersAction')}</span>
           </Link>
           <button type="button" className="settings-action" onClick={handleResetProviders}>
             <AppIcon name="refresh" size={14} />
-            <span style={{ marginInlineStart: 6 }}>{t('settings.resetProvidersAction')}</span>
+            <span>{t('settings.resetProvidersAction')}</span>
           </button>
           {providerResetMessage ? <span className="settings-inline-feedback">{providerResetMessage}</span> : null}
         </div>
       </div>
 
       <div className="settings-card settings-card-driver">
-        <div className="settings-card-head">
-          <h3>{t('settings.sectionDriverManagement')}</h3>
-          <p>{t('settings.driverManagementHint')}</p>
-        </div>
+        <SettingsCardHeader
+          description={t('settings.driverManagementHint')}
+          icon="chip"
+          title={t('settings.sectionDriverManagement')}
+        />
         <div className="settings-card-body"><DriverManagementCard /></div>
       </div>
 
       <div className="settings-card settings-card-maintenance">
-        <div className="settings-card-head">
-          <h3>{t('settings.resetWelcome')}</h3>
-          <p>{t('settings.resetWelcomeHint')}</p>
-        </div>
+        <SettingsCardHeader
+          description={t('settings.resetWelcomeHint')}
+          icon="refresh"
+          title={t('settings.resetWelcome')}
+        />
 
         <div className="settings-card-body settings-card-body-row">
           <button type="button" className="settings-action" onClick={handleResetWelcome}>
-            {t('settings.resetWelcomeAction')}
+            <AppIcon name="refresh" size={14} />
+            <span>{t('settings.resetWelcomeAction')}</span>
           </button>
           {resetMessage ? <span className="settings-inline-feedback">{resetMessage}</span> : null}
         </div>

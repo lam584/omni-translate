@@ -107,6 +107,7 @@ impl OmniEventProcessor {
             queued_audio_chunks,
         );
         if !was_ready_for_audio && state.session_ready_for_audio {
+            crate::watch_mode_diagnostic::readiness::mark_provider_ready();
             state.event_diagnostics.readiness_event = Some(event_type.to_string());
             store.watch_session_report.record_session_ready(
                 event_type,

@@ -1,5 +1,4 @@
-/* Shared middle section of the cascade, imported by both index.css and
-   deferred.css. Keep this order stable. */
+/* Shared middle section of the deferred cascade. Keep this order stable. */
 
 /* Feature styles and their first compatibility layer. */
 @import './pages/diagnostics.css';

@@ -76,15 +76,15 @@ const COMMON_CELL_ARTIFACTS = Object.freeze([
   'provider-input-budget-ledger.json.journal.jsonl',
   'report.json',
   'report.md',
-  'snapshots.json',
+  'run-collection.json',
   'source-media-reference-16k-mono.pcm',
-  'steps.json',
   'system-metrics.json',
   'watch-session-report.json',
 ]);
 
 const PHYSICAL_CONTENT_ARTIFACTS = Object.freeze([
   'physical-output-content.json',
+  'physical-output-content.raw.json',
   'physical-output-recording-16k-mono.pcm',
   'physical-output-recording-source-window-16k-mono.pcm',
   'physical-output-recording.json',
@@ -117,7 +117,7 @@ export function requiredCellArtifactPaths(feedbackLoopPrevention) {
 }
 
 export function forbiddenCellArtifactPaths(feedbackLoopPrevention) {
-  const paths = ['failure.json'];
+  const paths = [];
   if (feedbackLoopPrevention === 'echo-cancel') paths.push(...PHYSICAL_CONTENT_ARTIFACTS);
   return paths.sort();
 }

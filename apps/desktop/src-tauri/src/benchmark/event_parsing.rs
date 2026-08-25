@@ -448,28 +448,3 @@ fn push_gemini_output_delta(
     sync_output_progress(progress, r);
     progress.emit("running", "output-delta", "收到 Gemini Live 输出文本", None);
 }
-
-fn collect_gemini_model_text(value: &Value) -> String {
-    fn walk(value: &Value, out: &mut String) {
-        match value {
-            Value::Object(map) => {
-                if let Some(text) = map.get("text").and_then(Value::as_str) {
-                    out.push_str(text);
-                }
-                for child in map.values() {
-                    walk(child, out);
-                }
-            }
-            Value::Array(items) => {
-                for child in items {
-                    walk(child, out);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let mut out = String::new();
-    walk(value, &mut out);
-    out
-}

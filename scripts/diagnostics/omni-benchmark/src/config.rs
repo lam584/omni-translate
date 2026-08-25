@@ -4,8 +4,6 @@ use crate::protocol::BenchmarkProtocol;
 
 // ──────────────────────────────── Constants ────────────────────────────────
 
-#[allow(dead_code)]
-pub const DEFAULT_WS_BASE_URL: &str = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime";
 pub const DEFAULT_MODEL: &str = "qwen3.5-livetranslate-flash-realtime";
 
 // ──────────────────────────────── CLI Modes ────────────────────────────────
@@ -44,9 +42,6 @@ pub struct Config {
     pub auth_header_name: String,
     /// 自定义鉴权 scheme（如 "bearer" 或空字符串）
     pub auth_scheme: String,
-    /// 凭据引用（credential://...），用于从 Windows Credential Manager 读取
-    #[allow(dead_code)]
-    pub credential_ref: Option<String>,
 }
 
 // ──────────────────────────────── CLI Parsing ───────────────────────────────
@@ -279,7 +274,6 @@ fn parse_single_args(args: &[String]) -> Result<Config, String> {
         protocol,
         auth_header_name: final_auth_header,
         auth_scheme: final_auth_scheme,
-        credential_ref,
     })
 }
 

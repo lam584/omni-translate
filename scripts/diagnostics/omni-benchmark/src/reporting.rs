@@ -106,123 +106,41 @@ pub struct Summary {
 // ──────────────────────────────── Statistics ────────────────────────────────
 
 pub fn compute_summary(results: &[RunResult], _audio_duration: f64) -> Summary {
-    let successful: Vec<&RunResult> = results
+    let inputs = results
         .iter()
-        .filter(|r| r.response_count > 0 || !r.translation_final.is_empty())
-        .collect();
-    let n = successful.len();
-
-    if n == 0 {
-        return Summary {
-            run_count: results.len(),
-            successful_runs: 0,
-            avg_connect_ms: 0.0,
-            avg_session_ready_ms: 0.0,
-            avg_time_to_first_token_ms: None,
-            avg_time_to_first_committed_ms: None,
-            avg_output_delta_interval_ms: None,
-            avg_output_deltas_per_run: 0.0,
-            avg_total_output_duration_ms: None,
-            p50_delta_interval_ms: None,
-            p90_delta_interval_ms: None,
-            p99_delta_interval_ms: None,
-            min_delta_interval_ms: None,
-            max_delta_interval_ms: None,
-        };
-    }
-
-    let avg_connect = successful.iter().map(|r| r.connect_ms).sum::<f64>() / n as f64;
-    let avg_session = successful.iter().map(|r| r.session_ready_ms).sum::<f64>() / n as f64;
-
-    // TTFT relative to response.created (preferred) or absolute
-    let ttf_values: Vec<f64> = successful
-        .iter()
-        .filter_map(|r| match (r.first_output_ms, r.response_created_ms) {
-            (Some(ftt), Some(rc)) if ftt >= rc => Some(ftt - rc),
-            (Some(ftt), Some(_)) => Some(ftt),
-            (Some(ftt), None) => Some(ftt),
-            _ => None,
+        .map(|run| omni_benchmark_core::SummaryRun {
+            response_count: run.response_count,
+            has_translation: !run.translation_final.is_empty(),
+            connect_ms: run.connect_ms,
+            session_ready_ms: run.session_ready_ms,
+            first_output_ms: run.first_output_ms,
+            first_committed_ms: run.first_committed_ms,
+            response_created_ms: run.response_created_ms,
+            total_output_duration_ms: run.total_output_duration_ms,
+            output_delta_count: run.output_delta_count,
+            output_delta_elapsed_ms: run
+                .output_deltas
+                .iter()
+                .map(|delta| delta.elapsed_ms)
+                .collect(),
         })
-        .collect();
-    let avg_ttf = if ttf_values.is_empty() {
-        None
-    } else {
-        Some(ttf_values.iter().sum::<f64>() / ttf_values.len() as f64)
-    };
-
-    // TTFC relative to response.created (preferred) or absolute
-    let ttfc_values: Vec<f64> = successful
-        .iter()
-        .filter_map(|r| match (r.first_committed_ms, r.response_created_ms) {
-            (Some(ftc), Some(rc)) if ftc >= rc => Some(ftc - rc),
-            (Some(ftc), Some(_)) => Some(ftc),
-            (Some(ftc), None) => Some(ftc),
-            _ => None,
-        })
-        .collect();
-    let avg_ttfc = if ttfc_values.is_empty() {
-        None
-    } else {
-        Some(ttfc_values.iter().sum::<f64>() / ttfc_values.len() as f64)
-    };
-
-    let dur_values: Vec<f64> = successful
-        .iter()
-        .filter_map(|r| r.total_output_duration_ms)
-        .collect();
-    let avg_dur = if dur_values.is_empty() {
-        None
-    } else {
-        Some(dur_values.iter().sum::<f64>() / dur_values.len() as f64)
-    };
-
-    // Collect all delta intervals across all runs
-    let mut all_intervals: Vec<f64> = Vec::new();
-    for r in &successful {
-        for i in 1..r.output_deltas.len() {
-            let gap = r.output_deltas[i].elapsed_ms - r.output_deltas[i - 1].elapsed_ms;
-            if gap >= 0.0 {
-                all_intervals.push(gap);
-            }
-        }
-    }
-
-    let avg_interval = if all_intervals.is_empty() {
-        None
-    } else {
-        Some(all_intervals.iter().sum::<f64>() / all_intervals.len() as f64)
-    };
-
-    all_intervals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let percentile = |p: f64| -> Option<f64> {
-        if all_intervals.is_empty() {
-            return None;
-        }
-        let idx = ((all_intervals.len() as f64 - 1.0) * p / 100.0).round() as usize;
-        Some(all_intervals[idx.min(all_intervals.len() - 1)])
-    };
-
-    let avg_deltas = successful
-        .iter()
-        .map(|r| r.output_delta_count as f64)
-        .sum::<f64>()
-        / n as f64;
-
+        .collect::<Vec<_>>();
+    let summary = omni_benchmark_core::compute_summary(&inputs);
     Summary {
-        run_count: results.len(),
-        successful_runs: n,
-        avg_connect_ms: avg_connect,
-        avg_session_ready_ms: avg_session,
-        avg_time_to_first_token_ms: avg_ttf,
-        avg_time_to_first_committed_ms: avg_ttfc,
-        avg_output_delta_interval_ms: avg_interval,
-        avg_output_deltas_per_run: avg_deltas,
-        avg_total_output_duration_ms: avg_dur,
-        p50_delta_interval_ms: percentile(50.0),
-        p90_delta_interval_ms: percentile(90.0),
-        p99_delta_interval_ms: percentile(99.0),
-        min_delta_interval_ms: all_intervals.first().copied(),
-        max_delta_interval_ms: all_intervals.last().copied(),
+        run_count: summary.run_count,
+        successful_runs: summary.successful_runs,
+        avg_connect_ms: summary.avg_connect_ms,
+        avg_session_ready_ms: summary.avg_session_ready_ms,
+        avg_time_to_first_token_ms: summary.avg_time_to_first_token_ms,
+        avg_time_to_first_committed_ms: summary.avg_time_to_first_committed_ms,
+        avg_output_delta_interval_ms: summary.avg_output_delta_interval_ms,
+        avg_output_deltas_per_run: summary.avg_output_deltas_per_run,
+        avg_total_output_duration_ms: summary.avg_total_output_duration_ms,
+        p50_delta_interval_ms: summary.p50_delta_interval_ms,
+        p90_delta_interval_ms: summary.p90_delta_interval_ms,
+        p99_delta_interval_ms: summary.p99_delta_interval_ms,
+        min_delta_interval_ms: summary.min_delta_interval_ms,
+        max_delta_interval_ms: summary.max_delta_interval_ms,
     }
 }
 
@@ -388,6 +306,19 @@ pub fn set_read_timeout(
 
 pub fn is_timeout(msg: &str) -> bool {
     msg.contains("timed out") || msg.contains("TimedOut") || msg.contains("10060")
+}
+
+pub fn wait_session_ready(
+    socket: &mut tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
+) -> Result<(), String> {
+    omni_benchmark_core::wait_session_ready(|| match socket.read() {
+        Ok(tungstenite::Message::Text(text)) => {
+            omni_benchmark_core::SessionRead::Text(text.to_string())
+        }
+        Ok(tungstenite::Message::Close(_)) => omni_benchmark_core::SessionRead::Closed,
+        Err(error) => omni_benchmark_core::SessionRead::Error(error.to_string()),
+        _ => omni_benchmark_core::SessionRead::Other,
+    })
 }
 
 pub(crate) fn truncate_str(s: &str, max: usize) -> String {

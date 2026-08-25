@@ -3,6 +3,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { currentGitProvenance } from './git-provenance.mjs';
+import { derivePhysicalOutputContent } from './watch-mode/content-policy.mjs';
+import { resolveLayerVerdict } from './watch-mode/layer-classifier.mjs';
+import { collectReportInput, rebuildStoredReport, writeStoredReport } from './watch-mode/report-writer.mjs';
+
+export { derivePhysicalOutputContent } from './watch-mode/content-policy.mjs';
 
 /** HEAD commit of the checkout producing this evidence (null outside git). */
 export function currentGitCommit() {
@@ -114,11 +119,6 @@ function asNumber(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback;
 }
 
-function readJsonIfExists(filePath) {
-  if (!filePath || !fs.existsSync(filePath)) return null;
-  return JSON.parse(fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, ''));
-}
-
 function readTextIfExists(filePath) {
   if (!filePath || !fs.existsSync(filePath)) return '';
   return fs.readFileSync(filePath, 'utf8');
@@ -184,15 +184,15 @@ function isBenignCredentialLifecycleLine(line) {
 function normalizeSteps(steps) {
   if (!Array.isArray(steps)) return [];
   return steps.map((step) => ({
-    name: String(step?.name ?? '(unnamed step)'),
-    ok: step?.ok === true,
-    error: step?.error ? String(step.error) : null,
-    result: step?.result ?? null,
-    details: step?.details ?? null,
-    exitCode: step?.exitCode ?? step?.result?.exitCode ?? null,
-    timedOut: step?.timedOut ?? step?.result?.timedOut ?? null,
-    stdout: step?.stdout ?? step?.result?.stdout ?? null,
-    stderr: step?.stderr ?? step?.result?.stderr ?? null,
+    name: String(step?.id ?? '(unnamed-step)').replaceAll('-', ' '),
+    ok: step?.status === 'passed',
+    error: step?.error?.message ? String(step.error.message) : null,
+    result: step?.data ?? null,
+    details: step?.error?.details ?? null,
+    exitCode: step?.data?.exitCode ?? null,
+    timedOut: step?.data?.timedOut ?? null,
+    stdout: step?.data?.stdout ?? null,
+    stderr: step?.data?.stderr ?? null,
   }));
 }
 
@@ -956,6 +956,64 @@ function parseSpeechSegmentation(appLog) {
   };
 }
 
+export function parseSubtitleQueueTimeline(text) {
+  const events = [];
+  const decodeText = (value) => {
+    try { return JSON.parse(`"${value}"`); } catch { return value.replaceAll('\\"', '"').replaceAll('\\n', '\n'); }
+  };
+  const add = (regex, kind, map = () => ({})) => {
+    for (const match of text.matchAll(regex)) {
+      events.push({ index: match.index, at: match[1], kind, ...map(match) });
+    }
+  };
+  add(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[^\r\n]*speech_started received[^\r\n]*cue_id=(omni-cue-\d+)/gm,
+    'cue_started', (match) => ({ cueId: match[2] }));
+  add(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[^\r\n]*\[TRANS_WRITE\]\s+cue_id=(omni-cue-\d+)\s+rank=(\w+)\s+seq=(\d+)\s+translated="((?:\\.|[^"\\])*)"/gm,
+    'translation_write', (match) => ({ cueId: match[2], rank: match[3], seq: Number(match[4]), text: decodeText(match[5]) }));
+  add(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[^\r\n]*speech\.segment_tts_queued\s+\|\s+cue=(omni-cue-\d+)\s+segmentIndex=(\d+)/gm,
+    'segment_tts_queued', (match) => ({ cueId: match[2], seq: Number(match[3]) }));
+  add(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[^\r\n]*speech\.segment_playback_written\s+\|\s+cue=(omni-cue-\d+)\s+segmentIndex=(\d+)/gm,
+    'segment_playback_written', (match) => ({ cueId: match[2], seq: Number(match[3]) }));
+  add(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[^\r\n]*event=translation_playback_status\s+\|[^\r\n]*cueId=(omni-cue-\d+)[^\r\n]*\bstatus=completed\b[^\r\n]*\breason=physical-playback-completed\b/gm,
+    'bridge_playback_completed', (match) => ({ cueId: match[2] }));
+  events.sort((left, right) => left.index - right.index);
+  const finalWrites = events.filter((event) => event.kind === 'translation_write' && /^(Final|Forced)$/.test(event.rank));
+  let cueOrderInversions = 0;
+  for (let index = 1; index < finalWrites.length; index += 1) {
+    if (Number(finalWrites[index].cueId.match(/(\d+)$/)?.[1]) < Number(finalWrites[index - 1].cueId.match(/(\d+)$/)?.[1])) cueOrderInversions += 1;
+  }
+  const seen = new Set();
+  let duplicateFinalTranslations = 0;
+  for (const event of finalWrites) {
+    const normalized = event.text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+    if (normalized.length < 8) continue;
+    if (seen.has(normalized)) duplicateFinalTranslations += 1;
+    seen.add(normalized);
+  }
+  const first = (kind, rank = null) => events.find((event) => event.kind === kind && (!rank || rank.test(event.rank)));
+  const latency = (start, end) => {
+    if (!start || !end) return null;
+    const parse = (value) => Date.parse(`${value.replace(' ', 'T')}Z`);
+    return Math.round((parse(end.at) - parse(start.at))) / 1000;
+  };
+  const started = first('cue_started');
+  return {
+    eventCount: events.length,
+    startedCueCount: events.filter((event) => event.kind === 'cue_started').length,
+    finalWriteCount: finalWrites.length,
+    queuedSegmentCount: events.filter((event) => event.kind === 'segment_tts_queued').length,
+    playedSegmentCount: events.filter((event) => ['segment_playback_written', 'bridge_playback_completed'].includes(event.kind)).length,
+    cueOrderInversions,
+    duplicateFinalTranslations,
+    firstVisibleTranslationLatencySeconds: latency(started, first('translation_write')),
+    firstFinalTranslationLatencySeconds: latency(started, first('translation_write', /^(Final|Forced|Replacement)$/)),
+    firstTtsQueuedLatencySeconds: latency(started, first('segment_tts_queued')),
+    firstPlaybackLatencySeconds: latency(started, events.find((event) => ['segment_playback_written', 'bridge_playback_completed'].includes(event.kind))),
+    displayOrder: 'newest-first',
+    events: events.slice(-80).map(({ index, ...event }) => event),
+  };
+}
+
 function driverLayerFailed(driver) {
   if (!driver) return 'driver probe did not run';
   if (driver.error && /WASAPI audio probe failed|tone|idle peak|InvalidSamples|invalid samples/i.test(driver.error)) {
@@ -1594,6 +1652,7 @@ function physicalOutputContentLayerFailed(content) {
     return audioQuality.detail ?? audioQuality.error ?? 'physical output recording audio quality failed';
   }
   if (content.originalPassthrough || content.translatedSpeech || content.mixedOutput) {
+    const strictMedia = isStrictTestMediaEvidence(content, null);
     if (content.originalPassthrough?.passed === false) {
       const transcriptEvidencePassed = content.contentConsistency?.physicalTranscript?.passed === true
         || (content.contentConsistency?.passed === true && asNumber(content.originalPassthrough.transcriptChars) > 0);
@@ -1614,12 +1673,12 @@ function physicalOutputContentLayerFailed(content) {
         ?? content.translatedSpeech.error
         ?? `secondary translated speech was not written to physical output; queuedSegments=${asNumber(content.translatedSpeech.queuedSegments)} playedSegments=${asNumber(content.translatedSpeech.playedSegments)}`;
     }
-    if (content.contentConsistency?.combinedEvidence?.passed === false) {
+    if (!strictMedia && content.contentConsistency?.combinedEvidence?.passed === false) {
       return content.contentConsistency.combinedEvidence.detail
         ?? content.contentConsistency.combinedEvidence.error
         ?? 'combined physical/structured translation evidence did not pass';
     }
-    if (content.contentConsistency?.passed === false) {
+    if (!strictMedia && content.contentConsistency?.passed === false) {
       const details = [];
       if (Number.isFinite(Number(content.contentConsistency.coverage))) {
         details.push(`coverage=${Number(content.contentConsistency.coverage).toFixed(3)}`);
@@ -1638,6 +1697,9 @@ function physicalOutputContentLayerFailed(content) {
       return `physical output content diverged from source media reference${details.length ? `; ${details.join(' ')}` : ''}`;
     }
     return null;
+  }
+  if (content.contentConsistency?.passed === false) {
+    return 'physical output content diverged from source media reference';
   }
   if (content.passed === false) return content.detail ?? content.error ?? 'physical output content STT failed';
   const subtitleText = String(content.subtitleText ?? '');
@@ -1957,6 +2019,7 @@ function environmentPrecheckFailed(input, feedbackLoopPrevention = 'virtual-driv
 }
 
 export function classifyWatchModeRun(input) {
+  input = { ...input, physicalOutputContent: derivePhysicalOutputContent(input.physicalOutputContent) };
   const feedbackLoopPrevention = normalizeFeedbackLoopPrevention(
     input.feedbackLoopPrevention ?? input.snapshots?.feedbackLoopPrevention,
   );
@@ -1966,6 +2029,7 @@ export function classifyWatchModeRun(input) {
     watchSessionReport: input.watchSessionReport,
   });
   const appLog = parseAppLog(input.appLogText ?? '');
+  const app = { ...input.app, subtitleQueue: input.app?.subtitleQueue ?? parseSubtitleQueueTimeline(input.appLogText ?? '') };
   const translationRoute = inferTranslationRoute(input, appLog);
   const speechSegmentation = input.speechSegmentation ?? parseSpeechSegmentation(appLog);
   const realtimeSession = parseOmniRealtimeDiagnostics(appLog);
@@ -1992,7 +2056,7 @@ export function classifyWatchModeRun(input) {
     speechSegmentation: createLayer('speechSegmentation', speechSegmentation),
     strictContent: createLayer('strictContent', strictContent),
     app: createLayer('app', {
-      ...input.app,
+      ...app,
       watchSessionReport: input.watchSessionReport
         ? {
             sessionId: input.watchSessionReport.sessionId ?? null,
@@ -2097,7 +2161,7 @@ export function classifyWatchModeRun(input) {
         ...(hardProviderReason ? [['provider', hardProviderReason]] : []),
         ...(providerBeforeAppReason ? [['provider', providerReason]] : []),
         ...(secondaryPreconnectReason ? [['app', secondaryPreconnectReason]] : []),
-        ['app', appLayerFailed(input.app, appLog, {
+        ['app', appLayerFailed(app, appLog, {
           translationRoute,
           watchSessionReport: input.watchSessionReport,
           requireWatchReport: (input.mode ?? 'live') === 'live',
@@ -2128,13 +2192,7 @@ export function classifyWatchModeRun(input) {
     if (feedbackLoopPrevention === 'virtual-driver' && layers.wasapi.reason) layers.wasapi.status = 'blocked';
   }
 
-  const failed = activeChecks.find(([layer]) => layers[layer].status === 'failed');
-  const inconclusive = activeChecks.find(([layer]) => layers[layer].status === 'inconclusive');
-  const blocked = environmentReason
-    ? (layers.driver.status === 'blocked' ? ['driver', layers.driver.reason] : ['environment', environmentReason])
-    : null;
-  const failureLayer = blocked?.[0] ?? failed?.[0] ?? inconclusive?.[0] ?? null;
-  const verdict = blocked ? 'blocked' : failed ? 'failed' : inconclusive ? 'inconclusive' : 'passed';
+  const { failureLayer, verdict } = resolveLayerVerdict({ activeChecks, layers, environmentReason });
   const diagnostics = buildReportDiagnostics(input, layers, activeChecks, appLog, bridgeLog);
   const provenance = input.provenance ?? currentGitProvenance();
   return {
@@ -2247,118 +2305,19 @@ export function renderMarkdownReport(report) {
   return `${lines.join('\n')}\n`;
 }
 
-function bridgeSnapshotFromProbe(probe, feedbackLoopPrevention) {
-  if (!probe || typeof probe !== 'object') return null;
-  const state = probe.state;
-  if (state && (probe.sourceFrame || feedbackLoopPrevention === 'process-exclusion')) {
-    return {
-      probePassed: probe.passed !== false,
-      bridgeState: state.bridgeState,
-      driverHealth: state.driverHealth,
-      sourceCaptureMode: state.sourceCaptureMode,
-      captureBackend: state.captureBackend,
-      processLoopbackSupported: state.processLoopbackSupported,
-      processLoopbackStatus: state.processLoopbackStatus,
-      windowsBuildNumber: state.windowsBuildNumber,
-      processLoopbackMinimumWindowsBuild: state.processLoopbackMinimumWindowsBuild,
-      excludedProcessId: state.excludedProcessId,
-      processLoopbackFailureDetail: state.processLoopbackFailureDetail,
-      sourceSubscriberActive: state.sourceSubscriberActive,
-      sourceReadCalls: state.sourceReadCalls,
-      droppedFrameCount: state.droppedFrameCount,
-      lastErrorCode: state.lastErrorCode,
-      sourceFramePayloadBytes: probe.sourceFrame?.payloadBytes ?? 0,
-      pipeName: probe.pipeName,
-      sourcePipeName: probe.sourcePipeName,
-    };
-  }
-  return {
-    probePassed: false,
-    error: probe.error,
-    phase: probe.phase,
-    stateQueryError: probe.stateQueryError,
-    init: probe.init,
-    state: probe.state,
-    pipeName: probe.pipeName,
-    sourcePipeName: probe.sourcePipeName,
-    stdout: probe.stdout,
-    stderr: probe.stderr,
-  };
-}
-
 export function collectInputFromDirectory(inputDir, mode = 'live', options = {}) {
-  const appLogPath = path.join(inputDir, 'app.log');
-  const bridgeLogPath = path.join(inputDir, 'bridge-service.log');
-  const snapshotsPath = path.join(inputDir, 'snapshots.json');
-  const failurePath = path.join(inputDir, 'failure.json');
-  const stepsPath = path.join(inputDir, 'steps.json');
-  const snapshots = readJsonIfExists(snapshotsPath) ?? {};
-  const feedbackLoopPrevention = snapshots.feedbackLoopPrevention ?? null;
-  const bridgeProbe = readJsonIfExists(path.join(inputDir, 'bridge-source-probe.json'));
-  const runMarker = snapshots.runMarker ?? null;
-  const startedAtLocal = snapshots.startedAtLocal ?? null;
-  const rawAppLogText = readTextIfExists(appLogPath);
-  const rawBridgeLogText = readTextIfExists(bridgeLogPath);
-  const appLogText = textAfterMarker(rawAppLogText, runMarker) || textAfterLocalTimestamp(rawAppLogText, startedAtLocal);
-  const bridgeLogText = textAfterMarker(rawBridgeLogText, runMarker) || textAfterLocalTimestamp(rawBridgeLogText, startedAtLocal);
-  return {
-    mode,
-    snapshots,
-    provenance: options.provenance,
-    feedbackLoopPrevention,
-    driver: readJsonIfExists(path.join(inputDir, 'driver.json')) ?? snapshots.driver,
-    wasapi: readJsonIfExists(path.join(inputDir, 'driver.json')) ?? snapshots.wasapi ?? snapshots.driver,
-    bridge: bridgeSnapshotFromProbe(bridgeProbe, feedbackLoopPrevention) ?? snapshots.bridge,
-    physicalOutput: readJsonIfExists(path.join(inputDir, 'physical-output-probe.json')) ?? snapshots.physicalOutput,
-    physicalOutputContent: readJsonIfExists(path.join(inputDir, 'physical-output-content.json')) ?? snapshots.physicalOutputContent,
-    app: snapshots.app,
-    provider: snapshots.provider,
-    speechSegmentation: snapshots.speechSegmentation,
-    deviceEvidence: readJsonIfExists(path.join(inputDir, 'physical-playback-device.json'))
-      ?? snapshots.deviceEvidence,
-    watchSessionReport: readJsonIfExists(path.join(inputDir, 'watch-session-report.json'))
-      ?? snapshots.watchSessionReport,
-    playback: readJsonIfExists(path.join(inputDir, 'playback.json')) ?? snapshots.playback,
-    systemMetrics: readJsonIfExists(path.join(inputDir, 'system-metrics.json')),
-    failure: readJsonIfExists(failurePath),
-    steps: readJsonIfExists(stepsPath),
-    appLogText,
-    bridgeLogText,
-    artifacts: {
-      appLog: fs.existsSync(appLogPath) ? appLogPath : null,
-      bridgeLog: fs.existsSync(bridgeLogPath) ? bridgeLogPath : null,
-      snapshots: fs.existsSync(snapshotsPath) ? snapshotsPath : null,
-      failure: fs.existsSync(failurePath) ? failurePath : null,
-      steps: fs.existsSync(stepsPath) ? stepsPath : null,
-      physicalOutputRecording: fs.existsSync(path.join(inputDir, 'physical-output-recording.wav'))
-        ? path.join(inputDir, 'physical-output-recording.wav')
-        : null,
-      physicalOutputContent: fs.existsSync(path.join(inputDir, 'physical-output-content.json'))
-        ? path.join(inputDir, 'physical-output-content.json')
-        : null,
-      diagnosticsBundle: snapshots.diagnosticsBundle ?? null,
-      watchSessionReport: fs.existsSync(path.join(inputDir, 'watch-session-report.json'))
-        ? path.join(inputDir, 'watch-session-report.json')
-        : null,
-      systemMetrics: fs.existsSync(path.join(inputDir, 'system-metrics.json'))
-        ? path.join(inputDir, 'system-metrics.json')
-        : null,
-    },
-  };
+  return collectReportInput(inputDir, mode, options);
 }
 
 export function rebuildReportFromDirectory(inputDir, { mode = 'live', provenance } = {}) {
-  return classifyWatchModeRun(collectInputFromDirectory(inputDir, mode, { provenance }));
+  return rebuildStoredReport(inputDir, { mode, provenance }, classifyWatchModeRun);
 }
 
 export function writeReport({ inputDir, outputDir, mode = 'live' }) {
-  fs.mkdirSync(outputDir, { recursive: true });
-  const report = rebuildReportFromDirectory(inputDir, { mode });
-  const reportJsonPath = path.join(outputDir, 'report.json');
-  const reportMarkdownPath = path.join(outputDir, 'report.md');
-  fs.writeFileSync(reportJsonPath, `${JSON.stringify(report, null, 2)}\n`);
-  fs.writeFileSync(reportMarkdownPath, renderMarkdownReport(report));
-  return { report, reportJsonPath, reportMarkdownPath };
+  return writeStoredReport(
+    { inputDir, outputDir, mode },
+    { derivePhysicalOutputContent, classifyWatchModeRun, renderMarkdownReport },
+  );
 }
 
 function parseArgs(argv) {

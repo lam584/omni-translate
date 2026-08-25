@@ -1,4 +1,5 @@
 import i18n from '../../i18n/config';
+import AppIcon from '../../components/icons/AppIcon';
 import type { BenchmarkHistorySummary } from './benchmarkHistory';
 import { formatHistoryTime, historyScore } from './benchmarkHistoryFormat';
 
@@ -33,8 +34,8 @@ export function BenchmarkHistoryPanel({
           <p>{i18n.t('diagnostics.benchmark.historyDescription', { count: totalCount })}</p>
         </div>
         <div className="benchmark-history-actions">
-          <button disabled={loading} onClick={onRefresh} type="button">{i18n.t('diagnostics.actions.refreshRuntime')}</button>
-          <button disabled={loading || records.length === 0} onClick={onClear} type="button">{i18n.t('diagnostics.benchmark.clearHistory')}</button>
+          <button disabled={loading} onClick={onRefresh} type="button"><AppIcon name="refresh" size={13} />{i18n.t('diagnostics.actions.refreshRuntime')}</button>
+          <button disabled={loading || records.length === 0} onClick={onClear} type="button"><AppIcon name="trash" size={13} />{i18n.t('diagnostics.benchmark.clearHistory')}</button>
         </div>
       </div>
       {error ? <p className="benchmark-warning" role="alert">{error}</p> : null}
@@ -50,11 +51,11 @@ export function BenchmarkHistoryPanel({
                   <small>{i18n.t('diagnostics.benchmark.historyStatus', { run: record.runStatus, score: record.scoreStatus })}</small>
                 </button>
                 <strong className="benchmark-history-score">{historyScore(record)}</strong>
-                <button aria-label={i18n.t('diagnostics.benchmark.deleteHistory')} disabled={loading} onClick={() => onDelete(record.recordId)} type="button">×</button>
+                <button aria-label={i18n.t('diagnostics.benchmark.deleteHistory')} disabled={loading} onClick={() => onDelete(record.recordId)} type="button"><AppIcon name="trash" size={13} /></button>
               </article>
             ))}
           </div>
-          {hasMore ? <button className="benchmark-history-more" disabled={loading} onClick={onLoadMore} type="button">{i18n.t('diagnostics.benchmark.loadMoreHistory')}</button> : null}
+          {hasMore ? <button className="benchmark-history-more" disabled={loading} onClick={onLoadMore} type="button"><AppIcon name="plus" size={13} />{i18n.t('diagnostics.benchmark.loadMoreHistory')}</button> : null}
         </>
       ) : null}
     </section>

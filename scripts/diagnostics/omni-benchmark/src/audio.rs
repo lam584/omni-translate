@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use base64::Engine;
+pub(crate) use omni_benchmark_core::{base64_encode_i16, resample_to_16k};
 
 use crate::reporting::AudioFileInfo;
 
@@ -217,28 +217,4 @@ fn parse_wav(bytes: &[u8]) -> Result<WavAudio, String> {
         sample_rate,
         channels: channels as u16,
     })
-}
-
-pub fn resample_to_16k(samples: &[f32], source_rate: u32) -> Vec<i16> {
-    const TARGET: u32 = 16_000;
-    if samples.is_empty() {
-        return Vec::new();
-    }
-    let target_len = ((samples.len() as u64 * TARGET as u64) / source_rate.max(1) as u64).max(1);
-    let ratio = source_rate as f64 / TARGET as f64;
-    (0..target_len as usize)
-        .map(|i| {
-            let pos = i as f64 * ratio;
-            let lo = pos.floor() as usize;
-            let hi = (lo + 1).min(samples.len() - 1);
-            let frac = (pos - lo as f64) as f32;
-            let s = samples[lo] * (1.0 - frac) + samples[hi] * frac;
-            (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
-        })
-        .collect()
-}
-
-pub fn base64_encode_i16(samples: &[i16]) -> String {
-    let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-    base64::engine::general_purpose::STANDARD.encode(bytes)
 }

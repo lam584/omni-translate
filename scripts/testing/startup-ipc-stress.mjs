@@ -20,7 +20,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { isMain, sortableTimestamp } from '../lib/testing-common.mjs';
+import { asPositiveInteger, isMain, sortableTimestamp } from '../lib/testing-common.mjs';
 import {
   emitPlanArtifacts,
   parseSmokeCliArgs,
@@ -68,11 +68,6 @@ export const IPC_CONNECTED_MARKERS = [IPC_PING_LOG_MARKER, IPC_BRIDGE_READY_MARK
 export const STRESS_LAUNCH_ENVIRONMENT = { OMNI_LOG_LEVEL: 'debug' };
 
 const FAILURE_WORDS = /fail|error|timeout|超时|未响应/i;
-
-const asPositiveInteger = (value, fallback) => {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-};
 
 const asFiniteNumber = (value) => {
   const parsed = Number(value);

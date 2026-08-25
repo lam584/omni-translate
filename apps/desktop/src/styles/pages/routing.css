@@ -269,6 +269,12 @@
   min-height:88px
 }
 
+.glossary-mode-card-title {
+  display:flex;
+  align-items:center;
+  gap:7px
+}
+
 .routing-mode-card p,
 .glossary-mode-card p {
   margin:4px 0 0;

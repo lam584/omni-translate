@@ -61,9 +61,8 @@ if ($env:OMNI_SKIP_DRIVER_SMOKE -eq "1") {
   exit 0
 }
 
-# Shared file/process helpers (Set-Utf8NoBomContent, Get-FileLength,
-# Read-TextDelta, Get-ChildProcessIds, Stop-ProcessTree).
-. (Join-Path $PSScriptRoot 'lib/desktop-smoke-common.ps1')
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.IO.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.Process.psm1') -Force
 
 function Test-TcpPort {
   param([string]$TargetHost, [int]$Port, [int]$TimeoutMs = 500)
@@ -104,12 +103,6 @@ function Invoke-WebDriverRequest {
   return Invoke-RestMethod @parameters
 }
 
-function Stop-DesktopShellProcesses {
-  Get-Process -Name 'omni-desktop-shell' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-  Start-Sleep -Milliseconds 400
-  return (@(Get-Process -Name 'omni-desktop-shell' -ErrorAction SilentlyContinue).Count -eq 0)
-}
-
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $runId = "overlay-driver-smoke-$timestamp"
 $runDir = Join-Path $workspaceRoot (Join-Path $OutputRoot $runId)
@@ -148,10 +141,12 @@ if ($DryRun) {
 
 $plan = Get-Content -LiteralPath (Join-Path $runDir 'plan.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $appLogPath = Join-Path $workspaceRoot 'artifacts/diagnostics/logs/app.log'
-$appLogOffset = Get-FileLength $appLogPath
+$appLogOffset = Get-OmniFileLength -LiteralPath $appLogPath
 
 $tools = @()
 $driverProcess = $null
+$driverProcessLease = $null
+$desktopProcessLeases = @()
 $driverProcessEvidence = [ordered]@{ started = $false; listening = $false; pid = $null; endpoint = $plan.driver.endpoint; error = $null }
 $sessionEvidence = [ordered]@{ created = $false; sessionId = $null; error = $null }
 $overlayEvidence = [ordered]@{ showMode = $OverlayShowMode; windowHandles = @() }
@@ -200,6 +195,11 @@ try {
     throw "overlay driver smoke requires a release build at $($plan.releaseExecutable.path)"
   }
 
+  $existingDesktopProcesses = @(Get-Process -Name 'omni-desktop-shell' -ErrorAction SilentlyContinue)
+  if ($existingDesktopProcesses.Count -gt 0) {
+    throw "omni-desktop-shell is already running (pid=$(($existingDesktopProcesses.Id) -join ',')); close it before the overlay smoke"
+  }
+
   $nativeDriverResolved = ($tools | Where-Object { $_.name -eq 'msedgedriver' } | Select-Object -First 1).path
   # Start-Process joins ArgumentList with plain spaces on Windows PowerShell 5.1,
   # so a driver path containing spaces has to carry its own quotes.
@@ -224,6 +224,7 @@ try {
     -RedirectStandardError $driverStderr `
     -WindowStyle Hidden `
     -PassThru
+  $driverProcessLease = Get-OmniProcessIdentity -ProcessId $driverProcess.Id -Ownership managed
   $driverProcessEvidence.started = $true
   $driverProcessEvidence.pid = $driverProcess.Id
 
@@ -257,6 +258,19 @@ try {
   }
   $sessionEvidence.created = $true
   $sessionEvidence.sessionId = $sessionId
+
+  $desktopDeadline = [DateTime]::UtcNow.AddSeconds(5)
+  do {
+    $desktopProcesses = @(Get-Process -Name 'omni-desktop-shell' -ErrorAction SilentlyContinue)
+    if ($desktopProcesses.Count -gt 0) { break }
+    Start-Sleep -Milliseconds 100
+  } while ([DateTime]::UtcNow -lt $desktopDeadline)
+  if ($desktopProcesses.Count -eq 0) {
+    throw 'WebDriver session was created but its desktop process could not be leased'
+  }
+  $desktopProcessLeases = @($desktopProcesses | ForEach-Object {
+    Get-OmniProcessIdentity -ProcessId $_.Id -Ownership managed
+  })
 
   # Deterministic async-script budget instead of the implementation default.
   [void](Invoke-WebDriverRequest -Method POST `
@@ -308,15 +322,22 @@ try {
     }
   }
   if ($null -ne $driverProcess) {
-    Stop-ProcessTree -RootProcessId $driverProcess.Id
+    Stop-OmniOwnedProcessTree -Lease $driverProcessLease | Out-Null
     Start-Sleep -Milliseconds 300
     $teardownEvidence.driverStopped = -not (Test-TcpPort -TargetHost $plan.driver.host -Port $plan.driver.port)
   }
-  $teardownEvidence.appStopped = Stop-DesktopShellProcesses
+  foreach ($lease in $desktopProcessLeases) {
+    if (Test-OmniProcessIdentity -Lease $lease) {
+      Stop-OmniOwnedProcessTree -Lease $lease | Out-Null
+    }
+  }
+  $teardownEvidence.appStopped = -not @($desktopProcessLeases | Where-Object {
+    Test-OmniProcessIdentity -Lease $_
+  }).Count
 }
 
-$appLogDelta = Read-TextDelta -Path $appLogPath -Offset $appLogOffset
-Set-Utf8NoBomContent (Join-Path $runDir 'app-log-delta.log') $appLogDelta
+$appLogDelta = Read-OmniTextDelta -LiteralPath $appLogPath -Offset $appLogOffset
+Set-OmniUtf8NoBomContent -LiteralPath (Join-Path $runDir 'app-log-delta.log') -Value $appLogDelta
 
 $evidence = [ordered]@{
   runId = $runId
@@ -333,7 +354,7 @@ $evidence = [ordered]@{
   runnerError = $runnerError
   appLogDelta = $appLogDelta
 }
-Set-Utf8NoBomContent (Join-Path $runDir 'evidence.json') ($evidence | ConvertTo-Json -Depth 24)
+Set-OmniUtf8NoBomContent -LiteralPath (Join-Path $runDir 'evidence.json') -Value ($evidence | ConvertTo-Json -Depth 24)
 
 & node $smokeModule --mode report --input $runDir --output $runDir
 $reportExitCode = $LASTEXITCODE

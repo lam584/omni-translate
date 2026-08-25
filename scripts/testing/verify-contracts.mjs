@@ -66,6 +66,21 @@ const rootPackage = readJson('package.json');
 const tauriConfig = readJson(path.join('apps', 'desktop', 'src-tauri', 'tauri.conf.json'));
 const vitestSetupPath = path.join('apps', 'desktop', 'src', 'test-setup.ts');
 
+const watchReadinessContract = readJson(path.join('contracts', 'watch-mode-readiness-v2.json'));
+const watchReadinessRust = readText(path.join('apps', 'desktop', 'src-tauri', 'src', 'watch_mode_diagnostic', 'readiness.rs'));
+const watchRunnerPowerShell = readText(path.join('scripts', 'testing', 'lib', 'powershell', 'Omni.Testing.WatchMode.Readiness.psm1'));
+if (!watchReadinessRust.includes(`const SCHEMA_VERSION: &str = "${watchReadinessContract.schemaVersion}"`)) {
+  fail('Desktop Watch readiness writer is not pinned to contracts/watch-mode-readiness-v2.json.');
+}
+if (!watchRunnerPowerShell.includes(`$status.schemaVersion -ne '${watchReadinessContract.schemaVersion}'`)) {
+  fail('PowerShell Watch runner is not pinned to contracts/watch-mode-readiness-v2.json.');
+}
+for (const state of watchReadinessContract.states) {
+  if (!watchReadinessRust.includes(`"${state}"`)) {
+    fail(`Desktop Watch readiness writer is missing contract state: ${state}`);
+  }
+}
+
 if (typeof tauriConfig.app?.security?.csp !== 'string' || !tauriConfig.app.security.csp.trim()) {
   fail('Desktop Tauri CSP must be an explicit non-empty string.');
 }
@@ -108,11 +123,6 @@ assertTextMatch(
   'desktop config mock protocol',
 );
 assertTextMatch(
-  path.join('apps', 'desktop', 'src', 'mocks', 'driver-runtime.ts'),
-  new RegExp(`protocolVersion:\\s*'${protocolVersion}'`),
-  'desktop driver runtime mock protocol',
-);
-assertTextMatch(
   path.join('apps', 'desktop', 'src-tauri', 'src', 'bridge', 'ipc.rs'),
   /protocol_version:\s*omni_bridge_protocol::BRIDGE_PROTOCOL_VERSION\.to_string\(\)/,
   'desktop Rust bridge init protocol',
@@ -131,7 +141,8 @@ assertJsonValue(
 );
 
 for (const relativePath of [
-  path.join('scripts', 'testing', 'run-watch-mode-live.ps1'),
+  path.join('scripts', 'testing', 'lib', 'powershell', 'Omni.Testing.WatchMode.Bridge.psm1'),
+  path.join('scripts', 'testing', 'lib', 'powershell', 'Omni.Testing.WatchMode.AudioCapture.psm1'),
   path.join('scripts', 'installer', 'install-development-driver.ps1'),
   path.join('scripts', 'installer', 'build-sysvad-driver.ps1'),
 ]) {
@@ -208,12 +219,12 @@ const driverVersionPins = [
     'physical output probe expected driver version',
   ],
   [
-    path.join('scripts', 'testing', 'run-watch-mode-live.ps1'),
+    path.join('scripts', 'testing', 'lib', 'powershell', 'Omni.Testing.WatchMode.Bridge.psm1'),
     new RegExp(`expectedDriverVersion\\s*=\\s*'${driverVersionToken}'`),
     'watch mode live script expected driver version',
   ],
   [
-    path.join('scripts', 'testing', 'run-watch-mode-live.ps1'),
+    path.join('scripts', 'testing', 'lib', 'powershell', 'Omni.Testing.WatchMode.PlatformOperations.psm1'),
     new RegExp(`-DriverVersion ${driverVersionToken}`),
     'watch mode live script -DriverVersion argument',
   ],
@@ -283,12 +294,12 @@ const bridgeVersionPins = [
     'physical output probe expected bridge version',
   ],
   [
-    path.join('scripts', 'testing', 'run-watch-mode-live.ps1'),
+    path.join('scripts', 'testing', 'lib', 'powershell', 'Omni.Testing.WatchMode.Bridge.psm1'),
     new RegExp(`expectedBridgeVersion\\s*=\\s*'${bridgeVersionToken}'`),
     'watch mode live script expected bridge version',
   ],
   [
-    path.join('scripts', 'testing', 'run-watch-mode-live.ps1'),
+    path.join('scripts', 'testing', 'lib', 'powershell', 'Omni.Testing.WatchMode.PlatformOperations.psm1'),
     new RegExp(`-BridgeVersion ${bridgeVersionToken}`),
     'watch mode live script -BridgeVersion argument',
   ],

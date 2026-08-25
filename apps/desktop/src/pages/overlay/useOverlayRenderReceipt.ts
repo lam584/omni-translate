@@ -7,8 +7,6 @@ import { getCueDisplaySegments } from './overlayDomain';
 
 const overlayLogger = createLogger('runtime');
 
-export const SUBTITLE_OVERLAY_RENDERED_EVENT = 'subtitle-overlay://rendered';
-
 export type OverlayRenderModel = {
   cueId: string;
   sourceText: string;

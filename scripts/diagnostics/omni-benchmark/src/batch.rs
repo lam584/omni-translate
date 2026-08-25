@@ -278,7 +278,6 @@ fn run_single_model(
         protocol,
         auth_header_name: entry.auth_header.clone(),
         auth_scheme: entry.auth_scheme.clone(),
-        credential_ref: Some(entry.credential_ref.clone()),
     };
 
     // 调用协议分派器

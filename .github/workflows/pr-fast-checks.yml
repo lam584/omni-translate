@@ -61,6 +61,12 @@ jobs:
       - name: Test desktop shell
         run: npm run test:desktop-shell
 
+      - name: Test benchmark core
+        run: npm run test:benchmark-core
+
+      - name: Test diagnostic benchmark CLI
+        run: npm run test:diagnostics-benchmark
+
       # The native bridge previously only got cargo *check* on PRs while its
       # sidecar integration tests ran nowhere in CI.
       - name: Test native bridge
@@ -84,9 +90,15 @@ jobs:
       - name: Node tooling self-tests (startup readiness)
         run: npm run test:startup-readiness
 
+      - name: PowerShell tooling and boundary tests
+        run: npm run test:powershell-tooling
+
       # Pure-Node driver boundary tests had no CI carrier at all.
       - name: Driver boundary tests
         run: npm run test:driver-boundaries
 
       - name: Audit architecture boundaries
         run: npm run audit:architecture
+
+      - name: Audit PowerShell boundaries
+        run: npm run audit:powershell-boundaries

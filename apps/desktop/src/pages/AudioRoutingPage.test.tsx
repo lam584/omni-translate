@@ -11,6 +11,7 @@ import { DesktopApiProvider } from '../runtime/desktop-api-context';
 import { DesktopApiV2, type InvokeFn } from '../runtime/desktop-api-v2';
 import { useAppStore } from '../stores/app-store';
 import { mountTestRoot, type TestRootHandle } from '../test-utils/react-root';
+import { changeValue } from '../test-utils/dom-interactions';
 import type { ProviderCapability } from '../schema/provider-contract';
 import type { ModelPreset } from '../schema/provider-template';
 import AudioRoutingPage, { audioRoutingPageHelpers } from './AudioRoutingPage';
@@ -58,17 +59,6 @@ function rangeInputByLabel(container: HTMLElement, label: string) {
 function clickCheckbox(container: HTMLElement, label: string) {
   const input = inputText(Array.from(container.querySelectorAll('label')).find((item) => item.textContent?.includes(label))?.querySelector('input') ?? null);
   input.click();
-}
-
-async function changeValue(element: HTMLInputElement | HTMLSelectElement, value: string) {
-  const prototype = element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
-  const valueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-
-  await act(async () => {
-    valueSetter?.call(element, value);
-    element.dispatchEvent(new Event('input', { bubbles: true }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-  });
 }
 
 function scenarioCardByTitle(container: HTMLElement, title: string) {
@@ -1729,4 +1719,3 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
     }
   });
 });
-

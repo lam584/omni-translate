@@ -9,6 +9,7 @@ import {
   validateRunCanonicalSourceAuthority,
 } from './watch-mode-canonical-source-authority.mjs';
 import { buildTranslatedPcmLoopbackAuthority } from './watch-mode-translated-pcm-loopback.mjs';
+import { derivePhysicalOutputContent } from './watch-mode-report.mjs';
 
 export const EXTERNAL_PROVIDER_BUDGET_SCHEMA_VERSION = 1;
 export const CELL_EXTERNAL_PROVIDER_BUDGET_KIND = 'watch-mode-paid-cell-external-provider-budget';
@@ -467,7 +468,7 @@ export function buildCellExternalProviderBudget({
 
   const contentRequired = feedbackMode !== 'echo-cancel';
   const sourceAuthorityPath = path.join(resolvedRunDirectory, 'source-media-transcript.json');
-  const physicalAuthorityPath = path.join(resolvedRunDirectory, 'physical-output-content.json');
+  const physicalAuthorityPath = path.join(resolvedRunDirectory, 'physical-output-content.raw.json');
   let sourceAuthority = null;
   let physicalAuthority = null;
   let canonicalSourceValidation = null;
@@ -485,6 +486,7 @@ export function buildCellExternalProviderBudget({
     }
     try {
       physicalAuthority = readJson(physicalAuthorityPath, 'physical output authority');
+      const derivedPhysicalContent = derivePhysicalOutputContent(physicalAuthority);
       const recordingAuthority = readJson(
         path.join(resolvedRunDirectory, 'physical-output-recording.json'),
         'physical output recording authority',
@@ -506,7 +508,7 @@ export function buildCellExternalProviderBudget({
         protocol: modelProtocols[normalizedModel],
       });
       if (
-        physicalAuthority.passed !== true
+        derivedPhysicalContent?.passed !== true
         || physicalAuthority.authorityMode !== 'local-pcm-cue-playback-v1'
         || physicalAuthority.remoteProviderCalls !== 0
         || Number(physicalAuthority.externalAudioSeconds) !== 0
@@ -526,7 +528,7 @@ export function buildCellExternalProviderBudget({
         || Number(physicalAuthority.sttSourceWindow?.sampleRateHz) !== 16_000
         || Number(physicalAuthority.sttSourceWindow?.bytes)
           !== physicalSourceWaveform.sourceWindowPcm.bytes
-        || physicalAuthority.contentConsistency?.structuredEvidence?.passed !== true
+        || derivedPhysicalContent.contentConsistency?.structuredEvidence?.passed !== true
         || physicalAuthority.translatedSpeech?.playbackAuthority?.passed !== true
         || Number(physicalAuthority.translatedSpeech?.playbackAuthority?.invalidCues?.length ?? 0) !== 0
         || rebuiltAcousticAuthority.passed !== true

@@ -1,4 +1,6 @@
-export type GlossaryScenario = 'watch' | 'game' | 'voice-room';
+import type { ScenarioMode } from './scenario';
+
+export type GlossaryScenario = ScenarioMode;
 
 export type GlossaryProcessingMode = 'inject-all' | 'inject-important' | 'post-calibrate';
 

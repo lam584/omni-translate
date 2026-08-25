@@ -49,30 +49,6 @@ impl ProviderGateway {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn translate_text_streaming_traced<F>(
-        &self,
-        provider: ProviderDraftInput,
-        source_text: String,
-        source_language: String,
-        target_language: String,
-        trace: Option<&ModelTraceRecorder>,
-        on_delta: F,
-    ) -> Result<String, ProviderRuntimeError>
-    where
-        F: FnMut(&str) -> Result<(), ProviderRuntimeError>,
-    {
-        self.translate_text_streaming_traced_with_glossary(
-            provider,
-            source_text,
-            source_language,
-            target_language,
-            None,
-            trace,
-            on_delta,
-        )
-    }
-
     pub(crate) fn translate_text_streaming_traced_with_glossary<F>(
         &self,
         provider: ProviderDraftInput,
@@ -568,11 +544,12 @@ mod tests {
         provider.stream_enabled = false;
         let mut deltas = Vec::new();
         let result = ProviderGateway::new()
-            .translate_text_streaming_traced(
+            .translate_text_streaming_traced_with_glossary(
                 provider,
                 "hello".to_string(),
                 "en-US".to_string(),
                 "zh-CN".to_string(),
+                None,
                 None,
                 |delta| {
                     deltas.push(delta.to_string());
@@ -661,11 +638,12 @@ mod tests {
 
         let mut callback_count = 0;
         let error = ProviderGateway::new()
-            .translate_text_streaming_traced(
+            .translate_text_streaming_traced_with_glossary(
                 openai_provider(format!("http://{}", addr)),
                 "hello".to_string(),
                 "en-US".to_string(),
                 "zh-CN".to_string(),
+                None,
                 None,
                 |_| {
                     callback_count += 1;
@@ -1165,11 +1143,12 @@ mod tests {
     ) {
         let (delta_tx, delta_rx) = mpsc::channel();
         let client = thread::spawn(move || {
-            ProviderGateway::new().translate_text_streaming_traced(
+            ProviderGateway::new().translate_text_streaming_traced_with_glossary(
                 provider,
                 source_text.to_string(),
                 source_language.to_string(),
                 target_language.to_string(),
+                None,
                 None,
                 |delta| {
                     delta_tx.send(delta.to_string()).map_err(|error| {

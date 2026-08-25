@@ -8,15 +8,17 @@ import {
   AUTHORIZED_WATCH_AUDIO_LIMIT_BYTES,
   containsRetiredWorkspacePath,
   DEFAULT_TRACKED_FILE_LIMIT_BYTES,
-  loadAuthorizedWatchAudioFixtures,
+  EXPECTED_WATCH_AUDIO_FIXTURE_COUNTS,
+  loadWatchAudioFixtureInventory,
   sha256File,
   trackedFileSizeViolation,
 } from './repository-hygiene-policy.mjs';
 
 const windowsSeparator = String.fromCharCode(92);
 
-test('only the bundled canonical Watch Mode WAV has size and SHA256 authority', () => {
-  const authorized = loadAuthorizedWatchAudioFixtures({ workspaceRoot: repoRoot });
+test('Watch Mode audio policy keeps 22 recipes, one bundled receipt, and 21 on-demand recipes', () => {
+  const { authorized, counts } = loadWatchAudioFixtureInventory({ workspaceRoot: repoRoot });
+  assert.deepEqual(counts, EXPECTED_WATCH_AUDIO_FIXTURE_COUNTS);
   assert.deepEqual([...authorized.keys()], [
     'scripts/testing/fixtures/watch-mode-en-original.wav',
   ]);

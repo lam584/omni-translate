@@ -15,7 +15,7 @@ import {
   type DriverManagementAction,
 } from '../../utils/driver-management';
 import { resolveDriverDiagnosis } from '../../utils/driver-diagnostics';
-import AppIcon from '../icons/AppIcon';
+import AppIcon, { type AppIconName } from '../icons/AppIcon';
 
 type DriverAction = DriverManagementAction;
 type DriverManagementVariant = 'settings' | 'onboarding';
@@ -45,7 +45,22 @@ export default function DriverManagementCard({ variant = 'settings' }: { variant
   const actionKey =
     needsRepair ? 'repair' : primaryAction === 'start-bridge' ? 'startBridge' : primaryAction === 'refresh' ? 'refresh' : 'install';
   const statusTone = diagnosis.tone;
-  const statusIcon = ready ? 'check' : statusTone === 'error' ? 'alert' : 'wrench';
+  const statusIcon: AppIconName = ready
+    ? 'check'
+    : statusTone === 'error'
+      ? 'alert'
+      : !installed
+        ? 'chip'
+        : bridge.bridgeState !== 'running'
+          ? 'server'
+          : 'wrench';
+  const primaryActionIcon: AppIconName = actionKey === 'install'
+    ? 'download'
+    : actionKey === 'startBridge'
+      ? 'play'
+      : actionKey === 'refresh'
+        ? 'refresh'
+        : 'wrench';
 
   const run = async (action: DriverAction) => {
     setBusy(action);
@@ -112,19 +127,23 @@ export default function DriverManagementCard({ variant = 'settings' }: { variant
           disabled={Boolean(busy) || probing || ready}
           onClick={() => void run(primaryAction)}
         >
+          <AppIcon name={primaryActionIcon} size={14} />
           {busy === primaryAction ? t('driverManagement.processing') : t(`driverManagement.action.${actionKey}`)}
         </button>
         {variant === 'settings' ? (
           <>
             <button type="button" className="settings-action" disabled={Boolean(busy) || !installed} onClick={() => void run('uninstall')}>
+              <AppIcon name="trash" size={14} />
               {t('driverManagement.action.uninstall')}
             </button>
             <button type="button" className="settings-action" disabled={Boolean(busy)} onClick={() => void run('reinstall')}>
+              <AppIcon name="refresh" size={14} />
               {t('driverManagement.action.reinstall')}
             </button>
           </>
         ) : null}
         <button type="button" className="settings-action driver-management-secondary" disabled={Boolean(busy) || probing} onClick={() => void run('refresh')}>
+          <AppIcon name="refresh" size={14} />
           {probing ? t('driverManagement.processing') : t('driverManagement.action.refresh')}
         </button>
         <button
@@ -133,6 +152,7 @@ export default function DriverManagementCard({ variant = 'settings' }: { variant
           aria-expanded={expanded}
           onClick={() => setExpanded((value) => !value)}
         >
+          <AppIcon name={expanded ? 'eye-off' : 'eye'} size={14} />
           {t(expanded ? 'driverManagement.action.hideDetails' : 'driverManagement.action.showDetails')}
         </button>
       </div>

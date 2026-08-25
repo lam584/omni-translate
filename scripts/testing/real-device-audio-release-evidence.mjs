@@ -4,6 +4,9 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
 import { readJson, repoRoot } from '../lib/testing-common.mjs';
+import { readWatchModeRunCollection } from './watch-mode-run-collection.mjs';
+import { derivePhysicalOutputContent } from './watch-mode-report.mjs';
+import { analyzeAudioWithRust } from './watch-mode-rust-audio-analysis.mjs';
 import {
   currentGitProvenance,
   exactGitProvenanceFailure,
@@ -249,55 +252,13 @@ export function resolveCanonicalRealDeviceAudioAuthority({
 }
 
 function readPcm16Wav(candidate) {
-  const bytes = fs.readFileSync(candidate);
-  if (bytes.length < 44 || bytes.subarray(0, 4).toString('ascii') !== 'RIFF'
-    || bytes.subarray(8, 12).toString('ascii') !== 'WAVE') {
-    throw new Error(`${path.basename(candidate)} is not a RIFF/WAVE file`);
-  }
-  let offset = 12;
-  let format;
-  let data;
-  while (offset + 8 <= bytes.length) {
-    const id = bytes.subarray(offset, offset + 4).toString('ascii');
-    const size = bytes.readUInt32LE(offset + 4);
-    const start = offset + 8;
-    const end = start + size;
-    if (end > bytes.length) throw new Error(`${path.basename(candidate)} ${id} chunk is truncated`);
-    if (id === 'fmt ' && size >= 16) {
-      format = {
-        audioFormat: bytes.readUInt16LE(start),
-        channels: bytes.readUInt16LE(start + 2),
-        sampleRateHz: bytes.readUInt32LE(start + 4),
-        blockAlign: bytes.readUInt16LE(start + 12),
-        bitsPerSample: bytes.readUInt16LE(start + 14),
-      };
-    } else if (id === 'data' && !data) data = bytes.subarray(start, end);
-    offset = end + (size % 2);
-  }
-  if (!format || !data || format.audioFormat !== 1 || format.bitsPerSample !== 16
-    || format.channels <= 0 || format.blockAlign !== format.channels * 2
-    || data.length % format.blockAlign !== 0) {
-    throw new Error(`${path.basename(candidate)} must contain valid PCM16 audio`);
-  }
-  const frames = data.length / format.blockAlign;
-  let squares = 0;
-  let peak = 0;
-  for (let frame = 0; frame < frames; frame += 1) {
-    let mixed = 0;
-    for (let channel = 0; channel < format.channels; channel += 1) {
-      mixed += data.readInt16LE(frame * format.blockAlign + channel * 2) / 32768;
-    }
-    mixed /= format.channels;
-    squares += mixed * mixed;
-    peak = Math.max(peak, Math.abs(mixed));
-  }
+  const metrics = analyzeAudioWithRust({ inputPath: candidate, format: 'wav' });
   return {
-    bytes,
-    ...format,
-    frames,
-    durationSeconds: frames / format.sampleRateHz,
-    rms: frames > 0 ? Math.sqrt(squares / frames) : 0,
-    peak,
+    sampleRateHz: metrics.sampleRateHz,
+    frames: metrics.sampleCount,
+    durationSeconds: metrics.durationSeconds,
+    rms: metrics.rms,
+    peak: metrics.peak,
   };
 }
 
@@ -411,21 +372,21 @@ export function inspectAuthorizedRealDeviceCell(resolved) {
     issues.push('real-device subtitle expected segments were not accepted/rendered at 100% with zero cue drops');
   }
 
-  const steps = readJson(path.join(runDirectory, 'steps.json'));
+  const steps = readWatchModeRunCollection(runDirectory).collection.steps;
   const desktopStep = Array.isArray(steps)
-    ? steps.find((step) => step?.name === 'start desktop shell')
+    ? steps.find((step) => step?.id === 'start-desktop-shell')
     : null;
   const recorderStep = Array.isArray(steps)
-    ? steps.find((step) => step?.name === 'start physical output content recording')
+    ? steps.find((step) => step?.id === 'start-physical-output-content-recording')
     : null;
   const playback = readJson(path.join(runDirectory, 'playback.json'));
-  const desktopProcessId = Number(desktopStep?.result?.pid);
-  const physicalRecorderProcessId = Number(recorderStep?.result?.pid);
+  const desktopProcessId = Number(desktopStep?.data?.pid);
+  const physicalRecorderProcessId = Number(recorderStep?.data?.pid);
   const mediaInjectorProcessId = Number(playback?.injectorProcessId);
   const restart = report?.layers?.bridge?.data?.processExclusionRestart;
   const oldBridgeProcessId = Number(restart?.oldBridgeProcessId);
   const newBridgeProcessId = Number(restart?.newBridgeProcessId);
-  if (desktopStep?.ok !== true || recorderStep?.ok !== true
+  if (desktopStep?.status !== 'passed' || recorderStep?.status !== 'passed'
     || !positiveInteger(desktopProcessId)
     || !positiveInteger(physicalRecorderProcessId)
     || !positiveInteger(mediaInjectorProcessId)
@@ -470,7 +431,9 @@ export function inspectAuthorizedRealDeviceCell(resolved) {
     issues.push(error.message);
   }
   const recordingJson = readJson(path.join(runDirectory, 'physical-output-recording.json'));
-  const content = readJson(path.join(runDirectory, 'physical-output-content.json'));
+  const content = derivePhysicalOutputContent(
+    readJson(path.join(runDirectory, 'physical-output-content.raw.json')),
+  );
   if (!recording || recording.durationSeconds < MIN_PHYSICAL_RECORDING_SECONDS
     || recording.rms <= 0.0001 || recording.peak <= 0.001
     || recordingJson?.passed !== true || content?.passed !== true

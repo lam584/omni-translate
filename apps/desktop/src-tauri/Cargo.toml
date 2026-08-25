@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 chrono = "0.4"
 omni-audio-dsp = { path = "../../../crates/omni-audio-dsp" }
+omni-benchmark-core = { path = "../../../crates/omni-benchmark-core" }
 omni-bridge-protocol = { path = "../../../crates/omni-bridge-protocol" }
 omni-logging = { path = "../../../crates/omni-logging" }
 omni-webrtc-aec3 = { path = "../../../crates/omni-webrtc-aec3", optional = true }

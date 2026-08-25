@@ -205,8 +205,8 @@ export function WatchFallbackDialog({ onResolve }: { onResolve: WatchFallbackRes
     onClose={() => onResolve(false)} variant="benchmark">
     <div className="modal-panel-head--benchmark"><div><p>{t('session.virtualDriverFallbackConfirm')}</p></div></div>
     <div className="control-toolbar">
-      <button className="action-button" onClick={() => onResolve(true)} type="button">{t('common.confirm')}</button>
-      <button className="icon-button" onClick={() => onResolve(false)} type="button">{t('common.cancel')}</button>
+      <button className="action-button" onClick={() => onResolve(true)} type="button"><AppIcon name="check" size={14} />{t('common.confirm')}</button>
+      <button className="icon-button" onClick={() => onResolve(false)} type="button"><AppIcon name="close" size={14} />{t('common.cancel')}</button>
     </div>
   </ModalDialog>;
 }
@@ -682,6 +682,7 @@ function RealTimeSessionPage() {
   // Shared quick-export button rendered inside each cue-queue error surface.
   const exportDiagnosticsButton = (
     <button className="cue-queue-error-action" disabled={busyAction !== null} onClick={handleExportDiagnostics} type="button">
+      <AppIcon name="download" size={13} />
       {busyAction === 'export-diagnostics' ? t('diagnostics.actions.exporting') : t('session.exportDiagnostics')}
     </button>
   );
@@ -696,9 +697,11 @@ function RealTimeSessionPage() {
           />
           <div className="provider-list">
             <button aria-pressed={runningMode === 'watch'} className={runningMode === 'watch' ? 'action-button action-button-active' : 'action-button'} disabled={busyAction !== null || hasActiveChain} onClick={() => handleSceneLaunchClick('watch')} type="button">
+              <AppIcon name="eye" size={15} />
               {busyAction === 'watch-start' ? t('session.starting') : t('session.watchButton')}
             </button>
             <button aria-pressed={runningMode === 'voice-room'} className={runningMode === 'voice-room' ? 'action-button action-button-active' : 'action-button'} disabled={busyAction !== null || hasActiveChain} onClick={() => handleSceneLaunchClick('voice-room')} type="button">
+              <AppIcon name="mic" size={15} />
               {busyAction === 'conversation-start' ? t('session.starting') : t('session.conversationMode')}
             </button>
           </div>
@@ -724,7 +727,7 @@ function RealTimeSessionPage() {
             <div className="session-launch-feedback session-launch-feedback-error" role="alert">
               <AppIcon name="alert" size={15} />
               <span>{sessionActionProblem}</span>
-              <Link className="cue-queue-error-action" to="/diagnostics">{t('nav.diagnostics')}</Link>
+              <Link className="cue-queue-error-action" to="/diagnostics"><AppIcon name="diagnostics" size={13} />{t('nav.diagnostics')}</Link>
               <button aria-label={t('common.close')} className="icon-button" onClick={() => setSessionActionProblem(null)} type="button">
                 <AppIcon name="close" size={14} />
               </button>
@@ -739,7 +742,7 @@ function RealTimeSessionPage() {
                 {t('session.restartSessionButton')}
               </button>
               <button className="icon-button" disabled={busyAction !== null} onClick={handleExportDiagnostics} type="button">
-                <AppIcon name="layers" size={14} />
+                <AppIcon name="download" size={14} />
                 {busyAction === 'export-diagnostics' ? t('diagnostics.actions.exporting') : t('session.exportDiagnostics')}
               </button>
             </div>
@@ -771,7 +774,7 @@ function RealTimeSessionPage() {
             </button>
             {watchReport ? (
               <button className="icon-button" onClick={() => setWatchReportExpanded(true)} type="button">
-                <AppIcon name="layers" size={14} />
+                <AppIcon name="activity" size={14} />
                 {t('watchReport.currentTitle')}
               </button>
             ) : null}
@@ -799,7 +802,7 @@ function RealTimeSessionPage() {
               }}
               type="button"
             >
-              <AppIcon name="subtitles" size={14} />
+              <AppIcon name={overlayWindow?.visible ? 'eye-off' : 'eye'} size={14} />
               {overlayWindow?.visible ? t('session.hideOverlay') : t('session.showOverlay')}
             </button>
           </div>
@@ -876,7 +879,7 @@ function RealTimeSessionPage() {
               {(inboundErrorPresentation?.action === 'restart-session'
                 || (!inboundErrorPresentation && audioRuntimeSnapshot.inbound.recommendedAction === 'restart-session')) && t('session.restartSessionHint')}
               {inboundErrorPresentation?.action === 'open-providers' && inboundErrorPresentation.actionKey && (
-                <Link className="cue-queue-error-action" to="/settings/providers">{t(inboundErrorPresentation.actionKey)}</Link>
+                <Link className="cue-queue-error-action" to="/settings/providers"><AppIcon name="server" size={13} />{t(inboundErrorPresentation.actionKey)}</Link>
               )}
               {exportDiagnosticsButton}
             </p>
@@ -887,9 +890,9 @@ function RealTimeSessionPage() {
                 ? `${t(outboundErrorPresentation.messageKey)} [${outboundErrorCode}]`
                 : t('diagnostics.issues.outboundError', { error: audioRuntimeSnapshot.outbound.lastError })}
               {outboundErrorPresentation?.action === 'open-providers' && outboundErrorPresentation.actionKey ? (
-                <Link className="cue-queue-error-action" to="/settings/providers">{t(outboundErrorPresentation.actionKey)}</Link>
+                <Link className="cue-queue-error-action" to="/settings/providers"><AppIcon name="server" size={13} />{t(outboundErrorPresentation.actionKey)}</Link>
               ) : (
-                <Link className="cue-queue-error-action" to="/audio-routing">{t('nav.audioRouting')}</Link>
+                <Link className="cue-queue-error-action" to="/audio-routing"><AppIcon name="route" size={13} />{t('nav.audioRouting')}</Link>
               )}
               {exportDiagnosticsButton}
             </p>
@@ -898,7 +901,7 @@ function RealTimeSessionPage() {
             <p className="cue-queue-error" role="alert">
               {t('diagnostics.issues.speechError', { error: audioRuntimeSnapshot.speech.lastError })}
               <span>{t('session.speechFailureRecovery')}</span>
-              <Link className="cue-queue-error-action" to="/audio-routing">{t('nav.audioRouting')}</Link>
+              <Link className="cue-queue-error-action" to="/audio-routing"><AppIcon name="route" size={13} />{t('nav.audioRouting')}</Link>
               {exportDiagnosticsButton}
             </p>
           )}

@@ -248,6 +248,25 @@
   gap:10px
 }
 
+.console-page-title {
+  display:flex;
+  align-items:center;
+  gap:9px;
+  min-width:0
+}
+
+.console-page-title-icon {
+  width:32px;
+  height:32px;
+  flex:0 0 32px;
+  display:grid;
+  place-items:center;
+  border:1px solid var(--app-line, var(--color-accent-cool-border));
+  border-radius:10px;
+  color:var(--app-accent, var(--color-accent-cool));
+  background:var(--color-accent-cool-soft)
+}
+
 .console-support-label,
 .console-window-label,
 .runtime-signal-label {
@@ -616,6 +635,9 @@
 }
 
 .cue-queue-error-action {
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
   margin-left:8px;
   padding:0;
   border:none;

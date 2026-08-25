@@ -6,16 +6,8 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-function Get-Sha256 {
-  param([Parameter(Mandatory = $true)][string]$Path)
-  $bytes = [IO.File]::ReadAllBytes([IO.Path]::GetFullPath($Path))
-  $sha = [Security.Cryptography.SHA256]::Create()
-  try {
-    return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
-  } finally {
-    $sha.Dispose()
-  }
-}
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.IO.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.Process.psm1') -Force
 
 function Get-TextSha256 {
   param([Parameter(Mandatory = $true)][string]$Value)
@@ -25,28 +17,6 @@ function Get-TextSha256 {
     return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
   } finally {
     $sha.Dispose()
-  }
-}
-
-function Write-ImmutableJson {
-  param([string]$Path, $Value)
-  $resolved = [IO.Path]::GetFullPath($Path)
-  [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($resolved))
-  $encoding = New-Object Text.UTF8Encoding($false)
-  $bytes = $encoding.GetBytes((($Value | ConvertTo-Json -Depth 20 -Compress) + "`n"))
-  $stream = New-Object IO.FileStream(
-    $resolved,
-    [IO.FileMode]::CreateNew,
-    [IO.FileAccess]::Write,
-    [IO.FileShare]::Read,
-    4096,
-    [IO.FileOptions]::WriteThrough
-  )
-  try {
-    $stream.Write($bytes, 0, $bytes.Length)
-    $stream.Flush($true)
-  } finally {
-    $stream.Dispose()
   }
 }
 
@@ -77,8 +47,19 @@ function Stop-GuardedNode {
     if (
       [int]$actual.SessionId -eq [int]$launch.nodeProcess.sessionId -and
       $actualStart -ceq [string]$launch.nodeProcess.startedAt -and
-      (Get-Sha256 $actualPath) -ceq [string]$launch.nodeProcess.imageSha256
-    ) { & taskkill.exe /PID $processId /F /T 2>$null | Out-Null }
+      (Get-OmniSha256 -LiteralPath $actualPath) -ceq [string]$launch.nodeProcess.imageSha256
+    ) {
+      $lease = [pscustomobject]@{
+        schemaVersion = 'omni-process-lease/v1'
+        pid = $processId
+        startTimeUtcTicks = [long]$process.StartTime.ToUniversalTime().Ticks
+        executablePath = $actualPath
+        executableSha256 = [string]$launch.nodeProcess.imageSha256
+        ownership = 'managed'
+        guardianPid = $null
+      }
+      Stop-OmniOwnedProcessTree -Lease $lease | Out-Null
+    }
   } catch {
     # A stale or malformed receipt must never authorize an unguarded process kill.
   }
@@ -119,7 +100,7 @@ foreach ($entry in @(
   @($collectorPath, [string]$payload.processAuthorityCollectorSha256, 'process authority collector'),
   @($runnerPath, [string]$payload.shardRunnerSha256, 'shard runner')
 )) {
-  if (-not (Test-Path -LiteralPath $entry[0] -PathType Leaf) -or (Get-Sha256 $entry[0]) -cne $entry[1]) {
+  if (-not (Test-Path -LiteralPath $entry[0] -PathType Leaf) -or (Get-OmniSha256 -LiteralPath $entry[0]) -cne $entry[1]) {
     throw "$($entry[2]) does not match the signed orchestration inventory"
   }
 }
@@ -222,7 +203,7 @@ $command = [ordered]@{
   shardRunnerPath = $runnerPath
   shardRunnerSha256 = [string]$payload.shardRunnerSha256
   nodeExecutable = $nodeExecutable
-  nodeSha256 = Get-Sha256 $nodeExecutable
+  nodeSha256 = Get-OmniSha256 -LiteralPath $nodeExecutable
   taskName = $taskName
   taskPath = $taskPath
   scheduledCommandPath = $commandPath
@@ -241,14 +222,14 @@ $command = [ordered]@{
 if ($mode -in @('shard-cell', 'incident-plus-cell')) {
   foreach ($name in $cellFields.Keys) { $command[$name] = $cellFields[$name] }
   $command['requireRecorder'] = $cellFields.feedbackLoopPrevention -ne 'echo-cancel'
-  if ((Get-Sha256 $command.planPath) -cne $command.planSha256 -or (Get-Sha256 $command.leasePath) -cne $command.leaseSha256) {
+  if ((Get-OmniSha256 -LiteralPath $command.planPath) -cne $command.planSha256 -or (Get-OmniSha256 -LiteralPath $command.leasePath) -cne $command.leaseSha256) {
     throw 'interactive task plan/lease bytes do not match coordinator authority'
   }
 } else {
   foreach ($name in $endpointReadinessFields.Keys) { $command[$name] = $endpointReadinessFields[$name] }
 }
-Write-ImmutableJson $commandPath $command
-$commandSha256 = Get-Sha256 $commandPath
+Write-OmniImmutableJson -LiteralPath $commandPath -Value $command
+$commandSha256 = Get-OmniSha256 -LiteralPath $commandPath
 $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$launcherPath`" -RequestPath `"$commandPath`" -ExpectedRequestSha256 $commandSha256"
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments
   $principal = New-ScheduledTaskPrincipal -UserId $command.expectedUserId -LogonType Interactive -RunLevel Limited
@@ -334,7 +315,7 @@ try {
     logonType = 'InteractiveToken'
     runLevel = 'Limited'
     lastTaskResult = [int]$taskInfo.LastTaskResult
-    terminalSha256 = Get-Sha256 $terminalPath
+    terminalSha256 = Get-OmniSha256 -LiteralPath $terminalPath
     completedAt = [DateTime]::UtcNow.ToString('o')
   }
   if ($mode -in @('shard-cell', 'incident-plus-cell')) {
@@ -344,7 +325,7 @@ try {
   } else {
     $taskTerminal['readinessRequestDigest'] = $endpointReadinessFields.readinessRequestDigest
   }
-  Write-ImmutableJson $taskTerminalPath $taskTerminal
+  Write-OmniImmutableJson -LiteralPath $taskTerminalPath -Value $taskTerminal
   if ([int]$terminal.exitCode -ne 0 -or [int]$taskInfo.LastTaskResult -ne 0) {
     throw 'interactive task terminal or Task Scheduler result failed'
   }
@@ -375,7 +356,7 @@ try {
         $finalizationRequest['driverReadinessPath'] = [string]$command.driverReadinessPath
       }
     }
-    Write-ImmutableJson $finalizationRequestPath $finalizationRequest
+    Write-OmniImmutableJson -LiteralPath $finalizationRequestPath -Value $finalizationRequest
     $finalizerOutput = @(& $nodeExecutable $runnerPath '--finalize-interactive-request' $finalizationRequestPath 2>&1)
     if ($LASTEXITCODE -ne 0) { throw "interactive cell guest finalizer failed: $($finalizerOutput -join ' | ')" }
     $finalResultPath = [string](@($finalizerOutput | Where-Object { $_ } | Select-Object -Last 1)[0])

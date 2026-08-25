@@ -25,7 +25,7 @@ test('classifies physical output content that does not match subtitles', () => {
 
   assert.equal(report.verdict, 'failed');
   assert.equal(report.failureLayer, 'physicalOutputContent');
-  assert.match(report.failureReason, /did not match subtitle/i);
+  assert.match(report.failureReason, /diverged from source media reference/i);
 });
 
 test('classifies clipped physical output recording as content failure', () => {
@@ -53,6 +53,7 @@ test('passes mixed physical output content when original and translated subcheck
       source: 'original game voice that does not match the translated subtitle',
       translation: '',
       subtitleText: '译音字幕',
+      sourceReference: { passed: true, source: 'original game voice that does not match the translated subtitle', translation: '' },
       originalPassthrough: { passed: true, transcriptChars: 58 },
       translatedSpeech: { passed: true, playedSegments: 2, queuedSegments: 2, transcriptChars: 0 },
       mixedOutput: { passed: true, rms: 0.05, peak: 0.2 },
@@ -77,6 +78,7 @@ test('classifies low source similarity as physical output content failure', () =
           detail: 'physical output original passthrough does not resemble source media reference: correlation=0.12 levelRatio=0.8',
         },
       },
+      source: 'unrelated physical transcript',
       translatedSpeech: { passed: true, playedSegments: 3, queuedSegments: 3 },
       mixedOutput: { passed: true, rms: 0.08, peak: 0.3 },
       contentConsistency: {
@@ -155,7 +157,7 @@ test('classifies repeated or extra physical output content against the source re
   const report = classify({
     physicalOutputContent: {
       ...healthyPhysicalOutputContent,
-      source: '一个新家，一个五亿美元的生物圈。发生什么事了？未来汽车可以带你去任何地方。',
+      source: '一个新家，一个五亿美元的生物圈。发生什么事了？未来汽车可以带你去任何地方。'.repeat(4),
       translation: '我这边还是听不到任何声音，好像有点问题。你能再说一遍吗？我这边还是听不到任何声音，好像有点问题。你能再说一遍吗？',
       originalPassthrough: { passed: true, transcriptChars: 42 },
       translatedSpeech: { passed: true, playedSegments: 8, queuedSegments: 8, transcriptChars: 60 },
@@ -163,6 +165,7 @@ test('classifies repeated or extra physical output content against the source re
       sourceReference: {
         passed: true,
         source: '一个新家，一个五亿美元的生物圈。发生什么事了？未来汽车可以带你去任何地方。',
+        translation: '一个价值五亿美元的生物圈和一辆未来汽车可以带你去任何地方。'.repeat(8),
       },
       contentConsistency: {
         passed: false,
@@ -178,14 +181,15 @@ test('classifies repeated or extra physical output content against the source re
 
   assert.equal(report.verdict, 'failed');
   assert.equal(report.failureLayer, 'physicalOutputContent');
-  assert.match(report.failureReason, /diverged from source media reference/);
-  assert.match(report.failureReason, /lengthRatio=3\.100/);
+  assert.match(report.failureReason, /combined physical\/structured translation evidence/);
+  assert.equal(report.layers.physicalOutputContent.data.contentConsistency.evidenceSource, 'node-report-v2');
 });
 
 test('classifies failed combined physical and structured evidence as physical output content failure', () => {
   const report = classify({
     physicalOutputContent: {
       ...healthyPhysicalOutputContent,
+      source: 'completely unrelated physical source transcript',
       originalPassthrough: { passed: true, transcriptChars: 120 },
       translatedSpeech: { passed: true, playedSegments: 8, queuedSegments: 8, transcriptChars: 240 },
       mixedOutput: { passed: true, rms: 0.08, peak: 0.3 },
@@ -201,7 +205,7 @@ test('classifies failed combined physical and structured evidence as physical ou
 
   assert.equal(report.verdict, 'failed');
   assert.equal(report.failureLayer, 'physicalOutputContent');
-  assert.match(report.failureReason, /combined physical transcript/);
+  assert.match(report.failureReason, /diverged from source media reference/);
 });
 
 test('preserves physical output translated speech detail in failure reason and diagnostics', () => {

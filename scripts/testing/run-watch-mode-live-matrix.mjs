@@ -129,6 +129,7 @@ export const MATRIX_DEFAULTS = {
 };
 
 const RUNNER_SCRIPT = path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.ps1');
+const RUNNER_ENTRY = path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.mjs');
 // The PowerShell runner starts the auto-stop clock inside the desktop process,
 // so readiness can consume its complete budget before the planned live session.
 // Allow the report its own atomic-write grace, then leave the matrix enough time
@@ -411,64 +412,55 @@ export const resolveWatchRealtimeProtocol = (model, aliasModel = '', aliasProtoc
   return WATCH_MODEL_PROTOCOLS[model] ?? '';
 };
 
-// Enabled switches are emitted bare because Windows PowerShell 5.1 -File
-// rejects the '-Switch:$true' literal form with a SwitchParameter binding error.
-export const buildRunnerArgv = ({
-  model,
-  watchRealtimeProtocol = '',
-  subtitleTranslationMode = 'native',
-  feedbackMode,
-  outputRoot = MATRIX_DEFAULTS.outputRoot,
-  mediaPath = MATRIX_DEFAULTS.mediaPath,
-  warmupSeconds = MATRIX_DEFAULTS.warmupSeconds,
-  playbackSeconds = MATRIX_DEFAULTS.playbackSeconds,
-  postPlaybackWaitSeconds = MATRIX_DEFAULTS.postPlaybackWaitSeconds,
-  sessionReadyTimeoutSeconds = MATRIX_DEFAULTS.sessionReadyTimeoutSeconds,
-  watchAutoStopAfterSeconds = MATRIX_DEFAULTS.watchAutoStopAfterSeconds,
-  physicalPlaybackDeviceId = MATRIX_DEFAULTS.physicalPlaybackDeviceId,
-  physicalPlaybackDeviceClass = MATRIX_DEFAULTS.physicalPlaybackDeviceClass,
-  physicalPlaybackDeviceProfileId = MATRIX_DEFAULTS.physicalPlaybackDeviceProfileId,
-  expectedPhysicalPlaybackDeviceName = MATRIX_DEFAULTS.expectedPhysicalPlaybackDeviceName,
-  skipDesktopLaunch = false,
-  skipDriverRepair = false,
-  allowDriverRepair = false,
-  useDefaultEndpointPlayback = false,
-  stopDesktopAfterPlayback = false,
-  allowElevatedDesktopLaunch = false,
-  skipPhysicalOutputContentStt = false,
-  strictPaidAuthority = false,
-  localCanonicalContentAuthority = false,
-  cellId = '',
-  runnerArgs = [],
-}) => {
-  const argv = [
-    '-OutputRoot', outputRoot,
-    '-MediaPath', mediaPath,
-    '-WarmupSeconds', String(warmupSeconds),
-    '-WatchModelId', model,
-    '-SubtitleTranslationMode', subtitleTranslationMode,
-    '-PlaybackSeconds', String(playbackSeconds),
-    '-PostPlaybackWaitSeconds', String(postPlaybackWaitSeconds),
-    '-SessionReadyTimeoutSeconds', String(sessionReadyTimeoutSeconds),
-    '-WatchAutoStopAfterSeconds', String(watchAutoStopAfterSeconds),
-    '-PhysicalPlaybackDeviceId', physicalPlaybackDeviceId,
-    '-PhysicalPlaybackDeviceClass', physicalPlaybackDeviceClass,
-    '-PhysicalPlaybackDeviceProfileId', physicalPlaybackDeviceProfileId,
-    '-FeedbackLoopPrevention', feedbackMode,
-    '-ExpectedPhysicalPlaybackDeviceName', expectedPhysicalPlaybackDeviceName,
-  ];
-  if (watchRealtimeProtocol) argv.push('-WatchRealtimeProtocol', watchRealtimeProtocol);
-  if (skipDesktopLaunch) argv.push('-SkipDesktopLaunch');
-  if (skipDriverRepair) argv.push('-SkipDriverRepair');
-  if (allowDriverRepair) argv.push('-AllowDriverRepair');
-  if (useDefaultEndpointPlayback) argv.push('-UseDefaultEndpointPlayback');
-  if (stopDesktopAfterPlayback) argv.push('-StopDesktopAfterPlayback');
-  if (allowElevatedDesktopLaunch) argv.push('-AllowElevatedDesktopLaunch');
-  if (skipPhysicalOutputContentStt) argv.push('-SkipPhysicalOutputContentStt');
-  if (strictPaidAuthority) argv.push('-StrictPaidAuthority');
-  if (localCanonicalContentAuthority) argv.push('-LocalCanonicalContentAuthority');
-  if (cellId) argv.push('-MatrixCellId', cellId);
-  return [...argv, ...runnerArgs];
+export const buildRunnerRequest = (options) => {
+  const feedbackMode = options.feedbackMode;
+  return {
+    schemaVersion: 'watch-mode-run-request/v1',
+    runMode: 'live',
+    authorityMode: options.strictPaidAuthority
+      ? 'strict-paid'
+      : options.localCanonicalContentAuthority ? 'local-canonical-smoke' : 'none',
+    feedbackMode,
+    desktop: {
+      launchMode: 'managed',
+      elevation: options.allowElevatedDesktopLaunch ? 'allow' : 'forbid',
+    },
+    driverPolicy: feedbackMode === 'virtual-driver'
+      ? (options.allowDriverRepair ? 'repair-if-needed' : 'probe-only')
+      : 'not-applicable',
+    physicalContentMode: options.skipPhysicalOutputContentStt
+      ? 'disabled'
+      : (options.strictPaidAuthority || options.localCanonicalContentAuthority) ? 'local-canonical' : 'remote-stt',
+    model: {
+      id: options.model,
+      protocol: options.watchRealtimeProtocol || '',
+      subtitleTranslationMode: options.subtitleTranslationMode ?? 'native',
+      subtitleModelId: options.subtitleTranslationModelId ?? null,
+      secondaryAudioModelId: options.inboundSecondaryAudioModelId ?? null,
+    },
+    media: {
+      path: options.mediaPath ?? MATRIX_DEFAULTS.mediaPath,
+      playbackSeconds: Number(options.playbackSeconds ?? MATRIX_DEFAULTS.playbackSeconds),
+    },
+    physicalDevice: {
+      id: options.physicalPlaybackDeviceId ?? MATRIX_DEFAULTS.physicalPlaybackDeviceId,
+      class: options.physicalPlaybackDeviceClass ?? MATRIX_DEFAULTS.physicalPlaybackDeviceClass,
+      profileId: options.physicalPlaybackDeviceProfileId ?? MATRIX_DEFAULTS.physicalPlaybackDeviceProfileId,
+      expectedName: options.expectedPhysicalPlaybackDeviceName ?? MATRIX_DEFAULTS.expectedPhysicalPlaybackDeviceName,
+    },
+    timeouts: {
+      warmupSeconds: Number(options.warmupSeconds ?? MATRIX_DEFAULTS.warmupSeconds),
+      readinessSeconds: Number(options.sessionReadyTimeoutSeconds ?? MATRIX_DEFAULTS.sessionReadyTimeoutSeconds),
+      sessionSeconds: Number(options.watchAutoStopAfterSeconds ?? MATRIX_DEFAULTS.watchAutoStopAfterSeconds),
+      postPlaybackSeconds: Number(options.postPlaybackWaitSeconds ?? MATRIX_DEFAULTS.postPlaybackWaitSeconds),
+    },
+    paths: {
+      outputRoot: options.outputRoot ?? MATRIX_DEFAULTS.outputRoot,
+      runtimeRoot: options.runtimeRoot ?? path.join(process.env.LOCALAPPDATA ?? 'artifacts/diagnostics', 'OmniTranslate/diagnostics/logs'),
+      workerReadinessReceipt: options.workerReadinessReceiptPath ?? null,
+    },
+    matrix: { cellId: options.cellId || null, leaseId: null },
+  };
 };
 
 export const runnerArgsRequestDryRun = (runnerArgs = []) => runnerArgs.some(
@@ -1520,10 +1512,14 @@ export const assertStrictLiveReportPassed = (runDirectory) => {
   return report;
 };
 
-const runLiveRunner = (runnerArgv, timeoutMs, environment = process.env) => new Promise((resolve, reject) => {
+const runLiveRunner = (request, timeoutMs, environment = process.env) => new Promise((resolve, reject) => {
+  const requestDirectory = path.join(repoRoot, 'artifacts', 'testing', 'temp', 'watch-mode-requests');
+  fs.mkdirSync(requestDirectory, { recursive: true });
+  const requestPath = path.join(requestDirectory, `request-${process.pid}-${crypto.randomUUID()}.json`);
+  fs.writeFileSync(requestPath, `${JSON.stringify(request, null, 2)}\n`, 'utf8');
   const child = spawn(
-    'powershell.exe',
-    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', RUNNER_SCRIPT, ...runnerArgv],
+    process.execPath,
+    [RUNNER_ENTRY, '--request', requestPath],
     { cwd: repoRoot, stdio: ['ignore', 'pipe', 'inherit'], env: environment },
   );
   let stdout = '';
@@ -1547,6 +1543,7 @@ const runLiveRunner = (runnerArgv, timeoutMs, environment = process.env) => new 
   }, timeoutMs);
   child.once('error', (error) => {
     clearTimeout(timeout);
+    fs.rmSync(requestPath, { force: true });
     reject(error);
   });
   // Resolve on the PowerShell process exit instead of `close`: a degraded
@@ -1555,6 +1552,7 @@ const runLiveRunner = (runnerArgv, timeoutMs, environment = process.env) => new 
   // unrelated process from hanging the matrix indefinitely.
   child.once('exit', (exitCode) => {
     clearTimeout(timeout);
+    fs.rmSync(requestPath, { force: true });
     child.stdout.destroy();
     resolve({ exitCode: exitCode ?? 1, stdout });
   });
@@ -1702,7 +1700,7 @@ export const runMatrix = async (options) => {
           });
         }
         const { exitCode, stdout } = await runLiveRunner(
-          buildRunnerArgv(runnerOptions),
+          buildRunnerRequest(runnerOptions),
           resolveLiveRunnerTimeoutMs(runnerOptions),
           strict
             ? {

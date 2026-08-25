@@ -1,5 +1,6 @@
 mod config;
 mod process_exclusion_restart;
+pub(crate) mod readiness;
 
 #[cfg(test)]
 mod tests;
@@ -151,6 +152,7 @@ pub(crate) fn schedule_after_ipc(app: &tauri::App, ipc_ping_received: &'static A
     }
 
     let app_handle = app.handle().clone();
+    readiness::initialize();
     let run_marker = std::env::var("OMNI_WATCH_MODE_RUN_MARKER").unwrap_or_default();
     let _ = append_diagnostics_log(
         &app_handle,
@@ -177,6 +179,11 @@ pub(crate) fn schedule_after_ipc(app: &tauri::App, ipc_ping_received: &'static A
         })
         .await;
         if !ready {
+            readiness::fail(
+                "frontendIpc",
+                "frontend.ipc.timeout",
+                "frontend never reached debug_ipc_ping",
+            );
             let _ = append_diagnostics_log(
                 &app_handle,
                 "runtime",
@@ -199,6 +206,8 @@ pub(crate) fn schedule_after_ipc(app: &tauri::App, ipc_ping_received: &'static A
             }
             return;
         }
+
+        readiness::mark_frontend_ipc_ready();
 
         let _ = append_diagnostics_log(
             &app_handle,
@@ -285,6 +294,7 @@ fn start(app: &AppHandle) {
     ) {
         Ok(value) => value,
         Err(error) => {
+            readiness::fail("route", "watch.config.invalid", error.clone());
             let _ = append_diagnostics_log(
                 &app_handle,
                 "runtime",
@@ -342,6 +352,7 @@ fn start(app: &AppHandle) {
     let mut config = match storage.load_config() {
         Ok(config) => config,
         Err(error) => {
+            readiness::fail("route", "watch.config.load-failed", error.clone());
             let _ = append_diagnostics_log(
                 &app_handle,
                 "runtime",
@@ -362,6 +373,7 @@ fn start(app: &AppHandle) {
     ) {
         Ok(model_id) => model_id,
         Err(error) => {
+            readiness::fail("provider", "watch.provider.config-failed", error.clone());
             let _ = append_diagnostics_log(
                 &app_handle,
                 "runtime",
@@ -428,6 +440,7 @@ fn start(app: &AppHandle) {
         config.clone(),
     ) {
         Ok(_) => {
+            readiness::mark_bridge_ready();
             let _ = append_diagnostics_log(
                 &app_handle,
                 "runtime",
@@ -500,6 +513,7 @@ fn start_diagnostic_audio_route(
         config.clone(),
     ) {
         Ok(snapshot) => {
+            readiness::mark_route_ready();
             let _ = append_diagnostics_log(
                 app,
                 "runtime",
@@ -531,6 +545,7 @@ fn start_diagnostic_audio_route(
             schedule_capture(app, run_marker);
         }
         Err(error) => {
+            readiness::fail("route", "watch.route.start-failed", error.clone());
             let _ = append_diagnostics_log(
                 app,
                 "runtime",

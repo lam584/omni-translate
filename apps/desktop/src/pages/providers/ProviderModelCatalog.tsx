@@ -78,6 +78,7 @@ function ProviderModelCatalogItem({
           <span className="provider-setting-footnote">{t('providers.modelCatalog.noDeclaredCapabilities')}</span>
         )}
         <button className={added ? 'icon-button provider-row-action provider-row-action-danger' : 'icon-button provider-row-action'} onClick={onToggle} type="button">
+          <AppIcon name={added ? 'trash' : 'plus'} size={13} />
           {added ? t('common.delete') : t('common.add')}
         </button>
       </div>
@@ -117,7 +118,7 @@ export default function ProviderModelCatalog({
             <StatusBadge label={formatModelCatalogSourceLabel(catalog.source)} tone={catalog.source === 'runtime' ? 'ready' : 'draft'} />
             <StatusBadge label={t('providers.modelCatalog.scenarioBadge', { scenario: formatScenarioLabel(targetScenario) })} tone="pending" />
             <button className="provider-header-icon" onClick={onOpenCapabilityRegistry} title={t('providers.modelCatalog.editCapabilitiesTitle')} type="button">
-              <AppIcon name="settings" size={14} />
+              <AppIcon name="edit" size={14} />
             </button>
             <button className="provider-header-icon" onClick={onRefresh} title={t('providers.modelCatalog.refreshTitle')} type="button">
               <AppIcon name="refresh" size={14} />
@@ -221,7 +222,7 @@ export default function ProviderModelCatalog({
             value={manualModelIdDraft}
           />
           <button className="icon-button" onClick={onManualAdd} type="button">
-            <AppIcon name="spark" size={14} />
+            <AppIcon name="plus" size={14} />
             {t('providers.modelCatalog.manualAdd')}
           </button>
         </div>

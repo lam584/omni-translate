@@ -25,6 +25,11 @@ export const sortableTimestamp = (date = new Date()) =>
   `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T` +
   `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 
+export const asPositiveInteger = (value, fallback) => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
+
 export const ensureDir = (dirPath) => {
   fs.mkdirSync(dirPath, { recursive: true });
   return dirPath;

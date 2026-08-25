@@ -24,7 +24,7 @@ import {
 import {
   SMOKE_PROVIDER_SESSION_AUTHORITY_FILE,
   SMOKE_PROVIDER_SESSION_AUTHORITY_KIND,
-  buildVm3PaidSmokeRunnerArgv,
+  buildVm3PaidSmokeRunRequest,
   classifyTimeboxedCommandOutcome,
   classifyReport,
   createRuntimeBuildRunner,
@@ -347,8 +347,8 @@ test('VM3 local adapter binds the present default speaker and one local worker',
   assert.match(profile.expectedPhysicalPlaybackDeviceName, /High Definition Audio Device/);
 });
 
-test('VM3 paid smoke runner enables the bare local canonical content authority switch', () => {
-  const argv = buildVm3PaidSmokeRunnerArgv({
+test('VM3 paid smoke runner emits one typed local canonical request', () => {
+  const request = buildVm3PaidSmokeRunRequest({
     cell: SMOKE_PLUS_CELLS[0],
     outputRoot: 'artifacts/testing/watch-mode-smoke-runtime/test',
     liveTiming: {
@@ -359,8 +359,9 @@ test('VM3 paid smoke runner enables the bare local canonical content authority s
       sessionReadyTimeoutSeconds: 60,
     },
   });
-  assert.equal(argv.filter((entry) => entry === '-LocalCanonicalContentAuthority').length, 1);
-  assert.equal(argv.some((entry) => entry.startsWith('-LocalCanonicalContentAuthority:')), false);
+  assert.equal(request.schemaVersion, 'watch-mode-run-request/v1');
+  assert.equal(request.authorityMode, 'local-canonical-smoke');
+  assert.equal(request.physicalContentMode, 'local-canonical');
 });
 
 function completePaidSmokeReport(cell = SMOKE_PLUS_CELLS[0]) {
@@ -908,7 +909,7 @@ test('Windows timebox terminates its owned child process tree', { skip: process.
     assert.equal(outcome.minimumCFreeBytes, null);
     assert.deepEqual(outcome.samples, []);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

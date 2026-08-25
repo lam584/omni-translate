@@ -160,10 +160,6 @@ export function createRealDeviceAudioAuthorityFixture({
   const jsonFiles = {
     'watch-session-report.json': watch,
     'report.json': report,
-    'steps.json': [
-      { name: 'start desktop shell', ok: true, result: { pid: 1100 } },
-      { name: 'start physical output content recording', ok: true, result: { pid: 1200 } },
-    ],
     'physical-playback-device.json': {
       verified: true,
       fixtureOnly: false,
@@ -216,7 +212,6 @@ export function createRealDeviceAudioAuthorityFixture({
       playbackMode: 'wasapi-media-injector',
       injectorProcessId: 1300,
     },
-    'snapshots.json': { feedbackLoopPrevention: 'process-exclusion' },
     'system-metrics.json': {
       artifactKind: 'watch-mode-system-metrics',
       samples: [{ pid: 1100 }],
@@ -226,9 +221,35 @@ export function createRealDeviceAudioAuthorityFixture({
       source: 'This is the original media transcript.',
     },
   };
+  jsonFiles['physical-output-content.raw.json'] = structuredClone(jsonFiles['physical-output-content.json']);
   for (const [relativePath, value] of Object.entries(jsonFiles)) {
     writeJson(path.join(runDirectory, relativePath), value);
   }
+  writeJson(path.join(runDirectory, 'run-metadata.json'), {
+    schemaVersion: 'watch-mode-run-metadata/v1', runMarker: null, startedAtLocal: null,
+    modelId: 'fixture-model', feedbackMode: 'process-exclusion',
+  });
+  writeJson(path.join(runDirectory, 'run-collection.json'), {
+    schemaVersion: 'watch-mode-run-collection/v2',
+    artifactKind: 'watch-mode-run-collection',
+    request: { schemaVersion: 'watch-mode-run-request/v1', runMode: 'live', feedbackMode: 'process-exclusion' },
+    collectionStatus: 'completed',
+    steps: [
+      { schemaVersion: 'watch-mode-step/v1', id: 'start-desktop-shell', phase: 'desktopLaunch', status: 'passed', data: { pid: 1100 }, error: null },
+      { schemaVersion: 'watch-mode-step/v1', id: 'start-physical-output-content-recording', phase: 'recording', status: 'passed', data: { pid: 1200 }, error: null },
+    ],
+    ownedProcesses: [],
+    artifacts: {
+      runMetadata: 'run-metadata.json', appLog: 'app.log', bridgeLog: 'bridge-service.log',
+      driverProbe: 'driver.json', bridgeSourceProbe: 'bridge-source-probe.json',
+      physicalOutputProbe: 'physical-output-probe.json', physicalPlaybackDevice: 'physical-playback-device.json',
+      playback: 'playback.json', watchSessionReport: 'watch-session-report.json',
+      sourceMediaTranscript: 'source-media-transcript.json', physicalOutputContentRaw: 'physical-output-content.raw.json',
+      physicalOutputRecording: 'physical-output-recording.wav', systemMetrics: 'system-metrics.json',
+    },
+    primaryError: null,
+    cleanupErrors: [],
+  });
   writeText(path.join(runDirectory, 'app.log'), '2026-08-10 09:00:00.000 [NORMAL] [app] watch - session ready\n');
   writeText(path.join(runDirectory, 'bridge-service.log'), `${playbackLog({ failed: failedPlayback })}\n`);
   writeText(path.join(runDirectory, 'report.md'), '# passed\n');

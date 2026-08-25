@@ -70,7 +70,14 @@ export const PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS = 10 * 60 * 1_000;
 export const PRODUCTION_INTERACTIVE_SESSION_LAUNCH_BODY = String.raw`
 $control = Join-Path ([string]$payload.workspaceRoot) 'scripts\testing\invoke-watch-mode-interactive-task.ps1'
 if (-not (Test-Path -LiteralPath $control -PathType Leaf)) { throw 'interactive task control script is missing' }
-$controlHash = (Get-FileHash -LiteralPath $control -Algorithm SHA256).Hash.ToLowerInvariant()
+$controlStream = [IO.File]::OpenRead($control)
+$controlAlgorithm = [Security.Cryptography.SHA256]::Create()
+try {
+  $controlHash = ([BitConverter]::ToString($controlAlgorithm.ComputeHash($controlStream))).Replace('-', '').ToLowerInvariant()
+} finally {
+  $controlAlgorithm.Dispose()
+  $controlStream.Dispose()
+}
 if ($controlHash -cne [string]$payload.controlScriptSha256) { throw 'interactive task control script hash mismatch' }
 $json = $payload.interactiveRequest | ConvertTo-Json -Depth 30 -Compress
 $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))

@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { resolveChineseFallback } from '../i18n/resolveChineseFallback';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { subtitleOverlayPageHelpers } from './SubtitleOverlayPage';
-import { overlayFallbackText, overlayFontSizeOptions } from './overlay/overlayDomain';
+import { overlayFontSizeOptions } from './overlay/overlayDomain';
 
 describe('subtitle overlay page helpers', () => {
   it('resolves fallback translations and preserves unknown or object keys', () => {
-    expect(overlayFallbackText('overlay')).toBe('overlay');
-    expect(overlayFallbackText('overlay.missing.key')).toBe('overlay.missing.key');
-    expect(overlayFallbackText('overlay.unlockAction')).toBe('解锁');
+    expect(resolveChineseFallback('overlay')).toBe('overlay');
+    expect(resolveChineseFallback('overlay.missing.key')).toBe('overlay.missing.key');
+    expect(resolveChineseFallback('overlay.unlockAction')).toBe('解锁');
   });
   it('clamps values and converts monitor positions to bounded percentages', () => {
     expect(subtitleOverlayPageHelpers.clamp(-1, 0, 10)).toBe(0);

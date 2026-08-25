@@ -30,6 +30,3 @@ export function resolveBenchmarkSourceText(audioFile: string): string | null {
 export function resolveBenchmarkReferenceTranslation(audioFile: string): string | null {
   return resolveEnglishFixture(audioFile)?.referenceTranslation.trim() ?? null;
 }
-
-// Keep the old name as a source-text alias for callers outside this feature.
-export const resolveBenchmarkReferenceText = resolveBenchmarkSourceText;

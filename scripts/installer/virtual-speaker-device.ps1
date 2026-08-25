@@ -1,6 +1,10 @@
 $script:OmniVirtualSpeakerHardwareId = 'Root\OmniTranslateVirtualSpeaker'
 $script:OmniVirtualSpeakerName = 'Omni Translate Virtual Speaker'
 $script:OmniVirtualMicrophoneName = 'Omni Translate Virtual Microphone'
+
+function Get-OmniVirtualSpeakerHardwareId {
+  return $script:OmniVirtualSpeakerHardwareId
+}
 $script:OmniVirtualDriverMinimumWindowsBuild = 19041
 
 function Get-OmniWindowsBuildNumber {

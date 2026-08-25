@@ -32,12 +32,7 @@
       "seed": 4102,
       "instruction": "Natural friendly American English, normal conversational pace, varied questions and quotations.",
       "distribution": "generated-on-demand",
-      "model": "qwen-audio-3.0-tts-plus",
-      "sha256": "3494aff1ff5df130551a5886769ac7cc02a8b695592d2326e50b770ddda788ab",
-      "durationSeconds": 144.393,
-      "sampleRate": 24000,
-      "channels": 1,
-      "bitsPerSample": 16
+      "model": "qwen-audio-3.0-tts-plus"
     },
     {
       "id": "technical",
@@ -50,12 +45,7 @@
       "seed": 4103,
       "instruction": "Natural professional American English, normal speaking pace, precise units and abbreviations.",
       "distribution": "generated-on-demand",
-      "model": "qwen-audio-3.0-tts-plus",
-      "sha256": "5991bbb60684562549dcbb4bbd5f52013d4747e04badec5a23f62226f47c022f",
-      "durationSeconds": 149.075,
-      "sampleRate": 24000,
-      "channels": 1,
-      "bitsPerSample": 16
+      "model": "qwen-audio-3.0-tts-plus"
     }
   ]
 }

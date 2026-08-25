@@ -6,11 +6,11 @@ import path from 'node:path';
 import { repoRoot } from '../lib/testing-common.mjs';
 import { currentGitProvenance } from './git-provenance.mjs';
 import {
-  buildRunnerArgv,
   lastRunDirectoryLine,
   resolveLiveRunnerTimeoutMs,
   resolveWatchRealtimeProtocol,
 } from './run-watch-mode-live-matrix.mjs';
+import { buildLiveWatchModeRunRequest } from './watch-mode-run-request.mjs';
 import {
   buildLocalIsolationRuntime,
   runLocalIsolationCell,
@@ -695,7 +695,7 @@ export async function runPreflight({ executionRoot }) {
   };
 }
 
-function runPowerShell(argv, timeoutMs) {
+function runPowerShell(request, timeoutMs) {
   return new Promise((resolve, reject) => {
     // Do not inherit the desktop process' C: TEMP. Live-runner logs and
     // physical-audio windows can be sizable on VM3, whose system drive has a
@@ -704,12 +704,14 @@ function runPowerShell(argv, timeoutMs) {
     fs.mkdirSync(smokeTempRoot, { recursive: true });
     const temporaryRoot = fs.mkdtempSync(path.join(smokeTempRoot, 'omni-smoke-elevated-live-'));
     const outputLog = path.join(temporaryRoot, 'runner.log');
+    const requestPath = path.join(temporaryRoot, 'run-request.json');
+    fs.writeFileSync(requestPath, `${JSON.stringify(request, null, 2)}\n`, 'utf8');
     const launcher = path.join(repoRoot, 'scripts', 'testing', 'run-elevated-watch-mode-live.ps1');
     const child = spawn('powershell.exe', [
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcher,
       '-WorkspaceRoot', repoRoot,
       '-OutputLog', outputLog,
-      '-RunnerArgumentsBase64', Buffer.from(JSON.stringify(argv), 'utf8').toString('base64'),
+      '-RequestPath', requestPath,
     ], {
       cwd: repoRoot,
       windowsHide: false,
@@ -1027,13 +1029,14 @@ async function waitForCreatedReportDirectory(outputRoot, directoriesBeforeRun, {
   } while (true);
 }
 
-export function buildVm3PaidSmokeRunnerArgv({ cell, outputRoot, liveTiming }) {
-  return buildRunnerArgv({
+export function buildVm3PaidSmokeRunRequest({ cell, outputRoot, liveTiming }) {
+  return buildLiveWatchModeRunRequest({
     model: cell.modelId,
     watchRealtimeProtocol: resolveWatchRealtimeProtocol(cell.modelId),
     subtitleTranslationMode: 'native',
     feedbackMode: cell.feedbackLoopPrevention,
     outputRoot,
+    mediaPath: path.join(repoRoot, 'scripts', 'testing', 'fixtures', 'watch-mode-en-original.wav'),
     warmupSeconds: liveTiming.warmupSeconds,
     playbackSeconds: liveTiming.playbackSeconds,
     postPlaybackWaitSeconds: liveTiming.postPlaybackWaitSeconds,
@@ -1043,12 +1046,8 @@ export function buildVm3PaidSmokeRunnerArgv({ cell, outputRoot, liveTiming }) {
     physicalPlaybackDeviceClass: PROFILE.deviceClass,
     physicalPlaybackDeviceProfileId: PROFILE.profileId,
     expectedPhysicalPlaybackDeviceName: PROFILE.expectedPhysicalPlaybackDeviceName,
-    skipDriverRepair: true,
-    useDefaultEndpointPlayback: true,
-    stopDesktopAfterPlayback: true,
-    localCanonicalContentAuthority: true,
-    cellId: cell.cellId,
-  });
+    matrixCellId: cell.cellId,
+  }, { authorityMode: 'local-canonical-smoke' });
 }
 
 export async function runCell({ cell, executionRoot }) {
@@ -1091,12 +1090,12 @@ export async function runCell({ cell, executionRoot }) {
     postPlaybackWaitSeconds: 20,
     sessionReadyTimeoutSeconds: 60,
   });
-  const argv = buildVm3PaidSmokeRunnerArgv({ cell, outputRoot, liveTiming });
+  const request = buildVm3PaidSmokeRunRequest({ cell, outputRoot, liveTiming });
   // Reuse the strict matrix lifecycle budget: readiness plus the longer of
   // Watch report completion and recorder completion, followed by STT/report
   // post-processing. Smoke adds its explicit warmup and enforces a final hard
   // cap so a degraded elevated process tree still cannot run indefinitely.
-  const processResult = await runPowerShell(argv, resolveVm3SmokeLiveTimeoutMs(liveTiming));
+  const processResult = await runPowerShell(request, resolveVm3SmokeLiveTimeoutMs(liveTiming));
   const outputRunDirectory = lastRunDirectoryLine(processResult.stdout, repoRoot);
   // The elevated launcher can exit before the child-side report writer flushes
   // its final JSON. This is completion waiting, not a cell retry: retain the

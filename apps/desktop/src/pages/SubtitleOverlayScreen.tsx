@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { resolveChineseFallback } from '../i18n/resolveChineseFallback';
 import { clearSubtitleCuesRuntime, toggleSubtitleOverlayWindow } from '../runtime/audio-runtime';
 import { useDesktopApiV2 } from '../runtime/desktop-api-context';
 import { useAppStore } from '../stores/app-store';
 import OverlayContextMenu from './overlay/OverlayContextMenu';
 import OverlayResizeHandles from './overlay/OverlayResizeHandles';
 import SubtitleOverlayContent from './overlay/SubtitleOverlayContent';
-import { clamp, getCueDisplaySegments, overlayFallbackText, subtitleOverlayPageHelpers,
+import { clamp, getCueDisplaySegments, subtitleOverlayPageHelpers,
   MAX_OVERLAY_FONT_SIZE, MIN_OVERLAY_FONT_SIZE, toOverlayAxisPercent,
   type OverlayDragState, type OverlayResizeState } from './overlay/overlayDomain';
 import { useOverlayContextMenuController } from './overlay/useOverlayContextMenuController';
@@ -60,7 +61,7 @@ function SubtitleOverlayPage() {
   useEffect(() => {
     overlayPositionRef.current = { x: overlayX, y: overlayY };
   }, [overlayX, overlayY]);
-  const menuText = useCallback((key: string) => t(key, { defaultValue: overlayFallbackText(key) }), [t]);
+  const menuText = useCallback((key: string) => t(key, { defaultValue: resolveChineseFallback(key) }), [t]);
   const styleController = useOverlayStyleController({ overlayBackgroundColor, overlayBackgroundOpacity, overlayFontFamily,
     overlayOpacity, overlaySourceTextStyle, overlayTextColor, overlayTextOpacity,
     overlayTranslationTextStyle, updateSubtitleDraft });

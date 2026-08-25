@@ -11,6 +11,7 @@ import { PreviewDesktopApi } from '../runtime/preview-desktop-api';
 import { loggerTestHelpers } from '../runtime/logger';
 import { useAppStore } from '../stores/app-store';
 import { mountTestRoot, type TestRootHandle } from '../test-utils/react-root';
+import { changeValue } from '../test-utils/dom-interactions';
 import type { BenchmarkReport } from '../runtime/benchmark-runtime';
 import { DiagnosticsReportExporter } from './diagnostics/DiagnosticsDetails';
 
@@ -72,17 +73,6 @@ function findButtonByText(container: HTMLElement, text: string) {
   return Array.from(container.querySelectorAll('button')).find((element) => element.textContent?.trim() === text) as
     | HTMLButtonElement
     | undefined;
-}
-
-async function changeValue(element: HTMLInputElement | HTMLSelectElement, value: string) {
-  const prototype = element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
-  const valueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-
-  await act(async () => {
-    valueSetter?.call(element, value);
-    element.dispatchEvent(new Event('input', { bubbles: true }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-  });
 }
 
 /** Drains the microtask queue (and any 0ms timer) inside act(). */

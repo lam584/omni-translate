@@ -20,6 +20,7 @@ import { describeUnknownError } from '../utils/describe-unknown-error';
 import { resolveRecommendedDriverAction } from '../utils/driver-management';
 import { resolveInteractionCapabilities, resolveRealtimeAudioMode } from '../utils/provider-model-capabilities';
 import { collectProviderModelOptions } from '../utils/provider-model-options';
+import { isOverlayVisible } from '../utils/scene-readiness';
 import { LogLevelControl } from './diagnostics/LogLevelControl';
 import { BenchmarkHistoryPanel } from './diagnostics/BenchmarkHistoryPanel';
 import { useDiagnosticsWorkbenchController } from './diagnostics/useDiagnosticsActions';
@@ -41,7 +42,7 @@ import {
   buildOverviewIssues, buildOverviewSignals, buildServiceMonitorItems,
   createEmptyBenchmarkReport, formatBridgeStateLabel, formatCaptureBackendLabel, formatCaptureStateLabel,
   formatDriverHealthLabel, formatStatusLabel, getIssueToneRank,
-  formatProcessLoopbackStatusLabel, getRuntimeEnvironmentSummary, hasSameIds, isOverlayVisible, resolveStatusTone,
+  formatProcessLoopbackStatusLabel, getRuntimeEnvironmentSummary, hasSameIds, resolveStatusTone,
 } from './diagnostics/diagnosticsOverview';
 import WatchSessionReportPanel from './watch-report/WatchSessionReportPanel';
 import type { ExportArtifactReceipt } from '../runtime/export-artifact-runtime';
@@ -660,7 +661,7 @@ function DiagnosticsPage() {
             setExportDirectoryError(null);
             void runExportAction(exportScope);
           }} type="button">
-              <AppIcon name="layers" size={14} />
+              <AppIcon name="download" size={14} />
               {busyAction === 'export' ? i18n.t('diagnostics.actions.exporting') : i18n.t('diagnostics.actions.exportBundle')}
             </button>
           <button className="icon-button" disabled={busyAction !== null} onClick={() => void runBridgeRefresh()} type="button">
@@ -820,13 +821,13 @@ function DiagnosticsPage() {
             </button>
             {benchmarkReport ? (
               <button className="icon-button" onClick={() => setBenchmarkModalOpen(true)} type="button">
-                <AppIcon name="layers" size={14} />
+                <AppIcon name="eye" size={14} />
                 {i18n.t('diagnostics.benchmark.viewResults')}
               </button>
             ) : null}
             {hasNativeShell ? (
               <button aria-expanded={historyExpanded} className="icon-button" onClick={() => setHistoryExpanded((expanded) => !expanded)} type="button">
-                <AppIcon name="layers" size={14} />
+                <AppIcon name="clock" size={14} />
                 {i18n.t('diagnostics.benchmark.openHistory')}
               </button>
             ) : null}
@@ -872,7 +873,7 @@ function DiagnosticsPage() {
           <div className="control-toolbar" style={{ marginTop: 12 }}>
             {repairOptions.length > 0 ? (
               <button className="icon-button" disabled={busyAction !== null || selectedRepairIds.length === 0} onClick={() => void runAutomaticRepair()} type="button">
-                <AppIcon name="spark" size={14} />
+                <AppIcon name="wrench" size={14} />
                 {busyAction === 'auto-repair' ? i18n.t('diagnostics.repairs.running') : i18n.t('diagnostics.repairs.runSelected')}
               </button>
             ) : null}

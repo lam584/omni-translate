@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "watch-mode-run-request/v1",
+  "runMode": "fixture",
+  "authorityMode": "none",
+  "feedbackMode": "virtual-driver",
+  "desktop": { "launchMode": "managed", "elevation": "forbid" },
+  "driverPolicy": "probe-only",
+  "physicalContentMode": "remote-stt",
+  "model": {
+    "id": null,
+    "protocol": null,
+    "subtitleTranslationMode": "secondary",
+    "subtitleModelId": "template-dashscope-realtime::qwen3.6-flash-2026-04-16",
+    "secondaryAudioModelId": "template-dashscope-realtime::qwen3.5-omni-plus-realtime"
+  },
+  "media": { "path": "scripts/testing/fixtures/watch-mode-en-original.wav", "playbackSeconds": 0 },
+  "physicalDevice": {
+    "id": "default",
+    "class": "default-speaker",
+    "profileId": "default-speaker",
+    "expectedName": null
+  },
+  "timeouts": { "warmupSeconds": 12, "readinessSeconds": 90, "sessionSeconds": 180, "postPlaybackSeconds": 120 },
+  "paths": {
+    "outputRoot": "artifacts/testing/watch-mode-live",
+    "runtimeRoot": "artifacts/diagnostics/logs",
+    "workerReadinessReceipt": null
+  },
+  "matrix": { "cellId": null, "leaseId": null }
+}

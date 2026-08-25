@@ -56,7 +56,7 @@ function AppLayout() {
     session: { label: t('nav.session'), hint: t('nav.sessionHint'), icon: 'mic' },
     'audio-routing': { label: t('nav.audioRouting'), hint: t('nav.audioRoutingHint'), icon: 'route' },
     glossary: { label: t('nav.glossary'), hint: t('nav.glossaryHint'), icon: 'book' },
-    diagnostics: { label: t('nav.diagnostics'), hint: t('nav.diagnosticsHint'), icon: 'wrench' },
+    diagnostics: { label: t('nav.diagnostics'), hint: t('nav.diagnosticsHint'), icon: 'diagnostics' },
   };
 
   const baseNav: ShellNavItem[] = navItems.map((item) => {
@@ -100,7 +100,7 @@ function AppLayout() {
       ? { label: t('settings.sectionOverlay'), hint: t('settings.overlayHint'), icon: 'subtitles' }
       :
     location.pathname.startsWith('/settings/providers')
-      ? { label: t('nav.providers'), hint: t('nav.providersHint'), icon: 'cloud' }
+      ? { label: t('nav.providers'), hint: t('nav.providersHint'), icon: 'server' }
       : null;
   const activePage = subRouteHeading
     ? { ...activeNav, label: subRouteHeading.label, hint: subRouteHeading.hint, icon: subRouteHeading.icon }
@@ -154,7 +154,12 @@ function AppLayout() {
         <header className="console-topbar">
           <div className="console-page-heading">
             <div className="console-page-title-row">
-              <h1>{activePage.label}</h1>
+              <div className="console-page-title">
+                <span className="console-page-title-icon" aria-hidden="true">
+                  <AppIcon name={activePage.icon} size={18} />
+                </span>
+                <h1>{activePage.label}</h1>
+              </div>
               <StatusBadge label={formatBridgeStatusLabel(effectiveBridgeStatus)} tone={getRuntimeTone(runtimeSnapshot.bridge.bridgeState, effectiveBridgeStatus)} />
             </div>
             {activePage.hint ? <p>{activePage.hint}</p> : null}

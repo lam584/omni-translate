@@ -13,6 +13,9 @@ $startedAt = [DateTimeOffset]::UtcNow
 $deadline = [Diagnostics.Stopwatch]::StartNew()
 $cDriveSamples = @()
 $process = $null
+$processLease = $null
+
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.Process.psm1') -Force
 
 function Write-TimeboxedOutcome {
   param(
@@ -64,8 +67,10 @@ function Write-TimeboxedOutcome {
 
 function Stop-TimeboxedProcessTree {
   if ($null -eq $process -or $process.HasExited) { return }
-  & taskkill.exe /PID $process.Id /T /F | Out-Null
-  $process.WaitForExit()
+  if (-not $processLease -or -not (Test-OmniProcessIdentity -Lease $processLease)) {
+    throw "timeboxed process identity no longer matches its managed lease"
+  }
+  Stop-OmniOwnedProcessTree -Lease $processLease | Out-Null
 }
 
 try {
@@ -80,6 +85,7 @@ try {
   $process = Start-Process -FilePath $payload.command -ArgumentList @($payload.arguments) `
     -WorkingDirectory $payload.cwd -RedirectStandardOutput $StdoutPath `
     -RedirectStandardError $StderrPath -PassThru
+  $processLease = Get-OmniProcessIdentity -ProcessId $process.Id -Ownership managed
 
   while ($true) {
     $remainingMs = $TimeoutMs - $deadline.ElapsedMilliseconds

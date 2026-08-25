@@ -19,7 +19,6 @@ const liveTone: StatusTone = 'ready';
 const errorTone: StatusTone = 'risk';
 const warningTone: StatusTone = 'warning';
 const previewTone: StatusTone = 'draft';
-const unsupportedTone: StatusTone = 'unsupported';
 
 function captureDescriptor(snapshot: AudioRuntimeSnapshot, labels: { ready: string; capturing: string; error: string; armed: string; idle: string; preview: string }): AudioRouteBadgeDescriptor {
   const route = snapshot.inbound;
@@ -98,5 +97,3 @@ export function buildAudioRuntimeBadges(
     outboundModels: modelsDescriptor(snapshot, labels.outboundModels, hasOutboundModel),
   };
 }
-
-export const UNSUPPORTED_BADGE_TONE = unsupportedTone;

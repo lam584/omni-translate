@@ -71,7 +71,6 @@ import {
 } from './watch-mode-provider-preflight-authorization.mjs';
 import {
   buildTranslatedPcmLoopbackAuthority,
-  renderBridgeReferenceToLoopback,
 } from './watch-mode-translated-pcm-loopback.mjs';
 import {
   buildPhysicalSourceWaveformAuthority,
@@ -349,6 +348,22 @@ function deterministicTranslatedCue(seed, sampleRateHz = 24_000, seconds = 1.4) 
   return output;
 }
 
+function renderBridgeReferenceToLoopback(samples, sourceRateHz) {
+  const bridgeRateHz = 48_000;
+  const bridge = new Float32Array(Math.max(1, Math.floor(samples.length * bridgeRateHz / sourceRateHz)));
+  for (let index = 0; index < bridge.length; index += 1) {
+    bridge[index] = samples[Math.min(samples.length - 1, Math.floor(index * sourceRateHz / bridgeRateHz))];
+  }
+  const output = new Float32Array(Math.max(1, Math.floor(bridge.length * 16_000 / bridgeRateHz)));
+  for (let index = 0; index < output.length; index += 1) {
+    const source = index * bridgeRateHz / 16_000;
+    const left = Math.min(bridge.length - 1, Math.floor(source));
+    const right = Math.min(bridge.length - 1, left + 1);
+    output[index] = bridge[left] + (bridge[right] - bridge[left]) * (source - left);
+  }
+  return output;
+}
+
 function fixtureLocalTimestamp(epochMs) {
   const value = new Date(epochMs);
   const pad = (number, length = 2) => String(number).padStart(length, '0');
@@ -515,7 +530,7 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
     `${JSON.stringify(authority, null, 2)}\n`,
     'utf8',
   );
-  const physicalAuthorityPath = path.join(runDirectory, 'physical-output-content.json');
+  const physicalAuthorityPath = path.join(runDirectory, 'physical-output-content.raw.json');
   const physicalAuthority = JSON.parse(fs.readFileSync(physicalAuthorityPath, 'utf8'));
   const sourceWaveform = buildPhysicalSourceWaveformAuthority({ runDirectory });
   assert.equal(sourceWaveform.passed, true, sourceWaveform.violations.join('; '));
@@ -543,6 +558,7 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
     `${JSON.stringify(physicalAuthority, null, 2)}\n`,
     'utf8',
   );
+  writeDirectoryReport({ inputDir: runDirectory, outputDir: runDirectory, mode: 'live' });
   return authority;
 }
 
@@ -593,16 +609,6 @@ function writeAuthorityRawCell(root, directoryName, {
     speechSegmentation: {},
   };
   const jsonArtifacts = {
-    'snapshots.json': snapshots,
-    'steps.json': [{
-      name: 'start desktop shell',
-      ok: true,
-      result: {
-        pid: desktopProcessId,
-        systemMetricsSampler: { rootProcessId: desktopProcessId },
-      },
-      error: null,
-    }],
     'driver.json': { error: 'authority fixture driver did not run' },
     'bridge-source-probe.json': healthyBridgeProbe
       ? {
@@ -682,20 +688,52 @@ function writeAuthorityRawCell(root, directoryName, {
       }],
     },
   };
+  jsonArtifacts['run-metadata.json'] = {
+    schemaVersion: 'watch-mode-run-metadata/v1', runMarker: snapshots.runMarker,
+    startedAtLocal: snapshots.startedAtLocal, modelId: snapshots.modelId,
+    feedbackMode: feedbackLoopPrevention,
+  };
+  jsonArtifacts['run-collection.json'] = {
+    schemaVersion: 'watch-mode-run-collection/v2',
+    artifactKind: 'watch-mode-run-collection',
+    request: { schemaVersion: 'watch-mode-run-request/v1', runMode: 'live', feedbackMode: feedbackLoopPrevention, model: { id: snapshots.modelId } },
+    collectionStatus: 'completed',
+    steps: [{
+      schemaVersion: 'watch-mode-step/v1',
+      id: 'start-desktop-shell',
+      phase: 'desktopLaunch',
+      status: 'passed',
+      data: { pid: desktopProcessId, systemMetricsSampler: { rootProcessId: desktopProcessId } },
+      error: null,
+    }],
+    ownedProcesses: [],
+    artifacts: {
+      runMetadata: 'run-metadata.json', appLog: 'app.log', bridgeLog: 'bridge-service.log',
+      driverProbe: 'driver.json', bridgeSourceProbe: 'bridge-source-probe.json',
+      physicalOutputProbe: 'physical-output-probe.json', physicalPlaybackDevice: 'physical-playback-device.json',
+      playback: 'playback.json', watchSessionReport: 'watch-session-report.json',
+      systemMetrics: 'system-metrics.json',
+    },
+    primaryError: null,
+    cleanupErrors: [],
+  };
   if (feedbackLoopPrevention !== 'echo-cancel') {
-    jsonArtifacts['physical-output-content.json'] = { passed: false, detail: 'authority fixture' };
+    jsonArtifacts['physical-output-content.raw.json'] = { passed: false, detail: 'authority fixture' };
     jsonArtifacts['physical-output-recording.json'] = { passed: false, capturedFrames: 1 };
     jsonArtifacts['source-media-transcript.json'] = { passed: false, transcript: '' };
   }
   for (const [relativePath, value] of Object.entries(jsonArtifacts)) {
     fs.writeFileSync(path.join(directory, relativePath), `${JSON.stringify(value, null, 2)}\n`, 'utf8');
   }
-  const appLogLines = [snapshots.runMarker];
+  const appLogLines = [
+    snapshots.runMarker,
+    'watch_mode.route_start subtitleTranslationMode=native translationAudioSource=omni-native',
+    'watch_mode.omni_preconnect_started detail=direction=inbound sid=authority-fixture',
+    'watch_mode.omni_preconnect_reused detail=direction=inbound sid=authority-fixture',
+  ];
   if (feedbackLoopPrevention === 'echo-cancel') {
     const playbackStartedAtMs = metricsStartedAt.getTime() + 1_000;
     appLogLines.push(
-      'watch_mode.omni_preconnect_started detail=direction=inbound sid=authority-fixture',
-      'watch_mode.omni_preconnect_reused detail=direction=inbound sid=authority-fixture',
       `watch_mode.omni_session_config | model=${modelId} realtimeAudioMode=server_vad outputMode=text-and-audio inputAudioFormat=pcm16 isLivetranslate=false subtitleTranslateActive=false sid=authority-fixture`,
       '[AUDIO] playback request received: cue_id=authority-aec samples=24000 sample_rate_hz=24000 duration_ms=1000 enabled=true local_playback=true virtual_mic=false sid=authority-fixture',
       '[AUDIO] speaker playback completed: cue_id=authority-aec frames=24000 sample_rate_hz=24000 sid=authority-fixture',
@@ -739,9 +777,15 @@ function writeAuthorityRawCell(root, directoryName, {
       passed: true,
       capturedFrames: recordingFrames,
     })}\n`, 'utf8');
-    fs.writeFileSync(path.join(directory, 'physical-output-content.json'), `${JSON.stringify({
+    fs.writeFileSync(path.join(directory, 'physical-output-content.raw.json'), `${JSON.stringify({
       passed: true,
-      recording: { passed: true },
+      recording: {
+        passed: true,
+        recordingPath: 'physical-output-recording.wav',
+        transcriptionPcmPath: 'physical-output-recording-16k-mono.pcm',
+        capturedFrames: 960_000,
+        rms: 0.07,
+      },
     })}\n`, 'utf8');
     if (feedbackLoopPrevention === 'virtual-driver') {
       const runtimeSha256 = (relativePath, fallback) => runtimeBinaryHashes
@@ -875,12 +919,18 @@ function writeAuthorityRawCell(root, directoryName, {
       },
       fixture: canonical.fixture,
     }, null, 2)}\n`, 'utf8');
-    fs.writeFileSync(path.join(directory, 'physical-output-content.json'), `${JSON.stringify({
+    fs.writeFileSync(path.join(directory, 'physical-output-content.raw.json'), `${JSON.stringify({
       passed: true,
       authorityMode: 'local-pcm-cue-playback-v1',
       remoteProviderCalls: 0,
       externalAudioSeconds: 0,
-      recording: { passed: true },
+      recording: {
+        passed: true,
+        recordingPath: 'physical-output-recording.wav',
+        transcriptionPcmPath: 'physical-output-recording-16k-mono.pcm',
+        capturedFrames: 960_000,
+        rms: 0.07,
+      },
       originalPassthrough: { sourceSimilarity: { passed: true } },
       contentConsistency: { structuredEvidence: { passed: true } },
       translatedSpeech: {
@@ -889,6 +939,12 @@ function writeAuthorityRawCell(root, directoryName, {
       },
     }, null, 2)}\n`, 'utf8');
   }
+  const collectionPath = path.join(directory, 'run-collection.json');
+  const collection = JSON.parse(fs.readFileSync(collectionPath, 'utf8'));
+  if (feedbackLoopPrevention !== 'echo-cancel') {
+    collection.artifacts.physicalOutputContentRaw = 'physical-output-content.raw.json';
+  }
+  fs.writeFileSync(collectionPath, `${JSON.stringify(collection, null, 2)}\n`, 'utf8');
   writeDirectoryReport({ inputDir: directory, outputDir: directory, mode: 'live' });
   return directory;
 }
@@ -897,8 +953,9 @@ function writeStrictPaidBudgetFixture(runDirectory, cell, {
   generatedAt = new Date(),
   leaseId = `lease-${path.basename(runDirectory)}-${cell.cellId}`,
 } = {}) {
-  const snapshots = JSON.parse(fs.readFileSync(path.join(runDirectory, 'snapshots.json'), 'utf8'));
-  const runMarker = snapshots.runMarker;
+  const collection = JSON.parse(fs.readFileSync(path.join(runDirectory, 'run-collection.json'), 'utf8'));
+  const metadata = JSON.parse(fs.readFileSync(path.join(runDirectory, collection.artifacts.runMetadata), 'utf8'));
+  const runMarker = metadata.runMarker;
   const providerPcmPath = path.join(runDirectory, 'provider-input-16k-mono.pcm');
   const totalAttemptedSamples = fs.statSync(providerPcmPath).size / 2;
   const maxSamples = Number(cell.durationSeconds) * 16_000;

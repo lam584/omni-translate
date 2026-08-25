@@ -115,7 +115,7 @@ export default function ProviderTemplateCatalog({
 
       {!modelCatalogOpen ? (
         <button className="provider-directory-add provider-directory-add-compact" onClick={onAddProvider} type="button">
-          <AppIcon name="cloud" size={14} />
+          <AppIcon name="plus" size={14} />
           {t('common.add')}
         </button>
       ) : null}

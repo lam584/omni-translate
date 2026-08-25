@@ -21,7 +21,7 @@ import {
   assertStrictMatrixProvenance,
   assertStrictEvidenceOptions,
   assertStrictReleaseMatrixLists,
-  buildRunnerArgv,
+  buildRunnerRequest,
   buildStrictRuntimeAuthority,
   buildVerifyArgv,
   lastNonEmptyLine,
@@ -127,19 +127,6 @@ test('strict matrix refuses a failed cell report before another paid cell starts
   }
 });
 
-// Guard order matches the runner switch forwarding the retired matrix .ps1 used.
-const RUNNER_SWITCHES = [
-  'SkipDesktopLaunch',
-  'SkipDriverRepair',
-  'AllowDriverRepair',
-  'UseDefaultEndpointPlayback',
-  'StopDesktopAfterPlayback',
-  'AllowElevatedDesktopLaunch',
-  'SkipPhysicalOutputContentStt',
-  'StrictPaidAuthority',
-  'LocalCanonicalContentAuthority',
-];
-
 function writeAuthorityPlaceholderArtifacts(runDirectory, feedbackMode) {
   for (const relativePath of requiredCellArtifactPaths(feedbackMode)) {
     const filePath = path.join(runDirectory, ...relativePath.split('/'));
@@ -218,98 +205,29 @@ test('live runner supports the three-minute pairwise floor and derives its timeo
   );
 });
 
-test('sample pair argv binds every always-forwarded runner parameter', () => {
-  const argv = buildRunnerArgv({ model: SAMPLE_MODEL, feedbackMode: SAMPLE_FEEDBACK_MODE });
-
-  assert.deepEqual(argv, [
-    '-OutputRoot', 'artifacts/testing/watch-mode-live',
-    '-MediaPath', 'scripts/testing/fixtures/watch-mode-en-original.wav',
-    '-WarmupSeconds', '12',
-    '-WatchModelId', 'qwen3.5-omni-flash-realtime',
-    '-SubtitleTranslationMode', 'native',
-    '-PlaybackSeconds', '0',
-    '-PostPlaybackWaitSeconds', '120',
-    '-SessionReadyTimeoutSeconds', '90',
-    '-WatchAutoStopAfterSeconds', '180',
-    '-PhysicalPlaybackDeviceId', 'default',
-    '-PhysicalPlaybackDeviceClass', 'default-speaker',
-    '-PhysicalPlaybackDeviceProfileId', 'default-speaker',
-    '-FeedbackLoopPrevention', 'echo-cancel',
-    '-ExpectedPhysicalPlaybackDeviceName', '',
-  ]);
-});
-
-test('every forwarded parameter exists in the live runner param block', () => {
+test('matrix emits one finite run request and PowerShell accepts only its path', () => {
+  const request = buildRunnerRequest({ model: SAMPLE_MODEL, feedbackMode: SAMPLE_FEEDBACK_MODE });
+  assert.equal(request.schemaVersion, 'watch-mode-run-request/v1');
+  assert.equal(request.model.id, SAMPLE_MODEL);
+  assert.equal(request.feedbackMode, SAMPLE_FEEDBACK_MODE);
+  assert.equal(request.desktop.launchMode, 'managed');
   const runnerSource = fs.readFileSync(
     path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.ps1'),
     'utf8',
   );
   assert.ok(runnerSource.startsWith('param('), 'runner must open with its param block');
   const paramBlock = runnerSource.slice(0, runnerSource.search(/^\)/m));
-  const argv = buildRunnerArgv({
-    model: SAMPLE_MODEL,
-    feedbackMode: SAMPLE_FEEDBACK_MODE,
-    skipDesktopLaunch: true,
-    skipDriverRepair: true,
-    allowDriverRepair: true,
-    useDefaultEndpointPlayback: true,
-    stopDesktopAfterPlayback: true,
-    allowElevatedDesktopLaunch: true,
-    skipPhysicalOutputContentStt: true,
-    strictPaidAuthority: true,
-    localCanonicalContentAuthority: true,
-  });
-  for (const entry of argv) {
-    if (!entry.startsWith('-')) {
-      continue;
-    }
-    assert.match(
-      paramBlock,
-      new RegExp(`\\$${entry.slice(1)}\\b`),
-      `run-watch-mode-live.ps1 must declare the ${entry} parameter`,
-    );
-  }
-});
-
-test('switch parameters are appended bare, only when enabled, in guard order', () => {
-  const allOn = buildRunnerArgv({
-    model: SAMPLE_MODEL,
-    feedbackMode: SAMPLE_FEEDBACK_MODE,
-    skipDesktopLaunch: true,
-    skipDriverRepair: true,
-    allowDriverRepair: true,
-    useDefaultEndpointPlayback: true,
-    stopDesktopAfterPlayback: true,
-    allowElevatedDesktopLaunch: true,
-    skipPhysicalOutputContentStt: true,
-    strictPaidAuthority: true,
-    localCanonicalContentAuthority: true,
-  });
-  assert.deepEqual(allOn.slice(28), RUNNER_SWITCHES.map((name) => `-${name}`));
-
-  const allOff = buildRunnerArgv({ model: SAMPLE_MODEL, feedbackMode: SAMPLE_FEEDBACK_MODE });
-  for (const name of RUNNER_SWITCHES) {
-    assert.equal(allOff.includes(`-${name}`), false);
-  }
-});
-
-test('runner passthrough args are appended verbatim after the splat', () => {
-  const argv = buildRunnerArgv({
-    model: SAMPLE_MODEL,
-    feedbackMode: SAMPLE_FEEDBACK_MODE,
-    allowElevatedDesktopLaunch: true,
-    runnerArgs: ['-DryRun', '-Fixture', 'pass', 'value with spaces'],
-  });
-  assert.deepEqual(argv.slice(-5), ['-AllowElevatedDesktopLaunch', '-DryRun', '-Fixture', 'pass', 'value with spaces']);
+  assert.match(paramBlock, /\$RequestPath\b/);
+  assert.doesNotMatch(paramBlock, /\$DryRun\b|\$SkipDriverRepair\b|\$WatchModelId\b/);
 });
 
 test('keyword-free live aliases carry an explicit protocol into config preparation', () => {
-  const argv = buildRunnerArgv({
+  const request = buildRunnerRequest({
     model: 'deployment-blue',
     feedbackMode: SAMPLE_FEEDBACK_MODE,
     watchRealtimeProtocol: 'dashscope-omni',
   });
-  assert.deepEqual(argv.slice(-2), ['-WatchRealtimeProtocol', 'dashscope-omni']);
+  assert.equal(request.model.protocol, 'dashscope-omni');
 });
 
 test('known Watch models always bind their provider protocol instead of relying on provider order', () => {
@@ -422,19 +340,16 @@ test('legacy strict matrix fails before build, preflight, or any paid cell launc
 });
 
 test('strict paid argv binds the fail-closed local authority contract', () => {
-  const argv = buildRunnerArgv({
+  const request = buildRunnerRequest({
     model: SAMPLE_MODEL,
     feedbackMode: SAMPLE_FEEDBACK_MODE,
     strictPaidAuthority: true,
     cellId: 'pairwise-live::qwen3.5-omni-flash-realtime::echo-cancel::default-speaker',
   });
-  assert.ok(argv.includes('-StrictPaidAuthority'));
-  assert.equal(
-    argv[argv.indexOf('-MatrixCellId') + 1],
-    'pairwise-live::qwen3.5-omni-flash-realtime::echo-cancel::default-speaker',
-  );
-  assert.equal(argv[argv.indexOf('-SubtitleTranslationMode') + 1], 'native');
-  assert.equal(argv[argv.indexOf('-WatchAutoStopAfterSeconds') + 1], '180');
+  assert.equal(request.authorityMode, 'strict-paid');
+  assert.equal(request.matrix.cellId, 'pairwise-live::qwen3.5-omni-flash-realtime::echo-cancel::default-speaker');
+  assert.equal(request.model.subtitleTranslationMode, 'native');
+  assert.equal(request.timeouts.sessionSeconds, 180);
 });
 
 test('reusable local isolation authority is restricted to a repo-local manifest', () => {

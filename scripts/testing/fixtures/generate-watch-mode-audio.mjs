@@ -16,6 +16,13 @@ const integrationConfigPath = path.join(repoRoot, 'scripts', 'testing', 'llm-int
 const endpoint = process.env.OMNI_TTS_ENDPOINT
   ?? 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const model = process.env.OMNI_TTS_MODEL ?? 'qwen-audio-3.0-tts-plus';
+const generationReceiptFields = Object.freeze([
+  'sha256',
+  'durationSeconds',
+  'sampleRate',
+  'channels',
+  'bitsPerSample',
+]);
 
 const fixtures = Object.freeze({
   general: {
@@ -58,12 +65,33 @@ const fixtures = Object.freeze({
 
 function parseFixtureArg(argv) {
   const index = argv.indexOf('--fixture');
-  const value = index === -1 ? 'all' : argv[index + 1];
-  if (value === 'all') return Object.values(fixtures);
-  if (!fixtures[value]) {
-    throw new Error(`Unknown fixture '${value}'. Choose all, general, conversation, or technical.`);
+  const value = index === -1 ? 'optional' : argv[index + 1];
+  let selectedFixtures;
+  if (value === 'optional') {
+    selectedFixtures = Object.values(fixtures).filter((fixture) => fixture.distribution !== 'bundled');
+  } else if (value === 'all') {
+    selectedFixtures = Object.values(fixtures);
+  } else if (fixtures[value]) {
+    selectedFixtures = [fixtures[value]];
+  } else {
+    throw new Error(`Unknown fixture '${value}'. Choose optional, all, general, conversation, or technical.`);
   }
-  return [fixtures[value]];
+  if (
+    selectedFixtures.some((fixture) => fixture.distribution === 'bundled')
+    && !argv.includes('--confirm-canonical-overwrite')
+  ) {
+    throw new Error(
+      'Generating the bundled canonical fixture requires --confirm-canonical-overwrite.',
+    );
+  }
+  return selectedFixtures;
+}
+
+function withoutOnDemandReceipt(fixture) {
+  if (!fixture || fixture.distribution === 'bundled') return fixture;
+  const recipe = { ...fixture };
+  for (const field of generationReceiptFields) delete recipe[field];
+  return recipe;
 }
 
 async function readApiKey() {
@@ -172,12 +200,13 @@ async function generateFixture(apiKey, fixture) {
     'ascii',
   );
   process.stdout.write(`Generated ${fixture.audio}: ${wav.durationSeconds}s, ${wav.sampleRate} Hz\n`);
-  return {
+  const manifestFixture = {
     ...fixture,
     model,
-    sha256: digest,
-    ...wav,
   };
+  return fixture.distribution === 'bundled'
+    ? { ...manifestFixture, sha256: digest, ...wav }
+    : manifestFixture;
 }
 
 async function main() {
@@ -193,11 +222,14 @@ async function main() {
   }
   const byId = new Map((manifest.fixtures ?? []).map((fixture) => [fixture.id, fixture]));
   for (const result of results) byId.set(result.id, result);
+  const generatedCanonical = results.some((fixture) => fixture.distribution === 'bundled');
   manifest = {
-    generatedAt: new Date().toISOString(),
+    generatedAt: generatedCanonical ? new Date().toISOString() : manifest.generatedAt ?? null,
     generator: 'Alibaba Cloud Model Studio',
     model,
-    fixtures: Object.keys(fixtures).map((id) => byId.get(id)).filter(Boolean),
+    fixtures: Object.keys(fixtures)
+      .map((id) => withoutOnDemandReceipt(byId.get(id)))
+      .filter(Boolean),
   };
   await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 }

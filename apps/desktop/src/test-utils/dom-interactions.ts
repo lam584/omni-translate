@@ -38,3 +38,14 @@ export async function selectValue(element: HTMLSelectElement, value: string) {
     element.dispatchEvent(new Event('change', { bubbles: true }));
   });
 }
+
+/** Changes an input or select while preserving the full input + change event sequence. */
+export async function changeValue(element: HTMLInputElement | HTMLSelectElement, value: string) {
+  const prototype = element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+  const valueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+  await act(async () => {
+    valueSetter?.call(element, value);
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}

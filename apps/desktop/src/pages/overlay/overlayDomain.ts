@@ -1,4 +1,3 @@
-import zhCN from '../../i18n/locales/zh-CN.json';
 import type { SubtitleCueRuntime, SubtitleDisplaySegmentRuntime } from '../../schema/audio-runtime';
 
 export type OverlayStylePreset = {
@@ -79,15 +78,6 @@ export type OverlayDragState = {
 };
 
 export type OverlayResizeDirection = 'North' | 'South' | 'East' | 'West' | 'NorthEast' | 'NorthWest' | 'SouthEast' | 'SouthWest';
-
-export function overlayFallbackText(key: string): string {
-  let value: unknown = zhCN;
-  for (const segment of key.split('.')) {
-    if (!value || typeof value !== 'object' || !(segment in value)) return key;
-    value = (value as Record<string, unknown>)[segment];
-  }
-  return typeof value === 'string' ? value : key;
-}
 
 export type OverlayResizeState = {
   direction: OverlayResizeDirection;

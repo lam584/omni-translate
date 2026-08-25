@@ -12,3 +12,4 @@ import './watch-mode-report-route-app.test.mjs';
 import './watch-mode-report-environment.test.mjs';
 import './watch-mode-report-content.test.mjs';
 import './watch-mode-report-provider-io.test.mjs';
+import './watch-mode-content-verdict.test.mjs';

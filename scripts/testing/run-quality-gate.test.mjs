@@ -1665,7 +1665,7 @@ test('default production report validation rejects synthetic authority packages'
     const issues = testMarkdownManualReport(fixture.content, {
       workspaceRoot: fixture.workspaceRoot,
       currentProvenance: TEST_PROVENANCE,
-      now: TEST_NOW.getTime(),
+      now: TEST_NOW,
     });
     assert.ok(issues.some((issue) => issue.includes('authority does not match the registered production emitter')));
   } finally {
@@ -2296,6 +2296,7 @@ test('dedicated Desktop runner launches one production process and binds its PID
         return { pid: processId };
       },
       wait: async () => ({ code: 0, signal: null, processId }),
+      now: TEST_NOW,
       collectEvidence: (options) => testOnlyCollectReleaseManualEvidence({
         ...options,
         testOnlyAllowSyntheticAuthority: true,
@@ -3119,15 +3120,23 @@ test('system metrics collector records real process-tree samples', {
     const outputPath = path.join(dir, 'system-metrics.json');
     const collectorPath = path.resolve('scripts/testing/collect-watch-mode-system-metrics.ps1');
     const command = [
+      `$ErrorActionPreference = 'Stop'`,
       `$target = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-Command','Start-Sleep -Seconds 3') -WindowStyle Hidden -PassThru`,
       `& '${collectorPath.replaceAll("'", "''")}' -RootProcessId $target.Id -OutputPath '${outputPath.replaceAll("'", "''")}' -SampleIntervalMs 500`,
       'exit $LASTEXITCODE',
     ].join('; ');
-    const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', command], {
+    const result = spawnSync('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      command,
+    ], {
       encoding: 'utf8',
       timeout: 15_000,
     });
-    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join('\n'));
     const metrics = readJson(outputPath);
     assert.equal(metrics.completionReason, 'root-process-exited');
     assert.equal(metrics.collectionErrors.length, 0);
@@ -3273,12 +3282,20 @@ test('buildQualityGateSummary throws when the integration step is missing', () =
 });
 
 test('buildAutoSteps honors the skip switches', () => {
+  assert.equal(
+    buildAutoSteps().find((step) => step.name === 'audit-dead-code')?.command,
+    'npm run audit:dead-code',
+  );
   assert.deepEqual(buildAutoSteps().map((step) => step.name), [
     'audit-architecture',
+    'audit-powershell-boundaries',
+    'audit-dead-code',
     'audit-error-handling',
     'audit-rust-warnings',
     'i18n-ratchet',
     'verify-desktop',
+    'benchmark-core-tests',
+    'diagnostics-benchmark-tests',
     'contracts',
     'config-paths',
     'integration-bridge-contract',
@@ -3287,6 +3304,7 @@ test('buildAutoSteps honors the skip switches', () => {
     'release-tooling',
     'quality-gate-tooling',
     'startup-tooling',
+    'powershell-tooling',
     'coverage-base',
     'check-desktop-shell',
     'test-desktop-shell',
@@ -3296,10 +3314,11 @@ test('buildAutoSteps honors the skip switches', () => {
   assert.deepEqual(
     buildAutoSteps({ skipDesktopShell: true, skipBridgeService: true }).map((step) => step.name),
     [
-      'audit-architecture', 'audit-error-handling', 'audit-rust-warnings', 'i18n-ratchet',
-      'verify-desktop', 'contracts', 'config-paths', 'integration-bridge-contract',
+      'audit-architecture', 'audit-powershell-boundaries', 'audit-dead-code', 'audit-error-handling', 'audit-rust-warnings', 'i18n-ratchet',
+      'verify-desktop', 'benchmark-core-tests', 'diagnostics-benchmark-tests',
+      'contracts', 'config-paths', 'integration-bridge-contract',
       'driver-boundaries', 'watch-mode-tooling', 'release-tooling', 'quality-gate-tooling',
-      'startup-tooling', 'coverage-base',
+      'startup-tooling', 'powershell-tooling', 'coverage-base',
     ],
   );
 });
@@ -3308,6 +3327,8 @@ test('test:all includes every deterministic cross-layer gate', () => {
   assert.deepEqual(buildSteps({ skipIntegration: true }).map((step) => step.name), [
     'workspace-tests',
     'desktop-shell-tests',
+    'benchmark-core-tests',
+    'diagnostics-benchmark-tests',
     'bridge-service-native-tests',
     'contracts',
     'config-paths',
@@ -3317,5 +3338,6 @@ test('test:all includes every deterministic cross-layer gate', () => {
     'release-tooling',
     'quality-gate-tooling',
     'startup-tooling',
+    'powershell-tooling',
   ]);
 });

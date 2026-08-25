@@ -3,10 +3,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parseLooseArgs } from '../lib/testing-common.mjs';
+import {
+  WATCH_MODE_RUN_COLLECTION_SCHEMA,
+  writeWatchModeRunCollection,
+} from './watch-mode-run-collection.mjs';
 
 export const WATCH_MODE_LIVE_FIXTURE_FILES = [
-  'snapshots.json',
-  'steps.json',
+  'run-collection.json',
+  'run-metadata.json',
+  'fixture-evidence.raw.json',
   'app.log',
   'bridge-service.log',
 ];
@@ -76,7 +81,7 @@ export function generateWatchModeLiveFixture({ root, fixture = 'pass' }) {
     wasapi: healthyDriver,
     bridge: healthyBridge,
     physicalOutput: healthyPhysicalOutput,
-    physicalOutputContent: healthyPhysicalOutputContent,
+    physicalOutputContentRaw: healthyPhysicalOutputContent,
     speechSegmentation: {
       queuedSegments: 1,
       playedSegments: 1,
@@ -94,8 +99,8 @@ export function generateWatchModeLiveFixture({ root, fixture = 'pass' }) {
     },
   };
   const steps = [
-    { name: 'synthetic driver probe', ok: true, result: healthyDriver, error: null },
-    { name: 'synthetic watch route', ok: true, result: { routeState: 'capturing' }, error: null },
+    { schemaVersion: 'watch-mode-step/v1', id: 'synthetic-driver-probe', phase: 'driverProbe', status: 'passed', startedAt: null, endedAt: null, durationMs: 0, data: healthyDriver, error: null },
+    { schemaVersion: 'watch-mode-step/v1', id: 'synthetic-watch-route', phase: 'readiness', status: 'passed', startedAt: null, endedAt: null, durationMs: 0, data: { routeState: 'capturing' }, error: null },
   ];
   // Lines carry the trailing ` sid=<value>` session token appended by the
   // unified logging pipeline; load-bearing markers stay verbatim before it.
@@ -116,8 +121,30 @@ export function generateWatchModeLiveFixture({ root, fixture = 'pass' }) {
   // session id (`bridge-{appSid}-{startMs}`) as the trailing token.
   const bridgeLog = '2026-01-01 00:00:00.000 [NORMAL] [bridge] - - source pacer summary: releasedFrames=12 queuedFrames=0 pendingBytes=0 underruns=0 droppedFrames=0 driverBufferedBytes=0 driverDroppedBytes=0 monitorQueuedFrames=0 staleSourceFramesDropped=0 sid=bridge-0198fixturesid-1000';
 
-  fs.writeFileSync(path.join(fixtureDirectory, 'snapshots.json'), `${JSON.stringify(snapshots, null, 2)}\n`, 'utf8');
-  fs.writeFileSync(path.join(fixtureDirectory, 'steps.json'), `${JSON.stringify(steps, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(path.join(fixtureDirectory, 'fixture-evidence.raw.json'), `${JSON.stringify(snapshots, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(path.join(fixtureDirectory, 'run-metadata.json'), `${JSON.stringify({
+    schemaVersion: 'watch-mode-run-metadata/v1',
+    runMarker: null,
+    startedAtLocal: null,
+    modelId: snapshots.modelId,
+    feedbackMode: snapshots.feedbackLoopPrevention,
+  }, null, 2)}\n`, 'utf8');
+  writeWatchModeRunCollection(fixtureDirectory, {
+    schemaVersion: WATCH_MODE_RUN_COLLECTION_SCHEMA,
+    artifactKind: 'watch-mode-run-collection',
+    request: { schemaVersion: 'watch-mode-run-request/v1', runMode: 'fixture' },
+    collectionStatus: 'completed',
+    steps,
+    ownedProcesses: [],
+    artifacts: {
+      appLog: 'app.log',
+      bridgeLog: 'bridge-service.log',
+      runMetadata: 'run-metadata.json',
+      fixtureEvidence: 'fixture-evidence.raw.json',
+    },
+    primaryError: null,
+    cleanupErrors: [],
+  });
   fs.writeFileSync(path.join(fixtureDirectory, 'app.log'), `${appLog}\n`, 'utf8');
   fs.writeFileSync(path.join(fixtureDirectory, 'bridge-service.log'), `${bridgeLog}\n`, 'utf8');
   return fixtureDirectory;

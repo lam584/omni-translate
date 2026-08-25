@@ -3,7 +3,23 @@ import { describe, expect, it } from 'vitest';
 import AppIcon, { type AppIconName } from './AppIcon';
 
 describe('AppIcon', () => {
-  it.each(['globe', 'panel', 'power', 'route'] satisfies AppIconName[])('renders the %s icon', (name) => {
+  it.each([
+    'arrow-left',
+    'arrow-right',
+    'chip',
+    'diagnostics',
+    'edit',
+    'export',
+    'globe',
+    'import',
+    'panel',
+    'plus',
+    'power',
+    'route',
+    'save',
+    'server',
+    'translate',
+  ] satisfies AppIconName[])('renders the %s icon', (name) => {
     expect(renderToStaticMarkup(<AppIcon name={name} />)).toContain('<svg');
   });
 

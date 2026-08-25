@@ -50,8 +50,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/testing/run-watc
 ```
 
 See `multilingual/manifest.json` for the complete language-to-file mapping and
-the metadata from the last generated set. Its `audioDistribution` field makes
-clear that those outputs are not bundled.
+stable generation recipes. Its `audioDistribution` field makes clear that
+those outputs are not bundled; byte-level receipts live only beside a local
+generated output and are not committed as recipe metadata.
 
 ## Regeneration
 
@@ -65,6 +66,10 @@ fixture):
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/testing/fixtures/generate-watch-mode-audio.ps1 -Fixture conversation
 ```
+
+With no `-Fixture`, the English generator produces only the two optional
+variants. Replacing `general` or selecting `all` requires the explicit
+`-ConfirmCanonicalOverwrite` switch.
 
 Regenerate all localized texts and audio, or audio only:
 

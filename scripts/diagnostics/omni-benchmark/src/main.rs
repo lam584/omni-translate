@@ -9,6 +9,7 @@ mod openai;
 mod gemini;
 mod manifest;
 mod batch;
+mod pcm_cli;
 
 use config::{parse_args, print_usage, CliMode};
 use runner::run_benchmark;
@@ -16,6 +17,15 @@ use batch::{run_batch, BatchConfig};
 
 fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(result) = pcm_cli::try_run(&arguments) {
+        if let Err(error) = result {
+            eprintln!("PCM analysis failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     let mode = match parse_args() {
         Ok(m) => m,

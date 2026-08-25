@@ -41,6 +41,7 @@ test('deduplicates ts-rs stderr diagnostics by serde attribute', () => {
 test('always invokes a workspace all-target check in an isolated target directory', () => {
   let invocation;
   const result = collectWorkspaceWarnings({
+    environment: {},
     runner(command, args, options) {
       invocation = { command, args, options };
       return { status: 0, stdout: '', stderr: '' };
@@ -48,10 +49,23 @@ test('always invokes a workspace all-target check in an isolated target director
   });
   assert.equal(invocation.command, 'cargo');
   assert.deepEqual(invocation.args, ['check', '--workspace', '--all-targets', '--message-format=json']);
+  assert.equal(invocation.options.env.CARGO_BUILD_JOBS, '1');
   assert.match(invocation.options.env.CARGO_TARGET_DIR, /omni-rust-warning-audit-/u);
   assert.deepEqual(result.summary, {
     packages: {},
     lints: {},
     procMacroDiagnostics: 0,
   });
+});
+
+test('preserves an explicit cargo build job limit', () => {
+  let invocation;
+  collectWorkspaceWarnings({
+    environment: { CARGO_BUILD_JOBS: '3' },
+    runner(command, args, options) {
+      invocation = { command, args, options };
+      return { status: 0, stdout: '', stderr: '' };
+    },
+  });
+  assert.equal(invocation.options.env.CARGO_BUILD_JOBS, '3');
 });

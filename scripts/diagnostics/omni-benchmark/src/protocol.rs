@@ -34,12 +34,6 @@ impl BenchmarkProtocol {
         matches!(self, Self::DashscopeOmni | Self::DashscopeLiveTranslate)
     }
 
-    /// 是否属于 Gemini 系列协议
-    #[allow(dead_code)]
-    pub fn is_gemini_family(self) -> bool {
-        matches!(self, Self::GeminiLive)
-    }
-
     /// 是否使用 manual commit 模式
     pub fn uses_manual_commit(self) -> bool {
         matches!(
@@ -114,7 +108,3 @@ impl BenchmarkProtocol {
         }
     }
 }
-
-/// 保留旧名以兼容已有代码
-#[allow(dead_code)]
-pub type DashscopeProtocol = BenchmarkProtocol;

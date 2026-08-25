@@ -31,6 +31,10 @@
 }
 
 .action-button {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:7px;
   border:var(--border-width) solid var(--color-border-subtle);
   border-radius:var(--radius-nav);
   background:#ffffff08;

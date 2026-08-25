@@ -124,7 +124,7 @@ function RuntimeToastHost() {
               onClick={() => void runExport()}
               type="button"
             >
-              <AppIcon name="layers" size={12} />
+              <AppIcon name="download" size={12} />
               {exportBusy ? t('diagnostics.actions.exporting') : t('session.exportDiagnostics')}
             </button>
           )}

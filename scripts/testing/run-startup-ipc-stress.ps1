@@ -56,9 +56,8 @@ if (-not $DryRun -and $env:OMNI_STARTUP_IPC_STRESS_DRY_RUN -eq "1") {
 $workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $stressModule = Join-Path $workspaceRoot 'scripts/testing/startup-ipc-stress.mjs'
 
-# Shared file/process helpers (Set-Utf8NoBomContent, Get-FileLength,
-# Read-TextDelta, Get-ChildProcessIds, Stop-ProcessTree).
-. (Join-Path $PSScriptRoot 'lib/desktop-smoke-common.ps1')
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.IO.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.Process.psm1') -Force
 
 # Mirrors findIpcPingEvidence in startup-ipc-stress.mjs closely enough to stop
 # polling; the authoritative verdict is still computed by the Node module from
@@ -77,24 +76,6 @@ function Test-IpcConnectedDelta {
         return $true
       }
     }
-  }
-  return $false
-}
-
-function Stop-DesktopShellProcesses {
-  $deadline = [DateTimeOffset]::UtcNow.AddSeconds(10)
-  $stableSince = $null
-  while ([DateTimeOffset]::UtcNow -lt $deadline) {
-    $processes = @(Get-Process -Name 'omni-desktop-shell' -ErrorAction SilentlyContinue)
-    if ($processes.Count -gt 0) {
-      $processes | Stop-Process -Force -ErrorAction SilentlyContinue
-      $stableSince = $null
-    } elseif ($null -eq $stableSince) {
-      $stableSince = [DateTimeOffset]::UtcNow
-    } elseif (([DateTimeOffset]::UtcNow - $stableSince).TotalMilliseconds -ge 1000) {
-      return $true
-    }
-    Start-Sleep -Milliseconds 200
   }
   return $false
 }
@@ -170,10 +151,11 @@ try {
   $env:OMNI_LOG_LEVEL = [string]$plan.environment.OMNI_LOG_LEVEL
 
   for ($index = 1; $index -le $plan.runs; $index++) {
-    $logOffset = Get-FileLength $appLogPath
+    $logOffset = Get-OmniFileLength -LiteralPath $appLogPath
     $stdoutPath = Join-Path $runDir "run-$index.stdout.log"
     $stderrPath = Join-Path $runDir "run-$index.stderr.log"
     $process = $null
+    $processLease = $null
     $launched = $true
     $launchError = $null
     $connected = $false
@@ -187,14 +169,18 @@ try {
         -RedirectStandardError $stderrPath `
         -WindowStyle Hidden `
         -PassThru
+      $processLease = Get-OmniProcessIdentity -ProcessId $process.Id -Ownership managed
     } catch {
+      if ($null -ne $process -and $null -eq $processLease) {
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+      }
       $launched = $false
       $launchError = $_.Exception.Message
     }
 
     if ($launched) {
       while ($stopwatch.ElapsedMilliseconds -lt $plan.pingTimeoutMs) {
-        $delta = Read-TextDelta -Path $appLogPath -Offset $logOffset
+        $delta = Read-OmniTextDelta -LiteralPath $appLogPath -Offset $logOffset
         if (Test-IpcConnectedDelta -Delta $delta -Markers $markers -NeverConnectedMarker $neverConnectedMarker) {
           $connected = $true
           $latencyMs = [int]$stopwatch.ElapsedMilliseconds
@@ -208,16 +194,13 @@ try {
     }
 
     $waitedMs = [int]$stopwatch.ElapsedMilliseconds
-    if ($null -ne $process) {
-      Stop-ProcessTree -RootProcessId $process.Id
-    }
-    if (-not (Stop-DesktopShellProcesses)) {
-      throw "omni-desktop-shell processes remained after the 10-second cleanup window"
+    if ($null -ne $processLease) {
+      Stop-OmniOwnedProcessTree -Lease $processLease | Out-Null
     }
     Start-Sleep -Milliseconds 500
 
-    $finalDelta = Read-TextDelta -Path $appLogPath -Offset $logOffset
-    Set-Utf8NoBomContent (Join-Path $runDir "run-$index.app-log-delta.log") $finalDelta
+    $finalDelta = Read-OmniTextDelta -LiteralPath $appLogPath -Offset $logOffset
+    Set-OmniUtf8NoBomContent -LiteralPath (Join-Path $runDir "run-$index.app-log-delta.log") -Value $finalDelta
 
     $runRecords += [ordered]@{
       index = $index
@@ -272,7 +255,7 @@ $evidence = [ordered]@{
   runnerError = $runnerError
   runs = $runRecords
 }
-Set-Utf8NoBomContent (Join-Path $runDir 'evidence.json') ($evidence | ConvertTo-Json -Depth 24)
+Set-OmniUtf8NoBomContent -LiteralPath (Join-Path $runDir 'evidence.json') -Value ($evidence | ConvertTo-Json -Depth 24)
 
 & node $stressModule --mode report --input $runDir --output $runDir
 $reportExitCode = $LASTEXITCODE

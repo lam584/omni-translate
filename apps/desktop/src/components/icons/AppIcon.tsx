@@ -3,27 +3,37 @@ import type { CSSProperties } from 'react';
 export type AppIconName =
   | 'activity'
   | 'alert'
+  | 'arrow-left'
+  | 'arrow-right'
   | 'book'
   | 'check'
+  | 'chip'
   | 'clock'
   | 'close'
   | 'cloud'
+  | 'diagnostics'
   | 'download'
+  | 'edit'
   | 'eye'
   | 'eye-off'
+  | 'export'
   | 'globe'
   | 'headphones'
   | 'help-circle'
+  | 'import'
   | 'key'
   | 'layers'
   | 'lock'
   | 'mic'
   | 'panel'
   | 'play'
+  | 'plus'
   | 'power'
   | 'refresh'
   | 'route'
+  | 'save'
   | 'search'
+  | 'server'
   | 'settings'
   | 'sliders'
   | 'spark'
@@ -32,6 +42,7 @@ export type AppIconName =
   | 'star-fill'
   | 'subtitles'
   | 'trash'
+  | 'translate'
   | 'wave'
   | 'wrench';
 
@@ -68,6 +79,10 @@ function AppIcon({ className, name, size = 18, strokeWidth = 1.85, style }: AppI
             <path {...commonProps} d="M12 17h.01" />
           </>
         );
+      case 'arrow-left':
+        return <path {...commonProps} d="m15 18-6-6 6-6" />;
+      case 'arrow-right':
+        return <path {...commonProps} d="m9 18 6-6-6-6" />;
       case 'book':
         return (
           <>
@@ -79,6 +94,15 @@ function AppIcon({ className, name, size = 18, strokeWidth = 1.85, style }: AppI
         );
       case 'check':
         return <path {...commonProps} d="m5 12 4 4 10-10" />;
+      case 'chip':
+        return (
+          <>
+            <rect {...commonProps} x="6" y="6" width="12" height="12" rx="2" />
+            <path {...commonProps} d="M9 2v4M15 2v4M9 18v4M15 18v4" />
+            <path {...commonProps} d="M2 9h4M2 15h4M18 9h4M18 15h4" />
+            <path {...commonProps} d="M10 10h4v4h-4z" />
+          </>
+        );
       case 'clock':
         return (
           <>
@@ -99,12 +123,27 @@ function AppIcon({ className, name, size = 18, strokeWidth = 1.85, style }: AppI
             <path {...commonProps} d="M7 18a4 4 0 1 1 .9-7.9A5.5 5.5 0 0 1 18.5 9a3.5 3.5 0 1 1 .5 7H7Z" />
           </>
         );
+      case 'diagnostics':
+        return (
+          <>
+            <rect {...commonProps} x="5" y="4" width="14" height="17" rx="2" />
+            <path {...commonProps} d="M9 4V2h6v2" />
+            <path {...commonProps} d="M8 13h2l1.5-4 2.2 7 1.3-3h2" />
+          </>
+        );
       case 'download':
         return (
           <>
             <path {...commonProps} d="M12 3v12" />
             <path {...commonProps} d="M8 11l4 4 4-4" />
             <path {...commonProps} d="M5 21h14" />
+          </>
+        );
+      case 'edit':
+        return (
+          <>
+            <path {...commonProps} d="M4 20h4L19 9l-4-4L4 16v4Z" />
+            <path {...commonProps} d="m13.5 6.5 4 4" />
           </>
         );
       case 'eye':
@@ -121,6 +160,15 @@ function AppIcon({ className, name, size = 18, strokeWidth = 1.85, style }: AppI
             <path {...commonProps} d="M10.6 5.3A11.5 11.5 0 0 1 12 5.2c6 0 9.5 6 9.5 6a17.7 17.7 0 0 1-3.3 3.8" />
             <path {...commonProps} d="M6.3 6.4C4.2 7.8 2.5 10.7 2.5 10.7s3.5 6 9.5 6c1.4 0 2.7-.3 3.8-.8" />
             <path {...commonProps} d="M9.9 9.8A3 3 0 0 0 14.2 14" />
+          </>
+        );
+      case 'export':
+        return (
+          <>
+            <path {...commonProps} d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Z" />
+            <path {...commonProps} d="M14 3v6h6" />
+            <path {...commonProps} d="M8 15h8" />
+            <path {...commonProps} d="m13 12 3 3-3 3" />
           </>
         );
       case 'globe':
@@ -146,6 +194,14 @@ function AppIcon({ className, name, size = 18, strokeWidth = 1.85, style }: AppI
             <circle {...commonProps} cx="12" cy="12" r="9" />
             <path {...commonProps} d="M9.5 9.5a2.5 2.5 0 0 1 5 0c0 1.5-2.5 2-2.5 3.5" />
             <path {...commonProps} d="M12 16.5h.01" />
+          </>
+        );
+      case 'import':
+        return (
+          <>
+            <path {...commonProps} d="M3 12h11" />
+            <path {...commonProps} d="m10 8 4 4-4 4" />
+            <path {...commonProps} d="M14 5h5a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-5" />
           </>
         );
       case 'key':
@@ -191,6 +247,13 @@ function AppIcon({ className, name, size = 18, strokeWidth = 1.85, style }: AppI
         );
       case 'play':
         return <path {...commonProps} d="m9 7 8 5-8 5V7Z" />;
+      case 'plus':
+        return (
+          <>
+            <path {...commonProps} d="M12 5v14" />
+            <path {...commonProps} d="M5 12h14" />
+          </>
+        );
       case 'power':
         return (
           <>
@@ -216,11 +279,27 @@ function AppIcon({ className, name, size = 18, strokeWidth = 1.85, style }: AppI
             <path {...commonProps} d="M15.5 18H12a4 4 0 0 1-4-4V8.5" />
           </>
         );
+      case 'save':
+        return (
+          <>
+            <path {...commonProps} d="M5 3h12l2 2v16H5V3Z" />
+            <path {...commonProps} d="M8 3v6h8V3" />
+            <path {...commonProps} d="M8 21v-7h8v7" />
+          </>
+        );
       case 'search':
         return (
           <>
             <circle {...commonProps} cx="11" cy="11" r="6" />
             <path {...commonProps} d="m20 20-4.2-4.2" />
+          </>
+        );
+      case 'server':
+        return (
+          <>
+            <rect {...commonProps} x="4" y="4" width="16" height="6" rx="2" />
+            <rect {...commonProps} x="4" y="14" width="16" height="6" rx="2" />
+            <path {...commonProps} d="M8 7h.01M8 17h.01M12 7h5M12 17h5" />
           </>
         );
       case 'settings':
@@ -287,6 +366,17 @@ function AppIcon({ className, name, size = 18, strokeWidth = 1.85, style }: AppI
             <path {...commonProps} d="M7 7l1 12a2 2 0 0 0 2 1h4a2 2 0 0 0 2-1l1-12" />
             <path {...commonProps} d="M10 11v5" />
             <path {...commonProps} d="M14 11v5" />
+          </>
+        );
+      case 'translate':
+        return (
+          <>
+            <path {...commonProps} d="M2 5h12" />
+            <path {...commonProps} d="M7 2h1" />
+            <path {...commonProps} d="m5 8 6 6" />
+            <path {...commonProps} d="m4 14 6-6 2-3" />
+            <path {...commonProps} d="m22 22-5-10-5 10" />
+            <path {...commonProps} d="M14 18h6" />
           </>
         );
       case 'wave':

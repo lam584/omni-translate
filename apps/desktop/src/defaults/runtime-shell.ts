@@ -1,8 +1,7 @@
 import type { RuntimeNotification, RuntimeSnapshot } from '../schema/runtime-core';
 
-// Zeroed capture/playback telemetry for an idle bridge. Shared by the browser
-// preview snapshot below and the driver-runtime mock so the two stay aligned
-// with the Driver Bridge Contract field set.
+// Zeroed capture/playback telemetry for the idle browser-preview bridge,
+// aligned with the Driver Bridge Contract field set.
 export const idleBridgeTelemetryDefaults = {
   sourceCaptureMode: 'none',
   captureBackend: 'none',

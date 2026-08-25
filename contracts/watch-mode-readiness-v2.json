@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "watch-mode-readiness/v2",
+  "states": [
+    "waiting-frontend-ipc",
+    "starting-bridge",
+    "starting-route",
+    "waiting-provider",
+    "ready",
+    "failed"
+  ],
+  "componentStatuses": ["pending", "ready", "failed"],
+  "components": ["frontendIpc", "provider", "bridge", "route"],
+  "identityFields": ["runMarker", "processId"]
+}

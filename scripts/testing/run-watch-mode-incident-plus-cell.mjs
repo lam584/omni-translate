@@ -20,6 +20,7 @@ import {
   writeIncidentPlusCellResult,
 } from './watch-mode-incident-plus-authority.mjs';
 import { atomicWriteJson } from './watch-mode-shard-authority.mjs';
+import { buildLiveWatchModeRunRequest } from './watch-mode-run-request.mjs';
 
 export const INCIDENT_PLUS_CELL_RUNNER_ID =
   'scripts/testing/run-watch-mode-incident-plus-cell.mjs';
@@ -28,6 +29,7 @@ export const INCIDENT_PLUS_INTERACTIVE_EXECUTION_KIND =
   'watch-mode-interactive-incident-plus-cell-execution';
 
 const LIVE_RUNNER_SCRIPT = path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.ps1');
+const LIVE_RUNNER_ENTRY = path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.mjs');
 const COMPATIBILITY_READINESS_KIND = 'watch-mode-production-worker-zero-provider-readiness';
 
 function readRegularJson(filePath, label) {
@@ -181,34 +183,8 @@ export function buildIncidentPlusCellExecutionRequest({
   };
 }
 
-export function buildIncidentPlusPowerShellRunnerArgv(request) {
-  const options = request.runnerOptions;
-  const argv = [
-    '-NoProfile',
-    '-ExecutionPolicy', 'Bypass',
-    '-File', LIVE_RUNNER_SCRIPT,
-    '-OutputRoot', options.outputRoot,
-    '-MediaPath', options.mediaPath,
-    '-WarmupSeconds', String(options.warmupSeconds),
-    '-WatchModelId', options.model,
-    '-WatchRealtimeProtocol', options.watchRealtimeProtocol,
-    '-SubtitleTranslationMode', options.subtitleTranslationMode,
-    '-PlaybackSeconds', String(options.playbackSeconds),
-    '-PostPlaybackWaitSeconds', String(options.postPlaybackWaitSeconds),
-    '-SessionReadyTimeoutSeconds', String(options.sessionReadyTimeoutSeconds),
-    '-WatchAutoStopAfterSeconds', String(options.watchAutoStopAfterSeconds),
-    '-PhysicalPlaybackDeviceId', options.physicalPlaybackDeviceId,
-    '-PhysicalPlaybackDeviceClass', options.physicalPlaybackDeviceClass,
-    '-PhysicalPlaybackDeviceProfileId', options.physicalPlaybackDeviceProfileId,
-    '-FeedbackLoopPrevention', options.feedbackMode,
-    '-ExpectedPhysicalPlaybackDeviceName', options.expectedPhysicalPlaybackDeviceName,
-    '-IncidentReplayAuthority',
-    '-MatrixCellId', options.matrixCellId,
-  ];
-  if (request.driverReadinessReceiptPath) {
-    argv.push('-WorkerReadinessReceiptPath', request.driverReadinessReceiptPath);
-  }
-  return argv;
+export function buildIncidentPlusPowerShellRunnerArgv(requestPath) {
+  return [LIVE_RUNNER_ENTRY, '--request', path.resolve(requestPath)];
 }
 
 export function executeIncidentPlusPowerShellCell(request, {
@@ -217,7 +193,13 @@ export function executeIncidentPlusPowerShellCell(request, {
   timeoutMs = INCIDENT_PLUS_CELL_TIMEOUT_MS,
 } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn('powershell.exe', buildIncidentPlusPowerShellRunnerArgv(request), {
+    const runRequest = buildLiveWatchModeRunRequest(request.runnerOptions, {
+      authorityMode: 'incident-replay-plus',
+      workerReadinessReceipt: request.driverReadinessReceiptPath,
+    });
+    const requestPath = path.join(request.runnerOptions.outputRoot, 'run-request.json');
+    atomicWriteJson(requestPath, runRequest);
+    const child = spawn(process.execPath, buildIncidentPlusPowerShellRunnerArgv(requestPath), {
       cwd: repoRoot,
       env: { ...environment, ...request.environment },
       stdio: ['ignore', 'pipe', 'inherit'],

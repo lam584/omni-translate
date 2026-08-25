@@ -215,9 +215,9 @@ test('worker request carries only its signed paid cell and never contains build/
     'runs',
     `01-${cell.cellId}`,
   ).length);
-  const argv = buildPowerShellRunnerArgv(request);
-  assert.ok(argv.includes('-StrictPaidAuthority'));
-  assert.ok(argv.includes('-MatrixCellId'));
+  const argv = buildPowerShellRunnerArgv(path.join(request.cellOutputRoot, 'run-request.json'));
+  assert.ok(argv.includes('--request'));
+  assert.ok(!argv.includes('-StrictPaidAuthority'));
   assert.equal(argv.some((arg) => /preflight|local-isolation|build/i.test(arg)), false);
 });
 
@@ -235,10 +235,9 @@ test('validated worker readiness is forwarded to the strict live runner', async 
     now: value.now,
   });
   request.runnerOptions.readinessReceiptPath = 'E:\\signed\\zero-provider-readiness.json';
-  const argv = buildPowerShellRunnerArgv(request);
-  const index = argv.indexOf('-WorkerReadinessReceiptPath');
-  assert.notEqual(index, -1);
-  assert.equal(argv[index + 1], request.runnerOptions.readinessReceiptPath);
+  const argv = buildPowerShellRunnerArgv(path.join(request.cellOutputRoot, 'run-request.json'));
+  assert.equal(argv.includes('-WorkerReadinessReceiptPath'), false);
+  assert.equal(request.runnerOptions.readinessReceiptPath, 'E:\\signed\\zero-provider-readiness.json');
 });
 
 test('worker executes exactly one coordinator lease, verifies continuity, and writes result/terminal authority', async () => {

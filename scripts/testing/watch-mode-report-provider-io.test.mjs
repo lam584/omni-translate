@@ -27,6 +27,31 @@ import {
   healthyWatchSessionReport,
   healthyWasapi,
 } from './watch-mode-report-test-helpers.mjs';
+import { WATCH_MODE_RUN_COLLECTION_SCHEMA, writeWatchModeRunCollection } from './watch-mode-run-collection.mjs';
+
+function writeCollection(directory, evidence, { failure = null, steps = [], marker = null, startedAtLocal = null } = {}) {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, 'fixture-evidence.raw.json'), JSON.stringify(evidence), 'utf8');
+  fs.writeFileSync(path.join(directory, 'run-metadata.json'), JSON.stringify({
+    schemaVersion: 'watch-mode-run-metadata/v1', runMarker: marker, startedAtLocal,
+    modelId: evidence.modelId ?? null,
+    feedbackMode: evidence.feedbackLoopPrevention ?? null,
+  }), 'utf8');
+  writeWatchModeRunCollection(directory, {
+    schemaVersion: WATCH_MODE_RUN_COLLECTION_SCHEMA,
+    artifactKind: 'watch-mode-run-collection',
+    request: { schemaVersion: 'watch-mode-run-request/v1', runMode: 'live' },
+    collectionStatus: failure ? 'failed' : 'completed',
+    steps,
+    ownedProcesses: [],
+    artifacts: {
+      appLog: 'app.log', bridgeLog: 'bridge-service.log',
+      runMetadata: 'run-metadata.json', fixtureEvidence: 'fixture-evidence.raw.json',
+    },
+    primaryError: failure,
+    cleanupErrors: [],
+  });
+}
 
 test('preserves physical output mixed-output detail in markdown', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-report-physical-detail-'));
@@ -41,16 +66,16 @@ test('preserves physical output mixed-output detail in markdown', () => {
       peak: 0.004,
     },
   };
-  fs.writeFileSync(path.join(tempDir, 'snapshots.json'), JSON.stringify({
+  writeCollection(tempDir, {
     driver: healthyDriver,
     wasapi: healthyWasapi,
     bridge: healthyBridge,
     physicalOutput: healthyPhysicalOutput,
-    physicalOutputContent,
+    physicalOutputContentRaw: physicalOutputContent,
     app: healthyApp,
     watchSessionReport: healthyWatchSessionReport,
     provider: healthyProvider,
-  }));
+  });
   fs.writeFileSync(path.join(tempDir, 'app.log'), healthyAppLog);
   fs.writeFileSync(path.join(tempDir, 'bridge-service.log'), healthyBridgeLog);
 
@@ -232,10 +257,7 @@ test('echo-cancel suppresses virtual-driver evidence but preserves a real provid
 
 test('writeReport prioritizes failure artifact over stale healthy app log', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-report-failure-'));
-  fs.writeFileSync(path.join(tempDir, 'failure.json'), JSON.stringify({
-    message: 'start watch mode via existing desktop shell failed: elevation required',
-  }));
-  fs.writeFileSync(path.join(tempDir, 'snapshots.json'), JSON.stringify({
+  writeCollection(tempDir, {
     driver: healthyDriver,
     wasapi: healthyWasapi,
     bridge: healthyBridge,
@@ -243,7 +265,7 @@ test('writeReport prioritizes failure artifact over stale healthy app log', () =
     physicalOutputContent: healthyPhysicalOutputContent,
     app: healthyApp,
     provider: healthyProvider,
-  }));
+  }, { failure: { message: 'start watch mode via existing desktop shell failed: elevation required' } });
   fs.writeFileSync(path.join(tempDir, 'app.log'), healthyAppLog);
   fs.writeFileSync(path.join(tempDir, 'bridge-service.log'), healthyBridgeLog);
 
@@ -256,20 +278,14 @@ test('writeReport prioritizes failure artifact over stale healthy app log', () =
 
 test('writeReport surfaces failed runner steps and readiness evidence in report output', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-report-steps-'));
-  fs.writeFileSync(path.join(tempDir, 'failure.json'), JSON.stringify({
-    message: 'wait for watch-mode app readiness failed: timed out waiting for app log pattern: watch_mode\\.omni_session_ready',
-  }));
-  fs.writeFileSync(path.join(tempDir, 'steps.json'), JSON.stringify([
-    { name: 'driver probe', ok: true, result: healthyDriver, error: null },
+  const steps = [
+    { schemaVersion: 'watch-mode-step/v1', id: 'driver-probe', phase: 'driverProbe', status: 'passed', data: healthyDriver, error: null },
     {
-      name: 'wait for watch-mode app readiness',
-      ok: false,
-      result: null,
-      error: 'timed out waiting for app log pattern: watch_mode\\.omni_session_ready|ws\\.recv\\.session\\.(?:created|updated)',
+      schemaVersion: 'watch-mode-step/v1', id: 'wait-for-watch-mode-app-readiness', phase: 'readiness', status: 'failed', data: null,
+      error: { kind: 'timeout', code: 'testing.readiness.timeout', message: 'timed out waiting for structured readiness' },
     },
-  ]));
-  fs.writeFileSync(path.join(tempDir, 'snapshots.json'), JSON.stringify({
-    runMarker: 'watch_mode_diagnostic.run_id=steps-test',
+  ];
+  writeCollection(tempDir, {
     driver: healthyDriver,
     wasapi: healthyWasapi,
     bridge: healthyBridge,
@@ -278,7 +294,11 @@ test('writeReport surfaces failed runner steps and readiness evidence in report 
     app: { routeState: null, overlayVisible: null, subtitleCueCount: null },
     provider: { totalCalls: 2, failedCalls: 1 },
     translationRoute: 'secondary',
-  }));
+  }, {
+    failure: { message: 'wait for watch-mode app readiness failed: timed out waiting for structured readiness' },
+    steps,
+    marker: 'watch_mode_diagnostic.run_id=steps-test',
+  });
   fs.writeFileSync(path.join(tempDir, 'bridge-service.log'), healthyBridgeLog);
   fs.writeFileSync(path.join(tempDir, 'app.log'), [
     'watch_mode_diagnostic.run_id=steps-test',
@@ -291,19 +311,17 @@ test('writeReport surfaces failed runner steps and readiness evidence in report 
 
   assert.match(report.failureReason, /wait for watch-mode app readiness failed/);
   assert.equal(report.diagnostics.failedSteps.length, 1);
-  assert.equal(report.diagnostics.failedSteps[0].name, 'wait for watch-mode app readiness');
+  assert.equal(report.diagnostics.failedSteps[0].name, 'wait for watch mode app readiness');
   assert(report.diagnostics.failedLayers.some((layer) => layer.layer === 'app'));
-  assert(report.artifacts.steps.endsWith('steps.json'));
+  assert(report.artifacts.collection.endsWith('run-collection.json'));
   assert.match(markdown, /RunnerFailure: wait for watch-mode app readiness failed/);
-  assert.match(markdown, /wait for watch-mode app readiness: timed out waiting/);
+  assert.match(markdown, /wait for watch mode app readiness: timed out waiting/);
   assert.match(markdown, /omni_preconnect_discarded/);
 });
 
 test('does not use old subtitle evidence when marker is absent and startedAtLocal is current', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-report-'));
-  fs.writeFileSync(path.join(tempDir, 'snapshots.json'), JSON.stringify({
-    runMarker: 'watch_mode_diagnostic.run_id=missing',
-    startedAtLocal: '2026-06-04 09:32:00',
+  writeCollection(tempDir, {
     driver: healthyDriver,
     wasapi: healthyWasapi,
     bridge: healthyBridge,
@@ -311,7 +329,7 @@ test('does not use old subtitle evidence when marker is absent and startedAtLoca
     physicalOutputContent: healthyPhysicalOutputContent,
     app: { routeState: null, overlayVisible: null, subtitleCueCount: null },
     provider: healthyProvider,
-  }));
+  }, { marker: 'watch_mode_diagnostic.run_id=missing', startedAtLocal: '2026-06-04 09:32:00' });
   fs.writeFileSync(path.join(tempDir, 'app.log'), [
     '2026-06-01 00:12:28.696 [NORMAL] [omni] cue_id=old-cue',
     '2026-06-04 09:32:10.846 [NORMAL] [audio] watch_mode.route_start | direction=inbound routeMode=watch',
@@ -328,7 +346,7 @@ test('does not use old subtitle evidence when marker is absent and startedAtLoca
 
 test('writeReport infers secondary route from app log instead of stale snapshot route', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-report-'));
-  fs.writeFileSync(path.join(tempDir, 'snapshots.json'), JSON.stringify({
+  writeCollection(tempDir, {
     translationRoute: 'native',
     driver: healthyDriver,
     wasapi: healthyWasapi,
@@ -337,7 +355,7 @@ test('writeReport infers secondary route from app log instead of stale snapshot 
     physicalOutputContent: healthyPhysicalOutputContent,
     app: { routeState: 'preview', overlayVisible: true, subtitleCueCount: 0 },
     provider: healthyProvider,
-  }));
+  });
   fs.writeFileSync(path.join(tempDir, 'bridge-service.log'), healthyBridgeLog);
   fs.writeFileSync(path.join(tempDir, 'app.log'), [
     'watch_mode.route_start | direction=inbound routeMode=watch',
@@ -353,8 +371,7 @@ test('writeReport infers secondary route from app log instead of stale snapshot 
 
 test('writeReport keeps early route config when run marker appears again later', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-report-'));
-  fs.writeFileSync(path.join(tempDir, 'snapshots.json'), JSON.stringify({
-    runMarker: 'watch_mode_diagnostic.run_id=abc123',
+  writeCollection(tempDir, {
     translationRoute: 'native',
     driver: healthyDriver,
     wasapi: healthyWasapi,
@@ -363,7 +380,7 @@ test('writeReport keeps early route config when run marker appears again later',
     physicalOutputContent: healthyPhysicalOutputContent,
     app: { routeState: 'preview', overlayVisible: true, subtitleCueCount: 0 },
     provider: healthyProvider,
-  }));
+  }, { marker: 'watch_mode_diagnostic.run_id=abc123' });
   fs.writeFileSync(path.join(tempDir, 'bridge-service.log'), healthyBridgeLog);
   fs.writeFileSync(path.join(tempDir, 'app.log'), [
     'old stale cue_id=old-cue',
@@ -393,7 +410,7 @@ test('classifies provider errors after local layers pass', () => {
 test('preserves provider status code and model evidence in report and markdown', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-report-provider-'));
   const providerErrorLine = 'provider.translate_text end_call | {"payload":{"error":"HTTP 429 quota exceeded code=QuotaExceeded providerId=provider-dashscope modelId=qwen3.6-flash-2026-04-16","status":"failed"}}';
-  fs.writeFileSync(path.join(tempDir, 'snapshots.json'), JSON.stringify({
+  writeCollection(tempDir, {
     driver: healthyDriver,
     wasapi: healthyWasapi,
     bridge: healthyBridge,
@@ -401,7 +418,7 @@ test('preserves provider status code and model evidence in report and markdown',
     physicalOutputContent: null,
     app: healthyApp,
     provider: { totalCalls: 3, failedCalls: 1 },
-  }));
+  });
   fs.writeFileSync(path.join(tempDir, 'bridge-service.log'), healthyBridgeLog);
   fs.writeFileSync(path.join(tempDir, 'app.log'), [
     healthyAppLog,
@@ -519,6 +536,7 @@ test('does not fail recovered provider timeout when physical output content pass
       passed: true,
       source: '浣犲ソ涓栫晫',
       subtitleText: '浣犲ソ涓栫晫',
+      sourceReference: { passed: true, source: '浣犲ソ涓栫晫', translation: '' },
     },
   });
 

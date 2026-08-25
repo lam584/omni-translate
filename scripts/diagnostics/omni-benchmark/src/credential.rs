@@ -24,8 +24,7 @@ pub fn normalize_reference(reference: &str) -> String {
 ///
 /// 目标名格式: `OmniTranslate:<normalized_reference>`
 ///
-/// 非 Windows 平台直接返回错误，调用者应使用 `read_credential_with_fallback`
-/// 来提供环境变量回退。
+/// 非 Windows 平台直接返回错误；调用者负责提供环境变量回退。
 pub fn read_credential(auth_ref: &str) -> Result<String, String> {
     let normalized = normalize_reference(auth_ref);
 
@@ -41,33 +40,6 @@ pub fn read_credential(auth_ref: &str) -> Result<String, String> {
              (reference={})",
             auth_ref
         ))
-    }
-}
-
-/// 先尝试 Credential Manager，失败后回退到环境变量。
-///
-/// 参数:
-///   - `auth_ref`: 凭据引用，如 "credential://provider/openai/default"
-///   - `env_var`: 环境变量名，如 "OPENAI_API_KEY"
-#[allow(dead_code)]
-pub fn read_credential_with_fallback(auth_ref: &str, env_var: &str) -> Result<String, String> {
-    // 优先尝试 Credential Manager
-    match read_credential(auth_ref) {
-        Ok(key) if !key.trim().is_empty() => return Ok(key),
-        Ok(_) => {} // 空值，继续尝试环境变量
-        Err(err) => {
-            eprintln!("[credential] Credential Manager 读取失败: {err}；尝试环境变量 {env_var}");
-        }
-    }
-
-    // 回退到环境变量
-    match std::env::var(env_var) {
-        Ok(v) if !v.trim().is_empty() => Ok(v),
-        _ => Err(format!(
-            "无法获取 API Key：Credential Manager 和环境变量 {env_var} 均未找到有效凭据。\
-             (reference={})",
-            auth_ref
-        )),
     }
 }
 

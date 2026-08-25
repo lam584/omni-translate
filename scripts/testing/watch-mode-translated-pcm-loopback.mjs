@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { isMain, parseCliArgs } from '../lib/testing-common.mjs';
+import { matchTranslatedLoopbackWithRust } from './watch-mode-rust-audio-analysis.mjs';
 
 export const TRANSLATED_PCM_AUTHORITY_KIND = 'watch-mode-translated-cue-pcm-authority';
 export const TRANSLATED_PCM_LOOPBACK_KIND = 'watch-mode-translated-pcm-loopback-correlation';
@@ -12,12 +13,6 @@ export const LOOPBACK_SAMPLE_RATE_HZ = 16_000;
 export const MIN_COMPLETE_MATCHED_CUES = 2;
 
 const sha256File = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
-const median = (values) => {
-  const ordered = [...values].sort((left, right) => left - right);
-  if (ordered.length === 0) return 0;
-  const middle = Math.floor(ordered.length / 2);
-  return ordered.length % 2 ? ordered[middle] : (ordered[middle - 1] + ordered[middle]) / 2;
-};
 const rounded = (value, digits = 6) => Number(Number(value).toFixed(digits));
 
 function readRegularFile(filePath, label) {
@@ -52,204 +47,6 @@ function resolveChild(parentDirectory, relativePath, label) {
   return resolved;
 }
 
-function pcm16FromBuffer(bytes) {
-  if (bytes.length % 2 !== 0) throw new Error('s16le PCM byte length must be even');
-  const output = new Float32Array(bytes.length / 2);
-  for (let index = 0; index < output.length; index += 1) output[index] = bytes.readInt16LE(index * 2) / 32768;
-  return output;
-}
-
-function monoFrames(interleaved, channelCount) {
-  if (!Number.isInteger(channelCount) || channelCount <= 0 || interleaved.length % channelCount !== 0) {
-    throw new Error('translated PCM channelCount/sampleCount is invalid');
-  }
-  if (channelCount === 1) return interleaved;
-  const output = new Float32Array(interleaved.length / channelCount);
-  for (let frame = 0; frame < output.length; frame += 1) {
-    let sum = 0;
-    for (let channel = 0; channel < channelCount; channel += 1) sum += interleaved[frame * channelCount + channel];
-    output[frame] = sum / channelCount;
-  }
-  return output;
-}
-
-export function resampleMonoLinear(samples, sourceRateHz, targetRateHz = LOOPBACK_SAMPLE_RATE_HZ) {
-  if (!Number.isInteger(sourceRateHz) || sourceRateHz <= 0 || !Number.isInteger(targetRateHz) || targetRateHz <= 0) {
-    throw new Error('PCM sample rates must be positive integers');
-  }
-  if (sourceRateHz === targetRateHz) return samples;
-  const outputLength = Math.max(1, Math.floor(samples.length * targetRateHz / sourceRateHz));
-  const output = new Float32Array(outputLength);
-  const ratio = sourceRateHz / targetRateHz;
-  for (let index = 0; index < output.length; index += 1) {
-    const source = index * ratio;
-    const left = Math.min(samples.length - 1, Math.floor(source));
-    const right = Math.min(samples.length - 1, left + 1);
-    const fraction = source - left;
-    output[index] = samples[left] + (samples[right] - samples[left]) * fraction;
-  }
-  return output;
-}
-
-// Mirror Bridge `normalize_track` (nearest-neighbour to 48 kHz) followed by
-// omni-physical-output-probe's linear 48 kHz -> 16 kHz recorder conversion.
-export function renderBridgeReferenceToLoopback(samples, sourceRateHz) {
-  if (!Number.isInteger(sourceRateHz) || sourceRateHz <= 0) throw new Error('PCM source rate must be positive');
-  const bridgeRateHz = 48_000;
-  const bridgeLength = Math.max(1, Math.floor(samples.length * bridgeRateHz / sourceRateHz));
-  const bridge = new Float32Array(bridgeLength);
-  for (let index = 0; index < bridge.length; index += 1) {
-    const sourceIndex = Math.min(samples.length - 1, Math.floor(index * sourceRateHz / bridgeRateHz));
-    bridge[index] = samples[sourceIndex];
-  }
-  return resampleMonoLinear(bridge, bridgeRateHz, LOOPBACK_SAMPLE_RATE_HZ);
-}
-
-function pearsonAt(reference, recording, recordingStart, referenceStart, length, stride, difference) {
-  let sumX = 0;
-  let sumY = 0;
-  let sumXX = 0;
-  let sumYY = 0;
-  let sumXY = 0;
-  let count = 0;
-  const begin = difference ? Math.max(1, stride) : 0;
-  for (let offset = begin; offset < length; offset += stride) {
-    const referenceIndex = referenceStart + offset;
-    const recordingIndex = recordingStart + offset;
-    if (referenceIndex >= reference.length || recordingIndex >= recording.length || recordingIndex < 0) break;
-    const x = difference
-      ? reference[referenceIndex] - reference[referenceIndex - 1]
-      : reference[referenceIndex];
-    const y = difference
-      ? recording[recordingIndex] - recording[recordingIndex - 1]
-      : recording[recordingIndex];
-    sumX += x;
-    sumY += y;
-    sumXX += x * x;
-    sumYY += y * y;
-    sumXY += x * y;
-    count += 1;
-  }
-  if (count < 80) return 0;
-  const covariance = sumXY - sumX * sumY / count;
-  const varianceX = sumXX - sumX * sumX / count;
-  const varianceY = sumYY - sumY * sumY / count;
-  if (varianceX <= 1e-10 || varianceY <= 1e-10) return 0;
-  return covariance / Math.sqrt(varianceX * varianceY);
-}
-
-function correlationAt(reference, recording, recordingStart, referenceStart, length) {
-  const stride = Math.max(1, Math.floor(length / 12_000));
-  return {
-    waveform: pearsonAt(reference, recording, recordingStart, referenceStart, length, stride, false),
-    derivative: pearsonAt(reference, recording, recordingStart, referenceStart, length, stride, true),
-  };
-}
-
-function segmentStarts(sampleCount, segmentLength) {
-  const maximum = Math.max(0, sampleCount - segmentLength);
-  return [...new Set([0.08, 0.5, 0.9].map((fraction) => Math.round(maximum * fraction)))];
-}
-
-export function matchReferenceAtExpectedStart(reference, recording, expectedStart) {
-  const segmentLength = Math.min(reference.length, Math.round(0.7 * LOOPBACK_SAMPLE_RATE_HZ));
-  if (segmentLength < Math.floor(0.4 * LOOPBACK_SAMPLE_RATE_HZ)) {
-    return { passed: false, score: 0, segmentMatches: [], reason: 'translated cue is shorter than 400 ms' };
-  }
-  const starts = segmentStarts(reference.length, segmentLength);
-  const evaluateLag = (lagSamples) => {
-    const raw = [];
-    for (const referenceStart of starts) {
-      const recordingStart = expectedStart + lagSamples + referenceStart;
-      if (recordingStart < 0 || recordingStart + segmentLength > recording.length) return null;
-      raw.push({
-        referenceStart,
-        recordingStart,
-        ...correlationAt(reference, recording, recordingStart, referenceStart, segmentLength),
-      });
-    }
-    // One polarity is selected for the whole cue. Per-segment or per-feature
-    // absolute values would let a shared tone mask a missing hashed waveform.
-    const signedStrength = median(raw.map((entry) => entry.waveform))
-      + median(raw.map((entry) => entry.derivative));
-    const polarity = signedStrength < 0 ? -1 : 1;
-    const segments = raw.map((entry) => ({
-      ...entry,
-      waveform: entry.waveform * polarity,
-      derivative: entry.derivative * polarity,
-    }));
-    const waveformMedian = median(segments.map((entry) => entry.waveform));
-    const derivativeMedian = median(segments.map((entry) => entry.derivative));
-    return {
-      lagSamples,
-      polarity,
-      waveformMedian,
-      derivativeMedian,
-      waveformMinimum: Math.min(...segments.map((entry) => entry.waveform)),
-      derivativeMinimum: Math.min(...segments.map((entry) => entry.derivative)),
-      score: Math.min(waveformMedian, derivativeMedian),
-      segments,
-    };
-  };
-  let best = null;
-  const consider = (lagSamples) => {
-    const candidate = evaluateLag(lagSamples);
-    if (candidate && (!best || candidate.score > best.score)) best = candidate;
-  };
-  const radius = Math.round(1.5 * LOOPBACK_SAMPLE_RATE_HZ);
-  const prefilterLength = Math.min(segmentLength, Math.round(0.2 * LOOPBACK_SAMPLE_RATE_HZ));
-  const prefilterReferenceStart = starts[0];
-  const candidates = [];
-  for (let lag = -radius; lag <= radius; lag += 1) {
-    const recordingStart = expectedStart + lag + prefilterReferenceStart;
-    if (recordingStart < 0 || recordingStart + prefilterLength > recording.length) continue;
-    const waveform = pearsonAt(
-      reference, recording, recordingStart, prefilterReferenceStart, prefilterLength, 8, false,
-    );
-    const derivative = pearsonAt(
-      reference, recording, recordingStart, prefilterReferenceStart, prefilterLength, 8, true,
-    );
-    const score = Math.abs(waveform) + Math.abs(derivative);
-    if (candidates.length < 12 || score > candidates[0].score) {
-      candidates.push({ lag, score });
-      candidates.sort((left, right) => left.score - right.score);
-      if (candidates.length > 12) candidates.shift();
-    }
-  }
-  for (const candidate of candidates) consider(candidate.lag);
-  if (!best) return { passed: false, score: 0, segmentMatches: [], reason: 'no complete physical search window' };
-  const coarseLag = best.lagSamples;
-  for (let lag = coarseLag - 2; lag <= coarseLag + 2; lag += 1) consider(lag);
-  const timingErrorSeconds = best.lagSamples / LOOPBACK_SAMPLE_RATE_HZ;
-  const matches = best.segments.map((entry) => ({
-    referenceOffsetSeconds: rounded(entry.referenceStart / LOOPBACK_SAMPLE_RATE_HZ),
-    recordingOffsetSeconds: rounded(entry.recordingStart / LOOPBACK_SAMPLE_RATE_HZ),
-    timingErrorSeconds: rounded(timingErrorSeconds),
-    waveformCorrelation: rounded(entry.waveform),
-    derivativeCorrelation: rounded(entry.derivative),
-  }));
-  const passed = (
-    best.waveformMedian >= 0.32
-    && best.waveformMinimum >= 0.20
-    && best.derivativeMedian >= 0.24
-    && best.derivativeMinimum >= 0.14
-    && Math.abs(timingErrorSeconds) <= 0.65
-  );
-  return {
-    passed,
-    score: rounded(best.score),
-    waveformMedian: rounded(best.waveformMedian),
-    waveformMinimum: rounded(best.waveformMinimum),
-    derivativeMedian: rounded(best.derivativeMedian),
-    derivativeMinimum: rounded(best.derivativeMinimum),
-    polarity: best.polarity,
-    globalLagSamples: best.lagSamples,
-    timingErrorSeconds: rounded(timingErrorSeconds),
-    matchedStartSample: expectedStart + best.lagSamples,
-    matchedEndSample: expectedStart + best.lagSamples + reference.length,
-    segmentMatches: matches,
-  };
-}
 
 function parseLogTimestamp(line) {
   const explicit = line.match(/\btimestampMs=(\d+)\b/);
@@ -451,9 +248,11 @@ export function buildTranslatedPcmLoopbackAuthority({
     violations.push(error.message);
   }
   const recordingPath = path.join(resolvedRunDirectory, 'physical-output-recording-16k-mono.pcm');
-  let recording = new Float32Array();
+  let recordingSamples = 0;
   try {
-    recording = pcm16FromBuffer(readRegularFile(recordingPath, 'physical loopback PCM').bytes);
+    const recordingBytes = readRegularFile(recordingPath, 'physical loopback PCM').bytes;
+    if (recordingBytes.length % 2 !== 0) throw new Error('physical loopback PCM byte length must be even');
+    recordingSamples = recordingBytes.length / 2;
   } catch (error) {
     violations.push(error.message);
   }
@@ -469,17 +268,24 @@ export function buildTranslatedPcmLoopbackAuthority({
       continue;
     }
     try {
-      const mono = monoFrames(pcm16FromBuffer(cue.pcmBytes), Number(cue.channelCount));
       references.set(cueId, {
-        whole: renderBridgeReferenceToLoopback(mono, Number(cue.sampleRateHz)),
+        whole: {
+          referencePath: cue.pcmPath,
+          referenceSampleRateHz: Number(cue.sampleRateHz),
+          referenceChannels: Number(cue.channelCount),
+          referenceOffsetSamples: 0,
+          referenceSampleCount: Number(cue.sampleCount),
+        },
         chunks: cue.chunks.map((chunk) => {
-          const start = Number(chunk.sampleOffset) / Number(cue.channelCount);
-          const end = start + Number(chunk.sampleCount) / Number(cue.channelCount);
           return {
             ...chunk,
-            reference: renderBridgeReferenceToLoopback(
-              mono.slice(start, end), Number(cue.sampleRateHz),
-            ),
+            reference: {
+              referencePath: cue.pcmPath,
+              referenceSampleRateHz: Number(cue.sampleRateHz),
+              referenceChannels: Number(cue.channelCount),
+              referenceOffsetSamples: Number(chunk.sampleOffset),
+              referenceSampleCount: Number(chunk.sampleCount),
+            },
           };
         }),
       });
@@ -488,11 +294,33 @@ export function buildTranslatedPcmLoopbackAuthority({
     }
   }
 
+  const matchReference = (reference, expectedStartSamples) => {
+    try {
+      const metrics = matchTranslatedLoopbackWithRust({
+        ...reference,
+        recordingPath,
+        expectedStartSamples,
+      });
+      return {
+        ...metrics,
+        passed: (
+          metrics.waveformMedian >= 0.32
+          && metrics.waveformMinimum >= 0.20
+          && metrics.derivativeMedian >= 0.24
+          && metrics.derivativeMinimum >= 0.14
+          && Math.abs(metrics.timingErrorSeconds) <= 0.65
+        ),
+      };
+    } catch (error) {
+      return { passed: false, score: 0, segmentMatches: [], reason: error.message };
+    }
+  };
+
   const matches = [];
   for (const cueId of requiredCueIds) {
     const referenceSet = references.get(cueId);
     const startedAtMs = lifecycle.get(cueId)?.started?.occurredAtMs;
-    if (!referenceSet || !Number.isFinite(startedAtMs) || recording.length === 0 || !Number.isFinite(recordingStart)) continue;
+    if (!referenceSet || !Number.isFinite(startedAtMs) || recordingSamples === 0 || !Number.isFinite(recordingStart)) continue;
     const { whole: reference, chunks } = referenceSet;
     const expectedStart = Math.round((startedAtMs - recordingStart) * LOOPBACK_SAMPLE_RATE_HZ / 1000);
     if (chunks.length > 1) {
@@ -500,18 +328,14 @@ export function buildTranslatedPcmLoopbackAuthority({
         const chunkExpectedStart = Math.round(
           (Number(chunk.acceptedAtMs) - recordingStart) * LOOPBACK_SAMPLE_RATE_HZ / 1000,
         );
-        const diagonal = matchReferenceAtExpectedStart(
-          chunk.reference, recording, chunkExpectedStart,
-        );
+        const diagonal = matchReference(chunk.reference, chunkExpectedStart);
         let strongestWrongChunkScore = 0;
         for (const [otherCueId, otherSet] of references.entries()) {
           if (otherCueId === cueId || otherSet.chunks.length === 0) continue;
           const otherChunk = otherSet.chunks[Math.min(chunkPosition, otherSet.chunks.length - 1)];
           strongestWrongChunkScore = Math.max(
             strongestWrongChunkScore,
-            matchReferenceAtExpectedStart(
-              otherChunk.reference, recording, chunkExpectedStart,
-            ).score,
+            matchReference(otherChunk.reference, chunkExpectedStart).score,
           );
         }
         const identityMargin = diagonal.score - strongestWrongChunkScore;
@@ -543,13 +367,13 @@ export function buildTranslatedPcmLoopbackAuthority({
       if (!passed) violations.push(`translated stream cue ${cueId} did not correlate enough ordered physical chunks`);
       continue;
     }
-    const diagonal = matchReferenceAtExpectedStart(reference, recording, expectedStart);
+    const diagonal = matchReference(reference, expectedStart);
     let strongestWrongCueScore = 0;
     for (const [otherCueId, otherReference] of references.entries()) {
       if (otherCueId === cueId) continue;
       strongestWrongCueScore = Math.max(
         strongestWrongCueScore,
-        matchReferenceAtExpectedStart(otherReference.whole, recording, expectedStart).score,
+        matchReference(otherReference.whole, expectedStart).score,
       );
     }
     const identityMargin = diagonal.score - strongestWrongCueScore;
@@ -607,9 +431,9 @@ export function buildTranslatedPcmLoopbackAuthority({
     recordingStartedAtEpochMs: recordingStart,
     recording: {
       path: 'physical-output-recording-16k-mono.pcm',
-      samples: recording.length,
-      bytes: recording.length * 2,
-      sha256: recording.length > 0 ? sha256File(recordingPath) : null,
+      samples: recordingSamples,
+      bytes: recordingSamples * 2,
+      sha256: recordingSamples > 0 ? sha256File(recordingPath) : null,
     },
     translatedPcmAuthority: translated.artifacts,
     acceptedCueCount: translated.cues.length,

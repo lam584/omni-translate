@@ -588,8 +588,9 @@ test('incident Plus cell runner uses the bounded Plus authority without entering
       now: () => new Date('2035-08-14T03:30:00.000Z'),
       assertExternalProviderBudget: syntheticValidatedBudget,
       executeCell: async (cellRequest) => {
-        const argv = buildIncidentPlusPowerShellRunnerArgv(cellRequest);
-        assert.equal(argv.includes('-IncidentReplayAuthority'), true);
+        const argv = buildIncidentPlusPowerShellRunnerArgv(path.join(cellRequest.cellOutputRoot, 'run-request.json'));
+        assert.equal(argv.includes('--request'), true);
+        assert.equal(argv.includes('-IncidentReplayAuthority'), false);
         assert.equal(argv.includes('-StrictPaidAuthority'), false);
         assert.equal(cellRequest.environment.OMNI_WATCH_MODE_INCIDENT_REPLAY_AUTHORITY, '1');
         assert.equal(cellRequest.environment.OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES, '2880000');

@@ -1,9 +1,10 @@
 import { act } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
+import { resolveChineseFallback } from '../../i18n/resolveChineseFallback';
 import { registerDomHarness } from '../../test-utils/component-test-harness';
 import ChainFlow from './ChainFlow';
-import ScenarioCard, { resolveChineseFallback } from './ScenarioCard';
+import ScenarioCard from './ScenarioCard';
 import { detectScenarioCapabilities, supportsRoutingScenario, type RoutingModelOption, type ScenarioId } from './routingModelCatalog';
 
 const options: RoutingModelOption[] = [

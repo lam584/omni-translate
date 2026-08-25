@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { WATCH_MODE_RUN_COLLECTION_SCHEMA, writeWatchModeRunCollection } from './watch-mode-run-collection.mjs';
 import {
   BENCHMARK_SCORE_VERSION,
   calculateChrF2,
@@ -16,6 +17,21 @@ import {
 } from './watch-mode-score.mjs';
 
 const passedReport = { verdict: 'passed', failureLayer: null, layers: { app: { status: 'passed' } } };
+
+function writeCollection(directory, evidence) {
+  fs.writeFileSync(path.join(directory, 'fixture-evidence.raw.json'), JSON.stringify(evidence), 'utf8');
+  writeWatchModeRunCollection(directory, {
+    schemaVersion: WATCH_MODE_RUN_COLLECTION_SCHEMA,
+    artifactKind: 'watch-mode-run-collection',
+    request: { schemaVersion: 'watch-mode-run-request/v1', runMode: 'fixture' },
+    collectionStatus: 'completed',
+    steps: [],
+    ownedProcesses: [],
+    artifacts: { fixtureEvidence: 'fixture-evidence.raw.json' },
+    primaryError: null,
+    cleanupErrors: [],
+  });
+}
 
 function completeRun(index, overrides = {}) {
   return {
@@ -287,14 +303,14 @@ test('scoreRun persists a credential-free evidence-insufficient v1 record when a
   const credentialEnv = 'OMNI_TEST_WATCH_SCORE_V1_MISSING_CREDENTIAL';
   try {
     fs.writeFileSync(path.join(tempRoot, 'report.json'), JSON.stringify(passedReport), 'utf8');
-    fs.writeFileSync(path.join(tempRoot, 'snapshots.json'), JSON.stringify({
+    writeCollection(tempRoot, {
       app: { subtitleQueue: {
         firstVisibleTranslationLatencySeconds: 2,
         firstFinalTranslationLatencySeconds: 5,
         duplicateFinalTranslations: 0,
       } },
       physicalOutputContent: { translation: '你好世界' },
-    }), 'utf8');
+    });
     fs.writeFileSync(sourcePath, 'Hello world', 'utf8');
     fs.writeFileSync(referencePath, '你好世界', 'utf8');
     delete process.env[credentialEnv];
@@ -323,14 +339,14 @@ test('dry-run fixtures do not make an external judge request even when a key is 
   const credentialEnv = 'OMNI_TEST_WATCH_SCORE_V1_DRY_RUN_CREDENTIAL';
   try {
     fs.writeFileSync(path.join(tempRoot, 'report.json'), JSON.stringify({ ...passedReport, mode: 'dry-run' }), 'utf8');
-    fs.writeFileSync(path.join(tempRoot, 'snapshots.json'), JSON.stringify({
+    writeCollection(tempRoot, {
       app: { subtitleQueue: {
         firstVisibleTranslationLatencySeconds: 2,
         firstFinalTranslationLatencySeconds: 5,
         duplicateFinalTranslations: 0,
       } },
       physicalOutputContent: { translation: '你好世界' },
-    }), 'utf8');
+    });
     fs.writeFileSync(sourcePath, 'Hello world', 'utf8');
     fs.writeFileSync(referencePath, '你好世界', 'utf8');
     process.env[credentialEnv] = 'test-only-key';

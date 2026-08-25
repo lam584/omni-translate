@@ -143,6 +143,11 @@ export const healthyPhysicalOutputContent = {
   source: '你好世界',
   translation: '你好世界',
   subtitleText: '你好世界',
+  sourceReference: {
+    passed: true,
+    source: '你好世界',
+    translation: '',
+  },
   recording: {
     passed: true,
     recordingPath: 'physical-output-recording.wav',
@@ -150,6 +155,8 @@ export const healthyPhysicalOutputContent = {
     capturedFrames: 96000,
     rms: 0.08,
   },
+  translatedSpeech: { queuedSegments: 1, playedSegments: 1 },
+  mixedOutput: { rms: 0.08, peak: 0.3 },
 };
 
 export const testMediaReferenceTranslation = fs.readFileSync(
@@ -162,6 +169,8 @@ export function strictTestMediaContent(overrides = {}) {
     ...healthyPhysicalOutputContent,
     sourceReference: {
       passed: true,
+      source: '你好世界',
+      translation: testMediaReferenceTranslation,
       mediaSha256: 'cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f',
       mediaPath: 'scripts/testing/fixtures/watch-mode-en-original.wav',
       playbackSeconds: null,
@@ -183,10 +192,6 @@ export function strictTestMediaContent(overrides = {}) {
     },
     originalPassthrough: { passed: true, transcriptChars: 160 },
     mixedOutput: { passed: true, rms: 0.08, peak: 0.3 },
-    contentConsistency: {
-      passed: true,
-      combinedEvidence: { passed: true },
-    },
     ...overrides,
   };
 }

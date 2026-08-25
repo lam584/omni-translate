@@ -7,7 +7,9 @@ import {
   currentGitProvenance,
   exactGitProvenanceFailure,
 } from './git-provenance.mjs';
-import { rebuildReportFromDirectory } from './watch-mode-report.mjs';
+import { derivePhysicalOutputContent, rebuildReportFromDirectory } from './watch-mode-report.mjs';
+import { readWatchModeRunCollection } from './watch-mode-run-collection.mjs';
+import { analyzeAudioWithRust } from './watch-mode-rust-audio-analysis.mjs';
 import {
   CELL_AUTHORITY_ARTIFACT_KIND,
   CELL_AUTHORITY_FILE,
@@ -464,19 +466,19 @@ function assertSystemMetricsAuthority(
   index,
   minimumDurationMs = MIN_STRICT_SESSION_DURATION_MS,
 ) {
-  const steps = readJson(path.join(runDirectory, 'steps.json'));
+  const steps = readWatchModeRunCollection(runDirectory).collection.steps;
   const desktopStep = Array.isArray(steps)
-    ? steps.find((step) => step?.name === 'start desktop shell')
+    ? steps.find((step) => step?.id === 'start-desktop-shell')
     : null;
-  const desktopProcessId = Number(desktopStep?.result?.pid);
-  const samplerRootProcessId = Number(desktopStep?.result?.systemMetricsSampler?.rootProcessId);
+  const desktopProcessId = Number(desktopStep?.data?.pid);
+  const samplerRootProcessId = Number(desktopStep?.data?.systemMetricsSampler?.rootProcessId);
   if (
-    desktopStep?.ok !== true
+    desktopStep?.status !== 'passed'
     || !Number.isInteger(desktopProcessId)
     || desktopProcessId <= 0
     || samplerRootProcessId !== desktopProcessId
   ) {
-    throw new Error(`strict matrix cell ${index} steps.json does not bind the production Desktop launch PID to its metrics sampler`);
+    throw new Error(`strict matrix cell ${index} run collection does not bind the production Desktop launch PID to its metrics sampler`);
   }
 
   const metrics = readJson(path.join(runDirectory, 'system-metrics.json'));
@@ -543,84 +545,17 @@ function assertSystemMetricsAuthority(
   }
 }
 
-function readPcm16Wav(filePath, { collectMono = false } = {}) {
-  const bytes = fs.readFileSync(filePath);
-  if (bytes.length < 44 || bytes.toString('ascii', 0, 4) !== 'RIFF' || bytes.toString('ascii', 8, 12) !== 'WAVE') {
-    throw new Error(`invalid RIFF/WAVE PCM artifact: ${filePath}`);
-  }
-  let offset = 12;
-  let format = null;
-  let dataOffset = -1;
-  let dataBytes = 0;
-  while (offset + 8 <= bytes.length) {
-    const chunkId = bytes.toString('ascii', offset, offset + 4);
-    const chunkBytes = bytes.readUInt32LE(offset + 4);
-    const chunkStart = offset + 8;
-    if (chunkStart + chunkBytes > bytes.length) break;
-    if (chunkId === 'fmt ' && chunkBytes >= 16) {
-      format = {
-        audioFormat: bytes.readUInt16LE(chunkStart),
-        channels: bytes.readUInt16LE(chunkStart + 2),
-        sampleRate: bytes.readUInt32LE(chunkStart + 4),
-        bitsPerSample: bytes.readUInt16LE(chunkStart + 14),
-      };
-    } else if (chunkId === 'data') {
-      dataOffset = chunkStart;
-      dataBytes = chunkBytes;
-      break;
-    }
-    offset = chunkStart + chunkBytes + (chunkBytes % 2);
-  }
-  if (
-    !format
-    || format.audioFormat !== 1
-    || ![1, 2].includes(format.channels)
-    || format.bitsPerSample !== 16
-    || dataOffset < 0
-  ) {
-    throw new Error(`unsupported or incomplete PCM16 WAV artifact: ${filePath}`);
-  }
-  const bytesPerFrame = format.channels * 2;
-  const frames = Math.floor(dataBytes / bytesPerFrame);
-  const mono = collectMono ? new Float32Array(frames) : null;
-  let sumSquares = 0;
-  let peak = 0;
-  for (let frame = 0; frame < frames; frame += 1) {
-    let mixed = 0;
-    const frameOffset = dataOffset + frame * bytesPerFrame;
-    for (let channel = 0; channel < format.channels; channel += 1) {
-      mixed += bytes.readInt16LE(frameOffset + channel * 2) / 32_768;
-    }
-    mixed /= format.channels;
-    if (mono) mono[frame] = mixed;
-    sumSquares += mixed * mixed;
-    peak = Math.max(peak, Math.abs(mixed));
-  }
+function readPcm16Wav(filePath, frequencies = []) {
+  const profile = frequencies.length > 0 ? 'fingerprint-components-v1' : 'watch-physical-output/v1';
+  const metrics = analyzeAudioWithRust({ inputPath: filePath, format: 'wav', profile, frequencies });
   return {
-    ...format,
-    frames,
-    durationSeconds: frames / format.sampleRate,
-    rms: frames > 0 ? Math.sqrt(sumSquares / frames) : 0,
-    peak,
-    mono,
+    sampleRate: metrics.sampleRateHz,
+    frames: metrics.sampleCount,
+    durationSeconds: metrics.durationSeconds,
+    rms: metrics.rms,
+    peak: metrics.peak,
+    components: Object.fromEntries((metrics.components ?? []).map((entry) => [entry.frequencyHz, entry.amplitude])),
   };
-}
-
-function componentAmplitude(samples, sampleRate, frequencyHz) {
-  if (!samples || samples.length === 0) return 0;
-  const omega = 2 * Math.PI * frequencyHz / sampleRate;
-  const coefficient = 2 * Math.cos(omega);
-  let previous = 0;
-  let beforePrevious = 0;
-  for (const sample of samples) {
-    const current = sample + coefficient * previous - beforePrevious;
-    beforePrevious = previous;
-    previous = current;
-  }
-  const power = previous * previous
-    + beforePrevious * beforePrevious
-    - coefficient * previous * beforePrevious;
-  return 2 * Math.sqrt(Math.max(0, power)) / samples.length;
 }
 
 function assertPhysicalRecordingAuthority(runDirectory, index) {
@@ -629,7 +564,8 @@ function assertPhysicalRecordingAuthority(runDirectory, index) {
     throw new Error(`strict matrix cell ${index} physical-output WAV is too short or silent`);
   }
   const recording = readJson(path.join(runDirectory, 'physical-output-recording.json'));
-  const content = readJson(path.join(runDirectory, 'physical-output-content.json'));
+  const rawContent = readJson(path.join(runDirectory, 'physical-output-content.raw.json'));
+  const content = derivePhysicalOutputContent(rawContent);
   if (recording.passed !== true || content.passed !== true) {
     throw new Error(`strict matrix cell ${index} physical-output recording/content raw evidence did not pass`);
   }
@@ -645,13 +581,14 @@ function assertProcessExclusionAudioAuthority(runDirectory, index) {
   if (!evidence || typeof evidence !== 'object') {
     throw new Error(`strict matrix cell ${index} process-exclusion fingerprint evidence is missing`);
   }
+  const frequencies = [997, 1_733, 2_449];
   const physical = readPcm16Wav(
     path.join(runDirectory, 'physical-output-probe-runtime', 'process-exclusion-physical-output.wav'),
-    { collectMono: true },
+    frequencies,
   );
   const source = readPcm16Wav(
     path.join(runDirectory, 'physical-output-probe-runtime', 'process-exclusion-source-pipe.wav'),
-    { collectMono: true },
+    frequencies,
   );
   if (
     physical.sampleRate !== 48_000
@@ -667,12 +604,12 @@ function assertProcessExclusionAudioAuthority(runDirectory, index) {
   if (translationHz !== 997 || externalHz !== 1_733 || childHz !== 2_449) {
     throw new Error(`strict matrix cell ${index} process-exclusion fingerprint frequencies are not the production 997/1733/2449 Hz triplet`);
   }
-  const physicalTranslation = componentAmplitude(physical.mono, physical.sampleRate, translationHz);
-  const physicalExternal = componentAmplitude(physical.mono, physical.sampleRate, externalHz);
-  const physicalChild = componentAmplitude(physical.mono, physical.sampleRate, childHz);
-  const sourceTranslation = componentAmplitude(source.mono, source.sampleRate, translationHz);
-  const sourceExternal = componentAmplitude(source.mono, source.sampleRate, externalHz);
-  const sourceChild = componentAmplitude(source.mono, source.sampleRate, childHz);
+  const physicalTranslation = physical.components[translationHz] ?? 0;
+  const physicalExternal = physical.components[externalHz] ?? 0;
+  const physicalChild = physical.components[childHz] ?? 0;
+  const sourceTranslation = source.components[translationHz] ?? 0;
+  const sourceExternal = source.components[externalHz] ?? 0;
+  const sourceChild = source.components[childHz] ?? 0;
   const leakLimit = Math.max(0.006, Number(evidence.translationComponentLimit ?? 0.003) * 2);
   if (Math.min(physicalTranslation, physicalExternal, physicalChild, sourceExternal) < 0.005) {
     throw new Error(`strict matrix cell ${index} raw fingerprint WAVs do not prove physical translation/external/child playback and source preservation`);
@@ -904,7 +841,7 @@ export function assertStrictTranslatedPcmLoopbackAuthority({
     );
   }
   const matcherOutput = readJson(path.join(runDirectory, 'translated-pcm-loopback.stdout.json'));
-  const physicalAuthority = readJson(path.join(runDirectory, 'physical-output-content.json'));
+  const physicalAuthority = readJson(path.join(runDirectory, 'physical-output-content.raw.json'));
   assertExactObject(
     matcherOutput,
     rebuilt,
@@ -972,7 +909,7 @@ function assertPhysicalSourceWindowPrefix(runDirectory, canonicalAuthority, inde
   );
   const recording = fs.readFileSync(recordingPath);
   const sourceWindow = fs.readFileSync(sourceWindowPath);
-  const physicalContent = readJson(path.join(runDirectory, 'physical-output-content.json'));
+  const physicalContent = readJson(path.join(runDirectory, 'physical-output-content.raw.json'));
   const rebuiltWindow = canonicalAuthority?.physicalSourceWaveform?.sourceWindowPcm;
   if (
     sourceWindow.length === 0

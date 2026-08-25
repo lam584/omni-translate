@@ -8,8 +8,6 @@ import test from 'node:test';
 
 import {
   buildTranslatedPcmLoopbackAuthority,
-  matchReferenceAtExpectedStart,
-  renderBridgeReferenceToLoopback,
 } from './watch-mode-translated-pcm-loopback.mjs';
 
 const RUN_MARKER = 'watch_mode_diagnostic.run_id=translated-pcm-test';
@@ -20,16 +18,21 @@ const PROTOCOL = 'dashscope-omni';
 
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 
-test('finds broadband PCM at a sub-millisecond WASAPI phase offset', () => {
-  const reference = deterministicCue(73, { sampleRateHz: 16_000, seconds: 0.9 });
-  const recording = new Float32Array(40_000);
-  const expectedStart = 8_000;
-  const actualStart = expectedStart + 5;
-  recording.set(reference, actualStart);
-  const match = matchReferenceAtExpectedStart(reference, recording, expectedStart);
-  assert.equal(match.passed, true, JSON.stringify(match));
-  assert.equal(match.globalLagSamples, 5);
-});
+function renderBridgeReferenceToLoopback(samples, sourceRateHz) {
+  const bridgeRateHz = 48_000;
+  const bridge = new Float32Array(Math.max(1, Math.floor(samples.length * bridgeRateHz / sourceRateHz)));
+  for (let index = 0; index < bridge.length; index += 1) {
+    bridge[index] = samples[Math.min(samples.length - 1, Math.floor(index * sourceRateHz / bridgeRateHz))];
+  }
+  const output = new Float32Array(Math.max(1, Math.floor(bridge.length * 16_000 / bridgeRateHz)));
+  for (let index = 0; index < output.length; index += 1) {
+    const source = index * bridgeRateHz / 16_000;
+    const left = Math.min(bridge.length - 1, Math.floor(source));
+    const right = Math.min(bridge.length - 1, left + 1);
+    output[index] = bridge[left] + (bridge[right] - bridge[left]) * (source - left);
+  }
+  return output;
+}
 
 function pcmBuffer(samples) {
   const bytes = Buffer.alloc(samples.length * 2);

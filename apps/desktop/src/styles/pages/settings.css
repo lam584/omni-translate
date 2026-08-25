@@ -24,6 +24,29 @@
   font-weight:600
 }
 
+.settings-card-title {
+  display:flex;
+  align-items:center;
+  gap:9px;
+  margin-bottom:6px
+}
+
+.settings-card-title h3 {
+  margin:0
+}
+
+.settings-card-title-icon {
+  width:30px;
+  height:30px;
+  flex:0 0 30px;
+  display:grid;
+  place-items:center;
+  border:1px solid var(--app-line, var(--color-accent-cool-border));
+  border-radius:9px;
+  color:var(--app-accent, var(--color-accent-cool));
+  background:var(--color-accent-cool-soft)
+}
+
 .settings-card-head p {
   margin:0;
   font-size:14px;
@@ -76,6 +99,10 @@
 }
 
 .settings-action {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:7px;
   padding:10px 18px;
   border-radius:10px;
   border:1px solid rgba(255,
@@ -85,7 +112,8 @@
   background:#ffffff0d;
   color:inherit;
   cursor:pointer;
-  font-size:14px
+  font-size:14px;
+  text-decoration:none
 }
 
 .settings-action:hover {
@@ -116,4 +144,3 @@
   border-radius:8px;
   padding:8px 10px
 }
-

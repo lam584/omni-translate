@@ -354,7 +354,7 @@ export default function GlossaryPage() {
             <div className="routing-hero-actions">
               <StatusBadge label={t('glossary.labels.enabledLibraryCount', { count: enabledLibraries.length })} tone={enabledLibraries.length > 0 ? 'ready' : 'warning'} />
               <button className="icon-button" onClick={triggerFileImport} type="button">
-                <AppIcon name="layers" size={15} />
+                <AppIcon name="import" size={15} />
                 {t('glossary.actions.importFile')}
               </button>
               <button className="icon-button routing-primary-action" onClick={openLibraryDialog} type="button">
@@ -405,7 +405,7 @@ export default function GlossaryPage() {
             </div>
             <div className="routing-hero-actions">
               <button className="icon-button routing-primary-action" onClick={handleAddEntryClick} type="button">
-                <AppIcon name="spark" size={15} />
+                <AppIcon name="plus" size={15} />
                 {t('glossary.actions.addEntry')}
               </button>
             </div>
@@ -470,7 +470,10 @@ export default function GlossaryPage() {
           <div className="glossary-mode-grid">
             {(['inject-all', 'inject-important', 'post-calibrate'] as const).map((mode) => (
               <button className={processingMode === mode ? 'glossary-mode-card glossary-mode-card-active' : 'glossary-mode-card'} key={mode} onClick={() => updateGlossaryDraft({ processingMode: mode, status: 'draft' })} type="button">
-                <strong>{formatProcessingModeLabel(mode)}</strong>
+                <span className="glossary-mode-card-title">
+                  <AppIcon name={mode === 'inject-all' ? 'layers' : mode === 'inject-important' ? 'star' : 'sliders'} size={15} />
+                  <strong>{formatProcessingModeLabel(mode)}</strong>
+                </span>
                 <p>{describeProcessingMode(mode, totalEntries, importantCount)}</p>
               </button>
             ))}
@@ -577,10 +580,10 @@ export default function GlossaryPage() {
             </div>
             <div className="routing-action-row glossary-library-actions">
               <button className="icon-button glossary-library-primary-action" onClick={saveNewLibrary} type="button">
-                <AppIcon name="power" size={15} />
+                <AppIcon name="save" size={15} />
                 {t('common.create')}
               </button>
-              <button className="icon-button glossary-library-secondary-action" onClick={() => setLibraryDialogOpen(false)} type="button">{t('common.cancel')}</button>
+              <button className="icon-button glossary-library-secondary-action" onClick={() => setLibraryDialogOpen(false)} type="button"><AppIcon name="close" size={14} />{t('common.cancel')}</button>
             </div>
         </ModalDialog>
       ) : null}

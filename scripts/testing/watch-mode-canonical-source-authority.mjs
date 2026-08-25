@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+
+import { compareAudioWithRust } from './watch-mode-rust-audio-analysis.mjs';
 import { fileURLToPath } from 'node:url';
 
 export const CANONICAL_SOURCE_AUTHORITY_SCHEMA_VERSION = 2;
@@ -41,9 +43,6 @@ const waveformThresholds = Object.freeze({
   minimumPassingCandidateCount: 7,
 });
 
-const physicalFragmentSamples = Math.round(CANONICAL_SOURCE_SAMPLE_RATE_HZ * 0.2);
-const physicalFragmentOffsetStep = Math.round(CANONICAL_SOURCE_SAMPLE_RATE_HZ * 0.05);
-const physicalLocalLagRadiusSamples = Math.round(CANONICAL_SOURCE_SAMPLE_RATE_HZ * 0.2);
 
 const sha256Buffer = (buffer) => crypto.createHash('sha256').update(buffer).digest('hex');
 const portable = (value) => String(value).split(path.sep).join('/');
@@ -383,249 +382,12 @@ function readPcm16(filePath, label) {
   const stat = regularFile(filePath, label);
   if (stat.size % 2 !== 0) throw new Error(`${label} must contain whole PCM16 samples`);
   const bytes = fs.readFileSync(filePath);
-  const samples = new Int16Array(bytes.length / 2);
-  for (let index = 0; index < samples.length; index += 1) samples[index] = bytes.readInt16LE(index * 2);
-  return { bytes, samples };
-}
-
-function pearson(left, right, leftStart, rightStart, count, stride = 1, derivative = false) {
-  let sumLeft = 0;
-  let sumRight = 0;
-  let observed = 0;
-  const begin = derivative ? 1 : 0;
-  for (let offset = begin; offset < count; offset += stride) {
-    const leftIndex = leftStart + offset;
-    const rightIndex = rightStart + offset;
-    const leftValue = derivative ? left[leftIndex] - left[leftIndex - 1] : left[leftIndex];
-    const rightValue = derivative ? right[rightIndex] - right[rightIndex - 1] : right[rightIndex];
-    sumLeft += leftValue;
-    sumRight += rightValue;
-    observed += 1;
-  }
-  if (observed < 32) return 0;
-  const meanLeft = sumLeft / observed;
-  const meanRight = sumRight / observed;
-  let numerator = 0;
-  let denominatorLeft = 0;
-  let denominatorRight = 0;
-  for (let offset = begin; offset < count; offset += stride) {
-    const leftIndex = leftStart + offset;
-    const rightIndex = rightStart + offset;
-    const leftValue = (derivative ? left[leftIndex] - left[leftIndex - 1] : left[leftIndex]) - meanLeft;
-    const rightValue = (derivative ? right[rightIndex] - right[rightIndex - 1] : right[rightIndex]) - meanRight;
-    numerator += leftValue * rightValue;
-    denominatorLeft += leftValue * leftValue;
-    denominatorRight += rightValue * rightValue;
-  }
-  const denominator = Math.sqrt(denominatorLeft * denominatorRight);
-  return denominator > 0 ? numerator / denominator : 0;
-}
-
-function rmsRatio(reference, recorded, referenceStart, recordedStart, count) {
-  let referenceEnergy = 0;
-  let recordedEnergy = 0;
-  for (let offset = 0; offset < count; offset += 1) {
-    const referenceSample = reference[referenceStart + offset];
-    const recordedSample = recorded[recordedStart + offset];
-    referenceEnergy += referenceSample * referenceSample;
-    recordedEnergy += recordedSample * recordedSample;
-  }
-  if (referenceEnergy <= 0) return 0;
-  return Math.sqrt(recordedEnergy / referenceEnergy);
-}
-
-function segmentPlan(referenceLength) {
-  if (referenceLength < CANONICAL_SOURCE_SAMPLE_RATE_HZ * 3) {
-    throw new Error('source reference needs at least three seconds for independent waveform segments');
-  }
-  // Translation audio can overlap an otherwise exact source passthrough. Use
-  // a fixed grid of candidates so one favorable interval cannot be reused or
-  // substituted for distributed evidence across the source timeline.
-  const candidateCount = 9;
-  const segmentSamples = Math.min(CANONICAL_SOURCE_SAMPLE_RATE_HZ, Math.floor(referenceLength / (candidateCount + 2)));
-  const available = referenceLength - segmentSamples;
-  const starts = Array.from({ length: candidateCount }, (_, index) => {
-    const fraction = 0.04 + (0.92 * index) / (candidateCount - 1);
-    return Math.floor(available * fraction);
-  });
-  for (let index = 1; index < starts.length; index += 1) {
-    if (starts[index] < starts[index - 1] + segmentSamples) throw new Error('source segment plan overlaps');
-  }
-  return starts.map((referenceStartSample, index) => ({ index, referenceStartSample, samples: segmentSamples }));
-}
-
-function lagScore(reference, recorded, segments, lag, stride) {
-  let waveform = 0;
-  let derivative = 0;
-  for (const segment of segments) {
-    waveform += pearson(reference, recorded, segment.referenceStartSample, segment.referenceStartSample + lag, segment.samples, stride, false);
-    derivative += pearson(reference, recorded, segment.referenceStartSample, segment.referenceStartSample + lag, segment.samples, stride, true);
-  }
-  const combinedWaveform = waveform / segments.length;
-  const combinedDerivative = derivative / segments.length;
-  const sign = combinedWaveform < 0 ? -1 : 1;
-  return {
-    waveform: combinedWaveform * sign,
-    derivative: combinedDerivative * sign,
-    signedWaveform: combinedWaveform,
-    signedDerivative: combinedDerivative,
-    polarity: sign,
-    score: Math.max(0, combinedWaveform * sign) * 0.65 + Math.max(0, combinedDerivative * sign) * 0.35,
-  };
-}
-
-function findGlobalLag(reference, recorded, segments) {
-  const last = segments.at(-1);
-  const maximumFitLag = recorded.length - (last.referenceStartSample + last.samples);
-  if (maximumFitLag < 0) throw new Error('physical source window is shorter than the required canonical segments');
-  const maximumLag = Math.min(maximumFitLag, CANONICAL_SOURCE_SAMPLE_RATE_HZ * 15);
-  const coarseStep = 80;
-  let best = { lag: 0, score: -1 };
-  for (let lag = 0; lag <= maximumLag; lag += coarseStep) {
-    const score = lagScore(reference, recorded, segments, lag, 32);
-    if (score.score > best.score) best = { lag, ...score };
-  }
-  const refineStart = Math.max(0, best.lag - coarseStep);
-  const refineEnd = Math.min(maximumLag, best.lag + coarseStep);
-  for (let lag = refineStart; lag <= refineEnd; lag += 1) {
-    const score = lagScore(reference, recorded, segments, lag, 8);
-    if (score.score > best.score) best = { lag, ...score };
-  }
-  return { ...best, maximumLag };
-}
-
-function bestClockBoundFragment(reference, recorded, segment, anchorLag, polarity) {
-  // The media renderer and physical loopback capture are different hardware
-  // clocks. Keep the global lag as the signed identity/polarity anchor, but
-  // permit a tightly bounded local correction and a short fragment inside each
-  // fixed one-second candidate. This retains 7/9 distributed coverage while
-  // preventing dense translated speech from vetoing the original waveform.
-  const minimumLag = Math.max(0, anchorLag - physicalLocalLagRadiusSamples);
-  const maximumLag = Math.min(
-    anchorLag + physicalLocalLagRadiusSamples,
-    recorded.length - (segment.referenceStartSample + physicalFragmentSamples),
-  );
-  let best = null;
-  const evaluate = (referenceOffsetSample, lag, stride) => {
-    const referenceStartSample = segment.referenceStartSample + referenceOffsetSample;
-    const recordedStartSample = referenceStartSample + lag;
-    if (
-      recordedStartSample < 0
-      || referenceStartSample + physicalFragmentSamples > reference.length
-      || recordedStartSample + physicalFragmentSamples > recorded.length
-    ) return;
-    const waveform = pearson(
-      reference,
-      recorded,
-      referenceStartSample,
-      recordedStartSample,
-      physicalFragmentSamples,
-      stride,
-      false,
-    ) * polarity;
-    const derivative = pearson(
-      reference,
-      recorded,
-      referenceStartSample,
-      recordedStartSample,
-      physicalFragmentSamples,
-      stride,
-      true,
-    ) * polarity;
-    const score = Math.max(0, waveform) * 0.65 + Math.max(0, derivative) * 0.35;
-    if (!best || score > best.score) {
-      best = { referenceOffsetSample, referenceStartSample, recordedStartSample, lag, waveform, derivative, score };
-    }
-  };
-  for (
-    let referenceOffsetSample = 0;
-    referenceOffsetSample <= segment.samples - physicalFragmentSamples;
-    referenceOffsetSample += physicalFragmentOffsetStep
-  ) {
-    for (let lag = minimumLag; lag <= maximumLag; lag += 80) {
-      evaluate(referenceOffsetSample, lag, 8);
-    }
-  }
-  if (!best) throw new Error('physical waveform candidate has no complete clock-bounded fragment');
-  const coarse = best;
-  for (let lag = Math.max(minimumLag, coarse.lag - 80); lag <= Math.min(maximumLag, coarse.lag + 80); lag += 4) {
-    evaluate(coarse.referenceOffsetSample, lag, 4);
-  }
-  const refined = best;
-  for (let lag = Math.max(minimumLag, refined.lag - 4); lag <= Math.min(maximumLag, refined.lag + 4); lag += 1) {
-    evaluate(refined.referenceOffsetSample, lag, 2);
-  }
-  return best;
-}
-
-function adaptiveCandidateAuthorities(reference, recorded, segments, global) {
-  return segments.map((segment) => {
-    const fragment = bestClockBoundFragment(reference, recorded, segment, global.lag, global.polarity);
-    const energyRatio = rmsRatio(
-      reference,
-      recorded,
-      fragment.referenceStartSample,
-      fragment.recordedStartSample,
-      physicalFragmentSamples,
-    );
-    const coveragePassed = (
-      fragment.waveform >= waveformThresholds.minimumCandidateWaveformCorrelation
-      && fragment.derivative >= waveformThresholds.minimumCandidateDerivativeCorrelation
-      && energyRatio >= waveformThresholds.minimumCandidateEnergyRatio
-      && energyRatio <= waveformThresholds.maximumCandidateEnergyRatio
-    );
-    return {
-      index: segment.index,
-      anchorReferenceStartSample: segment.referenceStartSample,
-      referenceOffsetSample: fragment.referenceOffsetSample,
-      referenceStartSample: fragment.referenceStartSample,
-      recordedStartSample: fragment.recordedStartSample,
-      samples: physicalFragmentSamples,
-      anchorLagSamples: global.lag,
-      localLagSamples: fragment.lag,
-      localLagDeltaSamples: fragment.lag - global.lag,
-      waveformCorrelation: rounded(fragment.waveform),
-      derivativeCorrelation: rounded(fragment.derivative),
-      energyRatio: rounded(energyRatio),
-      coveragePassed,
-    };
-  });
+  return { bytes, samples: bytes.length / 2 };
 }
 
 const median = (values) => [...values].sort((left, right) => left - right)[Math.floor(values.length / 2)];
 const rounded = (value) => Number(value.toFixed(6));
 
-function scoreWrongReference(wrong, recorded) {
-  const comparisonLength = Math.min(
-    wrong.length,
-    Math.max(0, recorded.length - CANONICAL_SOURCE_SAMPLE_RATE_HZ),
-  );
-  const plan = segmentPlan(comparisonLength);
-  // Give each negative control its own best possible lag. The margin therefore
-  // cannot be manufactured by evaluating a wrong source at an unfavorable
-  // offset chosen for the canonical source.
-  const global = findGlobalLag(wrong, recorded, plan);
-  const candidates = adaptiveCandidateAuthorities(wrong, recorded, plan, global)
-    .sort((left, right) => (
-      (right.waveformCorrelation * 0.65 + right.derivativeCorrelation * 0.35)
-      - (left.waveformCorrelation * 0.65 + left.derivativeCorrelation * 0.35)
-    ))
-    .slice(0, 3);
-  const waveform = median(candidates.map((entry) => entry.waveformCorrelation));
-  const derivative = median(candidates.map((entry) => entry.derivativeCorrelation));
-  return Math.max(0, waveform) * 0.65 + Math.max(0, derivative) * 0.35;
-}
-
-function deterministicWrongReference(sampleCount, frequencyHz) {
-  const samples = new Int16Array(sampleCount);
-  for (let index = 0; index < samples.length; index += 1) {
-    const envelope = 0.7 + 0.3 * Math.sin((2 * Math.PI * 3 * index) / CANONICAL_SOURCE_SAMPLE_RATE_HZ);
-    samples[index] = Math.round(
-      Math.sin((2 * Math.PI * frequencyHz * index) / CANONICAL_SOURCE_SAMPLE_RATE_HZ) * 8_000 * envelope,
-    );
-  }
-  return samples;
-}
 
 export function buildPhysicalSourceWaveformAuthority({
   runDirectory,
@@ -666,21 +428,23 @@ export function buildPhysicalSourceWaveformAuthority({
     || !physicalRecording.bytes.subarray(0, recorded.bytes.length).equals(recorded.bytes)
   ) throw new Error('physical source window is not the exact prefix of the physical recording PCM');
 
-  // A production physical capture may intentionally retain only the first
-  // 90 seconds of the 126-second source. Plan all three anchors inside the
-  // common prefix while leaving room to discover startup latency.
-  const comparisonLength = Math.min(
-    reference.samples.length,
-    Math.max(0, recorded.samples.length - CANONICAL_SOURCE_SAMPLE_RATE_HZ),
-  );
-  const segments = segmentPlan(comparisonLength);
-  const global = findGlobalLag(reference.samples, recorded.samples, segments);
-  const candidateAuthorities = adaptiveCandidateAuthorities(
-    reference.samples,
-    recorded.samples,
-    segments,
-    global,
-  );
+  const rustMetrics = compareAudioWithRust({
+    referencePath: resolvedReferencePath,
+    recordedPath: resolvedWindowPath,
+    sampleRateHz: CANONICAL_SOURCE_SAMPLE_RATE_HZ,
+    profile: 'canonical-waveform-v1',
+    wrongReferencePaths: wrongReferencePcmPaths ?? [],
+    workspaceRoot: defaultWorkspaceRoot,
+  });
+  const candidateAuthorities = rustMetrics.candidates.map((entry) => ({
+    ...entry,
+    coveragePassed: (
+      entry.waveformCorrelation >= waveformThresholds.minimumCandidateWaveformCorrelation
+      && entry.derivativeCorrelation >= waveformThresholds.minimumCandidateDerivativeCorrelation
+      && entry.energyRatio >= waveformThresholds.minimumCandidateEnergyRatio
+      && entry.energyRatio <= waveformThresholds.maximumCandidateEnergyRatio
+    ),
+  }));
   const segmentAuthorities = [...candidateAuthorities]
     .sort((left, right) => (
       (right.waveformCorrelation * 0.65 + right.derivativeCorrelation * 0.35)
@@ -697,23 +461,12 @@ export function buildPhysicalSourceWaveformAuthority({
     ) throw new Error('physical waveform authority reused an overlapping comparison window');
   }
 
-  let wrongPaths = wrongReferencePcmPaths;
-  let wrongBuffers = [];
-  if (wrongPaths === undefined) {
-    wrongBuffers = [733, 1_211].map((frequencyHz) => ({
-      label: `deterministic-${frequencyHz}hz-control`,
-      samples: deterministicWrongReference(reference.samples.length, frequencyHz),
-    }));
-  } else {
-    wrongBuffers = wrongPaths.map((filePath) => ({
-      label: portableRunChild(path.resolve(filePath), 'wrong-reference PCM'),
-      samples: readPcm16(path.resolve(filePath), 'wrong-reference PCM').samples,
-    }));
-  }
-  if (wrongBuffers.length === 0) throw new Error('at least one wrong-reference control is required');
-  const wrongReferences = wrongBuffers.map(({ label, samples }) => ({
-    label,
-    score: rounded(scoreWrongReference(samples, recorded.samples)),
+  if (wrongReferencePcmPaths?.length === 0) throw new Error('at least one wrong-reference control is required');
+  const wrongReferences = rustMetrics.wrongReferences.map((entry, index) => ({
+    ...entry,
+    label: wrongReferencePcmPaths === undefined
+      ? entry.label
+      : portableRunChild(path.resolve(wrongReferencePcmPaths[index]), 'wrong-reference PCM'),
   }));
   const maximumWrongReferenceScore = Math.max(...wrongReferences.map((entry) => entry.score));
   const waveformValues = segmentAuthorities.map((entry) => entry.waveformCorrelation);
@@ -757,9 +510,9 @@ export function buildPhysicalSourceWaveformAuthority({
       physicalRecordingPrefixExact: true,
     },
     sampleRateHz: CANONICAL_SOURCE_SAMPLE_RATE_HZ,
-    globalPolarity: global.polarity,
-    globalLagSamples: global.lag,
-    globalLagSeconds: rounded(global.lag / CANONICAL_SOURCE_SAMPLE_RATE_HZ),
+    globalPolarity: rustMetrics.globalPolarity,
+    globalLagSamples: rustMetrics.globalLagSamples,
+    globalLagSeconds: rounded(rustMetrics.globalLagSamples / CANONICAL_SOURCE_SAMPLE_RATE_HZ),
     globalWaveformCorrelation: rounded(globalWaveformCorrelation),
     globalDerivativeCorrelation: rounded(globalDerivativeCorrelation),
     correctReferenceScore: rounded(correctReferenceScore),

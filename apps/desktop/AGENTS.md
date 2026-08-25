@@ -17,7 +17,7 @@
 
 新增组件或 runtime 测试前，先检查 [src/test-utils](src/test-utils) 是否已有可复用的 harness，不要在测试文件内重写挂载/mock 样板。
 
-**导出约定：不提供桶导出（barrel），一律使用深路径导入**（如 `import { registerDomHarness } from '../test-utils/component-test-harness'`）。[index.ts](src/test-utils/index.ts) 故意不导出任何符号，仅保留约定说明；原因是多个模块被 hoisted 的 `vi.mock` 工厂通过动态 import 深路径引用，必须保持各模块依赖图最小。
+**导出约定：不提供桶导出（barrel），一律使用深路径导入**（如 `import { registerDomHarness } from '../test-utils/component-test-harness'`）。多个模块被 hoisted 的 `vi.mock` 工厂通过动态 import 深路径引用，必须保持各模块依赖图最小。
 
 各模块适用场景：
 

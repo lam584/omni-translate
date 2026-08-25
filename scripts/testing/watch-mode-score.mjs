@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadWatchModeArtifacts } from './watch-mode/artifact-loader.mjs';
 
 const MODULE_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const RULES_PATH = path.resolve(MODULE_DIRECTORY, '../../contracts/benchmark-score-v1-rules.json');
@@ -83,12 +84,8 @@ export const BENCHMARK_SCORE_V1_RULES = Object.freeze(loadRules());
 export const BENCHMARK_SCORE_RULES = BENCHMARK_SCORE_V1_RULES;
 
 function findEvidence(runDirectory, report) {
-  const snapshotsPath = path.join(runDirectory, 'snapshots.json');
-  const contentPath = path.join(runDirectory, 'physical-output-content.json');
-  const snapshots = fs.existsSync(snapshotsPath) ? readJson(snapshotsPath) : {};
-  const content = snapshots.physicalOutputContent
-    ?? (fs.existsSync(contentPath) ? readJson(contentPath) : {})
-    ?? {};
+  const snapshots = loadWatchModeArtifacts(runDirectory).snapshots;
+  const content = snapshots.physicalOutputContentRaw ?? snapshots.physicalOutputContent ?? {};
   return {
     snapshots,
     content,

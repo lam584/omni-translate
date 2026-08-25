@@ -34,16 +34,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-function Get-Sha256 {
-  param([Parameter(Mandatory = $true)][string]$Path)
-  $bytes = [IO.File]::ReadAllBytes([IO.Path]::GetFullPath($Path))
-  $sha = [Security.Cryptography.SHA256]::Create()
-  try {
-    return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
-  } finally {
-    $sha.Dispose()
-  }
-}
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.IO.psm1') -Force
 
 function Format-CollectionError {
   param([Parameter(Mandatory = $true)]$ErrorRecord)
@@ -125,7 +116,7 @@ try {
             parentPid = [int]$process.ParentProcessId
             sessionId = [int]$process.SessionId
             imagePath = [IO.Path]::GetFullPath($imagePath)
-            imageSha256 = Get-Sha256 $imagePath
+            imageSha256 = Get-OmniSha256 -LiteralPath $imagePath
             commandLine = [string]$process.CommandLine
             startedAt = (Get-Process -Id $processId -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')
             ownerUser = [string]$owner.User

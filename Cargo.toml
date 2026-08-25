@@ -4,6 +4,7 @@ members = [
   "apps/bridge-service-native",
   "apps/desktop/src-tauri",
   "crates/omni-audio-dsp",
+  "crates/omni-benchmark-core",
   "crates/omni-bridge-protocol",
   "crates/omni-logging",
   "crates/omni-webrtc-aec3",
@@ -15,5 +16,4 @@ exclude = [
   "scripts/diagnostics/credential-write",
   "scripts/diagnostics/omni-benchmark",
   "scripts/diagnostics/omni-realtime",
-  ".claude/worktrees/benchmark-2026-07/scripts/diagnostics/omni-benchmark",
 ]

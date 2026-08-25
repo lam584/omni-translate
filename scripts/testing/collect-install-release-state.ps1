@@ -11,10 +11,8 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $utf8NoBom
 $OutputEncoding = $utf8NoBom
 
-function Get-Sha256([string]$Path) {
-  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
-  return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
-}
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.IO.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.Windows.psm1') -Force
 
 function Get-SignatureEvidence([string]$Path, [string]$RelativePath) {
   $signature = Get-AuthenticodeSignature -LiteralPath $Path
@@ -36,7 +34,7 @@ function Get-DriverStoreFileEvidence([string]$Path) {
     path = $Path
     present = $present
     bytes = if ($present) { [long](Get-Item -LiteralPath $Path).Length } else { $null }
-    sha256 = if ($present) { Get-Sha256 $Path } else { $null }
+    sha256 = if ($present) { Get-OmniSha256 -LiteralPath $Path } else { $null }
     signature = if ($present) { Get-SignatureEvidence $Path $Path } else { $null }
   }
 }
@@ -51,12 +49,6 @@ function Resolve-ServiceBinaryPath([string]$RawPath) {
     $resolved = Join-Path $env:SystemRoot $resolved.Substring('\SystemRoot\'.Length)
   }
   return [Environment]::ExpandEnvironmentVariables($resolved)
-}
-
-function Test-IsAdministrator {
-  $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-  $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
-  return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
 function Get-PnpPropertyData([object[]]$Properties, [string]$KeyName) {
@@ -180,11 +172,11 @@ if ($Mode -eq 'health') {
     virtualMicRuntimeSnapshot = $runtimeSnapshot
     rawEvidence = [ordered]@{
       captureProbePath = $captureProbePath
-      captureProbeSha256 = Get-Sha256 $captureProbePath
+      captureProbeSha256 = Get-OmniSha256 -LiteralPath $captureProbePath
       runtimeSnapshotPath = $runtimeSnapshotPath
-      runtimeSnapshotSha256 = Get-Sha256 $runtimeSnapshotPath
+      runtimeSnapshotSha256 = Get-OmniSha256 -LiteralPath $runtimeSnapshotPath
       captureWavPath = $captureWavPath
-      captureWavSha256 = Get-Sha256 $captureWavPath
+      captureWavSha256 = Get-OmniSha256 -LiteralPath $captureWavPath
     }
   })
   exit 0
@@ -195,13 +187,13 @@ $renderEndpoints = @(Get-PnpDevice -PresentOnly -Class AudioEndpoint -ErrorActio
   Test-OmniVirtualAudioEndpoint `
     -Endpoint $_ `
     -Direction render `
-    -ExpectedEndpointName $script:OmniVirtualSpeakerName
+    -ExpectedEndpointName 'Omni Translate Virtual Speaker'
 } | Sort-Object InstanceId)
 $captureEndpoints = @(Get-PnpDevice -PresentOnly -Class AudioEndpoint -ErrorAction SilentlyContinue | Where-Object {
   Test-OmniVirtualAudioEndpoint `
     -Endpoint $_ `
     -Direction capture `
-    -ExpectedEndpointName $script:OmniVirtualMicrophoneName
+    -ExpectedEndpointName 'Omni Translate Virtual Microphone'
 } | Sort-Object InstanceId)
 $driverPackages = @(Get-WindowsDriver -Online -ErrorAction Stop | Where-Object {
   $_.ProviderName -eq 'Omni Translate' -and
@@ -270,7 +262,7 @@ $serviceEvidence = @($services | ForEach-Object {
     pathName = [string]$_.PathName
     binaryPath = $binaryPath
     binaryPresent = [bool]($binaryPath -and (Test-Path -LiteralPath $binaryPath -PathType Leaf))
-    binarySha256 = if ($binaryPath) { Get-Sha256 $binaryPath } else { $null }
+    binarySha256 = if ($binaryPath) { Get-OmniSha256 -LiteralPath $binaryPath } else { $null }
     signature = if ($binaryPath -and (Test-Path -LiteralPath $binaryPath -PathType Leaf)) {
       Get-SignatureEvidence $binaryPath $binaryPath
     } else { $null }
@@ -384,8 +376,8 @@ Write-Result ([ordered]@{
   schemaVersion = 1
   artifactKind = 'omni-install-system-state'
   capturedAt = $capturedAt
-  isAdministrator = [bool](Test-IsAdministrator)
-  hardwareId = $script:OmniVirtualSpeakerHardwareId
+  isAdministrator = [bool](Test-OmniIsAdministrator)
+  hardwareId = Get-OmniVirtualSpeakerHardwareId
   rootDevices = @($rootDevices | ForEach-Object {
     [ordered]@{
       instanceId = [string]$_.InstanceId

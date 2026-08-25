@@ -553,10 +553,10 @@ test('echo-cancel keeps a failed virtual-driver probe as non-blocking diagnostic
       '[ERROR] [subtitle-translate] real application error: response.empty',
     ].join('\n'),
     steps: [{
-      name: 'driver probe',
-      ok: false,
-      result: null,
-      error: driverFailure.error,
+      id: 'driver-probe',
+      status: 'failed',
+      data: null,
+      error: { message: driverFailure.error },
     }],
     failure: { message: `driver probe failed: ${driverFailure.error}` },
   });

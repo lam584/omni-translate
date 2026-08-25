@@ -94,7 +94,7 @@ export default function CustomProviderDialog({
             {t('common.cancel')}
           </button>
           <button className="action-button" onClick={onSave} type="button">
-            <AppIcon name="cloud" size={14} />
+            <AppIcon name="plus" size={14} />
             {t('providers.customDialog.createAction')}
           </button>
         </div>

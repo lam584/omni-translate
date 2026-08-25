@@ -282,6 +282,7 @@ function Invoke-BridgeSourceProbe {
 
 Export-ModuleMember -Function @(
   'Write-NamedPipeJsonLine',
+  'Read-BridgeSourceFrame',
   'New-BridgeSourceProbeInitPayload',
   'Invoke-BridgeSourceProbe'
 )

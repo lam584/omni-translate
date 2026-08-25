@@ -14,6 +14,7 @@ param(
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
+Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
 
 function Get-OmniFileAuthority {
   param([Parameter(Mandatory = $true)][string]$Path)

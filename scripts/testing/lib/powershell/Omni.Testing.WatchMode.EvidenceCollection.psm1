@@ -1,8 +1,6 @@
 #requires -Version 5.1
-
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.IO.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Report.psm1') -Force -DisableNameChecking
-
 function Copy-IfExists {
   param([string]$Source, [string]$Destination)
   if (Test-Path -LiteralPath $Source -PathType Leaf) {
@@ -11,7 +9,11 @@ function Copy-IfExists {
   }
   return $null
 }
-
+function Get-WatchModeDesktopAppLogPath {
+  $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+  if ([string]::IsNullOrWhiteSpace($localAppData)) { throw 'LocalApplicationData is unavailable for the release desktop log.' }
+  return Join-Path $localAppData 'OmniTranslate\diagnostics\logs\app.log'
+}
 function Save-WatchModeRunArtifacts {
   param(
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
@@ -23,7 +25,7 @@ function Save-WatchModeRunArtifacts {
     [Parameter(Mandatory = $true)]$State
   )
   $runtimePath = Resolve-Path -LiteralPath $Context.paths.runtimeRoot -ErrorAction SilentlyContinue
-  $appLogSource = if ($runtimePath) { Join-Path $runtimePath.Path "app.log" } else { Join-Path $Context.paths.runtimeRoot "app.log" }
+  $appLogSource = Get-WatchModeDesktopAppLogPath
   $bridgeLogSource = if ($runtimePath) { Join-Path $runtimePath.Path "bridge-service.log" } else { Join-Path $Context.paths.runtimeRoot "bridge-service.log" }
   $appLogTarget = Copy-IfExists $appLogSource (Join-Path $OutputDirectory "app.log")
   $bridgeLogTarget = Copy-IfExists $bridgeLogSource (Join-Path $OutputDirectory "bridge-service.log")
@@ -106,7 +108,6 @@ function Save-WatchModeRunArtifacts {
   }) -Depth 16
   Invoke-WatchModeReportGenerator $OutputDirectory "live" $Context.paths.workspaceRoot
 }
-
 function Write-StrictPaidCellBudget {
   param([string]$OutputDirectory, [string]$AppLogPath, [string]$RunMarker, [Parameter(Mandatory = $true)]$Context)
   $workspaceRoot = [string]$Context.paths.workspaceRoot
@@ -144,7 +145,6 @@ function Write-StrictPaidCellBudget {
   }
   return $ledger
 }
-
 function Write-LocalSmokeProviderSessionAuthority {
   param([string]$OutputDirectory, [string]$RunMarker, [Parameter(Mandatory = $true)]$Context)
   $FeedbackLoopPrevention = [string]$Context.request.feedbackMode
@@ -250,8 +250,8 @@ function Write-LocalSmokeProviderSessionAuthority {
   }
   return [pscustomobject]$authority
 }
-
 Export-ModuleMember -Function @(
+  'Get-WatchModeDesktopAppLogPath',
   'Save-WatchModeRunArtifacts',
   'Write-StrictPaidCellBudget',
   'Write-LocalSmokeProviderSessionAuthority'

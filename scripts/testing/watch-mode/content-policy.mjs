@@ -1,6 +1,6 @@
 import { evaluateWatchContentConsistency } from '../watch-mode-content-verdict.mjs';
 
-export function derivePhysicalOutputContent(collected) {
+export function derivePhysicalOutputContent(collected, { speechSegmentation } = {}) {
   if (!collected?.sourceReference || collected.skipped === true) return collected ?? null;
 
   const similarity = collected.originalPassthrough?.sourceSimilarity;
@@ -17,9 +17,19 @@ export function derivePhysicalOutputContent(collected) {
     ...collected.originalPassthrough,
     passed: sttSucceeded && (canonicalSimilarity || envelopeSimilarity || similarity == null),
   };
+  const queuedSegments = Math.max(
+    Number(collected.translatedSpeech?.queuedSegments) || 0,
+    Number(speechSegmentation?.queuedSegments) || 0,
+  );
+  const playedSegments = Math.max(
+    Number(collected.translatedSpeech?.playedSegments) || 0,
+    Number(speechSegmentation?.playedSegments) || 0,
+  );
   const translatedSpeech = {
     ...collected.translatedSpeech,
-    passed: Number(collected.translatedSpeech?.playedSegments) > 0
+    queuedSegments,
+    playedSegments,
+    passed: playedSegments > 0
       && collected.translatedSpeech?.playbackAuthority?.passed !== false
       && collected.translatedSpeech?.acousticAuthority?.passed !== false,
   };

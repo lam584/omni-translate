@@ -228,6 +228,20 @@ test('preserves physical output translated speech detail in failure reason and d
   assert.equal(report.diagnostics.evidence.physicalOutputContent.translatedSpeech.playedSegments, 0);
 });
 
+test('uses Node-parsed playback lifecycle when raw PowerShell counters are stale', () => {
+  const report = classify({
+    physicalOutputContent: {
+      ...healthyPhysicalOutputContent,
+      translatedSpeech: { passed: false, queuedSegments: 0, playedSegments: 0 },
+    },
+    speechSegmentation: { queuedSegments: 4, playedSegments: 4 },
+  });
+
+  assert.equal(report.layers.physicalOutputContent.status, 'passed');
+  assert.equal(report.layers.physicalOutputContent.data.translatedSpeech.queuedSegments, 4);
+  assert.equal(report.layers.physicalOutputContent.data.translatedSpeech.playedSegments, 4);
+});
+
 test('strict reference-media content passes with full reference coverage and segment evidence', () => {
   const result = evaluateStrictContent({
     physicalOutputContent: strictTestMediaContent(),

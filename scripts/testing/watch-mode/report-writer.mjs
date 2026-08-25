@@ -47,7 +47,9 @@ export function rebuildStoredReport(inputDir, { mode = 'live', provenance } = {}
 export function writeStoredReport({ inputDir, outputDir, mode = 'live' }, policy) {
   fs.mkdirSync(outputDir, { recursive: true });
   const collected = collectReportInput(inputDir, mode);
-  const physicalOutputContent = policy.derivePhysicalOutputContent(collected.physicalOutputContent);
+  const physicalOutputContent = policy.derivePhysicalOutputContent(collected.physicalOutputContent, {
+    speechSegmentation: collected.speechSegmentation,
+  });
   if (physicalOutputContent) {
     fs.writeFileSync(
       path.join(outputDir, 'physical-output-content.json'),

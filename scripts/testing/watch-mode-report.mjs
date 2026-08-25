@@ -2026,7 +2026,9 @@ function environmentPrecheckFailed(input, feedbackLoopPrevention = 'virtual-driv
 }
 
 export function classifyWatchModeRun(input) {
-  input = { ...input, physicalOutputContent: derivePhysicalOutputContent(input.physicalOutputContent) };
+  input = { ...input, physicalOutputContent: derivePhysicalOutputContent(input.physicalOutputContent, {
+    speechSegmentation: input.speechSegmentation,
+  }) };
   const feedbackLoopPrevention = normalizeFeedbackLoopPrevention(
     input.feedbackLoopPrevention ?? input.snapshots?.feedbackLoopPrevention,
   );

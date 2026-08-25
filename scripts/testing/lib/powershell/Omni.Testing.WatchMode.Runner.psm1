@@ -110,8 +110,7 @@ function Invoke-WatchModeRun {
   $virtualDriverMediaPreflight = $null
   $runException = $null
   try {
-    $runtimePathForMarker = Resolve-Path -LiteralPath $RuntimeRoot -ErrorAction SilentlyContinue
-    $appLogForMarker = if ($runtimePathForMarker) { Join-Path $runtimePathForMarker.Path "app.log" } else { Join-Path $RuntimeRoot "app.log" }
+    $appLogForMarker = Get-WatchModeDesktopAppLogPath
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $appLogForMarker) | Out-Null
     Add-Content -LiteralPath $appLogForMarker -Value $runMarker -Encoding UTF8
     $desktopEnvState = Set-DesktopAutostartEnvFile -RunMarker $runMarker -OutputDirectory $outputDir `
@@ -255,8 +254,7 @@ function Invoke-WatchModeRun {
         } else {
           [string]$resolvedPhysicalDeviceId
         }
-        $runtimePathBeforePlayback = Resolve-Path -LiteralPath $RuntimeRoot -ErrorAction SilentlyContinue
-        $appLogBeforePlayback = if ($runtimePathBeforePlayback) { Join-Path $runtimePathBeforePlayback.Path "app.log" } else { Join-Path $RuntimeRoot "app.log" }
+        $appLogBeforePlayback = Get-WatchModeDesktopAppLogPath
         # Count the readiness budget from the desktop launch, not from this wait.
         # Warm-up therefore cannot silently extend a failed single-model run past
         # the configured limit.

@@ -825,7 +825,7 @@ export function createSshProductionTransport({
         ], {
           ...processOptions,
           cwd: worker.workspaceRoot,
-          env: windowsPowerShellEnvironment(processOptions.env ?? process.env),
+          environment: windowsPowerShellEnvironment(processOptions.environment ?? process.env),
           input: '',
           completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
         });

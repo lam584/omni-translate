@@ -579,6 +579,7 @@ test('SSH transport finalizes manifests in the guest and cancellation is task/la
   assert.match(source, /`local-command-\$\{crypto\.randomBytes\(12\)/);
   assert.match(source, /runProcess\('powershell\.exe', \[/);
   assert.match(source, /'-File', localScriptPath/);
+  assert.match(source, /environment: windowsPowerShellEnvironment\(processOptions\.environment \?\? process\.env\)/);
   assert.match(source, /decodeRemotePowerShellFileOutput\(localResult\)/);
   assert.match(source, /cwd: worker\.workspaceRoot/);
   assert.match(source, /requireControlPlane = false/);

@@ -62,7 +62,7 @@ function Invoke-OmniInteractiveScheduledTask {
       [string]$recorded.Principal.RunLevel -cne 'Limited' -or
       [string]$recordedXml.Task.Actions.Exec.Command -cne 'powershell.exe' -or
       [string]$recordedXml.Task.Actions.Exec.Arguments -cne $arguments -or
-      [string]$recordedXml.Task.Principals.Principal.UserId -cne $expectedSid -or
+      [string]$recordedXml.Task.Principals.Principal.UserId -cne [string]$command.expectedUserSid -or
       [string]$recordedXml.Task.Principals.Principal.LogonType -cne 'InteractiveToken'
     ) { throw 'registered interactive task does not match the immutable action/principal' }
     $taskInfoBeforeStart = Get-ScheduledTaskInfo -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop
@@ -111,7 +111,7 @@ function Invoke-OmniInteractiveScheduledTask {
     $taskInfo = Get-ScheduledTaskInfo -TaskPath $taskPath -TaskName $taskName
     $terminal = Get-Content -LiteralPath $terminalPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $taskTerminal = [ordered]@{
-      schemaVersion = 1
+      schemaVersion = 2
       artifactKind = 'watch-mode-interactive-scheduled-task-terminal'
       mode = $mode
       executionId = [string]$payload.executionId

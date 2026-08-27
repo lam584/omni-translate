@@ -199,7 +199,7 @@ if ($requestSha256 -cne $ExpectedRequestSha256.ToLowerInvariant()) {
   throw 'interactive task request hash mismatch'
 }
 $request = Get-Content -LiteralPath $resolvedRequestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-if ($request.schemaVersion -ne 1 -or $request.artifactKind -ne 'watch-mode-interactive-task-command') {
+if ($request.schemaVersion -ne 2 -or $request.artifactKind -ne 'watch-mode-interactive-task-command') {
   throw 'unsupported interactive task request'
 }
 if ((Get-OmniSha256 -LiteralPath ([IO.Path]::GetFullPath($MyInvocation.MyCommand.Path))) -cne [string]$request.launcherSha256) {
@@ -230,7 +230,7 @@ if ($actualUuid -cne ([string]$request.expectedVmUuidBios).ToLowerInvariant()) {
 }
 
 $common = [ordered]@{
-  schemaVersion = 1
+  schemaVersion = 2
   executionId = [string]$request.executionId
   workerId = [string]$request.workerId
   vmIdentityDigest = [string]$request.vmIdentityDigest
@@ -371,7 +371,7 @@ if ($nodeIdentity.sessionId -ne $activeConsoleSessionId -or $nodeIdentity.ownerS
   throw 'interactive shard Node did not inherit the console session identity'
 }
 $launch = [ordered]@{
-  schemaVersion = 1
+  schemaVersion = 2
   artifactKind = 'watch-mode-interactive-shard-launch-authority'
   launchedAt = [DateTime]::UtcNow.ToString('o')
   executionId = $common.executionId
@@ -396,7 +396,7 @@ $launch = [ordered]@{
 }
 Write-OmniImmutableJson -LiteralPath ([string]$request.launchPath) -Value $launch
 $release = [ordered]@{
-  schemaVersion = 1
+  schemaVersion = 2
   artifactKind = 'watch-mode-interactive-shard-claim-release'
   executionId = $common.executionId
   planDigest = [string]$request.planDigest
@@ -441,7 +441,7 @@ if ($node.ExitCode -eq 0 -and (Test-Path -LiteralPath ([string]$request.executio
   $executionReceiptObserved = $true
 }
 $terminal = [ordered]@{
-  schemaVersion = 1
+  schemaVersion = 2
   artifactKind = 'watch-mode-interactive-task-terminal'
   mode = [string]$request.mode
   executionId = $common.executionId

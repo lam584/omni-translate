@@ -356,7 +356,35 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
   assert.match(control, /\$terminalVisibilityGraceMilliseconds = 5000/);
   assert.match(control, /completed successfully without publishing terminal authority after the visibility grace period/);
   assert.match(control, /interactive task exited before terminal authority/);
+  assert.match(control, /Principal\.UserId -cne \[string\]\$command\.expectedUserSid/);
+  assert.doesNotMatch(control, /Principal\.UserId -cne \$expectedSid/);
+  assert.match(control, /\$command = \[ordered\]@\{\s*schemaVersion = 2/);
+  assert.match(control, /artifactKind = 'watch-mode-interactive-scheduled-task-terminal'[\s\S]*?schemaVersion = 2|schemaVersion = 2[\s\S]*?artifactKind = 'watch-mode-interactive-scheduled-task-terminal'/);
   assert.doesNotMatch(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /omni-desktop-shell|DashScope|providerId/i);
+});
+
+test('interactive shard PowerShell emitters use shard authority schema v2', () => {
+  const launcher = fs.readFileSync(
+    path.join(repoRoot, 'scripts/testing/run-watch-mode-interactive-task.ps1'),
+    'utf8',
+  );
+  const collector = fs.readFileSync(
+    path.join(repoRoot, 'scripts/testing/collect-watch-mode-interactive-process-authority.ps1'),
+    'utf8',
+  );
+  assert.match(launcher, /\$request\.schemaVersion -ne 2/);
+  for (const kind of [
+    'watch-mode-interactive-shard-launch-authority',
+    'watch-mode-interactive-shard-claim-release',
+  ]) {
+    const kindIndex = launcher.indexOf(`artifactKind = '${kind}'`);
+    assert.ok(kindIndex >= 0, `${kind} emitter must exist`);
+    assert.match(launcher.slice(Math.max(0, kindIndex - 80), kindIndex + 80), /schemaVersion = 2/);
+  }
+  const shardTerminalIndex = launcher.lastIndexOf("artifactKind = 'watch-mode-interactive-task-terminal'");
+  assert.ok(shardTerminalIndex >= 0);
+  assert.match(launcher.slice(Math.max(0, shardTerminalIndex - 80), shardTerminalIndex + 80), /schemaVersion = 2/);
+  assert.match(collector, /schemaVersion = 2\s*\r?\n\s*artifactKind = 'watch-mode-interactive-process-authority'/);
 });
 
 test('interactive readiness decodes native UTF-8 endpoint JSON and restores console encoding', { skip: !isWindows }, () => {
@@ -447,7 +475,7 @@ test('interactive control projects readiness and paid-cell fields only inside th
   }
   assert.match(control, /if \(\$mode -in @\('shard-cell', 'incident-plus-cell'\)\) \{[\s\S]*?\$taskTerminal\['leaseId'\]/);
   assert.match(control, /Export-ScheduledTask -TaskPath \$taskPath -TaskName \$taskName/);
-  assert.match(control, /recordedXml\.Task\.Principals\.Principal\.UserId -cne \$expectedSid/);
+  assert.match(control, /recordedXml\.Task\.Principals\.Principal\.UserId -cne \[string\]\$command\.expectedUserSid/);
   assert.match(control, /recordedXml\.Task\.Principals\.Principal\.LogonType -cne 'InteractiveToken'/);
   assert.ok(
     control.indexOf('Omni.Testing.Process.psm1') < control.lastIndexOf('Omni.Testing.IO.psm1'),

@@ -149,7 +149,7 @@ function Resolve-OmniInteractiveTaskRequest {
   $taskPath = '\OmniTranslate\'
   $nodeExecutable = [IO.Path]::GetFullPath((Get-Command node.exe -ErrorAction Stop).Source)
   $command = [ordered]@{
-    schemaVersion = 1
+    schemaVersion = 2
     artifactKind = 'watch-mode-interactive-task-command'
     mode = $mode
     executionId = [string]$payload.executionId

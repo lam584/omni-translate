@@ -151,7 +151,7 @@ foreach ($role in $requiredRoles) {
   }
 }
 $payload = [ordered]@{
-  schemaVersion = 1
+  schemaVersion = 2
   artifactKind = 'watch-mode-interactive-process-authority'
   executionId = $ExecutionId
   planDigest = $PlanDigest

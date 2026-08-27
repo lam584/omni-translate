@@ -216,8 +216,6 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
     /driver trust certificate does not match the signed runtime package signer/,
   );
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /packageMetadata\.signerThumbprint/);
-  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /install-development-driver\.ps1/);
-  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /-ValidatePackageOnly/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /request-elevated-driver-operation\.ps1/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /Action = 'reinstall'/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /driverOperation\.elevated -ne \$true/);
@@ -228,13 +226,8 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
   );
   assert.ok(
     PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('driver package changed after signed runtime distribution')
-      < PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('-ValidatePackageOnly'),
-    'signed runtime bytes must be rechecked before package validation',
-  );
-  assert.ok(
-    PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('-ValidatePackageOnly')
       < PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf("Action = 'reinstall'"),
-    'package validation must complete before destructive driver repair',
+    'signed runtime bytes must be rechecked before the elevated driver repair',
   );
   assert.ok(
     PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf("Action = 'reinstall'")

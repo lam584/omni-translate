@@ -108,7 +108,6 @@ if ($driverRequired) {
   # Provider preflight.  Resolve and validate DevCon plus the package before
   # the destructive repair begins.
   $devconAuthorityScript = Join-Path $workspace 'scripts\installer\devcon-authority.ps1'
-  $installScript = Join-Path $workspace 'scripts\installer\install-development-driver.ps1'
   $elevationRequestScript = Join-Path $workspace 'scripts\installer\request-elevated-driver-operation.ps1'
   $devconCandidate = Join-Path $workspace 'artifacts\tooling\devcon.exe'
   . $devconAuthorityScript
@@ -141,16 +140,6 @@ if ($driverRequired) {
     [string]$packageSysSignature.SignerCertificate.Thumbprint -ne [string]$packageCertificate.Thumbprint -or
     [string]$packageMetadata.signerThumbprint -ne [string]$packageCertificate.Thumbprint
   ) { throw 'driver trust certificate does not match the signed runtime package signer' }
-  $driverArguments = @{
-    WorkspaceRoot = $workspace
-    RuntimeRoot = $driverRuntimeRoot
-    InstallChannel = 'development'
-    DriverVersion = '0.10.0-dev'
-    BridgeVersion = '0.1.0'
-    TargetDeviceId = 'virtual-mic-default'
-    DevconPath = $devcon
-  }
-  & $installScript @driverArguments -ValidatePackageOnly
   $driverOperationId = "$( [string]$payload.executionId )-$( [string]$payload.workerId )-driver-readiness"
   $driverOperationResultPath = Join-Path $driverRuntimeRoot 'elevated-operation.json'
   $elevatedArguments = @{

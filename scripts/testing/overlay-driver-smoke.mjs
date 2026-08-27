@@ -1,11 +1,9 @@
 /**
- * Pure logic for the tauri-driver overlay smoke.
+ * Cross-platform tauri-driver overlay smoke.
  *
- * Nothing in this module launches a process, opens a socket, or talks to a
- * running app: the PowerShell runner (scripts/testing/run-overlay-driver-smoke.ps1)
- * owns every side effect and hands the collected evidence back as JSON. Keeping
- * the argument building, the pass/fail evaluation and the report shaping here is
- * what makes the smoke unit-testable without a desktop session — see
+ * This module owns process, socket and HTTP/WebDriver orchestration together with
+ * evidence and reports. The PowerShell entry point is a legacy argument wrapper.
+ * Deterministic argument building and evaluation remain unit-testable — see
  * scripts/testing/startup-orchestration.test.mjs.
  *
  * The smoke drives the *real* IPC boundary: tauri-driver starts the release
@@ -34,6 +32,10 @@ import {
   smokeExitCode,
   writeReportFromEvidence,
 } from './lib/smoke-common.mjs';
+import {
+  fileLength, isTcpPortOpen, readUtf8Delta, requestJson, resolveCommand,
+  spawnLogged, stopOwnedProcess, waitForTcpPort,
+} from './lib/process-runner.mjs';
 
 export const DEFAULT_OUTPUT_ROOT = 'artifacts/testing/overlay-driver-smoke';
 export const DEFAULT_DRIVER_HOST = '127.0.0.1';
@@ -355,7 +357,7 @@ export function buildOverlayDriverSmokePlan({
     teardown: [
       'DELETE the WebDriver session (closes the release shell tauri-driver started)',
       'stop the tauri-driver process tree',
-      'force-stop any surviving omni-desktop-shell process',
+      'let WebDriver session deletion close the shell it created',
     ],
     assertions: [
       `overlay window '${OVERLAY_WINDOW_LABEL}' is not visible before the show command`,
@@ -575,6 +577,88 @@ export function buildOverlayDriverSmokeReport({
 
 export const overlayDriverSmokeExitCode = smokeExitCode;
 
+export async function runOverlayDriverSmoke({ plan, outputDir, driverStartTimeoutSeconds = 30,
+  overlayCommandTimeoutSeconds = 30, nativeDriverPath = '', env = process.env }) {
+  const appLogPath = path.join(plan.workspaceRoot ?? process.cwd(), 'artifacts/diagnostics/logs/app.log');
+  const appLogOffset = fileLength(appLogPath);
+  const tools = plan.requiredTools.map((required) => {
+    const explicit = required.name === 'msedgedriver' && nativeDriverPath ? nativeDriverPath : null;
+    const resolved = explicit && fs.existsSync(explicit) ? path.resolve(explicit) : resolveCommand(required.name, { env });
+    return { ...required, found: Boolean(resolved), path: resolved };
+  });
+  const driverProcess = { started: false, listening: false, pid: null, endpoint: plan.driver.endpoint, error: null };
+  const session = { created: false, sessionId: null, error: null };
+  const overlay = { showMode: plan.overlay.showMode, windowHandles: [] };
+  const teardown = { sessionDeleted: false, driverStopped: false, appStopped: false };
+  let child = null;
+  let sessionId = null;
+  let runnerError = null;
+  const startedAt = new Date().toISOString();
+  try {
+    const missing = tools.filter((tool) => !tool.found);
+    if (missing.length) throw new Error(`overlay driver smoke requires ${missing.map((tool) => tool.name).join(', ')} on PATH`);
+    if (!plan.releaseExecutable.found) throw new Error(`overlay driver smoke requires a release build at ${plan.releaseExecutable.path}`);
+    if (await isTcpPortOpen(plan.driver.host, plan.driver.port)) {
+      throw new Error(`port ${plan.driver.port} is already in use; stop the stale tauri-driver before running the overlay smoke`);
+    }
+    const driverTool = tools.find((tool) => tool.name === 'tauri-driver');
+    const nativeTool = tools.find((tool) => tool.name === 'msedgedriver');
+    const args = [...plan.driver.args];
+    const nativeIndex = args.indexOf('--native-driver');
+    if (nativeIndex >= 0) args[nativeIndex + 1] = nativeTool.path;
+    child = spawnLogged(driverTool.path, args, { cwd: plan.workspaceRoot,
+      stdoutPath: path.join(outputDir, 'tauri-driver.stdout.log'),
+      stderrPath: path.join(outputDir, 'tauri-driver.stderr.log'), env });
+    await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    driverProcess.started = true;
+    driverProcess.pid = child.pid;
+    driverProcess.listening = await waitForTcpPort({ host: plan.driver.host, port: plan.driver.port,
+      timeoutMs: driverStartTimeoutSeconds * 1_000, child });
+    if (!driverProcess.listening) throw new Error(`tauri-driver did not accept connections on ${plan.driver.endpoint}`);
+
+    const sessionResponse = await requestJson(plan.session.request.url, { method: 'POST', body: plan.session.request.body,
+      timeoutMs: plan.session.timeoutSeconds * 1_000 });
+    sessionId = sessionResponse?.value?.sessionId;
+    if (!sessionId) throw new Error(`tauri-driver returned no sessionId; response=${JSON.stringify(sessionResponse)}`);
+    Object.assign(session, { created: true, sessionId });
+    await requestJson(`${plan.driver.endpoint}/session/${sessionId}/timeouts`, { method: 'POST',
+      body: { script: overlayCommandTimeoutSeconds * 1_000 }, timeoutMs: 30_000 });
+    for (const step of plan.overlay.steps) {
+      const stepEvidence = { ok: false, command: step.command, error: null, result: null };
+      try {
+        const response = await requestJson(`${plan.driver.endpoint}/session/${sessionId}/execute/async`, {
+          method: 'POST', body: { script: step.script, args: [] },
+          timeoutMs: (overlayCommandTimeoutSeconds + 15) * 1_000,
+        });
+        const value = response?.value;
+        if (value?.ok === true) { stepEvidence.ok = true; stepEvidence.result = value.value; }
+        else stepEvidence.error = value?.error ?? `invoke ${step.command} returned no result`;
+      } catch (error) { stepEvidence.error = error.message; }
+      overlay[step.name] = stepEvidence;
+      console.log(`overlay step '${step.name}' (${step.command}): ok=${stepEvidence.ok}`);
+    }
+    try {
+      const handles = await requestJson(`${plan.driver.endpoint}/session/${sessionId}/window/handles`, { timeoutMs: 30_000 });
+      overlay.windowHandles = handles?.value ?? [];
+    } catch { overlay.windowHandles = []; }
+  } catch (error) {
+    runnerError = error.message;
+    if (!driverProcess.listening && driverProcess.started) driverProcess.error = error.message;
+    if (!session.created && driverProcess.listening) session.error = error.message;
+  } finally {
+    if (sessionId) {
+      try { await requestJson(`${plan.driver.endpoint}/session/${sessionId}`, { method: 'DELETE', timeoutMs: 30_000 });
+        teardown.sessionDeleted = true; } catch { teardown.sessionDeleted = false; }
+    }
+    teardown.driverStopped = await stopOwnedProcess(child);
+    teardown.appStopped = teardown.sessionDeleted;
+  }
+  const appLogDelta = readUtf8Delta(appLogPath, appLogOffset);
+  fs.writeFileSync(path.join(outputDir, 'app-log-delta.log'), appLogDelta, 'utf8');
+  return { runId: path.basename(outputDir), dryRun: false, startedAt, finishedAt: new Date().toISOString(), plan,
+    tools, releaseExecutable: plan.releaseExecutable, driverProcess, session, overlay, teardown, runnerError, appLogDelta };
+}
+
 // ---------------------------------------------------------------------------
 // Thin CLI seam: reads/writes JSON only. The PowerShell runner calls
 //   --mode plan   (writes plan.json, prints the plan text)
@@ -591,6 +675,8 @@ if (isMain(import.meta.url)) {
       showMode: 'self-check',
       sessionTimeoutSeconds: String(DEFAULT_SESSION_TIMEOUT_SECONDS),
       outputRoot: DEFAULT_OUTPUT_ROOT,
+      driverStartTimeoutSeconds: '30',
+      overlayCommandTimeoutSeconds: '30',
     });
 
     // Single source for the escape-hatch banner so the PowerShell runner and
@@ -626,8 +712,27 @@ if (isMain(import.meta.url)) {
       process.exit(0);
     }
 
+    if (args.mode === 'run') {
+      const plan = buildOverlayDriverSmokePlan({ workspaceRoot, version: readPackageVersion(workspaceRoot),
+        host: args.driverHost, port: Number(args.driverPort), nativePort: Number(args.nativeDriverPort),
+        nativeDriverPath: args.nativeDriverPath, showMode: args.showMode,
+        sessionTimeoutSeconds: Number(args.sessionTimeoutSeconds), releaseExecutablePath: args.releaseExecutablePath,
+        outputRoot: args.outputRoot, exists: (candidate) => fs.existsSync(candidate) });
+      plan.workspaceRoot = workspaceRoot;
+      emitPlanArtifacts({ outputDir, plan, planText: formatOverlayDriverSmokePlanText(plan), dryRun: args.dryRun,
+        buildReport: buildOverlayDriverSmokeReport });
+      if (args.dryRun) process.exit(0);
+      const evidence = await runOverlayDriverSmoke({ plan, outputDir,
+        driverStartTimeoutSeconds: Number(args.driverStartTimeoutSeconds),
+        overlayCommandTimeoutSeconds: Number(args.overlayCommandTimeoutSeconds), nativeDriverPath: args.nativeDriverPath });
+      fs.writeFileSync(path.join(outputDir, 'evidence.json'), `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
+      const report = writeReportFromEvidence({ inputDir: outputDir, outputDir, label: 'overlay driver smoke',
+        buildReport: buildOverlayDriverSmokeReport });
+      process.exit(overlayDriverSmokeExitCode(report));
+    }
+
     if (args.mode !== 'report') {
-      throw new Error(`Unknown --mode ${args.mode}; expected plan, report or skip-banner`);
+      throw new Error(`Unknown --mode ${args.mode}; expected plan, run, report or skip-banner`);
     }
 
     const report = writeReportFromEvidence({

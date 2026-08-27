@@ -33,7 +33,7 @@ bundle before sharing it outside the support context.
 ## Existing PowerShell checks
 
 - `omni_diagnosis.ps1`: broad local environment and Omni runtime inspection.
-- `ipc_test.ps1`: checks the desktop shell IPC surface against a built exe.
+- `ipc-test.mjs`: cross-platform CLI that checks the desktop shell IPC surface against a built executable. `ipc_test.ps1` remains as a Windows-compatible argument wrapper.
 - `simple_check.ps1`: quick Credential Manager and process/log visibility check.
 - `check_advapi.ps1`, `check_elevated.ps1`, `check_tauri_data.ps1`,
   `find_omni_data.ps1`: focused support probes.

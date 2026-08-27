@@ -1,10 +1,9 @@
 /**
- * Pure logic for the startup IPC-ping stress runner.
+ * Cross-platform startup IPC-ping stress runner.
  *
- * Nothing here launches a process: scripts/testing/run-startup-ipc-stress.ps1
- * owns the N launches, the polling and the kills, and hands the per-run evidence
- * back as JSON. Marker detection, latency statistics, pass/fail evaluation and
- * report shaping live here so they can be unit-tested without a desktop session
+ * This module owns launches, polling, logs, evidence, evaluation and reports.
+ * scripts/testing/run-startup-ipc-stress.ps1 is only a legacy argument wrapper,
+ * while the deterministic functions remain unit-testable without a desktop session
  * (scripts/testing/startup-orchestration.test.mjs).
  *
  * Why the ping is observed through app.log instead of a CLI call:
@@ -30,6 +29,7 @@ import {
   smokeExitCode,
   writeReportFromEvidence,
 } from './lib/smoke-common.mjs';
+import { delay, fileLength, readUtf8Delta, spawnLogged, stopOwnedProcess } from './lib/process-runner.mjs';
 import {
   IPC_NEVER_CONNECTED_MARKER,
   RELEASE_EXECUTABLE_NAME,
@@ -156,7 +156,7 @@ export function buildStartupIpcStressPlan({
       `launch ${releaseExecutable.path} with ${Object.entries(STRESS_LAUNCH_ENVIRONMENT).map(([key, value]) => `${key}=${value}`).join(' ')}`,
       `poll the app.log delta every ${asPositiveInteger(pollIntervalMs, DEFAULT_POLL_INTERVAL_MS)}ms for ${IPC_CONNECTED_MARKERS.join(' or ')} (up to ${resolvedTimeout}ms)`,
       `keep a non-connecting run alive past the ${IPC_WATCHDOG_GRACE_MS}ms watchdog grace so ${IPC_NEVER_CONNECTED_MARKER} can be recorded`,
-      'force-stop the process tree and any surviving omni-desktop-shell process',
+      'stop only the exact desktop process spawned for this run',
       'store the app.log delta, the measured latency and the watchdog verdict for this run',
     ],
   };
@@ -303,6 +303,65 @@ export function buildStartupIpcStressReport({
 
 export const startupIpcStressExitCode = smokeExitCode;
 
+export async function runStartupIpcStress({ plan, outputDir, betweenRunsSettleMs = 1_500, env = process.env }) {
+  const appLogPath = path.isAbsolute(plan.appLogPath)
+    ? plan.appLogPath : path.join(plan.workspaceRoot ?? process.cwd(), plan.appLogPath);
+  const runs = [];
+  let runnerError = null;
+  let repeatedFailure = null;
+  let repeatedFailureCount = 0;
+  const startedAt = new Date().toISOString();
+
+  for (let index = 1; index <= plan.runs; index += 1) {
+    const offset = fileLength(appLogPath);
+    const started = Date.now();
+    let child = null;
+    let launchError = null;
+    let latencyMs = null;
+    try {
+      child = spawnLogged(plan.releaseExecutable.path, [], {
+        cwd: path.dirname(plan.releaseExecutable.path), env: { ...env, ...plan.environment },
+        stdoutPath: path.join(outputDir, `run-${index}.stdout.log`),
+        stderrPath: path.join(outputDir, `run-${index}.stderr.log`),
+      });
+      await new Promise((resolve, reject) => {
+        child.once('spawn', resolve);
+        child.once('error', reject);
+      });
+      while (Date.now() - started < plan.pingTimeoutMs) {
+        if (findIpcPingEvidence(readUtf8Delta(appLogPath, offset)).connected) {
+          latencyMs = Date.now() - started;
+          break;
+        }
+        if (child.exitCode !== null) break;
+        await delay(plan.pollIntervalMs);
+      }
+    } catch (error) {
+      launchError = error.message;
+    }
+    const waitedMs = Date.now() - started;
+    await stopOwnedProcess(child);
+    await delay(500);
+    const logDelta = readUtf8Delta(appLogPath, offset);
+    fs.writeFileSync(path.join(outputDir, `run-${index}.app-log-delta.log`), logDelta, 'utf8');
+    runs.push({ index, launched: !launchError, launchError, processId: child?.pid ?? null,
+      latencyMs, waitedMs, killed: Boolean(child), logDelta });
+    console.log(`run ${index}/${plan.runs}: connected=${findIpcPingEvidence(logDelta).connected} latencyMs=${latencyMs ?? '-'} waitedMs=${waitedMs}`);
+
+    const environmentFailure = launchError ? `launch-error:${launchError}`
+      : child?.exitCode !== null && latencyMs === null ? `process-exited:${child.exitCode}` : null;
+    if (environmentFailure && environmentFailure === repeatedFailure) repeatedFailureCount += 1;
+    else { repeatedFailure = environmentFailure; repeatedFailureCount = environmentFailure ? 1 : 0; }
+    if (repeatedFailureCount >= plan.maxConsecutiveEnvironmentFailures) {
+      runnerError = `startup IPC stress circuit breaker: repeated environment failure '${environmentFailure}'`;
+      break;
+    }
+    if (index < plan.runs) await delay(betweenRunsSettleMs);
+  }
+  return { runId: path.basename(outputDir), dryRun: false, startedAt,
+    finishedAt: new Date().toISOString(), plan, runnerError, runs };
+}
+
 // ---------------------------------------------------------------------------
 // Thin CLI seam: JSON in, JSON out.
 //   --mode plan   (writes plan.json, prints the plan text)
@@ -316,6 +375,7 @@ if (isMain(import.meta.url)) {
       pollIntervalMs: String(DEFAULT_POLL_INTERVAL_MS),
       outputRoot: DEFAULT_OUTPUT_ROOT,
       appLogPath: DEFAULT_APP_LOG_PATH,
+      betweenRunsSettleMs: '1500',
     });
     const { workspaceRoot, outputDir } = resolveSmokeDirs(args, DEFAULT_OUTPUT_ROOT);
 
@@ -341,8 +401,26 @@ if (isMain(import.meta.url)) {
       process.exit(0);
     }
 
+    if (args.mode === 'run') {
+      const plan = buildStartupIpcStressPlan({ workspaceRoot, version: readPackageVersion(workspaceRoot),
+        runs: Number(args.runs), pingTimeoutMs: Number(args.pingTimeoutMs), pollIntervalMs: Number(args.pollIntervalMs),
+        releaseExecutablePath: args.releaseExecutablePath, outputRoot: args.outputRoot, appLogPath: args.appLogPath,
+        exists: (candidate) => fs.existsSync(candidate) });
+      plan.workspaceRoot = workspaceRoot;
+      emitPlanArtifacts({ outputDir, plan, planText: formatStartupIpcStressPlanText(plan), dryRun: args.dryRun,
+        buildReport: buildStartupIpcStressReport });
+      if (args.dryRun) process.exit(0);
+      if (!plan.releaseExecutable.found) throw new Error(`startup IPC stress requires a release build at ${plan.releaseExecutable.path}`);
+      const evidence = await runStartupIpcStress({ plan, outputDir,
+        betweenRunsSettleMs: Number(args.betweenRunsSettleMs) });
+      fs.writeFileSync(path.join(outputDir, 'evidence.json'), `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
+      const report = writeReportFromEvidence({ inputDir: outputDir, outputDir, label: 'startup IPC stress',
+        buildReport: buildStartupIpcStressReport });
+      process.exit(startupIpcStressExitCode(report));
+    }
+
     if (args.mode !== 'report') {
-      throw new Error(`Unknown --mode ${args.mode}; expected plan or report`);
+      throw new Error(`Unknown --mode ${args.mode}; expected plan, run or report`);
     }
 
     const report = writeReportFromEvidence({

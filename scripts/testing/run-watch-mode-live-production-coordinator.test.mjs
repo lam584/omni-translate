@@ -382,6 +382,10 @@ test('interactive control projects readiness and paid-cell fields only inside th
   assert.match(control, /Export-ScheduledTask -TaskPath \$taskPath -TaskName \$taskName/);
   assert.match(control, /recordedXml\.Task\.Principals\.Principal\.UserId -cne \$expectedSid/);
   assert.match(control, /recordedXml\.Task\.Principals\.Principal\.LogonType -cne 'InteractiveToken'/);
+  assert.ok(
+    control.indexOf('Omni.Testing.Process.psm1') < control.indexOf('Omni.Testing.IO.psm1'),
+    'interactive control must re-import IO after Process so Get-OmniSha256 remains exported',
+  );
   assert.doesNotMatch(control, /recorded\.Principal\.UserId -cne \[string\]\$command\.expectedUserId/);
   assert.doesNotMatch(control, /recorded\.Principal\.LogonType -cne 'InteractiveToken'/);
 });

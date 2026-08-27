@@ -6,8 +6,8 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.IO.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.Process.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.IO.psm1') -Force
 
 function Get-TextSha256 {
   param([Parameter(Mandatory = $true)][string]$Value)

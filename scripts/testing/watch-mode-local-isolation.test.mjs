@@ -489,6 +489,57 @@ test('local isolation retries a briefly missing physical endpoint but keeps the 
   );
 });
 
+test('local isolation retries only an identity-bound incomplete process fingerprint window', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-local-isolation-fingerprint-retry-'));
+  const calls = [];
+  const waits = [];
+  const result = runLocalIsolationProbeIteration({
+    cell: LOCAL_ISOLATION_CELLS[0],
+    profile: {
+      profileId: 'default-speaker',
+      deviceClass: 'default-speaker',
+      physicalPlaybackDeviceId: 'default',
+      expectedPhysicalPlaybackDeviceName: 'Speaker',
+    },
+    cellDirectory: path.join(root, 'cell'),
+    iteration: 1,
+    workspaceRoot: root,
+    waitForRetry: (delayMs) => waits.push(delayMs),
+    run: () => {
+      calls.push('probe');
+      if (calls.length === 1) {
+        return {
+          exitCode: 1,
+          stdout: `${JSON.stringify({
+            passed: false,
+            detail: 'external fingerprint did not survive process loopback: component=0.005 minimum=0.010; excluded/external source ratio is too high',
+            processExclusionFingerprint: {
+              bridgeProcessId: 42,
+              excludedProcessId: 42,
+              sourceCaptureMode: 'process-exclusion',
+              captureBackend: 'wasapi-process-exclusion',
+              processLoopbackStatus: 'ready',
+              physicalExternalComponent: 0.2,
+              physicalBridgeChildComponent: 0.2,
+            },
+          })}\n`,
+          stderr: '',
+          error: null,
+        };
+      }
+      return {
+        exitCode: 0,
+        stdout: '{"passed":true,"resolvedPhysicalPlaybackDeviceName":"Speaker"}\n',
+        stderr: '',
+        error: null,
+      };
+    },
+  });
+  assert.deepEqual(calls, ['probe', 'probe']);
+  assert.deepEqual(waits, [750]);
+  assert.equal(result.probes[0].attempts, 2);
+});
+
 test('local isolation does not retry unrelated probe failures', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-local-isolation-nonretryable-'));
   const calls = [];

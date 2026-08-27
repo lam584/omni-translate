@@ -362,6 +362,30 @@ const isRetryableEndpointAvailabilityFailure = (result) => {
     || diagnostic.includes(TRANSIENT_ENDPOINT_NOT_FOUND);
 };
 
+const isRetryableProcessFingerprintWindowFailure = (result, label) => {
+  if (label !== 'process-exclusion' || result?.error) return false;
+  const lines = String(result?.stdout ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  let payload;
+  try {
+    payload = JSON.parse(lines.at(-1) ?? '');
+  } catch {
+    return false;
+  }
+  const fingerprint = payload?.processExclusionFingerprint;
+  const detail = String(payload?.detail ?? '');
+  return payload?.passed === false
+    && fingerprint?.sourceCaptureMode === 'process-exclusion'
+    && fingerprint?.captureBackend === 'wasapi-process-exclusion'
+    && fingerprint?.processLoopbackStatus === 'ready'
+    && Number(fingerprint?.bridgeProcessId) > 0
+    && Number(fingerprint?.excludedProcessId) === Number(fingerprint?.bridgeProcessId)
+    && Number(fingerprint?.physicalExternalComponent) >= 0.01
+    && Number(fingerprint?.physicalBridgeChildComponent) >= 0.01
+    && detail.includes('external fingerprint did not survive process loopback:')
+    && !detail.includes('translation fingerprint was not physically detectable')
+    && !detail.includes('leaked into source pipe');
+};
+
 const parseProbeJson = (result, label) => {
   if (result.exitCode !== 0 || result.error) {
     throw new Error(`${label} failed: exit=${result.exitCode} error=${result.error ?? '-'} stderr=${result.stderr}`);
@@ -399,14 +423,18 @@ export function runLocalIsolationProbeIteration({
         environment,
         timeoutMs,
       });
-      const retryable = isRetryableEndpointAvailabilityFailure(result);
+      const retryable = isRetryableEndpointAvailabilityFailure(result)
+        || isRetryableProcessFingerprintWindowFailure(result, label);
       if (retryable && attempts < TRANSIENT_ENDPOINT_CREATE_MAX_ATTEMPTS) {
         // AUDCLNT_E_ENDPOINT_CREATE_FAILED (0x8889000F) can be returned by a
         // just-released shared endpoint after many short WASAPI probe streams.
         // Windows can also briefly omit that same endpoint from enumeration
         // while the development driver settles between consecutive probes.
-        // Preserve each failed attempt, then retry only these endpoint
-        // availability conditions; every other failure remains fail-closed.
+        // Preserve each failed attempt. Besides endpoint churn, a fully
+        // identity-bound process-exclusion route may occasionally receive an
+        // incomplete external-tone window while all physical fingerprints
+        // remain present. Retry that narrow transient without weakening any
+        // fingerprint threshold; every other failure remains fail-closed.
         fs.writeFileSync(path.join(iterationDirectory, `${label}.attempt-${attempts}.stdout.log`), result.stdout || '\n', 'utf8');
         fs.writeFileSync(path.join(iterationDirectory, `${label}.attempt-${attempts}.stderr.log`), result.stderr || '\n', 'utf8');
         waitForRetry(TRANSIENT_ENDPOINT_CREATE_RETRY_DELAY_MS);

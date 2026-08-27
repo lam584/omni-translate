@@ -22,6 +22,8 @@ export const idleBridgeTelemetryDefaults = {
   captureSilentPacketCount: 0,
   captureInvalidSampleCount: 0,
   resolvedPhysicalPlaybackDeviceId: '',
+  physicalPlaybackStatus: 'uninitialized',
+  playbackOwnerGeneration: 0,
   monitorBufferedMs: 0,
   monitorUnderrunCount: 0,
   monitorOverrunCount: 0,

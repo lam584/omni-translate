@@ -362,54 +362,33 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
   exactKeys(config, [
     'schemaVersion',
     'artifactKind',
-    'sshExecutable',
-    'scpExecutable',
     'workers',
   ], 'production worker config');
   if (
     config.schemaVersion !== PRODUCTION_WORKER_CONFIG_SCHEMA_VERSION
     || config.artifactKind !== PRODUCTION_WORKER_CONFIG_KIND
     || !Array.isArray(config.workers)
-    || ![2, 3].includes(config.workers.length)
-  ) throw new Error('production worker config must be schema v1 with exactly two or three workers');
-  const sshExecutable = executableValue(config.sshExecutable, 'sshExecutable');
-  const scpExecutable = executableValue(config.scpExecutable, 'scpExecutable');
+    || config.workers.length !== 1
+  ) throw new Error('production worker config must be schema v1 with exactly one local worker');
   const workerIds = new Set();
-  const hosts = new Set();
   const workers = config.workers.map((worker, workerIndex) => {
     exactKeys(worker, [
       'workerId',
-      'host',
-      'port',
       'user',
-      'identityFile',
-      'knownHostsFile',
-      'hostKeyAlias',
       'workspaceRoot',
       'guestExecutionRoot',
       'vmIdentity',
       'deviceProfileInstances',
     ], `production worker ${workerIndex}`);
     const workerId = String(worker.workerId ?? '');
-    const host = String(worker.host ?? '');
     const user = String(worker.user ?? '');
-    const hostKeyAlias = String(worker.hostKeyAlias ?? '');
-    const port = Number(worker.port);
     if (!SAFE_ID.test(workerId) || workerIds.has(workerId)) throw new Error(`worker ${workerIndex} has invalid or duplicate workerId`);
-    if (!SAFE_HOST.test(host) || host.includes('..') || hosts.has(`${host}:${port}`)) throw new Error(`worker ${workerId} has invalid or duplicate host`);
-    if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error(`worker ${workerId} has invalid SSH port`);
     if (!/^[a-z0-9._-]{1,64}$/i.test(user)) throw new Error(`worker ${workerId} has invalid SSH user`);
-    if (!SAFE_ID.test(hostKeyAlias)) throw new Error(`worker ${workerId} has invalid hostKeyAlias`);
     if (!SAFE_REMOTE_WINDOWS_ROOT.test(String(worker.workspaceRoot ?? ''))) throw new Error(`worker ${workerId} workspaceRoot must be a fixed safe Windows path without spaces`);
     if (!SAFE_REMOTE_WINDOWS_ROOT.test(String(worker.guestExecutionRoot ?? ''))) throw new Error(`worker ${workerId} guestExecutionRoot must be a fixed safe Windows path without spaces`);
     exactKeys(worker.vmIdentity, ['provider', 'uuidBios'], `worker ${workerId} vmIdentity`);
     if (worker.vmIdentity.provider !== 'vmware' || !SAFE_UUID.test(String(worker.vmIdentity.uuidBios ?? ''))) {
       throw new Error(`worker ${workerId} must bind a portable VMware BIOS UUID`);
-    }
-    const identityFile = regularFile(path.resolve(configDirectory, worker.identityFile), `worker ${workerId} identityFile`);
-    const knownHostsFile = regularFile(path.resolve(configDirectory, worker.knownHostsFile), `worker ${workerId} knownHostsFile`);
-    if (!knownHostsContainsAlias(knownHostsFile, hostKeyAlias, port)) {
-      throw new Error(`worker ${workerId} known_hosts does not pin hostKeyAlias ${hostKeyAlias}`);
     }
     if (!Array.isArray(worker.deviceProfileInstances) || worker.deviceProfileInstances.length === 0) {
       throw new Error(`worker ${workerId} has no device profile instances`);
@@ -421,23 +400,16 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
       throw new Error(`worker ${workerId} reuses a device profile instanceId`);
     }
     workerIds.add(workerId);
-    hosts.add(`${host}:${port}`);
     return {
       workerId,
-      host,
-      port,
       user,
-      identityFile,
-      knownHostsFile,
-      hostKeyAlias,
       workspaceRoot: worker.workspaceRoot,
       guestExecutionRoot: worker.guestExecutionRoot,
       vmIdentity: structuredClone(worker.vmIdentity),
       deviceProfileInstances,
     };
   });
-  // Placement is capability-based: exactly one worker owns the USB endpoint,
-  // while every remaining worker supplies a default-speaker profile.
+  // All paid cells run serially on the one local interactive Windows session.
   const assignments = defaultThreeVmAssignments(workers);
   const workersById = new Map(workers.map((worker) => [worker.workerId, worker]));
   const assignedProfiles = assignments.map((assignment) => {
@@ -451,7 +423,7 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     return profile;
   });
   canonicalDeviceProfiles(assignedProfiles, 'production worker assignments');
-  return { sshExecutable, scpExecutable, workers };
+  return { workers };
 }
 
 export function readProductionWorkerConfig(configPath) {
@@ -804,9 +776,9 @@ export function createSshProductionTransport({
   );
 
   const runRemote = async (worker, body, payload, options = {}) => {
-    const { requireControlPlane = false, ...processOptions } = options;
+    const { requireControlPlane: _requireControlPlane = false, ...processOptions } = options;
     const invocation = remotePowerShellInvocation(body, payload);
-    if (isCoordinatorLocalWorker(worker) && !requireControlPlane) {
+    if (isCoordinatorLocalWorker(worker)) {
       return runProcess(invocation.args[0], invocation.args.slice(1), {
         ...processOptions,
         cwd: worker.workspaceRoot,

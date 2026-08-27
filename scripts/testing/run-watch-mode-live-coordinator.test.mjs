@@ -147,26 +147,6 @@ function workers() {
         physicalPlaybackDeviceId: 'default', expectedPhysicalPlaybackDeviceName: '',
       }],
     },
-    {
-      workerId: 'vm2', vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-2' },
-      deviceProfileInstances: [
-        {
-          instanceId: 'vm2-default', profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
-          physicalPlaybackDeviceId: 'default', expectedPhysicalPlaybackDeviceName: '',
-        },
-        {
-          instanceId: 'vm2-usb', profileId: 'realtek-usb-spdif', deviceClass: 'usb',
-          physicalPlaybackDeviceId: '{realtek-usb-endpoint}', expectedPhysicalPlaybackDeviceName: 'Realtek USB Test',
-        },
-      ],
-    },
-    {
-      workerId: 'vm3', vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-3' },
-      deviceProfileInstances: [{
-        instanceId: 'vm3-default', profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
-        physicalPlaybackDeviceId: 'default', expectedPhysicalPlaybackDeviceName: '',
-      }],
-    },
   ];
 }
 
@@ -202,33 +182,21 @@ function signedFixture() {
   };
 }
 
-test('default three-VM placement assigns every USB cell to VM2 and permits one cell per worker/wave', () => {
+test('single-machine placement assigns every paid cell to one distinct serial wave', () => {
   const workerList = workers();
   const assignments = defaultThreeVmAssignments(workerList);
-  assert.deepEqual(assignments.map((entry) => entry.waveIndex), [0, 0, 0, 1, 1, 2, 2, 1]);
-  assert.deepEqual(
-    assignments.filter((_, index) => [1, 3, 5].includes(index)).map((entry) => entry.workerId),
-    ['vm2', 'vm2', 'vm2'],
-  );
+  assert.deepEqual(assignments.map((entry) => entry.waveIndex), [0, 1, 2, 3, 4, 5, 6, 7]);
+  assert.ok(assignments.every((entry) => entry.workerId === 'vm1'));
   assert.equal(
     new Set(assignments.map((entry) => `${entry.workerId}:${entry.waveIndex}`)).size,
     assignments.length,
   );
 });
 
-test('two-VM placement is capability-driven across four waves with all virtual-driver cells on the USB-capable VM', () => {
-  const workerList = workers().slice(0, 2);
-  const assignments = defaultThreeVmAssignments(workerList);
-  assert.deepEqual(assignments.map((entry) => entry.waveIndex), [0, 0, 1, 1, 2, 3, 2, 3]);
-  assert.deepEqual(
-    assignments.map((entry) => entry.workerId),
-    ['vm1', 'vm2', 'vm1', 'vm2', 'vm2', 'vm2', 'vm1', 'vm1'],
-  );
-  assert.equal(new Set(assignments.map((entry) => `${entry.workerId}:${entry.waveIndex}`)).size, 8);
-  assert.throws(() => defaultThreeVmAssignments(workerList.slice(0, 1)), /two or three workers/);
+test('single-machine placement rejects additional workers', () => {
   assert.throws(() => defaultThreeVmAssignments([...workers(), {
     ...workers()[0], workerId: 'vm4', vmIdentity: { provider: 'vmware', uuidBios: 'vm-four' },
-  }]), /two or three workers/);
+  }]), /exactly one local worker/);
 });
 
 test('coordinator prepares build/preflight/local once and atomically publishes exactly eight signed leases', async () => {
@@ -489,7 +457,7 @@ test('coordinator fully validates staged driver and credential readiness before 
     {
       name: 'driver package hash',
       mutate: (receipt, worker) => {
-        if (worker.workerId === 'vm2') receipt.driver.packageSysSha256 = SHA_A;
+        if (worker.workerId === 'vm1') receipt.driver.packageSysSha256 = SHA_A;
       },
       expected: /installed driver does not match/,
     },
@@ -545,7 +513,7 @@ test('coordinator fully validates staged driver and credential readiness before 
   }
 });
 
-test('coordinator completes three bounded waves without redispatch or local retries', async () => {
+test('coordinator completes eight bounded serial waves without redispatch or local retries', async () => {
   const value = signedFixture();
   const executionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-coordinator-waves-'));
   fs.writeFileSync(path.join(executionRoot, SHARD_EXECUTION_PLAN_FILE), `${JSON.stringify(value.plan)}\n`, 'utf8');
@@ -565,12 +533,12 @@ test('coordinator completes three bounded waves without redispatch or local retr
       },
       onWaveCompleted: async ({ waveIndex }) => { completedWaves.push(waveIndex); },
     });
-    assert.deepEqual(ready.sort(), ['vm1', 'vm2', 'vm3']);
+    assert.deepEqual(ready.sort(), ['vm1']);
     assert.equal(dispatches.length, 8);
     assert.equal(new Set(dispatches.map((entry) => entry.cellId)).size, 8);
     assert.equal(new Set(dispatches.map((entry) => entry.leaseId)).size, 8);
-    assert.deepEqual(dispatches.map((entry) => entry.waveIndex), [0, 0, 0, 1, 1, 1, 2, 2]);
-    assert.deepEqual(completedWaves, [0, 1, 2]);
+    assert.deepEqual(dispatches.map((entry) => entry.waveIndex), [0, 1, 2, 3, 4, 5, 6, 7]);
+    assert.deepEqual(completedWaves, [0, 1, 2, 3, 4, 5, 6, 7]);
     assert.equal(outcome.completedCellIds.length, 8);
     assert.equal(fs.readdirSync(path.join(executionRoot, 'dispatch-claims')).length, 8);
   } finally {
@@ -611,10 +579,10 @@ test('wave failure cancels active peers and never dispatches a later paid wave',
         return true;
       },
     );
-    assert.deepEqual(started.slice(0, 3), value.plan.waves[0].cellIds);
+    assert.deepEqual(started.slice(0, 1), value.plan.waves[0].cellIds);
     assert.ok(value.plan.waves[1].cellIds.every((cellId) => started.includes(cellId)));
     assert.equal(value.plan.waves[2].cellIds.some((cellId) => started.includes(cellId)), false);
-    assert.ok(cancelled.length >= 1);
+    assert.equal(cancelled.length, 0);
   } finally {
     fs.rmSync(executionRoot, { recursive: true, force: true });
   }
@@ -633,7 +601,7 @@ test('readiness failure stops before every paid cell and before a lease is dispa
         executionRoot,
         now: () => value.now,
         assertWorkerReady: async ({ worker }) => {
-          if (worker.workerId === 'vm3') throw new Error('runtime bundle mismatch');
+          if (worker.workerId === 'vm1') throw new Error('runtime bundle mismatch');
         },
         dispatchCell: async () => { dispatchCount += 1; },
       }),
@@ -876,7 +844,7 @@ test('coordinator aggregate rejects cross-worker cell substitution even with val
         generatedAt: value.now,
         validateShard: ({ shardRoot }) => validatedByRoot.get(path.resolve(shardRoot)),
       }),
-      /duplicate cell|cell\/lease binding mismatch/,
+      /execution plan is missing|duplicate cell|cell\/lease binding mismatch/,
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

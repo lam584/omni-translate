@@ -368,7 +368,7 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
     'provider preflight worker readiness request authority',
   );
   if (!Array.isArray(grant.workers) || !SHARD_ALLOWED_WORKER_COUNTS.includes(grant.workers.length)) {
-    throw new Error('provider preflight grant requires exactly two or three workers');
+    throw new Error('provider preflight grant requires exactly one local worker');
   }
   validateWorkerReadinessRequest(grant.workerReadinessRequest, {
     executionId: grant.executionId,

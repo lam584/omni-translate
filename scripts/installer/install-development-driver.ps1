@@ -39,6 +39,19 @@ function Get-OmniInfDriverVersion([string]$InfPath) {
   return $match.Groups[1].Value
 }
 
+function Assert-OmniTestSigningEnabled {
+  $startOptions = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control' -Name SystemStartOptions -ErrorAction SilentlyContinue).SystemStartOptions
+  $enabled = [bool]($startOptions -match '(?i)(^|\s)TESTSIGNING(\s|$)')
+  if (-not $enabled) {
+    $bcdedit = Join-Path $env:SystemRoot 'System32\bcdedit.exe'
+    $bootConfiguration = & $bcdedit /enum '{current}' 2>$null
+    $enabled = [bool]($bootConfiguration -match '(?im)^\s*testsigning\s+(Yes|On|\u662f|\u5f00\u542f)\s*$')
+  }
+  if (-not $enabled) {
+    throw 'Virtual driver installation is disabled unless the current Windows boot has TESTSIGNING enabled. The installer will not enable test mode automatically.'
+  }
+}
+
 function Assert-OmniStableReleasePackage {
   param(
     [string]$PackageRoot,
@@ -52,14 +65,10 @@ function Assert-OmniStableReleasePackage {
   $releasePackagePath = Join-Path $PackageRoot '..\..\..\release-package.json'
   $releaseManifestPath = Join-Path $PackageRoot '..\..\..\release-manifest.json'
   $layoutPath = Join-Path $PackageRoot '..\..\..\installer-layout.json'
-  $developmentCertificatePath = Join-Path $PackageRoot 'omni-translate-development-driver.cer'
   foreach ($requiredPath in @($releasePackagePath, $releaseManifestPath, $layoutPath)) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
       throw "Release install requires canonical signed-package metadata: $requiredPath"
     }
-  }
-  if (Test-Path -LiteralPath $developmentCertificatePath) {
-    throw 'Release install refuses a package containing the development trust certificate.'
   }
   $releasePackage = Get-Content -LiteralPath $releasePackagePath -Raw -Encoding UTF8 | ConvertFrom-Json
   $releaseManifest = Get-Content -LiteralPath $releaseManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -145,21 +154,19 @@ function Assert-OmniStableReleasePackage {
     $Metadata.protocolVersion -ne '2026-08-13-audio-routing-v7' -or
     $Metadata.configuration -ne 'Release' -or
     $Metadata.platform -ne 'x64' -or
-    $Metadata.signingMode -ne 'release-injected' -or
-    $Metadata.timestampMode -ne 'rfc3161' -or
+    $Metadata.signingMode -ne 'local-self-signed' -or
+    $Metadata.timestampMode -ne 'none' -or
     [string]::IsNullOrWhiteSpace([string]$Metadata.signerThumbprint)
   ) {
-    throw 'Release install requires Release/x64/release-injected driver metadata with an RFC3161 timestamp policy.'
+    throw 'Release install requires Release/x64/local-self-signed driver metadata without an external timestamp authority.'
   }
   foreach ($signedPath in @($SysPath, $CatPath)) {
     $signature = Get-AuthenticodeSignature -LiteralPath $signedPath
     if (
-      $signature.Status -ne 'Valid' -or
       -not $signature.SignerCertificate -or
-      $signature.SignerCertificate.Thumbprint -ne $Metadata.signerThumbprint -or
-      -not $signature.TimeStamperCertificate
+      $signature.SignerCertificate.Thumbprint -ne $Metadata.signerThumbprint
     ) {
-      throw "Release install refuses invalid, mismatched, or untimestamped signature: $signedPath"
+      throw "Release install refuses a missing or mismatched local signature: $signedPath"
     }
   }
   $requiredReleaseFiles = @(
@@ -192,10 +199,9 @@ function Assert-OmniStableReleasePackage {
     $releaseSignature = Get-AuthenticodeSignature -LiteralPath $releaseFile.FullName
     if (
       $releaseSignature.Status -ne 'Valid' -or
-      -not $releaseSignature.SignerCertificate -or
-      -not $releaseSignature.TimeStamperCertificate
+      -not $releaseSignature.SignerCertificate
     ) {
-      throw "Release install refuses unsigned or untimestamped production artifact: $($releaseFile.FullName)"
+      throw "Release install refuses an unsigned production artifact: $($releaseFile.FullName)"
     }
   }
   return [pscustomobject]@{
@@ -206,6 +212,7 @@ function Assert-OmniStableReleasePackage {
 
 Assert-OmniVirtualDriverWindowsBuild
 Assert-OmniAdministrator
+Assert-OmniTestSigningEnabled
 $workspacePath = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
 $packageRoot = Join-Path $workspacePath 'drivers\windows-virtual-mic\package'
 $infPath = Join-Path $packageRoot 'omni-virtual-speaker.inf'

@@ -35,14 +35,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-wa
 双模型 × 三路线 × 两个真实物理设备严格矩阵必须通过已签的两或三 worker production coordinator：
 
 ```powershell
-npm run test:watch-mode-live:production-coordinator -- -- --workers-config artifacts/testing/watch-mode-workers.json --reuse-local-isolation artifacts/testing/watch-mode-local-isolation/<run>/local-isolation-manifest.json
+npm run test:watch-mode-live:production-coordinator -- -- --workers-config artifacts/testing/watch-mode-local-worker.json --reuse-local-isolation artifacts/testing/watch-mode-local-isolation/<run>/local-isolation-manifest.json
 ```
 
-npm 11 在 Windows 上会把通常单个 `npm run ... --` 后面的具名选项吞成 npm 配置；上面的第二个字面 `--` 是必需的，确保 Node 收到 `--workers-config` 和 `--reuse-local-isolation`，而不是只收到两个路径值。worker 配置逐台绑定 SSH host key、clean workspace、VM UUID、交互用户以及实际 `default-speaker`/`usb` profile。
+npm 11 在 Windows 上会把通常单个 `npm run ... --` 后面的具名选项吞成 npm 配置；上面的第二个字面 `--` 是必需的。生产配置只接受一个本机 worker，不包含 SSH、known_hosts 或私钥字段；八个付费单元在同一交互会话中串行执行。
 
 旧 `test:watch-mode-live:matrix` / `run-watch-mode-live-matrix.mjs` strict 入口已在 build、preflight 和任何 Provider 调用前 fail-closed，只用于提示迁移；不能再用于生成发布证据。
 
-严格入口必须显式传入 `--workers-config` 和 `--reuse-local-isolation`。worker JSON 中必须让实际分片覆盖 canonical `default-speaker` 与独立 `usb` profile；USB 必须写明真实 MMDevice id 和预期端点名称。Bluetooth 是可选诊断端点，不能用 USB 端点伪装。缺失 profile 时矩阵直接失败，绝不退化成默认扬声器单设备。平衡版固定复验 6 个零 Provider local-isolation 格，再运行 8 个 paid live 格；verifier 只读取本次签名 manifest，不扫描 output root 中的历史报告。支持 Windows build 20348 及以上时，`process-exclusion` 是推荐路线；能力探测失败时该变体必须明确失败或跳过为不支持，不能静默改跑其他后端。单设备调试请直接运行 `run-watch-mode-live.ps1`，或显式使用 `--diagnostic-single-device`；其结果属于 non-strict，不能发布 release manifest。单独跑 process-exclusion 变体：
+严格入口必须显式传入 `--workers-config` 和 `--reuse-local-isolation`。worker JSON 必须绑定一个真实 `default-speaker` profile、当前 clean workspace、VM UUID 和交互用户。平衡版固定复验 3 个零 Provider local-isolation 格，再串行运行 8 个 paid live 格；verifier 只读取本次签名 manifest，不扫描 output root 中的历史报告，也不迁移旧 schema 或历史证据。支持 Windows build 20348 及以上时，`process-exclusion` 是推荐路线；能力探测失败时该变体必须明确失败，不能静默改跑其他后端。
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-watch-mode-live.ps1 -SkipDriverRepair -AllowElevatedDesktopLaunch -WatchModelId qwen3.5-omni-flash-realtime -FeedbackLoopPrevention process-exclusion -PlaybackSeconds 0 -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90 -MediaPath .\scripts\testing\fixtures\watch-mode-en-original.wav

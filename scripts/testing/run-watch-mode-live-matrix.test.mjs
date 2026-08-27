@@ -167,7 +167,7 @@ test('matrix defaults freeze the strict-evidence contract', () => {
     expectedPhysicalPlaybackDeviceName: '',
     providerId: 'provider-dashscope',
   });
-  assert.deepEqual(SUPPORTED_DEVICE_CLASSES, ['default-speaker', 'usb']);
+  assert.deepEqual(SUPPORTED_DEVICE_CLASSES, ['default-speaker']);
   const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
   assert.match(
     packageJson.scripts['test:watch-mode-evidence:strict'],
@@ -413,33 +413,22 @@ test('resolveDeviceProfiles fails closed for strict runs and accepts single-devi
     expectedPhysicalPlaybackDeviceName: '',
   }]);
 
-  const profiles = [
-    {
+  const profiles = [{
       profileId: 'speakers',
       deviceClass: 'default-speaker',
       physicalPlaybackDeviceId: 'default',
       expectedPhysicalPlaybackDeviceName: 'Speakers',
-    },
-    {
-      profileId: 'usb-dac',
-      deviceClass: 'usb',
-      physicalPlaybackDeviceId: 'usb-endpoint-id',
-      expectedPhysicalPlaybackDeviceName: 'USB Audio',
-    },
-  ];
+    }];
   assert.deepEqual(resolveDeviceProfiles({ deviceProfiles: JSON.stringify(profiles) }), profiles);
 
   assert.throws(
-    () => resolveDeviceProfiles({ deviceProfiles: JSON.stringify([profiles[0]]) }),
-    /must contain exactly one profile for each device class/,
+    () => resolveDeviceProfiles({ deviceProfiles: JSON.stringify([]) }),
+    /At least one physical playback device profile|must contain exactly one profile for each device class/,
   );
-  assert.throws(
-    () => resolveDeviceProfiles({
-      diagnosticSingleDevice: true,
-      deviceProfiles: JSON.stringify(profiles),
-    }),
-    /requires exactly one device profile/,
-  );
+  assert.deepEqual(resolveDeviceProfiles({
+    diagnosticSingleDevice: true,
+    deviceProfiles: JSON.stringify(profiles),
+  }), profiles);
 
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-device-profiles-'));
   const configPath = path.join(directory, 'profiles.json');
@@ -455,7 +444,7 @@ test('resolveDeviceProfiles fails closed for strict runs and accepts single-devi
         expectedPhysicalPlaybackDeviceName: 'USB',
       }]),
     }),
-    /explicit endpoint id/,
+    /unsupported deviceClass|explicit endpoint id/,
   );
   assert.throws(
     () => resolveDeviceProfiles({
@@ -580,10 +569,7 @@ test('strict runtime build and live runner ignore external Cargo target-director
 
 test('matrix manifest contains only the current invocation run directories', () => {
   const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-matrix-manifest-'));
-  const currentRuns = [
-    path.join(outputRoot, 'current-default'),
-    path.join(outputRoot, 'current-usb'),
-  ];
+  const currentRuns = [path.join(outputRoot, 'current-default')];
   for (const runDirectory of currentRuns) {
     writeAuthorityPlaceholderArtifacts(runDirectory, 'process-exclusion');
   }
@@ -593,7 +579,6 @@ test('matrix manifest contains only the current invocation run directories', () 
     feedbackModeList: ['process-exclusion'],
     deviceProfiles: [
       { profileId: 'default', deviceClass: 'default-speaker' },
-      { profileId: 'usb', deviceClass: 'usb' },
     ],
     runDirectories: currentRuns,
     strict: true,
@@ -614,7 +599,7 @@ test('matrix manifest contains only the current invocation run directories', () 
   assert.equal(fs.existsSync(manifestPath), true);
   assert.deepEqual(manifest.runDirectories, currentRuns.map((directory) => path.basename(directory)));
   assert.equal(manifest.schemaVersion, 4);
-  assert.equal(manifest.cells.length, 2);
+  assert.equal(manifest.cells.length, 1);
   assert.equal(manifest.strict, true);
   assert.equal(manifest.evidenceMode, 'live');
   assert.deepEqual(manifest.provenance, CLEAN_PROVENANCE);
@@ -623,7 +608,7 @@ test('matrix manifest contains only the current invocation run directories', () 
 
 test('strict shard writer projects guest authority into the manifest and every downstream cell receipt', () => {
   const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-shard-projection-'));
-  const currentRuns = [path.join(outputRoot, 'guest-one'), path.join(outputRoot, 'guest-two')];
+  const currentRuns = [path.join(outputRoot, 'guest-one')];
   const releaseCells = currentRuns.map((_, index) => ({
     cellId: `test-shard-cell-${index}`,
     tier: 'pairwise-live',
@@ -683,12 +668,12 @@ test('strict shard writer projects guest authority into the manifest and every d
   }
 });
 
-test('shard staging copies three guest roots and emits only evidence-root-relative eight-cell projections', () => {
+test('shard staging copies one local root and emits only evidence-root-relative eight-cell projections', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-shard-stage-'));
   const coordinatorRoot = path.join(root, 'coordinator');
   const evidenceRoot = path.join(root, 'evidence');
   fs.mkdirSync(coordinatorRoot, { recursive: true });
-  const workerIds = ['vm-1', 'vm-2', 'vm-3'];
+  const workerIds = ['vm-1'];
   const fixtureProvenance = {
     schemaVersion: 1,
     source: 'git',
@@ -710,13 +695,6 @@ test('shard staging copies three guest roots and emits only evidence-root-relati
         physicalPlaybackDeviceId: 'default',
         expectedPhysicalPlaybackDeviceName: '',
       },
-      ...(workerId === 'vm-2' ? [{
-        instanceId: `${workerId}-usb`,
-        profileId: 'realtek-usb-spdif',
-        deviceClass: 'usb',
-        physicalPlaybackDeviceId: 'fixture-usb-endpoint',
-        expectedPhysicalPlaybackDeviceName: 'Fixture USB',
-      }] : []),
     ],
   }));
   const plan = {
@@ -734,9 +712,9 @@ test('shard staging copies three guest roots and emits only evidence-root-relati
       cellId: cell.cellId,
       workerId: workerIds[index % workerIds.length],
       vmIdentityDigest: String((index % workerIds.length) + 1).repeat(64),
-      waveIndex: Math.floor(index / workerIds.length),
+      waveIndex: index,
       leaseId: `lease-${index}`,
-      deviceProfileInstanceId: cell.deviceClass === 'usb' ? 'vm-2-usb' : `${workerIds[index % workerIds.length]}-default`,
+      deviceProfileInstanceId: `${workerIds[index % workerIds.length]}-default`,
     })),
   };
   const preflightRawRoot = path.join(coordinatorRoot, 'provider-preflight-evidence', 'raw');
@@ -959,7 +937,7 @@ test('shard staging copies three guest roots and emits only evidence-root-relati
     assert.equal(staged.runDirectories.length, LIVE_LLM_CELLS.length);
     assert.deepEqual(staged.matrixIntegration.cells.map((cell) => cell.cellId), LIVE_LLM_CELLS.map((cell) => cell.cellId));
     assert.equal(staged.shardExecution.leases.length, LIVE_LLM_CELLS.length);
-    assert.equal(staged.shardExecution.shards.length, 3);
+    assert.equal(staged.shardExecution.shards.length, 1);
     assert.ok(staged.runDirectories.every((directory) => path.relative(evidenceRoot, directory) && !path.relative(evidenceRoot, directory).startsWith('..')));
     assert.ok(staged.matrixIntegration.cells.every((cell) => (
       !Object.hasOwn(cell, 'sourceRunDirectory')

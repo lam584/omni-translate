@@ -1884,7 +1884,7 @@ export function verifyStrictShardMatrixAuthority({
   }
   const expectedWorkerCount = Array.isArray(plan.workers) ? plan.workers.length : 0;
   if (!SHARD_ALLOWED_WORKER_COUNTS.includes(expectedWorkerCount)) {
-    throw new Error('strict shard execution plan must bind exactly two or three unique workers');
+    throw new Error('strict execution plan must bind exactly one local worker');
   }
   const preflightAuthorization = verifyStrictShardProviderPreflightAuthorization({
     plan,

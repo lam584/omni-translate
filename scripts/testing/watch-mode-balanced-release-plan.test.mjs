@@ -29,11 +29,11 @@ test('balanced release plan caps paid LLM time at 24 minutes', () => {
     auxiliaryExternalAudioSeconds: 0,
     subtitleTranslationMode: 'native',
   });
-  assert.equal(LOCAL_ISOLATION_CELLS.length, 6);
+  assert.equal(LOCAL_ISOLATION_CELLS.length, 3);
   assert.equal(PAIRWISE_LIVE_CELLS.length, 6);
   assert.equal(MODEL_STABILITY_CELLS.length, 2);
   assert.equal(LIVE_LLM_CELLS.length, 8);
-  assert.equal(BALANCED_RELEASE_CELLS.length, 14);
+  assert.equal(BALANCED_RELEASE_CELLS.length, 11);
   assert.equal(balancedReleasePlanFailure(BALANCED_RELEASE_PLAN), null);
 
   const formerThreeDevicePlan = structuredClone(BALANCED_RELEASE_PLAN);
@@ -54,7 +54,7 @@ test('local isolation covers every route and device without a provider', () => {
   )));
 });
 
-test('pairwise live cells cover every model/route pair and every route on both real device classes', () => {
+test('pairwise live cells cover every model/route pair on the default speaker', () => {
   for (const modelId of RELEASE_MODELS) {
     assert.deepEqual(
       new Set(PAIRWISE_LIVE_CELLS.filter((entry) => entry.modelId === modelId)

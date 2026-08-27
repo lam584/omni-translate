@@ -136,19 +136,13 @@ const binaryAuthority = [
 }));
 
 const driverPackageDir = path.join(rootDir, 'drivers', 'windows-virtual-mic', 'package');
-const developmentDriverCertificate = path.join(driverPackageDir, 'omni-translate-development-driver.cer');
-if (fs.existsSync(developmentDriverCertificate)) {
-  throw new Error(
-    'The staged SYSVAD package uses the development test-signing credential. Rebuild it with scripts/installer/build-sysvad-driver.ps1 -Configuration Release -SigningPfxPath <release.pfx> -SigningPfxPasswordPath <password.txt> -SigningTimestampUrl <rfc3161-url> before preparing a stable installer.',
-  );
-}
 const driverMetadataPath = path.join(driverPackageDir, 'driver-package.json');
 if (!fs.existsSync(driverMetadataPath)) {
   throw new Error('Driver package metadata is missing. Rebuild the SYSVAD package before preparing a stable installer.');
 }
 const driverPackageMetadata = JSON.parse(fs.readFileSync(driverMetadataPath, 'utf8'));
-if (driverPackageMetadata.signingMode !== 'release-injected') {
-  throw new Error(`Stable installer requires a release-injected driver signature, received: ${driverPackageMetadata.signingMode}`);
+if (driverPackageMetadata.signingMode !== 'local-self-signed') {
+  throw new Error(`Stable installer requires a per-release local self-signed driver package, received: ${driverPackageMetadata.signingMode}`);
 }
 assertExactReleaseProvenance(driverPackageMetadata.sourceProvenance, sourceProvenance, 'driver package');
 if (driverPackageMetadata.sourceCommit !== sourceProvenance.headCommit) {

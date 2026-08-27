@@ -156,7 +156,7 @@ export async function runWatchModeSmoke({
     mode: selectionMode,
     cellIds: selectedCellIds,
     reason: String(selectionReason ?? '').trim()
-      || (selectedCells.length === plan.cells.length ? 'full 17-cell VM3 smoke' : 'unspecified'),
+      || (selectedCells.length === plan.cells.length ? `full ${plan.cells.length}-cell VM3 smoke` : 'unspecified'),
     stopOnFirstFailure,
   };
   const manifestPath = path.join(executionRoot, SMOKE_MANIFEST_FILE);

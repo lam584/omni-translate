@@ -291,7 +291,7 @@ function Start-WatchModeDesktopShell {
     throw
   }
   return [pscustomobject]@{
-    pid = $process.Id
+    pid = $process.Id; runMarker = $RunMarker; diagnosticsRoot = $OutputDirectory; appLogPath = Get-WatchModeDesktopAppLogPath
     processLease = $processLease
     stdout = $stdout
     stderr = $stderr

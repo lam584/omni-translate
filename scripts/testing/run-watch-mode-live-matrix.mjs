@@ -712,8 +712,8 @@ export function stageShardMatrixIntegration({
   if (!Array.isArray(leasePaths) || leasePaths.length !== LIVE_LLM_CELLS.length) {
     throw new Error('shard staging requires exactly eight signed lease files');
   }
-  if (!Array.isArray(shards) || ![2, 3].includes(shards.length)) {
-    throw new Error('shard staging requires exactly two or three guest shard roots');
+  if (!Array.isArray(shards) || shards.length !== 1) {
+    throw new Error('strict staging requires exactly one local shard root');
   }
   const temporaryRoot = `${finalExecutionRoot}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.staging`;
   fs.mkdirSync(temporaryRoot, { recursive: false });

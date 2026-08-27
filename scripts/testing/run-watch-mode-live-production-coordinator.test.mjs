@@ -153,14 +153,6 @@ test('production coordinator rejects a noncanonical authorization root before an
 });
 
 function rawWorkerConfig(root) {
-  const identityFile = path.join(root, 'id_rsa');
-  const knownHostsFile = path.join(root, 'known_hosts');
-  fs.writeFileSync(identityFile, 'fixture-private-key\n', 'utf8');
-  fs.writeFileSync(knownHostsFile, [
-    'vm-one ssh-ed25519 AAAAfixture1',
-    'vm-two ssh-ed25519 AAAAfixture2',
-    'vm-three ssh-ed25519 AAAAfixture3',
-  ].join('\n'), 'utf8');
   const defaultProfile = (workerId) => ({
     instanceId: `${workerId}-default`,
     profileId: 'vmware-hda-default',
@@ -171,85 +163,30 @@ function rawWorkerConfig(root) {
   return {
     schemaVersion: 1,
     artifactKind: PRODUCTION_WORKER_CONFIG_KIND,
-    sshExecutable: 'ssh.exe',
-    scpExecutable: 'scp.exe',
     workers: [
       {
-        workerId: 'vm1', host: '192.0.2.11', port: 22, user: 'VMUser',
-        identityFile, knownHostsFile, hostKeyAlias: 'vm-one',
+        workerId: 'vm1', user: 'VMUser',
         workspaceRoot: 'E:\\watch-worker', guestExecutionRoot: 'E:\\omni-shards',
         vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-1' },
         deviceProfileInstances: [defaultProfile('vm1')],
-      },
-      {
-        workerId: 'vm2', host: '192.0.2.12', port: 2222, user: 'VMUser',
-        identityFile, knownHostsFile, hostKeyAlias: 'vm-two',
-        workspaceRoot: 'E:\\watch-worker', guestExecutionRoot: 'E:\\omni-shards',
-        vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-2' },
-        deviceProfileInstances: [defaultProfile('vm2'), {
-          instanceId: 'vm2-usb', profileId: 'realtek-usb-spdif', deviceClass: 'usb',
-          physicalPlaybackDeviceId: '{usb-endpoint}', expectedPhysicalPlaybackDeviceName: 'Realtek USB Test',
-        }],
-      },
-      {
-        workerId: 'vm3', host: '192.0.2.13', port: 22, user: 'VMUser',
-        identityFile, knownHostsFile, hostKeyAlias: 'vm-three',
-        workspaceRoot: 'E:\\watch-worker', guestExecutionRoot: 'E:\\omni-shards',
-        vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-3' },
-        deviceProfileInstances: [defaultProfile('vm3')],
       },
     ],
   };
 }
 
-test('production worker config is exact, host-key pinned, UUID-bound, and command-injection closed', () => {
+test('production worker config is exact, single-machine, UUID-bound, and has no SSH credentials', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-production-config-'));
   try {
     const raw = rawWorkerConfig(root);
     const parsed = validateProductionWorkerConfig(raw, { configDirectory: root });
-    assert.equal(parsed.workers.length, 3);
-    const twoWorkers = structuredClone(raw);
-    twoWorkers.workers = twoWorkers.workers.slice(0, 2);
-    assert.equal(validateProductionWorkerConfig(twoWorkers, { configDirectory: root }).workers.length, 2);
-    for (const [field, value] of [
-      ['profileId', 'different-default-profile'],
-      ['physicalPlaybackDeviceId', '{different-default-endpoint}'],
-    ]) {
-      const inconsistentDefaults = structuredClone(raw);
-      inconsistentDefaults.workers[2].deviceProfileInstances[0][field] = value;
-      assert.throws(
-        () => validateProductionWorkerConfig(inconsistentDefaults, { configDirectory: root }),
-        /production worker assignments disagree on default-speaker matrix profile identity/,
-      );
-    }
-    const oneWorker = structuredClone(raw);
-    oneWorker.workers = oneWorker.workers.slice(0, 1);
-    assert.throws(() => validateProductionWorkerConfig(oneWorker, { configDirectory: root }), /two or three workers/);
-    const fourWorkers = structuredClone(raw);
-    fourWorkers.workers.push({
-      ...structuredClone(fourWorkers.workers[0]),
-      workerId: 'vm4', host: '192.0.2.14', hostKeyAlias: 'vm-three',
-      vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-4' },
-    });
-    assert.throws(() => validateProductionWorkerConfig(fourWorkers, { configDirectory: root }), /two or three workers/);
-    assert.deepEqual(parsed.workers.map((worker) => worker.workerId), ['vm1', 'vm2', 'vm3']);
-    const ssh = sshBaseArgs(parsed.workers[1]);
-    const scp = scpBaseArgs(parsed.workers[1]);
-    for (const args of [ssh, scp]) {
-      assert.ok(args.includes('StrictHostKeyChecking=yes'));
-      assert.ok(args.includes(`UserKnownHostsFile=${path.join(root, 'known_hosts')}`));
-      assert.ok(args.includes('HostKeyAlias=vm-two'));
-      assert.ok(args.includes(path.join(root, 'id_rsa')));
-    }
-    assert.equal(ssh[ssh.indexOf('-p') + 1], '2222');
-    assert.equal(scp[scp.indexOf('-P') + 1], '2222');
-
-    const injected = structuredClone(raw);
-    injected.workers[0].host = 'vm1;whoami';
-    assert.throws(() => validateProductionWorkerConfig(injected, { configDirectory: root }), /invalid or duplicate host/);
-    const unpinned = structuredClone(raw);
-    unpinned.workers[0].hostKeyAlias = 'missing-host-key';
-    assert.throws(() => validateProductionWorkerConfig(unpinned, { configDirectory: root }), /known_hosts does not pin/);
+    assert.equal(parsed.workers.length, 1);
+    assert.deepEqual(parsed.workers.map((worker) => worker.workerId), ['vm1']);
+    const additionalWorker = structuredClone(raw);
+    additionalWorker.workers.push({ ...structuredClone(raw.workers[0]), workerId: 'vm2' });
+    assert.throws(() => validateProductionWorkerConfig(additionalWorker, { configDirectory: root }), /exactly one local worker/);
+    const sshField = structuredClone(raw);
+    sshField.sshExecutable = 'ssh.exe';
+    assert.throws(() => validateProductionWorkerConfig(sshField, { configDirectory: root }), /keys must be exactly/);
     const extraKey = structuredClone(raw);
     extraKey.workers[0].remoteCommand = 'anything';
     assert.throws(() => validateProductionWorkerConfig(extraKey, { configDirectory: root }), /keys must be exactly/);
@@ -621,7 +558,7 @@ test('SSH transport finalizes manifests in the guest and cancellation is task/la
   assert.doesNotMatch(source, /logs\\\\" \+ \[string\]\$payload\.leaseId \+ '\\.pid'/);
 });
 
-test('production coordinator drives three signed waves through stage, verify, and publish without the legacy path', async () => {
+test('production coordinator drives eight signed serial waves through stage, verify, and publish', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-production-orchestrator-'));
   const config = rawWorkerConfig(root);
   const normalized = validateProductionWorkerConfig(config, { configDirectory: root });
@@ -629,10 +566,7 @@ test('production coordinator drives three signed waves through stage, verify, an
     worker.workerId,
     new Map(worker.deviceProfileInstances.map((profile) => [profile.deviceClass, profile])),
   ]));
-  const placements = [
-    ['vm1', 0], ['vm2', 0], ['vm3', 0], ['vm2', 1],
-    ['vm1', 1], ['vm2', 2], ['vm1', 2], ['vm3', 1],
-  ];
+  const placements = LIVE_LLM_CELLS.map((_, index) => ['vm1', index]);
   const cells = LIVE_LLM_CELLS.map((cell, index) => {
     const [workerId, waveIndex] = placements[index];
     return {
@@ -641,7 +575,7 @@ test('production coordinator drives three signed waves through stage, verify, an
       workerId,
       waveIndex,
       leaseId: `lease-${index}`,
-      vmIdentityDigest: String(index % 3 + 1).repeat(64),
+      vmIdentityDigest: '1'.repeat(64),
       deviceProfileInstance: profilesByWorker.get(workerId).get(cell.deviceClass),
     };
   });
@@ -652,7 +586,7 @@ test('production coordinator drives three signed waves through stage, verify, an
     localIsolationAuthority: { manifestPath: 'local.json', path: 'local.json', bytes: 1, sha256: 'b'.repeat(64), providerCalls: 0 },
     workers: normalized.workers.map(({ workerId, vmIdentity, deviceProfileInstances }) => ({ workerId, vmIdentity, deviceProfileInstances })),
     cells,
-    waves: [0, 1, 2].map((waveIndex) => ({
+    waves: cells.map((_, waveIndex) => ({
       waveIndex,
       cellIds: cells.filter((cell) => cell.waveIndex === waveIndex).map((cell) => cell.cellId),
     })),
@@ -707,7 +641,7 @@ test('production coordinator drives three signed waves through stage, verify, an
           assert.equal(typeof options.runZeroProviderWorkerReadiness, 'function');
           assert.equal(
             options.minimumRemainingExecutionMs,
-            3 * PRODUCTION_REMOTE_CELL_TIMEOUT_MS
+            8 * PRODUCTION_REMOTE_CELL_TIMEOUT_MS
               + PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS,
           );
           const workerReadiness = await options.runZeroProviderWorkerReadiness({
@@ -792,12 +726,15 @@ test('production coordinator drives three signed waves through stage, verify, an
         },
       },
     });
-    assert.deepEqual(calls.filter((entry) => entry.startsWith('wave:')), ['wave:0', 'wave:1', 'wave:2']);
+    assert.deepEqual(calls.filter((entry) => entry.startsWith('wave:')), [
+      'wave:0', 'wave:1', 'wave:2', 'wave:3',
+      'wave:4', 'wave:5', 'wave:6', 'wave:7',
+    ]);
     assert.ok(calls.indexOf('zero-provider-readiness') < calls.indexOf('provider-preflight'));
     assert.equal(calls.filter((entry) => entry.startsWith('paid:')).length, 8);
     assert.ok(calls.indexOf('verify') < calls.indexOf('publish'));
-    assert.equal(result.workerCount, 3);
-    assert.equal(result.waveCount, 3);
+    assert.equal(result.workerCount, 1);
+    assert.equal(result.waveCount, 8);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

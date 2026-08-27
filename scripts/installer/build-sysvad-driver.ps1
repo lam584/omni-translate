@@ -292,9 +292,6 @@ if (-not $SigningPfxPath) {
 if (-not $SigningPfxPasswordPath) {
   throw 'SigningPfxPasswordPath is required when SigningPfxPath is provided.'
 }
-if (-not $useDevelopmentSigningCredential -and [string]::IsNullOrWhiteSpace($SigningTimestampUrl)) {
-  throw 'SigningTimestampUrl is required for a release-injected driver signature.'
-}
 Assert-File $SigningPfxPath 'Signing PFX'
 Assert-File $SigningPfxPasswordPath 'Signing PFX password file'
 $signingPassword = (Get-Content -LiteralPath $SigningPfxPasswordPath -Raw).Trim()
@@ -302,7 +299,7 @@ $signtool = Join-Path $wdkBinRoot 'x64\signtool.exe'
 $inf2cat = Join-Path $wdkBinRoot 'x86\Inf2Cat.exe'
 
 $signingArguments = @('sign', '/fd', 'SHA256', '/f', $SigningPfxPath, '/p', $signingPassword)
-if (-not $useDevelopmentSigningCredential) {
+if (-not [string]::IsNullOrWhiteSpace($SigningTimestampUrl)) {
   $signingArguments += @('/tr', $SigningTimestampUrl, '/td', 'SHA256')
 }
 Invoke-Checked $signtool @($signingArguments + @($stagedSys))
@@ -321,7 +318,7 @@ foreach ($signedPath in @($stagedSys, $stagedCat)) {
   # SignTool is already a required WDK dependency for this workflow and validates
   # both the signed file and, for release signing, its RFC3161 timestamp.
   $verifyArguments = @('verify', '/pa', '/v')
-  if (-not $useDevelopmentSigningCredential) {
+  if (-not [string]::IsNullOrWhiteSpace($SigningTimestampUrl)) {
     $verifyArguments += '/tw'
   }
   # A deliberately untrusted development root makes SignTool write to stderr.
@@ -354,7 +351,7 @@ foreach ($signedPath in @($stagedSys, $stagedCat)) {
 }
 
 $certificatePath = [System.IO.Path]::ChangeExtension($SigningPfxPath, '.cer')
-if ($isDevelopmentTestSigner -and (Test-Path -LiteralPath $certificatePath -PathType Leaf)) {
+if (Test-Path -LiteralPath $certificatePath -PathType Leaf) {
   Copy-Item -LiteralPath $certificatePath -Destination $stagedPublicCertificate -Force
 }
 
@@ -366,10 +363,10 @@ $packageMetadata = [ordered]@{
   platform = $Platform
   minimumWindowsBuild = $declaredMinimumWindowsBuild
   kernelImportMinimumWindowsBuild = $minimumWindowsBuild
-  signingMode = if ($isDevelopmentTestSigner) { 'development-test' } else { 'release-injected' }
+  signingMode = if ($isDevelopmentTestSigner) { 'development-test' } else { 'local-self-signed' }
   signerThumbprint = $signingCertificate.Thumbprint
-  timestampMode = if ($isDevelopmentTestSigner) { 'none' } else { 'rfc3161' }
-  timestampUrl = if ($isDevelopmentTestSigner) { $null } else { $SigningTimestampUrl }
+  timestampMode = if ([string]::IsNullOrWhiteSpace($SigningTimestampUrl)) { 'none' } else { 'rfc3161' }
+  timestampUrl = if ([string]::IsNullOrWhiteSpace($SigningTimestampUrl)) { $null } else { $SigningTimestampUrl }
 }
 Write-Utf8NoBom $stagedMetadata (ConvertTo-CanonicalJson $packageMetadata)
 

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 import {
   assertExactReleaseProvenance,
@@ -23,6 +24,15 @@ const signingWorkDir = path.join(signedDir, bundleName(version));
 
 if (!fs.existsSync(signingWorkDir)) {
   throw new Error(`Signing work directory is missing at ${path.relative(rootDir, signingWorkDir)}. Run npm run release:package first.`);
+}
+const localSigning = spawnSync('powershell.exe', [
+  '-NoProfile', '-ExecutionPolicy', 'Bypass',
+  '-File', path.join(rootDir, 'scripts', 'release', 'sign-local-release-bundle.ps1'),
+  '-WorkspaceRoot', rootDir,
+  '-BundleRoot', signingWorkDir,
+], { cwd: rootDir, encoding: 'utf8', windowsHide: true });
+if (localSigning.status !== 0) {
+  throw new Error(`Local release signing failed: ${localSigning.stderr || localSigning.stdout}`);
 }
 for (const relativePath of [
   'release-manifest.json',
@@ -70,7 +80,7 @@ const signTargets = collectFiles(signingWorkDir)
     fileName: path.basename(fullPath),
     path: path.relative(rootDir, fullPath),
     sha256: sha256(fullPath),
-    expectedSignatureStatus: 'pending',
+    expectedSignatureStatus: 'valid-local-self-signed',
     signatureEvidencePath: null,
     verificationCommand: `Get-AuthenticodeSignature -FilePath \"${fullPath}\" | Format-List`,
   }));
@@ -84,17 +94,17 @@ const manifest = {
   sourceProvenance,
   certificatePolicy: {
     owner: 'Release Manager',
-    certificateType: 'EV Code Signing certificate for installer/archive; WHQL-compatible evidence for driver package when applicable',
-    privateKeyHandling: 'Certificate private key must stay in the managed signing workstation or HSM-backed store.',
-    timestampAuthority: 'RFC3161 trusted timestamp service required for all externally distributed artifacts.',
+    certificateType: 'Per-release local self-signed X.509 Code Signing certificate (RSA-3072/SHA-256).',
+    privateKeyHandling: 'The generated private key stays under ignored local artifacts and is never packaged.',
+    timestampAuthority: 'No external timestamp authority is used.',
   },
   signTargets,
   verificationSteps: [
     'Confirm the SHA256 of each unsigned target matches this manifest before signing.',
-    'Use the managed signing workstation to sign each target in packages/signed and record the output path under signatureEvidencePath.',
+    'The release task signs each target locally with the newly generated per-release certificate.',
     'Run Get-AuthenticodeSignature for each signed target and archive the output in the same release directory.',
     'After sign-off, run npm run release:finalize-signed to assemble the signed delivery zip from packages/signed.',
-    'Do not publish artifacts whose signature status is not valid and timestamped.',
+    'Do not publish artifacts whose signer does not match the per-release certificate and SHA256 manifest.',
   ],
   documentation: docsPath,
 };

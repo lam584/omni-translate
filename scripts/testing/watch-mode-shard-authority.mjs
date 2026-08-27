@@ -60,9 +60,9 @@ export const SHARD_CELL_MAX_EXTERNAL_AUDIO_SECONDS = 180;
 export const SHARD_MATRIX_CELL_COUNT = 8;
 export const SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES = 23_040_000;
 export const SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SECONDS = 1_440;
-export const SHARD_ALLOWED_WORKER_COUNTS = Object.freeze([2, 3]);
-export const SHARD_MIN_WORKER_COUNT = 2;
-export const SHARD_MAX_WORKER_COUNT = 3;
+export const SHARD_ALLOWED_WORKER_COUNTS = Object.freeze([1]);
+export const SHARD_MIN_WORKER_COUNT = 1;
+export const SHARD_MAX_WORKER_COUNT = 1;
 
 // This inventory is intentionally separate from AUTHORITY_IMPLEMENTATION_FILES.
 // Adding shard orchestration must not invalidate a previously captured six-cell
@@ -387,7 +387,7 @@ function assertDeviceProfileInstance(profile, label) {
 
 function assertWorkers(workers) {
   if (!Array.isArray(workers) || !SHARD_ALLOWED_WORKER_COUNTS.includes(workers.length)) {
-    throw new Error('strict paid sharding requires exactly two or three workers');
+    throw new Error('strict paid execution requires exactly one local worker');
   }
   const workerIds = new Set();
   const vmIds = new Set();

@@ -1,8 +1,8 @@
 // v2 is intentionally incompatible with the former three-device matrix.  A
 // strict receipt must never make the now-unavailable Bluetooth class look
 // covered by the two independently verified physical endpoint classes.
-export const BALANCED_RELEASE_PLAN_ID = 'watch-mode-balanced-v6-paid-budget';
-export const BALANCED_RELEASE_PLAN_SCHEMA_VERSION = 6;
+export const BALANCED_RELEASE_PLAN_ID = 'watch-mode-balanced-v7-single-machine';
+export const BALANCED_RELEASE_PLAN_SCHEMA_VERSION = 7;
 export const PAID_PROVIDER_SESSION_CEILING_SECONDS = 24 * 60;
 export const PAID_PROVIDER_CELL_CEILING_SECONDS = 3 * 60;
 
@@ -19,7 +19,6 @@ export const RELEASE_FEEDBACK_MODES = Object.freeze([
 
 export const RELEASE_DEVICE_CLASSES = Object.freeze([
   'default-speaker',
-  'usb',
 ]);
 
 export const RELEASE_TIER_DURATIONS_SECONDS = Object.freeze({
@@ -68,7 +67,7 @@ export const PAIRWISE_LIVE_CELLS = Object.freeze([
     tier: 'pairwise-live',
     modelId: RELEASE_MODELS[0],
     feedbackLoopPrevention: 'virtual-driver',
-    deviceClass: 'usb',
+    deviceClass: 'default-speaker',
   }),
   cell({
     tier: 'pairwise-live',
@@ -80,7 +79,7 @@ export const PAIRWISE_LIVE_CELLS = Object.freeze([
     tier: 'pairwise-live',
     modelId: RELEASE_MODELS[1],
     feedbackLoopPrevention: 'process-exclusion',
-    deviceClass: 'usb',
+    deviceClass: 'default-speaker',
   }),
   cell({
     tier: 'pairwise-live',
@@ -92,7 +91,7 @@ export const PAIRWISE_LIVE_CELLS = Object.freeze([
     tier: 'pairwise-live',
     modelId: RELEASE_MODELS[1],
     feedbackLoopPrevention: 'echo-cancel',
-    deviceClass: 'usb',
+    deviceClass: 'default-speaker',
   }),
 ]);
 

@@ -129,37 +129,21 @@ export function assertCoordinatorExecutionRoot({ executionRoot, plan }) {
 }
 
 export function defaultThreeVmAssignments(workers) {
-  if (!Array.isArray(workers) || ![2, 3].includes(workers.length)) {
-    throw new Error('default strict shard placement requires exactly two or three workers');
+  if (!Array.isArray(workers) || workers.length !== 1) {
+    throw new Error('default strict placement requires exactly one local worker');
   }
-  const usbWorkers = workers.filter((worker) => (
-    worker.deviceProfileInstances?.some((profile) => profile.deviceClass === 'usb')
-  ));
-  if (usbWorkers.length !== 1) {
-    throw new Error('default strict shard placement requires exactly one USB-capable worker');
+  const worker = workers[0];
+  const profiles = worker.deviceProfileInstances?.filter(
+    (profile) => profile.deviceClass === 'default-speaker',
+  ) ?? [];
+  if (profiles.length !== 1) {
+    throw new Error(`worker ${worker.workerId} must have exactly one default-speaker profile`);
   }
-  const usbWorker = usbWorkers[0];
-  const defaultOnlyWorkers = workers.filter((worker) => worker.workerId !== usbWorker.workerId);
-  if (defaultOnlyWorkers.some((worker) => (
-    !worker.deviceProfileInstances?.some((profile) => profile.deviceClass === 'default-speaker')
-  ))) throw new Error('every non-USB worker must provide one default-speaker profile');
   return LIVE_LLM_CELLS.map((cell, cellIndex) => {
-    const placement = workers.length === 2
-      ? TWO_WORKER_CELL_PLACEMENT[cellIndex]
-      : DEFAULT_CELL_PLACEMENT[cellIndex];
-    const worker = workers.length === 2
-      ? (placement.capability === 'usb' ? usbWorker : defaultOnlyWorkers[0])
-      : (placement.workerIndex === 1
-          ? usbWorker
-          : defaultOnlyWorkers[placement.workerIndex === 0 ? 0 : 1]);
-    const profiles = worker.deviceProfileInstances?.filter((profile) => profile.deviceClass === cell.deviceClass) ?? [];
-    if (profiles.length !== 1) {
-      throw new Error(`worker ${worker.workerId} must have exactly one ${cell.deviceClass} profile for cell ${cell.cellId}`);
-    }
     return {
       cellId: cell.cellId,
       workerId: worker.workerId,
-      waveIndex: placement.waveIndex,
+      waveIndex: cellIndex,
       deviceProfileInstanceId: profiles[0].instanceId,
     };
   });

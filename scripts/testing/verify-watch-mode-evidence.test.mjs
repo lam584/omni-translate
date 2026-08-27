@@ -1635,7 +1635,7 @@ test('strict Watch report validation requires a complete visible three-stage cue
 
 test('strict device evidence independently verifies classifying endpoint signals', () => {
   assert.equal(
-    strictDeviceEvidenceFailure({ deviceEvidence: deviceEvidence('usb') }, 'usb'),
+    strictDeviceEvidenceFailure({ deviceEvidence: deviceEvidence('default-speaker') }, 'default-speaker'),
     null,
   );
   assert.match(
@@ -1646,7 +1646,7 @@ test('strict device evidence independently verifies classifying endpoint signals
         classificationSignals: ['BTHENUM\\DEV_001'],
       }),
     }, 'usb'),
-    /classification mismatch/,
+    /unsupported deviceClass|classification mismatch/,
   );
 });
 
@@ -2370,7 +2370,7 @@ test('strict shard preflight rejects a self-consistent model outside the paid re
   );
 });
 
-test('strict production verifier rebuilds the staged eight-cell authority from two guest manifests', () => {
+test('strict production verifier rebuilds the staged eight-cell authority from one local manifest', () => {
   const root = makeTempRoot();
   const evidenceRoot = path.join(root, 'evidence');
   const coordinatorRoot = path.join(root, 'coordinator-source');
@@ -2425,25 +2425,6 @@ test('strict production verifier rebuilds the staged eight-cell authority from t
       'default-speaker',
       'default',
       'Built-in Speakers',
-    )],
-  }, {
-    workerId: 'vm2',
-    interactiveUser: 'VMUser',
-    vmIdentity: { provider: 'vmware', uuidBios: 'verifier-vm-2' },
-    deviceProfileInstances: [deviceProfile(
-      'vm2',
-      'default',
-      'vmware-hda-default',
-      'default-speaker',
-      'default',
-      'Built-in Speakers',
-    ), deviceProfile(
-      'vm2',
-      'usb',
-      'realtek-usb-spdif',
-      'usb',
-      'usb-endpoint-001',
-      'USB Audio Speakers',
     )],
   }];
 
@@ -2989,7 +2970,7 @@ test('strict production verifier rebuilds the staged eight-cell authority from t
         workerId: state.worker.workerId,
         shardRoot: state.shardRoot,
         resultPaths: state.resultPaths,
-        generatedAt: new Date(baseMs + 11_000),
+        generatedAt: new Date(baseMs + 30_000),
       });
       return {
         workerId: state.worker.workerId,
@@ -3025,7 +3006,7 @@ test('strict production verifier rebuilds the staged eight-cell authority from t
       leases,
       shards,
       executionRoot: coordinatorRoot,
-      generatedAt: new Date(baseMs + 12_000),
+      generatedAt: new Date(baseMs + 31_000),
     });
     const staged = stageShardMatrixIntegration({
       evidenceRoot,
@@ -3040,7 +3021,7 @@ test('strict production verifier rebuilds the staged eight-cell authority from t
       fs.readFileSync(path.join(runDirectory, 'external-provider-budget.json'), 'utf8'),
     ));
     const matrixBudget = writeMatrixExternalProviderBudget(evidenceRoot, stagedCellBudgets, {
-      generatedAt: new Date(baseMs + 12_500),
+      generatedAt: new Date(baseMs + 31_500),
       expectedCells: LIVE_LLM_CELLS,
       matrixCeilingSeconds: STRICT_PAID_MATRIX_CEILING_SECONDS,
     });
@@ -3061,13 +3042,10 @@ test('strict production verifier rebuilds the staged eight-cell authority from t
       deviceProfiles: [{
         profileId: 'vmware-hda-default',
         deviceClass: 'default-speaker',
-      }, {
-        profileId: 'realtek-usb-spdif',
-        deviceClass: 'usb',
       }],
       runDirectories: staged.runDirectories,
       strict: true,
-      now: new Date(baseMs + 13_000),
+      now: new Date(baseMs + 32_000),
       provenance: shardProvenance,
       authorityRuntimeBinaryHashes: runtimeBinaryHashes,
       releaseCells: LIVE_LLM_CELLS,
@@ -3085,7 +3063,7 @@ test('strict production verifier rebuilds the staged eight-cell authority from t
       currentRuntimeBinaryHashes: runtimeBinaryHashes,
       releaseCells: LIVE_LLM_CELLS,
       requireLocalIsolation: false,
-      now: baseMs + 14_000,
+      now: baseMs + 33_000,
       validatePreflightEvidence: validateFixturePreflight,
     });
     assert.equal(verified.runDirectories.length, LIVE_LLM_CELLS.length);
@@ -3996,13 +3974,14 @@ test('strict device matrix rejects a live report without classifiable endpoint e
   assert.match(result.reason, /requires report\.deviceEvidence/);
 });
 
-test('strict device matrix rejects one captured session copied across device cells', () => {
+test('strict device matrix rejects one captured session copied across model cells', () => {
   const root = makeTempRoot();
-  for (const [index, deviceClass] of ['default-speaker', 'usb'].entries()) {
-    writeReport(root, `20260605-19133${index}-${deviceClass}`, {
-      modelId: 'qwen3.5-omni-flash-realtime',
+  const models = ['qwen3.5-omni-flash-realtime', 'qwen3.5-livetranslate-flash-realtime'];
+  for (const [index, modelId] of models.entries()) {
+    writeReport(root, `20260605-19133${index}-default-speaker`, {
+      modelId,
       layers: strictContentLayers(),
-      deviceEvidence: deviceEvidence(deviceClass),
+      deviceEvidence: deviceEvidence('default-speaker'),
       watchSessionReport: {
         ...healthyWatchSessionReport,
         sessionId: 'copied-watch-session',
@@ -4011,9 +3990,9 @@ test('strict device matrix rejects one captured session copied across device cel
   }
 
   const result = findScopedStrictEvidence(root, {
-    models: ['qwen3.5-omni-flash-realtime'],
+    models,
     feedbackModes: ['virtual-driver'],
-    deviceClasses: ['default-speaker', 'usb'],
+    deviceClasses: ['default-speaker'],
     ...provenanceOk,
   });
 
@@ -4023,14 +4002,14 @@ test('strict device matrix rejects one captured session copied across device cel
   assert.match(result.reason, /duplicate live artifact\/session/);
 });
 
-test('strict device matrix accepts the complete two-model by three-route by two-device grid', () => {
+test('strict device matrix accepts the complete two-model by three-route single-device grid', () => {
   const root = makeTempRoot();
   const models = [
     'qwen3.5-omni-flash-realtime',
     'qwen3.5-livetranslate-flash-realtime',
   ];
   const feedbackModes = ['process-exclusion', 'virtual-driver', 'echo-cancel'];
-  const deviceClasses = ['default-speaker', 'usb'];
+  const deviceClasses = ['default-speaker'];
   let runIndex = 0;
   for (const modelId of models) {
     for (const feedbackLoopPrevention of feedbackModes) {
@@ -4067,7 +4046,7 @@ test('strict device matrix accepts the complete two-model by three-route by two-
   });
 
   assert.equal(result.ok, true, result.reason);
-  assert.equal(result.modelResults.length, 12);
+  assert.equal(result.modelResults.length, 6);
   assert.ok(result.modelResults.every((entry) => entry.ok));
 });
 

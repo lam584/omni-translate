@@ -57,19 +57,6 @@ function testWorkers() {
       vmIdentity: { provider: 'vmware', uuidBios: 'vm-uuid-1' },
       deviceProfileInstances: [profile('vm1', 'default', 'vmware-hda-default', 'default-speaker', 'default')],
     },
-    {
-      workerId: 'vm2',
-      vmIdentity: { provider: 'vmware', uuidBios: 'vm-uuid-2' },
-      deviceProfileInstances: [
-        profile('vm2', 'default', 'vmware-hda-default', 'default-speaker', 'default'),
-        profile('vm2', 'usb', 'realtek-usb-spdif', 'usb', '{usb-endpoint}', 'SPDIF Test Device'),
-      ],
-    },
-    {
-      workerId: 'vm3',
-      vmIdentity: { provider: 'vmware', uuidBios: 'vm-uuid-3' },
-      deviceProfileInstances: [profile('vm3', 'default', 'vmware-hda-default', 'default-speaker', 'default')],
-    },
   ];
 }
 
@@ -80,7 +67,14 @@ function createFixture({ providerPreflightOverrides = {} } = {}) {
   const workers = testWorkers();
   const signingKeys = generateCoordinatorSigningKeyPair();
   const authorityImplementationHashes = inventory('matrix');
-  const runtimeBinaryHashes = inventory('runtime', SHA_B);
+  const runtimeBinaryHashes = [
+    ...inventory('runtime', SHA_B),
+    ...['sys', 'cat', 'inf'].map((extension) => ({
+      path: `drivers/windows-virtual-mic/package/omni-virtual-speaker.${extension}`,
+      bytes: 17,
+      sha256: SHA_B,
+    })),
+  ];
   const shardOrchestrationImplementationHashes = inventory('shard');
   const plan = createSignedExecutionPlan({
     executionId: 'watch-shard-test-0001',
@@ -171,6 +165,21 @@ function writeSuccessfulRun(runDirectory, cell, lease, { samples = 32_000 } = {}
     verified: true,
     fixtureOnly: false,
   });
+  if (cell.feedbackLoopPrevention === 'virtual-driver') {
+    writeJson(path.join(runDirectory, 'driver.json'), {
+      InstalledDriverAuthority: {
+        installedSysSha256: SHA_B,
+        packageSysSha256: SHA_B,
+        packageCatSha256: SHA_B,
+        packageInfSha256: SHA_B,
+        installedServiceState: 'running',
+        installedSysSignatureStatus: 'valid',
+        packageCatalogSignatureStatus: 'valid',
+        installedSysSignerThumbprint: 'fixture-thumbprint',
+        packageCatalogSignerThumbprint: 'fixture-thumbprint',
+      },
+    });
+  }
   writeJson(path.join(runDirectory, PROVIDER_INPUT_BUDGET_LEASE_FILE), {
     schemaVersion: 1,
     artifactKind: PROVIDER_INPUT_BUDGET_LEASE_KIND,
@@ -224,7 +233,7 @@ test('shard orchestration inventory is independent from local/matrix implementat
   );
 });
 
-test('signed plan and leases bind exact eight cells, three waves, VM/runtime identities and 1440 seconds', () => {
+test('signed plan and leases bind exact eight cells, eight serial waves, machine/runtime identities and 1440 seconds', () => {
   const fixture = createFixture();
   assert.throws(
     () => createFixture({ providerPreflightOverrides: { inputTokens: '64' } }),
@@ -232,7 +241,7 @@ test('signed plan and leases bind exact eight cells, three waves, VM/runtime ide
   );
   assert.equal(verifySignedExecutionPlan(fixture.plan, { now: fixture.now }), fixture.plan);
   assert.equal(fixture.plan.cells.length, 8);
-  assert.deepEqual(fixture.plan.waves.map((wave) => wave.cellIds.length), [3, 3, 2]);
+  assert.deepEqual(fixture.plan.waves.map((wave) => wave.cellIds.length), [1, 1, 1, 1, 1, 1, 1, 1]);
   assert.equal(fixture.leases.length, 8);
   assert.equal(new Set(fixture.leases.map((lease) => lease.leaseId)).size, 8);
   assert.equal(
@@ -275,7 +284,7 @@ test('signed plan and leases bind exact eight cells, three waves, VM/runtime ide
   );
 });
 
-test('signed plan accepts two or three unique workers and rejects one or four', () => {
+test('signed plan accepts exactly one local worker and rejects additional workers', () => {
   const fixture = createFixture();
   const createWithWorkers = (workers) => createSignedExecutionPlan({
     executionId: `watch-worker-count-${workers.length}`,
@@ -296,21 +305,20 @@ test('signed plan accepts two or three unique workers and rejects one or four', 
        inputTokens: 64, outputTokens: 12, audioSeconds: null,
      },
     workers,
-    assignments: workers.length >= 2 && workers.length <= 3
+    assignments: workers.length === 1
       ? defaultThreeVmAssignments(workers)
       : [],
     ...fixture.signingKeys,
   });
-  const twoWorkerPlan = createWithWorkers(testWorkers().slice(0, 2));
-  assert.equal(twoWorkerPlan.workers.length, 2);
-  assert.deepEqual(twoWorkerPlan.waves.map((wave) => wave.cellIds.length), [2, 2, 2, 2]);
-  assert.throws(() => createWithWorkers(testWorkers().slice(0, 1)), /two or three workers/);
+  const oneWorkerPlan = createWithWorkers(testWorkers());
+  assert.equal(oneWorkerPlan.workers.length, 1);
+  assert.deepEqual(oneWorkerPlan.waves.map((wave) => wave.cellIds.length), [1, 1, 1, 1, 1, 1, 1, 1]);
   const fourth = {
     ...structuredClone(testWorkers()[0]),
     workerId: 'vm4',
     vmIdentity: { provider: 'vmware', uuidBios: 'vm-uuid-4' },
   };
-  assert.throws(() => createWithWorkers([...testWorkers(), fourth]), /two or three workers/);
+  assert.throws(() => createWithWorkers([...testWorkers(), fourth]), /assignments must contain|exactly one local worker/);
 });
 
 test('provider usage authority binds coordinator launch receipt and ordered send-boundary journal', () => {
@@ -382,7 +390,7 @@ test('cell results and a worker shard manifest rehash raw files and preserve can
   const fixture = createFixture();
   const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-shard-authority-'));
   try {
-    const workerId = 'vm3';
+    const workerId = 'vm1';
     const worker = fixture.plan.workers.find((entry) => entry.workerId === workerId);
     const cells = fixture.plan.cells.filter((cell) => cell.workerId === workerId);
     const resultPaths = [];

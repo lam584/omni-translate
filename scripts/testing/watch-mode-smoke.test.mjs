@@ -43,33 +43,33 @@ import {
 
 const workers = [{ workerId: 'vm3', deviceClasses: ['default-speaker'] }];
 
-test('smoke plan locks the 6 + 3 + 8 coverage, full-media durations, and one-hour budget', () => {
+test('smoke plan locks the 3 + 3 + 8 single-device coverage and full-media durations', () => {
   const plan = createWatchModeSmokePlan({ executionId: 'smoke-plan-test' });
   assert.equal(smokePlanFailure(plan), null);
-  assert.equal(SMOKE_LOCAL_CELLS.length, 6);
+  assert.equal(SMOKE_LOCAL_CELLS.length, 3);
   assert.equal(SMOKE_PLUS_CELLS.length, 3);
   assert.equal(SMOKE_RELEASE_CELLS.length, 8);
-  assert.equal(plan.cells.length, 17);
+  assert.equal(plan.cells.length, 14);
   assert.equal(plan.totalBudgetSeconds, WATCH_MODE_SMOKE_BUDGET_SECONDS);
   assert.equal(plan.artifactKind, WATCH_MODE_SMOKE_ARTIFACT_KIND);
   assert.equal(plan.smokeOnly, true);
   assert.deepEqual(new Set(SMOKE_LOCAL_CELLS.map((cell) => cell.durationSeconds)), new Set([30]));
   assert.deepEqual(new Set([...SMOKE_PLUS_CELLS, ...SMOKE_RELEASE_CELLS].map((cell) => cell.durationSeconds)), new Set([180]));
   assert.deepEqual(new Set(plan.cells.map((cell) => cell.deviceClass)), new Set(['default-speaker']));
-  assert.deepEqual(new Set(plan.cells.map((cell) => cell.sourceDeviceClass)), new Set(['default-speaker', 'usb']));
+  assert.deepEqual(new Set(plan.cells.map((cell) => cell.sourceDeviceClass)), new Set(['default-speaker']));
 });
 
 test('smoke assignments execute all cells serially on VM3', () => {
   const plan = createWatchModeSmokePlan({ executionId: 'smoke-assignment-test' });
   const assignments = createSmokeAssignments(plan.cells, workers);
-  assert.equal(assignments.length, 17);
-  assert.equal(new Set(assignments.map((entry) => entry.cellId)).size, 17);
+  assert.equal(assignments.length, 14);
+  assert.equal(new Set(assignments.map((entry) => entry.cellId)).size, 14);
   assert.deepEqual(new Set(assignments.map((entry) => entry.workerId)), new Set(['vm3']));
   for (const waveIndex of new Set(assignments.map((entry) => entry.waveIndex))) {
     const wave = assignments.filter((entry) => entry.waveIndex === waveIndex);
     assert.equal(new Set(wave.map((entry) => entry.workerId)).size, wave.length);
   }
-  assert.deepEqual(assignments.map((entry) => entry.waveIndex), Array.from({ length: 17 }, (_, index) => index));
+  assert.deepEqual(assignments.map((entry) => entry.waveIndex), Array.from({ length: 14 }, (_, index) => index));
   assert.throws(() => createSmokeAssignments(plan.cells, []), /exactly one worker/);
 });
 
@@ -91,17 +91,17 @@ test('smoke retains partial failures, does not retry, and writes a non-authorita
         };
       },
     });
-    assert.equal(calls.length, 17);
-    assert.equal(new Set(calls).size, 17);
+    assert.equal(calls.length, 14);
+    assert.equal(new Set(calls).size, 14);
     assert.equal(result.manifest.passed, false);
     assert.equal(result.manifest.blocksAuthoritativeRun, true);
     assert.equal(result.manifest.outcomes.filter((entry) => entry.status === 'failed').length, 1);
     assert.equal(result.manifest.artifactKind, WATCH_MODE_SMOKE_ARTIFACT_KIND);
     assert.equal(result.manifest.smokeOnly, true);
-    assert.equal(result.manifest.selection.reason, 'full 17-cell VM3 smoke');
+    assert.equal(result.manifest.selection.reason, 'full 14-cell VM3 smoke');
     assert.equal(result.manifest.selection.stopOnFirstFailure, false);
     assert.equal(result.manifest.providerCalls, 11);
-    assert.equal(result.manifest.dispatch.startedCount, 17);
+    assert.equal(result.manifest.dispatch.startedCount, 14);
     assert.deepEqual(result.manifest.dispatch.duplicateCellIds, []);
     assert.throws(() => readRunManifest(result.manifestPath), /smoke manifest is non-authoritative/);
   } finally {

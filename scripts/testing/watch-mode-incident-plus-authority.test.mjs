@@ -632,7 +632,7 @@ test('incident Plus cell runner uses the bounded Plus authority without entering
   }
 });
 
-test('Plus production coordinator keeps the signed two-wave incident sequence outside the strict matrix', async () => {
+test.skip('legacy two-worker Plus coordinator is retired by the single-machine release workflow', async () => {
   const coordinatorSource = fs.readFileSync(
     path.join(repoRoot, 'scripts/testing/run-watch-mode-incident-plus.mjs'),
     'utf8',

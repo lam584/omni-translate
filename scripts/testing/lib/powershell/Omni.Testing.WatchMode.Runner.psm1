@@ -254,7 +254,7 @@ function Invoke-WatchModeRun {
         } else {
           [string]$resolvedPhysicalDeviceId
         }
-        $appLogBeforePlayback = Get-WatchModeDesktopAppLogPath
+        $appLogBeforePlayback = [string]$desktopProcess.data.appLogPath
         # Count the readiness budget from the desktop launch, not from this wait.
         # Warm-up therefore cannot silently extend a failed single-model run past
         # the configured limit.

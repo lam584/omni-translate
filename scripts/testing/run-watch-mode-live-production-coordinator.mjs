@@ -112,7 +112,11 @@ if ($driverRequired) {
   $repairScript = Join-Path $workspace 'scripts\installer\repair-driver.ps1'
   $devconCandidate = Join-Path $workspace 'artifacts\tooling\devcon.exe'
   . $devconAuthorityScript
-  $devcon = Resolve-OmniDevconPath -WorkspaceRoot $workspace -ExplicitPath $devconCandidate
+  $devconArguments = @{ WorkspaceRoot = $workspace }
+  if (Test-Path -LiteralPath $devconCandidate -PathType Leaf) {
+    $devconArguments.ExplicitPath = $devconCandidate
+  }
+  $devcon = Resolve-OmniDevconPath @devconArguments
   $driverRuntimeRoot = Join-Path $remoteRoot 'logs\driver-runtime-sync'
   $packageRoot = Join-Path $workspace 'drivers\windows-virtual-mic\package'
   $packageSysHash = (Get-FileHash -LiteralPath (Join-Path $packageRoot 'omni-virtual-speaker.sys') -Algorithm SHA256).Hash.ToLowerInvariant()

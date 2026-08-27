@@ -559,9 +559,11 @@ test('SSH transport finalizes manifests in the guest and cancellation is task/la
   assert.doesNotMatch(source, /writeShardManifest\s*\(/);
   assert.doesNotMatch(source, /LEGACY_PRODUCTION_/);
   assert.doesNotMatch(source, /encodedPowerShell/);
-  assert.match(source, /input: invocation\.input/);
   assert.match(source, /isCoordinatorLocalWorker\(worker\)/);
-  assert.match(source, /runProcess\(invocation\.args\[0\], invocation\.args\.slice\(1\)/);
+  assert.match(source, /`local-command-\$\{crypto\.randomBytes\(12\)/);
+  assert.match(source, /runProcess\('powershell\.exe', \[/);
+  assert.match(source, /'-File', localScriptPath/);
+  assert.match(source, /decodeRemotePowerShellFileOutput\(localResult\)/);
   assert.match(source, /cwd: worker\.workspaceRoot/);
   assert.match(source, /requireControlPlane = false/);
   assert.match(source, /requireControlPlane: true/);

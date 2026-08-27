@@ -797,12 +797,27 @@ export function createSshProductionTransport({
     const { requireControlPlane: _requireControlPlane = false, ...processOptions } = options;
     const invocation = remotePowerShellInvocation(body, payload);
     if (isCoordinatorLocalWorker(worker)) {
-      return runProcess(invocation.args[0], invocation.args.slice(1), {
-        ...processOptions,
-        cwd: worker.workspaceRoot,
-        input: invocation.input,
-        completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
-      });
+      const transportRoot = path.join(coordinatorExecutionRoot, '.transport', worker.workerId);
+      fs.mkdirSync(transportRoot, { recursive: true });
+      const localScriptPath = path.join(
+        transportRoot,
+        `local-command-${crypto.randomBytes(12).toString('hex')}.ps1`,
+      );
+      fs.writeFileSync(localScriptPath, invocation.fileScript, 'utf8');
+      try {
+        const localResult = await runProcess('powershell.exe', [
+          '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+          '-File', localScriptPath,
+        ], {
+          ...processOptions,
+          cwd: worker.workspaceRoot,
+          input: '',
+          completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
+        });
+        return decodeRemotePowerShellFileOutput(localResult);
+      } finally {
+        fs.rmSync(localScriptPath, { force: true });
+      }
     }
     const transportRoot = path.join(coordinatorExecutionRoot, '.transport', worker.workerId);
     fs.mkdirSync(transportRoot, { recursive: true });

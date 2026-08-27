@@ -317,6 +317,7 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
   assert.doesNotMatch(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /omni-physical-output-probe\.exe/);
   assert.match(PRODUCTION_INTERACTIVE_SESSION_LAUNCH_BODY, /invoke-watch-mode-interactive-task\.ps1/);
   assert.match(PRODUCTION_WORKER_READINESS_FINALIZE_BODY, /interactive-readiness\.json/);
+  assert.match(PRODUCTION_WORKER_READINESS_FINALIZE_BODY, /\$receipt = \[ordered\]@\{\s*schemaVersion = 2/);
   assert.match(PRODUCTION_WORKER_READINESS_FINALIZE_BODY, /profiles = @\(\$interactive\.profiles\)/);
   assert.match(PRODUCTION_WORKER_READINESS_FINALIZE_BODY, /credentialStatus = \$interactive\.credentialStatus/);
   assert.match(PRODUCTION_WORKER_READINESS_FINALIZE_BODY, /windows-credential-manager/);
@@ -345,6 +346,7 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
   assert.match(control, /expectedCredentialReference = \[string\]\$payload\.expectedCredentialReference/);
   assert.match(control, /\[bool\]\$payload\.requireSeparateControlPlane/);
   assert.match(source, /requireSeparateControlPlane: !isCoordinatorLocalWorker\(worker\)/);
+  assert.match(source, /\$launch\.schemaVersion -ne 2/);
   assert.match(control, /taskInfoBeforeStart/);
   assert.match(control, /taskObservedStarted/);
   assert.match(control, /\$taskStateBeforeInfo/);

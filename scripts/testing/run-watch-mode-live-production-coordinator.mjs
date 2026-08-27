@@ -267,7 +267,7 @@ if (
   @($interactive.profiles).Count -ne @($payload.profiles).Count
 ) { throw 'worker readiness component identity/session binding mismatch' }
 $receipt = [ordered]@{
-  schemaVersion = 1
+  schemaVersion = 2
   artifactKind = 'watch-mode-production-worker-zero-provider-readiness'
   generatedAt = [DateTime]::UtcNow.ToString('o')
   executionId = [string]$payload.executionId
@@ -1339,7 +1339,7 @@ if (Test-Path -LiteralPath $launchPath -PathType Leaf) {
   try {
     $launch = Get-Content -LiteralPath $launchPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if (
-      $launch.schemaVersion -ne 1 -or
+      $launch.schemaVersion -ne 2 -or
       [string]$launch.artifactKind -ne 'watch-mode-interactive-shard-launch-authority' -or
       [string]$launch.executionId -ne [string]$payload.executionId -or
       [string]$launch.leaseId -ne [string]$payload.leaseId -or

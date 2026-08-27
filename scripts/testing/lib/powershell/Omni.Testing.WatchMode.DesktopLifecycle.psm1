@@ -4,6 +4,7 @@ Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Process.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Windows.Elevation.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Metrics.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Provider.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.EvidenceCollection.psm1') -DisableNameChecking
 function Resolve-OmniBuiltExecutable {
   # Every workspace member builds into the root Cargo target directory.
   param(
@@ -291,7 +292,7 @@ function Start-WatchModeDesktopShell {
     throw
   }
   return [pscustomobject]@{
-    pid = $process.Id; runMarker = $RunMarker; diagnosticsRoot = $OutputDirectory; appLogPath = Get-WatchModeDesktopAppLogPath
+    pid = $process.Id; runMarker = $RunMarker; diagnosticsRoot = $OutputDirectory; appLogPath = Omni.Testing.WatchMode.EvidenceCollection\Get-WatchModeDesktopAppLogPath
     processLease = $processLease
     stdout = $stdout
     stderr = $stderr

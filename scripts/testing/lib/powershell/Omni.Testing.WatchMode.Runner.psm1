@@ -14,12 +14,12 @@ Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.AudioCapture.psm1
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.DesktopLifecycle.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.RawContent.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Stt.psm1') -Force -DisableNameChecking
-Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.EvidenceCollection.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Step.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.StateMachine.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Preflight.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.FixtureRunner.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.PlatformOperations.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.EvidenceCollection.psm1') -Force -DisableNameChecking
 function Invoke-Step {
   param(
     [Parameter(Mandatory = $true)]$State,
@@ -110,7 +110,7 @@ function Invoke-WatchModeRun {
   $virtualDriverMediaPreflight = $null
   $runException = $null
   try {
-    $appLogForMarker = Get-WatchModeDesktopAppLogPath
+    $appLogForMarker = Omni.Testing.WatchMode.EvidenceCollection\Get-WatchModeDesktopAppLogPath
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $appLogForMarker) | Out-Null
     Add-Content -LiteralPath $appLogForMarker -Value $runMarker -Encoding UTF8
     $desktopEnvState = Set-DesktopAutostartEnvFile -RunMarker $runMarker -OutputDirectory $outputDir `

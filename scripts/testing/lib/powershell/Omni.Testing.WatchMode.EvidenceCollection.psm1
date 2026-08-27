@@ -1,6 +1,6 @@
 #requires -Version 5.1
-Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.IO.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Report.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.IO.psm1')
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Report.psm1') -DisableNameChecking
 function Copy-IfExists {
   param([string]$Source, [string]$Destination)
   if (Test-Path -LiteralPath $Source -PathType Leaf) {

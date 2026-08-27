@@ -35,6 +35,23 @@ fn diagnostic_autostart_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn release_evidence_blocks_background_preconnect(scenario: Option<&str>) -> bool {
+    matches!(
+        scenario.map(str::trim),
+        Some(
+            "E2E-PROVIDER-CONFIG"
+                | "E2E-PROVIDER-PROBE"
+                | "E2E-DIAGNOSTICS-EXPORT"
+        )
+    )
+}
+
+fn release_evidence_scenario() -> Option<String> {
+    std::env::var("OMNI_RELEASE_EVIDENCE_SCENARIO")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
 fn diagnostic_model_id(value: &str) -> &str {
     value
         .trim()
@@ -460,6 +477,19 @@ pub(crate) fn preconnect_omni_realtime_inner(
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
     let _pipeline_guard = state.lock_inbound_pipeline();
+    if release_evidence_blocks_background_preconnect(release_evidence_scenario().as_deref()) {
+        let snapshot = state.snapshot();
+        let _ = append_diagnostics_log(
+            &app,
+            "audio",
+            "info",
+            "release_evidence.background_preconnect_blocked",
+            Some("reason=release-evidence-provider-authority-is-exclusive".to_string()),
+            None,
+            None,
+        );
+        return Ok(snapshot);
+    }
     // The pipeline lock makes this check atomic against inbound start/stop.
     // Preconnect is an idle-time optimization and must never replace a worker
     // already owned by an accepted, converging, or active route.
@@ -663,5 +693,19 @@ mod active_route_preconnect_tests {
             "qwen3.5-omni-plus-realtime",
             omni::OmniOutputMode::TextAndAudio,
         ));
+    }
+
+    #[test]
+    fn release_evidence_scenarios_exclusively_own_provider_connections() {
+        for scenario in [
+            "E2E-PROVIDER-CONFIG",
+            "E2E-PROVIDER-PROBE",
+            "E2E-DIAGNOSTICS-EXPORT",
+        ] {
+            assert!(release_evidence_blocks_background_preconnect(Some(scenario)));
+        }
+        assert!(!release_evidence_blocks_background_preconnect(None));
+        assert!(!release_evidence_blocks_background_preconnect(Some("")));
+        assert!(!release_evidence_blocks_background_preconnect(Some("ordinary-startup")));
     }
 }

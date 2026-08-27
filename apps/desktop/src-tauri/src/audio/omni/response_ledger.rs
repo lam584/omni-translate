@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-const MAX_RESPONSE_LINEAGES: usize = 64;
+const MAX_COMPLETED_RESPONSE_LINEAGES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ResponseLineage {
@@ -50,9 +50,7 @@ impl ResponseLedger {
             response_id: None,
             completed: false,
         });
-        while self.lineages.len() > MAX_RESPONSE_LINEAGES {
-            self.lineages.pop_front();
-        }
+        self.prune_completed_lineages();
     }
 
     pub(super) fn bind_response(
@@ -146,10 +144,26 @@ impl ResponseLedger {
         {
             lineage.completed = true;
         }
+        self.prune_completed_lineages();
     }
 
     pub(super) fn clear(&mut self) {
         self.lineages.clear();
+    }
+
+    fn prune_completed_lineages(&mut self) {
+        while self
+            .lineages
+            .iter()
+            .filter(|lineage| lineage.completed)
+            .count()
+            > MAX_COMPLETED_RESPONSE_LINEAGES
+        {
+            let Some(index) = self.lineages.iter().position(|lineage| lineage.completed) else {
+                break;
+            };
+            self.lineages.remove(index);
+        }
     }
 }
 
@@ -262,5 +276,37 @@ mod tests {
             .bind_response(Some("response-two"), None, None, Some("cue-two"))
             .expect("second response");
         assert_eq!(second.cue_id, "cue-two");
+    }
+
+    #[test]
+    fn unfinished_lineages_are_never_evicted_by_completed_history_limit() {
+        let mut ledger = ResponseLedger::default();
+        for index in 0..=MAX_COMPLETED_RESPONSE_LINEAGES + 32 {
+            ledger.record_source(
+                &format!("cue-{index}"),
+                Some(&format!("source-{index}")),
+            );
+        }
+
+        let last = MAX_COMPLETED_RESPONSE_LINEAGES + 32;
+        let lineage = ledger
+            .bind_response(
+                Some("response-last"),
+                Some(&format!("source-{last}")),
+                Some("translation-last"),
+                None,
+            )
+            .expect("every unfinished final owner remains exactly addressable");
+        assert_eq!(lineage.cue_id, format!("cue-{last}"));
+
+        let first = ledger
+            .bind_response(
+                Some("response-first"),
+                Some("source-0"),
+                Some("translation-first"),
+                None,
+            )
+            .expect("the oldest unfinished owner also remains addressable");
+        assert_eq!(first.cue_id, "cue-0");
     }
 }

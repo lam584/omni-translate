@@ -531,9 +531,10 @@ impl OmniEventDiagnostics {
                 input_item_id,
                 response_id: None,
             });
-        if self.pending_native_response_owners.len() > MAX_NATIVE_RESPONSE_OWNERS {
-            self.pending_native_response_owners.pop_back();
-        }
+        // Never evict an unfinished response owner. Provider output may lag
+        // input for many turns, and dropping either end of this queue would
+        // silently orphan a final cue. Completed-owner history remains
+        // bounded below; reconnect/session teardown clears pending state.
     }
 
     #[cfg(test)]
@@ -1429,6 +1430,41 @@ mod native_response_owner_tests {
         assert_eq!(diagnostics.pending_native_response_owner_count(), 1);
         diagnostics.claim_native_response_owner(None, None, None, None);
         assert_eq!(diagnostics.native_response_cue_id.as_deref(), Some("cue-one"));
+    }
+
+    #[test]
+    fn more_than_legacy_owner_limit_preserves_every_pending_final_owner() {
+        let mut diagnostics = OmniEventDiagnostics::default();
+        let owner_count = MAX_NATIVE_RESPONSE_OWNERS + 8;
+        for index in 0..owner_count {
+            diagnostics.capture_native_response_owner(
+                format!("cue-{index}"),
+                Some(format!("source-{index}")),
+            );
+        }
+
+        assert_eq!(diagnostics.pending_native_response_owner_count(), owner_count);
+        let last = owner_count - 1;
+        diagnostics.claim_native_response_owner_for_response(
+            Some("response-last"),
+            Some(&format!("source-{last}")),
+            None,
+        );
+        assert_eq!(
+            diagnostics.native_response_cue_for_response_id("response-last"),
+            Some(format!("cue-{last}"))
+        );
+        diagnostics.complete_native_response_owner();
+
+        diagnostics.claim_native_response_owner_for_response(
+            Some("response-first"),
+            Some("source-0"),
+            None,
+        );
+        assert_eq!(
+            diagnostics.native_response_cue_for_response_id("response-first"),
+            Some("cue-0".to_string())
+        );
     }
 
     #[test]

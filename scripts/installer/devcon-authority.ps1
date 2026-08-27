@@ -1,3 +1,6 @@
+$windowsPowerShellSecurityModule = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1'
+Import-Module $windowsPowerShellSecurityModule -Force
+
 function Test-OmniPathWithinRoot {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -25,7 +28,7 @@ function Assert-OmniMicrosoftSignedDevcon {
     throw "DevCon authority requires an .exe file: $Path"
   }
 
-  $signature = Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $Path
+  $signature = Get-AuthenticodeSignature -LiteralPath $Path
   $subject = if ($signature.SignerCertificate) {
     [string]$signature.SignerCertificate.Subject
   } else {

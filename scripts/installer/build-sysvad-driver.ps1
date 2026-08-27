@@ -312,6 +312,13 @@ $signingCertificate = New-Object System.Security.Cryptography.X509Certificates.X
 )
 $isDevelopmentTestSigner = $useDevelopmentSigningCredential -or
   $signingCertificate.Subject -eq 'CN=Omni Translate Development Driver Test Signing'
+$isPerReleaseSelfSignedTestSigner =
+  $signingCertificate.Subject -like 'CN=Omni Translate Local Release *' -and
+  $signingCertificate.Issuer -eq $signingCertificate.Subject -and
+  $signingCertificate.SignatureAlgorithm.FriendlyName -match 'sha256' -and
+  @($signingCertificate.Extensions | Where-Object {
+    $_.Oid.Value -eq '2.5.29.37' -and $_.Format($false) -match '1\.3\.6\.1\.5\.5\.7\.3\.3|Code Signing'
+  }).Count -eq 1
 foreach ($signedPath in @($stagedSys, $stagedCat)) {
   # Do not use Get-AuthenticodeSignature here: on minimal PowerShell installs it
   # can fail to autoload Microsoft.PowerShell.Security after signing has succeeded.
@@ -343,6 +350,11 @@ foreach ($signedPath in @($stagedSys, $stagedCat)) {
     # The signer thumbprint above binds the package to this run in either case.
     if ($verifyExitCode -notin @(0, 1)) {
       throw "Development signature verification failed for $signedPath. ExitCode=$verifyExitCode`n$verifyOutput"
+    }
+  }
+  elseif ($isPerReleaseSelfSignedTestSigner -and $verifyExitCode -eq 1) {
+    if ($verifyOutput -notmatch 'terminated in a root\s+certificate which is not trusted by the trust provider') {
+      throw "Self-signed TESTSIGNING verification failed for $signedPath. ExitCode=$verifyExitCode`n$verifyOutput"
     }
   }
   elseif ($verifyExitCode -ne 0) {

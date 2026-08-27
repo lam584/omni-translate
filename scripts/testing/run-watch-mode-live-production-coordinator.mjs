@@ -131,8 +131,8 @@ if ($driverRequired) {
     $packageCertificateHash -ne [string]$expected.cerSha256
   ) { throw 'driver package changed after signed runtime distribution' }
   $packageCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($packageCertificatePath)
-  $packageCatalogSignature = Get-AuthenticodeSignature -LiteralPath (Join-Path $packageRoot 'omni-virtual-speaker.cat')
-  $packageSysSignature = Get-AuthenticodeSignature -LiteralPath (Join-Path $packageRoot 'omni-virtual-speaker.sys')
+  $packageCatalogSignature = Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath (Join-Path $packageRoot 'omni-virtual-speaker.cat')
+  $packageSysSignature = Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath (Join-Path $packageRoot 'omni-virtual-speaker.sys')
   $packageMetadata = Get-Content -LiteralPath (Join-Path $packageRoot 'driver-package.json') -Raw -Encoding UTF8 | ConvertFrom-Json
   if (
     -not $packageCatalogSignature.SignerCertificate -or
@@ -597,6 +597,8 @@ export function remotePowerShellInvocation(body, payload) {
     "$ErrorActionPreference = 'Stop'",
     '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)',
     '$OutputEncoding = [Console]::OutputEncoding',
+    // Authenticode validation is a security boundary and must not depend on
+    // command-discovery module auto-loading in a one-shot local worker.
     // The single-machine worker may run with module auto-loading disabled.
     // Keep the signed transport self-contained instead of depending on the
     // Microsoft.PowerShell.Utility implementation of Get-FileHash.

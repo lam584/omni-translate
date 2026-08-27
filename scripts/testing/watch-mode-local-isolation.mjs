@@ -69,6 +69,7 @@ export const LOCAL_ISOLATION_REUSE_ALLOWED_PATHS = Object.freeze([
   'apps/desktop/src/utils/provider-probe.test.ts',
   'scripts/development/build-desktop-release.mjs',
   'scripts/installer/build-sysvad-driver.ps1',
+  'scripts/installer/devcon-authority.ps1',
   'scripts/testing/README.md',
   'scripts/testing/collect-watch-mode-interactive-process-authority.ps1',
   'scripts/testing/invoke-watch-mode-interactive-task.ps1',

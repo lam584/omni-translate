@@ -30,6 +30,7 @@ import {
   scpBaseArgs,
   sshBaseArgs,
   validateProductionWorkerConfig,
+  windowsPowerShellEnvironment,
 } from './run-watch-mode-live-production-coordinator.mjs';
 
 test('remote runtime verification has a bounded slow-disk timeout', () => {
@@ -459,6 +460,20 @@ test('remote PowerShell file output reconstructs framed payloads larger than 256
   });
   assert.equal(decoded.exitCode, 0);
   assert.equal(decoded.stdout, `${payload}\n__OMNI_REMOTE_COMPLETE_V1__\n`);
+});
+
+test('local Windows PowerShell excludes PowerShell 7 module roots', () => {
+  const environment = windowsPowerShellEnvironment({
+    WINDIR: 'C:\\Windows',
+    ProgramFiles: 'C:\\Program Files',
+    USERPROFILE: 'C:\\Users\\VMUser',
+    PSModulePath: 'C:\\Program Files\\PowerShell\\Modules;C:\\Codex\\Modules',
+  });
+  assert.equal(
+    environment.PSModulePath,
+    'C:\\Users\\VMUser\\Documents\\WindowsPowerShell\\Modules;C:\\Program Files\\WindowsPowerShell\\Modules;C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules',
+  );
+  assert.doesNotMatch(environment.PSModulePath, /\\Program Files\\PowerShell\\Modules/);
 });
 
 test('remote PowerShell hashes files without module auto-loading', { skip: !isWindows }, () => {

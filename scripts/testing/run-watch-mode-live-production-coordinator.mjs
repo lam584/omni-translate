@@ -713,6 +713,19 @@ export async function runRemoteJsonWithRetries(operation, label, {
   throw lastError;
 }
 
+export function windowsPowerShellEnvironment(baseEnvironment = process.env) {
+  const environment = { ...baseEnvironment };
+  const windowsRoot = environment.WINDIR || 'C:\\Windows';
+  const programFiles = environment.ProgramFiles || 'C:\\Program Files';
+  const userProfile = environment.USERPROFILE || '';
+  environment.PSModulePath = [
+    ...(userProfile ? [path.win32.join(userProfile, 'Documents', 'WindowsPowerShell', 'Modules')] : []),
+    path.win32.join(programFiles, 'WindowsPowerShell', 'Modules'),
+    path.win32.join(windowsRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules'),
+  ].join(';');
+  return environment;
+}
+
 function safeRemoteChild(root, child, label) {
   const relative = path.win32.relative(path.win32.resolve(root), path.win32.resolve(child));
   if (!relative || relative.startsWith('..') || path.win32.isAbsolute(relative)) {
@@ -812,6 +825,7 @@ export function createSshProductionTransport({
         ], {
           ...processOptions,
           cwd: worker.workspaceRoot,
+          env: windowsPowerShellEnvironment(processOptions.env ?? process.env),
           input: '',
           completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
         });

@@ -105,7 +105,11 @@ foreach ($entry in @(
   }
 }
 $activeSessionId = [int][OmniInteractiveControl.NativeMethods]::WTSGetActiveConsoleSessionId()
-if ($activeSessionId -ne 1 -or [Diagnostics.Process]::GetCurrentProcess().SessionId -eq $activeSessionId) {
+if ($activeSessionId -ne 1) {
+  throw 'interactive task requires active console session 1'
+}
+if ([bool]$payload.requireSeparateControlPlane -and
+    [Diagnostics.Process]::GetCurrentProcess().SessionId -eq $activeSessionId) {
   throw 'SSH control plane must be outside the active console session 1'
 }
 $expectedUser = [string]$payload.user
@@ -123,7 +127,7 @@ Assert-RequiredProperties $payload @(
   'executionId', 'planDigest', 'workerId', 'vmIdentityDigest',
   'expectedVmUuidBios', 'user', 'timeoutMs', 'launcherSha256',
   'processAuthorityCollectorSha256', 'shardRunnerSha256',
-  'expectedCredentialReference'
+  'expectedCredentialReference', 'requireSeparateControlPlane'
 ) 'interactive task request'
 $cellFields = $null
 $endpointReadinessFields = $null

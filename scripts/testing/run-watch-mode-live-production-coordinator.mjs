@@ -771,7 +771,14 @@ function orchestrationHash(plan, relativePath) {
   return entry.sha256;
 }
 
-function interactiveRequestBase({ plan, worker, remoteRoot, mode, timeoutMs }) {
+function interactiveRequestBase({
+  plan,
+  worker,
+  remoteRoot,
+  mode,
+  timeoutMs,
+  requireSeparateControlPlane,
+}) {
   return {
     schemaVersion: 1,
     artifactKind: 'watch-mode-interactive-task-request',
@@ -785,6 +792,7 @@ function interactiveRequestBase({ plan, worker, remoteRoot, mode, timeoutMs }) {
     expectedVmUuidBios: worker.vmIdentity.uuidBios,
     user: worker.user,
     timeoutMs,
+    requireSeparateControlPlane,
     controlScriptSha256: orchestrationHash(plan, ORCHESTRATION_CONTROL_SCRIPT),
     launcherSha256: orchestrationHash(plan, ORCHESTRATION_LAUNCHER_SCRIPT),
     processAuthorityCollectorSha256: orchestrationHash(plan, ORCHESTRATION_PROCESS_COLLECTOR),
@@ -1163,6 +1171,7 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
               remoteRoot,
               mode: 'endpoint-readiness',
               timeoutMs: 300_000,
+              requireSeparateControlPlane: !isCoordinatorLocalWorker(worker),
             }),
             readinessRequestDigest: readinessPayload.readinessRequestDigest,
             profiles: worker.deviceProfileInstances,
@@ -1222,6 +1231,7 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
         remoteRoot,
         mode: 'shard-cell',
         timeoutMs: PRODUCTION_REMOTE_CELL_TIMEOUT_MS - 30_000,
+        requireSeparateControlPlane: !isCoordinatorLocalWorker(worker),
       }),
       planPath: path.win32.join(remoteRoot, SHARD_EXECUTION_PLAN_FILE),
       planSha256: fileAuthorityEntry(planPath, path.basename(planPath)).sha256,

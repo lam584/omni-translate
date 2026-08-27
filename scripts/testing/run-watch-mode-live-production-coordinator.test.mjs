@@ -197,6 +197,10 @@ test('production worker config is exact, single-machine, UUID-bound, and has no 
 });
 
 test('worker readiness proves driver package and endpoint profiles without a Provider process', () => {
+  const source = fs.readFileSync(
+    new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url),
+    'utf8',
+  );
   assert.ok(
     AUTHORITY_RUNTIME_BINARY_FILES.includes(
       'drivers/windows-virtual-mic/package/omni-translate-development-driver.cer',
@@ -279,6 +283,8 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
     'utf8',
   );
   assert.match(control, /expectedCredentialReference = \[string\]\$payload\.expectedCredentialReference/);
+  assert.match(control, /\[bool\]\$payload\.requireSeparateControlPlane/);
+  assert.match(source, /requireSeparateControlPlane: !isCoordinatorLocalWorker\(worker\)/);
   assert.match(control, /taskInfoBeforeStart/);
   assert.match(control, /taskObservedStarted/);
   assert.match(control, /\$taskStateBeforeInfo/);

@@ -218,8 +218,9 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /packageMetadata\.signerThumbprint/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /install-development-driver\.ps1/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /-ValidatePackageOnly/);
-  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /repair-driver\.ps1/);
-  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /-Action 'reinstall-driver'/);
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /request-elevated-driver-operation\.ps1/);
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /Action = 'reinstall'/);
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /driverOperation\.elevated -ne \$true/);
   assert.ok(
     PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('Resolve-OmniDevconPath')
       < PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('driver package changed after signed runtime distribution'),
@@ -232,11 +233,11 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
   );
   assert.ok(
     PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('-ValidatePackageOnly')
-      < PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf("-Action 'reinstall-driver'"),
+      < PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf("Action = 'reinstall'"),
     'package validation must complete before destructive driver repair',
   );
   assert.ok(
-    PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf("-Action 'reinstall-driver'")
+    PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf("Action = 'reinstall'")
       < PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('$driverOutput = @(& $driverScript'),
     'the exact rebuilt package must be installed before readiness is collected',
   );
@@ -248,8 +249,8 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
     PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('} else {'),
     PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('$control = [ordered]@{'),
   );
-  assert.match(driverRequiredBranch, /repair-driver\.ps1/);
-  assert.doesNotMatch(nonDriverBranch, /repair-driver\.ps1|Resolve-OmniDevconPath|-Action 'reinstall-driver'/);
+  assert.match(driverRequiredBranch, /request-elevated-driver-operation\.ps1/);
+  assert.doesNotMatch(nonDriverBranch, /request-elevated-driver-operation\.ps1|Resolve-OmniDevconPath|Action = 'reinstall'/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /installedSysSha256/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /packageCatSha256/);
   assert.doesNotMatch(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /omni-physical-output-probe\.exe/);

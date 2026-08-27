@@ -109,7 +109,7 @@ if ($driverRequired) {
   # the destructive repair begins.
   $devconAuthorityScript = Join-Path $workspace 'scripts\installer\devcon-authority.ps1'
   $installScript = Join-Path $workspace 'scripts\installer\install-development-driver.ps1'
-  $repairScript = Join-Path $workspace 'scripts\installer\repair-driver.ps1'
+  $elevationRequestScript = Join-Path $workspace 'scripts\installer\request-elevated-driver-operation.ps1'
   $devconCandidate = Join-Path $workspace 'artifacts\tooling\devcon.exe'
   . $devconAuthorityScript
   $devconArguments = @{ WorkspaceRoot = $workspace }
@@ -151,7 +151,35 @@ if ($driverRequired) {
     DevconPath = $devcon
   }
   & $installScript @driverArguments -ValidatePackageOnly
-  & $repairScript @driverArguments -Action 'reinstall-driver'
+  $driverOperationId = "$( [string]$payload.executionId )-$( [string]$payload.workerId )-driver-readiness"
+  $driverOperationResultPath = Join-Path $driverRuntimeRoot 'elevated-operation.json'
+  $elevatedArguments = @{
+    Action = 'reinstall'
+    OperationId = $driverOperationId
+    ResultPath = $driverOperationResultPath
+    WorkspaceRoot = $workspace
+    RuntimeRoot = $driverRuntimeRoot
+    InstallChannel = 'development'
+    DriverVersion = '0.10.0-dev'
+    BridgeVersion = '0.1.0'
+    TargetDeviceId = 'virtual-mic-default'
+  }
+  & $elevationRequestScript @elevatedArguments
+  if (-not (Test-Path -LiteralPath $driverOperationResultPath -PathType Leaf)) {
+    throw 'elevated driver readiness operation did not write its result authority'
+  }
+  $driverOperation = Get-Content -LiteralPath $driverOperationResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  if (
+    $driverOperation.operationId -ne $driverOperationId -or
+    $driverOperation.action -ne 'reinstall' -or
+    $driverOperation.succeeded -ne $true -or
+    $driverOperation.phase -ne 'completed' -or
+    $driverOperation.elevated -ne $true -or
+    @('already-elevated', 'uac-runas') -notcontains [string]$driverOperation.elevationMode -or
+    $driverOperation.installChannel -ne 'development' -or
+    $driverOperation.driverVersion -ne '0.10.0-dev' -or
+    $driverOperation.bridgeVersion -ne '0.1.0'
+  ) { throw "elevated driver readiness operation failed: $($driverOperation.errorCode) $($driverOperation.summary)" }
 
   $driverEvidenceRoot = Join-Path $readinessRoot 'virtual-mic'
   $driverOutput = @(& $driverScript -WorkspaceRoot $workspace -VirtualMicEvidenceOutputDirectory $driverEvidenceRoot)
@@ -191,6 +219,7 @@ $control = [ordered]@{
   providerCalls = 0
   driverRequired = $driverRequired
   driver = $authority
+  driverOperation = $driverOperation
 }
 $controlPath = Join-Path $readinessRoot 'control-readiness.json'
 if (Test-Path -LiteralPath $controlPath) { throw 'control readiness authority already exists' }

@@ -142,7 +142,7 @@ if ($driverRequired) {
   $driverOperationId = "$( [string]$payload.executionId )-$( [string]$payload.workerId )-driver-readiness"
   $driverOperationResultPath = Join-Path $driverRuntimeRoot 'elevated-operation.json'
   $driverReadinessResultPath = Join-Path $driverRuntimeRoot 'installed-driver-readiness.json'
-  $driverEvidenceRoot = Join-Path $readinessRoot 'virtual-mic'
+  $driverEvidenceRoot = Join-Path $driverRuntimeRoot 'virtual-mic'
   $elevatedArguments = @{
     Action = 'reinstall'
     OperationId = $driverOperationId

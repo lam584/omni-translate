@@ -110,7 +110,7 @@ function Invoke-WatchModeRun {
   $virtualDriverMediaPreflight = $null
   $runException = $null
   try {
-    $appLogForMarker = Omni.Testing.WatchMode.EvidenceCollection\Get-WatchModeDesktopAppLogPath
+    $appLogForMarker = [string]$runContext.paths.appLogPath
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $appLogForMarker) | Out-Null
     Add-Content -LiteralPath $appLogForMarker -Value $runMarker -Encoding UTF8
     $desktopEnvState = Set-DesktopAutostartEnvFile -RunMarker $runMarker -OutputDirectory $outputDir `

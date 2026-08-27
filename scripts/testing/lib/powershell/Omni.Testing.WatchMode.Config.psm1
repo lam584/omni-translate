@@ -18,6 +18,10 @@ function New-OmniWatchModeContext {
   if ($feedbackMode -ne 'virtual-driver' -and $driverPolicy -ne 'not-applicable') {
     throw "$feedbackMode cannot perform virtual-driver operations"
   }
+  $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+  if ([string]::IsNullOrWhiteSpace($localAppData)) {
+    throw 'LocalApplicationData is unavailable for the release desktop log.'
+  }
 
   return [pscustomobject]@{
     schemaVersion = 'watch-mode-run-context/v2'
@@ -35,6 +39,7 @@ function New-OmniWatchModeContext {
       workspaceRoot = [IO.Path]::GetFullPath($WorkspaceRoot)
       outputRoot = [string]$Request.paths.outputRoot
       runtimeRoot = [string]$Request.paths.runtimeRoot
+      appLogPath = Join-Path $localAppData 'OmniTranslate\diagnostics\logs\app.log'
     }
     timeouts = $Request.timeouts
     media = $Request.media

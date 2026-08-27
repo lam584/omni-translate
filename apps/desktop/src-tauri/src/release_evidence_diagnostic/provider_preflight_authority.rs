@@ -88,11 +88,11 @@ const CELL_FEEDBACK_MODES: [&str; 8] = [
 ];
 const CELL_DEVICE_CLASSES: [&str; 8] = [
     "default-speaker",
-    "usb",
     "default-speaker",
-    "usb",
     "default-speaker",
-    "usb",
+    "default-speaker",
+    "default-speaker",
+    "default-speaker",
     "default-speaker",
     "default-speaker",
 ];
@@ -709,7 +709,11 @@ fn validate_grant(
         return Err("provider preflight grant provenance does not match the exact clean Desktop build".to_string());
     }
     let workers = required_array(grant, "/workers", "grant workers")?;
-    if !matches!(workers.len(), 2 | 3)
+    let expected_worker_count = match profile {
+        PreflightAuthorityProfile::StrictReleaseMatrix => 1,
+        PreflightAuthorityProfile::IncidentPlusReplay => 2,
+    };
+    if workers.len() != expected_worker_count
         || required_u64(grant, "/localIsolationAuthority/providerCalls", "local provider calls")? != 0
         || required_u64(grant, "/budget/inputSampleRateHz", "budget sample rate")? != 16_000
         || required_u64(grant, "/budget/cellMaxExternalAudioSamples", "cell budget")? != CELL_MAX_SAMPLES

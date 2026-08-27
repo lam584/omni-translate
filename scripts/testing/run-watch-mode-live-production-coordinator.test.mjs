@@ -432,6 +432,7 @@ test('remote PowerShell uses a compressed encoded command without SSH stdin', ()
   assert.match(bootstrap, /\[Console\]::Out\.Flush\(\); \[Environment\]::Exit\(0\)/);
   assert.match(bootstrap, /\[Console\]::Error\.Flush\(\); \[Environment\]::Exit\(1\)/);
   assert.match(invocation.fileScript, /\$payloadJson =/);
+  assert.match(invocation.fileScript, /^Import-Module Microsoft\.PowerShell\.Security -ErrorAction Stop/m);
   assert.match(invocation.fileScript, /ConvertTo-Json -Compress/);
   assert.match(invocation.fileScript, /__OMNI_REMOTE_COMPLETE_V1__/);
   assert.doesNotMatch(invocation.fileScript, /ScriptBlock|GZipStream/);

@@ -643,6 +643,7 @@ export function remotePowerShellInvocation(body, payload) {
   return {
     script: bootstrap,
     fileScript: [
+      'Import-Module Microsoft.PowerShell.Security -ErrorAction Stop',
       '$omniRemoteOutput = @(',
       source,
       ')',

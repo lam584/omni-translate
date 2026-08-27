@@ -21,6 +21,7 @@ fn main() {
 #[cfg(windows)]
 mod injector {
     use omni_bridge_service::probe_support::open_render_stream;
+    use rodio::Source;
     use serde::Serialize;
     use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
@@ -489,35 +490,15 @@ mod injector {
     fn decode_mp3(path: &Path) -> Result<DecodedAudio, String> {
         let file = std::fs::File::open(path)
             .map_err(|error| format!("failed to open media '{}': {error}", path.display()))?;
-        let mut decoder = minimp3::Decoder::new(file);
-        let mut samples = Vec::new();
-        let mut source_sample_rate_hz = None;
-        let mut source_channels = None;
-        loop {
-            match decoder.next_frame() {
-                Ok(frame) => {
-                    source_sample_rate_hz.get_or_insert(frame.sample_rate.max(1) as u32);
-                    source_channels.get_or_insert(frame.channels.max(1));
-                    samples.extend(
-                        frame
-                            .data
-                            .into_iter()
-                            .map(|sample| sample as f32 / i16::MAX as f32),
-                    );
-                }
-                Err(minimp3::Error::Eof) => break,
-                Err(error) => {
-                    return Err(format!(
-                        "failed to decode media '{}': {error}",
-                        path.display()
-                    ))
-                }
-            }
-        }
+        let decoder = rodio::Decoder::try_from(file)
+            .map_err(|error| format!("failed to decode media '{}': {error}", path.display()))?;
+        let source_sample_rate_hz = decoder.sample_rate().get();
+        let source_channels = decoder.channels().get() as usize;
+        let samples = decoder.collect::<Vec<f32>>();
         Ok(DecodedAudio {
             samples,
-            source_sample_rate_hz: source_sample_rate_hz.unwrap_or(48_000),
-            source_channels: source_channels.unwrap_or(1),
+            source_sample_rate_hz,
+            source_channels,
         })
     }
 

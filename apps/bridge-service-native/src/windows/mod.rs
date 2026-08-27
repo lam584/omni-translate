@@ -14,7 +14,8 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use omni_bridge_protocol::{
     audio_pipe_path, control_pipe_path, source_pipe_path, TranslationPlaybackStatusAck,
     TranslationPlaybackStatusEvent, TranslationPlaybackStatusKind, TranslationStreamState,
-    DEFAULT_PIPE_NAME,
+    DEFAULT_PIPE_NAME, MAX_AUDIO_FRAME_HEADER_BYTES, MAX_AUDIO_FRAME_PAYLOAD_BYTES,
+    MAX_CONTROL_MESSAGE_BYTES,
 };
 use omni_bridge_service::{
     accepted_audio_frame_ack, classify_driver_health_with_device_evidence,
@@ -674,7 +675,7 @@ fn handle_control_client(
     runtime_root: &Path,
     pid_path: &Path,
 ) {
-    let line = match read_line(handle) {
+    let line = match read_line(handle, MAX_CONTROL_MESSAGE_BYTES) {
         Ok(line) => line,
         Err(error) => {
             service_log(
@@ -744,12 +745,18 @@ fn handle_audio_client(
         return;
     };
     let header_len = u32::from_le_bytes(header_len_bytes.try_into().unwrap()) as usize;
+    if header_len == 0 || header_len > MAX_AUDIO_FRAME_HEADER_BYTES {
+        return;
+    }
     let Ok(header_bytes) = read_exact(handle, header_len) else {
         return;
     };
     let Ok(header) = serde_json::from_slice::<AudioFrameHeader>(&header_bytes) else {
         return;
     };
+    if header.payload_bytes > MAX_AUDIO_FRAME_PAYLOAD_BYTES {
+        return;
+    }
     let Ok(payload) = read_exact(handle, header.payload_bytes) else {
         return;
     };

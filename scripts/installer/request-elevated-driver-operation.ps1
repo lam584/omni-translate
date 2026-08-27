@@ -8,7 +8,9 @@ param(
   [Parameter(Mandatory = $true)][string]$DriverVersion,
   [Parameter(Mandatory = $true)][string]$BridgeVersion,
   [Parameter(Mandatory = $true)][string]$TargetDeviceId,
-  [string]$VirtualRenderDeviceId = 'omni-virtual-speaker-default'
+  [string]$VirtualRenderDeviceId = 'omni-virtual-speaker-default',
+  [string]$ReadinessResultPath = '',
+  [string]$VirtualMicEvidenceOutputDirectory = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,6 +46,12 @@ $arguments = @(
   '-VirtualRenderDeviceId', $VirtualRenderDeviceId,
   '-RequestProcessId', $PID, '-ElevationMode', $elevationMode
 )
+if (-not [string]::IsNullOrWhiteSpace($ReadinessResultPath)) {
+  $arguments += @('-ReadinessResultPath', $ReadinessResultPath)
+}
+if (-not [string]::IsNullOrWhiteSpace($VirtualMicEvidenceOutputDirectory)) {
+  $arguments += @('-VirtualMicEvidenceOutputDirectory', $VirtualMicEvidenceOutputDirectory)
+}
 
 try {
   if ($requestWasElevated) {

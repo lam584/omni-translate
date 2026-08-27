@@ -10,7 +10,9 @@ param(
   [Parameter(Mandatory = $true)][string]$TargetDeviceId,
   [string]$VirtualRenderDeviceId = 'omni-virtual-speaker-default',
   [long]$RequestProcessId = 0,
-  [ValidateSet('already-elevated', 'uac-runas', 'unknown')][string]$ElevationMode = 'unknown'
+  [ValidateSet('already-elevated', 'uac-runas', 'unknown')][string]$ElevationMode = 'unknown',
+  [string]$ReadinessResultPath = '',
+  [string]$VirtualMicEvidenceOutputDirectory = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -64,6 +66,26 @@ try {
     & (Join-Path $PSScriptRoot $script) @common -Action 'rollback-driver' *> $logPath
   } else {
     & (Join-Path $PSScriptRoot $script) @common *> $logPath
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ReadinessResultPath)) {
+    $readinessPath = [System.IO.Path]::GetFullPath($ReadinessResultPath)
+    $evidencePath = [System.IO.Path]::GetFullPath($VirtualMicEvidenceOutputDirectory)
+    $runtimePrefix = $RuntimeRoot.TrimEnd([char[]]'\/') + [System.IO.Path]::DirectorySeparatorChar
+    if (
+      -not $readinessPath.StartsWith($runtimePrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+      -not $evidencePath.StartsWith($runtimePrefix, [System.StringComparison]::OrdinalIgnoreCase)
+    ) { throw 'elevated driver readiness evidence paths must stay inside RuntimeRoot' }
+    $testScript = Join-Path $PSScriptRoot 'test-development-driver.ps1'
+    $testOutput = @(& $testScript -WorkspaceRoot $WorkspaceRoot -VirtualMicEvidenceOutputDirectory $evidencePath)
+    $readiness = $testOutput | Where-Object { $_ -and $_.PSObject.Properties['InstalledDriverAuthority'] } | Select-Object -Last 1
+    if (-not $readiness -or -not $readiness.InstalledDriverAuthority) {
+      throw 'elevated driver readiness did not return installed driver authority'
+    }
+    [System.IO.File]::WriteAllText(
+      $readinessPath,
+      (($readiness | ConvertTo-Json -Depth 20) + [Environment]::NewLine),
+      [System.Text.UTF8Encoding]::new($false)
+    )
   }
   Write-OperationResult $true 'completed' $null "$Action completed."
 } catch {

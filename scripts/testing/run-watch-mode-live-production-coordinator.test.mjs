@@ -203,7 +203,12 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
     ),
     'the trust certificate must be hash-bound and distributed with the signed runtime package',
   );
-  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /test-development-driver\.ps1/);
+  const elevatedDriverOperation = fs.readFileSync(
+    path.join(repoRoot, 'scripts/installer/invoke-elevated-driver-operation.ps1'),
+    'utf8',
+  );
+  assert.match(elevatedDriverOperation, /test-development-driver\.ps1/);
+  assert.match(elevatedDriverOperation, /ReadinessResultPath/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /artifacts\\tooling\\devcon\.exe/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /Resolve-OmniDevconPath/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /Test-Path -LiteralPath \$devconCandidate -PathType Leaf/);
@@ -231,7 +236,7 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
   );
   assert.ok(
     PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf("Action = 'reinstall'")
-      < PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('$driverOutput = @(& $driverScript'),
+      < PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('$driver = Get-Content -LiteralPath $driverReadinessResultPath'),
     'the exact rebuilt package must be installed before readiness is collected',
   );
   const driverRequiredBranch = PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.slice(

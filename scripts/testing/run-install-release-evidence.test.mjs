@@ -1267,7 +1267,7 @@ test('production CLI rejects package/workspace overrides, dry-run, and skip-sign
   }), false);
 });
 
-test('stable installer PowerShell validates package and timestamp before all system mutations', () => {
+test('stable installer PowerShell validates the local self-signed package before all system mutations', () => {
   const install = fs.readFileSync(path.join(repoRoot, 'scripts/installer/install-development-driver.ps1'), 'utf8');
   const repair = fs.readFileSync(path.join(repoRoot, 'scripts/installer/repair-driver.ps1'), 'utf8');
   const invoke = fs.readFileSync(path.join(repoRoot, 'scripts/installer/invoke-elevated-driver-operation.ps1'), 'utf8');
@@ -1279,11 +1279,12 @@ test('stable installer PowerShell validates package and timestamp before all sys
   assert.ok(install.indexOf('-ValidatePackageOnly') === -1, 'install preflight is selected by its switch, not recursive invocation');
   assert.ok(repair.indexOf('-ValidatePackageOnly') < repair.indexOf('uninstall-development-driver.ps1'));
   assert.ok(invoke.indexOf('-ValidatePackageOnly') < invoke.indexOf("if ($Action -eq 'reinstall')"));
-  assert.ok(build.includes("'/tr', $SigningTimestampUrl, '/td', 'SHA256'"));
-  assert.ok(build.includes("timestampMode = if ($isDevelopmentTestSigner) { 'none' } else { 'rfc3161' }"));
+  assert.ok(build.includes("$signingArguments += @('/tr', $SigningTimestampUrl, '/td', 'SHA256')"));
+  assert.ok(build.includes("signingMode = if ($isDevelopmentTestSigner) { 'development-test' } else { 'local-self-signed' }"));
+  assert.ok(build.includes("timestampMode = if ([string]::IsNullOrWhiteSpace($SigningTimestampUrl)) { 'none' } else { 'rfc3161' }"));
   assert.ok(build.includes('$useDevelopmentSigningCredential = -not $SigningPfxPath'));
   assert.ok(install.includes("$releaseSignableExtensions = @('.exe', '.dll', '.sys', '.cat', '.ps1')"));
-  assert.ok(install.includes('Release install refuses unsigned or untimestamped production artifact'));
+  assert.ok(install.includes('Release install refuses an unsigned production artifact'));
   assert.ok(install.includes('Release package does not contain exact current-HEAD forced-build authority'));
   assert.doesNotMatch(install, /Get-CimInstance Win32_PnPSignedDriver/);
   assert.ok(install.includes('$testResult.InstalledDriverAuthority'));

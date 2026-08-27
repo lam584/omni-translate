@@ -97,7 +97,6 @@ $readinessRoot = Join-Path $remoteRoot 'readiness'
 [void](New-Item -ItemType Directory -Path $readinessRoot -Force)
 $driverRequired = [bool]$payload.driverRequired
 $expected = $payload.driver
-$driverScript = Join-Path $workspace 'scripts\installer\test-development-driver.ps1'
 $authority = $null
 if ($driverRequired) {
   # A development Authenticode signature and the WDK-stamped DriverVer make a
@@ -142,6 +141,8 @@ if ($driverRequired) {
   ) { throw 'driver trust certificate does not match the signed runtime package signer' }
   $driverOperationId = "$( [string]$payload.executionId )-$( [string]$payload.workerId )-driver-readiness"
   $driverOperationResultPath = Join-Path $driverRuntimeRoot 'elevated-operation.json'
+  $driverReadinessResultPath = Join-Path $driverRuntimeRoot 'installed-driver-readiness.json'
+  $driverEvidenceRoot = Join-Path $readinessRoot 'virtual-mic'
   $elevatedArguments = @{
     Action = 'reinstall'
     OperationId = $driverOperationId
@@ -152,6 +153,8 @@ if ($driverRequired) {
     DriverVersion = '0.10.0-dev'
     BridgeVersion = '0.1.0'
     TargetDeviceId = 'virtual-mic-default'
+    ReadinessResultPath = $driverReadinessResultPath
+    VirtualMicEvidenceOutputDirectory = $driverEvidenceRoot
   }
   & $elevationRequestScript @elevatedArguments
   if (-not (Test-Path -LiteralPath $driverOperationResultPath -PathType Leaf)) {
@@ -169,10 +172,10 @@ if ($driverRequired) {
     $driverOperation.driverVersion -ne '0.10.0-dev' -or
     $driverOperation.bridgeVersion -ne '0.1.0'
   ) { throw "elevated driver readiness operation failed: $($driverOperation.errorCode) $($driverOperation.summary)" }
-
-  $driverEvidenceRoot = Join-Path $readinessRoot 'virtual-mic'
-  $driverOutput = @(& $driverScript -WorkspaceRoot $workspace -VirtualMicEvidenceOutputDirectory $driverEvidenceRoot)
-  $driver = $driverOutput | Where-Object { $_ -and $_.PSObject.Properties['InstalledDriverAuthority'] } | Select-Object -Last 1
+  if (-not (Test-Path -LiteralPath $driverReadinessResultPath -PathType Leaf)) {
+    throw 'elevated driver readiness authority is missing'
+  }
+  $driver = Get-Content -LiteralPath $driverReadinessResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
   if (-not $driver -or -not $driver.InstalledDriverAuthority) { throw 'installed driver authority was not returned' }
   $authority = $driver.InstalledDriverAuthority
   if (

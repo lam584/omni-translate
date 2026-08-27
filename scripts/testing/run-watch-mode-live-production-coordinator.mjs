@@ -593,6 +593,18 @@ export function remotePowerShellInvocation(body, payload) {
     "$ErrorActionPreference = 'Stop'",
     '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)',
     '$OutputEncoding = [Console]::OutputEncoding',
+    // The single-machine worker may run with module auto-loading disabled.
+    // Keep the signed transport self-contained instead of depending on the
+    // Microsoft.PowerShell.Utility implementation of Get-FileHash.
+    'function Get-FileHash {',
+    '  param([Parameter(Mandatory=$true)][string]$LiteralPath, [string]$Algorithm = "SHA256")',
+    '  if ($Algorithm -cne "SHA256") { throw "only SHA256 is supported" }',
+    '  $bytes = [IO.File]::ReadAllBytes($LiteralPath)',
+    '  $hasher = [Security.Cryptography.SHA256]::Create()',
+    '  $hash = ([BitConverter]::ToString($hasher.ComputeHash($bytes))).Replace("-", "")',
+    '  $hasher.Dispose()',
+    '  [pscustomobject]@{ Hash = $hash }',
+    '}',
     `$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payloadBase64}'))`,
     '$payload = $payloadJson | ConvertFrom-Json',
     body,

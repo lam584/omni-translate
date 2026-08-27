@@ -458,6 +458,28 @@ test('remote PowerShell file output reconstructs framed payloads larger than 256
   assert.equal(decoded.stdout, `${payload}\n__OMNI_REMOTE_COMPLETE_V1__\n`);
 });
 
+test('remote PowerShell hashes files without module auto-loading', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-remote-hash-'));
+  const target = path.join(root, 'input.bin');
+  fs.writeFileSync(target, 'single-machine-runtime-authority', 'utf8');
+  const expected = crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex');
+  const invocation = remotePowerShellInvocation(
+    '$PSModuleAutoLoadingPreference = "None"; (Get-FileHash -LiteralPath ([string]$payload.path) -Algorithm SHA256).Hash.ToLowerInvariant()',
+    { path: target },
+  );
+  try {
+    const result = spawnSync(invocation.args[0], invocation.args.slice(1), {
+      input: invocation.input,
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0], expected);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('preserved worker readiness is decoded as UTF-8 and returned as one compact JSON line', { skip: !isWindows }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-preserved-readiness-'));
   const readinessRoot = path.join(root, 'readiness');

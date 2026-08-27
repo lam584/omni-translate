@@ -22,6 +22,12 @@ function New-OmniWatchModeContext {
   if ([string]::IsNullOrWhiteSpace($localAppData)) {
     throw 'LocalApplicationData is unavailable for the release desktop log.'
   }
+  $providerInputSeconds = [int]$Request.timeouts.sessionSeconds
+  $localContentAuthorityEnabled = @('strict-paid', 'incident-replay-plus', 'local-canonical-smoke') -contains [string]$Request.authorityMode
+  $desktopAutoStopSeconds = $providerInputSeconds
+  if ($localContentAuthorityEnabled) {
+    $desktopAutoStopSeconds += [int]$Request.timeouts.postPlaybackSeconds
+  }
 
   return [pscustomobject]@{
     schemaVersion = 'watch-mode-run-context/v2'
@@ -42,6 +48,10 @@ function New-OmniWatchModeContext {
       appLogPath = Join-Path $localAppData 'OmniTranslate\diagnostics\logs\app.log'
     }
     timeouts = $Request.timeouts
+    lifecycle = [pscustomobject]@{
+      providerInputSeconds = $providerInputSeconds
+      desktopAutoStopSeconds = $desktopAutoStopSeconds
+    }
     media = $Request.media
     model = $Request.model
     physicalDevice = $Request.physicalDevice

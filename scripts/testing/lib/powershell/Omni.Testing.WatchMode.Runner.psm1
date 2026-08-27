@@ -80,6 +80,7 @@ function Invoke-WatchModeRun {
   $ExpectedPhysicalPlaybackDeviceName = [string]$request.physicalDevice.expectedName
   $paidAuthorityEnabled = $StrictPaidAuthority -or $IncidentReplayAuthority
   $localContentAuthorityEnabled = $paidAuthorityEnabled -or $LocalCanonicalContentAuthority
+  $desktopAutoStopAfterSeconds = [int]$Context.lifecycle.desktopAutoStopSeconds
   $providerAuthorityMode = [string]$request.authorityMode
   Set-Location $workspaceRoot
   
@@ -306,7 +307,7 @@ function Invoke-WatchModeRun {
           $reportDeadlineUtc = Get-WatchSessionReportDeadlineUtc `
             -LaunchedAtUtc ([DateTime]$desktopProcess.data.launchedAtUtc) `
             -ReadyTimeoutSeconds $SessionReadyTimeoutSeconds `
-            -AutoStopAfterSeconds $WatchAutoStopAfterSeconds
+            -AutoStopAfterSeconds $desktopAutoStopAfterSeconds
           $reportWaitStep = Invoke-Step -State $state "wait for same-process Watch report and desktop exit" -Phase reportWait {
             Wait-WatchSessionReportAndDesktopExit `
               -Path $requiredWatchReportPath `

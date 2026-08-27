@@ -575,6 +575,26 @@ test('run request accepts the 30-second smoke floor and rejects shorter or overs
   assert.throws(() => validateWatchModeRunRequest(oversized), /30\.\.7200/);
 });
 
+test('run context keeps the paid input ceiling separate from local playback drain lifetime', { skip: !isWindows }, () => {
+  const requestPath = path.resolve('scripts', 'testing', 'fixtures', 'watch-mode-run-request-dry-run.json');
+  const configModule = path.resolve('scripts', 'testing', 'lib', 'powershell', 'Omni.Testing.WatchMode.Config.psm1');
+  const workspaceRoot = path.resolve('.');
+  const probe = runPowerShell([
+    '-Command',
+    `Import-Module '${configModule}' -Force; ` +
+      `$request = Get-Content -LiteralPath '${requestPath}' -Raw -Encoding UTF8 | ConvertFrom-Json; ` +
+      `$request.authorityMode = 'strict-paid'; ` +
+      `$context = New-OmniWatchModeContext -Request $request -WorkspaceRoot '${workspaceRoot}'; ` +
+      `$context.lifecycle | ConvertTo-Json -Compress`,
+  ]);
+
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+  assert.deepEqual(JSON.parse(probe.stdout.trim()), {
+    providerInputSeconds: 180,
+    desktopAutoStopSeconds: 300,
+  });
+});
+
 test('live runner schedules a midpoint process restart and does not truncate 1800 seconds to five minutes', { skip: !isWindows }, () => {
   const probe = runPowerShell([
     '-Command',

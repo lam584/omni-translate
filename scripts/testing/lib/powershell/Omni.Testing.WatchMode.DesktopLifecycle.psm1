@@ -56,7 +56,12 @@ function Start-WatchModeDesktopShell {
   $providerInputPcmPath = Join-Path $OutputDirectory "provider-input-16k-mono.pcm"
   $watchSessionReportPath = Join-Path $OutputDirectory "watch-session-report.json"
   $watchReadinessPath = Join-Path $OutputDirectory "watch-runtime-status.json"
-  $watchReportAutoStopAfterMs = $WatchAutoStopAfterSeconds * 1000
+  # The provider input ceiling and the desktop lifetime are deliberately
+  # separate. Strict runs stop accepting paid input at sessionSeconds, while
+  # the local desktop remains alive long enough to drain already accepted
+  # translated audio and emit terminal playback receipts.
+  $desktopAutoStopAfterSeconds = [int]$Context.lifecycle.desktopAutoStopSeconds
+  $watchReportAutoStopAfterMs = $desktopAutoStopAfterSeconds * 1000
   $liveScenarioEnvironment = Get-WatchModeLiveScenarioEnvironment `
     -FeedbackMode $FeedbackLoopPrevention `
     -AutoStopAfterMs $watchReportAutoStopAfterMs

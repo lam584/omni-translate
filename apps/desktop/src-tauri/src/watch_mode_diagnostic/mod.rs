@@ -585,6 +585,9 @@ fn process_exclusion_source_is_ready(
         && bridge.source_capture_mode == SourceCaptureMode::ProcessExclusion
         && bridge.capture_backend == CaptureBackend::WasapiProcessExclusion
         && bridge.process_loopback_status == ProcessLoopbackStatus::Ready
+        && bridge.physical_playback_status == "ready"
+        && !bridge.resolved_physical_playback_device_id.trim().is_empty()
+        && bridge.playback_owner_generation > 0
         && bridge.source_subscriber_active
         && bridge.bridge_process_id == Some(frame.bridge_process_id)
         && bridge.excluded_process_id == Some(frame.bridge_process_id)
@@ -632,13 +635,15 @@ async fn wait_for_process_exclusion_source(
                             && bridge.source_generation != old.bridge.source_generation
                             && bridge.source_generation_token
                                 != old.bridge.source_generation_token
+                            && bridge.playback_owner_generation
+                                > old.bridge.playback_owner_generation
                     });
                     if changed && process_exclusion_source_is_ready(&bridge, &frame) {
                         return Ok(ProcessExclusionSourceObservation { bridge, frame });
                     }
                 }
                 last_detail = format!(
-                    "bridgeProcessId={} bridgeInstanceId={} sessionId={} sourceGeneration={} sourceGenerationToken={} sourceFramesCaptured={} sourceSubscriberActive={} processLoopbackStatus={} excludedProcessId={} evidenceAcceptedFrames={}",
+                    "bridgeProcessId={} bridgeInstanceId={} sessionId={} sourceGeneration={} sourceGenerationToken={} sourceFramesCaptured={} sourceSubscriberActive={} processLoopbackStatus={} physicalPlaybackStatus={} playbackOwnerGeneration={} resolvedPhysicalPlaybackDeviceId={} excludedProcessId={} evidenceAcceptedFrames={}",
                     bridge
                         .bridge_process_id
                         .map(|value| value.to_string())
@@ -650,6 +655,9 @@ async fn wait_for_process_exclusion_source(
                     bridge.source_frames_captured,
                     bridge.source_subscriber_active,
                     bridge.process_loopback_status.as_str(),
+                    bridge.physical_playback_status,
+                    bridge.playback_owner_generation,
+                    bridge.resolved_physical_playback_device_id,
                     bridge
                         .excluded_process_id
                         .map(|value| value.to_string())

@@ -272,16 +272,29 @@ mod probe {
             }),
         )?;
         let before_frames = before["playbackFramesWritten"].as_u64().unwrap_or(0);
+        let bridge_instance_id = init["bridgeInstanceId"].as_str().map(str::to_string);
+        let playback_owner_generation = init["playbackOwnerGeneration"].as_u64();
         let capture = LoopbackCapture::start(&capture_device)?;
         thread::sleep(Duration::from_millis(250));
         let sender_pipe_name = pipe_name.clone();
         let sender_session_id = session_id.clone();
+        let sender_bridge_instance_id = bridge_instance_id.clone();
         let streaming_tone = args.streaming_tone;
         let sender = thread::spawn(move || {
             if streaming_tone {
-                send_streaming_translation_tone(&sender_pipe_name, &sender_session_id)
+                send_streaming_translation_tone(
+                    &sender_pipe_name,
+                    &sender_session_id,
+                    sender_bridge_instance_id,
+                    playback_owner_generation,
+                )
             } else {
-                send_translation_tone(&sender_pipe_name, &sender_session_id)
+                send_translation_tone(
+                    &sender_pipe_name,
+                    &sender_session_id,
+                    sender_bridge_instance_id,
+                    playback_owner_generation,
+                )
             }
         });
         let mut metrics = CaptureMetrics::default();
@@ -597,7 +610,12 @@ mod probe {
         serde_json::from_str(line.trim()).map_err(error_text)
     }
 
-    fn send_translation_tone(pipe_name: &str, session_id: &str) -> Result<(), String> {
+    fn send_translation_tone(
+        pipe_name: &str,
+        session_id: &str,
+        bridge_instance_id: Option<String>,
+        playback_owner_generation: Option<u64>,
+    ) -> Result<(), String> {
         send_translation_tone_at(
             pipe_name,
             session_id,
@@ -605,10 +623,17 @@ mod probe {
             TONE_AMPLITUDE,
             TONE_SECONDS,
             "physical-output",
+            bridge_instance_id,
+            playback_owner_generation,
         )
     }
 
-    fn send_streaming_translation_tone(pipe_name: &str, session_id: &str) -> Result<(), String> {
+    fn send_streaming_translation_tone(
+        pipe_name: &str,
+        session_id: &str,
+        bridge_instance_id: Option<String>,
+        playback_owner_generation: Option<u64>,
+    ) -> Result<(), String> {
         let chunk_seconds = 0.5;
         for (chunk_index, frequency_hz) in STREAM_TONE_FREQUENCIES_HZ.iter().enumerate() {
             send_translation_tone_stream_frame(
@@ -622,6 +647,8 @@ mod probe {
                 } else {
                     TranslationStreamState::Chunk
                 },
+                bridge_instance_id.clone(),
+                playback_owner_generation,
             )?;
             thread::sleep(Duration::from_millis(500));
         }
@@ -632,6 +659,8 @@ mod probe {
             0.0,
             4,
             TranslationStreamState::End,
+            bridge_instance_id,
+            playback_owner_generation,
         )
     }
 
@@ -642,6 +671,8 @@ mod probe {
         seconds: f32,
         chunk_index: u32,
         stream_state: TranslationStreamState,
+        bridge_instance_id: Option<String>,
+        playback_owner_generation: Option<u64>,
     ) -> Result<(), String> {
         let payload = if stream_state == TranslationStreamState::End {
             Vec::new()
@@ -656,6 +687,8 @@ mod probe {
             Some(chunk_index),
             Some(stream_state),
             (seconds.max(0.0) * 1_000.0).ceil() as u64,
+            bridge_instance_id,
+            playback_owner_generation,
         )
     }
 
@@ -666,6 +699,8 @@ mod probe {
         amplitude: f32,
         seconds: f32,
         label: &str,
+        bridge_instance_id: Option<String>,
+        playback_owner_generation: Option<u64>,
     ) -> Result<(), String> {
         let payload = tone_pcm16le_at(frequency_hz, amplitude, seconds);
         let duration_ms = (seconds.max(0.0) * 1_000.0).ceil() as u64;
@@ -677,6 +712,8 @@ mod probe {
             None,
             None,
             duration_ms,
+            bridge_instance_id,
+            playback_owner_generation,
         )
     }
 
@@ -688,6 +725,8 @@ mod probe {
         chunk_index: Option<u32>,
         stream_state: Option<TranslationStreamState>,
         duration_ms: u64,
+        bridge_instance_id: Option<String>,
+        playback_owner_generation: Option<u64>,
     ) -> Result<(), String> {
         let path = format!(r"\\.\pipe\{pipe_name}-audio");
         let mut pipe = open_pipe(&path)?;
@@ -705,7 +744,8 @@ mod probe {
             timestamp_ms: created_at_ms,
             payload_bytes: payload.len(),
             bridge_process_id: None,
-            bridge_instance_id: None,
+            bridge_instance_id,
+            playback_owner_generation,
             source_generation: None,
             source_generation_token: None,
             cue_id: Some(format!("{label}-cue")),

@@ -239,6 +239,8 @@ struct BridgeState {
     virtual_render_device_id: String,
     physical_playback_device_id: String,
     resolved_physical_playback_device_id: String,
+    physical_playback_status: String,
+    playback_owner_generation: u64,
     physical_playback_level: u64,
     translation_playback_enabled: bool,
     source_monitor_playback_enabled: bool,
@@ -317,6 +319,7 @@ impl BridgeState {
             process_loopback_status,
             windows_build_number,
             monitor_playback_state: "idle".to_string(),
+            physical_playback_status: "uninitialized".to_string(),
             source_worker_phase: "capture-disabled".to_string(),
             virtual_mic_output_status: "unknown".to_string(),
             // A source generation is only compared for equality/authority; it
@@ -810,6 +813,43 @@ fn handle_audio_client(
             TranslationPlaybackStatusKind::RouteFailed,
             "process-exclusion-route-not-ready",
             Some(&code),
+        );
+        drop(current);
+        let _ = write_framed_json(handle, &ack);
+        return;
+    }
+    if header.translation_sink == Some(TranslationAudioSink::PhysicalPlayback)
+        && current.source_capture_mode == SourceCaptureMode::ProcessExclusion
+        && (current.physical_playback_status != "ready"
+            || header.bridge_instance_id.as_deref()
+                != Some(current.bridge_instance_id.as_str())
+            || header.playback_owner_generation != Some(current.playback_owner_generation))
+    {
+        let code = "bridge.translation-generation-ended";
+        let ack = rejected_audio_frame_ack(
+            &header,
+            code,
+            "physical translation frame belongs to a superseded playback owner",
+        );
+        current.dropped_frame_count += header.frame_count as u64;
+        service_log(
+            LogLevel::Warning,
+            &header.request_id,
+            &format!(
+                "event=translation_playback_status status=stale-dropped cueId={} errorCode={} expectedBridgeInstanceId={} actualBridgeInstanceId={} expectedPlaybackOwnerGeneration={} actualPlaybackOwnerGeneration={}",
+                header.cue_id.as_deref().unwrap_or("-"),
+                code,
+                current.bridge_instance_id,
+                header.bridge_instance_id.as_deref().unwrap_or("-"),
+                current.playback_owner_generation,
+                header.playback_owner_generation.map(|value| value.to_string()).unwrap_or_else(|| "-".to_string()),
+            ),
+        );
+        current.emit_translation_status(
+            header.cue_id.as_deref(),
+            TranslationPlaybackStatusKind::StaleDropped,
+            "physical-playback-owner-generation-ended",
+            Some(code),
         );
         drop(current);
         let _ = write_framed_json(handle, &ack);
@@ -1363,6 +1403,17 @@ mod tests {
             .unwrap();
         let (playback_tx, playback_rx) = mpsc::sync_channel(2);
         let (playback_control_tx, playback_control_rx) = mpsc::channel();
+        let rebind = std::thread::spawn(move || {
+            let PlaybackControlCommand::RebindPhysicalOutput {
+                device_id,
+                response_tx,
+            } = playback_control_rx.recv().unwrap()
+            else {
+                panic!("expected physical playback rebind control");
+            };
+            assert_eq!(device_id, "speaker-b");
+            response_tx.send(Ok(device_id)).unwrap();
+        });
 
         let response = handle_control(
             json!({
@@ -1372,6 +1423,7 @@ mod tests {
                 "sessionId": "session-1",
                 "sourceCaptureMode": "process-exclusion",
                 "physicalPlaybackDeviceId": "speaker-b",
+                "previousPlaybackOwnerGeneration": 9_000_000_000_000_u64,
                 "physicalPlaybackLevel": 50,
                 "monitorPlaybackEnabled": false,
                 "translationPlaybackEnabled": false
@@ -1384,32 +1436,76 @@ mod tests {
         );
 
         assert_eq!(response["type"], "bridge.init.ack");
-        assert!(translation_queue.lock().unwrap().pending.is_empty());
+        rebind.join().unwrap();
         assert!(playback_rx.try_recv().is_err());
-        let PlaybackControlCommand::StopAll(stop) = playback_control_rx.try_recv().unwrap() else {
-            panic!("expected stop-all playback control");
-        };
-        assert_eq!(stop.reason, "physical-playback-device-changed");
-        assert_eq!(stop.error_code, None);
-        assert!(
-            stop.recreate_output,
-            "the next translation must open a new player on the selected endpoint"
-        );
-        assert_eq!(stop.terminated_cues.len(), 1);
-        assert_eq!(stop.terminated_cues[0].cue_id.as_deref(), Some("old-device-cue"));
-        assert_eq!(
-            stop.terminated_cues[0].status,
-            TranslationPlaybackStatusKind::StaleDropped
-        );
         let current = state.lock().unwrap();
         assert_eq!(current.physical_playback_device_id, "speaker-b");
         assert!(current.source_subscriber_active);
         assert_eq!(current.process_loopback_status, ProcessLoopbackStatus::Ready);
         assert_eq!(current.capture_backend, CaptureBackend::WasapiProcessExclusion);
+        assert_eq!(current.physical_playback_status, "ready");
+        assert_eq!(current.resolved_physical_playback_device_id, "speaker-b");
+        assert_eq!(current.playback_owner_generation, 9_000_000_000_001);
         assert_eq!(
             current.source_generation, 9,
             "an output-device change must not rebuild the source capture backend"
         );
+    }
+
+    #[test]
+    fn process_route_rebind_failure_is_fail_closed() {
+        let runtime_root = TempDir::new().unwrap();
+        let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
+        {
+            let mut current = state.lock().unwrap();
+            current.session_id = Some("session-1".to_string());
+            current.source_capture_mode = SourceCaptureMode::ProcessExclusion;
+            current.capture_backend = CaptureBackend::WasapiProcessExclusion;
+            current.process_loopback_supported = true;
+            current.process_loopback_status = ProcessLoopbackStatus::Ready;
+            current.windows_build_number = Some(PROCESS_LOOPBACK_MINIMUM_WINDOWS_BUILD);
+        }
+        let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
+        let (playback_tx, _playback_rx) = mpsc::sync_channel(2);
+        let (playback_control_tx, playback_control_rx) = mpsc::channel();
+        let rebind = std::thread::spawn(move || {
+            let PlaybackControlCommand::RebindPhysicalOutput { response_tx, .. } =
+                playback_control_rx.recv().unwrap()
+            else {
+                panic!("expected physical playback rebind control");
+            };
+            response_tx
+                .send(Err("configured endpoint is unavailable".to_string()))
+                .unwrap();
+        });
+
+        let response = handle_control(
+            json!({
+                "type": "bridge.init",
+                "requestId": "rebind-failure",
+                "protocolVersion": BRIDGE_PROTOCOL_VERSION,
+                "sessionId": "session-1",
+                "sourceCaptureMode": "process-exclusion",
+                "physicalPlaybackDeviceId": "speaker-missing",
+                "physicalPlaybackLevel": 50,
+                "monitorPlaybackEnabled": false,
+                "translationPlaybackEnabled": true
+            }),
+            &state,
+            &playback_tx,
+            &playback_control_tx,
+            &translation_queue,
+            runtime_root.path(),
+        );
+
+        rebind.join().unwrap();
+        assert_eq!(response["type"], "bridge.error");
+        assert_eq!(response["code"], "bridge.physical-playback-rebind-failed");
+        let current = state.lock().unwrap();
+        assert_eq!(current.physical_playback_status, "failed");
+        assert_eq!(current.lifecycle_state, "error");
+        assert_eq!(current.bridge_state, "degraded");
+        assert!(current.resolved_physical_playback_device_id.is_empty());
     }
 
     #[test]

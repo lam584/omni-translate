@@ -131,6 +131,7 @@ fn handle_source_subscriber(
             payload_bytes: payload.len(),
             bridge_process_id: Some(bridge_process_id),
             bridge_instance_id: Some(bridge_instance_id),
+            playback_owner_generation: None,
             source_generation: Some(my_generation),
             source_generation_token: Some(source_generation_token),
             cue_id: None,
@@ -425,6 +426,29 @@ fn apply_playback_control_commands(
     pending_physical_streams: &mut VecDeque<PhysicalTranslationStreamCommand>,
 ) {
     while let Ok(command) = playback_control_rx.try_recv() {
+        if let PlaybackControlCommand::RebindPhysicalOutput {
+            device_id,
+            response_tx,
+        } = command
+        {
+            if let Some(current) = output.as_mut() {
+                current.source_pending_samples.clear();
+                current.source_player.clear();
+                current.translation_player.clear();
+            }
+            *physical_stream = None;
+            cancelled_physical_streams.clear();
+            pending_physical_streams.clear();
+            let _ = translation_queue.lock().unwrap().clear();
+            *output = None;
+            let result = open_exact_playback_output(&device_id).map(|next| {
+                let resolved = next.resolved_device_id.clone();
+                *output = Some(next);
+                resolved
+            });
+            let _ = response_tx.send(result);
+            continue;
+        }
         let PlaybackControlCommand::StopAll(request) = command else {
             let PlaybackControlCommand::TerminateTranslationStream { cue_id, terminal } = command else { unreachable!() };
             if physical_stream.as_ref().is_some_and(|stream| stream.cue_id == cue_id) {
@@ -869,6 +893,47 @@ fn open_playback_output(device_id: &str) -> Result<PlaybackOutput, String> {
     let translation_player = Player::connect_new(sink.mixer());
     Ok(PlaybackOutput {
         device_id: device_id.to_string(),
+        resolved_device_id,
+        _sink: sink,
+        source_player,
+        translation_player,
+        source_pending_samples: Vec::new(),
+        source_volume: 1.0,
+        duck_until: None,
+        stream_ducking: false,
+        translation_generation: None,
+    })
+}
+
+fn open_exact_playback_output(device_id: &str) -> Result<PlaybackOutput, String> {
+    let requested = device_id.trim();
+    if requested.is_empty()
+        || matches!(requested, "default" | "speaker-default" | "system-output-default")
+    {
+        return Err("an explicit physical playback endpoint id is required".to_string());
+    }
+    let host = cpal::default_host();
+    let device = host
+        .output_devices()
+        .map_err_str()?
+        .find(|device| device.id().map(|id| id.1 == requested).unwrap_or(false))
+        .ok_or_else(|| format!("configured physical playback endpoint not found: {requested}"))?;
+    if is_omni_virtual_playback_device(&device) {
+        return Err(MONITOR_VIRTUAL_PLAYBACK_LOOP.to_string());
+    }
+    let resolved_device_id = device.id().map_err_str()?.1;
+    if resolved_device_id != requested {
+        return Err(format!(
+            "physical playback endpoint identity mismatch: requested={requested} resolved={resolved_device_id}"
+        ));
+    }
+    let sink = DeviceSinkBuilder::from_device(device)
+        .and_then(|builder| builder.open_sink_or_fallback())
+        .map_err_str()?;
+    let source_player = Player::connect_new(sink.mixer());
+    let translation_player = Player::connect_new(sink.mixer());
+    Ok(PlaybackOutput {
+        device_id: requested.to_string(),
         resolved_device_id,
         _sink: sink,
         source_player,

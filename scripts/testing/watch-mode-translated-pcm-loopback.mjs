@@ -15,6 +15,63 @@ export const MIN_COMPLETE_MATCHED_CUES = 2;
 const sha256File = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 const rounded = (value, digits = 6) => Number(Number(value).toFixed(digits));
 
+function pcmWindowRms(bytes, offsetSamples, sampleCount) {
+  let squareSum = 0;
+  for (let index = offsetSamples; index < offsetSamples + sampleCount; index += 1) {
+    const sample = bytes.readInt16LE(index * 2) / 32768;
+    squareSum += sample * sample;
+  }
+  return Math.sqrt(squareSum / Math.max(1, sampleCount));
+}
+
+function selectHighEnergyAnchors(cue) {
+  const sampleRateHz = Number(cue.sampleRateHz);
+  const channelCount = Number(cue.channelCount);
+  const totalFrames = Number(cue.frameCount);
+  const minimumFrames = Math.ceil(sampleRateHz * 0.4);
+  const anchors = [];
+  for (let regionIndex = 0; regionIndex < 3; regionIndex += 1) {
+    const regionStart = Math.floor(totalFrames * regionIndex / 3);
+    const regionEnd = Math.floor(totalFrames * (regionIndex + 1) / 3);
+    const regionFrames = regionEnd - regionStart;
+    const windowFrames = Math.min(
+      Math.floor(sampleRateHz * 0.75),
+      Math.max(minimumFrames, Math.floor(regionFrames * 0.8)),
+    );
+    if (regionFrames < minimumFrames || windowFrames > regionFrames) {
+      throw new Error(`cue ${cue.cueId} is too short for three independent 400ms anchors`);
+    }
+    const strideFrames = Math.max(1, Math.floor(sampleRateHz * 0.05));
+    let best = null;
+    for (
+      let frameOffset = regionStart;
+      frameOffset + windowFrames <= regionEnd;
+      frameOffset += strideFrames
+    ) {
+      const sampleOffset = frameOffset * channelCount;
+      const sampleCount = windowFrames * channelCount;
+      const rms = pcmWindowRms(cue.pcmBytes, sampleOffset, sampleCount);
+      if (!best || rms > best.rms) best = { frameOffset, sampleOffset, sampleCount, rms };
+    }
+    if (!best || best.rms < 0.003) {
+      throw new Error(`cue ${cue.cueId} ${['early', 'middle', 'late'][regionIndex]} anchor is silent`);
+    }
+    anchors.push({
+      name: ['early', 'middle', 'late'][regionIndex],
+      frameOffset: best.frameOffset,
+      rms: rounded(best.rms),
+      reference: {
+        referencePath: cue.pcmPath,
+        referenceSampleRateHz: sampleRateHz,
+        referenceChannels: channelCount,
+        referenceOffsetSamples: best.sampleOffset,
+        referenceSampleCount: best.sampleCount,
+      },
+    });
+  }
+  return anchors;
+}
+
 function readRegularFile(filePath, label) {
   const stats = fs.lstatSync(filePath);
   if (!stats.isFile() || stats.isSymbolicLink() || stats.size <= 0) {
@@ -142,6 +199,11 @@ function validateTranslatedAuthority({ authorityDirectory, expectedIdentity }) {
     const sampleCount = Number(cue.sampleCount);
     const frameCount = Number(cue.frameCount);
     const bytes = Number(cue.bytes);
+    if (!String(cue.bridgeInstanceId ?? '').trim()) violations.push(`translated PCM cue ${cue.cueId} bridge instance is missing`);
+    if (!Number.isSafeInteger(Number(cue.playbackOwnerGeneration)) || Number(cue.playbackOwnerGeneration) <= 0) {
+      violations.push(`translated PCM cue ${cue.cueId} playback owner generation is invalid`);
+    }
+    if (!String(cue.physicalPlaybackDeviceId ?? '').trim()) violations.push(`translated PCM cue ${cue.cueId} physical endpoint is missing`);
     if (!Number.isInteger(sampleRateHz) || sampleRateHz < 8_000 || sampleRateHz > 48_000) violations.push(`translated PCM cue ${cue.cueId} sample rate is invalid`);
     if (!Number.isInteger(channelCount) || channelCount <= 0 || channelCount > 2) violations.push(`translated PCM cue ${cue.cueId} channel count is invalid`);
     if (!Number.isInteger(sampleCount) || sampleCount <= 0 || bytes !== sampleCount * 2) violations.push(`translated PCM cue ${cue.cueId} sample/byte count mismatch`);
@@ -268,27 +330,7 @@ export function buildTranslatedPcmLoopbackAuthority({
       continue;
     }
     try {
-      references.set(cueId, {
-        whole: {
-          referencePath: cue.pcmPath,
-          referenceSampleRateHz: Number(cue.sampleRateHz),
-          referenceChannels: Number(cue.channelCount),
-          referenceOffsetSamples: 0,
-          referenceSampleCount: Number(cue.sampleCount),
-        },
-        chunks: cue.chunks.map((chunk) => {
-          return {
-            ...chunk,
-            reference: {
-              referencePath: cue.pcmPath,
-              referenceSampleRateHz: Number(cue.sampleRateHz),
-              referenceChannels: Number(cue.channelCount),
-              referenceOffsetSamples: Number(chunk.sampleOffset),
-              referenceSampleCount: Number(chunk.sampleCount),
-            },
-          };
-        }),
-      });
+      references.set(cueId, { anchors: selectHighEnergyAnchors(cue) });
     } catch (error) {
       violations.push(`cue ${cueId}: ${error.message}`);
     }
@@ -321,82 +363,54 @@ export function buildTranslatedPcmLoopbackAuthority({
     const referenceSet = references.get(cueId);
     const startedAtMs = lifecycle.get(cueId)?.started?.occurredAtMs;
     if (!referenceSet || !Number.isFinite(startedAtMs) || recordingSamples === 0 || !Number.isFinite(recordingStart)) continue;
-    const { whole: reference, chunks } = referenceSet;
-    const expectedStart = Math.round((startedAtMs - recordingStart) * LOOPBACK_SAMPLE_RATE_HZ / 1000);
-    if (chunks.length > 1) {
-      const chunkMatches = chunks.map((chunk, chunkPosition) => {
-        const chunkExpectedStart = Math.round(
-          (Number(chunk.acceptedAtMs) - recordingStart) * LOOPBACK_SAMPLE_RATE_HZ / 1000,
-        );
-        const diagonal = matchReference(chunk.reference, chunkExpectedStart);
-        let strongestWrongChunkScore = 0;
-        for (const [otherCueId, otherSet] of references.entries()) {
-          if (otherCueId === cueId || otherSet.chunks.length === 0) continue;
-          const otherChunk = otherSet.chunks[Math.min(chunkPosition, otherSet.chunks.length - 1)];
-          strongestWrongChunkScore = Math.max(
-            strongestWrongChunkScore,
-            matchReference(otherChunk.reference, chunkExpectedStart).score,
-          );
-        }
-        const identityMargin = diagonal.score - strongestWrongChunkScore;
-        return {
-          chunkIndex: Number(chunk.chunkIndex),
-          expectedPlaybackStartSeconds: rounded(chunkExpectedStart / LOOPBACK_SAMPLE_RATE_HZ),
-          strongestWrongChunkScore: rounded(strongestWrongChunkScore),
-          identityMargin: rounded(identityMargin),
-          ...diagonal,
-          passed: diagonal.passed && identityMargin >= 0.08,
-        };
-      });
-      const requiredChunkMatches = Math.max(2, Math.ceil(chunks.length * 0.7));
-      const passingChunks = chunkMatches.filter((entry) => entry.passed);
-      const ordered = passingChunks.every((entry, index) => (
-        index === 0 || entry.matchedStartSample >= passingChunks[index - 1].matchedEndSample
-      ));
-      const passed = passingChunks.length >= requiredChunkMatches && ordered;
-      matches.push({
-        cueId,
-        streamChunkCount: chunks.length,
-        requiredChunkMatches,
-        matchedChunkCount: passingChunks.length,
-        chunkMatches,
-        matchedStartSample: passingChunks[0]?.matchedStartSample ?? null,
-        matchedEndSample: passingChunks.at(-1)?.matchedEndSample ?? null,
-        passed,
-      });
-      if (!passed) violations.push(`translated stream cue ${cueId} did not correlate enough ordered physical chunks`);
-      continue;
-    }
-    const diagonal = matchReference(reference, expectedStart);
-    let strongestWrongCueScore = 0;
-    for (const [otherCueId, otherReference] of references.entries()) {
-      if (otherCueId === cueId) continue;
-      strongestWrongCueScore = Math.max(
-        strongestWrongCueScore,
-        matchReference(otherReference.whole, expectedStart).score,
+    const cue = cueById.get(cueId);
+    const anchorMatches = referenceSet.anchors.map((anchor, anchorIndex) => {
+      const expectedStart = Math.round(
+        (startedAtMs - recordingStart) * LOOPBACK_SAMPLE_RATE_HZ / 1000
+        + anchor.frameOffset * LOOPBACK_SAMPLE_RATE_HZ / Number(cue.sampleRateHz),
       );
-    }
-    const identityMargin = diagonal.score - strongestWrongCueScore;
-    const passed = diagonal.passed && identityMargin >= 0.08;
+      const diagonal = matchReference(anchor.reference, expectedStart);
+      let strongestWrongAnchorScore = 0;
+      for (const [otherCueId, otherSet] of references.entries()) {
+        if (otherCueId === cueId) continue;
+        const wrongAnchor = otherSet.anchors[anchorIndex];
+        strongestWrongAnchorScore = Math.max(
+          strongestWrongAnchorScore,
+          matchReference(wrongAnchor.reference, expectedStart).score,
+        );
+      }
+      const identityMargin = diagonal.score - strongestWrongAnchorScore;
+      return {
+        anchor: anchor.name,
+        referenceFrameOffset: anchor.frameOffset,
+        referenceRms: anchor.rms,
+        expectedPlaybackStartSeconds: rounded(expectedStart / LOOPBACK_SAMPLE_RATE_HZ),
+        strongestWrongAnchorScore: rounded(strongestWrongAnchorScore),
+        identityMargin: rounded(identityMargin),
+        ...diagonal,
+        passed: diagonal.passed && identityMargin >= 0.08,
+      };
+    });
+    const passingAnchors = anchorMatches.filter((entry) => entry.passed);
+    const anchorsOrdered = anchorMatches.every((entry, index) => (
+      index === 0 || entry.matchedStartSample >= anchorMatches[index - 1].matchedEndSample
+    ));
+    const passed = passingAnchors.length >= 3 && anchorsOrdered;
     matches.push({
       cueId,
-      expectedPlaybackStartSeconds: rounded(expectedStart / LOOPBACK_SAMPLE_RATE_HZ),
-      score: diagonal.score,
-      waveformMedian: diagonal.waveformMedian,
-      waveformMinimum: diagonal.waveformMinimum,
-      derivativeMedian: diagonal.derivativeMedian,
-      derivativeMinimum: diagonal.derivativeMinimum,
-      polarity: diagonal.polarity,
-      globalLagSamples: diagonal.globalLagSamples,
-      timingErrorSeconds: diagonal.timingErrorSeconds,
-      matchedStartSample: diagonal.matchedStartSample,
-      matchedEndSample: diagonal.matchedEndSample,
-      strongestWrongCueScore: rounded(strongestWrongCueScore),
-      identityMargin: rounded(identityMargin),
-      segmentMatches: diagonal.segmentMatches,
+      bridgeInstanceId: cue.bridgeInstanceId ?? null,
+      playbackOwnerGeneration: Number(cue.playbackOwnerGeneration),
+      physicalPlaybackDeviceId: cue.physicalPlaybackDeviceId ?? null,
+      requiredAnchorMatches: 3,
+      matchedAnchorCount: passingAnchors.length,
+      anchorMatches,
+      score: Math.min(...anchorMatches.map((entry) => entry.score)),
+      identityMargin: Math.min(...anchorMatches.map((entry) => entry.identityMargin)),
+      matchedStartSample: anchorMatches[0]?.matchedStartSample ?? null,
+      matchedEndSample: anchorMatches.at(-1)?.matchedEndSample ?? null,
       passed,
     });
-    if (!passed) violations.push(`translated cue ${cueId} did not uniquely correlate with its physical loopback window`);
+    if (!passed) violations.push(`translated cue ${cueId} did not correlate three ordered high-energy physical anchors`);
   }
   if (matches.length !== requiredCueIds.length) violations.push('not every complete rendered cue produced a loopback match result');
   const lifecycleStarts = requiredCueIds.map((cueId) => lifecycle.get(cueId)?.started?.index);
@@ -415,10 +429,39 @@ export function buildTranslatedPcmLoopbackAuthority({
       break;
     }
   }
+  let restartPlaybackEvidence = null;
+  if (String(cellId).includes('process-exclusion')) {
+    const generations = matches
+      .map((entry) => entry.playbackOwnerGeneration)
+      .filter(Number.isSafeInteger);
+    const newOwnerGeneration = Math.max(...generations);
+    const endpointIds = [...new Set(matches.map((entry) => entry.physicalPlaybackDeviceId).filter(Boolean))];
+    const endpointId = String(endpointIds[0] ?? '');
+    const postRestartMatches = matches.filter((entry) => (
+      entry.passed
+      && entry.playbackOwnerGeneration === newOwnerGeneration
+      && entry.physicalPlaybackDeviceId === endpointId
+    ));
+    restartPlaybackEvidence = {
+      recoveredAtMs: null,
+      playbackOwnerGeneration: Number.isFinite(newOwnerGeneration) ? newOwnerGeneration : null,
+      physicalPlaybackDeviceId: endpointId || null,
+      matchedCueIds: postRestartMatches.map((entry) => entry.cueId),
+      passed: (
+        new Set(generations).size >= 2
+        && newOwnerGeneration > Math.min(...generations)
+        && endpointIds.length === 1
+        && postRestartMatches.length > 0
+      ),
+    };
+    if (!restartPlaybackEvidence.passed) {
+      violations.push('process-exclusion loopback lacks a complete post-restart cue on the new playback owner and unchanged physical endpoint');
+    }
+  }
   return {
     schemaVersion: 1,
     artifactKind: TRANSLATED_PCM_LOOPBACK_KIND,
-    authorityMode: 'translated-pcm-loopback-correlation-v1',
+    authorityMode: 'translated-pcm-loopback-multi-anchor-v2',
     passed: violations.length === 0,
     remoteProviderCalls: 0,
     externalAudioSeconds: 0,
@@ -441,6 +484,7 @@ export function buildTranslatedPcmLoopbackAuthority({
     requiredCompleteCueCount: requiredCueIds.length,
     matchedCueCount: matches.filter((entry) => entry.passed).length,
     matches,
+    restartPlaybackEvidence,
     thresholds: {
       minimumCompleteCueCount: MIN_COMPLETE_MATCHED_CUES,
       waveformMedianCorrelation: 0.32,

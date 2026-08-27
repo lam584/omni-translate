@@ -31,6 +31,11 @@ bridgeProcessId?: number,
  */
 bridgeInstanceId?: string,
 /**
+ * Physical playback ownership epoch. Every physical translation frame
+ * must carry the epoch returned by the current Bridge initialization.
+ */
+playbackOwnerGeneration?: number,
+/**
  * Active native source subscription generation. Source frames and
  * heartbeats carry it; translation frames do not.
  */

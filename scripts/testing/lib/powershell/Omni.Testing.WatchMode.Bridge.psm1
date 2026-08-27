@@ -71,7 +71,7 @@ function New-BridgeSourceProbeInitPayload {
   return [ordered]@{
     type = 'bridge.init'
     requestId = "watch-mode-probe-init-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
-    protocolVersion = '2026-08-13-audio-routing-v7'
+    protocolVersion = '2026-08-27-audio-routing-v8'
     sessionId = $SessionId
     installChannel = 'development'
     targetDeviceId = 'virtual-mic-default'
@@ -112,7 +112,7 @@ function Invoke-BridgeSourceProbe {
   $probeRuntimeRoot = Join-Path ([System.IO.Path]::GetTempPath()) "omni-bridge-source-probe-$PID"
   New-Item -ItemType Directory -Force -Path $probeRuntimeRoot | Out-Null
   $installStateJson = [ordered]@{
-    protocolVersion = '2026-08-13-audio-routing-v7'
+    protocolVersion = '2026-08-27-audio-routing-v8'
     installChannel = 'development'
     driverVersion = '0.10.0-dev'
     bridgeVersion = '0.1.0'

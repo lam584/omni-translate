@@ -2815,6 +2815,18 @@ export function strictProcessExclusionRestartFailure(
     return 'process-exclusion restart did not restore ready WASAPI exclusion targeting the new Bridge PID';
   }
   if (
+    restart.playbackRebound !== true
+    || restart.physicalPlaybackStatus !== 'ready'
+    || Number(restart.oldPlaybackOwnerGeneration) <= 0
+    || Number(restart.newPlaybackOwnerGeneration) <= Number(restart.oldPlaybackOwnerGeneration)
+    || !restart.oldPhysicalPlaybackDeviceId
+    || restart.newPhysicalPlaybackDeviceId !== restart.oldPhysicalPlaybackDeviceId
+    || Number(restart.physicalPlaybackRebindDurationMs) < 0
+    || Number(restart.physicalPlaybackRebindDurationMs) > 15_000
+  ) {
+    return 'process-exclusion restart did not rebind a newer playback owner to the same explicit physical endpoint';
+  }
+  if (
     restart.timingValid !== true
     || !Number.isFinite(Number(restart.startedAtMs))
     || !Number.isFinite(Number(restart.restartTriggeredAtMs))

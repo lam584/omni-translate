@@ -227,6 +227,13 @@
                     "process exclusion fingerprint init did not return a ready process backend: {init}"
                 )));
             }
+            let bridge_instance_id = init["bridgeInstanceId"]
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("process exclusion init omitted bridgeInstanceId: {init}"))?;
+            let playback_owner_generation = init["playbackOwnerGeneration"]
+                .as_u64()
+                .ok_or_else(|| format!("process exclusion init omitted playbackOwnerGeneration: {init}"))?;
 
             let source_pipe = open_pipe(&format!(r"\\.\pipe\{pipe_name}-source"))?;
             let collect_source = Arc::new(AtomicBool::new(false));
@@ -279,6 +286,8 @@
                     PROCESS_FINGERPRINT_AMPLITUDE,
                     PROCESS_FINGERPRINT_SECONDS,
                     "process-exclusion-translation",
+                    Some(bridge_instance_id.clone()),
+                    Some(playback_owner_generation),
                 )?;
                 let mut external_player = start_external_tone_player(
                     &tone_player_exe,

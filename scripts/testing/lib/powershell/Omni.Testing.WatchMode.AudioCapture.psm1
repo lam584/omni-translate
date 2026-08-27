@@ -222,7 +222,7 @@ function Invoke-VirtualDriverMediaSourcePreflight {
   $preflightRoot = Join-Path ([System.IO.Path]::GetTempPath()) "omni-virtual-driver-preflight-$PID"
   New-Item -ItemType Directory -Force -Path $preflightRoot | Out-Null
   $installStateJson = [ordered]@{
-    protocolVersion = '2026-08-13-audio-routing-v7'
+    protocolVersion = '2026-08-27-audio-routing-v8'
     installChannel = 'development'
     driverVersion = '0.10.0-dev'
     bridgeVersion = '0.1.0'

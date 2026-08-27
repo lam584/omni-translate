@@ -55,6 +55,9 @@ pub(crate) struct BridgeRuntimeSnapshot {
     pub capture_silent_packet_count: u64,
     pub capture_invalid_sample_count: u64,
     pub resolved_physical_playback_device_id: String,
+    #[ts(type = "'uninitialized' | 'rebinding' | 'ready' | 'failed'")]
+    pub physical_playback_status: String,
+    pub playback_owner_generation: u64,
     pub monitor_buffered_ms: usize,
     pub monitor_underrun_count: u64,
     pub monitor_overrun_count: u64,
@@ -84,7 +87,7 @@ pub(crate) struct BridgeRuntimeSnapshot {
     pub source_monitor_playback_enabled: bool,
     pub monitor_playback_state: String,
     pub last_frame_timestamp_ms: Option<u64>,
-    #[ts(type = "('driver.not-installed' | 'driver.version-mismatch' | 'driver.write-failed' | 'driver.testsigning-disabled' | 'driver.secure-boot-enabled' | 'driver.memory-integrity-enabled' | 'driver.reboot-required' | 'driver.audio-probe-failed' | 'driver.duplicate-root-devices' | 'driver.endpoint-missing' | 'driver.ioctl-unavailable' | 'driver.abi-mismatch' | 'driver.elevation-cancelled' | 'driver.probe-failed' | 'driver.operation-failed' | 'bridge.not-ready' | 'bridge.queue-overflow' | 'bridge.permission-denied' | 'bridge.timeout' | 'bridge.session-mismatch' | 'bridge.singleton-already-running' | 'bridge.process-loopback-unsupported' | 'bridge.process-loopback-activation-failed' | 'bridge.process-loopback-capture-failed' | 'bridge.playback-ownership-barrier-failed' | 'bridge.translation-output-bypass' | 'bridge.translation-playback-failed' | 'bridge.virtual-mic-output-unavailable' | 'bridge.virtual-mic-driver-unavailable' | 'bridge.virtual-mic-format-unsupported' | 'bridge.virtual-mic-session-failed' | 'bridge.virtual-mic-write-failed' | 'monitor.virtual-playback-loop' | 'installer.rollback-triggered') | null")]
+#[ts(type = "('driver.not-installed' | 'driver.version-mismatch' | 'driver.write-failed' | 'driver.testsigning-disabled' | 'driver.secure-boot-enabled' | 'driver.memory-integrity-enabled' | 'driver.reboot-required' | 'driver.audio-probe-failed' | 'driver.duplicate-root-devices' | 'driver.endpoint-missing' | 'driver.ioctl-unavailable' | 'driver.abi-mismatch' | 'driver.elevation-cancelled' | 'driver.probe-failed' | 'driver.operation-failed' | 'bridge.not-ready' | 'bridge.queue-overflow' | 'bridge.permission-denied' | 'bridge.timeout' | 'bridge.session-mismatch' | 'bridge.singleton-already-running' | 'bridge.process-loopback-unsupported' | 'bridge.process-loopback-activation-failed' | 'bridge.process-loopback-capture-failed' | 'bridge.playback-ownership-barrier-failed' | 'bridge.physical-playback-rebind-failed' | 'bridge.translation-generation-ended' | 'bridge.translation-output-bypass' | 'bridge.translation-playback-failed' | 'bridge.virtual-mic-output-unavailable' | 'bridge.virtual-mic-driver-unavailable' | 'bridge.virtual-mic-format-unsupported' | 'bridge.virtual-mic-session-failed' | 'bridge.virtual-mic-write-failed' | 'monitor.virtual-playback-loop' | 'installer.rollback-triggered') | null")]
     pub last_error_code: Option<String>,
     #[ts(type = "('reinstall-driver' | 'restart-bridge' | 'rollback-driver' | 'open-diagnostics') | null")]
     pub recommended_action: Option<String>,
@@ -173,6 +176,8 @@ impl Default for BridgeRuntimeSnapshot {
             capture_silent_packet_count: 0,
             capture_invalid_sample_count: 0,
             resolved_physical_playback_device_id: String::new(),
+            physical_playback_status: "uninitialized".to_string(),
+            playback_owner_generation: 0,
             monitor_buffered_ms: 0,
             monitor_underrun_count: 0,
             monitor_overrun_count: 0,
@@ -337,7 +342,7 @@ pub(crate) enum DriverBridgeEvent {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BridgeInitRequest {
     pub request_id: String,
-    #[ts(type = "'2026-08-13-audio-routing-v7'")]
+    #[ts(type = "'2026-08-27-audio-routing-v8'")]
     pub protocol_version: String,
     pub session_id: String,
     #[ts(type = "'development' | 'release'")]
@@ -345,6 +350,7 @@ pub(crate) struct BridgeInitRequest {
     pub target_device_id: String,
     pub virtual_render_device_id: String,
     pub physical_playback_device_id: String,
+    pub previous_playback_owner_generation: u64,
     pub physical_playback_level: u64,
     pub mix_control: BridgeMixControl,
     pub monitor_playback_enabled: bool,
@@ -359,7 +365,7 @@ pub(crate) struct BridgeInitRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BridgeInitResponse {
     pub request_id: String,
-    #[ts(type = "'2026-08-13-audio-routing-v7'")]
+    #[ts(type = "'2026-08-27-audio-routing-v8'")]
     pub protocol_version: String,
     #[ts(type = "'stopped' | 'starting' | 'running' | 'degraded'")]
     pub bridge_state: String,
@@ -398,6 +404,10 @@ pub(crate) struct BridgeInitResponse {
     #[serde(default)]
     #[ts(optional)]
     pub virtual_mic_format: Option<String>,
+    #[ts(type = "'uninitialized' | 'rebinding' | 'ready' | 'failed'")]
+    pub physical_playback_status: String,
+    pub resolved_physical_playback_device_id: String,
+    pub playback_owner_generation: u64,
 }
 
 fn default_virtual_mic_output_status() -> String {
@@ -408,7 +418,7 @@ fn default_virtual_mic_output_status() -> String {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BridgeProcessLoopbackProbeRequest {
     pub request_id: String,
-    #[ts(type = "'2026-08-13-audio-routing-v7'")]
+    #[ts(type = "'2026-08-27-audio-routing-v8'")]
     pub protocol_version: String,
 }
 
@@ -416,7 +426,7 @@ pub(crate) struct BridgeProcessLoopbackProbeRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BridgeProcessLoopbackProbeResponse {
     pub request_id: String,
-    #[ts(type = "'2026-08-13-audio-routing-v7'")]
+    #[ts(type = "'2026-08-27-audio-routing-v8'")]
     pub protocol_version: String,
     pub process_loopback_supported: bool,
     pub process_loopback_status: ProcessLoopbackStatus,
@@ -453,7 +463,7 @@ const fn default_process_loopback_minimum_windows_build() -> u32 {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BridgeStateResponse {
     pub request_id: String,
-    #[ts(type = "'2026-08-13-audio-routing-v7'")]
+    #[ts(type = "'2026-08-27-audio-routing-v8'")]
     pub protocol_version: String,
     #[ts(type = "'stopped' | 'starting' | 'running' | 'degraded'")]
     pub bridge_state: String,
@@ -507,6 +517,9 @@ pub(crate) struct BridgeStateResponse {
     pub capture_invalid_sample_count: u64,
     #[serde(default)]
     pub resolved_physical_playback_device_id: String,
+    #[ts(type = "'uninitialized' | 'rebinding' | 'ready' | 'failed'")]
+    pub physical_playback_status: String,
+    pub playback_owner_generation: u64,
     #[serde(default)]
     pub monitor_buffered_ms: usize,
     #[serde(default)]
@@ -600,7 +613,7 @@ pub(crate) struct BridgeStateResponse {
     #[ts(optional)]
     pub last_frame_timestamp_ms: Option<u64>,
     #[ts(optional)]
-    #[ts(type = "'driver.not-installed' | 'driver.version-mismatch' | 'driver.write-failed' | 'driver.testsigning-disabled' | 'driver.secure-boot-enabled' | 'driver.memory-integrity-enabled' | 'driver.reboot-required' | 'driver.audio-probe-failed' | 'driver.duplicate-root-devices' | 'driver.endpoint-missing' | 'driver.ioctl-unavailable' | 'driver.abi-mismatch' | 'driver.elevation-cancelled' | 'driver.probe-failed' | 'driver.operation-failed' | 'bridge.not-ready' | 'bridge.queue-overflow' | 'bridge.permission-denied' | 'bridge.timeout' | 'bridge.session-mismatch' | 'bridge.singleton-already-running' | 'bridge.process-loopback-unsupported' | 'bridge.process-loopback-activation-failed' | 'bridge.process-loopback-capture-failed' | 'bridge.playback-ownership-barrier-failed' | 'bridge.translation-output-bypass' | 'bridge.translation-playback-failed' | 'bridge.virtual-mic-output-unavailable' | 'bridge.virtual-mic-driver-unavailable' | 'bridge.virtual-mic-format-unsupported' | 'bridge.virtual-mic-session-failed' | 'bridge.virtual-mic-write-failed' | 'monitor.virtual-playback-loop' | 'installer.rollback-triggered'")]
+    #[ts(type = "'driver.not-installed' | 'driver.version-mismatch' | 'driver.write-failed' | 'driver.testsigning-disabled' | 'driver.secure-boot-enabled' | 'driver.memory-integrity-enabled' | 'driver.reboot-required' | 'driver.audio-probe-failed' | 'driver.duplicate-root-devices' | 'driver.endpoint-missing' | 'driver.ioctl-unavailable' | 'driver.abi-mismatch' | 'driver.elevation-cancelled' | 'driver.probe-failed' | 'driver.operation-failed' | 'bridge.not-ready' | 'bridge.queue-overflow' | 'bridge.permission-denied' | 'bridge.timeout' | 'bridge.session-mismatch' | 'bridge.singleton-already-running' | 'bridge.process-loopback-unsupported' | 'bridge.process-loopback-activation-failed' | 'bridge.process-loopback-capture-failed' | 'bridge.playback-ownership-barrier-failed' | 'bridge.physical-playback-rebind-failed' | 'bridge.translation-generation-ended' | 'bridge.translation-output-bypass' | 'bridge.translation-playback-failed' | 'bridge.virtual-mic-output-unavailable' | 'bridge.virtual-mic-driver-unavailable' | 'bridge.virtual-mic-format-unsupported' | 'bridge.virtual-mic-session-failed' | 'bridge.virtual-mic-write-failed' | 'monitor.virtual-playback-loop' | 'installer.rollback-triggered'")]
     pub last_error_code: Option<String>,
 }
 
@@ -653,7 +666,7 @@ pub(crate) struct BridgeShutdownRequest {
 pub(crate) struct DriverBridgeErrorEvent {
     #[ts(optional)]
     pub request_id: Option<String>,
-    #[ts(type = "'driver.not-installed' | 'driver.version-mismatch' | 'driver.write-failed' | 'driver.testsigning-disabled' | 'driver.secure-boot-enabled' | 'driver.memory-integrity-enabled' | 'driver.reboot-required' | 'driver.audio-probe-failed' | 'driver.duplicate-root-devices' | 'driver.endpoint-missing' | 'driver.ioctl-unavailable' | 'driver.abi-mismatch' | 'driver.elevation-cancelled' | 'driver.probe-failed' | 'driver.operation-failed' | 'bridge.not-ready' | 'bridge.queue-overflow' | 'bridge.permission-denied' | 'bridge.timeout' | 'bridge.session-mismatch' | 'bridge.singleton-already-running' | 'bridge.process-loopback-unsupported' | 'bridge.process-loopback-activation-failed' | 'bridge.process-loopback-capture-failed' | 'bridge.playback-ownership-barrier-failed' | 'bridge.translation-output-bypass' | 'bridge.translation-playback-failed' | 'bridge.virtual-mic-output-unavailable' | 'bridge.virtual-mic-driver-unavailable' | 'bridge.virtual-mic-format-unsupported' | 'bridge.virtual-mic-session-failed' | 'bridge.virtual-mic-write-failed' | 'monitor.virtual-playback-loop' | 'installer.rollback-triggered'")]
+    #[ts(type = "'driver.not-installed' | 'driver.version-mismatch' | 'driver.write-failed' | 'driver.testsigning-disabled' | 'driver.secure-boot-enabled' | 'driver.memory-integrity-enabled' | 'driver.reboot-required' | 'driver.audio-probe-failed' | 'driver.duplicate-root-devices' | 'driver.endpoint-missing' | 'driver.ioctl-unavailable' | 'driver.abi-mismatch' | 'driver.elevation-cancelled' | 'driver.probe-failed' | 'driver.operation-failed' | 'bridge.not-ready' | 'bridge.queue-overflow' | 'bridge.permission-denied' | 'bridge.timeout' | 'bridge.session-mismatch' | 'bridge.singleton-already-running' | 'bridge.process-loopback-unsupported' | 'bridge.process-loopback-activation-failed' | 'bridge.process-loopback-capture-failed' | 'bridge.playback-ownership-barrier-failed' | 'bridge.physical-playback-rebind-failed' | 'bridge.translation-generation-ended' | 'bridge.translation-output-bypass' | 'bridge.translation-playback-failed' | 'bridge.virtual-mic-output-unavailable' | 'bridge.virtual-mic-driver-unavailable' | 'bridge.virtual-mic-format-unsupported' | 'bridge.virtual-mic-session-failed' | 'bridge.virtual-mic-write-failed' | 'monitor.virtual-playback-loop' | 'installer.rollback-triggered'")]
     pub code: String,
     pub message: String,
     pub retriable: bool,

@@ -117,7 +117,7 @@ function Assert-OmniVirtualMicCaptureAuthority {
   Assert-OmniVirtualMicEvidenceCondition ($RuntimeSnapshot.artifactKind -eq 'virtual-mic-runtime-snapshot') 'runtime snapshot artifactKind is invalid'
   Assert-OmniVirtualMicEvidenceCondition ($CaptureProbe.collectorId -eq 'omni-virtual-mic-target-capture') 'collectorId is invalid'
   Assert-OmniVirtualMicEvidenceCondition (-not [string]::IsNullOrWhiteSpace([string]$CaptureProbe.collectorVersion)) 'collectorVersion is empty'
-  Assert-OmniVirtualMicEvidenceCondition ($CaptureProbe.bridgeProtocolVersion -eq '2026-08-13-audio-routing-v7') 'Bridge protocol is not v7'
+  Assert-OmniVirtualMicEvidenceCondition ($CaptureProbe.bridgeProtocolVersion -eq '2026-08-27-audio-routing-v8') 'Bridge protocol is not v8'
   Assert-OmniVirtualMicEvidenceCondition (-not [string]::IsNullOrWhiteSpace([string]$CaptureProbe.capturedAt)) 'capturedAt is empty'
 
   $authorityFields = @(

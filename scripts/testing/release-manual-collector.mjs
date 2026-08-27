@@ -52,7 +52,7 @@ export const RELEASE_MANUAL_COLLECTOR_SCHEMA_VERSION = 1;
 export const RELEASE_MANUAL_COLLECTOR_SCRIPT = 'scripts/testing/collect-release-manual-evidence.mjs';
 export const RELEASE_MANUAL_COLLECTOR_MAX_AGE_DAYS = 14;
 
-const VMIC_PROTOCOL_V7 = '2026-08-13-audio-routing-v7';
+const VMIC_PROTOCOL_V8 = '2026-08-27-audio-routing-v8';
 const VMIC_COLLECTOR_ID = 'omni-virtual-mic-target-capture';
 const VMIC_COLLECTOR_VERSION = '0.1.0';
 const DESKTOP_EMITTER_AUTHORITY = Symbol('desktop-release-evidence-authority');
@@ -1250,7 +1250,7 @@ const validateVirtualMic = (root, options) => {
     || probe?.targetCaptureApplication?.openedEndpoint !== true
     || Number(probe?.targetCaptureApplication?.processId) !== Number(probe?.captureChildProcessId)
   ) issues.push('virtual microphone target capture must be the official collector child process');
-  if (probe?.bridgeProtocolVersion !== VMIC_PROTOCOL_V7) issues.push(`virtual microphone Bridge protocol must be ${VMIC_PROTOCOL_V7}`);
+  if (probe?.bridgeProtocolVersion !== VMIC_PROTOCOL_V8) issues.push(`virtual microphone Bridge protocol must be ${VMIC_PROTOCOL_V8}`);
   for (const [value, subject] of [
     [probe?.bridgeInstanceId, 'Bridge instance ID'],
     [probe?.bridgeSessionId, 'Bridge session ID'],
@@ -1437,7 +1437,7 @@ const validateInstallFresh = (root, options) => {
   validateInstallOperation(issues, operation, 'install-fresh-operation', options);
   validateDriverProbeReady(issues, probe, 'fresh-install driver probe');
   if (
-    state?.protocolVersion !== VMIC_PROTOCOL_V7
+    state?.protocolVersion !== VMIC_PROTOCOL_V8
     || state?.installChannel !== 'stable'
     || state?.driverHealth !== 'running'
     || state?.driverVersion !== operation?.packageVersion
@@ -1485,7 +1485,7 @@ const validateRepair = (root, options) => {
   requireJsonIdentity(issues, handshake, 'bridge-production-handshake');
   if (
     handshake?.passed !== true
-    || handshake?.protocolVersion !== VMIC_PROTOCOL_V7
+    || handshake?.protocolVersion !== VMIC_PROTOCOL_V8
     || Number(handshake?.bridgeProcessId) <= 0
     || handshake?.rootInstanceId !== probe?.rootInstanceIds?.[0]
     || handshake?.captureEndpointName !== probe?.captureEndpointName
@@ -1560,7 +1560,7 @@ const validateUpgrade = (root, options) => {
   requireJsonIdentity(issues, handshake, 'bridge-production-handshake');
   if (
     handshake?.passed !== true
-    || handshake?.protocolVersion !== VMIC_PROTOCOL_V7
+    || handshake?.protocolVersion !== VMIC_PROTOCOL_V8
     || Number(handshake?.bridgeProcessId) <= 0
     || handshake?.captureEndpointName !== probe?.captureEndpointName
   ) issues.push('upgrade must finish with a matching production Bridge v6 handshake');

@@ -38,6 +38,9 @@ pub(super) struct AcceptedTranslatedCue {
     chunks: Vec<AcceptedTranslatedChunk>,
     created_at_ms: u64,
     completed_at_ms: u64,
+    bridge_instance_id: String,
+    playback_owner_generation: u64,
+    physical_playback_device_id: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -61,6 +64,9 @@ struct PendingTranslatedStream {
     chunks: Vec<AcceptedTranslatedChunk>,
     next_chunk_index: u32,
     created_at_ms: u64,
+    bridge_instance_id: String,
+    playback_owner_generation: u64,
+    physical_playback_device_id: String,
 }
 
 #[derive(Debug)]
@@ -229,6 +235,9 @@ impl TranslatedPcmAuthority {
         channel_count: u16,
         accepted_frames: u64,
         created_at_ms: u64,
+        bridge_instance_id: &str,
+        playback_owner_generation: u64,
+        physical_playback_device_id: &str,
     ) -> Result<(), String> {
         let Some(enabled) = self.enabled.as_mut() else {
             return Ok(());
@@ -264,6 +273,9 @@ impl TranslatedPcmAuthority {
                 accepted_at_ms: now_unix_ms(),
             }],
             created_at_ms,
+            bridge_instance_id,
+            playback_owner_generation,
+            physical_playback_device_id,
         )?;
         self.write_event("bridge_write_accepted", Some(&record))?;
         self.write_summary()
@@ -281,6 +293,9 @@ impl TranslatedPcmAuthority {
         chunk_index: u32,
         stream_state: omni_bridge_protocol::TranslationStreamState,
         created_at_ms: u64,
+        bridge_instance_id: &str,
+        playback_owner_generation: u64,
+        physical_playback_device_id: &str,
     ) -> Result<(), String> {
         let Some(enabled) = self.enabled.as_mut() else {
             return Ok(());
@@ -321,6 +336,9 @@ impl TranslatedPcmAuthority {
                         }],
                         next_chunk_index: 1,
                         created_at_ms,
+                        bridge_instance_id: bridge_instance_id.to_string(),
+                        playback_owner_generation,
+                        physical_playback_device_id: physical_playback_device_id.to_string(),
                     },
                 );
                 self.write_summary()
@@ -336,7 +354,15 @@ impl TranslatedPcmAuthority {
                 let pending = enabled.active_streams.get_mut(cue_id).ok_or_else(|| {
                     format!("translated PCM authority stream chunk has no start cueId={cue_id}")
                 })?;
-                validate_stream_identity(pending, sample_rate_hz, channel_count, chunk_index)?;
+                validate_stream_identity(
+                    pending,
+                    sample_rate_hz,
+                    channel_count,
+                    chunk_index,
+                    bridge_instance_id,
+                    playback_owner_generation,
+                    physical_playback_device_id,
+                )?;
                 let next_len = pending.samples.len().saturating_add(samples.len());
                 if next_len > MAX_TRANSLATED_PCM_SAMPLES {
                     return Err(format!(
@@ -368,7 +394,15 @@ impl TranslatedPcmAuthority {
                 let pending = enabled.active_streams.get(cue_id).ok_or_else(|| {
                     format!("translated PCM authority stream end has no start cueId={cue_id}")
                 })?;
-                validate_stream_identity(pending, sample_rate_hz, channel_count, chunk_index)?;
+                validate_stream_identity(
+                    pending,
+                    sample_rate_hz,
+                    channel_count,
+                    chunk_index,
+                    bridge_instance_id,
+                    playback_owner_generation,
+                    physical_playback_device_id,
+                )?;
                 let pending = enabled
                     .active_streams
                     .remove(cue_id)
@@ -386,6 +420,9 @@ impl TranslatedPcmAuthority {
                     pending.next_chunk_index,
                     pending.chunks,
                     pending.created_at_ms,
+                    &pending.bridge_instance_id,
+                    pending.playback_owner_generation,
+                    &pending.physical_playback_device_id,
                 )?;
                 self.write_event("bridge_write_accepted", Some(&record))?;
                 self.write_summary()
@@ -569,10 +606,16 @@ fn validate_stream_identity(
     sample_rate_hz: u32,
     channel_count: u16,
     chunk_index: u32,
+    bridge_instance_id: &str,
+    playback_owner_generation: u64,
+    physical_playback_device_id: &str,
 ) -> Result<(), String> {
     if pending.sample_rate_hz != sample_rate_hz
         || pending.channel_count != channel_count
         || pending.next_chunk_index != chunk_index
+        || pending.bridge_instance_id != bridge_instance_id
+        || pending.playback_owner_generation != playback_owner_generation
+        || pending.physical_playback_device_id != physical_playback_device_id
     {
         return Err(format!(
             "translated PCM authority stream sequence mismatch: cueId={} expectedChunk={} actualChunk={chunk_index}",
@@ -594,6 +637,9 @@ fn persist_accepted_cue(
     chunk_count: u32,
     chunks: Vec<AcceptedTranslatedChunk>,
     created_at_ms: u64,
+    bridge_instance_id: &str,
+    playback_owner_generation: u64,
+    physical_playback_device_id: &str,
 ) -> Result<AcceptedTranslatedCue, String> {
     if enabled.accepted_cue_ids.contains(cue_id) {
         return Err(format!(
@@ -629,6 +675,9 @@ fn persist_accepted_cue(
         chunks,
         created_at_ms,
         completed_at_ms: now_unix_ms(),
+        bridge_instance_id: bridge_instance_id.to_string(),
+        playback_owner_generation,
+        physical_playback_device_id: physical_playback_device_id.to_string(),
     };
     enabled.accepted_cue_ids.insert(cue_id.to_string());
     enabled.accepted_cues.push(record.clone());
@@ -698,7 +747,10 @@ mod tests {
         let mut authority = create_authority(root.path());
         let samples = vec![100_i16, -200, 300, -400];
         authority
-            .accept_complete_cue("cue-1", "request-1", &samples, 24_000, 1, 4, 11)
+            .accept_complete_cue(
+                "cue-1", "request-1", &samples, 24_000, 1, 4, 11,
+                "bridge-instance-1", 17, "{hda-endpoint}",
+            )
             .expect("accepted cue");
         authority.finalize("test-completed").expect("finalize");
 
@@ -711,6 +763,9 @@ mod tests {
         assert_eq!(summary["cueCount"], 1);
         assert_eq!(summary["acceptedCues"][0]["cueId"], "cue-1");
         assert_eq!(summary["acceptedCues"][0]["acceptedFrames"], 4);
+        assert_eq!(summary["acceptedCues"][0]["bridgeInstanceId"], "bridge-instance-1");
+        assert_eq!(summary["acceptedCues"][0]["playbackOwnerGeneration"], 17);
+        assert_eq!(summary["acceptedCues"][0]["physicalPlaybackDeviceId"], "{hda-endpoint}");
         assert_eq!(summary["acceptedCues"][0]["chunks"][0]["chunkIndex"], 0);
         assert_eq!(summary["acceptedCues"][0]["chunks"][0]["sampleOffset"], 0);
         assert_eq!(summary["acceptedCues"][0]["chunks"][0]["sampleCount"], 4);
@@ -739,6 +794,9 @@ mod tests {
                 0,
                 TranslationStreamState::Start,
                 12,
+                "bridge-instance-1",
+                17,
+                "{hda-endpoint}",
             )
             .expect("start");
         authority
@@ -752,6 +810,9 @@ mod tests {
                 1,
                 TranslationStreamState::Chunk,
                 12,
+                "bridge-instance-1",
+                17,
+                "{hda-endpoint}",
             )
             .expect("chunk");
         let error = authority
@@ -765,6 +826,9 @@ mod tests {
                 3,
                 TranslationStreamState::End,
                 12,
+                "bridge-instance-1",
+                17,
+                "{hda-endpoint}",
             )
             .expect_err("out-of-order end");
         assert!(error.contains("sequence mismatch"));
@@ -779,6 +843,9 @@ mod tests {
                 2,
                 TranslationStreamState::End,
                 12,
+                "bridge-instance-1",
+                17,
+                "{hda-endpoint}",
             )
             .expect("end");
         authority.finalize("test-completed").expect("finalize");
@@ -804,14 +871,23 @@ mod tests {
         let root = tempdir().expect("tempdir");
         let mut authority = create_authority(root.path());
         authority
-            .accept_complete_cue("cue", "request", &[1, 2], 24_000, 1, 2, 1)
+            .accept_complete_cue(
+                "cue", "request", &[1, 2], 24_000, 1, 2, 1,
+                "bridge-instance-1", 17, "{hda-endpoint}",
+            )
             .expect("first cue");
         assert!(authority
-            .accept_complete_cue("cue", "request-2", &[1, 2], 24_000, 1, 2, 1)
+            .accept_complete_cue(
+                "cue", "request-2", &[1, 2], 24_000, 1, 2, 1,
+                "bridge-instance-1", 17, "{hda-endpoint}",
+            )
             .expect_err("duplicate")
             .contains("duplicate"));
         assert!(authority
-            .accept_complete_cue("cue-2", "request-3", &[1, 2], 24_000, 1, 1, 1)
+            .accept_complete_cue(
+                "cue-2", "request-3", &[1, 2], 24_000, 1, 1, 1,
+                "bridge-instance-1", 17, "{hda-endpoint}",
+            )
             .expect_err("partial ack")
             .contains("mismatch"));
     }

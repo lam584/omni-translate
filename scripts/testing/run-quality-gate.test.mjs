@@ -247,7 +247,7 @@ const writeVirtualMicCaptureEvidence = (
     collectorVersion: '0.1.0',
     parentCollectorProcessId: 4101,
     captureChildProcessId: 4102,
-    bridgeProtocolVersion: '2026-08-13-audio-routing-v7',
+    bridgeProtocolVersion: '2026-08-27-audio-routing-v8',
     bridgeProcessId: 4103,
     bridgeInstanceId: 'bridge-instance-release-1',
     bridgeSessionId: sessionId,
@@ -1159,7 +1159,7 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
     case 'INSTALL-FRESH':
       writeJson(path.join(rawDirectory, 'fresh-install-evidence.json'), installOperation('install-fresh-operation'));
       writeJson(path.join(rawDirectory, 'driver-install-state.json'), {
-        protocolVersion: '2026-08-13-audio-routing-v7',
+        protocolVersion: '2026-08-27-audio-routing-v8',
         installChannel: 'stable',
         driverHealth: 'running',
         driverVersion: '1.2.3',
@@ -1200,7 +1200,7 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
         artifactKind: 'bridge-production-handshake',
         passed: true,
         connectedAt: TEST_NOW.toISOString(),
-        protocolVersion: '2026-08-13-audio-routing-v7',
+        protocolVersion: '2026-08-27-audio-routing-v8',
         bridgeProcessId: 6101,
         rootInstanceId: 'ROOT\\MEDIA\\0000',
         captureEndpointName: 'Omni Translate Virtual Microphone',
@@ -1243,7 +1243,7 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
         artifactKind: 'bridge-production-handshake',
         passed: true,
         connectedAt: TEST_NOW.toISOString(),
-        protocolVersion: '2026-08-13-audio-routing-v7',
+        protocolVersion: '2026-08-27-audio-routing-v8',
         bridgeProcessId: 6102,
         captureEndpointName: 'Omni Translate Virtual Microphone',
       });

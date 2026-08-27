@@ -188,7 +188,7 @@ function createRunDirectory({
       },
       fixture: canonical.fixture,
     }), 'utf8');
-    fs.writeFileSync(path.join(runDirectory, 'physical-output-content.json'), JSON.stringify({
+    const rawPhysicalContent = {
       passed: true,
       authorityMode: 'local-pcm-cue-playback-v1',
       remoteProviderCalls: 0,
@@ -207,7 +207,17 @@ function createRunDirectory({
         playbackAuthority: { passed: true, invalidCues: [] },
         acousticAuthority: { passed: true },
       },
-    }), 'utf8');
+    };
+    fs.writeFileSync(
+      path.join(runDirectory, 'physical-output-content.raw.json'),
+      JSON.stringify(rawPhysicalContent),
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(runDirectory, 'physical-output-content.json'),
+      JSON.stringify(rawPhysicalContent),
+      'utf8',
+    );
     // Supply the surrounding raw files so this negative fixture reaches the
     // translated-PCM check instead of failing earlier on an unrelated missing
     // recording/report. It deliberately omits the Rust cue PCM authority.
@@ -431,7 +441,7 @@ test('strict paid cell rejects forged canonical and lifecycle-only physical auth
     assert.match(budget.violations.join('; '), /not byte-for-byte the injector reconstruction/);
 
     fs.writeFileSync(referencePath, canonical.referencePcm.buffer);
-    const physicalPath = path.join(runDirectory, 'physical-output-content.json');
+    const physicalPath = path.join(runDirectory, 'physical-output-content.raw.json');
     const physical = JSON.parse(fs.readFileSync(physicalPath, 'utf8'));
     physical.translatedSpeech.acousticAuthority.passed = false;
     fs.writeFileSync(physicalPath, JSON.stringify(physical), 'utf8');
@@ -456,7 +466,7 @@ test('strict paid cell rejects a forged source window and an unbound sttSourceWi
         bytes[bytes.length - 1] ^= 0x5a;
         fs.writeFileSync(sourceWindowPath, bytes);
       } else {
-        const physicalPath = path.join(runDirectory, 'physical-output-content.json');
+        const physicalPath = path.join(runDirectory, 'physical-output-content.raw.json');
         const physical = JSON.parse(fs.readFileSync(physicalPath, 'utf8'));
         physical.sttSourceWindow.path = path.join(runDirectory, 'caller-authored-window.pcm');
         fs.writeFileSync(physicalPath, JSON.stringify(physical), 'utf8');

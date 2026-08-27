@@ -216,6 +216,7 @@ const healthyProcessRestartData = {
   identityChanged: true,
   frameContinuity: true,
   runtimeReady: true,
+  playbackRebound: true,
   timingValid: true,
   metricsProveTransition: true,
   oldBridgeProcessId: 4242,
@@ -228,6 +229,12 @@ const healthyProcessRestartData = {
   newSourceGeneration: 202,
   oldSourceGenerationToken: 'token-old',
   newSourceGenerationToken: 'token-new',
+  oldPlaybackOwnerGeneration: 1001,
+  newPlaybackOwnerGeneration: 2002,
+  oldPhysicalPlaybackDeviceId: '{hda-test-endpoint}',
+  newPhysicalPlaybackDeviceId: '{hda-test-endpoint}',
+  physicalPlaybackStatus: 'ready',
+  physicalPlaybackRebindDurationMs: 250,
   oldLastFrameTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 899_000,
   oldLastFrameReadTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 899_100,
   newFirstFrameTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 901_000,
@@ -429,6 +436,9 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
       createdAtMs: recordingStartedAtEpochMs + playbackOffsetsSeconds[index] * 1_000 - 50,
       completedAtMs: recordingStartedAtEpochMs
         + (playbackOffsetsSeconds[index] + samples.length / 24_000) * 1_000,
+      bridgeInstanceId: index === 0 ? 'bridge-instance-old' : 'bridge-instance-new',
+      playbackOwnerGeneration: index === 0 ? 1001 : 2002,
+      physicalPlaybackDeviceId: '{hda-test-endpoint}',
     });
   }
   const physicalPcmPath = path.join(runDirectory, 'physical-output-recording-16k-mono.pcm');
@@ -1302,6 +1312,12 @@ function writeProcessExclusionRestartFixture(runDirectory) {
     newSourceGeneration: '2',
     oldSourceGenerationToken: 'generation-token-old',
     newSourceGenerationToken: 'generation-token-new',
+    oldPlaybackOwnerGeneration: 1001,
+    newPlaybackOwnerGeneration: 2002,
+    oldPhysicalPlaybackDeviceId: '{hda-test-endpoint}',
+    newPhysicalPlaybackDeviceId: '{hda-test-endpoint}',
+    physicalPlaybackStatus: 'ready',
+    physicalPlaybackRebindDurationMs: 150,
     oldLastFrameTimestampMs: midpointMs - 100,
     oldLastFrameReadTimestampMs: midpointMs - 50,
     newFirstFrameTimestampMs: midpointMs + 50,

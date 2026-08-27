@@ -168,6 +168,10 @@ fn handle_control(
                 .as_str()
                 .unwrap_or_default()
                 .to_string();
+            let previous_playback_owner_generation = command
+                ["previousPlaybackOwnerGeneration"]
+                .as_u64()
+                .unwrap_or(0);
             let physical_playback_device_changed = current.physical_playback_device_id
                 != requested_physical_playback_device_id;
             current.physical_playback_device_id = requested_physical_playback_device_id;
@@ -234,13 +238,6 @@ fn handle_control(
                 current.excluded_process_id = Some(unsafe { GetCurrentProcessId() });
                 current.last_error_code = None;
             }
-            let route_ready = capture_route_is_ready(
-                requested_capture_mode,
-                &current.driver_health,
-                current.process_loopback_status,
-            );
-            current.bridge_state = if route_ready { "running" } else { "degraded" }.to_string();
-            current.lifecycle_state = if route_ready { "ready" } else { "error" }.to_string();
             let reconfiguration_reason = if session_changed {
                 Some("session-changed")
             } else if capture_mode_changed {
@@ -252,15 +249,91 @@ fn handle_control(
             } else {
                 None
             };
-            if let Some(reason) = reconfiguration_reason {
-                request_playback_stop(
-                    &mut current,
-                    translation_queue,
-                    playback_control_tx,
-                    reason,
-                    None,
-                );
-            }
+            let mut current = if requested_capture_mode == SourceCaptureMode::ProcessExclusion {
+                current.physical_playback_status = "rebinding".to_string();
+                current.resolved_physical_playback_device_id.clear();
+                current.bridge_state = "starting".to_string();
+                current.lifecycle_state = "initializing".to_string();
+                let requested_endpoint = current.physical_playback_device_id.clone();
+                let next_owner_generation = unix_ms()
+                    .max(previous_playback_owner_generation.saturating_add(1))
+                    .max(current.playback_owner_generation.saturating_add(1));
+                drop(current);
+
+                let (response_tx, response_rx) = mpsc::sync_channel(1);
+                let rebind_result = playback_control_tx
+                    .send(PlaybackControlCommand::RebindPhysicalOutput {
+                        device_id: requested_endpoint.clone(),
+                        response_tx,
+                    })
+                    .map_err(|error| format!("physical playback worker is unavailable: {error}"))
+                    .and_then(|()| {
+                        response_rx
+                            .recv_timeout(Duration::from_secs(10))
+                            .map_err(|error| format!("physical playback rebind timed out: {error}"))?
+                    });
+                let mut current = state.lock().unwrap();
+                match rebind_result {
+                    Ok(resolved_endpoint) => {
+                        current.resolved_physical_playback_device_id = resolved_endpoint.clone();
+                        current.physical_playback_status = "ready".to_string();
+                        current.playback_owner_generation = next_owner_generation;
+                        service_log(
+                            LogLevel::Info,
+                            request_id,
+                            &format!(
+                                "event=physical_playback_rebind status=ready endpointId={} playbackOwnerGeneration={}",
+                                resolved_endpoint, next_owner_generation,
+                            ),
+                        );
+                    }
+                    Err(detail) => {
+                        current.physical_playback_status = "failed".to_string();
+                        current.last_error_code =
+                            Some("bridge.physical-playback-rebind-failed".to_string());
+                        current.bridge_state = "degraded".to_string();
+                        current.lifecycle_state = "error".to_string();
+                        service_log(
+                            LogLevel::Error,
+                            request_id,
+                            &format!(
+                                "event=physical_playback_rebind status=failed errorCode=bridge.physical-playback-rebind-failed endpointId={} detail={}",
+                                requested_endpoint, detail,
+                            ),
+                        );
+                        return bridge_error(
+                            request_id,
+                            "bridge.physical-playback-rebind-failed",
+                            &detail,
+                            &current,
+                        );
+                    }
+                }
+                current
+            } else {
+                current.physical_playback_status = "uninitialized".to_string();
+                current.resolved_physical_playback_device_id.clear();
+                if let Some(reason) = reconfiguration_reason {
+                    request_playback_stop(
+                        &mut current,
+                        translation_queue,
+                        playback_control_tx,
+                        reason,
+                        None,
+                    );
+                }
+                current
+            };
+            let capture_ready = capture_route_is_ready(
+                requested_capture_mode,
+                &current.driver_health,
+                current.process_loopback_status,
+            );
+            let playback_ready = requested_capture_mode != SourceCaptureMode::ProcessExclusion
+                || current.physical_playback_status == "ready";
+            let route_ready = capture_ready && playback_ready;
+            current.bridge_state = if route_ready { "running" } else { "degraded" }.to_string();
+            current.lifecycle_state = if route_ready { "ready" } else { "error" }.to_string();
             bridge_init_ack(request_id, &current)
         }
         "bridge.state.query" => state_snapshot(request_id, &state.lock().unwrap()),
@@ -282,6 +355,8 @@ fn handle_control(
             current.session_id = None;
             current.bridge_state = "stopped".to_string();
             current.lifecycle_state = "stopped".to_string();
+            current.physical_playback_status = "uninitialized".to_string();
+            current.resolved_physical_playback_device_id.clear();
             request_playback_stop(
                 &mut current,
                 translation_queue,
@@ -456,6 +531,9 @@ fn bridge_init_ack(request_id: &str, current: &BridgeState) -> Value {
         "virtualMicOutputStatus": current.virtual_mic_output_status,
         "captureEndpointName": current.virtual_mic_capture_endpoint_name,
         "virtualMicFormat": current.virtual_mic_format,
+        "physicalPlaybackStatus": current.physical_playback_status,
+        "resolvedPhysicalPlaybackDeviceId": current.resolved_physical_playback_device_id,
+        "playbackOwnerGeneration": current.playback_owner_generation,
     })
 }
 
@@ -677,6 +755,8 @@ fn state_snapshot(request_id: &str, state: &BridgeState) -> Value {
         "captureSilentPacketCount": state.capture_silent_packet_count,
         "captureInvalidSampleCount": state.capture_invalid_sample_count,
         "resolvedPhysicalPlaybackDeviceId": state.resolved_physical_playback_device_id,
+        "physicalPlaybackStatus": state.physical_playback_status,
+        "playbackOwnerGeneration": state.playback_owner_generation,
         "monitorBufferedMs": state.monitor_source_queued_frames * OMNI_SOURCE_FRAME_INTERVAL_MS as usize,
         "monitorUnderrunCount": state.monitor_underrun_count,
         "monitorOverrunCount": state.monitor_overrun_count,

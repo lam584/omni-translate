@@ -2837,6 +2837,9 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
             chunk_index,
             stream_state,
             created_at_ms,
+            expected_owner.bridge_instance_id(),
+            expected_owner.playback_owner_generation(),
+            &bridge_snapshot.resolved_physical_playback_device_id,
         ) {
             Ok(()) => true,
             Err(error) => {
@@ -2981,6 +2984,9 @@ fn write_native_bridge_or_virtual_output<R: tauri::Runtime>(
         }
     };
     if output_route.write_to_bridge_playback {
+        let bridge_snapshot = app
+            .state::<crate::bridge::state::BridgeStateStore>()
+            .snapshot();
         if let Err(error) = translated_pcm_authority.accept_complete_cue(
             cue_id,
             &request_id,
@@ -2989,6 +2995,9 @@ fn write_native_bridge_or_virtual_output<R: tauri::Runtime>(
             1,
             frames,
             created_at_ms,
+            bridge_snapshot.bridge_instance_id.as_deref().unwrap_or(""),
+            bridge_snapshot.playback_owner_generation,
+            &bridge_snapshot.resolved_physical_playback_device_id,
         ) {
             audio_state.watch_session_report.record_session_issue(
                 "output",

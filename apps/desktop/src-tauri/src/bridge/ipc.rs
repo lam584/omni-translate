@@ -103,6 +103,7 @@ pub(crate) fn initialize_bridge(
             target_device_id: snapshot.target_device_id.clone(),
             virtual_render_device_id: snapshot.virtual_render_device_id.clone(),
             physical_playback_device_id: snapshot.physical_playback_device_id.clone(),
+            previous_playback_owner_generation: snapshot.playback_owner_generation,
             physical_playback_level: snapshot.physical_playback_level,
             mix_control: snapshot.mix_control.clone(),
             monitor_playback_enabled: snapshot.monitor_playback_enabled,
@@ -134,6 +135,10 @@ pub(crate) fn initialize_bridge(
             next.process_loopback_minimum_windows_build =
                 ack.process_loopback_minimum_windows_build;
             next.process_loopback_failure_detail = ack.process_loopback_failure_detail;
+            next.physical_playback_status = ack.physical_playback_status;
+            next.resolved_physical_playback_device_id =
+                ack.resolved_physical_playback_device_id;
+            next.playback_owner_generation = ack.playback_owner_generation;
             if ack.virtual_mic_output_status != "unknown" {
                 next.virtual_mic_output_supported = ack.virtual_mic_output_supported;
                 next.virtual_mic_output_status = ack.virtual_mic_output_status;
@@ -205,6 +210,8 @@ pub(crate) fn apply_query(snapshot: &mut BridgeRuntimeSnapshot, query: BridgeSta
     snapshot.capture_silent_packet_count = query.capture_silent_packet_count;
     snapshot.capture_invalid_sample_count = query.capture_invalid_sample_count;
     snapshot.resolved_physical_playback_device_id = query.resolved_physical_playback_device_id;
+    snapshot.physical_playback_status = query.physical_playback_status;
+    snapshot.playback_owner_generation = query.playback_owner_generation;
     snapshot.monitor_buffered_ms = query.monitor_buffered_ms;
     snapshot.monitor_underrun_count = query.monitor_underrun_count;
     snapshot.monitor_overrun_count = query.monitor_overrun_count;
@@ -475,6 +482,8 @@ mod tests {
                 capture_silent_packet_count: 3,
                 capture_invalid_sample_count: 4,
                 resolved_physical_playback_device_id: "real-speaker-1".to_string(),
+                physical_playback_status: "ready".to_string(),
+                playback_owner_generation: 42,
                 monitor_buffered_ms: 80,
                 monitor_underrun_count: 0,
                 monitor_overrun_count: 0,
@@ -1060,6 +1069,7 @@ mod tests {
             None,
             Some(4242),
             Some("bridge-instance-timing".to_string()),
+            Some(7),
         );
 
         assert_eq!(header.cue_id.as_deref(), Some("cue-timing"));

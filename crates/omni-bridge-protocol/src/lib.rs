@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub const BRIDGE_PROTOCOL_VERSION: &str = "2026-08-13-audio-routing-v7";
+pub const BRIDGE_PROTOCOL_VERSION: &str = "2026-08-27-audio-routing-v8";
 
 pub const DEFAULT_PIPE_NAME: &str = "omni-bridge-ipc";
 
@@ -230,6 +230,11 @@ pub struct AudioFrameHeader {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub bridge_instance_id: Option<String>,
+    /// Physical playback ownership epoch. Every physical translation frame
+    /// must carry the epoch returned by the current Bridge initialization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub playback_owner_generation: Option<u64>,
     /// Active native source subscription generation. Source frames and
     /// heartbeats carry it; translation frames do not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -450,6 +455,7 @@ pub fn translation_header_fixture() -> AudioFrameHeader {
         payload_bytes: 4,
         bridge_process_id: None,
         bridge_instance_id: None,
+        playback_owner_generation: Some(1),
         source_generation: None,
         source_generation_token: None,
         cue_id: None,

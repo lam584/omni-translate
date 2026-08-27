@@ -80,13 +80,16 @@ pub(super) fn schedule_process_exclusion_restart(
             "info",
             "event=process_exclusion_restart_before",
             Some(format!(
-                "runMarker={} startedAtUnixMs={started_at_unix_ms} bridgeProcessId={} bridgeInstanceId={} sessionId={} sourceGeneration={} sourceGenerationToken={} lastFrameTimestampMs={} lastFrameReadTimestampMs={} sourceFrames={} sourceSubscriberActive={} excludedProcessId={}",
+                "runMarker={} startedAtUnixMs={started_at_unix_ms} bridgeProcessId={} bridgeInstanceId={} sessionId={} sourceGeneration={} sourceGenerationToken={} playbackOwnerGeneration={} physicalPlaybackStatus={} physicalPlaybackDeviceId={} lastFrameTimestampMs={} lastFrameReadTimestampMs={} sourceFrames={} sourceSubscriberActive={} excludedProcessId={}",
                 if run_marker.is_empty() { "-" } else { run_marker.as_str() },
                 old.frame.bridge_process_id,
                 old.frame.bridge_instance_id,
                 old.frame.session_id,
                 old.frame.source_generation,
                 old.frame.source_generation_token,
+                old.bridge.playback_owner_generation,
+                old.bridge.physical_playback_status,
+                old.bridge.resolved_physical_playback_device_id,
                 old.frame.frame_timestamp_ms,
                 old.frame.read_timestamp_ms,
                 old.bridge.source_frames_captured,
@@ -129,12 +132,14 @@ pub(super) fn schedule_process_exclusion_restart(
             "info",
             "event=process_exclusion_restart_triggered",
             Some(format!(
-                "runMarker={} restartTriggeredAtUnixMs={restart_triggered_at_unix_ms} oldBridgeProcessId={} oldSessionId={} oldSourceGeneration={} oldSourceGenerationToken={}",
+                "runMarker={} restartTriggeredAtUnixMs={restart_triggered_at_unix_ms} oldBridgeProcessId={} oldSessionId={} oldSourceGeneration={} oldSourceGenerationToken={} oldPlaybackOwnerGeneration={} oldPhysicalPlaybackDeviceId={}",
                 if run_marker.is_empty() { "-" } else { run_marker.as_str() },
                 old.frame.bridge_process_id,
                 old.frame.session_id,
                 old.frame.source_generation,
                 old.frame.source_generation_token,
+                old.bridge.playback_owner_generation,
+                old.bridge.resolved_physical_playback_device_id,
             )),
             None,
             None,
@@ -163,6 +168,7 @@ pub(super) fn schedule_process_exclusion_restart(
             );
             return;
         }
+        let playback_rebind_completed_at_unix_ms = crate::audio::time_utils::unix_ms();
 
         let mut new = match wait_for_process_exclusion_source(&app, Some(&old)).await {
             Ok(observation) => observation,
@@ -181,6 +187,28 @@ pub(super) fn schedule_process_exclusion_restart(
             .state::<AudioStateStore>()
             .bridge_source_runtime_evidence()
             .accepted_for_instance(&old_instance_id);
+        if new.bridge.physical_playback_status != "ready"
+            || new.bridge.playback_owner_generation <= old.bridge.playback_owner_generation
+            || new.bridge.resolved_physical_playback_device_id
+                != old.bridge.resolved_physical_playback_device_id
+        {
+            log_process_exclusion_restart_failure(
+                &app,
+                &run_marker,
+                "physical-playback-rebind",
+                started_at_unix_ms,
+                &format!(
+                    "physical playback ownership did not recover on the same endpoint: oldStatus={} newStatus={} oldGeneration={} newGeneration={} oldEndpoint={} newEndpoint={}",
+                    old.bridge.physical_playback_status,
+                    new.bridge.physical_playback_status,
+                    old.bridge.playback_owner_generation,
+                    new.bridge.playback_owner_generation,
+                    old.bridge.resolved_physical_playback_device_id,
+                    new.bridge.resolved_physical_playback_device_id,
+                ),
+            );
+            return;
+        }
         // Prove the new generation remains live after its first frame and give
         // any delayed old-pipe bytes time to hit the rejection barrier.
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -193,7 +221,11 @@ pub(super) fn schedule_process_exclusion_restart(
                     && bridge.source_generation_token == new.bridge.source_generation_token
                     && bridge.source_frames_captured > new.bridge.source_frames_captured
                     && bridge.source_subscriber_active
-                    && bridge.process_loopback_status == ProcessLoopbackStatus::Ready =>
+                    && bridge.process_loopback_status == ProcessLoopbackStatus::Ready
+                    && bridge.physical_playback_status == "ready"
+                    && bridge.playback_owner_generation == new.bridge.playback_owner_generation
+                    && bridge.resolved_physical_playback_device_id
+                        == new.bridge.resolved_physical_playback_device_id =>
             {
                 bridge
             }
@@ -204,11 +236,14 @@ pub(super) fn schedule_process_exclusion_restart(
                     "post-recovery-continuity",
                     started_at_unix_ms,
                     &format!(
-                        "new source generation did not continue growing: firstFrames={} settledFrames={} settledSubscriber={} settledStatus={}",
+                        "new source/playback generation did not remain ready: firstFrames={} settledFrames={} settledSubscriber={} settledStatus={} settledPlaybackStatus={} settledPlaybackOwnerGeneration={} settledEndpoint={}",
                         new.bridge.source_frames_captured,
                         bridge.source_frames_captured,
                         bridge.source_subscriber_active,
                         bridge.process_loopback_status.as_str(),
+                        bridge.physical_playback_status,
+                        bridge.playback_owner_generation,
+                        bridge.resolved_physical_playback_device_id,
                     ),
                 );
                 return;
@@ -251,13 +286,16 @@ pub(super) fn schedule_process_exclusion_restart(
             if status == "passed" { "info" } else { "error" },
             "event=process_exclusion_restart_after",
             Some(format!(
-                "status={status} runMarker={} recoveredAtUnixMs={recovered_at_unix_ms} bridgeProcessId={} bridgeInstanceId={} sessionId={} sourceGeneration={} sourceGenerationToken={} firstFrameTimestampMs={} firstFrameReadTimestampMs={} sourceFrames={} sourceSubscriberActive={} processLoopbackStatus={} captureBackend={} excludedProcessId={} oldFramesAfterRestart={} oldFrameRejectedCount={} totalRejectedFrames={}",
+                "status={status} runMarker={} recoveredAtUnixMs={recovered_at_unix_ms} bridgeProcessId={} bridgeInstanceId={} sessionId={} sourceGeneration={} sourceGenerationToken={} playbackOwnerGeneration={} physicalPlaybackStatus={} physicalPlaybackDeviceId={} firstFrameTimestampMs={} firstFrameReadTimestampMs={} sourceFrames={} sourceSubscriberActive={} processLoopbackStatus={} captureBackend={} excludedProcessId={} oldFramesAfterRestart={} oldFrameRejectedCount={} totalRejectedFrames={}",
                 if run_marker.is_empty() { "-" } else { run_marker.as_str() },
                 new.frame.bridge_process_id,
                 new.frame.bridge_instance_id,
                 new.frame.session_id,
                 new.frame.source_generation,
                 new.frame.source_generation_token,
+                new.bridge.playback_owner_generation,
+                new.bridge.physical_playback_status,
+                new.bridge.resolved_physical_playback_device_id,
                 new.frame.frame_timestamp_ms,
                 new.frame.read_timestamp_ms,
                 new.bridge.source_frames_captured,
@@ -278,7 +316,7 @@ pub(super) fn schedule_process_exclusion_restart(
             if status == "passed" { "info" } else { "error" },
             "event=process_exclusion_restart_summary",
             Some(format!(
-                "status={status} runMarker={} startedAtUnixMs={started_at_unix_ms} restartTriggeredAtUnixMs={restart_triggered_at_unix_ms} oldBridgeProcessId={} newBridgeProcessId={} oldBridgeInstanceId={} newBridgeInstanceId={} oldSessionId={} newSessionId={} oldSourceGeneration={} newSourceGeneration={} oldSourceGenerationToken={} newSourceGenerationToken={} oldLastFrameTimestampMs={} oldLastFrameReadTimestampMs={} newFirstFrameTimestampMs={} newFirstFrameReadTimestampMs={} recoveredAtMs={recovered_at_unix_ms} recoveredAtUnixMs={recovered_at_unix_ms} downtimeMs={downtime_ms} oldFramesAfterRestart={} oldFrameRejectedCount={} excludedProcessId={} processLoopbackStatus={} captureBackend={} sourceFramesBefore={} sourceFramesAfter={} sourceSubscriberActive={}",
+                "status={status} runMarker={} startedAtUnixMs={started_at_unix_ms} restartTriggeredAtUnixMs={restart_triggered_at_unix_ms} oldBridgeProcessId={} newBridgeProcessId={} oldBridgeInstanceId={} newBridgeInstanceId={} oldSessionId={} newSessionId={} oldSourceGeneration={} newSourceGeneration={} oldSourceGenerationToken={} newSourceGenerationToken={} oldPlaybackOwnerGeneration={} newPlaybackOwnerGeneration={} oldPhysicalPlaybackDeviceId={} newPhysicalPlaybackDeviceId={} physicalPlaybackStatus={} physicalPlaybackRebindDurationMs={} oldLastFrameTimestampMs={} oldLastFrameReadTimestampMs={} newFirstFrameTimestampMs={} newFirstFrameReadTimestampMs={} recoveredAtMs={recovered_at_unix_ms} recoveredAtUnixMs={recovered_at_unix_ms} downtimeMs={downtime_ms} oldFramesAfterRestart={} oldFrameRejectedCount={} excludedProcessId={} processLoopbackStatus={} captureBackend={} sourceFramesBefore={} sourceFramesAfter={} sourceSubscriberActive={}",
                 if run_marker.is_empty() { "-" } else { run_marker.as_str() },
                 old.frame.bridge_process_id,
                 new.frame.bridge_process_id,
@@ -290,6 +328,13 @@ pub(super) fn schedule_process_exclusion_restart(
                 new.frame.source_generation,
                 old.frame.source_generation_token,
                 new.frame.source_generation_token,
+                old.bridge.playback_owner_generation,
+                new.bridge.playback_owner_generation,
+                old.bridge.resolved_physical_playback_device_id,
+                new.bridge.resolved_physical_playback_device_id,
+                new.bridge.physical_playback_status,
+                playback_rebind_completed_at_unix_ms
+                    .saturating_sub(restart_triggered_at_unix_ms),
                 old.frame.frame_timestamp_ms,
                 old.frame.read_timestamp_ms,
                 new.frame.frame_timestamp_ms,

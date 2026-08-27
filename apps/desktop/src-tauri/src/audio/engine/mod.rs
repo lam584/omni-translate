@@ -1221,6 +1221,7 @@ mod tests {
             payload_bytes,
             bridge_process_id: Some(42),
             bridge_instance_id: Some("bridge-instance-1".to_string()),
+            playback_owner_generation: None,
             source_generation: Some(7),
             source_generation_token: Some(
                 "bridge-instance-1:session-1:7".to_string(),

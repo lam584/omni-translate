@@ -4,6 +4,7 @@ const BRIDGE_TRANSLATION_GENERATION_ENDED: &str = "bridge.translation-generation
 pub(crate) struct BridgeTranslationSinkOwner {
     session_id: String,
     bridge_instance_id: String,
+    playback_owner_generation: u64,
 }
 
 impl BridgeTranslationSinkOwner {
@@ -11,14 +12,23 @@ impl BridgeTranslationSinkOwner {
         Some(Self {
             session_id: snapshot.session_id.clone()?,
             bridge_instance_id: snapshot.bridge_instance_id.clone()?,
+            playback_owner_generation: snapshot.playback_owner_generation,
         })
     }
 
     fn evidence(&self) -> String {
         format!(
-            "sessionId={} bridgeInstanceId={}",
-            self.session_id, self.bridge_instance_id
+            "sessionId={} bridgeInstanceId={} playbackOwnerGeneration={}",
+            self.session_id, self.bridge_instance_id, self.playback_owner_generation
         )
+    }
+
+    pub(crate) fn bridge_instance_id(&self) -> &str {
+        &self.bridge_instance_id
+    }
+
+    pub(crate) fn playback_owner_generation(&self) -> u64 {
+        self.playback_owner_generation
     }
 }
 
@@ -255,6 +265,7 @@ fn translation_frame_header(
     stream_state: Option<TranslationStreamState>,
     bridge_process_id: Option<u32>,
     bridge_instance_id: Option<String>,
+    playback_owner_generation: Option<u64>,
 ) -> BridgeTranslationFrameHeader {
     BridgeTranslationFrameHeader {
         event_type: event_type.to_string(),
@@ -270,6 +281,7 @@ fn translation_frame_header(
         payload_bytes,
         bridge_process_id,
         bridge_instance_id,
+        playback_owner_generation,
         source_generation: None,
         source_generation_token: None,
         cue_id: Some(cue_id.to_string()),
@@ -369,6 +381,7 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
         stream_state,
         snapshot.bridge_process_id,
         snapshot.bridge_instance_id.clone(),
+        Some(snapshot.playback_owner_generation),
     );
     let header_bytes = serde_json::to_vec(&header).map_err(|error| error.to_string())?;
     let mut audio_pipe = OpenOptions::new()

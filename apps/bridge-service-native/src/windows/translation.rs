@@ -47,6 +47,10 @@ struct PlaybackStopRequest {
 
 enum PlaybackControlCommand {
     StopAll(PlaybackStopRequest),
+    RebindPhysicalOutput {
+        device_id: String,
+        response_tx: mpsc::SyncSender<Result<String, String>>,
+    },
     TerminateTranslationStream {
         cue_id: String,
         terminal: TranslationCueTerminal,

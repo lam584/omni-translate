@@ -743,6 +743,14 @@ function parseProcessExclusionRestart(appLog, input) {
   const sourceFramesBefore = asNumber(summary.sourceFramesBefore, NaN);
   const sourceFramesAfter = asNumber(summary.sourceFramesAfter, NaN);
   const oldFramesAfterRestart = asNumber(summary.oldFramesAfterRestart, NaN);
+  const oldPlaybackOwnerGeneration = asNumber(summary.oldPlaybackOwnerGeneration, NaN);
+  const newPlaybackOwnerGeneration = asNumber(summary.newPlaybackOwnerGeneration, NaN);
+  const oldPhysicalPlaybackDeviceId = String(summary.oldPhysicalPlaybackDeviceId ?? '');
+  const newPhysicalPlaybackDeviceId = String(summary.newPhysicalPlaybackDeviceId ?? '');
+  const physicalPlaybackRebindDurationMs = asNumber(
+    summary.physicalPlaybackRebindDurationMs,
+    NaN,
+  );
   const systemMetrics = input.systemMetrics ?? {};
   const samples = Array.isArray(systemMetrics.samples) ? systemMetrics.samples : [];
   const samplesWithOldPid = samples.filter((sample) => (
@@ -815,6 +823,18 @@ function parseProcessExclusionRestart(appLog, input) {
     && summary.sourceSubscriberActive === 'true'
     && asNumber(summary.excludedProcessId, NaN) === newBridgeProcessId
   );
+  const playbackRebound = (
+    summary.physicalPlaybackStatus === 'ready'
+    && Number.isSafeInteger(oldPlaybackOwnerGeneration)
+    && Number.isSafeInteger(newPlaybackOwnerGeneration)
+    && oldPlaybackOwnerGeneration > 0
+    && newPlaybackOwnerGeneration > oldPlaybackOwnerGeneration
+    && oldPhysicalPlaybackDeviceId !== ''
+    && newPhysicalPlaybackDeviceId === oldPhysicalPlaybackDeviceId
+    && Number.isFinite(physicalPlaybackRebindDurationMs)
+    && physicalPlaybackRebindDurationMs >= 0
+    && physicalPlaybackRebindDurationMs <= 15_000
+  );
   const timingValid = (
     Number.isFinite(startedAtMs)
     && Number.isFinite(restartTriggeredAtMs)
@@ -839,6 +859,7 @@ function parseProcessExclusionRestart(appLog, input) {
   const completed = identityChanged
     && frameContinuity
     && runtimeReady
+    && playbackRebound
     && timingValid
     && metricsProveTransition;
   return {
@@ -849,6 +870,7 @@ function parseProcessExclusionRestart(appLog, input) {
     identityChanged,
     frameContinuity,
     runtimeReady,
+    playbackRebound,
     timingValid,
     metricsProveTransition,
     oldBridgeProcessId: Number.isFinite(oldBridgeProcessId) ? oldBridgeProcessId : null,
@@ -876,6 +898,18 @@ function parseProcessExclusionRestart(appLog, input) {
     sourceFramesBefore: Number.isFinite(sourceFramesBefore) ? sourceFramesBefore : null,
     sourceFramesAfter: Number.isFinite(sourceFramesAfter) ? sourceFramesAfter : null,
     oldFramesAfterRestart: Number.isFinite(oldFramesAfterRestart) ? oldFramesAfterRestart : null,
+    oldPlaybackOwnerGeneration: Number.isFinite(oldPlaybackOwnerGeneration)
+      ? oldPlaybackOwnerGeneration
+      : null,
+    newPlaybackOwnerGeneration: Number.isFinite(newPlaybackOwnerGeneration)
+      ? newPlaybackOwnerGeneration
+      : null,
+    oldPhysicalPlaybackDeviceId: oldPhysicalPlaybackDeviceId || null,
+    newPhysicalPlaybackDeviceId: newPhysicalPlaybackDeviceId || null,
+    physicalPlaybackStatus: summary.physicalPlaybackStatus ?? null,
+    physicalPlaybackRebindDurationMs: Number.isFinite(physicalPlaybackRebindDurationMs)
+      ? physicalPlaybackRebindDurationMs
+      : null,
     oldFrameRejectedCount: asNumber(summary.oldFrameRejectedCount, null),
     excludedProcessId: asNumber(summary.excludedProcessId, null),
     processLoopbackStatus: summary.processLoopbackStatus ?? null,
@@ -1875,7 +1909,7 @@ function speechSegmentationLayerFailed(segmentation, translationRoute) {
 function processExclusionRestartLayerFailed(evidence, { required = false } = {}) {
   if (!required) return null;
   if (!evidence || evidence.completed !== true) {
-    return 'process-exclusion did not prove a controlled live Bridge restart with new process/session/generation identity, continuous source frames, and zero old frames';
+    return 'process-exclusion did not prove a controlled live Bridge restart with new process/session/generation identity, physical playback ownership rebind, continuous source frames, and zero old frames';
   }
   if (evidence.evidenceMode !== 'live' || evidence.fixtureOnly !== false) {
     return 'process-exclusion Bridge restart evidence was not produced by a live runtime session';

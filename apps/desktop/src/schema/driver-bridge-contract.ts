@@ -26,7 +26,7 @@ import type {
   MixControl as GeneratedMixControl,
 } from './generated/driver-bridge-contract';
 
-export type DriverBridgeProtocolVersion = '2026-08-13-audio-routing-v7';
+export type DriverBridgeProtocolVersion = '2026-08-27-audio-routing-v8';
 
 // Union aliases derived from the generated fields, so the literal members
 // have exactly one source of truth (the Rust contract).

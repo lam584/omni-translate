@@ -12,6 +12,7 @@ use std::{
 
 use serde_json::{json, Value};
 use tempfile::TempDir;
+use cpal::traits::{DeviceTrait, HostTrait};
 
 use omni_bridge_protocol::{
     TranslationPlaybackStatusAck, BRIDGE_PROTOCOL_VERSION,
@@ -32,6 +33,15 @@ fn sidecar_path() -> &'static str {
 
 fn physical_output_probe_path() -> &'static str {
     env!("CARGO_BIN_EXE_omni-physical-output-probe")
+}
+
+fn default_physical_output_endpoint_id() -> Option<String> {
+    let device = cpal::default_host().default_output_device()?;
+    let name = device.description().ok()?.name().to_string();
+    if name.contains("Omni Translate Virtual Speaker") {
+        return None;
+    }
+    device.id().ok().map(|id| id.1)
 }
 
 fn tone_render_probe_path() -> &'static str {
@@ -420,6 +430,8 @@ fn process_exclusion_init_is_driver_independent_and_never_falls_back() {
     let pipe_name = format!("omni-bridge-process-exclusion-{}", std::process::id());
     let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
     wait_until_ready(&mut sidecar);
+    let physical_endpoint = default_physical_output_endpoint_id()
+        .expect("process-exclusion integration requires an explicit physical output endpoint");
 
     let response = send_control(
         &pipe_name,
@@ -429,6 +441,7 @@ fn process_exclusion_init_is_driver_independent_and_never_falls_back() {
             "sessionId": "session-1",
             "protocolVersion": BRIDGE_PROTOCOL_VERSION,
             "sourceCaptureMode": "process-exclusion",
+            "physicalPlaybackDeviceId": physical_endpoint,
             "monitorPlaybackEnabled": false,
             "translationPlaybackEnabled": false
         }),
@@ -504,6 +517,8 @@ fn process_exclusion_intentional_mute_acknowledges_with_a_terminal_cue_reason() 
     let pipe_name = format!("omni-bridge-process-muted-{}", std::process::id());
     let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
     wait_until_ready(&mut sidecar);
+    let physical_endpoint = default_physical_output_endpoint_id()
+        .expect("process-exclusion integration requires an explicit physical output endpoint");
 
     let response = send_control(
         &pipe_name,
@@ -513,6 +528,7 @@ fn process_exclusion_intentional_mute_acknowledges_with_a_terminal_cue_reason() 
             "sessionId": "session-1",
             "protocolVersion": BRIDGE_PROTOCOL_VERSION,
             "sourceCaptureMode": "process-exclusion",
+            "physicalPlaybackDeviceId": physical_endpoint,
             "monitorPlaybackEnabled": false,
             "translationPlaybackEnabled": false,
             "mixControl": {
@@ -540,7 +556,18 @@ fn process_exclusion_intentional_mute_acknowledges_with_a_terminal_cue_reason() 
     assert_eq!(response["type"], "bridge.init.ack");
     assert_eq!(response["processLoopbackStatus"], "ready");
 
-    let header = translation_header("session-1", "bridge.translation.frame", 2, 4);
+    let mut stale_header = translation_header("session-1", "bridge.translation.frame", 2, 4);
+    stale_header["bridgeInstanceId"] = response["bridgeInstanceId"].clone();
+    stale_header["playbackOwnerGeneration"] = json!(
+        response["playbackOwnerGeneration"].as_u64().unwrap().saturating_sub(1)
+    );
+    let stale_ack = exchange_audio_frame(&pipe_name, &stale_header, &[1, 0, 2, 0]).unwrap();
+    assert_eq!(stale_ack["type"], "bridge.translation.nack");
+    assert_eq!(stale_ack["errorCode"], "bridge.translation-generation-ended");
+
+    let mut header = translation_header("session-1", "bridge.translation.frame", 2, 4);
+    header["bridgeInstanceId"] = response["bridgeInstanceId"].clone();
+    header["playbackOwnerGeneration"] = response["playbackOwnerGeneration"].clone();
     let ack = exchange_audio_frame(&pipe_name, &header, &[1, 0, 2, 0]).unwrap();
     assert_eq!(ack["type"], "bridge.translation.ack");
     let log = wait_for_log_text(
@@ -762,6 +789,8 @@ fn process_exclusion_restart_retargets_the_new_bridge_without_old_source_frames(
     let _process_loopback_guard = process_loopback_test_guard();
     let runtime_root = TempDir::new().unwrap();
     let pipe_name = format!("omni-bridge-process-restart-{}", std::process::id());
+    let physical_endpoint = default_physical_output_endpoint_id()
+        .expect("process-exclusion restart requires an explicit physical output endpoint");
 
     let mut first = spawn_sidecar(&pipe_name, runtime_root.path());
     wait_until_ready(&mut first);
@@ -773,6 +802,7 @@ fn process_exclusion_restart_retargets_the_new_bridge_without_old_source_frames(
             "sessionId": "process-restart-session-a",
             "protocolVersion": BRIDGE_PROTOCOL_VERSION,
             "sourceCaptureMode": "process-exclusion",
+            "physicalPlaybackDeviceId": physical_endpoint,
             "monitorPlaybackEnabled": false,
             "translationPlaybackEnabled": false
         }),
@@ -786,6 +816,11 @@ fn process_exclusion_restart_retargets_the_new_bridge_without_old_source_frames(
         return;
     }
     assert_eq!(first_init["type"], "bridge.init.ack", "{first_init}");
+    assert_eq!(first_init["physicalPlaybackStatus"], "ready");
+    assert_eq!(first_init["resolvedPhysicalPlaybackDeviceId"], physical_endpoint);
+    let first_playback_owner_generation = first_init["playbackOwnerGeneration"]
+        .as_u64()
+        .expect("first init must publish playback owner generation");
     let first_pid = first.id();
     let mut first_source = open_pipe(&format!(r"\\.\pipe\{pipe_name}-source"));
     let first_state = wait_for_process_source_running(&pipe_name);
@@ -823,11 +858,19 @@ fn process_exclusion_restart_retargets_the_new_bridge_without_old_source_frames(
             "sessionId": "process-restart-session-b",
             "protocolVersion": BRIDGE_PROTOCOL_VERSION,
             "sourceCaptureMode": "process-exclusion",
+            "physicalPlaybackDeviceId": physical_endpoint,
             "monitorPlaybackEnabled": false,
             "translationPlaybackEnabled": false
         }),
     );
     assert_eq!(second_init["type"], "bridge.init.ack", "{second_init}");
+    assert_eq!(second_init["physicalPlaybackStatus"], "ready");
+    assert_eq!(second_init["resolvedPhysicalPlaybackDeviceId"], physical_endpoint);
+    assert!(
+        second_init["playbackOwnerGeneration"].as_u64().unwrap()
+            > first_playback_owner_generation,
+        "restart must publish a newer playback owner generation"
+    );
     let mut second_source = open_pipe(&format!(r"\\.\pipe\{pipe_name}-source"));
     let second_state = wait_for_process_source_running(&pipe_name);
     assert_eq!(second_state["excludedProcessId"], second_pid);

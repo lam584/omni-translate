@@ -116,8 +116,7 @@ function createFixture({
     const chunks = [];
     for (let sampleOffset = 0, chunkIndex = 0; sampleOffset < samples.length; sampleOffset += chunkLength, chunkIndex += 1) {
       const sampleCount = Math.min(chunkLength, samples.length - sampleOffset);
-      const chunkStartSeconds = renderedPlaybackOffsetsSeconds[index]
-        + sampleOffset / 24_000 + chunkIndex * streamChunkGapSeconds;
+      const chunkStartSeconds = renderedPlaybackOffsetsSeconds[index] + sampleOffset / 24_000;
       const loopback = renderBridgeReferenceToLoopback(
         renderedSamples.slice(sampleOffset, sampleOffset + sampleCount), 24_000,
       );
@@ -131,7 +130,8 @@ function createFixture({
         requestId: `request-${index}-${chunkIndex}`,
         sampleOffset,
         sampleCount,
-        acceptedAtMs: Math.round(recordingStartedAtEpochMs + chunkStartSeconds * 1_000),
+        acceptedAtMs: Math.round(recordingStartedAtEpochMs
+          + (playbackOffsetsSeconds[index] - 0.8 + chunkIndex * streamChunkGapSeconds) * 1_000),
       });
     }
     acceptedCues.push({
@@ -150,6 +150,9 @@ function createFixture({
       chunks,
       createdAtMs: recordingStartedAtEpochMs + playbackOffsetsSeconds[index] * 1_000 - 50,
       completedAtMs: recordingStartedAtEpochMs + (playbackOffsetsSeconds[index] + 2.6) * 1_000,
+      bridgeInstanceId: index === 0 ? 'bridge-before-restart' : 'bridge-after-restart',
+      playbackOwnerGeneration: index === 0 ? 10 : 20,
+      physicalPlaybackDeviceId: '{hda-test-endpoint}',
     });
   }
   fs.writeFileSync(path.join(runDirectory, 'physical-output-recording-16k-mono.pcm'), pcmBuffer(recording));
@@ -209,6 +212,10 @@ function createFixture({
     lines.push(`${localTimestamp(startMs - 20)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=queued`);
     lines.push(`${localTimestamp(startMs)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=started`);
     lines.push(`${localTimestamp(startMs + 2_600)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=completed`);
+    if (index === 0) {
+      const restartAtMs = recordingStartedAtEpochMs + 7_000;
+      lines.push(`${localTimestamp(restartAtMs)} [NORMAL] event=process_exclusion_restart_summary | status=passed runMarker=${RUN_MARKER} recoveredAtUnixMs=${restartAtMs} oldPlaybackOwnerGeneration=10 newPlaybackOwnerGeneration=20 oldPhysicalPlaybackDeviceId={hda-test-endpoint} newPhysicalPlaybackDeviceId={hda-test-endpoint} physicalPlaybackStatus=ready physicalPlaybackRebindDurationMs=250`);
+    }
   }
   fs.writeFileSync(path.join(runDirectory, 'app.log'), `${lines.join('\n')}\n`, 'utf8');
   return {
@@ -246,13 +253,13 @@ test('matches every hashed Bridge-accepted translated cue in ordered physical lo
   }
 });
 
-test('matches streamed PCM by ACK-bound chunks across scheduler gaps', () => {
+test('uses started playback time plus PCM offsets even when ACK timestamps arrive early', () => {
   const fixture = createFixture({ streamChunkGapSeconds: 0.08 });
   try {
     const authority = build(fixture);
     assert.equal(authority.passed, true, JSON.stringify(authority.matches));
-    assert.ok(authority.matches.every((match) => match.streamChunkCount === 3));
-    assert.ok(authority.matches.every((match) => match.matchedChunkCount === 3));
+    assert.ok(authority.matches.every((match) => match.requiredAnchorMatches === 3));
+    assert.ok(authority.matches.every((match) => match.matchedAnchorCount === 3));
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
   }
@@ -326,7 +333,7 @@ test('rejects same-frequency same-envelope different waveform cues', () => {
     assert.equal(authority.passed, false);
     assert.equal(authority.matches.length, 2);
     assert.ok(authority.matches.every((match) => Number.isFinite(match.score) && Number.isFinite(match.identityMargin)));
-    assert.match(authority.violations.join('; '), /did not uniquely correlate/);
+    assert.match(authority.violations.join('; '), /did not correlate three ordered/);
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
   }
@@ -346,7 +353,7 @@ test('rejects tone-only components and real source-only media PCM', () => {
       assert.ok(authority.matches.every((match) => Number.isFinite(match.score) && Number.isFinite(match.identityMargin)));
       assert.match(
         authority.violations.join('; '),
-        /did not uniquely correlate/,
+        /did not correlate three ordered/,
       );
     } finally {
       fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
@@ -367,7 +374,7 @@ test('rejects cross-lifecycle overlap and reuse of the same physical window', ()
       assert.ok(authority.matches.every((match) => Number.isFinite(match.score) && Number.isFinite(match.identityMargin)));
       assert.match(
         authority.violations.join('; '),
-        /overlap or are not one-to-one|did not uniquely correlate/,
+        /overlap or are not one-to-one|did not correlate three ordered/,
       );
     } finally {
       fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
@@ -387,7 +394,7 @@ test('rejects a self-consistently rehashed wrong cue and a missing completed lif
     fs.writeFileSync(summaryPath, JSON.stringify(summary), 'utf8');
     let authority = build(fixture);
     assert.equal(authority.passed, false);
-    assert.match(authority.violations.join('; '), /did not uniquely correlate/);
+    assert.match(authority.violations.join('; '), /did not correlate three ordered/);
 
     fs.writeFileSync(summaryPath, JSON.stringify(fixture.summary), 'utf8');
     fs.writeFileSync(wrongPath, pcmBuffer(deterministicCue(30)));

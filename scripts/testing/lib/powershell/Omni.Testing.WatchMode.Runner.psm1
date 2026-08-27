@@ -316,6 +316,13 @@ function Invoke-WatchModeRun {
           if ($reportWaitStep.status -ne 'passed') {
             throw "same-process Watch report capture failed: $($reportWaitStep.error.message)"
           }
+          $scopedAppLogPath = Join-Path $outputDir 'app.log'
+          $savedAppLogPath = Copy-WatchModeAppLog -SourcePath ([string]$runContext.paths.appLogPath) `
+            -DestinationPath $scopedAppLogPath -RunMarker $runMarker
+          if (-not $savedAppLogPath) {
+            throw 'same-process Watch app log could not be scoped across log rotation'
+          }
+          $appLogBeforePlayback = $scopedAppLogPath
           if ($StopDesktopAfterPlayback) {
             Invoke-Step -State $state "stop watch-mode desktop shell after playback" -Phase cleanup {
               Stop-WatchModeDesktopShell $runContext $desktopProcess

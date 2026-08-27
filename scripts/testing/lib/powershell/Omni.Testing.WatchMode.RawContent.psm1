@@ -109,7 +109,9 @@ function Get-LocalPhysicalOutputContentAuthority {
   } else {
     90
   }
-  $sourceWindow = Copy-PcmWindow $pcmPath (Join-Path ([System.IO.Path]::GetTempPath()) "omni-physical-window-$PID.pcm") 16000 $sourceWindowSeconds
+  $sourceWindow = Copy-PcmWindow $pcmPath `
+    (Join-Path $OutputDirectory 'physical-output-recording-source-window-16k-mono.pcm') `
+    16000 $sourceWindowSeconds
   $canonicalSourceAndPhysical = if ($sourceWindow) {
     try {
       Invoke-CanonicalSourceAuthorityNode $OutputDirectory "Combined" $workspaceRoot
@@ -235,7 +237,9 @@ function Invoke-PhysicalOutputContentStt {
   } else {
     90
   }
-  $sourceWindow = Copy-PcmWindow $pcmPath (Join-Path ([System.IO.Path]::GetTempPath()) "omni-physical-window-$PID.pcm") 16000 $sourceWindowSeconds
+  $sourceWindow = Copy-PcmWindow $pcmPath `
+    (Join-Path $OutputDirectory 'physical-output-recording-source-window-16k-mono.pcm') `
+    16000 $sourceWindowSeconds
   $sourceReferencePcmPath = Join-Path $OutputDirectory "source-media-reference-16k-mono.pcm"
   $originalSimilarity = if ($sourceWindow) {
     Measure-PcmReferenceSimilarity -ReferencePcmPath $sourceReferencePcmPath `

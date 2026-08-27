@@ -14,6 +14,29 @@ function Get-WatchModeDesktopAppLogPath {
   if ([string]::IsNullOrWhiteSpace($localAppData)) { throw 'LocalApplicationData is unavailable for the release desktop log.' }
   return Join-Path $localAppData 'OmniTranslate\diagnostics\logs\app.log'
 }
+function Copy-WatchModeAppLog {
+  param(
+    [Parameter(Mandatory = $true)][string]$SourcePath,
+    [Parameter(Mandatory = $true)][string]$DestinationPath,
+    [Parameter(Mandatory = $true)][string]$RunMarker
+  )
+  $directory = Split-Path -Parent $SourcePath
+  $rotatedPath = Join-Path $directory 'app.1.log'
+  $parts = @()
+  if (Test-Path -LiteralPath $rotatedPath -PathType Leaf) {
+    $parts += [System.IO.File]::ReadAllText($rotatedPath, [System.Text.Encoding]::UTF8)
+  }
+  if (Test-Path -LiteralPath $SourcePath -PathType Leaf) {
+    $parts += [System.IO.File]::ReadAllText($SourcePath, [System.Text.Encoding]::UTF8)
+  }
+  $combined = ($parts -join '') -replace "`r`n", "`n"
+  $markerLine = "`n$RunMarker`n"
+  $markerIndex = ("`n$combined").LastIndexOf($markerLine, [System.StringComparison]::Ordinal)
+  if ($markerIndex -lt 0) { return $null }
+  $scoped = ("`n$combined").Substring($markerIndex + 1)
+  [System.IO.File]::WriteAllText($DestinationPath, $scoped, [System.Text.UTF8Encoding]::new($false))
+  return $DestinationPath
+}
 function Save-WatchModeRunArtifacts {
   param(
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
@@ -27,7 +50,8 @@ function Save-WatchModeRunArtifacts {
   $runtimePath = Resolve-Path -LiteralPath $Context.paths.runtimeRoot -ErrorAction SilentlyContinue
   $appLogSource = Get-WatchModeDesktopAppLogPath
   $bridgeLogSource = if ($runtimePath) { Join-Path $runtimePath.Path "bridge-service.log" } else { Join-Path $Context.paths.runtimeRoot "bridge-service.log" }
-  $appLogTarget = Copy-IfExists $appLogSource (Join-Path $OutputDirectory "app.log")
+  $appLogTarget = Copy-WatchModeAppLog -SourcePath $appLogSource `
+    -DestinationPath (Join-Path $OutputDirectory "app.log") -RunMarker $RunMarker
   $bridgeLogTarget = Copy-IfExists $bridgeLogSource (Join-Path $OutputDirectory "bridge-service.log")
   if (-not $appLogTarget) {
     "" | Set-Content -Path (Join-Path $OutputDirectory "app.log") -Encoding UTF8
@@ -252,6 +276,7 @@ function Write-LocalSmokeProviderSessionAuthority {
 }
 Export-ModuleMember -Function @(
   'Get-WatchModeDesktopAppLogPath',
+  'Copy-WatchModeAppLog',
   'Save-WatchModeRunArtifacts',
   'Write-StrictPaidCellBudget',
   'Write-LocalSmokeProviderSessionAuthority'

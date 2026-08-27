@@ -4,6 +4,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$windowsPowerShellModuleRoot = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\Modules'
+Import-Module (Join-Path $windowsPowerShellModuleRoot 'Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -Force
+Import-Module (Join-Path $windowsPowerShellModuleRoot 'PKI\PKI.psd1') -Force
 $workspacePath = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
 if ($ReleaseId -notmatch '^[A-Za-z0-9._-]{8,80}$') {
   throw 'ReleaseId contains unsupported characters.'

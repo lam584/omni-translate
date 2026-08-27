@@ -31,7 +31,7 @@ export const appConfigDraftMock: AppConfigDraft = {
     sceneModelAssignments: [
       {
         scenario: 'watch',
-        modelIds: ['qwen3.5-omni-plus-realtime'],
+        modelIds: ['qwen3.5-livetranslate-flash-realtime'],
       },
       {
         scenario: 'game',
@@ -176,7 +176,7 @@ export const appConfigDraftMock: AppConfigDraft = {
       },
     },
     supportProfileId: 'support-watch-system-audio',
-    inboundVoiceModelId: 'qwen3.5-omni-plus-realtime',
+    inboundVoiceModelId: 'qwen3.5-livetranslate-flash-realtime',
     outboundVoiceModelId: 'qwen3.5-omni-plus-realtime',
     textToSpeechModelId: 'qwen3.5-omni-plus-realtime',
     subtitleTranslationMode: 'native',
@@ -242,6 +242,11 @@ export const appConfigDraftMock: AppConfigDraft = {
     overlayHeight: 220,
     overlayX: 50,
     overlayY: 78,
+    history: {
+      enabled: true,
+      sourceAudioEnabled: true,
+      translatedAudioEnabled: true,
+    },
     status: 'ready',
   },
   speech: {

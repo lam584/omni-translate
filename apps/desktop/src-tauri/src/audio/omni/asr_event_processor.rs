@@ -221,131 +221,27 @@ impl OmniAsrEventProcessor {
                     "",
                     source,
                 );
-                if let Some(native_cue_id) = routed_native_response_cue.as_deref() {
-                    if merged_asr_cue_id.as_deref() == current_cue_id.as_deref() {
-                        // The provider explicitly identified the current live
-                        // cue as the same input item already owned by the
-                        // native response. Its final source/translation now
-                        // live on the native cue, so release only that proven
-                        // duplicate input state.
-                        pending_source_text.clear();
-                        current_cue_id = None;
-                        transcription_completed_flag = false;
-                        transcription_completed_at = None;
-                    } else if current_cue_id.as_deref() != Some(native_cue_id) {
-                        // This completion belongs to a prior response. Keep a
-                        // newer input item's live hypothesis untouched.
-                        pending_source_text = current_input_text;
-                    } else {
-                        // The native response and ASR final share the current
-                        // cue. Preserve the authoritative final for the still
-                        // active response instead of restoring an older delta.
-                        pending_source_text = completion_source_text.clone();
-                        transcription_completed_flag = true;
-                        transcription_completed_at = Some(SystemTime::now());
-                    }
-                } else if let Some(cue_id) = isolated_unmapped_cue_id.as_deref() {
-                    // A completed item that cannot be correlated to the live
-                    // cue must never overwrite that cue. In secondary subtitle
-                    // mode keep the isolated final open for the worker; without
-                    // a secondary worker it is a display-only final.
-                    store.update_or_push_stt_cue(
-                        cue_id,
-                        &completion_source_text,
-                        !subtitle_translate_active,
-                    );
-                    let _ = diag_log(
-                        &app,
-                        "omni",
-                        "info",
-                        format!(
-                            "[EVENT] transcription.completed -> ISOLATED_LATE_ASR_CUE cue_id={cue_id} source=\"{source}\""
-                        ),
-                    );
-                } else if !completion_targets_current_cue
-                    && !completion_source_text.trim().is_empty()
-                {
-                    // The ASR item map is authoritative even when the native
-                    // response-owner map has already expired. Repair the
-                    // mapped cue and leave the newer current cue untouched.
-                    let cue_id = asr_cue_id
-                        .as_ref()
-                        .expect("a non-current completion must have an ASR cue owner");
-                    if subtitle_translate_active {
-                        if defer_secondary_translation {
-                            store.defer_subtitle_cue_translation(cue_id);
-                        }
-                        store.update_or_push_stt_cue(
-                            cue_id,
-                            &completion_source_text,
-                            false,
-                        );
-                    } else {
-                        update_native_response_cue_source(
-                            store,
-                            cue_id,
-                            &completion_source_text,
-                        );
-                    }
-                    let _ = diag_log(
-                        &app,
-                        "omni",
-                        "info",
-                        format!(
-                            "[EVENT] transcription.completed -> LATE_ASR_CUE cue_id={cue_id} source=\"{source}\""
-                        ),
-                    );
-                } else if subtitle_translate_active && !completion_source_text.trim().is_empty() {
-                    let cue_id = ensure_transcription_cue_id(direction, &mut current_cue_id);
-                    if defer_secondary_translation {
-                        store.defer_subtitle_cue_translation(&cue_id);
-                    }
-                    if event_diagnostics.current_cue_origin.is_none() {
-                        event_diagnostics.current_cue_origin =
-                            Some("transcription_completed".to_string());
-                    }
-                    store.update_or_push_stt_cue(
-                        &cue_id,
-                        &completion_source_text,
-                        false,
-                    );
-                    let _ = diag_log(
-                        &app,
-                        "omni",
-                        "info",
-                        format!(
-                            "[EVENT] transcription.completed -> ST_SOURCE_READY cue_id={cue_id} source=\"{source}\" lateMapped=false"
-                        ),
-                    );
-                    if native_translation_reuse_active {
-                        transcription_completed_flag = true;
-                        transcription_completed_at = Some(SystemTime::now());
-                    } else {
-                        pending_source_text.clear();
-                        current_cue_id = None;
-                        transcription_completed_flag = false;
-                        transcription_completed_at = None;
-                    }
-                } else {
-                    transcription_completed_flag = true;
-                    transcription_completed_at = Some(SystemTime::now());
-                    let cue_id_str = current_cue_id.as_deref().unwrap_or("(none)");
-                    if let Some(ref id) = current_cue_id {
-                        store.update_or_push_stt_cue(
-                            id,
-                            &completion_source_text,
-                            false,
-                        );
-                    }
-                    let _ = diag_log(
-                        &app,
-                        "omni",
-                        "info",
-                        format!(
-                            "[EVENT] transcription.completed → cue_id={cue_id_str} source=\"{source}\""
-                        ),
-                    );
-                }
+                Self::apply_completed_transcription(
+                    app,
+                    store,
+                    direction,
+                    source,
+                    &completion_source_text,
+                    subtitle_translate_active,
+                    native_translation_reuse_active,
+                    defer_secondary_translation,
+                    completion_targets_current_cue,
+                    routed_native_response_cue.as_deref(),
+                    merged_asr_cue_id.as_deref(),
+                    isolated_unmapped_cue_id.as_deref(),
+                    asr_cue_id.as_deref(),
+                    &current_input_text,
+                    &mut current_cue_id,
+                    &mut pending_source_text,
+                    &mut transcription_completed_flag,
+                    &mut transcription_completed_at,
+                    &mut event_diagnostics,
+                );
             }
             _ => unreachable!("ASR processor called for unsupported event"),
         }
@@ -364,6 +260,134 @@ impl OmniAsrEventProcessor {
             skip_tick,
             completed_source_text,
             completed_cue_id,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_completed_transcription<R: tauri::Runtime>(
+        app: &AppHandle<R>,
+        store: &AudioStateStore,
+        direction: &str,
+        source: &str,
+        completion_source_text: &str,
+        subtitle_translate_active: bool,
+        native_translation_reuse_active: bool,
+        defer_secondary_translation: bool,
+        completion_targets_current_cue: bool,
+        routed_native_response_cue: Option<&str>,
+        merged_asr_cue_id: Option<&str>,
+        isolated_unmapped_cue_id: Option<&str>,
+        asr_cue_id: Option<&str>,
+        current_input_text: &str,
+        current_cue_id: &mut Option<String>,
+        pending_source_text: &mut String,
+        transcription_completed_flag: &mut bool,
+        transcription_completed_at: &mut Option<SystemTime>,
+        event_diagnostics: &mut OmniEventDiagnostics,
+    ) {
+        // Provider `transcription.completed` is the authoritative source final
+        // in every topology. `subtitle_translate_active` changes only who owns
+        // the translation final; it must never downgrade source finality.
+        if let Some(native_cue_id) = routed_native_response_cue {
+            if merged_asr_cue_id == current_cue_id.as_deref() {
+                // The provider explicitly identified the current live cue as
+                // the same input item already owned by the native response.
+                // Release only that proven duplicate input state.
+                pending_source_text.clear();
+                *current_cue_id = None;
+                *transcription_completed_flag = false;
+                *transcription_completed_at = None;
+            } else if current_cue_id.as_deref() != Some(native_cue_id) {
+                // This completion belongs to a prior response. Keep a newer
+                // input item's live hypothesis untouched.
+                *pending_source_text = current_input_text.to_string();
+            } else {
+                // Preserve the authoritative final for the still active
+                // response instead of restoring an older delta.
+                *pending_source_text = completion_source_text.to_string();
+                *transcription_completed_flag = true;
+                *transcription_completed_at = Some(SystemTime::now());
+            }
+        } else if let Some(cue_id) = isolated_unmapped_cue_id {
+            // A completed item that cannot be correlated to the live cue must
+            // never overwrite that cue. Its translation remains open only for
+            // the secondary subtitle worker.
+            store.update_or_push_stt_cue(
+                cue_id,
+                completion_source_text,
+                true,
+            );
+            let _ = diag_log(
+                app,
+                "omni",
+                "info",
+                format!(
+                    "[EVENT] transcription.completed -> ISOLATED_LATE_ASR_CUE cue_id={cue_id} source=\"{source}\""
+                ),
+            );
+        } else if !completion_targets_current_cue && !completion_source_text.trim().is_empty() {
+            // The ASR item map is authoritative even when the native response
+            // owner map has already expired. Repair that mapped cue only.
+            let cue_id = asr_cue_id
+                .expect("a non-current completion must have an ASR cue owner");
+            if subtitle_translate_active {
+                if defer_secondary_translation {
+                    store.defer_subtitle_cue_translation(cue_id);
+                }
+                store.update_or_push_stt_cue(cue_id, completion_source_text, true);
+            } else {
+                update_native_response_cue_source(store, cue_id, completion_source_text);
+            }
+            let _ = diag_log(
+                app,
+                "omni",
+                "info",
+                format!(
+                    "[EVENT] transcription.completed -> LATE_ASR_CUE cue_id={cue_id} source=\"{source}\""
+                ),
+            );
+        } else if subtitle_translate_active && !completion_source_text.trim().is_empty() {
+            let cue_id = ensure_transcription_cue_id(direction, current_cue_id);
+            if defer_secondary_translation {
+                store.defer_subtitle_cue_translation(&cue_id);
+            }
+            if event_diagnostics.current_cue_origin.is_none() {
+                event_diagnostics.current_cue_origin =
+                    Some("transcription_completed".to_string());
+            }
+            store.update_or_push_stt_cue(&cue_id, completion_source_text, true);
+            let _ = diag_log(
+                app,
+                "omni",
+                "info",
+                format!(
+                    "[EVENT] transcription.completed -> ST_SOURCE_READY cue_id={cue_id} source=\"{source}\" lateMapped=false"
+                ),
+            );
+            if native_translation_reuse_active {
+                *transcription_completed_flag = true;
+                *transcription_completed_at = Some(SystemTime::now());
+            } else {
+                pending_source_text.clear();
+                *current_cue_id = None;
+                *transcription_completed_flag = false;
+                *transcription_completed_at = None;
+            }
+        } else {
+            *transcription_completed_flag = true;
+            *transcription_completed_at = Some(SystemTime::now());
+            let cue_id_str = current_cue_id.as_deref().unwrap_or("(none)");
+            if let Some(id) = current_cue_id.as_ref() {
+                store.update_or_push_stt_cue(id, completion_source_text, true);
+            }
+            let _ = diag_log(
+                app,
+                "omni",
+                "info",
+                format!(
+                    "[EVENT] transcription.completed → cue_id={cue_id_str} source=\"{source}\""
+                ),
+            );
         }
     }
 
@@ -581,6 +605,10 @@ impl OmniAsrEventProcessor {
         }
         let cue_id = next_omni_cue_id(direction);
         store.update_or_push_stt_cue(&cue_id, "", false);
+        super::audio_origin::record_provider_audio_origin(
+            store, &cue_id, direction, evt["audio_start_ms"].as_u64(),
+            speech_ms, *vad_event_count, first_audible_chunk_ms,
+        );
         *current_cue_id = Some(cue_id.clone());
         event_diagnostics.current_cue_origin = Some("speech_started".to_string());
         event_diagnostics.current_vad_item_id = evt["item_id"]

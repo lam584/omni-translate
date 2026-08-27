@@ -49,6 +49,7 @@ pub(crate) trait RealtimeSocketConnector {
         instructions: &str,
         audio_mode: RealtimeAudioMode,
         output_mode: OmniOutputMode,
+        source_language: &str,
         target_language: &str,
     ) -> Result<Self::Socket, String>;
 }
@@ -67,6 +68,7 @@ impl RealtimeSocketConnector for TungsteniteConnector {
         instructions: &str,
         audio_mode: RealtimeAudioMode,
         output_mode: OmniOutputMode,
+        source_language: &str,
         target_language: &str,
     ) -> Result<Self::Socket, String> {
         reconnect_socket(
@@ -76,6 +78,7 @@ impl RealtimeSocketConnector for TungsteniteConnector {
             instructions,
             audio_mode,
             output_mode,
+            source_language,
             target_language,
         )
     }
@@ -170,6 +173,7 @@ pub(crate) mod scripted {
             _instructions: &str,
             _audio_mode: RealtimeAudioMode,
             _output_mode: OmniOutputMode,
+            _source_language: &str,
             _target_language: &str,
         ) -> Result<Self::Socket, String> {
             let mut shared = self.shared.lock().expect("scripted state");

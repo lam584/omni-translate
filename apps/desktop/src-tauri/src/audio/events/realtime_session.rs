@@ -7,7 +7,10 @@ use super::super::contracts::AudioRuntimeSnapshot;
 use super::super::state::AudioStateStore;
 use super::super::{gemini_live, omni, openai_realtime, tencent_speech_translate};
 use super::route_config::{resolve_model_provider_from_config, resolve_realtime_profile, ResolvedRoutePlan};
-use super::{OMNI_PRECONNECT_COMMAND_TIMEOUT, OMNI_PRECONNECT_SESSION_READINESS_TIMEOUT};
+use super::{
+    OMNI_PRECONNECT_COMMAND_TIMEOUT, OMNI_PRECONNECT_SESSION_READINESS_TIMEOUT,
+    OMNI_ROUTE_SESSION_READINESS_TIMEOUT,
+};
 use crate::diagnostics::events::append_diagnostics_log;
 use crate::audio::glossary::GlossaryContext;
 use crate::provider::contracts::ProviderDraftInput;
@@ -97,17 +100,18 @@ pub(super) fn start_or_reuse_omni_session(
     direction: &str,
     phase: &str,
     st_active: bool,
+    source_lang: &str,
     target_lang: &str,
     realtime_audio_mode: &str,
     voice: String,
     instructions: String,
     glossary: GlossaryContext,
-    glossary_signature: u64,
+    contract_signature: u64,
+    output_mode: omni::OmniOutputMode,
     speech_config: omni::OmniSpeechConfig,
     readiness_timeout: Duration,
 ) -> Result<(std::sync::mpsc::Sender<Vec<u8>>, u64), String> {
     let voice_model = voice_provider.model.clone();
-    let output_mode = omni::OmniOutputMode::from_speech_config(&speech_config);
     let log_readiness_failure = |reason: &str, detail: String| {
         let _ = append_diagnostics_log(
             app,
@@ -127,23 +131,27 @@ pub(super) fn start_or_reuse_omni_session(
         Some(realtime_audio_mode),
         &voice_provider.model,
     )?;
-    if let Some(sender) = state.take_matching_omni_sender(
+    if let Some(sender) = state.take_matching_omni_sender_with_languages(
         direction,
         &voice_model,
+        source_lang,
+        target_lang,
         realtime_audio_mode,
         st_active,
         output_mode,
-        glossary_signature,
+        contract_signature,
     ) {
         state.replace_omni_speech_config(speech_config);
         let generation = state
-            .matching_ready_omni_session(
+            .matching_ready_omni_session_with_languages(
                 direction,
                 &voice_model,
+                source_lang,
+                target_lang,
                 realtime_audio_mode,
                 st_active,
                 output_mode,
-                glossary_signature,
+                contract_signature,
             )
             .unwrap_or_default();
         let _ = append_diagnostics_log(
@@ -166,13 +174,15 @@ pub(super) fn start_or_reuse_omni_session(
         stop_preconnected_omni_session(app, state, direction, "preconnect_not_reusable");
     }
 
-    let session_generation = state.begin_omni_session(
+    let session_generation = state.begin_omni_session_with_languages(
         direction,
         &voice_provider.model,
+        source_lang,
+        target_lang,
         realtime_audio_mode,
         st_active,
         output_mode,
-        glossary_signature,
+        contract_signature,
     );
     let (omni_sender, handle, readiness_rx) = match omni::start_omni(
         app.clone(),
@@ -184,6 +194,8 @@ pub(super) fn start_or_reuse_omni_session(
         instructions,
         glossary,
         audio_mode,
+        output_mode,
+        source_lang.to_string(),
         target_lang.to_string(),
         st_active,
         speech_config,
@@ -286,6 +298,33 @@ pub(super) fn start_or_reuse_omni_session(
         }
     }
     Ok((omni_sender, session_generation))
+}
+
+pub(super) fn start_or_reuse_route_omni_session(
+    app: &AppHandle,
+    state: &AudioStateStore,
+    direction: &str,
+    subtitle_translate_active: bool,
+    plan: &ResolvedRoutePlan,
+) -> Result<(std::sync::mpsc::Sender<Vec<u8>>, u64), String> {
+    start_or_reuse_omni_session(
+        app,
+        state,
+        plan.provider.clone(),
+        direction,
+        "route",
+        subtitle_translate_active,
+        &plan.session_reuse_key.source_language,
+        &plan.session_reuse_key.target_language,
+        &plan.realtime_audio_mode,
+        plan.voice.clone(),
+        plan.instructions.clone(),
+        plan.glossary.clone(),
+        plan.session_reuse_key.contract_signature,
+        plan.session_reuse_key.output_mode,
+        plan.omni_speech_config.clone(),
+        OMNI_ROUTE_SESSION_READINESS_TIMEOUT,
+    )
 }
 
 pub(super) fn apply_native_subtitle_translate_fallback(config: &mut Value) {
@@ -563,13 +602,15 @@ pub(crate) fn preconnect_omni_realtime_inner(
     }
     let st_active = plan.session_reuse_key.subtitle_translate_active;
     if state
-        .matching_ready_omni_session(
+        .matching_ready_omni_session_with_languages(
             &plan.session_reuse_key.direction,
             &plan.session_reuse_key.model,
+            &plan.session_reuse_key.source_language,
+            &plan.session_reuse_key.target_language,
             &plan.session_reuse_key.realtime_audio_mode,
             st_active,
             plan.session_reuse_key.output_mode,
-            plan.session_reuse_key.glossary_signature,
+            plan.session_reuse_key.contract_signature,
         )
         .is_some()
         && state.has_omni_sender("inbound")
@@ -586,12 +627,14 @@ pub(crate) fn preconnect_omni_realtime_inner(
         "inbound",
         "preconnect",
         st_active,
-        &plan.target_language,
+        &plan.session_reuse_key.source_language,
+        &plan.session_reuse_key.target_language,
         &plan.realtime_audio_mode,
         plan.voice,
         plan.instructions,
         plan.glossary,
-        plan.session_reuse_key.glossary_signature,
+        plan.session_reuse_key.contract_signature,
+        plan.session_reuse_key.output_mode,
         plan.omni_speech_config,
         OMNI_PRECONNECT_SESSION_READINESS_TIMEOUT,
     )?;

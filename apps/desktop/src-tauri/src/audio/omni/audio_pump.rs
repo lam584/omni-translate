@@ -98,6 +98,60 @@ fn record_append_attempt_progress<R: tauri::Runtime>(
     first_audio_sent_ms
 }
 
+#[allow(clippy::too_many_arguments)]
+fn reconnect_after_audio_send_failure<C: RealtimeSocketConnector, R: tauri::Runtime>(
+    connector: &C,
+    app: &AppHandle<R>,
+    store: &AudioStateStore,
+    provider: &ProviderDraftInput,
+    active_voice: &str,
+    instructions: &str,
+    audio_mode: RealtimeAudioMode,
+    output_mode: OmniOutputMode,
+    source_language: &str,
+    target_language: &str,
+    buffer_size: u64,
+    reconnect_count: &mut usize,
+    pending_audio_buffer: &mut Vec<i16>,
+    provider_input_budget: &ProviderInputBudget,
+    send_error: &tungstenite::Error,
+) -> Result<C::Socket, String> {
+    let _ = diag_log(
+        app,
+        "omni",
+        "warning",
+        format!("[AUDIO] 发送失败: {send_error}"),
+    );
+    provider_input_budget.authorize_reconnect_before_connect("send-failure")?;
+    match try_reconnect(
+        connector,
+        reconnect_count,
+        pending_audio_buffer,
+        store,
+        app,
+        provider,
+        active_voice,
+        instructions,
+        audio_mode,
+        output_mode,
+        source_language,
+        target_language,
+        buffer_size,
+        &format!("audio send failed: {send_error}"),
+    ) {
+        Ok(socket) => {
+            provider_input_budget.record_reconnect()?;
+            Ok(socket)
+        }
+        Err(_) => {
+            provider_input_budget.mark_terminal("send-reconnect-exhausted");
+            Err(format!(
+                "Omni WebSocket 发送失败且重连次数已用尽: {send_error}"
+            ))
+        }
+    }
+}
+
 impl OmniAudioPump {
     pub(super) fn log_waiting_if_needed(
         app: &AppHandle,
@@ -138,6 +192,7 @@ impl OmniAudioPump {
         instructions: &str,
         audio_mode: RealtimeAudioMode,
         output_mode: OmniOutputMode,
+        source_language: &str,
         target_language: &str,
         session_started_at: &SystemTime,
         defer_audio_until_response_done: bool,
@@ -231,15 +286,7 @@ impl OmniAudioPump {
                 } else {
                     silence_chunks_skipped = silence_chunks_skipped.saturating_add(1);
                     if silence_chunks_skipped == 1 || silence_chunks_skipped.is_multiple_of(250) {
-                        let _ = diag_log(
-                            &app,
-                            "omni",
-                            "debug",
-                            format!(
-                                "event=omni.asr_silence_chunk_skipped skipped={} rms={:.6} threshold={:.6}",
-                                silence_chunks_skipped, chunk_rms, OMNI_ASR_MIN_CHUNK_RMS
-                            ),
-                        );
+                        log_skipped_silence(app, silence_chunks_skipped, chunk_rms);
                     }
                     continue;
                 }
@@ -310,58 +357,32 @@ impl OmniAudioPump {
                 },
                 || socket.send_message(Message::Text(append.to_string().into())),
             )?;
+            archive_successful_source_audio(store, &send_result, &asr_chunk);
             if let Err(error) = send_result {
-                let _ = diag_log(
-                    app,
-                    "omni",
-                    "warning",
-                    format!("[AUDIO] 发送失败: {error}"),
-                );
-                // A failed append may already have reached the paid peer.
-                // Strict cells permit no replacement WebSocket, so persist a
-                // terminal rejection before `try_reconnect` can back off or
-                // invoke the connector. Ordinary sessions continue below.
-                provider_input_budget.authorize_reconnect_before_connect("send-failure")?;
-                match try_reconnect(
+                *socket = reconnect_after_audio_send_failure(
                     connector,
-                    &mut reconnect_count,
-                    &mut pending_audio_buffer,
-                    store,
                     app,
-                    &provider,
-                    &active_voice,
-                    &instructions,
+                    store,
+                    provider,
+                    active_voice,
+                    instructions,
                     audio_mode,
                     output_mode,
-                    &target_language,
+                    source_language,
+                    target_language,
                     buffer_size,
-                    &format!("audio send failed: {error}"),
-                ) {
-                    Ok(new_socket) => {
-                        *socket = new_socket;
-                        provider_input_budget.record_reconnect()?;
-                        socket_reconnected = true;
-                        // The replacement session has not confirmed its
-                        // session.update yet: sending now races the provider's
-                        // session setup (the audio lands before the session is
-                        // configured). Re-queue this chunk at the front of the
-                        // pre-session buffer and stop treating the session as
-                        // ready; the queue drains once the new
-                        // session.created/session.updated arrives.
-                        session_ready_for_audio = false;
-                        buffer_size = buffer_size.wrapping_sub(raw_chunk.len() as u64);
-                        chunk_count = chunk_count.saturating_sub(1);
-                        chunks_sent_this_tick = chunks_sent_this_tick.saturating_sub(1);
-                        pre_session_audio_queue.push_front(raw_chunk);
-                        continue;
-                    }
-                    Err(_) => {
-                        provider_input_budget.mark_terminal("send-reconnect-exhausted");
-                        return Err(format!(
-                            "Omni WebSocket 发送失败且重连次数已用尽: {error}"
-                        ));
-                    }
-                }
+                    &mut reconnect_count,
+                    &mut pending_audio_buffer,
+                    &provider_input_budget,
+                    &error,
+                )?;
+                socket_reconnected = true;
+                session_ready_for_audio = false;
+                buffer_size = buffer_size.wrapping_sub(raw_chunk.len() as u64);
+                chunk_count = chunk_count.saturating_sub(1);
+                chunks_sent_this_tick = chunks_sent_this_tick.saturating_sub(1);
+                pre_session_audio_queue.push_front(raw_chunk);
+                continue;
             }
             manual_turn_audio_after_response = true;
             // Only audio accepted by the current socket belongs to the
@@ -430,6 +451,31 @@ impl OmniAudioPump {
     }
 }
 
+fn log_skipped_silence<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    skipped: u64,
+    chunk_rms: f32,
+) {
+    let _ = diag_log(
+        app,
+        "omni",
+        "debug",
+        format!(
+            "event=omni.asr_silence_chunk_skipped skipped={skipped} rms={chunk_rms:.6} threshold={OMNI_ASR_MIN_CHUNK_RMS:.6}"
+        ),
+    );
+}
+
+fn archive_successful_source_audio<E>(
+    store: &AudioStateStore,
+    send_result: &Result<(), E>,
+    samples: &[i16],
+) {
+    if send_result.is_ok() {
+        store.archive_source_pcm(samples, 16_000);
+    }
+}
+
 pub(super) fn manual_turn_has_audible_input(
     already_audible: bool,
     chunk_rms: f32,
@@ -490,6 +536,7 @@ mod tests {
             _instructions: &str,
             _audio_mode: RealtimeAudioMode,
             _output_mode: OmniOutputMode,
+            _source_language: &str,
             _target_language: &str,
         ) -> Result<Self::Socket, String> {
             self.attempts.fetch_add(1, Ordering::SeqCst);
@@ -583,6 +630,7 @@ mod tests {
             "translate",
             RealtimeAudioMode::Manual,
             OmniOutputMode::TextAndAudio,
+            "en",
             "zh-CN",
             &SystemTime::now(),
             false,

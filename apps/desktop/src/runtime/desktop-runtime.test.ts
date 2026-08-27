@@ -425,7 +425,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     expect(useAppStore.getState().audioRuntimeSnapshot.inbound.streamBound).toBe(true);
 
     cleanup();
-    expect(unlisten).toHaveBeenCalledTimes(4);
+    expect(unlisten).toHaveBeenCalledTimes(5);
   });
 
   it('reports invalid cross-window config JSON as a runtime warning', async () => {
@@ -852,4 +852,3 @@ describe('capture warm signature re-warm on device drift', () => {
     cleanup();
   });
 });
-

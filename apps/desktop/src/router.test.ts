@@ -30,6 +30,7 @@ describe('router', () => {
       'audio-routing',
       'devices',
       'glossary',
+      'history',
       'diagnostics',
       'settings',
       'quick-setup',

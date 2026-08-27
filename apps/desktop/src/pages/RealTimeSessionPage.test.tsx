@@ -1328,8 +1328,8 @@ describe('RealTimeSessionPage one-click launch', () => {
     audioRuntimeSnapshot.subtitleOverlay.droppedCueCount = 3;
     audioRuntimeSnapshot.subtitleOverlay.recentCues = [
       activeCue,
-      { ...cue, cueId: 'cue-failure', translatedText: '[翻译失败] timeout', committed: true, translationCommitted: true },
-      { ...cue, cueId: 'cue-translated', translatedText: 'translated text', committed: true, translationCommitted: true },
+      { ...cue, cueId: 'cue-failure', translatedText: '[翻译失败] timeout', committed: true, translationCommitted: false, translationState: 'error' },
+      { ...cue, cueId: 'cue-translated', translatedText: 'translated text', committed: true, translationCommitted: true, translationState: 'final' },
       { ...cue, cueId: 'cue-empty', translatedText: '', committed: true, translationCommitted: true },
     ];
     const runtimeSnapshot = structuredClone(useAppStore.getState().runtimeSnapshot);

@@ -1,4 +1,4 @@
-use std::collections::{hash_map::DefaultHasher, HashSet, VecDeque};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -15,7 +15,10 @@ use crate::provider::contracts::ProviderDraftInput;
 use crate::provider::gateway::ProviderGateway;
 use crate::storage::StorageStateStore;
 
-use super::contracts::{AudioRuntimeSnapshot, SpeechDispatchEventRuntime, SubtitleCueRuntime};
+use super::contracts::{
+    AudioRuntimeSnapshot, SpeechDispatchEventRuntime, SubtitleCueRuntime,
+    SubtitleTranslationStateRuntime,
+};
 use super::engine::emit_audio_snapshot;
 use super::state::{AudioRouteHandle, AudioStateStore, CachedTtsAudio, CapturedSegmentAudio};
 
@@ -23,6 +26,9 @@ const SPEECH_POLL_INTERVAL_MS: u64 = 120;
 const SPEECH_DISPATCH_IDLE_INTERVAL_MS: u64 = 40;
 const MAX_PROCESSED_CUES: usize = 128;
 const PROMPT_TONE_MS: u32 = 90;
+const MAX_TTS_QUEUE_DEPTH: usize = 32;
+const TTS_START_DEADLINE: Duration = Duration::from_secs(5);
+const PLAYBACK_START_DEADLINE_MS: u64 = 4_000;
 
 mod playback_engine;
 mod aec_live_scenario;
@@ -299,6 +305,8 @@ mod tests {
     ) -> SubtitleCueRuntime {
         SubtitleCueRuntime {
             cue_id: cue_id.to_string(),
+            revision: None,
+            sequence: None,
             route_direction: "inbound".to_string(),
             source_text: source_text.to_string(),
             display_source_text: display_source_text.to_string(),
@@ -308,6 +316,11 @@ mod tests {
             ended_at: "unix-ms:2".to_string(),
             committed,
             translation_committed,
+            translation_state: Some(if translation_committed {
+                SubtitleTranslationStateRuntime::Final
+            } else {
+                SubtitleTranslationStateRuntime::Pending
+            }),
         }
     }
 
@@ -346,6 +359,8 @@ mod tests {
     fn build_mix_plan_adds_prompt_and_original_audio() {
         let cue = SubtitleCueRuntime {
             cue_id: "cue-outbound-1".to_string(),
+            revision: None,
+            sequence: None,
             route_direction: "outbound".to_string(),
             source_text: "source".to_string(),
             display_source_text: String::new(),
@@ -355,6 +370,7 @@ mod tests {
             ended_at: "unix-ms:2".to_string(),
             committed: true,
             translation_committed: true,
+            translation_state: Some(SubtitleTranslationStateRuntime::Final),
         };
         let config = SpeechConfig {
             provider: provider_input(),
@@ -866,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn speech_ready_accepts_final_secondary_translation_before_cue_commit() {
+    fn speech_ready_rejects_nonfinal_translation_even_when_segment_is_stable() {
         let cue = subtitle_cue_runtime(
             "cue-1",
             "hello",
@@ -877,7 +893,7 @@ mod tests {
             false,
         );
 
-        assert!(is_speech_ready_cue(&cue));
+        assert!(!is_speech_ready_cue(&cue));
     }
 
     #[test]
@@ -893,6 +909,48 @@ mod tests {
         );
 
         assert!(!is_speech_ready_cue(&cue));
+    }
+
+    #[test]
+    fn terminal_translation_error_is_never_enqueued_for_tts() {
+        let config = secondary_subtitle_tts_config();
+        let mut cue = subtitle_cue_runtime(
+            "cue-error",
+            "hello",
+            "hello",
+            vec![subtitle_segment(
+                "hello",
+                "[翻译失败] 本地翻译队列过载",
+                false,
+            )],
+            "[翻译失败] 本地翻译队列过载",
+            true,
+            false,
+        );
+        cue.translation_state = Some(SubtitleTranslationStateRuntime::Error);
+
+        assert!(!is_speech_ready_cue(&cue));
+        assert!(speech_dispatch_tasks_for_cue(&cue, &config, &HashSet::new()).is_empty());
+    }
+
+    #[test]
+    fn final_translation_text_is_not_classified_by_failure_prefix() {
+        let config = secondary_subtitle_tts_config();
+        let cue = subtitle_cue_runtime(
+            "cue-quoted-error",
+            "say the label",
+            "say the label",
+            vec![subtitle_segment("say the label", "[翻译失败] 是界面标签。", false)],
+            "[翻译失败] 是界面标签。",
+            true,
+            true,
+        );
+
+        assert!(is_speech_ready_cue(&cue));
+        assert_eq!(
+            speech_dispatch_tasks_for_cue(&cue, &config, &HashSet::new()).len(),
+            1
+        );
     }
 
     #[test]
@@ -1027,6 +1085,7 @@ mod tests {
             source_text: "hello".to_string(),
             translated_text: "hello translated".to_string(),
             segment_mode: true,
+            queued_at: Instant::now(),
         };
         let replacement = SpeechDispatchTask {
             cue,
@@ -1034,6 +1093,7 @@ mod tests {
             source_text: "hello there".to_string(),
             translated_text: "hello there translated".to_string(),
             segment_mode: true,
+            queued_at: Instant::now(),
         };
         let mut processed = HashSet::new();
         let mut processed_order = VecDeque::new();
@@ -1052,6 +1112,73 @@ mod tests {
             &processed,
             &processed_slots
         ));
+    }
+
+    #[test]
+    fn tts_admission_keeps_only_the_newest_32_tasks() {
+        let cue = subtitle_cue_runtime(
+            "cue-base",
+            "hello",
+            "hello",
+            Vec::new(),
+            "你好",
+            true,
+            true,
+        );
+        let tasks: Vec<_> = (0..MAX_TTS_QUEUE_DEPTH + 3)
+            .map(|index| SpeechDispatchTask {
+                cue: SubtitleCueRuntime {
+                    cue_id: format!("cue-{index}"),
+                    ..cue.clone()
+                },
+                segment_index: 0,
+                source_text: format!("source-{index}"),
+                translated_text: format!("translated-{index}"),
+                segment_mode: false,
+                queued_at: Instant::now(),
+            })
+            .collect();
+        let mut queue = SpeechDispatchQueue::default();
+
+        let (admitted, overflow) = queue.admit(tasks);
+
+        assert_eq!(admitted.len(), MAX_TTS_QUEUE_DEPTH);
+        assert_eq!(overflow.len(), 3);
+        assert_eq!(admitted.first().unwrap().cue.cue_id, "cue-3");
+        assert!(overflow
+            .iter()
+            .all(|task| queue.contains(task)));
+    }
+
+    #[test]
+    fn tts_admission_preserves_original_queue_age() {
+        let cue = subtitle_cue_runtime(
+            "cue-aged",
+            "hello",
+            "hello",
+            Vec::new(),
+            "你好",
+            true,
+            true,
+        );
+        let task = SpeechDispatchTask {
+            cue,
+            segment_index: 0,
+            source_text: "hello".to_string(),
+            translated_text: "你好".to_string(),
+            segment_mode: false,
+            queued_at: Instant::now(),
+        };
+        let key = task.dispatch_key();
+        let original = Instant::now() - TTS_START_DEADLINE;
+        let mut queue = SpeechDispatchQueue::default();
+        queue.queued_at.insert(key, original);
+
+        let (admitted, overflow) = queue.admit(vec![task]);
+
+        assert!(overflow.is_empty());
+        assert!(admitted[0].queued_at <= original + Duration::from_millis(1));
+        assert!(admitted[0].queued_at.elapsed() >= TTS_START_DEADLINE);
     }
 
     #[test]
@@ -1295,6 +1422,8 @@ mod tests {
     ) -> SubtitleCueRuntime {
         SubtitleCueRuntime {
             cue_id: cue_id.to_string(),
+            revision: None,
+            sequence: None,
             route_direction: "inbound".to_string(),
             source_text: "hello".to_string(),
             display_source_text: "hello".to_string(),
@@ -1304,6 +1433,11 @@ mod tests {
             ended_at: "unix-ms:2".to_string(),
             committed,
             translation_committed,
+            translation_state: Some(if translation_committed {
+                SubtitleTranslationStateRuntime::Final
+            } else {
+                SubtitleTranslationStateRuntime::Pending
+            }),
         }
     }
 

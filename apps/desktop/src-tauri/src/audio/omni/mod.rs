@@ -40,6 +40,7 @@ use crate::provider::gateway_parts::{
 };
 
 mod audio_pump;
+mod audio_origin;
 mod asr_event_processor;
 mod connection;
 mod connection_coordinator;
@@ -47,6 +48,8 @@ mod event_processor;
 mod config;
 mod provider_input_budget;
 mod realtime_socket;
+mod response_lifecycle;
+mod response_ledger;
 pub(crate) use self::realtime_socket::{
     RealtimeSocket, RealtimeSocketConnector, TungsteniteConnector,
 };
@@ -333,7 +336,8 @@ impl RealtimeAudioMode {
             }),
             Self::SemanticVad => json!({
               "type": "semantic_vad",
-              "eagerness": "auto"
+              "threshold": 0.5,
+              "silence_duration_ms": 800
             }),
         }
     }
@@ -380,7 +384,11 @@ fn build_dashscope_ws_request(
 mod unit_tests {
     use super::*;
     use super::audio_pump::manual_turn_has_audible_input;
-    use super::protocol::{is_session_ready_event, should_use_native_output_fallback};
+    use super::protocol::{
+        build_livetranslate_session_update_with_languages, is_session_ready_event,
+        resolve_livetranslate_language, resolve_livetranslate_output_mode,
+        should_use_native_output_fallback,
+    };
     use base64::Engine;
 
     #[test]
@@ -589,6 +597,61 @@ mod unit_tests {
     }
 
     #[test]
+    fn livetranslate_session_normalizes_explicit_source_and_target_languages() {
+        let session = build_livetranslate_session_update_with_languages(
+            "Cherry",
+            "translate naturally",
+            RealtimeAudioMode::ServerVad,
+            "en-US",
+            "zh-Hans",
+            OmniOutputMode::TextOnly,
+        );
+
+        assert_eq!(
+            session
+                .pointer("/session/input_audio_transcription/language")
+                .and_then(Value::as_str),
+            Some("en")
+        );
+        assert_eq!(
+            session
+                .pointer("/session/translation/language")
+                .and_then(Value::as_str),
+            Some("zh")
+        );
+    }
+
+    #[test]
+    fn livetranslate_language_contract_defaults_auto_source_and_rejects_unknown_codes() {
+        assert_eq!(
+            resolve_livetranslate_language(
+                "qwen3.5-livetranslate-flash-realtime",
+                "auto",
+                "en",
+            ),
+            Ok("en".to_string())
+        );
+        assert!(resolve_livetranslate_language(
+            "qwen3.5-livetranslate-flash-realtime",
+            "xx-Unknown",
+            "en",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn livetranslate_audio_output_falls_back_to_text_for_unsupported_target() {
+        assert_eq!(
+            resolve_livetranslate_output_mode(
+                "qwen3.5-livetranslate-flash-realtime",
+                "sw",
+                OmniOutputMode::TextAndAudio,
+            ),
+            Ok(OmniOutputMode::TextOnly)
+        );
+    }
+
+    #[test]
     fn session_created_or_updated_releases_audio_for_provider_variants() {
         assert!(is_session_ready_event("session.created"));
         assert!(is_session_ready_event("session.updated"));
@@ -770,11 +833,17 @@ mod unit_tests {
 }
 
 mod protocol;
+use self::response_lifecycle::{
+    ResponseDeadlineBudget, ResponseLifecycle, ResponseStallAction,
+};
+use self::response_ledger::ResponseLedger;
 
 pub(crate) use self::protocol::{
     build_dashscope_audio_append, build_dashscope_input_audio_commit,
-    build_dashscope_response_create, build_dashscope_session_update, build_dashscope_text_item,
+    build_dashscope_response_create_for_protocol, build_dashscope_session_update,
+    build_dashscope_text_item,
     build_omni_session_update_for_provider_with_output_mode, OmniOutputMode, OmniSpeechConfig,
+    resolve_livetranslate_language, resolve_livetranslate_output_mode,
 };
 use self::translated_pcm_authority::TranslatedPcmAuthority;
 use self::protocol::{
@@ -788,11 +857,13 @@ use self::protocol::{
     extract_response_done_text,
     set_socket_read_timeout, set_socket_write_timeout, start_omni_playback,
     try_reconnect, write_live_source_to_cue, write_native_output_final_to_cue,
-    write_native_output_preview_to_cue, write_native_translation_to_cue,
+    write_native_output_preview_to_cue,
     update_native_response_cue_source,
     OmniEventDiagnostics, OmniPlaybackCommand, OmniPlaybackEnqueueOutcome,
     OmniPlaybackOverflowReason, OmniPlaybackQueue, OmniPlaybackWorker,
 };
+#[cfg(test)]
+use self::protocol::write_native_translation_to_cue;
 #[cfg(test)]
 use protocol::{build_omni_session_update, build_omni_session_update_with_output_mode};
 #[cfg(test)]
@@ -885,6 +956,36 @@ mod native_translation_tests {
     }
 
     #[test]
+    fn qwen35_omni_semantic_vad_uses_watch_defaults() {
+        let session = build_omni_session_update(
+            "qwen3.5-omni-plus-realtime",
+            "longanqian",
+            "translate naturally",
+            RealtimeAudioMode::SemanticVad,
+            "zh-CN",
+        );
+
+        assert_eq!(
+            session
+                .pointer("/session/turn_detection/type")
+                .and_then(Value::as_str),
+            Some("semantic_vad")
+        );
+        assert_eq!(
+            session
+                .pointer("/session/turn_detection/threshold")
+                .and_then(Value::as_f64),
+            Some(0.5)
+        );
+        assert_eq!(
+            session
+                .pointer("/session/turn_detection/silence_duration_ms")
+                .and_then(Value::as_u64),
+            Some(800)
+        );
+    }
+
+    #[test]
     fn empty_completed_transcription_only_reuses_a_correlated_delta() {
         let empty_final = resolve_completed_transcription(
             "Oh, my dilemma.",
@@ -940,7 +1041,8 @@ mod native_translation_tests {
             .find(|cue| cue.cue_id == "omni-cue-test")
             .expect("native translation cue");
 
-        assert!(cue.committed);
+        assert!(!cue.committed, "translation final must not synthesize a source final");
+        assert!(cue.translation_committed);
         assert_eq!(cue.source_text, "hello world");
         assert_eq!(cue.translated_text, "你好，世界。");
         assert_eq!(cue.display_segments.len(), 1);
@@ -1090,7 +1192,8 @@ mod native_translation_tests {
             .find(|cue| cue.cue_id == "omni-cue-partial")
             .expect("partial native translation cue");
 
-        assert!(cue.committed);
+        assert!(!cue.committed, "translation final must not synthesize a source final");
+        assert!(cue.translation_committed);
         assert_eq!(
             cue.translated_text.replace('\n', ""),
             translated.replace('\n', "")
@@ -1136,7 +1239,8 @@ mod native_translation_tests {
             .find(|cue| cue.cue_id == "omni-cue-aligned")
             .expect("aligned native translation cue");
 
-        assert!(cue.committed);
+        assert!(!cue.committed, "translation final must not synthesize a source final");
+        assert!(cue.translation_committed);
         assert_eq!(cue.display_segments.len(), 2);
         assert_eq!(cue.display_segments[0].source_text, "First source.");
         assert_eq!(cue.display_segments[0].translated_text, "第一句。");

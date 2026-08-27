@@ -14,6 +14,7 @@ pub(crate) struct OmniSessionConfig {
     pub(super) glossary: GlossaryContext,
     pub(super) audio_mode: RealtimeAudioMode,
     pub(super) output_mode: OmniOutputMode,
+    pub(super) source_language: String,
     pub(super) target_language: String,
     pub(super) subtitle_translate_active: bool,
     pub(super) speech_config: OmniSpeechConfig,

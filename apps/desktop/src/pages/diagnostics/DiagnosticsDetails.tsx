@@ -7,7 +7,7 @@ import { writeExportArtifactRuntime, type ExportArtifactReceipt } from '../../ru
 import {
   scoreBenchmarkReport,
   type BenchmarkRunState,
-  type BenchmarkScoreV1,
+  type BenchmarkResultScore,
 } from './benchmarkReportScore';
 import type { BenchmarkJudgeModel, BenchmarkSemanticJudgeResult } from './benchmarkSemanticJudge';
 import { resolveBenchmarkReferenceTranslation, resolveBenchmarkSourceText } from './benchmarkReferenceText';
@@ -189,7 +189,7 @@ function formatScoreValue(value: number | null): string {
   return value == null ? '—' : value.toFixed(1);
 }
 
-function scoreStatusLabel(status: BenchmarkScoreV1['status']): string {
+function scoreStatusLabel(status: BenchmarkResultScore['status']): string {
   return i18n.t(`diagnostics.benchmark.scoreStatus.${status}`);
 }
 
@@ -208,7 +208,7 @@ function missingEvidenceLabel(value: string): string {
   return labels[value] ?? value.replace(/-/gu, ' ');
 }
 
-function scoreDimensionSummary(score: BenchmarkScoreV1, dimension: keyof BenchmarkScoreV1['dimensions']): string {
+function scoreDimensionSummary(score: BenchmarkResultScore, dimension: keyof BenchmarkResultScore['dimensions']): string {
   const incompleteSummary = (detail: { score: number | null; missingEvidence: string[] }) => {
     if (detail.score != null) return null;
     return detail.missingEvidence.length
@@ -243,7 +243,7 @@ function scoreDimensionSummary(score: BenchmarkScoreV1, dimension: keyof Benchma
       return slowest
         ? i18n.t('diagnostics.benchmark.scoreLatencySummary', {
           run: slowest.runIndex + 1,
-          signal: slowest.signal === 'firstToken'
+          signal: slowest.signal === 'audioToRenderFirst'
             ? i18n.t('diagnostics.benchmark.scoreFirstToken')
             : i18n.t('diagnostics.benchmark.scoreFirstCommitted'),
           latency: (slowest.latencyMs ?? 0).toFixed(1),
@@ -276,12 +276,12 @@ function ScoreFormula({ children }: { children: ReactNode }) {
   return <p className="benchmark-score-formula"><strong>{i18n.t('diagnostics.benchmark.scoreFormula')}:</strong> {children}</p>;
 }
 
-function BenchmarkScoreCard({ score }: { score: BenchmarkScoreV1 }) {
+function BenchmarkScoreCard({ score }: { score: BenchmarkResultScore }) {
   const semantic = score.dimensions.semantic;
   const latency = score.dimensions.latency;
   const completeness = score.dimensions.completeness;
   const stability = score.dimensions.stability;
-  const dimensions: Array<{ key: keyof BenchmarkScoreV1['dimensions']; label: string }> = [
+  const dimensions: Array<{ key: keyof BenchmarkResultScore['dimensions']; label: string }> = [
     { key: 'semantic', label: i18n.t('watchReport.score.semantic') },
     { key: 'latency', label: i18n.t('watchReport.score.latency') },
     { key: 'completeness', label: i18n.t('watchReport.score.completeness') },
@@ -380,7 +380,7 @@ function BenchmarkScoreCard({ score }: { score: BenchmarkScoreV1 }) {
                 {latency.evidence.signals.map((signal) => (
                   <tr key={`${signal.runIndex}-${signal.signal}`}>
                     <td>{signal.runIndex + 1}</td>
-                    <td>{signal.signal === 'firstToken' ? i18n.t('diagnostics.benchmark.scoreFirstToken') : i18n.t('diagnostics.benchmark.scoreFirstCommitted')}</td>
+                    <td>{signal.signal === 'audioToRenderFirst' ? i18n.t('diagnostics.benchmark.scoreFirstToken') : i18n.t('diagnostics.benchmark.scoreFirstCommitted')}</td>
                     <td>{signal.latencyMs == null ? '—' : `${signal.latencyMs.toFixed(1)}ms`}</td>
                     <td>≤{signal.threshold.good}ms = 100; ≥{signal.threshold.bad}ms = 0</td>
                     <td>{formatScoreValue(signal.score)}</td>
@@ -434,7 +434,7 @@ export function BenchmarkReportDetail({
   semanticJudgeError?: string | null;
   semanticJudgeResult?: BenchmarkSemanticJudgeResult | null;
   benchmarkState?: BenchmarkRunState;
-  score?: BenchmarkScoreV1;
+  score?: BenchmarkResultScore;
   onSemanticJudgeModelChange?: (modelId: string) => void;
   onRunSemanticJudge?: () => void;
 }) {
@@ -660,7 +660,7 @@ export function exportJson(data: unknown, filename: string): Promise<ExportArtif
 
 // eslint-disable-next-line react-refresh/only-export-components -- static download facade is shared by the diagnostics screen and export tests.
 export class DiagnosticsReportExporter {
-  static exportBenchmark(report: BenchmarkReport, basename: string, format: 'json' | 'txt', score?: BenchmarkScoreV1) {
+  static exportBenchmark(report: BenchmarkReport, basename: string, format: 'json' | 'txt', score?: BenchmarkResultScore) {
     const benchmarkScore = score ?? scoreBenchmarkReport(report, {
       sourceText: resolveBenchmarkSourceText(report.audioFile),
       referenceTranslation: resolveBenchmarkReferenceTranslation(report.audioFile),
@@ -735,7 +735,7 @@ export function formatLiveEventsTxt(events: LiveSessionEvents): string {
   return lines.join('\n');
 }
 
-export function formatBenchmarkTxt(report: BenchmarkReport, score?: BenchmarkScoreV1): string {
+export function formatBenchmarkTxt(report: BenchmarkReport, score?: BenchmarkResultScore): string {
   const lines: string[] = [];
   lines.push(`=== Benchmark Report ===`);
   lines.push(`Model: ${report.model}`);
@@ -815,7 +815,7 @@ export function formatBenchmarkTxt(report: BenchmarkReport, score?: BenchmarkSco
   lines.push('--- Raw Benchmark Report JSON ---');
   lines.push(JSON.stringify(report, null, 2));
   lines.push('');
-  lines.push('--- BenchmarkScoreV1 JSON ---');
+  lines.push('--- BenchmarkScoreV2 JSON ---');
   lines.push(JSON.stringify(benchmarkScore, null, 2));
   return lines.join('\n');
 }

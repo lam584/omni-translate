@@ -54,6 +54,7 @@ use route_orchestrator::{
 };
 
 pub(crate) const AUDIO_RUNTIME_SNAPSHOT_EVENT: &str = "audio://snapshot";
+pub(crate) const SUBTITLE_DELTA_EVENT: &str = "audio://subtitle-delta";
 const AUDIO_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(6);
 const OMNI_PRECONNECT_SESSION_READINESS_TIMEOUT: Duration = Duration::from_secs(45);
 const OMNI_ROUTE_SESSION_READINESS_TIMEOUT: Duration = Duration::from_secs(90);
@@ -404,6 +405,12 @@ mod tests {
             resolve_realtime_audio_mode_for_route("inbound", &watch_config, &omni_provider)
                 .expect("mode")
                 .as_str(),
+            "semantic_vad"
+        );
+        assert_eq!(
+            resolve_realtime_audio_mode_for_route("outbound", &watch_config, &omni_provider)
+                .expect("PTT mode")
+                .as_str(),
             "manual"
         );
         assert_eq!(
@@ -438,6 +445,62 @@ mod tests {
                 .as_str(),
             "manual"
         );
+    }
+
+    #[test]
+    fn custom_registry_wins_over_official_seed_and_manual_only_watch_fails_early() {
+        let mut value = provider_value(
+            "template-dashscope-realtime",
+            "dashscope",
+            "dashscope",
+            "qwen3.5-omni-plus-realtime",
+            "https://dashscope.aliyuncs.com/api/v1",
+            "websocket",
+            "dashscope",
+        );
+        value["localModelCapabilityRegistry"] = json!([
+            {
+                "id": "seed-qwen3.5-omni-plus-realtime",
+                "modelId": "qwen3.5-omni-plus-realtime",
+                "capabilities": ["speech-to-speech"],
+                "realtimeProtocol": "dashscope-omni",
+                "realtimeAudioMode": "semantic_vad",
+                "interactionCapabilities": ["auto_vad"],
+                "source": "official"
+            },
+            {
+                "id": "custom-qwen3.5-omni-plus-realtime",
+                "modelId": "qwen3.5-omni-plus-realtime",
+                "capabilities": ["speech-to-speech"],
+                "realtimeProtocol": "dashscope-omni",
+                "realtimeAudioMode": "server_vad",
+                "interactionCapabilities": ["auto_vad"],
+                "source": "custom"
+            }
+        ]);
+        let custom: ProviderDraftInput = serde_json::from_value(value.clone()).expect("provider");
+        assert_eq!(
+            resolve_realtime_profile(&custom, &custom.model).realtime_audio_mode,
+            "server_vad"
+        );
+
+        value["localModelCapabilityRegistry"] = json!([{
+            "id": "custom-manual-only",
+            "modelId": "qwen3.5-omni-plus-realtime",
+            "capabilities": ["speech-to-speech"],
+            "realtimeProtocol": "dashscope-omni",
+            "realtimeAudioMode": "manual",
+            "interactionCapabilities": ["manual_commit"],
+            "source": "custom"
+        }]);
+        let manual_only: ProviderDraftInput = serde_json::from_value(value).expect("provider");
+        let error = resolve_realtime_audio_mode_for_route(
+            "inbound",
+            &json!({"devices": {"routeMode": "watch"}}),
+            &manual_only,
+        )
+        .expect_err("continuous Watch rejects manual-only models before connect");
+        assert!(error.contains("manual-only"));
     }
 
     #[test]
@@ -987,11 +1050,11 @@ mod tests {
             "dashscope",
         )).expect("provider should parse");
         let cases = [
-            ("watch", true, ResolvedVadPolicy::ManualCommit, false),
-            ("game", true, ResolvedVadPolicy::ManualCommit, true),
-            ("watch", false, ResolvedVadPolicy::ManualCommit, false),
+            ("watch", true, ResolvedVadPolicy::ServerVad, "semantic_vad", false),
+            ("game", true, ResolvedVadPolicy::ManualCommit, "manual", true),
+            ("watch", false, ResolvedVadPolicy::ServerVad, "semantic_vad", false),
         ];
-        for (route_mode, bypass, expected_policy, expected_legacy_bypass) in cases {
+        for (route_mode, bypass, expected_policy, expected_audio_mode, expected_legacy_bypass) in cases {
             let config = json!({
                 "devices": { "routeMode": route_mode },
                 "vad": { "bypass": bypass },
@@ -1001,6 +1064,7 @@ mod tests {
                 "inbound", &config, provider.model.clone(), provider.clone(),
             );
             assert_eq!(plan.vad_policy, expected_policy, "routeMode={route_mode}");
+            assert_eq!(plan.realtime_audio_mode, expected_audio_mode, "routeMode={route_mode}");
             assert_eq!(plan.legacy_vad_bypass, expected_legacy_bypass, "routeMode={route_mode}");
             assert_eq!(plan.target_language, "ja");
             assert_eq!(plan.session_reuse_key.model, provider.model);

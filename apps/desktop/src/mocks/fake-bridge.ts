@@ -197,6 +197,10 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
     lastDisconnectReason: null,
   };
   audio.subtitleOverlay = {
+    streamId: 'fake-subtitle-stream',
+    generation: 1,
+    seq: 0,
+    baselineIncluded: true,
     queueDepth: 0,
     droppedCueCount: 0,
     firstTranslationAverageMs: null,
@@ -1156,8 +1160,8 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
     if (!runId || !model || !validRunStatuses.includes(runStatus as BenchmarkHistoryRecord['runStatus']) || !validScoreStatuses.includes(scoreStatus as BenchmarkHistoryRecord['scoreStatus'])) {
       throw serviceErrorV2({ code: 'diagnostics.invalid-request', message: 'fake benchmark history record is invalid' });
     }
-    if (command.scoreVersion != null && command.scoreVersion !== 'benchmark-score/v1') {
-      throw serviceErrorV2({ code: 'diagnostics.invalid-request', message: 'fake benchmark history accepts benchmark-score/v1 only' });
+    if (command.scoreVersion != null && command.scoreVersion !== 'benchmark-score/v2') {
+      throw serviceErrorV2({ code: 'diagnostics.invalid-request', message: 'fake benchmark history accepts benchmark-score/v2 writes only' });
     }
 
     const requestedRecordId = typeof command.recordId === 'string' && command.recordId.trim() ? command.recordId : null;
@@ -1180,7 +1184,7 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
       model,
       runStatus: runStatus as BenchmarkHistoryRecord['runStatus'],
       scoreStatus: scoreStatus as BenchmarkHistoryRecord['scoreStatus'],
-      scoreVersion: 'benchmark-score/v1',
+      scoreVersion: 'benchmark-score/v2',
       totalScore: typeof command.totalScore === 'number' ? command.totalScore : null,
       grade: typeof command.grade === 'string' ? command.grade : null,
       report: command.report ?? null,

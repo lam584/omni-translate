@@ -125,7 +125,7 @@ function sortedCues(
       return cueLatency(right) - cueLatency(left);
     }
     return left.sourceAtMs === right.sourceAtMs
-      ? left.revision - right.revision
+      ? (left.revision ?? 0) - (right.revision ?? 0)
       : (left.sourceAtMs ?? 0) - (right.sourceAtMs ?? 0);
   });
 }

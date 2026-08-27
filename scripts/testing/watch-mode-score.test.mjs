@@ -39,6 +39,13 @@ function completeRun(index, overrides = {}) {
     responseCreatedMs: 0,
     firstOutputMs: 2_000,
     firstCommittedMs: 5_000,
+    audioStartedAtMs: 0,
+    audioStartOrigin: 'provider-offset',
+    sourceStableAtMs: 1_000,
+    audioToSourceFirstMs: 500,
+    audioToLlmFirstMs: 1_500,
+    audioToRenderFirstMs: 2_000,
+    audioToRenderFinalMs: 5_000,
     responseDoneMs: 10_000,
     translationFinal: '你好世界',
     responseCount: 1,
@@ -89,7 +96,7 @@ test('latency ramp has public threshold boundaries and linear interpolation', ()
   assert.equal(scoreLatencyRamp(null, 5_000, 15_000), null);
 });
 
-test('v1 does not issue a total before LLM judge evidence is present', () => {
+test('v2 does not issue a total before LLM judge evidence is present', () => {
   const deterministic = scoreDeterministic({
     report: passedReport,
     sourceText: 'Hello world',
@@ -116,6 +123,8 @@ test('aggregates every run and exposes the exact weighted total and every stabil
       responseCreatedMs: 100,
       firstOutputMs: 5_100,
       firstCommittedMs: 10_100,
+      audioToRenderFirstMs: 5_000,
+      audioToRenderFinalMs: 10_000,
       responseCount: 3,
     }),
   ];
@@ -145,7 +154,7 @@ test('aggregates every run and exposes the exact weighted total and every stabil
 });
 
 test('missing mandatory latency evidence is explicit and prevents a formal total', () => {
-  const runs = [completeRun(0, { firstCommittedMs: null, timeToFirstCommittedMs: null })];
+  const runs = [completeRun(0, { audioToRenderFinalMs: null })];
   const deterministic = scoreDeterministic({
     report: passedReport,
     sourceText: 'Hello world',
@@ -156,8 +165,8 @@ test('missing mandatory latency evidence is explicit and prevents a formal total
   assert.equal(result.status, 'evidence-insufficient');
   assert.equal(result.total, null);
   assert.equal(result.dimensions.latency.status, 'evidence-insufficient');
-  assert.deepEqual(result.dimensions.latency.missingEvidence, ['run-0-firstCommitted']);
-  assert.ok(result.evidenceCoverage.missing.includes('latency:run-0-firstCommitted'));
+  assert.deepEqual(result.dimensions.latency.missingEvidence, ['run-0-audioToRenderFinal']);
+  assert.ok(result.evidenceCoverage.missing.includes('latency:run-0-audioToRenderFinal'));
 });
 
 test('legacy Watch cue-start timers are retained as diagnostics but are not misrepresented as response-created latency', () => {
@@ -175,26 +184,61 @@ test('legacy Watch cue-start timers are retained as diagnostics but are not misr
     },
   });
   assert.equal(deterministic.dimensions.latency.score, null);
-  assert.deepEqual(deterministic.dimensions.latency.missingEvidence, ['run-0-firstToken', 'run-0-firstCommitted']);
+  assert.deepEqual(deterministic.dimensions.latency.missingEvidence, ['run-0-audioToRenderFirst', 'run-0-audioToRenderFinal']);
   assert.equal(deterministic.runContributions[0].legacyCueToFirstTokenLatencyMs, 2_000);
   assert.equal(deterministic.runContributions[0].legacyCueToFirstCommittedLatencyMs, 5_000);
 });
 
-test('legacy whole-run time-to-first fields are not substituted for response-relative latency evidence', () => {
+test('provider-event fallback is not treated as high-confidence scoring evidence', () => {
   const deterministic = scoreDeterministic({
     report: passedReport,
     sourceText: 'Hello world',
     referenceText: '你好世界',
     evidence: {
       runs: [completeRun(0, {
-        responseCreatedMs: null,
+        audioStartOrigin: 'provider-event',
         timeToFirstTokenMs: 2_000,
         timeToFirstCommittedMs: 5_000,
       })],
     },
   });
   assert.equal(deterministic.dimensions.latency.score, null);
-  assert.deepEqual(deterministic.dimensions.latency.missingEvidence, ['run-0-firstToken', 'run-0-firstCommitted']);
+  assert.deepEqual(deterministic.dimensions.latency.missingEvidence, ['run-0-audioToRenderFirst', 'run-0-audioToRenderFinal']);
+});
+
+test('Watch scoring ignores terminal translation errors and selects a final cue', () => {
+  const deterministic = scoreDeterministic({
+    report: passedReport,
+    sourceText: 'Hello world',
+    referenceText: '你好世界',
+    evidence: {
+      content: { translation: '你好世界' },
+      queue: { duplicateFinalTranslations: 0 },
+      watchSessionReport: {
+        sessionId: 'watch-session',
+        cues: [
+          {
+            translationState: 'error',
+            audioStartedAtMs: 0,
+            audioStartOrigin: 'provider-offset',
+            audioToRenderFirstMs: 100,
+            audioToRenderFinalMs: 200,
+          },
+          {
+            translationState: 'final',
+            audioStartedAtMs: 0,
+            audioStartOrigin: 'provider-offset',
+            audioToRenderFirstMs: 2_000,
+            audioToRenderFinalMs: 5_000,
+          },
+        ],
+      },
+    },
+  });
+
+  assert.equal(deterministic.runContributions[0].audioToRenderFirstMs, 2_000);
+  assert.equal(deterministic.runContributions[0].audioToRenderFinalMs, 5_000);
+  assert.equal(deterministic.dimensions.latency.score, 100);
 });
 
 test('missing response-count telemetry is evidence-insufficient instead of an invented stability score', () => {
@@ -296,7 +340,7 @@ test('LLM judging evaluates each completed run separately', async () => {
   assert.deepEqual(result.semanticJudge.runs.map(({ runIndex }) => runIndex), [0, 1]);
 });
 
-test('scoreRun persists a credential-free evidence-insufficient v1 record when automatic judging cannot authenticate', async () => {
+test('scoreRun persists a credential-free evidence-insufficient v2 record when automatic judging cannot authenticate', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-watch-score-'));
   const sourcePath = path.join(tempRoot, 'source.txt');
   const referencePath = path.join(tempRoot, 'reference.txt');

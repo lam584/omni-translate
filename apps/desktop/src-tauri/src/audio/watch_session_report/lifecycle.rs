@@ -44,6 +44,7 @@ impl WatchSessionReportStore {
             dropped_event_count: 0,
             next_event_id: 0,
             adopted_segments: HashMap::new(),
+            pending_manual_audio_origins: VecDeque::new(),
         });
         if let Some(session) = guard.as_mut() {
             let event = session.event(
@@ -181,6 +182,28 @@ impl WatchSessionReportStore {
         text: &str,
         final_event: bool,
     ) {
+        self.record_source_runtime(
+            cue_id,
+            route_direction,
+            text,
+            final_event,
+            0,
+            0,
+            Some(SubtitleTranslationStateRuntime::Pending),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_source_runtime(
+        &self,
+        cue_id: &str,
+        route_direction: &str,
+        text: &str,
+        final_event: bool,
+        revision: u64,
+        sequence: u64,
+        translation_state: Option<SubtitleTranslationStateRuntime>,
+    ) {
         if is_internal_status_cue(cue_id) {
             return;
         }
@@ -191,9 +214,19 @@ impl WatchSessionReportStore {
         let elapsed = session.elapsed_ms();
         let index = session.ensure_cue(cue_id, route_direction, Some(text));
         let cue = &mut session.cues[index];
+        if revision > 0 {
+            cue.revision = revision;
+        }
+        cue.sequence = cue.sequence.max(sequence);
+        if translation_state.is_some() {
+            cue.translation_state = translation_state;
+        }
         if !text.is_empty() {
             cue.source_text = text.to_string();
             cue.source_at_ms.get_or_insert(elapsed);
+            if final_event {
+                cue.source_stable_at_ms.get_or_insert(elapsed);
+            }
         }
         let event = session.event(
             "source",

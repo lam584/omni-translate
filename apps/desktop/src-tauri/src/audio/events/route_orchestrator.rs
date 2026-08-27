@@ -12,7 +12,7 @@ use super::super::state::AudioStateStore;
 use super::super::{speech, stt, subtitle_translate};
 use super::realtime_session::{
     apply_native_subtitle_translate_fallback, start_or_reuse_gemini_live_session,
-    start_or_reuse_omni_session, start_or_reuse_openai_realtime_session,
+    start_or_reuse_openai_realtime_session, start_or_reuse_route_omni_session,
     start_or_reuse_tencent_speech_translate_session, stop_preconnected_omni_session,
 };
 use super::route_config::{
@@ -22,7 +22,6 @@ use super::route_config::{
 use super::{
     route_command_timeout, route_command_timeout_message, start_route_with_overlay,
     stop_existing_inbound_pipeline, stop_existing_route_pipeline,
-    OMNI_ROUTE_SESSION_READINESS_TIMEOUT,
 };
 use crate::diagnostics::events::append_diagnostics_log;
 
@@ -217,6 +216,7 @@ pub(crate) async fn start_audio_route(
         // Freeze the accepted state before the worker can contend for the
         // pipeline/session locks. It is intentionally not a ready snapshot.
         let accepted_snapshot = state.snapshot();
+        crate::history::begin_route_session(&app, &config);
         let started_at = std::time::Instant::now();
         let _ = append_diagnostics_log(
             &app,
@@ -231,12 +231,6 @@ pub(crate) async fn start_audio_route(
         let task_app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
             let task_state = task_app.state::<AudioStateStore>();
-            // Take the pipeline lock *before* re-checking the generation: a
-            // stop command that raced this worker either already holds the
-            // lock (we block, then observe its bump and abort) or has already
-            // bumped and finished (we observe the bump immediately). Without
-            // this token a stop that won the lock was silently undone by the
-            // pending start.
             let pipeline_guard = task_state.lock_inbound_pipeline();
             if !fast_watch_start_still_current(&task_state, accepted_generation) {
                 let _ = append_diagnostics_log(
@@ -252,6 +246,7 @@ pub(crate) async fn start_audio_route(
                     None,
                     None,
                 );
+                crate::history::finalize_session_if_routes_idle(&task_app, &task_state.snapshot());
                 return;
             }
             // Capture both `Err` and panic so a failed background init is always
@@ -302,17 +297,19 @@ pub(crate) async fn start_audio_route(
                         None,
                         None,
                     );
+                    crate::history::finalize_session_if_routes_idle(&task_app, &task_state.snapshot());
                 }
             }
         });
         return Ok(accepted_snapshot);
     }
 
+    let history_config = config.clone();
     let timeout = route_command_timeout(&direction, &config);
     let timeout_message = route_command_timeout_message(&direction, &config, timeout);
     let app_for_task = app.clone();
     let direction_for_task = direction.clone();
-    match tokio::time::timeout(
+    let result = match tokio::time::timeout(
         timeout,
         tauri::async_runtime::spawn_blocking(move || {
             let app_for_state = app_for_task.clone();
@@ -345,7 +342,11 @@ pub(crate) async fn start_audio_route(
             }
             Err(timeout_message)
         }
+    };
+    if result.is_ok() {
+        crate::history::begin_route_session(&app, &history_config);
     }
+    result
 }
 
 fn start_omni_inbound_route(
@@ -356,13 +357,11 @@ fn start_omni_inbound_route(
     plan: ResolvedRoutePlan,
 ) -> Result<AudioRuntimeSnapshot, String> {
     let mut omni_route_config = config;
-    let voice_provider = plan.provider.clone();
     let subtitle_translate_mode = match plan.subtitle_fallback_policy {
         SubtitleFallbackPolicy::Secondary => "secondary",
         SubtitleFallbackPolicy::Native => "native",
     };
     let subtitle_translate_model_id = plan.subtitle_translation_model_id.clone();
-    let target_lang = plan.target_language.clone();
     let speech_dispatch_state = state.snapshot().speech.dispatch_state;
     let mut st_active = false;
     if let Some(text_provider) = plan.secondary_subtitle_provider.clone() {
@@ -457,7 +456,6 @@ fn start_omni_inbound_route(
     let translation_audio_source = plan.translation_audio_source;
     let should_start_speech_dispatch = plan.speech_dispatch_policy
         == SpeechDispatchPolicy::SubtitleTtsWhenIdle
-        && st_active
         && speech_dispatch_state == "idle";
     let _ = append_diagnostics_log(
         &app,
@@ -481,21 +479,12 @@ fn start_omni_inbound_route(
         None,
         None,
     );
-    let (omni_sender, _) = start_or_reuse_omni_session(
+    let (omni_sender, _) = start_or_reuse_route_omni_session(
         &app,
         &state,
-        voice_provider.clone(),
         &direction,
-        "route",
         st_active,
-        &target_lang,
-        &plan.realtime_audio_mode,
-        plan.voice.clone(),
-        plan.instructions.clone(),
-        plan.glossary.clone(),
-        plan.session_reuse_key.glossary_signature,
-        plan.omni_speech_config.clone(),
-        OMNI_ROUTE_SESSION_READINESS_TIMEOUT,
+        &plan,
     )?;
     state.watch_session_report.record_milestone_now("route_started");
 
@@ -901,6 +890,7 @@ pub(crate) async fn stop_audio_route(
             if !snapshot.inbound.stream_bound && !snapshot.outbound.stream_bound {
                 state.watch_session_report.complete();
             }
+            crate::history::finalize_session_if_routes_idle(&app, &snapshot);
             Ok(state.snapshot())
         })();
         let _ = tx.send(result);

@@ -1,13 +1,13 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::Instant;
 
 use uuid::Uuid;
 
 use super::contracts::{
-    OverlayRenderReceiptRuntime, SubtitleDisplaySegmentRuntime, WatchCueComparisonRuntime,
-    WatchIssueRuntime, WatchSessionReportRuntime, WatchSessionReportSummaryRuntime,
-    WatchTimelineEventRuntime,
+    OverlayRenderReceiptRuntime, SubtitleDisplaySegmentRuntime, SubtitleTranslationStateRuntime,
+    WatchCueComparisonRuntime, WatchIssueRuntime, WatchSessionReportRuntime,
+    WatchSessionReportSummaryRuntime, WatchTimelineEventRuntime,
 };
 use super::time_utils::{ms_marker, unix_ms};
 
@@ -55,6 +55,7 @@ struct WatchSession {
     dropped_event_count: u64,
     next_event_id: u64,
     adopted_segments: HashMap<String, BTreeMap<usize, String>>,
+    pending_manual_audio_origins: VecDeque<u64>,
 }
 
 impl WatchSession {
@@ -140,7 +141,12 @@ impl WatchSession {
                 .remove(&Self::cue_revision_key(&removed.cue_id, removed.revision));
             self.dropped_cue_count = self.dropped_cue_count.saturating_add(1);
         }
-        self.cues.push(empty_cue(cue_id, revision, route_direction));
+        let mut cue = empty_cue(cue_id, revision, route_direction);
+        if let Some(started_at_ms) = self.pending_manual_audio_origins.pop_front() {
+            cue.audio_started_at_ms = Some(started_at_ms);
+            cue.audio_start_origin = Some("manual-audible".to_string());
+        }
+        self.cues.push(cue);
         self.cues.len() - 1
     }
 
@@ -247,6 +253,44 @@ impl WatchSession {
 
 impl WatchSessionReportStore {
 
+    pub(crate) fn stage_manual_audio_origin(&self, started_at_ms: u64) {
+        let mut guard = self.inner.lock().expect("watch session report poisoned");
+        let Some(session) = guard.as_mut() else {
+            return;
+        };
+        if session.pending_manual_audio_origins.len() >= 8 {
+            session.pending_manual_audio_origins.pop_front();
+        }
+        session.pending_manual_audio_origins.push_back(started_at_ms);
+    }
+
+    pub(crate) fn record_audio_origin(
+        &self,
+        cue_id: &str,
+        route_direction: &str,
+        started_at_ms: u64,
+        origin: &str,
+    ) {
+        if is_internal_status_cue(cue_id) || audio_origin_priority(origin) == 0 {
+            return;
+        }
+        let mut guard = self.inner.lock().expect("watch session report poisoned");
+        let Some(session) = guard.as_mut() else {
+            return;
+        };
+        let index = session.ensure_cue(cue_id, route_direction, None);
+        let cue = &mut session.cues[index];
+        let current_priority = cue
+            .audio_start_origin
+            .as_deref()
+            .map(audio_origin_priority)
+            .unwrap_or(0);
+        if audio_origin_priority(origin) > current_priority {
+            cue.audio_started_at_ms = Some(started_at_ms);
+            cue.audio_start_origin = Some(origin.to_string());
+        }
+    }
+
     pub(crate) fn record_publish(
         &self,
         cue_id: &str,
@@ -255,6 +299,36 @@ impl WatchSessionReportStore {
         translated_text: &str,
         display_segments: &[SubtitleDisplaySegmentRuntime],
         final_event: bool,
+    ) {
+        self.record_publish_runtime(
+            cue_id,
+            route_direction,
+            source_text,
+            translated_text,
+            display_segments,
+            final_event,
+            0,
+            0,
+            Some(if final_event {
+                SubtitleTranslationStateRuntime::Final
+            } else {
+                SubtitleTranslationStateRuntime::Streaming
+            }),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_publish_runtime(
+        &self,
+        cue_id: &str,
+        route_direction: &str,
+        source_text: &str,
+        translated_text: &str,
+        display_segments: &[SubtitleDisplaySegmentRuntime],
+        final_event: bool,
+        revision: u64,
+        sequence: u64,
+        translation_state: Option<SubtitleTranslationStateRuntime>,
     ) {
         if is_internal_status_cue(cue_id) {
             return;
@@ -266,6 +340,13 @@ impl WatchSessionReportStore {
         let elapsed = session.elapsed_ms();
         let index = session.ensure_cue(cue_id, route_direction, Some(source_text));
         let cue = &mut session.cues[index];
+        if revision > 0 {
+            cue.revision = revision;
+        }
+        cue.sequence = cue.sequence.max(sequence);
+        if translation_state.is_some() {
+            cue.translation_state = translation_state;
+        }
         if !source_text.is_empty() {
             cue.source_text = source_text.to_string();
             cue.source_at_ms.get_or_insert(elapsed);
@@ -636,6 +717,16 @@ impl WatchSessionReportStore {
                     .map(|cue| cue.route_direction.clone())
             })
             .unwrap_or_else(|| "inbound".to_string())
+    }
+}
+
+fn audio_origin_priority(origin: &str) -> u8 {
+    match origin {
+        "provider-offset" => 4,
+        "manual-audible" => 3,
+        "local-rms" => 2,
+        "provider-event" => 1,
+        _ => 0,
     }
 }
 

@@ -288,6 +288,7 @@ pub(crate) async fn upsert_secret_ref<R: tauri::Runtime>(
     reference: String,
     secret: String,
 ) -> Result<CredentialRefStatus, String> {
+    super::credential::ensure_public_credential_reference(&reference)?;
     let command_started_at = Instant::now();
     let secret_length = secret.len();
     log_storage_event(
@@ -381,6 +382,7 @@ pub(crate) async fn get_secret_ref_status<R: tauri::Runtime>(
     app: AppHandle<R>,
     reference: String,
 ) -> Result<CredentialRefStatus, String> {
+    super::credential::ensure_public_credential_reference(&reference)?;
     let command_started_at = Instant::now();
     log_storage_event(
         &app,
@@ -448,6 +450,7 @@ pub(crate) async fn read_secret_ref<R: tauri::Runtime>(
     app: AppHandle<R>,
     reference: String,
 ) -> Result<CredentialSecretPayload, String> {
+    super::credential::ensure_public_credential_reference(&reference)?;
     let command_started_at = Instant::now();
     log_storage_event(
         &app,

@@ -39,9 +39,15 @@ fn replay_matching_asr_progress_extends_the_manual_response_gate() {
         .iter()
         .find(|cue| cue.source_text == "the complete middle translation source")
         .expect("completed source cue");
-    assert!(
-        !completed_cue.committed,
-        "ASR completed source stays open until response/translation terminal"
+    assert!(completed_cue.committed, "Provider ASR completed owns source finality");
+    assert!(harness
+        .store()
+        .subtitle_source_is_final(&completed_cue.cue_id));
+    assert!(!completed_cue.translation_committed);
+    assert!(completed_cue.translated_text.is_empty());
+    assert_eq!(
+        completed_cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Pending)
     );
 }
 

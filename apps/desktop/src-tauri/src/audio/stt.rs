@@ -5,8 +5,8 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use tauri::Manager;
-use tungstenite::{connect, Message};
 use tungstenite::client::IntoClientRequest;
+use tungstenite::{connect, Message};
 
 use crate::diagnostics::events::append_diagnostics_log;
 use crate::provider::contracts::ProviderDraftInput;
@@ -15,7 +15,7 @@ use crate::provider::gateway_parts::{
     transport::to_websocket_url,
 };
 
-use super::contracts::SubtitleCueRuntime;
+use super::contracts::{SubtitleCueRuntime, SubtitleTranslationStateRuntime};
 use super::engine::emit_audio_snapshot;
 use super::pcm_resample::{base64_encode_pcm16, resample_capture_to_mono_i16};
 use super::realtime_ws::{self, backoff_delay, WsSocket};
@@ -25,6 +25,7 @@ use super::time_utils::{ms_marker, unix_ms};
 const ASR_MODEL: &str = "qwen3-asr-flash-realtime";
 const STT_RECONNECT_MAX_RETRIES: usize = 5;
 const STT_WRITE_TIMEOUT_SECS: u64 = 10;
+const MAX_AUDIO_CHUNKS_PER_TICK: usize = 8;
 
 fn notify_reconnecting(store: &AudioStateStore, attempt: usize) {
     realtime_ws::push_reconnecting_cue(
@@ -142,6 +143,8 @@ pub(crate) fn start_stt(
 
                 audio_state.push_subtitle_cue(SubtitleCueRuntime {
                     cue_id: format!("stt-error-{}", unix_ms()),
+                    revision: None,
+                    sequence: None,
                     route_direction: "inbound".to_string(),
                     source_text: format!("[STT 错误] {error}"),
                     display_source_text: String::new(),
@@ -150,7 +153,8 @@ pub(crate) fn start_stt(
                     started_at: ms_marker(unix_ms()),
                     ended_at: ms_marker(unix_ms()),
                     committed: true,
-                    translation_committed: true,
+                    translation_committed: false,
+                    translation_state: Some(SubtitleTranslationStateRuntime::Error),
                 });
 
                 let _ = emit_audio_snapshot(&app_handle, &audio_state);
@@ -306,7 +310,7 @@ fn run_stt_worker(
             break;
         }
 
-        while let Ok(raw_chunk) = audio_rx.try_recv() {
+        for raw_chunk in audio_rx.try_iter().take(MAX_AUDIO_CHUNKS_PER_TICK) {
             let asr_chunk = resample_capture_to_mono_i16(&raw_chunk, 16_000);
 
             if asr_chunk.is_empty() {

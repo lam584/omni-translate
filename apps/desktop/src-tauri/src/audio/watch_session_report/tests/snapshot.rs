@@ -1,5 +1,87 @@
 use super::*;
 
+#[test]
+fn terminal_translation_error_is_reported_without_claiming_final_ownership() {
+    let store = WatchSessionReportStore::new();
+    let session_id = store.begin_or_reuse("provider", "model");
+    store.record_source_runtime(
+        "cue-error",
+        "inbound",
+        "source final",
+        false,
+        1,
+        1,
+        Some(SubtitleTranslationStateRuntime::Pending),
+    );
+    store.record_publish_runtime(
+        "cue-error",
+        "inbound",
+        "source final",
+        "translation unavailable",
+        &[],
+        true,
+        1,
+        2,
+        Some(SubtitleTranslationStateRuntime::Error),
+    );
+    store.record_audio_origin("cue-error", "inbound", 0, "provider-offset");
+    store.record_overlay_receipt(OverlayRenderReceiptRuntime {
+        session_id,
+        cue_id: "cue-error".to_string(),
+        revision: 1,
+        source_text: "source final".to_string(),
+        translated_text: "translation unavailable".to_string(),
+        committed: true,
+        visible: true,
+        rendered_at_ms: unix_ms(),
+    });
+
+    let report = store.snapshot().expect("active report");
+    assert_eq!(
+        report.cues[0].translation_state,
+        Some(SubtitleTranslationStateRuntime::Error)
+    );
+    assert_ne!(
+        report.cues[0].translation_state,
+        Some(SubtitleTranslationStateRuntime::Final)
+    );
+    assert_eq!(report.cues[0].audio_to_render_first_ms, None);
+    assert_eq!(report.cues[0].audio_to_render_final_ms, None);
+    assert_eq!(report.summary.p95_audio_to_render_first_ms, None);
+    assert_eq!(report.summary.p95_audio_to_render_final_ms, None);
+}
+
+#[test]
+fn final_translation_contributes_high_confidence_audio_latency() {
+    let store = WatchSessionReportStore::new();
+    let session_id = store.begin_or_reuse("provider", "model");
+    store.record_source_runtime(
+        "cue-final", "inbound", "source final", true, 1, 1,
+        Some(SubtitleTranslationStateRuntime::Pending),
+    );
+    store.record_publish_runtime(
+        "cue-final", "inbound", "source final", "translated", &[], true, 1, 2,
+        Some(SubtitleTranslationStateRuntime::Final),
+    );
+    store.record_audio_origin("cue-final", "inbound", 0, "provider-offset");
+    store.record_overlay_receipt(OverlayRenderReceiptRuntime {
+        session_id,
+        cue_id: "cue-final".to_string(),
+        revision: 1,
+        source_text: "source final".to_string(),
+        translated_text: "translated".to_string(),
+        committed: true,
+        visible: true,
+        rendered_at_ms: unix_ms(),
+    });
+
+    let report = store.snapshot().expect("active report");
+    assert!(report.cues[0].audio_to_render_first_ms.is_some());
+    assert!(report.cues[0].audio_to_render_final_ms.is_some());
+    assert!(report.summary.p95_audio_to_render_first_ms.is_some());
+    assert!(report.summary.p95_audio_to_render_final_ms.is_some());
+}
+
 const WATCH_REPORT_SOURCE_FIXTURE: [&str; 6] = [
     "Del live in your prayer. ",
     "A 500",
@@ -361,4 +443,3 @@ const WATCH_REPORT_SOURCE_FIXTURE: [&str; 6] = [
         assert!(report.cues[0].rendered_text.is_empty());
         assert_eq!(report.dropped_event_count, 0);
     }
-

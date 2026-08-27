@@ -16,6 +16,7 @@ export type {
   SpeechRuntimeSnapshot,
   SttConnectionRuntime,
   SubtitleCueRuntime,
+  SubtitleDeltaRuntime,
   SubtitleDisplaySegmentRuntime,
   SubtitleOverlayRuntimeSnapshot,
   WatchCueComparisonRuntime,
@@ -49,3 +50,4 @@ export type SessionErrorCode =
   | 'audio.flow-stalled';
 
 export const AUDIO_RUNTIME_SNAPSHOT_EVENT = 'audio://snapshot';
+export const SUBTITLE_DELTA_EVENT = 'audio://subtitle-delta';

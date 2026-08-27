@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Omni Translate benchmark-score/v2 rules",
+  "schemaVersion": "benchmark-score/v2",
+  "dimensionWeights": {
+    "semantic": 40,
+    "latency": 30,
+    "completeness": 20,
+    "stability": 10
+  },
+  "semantic": {
+    "referenceMetric": "chrF2",
+    "characterNgramOrder": 6,
+    "beta": 2,
+    "referenceWeight": 40,
+    "judgeWeight": 60,
+    "judgeSubscores": [
+      "adequacy",
+      "factsTerminology",
+      "omissionsAdditions",
+      "fluency"
+    ]
+  },
+  "latencyMilliseconds": {
+    "audioToRenderFirst": { "good": 2000, "bad": 8000 },
+    "audioToRenderFinal": { "good": 5000, "bad": 15000 }
+  },
+  "stability": {
+    "extraResponsePenalty": 5
+  },
+  "grades": [
+    { "grade": "A", "minimum": 90 },
+    { "grade": "B", "minimum": 80 },
+    { "grade": "C", "minimum": 70 },
+    { "grade": "D", "minimum": 60 },
+    { "grade": "F", "minimum": 0 }
+  ]
+}

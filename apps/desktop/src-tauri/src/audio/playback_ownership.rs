@@ -167,6 +167,59 @@ impl DesktopPlaybackOwnership {
         after_drain()
     }
 
+    /// Cancel one logical playback without closing Desktop ownership for
+    /// unrelated realtime speech. This is used by history playback so a new
+    /// request supersedes only the previous history item.
+    pub(crate) fn cancel_and_drain_matching(
+        &self,
+        cue_id: &str,
+        source: &'static str,
+        timeout: Duration,
+    ) -> Result<bool, String> {
+        let deadline = Instant::now() + timeout;
+        let mut state = self.lock_state();
+        let mut matched = false;
+        for playback in state.active.values_mut() {
+            if playback.cue_id == cue_id && playback.source == source {
+                playback.cancelled = true;
+                matched = true;
+            }
+        }
+        if !matched {
+            return Ok(false);
+        }
+        self.inner.changed.notify_all();
+        while state
+            .active
+            .values()
+            .any(|playback| playback.cue_id == cue_id && playback.source == source)
+        {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(format!(
+                    "{PLAYBACK_OWNERSHIP_BARRIER_ERROR_CODE}: timed out stopping cue={cue_id} source={source}"
+                ));
+            }
+            let (next, wait) = self
+                .inner
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(PoisonError::into_inner);
+            state = next;
+            if wait.timed_out()
+                && state
+                    .active
+                    .values()
+                    .any(|playback| playback.cue_id == cue_id && playback.source == source)
+            {
+                return Err(format!(
+                    "{PLAYBACK_OWNERSHIP_BARRIER_ERROR_CODE}: timed out stopping cue={cue_id} source={source}"
+                ));
+            }
+        }
+        Ok(true)
+    }
+
     /// Release the closed owner only after a non-process-exclusion Bridge Init
     /// has succeeded or the Bridge process has been synchronously stopped.
     /// Advancing the generation ensures an old cancelled permit cannot resume.
@@ -449,5 +502,35 @@ mod tests {
 
         assert!(old.submit(|| Ok(())).is_err());
         new.submit(|| Ok(())).unwrap();
+    }
+
+    #[test]
+    fn targeted_stop_is_idempotent_and_does_not_cancel_other_playback() {
+        let ownership = DesktopPlaybackOwnership::default();
+        let history = ownership.acquire("history-1", "history-playback").unwrap();
+        let realtime = ownership.acquire("cue-live", "subtitle-tts").unwrap();
+        let history_thread = thread::spawn(move || {
+            let error = history
+                .wait_for_endpoint_poll(TEST_TIMEOUT)
+                .expect_err("targeted history stop must cancel the matching permit");
+            assert!(desktop_playback_was_cancelled(&error));
+        });
+
+        assert!(ownership
+            .cancel_and_drain_matching(
+                "history-1",
+                "history-playback",
+                TEST_TIMEOUT,
+            )
+            .unwrap());
+        history_thread.join().unwrap();
+        realtime.ensure_active().unwrap();
+        assert!(!ownership
+            .cancel_and_drain_matching(
+                "history-1",
+                "history-playback",
+                TEST_TIMEOUT,
+            )
+            .unwrap());
     }
 }

@@ -23,6 +23,8 @@ mod native_response;
 mod manual_response_gate;
 mod text_only_reconnect;
 mod echo_suppression_incident;
+mod late_completion;
+mod secondary_finality;
 
 type MockHandle = tauri::AppHandle<tauri::test::MockRuntime>;
 
@@ -332,6 +334,7 @@ impl ReplayHarness {
                 glossary: &glossary,
                 audio_mode: self.audio_mode,
                 output_mode: self.output_mode,
+                source_language: "en",
                 target_language: "zh-CN",
                 buffer_size: 0,
                 pre_session_audio_queue_len: 0,
@@ -411,81 +414,10 @@ fn backdated(seconds: u64) -> SystemTime {
         .expect("backdated timestamp")
 }
 
-/// A realtime provider may deliver an earlier ASR final after server VAD has
-/// already opened the next cue. The secondary subtitle path must keep that
-/// final attached to the item that produced its deltas; otherwise the LLM is
-/// handed audio from the previous turn and the visible translations repeat.
-#[test]
-fn replay_secondary_late_asr_final_stays_with_original_cue() {
-    let mut harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
-    harness.subtitle_translate_active = true;
-    let mut slice = WorkerSlice::new();
-    let steps = vec![
-        ScriptStep::Event(json!({
-            "type": "input_audio_buffer.speech_started"
-        })),
-        ScriptStep::Event(json!({
-            "type": "conversation.item.input_audio_transcription.delta",
-            "item_id": "item-one",
-            "text": "first sentence",
-            "stash": ""
-        })),
-        ScriptStep::Event(json!({
-            "type": "input_audio_buffer.speech_started"
-        })),
-        ScriptStep::Event(json!({
-            "type": "conversation.item.input_audio_transcription.delta",
-            "item_id": "item-two",
-            "text": "second sentence",
-            "stash": ""
-        })),
-        ScriptStep::Event(json!({
-            "type": "conversation.item.input_audio_transcription.completed",
-            "item_id": "item-one",
-            "transcript": "first sentence"
-        })),
-        ScriptStep::Event(json!({
-            "type": "conversation.item.input_audio_transcription.completed",
-            "item_id": "item-two",
-            "transcript": "second sentence"
-        })),
-    ];
-    let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
-    for (index, _) in [0, 1, 2, 3, 4, 5].iter().enumerate() {
-        socket = harness.tick(socket, &mut slice);
-        if index == 1 {
-            // Cue ids use millisecond timestamps; ensure the second VAD
-            // event represents a genuinely new cue in this deterministic
-            // replay rather than a same-millisecond id collision.
-            std::thread::sleep(Duration::from_millis(2));
-        }
-    }
-
-    let cues = harness.store().snapshot().subtitle_overlay.recent_cues;
-    let source_texts: Vec<_> = cues.iter().map(|cue| cue.source_text.as_str()).collect();
-    assert_eq!(
-        source_texts
-            .iter()
-            .filter(|&&source| source == "first sentence")
-            .count(),
-        1
-    );
-    assert_eq!(
-        source_texts
-            .iter()
-            .filter(|&&source| source == "second sentence")
-            .count(),
-        1
-    );
-    assert!(cues.iter().all(|cue| {
-        cue.source_text != "first sentence second sentence"
-            && cue.source_text != "second sentence first sentence"
-    }));
-}
-
 /// A provider item id is the only admissible merge key. Even if the native
 /// cue id looks arbitrarily old, a late ASR cue carrying that same item id is
-/// folded into it and the already committed translation survives unchanged.
+/// folded into it. A semantic source replacement still advances the revision,
+/// so the prior revision's translation must not be rebound to the new source.
 #[test]
 fn replay_same_provider_item_merges_by_lineage_without_a_time_window() {
     let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
@@ -506,7 +438,11 @@ fn replay_same_provider_item_merges_by_lineage_without_a_time_window() {
     );
     slice
         .event_diagnostics
-        .claim_native_response_owner_for_response(Some("response-shared"), None);
+        .claim_native_response_owner_for_response(
+            Some("response-shared"),
+            Some("item-shared"),
+            None,
+        );
     slice.event_diagnostics.complete_native_response_owner();
 
     let steps = vec![
@@ -536,8 +472,13 @@ fn replay_same_provider_item_merges_by_lineage_without_a_time_window() {
     let cue = &cues[0];
     assert_eq!(cue.cue_id, native_cue_id);
     assert_eq!(cue.source_text, "authoritative final source");
-    assert_eq!(cue.translated_text, "保留的最终译文");
+    assert!(cue.translated_text.is_empty());
     assert!(cue.committed);
+    assert!(!cue.translation_committed);
+    assert_eq!(
+        cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Pending)
+    );
     assert_eq!(
         slice
             .event_diagnostics
@@ -571,7 +512,11 @@ fn replay_same_text_with_different_provider_items_preserves_both_cues() {
     );
     slice
         .event_diagnostics
-        .claim_native_response_owner_for_response(Some("response-older"), None);
+        .claim_native_response_owner_for_response(
+            Some("response-older"),
+            Some("item-older"),
+            None,
+        );
     slice.event_diagnostics.complete_native_response_owner();
 
     let steps = vec![
@@ -593,7 +538,9 @@ fn replay_same_text_with_different_provider_items_preserves_both_cues() {
 
     let cues = harness.store().snapshot().subtitle_overlay.recent_cues;
     assert_eq!(cues.len(), 2, "different item ids must never content-merge");
-    assert!(cues.iter().any(|cue| cue.cue_id == native_cue_id && cue.committed));
+    assert!(cues.iter().any(|cue| {
+        cue.cue_id == native_cue_id && !cue.committed && cue.translation_committed
+    }));
     assert_eq!(
         cues.iter()
             .filter(|cue| cue.source_text == "same visible text")
@@ -636,7 +583,9 @@ fn replay_same_text_without_provider_identity_preserves_both_cues() {
 
     let cues = harness.store().snapshot().subtitle_overlay.recent_cues;
     assert_eq!(cues.len(), 2, "missing item id must preserve both cue rows");
-    assert!(cues.iter().any(|cue| cue.cue_id == native_cue_id && cue.committed));
+    assert!(cues.iter().any(|cue| {
+        cue.cue_id == native_cue_id && !cue.committed && cue.translation_committed
+    }));
 }
 
 /// Production regression: a long idle after the previous commit must not make
@@ -856,133 +805,27 @@ fn replay_gate_timeout_then_late_completed() {
         .expect("late cue remains visible");
     assert_eq!(late_cue.source_text, "the user's last sentence");
     assert!(late_cue.committed, "the late ASR final remains authoritative");
-    assert!(snapshot.subtitle_overlay.recent_cues.iter().any(|cue| {
-        cue.cue_id != late_cue_id
-            && cue.source_text == "the current turn"
-            && !cue.committed
-    }));
-}
-
-#[test]
-fn replay_new_delta_then_unmapped_old_final_isolates_cues() {
-    let mut harness = ReplayHarness::new(RealtimeAudioMode::Manual, Vec::new());
-    harness.subtitle_translate_active = true;
-    let mut slice = WorkerSlice::new();
-    slice.manual_response_pending = true;
-    slice.manual_response_item_id = Some("item-current".to_string());
-    slice.last_commit_time = SystemTime::now();
-
-    let current_delta_socket = ScriptedRealtimeSocket::new(
-        vec![ScriptStep::Event(json!({
-            "type": "conversation.item.input_audio_transcription.delta",
-            "item_id": "item-current",
-            "delta": "the current turn in progress"
-        }))],
-        harness.shared.clone(),
+    assert!(harness.store().subtitle_source_is_final(&late_cue_id));
+    assert!(!late_cue.translation_committed);
+    assert!(late_cue.translated_text.is_empty());
+    assert_eq!(
+        late_cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Pending)
     );
-    let current_delta_socket = harness.tick(current_delta_socket, &mut slice);
-    let current_cue_id = slice.current_cue_id.clone().expect("current delta cue");
-    assert_eq!(slice.pending_source_text, "the current turn in progress");
-    assert!(
-        !harness
-            .store()
-            .subtitle_cue_translation_allowed(&current_cue_id),
-        "the active manual turn remains deferred until its matching final"
-    );
-
-    // Make the fail-safe cue id deterministic even on millisecond cue clocks.
-    std::thread::sleep(Duration::from_millis(2));
-    let old_final_socket = ScriptedRealtimeSocket::new(
-        vec![ScriptStep::Event(json!({
-            "type": "conversation.item.input_audio_transcription.completed",
-            "item_id": "item-old-unmapped",
-            "transcript": "the late old final"
-        }))],
-        harness.shared.clone(),
-    );
-    drop(current_delta_socket);
-    let old_final_socket = harness.tick(old_final_socket, &mut slice);
-
-    assert_eq!(slice.current_cue_id.as_deref(), Some(current_cue_id.as_str()));
-    assert_eq!(slice.pending_source_text, "the current turn in progress");
-    assert!(slice.manual_response_pending);
-    assert!(!slice.manual_response_requested);
-    assert!(
-        !harness.sent_types().iter().any(|kind| kind == "response.create"),
-        "an uncorrelated old final must not cross the current turn's gate"
-    );
-
-    let snapshot = harness.store().snapshot();
     let current_cue = snapshot
         .subtitle_overlay
         .recent_cues
         .iter()
-        .find(|cue| cue.cue_id == current_cue_id)
-        .expect("current cue remains present");
-    assert_eq!(current_cue.source_text, "the current turn in progress");
-    assert!(!current_cue.committed);
-    let isolated_cue = snapshot
-        .subtitle_overlay
-        .recent_cues
-        .iter()
-        .find(|cue| cue.source_text == "the late old final")
-        .expect("isolated old final cue");
-    assert_ne!(isolated_cue.cue_id, current_cue_id);
-    assert!(
-        !isolated_cue.committed,
-        "the secondary worker must be able to translate the isolated final"
-    );
-    assert!(
-        harness
-            .store()
-            .subtitle_cue_translation_allowed(&isolated_cue.cue_id),
-        "an already-mismatched final has no response gate left to approve it"
-    );
-
-    let current_final_socket = ScriptedRealtimeSocket::new(
-        vec![ScriptStep::Event(json!({
-            "type": "conversation.item.input_audio_transcription.completed",
-            "item_id": "item-current",
-            "transcript": "the current turn final"
-        }))],
-        harness.shared.clone(),
-    );
-    drop(old_final_socket);
-    let _socket = harness.tick(current_final_socket, &mut slice);
-
-    assert!(slice.manual_response_pending);
-    assert!(slice.manual_response_requested);
+        .find(|cue| cue.cue_id != late_cue_id && cue.source_text == "the current turn")
+        .expect("current source final remains separate from the timed-out cue");
+    assert!(current_cue.committed);
+    assert!(harness
+        .store()
+        .subtitle_source_is_final(&current_cue.cue_id));
+    assert!(!current_cue.translation_committed);
+    assert!(current_cue.translated_text.is_empty());
     assert_eq!(
-        harness
-            .sent_types()
-            .iter()
-            .filter(|kind| kind.as_str() == "response.create")
-            .count(),
-        1
-    );
-    assert!(
-        harness
-            .store()
-            .subtitle_cue_translation_allowed(&current_cue_id),
-        "the matching final releases only the current turn's deferred cue"
-    );
-    let snapshot = harness.store().snapshot();
-    let current_cue = snapshot
-        .subtitle_overlay
-        .recent_cues
-        .iter()
-        .find(|cue| cue.cue_id == current_cue_id)
-        .expect("current cue is finalized in place");
-    assert_eq!(current_cue.source_text, "the current turn final");
-    assert!(!current_cue.committed);
-    assert_eq!(
-        snapshot
-            .subtitle_overlay
-            .recent_cues
-            .iter()
-            .filter(|cue| cue.source_text == "the late old final")
-            .count(),
-        1,
-        "the late final remains isolated after the current turn completes"
+        current_cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Pending)
     );
 }

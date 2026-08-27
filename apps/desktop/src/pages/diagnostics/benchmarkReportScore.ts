@@ -1,4 +1,4 @@
-import scoreRulesJson from '../../../../../contracts/benchmark-score-v1-rules.json';
+import scoreRulesJson from '../../../../../contracts/benchmark-score-v2-rules.json';
 import type { BenchmarkReport, BenchmarkRunResult } from '../../runtime/benchmark-runtime';
 
 /**
@@ -8,7 +8,9 @@ import type { BenchmarkReport, BenchmarkRunResult } from '../../runtime/benchmar
  * in the renderer.  The score object persists this exact rules snapshot so a
  * historical result remains explainable after a future rubric change.
  */
-export const BENCHMARK_SCORE_VERSION = 'benchmark-score/v1' as const;
+export const BENCHMARK_SCORE_VERSION = 'benchmark-score/v2' as const;
+export const LEGACY_BENCHMARK_SCORE_VERSION = 'benchmark-score/v1' as const;
+export type BenchmarkScoreVersion = typeof BENCHMARK_SCORE_VERSION | typeof LEGACY_BENCHMARK_SCORE_VERSION;
 
 export type BenchmarkScoreGrade = 'A' | 'B' | 'C' | 'D' | 'F';
 export type BenchmarkScoreStatus =
@@ -22,7 +24,7 @@ export type BenchmarkDimensionStatus = 'scored' | 'evidence-insufficient';
 export type BenchmarkJudgeState = 'idle' | 'running' | 'failed' | 'completed';
 export type BenchmarkRunState = 'running' | 'completed' | 'failed';
 
-export type BenchmarkScoreV1Rules = {
+export type BenchmarkScoreV2Rules = {
   $schema: string;
   title: string;
   schemaVersion: typeof BENCHMARK_SCORE_VERSION;
@@ -41,14 +43,14 @@ export type BenchmarkScoreV1Rules = {
     judgeSubscores: readonly BenchmarkJudgeSubscoreKey[];
   };
   latencyMilliseconds: {
-    firstToken: { good: number; bad: number };
-    firstCommitted: { good: number; bad: number };
+    audioToRenderFirst: { good: number; bad: number };
+    audioToRenderFinal: { good: number; bad: number };
   };
   stability: { extraResponsePenalty: number };
   grades: readonly { grade: BenchmarkScoreGrade; minimum: number }[];
 };
 
-export const BENCHMARK_SCORE_V1_RULES = scoreRulesJson as BenchmarkScoreV1Rules;
+export const BENCHMARK_SCORE_V2_RULES = scoreRulesJson as BenchmarkScoreV2Rules;
 
 export type BenchmarkJudgeSubscoreKey =
   | 'adequacy'
@@ -128,7 +130,9 @@ export type SemanticDimensionEvidence = {
 
 export type LatencySignalEvidence = {
   runIndex: number;
-  signal: 'firstToken' | 'firstCommitted';
+  signal: 'audioToRenderFirst' | 'audioToRenderFinal';
+  audioStartOrigin: BenchmarkRunResult['audioStartOrigin'];
+  highConfidence: boolean;
   latencyMs: number | null;
   score: number | null;
   threshold: { good: number; bad: number };
@@ -174,15 +178,15 @@ export type BenchmarkScoreEvidenceCoverage = {
   missing: string[];
 };
 
-/** The complete public record stored/exported for a v1 benchmark score. */
-export type BenchmarkScoreV1 = {
+/** The complete public record stored/exported for a v2 benchmark score. */
+export type BenchmarkScoreV2 = {
   schemaVersion: typeof BENCHMARK_SCORE_VERSION;
   version: typeof BENCHMARK_SCORE_VERSION;
   status: BenchmarkScoreStatus;
   total: number | null;
   grade: BenchmarkScoreGrade | null;
-  weights: BenchmarkScoreV1Rules['dimensionWeights'];
-  thresholds: Pick<BenchmarkScoreV1Rules, 'semantic' | 'latencyMilliseconds' | 'stability' | 'grades'>;
+  weights: BenchmarkScoreV2Rules['dimensionWeights'];
+  thresholds: Pick<BenchmarkScoreV2Rules, 'semantic' | 'latencyMilliseconds' | 'stability' | 'grades'>;
   dimensions: {
     semantic: BenchmarkDimension<SemanticDimensionEvidence>;
     latency: BenchmarkDimension<LatencyDimensionEvidence>;
@@ -202,7 +206,12 @@ export type BenchmarkScoreV1 = {
 };
 
 /** Kept as a source-compatible name for diagnostics callers. */
-export type BenchmarkResultScore = BenchmarkScoreV1;
+export type BenchmarkResultScore = Omit<BenchmarkScoreV2, 'schemaVersion' | 'version'> & {
+  schemaVersion: BenchmarkScoreVersion;
+  version: BenchmarkScoreVersion;
+};
+/** @deprecated Source-compatible alias for callers; newly produced scores are v2. */
+export type BenchmarkScoreV1 = BenchmarkResultScore;
 
 export type BenchmarkScoreOptions = {
   sourceText?: string | null;
@@ -238,7 +247,7 @@ function declaredRunCount(report: BenchmarkReport): number {
 }
 
 function scoreGrade(score: number): BenchmarkScoreGrade {
-  return BENCHMARK_SCORE_V1_RULES.grades.find(({ minimum }) => score >= minimum)?.grade ?? 'F';
+  return BENCHMARK_SCORE_V2_RULES.grades.find(({ minimum }) => score >= minimum)?.grade ?? 'F';
 }
 
 function normalizeChrFText(value: string): string {
@@ -267,7 +276,7 @@ export function calculateChrF2(candidateText: string, referenceText: string): Ch
   if (!candidate.length || !reference.length) return null;
 
   const orderLimit = Math.min(
-    BENCHMARK_SCORE_V1_RULES.semantic.characterNgramOrder,
+    BENCHMARK_SCORE_V2_RULES.semantic.characterNgramOrder,
     candidate.length,
     reference.length,
   );
@@ -295,7 +304,7 @@ export function calculateChrF2(candidateText: string, referenceText: string): Ch
 
   const precision = average(orders.map(({ precision: value }) => value)) ?? 0;
   const recall = average(orders.map(({ recall: value }) => value)) ?? 0;
-  const beta = BENCHMARK_SCORE_V1_RULES.semantic.beta;
+  const beta = BENCHMARK_SCORE_V2_RULES.semantic.beta;
   const betaSquared = beta ** 2;
   const score = precision + recall === 0
     ? 0
@@ -304,7 +313,7 @@ export function calculateChrF2(candidateText: string, referenceText: string): Ch
   return {
     metric: 'chrF2',
     normalization: 'Unicode NFKC; whitespace removed; case preserved',
-    characterNgramOrder: BENCHMARK_SCORE_V1_RULES.semantic.characterNgramOrder,
+    characterNgramOrder: BENCHMARK_SCORE_V2_RULES.semantic.characterNgramOrder,
     beta,
     candidateCharacters: candidate.length,
     referenceCharacters: reference.length,
@@ -345,6 +354,12 @@ function latencyZone(valueMs: number | null, threshold: { good: number; bad: num
   return 'linear';
 }
 
+export function isHighConfidenceAudioOrigin(
+  origin: BenchmarkRunResult['audioStartOrigin'],
+): boolean {
+  return origin === 'provider-offset' || origin === 'manual-audible' || origin === 'local-rms';
+}
+
 function incompleteRuns(report: BenchmarkReport, declaredRuns: number): IncompleteRunEvidence[] {
   const runByIndex = new Map(report.runs.map((run) => [run.runIndex, run]));
   const knownIndexes = new Set<number>([...Array(declaredRuns).keys(), ...runByIndex.keys()]);
@@ -370,15 +385,15 @@ function hasAllJudgeEvidence(
 }
 
 /**
- * Scores a completed benchmark report using benchmark-score/v1.  A total is
+ * Scores a completed benchmark report using benchmark-score/v2. A total is
  * intentionally produced only for an official score; dimensions are still
  * exposed with their evidence while a user needs to supply/retry judging.
  */
 export function scoreBenchmarkReport(
   report: BenchmarkReport,
   options: BenchmarkScoreOptions = {},
-): BenchmarkScoreV1 {
-  const rules = BENCHMARK_SCORE_V1_RULES;
+): BenchmarkScoreV2 {
+  const rules = BENCHMARK_SCORE_V2_RULES;
   const declaredRuns = declaredRunCount(report);
   const completedRuns = report.runs.filter(completedRun);
   const completedRunIndexes = completedRuns.map(({ runIndex }) => runIndex);
@@ -437,29 +452,31 @@ export function scoreBenchmarkReport(
   };
 
   const latencySignals: LatencySignalEvidence[] = report.runs.flatMap((run) => {
-    // `timeToFirst*Ms` in the desktop report predates v1 and is a
-    // whole-run timestamp, not independently verified response-relative
-    // evidence. Never use it to fill a missing responseCreated event.
-    const firstTokenLatency = relativeResponseLatency(run.responseCreatedMs, run.firstOutputMs);
-    const firstCommittedLatency = relativeResponseLatency(run.responseCreatedMs, run.firstCommittedMs);
-    const firstTokenThreshold = rules.latencyMilliseconds.firstToken;
-    const firstCommittedThreshold = rules.latencyMilliseconds.firstCommitted;
+    const highConfidence = isHighConfidenceAudioOrigin(run.audioStartOrigin);
+    const firstLatency = highConfidence ? run.audioToRenderFirstMs ?? null : null;
+    const finalLatency = highConfidence ? run.audioToRenderFinalMs ?? null : null;
+    const firstThreshold = rules.latencyMilliseconds.audioToRenderFirst;
+    const finalThreshold = rules.latencyMilliseconds.audioToRenderFinal;
     return [
       {
         runIndex: run.runIndex,
-        signal: 'firstToken' as const,
-        latencyMs: firstTokenLatency,
-        score: scoreLatencyRamp(firstTokenLatency, firstTokenThreshold.good, firstTokenThreshold.bad),
-        threshold: firstTokenThreshold,
-        zone: latencyZone(firstTokenLatency, firstTokenThreshold),
+        signal: 'audioToRenderFirst' as const,
+        audioStartOrigin: run.audioStartOrigin,
+        highConfidence,
+        latencyMs: firstLatency,
+        score: scoreLatencyRamp(firstLatency, firstThreshold.good, firstThreshold.bad),
+        threshold: firstThreshold,
+        zone: latencyZone(firstLatency, firstThreshold),
       },
       {
         runIndex: run.runIndex,
-        signal: 'firstCommitted' as const,
-        latencyMs: firstCommittedLatency,
-        score: scoreLatencyRamp(firstCommittedLatency, firstCommittedThreshold.good, firstCommittedThreshold.bad),
-        threshold: firstCommittedThreshold,
-        zone: latencyZone(firstCommittedLatency, firstCommittedThreshold),
+        signal: 'audioToRenderFinal' as const,
+        audioStartOrigin: run.audioStartOrigin,
+        highConfidence,
+        latencyMs: finalLatency,
+        score: scoreLatencyRamp(finalLatency, finalThreshold.good, finalThreshold.bad),
+        threshold: finalThreshold,
+        zone: latencyZone(finalLatency, finalThreshold),
       },
     ];
   });
@@ -475,7 +492,7 @@ export function scoreBenchmarkReport(
     score: latencyAverage == null ? null : round(latencyAverage),
     status: latencyAverage == null ? 'evidence-insufficient' : 'scored',
     weight: rules.dimensionWeights.latency,
-    formula: 'mean(each run’s response-created → first-token and response-created → first-committed linear-ramp scores)',
+    formula: 'mean(each run’s high-confidence audio → visible-first and audio → visible-final linear-ramp scores)',
     missingEvidence: latencyMissing,
     evidence: { signals: latencySignals, average: latencyAverage == null ? null : round(latencyAverage) },
   };

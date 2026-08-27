@@ -52,6 +52,9 @@ fn render(header_source: &str, imports: &[&str], decls: &[String]) -> String {
             .join("\n");
         let _ = write!(out, "export {}\n\n", decl.trim_end());
     }
+    while out.ends_with("\n\n") {
+        out.pop();
+    }
     out
 }
 
@@ -177,7 +180,22 @@ fn generated_files() -> Vec<GeneratedFile> {
                     decl::<crate::api_v2::SessionCommandV2>(),
                     decl::<crate::api_v2::BridgeCommandV2>(),
                     decl::<crate::api_v2::DiagnosticsCommandV2>(),
+                    decl::<crate::api_v2::HistoryCommandV2>(),
                     decl::<crate::api_v2::ConfigurationCommandV2>(),
+                ],
+            ),
+        },
+        GeneratedFile {
+            name: "history.ts",
+            content: render(
+                "apps/desktop/src-tauri/src/history/playback.rs",
+                &[],
+                &[
+                    decl::<crate::history::HistoryAudioTrack>(),
+                    decl::<crate::history::HistoryChangedEventV2>(),
+                    decl::<crate::history::HistoryPlaybackEventV2>(),
+                    decl::<crate::history::HistoryPlaybackStartV2>(),
+                    decl::<crate::history::HistoryPlaybackStopV2>(),
                 ],
             ),
         },
@@ -190,8 +208,10 @@ fn generated_files() -> Vec<GeneratedFile> {
                     decl::<audio::AudioDeviceRuntime>(),
                     decl::<audio::AudioRouteRuntimeSnapshot>(),
                     decl::<audio::SubtitleDisplaySegmentRuntime>(),
+                    decl::<audio::SubtitleTranslationStateRuntime>(),
                     decl::<audio::SubtitleCueRuntime>(),
                     decl::<audio::SubtitleOverlayRuntimeSnapshot>(),
+                    decl::<audio::SubtitleDeltaRuntime>(),
                     decl::<audio::WatchTimelineEventRuntime>(),
                     decl::<audio::WatchIssueRuntime>(),
                     decl::<audio::WatchCueComparisonRuntime>(),

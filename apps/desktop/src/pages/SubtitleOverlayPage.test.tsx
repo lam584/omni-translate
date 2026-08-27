@@ -1292,9 +1292,9 @@ describe('SubtitleOverlayPage locked interaction', () => {
     }
   });
 
-  it('renders the complete recent history and emphasizes the latest cue regardless of caption density', async () => {
+  it('renders at most twelve recent cues and emphasizes the latest regardless of caption density', async () => {
     useAppStore.setState((state) => {
-      const recentCues = Array.from({ length: 6 }, (_, index) => ({
+      const recentCues = Array.from({ length: 15 }, (_, index) => ({
         cueId: `dense-cue-${index}`,
         routeDirection: 'inbound' as const,
         sourceText: `Source ${index}`,
@@ -1337,11 +1337,13 @@ describe('SubtitleOverlayPage locked interaction', () => {
 
     const sources = Array.from(container.querySelectorAll<HTMLElement>('.subtitle-overlay-source'));
     const translations = Array.from(container.querySelectorAll<HTMLElement>('.subtitle-overlay-translation'));
-    expect(sources).toHaveLength(6);
-    expect(sources.map((item) => item.textContent)).toEqual(['Source 5', 'Source 4', 'Source 3', 'Source 2', 'Source 1', 'Source 0']);
+    expect(sources).toHaveLength(12);
+    expect(sources.map((item) => item.textContent)).toEqual(
+      Array.from({ length: 12 }, (_, index) => `Source ${11 - index}`),
+    );
     expect(sources[0].style.fontSize).toBe('19px');
-    expect(sources[5].style.fontSize).toBe('24px');
-    expect(translations[5].style.fontSize).toBe('20px');
+    expect(sources[11].style.fontSize).toBe('24px');
+    expect(translations[11].style.fontSize).toBe('20px');
 
     for (const captionDensity of ['balanced', 'detailed'] as const) {
       useAppStore.setState((state) => ({
@@ -1352,7 +1354,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
         },
       }));
       await view.render(<SubtitleOverlayPage />);
-      expect(container.querySelectorAll('.subtitle-overlay-source')).toHaveLength(6);
+      expect(container.querySelectorAll('.subtitle-overlay-source')).toHaveLength(12);
     }
   });
 });

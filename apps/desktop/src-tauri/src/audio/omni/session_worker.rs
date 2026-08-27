@@ -2,94 +2,18 @@ use super::*;
 use crate::audio::glossary::GlossaryContext;
 
 use self::livetranslate_shutdown::LivetranslateShutdown;
+use self::shutdown_failure::{
+    terminalize_livetranslate_shutdown_failure, LivetranslateShutdownFailure,
+};
 
-pub(crate) struct OmniHandle {
-    pub stop_tx: OmniStopSender,
-    #[allow(dead_code, reason = "join handle is retained for supervised shutdown on supported runners")]
-    pub join_handle: JoinHandle<()>,
-}
-
-pub(crate) struct OmniStopSender {
-    inner: mpsc::Sender<()>,
-    stop_requested: Arc<AtomicBool>,
-}
-
-impl OmniStopSender {
-    pub(crate) fn send(&self, signal: ()) -> Result<(), mpsc::SendError<()>> {
-        // Every public Omni stop path uses this sender, including callers that
-        // do not join. Close the LiveTranslate reconnect gate before the
-        // worker can observe the channel message.
-        self.stop_requested.store(true, Ordering::SeqCst);
-        self.inner.send(signal)
-    }
-}
-
-impl OmniHandle {
-    pub(crate) fn new(stop_tx: mpsc::Sender<()>, join_handle: JoinHandle<()>) -> Self {
-        Self::with_stop_signal(stop_tx, join_handle, Arc::new(AtomicBool::new(false)))
-    }
-
-    fn with_stop_signal(
-        stop_tx: mpsc::Sender<()>,
-        join_handle: JoinHandle<()>,
-        stop_requested: Arc<AtomicBool>,
-    ) -> Self {
-        Self {
-            stop_tx: OmniStopSender {
-                inner: stop_tx,
-                stop_requested,
-            },
-            join_handle,
-        }
-    }
-
-    pub(crate) fn stop_and_join(self, direction: &str) -> Result<(), String> {
-        let _ = self.stop_tx.send(());
-        self.join_handle
-            .join()
-            .map_err(|_| format!("Omni {direction} worker panicked during route stop"))
-    }
-}
-
-#[cfg(test)]
-mod handle_shutdown_tests {
-    use super::*;
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-
-    #[test]
-    fn stop_and_join_waits_for_worker_finalization() {
-        let (stop_tx, stop_rx) = mpsc::channel();
-        let finalized = Arc::new(AtomicBool::new(false));
-        let worker_finalized = finalized.clone();
-        let stop_requested = Arc::new(AtomicBool::new(false));
-        let worker_stop_requested = stop_requested.clone();
-        let join_handle = thread::spawn(move || {
-            stop_rx.recv().expect("stop signal");
-            assert!(
-                worker_stop_requested.load(Ordering::SeqCst),
-                "the reconnect gate must close before the worker consumes stop"
-            );
-            worker_finalized.store(true, Ordering::SeqCst);
-        });
-        OmniHandle::with_stop_signal(stop_tx, join_handle, stop_requested)
-            .stop_and_join("inbound")
-            .expect("joined stop");
-        assert!(finalized.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn successful_livetranslate_finish_is_the_only_tail_preserving_exit() {
-        assert!(!should_discard_uncommitted_after_worker(&Ok(
-            OmniWorkerShutdown::LivetranslateSessionFinished,
-        )));
-        assert!(should_discard_uncommitted_after_worker(&Ok(
-            OmniWorkerShutdown::Immediate,
-        )));
-        assert!(should_discard_uncommitted_after_worker(&Err(
-            "provider ended early".to_string(),
-        )));
-    }
-}
+#[path = "session_worker/start.rs"]
+mod start;
+pub(crate) use start::{start_omni, OmniHandle};
+#[path = "session_worker/shutdown_failure.rs"]
+mod shutdown_failure;
+#[path = "session_worker/reconnect_reset.rs"]
+mod reconnect_reset;
+pub(super) use reconnect_reset::reset_manual_gate_after_reconnect;
 
 struct OmniSessionWorker {
     app: AppHandle,
@@ -221,6 +145,7 @@ impl OmniSessionWorker {
             self.config.glossary,
             self.config.audio_mode,
             self.config.output_mode,
+            self.config.source_language,
             self.config.target_language,
             self.config.subtitle_translate_active,
             self.config.speech_config,
@@ -230,174 +155,6 @@ impl OmniSessionWorker {
             self.stop_requested,
         )
     }
-}
-
-pub(crate) fn start_omni(
-    app: AppHandle,
-    store: &AudioStateStore,
-    direction: String,
-    session_generation: u64,
-    provider: ProviderDraftInput,
-    voice: String,
-    instructions: String,
-    glossary: GlossaryContext,
-    audio_mode: RealtimeAudioMode,
-    target_language: String,
-    subtitle_translate_active: bool,
-    speech_config: OmniSpeechConfig,
-) -> Result<
-    (
-        mpsc::Sender<Vec<u8>>,
-        OmniHandle,
-        mpsc::Receiver<Result<u64, String>>,
-    ),
-    String,
-> {
-    let output_mode = OmniOutputMode::from_speech_config(&speech_config);
-    let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();
-    let (stop_tx, stop_rx) = mpsc::channel::<()>();
-    let stop_requested = Arc::new(AtomicBool::new(false));
-    let (readiness_tx, readiness_rx) = mpsc::channel::<Result<u64, String>>();
-    let readiness_sent = Arc::new(AtomicBool::new(false));
-
-    store.set_stt_connected(false, 0);
-    let _ = diag_log_detail(
-        &app,
-        "omni",
-        "info",
-        "正在启动 Omni 实时翻译...",
-        format!("model={} voice={}", provider.model, voice),
-    );
-
-    let app_handle = app.clone();
-    let model = provider.model.clone();
-    let worker_direction = direction.clone();
-    let readiness_tx_for_worker = readiness_tx.clone();
-    let readiness_sent_for_worker = readiness_sent.clone();
-    let stop_requested_for_worker = stop_requested.clone();
-    let trace = ModelTraceRecorder::new(
-        app.clone(),
-        ModelTraceContext::new(
-            provider.provider_id.clone(),
-            provider.model.clone(),
-            "omni-realtime",
-        )
-        .with_session_id(ms_marker(unix_ms()))
-        .with_route_mode("watch"),
-    );
-
-    let join_handle = thread::Builder::new()
-        .name("omni".to_string())
-        .spawn(move || {
-            let audio_state = app_handle.state::<AudioStateStore>();
-            let worker = OmniSessionWorker {
-                app: app_handle.clone(),
-                config: OmniSessionConfig {
-                    direction: worker_direction.clone(),
-                    session_generation,
-                    provider,
-                    voice,
-                    instructions,
-                    glossary,
-                    audio_mode,
-                    output_mode,
-                    target_language,
-                    subtitle_translate_active,
-                    speech_config,
-                },
-                readiness_tx: readiness_tx_for_worker.clone(),
-                readiness_sent: readiness_sent_for_worker.clone(),
-                trace,
-                audio_rx,
-                stop_rx,
-                stop_requested: stop_requested_for_worker,
-            };
-            let result = worker.run(&audio_state);
-            // Error exits and early provider shutdowns bypass the normal stop
-            // branch inside run_omni_worker. Apply the same direction-scoped
-            // tail cleanup here as a final lifecycle guard.
-            if should_discard_uncommitted_after_worker(&result)
-                && audio_state.is_current_omni_session(&worker_direction, session_generation)
-            {
-                audio_state.discard_uncommitted_subtitle_cues_by_direction(&worker_direction);
-            }
-            if let Err(error) = result {
-                audio_state.set_stt_connected(false, 0);
-                // Mirror the engine route-worker convention: trailing
-                // `| code:` / `| recommended:` markers become the snapshot's
-                // last_error_code and recommended_action so the session page
-                // can surface a translated message and a concrete next step
-                // instead of a silent session death.
-                let normalized_error = if split_error_markers(&error).1.is_some() {
-                    error.clone()
-                } else {
-                    super::session_errors::with_error_markers(
-                        &error,
-                        super::session_errors::SessionErrorCode::ProviderInternal,
-                    )
-                };
-                if worker_direction == "inbound" {
-                    crate::watch_mode_diagnostic::readiness::fail(
-                        "provider",
-                        "watch.provider.session-failed",
-                        normalized_error.clone(),
-                    );
-                }
-                let (route_message, error_code, recommended_action) =
-                    split_error_markers(&normalized_error);
-                audio_state.mark_route_last_error(
-                    &worker_direction,
-                    route_message.clone(),
-                    error_code,
-                    recommended_action,
-                );
-                let _ = audio_state.mark_omni_session_failed(
-                    &worker_direction,
-                    session_generation,
-                    normalized_error.clone(),
-                );
-                if !readiness_sent_for_worker.swap(true, Ordering::SeqCst) {
-                    let _ = readiness_tx_for_worker.send(Err(normalized_error.clone()));
-                }
-                let _ = diag_log_detail(
-                    &app_handle,
-                    "omni",
-                    "error",
-                    format!("Omni 实时翻译出错: {error}"),
-                    format!("model={model}"),
-                );
-                let _ = crate::audio::worker_notify::emit_worker_notification(
-                    &app_handle,
-                    crate::runtime::contracts::RuntimeNotification::error(
-                        &format!("omni-session-failed-{worker_direction}"),
-                        "session",
-                        &normalized_error,
-                        ms_marker(unix_ms()),
-                    ),
-                );
-                let _ = emit_audio_snapshot(&app_handle, &audio_state);
-                let _ =
-                    audio_state.clear_omni_session(&worker_direction, session_generation, normalized_error);
-            } else {
-                if !readiness_sent_for_worker.swap(true, Ordering::SeqCst) {
-                    let _ = readiness_tx_for_worker.send(Err(
-                        "Omni worker exited before session readiness".to_string(),
-                    ));
-                }
-                let _ = audio_state.clear_omni_session(
-                    &worker_direction,
-                    session_generation,
-                    "worker_exit",
-                );
-            }
-        })
-        .map_err(|error| format!("无法启动 Omni 线程: {error}"))?;
-
-    Ok((
-        audio_tx,
-        OmniHandle::with_stop_signal(stop_tx, join_handle, stop_requested),
-        readiness_rx,
-    ))
 }
 
 fn run_omni_worker(
@@ -413,6 +170,7 @@ fn run_omni_worker(
     glossary: GlossaryContext,
     audio_mode: RealtimeAudioMode,
     output_mode: OmniOutputMode,
+    source_language: String,
     target_language: String,
     subtitle_translate_active: bool,
     speech_config: OmniSpeechConfig,
@@ -457,6 +215,7 @@ fn run_omni_worker(
         &instructions,
         audio_mode,
         output_mode,
+        &source_language,
         &target_language,
         subtitle_translate_active,
         speech_config,
@@ -512,6 +271,23 @@ fn run_omni_worker(
     let mut socket = livetranslate_shutdown.wrap_socket(socket);
     let connector = livetranslate_shutdown.wrap_connector(TungsteniteConnector);
     let mut shutdown_outcome = OmniWorkerShutdown::Immediate;
+    macro_rules! terminalize_livetranslate_shutdown {
+        () => {{
+            let native_cue_ids = event_diagnostics.unfinished_native_response_cue_ids();
+            terminalize_livetranslate_shutdown_failure(LivetranslateShutdownFailure {
+                store,
+                direction: &direction,
+                current_cue_id: current_cue_id.as_deref(),
+                pending_source_text: &pending_source_text,
+                native_cue_ids: &native_cue_ids,
+                native_translation_reuse_active,
+                playback_tx: &playback_tx,
+                pending_audio_stream_cue_id: pending_audio_stream_cue_id.as_deref(),
+                pending_audio_stream_chunk_index,
+                pending_audio_stream_created_at_ms,
+            });
+        }};
+    }
     loop {
         if stop_rx.try_recv().is_ok() {
             if livetranslate_shutdown.request(Instant::now()) {
@@ -573,7 +349,10 @@ fn run_omni_worker(
                 "error",
                 format!("event=livetranslate_shutdown action=fail_closed reason={reason}"),
             );
+            terminalize_livetranslate_shutdown!();
             let _ = socket.close();
+            let _ = playback_worker.shutdown_gracefully();
+            let _ = emit_audio_snapshot(&app, store);
             return Err(error);
         }
 
@@ -614,6 +393,7 @@ fn run_omni_worker(
             &instructions,
             audio_mode,
             output_mode,
+            &source_language,
             &target_language,
             &session_started_at,
             audio_mode.uses_manual_commit() && manual_response_pending,
@@ -627,7 +407,10 @@ fn run_omni_worker(
                     "error",
                     "event=livetranslate_shutdown action=fail_closed reason=write_failed",
                 );
+                terminalize_livetranslate_shutdown!();
                 let _ = socket.close();
+                let _ = playback_worker.shutdown_gracefully();
+                let _ = emit_audio_snapshot(&app, store);
                 return Err(format!(
                     "LiveTranslate fail-closed while draining the existing session: {error}"
                 ));
@@ -677,7 +460,10 @@ fn run_omni_worker(
                         "event=livetranslate_shutdown action=fail_closed reason=session_finish_send_failed error={error}"
                     ),
                 );
+                terminalize_livetranslate_shutdown!();
                 let _ = socket.close();
+                let _ = playback_worker.shutdown_gracefully();
+                let _ = emit_audio_snapshot(&app, store);
                 return Err(format!(
                     "LiveTranslate fail-closed: session.finish send failed on the existing socket: {error}"
                 ));
@@ -745,6 +531,8 @@ fn run_omni_worker(
             &mut last_waiting_log_chunk_count,
         );
 
+        let pending_manual_audio_origin_ms =
+            audio_origin::manual_origin_ms(manual_turn_started_at.as_ref(), &session_started_at);
         let commit_state = OmniConnectionCoordinator::maintain_manual_commit(
             OmniCommitState {
                 last_commit_time,
@@ -779,25 +567,11 @@ fn run_omni_worker(
         manual_response_requested = commit_state.manual_response_requested;
         manual_response_item_id = commit_state.manual_response_item_id;
         manual_response_released_at = commit_state.manual_response_released_at;
-        if let Some(started_during_playback) =
-            commit_state.committed_source_started_during_playback
-        {
-            let source_started_ms = elapsed_ms_since(&session_started_at);
-            event_diagnostics.begin_manual_source_segment(
-                source_started_ms,
-                started_during_playback,
-            );
-            let _ = diag_log(
-                &app,
-                "omni",
-                "debug",
-                format!(
-                    "event=manual_source_segment action=begin sourceStartedDuringPlayback={started_during_playback} sourceContinuityId={} sourceContinuityActive={}",
-                    event_diagnostics.source_continuity_id,
-                    event_diagnostics.source_continuity_active,
-                ),
-            );
-        }
+        audio_origin::record_committed_manual_source_segment(
+            &app, store, pending_manual_audio_origin_ms,
+            commit_state.committed_source_started_during_playback,
+            &session_started_at, &mut event_diagnostics,
+        );
         if commit_state.manual_turn_timed_out {
             // A timed-out turn never issued response.create; buffered output
             // and, in native-reuse/audio-only modes, `current_cue_id` may still
@@ -849,6 +623,17 @@ fn run_omni_worker(
                 ),
             );
         }
+
+        let shutdown_failure_tail = livetranslate_shutdown.is_requested().then(|| {
+            (
+                event_diagnostics.unfinished_native_response_cue_ids(),
+                current_cue_id.clone(),
+                pending_source_text.clone(),
+                pending_audio_stream_cue_id.clone(),
+                pending_audio_stream_chunk_index,
+                pending_audio_stream_created_at_ms,
+            )
+        });
 
         let poll = OmniSocketEventProcessor::poll(
             OmniSocketEventState {
@@ -905,6 +690,7 @@ fn run_omni_worker(
                 glossary: &glossary,
                 audio_mode,
                 output_mode,
+                source_language: &source_language,
                 target_language: &target_language,
                 buffer_size,
                 pre_session_audio_queue_len: pre_session_audio_queue.len(),
@@ -923,6 +709,32 @@ fn run_omni_worker(
                     "error",
                     "event=livetranslate_shutdown action=fail_closed reason=poll_failed",
                 );
+                if let Some((
+                    native_cue_ids,
+                    shutdown_cue_id,
+                    shutdown_source_text,
+                    shutdown_audio_cue_id,
+                    shutdown_audio_chunk_index,
+                    shutdown_audio_created_at_ms,
+                )) = shutdown_failure_tail.as_ref()
+                {
+                    terminalize_livetranslate_shutdown_failure(
+                        LivetranslateShutdownFailure {
+                            store,
+                            direction: &direction,
+                            current_cue_id: shutdown_cue_id.as_deref(),
+                            pending_source_text: shutdown_source_text,
+                            native_cue_ids,
+                            native_translation_reuse_active,
+                            playback_tx: &playback_tx,
+                            pending_audio_stream_cue_id: shutdown_audio_cue_id.as_deref(),
+                            pending_audio_stream_chunk_index: *shutdown_audio_chunk_index,
+                            pending_audio_stream_created_at_ms: *shutdown_audio_created_at_ms,
+                        },
+                    );
+                }
+                let _ = playback_worker.shutdown_gracefully();
+                let _ = emit_audio_snapshot(&app, store);
                 return Err(format!(
                     "LiveTranslate fail-closed while awaiting session.finished on the existing socket: {error}"
                 ));
@@ -995,7 +807,10 @@ fn run_omni_worker(
         if poll.stop_worker {
             if livetranslate_shutdown.is_requested() {
                 provider_input_budget.mark_terminal("livetranslate-session-ended-before-finished");
+                terminalize_livetranslate_shutdown!();
                 let _ = socket.close();
+                let _ = playback_worker.shutdown_gracefully();
+                let _ = emit_audio_snapshot(&app, store);
                 return Err(
                     "LiveTranslate fail-closed: provider ended the session before session.finished"
                         .to_string(),
@@ -1034,81 +849,6 @@ fn run_omni_worker(
 
     provider_input_budget.finalize("worker-completed")?;
     Ok(shutdown_outcome)
-}
-
-/// After a WebSocket reconnect the provider session and its input buffer are
-/// gone: an awaited `input_audio_buffer.committed` ack or
-/// `transcription.completed` will never arrive, and a streaming response
-/// cannot resume. Drop the manual response gate and the stale turn/output
-/// state, restart the commit timer so the next audible chunk cannot create a
-/// tiny empty turn, and mark the session not ready for audio: the new socket has not confirmed
-/// its `session.update` yet, so audio must buffer in the pre-session queue
-/// until the new `session.created`/`session.updated` arrives.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    store: &AudioStateStore,
-    audio_mode: RealtimeAudioMode,
-    manual_response_pending: &mut bool,
-    manual_response_requested: &mut bool,
-    manual_response_item_id: &mut Option<String>,
-    sent_audio_since_commit: &mut bool,
-    audio_samples_since_commit: &mut u64,
-    manual_turn_audio_after_response: &mut bool,
-    last_commit_time: &mut SystemTime,
-    manual_turn_started_at: &mut Option<SystemTime>,
-    manual_turn_started_during_playback: &mut Option<bool>,
-    current_cue_id: &mut Option<String>,
-    pending_source_text: &mut String,
-    pending_translated_text: &mut String,
-    transcription_completed_flag: &mut bool,
-    transcription_completed_at: &mut Option<SystemTime>,
-    event_diagnostics: &mut OmniEventDiagnostics,
-    pending_audio_buffer: &mut Vec<i16>,
-    pending_audio_delta_count: &mut u64,
-    pending_audio_delta_base64_bytes: &mut u64,
-    pending_audio_response_id: &mut Option<String>,
-    pending_audio_stream_cue_id: &mut Option<String>,
-    pending_audio_stream_chunk_index: &mut u32,
-    pending_audio_stream_created_at_ms: &mut Option<u64>,
-    pending_audio_stream_aborted: &mut bool,
-    session_ready_for_audio: &mut bool,
-) {
-    if audio_mode.uses_manual_commit() && *manual_response_pending {
-        let _ = diag_log(
-            app,
-            "omni",
-            "warning",
-            "event=manual_response_gate action=reset_after_reconnect reason=server_session_lost",
-        );
-    }
-    reset_session_state_after_reconnect(
-        store,
-        manual_response_pending,
-        manual_response_requested,
-        manual_response_item_id,
-        sent_audio_since_commit,
-        audio_samples_since_commit,
-        manual_turn_audio_after_response,
-        last_commit_time,
-        manual_turn_started_at,
-        manual_turn_started_during_playback,
-        current_cue_id,
-        pending_source_text,
-        pending_translated_text,
-        transcription_completed_flag,
-        transcription_completed_at,
-        event_diagnostics,
-        pending_audio_buffer,
-        pending_audio_delta_count,
-        pending_audio_delta_base64_bytes,
-        pending_audio_response_id,
-        pending_audio_stream_cue_id,
-        pending_audio_stream_chunk_index,
-        pending_audio_stream_created_at_ms,
-        pending_audio_stream_aborted,
-        session_ready_for_audio,
-    );
 }
 
 #[cfg(test)]

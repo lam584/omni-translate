@@ -1,6 +1,30 @@
 use super::*;
 
 impl AudioStateStore {
+    pub(crate) fn begin_omni_session_with_languages(
+        &self,
+        direction: &str,
+        model_id: &str,
+        source_language: &str,
+        target_language: &str,
+        realtime_audio_mode: &str,
+        subtitle_translate_active: bool,
+        output_mode: OmniOutputMode,
+        contract_signature: u64,
+    ) -> u64 {
+        self.omni_sessions.begin(
+            direction,
+            model_id,
+            source_language,
+            target_language,
+            realtime_audio_mode,
+            subtitle_translate_active,
+            output_mode,
+            contract_signature,
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn begin_omni_session(
         &self,
         direction: &str,
@@ -8,15 +32,11 @@ impl AudioStateStore {
         realtime_audio_mode: &str,
         subtitle_translate_active: bool,
         output_mode: OmniOutputMode,
-        glossary_signature: u64,
+        contract_signature: u64,
     ) -> u64 {
-        self.omni_sessions.begin(
-            direction,
-            model_id,
-            realtime_audio_mode,
-            subtitle_translate_active,
-            output_mode,
-            glossary_signature,
+        self.begin_omni_session_with_languages(
+            direction, model_id, "en", "zh", realtime_audio_mode,
+            subtitle_translate_active, output_mode, contract_signature,
         )
     }
 
@@ -54,6 +74,30 @@ impl AudioStateStore {
         self.omni_sessions.clear(direction, generation)
     }
 
+    pub(crate) fn matching_ready_omni_session_with_languages(
+        &self,
+        direction: &str,
+        model_id: &str,
+        source_language: &str,
+        target_language: &str,
+        realtime_audio_mode: &str,
+        subtitle_translate_active: bool,
+        output_mode: OmniOutputMode,
+        contract_signature: u64,
+    ) -> Option<u64> {
+        self.omni_sessions.matching_ready(
+            direction,
+            model_id,
+            source_language,
+            target_language,
+            realtime_audio_mode,
+            subtitle_translate_active,
+            output_mode,
+            contract_signature,
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn matching_ready_omni_session(
         &self,
         direction: &str,
@@ -61,18 +105,38 @@ impl AudioStateStore {
         realtime_audio_mode: &str,
         subtitle_translate_active: bool,
         output_mode: OmniOutputMode,
-        glossary_signature: u64,
+        contract_signature: u64,
     ) -> Option<u64> {
-        self.omni_sessions.matching_ready(
-            direction,
-            model_id,
-            realtime_audio_mode,
-            subtitle_translate_active,
-            output_mode,
-            glossary_signature,
+        self.matching_ready_omni_session_with_languages(
+            direction, model_id, "en", "zh", realtime_audio_mode,
+            subtitle_translate_active, output_mode, contract_signature,
         )
     }
 
+    pub(crate) fn take_matching_omni_sender_with_languages(
+        &self,
+        direction: &str,
+        model_id: &str,
+        source_language: &str,
+        target_language: &str,
+        realtime_audio_mode: &str,
+        subtitle_translate_active: bool,
+        output_mode: OmniOutputMode,
+        contract_signature: u64,
+    ) -> Option<Sender<Vec<u8>>> {
+        self.omni_sessions.take_matching_sender(
+            direction,
+            model_id,
+            source_language,
+            target_language,
+            realtime_audio_mode,
+            subtitle_translate_active,
+            output_mode,
+            contract_signature,
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn take_matching_omni_sender(
         &self,
         direction: &str,
@@ -80,15 +144,11 @@ impl AudioStateStore {
         realtime_audio_mode: &str,
         subtitle_translate_active: bool,
         output_mode: OmniOutputMode,
-        glossary_signature: u64,
+        contract_signature: u64,
     ) -> Option<Sender<Vec<u8>>> {
-        self.omni_sessions.take_matching_sender(
-            direction,
-            model_id,
-            realtime_audio_mode,
-            subtitle_translate_active,
-            output_mode,
-            glossary_signature,
+        self.take_matching_omni_sender_with_languages(
+            direction, model_id, "en", "zh", realtime_audio_mode,
+            subtitle_translate_active, output_mode, contract_signature,
         )
     }
 

@@ -47,6 +47,7 @@ pub(super) fn try_reconnect<C: RealtimeSocketConnector, R: tauri::Runtime>(
     instructions: &str,
     audio_mode: RealtimeAudioMode,
     output_mode: OmniOutputMode,
+    source_language: &str,
     target_language: &str,
     buffer_size: u64,
     disconnect_reason: &str,
@@ -74,9 +75,10 @@ pub(super) fn try_reconnect<C: RealtimeSocketConnector, R: tauri::Runtime>(
             provider,
             active_voice,
             instructions,
-            audio_mode,
-            output_mode,
-            target_language,
+                audio_mode,
+                output_mode,
+                source_language,
+                target_language,
         ) {
             Ok(socket) => {
                 *reconnect_count = 0;
@@ -243,6 +245,8 @@ pub(super) struct OmniEventDiagnostics {
     /// Recently completed owners remain addressable by input item id because
     /// `transcription.completed` is allowed to arrive after `response.done`.
     completed_native_response_owners: VecDeque<NativeResponseOwner>,
+    response_ledger: ResponseLedger,
+    response_lifecycle: ResponseLifecycle,
     pub(super) last_asr_delta_text: String,
     pub(super) last_asr_delta_at_ms: Option<u64>,
     pub(super) last_asr_delta_item_id: Option<String>,
@@ -269,6 +273,36 @@ pub(super) struct OmniEventDiagnostics {
 }
 
 impl OmniEventDiagnostics {
+    pub(super) fn set_response_ledger_generation(&mut self, session_generation: u64) {
+        self.response_ledger.set_generation(session_generation);
+    }
+
+    pub(super) fn begin_native_response_lifecycle(&mut self, response_id: Option<&str>) {
+        self.response_lifecycle.begin(response_id, Instant::now());
+    }
+
+    pub(super) fn note_native_response_progress(&mut self, response_id: Option<&str>) {
+        self.response_lifecycle
+            .progress(response_id, Instant::now());
+    }
+
+    pub(super) fn native_response_stall_action(
+        &self,
+        now: Instant,
+        provider_timeout_ms: u64,
+        allow_cancel: bool,
+    ) -> ResponseStallAction {
+        self.response_lifecycle.action(
+            now,
+            ResponseDeadlineBudget::from_provider_timeout_ms(provider_timeout_ms),
+            allow_cancel,
+        )
+    }
+
+    pub(super) fn mark_native_response_cancel_sent(&mut self, now: Instant) {
+        self.response_lifecycle.mark_cancel_sent(now);
+    }
+
     const SOURCE_CONTINUITY_MAX_GAP_MS: u64 = 1_200;
 
     pub(super) fn begin_source_segment(
@@ -326,13 +360,15 @@ const NATIVE_EMPTY_TRANSLATION_FAILURE: &str =
     "[翻译失败] 实时模型已结束本轮响应，但没有返回可用译文。";
 const NATIVE_CANCELLED_TRANSLATION_FAILURE: &str =
     "[翻译失败] 实时响应被后续语音打断。";
-const NATIVE_FAILED_TRANSLATION_FAILURE: &str = "[翻译失败] 实时模型未能完成本轮响应。";
+pub(super) const NATIVE_FAILED_TRANSLATION_FAILURE: &str =
+    "[翻译失败] 实时模型未能完成本轮响应。";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResponseDoneMetadata {
     response_id: String,
     status: String,
     reason: String,
+    completed_output: bool,
 }
 
 pub(super) fn native_response_id_from_event(event: &Value) -> Option<&str> {
@@ -369,10 +405,20 @@ impl ResponseDoneMetadata {
         .unwrap_or("(none)")
         .trim()
         .to_string();
+        let completed_output = event
+            .pointer("/response/output")
+            .is_some_and(output_value_has_completed_status)
+            || event
+                .get("item")
+                .is_some_and(output_value_has_completed_status)
+            || event
+                .get("part")
+                .is_some_and(output_value_has_completed_status);
         Self {
             response_id,
             status,
             reason,
+            completed_output,
         }
     }
 
@@ -381,11 +427,30 @@ impl ResponseDoneMetadata {
     }
 
     fn is_failed(&self) -> bool {
-        self.status == "failed"
+        self.status == "failed" || self.status == "incomplete" || self.status == "interrupted"
     }
 
-    fn allows_final_output(&self) -> bool {
-        self.status == "completed" || self.status == "unknown" || self.status.is_empty()
+    fn allows_final_output(&self, require_completed_status: bool) -> bool {
+        self.status == "completed"
+            || self.completed_output
+            || (!require_completed_status && (self.status == "unknown" || self.status.is_empty()))
+    }
+}
+
+fn output_value_has_completed_status(value: &Value) -> bool {
+    match value {
+        Value::Array(values) => values.iter().any(output_value_has_completed_status),
+        Value::Object(object) => {
+            object
+                .get("status")
+                .and_then(Value::as_str)
+                .is_some_and(|status| status.eq_ignore_ascii_case("completed"))
+                || ["content", "item", "part", "output"]
+                    .into_iter()
+                    .filter_map(|key| object.get(key))
+                    .any(output_value_has_completed_status)
+        }
+        _ => false,
     }
 }
 
@@ -442,6 +507,8 @@ impl OmniEventDiagnostics {
         cue_id: String,
         input_item_id: Option<String>,
     ) {
+        self.response_ledger
+            .record_source(&cue_id, input_item_id.as_deref());
         if self.native_response_cue_id.as_deref() == Some(cue_id.as_str()) {
             if self.native_response_item_id.is_none() {
                 self.native_response_item_id = input_item_id;
@@ -464,19 +531,92 @@ impl OmniEventDiagnostics {
                 input_item_id,
                 response_id: None,
             });
-        if self.pending_native_response_owners.len() > MAX_NATIVE_RESPONSE_OWNERS {
-            self.pending_native_response_owners.pop_back();
-        }
+        // Never evict an unfinished response owner. Provider output may lag
+        // input for many turns, and dropping either end of this queue would
+        // silently orphan a final cue. Completed-owner history remains
+        // bounded below; reconnect/session teardown clears pending state.
     }
 
+    #[cfg(test)]
     pub(super) fn claim_native_response_owner_for_response(
         &mut self,
         response_id: Option<&str>,
+        source_item_id: Option<&str>,
+        fallback_cue_id: Option<&str>,
+    ) {
+        self.claim_native_response_owner(
+            response_id,
+            source_item_id,
+            None,
+            fallback_cue_id,
+        );
+    }
+
+    pub(super) fn claim_native_response_owner_for_event(
+        &mut self,
+        event: &Value,
+        fallback_cue_id: Option<&str>,
+    ) {
+        let source_item_id = [
+            "/response/input_item_id",
+            "/response/source_item_id",
+            "/input_item_id",
+            "/source_item_id",
+        ]
+        .into_iter()
+        .find_map(|path| event.pointer(path).and_then(Value::as_str));
+        let translation_item_id = event
+            .get("item")
+            .and_then(|item| item.get("id"))
+            .or_else(|| {
+                event
+                    .get("response")
+                    .and_then(|response| response.get("output_item"))
+                    .and_then(|item| item.get("id"))
+            })
+            .or_else(|| event.get("output_item_id"))
+            .and_then(Value::as_str);
+        self.claim_native_response_owner(
+            native_response_id_from_event(event),
+            source_item_id,
+            translation_item_id,
+            fallback_cue_id,
+        );
+    }
+
+    fn claim_native_response_owner(
+        &mut self,
+        response_id: Option<&str>,
+        source_item_id: Option<&str>,
+        translation_item_id: Option<&str>,
         fallback_cue_id: Option<&str>,
     ) {
         let response_id = response_id
             .map(str::trim)
             .filter(|value| !value.is_empty() && *value != "(none)");
+        let source_item_id = source_item_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && *value != "(none)");
+        let translation_item_id = translation_item_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && *value != "(none)");
+        let has_provider_lineage =
+            response_id.is_some() || source_item_id.is_some() || translation_item_id.is_some();
+        let ledger_owner = self.response_ledger.bind_response(
+            response_id,
+            source_item_id,
+            translation_item_id,
+            fallback_cue_id,
+        );
+        if has_provider_lineage && ledger_owner.is_none() {
+            log::warn!(
+                "event=response_lineage_mismatch response_id={} source_item_id={} translation_item_id={}",
+                response_id.unwrap_or("(none)"),
+                source_item_id.unwrap_or("(none)"),
+                translation_item_id.unwrap_or("(none)"),
+            );
+            return;
+        }
         if response_id.is_some_and(|response_id| {
             self.completed_native_response_owners
                 .iter()
@@ -490,13 +630,26 @@ impl OmniEventDiagnostics {
             }
             return;
         }
-        let owner = self.pending_native_response_owners.pop_front().or_else(|| {
-            fallback_cue_id.map(|cue_id| NativeResponseOwner {
-                cue_id: cue_id.to_string(),
-                input_item_id: None,
-                response_id: None,
-            })
+        let exact_pending_index = ledger_owner.as_ref().and_then(|lineage| {
+            self.pending_native_response_owners
+                .iter()
+                .position(|owner| owner.cue_id == lineage.cue_id)
         });
+        let owner = if let Some(index) = exact_pending_index {
+            self.pending_native_response_owners.remove(index)
+        } else if has_provider_lineage {
+            None
+        } else {
+            self.pending_native_response_owners
+                .pop_front()
+                .or_else(|| {
+                    fallback_cue_id.map(|cue_id| NativeResponseOwner {
+                        cue_id: cue_id.to_string(),
+                        input_item_id: None,
+                        response_id: None,
+                    })
+                })
+        };
         if let Some(owner) = owner {
             self.native_response_cue_id = Some(owner.cue_id);
             self.native_response_item_id = owner.input_item_id;
@@ -562,6 +715,10 @@ impl OmniEventDiagnostics {
     }
 
     pub(super) fn complete_native_response_owner(&mut self) {
+        self.response_lifecycle
+            .complete(self.native_response_id.as_deref());
+        self.response_ledger
+            .complete_response(self.native_response_id.as_deref());
         let Some(cue_id) = self.native_response_cue_id.take() else {
             self.native_response_item_id = None;
             self.native_response_id = None;
@@ -578,12 +735,27 @@ impl OmniEventDiagnostics {
         }
     }
 
+    pub(super) fn unfinished_native_response_cue_ids(&self) -> Vec<String> {
+        let mut cue_ids = Vec::new();
+        if let Some(cue_id) = self.native_response_cue_id.as_ref() {
+            cue_ids.push(cue_id.clone());
+        }
+        for owner in &self.pending_native_response_owners {
+            if !cue_ids.iter().any(|cue_id| cue_id == &owner.cue_id) {
+                cue_ids.push(owner.cue_id.clone());
+            }
+        }
+        cue_ids
+    }
+
     pub(super) fn clear_native_response_owners(&mut self) {
         self.native_response_cue_id = None;
         self.native_response_item_id = None;
         self.native_response_id = None;
         self.pending_native_response_owners.clear();
         self.completed_native_response_owners.clear();
+        self.response_ledger.clear();
+        self.response_lifecycle.clear();
     }
 
     pub(super) fn pending_native_response_owner_count(&self) -> usize {
@@ -599,6 +771,7 @@ pub(super) fn elapsed_ms_since(start: &SystemTime) -> u64 {
         .min(u64::MAX as u128) as u64
 }
 
+#[cfg(test)]
 pub(super) fn should_use_native_output_fallback(
     subtitle_translate_active: bool,
     native_translation_reuse_active: bool,
@@ -677,6 +850,7 @@ fn record_response_done_diagnostics<R: tauri::Runtime>(
     candidate_translated_text: &str,
     subtitle_translate_active: bool,
     native_translation_reuse_active: bool,
+    final_output_allowed: bool,
     response_metadata: &ResponseDoneMetadata,
     event_diagnostics: &OmniEventDiagnostics,
     response_done_at_ms: u64,
@@ -695,7 +869,7 @@ fn record_response_done_diagnostics<R: tauri::Runtime>(
           "responseId": response_metadata.response_id,
           "responseStatus": response_metadata.status,
           "responseReason": response_metadata.reason,
-          "discardedPartialText": if response_metadata.allows_final_output() {
+          "discardedPartialText": if final_output_allowed {
               String::new()
           } else {
               candidate_translated_text.to_string()
@@ -813,7 +987,7 @@ fn terminalize_native_response_without_output<R: tauri::Runtime>(
             )
         };
     store.update_or_push_stt_cue(cue_id, response_source_text, true);
-    store.update_subtitle_cue_translation(cue_id, failure_text.to_string(), true);
+    store.mark_current_subtitle_translation_error(cue_id, failure_text.to_string());
     if response_metadata.is_cancelled() {
         store.watch_session_report.record_session_issue(
             "model",
@@ -855,6 +1029,7 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
     pending_translated_text: &mut String,
     subtitle_translate_active: bool,
     native_translation_reuse_active: bool,
+    require_completed_status: bool,
     transcription_completed_flag: &mut bool,
     transcription_completed_at: &mut Option<SystemTime>,
     event_diagnostics: &mut OmniEventDiagnostics,
@@ -863,14 +1038,15 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
     glossary: &GlossaryContext,
 ) {
     let response_metadata = ResponseDoneMetadata::from_event(response_event);
-    if response_metadata.allows_final_output() && pending_translated_text.trim().is_empty() {
+    let final_output_allowed = response_metadata.allows_final_output(require_completed_status);
+    if final_output_allowed && pending_translated_text.trim().is_empty() {
         let response_text = extract_response_done_text(response_event);
         if !response_text.trim().is_empty() {
             *pending_translated_text = response_text;
         }
     }
-    event_diagnostics.claim_native_response_owner_for_response(
-        Some(&response_metadata.response_id),
+    event_diagnostics.claim_native_response_owner_for_event(
+        response_event,
         current_cue_id.as_deref(),
     );
     let response_done_at_ms = elapsed_ms_since(session_started_at);
@@ -901,7 +1077,7 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
     // A cancelled/failed response may retain partial output in its response
     // envelope. That text is useful for diagnostics but is not a final model
     // answer and must never be committed as the cue's translation.
-    let translated_text = if response_metadata.allows_final_output() {
+    let translated_text = if final_output_allowed {
         candidate_translated_text.clone()
     } else {
         String::new()
@@ -922,31 +1098,13 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
         &candidate_translated_text,
         subtitle_translate_active,
         native_translation_reuse_active,
+        final_output_allowed,
         &response_metadata,
         event_diagnostics,
         response_done_at_ms,
     );
     if subtitle_translate_active {
-        if native_translation_reuse_active && !translated_text.trim().is_empty() {
-            write_native_translation_to_cue(
-                store,
-                &cue_id,
-                &response_source_text,
-                &translated_text,
-                true,
-                false,
-            );
-            let _ = diag_log(
-                app,
-                "omni",
-                "info",
-                format!(
-                    "[EVENT] response.done -> ST_NATIVE_TRANSLATION_COMMIT{st_flag} cue_id={cue_id} source_len={} translated_len={translated_len} translated=\"{}\"",
-                    response_source_text.len(),
-                    translated_text
-                ),
-            );
-        } else if !response_source_text.is_empty() {
+        if !response_source_text.is_empty() {
             let src_preview = if response_source_text.len() > 200 {
                 format!("{}...", crate::audio::str_utils::truncate_chars(&response_source_text, 200))
             } else {
@@ -974,29 +1132,6 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
                 "info",
                 format!(
                     "[EVENT] response.done → ST_SOURCE_ONLY{st_flag} cue_id={cue_id} src=\"{src_preview}\" src_len={source_len} cue_state=[{cue_state}] (翻译留给 subtitle_translate worker)"
-                ),
-            );
-        } else if should_use_native_output_fallback(
-            subtitle_translate_active,
-            native_translation_reuse_active,
-            &response_source_text,
-            &translated_text,
-        ) {
-            write_native_translation_to_cue(
-                store,
-                &cue_id,
-                &translated_text,
-                &translated_text,
-                true,
-                false,
-            );
-            let _ = diag_log(
-                app,
-                "omni",
-                "warning",
-                format!(
-                    "[EVENT] response.done -> ST_NATIVE_OUTPUT_FALLBACK{st_flag} cue_id={cue_id} source_len=0 translated_len={translated_len} translated=\"{}\" reason=empty_source_text",
-                    translated_text
                 ),
             );
         } else {
@@ -1177,7 +1312,7 @@ mod response_text_tests {
         assert_eq!(metadata.reason, "turn_detected");
         assert!(metadata.is_cancelled());
         assert!(!metadata.is_failed());
-        assert!(!metadata.allows_final_output());
+        assert!(!metadata.allows_final_output(true));
     }
 
     #[test]
@@ -1197,7 +1332,51 @@ mod response_text_tests {
         assert_eq!(metadata.reason, "server_error");
         assert!(metadata.is_failed());
         assert!(!metadata.is_cancelled());
-        assert!(!metadata.allows_final_output());
+        assert!(!metadata.allows_final_output(true));
+    }
+
+    #[test]
+    fn response_done_metadata_rejects_incomplete_candidate_output() {
+        let event = json!({
+            "type": "response.done",
+            "response": {
+                "status": "incomplete",
+                "status_details": { "reason": "max_output_tokens" },
+                "output": [{ "content": [{ "text": "partial candidate" }] }]
+            }
+        });
+
+        let metadata = ResponseDoneMetadata::from_event(&event);
+        assert_eq!(metadata.status, "incomplete");
+        assert!(metadata.is_failed());
+        assert!(!metadata.allows_final_output(true));
+    }
+
+    #[test]
+    fn livetranslate_response_without_status_does_not_finalize_candidate_text() {
+        let metadata = ResponseDoneMetadata::from_event(&json!({
+            "type": "response.done",
+            "response": { "output": [{ "content": [{ "text": "candidate" }] }] }
+        }));
+
+        assert_eq!(metadata.status, "unknown");
+        assert!(!metadata.allows_final_output(true));
+        assert!(metadata.allows_final_output(false));
+    }
+
+    #[test]
+    fn completed_output_item_can_finalize_when_response_status_is_missing() {
+        let metadata = ResponseDoneMetadata::from_event(&json!({
+            "type": "response.done",
+            "response": {
+                "output": [{
+                    "status": "completed",
+                    "content": [{ "text": "finished translation" }]
+                }]
+            }
+        }));
+
+        assert!(metadata.allows_final_output(true));
     }
 }
 
@@ -1206,7 +1385,7 @@ mod native_response_owner_tests {
     use super::*;
 
     #[test]
-    fn concurrent_input_turns_bind_provider_responses_to_cues_in_fifo_order() {
+    fn response_id_only_events_bind_then_resolve_the_oldest_pending_cue() {
         let mut diagnostics = OmniEventDiagnostics::default();
         diagnostics.capture_native_response_owner(
             "cue-one".to_string(),
@@ -1217,13 +1396,13 @@ mod native_response_owner_tests {
             Some("item-two".to_string()),
         );
 
-        diagnostics.claim_native_response_owner_for_response(Some("resp-one"), None);
+        diagnostics.claim_native_response_owner_for_response(Some("resp-one"), None, None);
         assert_eq!(
             diagnostics.native_response_cue_for_response_id("resp-one"),
             Some("cue-one".to_string())
         );
         diagnostics.complete_native_response_owner();
-        diagnostics.claim_native_response_owner_for_response(Some("resp-two"), None);
+        diagnostics.claim_native_response_owner_for_response(Some("resp-two"), None, None);
 
         assert_eq!(
             diagnostics.native_response_cue_for_response_id("resp-two"),
@@ -1233,24 +1412,92 @@ mod native_response_owner_tests {
     }
 
     #[test]
+    fn unknown_explicit_lineage_does_not_claim_the_next_cue() {
+        let mut diagnostics = OmniEventDiagnostics::default();
+        diagnostics.capture_native_response_owner(
+            "cue-one".to_string(),
+            Some("source-one".to_string()),
+        );
+
+        diagnostics.claim_native_response_owner(
+            Some("unknown-response"),
+            Some("unknown-source"),
+            None,
+            Some("cue-one"),
+        );
+
+        assert!(diagnostics.native_response_cue_id.is_none());
+        assert_eq!(diagnostics.pending_native_response_owner_count(), 1);
+        diagnostics.claim_native_response_owner(None, None, None, None);
+        assert_eq!(diagnostics.native_response_cue_id.as_deref(), Some("cue-one"));
+    }
+
+    #[test]
+    fn more_than_legacy_owner_limit_preserves_every_pending_final_owner() {
+        let mut diagnostics = OmniEventDiagnostics::default();
+        let owner_count = MAX_NATIVE_RESPONSE_OWNERS + 8;
+        for index in 0..owner_count {
+            diagnostics.capture_native_response_owner(
+                format!("cue-{index}"),
+                Some(format!("source-{index}")),
+            );
+        }
+
+        assert_eq!(diagnostics.pending_native_response_owner_count(), owner_count);
+        let last = owner_count - 1;
+        diagnostics.claim_native_response_owner_for_response(
+            Some("response-last"),
+            Some(&format!("source-{last}")),
+            None,
+        );
+        assert_eq!(
+            diagnostics.native_response_cue_for_response_id("response-last"),
+            Some(format!("cue-{last}"))
+        );
+        diagnostics.complete_native_response_owner();
+
+        diagnostics.claim_native_response_owner_for_response(
+            Some("response-first"),
+            Some("source-0"),
+            None,
+        );
+        assert_eq!(
+            diagnostics.native_response_cue_for_response_id("response-first"),
+            Some("cue-0".to_string())
+        );
+    }
+
+    #[test]
     fn completed_response_owner_remains_resolvable_for_late_audio_done() {
         let mut diagnostics = OmniEventDiagnostics::default();
-        diagnostics.capture_native_response_owner("cue-late-audio".to_string(), None);
-        diagnostics.claim_native_response_owner_for_response(Some("resp-late-audio"), None);
+        diagnostics.capture_native_response_owner(
+            "cue-late-audio".to_string(),
+            Some("source-late-audio".to_string()),
+        );
+        diagnostics.claim_native_response_owner(
+            Some("resp-late-audio"),
+            Some("source-late-audio"),
+            None,
+            None,
+        );
         diagnostics.complete_native_response_owner();
 
         assert_eq!(
             diagnostics.native_response_cue_for_response_id("resp-late-audio"),
             Some("cue-late-audio".to_string())
         );
-        diagnostics.claim_native_response_owner_for_response(Some("resp-late-audio"), None);
+        diagnostics.claim_native_response_owner_for_response(
+            Some("resp-late-audio"),
+            None,
+            None,
+        );
         assert!(diagnostics.native_response_cue_id.is_none());
     }
 
     #[test]
     fn response_without_any_subtitle_owner_stays_unassigned() {
         let mut diagnostics = OmniEventDiagnostics::default();
-        diagnostics.claim_native_response_owner_for_response(Some("resp-empty"), None);
+        diagnostics.claim_native_response_owner_for_response(Some("resp-empty"), None, None);
 
         assert_eq!(
             diagnostics.native_response_cue_for_response_id("resp-empty"),
@@ -1258,6 +1505,32 @@ mod native_response_owner_tests {
         );
         assert!(diagnostics.native_response_cue_id.is_none());
         assert_eq!(diagnostics.pending_native_response_owner_count(), 0);
+    }
+
+    #[test]
+    fn replacement_source_revision_does_not_rebind_prior_native_final() {
+        let store = AudioStateStore::new();
+        let cue_id = "omni-cue-inbound-source-replacement";
+        store.update_or_push_stt_cue(cue_id, "old source", false);
+        store.update_subtitle_cue_translation(cue_id, "旧译文".to_string(), true);
+
+        update_native_response_cue_source(&store, cue_id, "entirely corrected source");
+
+        let snapshot = store.snapshot();
+        let cue = snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id == cue_id)
+            .expect("corrected source cue");
+        assert_eq!(cue.revision, Some(2));
+        assert!(cue.committed);
+        assert_eq!(
+            cue.translation_state,
+            Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Pending)
+        );
+        assert!(!cue.translation_committed);
+        assert!(cue.translated_text.is_empty());
     }
 }
 
@@ -1485,21 +1758,60 @@ pub(super) fn update_native_response_cue_source(
         .recent_cues
         .iter()
         .find(|cue| cue.cue_id == cue_id);
+    let previous_revision = existing.and_then(|cue| cue.revision).unwrap_or(1);
     let translated_text = existing
         .map(|cue| cue.translated_text.clone())
         .unwrap_or_default();
-    let translation_committed = existing.is_some_and(|cue| cue.translation_committed);
+    // Preserve the exact terminal state. Reducing it to the legacy committed
+    // boolean would reopen an Error cue as Streaming when its late ASR final
+    // advances the source revision.
+    let translation_state = existing
+        .and_then(|cue| cue.translation_state)
+        .unwrap_or_else(|| {
+            if existing.is_some_and(|cue| cue.translation_committed) {
+                crate::audio::contracts::SubtitleTranslationStateRuntime::Final
+            } else {
+                crate::audio::contracts::SubtitleTranslationStateRuntime::Streaming
+            }
+        });
     // A transcription.completed event is the authoritative source terminal
     // even when native response output is still streaming. Preserve any
     // translation already attached to the cue, but publish the source update
     // as final so cue-local evidence does not remain a delta-only tail.
     store.update_or_push_stt_cue(cue_id, source_text, true);
     if !translated_text.trim().is_empty() {
-        store.update_subtitle_cue_translation(
-            cue_id,
-            translated_text,
-            translation_committed,
-        );
+        let revision = store
+            .snapshot()
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id == cue_id)
+            .and_then(|cue| cue.revision)
+            .unwrap_or(1);
+        if revision == previous_revision {
+            store.update_subtitle_cue_translation_for_revision(
+                cue_id,
+                revision,
+                translated_text,
+                translation_state,
+            );
+        } else if translation_state
+            == crate::audio::contracts::SubtitleTranslationStateRuntime::Error
+        {
+            // The failure belongs to the response itself, not to a particular
+            // wording of its source transcript. Re-terminalize the corrected
+            // source revision instead of reopening it as an endless pending cue.
+            store.mark_subtitle_translation_error(cue_id, revision, translated_text);
+        } else {
+            // A source replacement is a new semantic revision. Do not attach
+            // the prior revision's native translation to it.
+            store.update_subtitle_cue_translation_for_revision(
+                cue_id,
+                revision,
+                String::new(),
+                crate::audio::contracts::SubtitleTranslationStateRuntime::Pending,
+            );
+        }
     }
 }
 
@@ -1537,7 +1849,7 @@ pub(super) fn write_native_output_final_to_cue(
         &cue_id,
         source_text,
         translated_text,
-        false,
+        true,
         false,
         false,
         false,
@@ -1571,6 +1883,7 @@ pub(super) fn resolve_completed_transcription(
     }
 }
 
+#[cfg(test)]
 pub(super) fn write_native_translation_to_cue(
     store: &AudioStateStore,
     cue_id: &str,
@@ -1732,7 +2045,16 @@ fn write_native_translation_payload_to_cue(
             None,
         );
     }
-    store.update_or_push_stt_cue(cue_id, &display_source_text, false);
+    let source_committed = store
+        .snapshot()
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .find(|cue| cue.cue_id == cue_id)
+        .is_some_and(|cue| cue.committed);
+    // Translation finality is independent from the source-ASR owner. Native
+    // output must preserve an existing source final, but cannot create one.
+    store.update_or_push_stt_cue(cue_id, &display_source_text, source_committed);
     store.update_subtitle_cue_display_segments(
         cue_id,
         source_lines.join("\n"),
@@ -1750,6 +2072,25 @@ fn has_terminal_subtitle_boundary(text: &str) -> bool {
         || text.ends_with('\n')
 }
 
+const LIVETRANSLATE_LANGUAGE_TABLE_V2026_07_08: &[&str] = &[
+    "zh", "en", "ar", "de", "fr", "es", "pt", "id", "it", "ko", "ru", "th",
+    "vi", "ja", "tr", "hi", "ms", "nl", "ur", "nb", "sv", "da", "he", "fi",
+    "pl", "is", "cs", "fil", "fa", "yue", "el", "af", "ast", "be", "bg", "bn",
+    "bs", "ca", "ceb", "et", "gl", "gu", "hr", "hu", "jv", "kk", "kn", "ky",
+    "lv", "mk", "ml", "mr", "pa", "ro", "sk", "sl", "sw", "tg", "az", "uk",
+];
+
+const LIVETRANSLATE_LEGACY_LANGUAGE_TABLE: &[&str] = &[
+    "en", "zh", "ru", "fr", "de", "pt", "es", "it", "id", "ko", "ja", "vi",
+    "th", "ar", "yue", "hi", "el", "tr",
+];
+
+const LIVETRANSLATE_AUDIO_OUTPUT_LANGUAGES: &[&str] = &[
+    "zh", "en", "ar", "de", "fr", "es", "pt", "id", "it", "ko", "ru", "th",
+    "vi", "ja", "yue", "tr", "hi", "ms", "nl", "ur", "nb", "sv", "da", "he",
+    "fi", "pl", "cs", "fil", "fa",
+];
+
 fn normalize_livetranslate_language(language: &str, fallback: &str) -> String {
     let trimmed = language.trim();
     if trimmed.is_empty() {
@@ -1757,6 +2098,7 @@ fn normalize_livetranslate_language(language: &str, fallback: &str) -> String {
     }
     let lower = trimmed.to_ascii_lowercase();
     match lower.as_str() {
+        "auto" => fallback.to_string(),
         "zh-cn" | "zh-hans" | "zh_cn" | "zh" | "chinese" => "zh".to_string(),
         "en-us" | "en-gb" | "en" | "english" => "en".to_string(),
         _ => lower
@@ -1766,6 +2108,45 @@ fn normalize_livetranslate_language(language: &str, fallback: &str) -> String {
             .unwrap_or(fallback)
             .to_string(),
     }
+}
+
+pub(crate) fn resolve_livetranslate_language(
+    model: &str,
+    language: &str,
+    fallback: &str,
+) -> Result<String, String> {
+    let normalized = normalize_livetranslate_language(language, fallback);
+    let supported = if model
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("qwen3.5-livetranslate")
+    {
+        LIVETRANSLATE_LANGUAGE_TABLE_V2026_07_08
+    } else {
+        LIVETRANSLATE_LEGACY_LANGUAGE_TABLE
+    };
+    if supported.contains(&normalized.as_str()) {
+        Ok(normalized)
+    } else {
+        Err(format!(
+            "LiveTranslate model {model} does not support language '{language}' (normalized '{normalized}')"
+        ))
+    }
+}
+
+pub(crate) fn resolve_livetranslate_output_mode(
+    model: &str,
+    target_language: &str,
+    requested: OmniOutputMode,
+) -> Result<OmniOutputMode, String> {
+    let target = resolve_livetranslate_language(model, target_language, "zh")?;
+    Ok(if requested == OmniOutputMode::TextAndAudio
+        && !LIVETRANSLATE_AUDIO_OUTPUT_LANGUAGES.contains(&target.as_str())
+    {
+        OmniOutputMode::TextOnly
+    } else {
+        requested
+    })
 }
 
 /// Provider output requested for the lifetime of one realtime session.
@@ -1779,6 +2160,53 @@ fn normalize_livetranslate_language(language: &str, fallback: &str) -> String {
 pub(crate) enum OmniOutputMode {
     TextOnly,
     TextAndAudio,
+}
+
+#[cfg(test)]
+mod livetranslate_language_contract_tests {
+    use super::*;
+
+    const MODEL: &str = "qwen3.5-livetranslate-flash-realtime";
+
+    #[test]
+    fn normalizes_region_tags_and_rejects_unknown_explicit_languages() {
+        assert_eq!(
+            resolve_livetranslate_language(MODEL, "zh-CN", "en").unwrap(),
+            "zh"
+        );
+        assert_eq!(
+            resolve_livetranslate_language(MODEL, "ja-JP", "en").unwrap(),
+            "ja"
+        );
+        assert!(resolve_livetranslate_language(MODEL, "xx-ZZ", "en").is_err());
+    }
+
+    #[test]
+    fn empty_or_auto_source_defaults_to_english() {
+        assert_eq!(
+            resolve_livetranslate_language(MODEL, "", "en").unwrap(),
+            "en"
+        );
+        assert_eq!(
+            resolve_livetranslate_language(MODEL, "auto", "en").unwrap(),
+            "en"
+        );
+    }
+
+    #[test]
+    fn text_and_audio_uses_the_versioned_target_capability_table() {
+        assert_eq!(LIVETRANSLATE_AUDIO_OUTPUT_LANGUAGES.len(), 29);
+        assert_eq!(
+            resolve_livetranslate_output_mode(MODEL, "yue", OmniOutputMode::TextAndAudio)
+                .unwrap(),
+            OmniOutputMode::TextAndAudio
+        );
+        assert_eq!(
+            resolve_livetranslate_output_mode(MODEL, "uk", OmniOutputMode::TextAndAudio)
+                .unwrap(),
+            OmniOutputMode::TextOnly
+        );
+    }
 }
 
 impl OmniOutputMode {
@@ -1803,6 +2231,7 @@ fn build_omni_session_update_with_dialect(
     voice: &str,
     instructions: &str,
     audio_mode: RealtimeAudioMode,
+    source_language: &str,
     target_language: &str,
     output_mode: OmniOutputMode,
 ) -> Value {
@@ -1830,7 +2259,7 @@ fn build_omni_session_update_with_dialect(
         }
     }
     if is_livetranslate {
-        let source_language = "en";
+        let source_language = normalize_livetranslate_language(source_language, "en");
         let target_language = normalize_livetranslate_language(target_language, "zh");
         session_cfg["session"]["input_audio_transcription"] = json!({
           "model": "qwen3-asr-flash-realtime",
@@ -1868,6 +2297,26 @@ pub(crate) fn build_dashscope_session_update_with_output_mode(
     target_language: &str,
     output_mode: OmniOutputMode,
 ) -> Result<Value, String> {
+    build_dashscope_session_update_with_languages_and_output_mode(
+        protocol,
+        voice,
+        instructions,
+        audio_mode,
+        "en",
+        target_language,
+        output_mode,
+    )
+}
+
+fn build_dashscope_session_update_with_languages_and_output_mode(
+    protocol: crate::audio::events::RealtimeProtocol,
+    voice: &str,
+    instructions: &str,
+    audio_mode: RealtimeAudioMode,
+    source_language: &str,
+    target_language: &str,
+    output_mode: OmniOutputMode,
+) -> Result<Value, String> {
     let is_livetranslate = match protocol {
         crate::audio::events::RealtimeProtocol::DashscopeOmni => false,
         crate::audio::events::RealtimeProtocol::DashscopeLivetranslate => true,
@@ -1878,6 +2327,7 @@ pub(crate) fn build_dashscope_session_update_with_output_mode(
         voice,
         instructions,
         audio_mode,
+        source_language,
         target_language,
         output_mode,
     ))
@@ -1893,6 +2343,32 @@ pub(crate) fn build_dashscope_input_audio_commit() -> Value {
 
 pub(crate) fn build_dashscope_response_create() -> Value {
     json!({ "type": "response.create" })
+}
+
+pub(crate) fn build_dashscope_response_create_for_protocol(
+    protocol: crate::audio::events::RealtimeProtocol,
+) -> Option<Value> {
+    (protocol != crate::audio::events::RealtimeProtocol::DashscopeLivetranslate)
+        .then(build_dashscope_response_create)
+}
+
+#[cfg(test)]
+mod response_control_tests {
+    use super::*;
+
+    #[test]
+    fn livetranslate_never_builds_an_explicit_response_control_event() {
+        assert!(build_dashscope_response_create_for_protocol(
+            crate::audio::events::RealtimeProtocol::DashscopeLivetranslate,
+        )
+        .is_none());
+        let omni = build_dashscope_response_create_for_protocol(
+            crate::audio::events::RealtimeProtocol::DashscopeOmni,
+        )
+        .expect("Omni supports explicit response creation");
+        assert_eq!(omni["type"], "response.create");
+        assert_ne!(omni["type"], "response.cancel");
+    }
 }
 
 pub(crate) fn build_dashscope_text_item(text: &str) -> Value {
@@ -1911,23 +2387,45 @@ pub(crate) fn build_omni_session_update_for_provider_with_output_mode(
     voice: &str,
     instructions: &str,
     audio_mode: RealtimeAudioMode,
+    source_language: &str,
     target_language: &str,
     output_mode: OmniOutputMode,
 ) -> Value {
     let protocol = crate::audio::events::resolve_realtime_profile(provider, &provider.model)
         .protocol_dialect
         .expect("Omni session builder requires an explicit or compatibility-resolved protocol");
-    let mut session_update = build_dashscope_session_update_with_output_mode(
+    let mut session_update = build_dashscope_session_update_with_languages_and_output_mode(
         protocol,
         voice,
         instructions,
         audio_mode,
+        source_language,
         target_language,
         output_mode,
     )
     .expect("Omni session builder requires a DashScope Omni/LiveTranslate protocol");
     apply_model_specific_turn_detection(&mut session_update, &provider.model, audio_mode);
     session_update
+}
+
+#[cfg(test)]
+pub(crate) fn build_livetranslate_session_update_with_languages(
+    voice: &str,
+    instructions: &str,
+    audio_mode: RealtimeAudioMode,
+    source_language: &str,
+    target_language: &str,
+    output_mode: OmniOutputMode,
+) -> Value {
+    build_omni_session_update_with_dialect(
+        true,
+        voice,
+        instructions,
+        audio_mode,
+        source_language,
+        target_language,
+        output_mode,
+    )
 }
 
 fn apply_model_specific_turn_detection(
@@ -1985,6 +2483,7 @@ pub(super) fn build_omni_session_update_with_output_mode(
         voice,
         instructions,
         audio_mode,
+        "en",
         target_language,
         output_mode,
     );

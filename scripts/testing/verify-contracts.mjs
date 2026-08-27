@@ -329,9 +329,12 @@ assertJsonValue(
 // same wire value, plus an entry here.
 const EXPECTED_CROSS_PROCESS_EVENTS = [
   'audio://snapshot',
+  'audio://subtitle-delta',
   'benchmark://progress',
   'config://draft-updated',
   'credential://direct-result',
+  'history://changed',
+  'history://playback',
   'runtime://notification',
   'runtime://snapshot',
 ];

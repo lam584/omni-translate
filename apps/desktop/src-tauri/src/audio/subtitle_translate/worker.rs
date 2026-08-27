@@ -23,6 +23,85 @@ fn cue_target_language<'a>(
     }
 }
 
+fn mark_translation_queue_rejection(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    cue_id: &str,
+    cue_revision: u64,
+) {
+    if !publish_terminal_translation_error(
+        app, store, cue_id, cue_revision, "[翻译失败] 本地翻译队列过载",
+    ) {
+        return;
+    }
+    store.watch_session_report.record_model_error_for_cue(
+        cue_id,
+        "secondary-text-translation",
+        "translation.queue-rejected",
+        "translation queue capacity/deadline rejected a final segment",
+        true,
+        None,
+    );
+}
+
+fn publish_terminal_translation_error(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    cue_id: &str,
+    cue_revision: u64,
+    message: &str,
+) -> bool {
+    let accepted = store.mark_subtitle_translation_error(
+        cue_id,
+        cue_revision,
+        message.to_string(),
+    );
+    if accepted {
+        let _ = emit_audio_snapshot(app, store);
+    }
+    accepted
+}
+
+fn sync_ledger_revision(cue: &SubtitleCueRuntime, cue_state: &mut CueTranslationLedger) {
+    cue_state.revision = cue
+        .revision
+        .unwrap_or_else(|| cue_state.revision.saturating_add(1));
+    cue_state.reset_for_revision_state();
+}
+
+fn terminalize_fatal_provider_cue(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    cue: &SubtitleCueRuntime,
+    cue_revision: u64,
+    error: Option<&ProviderRuntimeError>,
+) -> bool {
+    let Some(error) = error else {
+        return false;
+    };
+    let _ = diag_log_detail(
+        app,
+        "subtitle-translate",
+        "error",
+        format!(
+            "[FATAL_PROVIDER] cue_id={} provider translation disabled: code={} provider_code={:?}",
+            cue.cue_id, error.code, error.provider_code
+        ),
+        error
+            .suggestion
+            .clone()
+            .unwrap_or_else(|| error.message.clone()),
+    );
+    let _ = publish_terminal_translation_error(
+        app,
+        store,
+        &cue.cue_id,
+        cue_revision,
+        &format!("[翻译失败] {}", error.message),
+    );
+    true
+}
+
 fn process_translation_cues(
     app: &AppHandle,
     store: &AudioStateStore,
@@ -36,7 +115,6 @@ fn process_translation_cues(
     text_model_provider: &ProviderDraftInput,
     glossary_catalog: &GlossaryCatalog,
     trace: &ModelTraceRecorder,
-    translation_tx: &mpsc::Sender<TranslationUpdate>,
     loop_count: u64,
 ) {
     for cue in cues {
@@ -49,24 +127,11 @@ fn process_translation_cues(
 
         let cue_state = cue_states
             .entry(cue.cue_id.clone())
-            .or_insert_with(CueTranslationLedger::new);
+            .or_insert_with(|| CueTranslationLedger::new_for_revision(cue.revision.unwrap_or(1)));
 
-        if let Some(error) = fatal_provider_error.as_ref() {
-            let _ = diag_log_detail(
-                &app,
-                "subtitle-translate",
-                "error",
-                format!(
-                    "[FATAL_PROVIDER] cue_id={} provider translation disabled: code={} provider_code={:?}",
-                    cue.cue_id, error.code, error.provider_code
-                ),
-                error
-                    .suggestion
-                    .clone()
-                    .unwrap_or_else(|| error.message.clone()),
-            );
-            store.commit_subtitle_cue(&cue.cue_id);
-            let _ = emit_audio_snapshot(&app, store);
+        if terminalize_fatal_provider_cue(
+            app, store, cue, cue_state.revision, fatal_provider_error.as_ref(),
+        ) {
             continue;
         }
 
@@ -96,8 +161,9 @@ fn process_translation_cues(
                         cue_state.source_stable_since.elapsed()
                     ),
                 );
-                store.commit_subtitle_cue(&cue.cue_id);
-                let _ = emit_audio_snapshot(&app, store);
+                let _ = publish_terminal_translation_error(
+                    app, store, &cue.cue_id, cue_state.revision, "[翻译失败] 翻译响应超时",
+                );
                 continue;
             }
             cue_state.stable_retry_count = cue_state.stable_retry_count.saturating_add(1);
@@ -124,9 +190,16 @@ fn process_translation_cues(
             );
         }
 
-        let feed_result = cue_state.splitter.feed_with_revision(&source_text);
+        let finality = if store.subtitle_source_is_final(&cue.cue_id) {
+            HypothesisFinality::ProviderFinal
+        } else {
+            HypothesisFinality::Partial
+        };
+        let feed_result = cue_state
+            .splitter
+            .feed_hypothesis(&source_text, finality);
         if feed_result.revision_reset {
-            cue_state.reset_for_revision();
+            sync_ledger_revision(cue, cue_state);
             scheduler.drop_queued_for_cue(&cue.cue_id);
             let _ = diag_log(
                 &app,
@@ -279,6 +352,8 @@ fn process_translation_cues(
                 continue;
             }
 
+            let created_at = Instant::now();
+            let deadline_at = TranslationJob::deadline_for(result, created_at);
             let job = TranslationJob {
                 key: translation_job_key(&cue.cue_id, cue_state.revision, result),
                 sequence: *next_translation_sequence,
@@ -292,14 +367,28 @@ fn process_translation_cues(
                 provider: text_model_provider.clone(),
                 glossary: glossary_catalog.for_languages("auto", target_language),
                 trace: Some(trace.clone()),
+                created_at,
+                deadline_at,
             };
             *next_translation_sequence = next_translation_sequence.saturating_add(1);
 
-            if scheduler.enqueue(job) {
+            let enqueue_result = scheduler.enqueue_with_result(job);
+            if enqueue_result == TranslationEnqueueResult::Enqueued {
                 cue_state
                     .sentence_attempt_count
                     .insert(attempt_key, attempts + 1);
-                scheduler.dispatch_ready(|job| spawn_translation_job(translation_tx.clone(), job));
+            } else if matches!(
+                enqueue_result,
+                TranslationEnqueueResult::RejectedOverflow
+                    | TranslationEnqueueResult::RejectedExpired
+            ) && !result.is_forced
+            {
+                mark_translation_queue_rejection(
+                    app,
+                    store,
+                    &cue.cue_id,
+                    cue_state.revision,
+                );
             }
         }
     }
@@ -399,6 +488,7 @@ impl SubtitleTranslationWorker {
             }
         }
         scheduler.dispatch_ready(|job| spawn_translation_job(translation_tx.clone(), job));
+        drain_expired_terminal_jobs(&app, store, &mut scheduler);
 
         if let Some(error) = fatal_provider_error.take() {
             let classified = super::omni::session_errors::classify_provider_error(
@@ -424,24 +514,24 @@ impl SubtitleTranslationWorker {
         }
 
         let snapshot = store.snapshot();
-        let uncommitted_cues: Vec<_> = snapshot
+        let untranslated_cues: Vec<_> = snapshot
             .subtitle_overlay
             .recent_cues
             .iter()
             .filter(|cue| {
-                !cue.committed
+                !cue.translation_committed
                     && store.subtitle_cue_translation_allowed(&cue.cue_id)
             })
             .collect();
-        let uncommitted_ids: HashSet<String> = uncommitted_cues
+        let untranslated_ids: HashSet<String> = untranslated_cues
             .iter()
             .map(|cue| cue.cue_id.clone())
             .collect();
         cue_states.retain(|cue_id, _| {
-            uncommitted_ids.contains(cue_id) || scheduler.has_work_for_cue(cue_id)
+            untranslated_ids.contains(cue_id) || scheduler.has_work_for_cue(cue_id)
         });
 
-        let is_idle = uncommitted_cues.is_empty()
+        let is_idle = untranslated_cues.is_empty()
             && scheduler.queued.is_empty()
             && scheduler.in_flight.is_empty();
 
@@ -453,7 +543,7 @@ impl SubtitleTranslationWorker {
 
         if should_log_loop {
             let (queued_forced, queued_replacement, queued_final) = scheduler.counts_by_kind();
-            let cue_summary: Vec<String> = uncommitted_cues
+            let cue_summary: Vec<String> = untranslated_cues
                 .iter()
                 .map(|cue| {
                     format!(
@@ -471,7 +561,7 @@ impl SubtitleTranslationWorker {
                 "debug",
                 format!(
                     "[LOOP#{loop_count}] uncommitted={} queued={} forced={} repl={} final={} in_flight={} cue_states={} cues=[{}]",
-                    uncommitted_cues.len(),
+                    untranslated_cues.len(),
                     scheduler.queued.len(),
                     queued_forced,
                     queued_replacement,
@@ -486,7 +576,7 @@ impl SubtitleTranslationWorker {
         process_translation_cues(
             &app,
             store,
-            &uncommitted_cues,
+            &untranslated_cues,
             &mut cue_states,
             &mut scheduler,
             &fatal_provider_error,
@@ -496,9 +586,10 @@ impl SubtitleTranslationWorker {
             &text_model_provider,
             &glossary_catalog,
             &trace,
-            &translation_tx,
             loop_count,
         );
+        scheduler.dispatch_ready(|job| spawn_translation_job(translation_tx.clone(), job));
+        drain_expired_terminal_jobs(&app, store, &mut scheduler);
 
         let is_idle = scheduler.queued.is_empty()
             && scheduler.in_flight.is_empty()
@@ -508,7 +599,7 @@ impl SubtitleTranslationWorker {
                 .recent_cues
                 .iter()
                 .any(|cue| {
-                    !cue.committed
+                    !cue.translation_committed
                         && store.subtitle_cue_translation_allowed(&cue.cue_id)
                 });
 
@@ -526,7 +617,7 @@ impl SubtitleTranslationWorker {
                 .recent_cues
                 .iter()
                 .filter(|cue| {
-                    !cue.committed
+                    !cue.translation_committed
                         && store.subtitle_cue_translation_allowed(&cue.cue_id)
                 })
                 .count();

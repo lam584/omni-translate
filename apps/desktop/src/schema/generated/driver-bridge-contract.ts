@@ -82,4 +82,3 @@ statusId: string, requestId: string, sessionId: string, cueId: string, playbackS
 export type TranslationPlaybackStatusAck = { type: 'bridge.translation.status.ack', statusId: string, sessionId: string, };
 
 export type AudioFrameAck = { type: 'bridge.source.ack' | 'bridge.translation.ack' | 'bridge.translation.nack', requestId: string, frameId: string, acceptedFrames: number, playbackFramesWritten: number, errorCode?: string, message?: string, };
-

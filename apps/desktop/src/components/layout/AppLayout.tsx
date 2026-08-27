@@ -56,6 +56,7 @@ function AppLayout() {
     session: { label: t('nav.session'), hint: t('nav.sessionHint'), icon: 'mic' },
     'audio-routing': { label: t('nav.audioRouting'), hint: t('nav.audioRoutingHint'), icon: 'route' },
     glossary: { label: t('nav.glossary'), hint: t('nav.glossaryHint'), icon: 'book' },
+    history: { label: t('nav.history'), hint: t('nav.historyHint'), icon: 'clock' },
     diagnostics: { label: t('nav.diagnostics'), hint: t('nav.diagnosticsHint'), icon: 'diagnostics' },
   };
 

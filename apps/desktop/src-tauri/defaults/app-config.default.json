@@ -31,7 +31,7 @@
       {
         "scenario": "watch",
         "modelIds": [
-          "qwen3.5-omni-plus-realtime"
+          "qwen3.5-livetranslate-flash-realtime"
         ]
       },
       {
@@ -320,7 +320,7 @@
           "speech-to-speech"
         ],
         "realtimeProtocol": "dashscope-omni",
-        "realtimeAudioMode": "manual",
+        "realtimeAudioMode": "semantic_vad",
         "interactionCapabilities": [
           "auto_vad",
           "manual_commit",
@@ -339,7 +339,7 @@
           "speech-to-speech"
         ],
         "realtimeProtocol": "dashscope-omni",
-        "realtimeAudioMode": "manual",
+        "realtimeAudioMode": "semantic_vad",
         "interactionCapabilities": [
           "auto_vad",
           "manual_commit",
@@ -386,7 +386,7 @@
           "speech-to-speech"
         ],
         "realtimeProtocol": "dashscope-omni",
-        "realtimeAudioMode": "manual",
+        "realtimeAudioMode": "semantic_vad",
         "interactionCapabilities": [
           "auto_vad",
           "manual_commit",
@@ -405,7 +405,7 @@
           "speech-to-speech"
         ],
         "realtimeProtocol": "dashscope-omni",
-        "realtimeAudioMode": "manual",
+        "realtimeAudioMode": "semantic_vad",
         "interactionCapabilities": [
           "auto_vad",
           "manual_commit",
@@ -1335,11 +1335,11 @@
     },
     "supportProfileId": "support-watch-system-audio",
     "virtualRenderDeviceId": "",
-    "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+    "inboundVoiceModelId": "qwen3.5-livetranslate-flash-realtime",
     "inboundSecondaryAudioModelId": "",
     "outboundVoiceModelId": "qwen3.5-omni-plus-realtime",
     "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
-    "subtitleTranslationMode": "secondary",
+    "subtitleTranslationMode": "native",
     "subtitleTranslationModelId": "",
     "inputLevel": 100,
     "aecEnabled": true,
@@ -1402,6 +1402,11 @@
     "overlayHeight": 220,
     "overlayX": 50,
     "overlayY": 78,
+    "history": {
+      "enabled": true,
+      "sourceAudioEnabled": true,
+      "translatedAudioEnabled": true
+    },
     "status": "ready"
   },
   "speech": {

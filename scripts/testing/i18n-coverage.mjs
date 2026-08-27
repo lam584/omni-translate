@@ -67,7 +67,7 @@ const allowedSameAsSourceValuePatterns = [
   /^(?:GPT|Qwen|DashScope|Gemini|OpenAI|Omni)[\w.-]*$/u,
   /^(?:gpt|qwen|gemini|dashscope|openai)[a-z0-9._-]*$/u,
 ];
-// The public benchmark-score/v1 report deliberately has an English fallback
+// The public benchmark-score/v2 report deliberately has an English fallback
 // outside English and Simplified Chinese. `withEnglishFallback()` in the
 // runtime deep-merges that bundle before rendering, so treating these keys as
 // missing would reject the documented fallback policy rather than a broken
@@ -291,7 +291,7 @@ const thresholdFailures =
 let ratchetFailures = [];
 if (updateRatchetBaseline) {
   const baseline = {
-    comment: 'Translation coverage ratchet. New English keys must be translated in every locale except documented benchmark-score/v1 English fallbacks.',
+    comment: 'Translation coverage ratchet. New English keys must be translated in every locale except documented benchmark-score/v2 English fallbacks.',
     sourceKeys,
     translationCoverage: Object.fromEntries(
       results.filter(({ locale }) => locale !== sourceLocale).map(({ locale, translationCoverage }) => [locale, translationCoverage]),

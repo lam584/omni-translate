@@ -331,13 +331,15 @@ fn run_single_benchmark(
                     .into(),
             ))
             .map_err(|e| format!("audio commit send: {e}"))?;
-        socket
-            .send(Message::Text(
-                crate::audio::omni::build_dashscope_response_create()
-                    .to_string()
-                    .into(),
-            ))
-            .map_err(|e| format!("response.create send: {e}"))?;
+        if let Some(response_create) = config
+            .protocol_dialect
+            .or(Some(crate::audio::events::RealtimeProtocol::DashscopeOmni))
+            .and_then(crate::audio::omni::build_dashscope_response_create_for_protocol)
+        {
+            socket
+                .send(Message::Text(response_create.to_string().into()))
+                .map_err(|e| format!("response.create send: {e}"))?;
+        }
         progress.emit(
             "running",
             "response-requested",

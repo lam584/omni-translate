@@ -204,8 +204,8 @@ describe('realTimeSessionPageHelpers', () => {
 
   it('renders each cue status', () => {
     expect(renderToStaticMarkup(<CueStatusBadge cue={baseCue} />)).toContain('翻译中...');
-    expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true, translatedText: '[翻译失败] timeout' }} />)).toContain('失败');
-    expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true, translationCommitted: true, translatedText: '你好' }} />)).toContain('已翻译');
+    expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true, translationState: 'error', translatedText: '[翻译失败] timeout' }} />)).toContain('失败');
+    expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true, translationCommitted: true, translationState: 'final', translatedText: '你好' }} />)).toContain('已翻译');
     expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true }} />)).toContain('翻译中...');
     expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true, translationCommitted: true }} />)).toContain('失败');
   });
@@ -224,8 +224,15 @@ describe('realTimeSessionPageHelpers', () => {
     })).toBe('translated');
     expect(resolveCueTranslationState({
       ...baseCue,
-      translatedText: '[翻译失败] timeout',
+      translationState: 'error',
+      translatedText: 'provider timeout',
     })).toBe('failed');
+    expect(resolveCueTranslationState({
+      ...baseCue,
+      translationState: 'final',
+      translationCommitted: true,
+      translatedText: '[翻译失败] 是界面标签',
+    })).toBe('translated');
     expect(resolveCueTranslationState({
       ...baseCue,
       translationCommitted: true,

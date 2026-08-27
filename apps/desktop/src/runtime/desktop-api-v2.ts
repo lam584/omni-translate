@@ -54,7 +54,17 @@ import type {
   DiagnosticsCommandV2,
   ProviderCommandV2,
   SessionCommandV2,
+  HistoryCommandV2,
 } from '../schema/generated/api-v2-commands';
+import type {
+  HistoryAudioTrack,
+  HistoryCuePage,
+  HistoryPlaybackStartV2,
+  HistoryPlaybackStopV2,
+  HistorySessionDetail,
+  HistorySessionPage,
+  HistoryStatistics,
+} from '../schema/history';
 import type { DiagnosticLogEntryRuntime, RuntimeSnapshot } from '../schema/runtime-core';
 import type { ResolvedRealtimeProfile } from '../utils/realtime-profile';
 
@@ -99,7 +109,7 @@ export type BenchmarkHistorySavePayload = {
   model: string;
   runStatus: 'running' | 'completed' | 'failed' | 'interrupted';
   scoreStatus: 'pending' | 'judging' | 'final' | 'evidence-insufficient' | 'judge-failed' | 'benchmark-failed';
-  scoreVersion?: 'benchmark-score/v1';
+  scoreVersion?: 'benchmark-score/v2';
   totalScore?: number | null;
   grade?: string | null;
   report?: unknown | null;
@@ -165,6 +175,33 @@ export class DesktopApiV2 {
     // ServiceResult unwrap entirely.
     startAudioRoute: async (direction: 'inbound' | 'outbound', config: AppConfigDraft) =>
       this.invokeFn<AudioRuntimeSnapshot>('start_audio_route', { direction, config }),
+  };
+
+  readonly history = {
+    listSessions: async (cursor?: string, limit = 25) => unwrap(await this.invokeFn<ServiceResult<HistorySessionPage>>('history_v2', {
+      command: { action: 'listSessions', cursor, limit } satisfies HistoryCommandV2,
+    })),
+    getSession: async (sessionId: string) => unwrap(await this.invokeFn<ServiceResult<HistorySessionDetail | null>>('history_v2', {
+      command: { action: 'getSession', sessionId } satisfies HistoryCommandV2,
+    })),
+    listCues: async (sessionId: string, cursor?: string, limit = 50) => unwrap(await this.invokeFn<ServiceResult<HistoryCuePage>>('history_v2', {
+      command: { action: 'listCues', sessionId, cursor, limit } satisfies HistoryCommandV2,
+    })),
+    getStats: async () => unwrap(await this.invokeFn<ServiceResult<HistoryStatistics>>('history_v2', {
+      command: { action: 'getStats' } satisfies HistoryCommandV2,
+    })),
+    deleteSession: async (sessionId: string) => unwrap(await this.invokeFn<ServiceResult<{ deleted: boolean }>>('history_v2', {
+      command: { action: 'deleteSession', sessionId } satisfies HistoryCommandV2,
+    })),
+    clear: async () => unwrap(await this.invokeFn<ServiceResult<{ deletedCount: number }>>('history_v2', {
+      command: { action: 'clearHistory' } satisfies HistoryCommandV2,
+    })),
+    playCueAudio: async (sessionId: string, cueId: string, track: HistoryAudioTrack) => unwrap(await this.invokeFn<ServiceResult<HistoryPlaybackStartV2>>('history_v2', {
+      command: { action: 'playCueAudio', sessionId, cueId, track } satisfies HistoryCommandV2,
+    })),
+    stopPlayback: async () => unwrap(await this.invokeFn<ServiceResult<HistoryPlaybackStopV2>>('history_v2', {
+      command: { action: 'stopPlayback' } satisfies HistoryCommandV2,
+    })),
   };
 
   readonly bridge = {

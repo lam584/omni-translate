@@ -68,7 +68,7 @@ pub(crate) struct BenchmarkHistoryRecord {
     pub run_status: String,
     #[ts(type = "'pending' | 'judging' | 'final' | 'evidence-insufficient' | 'judge-failed' | 'benchmark-failed'")]
     pub score_status: String,
-    #[ts(type = "'benchmark-score/v1' | null")]
+    #[ts(type = "'benchmark-score/v1' | 'benchmark-score/v2' | null")]
     pub score_version: Option<String>,
     pub total_score: Option<f64>,
     pub grade: Option<String>,
@@ -93,7 +93,7 @@ pub(crate) struct BenchmarkHistorySummary {
     pub run_status: String,
     #[ts(type = "'pending' | 'judging' | 'final' | 'evidence-insufficient' | 'judge-failed' | 'benchmark-failed'")]
     pub score_status: String,
-    #[ts(type = "'benchmark-score/v1' | null")]
+    #[ts(type = "'benchmark-score/v1' | 'benchmark-score/v2' | null")]
     pub score_version: Option<String>,
     pub total_score: Option<f64>,
     pub grade: Option<String>,

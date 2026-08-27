@@ -139,14 +139,22 @@ describe('PreviewDesktopApi', () => {
 
     const loaded = await api.configuration.load();
     expect(loaded).toEqual(appConfigDraftMock);
+    expect(loaded.devices.inboundVoiceModelId).toBe('qwen3.5-livetranslate-flash-realtime');
+    expect(loaded.devices.outboundVoiceModelId).toBe('qwen3.5-omni-plus-realtime');
+    expect(loaded.devices.subtitleTranslationMode).toBe('native');
+    expect(loaded.providers[0].sceneModelAssignments.find((item) => item.scenario === 'watch')?.modelIds)
+      .toEqual(['qwen3.5-livetranslate-flash-realtime']);
 
     const next = draft();
     next.subtitles.overlayFontSize = 44;
+    next.devices.inboundVoiceModelId = 'saved-user-model';
     await api.configuration.save(next);
     expect((await api.configuration.load()).subtitles.overlayFontSize).toBe(44);
+    expect((await api.configuration.load()).devices.inboundVoiceModelId).toBe('saved-user-model');
 
     const reset = await api.configuration.reset();
     expect(reset).toEqual(appConfigDraftMock);
+    expect(reset.devices.inboundVoiceModelId).toBe('qwen3.5-livetranslate-flash-realtime');
 
     await expect(api.configuration.export()).rejects.toThrow('browser-preview');
     await expect(api.configuration.import('C:/x.json')).rejects.toThrow('browser-preview');

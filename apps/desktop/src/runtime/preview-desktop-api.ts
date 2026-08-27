@@ -232,6 +232,10 @@ export class PreviewDesktopApi {
     stopRoute: async (direction: 'inbound' | 'outbound') => this.stopRoute(direction),
     clearCues: async () => {
       this.audio.subtitleOverlay = {
+        streamId: 'preview-subtitle-stream',
+        generation: this.audio.subtitleOverlay.generation + 1,
+        seq: 0,
+        baselineIncluded: true,
         queueDepth: 0,
         droppedCueCount: 0,
         firstTranslationAverageMs: null,
@@ -273,6 +277,22 @@ export class PreviewDesktopApi {
     syncOverlayRegion: async (_rounded = true) => this.audioSnapshot(),
     syncOverlayWindowState: async (_locked: boolean, _rounded: boolean, _hotspotInteractive: boolean) => this.audioSnapshot(),
     startAudioRoute: async (direction: 'inbound' | 'outbound', _config: AppConfigDraft) => this.startRoute(direction),
+  };
+
+  readonly history = {
+    listSessions: async (_cursor?: string, _limit = 25) => ({ items: [], nextCursor: null }),
+    getSession: async (_sessionId: string) => null,
+    listCues: async (_sessionId: string, _cursor?: string, _limit = 50) => ({
+      items: [],
+      nextCursor: null,
+    }),
+    getStats: async () => ({ sessionCount: 0, cueCount: 0, audioBytes: 0 }),
+    deleteSession: async (_sessionId: string) => ({ deleted: false }),
+    clear: async () => ({ deletedCount: 0 }),
+    playCueAudio: async (_sessionId: string, _cueId: string, _track: 'source' | 'translated') => {
+      throw previewUnavailable('history audio playback');
+    },
+    stopPlayback: async () => ({ stopped: false }),
   };
 
   readonly bridge = {

@@ -166,6 +166,111 @@ describe('connectDesktopRuntimeBridge failure and sync edges', () => {
     }
   });
 
+  it('resynchronizes through session_v2 when a subtitle delta sequence has a gap', async () => {
+    const reconciled = structuredClone(audioRuntimeSnapshotMock);
+    reconciled.subtitleOverlay.streamId = 'gap-stream';
+    reconciled.subtitleOverlay.generation = 2;
+    reconciled.subtitleOverlay.seq = 8;
+    reconciled.subtitleOverlay.recentCues = [];
+    reconciled.subtitleOverlay.activeCue = null;
+    happyInvoke({ 'session_v2:snapshot': { data: reconciled, warnings: [] } });
+    const listeners = captureRegisteredListeners();
+
+    const cleanup = await connectDesktopRuntimeBridge();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    invokeMock.mockClear();
+    listeners.get('audio://subtitle-delta')?.({
+      payload: {
+        streamId: useAppStore.getState().subtitleStreamId,
+        generation: useAppStore.getState().subtitleGeneration,
+        seq: useAppStore.getState().subtitleSeq + 2,
+        operation: 'upsert',
+        cue: null,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(invokeMock.mock.calls.some(
+      ([command, args]) => command === 'session_v2' && (args as V2Args)?.command?.action === 'snapshot',
+    )).toBe(true);
+    expect(useAppStore.getState().subtitleStreamId).toBe('gap-stream');
+    expect(useAppStore.getState().subtitleSeq).toBe(8);
+    cleanup();
+  });
+
+  it('retries subtitle resync when another gap arrives while the baseline snapshot is in flight', async () => {
+    happyInvoke();
+    const listeners = captureRegisteredListeners();
+    const cleanup = await connectDesktopRuntimeBridge();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const initial = useAppStore.getState();
+    const firstBaseline = structuredClone(initial.audioRuntimeSnapshot);
+    firstBaseline.snapshotSeq = initial.audioRuntimeSnapshot.snapshotSeq + 100;
+    firstBaseline.subtitleOverlay.streamId = initial.subtitleStreamId;
+    firstBaseline.subtitleOverlay.generation = initial.subtitleGeneration;
+    firstBaseline.subtitleOverlay.seq = initial.subtitleSeq + 2;
+    firstBaseline.subtitleOverlay.recentCues = [];
+    firstBaseline.subtitleOverlay.activeCue = null;
+
+    const finalCue = {
+      cueId: 'cue-final-after-second-gap',
+      routeDirection: 'inbound' as const,
+      sourceText: 'authoritative source final',
+      translatedText: '权威最终译文',
+      startedAt: 'unix-ms:1',
+      endedAt: 'unix-ms:2',
+      committed: true,
+      translationCommitted: true,
+    };
+    const secondBaseline = structuredClone(firstBaseline);
+    secondBaseline.snapshotSeq += 1;
+    secondBaseline.subtitleOverlay.seq += 1;
+    secondBaseline.subtitleOverlay.recentCues = [finalCue];
+    secondBaseline.subtitleOverlay.activeCue = finalCue;
+
+    let releaseFirstSnapshot: ((value: unknown) => void) | undefined;
+    let snapshotCallCount = 0;
+    invokeMock.mockImplementation(async (command: string, args?: V2Args) => {
+      const action = args?.command?.action;
+      if (command === 'session_v2' && action === 'snapshot') {
+        snapshotCallCount += 1;
+        if (snapshotCallCount === 1) {
+          return new Promise((resolve) => { releaseFirstSnapshot = resolve; });
+        }
+        return { data: secondBaseline, warnings: [] };
+      }
+      if (command.startsWith('append_frontend_diagnostics_log')) return undefined;
+      return { data: structuredClone(runtimeSnapshotMock), warnings: [] };
+    });
+
+    const emitGap = (seq: number) => listeners.get('audio://subtitle-delta')?.({
+      payload: {
+        streamId: initial.subtitleStreamId,
+        generation: initial.subtitleGeneration,
+        seq,
+        operation: 'upsert',
+        cue: null,
+      },
+    });
+    emitGap(initial.subtitleSeq + 2);
+    await Promise.resolve();
+    emitGap(initial.subtitleSeq + 3);
+    await Promise.resolve();
+    expect(snapshotCallCount).toBe(1);
+
+    releaseFirstSnapshot?.({ data: firstBaseline, warnings: [] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(snapshotCallCount).toBe(2);
+    expect(useAppStore.getState().subtitleSeq).toBe(secondBaseline.subtitleOverlay.seq);
+    expect(useAppStore.getState().subtitleOrderedCueIds).toContain(finalCue.cueId);
+    expect(useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay.recentCues).toHaveLength(1);
+    expect(useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay.recentCues.length)
+      .toBeLessThanOrEqual(32);
+    cleanup();
+  });
+
   it('degrades to the runtime-error snapshot when bootstrapRuntime fails after the ping', async () => {
     happyInvoke({ 'configuration_v2:bootstrapRuntime': new Error('runtime store exploded') });
 

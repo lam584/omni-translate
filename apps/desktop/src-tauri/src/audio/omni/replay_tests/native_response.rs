@@ -1,5 +1,7 @@
 use super::*;
 
+mod audio_playback;
+
 /// Native server-VAD providers may begin the next speech window just before
 /// the prior turn's output and ASR final arrive. The response used to commit a
 /// translation-only cue, then the late ASR final created a second uncommitted
@@ -292,6 +294,11 @@ fn replay_fast_next_speech_turn_detected_cancel_keeps_item_lineage() {
         .expect("completed second cue");
     assert_eq!(first.source_text, source_one);
     assert!(first.committed);
+    assert!(!first.translation_committed);
+    assert_eq!(
+        first.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Error)
+    );
     assert_eq!(first.translated_text, "[翻译失败] 实时响应被后续语音打断。");
     assert_eq!(second.source_text, source_two);
     assert!(second.committed);
@@ -355,7 +362,11 @@ fn replay_native_empty_response_reaches_failure_terminal_and_keeps_late_asr_fina
         .find(|cue| cue.source_text == final_source)
         .expect("source cue should remain visible");
     assert!(cue.committed);
-    assert!(cue.translation_committed);
+    assert!(!cue.translation_committed);
+    assert_eq!(
+        cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Error)
+    );
     assert_eq!(
         cue.translated_text,
         "[翻译失败] 实时模型已结束本轮响应，但没有返回可用译文。"
@@ -429,7 +440,11 @@ fn replay_turn_detected_response_uses_cancellation_terminal() {
         .find(|cue| cue.source_text == source)
         .expect("cancelled response should still terminalize its source cue");
     assert!(cue.committed);
-    assert!(cue.translation_committed);
+    assert!(!cue.translation_committed);
+    assert_eq!(
+        cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Error)
+    );
     assert_eq!(cue.translated_text, "[翻译失败] 实时响应被后续语音打断。");
     let report = harness
         .store()
@@ -450,6 +465,58 @@ fn replay_turn_detected_response_uses_cancellation_terminal() {
         .iter()
         .flat_map(|cue| &cue.issues)
         .any(|issue| issue.code == "native-empty-response"));
+}
+
+/// LiveTranslate may emit text.done for an interrupted/incomplete response.
+/// The candidate stays replaceable and the terminal status must publish an
+/// explicit failure instead of presenting the partial text as a final.
+#[test]
+fn replay_incomplete_text_candidate_never_becomes_translation_final() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    let mut slice = WorkerSlice::new();
+    let source = "an incomplete response";
+    let steps = vec![
+        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_started" })),
+        ScriptStep::Event(json!({
+            "type": "conversation.item.input_audio_transcription.delta",
+            "item_id": "item-incomplete",
+            "delta": source
+        })),
+        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_stopped" })),
+        ScriptStep::Event(json!({
+            "type": "response.text.done",
+            "response_id": "resp-incomplete",
+            "text": "不应提交的候选译文"
+        })),
+        ScriptStep::Event(json!({
+            "type": "response.done",
+            "response": {
+                "id": "resp-incomplete",
+                "status": "incomplete",
+                "status_details": { "reason": "max_output_tokens" },
+                "output": [{ "content": [{ "text": "不应提交的候选译文" }] }]
+            }
+        })),
+    ];
+    let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
+    for _ in 0..5 {
+        socket = harness.tick(socket, &mut slice);
+    }
+
+    let snapshot = harness.store().snapshot();
+    let cue = snapshot
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .find(|cue| cue.source_text == source)
+        .expect("incomplete response keeps its source cue");
+    assert!(!cue.translation_committed);
+    assert_eq!(
+        cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Error)
+    );
+    assert_eq!(cue.translated_text, "[翻译失败] 实时模型未能完成本轮响应。");
+    assert_ne!(cue.translated_text, "不应提交的候选译文");
 }
 
 /// A cancelled response can beat both ASR delta and ASR final. Because that
@@ -516,7 +583,11 @@ fn replay_cancelled_response_without_item_lineage_preserves_both_cues() {
         .find(|cue| cue.translated_text == "[翻译失败] 实时响应被后续语音打断。")
         .expect("cancelled response must retain its terminal cue");
     assert!(terminal_cue.committed);
-    assert!(terminal_cue.translation_committed);
+    assert!(!terminal_cue.translation_committed);
+    assert_eq!(
+        terminal_cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Error)
+    );
 
     let late_source_cue = snapshot
         .subtitle_overlay
@@ -539,11 +610,16 @@ fn replay_cancelled_response_without_item_lineage_preserves_both_cues() {
         late_source_cue.cue_id, terminal_cue.cue_id,
         "unresolved cues: {cue_debug:?}",
     );
-    assert!(
-        !late_source_cue.committed,
-        "without response lineage the source has no native translation terminal",
-    );
+    assert!(late_source_cue.committed, "Provider ASR completed owns source finality");
+    assert!(harness
+        .store()
+        .subtitle_source_is_final(&late_source_cue.cue_id));
+    assert!(!late_source_cue.translation_committed);
     assert!(late_source_cue.translated_text.is_empty());
+    assert_eq!(
+        late_source_cue.translation_state,
+        Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Pending)
+    );
 }
 
 /// Some OpenAI-compatible realtime providers put the final text only in the
@@ -583,7 +659,8 @@ fn replay_response_done_nested_output_commits_native_translation() {
         .iter()
         .find(|cue| cue.source_text == source)
         .expect("nested response output should create a cue");
-    assert!(cue.committed);
+    assert!(!cue.committed, "response final cannot own the missing ASR final");
+    assert!(cue.translation_committed);
     assert_eq!(cue.translated_text, translated);
 }
 
@@ -758,89 +835,6 @@ fn replay_two_stopped_turns_before_first_response_keep_fifo_ownership() {
         .iter()
         .filter(|cue| !cue.committed)
         .all(|cue| cue.source_text.trim().is_empty()));
-}
-
-#[test]
-fn replay_next_speech_started_preserves_prior_native_audio_buffer() {
-    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
-    let mut slice = WorkerSlice::new();
-    let steps = vec![
-        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_started" })),
-        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_stopped" })),
-        ScriptStep::Event(json!({
-            "type": "response.audio.delta",
-            "response_id": "response-one",
-            "delta": "AQACAA=="
-        })),
-        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_started" })),
-    ];
-    let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
-    for _ in 0..4 {
-        socket = harness.tick(socket, &mut slice);
-    }
-
-    assert_eq!(slice.pending_audio_buffer, vec![1, 2]);
-    assert_eq!(slice.pending_audio_delta_count, 1);
-    assert_eq!(
-        slice.pending_audio_response_id.as_deref(),
-        Some("response-one")
-    );
-}
-
-#[test]
-fn replay_audio_done_after_response_done_keeps_the_subtitle_cue_identity() {
-    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
-    let mut slice = WorkerSlice::new();
-    let source = "Actual source cue";
-    let translated = "实际译文";
-    let steps = vec![
-        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_started" })),
-        ScriptStep::Event(json!({
-            "type": "conversation.item.input_audio_transcription.delta",
-            "item_id": "item-audio-owner",
-            "delta": source
-        })),
-        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_stopped" })),
-        ScriptStep::Event(json!({
-            "type": "response.created",
-            "response": { "id": "response-audio-owner" }
-        })),
-        ScriptStep::Event(json!({
-            "type": "response.audio.delta",
-            "response_id": "response-audio-owner",
-            "delta": "AQACAA=="
-        })),
-        ScriptStep::Event(json!({
-            "type": "response.done",
-            "response": {
-                "id": "response-audio-owner",
-                "output": [{ "content": [{ "type": "text", "text": translated }] }]
-            }
-        })),
-        ScriptStep::Event(json!({
-            "type": "response.audio.done",
-            "response_id": "response-audio-owner"
-        })),
-    ];
-    let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
-    for _ in 0..7 {
-        socket = harness.tick(socket, &mut slice);
-    }
-
-    let snapshot = harness.store().snapshot();
-    let cue = snapshot
-        .subtitle_overlay
-        .recent_cues
-        .iter()
-        .find(|cue| cue.source_text == source)
-        .expect("response subtitle cue");
-    assert_eq!(cue.translated_text, translated);
-    assert_eq!(harness.playback_tx.pending_cue_ids(), [cue.cue_id.as_str()]);
-    assert!(harness
-        .playback_tx
-        .pending_cue_ids()
-        .iter()
-        .all(|cue_id| !cue_id.starts_with("omni-audio-")));
 }
 
 fn normalize_for_replay_assert(text: &str) -> String {

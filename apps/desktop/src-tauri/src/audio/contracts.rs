@@ -63,12 +63,23 @@ impl AudioRouteRuntimeSnapshot {
     }
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SubtitleDisplaySegmentRuntime {
     pub source_text: String,
     pub translated_text: String,
     pub pending: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(rename_all = "kebab-case")]
+pub(crate) enum SubtitleTranslationStateRuntime {
+    Pending,
+    Streaming,
+    Final,
+    Error,
+    Superseded,
 }
 
 /// serde `skip_serializing_if` predicate: omit `false` booleans from the wire
@@ -77,10 +88,25 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-#[derive(Clone, Serialize, TS)]
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SubtitleCueRuntime {
     pub cue_id: String,
+    /// Source-hypothesis generation. Append-only growth stays in the same
+    /// revision; a replacement of already published source content advances
+    /// it so late translation callbacks can be rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub revision: Option<u64>,
+    /// Monotonic runtime mutation order used by delta consumers to reject
+    /// out-of-order cue updates without comparing wall clocks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sequence: Option<u64>,
     #[ts(type = "'inbound' | 'outbound'")]
     pub route_direction: String,
     pub source_text: String,
@@ -107,11 +133,24 @@ pub(crate) struct SubtitleCueRuntime {
     #[ts(as = "Option<bool>")]
     #[ts(optional)]
     pub translation_committed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub translation_state: Option<SubtitleTranslationStateRuntime>,
 }
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SubtitleOverlayRuntimeSnapshot {
+    /// Identifies one desktop process' subtitle event stream. A renderer must
+    /// resync when this changes rather than applying deltas from an old shell.
+    pub stream_id: String,
+    /// Bumped whenever the live cue window is reset.
+    pub generation: u64,
+    /// Last subtitle delta included in this baseline.
+    pub seq: u64,
+    /// `true` for invoke/bootstrap baselines and `false` for aggregate push
+    /// snapshots, which deliberately omit the cue collection.
+    pub baseline_included: bool,
     pub queue_depth: usize,
     pub dropped_cue_count: u64,
     pub first_translation_average_ms: Option<u64>,
@@ -127,6 +166,10 @@ pub(crate) struct SubtitleOverlayRuntimeSnapshot {
 impl SubtitleOverlayRuntimeSnapshot {
     pub(crate) fn empty() -> Self {
         Self {
+            stream_id: String::new(),
+            generation: 0,
+            seq: 0,
+            baseline_included: true,
             queue_depth: 0,
             dropped_cue_count: 0,
             first_translation_average_ms: None,
@@ -137,6 +180,18 @@ impl SubtitleOverlayRuntimeSnapshot {
             recent_cues: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubtitleDeltaRuntime {
+    pub stream_id: String,
+    pub generation: u64,
+    pub seq: u64,
+    #[ts(type = "'upsert' | 'remove' | 'reset'")]
+    pub operation: String,
+    /// Upserts and removals carry exactly one cue. Reset carries none.
+    pub cue: Option<SubtitleCueRuntime>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
@@ -174,7 +229,17 @@ pub(crate) struct WatchIssueRuntime {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WatchCueComparisonRuntime {
     pub cue_id: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    #[ts(as = "Option<u64>")]
+    #[ts(optional)]
     pub revision: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    #[ts(as = "Option<u64>")]
+    #[ts(optional)]
+    pub sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub translation_state: Option<SubtitleTranslationStateRuntime>,
     #[ts(type = "'inbound' | 'outbound'")]
     pub route_direction: String,
     pub translation_path: String,
@@ -186,6 +251,16 @@ pub(crate) struct WatchCueComparisonRuntime {
     pub rendered_text: String,
     #[ts(type = "'exact' | 'formatting-only' | 'different' | 'not-published' | 'not-rendered' | 'model-error' | 'pending' | 'superseded'")]
     pub comparison_status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub audio_started_at_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(type = "'provider-offset' | 'manual-audible' | 'local-rms' | 'provider-event' | null")]
+    pub audio_start_origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub source_stable_at_ms: Option<u64>,
     pub source_at_ms: Option<u64>,
     pub llm_first_at_ms: Option<u64>,
     pub llm_final_at_ms: Option<u64>,
@@ -201,6 +276,18 @@ pub(crate) struct WatchCueComparisonRuntime {
     pub llm_final_to_publish_ms: Option<u64>,
     pub published_final_to_render_ms: Option<u64>,
     pub llm_final_to_render_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub audio_to_source_first_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub audio_to_llm_first_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub audio_to_render_first_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub audio_to_render_final_ms: Option<u64>,
     pub events: Vec<WatchTimelineEventRuntime>,
     pub issues: Vec<WatchIssueRuntime>,
     pub dropped_event_count: u64,
@@ -222,6 +309,24 @@ pub(crate) struct WatchSessionReportSummaryRuntime {
     pub average_source_to_render_ms: Option<u64>,
     pub p95_source_to_render_ms: Option<u64>,
     pub max_source_to_render_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub average_audio_to_render_first_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub p95_audio_to_render_first_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub max_audio_to_render_first_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub average_audio_to_render_final_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub p95_audio_to_render_final_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub max_audio_to_render_final_ms: Option<u64>,
     pub average_llm_first_to_render_ms: Option<u64>,
     pub p95_llm_first_to_render_ms: Option<u64>,
     pub max_llm_first_to_render_ms: Option<u64>,
@@ -461,6 +566,8 @@ mod tests {
     fn empty_cue() -> SubtitleCueRuntime {
         SubtitleCueRuntime {
             cue_id: "cue-1".to_string(),
+            revision: None,
+            sequence: None,
             route_direction: "inbound".to_string(),
             source_text: "hello".to_string(),
             display_source_text: String::new(),
@@ -470,6 +577,7 @@ mod tests {
             ended_at: "2026-07-30T00:00:01Z".to_string(),
             committed: true,
             translation_committed: false,
+            translation_state: None,
         }
     }
 
@@ -481,15 +589,30 @@ mod tests {
         assert!(!object.contains_key("displaySourceText"));
         assert!(!object.contains_key("displaySegments"));
         assert!(!object.contains_key("translationCommitted"));
+        assert!(!object.contains_key("revision"));
+        assert!(!object.contains_key("sequence"));
+        assert!(!object.contains_key("translationState"));
     }
 
     #[test]
     fn cue_typescript_keeps_omitted_wire_fields_optional() {
         let declaration = SubtitleCueRuntime::decl(&ts_rs::Config::default());
 
-        assert!(declaration.contains("displaySourceText?: string"));
-        assert!(declaration.contains("displaySegments?: Array<SubtitleDisplaySegmentRuntime>"));
-        assert!(declaration.contains("translationCommitted?: boolean"));
+        for field in [
+            "displaySourceText",
+            "displaySegments",
+            "revision",
+            "sequence",
+            "translationState",
+            "translationCommitted",
+        ] {
+            assert!(
+                declaration.contains(&format!("{field}?:")),
+                "{field} must remain optional in the renderer contract: {declaration}",
+            );
+        }
+        assert!(declaration.contains("Array<SubtitleDisplaySegmentRuntime>"));
+        assert!(declaration.contains("SubtitleTranslationStateRuntime"));
     }
 
     #[test]

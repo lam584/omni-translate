@@ -26,4 +26,3 @@ export type CredentialRefStatus = { reference: string, backend: string, hasSecre
 export type CredentialSecretPayload = { reference: string, backend: string, secret: string | null, };
 
 export type CredentialDirectResultEvent = { jobId: string, reference: string, success: boolean, detail: string | null, error: string | null, elapsedMs: number, };
-

@@ -15,7 +15,9 @@ use crate::common::MapErrToString;
 use crate::runtime::events::{emit_runtime_notification, emit_runtime_snapshot};
 use crate::runtime::state::RuntimeStateStore;
 
-use super::contracts::{AudioRuntimeSnapshot, SubtitleCueRuntime};
+use super::contracts::{
+    AudioRuntimeSnapshot, SubtitleCueRuntime, SubtitleTranslationStateRuntime,
+};
 use super::events::AUDIO_RUNTIME_SNAPSHOT_EVENT;
 use super::state::{
     AudioRouteHandle, AudioStateStore, BridgeSourceFrameIdentity, CapturedSegmentAudio,
@@ -429,10 +431,19 @@ pub(crate) fn emit_audio_snapshot<R: tauri::Runtime>(
     app: &AppHandle<R>,
     store: &AudioStateStore,
 ) -> Result<(), String> {
-    app.emit(AUDIO_RUNTIME_SNAPSHOT_EVENT, store.snapshot())
-        .map_err_str()?;
-    if let Some(runtime_state) = app.try_state::<RuntimeStateStore>() {
-        emit_runtime_snapshot(app, &runtime_state).map_err_str()?;
+    let (snapshot, subtitle_deltas, emit_audio, emit_runtime) = store.prepare_event_dispatch();
+    for delta in subtitle_deltas {
+        app.emit(super::events::SUBTITLE_DELTA_EVENT, delta)
+            .map_err_str()?;
+    }
+    if emit_audio {
+        app.emit(AUDIO_RUNTIME_SNAPSHOT_EVENT, snapshot)
+            .map_err_str()?;
+    }
+    if emit_runtime {
+        if let Some(runtime_state) = app.try_state::<RuntimeStateStore>() {
+            emit_runtime_snapshot(app, &runtime_state).map_err_str()?;
+        }
     }
     Ok(())
 }
@@ -859,6 +870,8 @@ impl RouteProcessor {
 
         let cue = SubtitleCueRuntime {
             cue_id: format!("cue-{}-{}", self.spec.direction, self.segment_index),
+            revision: None,
+            sequence: None,
             route_direction: self.spec.direction.clone(),
             source_text,
             display_source_text: String::new(),
@@ -868,6 +881,7 @@ impl RouteProcessor {
             ended_at: ms_marker(ended_at_ms),
             committed: false,
             translation_committed: false,
+            translation_state: Some(SubtitleTranslationStateRuntime::Pending),
         };
 
         Some(FinalizedSegment {
@@ -1949,6 +1963,8 @@ mod tests {
         for index in 0..16 {
             store.push_subtitle_cue(SubtitleCueRuntime {
                 cue_id: format!("cue-{index}"),
+                revision: None,
+                sequence: None,
                 route_direction: "inbound".to_string(),
                 source_text: format!("source-{index}"),
                 display_source_text: String::new(),
@@ -1958,6 +1974,7 @@ mod tests {
                 ended_at: "unix-ms:2".to_string(),
                 committed: true,
                 translation_committed: true,
+                translation_state: Some(SubtitleTranslationStateRuntime::Final),
             });
         }
 

@@ -257,7 +257,7 @@ describe('provider model capabilities', () => {
     expect(seeded.find((item) => item.modelId === 'hunyuan-translation')?.realtimeAudioMode).toBe('server_vad');
     expect(seeded.find((item) => item.modelId === 'gemini-3.1-flash-live-preview')?.realtimeAudioMode).toBe('gemini_auto_activity');
     expect(seeded.find((item) => item.modelId === 'qwen3.5-livetranslate-flash-realtime')?.realtimeAudioMode).toBe('server_vad');
-    expect(seeded.find((item) => item.modelId === 'qwen3.5-omni-flash-realtime')?.realtimeAudioMode).toBe('manual');
+    expect(seeded.find((item) => item.modelId === 'qwen3.5-omni-flash-realtime')?.realtimeAudioMode).toBe('semantic_vad');
     expect(seeded.every((item) => item.capabilities.length > 0)).toBe(true);
   });
 });

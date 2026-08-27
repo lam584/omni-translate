@@ -18,6 +18,7 @@ use crate::bridge::events as bridge_events;
 use crate::bridge::state::BridgeStateStore;
 use crate::diagnostics::events as diagnostics_events;
 use crate::diagnostics::state::DiagnosticsStateStore;
+use crate::history::HistoryStateStore;
 use crate::provider::contracts::ProviderDraftInput;
 use crate::provider::events as provider_events;
 use crate::runtime::events as runtime_events;
@@ -143,6 +144,84 @@ fn finish_v2<T, R: tauri::Runtime>(
             Err(attach_request_id(error, &request_id))
         }
     }
+}
+
+#[derive(Debug, Deserialize, ts_rs::TS)]
+#[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub(crate) enum HistoryCommandV2 {
+    ListSessions {
+        #[ts(optional)]
+        cursor: Option<String>,
+        #[ts(optional)]
+        limit: Option<u32>,
+    },
+    GetSession { session_id: String },
+    ListCues {
+        session_id: String,
+        #[ts(optional)]
+        cursor: Option<String>,
+        #[ts(optional)]
+        limit: Option<u32>,
+    },
+    GetStats,
+    DeleteSession { session_id: String },
+    ClearHistory,
+    PlayCueAudio {
+        session_id: String,
+        cue_id: String,
+        #[ts(type = "'source' | 'translated'")]
+        track: crate::history::HistoryAudioTrack,
+    },
+    StopPlayback,
+}
+
+#[tauri::command]
+pub(crate) fn history_v2(
+    app: AppHandle,
+    command: HistoryCommandV2,
+) -> Result<ServiceResult<Value>, ServiceErrorV2> {
+    let request_id = new_request_id();
+    let started = std::time::Instant::now();
+    log_v2_entry(&app, "history_v2", &request_id);
+    let history = app.state::<HistoryStateStore>();
+    let outcome = match command {
+        HistoryCommandV2::ListSessions { cursor, limit } => {
+            history.list_sessions(cursor.as_deref(), limit.unwrap_or(25)).and_then(|value| {
+                to_value(value).map_err(|error| error.to_string())
+            })
+        }
+        HistoryCommandV2::GetSession { session_id } => history
+            .get_session(&session_id)
+            .and_then(|value| to_value(value).map_err(|error| error.to_string())),
+        HistoryCommandV2::ListCues { session_id, cursor, limit } => history
+            .list_cues(&session_id, cursor.as_deref(), limit.unwrap_or(50))
+            .and_then(|value| to_value(value).map_err(|error| error.to_string())),
+        HistoryCommandV2::GetStats => history
+            .statistics()
+            .and_then(|value| to_value(value).map_err(|error| error.to_string())),
+        HistoryCommandV2::DeleteSession { session_id } => history
+            .delete_session(&session_id)
+            .map(|deleted| {
+                if deleted {
+                    crate::history::emit_changed(&app, "sessionDeleted", Some(session_id));
+                }
+                json!({ "deleted": deleted })
+            }),
+        HistoryCommandV2::ClearHistory => history.clear(&app).map(|deleted_count| {
+            if deleted_count > 0 {
+                crate::history::emit_changed(&app, "historyCleared", None);
+            }
+            json!({ "deletedCount": deleted_count })
+        }),
+        HistoryCommandV2::PlayCueAudio { session_id, cue_id, track } => history
+            .play_cue_audio(&app, &session_id, &cue_id, track)
+            .and_then(|value| to_value(value).map_err(|error| error.to_string())),
+        HistoryCommandV2::StopPlayback => history
+            .stop_playback(&app, "user")
+            .and_then(|value| to_value(value).map_err(|error| error.to_string())),
+    }
+    .map_err(ServiceErrorV2::from);
+    finish_v2(&app, "history_v2", request_id, started, outcome)
 }
 
 /// Stable event shape for renderer subscriptions.  Individual producers can
@@ -483,7 +562,7 @@ pub(crate) enum DiagnosticsCommandV2 {
     OpenExportDirectory { output_path: String },
     WriteExportArtifact { filename: String, content: String },
     OpenExternalUrl { url: String },
-    /// Creates a new `benchmark-score/v1` record when `recordId` is omitted,
+    /// Creates a new `benchmark-score/v2` record when `recordId` is omitted,
     /// or replaces the complete persisted snapshot for that record when it is
     /// supplied.  The report/score values are arbitrary JSON and are scrubbed
     /// for credentials before they reach SQLite.
@@ -496,7 +575,7 @@ pub(crate) enum DiagnosticsCommandV2 {
         run_status: String,
         #[ts(type = "'pending' | 'judging' | 'final' | 'evidence-insufficient' | 'judge-failed' | 'benchmark-failed'")]
         score_status: String,
-        #[ts(optional, type = "'benchmark-score/v1'")]
+        #[ts(optional, type = "'benchmark-score/v2'")]
         score_version: Option<String>,
         #[ts(optional = nullable)]
         total_score: Option<f64>,
@@ -752,7 +831,7 @@ mod tests {
                 .unwrap();
         assert!(matches!(configuration, ConfigurationCommandV2::CreateSnapshot { .. }));
         let history: DiagnosticsCommandV2 = serde_json::from_str(
-            r#"{"action":"saveBenchmarkHistory","runId":"run-1","model":"judge-model","runStatus":"completed","scoreStatus":"final","scoreVersion":"benchmark-score/v1","totalScore":91,"grade":"A","report":{"event":"done"},"score":{"version":"benchmark-score/v1"}}"#,
+            r#"{"action":"saveBenchmarkHistory","runId":"run-1","model":"judge-model","runStatus":"completed","scoreStatus":"final","scoreVersion":"benchmark-score/v2","totalScore":91,"grade":"A","report":{"event":"done"},"score":{"version":"benchmark-score/v2"}}"#,
         )
         .unwrap();
         assert!(matches!(
@@ -825,6 +904,9 @@ mod tests {
                     .map(|_| ())
                     .map_err(|error| error.to_string()),
                 "diagnostics_v2" => serde_json::from_value::<super::DiagnosticsCommandV2>(payload)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+                "history_v2" => serde_json::from_value::<super::HistoryCommandV2>(payload)
                     .map(|_| ())
                     .map_err(|error| error.to_string()),
                 "configuration_v2" => serde_json::from_value::<ConfigurationCommandV2>(payload)

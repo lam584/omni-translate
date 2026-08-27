@@ -196,7 +196,7 @@ function Invoke-WatchModeRun {
     }
     if ($virtualDriverMediaPreflight.status -eq 'passed') {
       $virtualDriverMediaPreflight.data | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path $outputDir "virtual-driver-media-source-preflight.json") -Encoding UTF8
-    } else {
+    } elseif ($virtualDriverMediaPreflight.status -eq 'failed') {
       $preflightDiagnosticsPath = Join-Path $outputDir "virtual-driver-media-source-preflight-diagnostics.json"
       if (Test-Path -LiteralPath $preflightDiagnosticsPath -PathType Leaf) {
         Get-Content -LiteralPath $preflightDiagnosticsPath -Raw -Encoding UTF8 | Set-Content -Path (Join-Path $outputDir "virtual-driver-media-source-preflight.json") -Encoding UTF8
@@ -204,6 +204,11 @@ function Invoke-WatchModeRun {
         [pscustomobject]@{ passed = $false; error = $virtualDriverMediaPreflight.error.message } | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $outputDir "virtual-driver-media-source-preflight.json") -Encoding UTF8
       }
       throw "virtual-driver media source preflight failed before the Desktop/LLM session: $($virtualDriverMediaPreflight.error.message)"
+    } else {
+      [pscustomobject]@{
+        skipped = $true
+        reason = [string]$virtualDriverMediaPreflight.data.reason
+      } | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $outputDir "virtual-driver-media-source-preflight.json") -Encoding UTF8
     }
   
     $physicalOutputProbe = if ($FeedbackLoopPrevention -eq "echo-cancel") {

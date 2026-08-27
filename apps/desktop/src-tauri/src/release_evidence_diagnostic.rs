@@ -596,7 +596,7 @@ async fn collect_provider_probe(
             json!(provider_connect_completed_at),
         );
     }
-    let result = json!({
+    let mut result = json!({
         "schemaVersion": 1,
         "artifactKind": "provider-production-probe-result",
         "collectorId": EvidenceScenario::ProviderProbe.collector_id(),
@@ -627,18 +627,31 @@ async fn collect_provider_probe(
         "endpointHost": endpoint_host,
         "verdict": probe.verdict,
         "latencyMs": probe.measured_latency_ms,
-        "latencyBudgetMs": probe.latency_budget_ms,
-        "streamObserved": probe.stream_supported,
-        "responseShapeStable": probe.response_shape_stable,
-        "errorShapeStable": probe.error_shape_stable,
-        "credentialStatus": {
+        "latencyBudgetMs": probe.latency_budget_ms
+    });
+    let result_object = result
+        .as_object_mut()
+        .ok_or_else(|| "provider probe result must be a JSON object".to_string())?;
+    for (key, value) in [
+        ("connectionAttempts", json!(probe.connection_attempts)),
+        ("connectionCount", json!(probe.connection_count)),
+        ("connectionOpened", json!(probe.connection_opened)),
+        ("connectionClosed", json!(probe.connection_closed)),
+        ("connectionOwner", json!(probe.connection_owner)),
+        ("connectionGeneration", json!(probe.connection_generation)),
+        ("streamObserved", json!(probe.stream_supported)),
+        ("responseShapeStable", json!(probe.response_shape_stable)),
+        ("errorShapeStable", json!(probe.error_shape_stable)),
+        ("credentialStatus", json!({
             "backend": credential.backend,
             "exists": credential.has_secret,
             "reference": credential.reference,
-        },
-        "rawProbeResult": raw_probe_result,
-        "diagnosticsExport": diagnostics,
-    });
+        })),
+        ("rawProbeResult", raw_probe_result),
+        ("diagnosticsExport", json!(diagnostics)),
+    ] {
+        result_object.insert(key.to_string(), value);
+    }
     write_json(&staging.join("provider-probe-result.json"), &result)?;
     Ok(diagnostics)
 }

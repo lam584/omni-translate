@@ -11,10 +11,8 @@ import {
   resolveWatchRealtimeProtocol,
 } from './run-watch-mode-live-matrix.mjs';
 import { buildLiveWatchModeRunRequest } from './watch-mode-run-request.mjs';
-import {
-  buildLocalIsolationRuntime,
-  runLocalIsolationCell,
-} from './watch-mode-local-isolation.mjs';
+import { runLocalIsolationCell } from './watch-mode-local-isolation.mjs';
+import { buildDevelopmentSmokeRuntime } from './watch-mode-development-smoke-runtime.mjs';
 import {
   currentAuthorityImplementationHashes,
   currentAuthorityRuntimeBinaryHashes,
@@ -634,7 +632,7 @@ export async function runPreflight({ executionRoot }) {
   process.env.CARGO_INCREMENTAL = '0';
   process.env.CARGO_PROFILE_TEST_DEBUG = '0';
   try {
-    runtimeAuthority = buildLocalIsolationRuntime({
+    runtimeAuthority = buildDevelopmentSmokeRuntime({
       workspaceRoot: repoRoot,
       run: createRuntimeBuildRunner({ checks, preflightRoot, temporaryRoot }),
     });

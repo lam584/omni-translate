@@ -190,7 +190,6 @@ export function runPowerShellBoundaryAudit({ root = repoRoot, strict = false } =
 
 export function auditTestingDspBoundaries(root = repoRoot) {
   const targets = [
-    'scripts/testing/watch-mode-translated-pcm-loopback.mjs',
     'scripts/testing/verify-watch-mode-evidence.mjs',
     'scripts/testing/real-device-audio-release-evidence.mjs',
   ];

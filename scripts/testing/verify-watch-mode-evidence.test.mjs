@@ -709,7 +709,7 @@ function writeAuthorityRawCell(root, directoryName, {
     request: { schemaVersion: 'watch-mode-run-request/v1', runMode: 'live', feedbackMode: feedbackLoopPrevention, model: { id: snapshots.modelId } },
     collectionStatus: 'completed',
     steps: [{
-      schemaVersion: 'watch-mode-step/v1',
+      schemaVersion: 'watch-mode-step/v2',
       id: 'start-desktop-shell',
       phase: 'desktopLaunch',
       status: 'passed',
@@ -1112,7 +1112,7 @@ function writeInteractiveSessionBundleFixture(runDirectory, {
   };
 
   const command = writeComponent(SHARD_INTERACTIVE_COMMAND_FILE, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-interactive-task-command',
     mode: 'shard-cell',
     ...common,
@@ -1135,7 +1135,7 @@ function writeInteractiveSessionBundleFixture(runDirectory, {
   const explorerProcess = processIdentity(explorerPid, 4, 'explorer.exe');
   const nodeProcess = processIdentity(nodePid, taskPid, 'node.exe');
   const launch = writeComponent(SHARD_INTERACTIVE_LAUNCH_FILE, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-interactive-shard-launch-authority',
     launchedAt: new Date(baseMs + 200).toISOString(),
     ...common,
@@ -1154,7 +1154,7 @@ function writeInteractiveSessionBundleFixture(runDirectory, {
     shardRunnerSha256: 'b'.repeat(64),
   });
   const release = writeComponent(SHARD_INTERACTIVE_CLAIM_RELEASE_FILE, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-interactive-shard-claim-release',
     ...common,
     vmIdentityDigest: worker.vmIdentityDigest,
@@ -1184,7 +1184,7 @@ function writeInteractiveSessionBundleFixture(runDirectory, {
     lastSeenAt,
   }));
   const processAuthority = writeComponent(SHARD_INTERACTIVE_PROCESS_AUTHORITY_FILE, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-interactive-process-authority',
     ...common,
     vmIdentityDigest: worker.vmIdentityDigest,
@@ -1200,7 +1200,7 @@ function writeInteractiveSessionBundleFixture(runDirectory, {
     passed: true,
   });
   const execution = writeComponent(SHARD_INTERACTIVE_CELL_EXECUTION_FILE, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-interactive-shard-cell-execution',
     ...common,
     vmIdentityDigest: worker.vmIdentityDigest,
@@ -1209,7 +1209,7 @@ function writeInteractiveSessionBundleFixture(runDirectory, {
     completedAt: new Date(baseMs + 700).toISOString(),
   });
   const terminal = writeComponent(SHARD_INTERACTIVE_TERMINAL_FILE, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-interactive-task-terminal',
     mode: 'shard-cell',
     ...common,
@@ -1227,7 +1227,7 @@ function writeInteractiveSessionBundleFixture(runDirectory, {
     completedAt: new Date(baseMs + 800).toISOString(),
   });
   const taskTerminal = writeComponent(SHARD_INTERACTIVE_TASK_TERMINAL_FILE, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-interactive-scheduled-task-terminal',
     mode: 'shard-cell',
     ...common,
@@ -1247,7 +1247,7 @@ function writeInteractiveSessionBundleFixture(runDirectory, {
     completedAt: new Date(baseMs + 900).toISOString(),
   });
   const summary = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-interactive-shard-session-authority',
     ...common,
     vmIdentityDigest: worker.vmIdentityDigest,
@@ -1913,7 +1913,7 @@ test('strict verifier refuses to scan outputRoot without an explicit current-run
   const result = findWatchModeEvidence({ root, strict: true, ...provenanceOk });
 
   assert.equal(result.ok, false);
-  assert.match(result.reason, /requires the schema-v4 budget-balanced authority manifest/);
+  assert.match(result.reason, /requires the schema-v5 budget-balanced authority manifest/);
   assert.equal(result.candidates.length, 0, 'historical reports must not be scanned in strict mode');
 });
 
@@ -2263,7 +2263,7 @@ test('strict shard preflight rejects a self-consistent model outside the paid re
   const receiptGeneratedAt = new Date(Date.now() - 6_000);
   const completionGeneratedAt = new Date(Date.now() - 5_000).toISOString();
   const unsupportedClaim = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_KIND,
     executionId,
     grantDigest: '1'.repeat(64),
@@ -2486,7 +2486,7 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
         startedAt: new Date(baseMs - 9_750).toISOString(),
       };
       const receipt = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         artifactKind: SHARD_WORKER_READINESS_KIND,
         generatedAt: new Date(baseMs - 9_000).toISOString(),
         executionId,
@@ -2618,7 +2618,7 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
       (entry) => entry.path === PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE,
     );
     const consumptionClaim = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       artifactKind: PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_KIND,
       executionId,
       grantDigest: preflightGrant.digest,
@@ -2700,6 +2700,12 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
         inputMode: 'text-only',
         externalAudioSamples: 0,
         providerInvocationCount: 1,
+        connectionAttempts: 1,
+        connectionCount: 1,
+        connectionOpened: true,
+        connectionClosed: true,
+        connectionOwner: `preflight:${observedPreflightAuthorization.executionId}`,
+        connectionGeneration: 1,
         tokenBudget: expectedPreflightAuthorization.tokenBudget,
         inputTokens: 42,
         outputTokens: 7,
@@ -2758,6 +2764,12 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
         inputTokens: 42,
         outputTokens: 7,
         audioSeconds: null,
+        connectionAttempts: 1,
+        connectionCount: 1,
+        connectionOpened: true,
+        connectionClosed: true,
+        connectionOwner: `preflight:${observedPreflightAuthorization.executionId}`,
+        connectionGeneration: 1,
         rawProbeResult: {
           configuredModel,
           model: PROVIDER_PREFLIGHT_MODEL,
@@ -2771,6 +2783,12 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
           inputTokens: 42,
           outputTokens: 7,
           audioSeconds: null,
+          connectionAttempts: 1,
+          connectionCount: 1,
+          connectionOpened: true,
+          connectionClosed: true,
+          connectionOwner: `preflight:${observedPreflightAuthorization.executionId}`,
+          connectionGeneration: 1,
         },
       }, null, 2)}\n`,
       'utf8',
@@ -2815,6 +2833,12 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
         inputTokens: 42,
         outputTokens: 7,
         audioSeconds: null,
+        connectionAttempts: 1,
+        connectionCount: 1,
+        connectionOpened: true,
+        connectionClosed: true,
+        connectionOwner: `preflight:${observedPreflightAuthorization.executionId}`,
+        connectionGeneration: 1,
       }, null, 2)}\n`,
       'utf8',
     );
@@ -3051,6 +3075,12 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
       ledgerBytes: matrixBudgetAuthority.bytes,
       ledgerSha256: matrixBudgetAuthority.sha256,
     };
+    const failureFingerprintPath = path.join(staged.finalExecutionRoot, 'failure-fingerprints.json');
+    fs.writeFileSync(failureFingerprintPath, '{"failures":[]}\n', 'utf8');
+    const failureFingerprintAuthority = fileAuthorityEntry(
+      failureFingerprintPath,
+      path.relative(evidenceRoot, failureFingerprintPath).split(path.sep).join('/'),
+    );
     const { manifestPath, manifest } = writeMatrixRunManifest({
       outputRoot: evidenceRoot,
       modelList: [...new Set(LIVE_LLM_CELLS.map((cell) => cell.modelId))],
@@ -3066,6 +3096,16 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
       authorityRuntimeBinaryHashes: runtimeBinaryHashes,
       releaseCells: LIVE_LLM_CELLS,
       externalProviderBudget,
+      failureSummary: {
+        attempted: LIVE_LLM_CELLS.map((cell) => cell.cellId),
+        completed: LIVE_LLM_CELLS.map((cell) => cell.cellId),
+        passed: LIVE_LLM_CELLS.map((cell) => cell.cellId),
+        failed: [],
+        failures: [],
+        sharedRootCauses: [],
+        cellSpecificFailures: [],
+      },
+      failureFingerprintAuthority,
       shardExecution: staged.shardExecution,
       matrixIntegration: staged.matrixIntegration,
     });
@@ -3563,7 +3603,7 @@ test('strict authority rejects a report-only schema-v1 matrix even when all 18 s
       workspaceRoot: path.resolve('.'),
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
-    /requires watch-mode-strict-matrix-authority schemaVersion=4/,
+    /requires watch-mode-strict-matrix-authority schemaVersion=5/,
   );
 });
 

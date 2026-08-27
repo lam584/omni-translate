@@ -347,6 +347,13 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
     || probe?.streamObserved !== true
     || probe?.responseShapeStable !== true
     || probe?.errorShapeStable !== true
+    || Number(probe?.connectionAttempts) !== 1
+    || Number(probe?.connectionCount) !== 1
+    || probe?.connectionOpened !== true
+    || probe?.connectionClosed !== true
+    || !String(probe?.connectionOwner ?? '').includes(String(expectedAuthorization?.executionId ?? ''))
+    || !Number.isSafeInteger(Number(probe?.connectionGeneration))
+    || Number(probe?.connectionGeneration) < 1
   ) issues.push('provider preflight probe availability/latency/shape authority is invalid');
   const raw = probe?.rawProbeResult;
   if (
@@ -361,6 +368,12 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
     || raw?.transportEffective !== probe?.effectiveTransport
     || raw?.responseShapeStable !== true
     || raw?.errorShapeStable !== true
+    || Number(raw?.connectionAttempts) !== 1
+    || Number(raw?.connectionCount) !== 1
+    || raw?.connectionOpened !== true
+    || raw?.connectionClosed !== true
+    || raw?.connectionOwner !== probe?.connectionOwner
+    || Number(raw?.connectionGeneration) !== Number(probe?.connectionGeneration)
     || raw?.error != null
   ) issues.push('provider preflight raw provider result does not match the top-level probe');
   const rawAuthorization = expectedAuthorization
@@ -537,6 +550,12 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
       audioSeconds: probeUsage.audioSeconds,
       effectiveTransport: probe?.effectiveTransport ?? null,
       latencyMs: Number(probe?.latencyMs ?? 0),
+      connectionAttempts: Number(probe?.connectionAttempts ?? 0),
+      connectionCount: Number(probe?.connectionCount ?? 0),
+      connectionOpened: probe?.connectionOpened === true,
+      connectionClosed: probe?.connectionClosed === true,
+      connectionOwner: probe?.connectionOwner ?? null,
+      connectionGeneration: Number(probe?.connectionGeneration ?? 0),
       desktopProcessId: Number(probe?.desktopProcessId ?? 0),
     },
     evidenceTimes: [

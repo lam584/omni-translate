@@ -12,6 +12,7 @@ import {
   writeJson,
 } from '../lib/testing-common.mjs';
 import { selectAutomatedGateSteps } from './test-manifest.mjs';
+import { loadReusableTestReceipt } from './watch-mode-test-receipts.mjs';
 
 const defaultOutputRoot = 'artifacts/logs/testing/quality-gate-auto';
 
@@ -28,6 +29,18 @@ export const runQualityGateAuto = ({
 
   const results = [];
   for (const step of buildAutoSteps({ skipDesktopShell, skipBridgeService })) {
+    const reusable = loadReusableTestReceipt(step);
+    if (reusable) {
+      console.error(`>>> ${step.name}: verified clean-HEAD receipt ${reusable.receiptPath}`);
+      results.push({
+        name: step.name,
+        command: step.command,
+        logPath: path.join(path.dirname(reusable.receiptPath), reusable.receipt.log.path),
+        status: 'passed',
+        reusedReceipt: reusable.receiptPath,
+      });
+      continue;
+    }
     const logPath = path.join(targetDir, `${step.name}.log`);
     console.error(`>>> ${step.name}: ${step.command}`);
     const exitCode = runLoggedStep(step.command, logPath, { cwd: repoRoot });

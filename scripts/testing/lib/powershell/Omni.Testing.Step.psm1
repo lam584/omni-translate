@@ -42,7 +42,7 @@ function New-OmniStepResult {
     throw "non-failed step '$Id' must not carry ErrorRecord"
   }
   return [pscustomobject]@{
-    schemaVersion = 'watch-mode-step/v1'
+    schemaVersion = 'watch-mode-step/v2'
     id = $Id
     phase = $Phase
     status = $Status

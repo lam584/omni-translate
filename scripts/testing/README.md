@@ -463,7 +463,7 @@ below so the Node entrypoint receives the named options instead of only their
 values:
 
 ```powershell
-npm run test:watch-mode-live:production-coordinator -- -- --workers-config artifacts/testing/watch-mode-workers.json --reuse-local-isolation artifacts/testing/watch-mode-local-isolation/<run>/local-isolation-manifest.json
+npm run test:watch-mode-live:production-coordinator -- -- --workers-config artifacts/testing/watch-mode-workers.json --runtime-authority artifacts/testing/watch-mode-strict-runtime/<release>/strict-runtime-authority.json --local-isolation-authority artifacts/testing/watch-mode-local-isolation/<run>/local-isolation-manifest.json
 ```
 
 ### Non-authoritative 60-minute smoke matrix

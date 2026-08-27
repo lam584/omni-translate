@@ -99,8 +99,8 @@ export function generateWatchModeLiveFixture({ root, fixture = 'pass' }) {
     },
   };
   const steps = [
-    { schemaVersion: 'watch-mode-step/v1', id: 'synthetic-driver-probe', phase: 'driverProbe', status: 'passed', startedAt: null, endedAt: null, durationMs: 0, data: healthyDriver, error: null },
-    { schemaVersion: 'watch-mode-step/v1', id: 'synthetic-watch-route', phase: 'readiness', status: 'passed', startedAt: null, endedAt: null, durationMs: 0, data: { routeState: 'capturing' }, error: null },
+    { schemaVersion: 'watch-mode-step/v2', id: 'synthetic-driver-probe', phase: 'driverProbe', status: 'passed', startedAt: null, endedAt: null, durationMs: 0, data: healthyDriver, error: null },
+    { schemaVersion: 'watch-mode-step/v2', id: 'synthetic-watch-route', phase: 'readiness', status: 'passed', startedAt: null, endedAt: null, durationMs: 0, data: { routeState: 'capturing' }, error: null },
   ];
   // Lines carry the trailing ` sid=<value>` session token appended by the
   // unified logging pipeline; load-bearing markers stay verbatim before it.

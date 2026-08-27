@@ -81,7 +81,7 @@ function writeReadinessFixture(context, mutateReceipt = () => {}) {
       };
       const generatedAt = new Date(requestedAt + 100).toISOString();
       const receipt = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         artifactKind: 'watch-mode-production-worker-zero-provider-readiness',
         generatedAt,
         executionId: context.executionId,
@@ -251,7 +251,7 @@ test('coordinator prepares build/preflight/local once and atomically publishes e
         assert.equal(new Set(grant.cells.map((cell) => cell.leaseId)).size, 8);
         const desktop = runtimeAuthority.find((entry) => entry.path === 'target/release/omni-desktop-shell.exe');
         fs.writeFileSync(path.join(path.dirname(grantPath), 'provider-preflight-consumption-claim.json'), `${JSON.stringify({
-          schemaVersion: 1,
+          schemaVersion: 2,
           artifactKind: 'watch-mode-provider-preflight-consumption-claim',
           executionId: grant.executionId,
           grantDigest: grant.digest,
@@ -753,7 +753,7 @@ test('coordinator aggregate canonicalizes arrival order and binds every cell to 
         const cell = value.plan.cells.find((entry) => entry.cellId === cellId);
         const lease = value.leases.find((entry) => entry.leaseId === cell.leaseId);
         const claim = {
-          schemaVersion: 1,
+          schemaVersion: 2,
           artifactKind: 'watch-mode-shard-dispatch-claim',
           claimedAt: new Date(timestamp).toISOString(),
           executionId: value.plan.executionId,
@@ -780,7 +780,7 @@ test('coordinator aggregate canonicalizes arrival order and binds every cell to 
         };
       });
       const core = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         artifactKind: 'watch-mode-shard-wave-completion',
         completedAt: new Date(timestamp).toISOString(),
         executionId: value.plan.executionId,

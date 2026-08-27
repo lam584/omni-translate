@@ -6,11 +6,9 @@ function Invoke-OmniPcmAnalyzer {
     [Parameter(Mandatory = $true)][string]$WorkspaceRoot
   )
 
-  $manifestPath = Join-Path $workspaceRoot 'scripts/diagnostics/omni-benchmark/Cargo.toml'
-  $executablePath = Join-Path $workspaceRoot 'scripts/diagnostics/omni-benchmark/target/release/omni-benchmark.exe'
-  & cargo build --locked --release --manifest-path $manifestPath
-  if ($LASTEXITCODE -ne 0) {
-    throw "failed to build omni-benchmark PCM analyzer: exitCode=$LASTEXITCODE"
+  $executablePath = Join-Path $workspaceRoot 'target/release/omni-benchmark.exe'
+  if (-not (Test-Path -LiteralPath $executablePath -PathType Leaf)) {
+    throw "frozen omni-benchmark PCM analyzer is missing: $executablePath"
   }
   $output = @(& $executablePath @Arguments)
   if ($LASTEXITCODE -ne 0) {

@@ -114,9 +114,30 @@ function Stop-OmniOwnedProcessTree {
   return [pscustomobject]@{ stopped = $true; pid = [int]$Lease.pid }
 }
 
+function Stop-OmniManagedProcessHandle {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+    [ValidateRange(100, 30000)][int]$WaitMilliseconds = 3000
+  )
+  if ($Process.HasExited) {
+    return [pscustomobject]@{ stopped = $false; pid = [int]$Process.Id; alreadyExited = $true }
+  }
+  try {
+    $lease = Get-OmniProcessIdentity -ProcessId ([int]$Process.Id) -Ownership managed
+  } catch {
+    if (-not (Get-Process -Id ([int]$Process.Id) -ErrorAction SilentlyContinue)) {
+      return [pscustomobject]@{ stopped = $false; pid = [int]$Process.Id; alreadyExited = $true }
+    }
+    throw
+  }
+  Stop-OmniOwnedProcessTree -Lease $lease -WaitMilliseconds $WaitMilliseconds
+}
+
 Export-ModuleMember -Function @(
   'Get-OmniProcessIdentity',
   'Test-OmniProcessIdentity',
   'Get-OmniDescendantProcessIds',
-  'Stop-OmniOwnedProcessTree'
+  'Stop-OmniOwnedProcessTree',
+  'Stop-OmniManagedProcessHandle'
 )

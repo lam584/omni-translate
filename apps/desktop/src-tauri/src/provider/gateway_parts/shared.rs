@@ -86,6 +86,12 @@ pub(super) fn new_streaming_smoke_result(
         input_tokens: None,
         output_tokens: None,
         audio_seconds: None,
+        connection_attempts: 1,
+        connection_count: 1,
+        connection_opened: true,
+        connection_closed: true,
+        connection_owner: None,
+        connection_generation: None,
         routing_decision: build_routing_decision("available", 0, false),
         error: None,
     }

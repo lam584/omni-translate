@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { repoRoot } from '../lib/testing-common.mjs';
 
-export const STRICT_MATRIX_SCHEMA_VERSION = 4;
+export const STRICT_MATRIX_SCHEMA_VERSION = 5;
 export const STRICT_MATRIX_ARTIFACT_KIND = 'watch-mode-strict-matrix-authority';
 export const CELL_AUTHORITY_SCHEMA_VERSION = 3;
 export const CELL_AUTHORITY_ARTIFACT_KIND = 'watch-mode-live-cell-authority';
@@ -15,14 +15,51 @@ export const LIVE_RUN_COLLECTOR_ID = 'scripts/testing/run-watch-mode-live.ps1';
 export const AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   MATRIX_RUNNER_ID,
   LIVE_RUN_COLLECTOR_ID,
+  'scripts/testing/lib/powershell/Omni.Testing.IO.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.Process.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.StateMachine.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.Step.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.Windows.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.Windows.Audio.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.Windows.Elevation.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.AudioAnalysis.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.AudioCapture.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.AudioPlayback.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Bridge.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Config.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Configuration.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.DesktopLifecycle.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Evidence.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.EvidenceCollection.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.ExecutionContext.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.FixtureRunner.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Metrics.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.PhysicalCapture.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.PlatformOperations.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.PreDesktopPhase.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Preflight.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Provider.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.RawContent.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Readiness.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Report.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.RunLifecycle.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Runner.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Stt.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.VirtualDriverCapture.psm1',
   'scripts/testing/watch-mode-report.mjs',
   'scripts/testing/verify-watch-mode-evidence.mjs',
   'scripts/testing/watch-mode-evidence-authority.mjs',
   'scripts/testing/watch-mode-balanced-release-plan.mjs',
   'scripts/testing/watch-mode-local-isolation.mjs',
+  'scripts/testing/watch-mode-strict-runtime-authority.mjs',
   'scripts/testing/collect-watch-mode-system-metrics.ps1',
   'scripts/development/build-desktop-release.mjs',
+  'scripts/release/new-local-release-certificate.ps1',
   'scripts/installer/build-sysvad-driver.ps1',
+  'scripts/installer/install-development-driver.ps1',
+  'scripts/installer/probe-development-driver.ps1',
+  'scripts/installer/invoke-elevated-driver-operation.ps1',
+  'scripts/installer/request-elevated-driver-operation.ps1',
   'scripts/installer/test-development-driver.ps1',
   'scripts/installer/virtual-speaker-device.ps1',
   'scripts/testing/fixtures/watch-mode-en-original.wav',
@@ -31,17 +68,17 @@ export const AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/fixtures/watch-mode-en-original.zh-CN.txt',
 ]);
 
-// Paid-only inputs are deliberately kept out of AUTHORITY_IMPLEMENTATION_FILES.
-// That shared inventory is also used to decide whether an already completed
-// zero-Provider local-isolation layer can be reused across HEADs. Adding a new
-// paid implementation there would make an older local receipt appear to have
-// omitted a local implementation file even though the paid path never ran.
+// Paid-only inputs remain separate so the zero-Provider authority describes
+// exactly the implementation it exercised. Neither inventory may be reused
+// across a commit or runtime authority digest.
 export const PAID_AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/watch-mode-external-provider-budget.mjs',
   'scripts/testing/watch-mode-canonical-source-authority.mjs',
   'scripts/testing/watch-mode-translated-pcm-loopback.mjs',
   'scripts/testing/release-manual-collector.mjs',
   'scripts/testing/watch-mode-provider-preflight-authority.mjs',
+  'scripts/testing/watch-mode-provider-preflight-process.mjs',
+  'scripts/testing/watch-mode-provider-network-health.mjs',
   'scripts/testing/fixtures/watch-mode-audio-fixtures.json',
 ]);
 
@@ -53,6 +90,8 @@ export const AUTHORITY_RUNTIME_BINARY_FILES = Object.freeze([
   'target/release/omni-tone-render-probe.exe',
   'target/release/omni-driver-audio-probe.exe',
   'target/release/omni-virtual-mic-target-capture.exe',
+  'target/debug/omni-realtime-diagnostic.exe',
+  'target/release/omni-benchmark.exe',
   'drivers/windows-virtual-mic/package/omni-virtual-speaker.sys',
   'drivers/windows-virtual-mic/package/omni-virtual-speaker.cat',
   'drivers/windows-virtual-mic/package/omni-virtual-speaker.inf',

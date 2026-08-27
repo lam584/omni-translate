@@ -11,6 +11,7 @@ use super::contracts::{
     ProviderProbeProfileRuntime, ProviderRoutingDecision,
     ProviderRuntimeError, ProviderSmokeResult, TtsSynthesisResult,
 };
+use super::connection_lease;
 use super::gateway_parts::{
     dashscope::DashScopeProviderAdapter,
     models::ModelCatalogService,
@@ -189,8 +190,17 @@ impl ProviderGateway {
         let transport_requested = provider.transport.clone();
         let (transport_effective, fallback_applied) = resolve_transport(&provider);
         let started_at = Instant::now();
+        let connection_lease = connection_lease::acquire(&provider);
+        let (connection_owner, connection_generation) = connection_lease
+            .as_ref()
+            .ok()
+            .and_then(|lease| lease.owner())
+            .map(|owner| (Some(owner.label()), Some(owner.generation)))
+            .unwrap_or((None, None));
 
-        let execution = match provider.kind.as_str() {
+        let execution = match connection_lease {
+            Err(error) => Err(error),
+            Ok(_lease) => match provider.kind.as_str() {
             kind if is_openai_compatible_kind(kind) => self.openai_adapter.execute(
                 &provider,
                 &transport_effective,
@@ -215,6 +225,7 @@ impl ProviderGateway {
                 "request.invalid",
                 format!("unsupported provider kind: {other}"),
             )),
+            },
         };
 
         match execution {
@@ -242,6 +253,12 @@ impl ProviderGateway {
                 execution.source_language = source_language;
                 execution.target_language = target_language;
                 execution.transport_requested = transport_requested;
+                execution.connection_attempts = 1;
+                execution.connection_count = 1;
+                execution.connection_opened = true;
+                execution.connection_closed = true;
+                execution.connection_owner = connection_owner;
+                execution.connection_generation = connection_generation;
                 execution
             }
             Err(error) => ProviderSmokeResult {
@@ -261,6 +278,12 @@ impl ProviderGateway {
                 input_tokens: None,
                 output_tokens: None,
                 audio_seconds: None,
+                connection_attempts: 1,
+                connection_count: 0,
+                connection_opened: false,
+                connection_closed: false,
+                connection_owner,
+                connection_generation,
                 routing_decision: ProviderRoutingDecision::for_verdict(
                     "unavailable",
                     LATENCY_BUDGET_MS,

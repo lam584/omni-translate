@@ -235,8 +235,8 @@ export function createRealDeviceAudioAuthorityFixture({
     request: { schemaVersion: 'watch-mode-run-request/v1', runMode: 'live', feedbackMode: 'process-exclusion' },
     collectionStatus: 'completed',
     steps: [
-      { schemaVersion: 'watch-mode-step/v1', id: 'start-desktop-shell', phase: 'desktopLaunch', status: 'passed', data: { pid: 1100 }, error: null },
-      { schemaVersion: 'watch-mode-step/v1', id: 'start-physical-output-content-recording', phase: 'recording', status: 'passed', data: { pid: 1200 }, error: null },
+      { schemaVersion: 'watch-mode-step/v2', id: 'start-desktop-shell', phase: 'desktopLaunch', status: 'passed', data: { pid: 1100 }, error: null },
+      { schemaVersion: 'watch-mode-step/v2', id: 'start-physical-output-content-recording', phase: 'recording', status: 'passed', data: { pid: 1200 }, error: null },
     ],
     ownedProcesses: [],
     artifacts: {

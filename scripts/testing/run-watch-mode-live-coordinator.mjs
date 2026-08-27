@@ -128,7 +128,7 @@ export function assertCoordinatorExecutionRoot({ executionRoot, plan }) {
   return { root, planPath };
 }
 
-export function defaultThreeVmAssignments(workers) {
+export function defaultSingleWorkerAssignments(workers) {
   if (!Array.isArray(workers) || workers.length !== 1) {
     throw new Error('default strict placement requires exactly one local worker');
   }
@@ -148,6 +148,10 @@ export function defaultThreeVmAssignments(workers) {
     };
   });
 }
+
+// Transitional source-level alias only. It does not enable multi-worker
+// placement or evidence compatibility; all current plans require one worker.
+export const defaultThreeVmAssignments = defaultSingleWorkerAssignments;
 
 function assertPreflightOutcome(outcome) {
   if (
@@ -862,9 +866,10 @@ export function completeCoordinatorWave({
 }
 
 /**
- * Runs one cell per worker in bounded waves. A failure aborts/cancels peers in
- * the current wave and no later wave is dispatched. Already-started peer audio
- * remains chargeable; no retry is attempted within this execution.
+ * Runs one cell per worker in bounded waves. The classifier may retain an
+ * identity-bound ordinary failed result and continue later waves. Safety
+ * failures abort/cancel peers immediately. Already-started peer audio remains
+ * chargeable; no retry is attempted within this execution.
  */
 export async function runCoordinatorWaves({
   plan,
@@ -878,6 +883,7 @@ export async function runCoordinatorWaves({
     return outcome;
   },
   onWaveCompleted = async () => {},
+  classifyFailure = () => 'stop',
   now = () => new Date(),
 }) {
   if (typeof dispatchCell !== 'function') throw new Error('coordinator requires a dispatchCell adapter');
@@ -894,6 +900,7 @@ export async function runCoordinatorWaves({
   const completed = new Set();
   const results = new Map();
   const waveCompletions = [];
+  const collectedFailures = [];
   for (const wave of plan.waves) {
     const waveCells = wave.cellIds.map((cellId) => plan.cells.find((cell) => cell.cellId === cellId));
     let firstFailure = null;
@@ -927,7 +934,27 @@ export async function runCoordinatorWaves({
           lease,
           signal: controllers.get(cell.cellId).signal,
         });
-        const validated = await validateCompletedCell({ plan, cell, lease, outcome });
+        let validated;
+        try {
+          validated = await validateCompletedCell({ plan, cell, lease, outcome });
+        } catch (error) {
+          if (
+            classifyFailure({ plan, cell, lease, outcome, error }) === 'collect'
+            && /^[a-f0-9]{64}$/iu.test(String(outcome?.result?.resultDigest ?? ''))
+          ) {
+            completed.add(cell.cellId);
+            results.set(cell.cellId, outcome);
+            collectedFailures.push({
+              cellId: cell.cellId,
+              cellIndex: cell.cellIndex,
+              waveIndex: wave.waveIndex,
+              error: error.message,
+              outcome,
+            });
+            return outcome;
+          }
+          throw error;
+        }
         if (firstFailure) throw new Error(`peer ${firstFailure.cell.cellId} already failed in this wave`);
         completed.add(cell.cellId);
         results.set(cell.cellId, validated);
@@ -969,7 +996,13 @@ export async function runCoordinatorWaves({
     });
   }
   if (completed.size !== SHARD_MATRIX_CELL_COUNT) throw new Error('coordinator completed an incomplete paid matrix');
-  return { results, waveCompletions, startedCellIds: [...started], completedCellIds: [...completed] };
+  return {
+    results,
+    waveCompletions,
+    collectedFailures,
+    startedCellIds: [...started],
+    completedCellIds: [...completed],
+  };
 }
 
 export function validateCoordinatorExecutionAuthority({
@@ -1152,6 +1185,12 @@ export function collectCoordinatorAggregation({
       leaseDigest: lease.leaseDigest,
       shardManifestDigest: binding.shardManifestDigest,
       resultDigest: binding.result.resultDigest,
+      verdict: binding.result.verdict,
+      ...(binding.result.verdict === 'failed' ? {
+        failureLayer: binding.result.failureLayer,
+        stableErrorCode: binding.result.stableErrorCode,
+        lifecyclePhase: binding.result.lifecyclePhase,
+      } : {}),
       runDirectory: binding.result.runDirectory,
       actualExternalAudioSamples: binding.result.usageAuthority.actualExternalAudioSamples,
       usageAuthority: binding.result.usageAuthority,
@@ -1182,7 +1221,7 @@ export function collectCoordinatorAggregation({
     schemaVersion: SHARD_AUTHORITY_SCHEMA_VERSION,
     artifactKind: COORDINATOR_AGGREGATE_KIND,
     generatedAt: generatedAt instanceof Date ? generatedAt.toISOString() : String(generatedAt),
-    verdict: 'passed',
+    verdict: canonicalCells.every((cell) => cell.verdict === 'passed') ? 'passed' : 'failed',
     executionId: plan.executionId,
     planDigest: plan.planDigest,
     provenance: structuredClone(plan.provenance),
@@ -1231,7 +1270,7 @@ export function validateCoordinatorAggregate(aggregate) {
   if (
     aggregate?.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
     || aggregate?.artifactKind !== COORDINATOR_AGGREGATE_KIND
-    || aggregate?.verdict !== 'passed'
+    || !['passed', 'failed'].includes(aggregate?.verdict)
     || aggregate?.aggregateDigest !== sha256Canonical(aggregateCore(aggregate))
     || !Array.isArray(aggregate.cells)
     || aggregate.cells.length !== SHARD_MATRIX_CELL_COUNT
@@ -1245,6 +1284,8 @@ export function validateCoordinatorAggregate(aggregate) {
   if (canonicalJson(aggregate.cells.map((cell) => cell.cellId)) !== canonicalJson(expectedIds)) {
     throw new Error('coordinator aggregate cells are not in canonical paid-plan order');
   }
+  const expectedVerdict = aggregate.cells.every((cell) => cell.verdict === 'passed') ? 'passed' : 'failed';
+  if (aggregate.verdict !== expectedVerdict) throw new Error('coordinator aggregate verdict does not match cell verdicts');
   return aggregate;
 }
 

@@ -20,7 +20,7 @@ import {
   buildShardCellExecutionRequest,
   runLeasedShardCell,
 } from './run-watch-mode-live-shard.mjs';
-import { defaultThreeVmAssignments } from './run-watch-mode-live-coordinator.mjs';
+import { defaultSingleWorkerAssignments } from './run-watch-mode-live-coordinator.mjs';
 
 const SHA_A = 'a'.repeat(64);
 const SHA_B = 'b'.repeat(64);
@@ -38,35 +38,14 @@ const inventory = (name, sha) => [{ path: `${name}/binary`, bytes: 11, sha256: s
 function fixture() {
   const now = new Date();
   const generatedAt = new Date(now.getTime() - 1_000);
-  const workers = [
-    {
-      workerId: 'vm1', vmIdentity: { provider: 'vmware', uuidBios: 'uuid-1' },
-      deviceProfileInstances: [{
-        instanceId: 'vm1-default', profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
-        physicalPlaybackDeviceId: 'default', expectedPhysicalPlaybackDeviceName: '',
-      }],
-    },
-    {
-      workerId: 'vm2', vmIdentity: { provider: 'vmware', uuidBios: 'uuid-2' },
-      deviceProfileInstances: [
-        {
-          instanceId: 'vm2-default', profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
-          physicalPlaybackDeviceId: 'default', expectedPhysicalPlaybackDeviceName: '',
-        },
-        {
-          instanceId: 'vm2-usb', profileId: 'realtek-usb-spdif', deviceClass: 'usb',
-          physicalPlaybackDeviceId: '{usb}', expectedPhysicalPlaybackDeviceName: 'Realtek USB Test',
-        },
-      ],
-    },
-    {
-      workerId: 'vm3', vmIdentity: { provider: 'vmware', uuidBios: 'uuid-3' },
-      deviceProfileInstances: [{
-        instanceId: 'vm3-default', profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
-        physicalPlaybackDeviceId: 'default', expectedPhysicalPlaybackDeviceName: '',
-      }],
-    },
-  ];
+  const workers = [{
+    workerId: 'local-vmware', vmIdentity: { provider: 'vmware', uuidBios: 'uuid-local' },
+    deviceProfileInstances: [{
+      instanceId: 'local-hda', profileId: 'vmware-hda', deviceClass: 'default-speaker',
+      physicalPlaybackDeviceId: '{hda-endpoint}',
+      expectedPhysicalPlaybackDeviceName: '扬声器 (High Definition Audio Device)',
+    }],
+  }];
   const keys = generateCoordinatorSigningKeyPair();
   const snapshot = {
     provenance: PROVENANCE,
@@ -88,7 +67,7 @@ function fixture() {
       inputTokens: 64, outputTokens: 12, audioSeconds: null,
     },
     workers,
-    assignments: defaultThreeVmAssignments(workers),
+    assignments: defaultSingleWorkerAssignments(workers),
     ...keys,
   });
   return {

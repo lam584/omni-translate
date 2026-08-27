@@ -19,8 +19,8 @@ test('marks environment precheck failures blocked before downstream recording fa
     physicalOutputContent: { passed: false, error: 'physical output recording did not run' },
     failure: { message: 'start physical output content recording failed: recorder executable not found' },
     steps: [
-      { id: 'driver-probe', status: 'failed', data: null, error: { message: 'virtual endpoint unavailable' } },
-      { name: 'start physical output content recording', ok: false, error: 'recorder executable not found' },
+      { schemaVersion: 'watch-mode-step/v2', id: 'driver-probe', status: 'failed', data: null, error: { message: 'virtual endpoint unavailable' } },
+      { schemaVersion: 'watch-mode-step/v2', id: 'start-physical-output-content-recording', status: 'failed', data: null, error: { message: 'recorder executable not found' } },
     ],
   });
 
@@ -35,7 +35,7 @@ test('echo-cancel environment failure is not attributed to its skipped driver la
     feedbackLoopPrevention: 'echo-cancel',
     driver: { error: 'virtual endpoint unavailable' },
     failure: { message: 'start physical output content recording failed: playback endpoint unresolved' },
-    steps: [{ id: 'start-physical-output-content-recording', status: 'failed', data: null, error: { message: 'playback endpoint unresolved' } }],
+    steps: [{ schemaVersion: 'watch-mode-step/v2', id: 'start-physical-output-content-recording', status: 'failed', data: null, error: { message: 'playback endpoint unresolved' } }],
   });
   assert.equal(report.verdict, 'blocked');
   assert.equal(report.failureLayer, 'environment');

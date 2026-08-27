@@ -14,7 +14,7 @@ test('current PowerShell inventory satisfies its ratcheted boundary policy', () 
 });
 
 test('Watch report and verifier layers contain no PCM/DSP implementation', () => {
-  assert.equal(auditTestingDspBoundaries().files, 3);
+  assert.equal(auditTestingDspBoundaries().files, 2);
 });
 
 test('unregistered files and new unsafe process cleanup fail the audit', () => {

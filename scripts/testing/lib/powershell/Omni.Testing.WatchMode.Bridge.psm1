@@ -1,6 +1,7 @@
 #requires -Version 5.1
 
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.IO.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Process.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Configuration.psm1') -Force
 
 function Write-NamedPipeJsonLine {
@@ -271,10 +272,10 @@ function Invoke-BridgeSourceProbe {
     throw "bridge source probe failed during ${phase}: $errorMessage Diagnostics=$diagnosticsPath"
   } finally {
     if ($audioProbeProcess -and -not $audioProbeProcess.HasExited) {
-      Stop-Process -Id $audioProbeProcess.Id -Force -ErrorAction SilentlyContinue
+      Stop-OmniManagedProcessHandle -Process $audioProbeProcess | Out-Null
     }
     if (-not $process.HasExited) {
-      Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+      Stop-OmniManagedProcessHandle -Process $process | Out-Null
     }
   }
 }

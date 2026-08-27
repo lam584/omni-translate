@@ -385,10 +385,13 @@ export async function runLeasedShardCell({
   claimLease({ plan, lease, workerId, shardRoot, now: startedAt });
   try {
     const execution = await executeCell(request, { signal });
-    if (Number(execution?.exitCode) !== 0) {
-      throw new Error(`paid shard cell ${cell.cellId} exited with ${execution?.exitCode ?? 'no exit code'}`);
+    if (!execution.runDirectory) {
+      const exitCode = execution.status ?? execution.exitCode;
+      if (Number(exitCode) !== 0) {
+        throw new Error(`paid shard cell ${cell.cellId} exited with ${exitCode}`);
+      }
+      throw new Error(`paid shard cell ${cell.cellId} returned no run directory`);
     }
-    if (!execution.runDirectory) throw new Error(`paid shard cell ${cell.cellId} returned no run directory`);
     const runDirectory = path.resolve(execution.runDirectory);
     const relative = path.relative(path.resolve(request.cellOutputRoot), runDirectory);
     if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
@@ -474,12 +477,15 @@ export async function runLeasedShardCell({
       currentRuntimeBinaryHashes: completionSnapshot.runtimeBinaryHashes,
       currentShardImplementationHashes: completionSnapshot.shardOrchestrationImplementationHashes,
     });
+    if (Number(execution?.exitCode) !== 0 && result.verdict !== 'failed') {
+      throw new Error(`paid shard cell ${cell.cellId} exited with ${execution?.exitCode ?? 'no exit code'} without a failed report`);
+    }
     const terminal = writeLeaseTerminal({
       plan,
       lease,
       workerId,
       shardRoot,
-      status: 'passed',
+      status: result.verdict,
       now: completedAt,
       resultPath,
     });
@@ -642,7 +648,7 @@ export function finalizeInteractiveShardCell({
     lease,
     workerId,
     shardRoot: resolvedShardRoot,
-    status: 'passed',
+    status: result.verdict,
     now: generatedAt,
     resultPath,
   });

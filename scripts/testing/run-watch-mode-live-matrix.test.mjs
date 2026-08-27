@@ -30,7 +30,6 @@ import {
   publishSuccessfulStrictMatrixManifest,
   renameWithTransientRetrySync,
   resolveDeviceProfiles,
-  resolveReusableLocalIsolationManifest,
   resolveLiveRunnerTimeoutMs,
   resolveMatrixLists,
   resolveWatchRealtimeProtocol,
@@ -259,7 +258,6 @@ test('parseMatrixCliArgs maps kebab-case flags, coerces integers, and collects r
   assert.equal(defaults.feedbackLoopPreventionModes, DEFAULT_FEEDBACK_MODES.join(','));
   assert.equal(defaults.outputRoot, MATRIX_DEFAULTS.outputRoot);
   assert.equal(defaults.deviceProfiles, '');
-  assert.equal(defaults.reuseLocalIsolation, '');
   assert.equal(defaults.warmupSeconds, 12);
   assert.equal(defaults.watchAutoStopAfterSeconds, 180);
   assert.deepEqual(defaults.runnerArgs, []);
@@ -273,7 +271,6 @@ test('parseMatrixCliArgs maps kebab-case flags, coerces integers, and collects r
     '--skip-driver-repair',
     '--allow-elevated-desktop-launch',
     '--expected-physical-playback-device-name', 'Speakers',
-    '--reuse-local-isolation', 'artifacts/testing/watch-mode-local-isolation/example/local-isolation-manifest.json',
     '--', '-DryRun', '-Fixture', 'pass',
   ]);
   assert.equal(parsed.models, 'model-a,model-b');
@@ -284,7 +281,6 @@ test('parseMatrixCliArgs maps kebab-case flags, coerces integers, and collects r
   assert.equal(parsed.skipDriverRepair, true);
   assert.equal(parsed.allowElevatedDesktopLaunch, true);
   assert.equal(parsed.expectedPhysicalPlaybackDeviceName, 'Speakers');
-  assert.equal(parsed.reuseLocalIsolation, 'artifacts/testing/watch-mode-local-isolation/example/local-isolation-manifest.json');
   assert.deepEqual(parsed.runnerArgs, ['-DryRun', '-Fixture', 'pass']);
 
   assert.throws(() => parseMatrixCliArgs(['--warmup-seconds', 'soon']), /--warmup-seconds must be an integer/);
@@ -350,25 +346,6 @@ test('strict paid argv binds the fail-closed local authority contract', () => {
   assert.equal(request.matrix.cellId, 'pairwise-live::qwen3.5-omni-flash-realtime::echo-cancel::default-speaker');
   assert.equal(request.model.subtitleTranslationMode, 'native');
   assert.equal(request.timeouts.sessionSeconds, 180);
-});
-
-test('reusable local isolation authority is restricted to a repo-local manifest', () => {
-  const workspace = path.join(repoRoot, 'fixture-workspace');
-  assert.equal(
-    resolveReusableLocalIsolationManifest(
-      'artifacts/testing/watch-mode-local-isolation/run/local-isolation-manifest.json',
-      { workspaceRoot: workspace },
-    ),
-    path.resolve(workspace, 'artifacts/testing/watch-mode-local-isolation/run/local-isolation-manifest.json'),
-  );
-  assert.throws(
-    () => resolveReusableLocalIsolationManifest('artifacts/testing/watch-mode-live/run/local-isolation-manifest.json'),
-    /must point inside artifacts\/testing\/watch-mode-local-isolation/,
-  );
-  assert.throws(
-    () => resolveReusableLocalIsolationManifest('artifacts/testing/watch-mode-local-isolation/run/report.json'),
-    /must point to local-isolation-manifest\.json/,
-  );
 });
 
 test('resolveMatrixLists enforces the matrix validation errors', () => {
@@ -598,7 +575,7 @@ test('matrix manifest contains only the current invocation run directories', () 
   });
   assert.equal(fs.existsSync(manifestPath), true);
   assert.deepEqual(manifest.runDirectories, currentRuns.map((directory) => path.basename(directory)));
-  assert.equal(manifest.schemaVersion, 4);
+  assert.equal(manifest.schemaVersion, 5);
   assert.equal(manifest.cells.length, 1);
   assert.equal(manifest.strict, true);
   assert.equal(manifest.evidenceMode, 'live');
@@ -804,7 +781,7 @@ test('shard staging copies one local root and emits only evidence-root-relative 
   });
   const consumptionClaimPath = path.join(coordinatorRoot, 'provider-preflight-consumption-claim.json');
   const consumptionClaim = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-provider-preflight-consumption-claim',
     executionId: plan.executionId,
     grantDigest: grant.digest,

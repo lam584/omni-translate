@@ -663,7 +663,7 @@ test('artifact saving omits echo-cancel physical-content placeholders but preser
         `$runRequest = [pscustomobject]@{}; ` +
         `$context = [pscustomobject]@{ audioRoute = 'echo-cancel'; paths = [pscustomobject]@{ runtimeRoot = ${quotePowerShell(root)} }; model = [pscustomobject]@{ id = $null } }; ` +
         `$steps = [System.Collections.ArrayList]::new(); [void]$steps.Add([pscustomobject]@{ ` +
-          `schemaVersion = 'watch-mode-step/v1'; ` +
+          `schemaVersion = 'watch-mode-step/v2'; ` +
           `id = 'transcribe-and-compare-physical-output-content'; ` +
           `phase = 'contentCapture'; status = 'passed'; ` +
           `startedAt = '2026-08-13T00:00:00Z'; endedAt = '2026-08-13T00:00:01Z'; durationMs = 1000; ` +

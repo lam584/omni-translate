@@ -181,8 +181,12 @@ function isBenignCredentialLifecycleLine(line) {
   return /\bstart action=|calling CredReadW|CredReadW succeeded|\boutcome=ok\b/i.test(text);
 }
 
-function normalizeSteps(steps) {
+export function normalizeSteps(steps) {
   if (!Array.isArray(steps)) return [];
+  const unsupported = steps.find((step) => step?.schemaVersion !== 'watch-mode-step/v2');
+  if (unsupported) {
+    throw new Error(`unsupported watch-mode step schema: ${unsupported?.schemaVersion ?? 'missing'}`);
+  }
   return steps.map((step) => ({
     name: String(step?.id ?? '(unnamed-step)').replaceAll('-', ' '),
     ok: step?.status === 'passed',

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -62,7 +63,7 @@ test('step module exposes one explicit four-state schema', () => {
   `);
   const [passed, failed, skipped] = JSON.parse(output);
   assert.deepEqual([passed.status, failed.status, skipped.status], ['passed', 'failed', 'skipped']);
-  assert.equal(passed.schemaVersion, 'watch-mode-step/v1');
+  assert.equal(passed.schemaVersion, 'watch-mode-step/v2');
   assert.equal(failed.error.code, 'testing.launch.failed');
   assert.equal(failed.error.message, 'boom');
 });
@@ -141,5 +142,22 @@ test('process module refuses external and stale leases, then stops its managed p
     assert.equal(parsed.stopped, true, output);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('Watch Mode PowerShell boundaries stay thin and route termination through Process', () => {
+  const watchFiles = fs.readdirSync(moduleRoot)
+    .filter((name) => name.startsWith('Omni.Testing.WatchMode.') && name.endsWith('.psm1'));
+  for (const name of watchFiles) {
+    const source = fs.readFileSync(path.join(moduleRoot, name), 'utf8');
+    assert.doesNotMatch(source, /\bStop-Process\b|\btaskkill(?:\.exe)?\b/iu, name);
+  }
+  assert.ok(fs.readFileSync(path.join(moduleRoot, 'Omni.Testing.WatchMode.Runner.psm1'), 'utf8').split(/\r?\n/u).length <= 350);
+  for (const name of [
+    'Omni.Testing.WatchMode.AudioPlayback.psm1',
+    'Omni.Testing.WatchMode.VirtualDriverCapture.psm1',
+    'Omni.Testing.WatchMode.PhysicalCapture.psm1',
+  ]) {
+    assert.ok(fs.readFileSync(path.join(moduleRoot, name), 'utf8').split(/\r?\n/u).length <= 300, name);
   }
 });

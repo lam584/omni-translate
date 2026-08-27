@@ -11,11 +11,8 @@ import {
   DEFAULT_MODELS,
   MATRIX_DEFAULTS,
   SUPPORTED_DEVICE_CLASSES,
-  buildStrictRuntimeAuthority,
   buildVerifyArgv,
   publishSuccessfulStrictMatrixManifest,
-  resolveReusableLocalIsolationManifest,
-  runStrictProviderPreflight,
   stageShardMatrixIntegration,
   strictRuntimeEnvironment,
   writeMatrixRunManifest,
@@ -23,12 +20,13 @@ import {
 import {
   currentAuthorityImplementationHashes,
   fileAuthorityEntry,
+  relativeChildPath,
   resolveAuthorityPath,
 } from './watch-mode-evidence-authority.mjs';
 import {
-  createReusableLocalIsolationAuthority,
   verifyLocalIsolationManifest,
 } from './watch-mode-local-isolation.mjs';
+import { verifyStrictRuntimeAuthority } from './watch-mode-strict-runtime-authority.mjs';
 import {
   assertCellExternalProviderBudget,
   writeMatrixExternalProviderBudget,
@@ -44,7 +42,7 @@ import {
   validateShardManifest,
 } from './watch-mode-shard-authority.mjs';
 import {
-  defaultThreeVmAssignments,
+  defaultSingleWorkerAssignments,
   prepareCoordinatorExecution,
   runCoordinatorWaves,
   writeCoordinatorAggregate,
@@ -54,6 +52,8 @@ import {
   PROVIDER_PREFLIGHT_GRANT_PATH_ENV,
   PROVIDER_PREFLIGHT_RESERVATION_DIRECTORY_ENV,
 } from './watch-mode-provider-preflight-authorization.mjs';
+import { runManagedProviderPreflight } from './watch-mode-provider-preflight-process.mjs';
+import { runProviderNetworkHealth } from './watch-mode-provider-network-health.mjs';
 
 export const PRODUCTION_COORDINATOR_RUNNER_ID =
   'scripts/testing/run-watch-mode-live-production-coordinator.mjs';
@@ -62,6 +62,22 @@ export const PRODUCTION_WORKER_CONFIG_KIND = 'watch-mode-production-shard-worker
 export const PRODUCTION_REMOTE_CELL_TIMEOUT_MS = 650_000;
 export const PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS = 15 * 60 * 1_000;
 export const PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS = 10 * 60 * 1_000;
+export const PRODUCTION_COORDINATOR_TIMEOUT_MS = 150 * 60 * 1_000;
+
+const SAFETY_FAILURE_PATTERNS = Object.freeze([
+  /provider.*(?:authorization|budget|unauthorized|unreserved|extra connection|duplicate connection|connection[- ]owner|lease)/iu,
+  /runtime.*(?:hash|digest|changed|mismatch)/iu,
+  /implementation.*(?:hash|digest|changed|mismatch)/iu,
+  /endpoint.*(?:owner|ownership|conflict|untrusted|wrong)/iu,
+  /(?:device|driver).*(?:untrusted|identity|state.*invalid|not trustworthy)/iu,
+  /(?:evidence|artifact).*(?:outside|escape|identity mismatch|authority mismatch)/iu,
+  /(?:cleanup|owned process|process identity).*(?:failed|timeout|changed|still running)/iu,
+]);
+
+export function productionCellFailureDisposition({ outcome, error }) {
+  const evidence = `${error?.message ?? ''}\n${JSON.stringify(outcome ?? {})}`;
+  return SAFETY_FAILURE_PATTERNS.some((pattern) => pattern.test(evidence)) ? 'stop' : 'collect';
+}
 
 
 // The SSH process is control-plane only. The checked-in helper registers a
@@ -358,6 +374,13 @@ function validateProfile(profile, workerId, index) {
       throw new Error(`worker ${workerId} device profile ${index} ${key} is invalid`);
     }
   }
+  if (
+    !String(profile.physicalPlaybackDeviceId ?? '').trim()
+    || String(profile.physicalPlaybackDeviceId).trim().toLowerCase() === 'default'
+    || !String(profile.expectedPhysicalPlaybackDeviceName ?? '').trim()
+  ) {
+    throw new Error(`worker ${workerId} device profile ${index} must bind an explicit VMware HDA endpoint id and name`);
+  }
   return structuredClone(profile);
 }
 
@@ -408,7 +431,7 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     const workerId = String(worker.workerId ?? '');
     const user = String(worker.user ?? '');
     if (!SAFE_ID.test(workerId) || workerIds.has(workerId)) throw new Error(`worker ${workerIndex} has invalid or duplicate workerId`);
-    if (!/^[a-z0-9._-]{1,64}$/i.test(user)) throw new Error(`worker ${workerId} has invalid SSH user`);
+    if (!/^[a-z0-9._-]{1,64}$/i.test(user)) throw new Error(`worker ${workerId} has invalid interactive Windows user`);
     if (!SAFE_REMOTE_WINDOWS_ROOT.test(String(worker.workspaceRoot ?? ''))) throw new Error(`worker ${workerId} workspaceRoot must be a fixed safe Windows path without spaces`);
     if (!SAFE_REMOTE_WINDOWS_ROOT.test(String(worker.guestExecutionRoot ?? ''))) throw new Error(`worker ${workerId} guestExecutionRoot must be a fixed safe Windows path without spaces`);
     exactKeys(worker.vmIdentity, ['provider', 'uuidBios'], `worker ${workerId} vmIdentity`);
@@ -435,7 +458,7 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     };
   });
   // All paid cells run serially on the one local interactive Windows session.
-  const assignments = defaultThreeVmAssignments(workers);
+  const assignments = defaultSingleWorkerAssignments(workers);
   const workersById = new Map(workers.map((worker) => [worker.workerId, worker]));
   const assignedProfiles = assignments.map((assignment) => {
     const worker = workersById.get(assignment.workerId);
@@ -1501,15 +1524,103 @@ function productionDeviceProfiles(plan) {
   );
 }
 
-export async function runProductionCoordinator({
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== '') ?? null;
+}
+
+export function productionFailureFingerprint(failure, plan) {
+  const result = failure?.outcome?.result ?? {};
+  const cell = plan.cells.find((candidate) => candidate.cellId === failure.cellId) ?? {};
+  const report = result.report ?? result.summary?.report ?? result.cellAuthority?.report ?? {};
+  const restart = result.restartSummary ?? report.restartSummary ?? result.bridgeRestart ?? {};
+  return {
+    failureLayer: firstDefined(result.failureLayer, report.failureLayer, report.verdict?.failureLayer, 'unknown'),
+    stableErrorCode: firstDefined(result.stableErrorCode, result.errorCode, report.stableErrorCode, 'unknown'),
+    feedbackMode: cell.feedbackLoopPrevention ?? null,
+    lifecyclePhase: firstDefined(result.lifecyclePhase, report.lifecyclePhase, restart.phase, 'unknown'),
+    endpointId: firstDefined(
+      restart.afterEndpointId,
+      restart.resolvedPhysicalPlaybackDeviceId,
+      result.resolvedPhysicalPlaybackDeviceId,
+      cell.deviceProfileInstance?.physicalPlaybackDeviceId,
+    ),
+    ownerGenerationTransition: {
+      before: firstDefined(restart.beforePlaybackOwnerGeneration, restart.previousPlaybackOwnerGeneration),
+      after: firstDefined(restart.afterPlaybackOwnerGeneration, restart.playbackOwnerGeneration),
+    },
+  };
+}
+
+export function resolveLocalIsolationAuthorityPath(manifestPath, { workspaceRoot = repoRoot } = {}) {
+  const resolved = resolveAuthorityPath(workspaceRoot, manifestPath, '--local-isolation-authority');
+  const authorityRoot = path.resolve(workspaceRoot, 'artifacts', 'testing', 'watch-mode-local-isolation');
+  if (!resolved.startsWith(`${authorityRoot}${path.sep}`)) {
+    throw new Error('--local-isolation-authority must point inside artifacts/testing/watch-mode-local-isolation');
+  }
+  if (path.basename(resolved) !== 'local-isolation-manifest.json') {
+    throw new Error('--local-isolation-authority must point to local-isolation-manifest.json');
+  }
+  return resolved;
+}
+
+function fingerprintKey(fingerprint) {
+  return JSON.stringify([
+    fingerprint.failureLayer,
+    fingerprint.stableErrorCode,
+    fingerprint.feedbackMode,
+    fingerprint.lifecyclePhase,
+    fingerprint.endpointId,
+    fingerprint.ownerGenerationTransition?.before,
+    fingerprint.ownerGenerationTransition?.after,
+  ]);
+}
+
+export function aggregateProductionCellFailures({ plan, waveOutcome }) {
+  const attempted = [...waveOutcome.startedCellIds];
+  const completed = [...waveOutcome.completedCellIds];
+  const failures = waveOutcome.collectedFailures.map((failure) => ({
+    cellId: failure.cellId,
+    error: failure.error,
+    fingerprint: productionFailureFingerprint(failure, plan),
+  }));
+  const failedIds = new Set(failures.map((entry) => entry.cellId));
+  const passed = completed.filter((cellId) => !failedIds.has(cellId));
+  const grouped = new Map();
+  for (const failure of failures) {
+    const key = fingerprintKey(failure.fingerprint);
+    const group = grouped.get(key) ?? { fingerprint: failure.fingerprint, cellIds: [], errors: [] };
+    group.cellIds.push(failure.cellId);
+    group.errors.push(failure.error);
+    grouped.set(key, group);
+  }
+  const groups = [...grouped.values()].map((group) => ({
+    ...group,
+    cellIds: group.cellIds.sort(),
+    errors: [...new Set(group.errors)].sort(),
+  }));
+  return {
+    attempted,
+    completed,
+    passed,
+    failed: failures.map((entry) => entry.cellId),
+    failures,
+    sharedRootCauses: groups.filter((group) => group.cellIds.length > 1),
+    cellSpecificFailures: groups.filter((group) => group.cellIds.length === 1),
+  };
+}
+
+async function runProductionCoordinatorCore({
   workerConfig,
-  reuseLocalIsolation,
+  runtimeAuthority,
+  localIsolationAuthority,
   coordinatorOutputRoot = path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-live-coordinator'),
   evidenceOutputRoot = path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-live'),
   executionId = `watch-shard-${crypto.randomUUID()}`,
+  signal = null,
   now = () => new Date(),
   operations = {},
 }) {
+  const transitionCoordinatorState = operations.transitionCoordinatorState ?? (() => {});
   const canonicalCoordinatorOutputRoot = path.join(
     repoRoot,
     'artifacts',
@@ -1524,8 +1635,11 @@ export async function runProductionCoordinator({
   const config = typeof workerConfig === 'string'
     ? readProductionWorkerConfig(workerConfig)
     : validateProductionWorkerConfig(workerConfig, { configDirectory: repoRoot });
-  if (!String(reuseLocalIsolation ?? '').trim()) {
-    throw new Error('production coordinator requires --reuse-local-isolation before build/preflight/provider launch');
+  if (!String(localIsolationAuthority ?? '').trim()) {
+    throw new Error('production coordinator requires --local-isolation-authority before readiness/preflight/provider launch');
+  }
+  if (!String(runtimeAuthority ?? '').trim()) {
+    throw new Error('production coordinator requires --runtime-authority before readiness/preflight/provider launch');
   }
   const generatedAt = now();
   const productionWorkers = config.workers.map(({
@@ -1533,17 +1647,22 @@ export async function runProductionCoordinator({
   }) => ({
     workerId, interactiveUser: user, vmIdentity, deviceProfileInstances,
   }));
-  const productionAssignments = defaultThreeVmAssignments(config.workers);
+  const productionAssignments = defaultSingleWorkerAssignments(config.workers);
   const productionWaveCount = Math.max(...productionAssignments.map((entry) => entry.waveIndex)) + 1;
   const captureProvenance = operations.captureProvenance
     ?? (async () => currentGitProvenance({ cwd: repoRoot }));
+  const verifyRuntimeAuthority = operations.verifyRuntimeAuthority
+    ?? ((authorityPath) => verifyStrictRuntimeAuthority(authorityPath, { workspaceRoot: repoRoot }));
+  const frozenRuntime = await verifyRuntimeAuthority(runtimeAuthority);
+  transitionCoordinatorState('runtime-verified', {
+    runtimeAuthorityDigest: frozenRuntime.authority.authorityDigest,
+    releaseId: frozenRuntime.authority.releaseId,
+  });
   const buildRuntimeAuthority = operations.buildRuntimeAuthority
-    ?? (async ({ coordinatorKeyId }) => buildStrictRuntimeAuthority({
-      environment: {
-        ...strictRuntimeEnvironment(process.env),
-        OMNI_PROVIDER_PREFLIGHT_COORDINATOR_KEY_ID: coordinatorKeyId,
-      },
-    }));
+    ?? (async () => {
+      const verified = await verifyRuntimeAuthority(frozenRuntime.authorityPath);
+      return verified.authority.runtimeBinaryHashes;
+    });
   const captureAuthorityImplementationHashes = operations.captureAuthorityImplementationHashes
     ?? (async () => currentAuthorityImplementationHashes({ workspaceRoot: repoRoot }));
   const captureShardImplementationHashes = operations.captureShardImplementationHashes
@@ -1556,19 +1675,46 @@ export async function runProductionCoordinator({
     authorization,
     authorizationDigest,
   }) => {
-    const preflight = runStrictProviderPreflight({
-      providerId: grant.authorization.providerId,
-      provenance,
-      expectedAuthorization: authorization,
+    const providerId = grant.authorization.providerId;
+    const outputDirectory = path.join(
+      repoRoot,
+      'artifacts',
+      'testing',
+      'watch-mode-provider-preflight',
+      `${new Date().toISOString().replace(/[-:.TZ]/gu, '')}-${executionId}`,
+    );
+    transitionCoordinatorState('preflight-authorized', {
+      providerCalls: 1,
+      providerId,
+      preflightOutputDirectory: outputDirectory,
+    });
+    const preflight = await runManagedProviderPreflight({
+      executablePath: path.join(repoRoot, 'target', 'release', 'omni-desktop-shell.exe'),
+      outputDirectory,
+      executionId,
+      providerId,
+      signal,
       environment: {
         ...strictRuntimeEnvironment(process.env),
+        OMNI_RELEASE_EVIDENCE_SCENARIO: 'E2E-PROVIDER-PROBE',
+        OMNI_RELEASE_EVIDENCE_OUTPUT_DIRECTORY: outputDirectory,
+        OMNI_RELEASE_EVIDENCE_HEAD_COMMIT: provenance.headCommit,
+        OMNI_RELEASE_EVIDENCE_PROVIDER_ID: providerId,
+        OMNI_PROVIDER_PREFLIGHT_EXECUTION_ID: executionId,
+        OMNI_LOG_LEVEL: 'debug',
         [PROVIDER_PREFLIGHT_GRANT_PATH_ENV]: grantPath,
         [PROVIDER_PREFLIGHT_RESERVATION_DIRECTORY_ENV]: leaseReservationDirectory,
         [PROVIDER_PREFLIGHT_AUTHORIZATION_DIGEST_ENV]: authorizationDigest,
       },
     });
+    transitionCoordinatorState('preflight-terminal', {
+      providerCalls: 1,
+      providerId,
+      measuredLatencyMs: preflight.fields.measuredLatencyMs,
+      connectionCount: preflight.fields.connectionCount,
+    });
     return {
-      providerId: preflight.providerId,
+      providerId,
       operation: 'text-translation-preflight',
       inputMode: 'text-only',
       providerInvocationCount: 1,
@@ -1642,34 +1788,48 @@ export async function runProductionCoordinator({
       };
     });
     readinessPreparation = await implementation(context);
+    transitionCoordinatorState('worker-ready', {
+      workerCount: readinessPreparation?.workers?.length ?? 0,
+      providerCalls: 0,
+    });
     return readinessPreparation;
   };
   const obtainLocalIsolationAuthority = operations.obtainLocalIsolationAuthority ?? (async ({
     provenance,
     runtimeBinaryHashes,
   }) => {
-    const manifestPath = resolveReusableLocalIsolationManifest(reuseLocalIsolation, { workspaceRoot: repoRoot });
-    const implementationHashes = currentAuthorityImplementationHashes({ workspaceRoot: repoRoot });
-    const reuse = createReusableLocalIsolationAuthority({
-      manifestPath,
-      provenance,
-      implementationHashes,
-      runtimeBinaryHashes,
-      workspaceRoot: repoRoot,
-    });
+    const manifestPath = resolveLocalIsolationAuthorityPath(localIsolationAuthority, { workspaceRoot: repoRoot });
     verifyLocalIsolationManifest({
       manifestPath,
       workspaceRoot: repoRoot,
       provenance,
       runtimeBinaryHashes,
-      reuseAuthority: reuse,
+      runtimeAuthorityPath: frozenRuntime.authorityPath,
+    });
+    const networkHealthPath = path.join(
+      coordinatorOutputRoot,
+      `${executionId}.provider-network-health.json`,
+    );
+    await (operations.runProviderNetworkHealth ?? runProviderNetworkHealth)({
+      executionId,
+      providerId: 'dashscope',
+      outputPath: networkHealthPath,
+    });
+    transitionCoordinatorState('worker-ready', {
+      providerCalls: 0,
+      networkHealthPath,
+      networkHealthVerified: true,
     });
     const relative = path.relative(repoRoot, manifestPath).split(path.sep).join('/');
     return {
       ...fileAuthorityEntry(manifestPath, relative),
       manifestPath: relative,
       providerCalls: 0,
-      reuse,
+      runtimeAuthorityDigest: frozenRuntime.authority.authorityDigest,
+      networkHealth: fileAuthorityEntry(
+        networkHealthPath,
+        path.relative(repoRoot, networkHealthPath).split(path.sep).join('/'),
+      ),
     };
   });
   const preparation = await (operations.prepareCoordinatorExecution ?? prepareCoordinatorExecution)({
@@ -1691,6 +1851,10 @@ export async function runProductionCoordinator({
       + PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS
     ),
   });
+  transitionCoordinatorState('plan-published', {
+    planDigest: preparation.plan.planDigest,
+    providerCalls: 1,
+  });
   if (!operations.createTransport && (
     !readinessPreparation?.workerReadinessRequest
     || preparation.plan?.workerReadinessRequest?.requestDigest
@@ -1706,6 +1870,7 @@ export async function runProductionCoordinator({
         coordinatorExecutionRoot: preparation.executionRoot,
         reusePreparedWorkers: true,
       });
+  transitionCoordinatorState('waves-running', { providerCalls: 1 });
   const waveOutcome = await (operations.runCoordinatorWaves ?? runCoordinatorWaves)({
     plan: preparation.plan,
     leases: preparation.leases,
@@ -1714,13 +1879,27 @@ export async function runProductionCoordinator({
     dispatchCell: ({ cell, lease, signal }) => transport.dispatchCell({ cell, lease, signal }),
     cancelCell: ({ cell, lease }) => transport.cancelCell({ cell, lease }),
     validateCompletedCell: async ({ outcome }) => {
-      if (
-        outcome?.result?.verdict !== 'passed'
-        || !outcome.result.workerReadinessAuthority
-      ) throw new Error('SSH worker result did not pass local raw/readiness validation');
+      if (!outcome?.result?.workerReadinessAuthority) {
+        throw new Error('device state untrusted: SSH worker result omitted readiness authority');
+      }
+      if (outcome.result.verdict !== 'passed') {
+        throw new Error(`strict cell verdict failed: ${outcome.result.stableErrorCode ?? outcome.result.failureLayer ?? 'unknown'}`);
+      }
       return outcome;
     },
+    classifyFailure: productionCellFailureDisposition,
     now,
+  });
+  const failureSummary = aggregateProductionCellFailures({ plan: preparation.plan, waveOutcome });
+  const failureFingerprints = failureSummary.failures;
+  const failureFingerprintPath = path.join(preparation.executionRoot, 'failure-fingerprints.json');
+  atomicWriteJson(failureFingerprintPath, {
+    schemaVersion: 1,
+    artifactKind: 'watch-mode-production-failure-fingerprints',
+    generatedAt: now().toISOString(),
+    executionId: preparation.plan.executionId,
+    collectAllCompleted: true,
+    ...failureSummary,
   });
   const shards = await Promise.all(preparation.plan.workers.map((worker) => transport.collectWorker({
     worker,
@@ -1728,6 +1907,12 @@ export async function runProductionCoordinator({
     results: waveOutcome.results,
     generatedAt: now(),
   })));
+  transitionCoordinatorState('evidence-collected', {
+    startedCellIds: waveOutcome.startedCellIds,
+    completedCellIds: waveOutcome.completedCellIds,
+    collectedFailureCount: failureFingerprints.length,
+    failureFingerprintPath,
+  });
   const aggregation = (operations.writeCoordinatorAggregate ?? writeCoordinatorAggregate)({
     outputRoot: preparation.executionRoot,
     executionRoot: preparation.executionRoot,
@@ -1745,6 +1930,12 @@ export async function runProductionCoordinator({
     shards,
     collectedMatrixIntegration: aggregation.matrixIntegration,
   });
+  const stagedFailureFingerprintPath = path.join(staged.finalExecutionRoot, 'failure-fingerprints.json');
+  fs.copyFileSync(failureFingerprintPath, stagedFailureFingerprintPath, fs.constants.COPYFILE_EXCL);
+  const failureFingerprintAuthority = fileAuthorityEntry(
+    stagedFailureFingerprintPath,
+    relativeChildPath(evidenceOutputRoot, stagedFailureFingerprintPath, 'staged failure fingerprints'),
+  );
   const assertBudget = operations.assertCellExternalProviderBudget ?? assertCellExternalProviderBudget;
   const rawBudgets = staged.runDirectories.map((runDirectory, index) => assertBudget(
     runDirectory,
@@ -1779,9 +1970,15 @@ export async function runProductionCoordinator({
     releaseCells: LIVE_LLM_CELLS,
     localIsolationAuthority: preparation.plan.localIsolationAuthority,
     externalProviderBudget,
+    failureSummary,
+    failureFingerprintAuthority,
     shardExecution: staged.shardExecution,
     matrixIntegration: staged.matrixIntegration,
   });
+  const runtimeBeforeVerifier = await verifyRuntimeAuthority(frozenRuntime.authorityPath);
+  if (runtimeBeforeVerifier.authority.authorityDigest !== frozenRuntime.authority.authorityDigest) {
+    throw new Error('runtime authority changed before strict evidence verification');
+  }
   const verifyResult = operations.runVerifier
     ? await operations.runVerifier({ manifestPath: manifestResult.manifestPath, evidenceOutputRoot })
     : spawnSync(
@@ -1799,12 +1996,24 @@ export async function runProductionCoordinator({
   if (Number(verifyResult?.status ?? verifyResult?.exitCode ?? 1) !== 0) {
     throw new Error('production sharded strict evidence verification failed; canonical manifest was not published');
   }
+  const runtimeAfterVerifier = await verifyRuntimeAuthority(frozenRuntime.authorityPath);
+  if (runtimeAfterVerifier.authority.authorityDigest !== frozenRuntime.authority.authorityDigest) {
+    throw new Error('runtime authority changed during strict evidence verification');
+  }
+  transitionCoordinatorState('verified', {
+    manifestPath: manifestResult.manifestPath,
+    completedCellIds: waveOutcome.completedCellIds,
+  });
   const published = (operations.publishSuccessfulStrictMatrixManifest ?? publishSuccessfulStrictMatrixManifest)({
     outputRoot: evidenceOutputRoot,
     manifestPath: manifestResult.manifestPath,
     verifiedAt: now(),
     currentProvenance: preparation.plan.provenance,
     currentRuntimeBinaryHashes: preparation.plan.authority.runtimeBinaryHashes,
+  });
+  transitionCoordinatorState('published', {
+    manifestPath: published.canonicalPath,
+    completedCellIds: waveOutcome.completedCellIds,
   });
   return {
     executionId: preparation.plan.executionId,
@@ -1813,16 +2022,103 @@ export async function runProductionCoordinator({
     runManifest: manifestResult.manifestPath,
     canonicalRunManifest: published.canonicalPath,
     externalProviderBudget,
+    failureSummary,
+    failureFingerprintPath,
     waveCount: preparation.plan.waves.length,
     workerCount: preparation.plan.workers.length,
   };
+}
+
+export async function runProductionCoordinator(options) {
+  const executionId = options.executionId ?? `watch-shard-${crypto.randomUUID()}`;
+  const outputRoot = path.resolve(
+    options.coordinatorOutputRoot ?? path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-live-coordinator'),
+  );
+  fs.mkdirSync(outputRoot, { recursive: true });
+  const statePath = path.join(outputRoot, `${executionId}.coordinator-state.json`);
+  let current = {
+    schemaVersion: 2,
+    artifactKind: 'watch-mode-production-coordinator-state',
+    executionId,
+    stage: 'reserved',
+    generatedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    providerCalls: 0,
+    startedCellIds: [],
+    completedCellIds: [],
+    ownedResources: [],
+    primaryError: null,
+    cleanupErrors: [],
+  };
+  atomicWriteJson(statePath, current, { overwrite: true });
+  const transition = (stage, detail = {}) => {
+    current = { ...current, ...detail, stage, updatedAt: new Date().toISOString() };
+    atomicWriteJson(statePath, current, { overwrite: true });
+    options.operations?.transitionCoordinatorState?.(stage, detail);
+  };
+  const coordinatorController = new AbortController();
+  const forwardAbort = () => coordinatorController.abort(options.signal?.reason ?? new Error('coordinator aborted'));
+  if (options.signal?.aborted) forwardAbort();
+  else options.signal?.addEventListener('abort', forwardAbort, { once: true });
+  const coordinatorTimeoutMs = options.coordinatorTimeoutMs ?? PRODUCTION_COORDINATOR_TIMEOUT_MS;
+  let timeoutId;
+  try {
+    const core = runProductionCoordinatorCore({
+      ...options,
+      executionId,
+      signal: coordinatorController.signal,
+      operations: { ...options.operations, transitionCoordinatorState: transition },
+    });
+    const timeout = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
+        const error = new Error(`production coordinator timed out after ${coordinatorTimeoutMs}ms`);
+        coordinatorController.abort(error);
+        reject(error);
+      }, coordinatorTimeoutMs);
+      timeoutId.unref?.();
+    });
+    return await Promise.race([core, timeout]);
+  } catch (error) {
+    const primaryError = { name: error.name ?? 'Error', message: error.message };
+    const cleanupErrors = [...(error.cleanupErrors ?? error.failure?.cleanupErrors ?? [])];
+    transition('failed', {
+      primaryError,
+      cleanupErrors,
+      startedCellIds: error.startedCellIds ?? current.startedCellIds,
+      completedCellIds: error.completedCellIds ?? current.completedCellIds,
+      providerCalls: Math.max(current.providerCalls, error.failurePath ? 1 : 0),
+      failureAuthorityPath: error.failurePath ?? null,
+    });
+    transition('cleanup-running', { primaryError, cleanupErrors });
+    try {
+      if (typeof options.operations?.cleanupOwnedResources === 'function') {
+        const result = await options.operations.cleanupOwnedResources({ executionId, state: structuredClone(current) });
+        if (Array.isArray(result?.cleanupErrors)) cleanupErrors.push(...result.cleanupErrors);
+      }
+    } catch (cleanupError) {
+      cleanupErrors.push({
+        code: 'coordinator.cleanup.unhandled',
+        message: cleanupError.message,
+      });
+    }
+    transition(cleanupErrors.length === 0 ? 'cleanup-completed' : 'cleanup-incomplete', {
+      primaryError,
+      cleanupErrors,
+    });
+    error.cleanupErrors = cleanupErrors;
+    throw error;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    options.signal?.removeEventListener?.('abort', forwardAbort);
+  }
 }
 
 export function parseProductionCoordinatorCliArgs(argv) {
   return parseCliArgs(argv, {
     defaults: {
       workersConfig: '',
-      reuseLocalIsolation: '',
+      runtimeAuthority: '',
+      localIsolationAuthority: '',
       coordinatorOutputRoot: 'artifacts/testing/watch-mode-live-coordinator',
       evidenceOutputRoot: 'artifacts/testing/watch-mode-live',
       executionId: '',
@@ -1831,21 +2127,33 @@ export function parseProductionCoordinatorCliArgs(argv) {
 }
 
 if (isMain(import.meta.url)) {
+  const controller = new AbortController();
+  const abort = (eventName) => controller.abort(new Error(`coordinator interrupted by ${eventName}`));
+  const onSigint = () => abort('SIGINT');
+  const onSigterm = () => abort('SIGTERM');
+  process.once('SIGINT', onSigint);
+  process.once('SIGTERM', onSigterm);
   try {
     const options = parseProductionCoordinatorCliArgs(process.argv.slice(2));
     if (!options.workersConfig) throw new Error('--workers-config is required');
-    if (!options.reuseLocalIsolation) throw new Error('--reuse-local-isolation is required');
+    if (!options.runtimeAuthority) throw new Error('--runtime-authority is required');
+    if (!options.localIsolationAuthority) throw new Error('--local-isolation-authority is required');
     if (options.executionId && !SAFE_ID.test(options.executionId)) throw new Error('--execution-id is not portable');
     const result = await runProductionCoordinator({
       workerConfig: path.resolve(repoRoot, options.workersConfig),
-      reuseLocalIsolation: options.reuseLocalIsolation,
+      runtimeAuthority: path.resolve(repoRoot, options.runtimeAuthority),
+      localIsolationAuthority: options.localIsolationAuthority,
       coordinatorOutputRoot: path.resolve(repoRoot, options.coordinatorOutputRoot),
       evidenceOutputRoot: path.resolve(repoRoot, options.evidenceOutputRoot),
       ...(options.executionId ? { executionId: options.executionId } : {}),
+      signal: controller.signal,
     });
     console.log(result.canonicalRunManifest);
   } catch (error) {
     console.error(error.message);
     process.exitCode = 1;
+  } finally {
+    process.removeListener('SIGINT', onSigint);
+    process.removeListener('SIGTERM', onSigterm);
   }
 }

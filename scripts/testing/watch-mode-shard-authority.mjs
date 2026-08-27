@@ -8,7 +8,7 @@ import {
   LIVE_LLM_CELLS,
 } from './watch-mode-balanced-release-plan.mjs';
 
-export const SHARD_AUTHORITY_SCHEMA_VERSION = 1;
+export const SHARD_AUTHORITY_SCHEMA_VERSION = 2;
 export const SHARD_EXECUTION_PLAN_KIND = 'watch-mode-paid-shard-execution-plan';
 export const SHARD_CELL_LEASE_KIND = 'watch-mode-paid-shard-cell-lease';
 export const SHARD_CELL_RESULT_KIND = 'watch-mode-paid-shard-cell-result';
@@ -72,7 +72,12 @@ export const SHARD_ORCHESTRATION_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/run-watch-mode-live-shard.mjs',
   'scripts/testing/run-watch-mode-live-coordinator.mjs',
   'scripts/testing/run-watch-mode-live-production-coordinator.mjs',
+  'scripts/testing/watch-mode-strict-runtime-authority.mjs',
+  'scripts/testing/watch-mode-provider-preflight-process.mjs',
+  'scripts/testing/watch-mode-provider-network-health.mjs',
   'scripts/testing/invoke-watch-mode-interactive-task.ps1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
   'scripts/testing/run-watch-mode-interactive-task.ps1',
   'scripts/testing/collect-watch-mode-interactive-process-authority.ps1',
   'scripts/testing/release-manual-collector.mjs',
@@ -495,7 +500,7 @@ function assertBoundPrerequisites(plan) {
       })
       || canonicalJson(plan.providerPreflightAuthorization.tokenBudget)
         !== canonicalJson(plan.providerPreflightAuthority.tokenBudget)
-      || plan.providerPreflightAuthorization.consumptionClaim?.schemaVersion !== 1
+      || plan.providerPreflightAuthorization.consumptionClaim?.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
       || plan.providerPreflightAuthorization.consumptionClaim?.artifactKind
         !== 'watch-mode-provider-preflight-consumption-claim'
       || plan.providerPreflightAuthorization.consumptionClaim?.executionId !== plan.executionId
@@ -1793,8 +1798,8 @@ export function buildShardCellResult({
   const resolvedRunDirectory = path.resolve(runDirectory);
   const runDirectoryRelative = relativeAuthorityChild(resolvedShardRoot, resolvedRunDirectory, 'shard run directory');
   const report = readJson(path.join(resolvedRunDirectory, 'report.json'), 'strict cell report');
-  if (report.verdict !== 'passed') {
-    throw new Error(`shard cell report did not pass: ${report.failureReason ?? report.failureLayer ?? 'unknown'}`);
+  if (!['passed', 'failed'].includes(report.verdict)) {
+    throw new Error(`shard cell report has unsupported verdict: ${report.verdict ?? 'missing'}`);
   }
   const usageAuthority = validateProviderUsageAuthority(resolvedRunDirectory, { cell, lease });
   const deviceAuthority = readDeviceAuthority(resolvedRunDirectory, cell);
@@ -1848,7 +1853,12 @@ export function buildShardCellResult({
     schemaVersion: SHARD_AUTHORITY_SCHEMA_VERSION,
     artifactKind: SHARD_CELL_RESULT_KIND,
     generatedAt: generatedAt instanceof Date ? generatedAt.toISOString() : String(generatedAt),
-    verdict: 'passed',
+    verdict: report.verdict,
+    ...(report.verdict === 'failed' ? {
+      failureLayer: report.failureLayer ?? 'unknown',
+      stableErrorCode: report.stableErrorCode ?? report.failureCode ?? 'watch.strict-cell.failed',
+      lifecyclePhase: report.lifecyclePhase ?? null,
+    } : {}),
     executionId: plan.executionId,
     planDigest: plan.planDigest,
     leaseDigest: lease.leaseDigest,
@@ -1928,8 +1938,13 @@ export function validateShardCellResult({
   });
   const plannedCell = verifyCellLease(lease, plan, { now });
   const result = readJson(resultPath, 'shard cell result');
-  if (result.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION || result.artifactKind !== SHARD_CELL_RESULT_KIND || result.verdict !== 'passed') {
-    throw new Error('unsupported or failed shard cell result');
+  if (
+    result.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
+    || result.artifactKind !== SHARD_CELL_RESULT_KIND
+    || !['passed', 'failed'].includes(result.verdict)
+    || (result.verdict === 'failed' && !String(result.stableErrorCode ?? '').trim())
+  ) {
+    throw new Error('unsupported shard cell result');
   }
   if (result.resultDigest !== sha256Canonical(resultCore(result))) throw new Error('shard cell result digest mismatch');
   const resultGeneratedAtMs = assertIsoDate(result.generatedAt, 'shard cell result generatedAt');
@@ -2035,6 +2050,12 @@ export function buildShardManifest({
         `${result.runDirectory}/${SHARD_CELL_RESULT_FILE}`,
       ),
       resultDigest: result.resultDigest,
+      verdict: result.verdict,
+      ...(result.verdict === 'failed' ? {
+        failureLayer: result.failureLayer,
+        stableErrorCode: result.stableErrorCode,
+        lifecyclePhase: result.lifecyclePhase,
+      } : {}),
       actualExternalAudioSamples: result.usageAuthority.actualExternalAudioSamples,
     };
   });
@@ -2049,7 +2070,7 @@ export function buildShardManifest({
     schemaVersion: SHARD_AUTHORITY_SCHEMA_VERSION,
     artifactKind: SHARD_MANIFEST_KIND,
     generatedAt: generatedAt instanceof Date ? generatedAt.toISOString() : String(generatedAt),
-    verdict: 'passed',
+    verdict: validated.every(({ result }) => result.verdict === 'passed') ? 'passed' : 'failed',
     executionId: plan.executionId,
     planDigest: plan.planDigest,
     workerId,
@@ -2083,8 +2104,12 @@ export function validateShardManifest({
     throw new Error('shard manifest must be stored directly in its shard root');
   }
   const manifest = readJson(manifestPath, 'shard manifest');
-  if (manifest.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION || manifest.artifactKind !== SHARD_MANIFEST_KIND || manifest.verdict !== 'passed') {
-    throw new Error('unsupported or failed shard manifest');
+  if (
+    manifest.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
+    || manifest.artifactKind !== SHARD_MANIFEST_KIND
+    || !['passed', 'failed'].includes(manifest.verdict)
+  ) {
+    throw new Error('unsupported shard manifest');
   }
   if (manifest.manifestDigest !== sha256Canonical(manifestCore(manifest))) throw new Error('shard manifest digest mismatch');
   const manifestGeneratedAtMs = assertIsoDate(manifest.generatedAt, 'shard manifest generatedAt');
@@ -2133,10 +2158,13 @@ export function validateShardManifest({
     }
     if (
       validated.result.resultDigest !== binding.resultDigest
+      || validated.result.verdict !== binding.verdict
       || Number(validated.result.usageAuthority.actualExternalAudioSamples) !== Number(binding.actualExternalAudioSamples)
     ) throw new Error(`shard manifest result ${index} authority mismatch`);
     validatedResults.push(validated);
   }
+  const expectedVerdict = validatedResults.every(({ result }) => result.verdict === 'passed') ? 'passed' : 'failed';
+  if (manifest.verdict !== expectedVerdict) throw new Error('shard manifest verdict does not match its cell results');
   const actual = validatedResults.reduce(
     (sum, entry) => sum + Number(entry.result.usageAuthority.actualExternalAudioSamples),
     0,

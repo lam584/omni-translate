@@ -48,6 +48,7 @@ import {
 } from './watch-mode-external-provider-budget.mjs';
 import {
   SHARD_CELL_RESULT_FILE,
+  SHARD_AUTHORITY_SCHEMA_VERSION,
   SHARD_EXECUTION_PLAN_FILE,
   SHARD_ALLOWED_WORKER_COUNTS,
   SHARD_MANIFEST_FILE,
@@ -1045,7 +1046,7 @@ export function verifyStrictShardProviderPreflightAuthorization({
     'strict shard provider preflight consumption claim claimedAt',
   );
   if (
-    claim.schemaVersion !== 1
+    claim.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
     || claim.artifactKind !== PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_KIND
     || claim.executionId !== plan.executionId
     || claim.grantDigest !== grant.digest
@@ -1400,7 +1401,7 @@ export function verifyStrictShardProviderPreflightAuthority({
   );
   const rebuiltDigest = sha256Canonical(rebuiltEntries);
   if (
-    inventory.schemaVersion !== 1
+    inventory.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
     || inventory.artifactKind !== COORDINATOR_PROVIDER_PREFLIGHT_INVENTORY_KIND
     || inventory.executionId !== plan.executionId
     || inventory.scenarioId !== 'E2E-PROVIDER-PROBE'
@@ -1432,7 +1433,7 @@ export function verifyStrictShardProviderPreflightAuthority({
 
   const providerProbeResult = readJson(path.join(rawRoot, 'provider-probe-result.json'));
   if (
-    receipt.schemaVersion !== 1
+    receipt.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
     || receipt.artifactKind !== COORDINATOR_PROVIDER_PREFLIGHT_KIND
     || receipt.executionId !== plan.executionId
     || receipt.scenarioId !== 'E2E-PROVIDER-PROBE'
@@ -1574,6 +1575,19 @@ export function verifyStrictShardProviderPreflightAuthority({
     || providerProbeResult.credentialStatus?.exists !== true
     || providerProbeResult.credentialStatus?.reference
       !== STRICT_PAID_PROVIDER_IDENTITY.credentialReference
+    || Number(providerProbeResult.connectionAttempts) !== 1
+    || Number(providerProbeResult.connectionCount) !== 1
+    || providerProbeResult.connectionOpened !== true
+    || providerProbeResult.connectionClosed !== true
+    || !String(providerProbeResult.connectionOwner ?? '').includes(expectedAuthorization.executionId)
+    || !Number.isSafeInteger(Number(providerProbeResult.connectionGeneration))
+    || Number(providerProbeResult.connectionGeneration) < 1
+    || Number(rawProbeResult?.connectionAttempts) !== 1
+    || Number(rawProbeResult?.connectionCount) !== 1
+    || rawProbeResult?.connectionOpened !== true
+    || rawProbeResult?.connectionClosed !== true
+    || rawProbeResult?.connectionOwner !== providerProbeResult.connectionOwner
+    || Number(rawProbeResult?.connectionGeneration) !== Number(providerProbeResult.connectionGeneration)
   ) {
     throw new Error('strict shard provider preflight configured provider identity is invalid');
   }
@@ -1606,6 +1620,12 @@ export function verifyStrictShardProviderPreflightAuthority({
       || candidate?.protocol !== expectedAuthorization.protocol
       || candidate?.providerConnectStartedAt !== connectStartedAt
       || candidate?.providerConnectCompletedAt !== connectCompletedAt
+      || Number(candidate?.connectionAttempts) !== 1
+      || Number(candidate?.connectionCount) !== 1
+      || candidate?.connectionOpened !== true
+      || candidate?.connectionClosed !== true
+      || candidate?.connectionOwner !== providerProbeResult.connectionOwner
+      || Number(candidate?.connectionGeneration) !== Number(providerProbeResult.connectionGeneration)
     ) {
       throw new Error(`strict shard provider preflight ${label} model/protocol/connect authority mismatch`);
     }
@@ -2220,6 +2240,11 @@ export function verifyStrictMatrixAuthority({
   }
   if (requireLocalIsolation) {
     const localManifestPath = path.resolve(workspaceRoot, manifest.localIsolation.manifestPath ?? '');
+    const localManifest = JSON.parse(fs.readFileSync(localManifestPath, 'utf8').replace(/^\uFEFF/u, ''));
+    const localRuntimeAuthorityPath = path.resolve(
+      path.dirname(localManifestPath),
+      localManifest.runtimeAuthority?.authority?.path ?? '',
+    );
     const localManifestAuthority = fileAuthorityEntry(
       localManifestPath,
       path.basename(localManifestPath),
@@ -2233,8 +2258,30 @@ export function verifyStrictMatrixAuthority({
       workspaceRoot,
       provenance: currentProvenance,
       runtimeBinaryHashes: currentRuntimeBinaryHashes,
-      reuseAuthority: manifest.localIsolation.reuse ?? null,
+      runtimeAuthorityPath: localRuntimeAuthorityPath,
     });
+  }
+  if (
+    manifest.collectAll
+    && (
+      manifest.collectAll.verdict !== 'passed'
+      || !Array.isArray(manifest.collectAll.attempted)
+      || !Array.isArray(manifest.collectAll.completed)
+      || !Array.isArray(manifest.collectAll.passed)
+      || !Array.isArray(manifest.collectAll.failed)
+      || manifest.collectAll.attempted.length !== LIVE_LLM_CELLS.length
+      || manifest.collectAll.completed.length !== LIVE_LLM_CELLS.length
+      || manifest.collectAll.passed.length !== LIVE_LLM_CELLS.length
+      || manifest.collectAll.failed.length !== 0
+    )
+  ) throw new Error('strict collect-all matrix contains failed or incomplete cells');
+  if (manifest.collectAll) {
+    validateFileAuthorityEntry(
+      resolvedRoot,
+      manifest.collectAll.failureFingerprintAuthority,
+      manifest.collectAll.failureFingerprintAuthority?.path,
+      'strict collect-all failure fingerprints',
+    );
   }
   if (manifest.authority?.runner !== MATRIX_RUNNER_ID) {
     throw new Error(`strict authority runner must be ${MATRIX_RUNNER_ID}`);
@@ -2265,6 +2312,9 @@ export function verifyStrictMatrixAuthority({
   const requiresShardAuthority = releaseCells.length === SHARD_MATRIX_CELL_COUNT
     && canonicalJson(releaseCells.map((cell) => cell.cellId))
       === canonicalJson(LIVE_LLM_CELLS.map((cell) => cell.cellId));
+  if (requiresShardAuthority && !manifest.collectAll) {
+    throw new Error('strict shard matrix requires collect-all completion authority');
+  }
   if (
     requiresShardAuthority
     && (!manifest.shardExecution || !manifest.matrixIntegration)

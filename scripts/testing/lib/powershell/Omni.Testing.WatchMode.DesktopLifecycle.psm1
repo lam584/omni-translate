@@ -290,7 +290,7 @@ function Start-WatchModeDesktopShell {
     if ($elevatedLaunch) {
       Stop-ElevatedWatchModeDesktopLaunch $elevatedLaunch | Out-Null
     } else {
-      Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+      Stop-OmniManagedProcessHandle -Process $process | Out-Null
     }
     Stop-WatchModeSystemMetricsSampler $systemMetricsSampler
     throw

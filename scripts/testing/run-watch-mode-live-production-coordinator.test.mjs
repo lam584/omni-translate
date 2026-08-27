@@ -21,6 +21,8 @@ import {
   PRODUCTION_WORKER_READINESS_FINALIZE_BODY,
   PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY,
   parseProductionCoordinatorCliArgs,
+  aggregateProductionCellFailures,
+  productionCellFailureDisposition,
   remotePowerShellInvocation,
   decodeRemotePowerShellFileOutput,
   runRemoteJsonWithRetries,
@@ -32,6 +34,45 @@ import {
   validateProductionWorkerConfig,
   windowsPowerShellEnvironment,
 } from './run-watch-mode-live-production-coordinator.mjs';
+
+test('production cell failures stop only for safety boundaries and collect ordinary verdicts', () => {
+  assert.equal(productionCellFailureDisposition({
+    error: new Error('runtime hash mismatch before evidence collection'),
+  }), 'stop');
+  assert.equal(productionCellFailureDisposition({
+    outcome: { result: { verdict: 'failed', stableErrorCode: 'watch.acoustic.reference-mismatch' } },
+    error: new Error('strict cell verdict failed: watch.acoustic.reference-mismatch'),
+  }), 'collect');
+});
+
+test('production failure aggregation reports progress and shared root causes', () => {
+  const plan = {
+    cells: [
+      { cellId: 'a', feedbackLoopPrevention: 'process-exclusion' },
+      { cellId: 'b', feedbackLoopPrevention: 'process-exclusion' },
+      { cellId: 'c', feedbackLoopPrevention: 'echo-cancel' },
+    ],
+  };
+  const failed = (cellId) => ({
+    cellId,
+    error: 'acoustic mismatch',
+    outcome: { result: { failureLayer: 'acoustic', stableErrorCode: 'watch.acoustic.mismatch' } },
+  });
+  const summary = aggregateProductionCellFailures({
+    plan,
+    waveOutcome: {
+      startedCellIds: ['a', 'b', 'c'],
+      completedCellIds: ['a', 'b', 'c'],
+      collectedFailures: [failed('a'), failed('b')],
+    },
+  });
+  assert.deepEqual(summary.attempted, ['a', 'b', 'c']);
+  assert.deepEqual(summary.passed, ['c']);
+  assert.deepEqual(summary.failed, ['a', 'b']);
+  assert.equal(summary.sharedRootCauses.length, 1);
+  assert.deepEqual(summary.sharedRootCauses[0].cellIds, ['a', 'b']);
+  assert.equal(summary.cellSpecificFailures.length, 0);
+});
 
 test('remote runtime verification has a bounded slow-disk timeout', () => {
   assert.equal(PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS, 5 * 60 * 1000);
@@ -141,7 +182,7 @@ test('production coordinator rejects a noncanonical authorization root before an
   try {
     await assert.rejects(runProductionCoordinator({
       workerConfig: null,
-      reuseLocalIsolation: 'unused.json',
+      localIsolationAuthority: 'unused.json',
       coordinatorOutputRoot: noncanonicalRoot,
       operations: {
         prepareCoordinatorExecution: async () => { callbackCalls += 1; },
@@ -153,13 +194,31 @@ test('production coordinator rejects a noncanonical authorization root before an
   }
 });
 
+test('coordinator failure state preserves the primary error through bounded cleanup terminal state', async () => {
+  const executionId = `cleanup-state-${crypto.randomUUID()}`;
+  const outputRoot = path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-live-coordinator');
+  const statePath = path.join(outputRoot, `${executionId}.coordinator-state.json`);
+  await assert.rejects(runProductionCoordinator({
+    workerConfig: null,
+    runtimeAuthority: 'missing-runtime.json',
+    localIsolationAuthority: 'missing-local.json',
+    executionId,
+    coordinatorOutputRoot: outputRoot,
+  }));
+  const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  assert.equal(state.stage, 'cleanup-completed');
+  assert.ok(state.primaryError?.message);
+  assert.deepEqual(state.cleanupErrors, []);
+  fs.rmSync(statePath, { force: true });
+});
+
 function rawWorkerConfig(root) {
   const defaultProfile = (workerId) => ({
     instanceId: `${workerId}-default`,
     profileId: 'vmware-hda-default',
     deviceClass: 'default-speaker',
-    physicalPlaybackDeviceId: 'default',
-    expectedPhysicalPlaybackDeviceName: '',
+    physicalPlaybackDeviceId: '{0.0.0.00000000}.{a609dee5-4ffd-49d6-b7f2-705cfa934363}',
+    expectedPhysicalPlaybackDeviceName: '扬声器 (High Definition Audio Device)',
   });
   return {
     schemaVersion: 1,
@@ -278,10 +337,11 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
   assert.match(launcher, /-gt 2560/);
   assert.match(launcher, /credential:\/\/provider\/dashscope\/default/);
   assert.match(launcher, /OmniTranslate:credential___provider_dashscope_default/);
-  const control = fs.readFileSync(
-    path.join(repoRoot, 'scripts/testing/invoke-watch-mode-interactive-task.ps1'),
-    'utf8',
-  );
+  const control = [
+    'invoke-watch-mode-interactive-task.ps1',
+    'lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',
+    'lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
+  ].map((relativePath) => fs.readFileSync(path.join(repoRoot, 'scripts/testing', relativePath), 'utf8')).join('\n');
   assert.match(control, /expectedCredentialReference = \[string\]\$payload\.expectedCredentialReference/);
   assert.match(control, /\[bool\]\$payload\.requireSeparateControlPlane/);
   assert.match(source, /requireSeparateControlPlane: !isCoordinatorLocalWorker\(worker\)/);
@@ -342,10 +402,11 @@ test('interactive readiness decodes native UTF-8 endpoint JSON and restores cons
 });
 
 test('interactive control projects readiness and paid-cell fields only inside their exact mode', () => {
-  const control = fs.readFileSync(
-    path.join(repoRoot, 'scripts/testing/invoke-watch-mode-interactive-task.ps1'),
-    'utf8',
-  );
+  const control = [
+    'invoke-watch-mode-interactive-task.ps1',
+    'lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',
+    'lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
+  ].map((relativePath) => fs.readFileSync(path.join(repoRoot, 'scripts/testing', relativePath), 'utf8')).join('\n');
   assert.match(control, /\$mode -notin @\('endpoint-readiness', 'shard-cell', 'incident-plus-cell'\)/);
   const commandStart = control.indexOf('$command = [ordered]@{');
   const commandEnd = control.indexOf('Write-OmniImmutableJson -LiteralPath $commandPath -Value $command');
@@ -389,20 +450,22 @@ test('interactive control projects readiness and paid-cell fields only inside th
   assert.match(control, /recordedXml\.Task\.Principals\.Principal\.UserId -cne \$expectedSid/);
   assert.match(control, /recordedXml\.Task\.Principals\.Principal\.LogonType -cne 'InteractiveToken'/);
   assert.ok(
-    control.indexOf('Omni.Testing.Process.psm1') < control.indexOf('Omni.Testing.IO.psm1'),
+    control.indexOf('Omni.Testing.Process.psm1') < control.lastIndexOf('Omni.Testing.IO.psm1'),
     'interactive control must re-import IO after Process so Get-OmniSha256 remains exported',
   );
   assert.doesNotMatch(control, /recorded\.Principal\.UserId -cne \[string\]\$command\.expectedUserId/);
   assert.doesNotMatch(control, /recorded\.Principal\.LogonType -cne 'InteractiveToken'/);
 });
 
-test('production runtime build embeds the coordinator key identity before preflight', () => {
+test('production coordinator verifies a prebuilt runtime and never rebuilds it', () => {
   const source = fs.readFileSync(
     path.join(repoRoot, 'scripts/testing/run-watch-mode-live-production-coordinator.mjs'),
     'utf8',
   );
-  assert.match(source, /async \(\{ coordinatorKeyId \}\) => buildStrictRuntimeAuthority/);
-  assert.match(source, /OMNI_PROVIDER_PREFLIGHT_COORDINATOR_KEY_ID: coordinatorKeyId/);
+  assert.match(source, /verifyStrictRuntimeAuthority/);
+  assert.doesNotMatch(source, /buildStrictRuntimeAuthority/);
+  assert.match(source, /PROVIDER_PREFLIGHT_AUTHORIZATION_DIGEST_ENV/);
+  assert.match(source, /PROVIDER_PREFLIGHT_GRANT_PATH_ENV/);
 });
 
 test('remote PowerShell uses a compressed encoded command without SSH stdin', () => {
@@ -653,7 +716,8 @@ test('production coordinator drives eight signed serial waves through stage, ver
   try {
     const result = await runProductionCoordinator({
       workerConfig: config,
-      reuseLocalIsolation: 'local.json',
+      runtimeAuthority: 'runtime.json',
+      localIsolationAuthority: 'local.json',
       coordinatorOutputRoot: path.join(
         repoRoot,
         'artifacts',
@@ -662,6 +726,14 @@ test('production coordinator drives eight signed serial waves through stage, ver
       ),
       evidenceOutputRoot: path.join(root, 'evidence'),
       operations: {
+        verifyRuntimeAuthority: async () => ({
+          authorityPath: path.join(root, 'strict-runtime-authority.json'),
+          authority: {
+            authorityDigest: 'f'.repeat(64),
+            releaseId: 'watch-test-release',
+            runtimeBinaryHashes: [],
+          },
+        }),
         runZeroProviderWorkerReadiness: async (context) => {
           calls.push('zero-provider-readiness');
           fs.mkdirSync(context.executionRoot, { recursive: true });
@@ -740,18 +812,27 @@ test('production coordinator drives eight signed serial waves through stage, ver
               results.set(cellId, outcome);
             }));
           }
-          return { results };
+          return {
+            results,
+            startedCellIds: signedPlan.cells.map((cell) => cell.cellId),
+            completedCellIds: signedPlan.cells.map((cell) => cell.cellId),
+            collectedFailures: [],
+          };
         },
         writeCoordinatorAggregate: () => ({
           aggregatePath: path.join(root, 'aggregate.json'),
           matrixIntegration: { cells: [] },
         }),
-        stageShardMatrixIntegration: () => ({
-          runDirectories,
-          shardExecution: { executionRoot: 'staged' },
-          matrixIntegration: { cells },
-          finalExecutionRoot: path.join(root, 'staged'),
-        }),
+        stageShardMatrixIntegration: () => {
+          const finalExecutionRoot = path.join(root, 'evidence', 'staged');
+          fs.mkdirSync(finalExecutionRoot, { recursive: true });
+          return {
+            runDirectories,
+            shardExecution: { executionRoot: 'staged' },
+            matrixIntegration: { cells },
+            finalExecutionRoot,
+          };
+        },
         assertCellExternalProviderBudget: (_directory, expected) => ({
           passed: true,
           cellId: expected.cellId,
@@ -795,11 +876,13 @@ test('production coordinator drives eight signed serial waves through stage, ver
 test('coordinator CLI exposes only the production config, local receipt, and output roots', () => {
   const parsed = parseProductionCoordinatorCliArgs([
     '--workers-config', 'workers.json',
-    '--reuse-local-isolation', 'local-isolation-manifest.json',
+    '--runtime-authority', 'strict-runtime-authority.json',
+    '--local-isolation-authority', 'local-isolation-manifest.json',
     '--execution-id', 'fixed-execution',
   ]);
   assert.equal(parsed.workersConfig, 'workers.json');
-  assert.equal(parsed.reuseLocalIsolation, 'local-isolation-manifest.json');
+  assert.equal(parsed.runtimeAuthority, 'strict-runtime-authority.json');
+  assert.equal(parsed.localIsolationAuthority, 'local-isolation-manifest.json');
   assert.equal(parsed.executionId, 'fixed-execution');
   assert.throws(() => parseProductionCoordinatorCliArgs(['--remote-command', 'whoami']), /Unknown flag/);
 });

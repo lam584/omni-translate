@@ -10,10 +10,22 @@ import test from 'node:test';
 
 import {
   classifyWatchModeRun,
+  normalizeSteps,
   parseBridgeLog,
   renderMarkdownReport,
   writeReport,
 } from './watch-mode-report.mjs';
+
+test('report rejects legacy or missing step schemas instead of migrating them', () => {
+  assert.throws(
+    () => normalizeSteps([{ schemaVersion: 'watch-mode-step/v1', id: 'legacy', status: 'passed' }]),
+    /unsupported watch-mode step schema/,
+  );
+  assert.throws(
+    () => normalizeSteps([{ id: 'missing', status: 'passed' }]),
+    /unsupported watch-mode step schema/,
+  );
+});
 import {
   classify,
   healthyApp,
@@ -279,9 +291,9 @@ test('writeReport prioritizes failure artifact over stale healthy app log', () =
 test('writeReport surfaces failed runner steps and readiness evidence in report output', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-report-steps-'));
   const steps = [
-    { schemaVersion: 'watch-mode-step/v1', id: 'driver-probe', phase: 'driverProbe', status: 'passed', data: healthyDriver, error: null },
+    { schemaVersion: 'watch-mode-step/v2', id: 'driver-probe', phase: 'driverProbe', status: 'passed', data: healthyDriver, error: null },
     {
-      schemaVersion: 'watch-mode-step/v1', id: 'wait-for-watch-mode-app-readiness', phase: 'readiness', status: 'failed', data: null,
+      schemaVersion: 'watch-mode-step/v2', id: 'wait-for-watch-mode-app-readiness', phase: 'readiness', status: 'failed', data: null,
       error: { kind: 'timeout', code: 'testing.readiness.timeout', message: 'timed out waiting for structured readiness' },
     },
   ];

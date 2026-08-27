@@ -38,11 +38,7 @@ import {
   RELEASE_MODELS,
   balancedReleasePlanFailure,
 } from './watch-mode-balanced-release-plan.mjs';
-import {
-  createReusableLocalIsolationAuthority,
-  runLocalIsolationMatrix,
-  verifyLocalIsolationManifest,
-} from './watch-mode-local-isolation.mjs';
+import { runLocalIsolationMatrix, verifyLocalIsolationManifest } from './watch-mode-local-isolation.mjs';
 import {
   STRICT_PAID_MATRIX_CEILING_SECONDS,
   assertCellExternalProviderBudget,
@@ -204,8 +200,6 @@ Options:
                                                     (default: ${MATRIX_DEFAULTS.providerId})
   --device-profiles <json-or-file>                  required for strict matrix; must contain exactly one
                                                     default-speaker and usb profile
-  --reuse-local-isolation <manifest>                strict-only; reuse a passed current-HEAD 6-cell
-                                                   zero-LLM authority instead of rerunning local cells
   --diagnostic-single-device                       explicit non-strict single-device diagnostic; never
                                                    produces release matrix evidence
   --skip-desktop-launch
@@ -248,7 +242,6 @@ export const parseMatrixCliArgs = (argv) => {
       aliasProtocol: process.env.OMNI_WATCH_MODE_LIVE_ALIAS_PROTOCOL ?? 'dashscope-omni',
       feedbackLoopPreventionModes: DEFAULT_FEEDBACK_MODES.join(','),
       deviceProfiles: process.env.OMNI_WATCH_MODE_LIVE_DEVICE_PROFILES ?? '',
-      reuseLocalIsolation: '',
       ...MATRIX_DEFAULTS,
     },
   });
@@ -258,7 +251,6 @@ export const parseMatrixCliArgs = (argv) => {
     'aliasProtocol',
     'feedbackLoopPreventionModes',
     'deviceProfiles',
-    'reuseLocalIsolation',
     ...Object.keys(MATRIX_DEFAULTS),
     ...BOOLEAN_FLAGS.map(toCamelCase),
   ]);
@@ -1100,22 +1092,6 @@ function assertRuntimeBinaryContinuity(recorded, stage) {
   }
 }
 
-export function resolveReusableLocalIsolationManifest(manifestPath, { workspaceRoot = repoRoot } = {}) {
-  if (typeof manifestPath !== 'string' || !manifestPath.trim()) {
-    throw new Error('--reuse-local-isolation requires a manifest path');
-  }
-  const resolved = resolveAuthorityPath(workspaceRoot, manifestPath, '--reuse-local-isolation');
-  const localIsolationRoot = path.resolve(workspaceRoot, 'artifacts', 'testing', 'watch-mode-local-isolation');
-  const relative = path.relative(localIsolationRoot, resolved);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error('--reuse-local-isolation must point inside artifacts/testing/watch-mode-local-isolation');
-  }
-  if (path.basename(resolved) !== 'local-isolation-manifest.json') {
-    throw new Error('--reuse-local-isolation must point to local-isolation-manifest.json');
-  }
-  return resolved;
-}
-
 export const writeMatrixRunManifest = ({
   outputRoot,
   modelList,
@@ -1129,6 +1105,8 @@ export const writeMatrixRunManifest = ({
   releaseCells = null,
   localIsolationAuthority = null,
   externalProviderBudget = null,
+  failureSummary = null,
+  failureFingerprintAuthority = null,
   shardExecution = null,
   matrixIntegration = null,
 }) => {
@@ -1227,6 +1205,13 @@ export const writeMatrixRunManifest = ({
           validationPlan: BALANCED_RELEASE_PLAN,
           localIsolation: localIsolationAuthority,
           externalProviderBudget,
+          ...(failureSummary ? {
+            collectAll: {
+              ...failureSummary,
+              failureFingerprintAuthority,
+              verdict: failureSummary.failed.length === 0 ? 'passed' : 'failed',
+            },
+          } : {}),
           ...(shardExecution ? { shardExecution, matrixIntegration } : {}),
           authority: {
             runner: MATRIX_RUNNER_ID,
@@ -1276,6 +1261,12 @@ export const publishSuccessfulStrictMatrixManifest = ({
     && manifest.localIsolation?.sha256
     && Number(manifest.localIsolation?.bytes) > 0
     && manifest.externalProviderBudget?.passed === true
+    && (!manifest.collectAll || (
+      manifest.collectAll.verdict === 'passed'
+      && Array.isArray(manifest.collectAll.failed)
+      && manifest.collectAll.failed.length === 0
+      && manifest.collectAll.completed?.length === LIVE_LLM_CELLS.length
+    ))
     && Number(manifest.externalProviderBudget?.matrixCeilingSeconds) === STRICT_PAID_MATRIX_CEILING_SECONDS
     && Number(manifest.externalProviderBudget?.reservedSessionSeconds) === STRICT_PAID_MATRIX_CEILING_SECONDS
     && Number(manifest.externalProviderBudget?.auxiliaryExternalAudioSeconds) === 0
@@ -1578,7 +1569,7 @@ export const runMatrix = async (options) => {
     assertStrictMediaPath(options.mediaPath ?? MATRIX_DEFAULTS.mediaPath);
     assertStrictEvidenceOptions(options);
     throw new Error(
-      'the legacy strict matrix entry is disabled before build/preflight/provider launch; use run-watch-mode-live-production-coordinator.mjs for the signed two-or-three-worker shard workflow',
+      'the legacy strict matrix entry is disabled before build/preflight/provider launch; use run-watch-mode-live-production-coordinator.mjs with one local worker and frozen authorities',
     );
   }
   const startProvenance = strict
@@ -1606,56 +1597,6 @@ export const runMatrix = async (options) => {
     });
   }
   let localIsolationAuthority = null;
-  if (strict) {
-    const reusableManifest = String(options.reuseLocalIsolation ?? '').trim();
-    let localIsolationManifestPath = reusableManifest
-      ? resolveReusableLocalIsolationManifest(reusableManifest, { workspaceRoot: repoRoot })
-      : null;
-    let localIsolationReuseAuthority = null;
-    if (localIsolationManifestPath) {
-      console.error(`==> Reusing verified zero-LLM local isolation authority: ${path.relative(repoRoot, localIsolationManifestPath)}`);
-      localIsolationReuseAuthority = createReusableLocalIsolationAuthority({
-        manifestPath: localIsolationManifestPath,
-        provenance: startProvenance,
-        implementationHashes: currentAuthorityImplementationHashes({ workspaceRoot: repoRoot }),
-        runtimeBinaryHashes,
-        workspaceRoot: repoRoot,
-      });
-      verifyLocalIsolationManifest({
-        manifestPath: localIsolationManifestPath,
-        workspaceRoot: repoRoot,
-        provenance: startProvenance,
-        runtimeBinaryHashes,
-        reuseAuthority: localIsolationReuseAuthority,
-      });
-    } else {
-      console.error('==> Running zero-LLM local isolation layer (3 routes x 2 verified physical device classes x 5 minutes)');
-      const localIsolation = await runLocalIsolationMatrix({
-        deviceProfiles,
-        workspaceRoot: repoRoot,
-        provenance: startProvenance,
-      });
-      verifyLocalIsolationManifest({
-        manifestPath: localIsolation.manifestPath,
-        workspaceRoot: repoRoot,
-        provenance: startProvenance,
-        runtimeBinaryHashes,
-      });
-      localIsolationManifestPath = localIsolation.manifestPath;
-    }
-    const manifestStats = fs.statSync(localIsolationManifestPath);
-      localIsolationAuthority = {
-      manifestPath: path.relative(repoRoot, localIsolationManifestPath).split(path.sep).join('/'),
-      bytes: manifestStats.size,
-      sha256: fileAuthorityEntry(
-        localIsolationManifestPath,
-        path.basename(localIsolationManifestPath),
-      ).sha256,
-      ...(localIsolationReuseAuthority ? { reuse: localIsolationReuseAuthority } : {}),
-    };
-  } else if (String(options.reuseLocalIsolation ?? '').trim()) {
-    throw new Error('--reuse-local-isolation is only valid for the strict balanced matrix');
-  }
   const runDirectories = [];
   const cellExternalProviderBudgets = [];
   let reservedPaidSessionSeconds = 0;

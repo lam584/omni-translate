@@ -1,0 +1,111 @@
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+
+import { compactTimestamp, isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
+import { currentGitProvenance } from './git-provenance.mjs';
+import {
+  TEST_RECEIPT_CANONICAL_INDEX,
+  createTestReceipt,
+} from './watch-mode-test-receipts.mjs';
+import { verifyStrictRuntimeAuthority } from './watch-mode-strict-runtime-authority.mjs';
+import { fileAuthorityEntry } from './watch-mode-evidence-authority.mjs';
+
+const PARALLEL_SAFE_STEPS = Object.freeze([
+  { name: 'contracts', command: 'npm run test:contracts' },
+  { name: 'powershell-tooling', command: 'npm run test:powershell-tooling' },
+  { name: 'audit-powershell-boundaries', command: 'npm run audit:powershell-boundaries:strict' },
+  { name: 'audit-architecture', command: 'npm run audit:architecture' },
+  { name: 'watch-mode-coordinator-tooling', command: 'npm run test:watch-mode-coordinator-tooling' },
+]);
+
+const SERIAL_STEPS = Object.freeze([
+  { name: 'integration-bridge-contract', command: 'npm run test:integration:bridge-contract' },
+  { name: 'check-bridge-service-native', command: 'npm run check:bridge-service-native' },
+  { name: 'test-bridge-service-native', command: 'npm run test:bridge-service-native' },
+  { name: 'check-desktop-shell', command: 'npm run check:desktop-shell' },
+  { name: 'test-desktop-shell', command: 'npm run test:desktop-shell' },
+  { name: 'verify-desktop', command: 'npm run verify:desktop' },
+  { name: 'watch-mode-tooling', command: 'npm run test:watch-mode-report' },
+  { name: 'benchmark-core-tests', command: 'npm run test:benchmark-core' },
+  { name: 'diagnostics-benchmark-tests', command: 'npm run test:diagnostics-benchmark' },
+]);
+
+function runCommand(step, logPath) {
+  return new Promise((resolve, reject) => {
+    const startedAt = new Date();
+    const output = fs.createWriteStream(logPath, { flags: 'wx' });
+    const shell = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh';
+    const args = process.platform === 'win32'
+      ? ['/d', '/s', '/c', step.command]
+      : ['-lc', step.command];
+    const child = spawn(shell, args, { cwd: repoRoot, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.pipe(output, { end: false });
+    child.stderr.pipe(output, { end: false });
+    child.once('error', (error) => { output.end(); reject(error); });
+    child.once('exit', (code) => {
+      output.end(() => {
+        if (Number(code) !== 0) reject(new Error(`${step.name} failed with exit ${code}`));
+        else resolve({ step, logPath, startedAt, completedAt: new Date() });
+      });
+    });
+  });
+}
+
+export async function runFrozenTestFunnel({ workspaceRoot = repoRoot, runtimeAuthorityPath } = {}) {
+  const provenance = currentGitProvenance({ cwd: workspaceRoot });
+  if (provenance.worktreeClean !== true || Number(provenance.dirtyEntryCount) !== 0) {
+    throw new Error('frozen test funnel requires the exact clean HEAD');
+  }
+  if (!runtimeAuthorityPath) throw new Error('frozen test funnel requires --runtime-authority');
+  const frozenRuntime = verifyStrictRuntimeAuthority(runtimeAuthorityPath, { workspaceRoot, provenance });
+  const root = path.resolve(workspaceRoot, 'artifacts', 'testing', 'test-receipts', compactTimestamp());
+  fs.mkdirSync(path.dirname(root), { recursive: true });
+  fs.mkdirSync(root, { recursive: false });
+  const results = await Promise.all(PARALLEL_SAFE_STEPS.map((step) => (
+    runCommand(step, path.join(root, `${step.name}.log`))
+  )));
+  for (const step of SERIAL_STEPS) {
+    results.push(await runCommand(step, path.join(root, `${step.name}.log`)));
+  }
+  const finalRuntime = verifyStrictRuntimeAuthority(frozenRuntime.authorityPath, { workspaceRoot, provenance });
+  if (finalRuntime.authority.authorityDigest !== frozenRuntime.authority.authorityDigest) {
+    throw new Error('frozen runtime authority changed while running the test funnel');
+  }
+  const receipts = results.map((result) => {
+    const receipt = createTestReceipt({ ...result, provenance, runtimeAuthority: frozenRuntime.authority });
+    const receiptPath = path.join(root, `${result.step.name}.receipt.json`);
+    fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+    return { name: result.step.name, command: result.step.command, receiptPath };
+  });
+  const canonicalPath = path.resolve(workspaceRoot, TEST_RECEIPT_CANONICAL_INDEX);
+  const index = {
+    schemaVersion: 1,
+    artifactKind: 'clean-head-test-receipt-index',
+    generatedAt: new Date().toISOString(),
+    provenance,
+    runtimeAuthority: {
+      authorityDigest: frozenRuntime.authority.authorityDigest,
+      ...fileAuthorityEntry(
+        frozenRuntime.authorityPath,
+        path.relative(path.dirname(canonicalPath), frozenRuntime.authorityPath).split(path.sep).join('/'),
+      ),
+    },
+    receipts: receipts.map((receipt) => ({
+      name: receipt.name,
+      command: receipt.command,
+      path: path.relative(path.dirname(canonicalPath), receipt.receiptPath).split(path.sep).join('/'),
+    })),
+  };
+  fs.writeFileSync(canonicalPath, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
+  return canonicalPath;
+}
+
+if (isMain(import.meta.url)) {
+  try {
+    const args = parseCliArgs(process.argv.slice(2), { defaults: { runtimeAuthority: '' } });
+    if (!args.runtimeAuthority) throw new Error('--runtime-authority is required');
+    console.log(await runFrozenTestFunnel({ runtimeAuthorityPath: path.resolve(repoRoot, args.runtimeAuthority) }));
+  }
+  catch (error) { console.error(error.message); process.exitCode = 1; }
+}

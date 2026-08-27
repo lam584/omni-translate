@@ -1397,6 +1397,12 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
       inputTokens: null,
       outputTokens: null,
       audioSeconds: null,
+      connectionAttempts: 0,
+      connectionCount: 0,
+      connectionOpened: false,
+      connectionClosed: false,
+      connectionOwner: null,
+      connectionGeneration: null,
       routingDecision: { subtitlePriority: 'balanced', speechDisposition: 'ready', rationale: 'fake semantic judge' },
       error: null,
     });

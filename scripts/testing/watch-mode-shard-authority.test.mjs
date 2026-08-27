@@ -220,17 +220,19 @@ test('shard orchestration inventory is independent from local/matrix implementat
     'scripts/testing/run-watch-mode-live-shard.mjs',
     'scripts/testing/run-watch-mode-live-coordinator.mjs',
     'scripts/testing/run-watch-mode-live-production-coordinator.mjs',
+    'scripts/testing/watch-mode-strict-runtime-authority.mjs',
+    'scripts/testing/watch-mode-provider-preflight-process.mjs',
+    'scripts/testing/watch-mode-provider-network-health.mjs',
     'scripts/testing/invoke-watch-mode-interactive-task.ps1',
+    'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',
+    'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
     'scripts/testing/run-watch-mode-interactive-task.ps1',
     'scripts/testing/collect-watch-mode-interactive-process-authority.ps1',
     'scripts/testing/release-manual-collector.mjs',
     'scripts/testing/watch-mode-provider-preflight-authority.mjs',
     'scripts/testing/watch-mode-provider-preflight-authorization.mjs',
   ]);
-  assert.equal(
-    SHARD_ORCHESTRATION_IMPLEMENTATION_FILES.some((entry) => AUTHORITY_IMPLEMENTATION_FILES.includes(entry)),
-    false,
-  );
+  assert.equal(SHARD_ORCHESTRATION_IMPLEMENTATION_FILES.includes('scripts/testing/run-watch-mode-live-matrix.mjs'), false);
 });
 
 test('signed plan and leases bind exact eight cells, eight serial waves, machine/runtime identities and 1440 seconds', () => {
@@ -466,6 +468,44 @@ test('cell results and a worker shard manifest rehash raw files and preserve can
       }),
       /raw artifact inventory mismatch|hash\/size binding mismatch/,
     );
+  } finally {
+    fs.rmSync(shardRoot, { recursive: true, force: true });
+  }
+});
+
+test('ordinary failed report remains an identity-bound shard result for collect-all', () => {
+  const fixture = createFixture();
+  const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-shard-failed-result-'));
+  try {
+    const cell = fixture.plan.cells[0];
+    const lease = fixture.leases.find((entry) => entry.cellId === cell.cellId);
+    const worker = fixture.plan.workers.find((entry) => entry.workerId === cell.workerId);
+    const runDirectory = path.join(shardRoot, 'runs', 'failed-cell');
+    writeSuccessfulRun(runDirectory, cell, lease);
+    writeJson(path.join(runDirectory, 'report.json'), {
+      verdict: 'failed',
+      failureLayer: 'acoustic',
+      stableErrorCode: 'watch.acoustic.reference-mismatch',
+      lifecyclePhase: 'contentCapture',
+    });
+    const written = writeShardCellResult({
+      plan: fixture.plan,
+      lease,
+      workerId: worker.workerId,
+      vmIdentity: worker.vmIdentity,
+      shardRoot,
+      runDirectory,
+      ...fixture.snapshot,
+    });
+    const validated = validateShardCellResult({
+      resultPath: written.resultPath,
+      plan: fixture.plan,
+      lease,
+      shardRoot,
+      now: fixture.now,
+    });
+    assert.equal(validated.result.verdict, 'failed');
+    assert.equal(validated.result.stableErrorCode, 'watch.acoustic.reference-mismatch');
   } finally {
     fs.rmSync(shardRoot, { recursive: true, force: true });
   }

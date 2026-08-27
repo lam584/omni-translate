@@ -20,6 +20,9 @@ Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Preflight.psm1') 
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.FixtureRunner.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.PlatformOperations.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.EvidenceCollection.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.ExecutionContext.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.RunLifecycle.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.PreDesktopPhase.psm1') -Force -DisableNameChecking
 function Invoke-Step {
   param(
     [Parameter(Mandatory = $true)]$State,
@@ -43,54 +46,10 @@ function Invoke-WatchModeRun {
     [Parameter(Mandatory = $true)]$Request,
     [string]$DevconPath
   )
-  $runContext = $Context
-  $request = $Request
-  $workspaceRoot = [string]$Context.paths.workspaceRoot
-  $DryRun = $request.runMode -eq 'fixture'
-  $Fixture = 'pass'
-  $FixtureRoot = 'scripts/testing/fixtures/watch-mode-live'
-  $OutputRoot = [string]$request.paths.outputRoot
-  $RuntimeRoot = [string]$request.paths.runtimeRoot
-  $WarmupSeconds = [int]$request.timeouts.warmupSeconds
-  $PlaybackSeconds = [int]$request.media.playbackSeconds
-  $PostPlaybackWaitSeconds = [int]$request.timeouts.postPlaybackSeconds
-  $SessionReadyTimeoutSeconds = [int]$request.timeouts.readinessSeconds
-  $WatchAutoStopAfterSeconds = [int]$request.timeouts.sessionSeconds
-  $SkipDriverRepair = $request.driverPolicy -ne 'repair-if-needed'
-  $AllowDriverRepair = $request.driverPolicy -eq 'repair-if-needed'
-  $UseDefaultEndpointPlayback = $false
-  $StopDesktopAfterPlayback = $false
-  $AllowElevatedDesktopLaunch = $request.desktop.elevation -eq 'allow'
-  $SkipPhysicalOutputContentStt = $request.physicalContentMode -eq 'disabled'
-  $StrictPaidAuthority = $request.authorityMode -eq 'strict-paid'
-  $IncidentReplayAuthority = $request.authorityMode -eq 'incident-replay-plus'
-  $LocalCanonicalContentAuthority = $request.authorityMode -eq 'local-canonical-smoke'
-  $MatrixCellId = [string]$request.matrix.cellId
-  $WorkerReadinessReceiptPath = [string]$request.paths.workerReadinessReceipt
-  $MediaPath = [string]$request.media.path
-  $WatchModelId = [string]$request.model.id
-  $WatchRealtimeProtocol = [string]$request.model.protocol
-  $SubtitleTranslationMode = [string]$request.model.subtitleTranslationMode
-  $SubtitleTranslationModelId = [string]$request.model.subtitleModelId
-  $InboundSecondaryAudioModelId = [string]$request.model.secondaryAudioModelId
-  $PhysicalPlaybackDeviceId = [string]$request.physicalDevice.id
-  $PhysicalPlaybackDeviceClass = [string]$request.physicalDevice.class
-  $PhysicalPlaybackDeviceProfileId = [string]$request.physicalDevice.profileId
-  $FeedbackLoopPrevention = [string]$request.feedbackMode
-  $ExpectedPhysicalPlaybackDeviceName = [string]$request.physicalDevice.expectedName
-  $paidAuthorityEnabled = $StrictPaidAuthority -or $IncidentReplayAuthority
-  $localContentAuthorityEnabled = $paidAuthorityEnabled -or $LocalCanonicalContentAuthority
-  $desktopAutoStopAfterSeconds = [int]$Context.lifecycle.desktopAutoStopSeconds
-  $providerAuthorityMode = [string]$request.authorityMode
-  Set-Location $workspaceRoot
-  
-  Assert-WatchModeAuthorityRequest -Context $Context
-  
-  
-  $outputDir = New-OmniTestingOutputDirectory -Root $OutputRoot -ModelId $WatchModelId `
-    -FeedbackMode $FeedbackLoopPrevention -DeviceProfileId $PhysicalPlaybackDeviceProfileId
-  $runMarker = "watch_mode_diagnostic.run_id=$([System.Guid]::NewGuid().ToString('N'))"
-  $startedAtLocal = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+  $execution = New-WatchModeExecutionContext -Context $Context -Request $Request
+  foreach ($property in $execution.PSObject.Properties) {
+    Set-Variable -Name $property.Name -Value $property.Value -Scope Local
+  }
   
   if ($DryRun) {
     Invoke-WatchModeFixtureRun -Context $runContext -Request $request -OutputDirectory $outputDir
@@ -111,139 +70,13 @@ function Invoke-WatchModeRun {
   $virtualDriverMediaPreflight = $null
   $runException = $null
   try {
-    $appLogForMarker = [string]$runContext.paths.appLogPath
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $appLogForMarker) | Out-Null
-    Add-Content -LiteralPath $appLogForMarker -Value $runMarker -Encoding UTF8
-    $desktopEnvState = Set-DesktopAutostartEnvFile -RunMarker $runMarker -OutputDirectory $outputDir `
-      -WorkspaceRoot $workspaceRoot -Context $runContext
-  
-    # Windows PowerShell promotes cargo's successful stderr progress line to a
-    # NativeCommandError when ErrorActionPreference=Stop. Run npm through cmd
-    # with stdout/stderr merged so a zero exit remains a successful build step.
-    Invoke-Step -State $state "build bridge service native" -Phase initialize {
-      & cmd.exe /d /c 'npm.cmd run build:bridge-service-native 2>&1'
-    } -ContinueOnError | Out-Null
-    Invoke-Step -State $state "verify no unleased desktop shell exists before live run" -Phase preflight {
-      Stop-StaleWatchModeDesktopShell
-    } | Out-Null
-    Invoke-Step -State $state "stop stale bridge service before driver probe" -Phase preflight {
-      Stop-StaleBridgeService $workspaceRoot $RuntimeRoot
-    } -ContinueOnError | Out-Null
-    if (Test-UsesVirtualDriverBackend $FeedbackLoopPrevention) {
-      if ($paidAuthorityEnabled) {
-        $driverProbe = Invoke-Step -State $state "driver probe from signed worker readiness" -Phase driverProbe {
-          Get-SignedWorkerReadinessDriverProbe -ReceiptPath $WorkerReadinessReceiptPath -WorkspaceRoot $workspaceRoot
-        } -ContinueOnError
-      } else {
-        $driverProbeArguments = Get-WatchModeDriverProbeArguments `
-          -WorkspaceRoot $workspaceRoot `
-          -RequestedDevconPath $DevconPath
-        $driverProbe = Invoke-Step -State $state "driver probe" -Phase driverProbe {
-          & (Join-Path $workspaceRoot "scripts/installer/test-development-driver.ps1") @driverProbeArguments
-        } -ContinueOnError
-      }
-  
-      if ($driverProbe.status -ne 'passed' -and -not $SkipDriverRepair -and $AllowDriverRepair) {
-        Invoke-Step -State $state "repair driver with explicit elevation" -Phase driverProbe { Invoke-ElevatedDriverReinstall $outputDir $runContext } -ContinueOnError | Out-Null
-        $driverProbe = Invoke-Step -State $state "driver probe after repair" -Phase driverProbe {
-          & (Join-Path $workspaceRoot "scripts/installer/test-development-driver.ps1") @driverProbeArguments
-        } -ContinueOnError
-      }
-      elseif ($driverProbe.status -ne 'passed' -and -not $SkipDriverRepair -and -not $AllowDriverRepair) {
-        Write-Host "driver probe failed; skipping elevated repair because -AllowDriverRepair was not provided"
-      }
-    } else {
-      $driverProbe = Invoke-OmniRunPhase -State $state -Id 'driver-probe' -Phase driverProbe `
-        -PolicySkipReason "$FeedbackLoopPrevention does not install, probe, or depend on the virtual driver"
-    }
-    Convert-DriverProbeToJsonFile $driverProbe (Join-Path $outputDir "driver.json")
-    $driverPreflightFailure = Get-VirtualDriverPreflightFailure $FeedbackLoopPrevention $driverProbe
-    if ($driverPreflightFailure) { throw $driverPreflightFailure }
-  
-    $bridgeSourceProbe = if ($FeedbackLoopPrevention -eq "echo-cancel") {
-      Invoke-OmniRunPhase -State $state -Id 'bridge-source-frame-probe' -Phase bridgeProbe `
-        -PolicySkipReason 'echo-cancel Watch capture does not use a Bridge source backend'
-    } else {
-      Invoke-Step -State $state "bridge source frame probe" -Phase bridgeProbe {
-        Invoke-BridgeSourceProbe -OutputDirectory $outputDir -FeedbackMode $FeedbackLoopPrevention `
-          -WorkspaceRoot $workspaceRoot
-      } -ContinueOnError
-    }
-    if ($bridgeSourceProbe.status -eq 'passed') {
-      $bridgeSourceProbe.data | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path $outputDir "bridge-source-probe.json") -Encoding UTF8
-    } else {
-      $bridgeDiagnosticsPath = Join-Path $outputDir "bridge-source-probe-diagnostics.json"
-      if (Test-Path -LiteralPath $bridgeDiagnosticsPath -PathType Leaf) {
-        Get-Content -LiteralPath $bridgeDiagnosticsPath -Raw -Encoding UTF8 | Set-Content -Path (Join-Path $outputDir "bridge-source-probe.json") -Encoding UTF8
-      } else {
-        [pscustomobject]@{ passed = $false; error = $bridgeSourceProbe.error.message } | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $outputDir "bridge-source-probe.json") -Encoding UTF8
-      }
-    }
-    if ($FeedbackLoopPrevention -ne "echo-cancel" -and $bridgeSourceProbe.status -ne 'passed') {
-      throw "bridge source frame preflight failed before the Desktop/LLM session: $($bridgeSourceProbe.error.message)"
-    }
-  
-    $virtualDriverMediaPreflight = if (Test-UsesVirtualDriverBackend $FeedbackLoopPrevention) {
-      Invoke-Step -State $state "virtual-driver media source preflight" -Phase preflight {
-        Invoke-VirtualDriverMediaSourcePreflight `
-          -OutputDirectory $outputDir `
-          -VirtualRenderEndpointId ([string]$driverProbe.data.WasapiEndpointId) `
-          -PathToMedia $MediaPath `
-          -WorkspaceRoot $workspaceRoot
-      } -ContinueOnError
-    } else {
-      Invoke-OmniRunPhase -State $state -Id 'virtual-driver-media-source-preflight' -Phase preflight `
-        -PolicySkipReason "$FeedbackLoopPrevention does not use the virtual-driver media path"
-    }
-    if ($virtualDriverMediaPreflight.status -eq 'passed') {
-      $virtualDriverMediaPreflight.data | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path $outputDir "virtual-driver-media-source-preflight.json") -Encoding UTF8
-    } elseif ($virtualDriverMediaPreflight.status -eq 'failed') {
-      $preflightDiagnosticsPath = Join-Path $outputDir "virtual-driver-media-source-preflight-diagnostics.json"
-      if (Test-Path -LiteralPath $preflightDiagnosticsPath -PathType Leaf) {
-        Get-Content -LiteralPath $preflightDiagnosticsPath -Raw -Encoding UTF8 | Set-Content -Path (Join-Path $outputDir "virtual-driver-media-source-preflight.json") -Encoding UTF8
-      } else {
-        [pscustomobject]@{ passed = $false; error = $virtualDriverMediaPreflight.error.message } | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $outputDir "virtual-driver-media-source-preflight.json") -Encoding UTF8
-      }
-      throw "virtual-driver media source preflight failed before the Desktop/LLM session: $($virtualDriverMediaPreflight.error.message)"
-    } else {
-      [pscustomobject]@{
-        skipped = $true
-        reason = [string]$virtualDriverMediaPreflight.data.reason
-      } | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $outputDir "virtual-driver-media-source-preflight.json") -Encoding UTF8
-    }
-  
-    $physicalOutputProbe = if ($FeedbackLoopPrevention -eq "echo-cancel") {
-      Invoke-OmniRunPhase -State $state -Id 'physical-output-loopback-probe' -Phase preflight `
-        -PolicySkipReason 'echo-cancel does not use a Bridge physical-output isolation probe'
-    } else {
-      Invoke-Step -State $state "physical output loopback probe" -Phase preflight {
-        Invoke-PhysicalOutputProbe $outputDir $FeedbackLoopPrevention $workspaceRoot $PhysicalPlaybackDeviceId $ExpectedPhysicalPlaybackDeviceName
-      } -ContinueOnError
-    }
-    if ($physicalOutputProbe.status -eq 'passed') {
-      $physicalOutputProbe.data | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path $outputDir "physical-output-probe.json") -Encoding UTF8
-      Set-DesktopPhysicalPlaybackOverride -DeviceId (Get-PhysicalOutputResolvedDeviceId $physicalOutputProbe) `
-        -WorkspaceRoot $workspaceRoot
-    } else {
-      [pscustomobject]@{ error = $physicalOutputProbe.error.message } | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $outputDir "physical-output-probe.json") -Encoding UTF8
-    }
-  
-    $deviceEvidenceStep = Invoke-Step -State $state "resolve and classify physical playback endpoint" -Phase preflight {
-      Resolve-PhysicalPlaybackDeviceEvidence -PhysicalOutputProbe $physicalOutputProbe `
-        -FeedbackMode $FeedbackLoopPrevention -RequestedDeviceId $PhysicalPlaybackDeviceId `
-        -ExpectedDeviceName $ExpectedPhysicalPlaybackDeviceName -ProfileId $PhysicalPlaybackDeviceProfileId `
-        -DeviceClass $PhysicalPlaybackDeviceClass
-    } -ContinueOnError
-    if ($deviceEvidenceStep.status -ne 'passed') {
-      throw "physical playback device evidence failed: $($deviceEvidenceStep.error.message)"
-    }
-    $deviceEvidenceStep.data | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $outputDir "physical-playback-device.json") -Encoding UTF8
-    $resolvedPhysicalDeviceId = [string]$deviceEvidenceStep.data.resolvedDeviceId
-    Set-DesktopPhysicalPlaybackOverride -DeviceId $resolvedPhysicalDeviceId -WorkspaceRoot $workspaceRoot
-    $desktopProcess = Invoke-Step -State $state "start desktop shell" -Phase desktopLaunch {
-      Start-WatchModeDesktopShell $runContext $outputDir $runMarker $resolvedPhysicalDeviceId
-    } -ContinueOnError
-  
+    $preDesktop = Invoke-WatchModePreDesktopPhase -Execution $execution -State $state -DevconPath $DevconPath
+    $desktopProcess = $preDesktop.desktopProcess
+    $desktopEnvState = $preDesktop.desktopEnvState
+    $driverProbe = $preDesktop.driverProbe
+    $virtualDriverMediaPreflight = $preDesktop.virtualDriverMediaPreflight
+    $deviceEvidenceStep = $preDesktop.deviceEvidenceStep
+    $resolvedPhysicalDeviceId = [string]$preDesktop.resolvedPhysicalDeviceId
     if ($desktopProcess.status -eq 'passed') {
       # The virtual-driver route intentionally renders its source through the
         # installed virtual endpoint. The other routes must inject the source
@@ -420,33 +253,8 @@ function Invoke-WatchModeRun {
       'recording', 'playback', 'reportWait', 'contentCapture', 'artifactSave'
     )
   } finally {
-    try {
-      Stop-WatchModeDesktopShell $runContext $desktopProcess | Out-Null
-    } catch {
-      Add-OmniCleanupError -State $state -Code 'watch-mode.cleanup.desktop-failed' `
-        -Message $_.Exception.Message | Out-Null
-    }
-    $samplerToStop = if ($desktopProcess -and $desktopProcess.status -eq 'passed' -and $desktopProcess.data) {
-      $desktopProcess.data.systemMetricsSampler
-    } else { $null }
-    try {
-      Stop-WatchModeSystemMetricsSampler $samplerToStop
-    } catch {
-      Add-OmniCleanupError -State $state -Code 'watch-mode.cleanup.metrics-failed' `
-        -Message $_.Exception.Message | Out-Null
-    }
-    try {
-      Stop-StaleBridgeService $workspaceRoot $RuntimeRoot | Out-Null
-    } catch {
-      Add-OmniCleanupError -State $state -Code 'watch-mode.cleanup.bridge-failed' `
-        -Message $_.Exception.Message | Out-Null
-    }
-    try {
-      Restore-DesktopAutostartEnvFile $desktopEnvState
-    } catch {
-      Add-OmniCleanupError -State $state -Code 'watch-mode.cleanup.environment-failed' `
-        -Message $_.Exception.Message | Out-Null
-    }
+    Stop-WatchModeRunResources -State $state -Context $runContext -DesktopProcess $desktopProcess `
+      -WorkspaceRoot $workspaceRoot -RuntimeRoot $RuntimeRoot -DesktopEnvironmentState $desktopEnvState
   }
   Save-WatchModeRunArtifacts -OutputDirectory $outputDir -PlaybackStep $playbackStep `
     -RunMarker $runMarker -StartedAtLocal $startedAtLocal -Context $runContext -Request $request -State $state

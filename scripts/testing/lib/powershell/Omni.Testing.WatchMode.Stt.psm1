@@ -1,6 +1,7 @@
 #requires -Version 5.1
 
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Evidence.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Process.psm1') -Force -DisableNameChecking
 
 function Invoke-NativeProcessToLog {
   param(
@@ -21,7 +22,7 @@ function Invoke-NativeProcessToLog {
   if ($TimeoutSeconds -gt 0) {
     $exited = $process.WaitForExit($TimeoutSeconds * 1000)
     if (-not $exited) {
-      Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+      Stop-OmniManagedProcessHandle -Process $process | Out-Null
       return 124
     }
   } else {
@@ -120,28 +121,11 @@ public static class OmniWatchCredentialReader {
   return $null
 }
 
-function Build-OmniRealtimeDiagnostic {
-  param([string]$OutputDirectory, [Parameter(Mandatory = $true)][string]$WorkspaceRoot)
-  $buildLog = Join-Path $OutputDirectory "omni-realtime-diagnostic.build.log"
-  $buildErr = Join-Path $OutputDirectory "omni-realtime-diagnostic.build.stderr.log"
-  $previousCargoTargetDir = $env:CARGO_TARGET_DIR
-  try {
-    # This diagnostic crate is not a workspace member. Pin its output to the
-    # repository target directory here instead of relying on the matrix
-    # caller's environment; diagnostic-single-device uses the same verifier.
-    $env:CARGO_TARGET_DIR = Join-Path $workspaceRoot "target"
-    $buildExit = Invoke-NativeProcessToLog "cargo.exe" @("build", "--manifest-path", "scripts/diagnostics/omni-realtime/Cargo.toml") $workspaceRoot $buildLog $buildErr
-  } finally {
-    $env:CARGO_TARGET_DIR = $previousCargoTargetDir
-  }
-  if ($buildExit -ne 0) {
-    throw "omni realtime STT diagnostic build failed with exit code $buildExit; see $buildLog and $buildErr"
-  }
-  # The strict matrix fixes CARGO_TARGET_DIR to the workspace target. Never
-  # prefer a stale standalone-crate target over the just-built current-HEAD binary.
+function Resolve-OmniRealtimeDiagnostic {
+  param([Parameter(Mandatory = $true)][string]$WorkspaceRoot)
   $exe = Join-Path $workspaceRoot "target/debug/omni-realtime-diagnostic.exe"
   if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
-    throw "omni realtime STT diagnostic executable was not built"
+    throw "frozen omni realtime STT diagnostic executable is missing"
   }
   return $exe
 }
@@ -279,7 +263,7 @@ function Get-SourceMediaReferenceTranscript {
     return Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
   }
   try {
-    $exe = Build-OmniRealtimeDiagnostic $OutputDirectory $workspaceRoot
+    $exe = Resolve-OmniRealtimeDiagnostic $workspaceRoot
     $stdout = Join-Path $OutputDirectory "source-media-stt.stdout.log"
     $stderr = Join-Path $OutputDirectory "source-media-stt.stderr.log"
     $previous = $env:DASHSCOPE_API_KEY
@@ -340,7 +324,7 @@ function Get-SourceMediaReferenceTranscript {
 Export-ModuleMember -Function @(
   'Invoke-NativeProcessToLog',
   'Get-PhysicalOutputSttApiKey',
-  'Build-OmniRealtimeDiagnostic',
+  'Resolve-OmniRealtimeDiagnostic',
   'Parse-OmniRealtimeDiagnosticText',
   'Invoke-CanonicalSourceAuthorityNode',
   'Get-CanonicalSourceMediaReference',

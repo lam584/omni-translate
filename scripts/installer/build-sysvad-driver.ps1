@@ -353,7 +353,10 @@ foreach ($signedPath in @($stagedSys, $stagedCat)) {
     }
   }
   elseif ($isPerReleaseSelfSignedTestSigner -and $verifyExitCode -eq 1) {
-    if ($verifyOutput -notmatch 'terminated in a root\s+certificate which is not trusted by the trust provider') {
+    if (
+      $verifyOutput -notmatch 'certificate chain processed, but terminated in a root' -or
+      $verifyOutput -notmatch 'certificate which is not trusted by the trust provider'
+    ) {
       throw "Self-signed TESTSIGNING verification failed for $signedPath. ExitCode=$verifyExitCode`n$verifyOutput"
     }
   }

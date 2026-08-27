@@ -5,7 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 rodio = { version = "0.22.2", default-features = false, features = ["mp3"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde_json = "1"

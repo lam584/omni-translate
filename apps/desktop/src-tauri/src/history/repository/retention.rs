@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use super::HistoryRepository;
@@ -7,6 +8,27 @@ use crate::history::fs_safety::{canonical_archive_file, walk_regular_archive_fil
 pub(super) const RETENTION_MAX_AGE_MS: i64 = 90 * 24 * 60 * 60 * 1_000;
 pub(super) const RETENTION_MAX_SESSIONS: usize = 500;
 pub(super) const RETENTION_MAX_BYTES: i64 = 5 * 1024 * 1024 * 1024;
+
+pub(super) fn database_footprint_bytes(database_path: &Path) -> Result<i64, String> {
+    let mut total = 0_i64;
+    for suffix in ["", "-wal", "-shm"] {
+        let path = if suffix.is_empty() {
+            database_path.to_path_buf()
+        } else {
+            let mut value = OsString::from(database_path.as_os_str());
+            value.push(suffix);
+            PathBuf::from(value)
+        };
+        match std::fs::metadata(path) {
+            Ok(metadata) => {
+                total = total.saturating_add(i64::try_from(metadata.len()).unwrap_or(i64::MAX));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(total)
+}
 
 struct RetentionVictim {
     session_id: String,
@@ -36,8 +58,23 @@ impl HistoryRepository {
         }
         drop(connection);
         self.resume_deleting_sessions(history_dir)?;
+        self.compact_database()?;
         self.cleanup_orphan_audio(history_dir)?;
         Ok(victims.len())
+    }
+
+    fn compact_database(&self) -> Result<(), String> {
+        let connection = self.open()?;
+        connection
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute_batch("VACUUM")
+            .map_err(|error| error.to_string())?;
+        connection
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+            .map_err(|error| error.to_string())?;
+        Ok(())
     }
 
     fn select_retention_victims(&self, now_ms: i64) -> Result<Vec<RetentionVictim>, String> {
@@ -62,24 +99,26 @@ impl HistoryRepository {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?;
         drop(statement);
-        let mut total_audio_bytes: i64 = connection
+        let total_audio_bytes: i64 = connection
             .query_row(
                 "SELECT COALESCE(SUM(audio_bytes), 0) FROM subtitle_sessions",
                 [],
                 |row| row.get(0),
             )
             .map_err(|error| error.to_string())?;
+        let mut total_footprint_bytes = total_audio_bytes
+            .saturating_add(database_footprint_bytes(&self.database_path)?);
         let age_cutoff = now_ms.saturating_sub(RETENTION_MAX_AGE_MS);
         let mut victims = Vec::new();
         for (index, (session_id, ended_at_ms, audio_bytes)) in ended.iter().enumerate() {
             let too_old = *ended_at_ms < age_cutoff;
             let exceeds_count = ended.len().saturating_sub(index) > RETENTION_MAX_SESSIONS;
-            let exceeds_bytes = total_audio_bytes > RETENTION_MAX_BYTES;
+            let exceeds_bytes = total_footprint_bytes > RETENTION_MAX_BYTES;
             if too_old || exceeds_count || exceeds_bytes {
                 victims.push(RetentionVictim {
                     session_id: session_id.clone(),
                 });
-                total_audio_bytes = total_audio_bytes.saturating_sub(*audio_bytes);
+                total_footprint_bytes = total_footprint_bytes.saturating_sub(*audio_bytes);
             }
         }
         Ok(victims)

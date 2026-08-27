@@ -1,4 +1,5 @@
 mod audio;
+mod archive_gap;
 mod crypto;
 mod cue_ingress;
 mod fs_safety;
@@ -27,6 +28,7 @@ pub(crate) use playback::{
 };
 pub(crate) use playback::emit_changed;
 use audio::AudioTrack;
+use archive_gap::{drain_audio, flush_finished_session_payload, handle_audio_gap};
 use cue_ingress::{
     drain_cue_overflow, drain_latest_cues, insert_latest_cue, parse_ms_marker, QueuedCue,
 };
@@ -84,6 +86,7 @@ pub(crate) struct HistoryStateStore {
     cue_overflow: Arc<Mutex<HashMap<(String, String), QueuedCue>>>,
     audio_tx: SyncSender<QueuedAudio>,
     queued_audio_ms: Arc<AtomicU64>,
+    audio_gap_epoch: Arc<AtomicU64>,
     audio_gap_sessions: Arc<Mutex<HashSet<String>>>,
     control_tx: mpsc::Sender<ArchiveControl>,
     playback: playback::HistoryPlaybackController,
@@ -105,6 +108,7 @@ struct QueuedAudio {
     sample_rate_hz: u32,
     started_at_ms: i64,
     duration_ms: u64,
+    gap_epoch: u64,
     samples: Vec<i16>,
 }
 
@@ -113,6 +117,7 @@ struct AudioAccumulatorKey {
     session_id: String,
     track: AudioTrack,
     sample_rate_hz: u32,
+    gap_epoch: u64,
 }
 
 struct AudioCueSpan {
@@ -144,6 +149,7 @@ impl HistoryStateStore {
         let cue_overflow = Arc::new(Mutex::new(HashMap::new()));
         let (audio_tx, audio_rx) = mpsc::sync_channel(AUDIO_MUTATION_CAPACITY);
         let queued_audio_ms = Arc::new(AtomicU64::new(0));
+        let audio_gap_epoch = Arc::new(AtomicU64::new(0));
         let audio_gap_sessions = Arc::new(Mutex::new(HashSet::new()));
         let (control_tx, control_rx) = mpsc::channel();
         let worker_inner = inner.clone();
@@ -170,6 +176,7 @@ impl HistoryStateStore {
             cue_overflow,
             audio_tx,
             queued_audio_ms,
+            audio_gap_epoch,
             audio_gap_sessions,
             control_tx,
             playback: playback::HistoryPlaybackController::default(),
@@ -310,6 +317,7 @@ impl HistoryStateStore {
             sample_rate_hz,
             started_at_ms: unix_ms().saturating_sub(duration_ms as i64),
             duration_ms,
+            gap_epoch: self.audio_gap_epoch.load(Ordering::Acquire),
             samples: samples.to_vec(),
         };
         if self.audio_tx.try_send(queued).is_err() {
@@ -319,6 +327,10 @@ impl HistoryStateStore {
     }
 
     fn report_audio_gap(&self, session_id: String) {
+        // Advance before publishing the control event. Audio accepted after
+        // this rejection carries a new epoch even if it races ahead of the
+        // worker's control-channel handling.
+        self.audio_gap_epoch.fetch_add(1, Ordering::AcqRel);
         let should_report = self
             .audio_gap_sessions
             .lock()
@@ -407,10 +419,12 @@ impl HistoryStateStore {
     }
 
     pub(crate) fn finish_active_session(&self) -> Result<Option<String>, String> {
-        let mut inner = self.inner.lock().map_err(|_| "history state poisoned".to_string())?;
-        let state = available_state_mut(&mut inner)?;
-        let Some(session_id) = state.active_session_id.take() else { return Ok(None); };
-        drop(inner);
+        let session_id = {
+            let mut inner = self.inner.lock().map_err(|_| "history state poisoned".to_string())?;
+            let state = available_state_mut(&mut inner)?;
+            let Some(session_id) = state.active_session_id.clone() else { return Ok(None); };
+            session_id
+        };
         let (acknowledged, receiver) = mpsc::channel();
         self.control_tx
             .send(ArchiveControl::Finish {
@@ -422,6 +436,11 @@ impl HistoryStateStore {
         receiver
             .recv_timeout(STOP_FLUSH_TIMEOUT)
             .map_err(|_| "字幕历史停止 flush 超过 2 秒".to_string())??;
+        let mut inner = self.inner.lock().map_err(|_| "history state poisoned".to_string())?;
+        let state = available_state_mut(&mut inner)?;
+        if state.active_session_id.as_deref() == Some(session_id.as_str()) {
+            state.active_session_id = None;
+        }
         Ok(Some(session_id))
     }
 
@@ -636,9 +655,15 @@ fn archive_worker(
                     let _ = acknowledged.send(result);
                 }
                 ArchiveControl::AudioGap { session_id } => {
-                    with_worker_repository(&state, |repository| {
-                        repository.mark_archive_gap(&session_id)
-                    });
+                    if let Err(error) = handle_audio_gap(
+                        &state,
+                        &audio_rx,
+                        &mut audio,
+                        &queued_audio_ms,
+                        &session_id,
+                    ) {
+                        log::warn!("[omni][history] archive gap boundary failed: {error}");
+                    }
                 }
             }
         }
@@ -676,33 +701,6 @@ fn archive_worker(
     }
 }
 
-fn flush_finished_session_payload(
-    state: &Arc<Mutex<Option<HistoryState>>>,
-    pending: &mut HashMap<(String, String), QueuedCue>,
-    audio_rx: &Receiver<QueuedAudio>,
-    audio: &mut HashMap<AudioAccumulatorKey, AudioAccumulator>,
-    queued_audio_ms: &AtomicU64,
-    session_id: &str,
-) -> Result<(), String> {
-    flush_pending_cues(state, pending)?;
-    drain_audio(audio_rx, audio, state, queued_audio_ms);
-    flush_session_audio(state, audio, session_id)
-}
-
-fn drain_audio(
-    receiver: &Receiver<QueuedAudio>,
-    accumulators: &mut HashMap<AudioAccumulatorKey, AudioAccumulator>,
-    state: &Arc<Mutex<Option<HistoryState>>>,
-    queued_audio_ms: &AtomicU64,
-) {
-    while let Ok(audio) = receiver.try_recv() {
-        queued_audio_ms.fetch_sub(audio.duration_ms, Ordering::AcqRel);
-        if let Err(error) = append_audio(accumulators, state, audio) {
-            log::warn!("[omni][history] audio archive mutation failed: {error}");
-        }
-    }
-}
-
 fn append_audio(
     accumulators: &mut HashMap<AudioAccumulatorKey, AudioAccumulator>,
     state: &Arc<Mutex<Option<HistoryState>>>,
@@ -712,6 +710,7 @@ fn append_audio(
         session_id: audio.session_id,
         track: audio.track,
         sample_rate_hz: audio.sample_rate_hz,
+        gap_epoch: audio.gap_epoch,
     };
     let max_samples = audio.sample_rate_hz as usize * 30;
     let mut consumed = 0usize;
@@ -1034,6 +1033,7 @@ mod tests {
                 sample_rate_hz: 100,
                 started_at_ms: 1_000,
                 duration_ms: 30_000,
+                gap_epoch: 0,
                 samples: samples.clone(),
             })
             .unwrap();
@@ -1064,6 +1064,126 @@ mod tests {
         assert_eq!(pieces.len(), 1);
         assert_eq!(pieces[0].sample_rate_hz, 100);
         assert_eq!(pieces[0].samples, samples);
+    }
+
+    #[test]
+    fn audio_gap_closes_the_current_segment_before_later_pcm_arrives() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("subtitle-history.db");
+        let repository = Arc::new(
+            HistoryRepository::initialize(
+                database_path.clone(),
+                crypto::HistoryCipher::for_test([53; 32]),
+            )
+            .unwrap(),
+        );
+        repository.create_session("session-gap", 1_000).unwrap();
+        let state = Arc::new(Mutex::new(Some(HistoryState {
+            database_path,
+            history_dir: directory.path().to_path_buf(),
+            repository: Some(repository.clone()),
+            unavailable_reason: None,
+            active_session_id: Some("session-gap".to_string()),
+            archive_policy: HistoryArchivePolicy::default(),
+        })));
+        let mut accumulators = HashMap::new();
+        append_audio(
+            &mut accumulators,
+            &state,
+            QueuedAudio {
+                session_id: "session-gap".to_string(),
+                cue_id: None,
+                track: AudioTrack::Source,
+                sample_rate_hz: 100,
+                started_at_ms: 1_000,
+                duration_ms: 1_000,
+                gap_epoch: 0,
+                samples: vec![11; 100],
+            },
+        )
+        .unwrap();
+        let (_audio_tx, audio_rx) = mpsc::sync_channel(1);
+        handle_audio_gap(
+            &state,
+            &audio_rx,
+            &mut accumulators,
+            &AtomicU64::new(0),
+            "session-gap",
+        )
+        .unwrap();
+        assert!(accumulators.is_empty());
+
+        append_audio(
+            &mut accumulators,
+            &state,
+            QueuedAudio {
+                session_id: "session-gap".to_string(),
+                cue_id: None,
+                track: AudioTrack::Source,
+                sample_rate_hz: 100,
+                started_at_ms: 5_000,
+                duration_ms: 1_000,
+                gap_epoch: 1,
+                samples: vec![22; 100],
+            },
+        )
+        .unwrap();
+        flush_session_audio(&state, &mut accumulators, "session-gap").unwrap();
+
+        let segments = repository
+            .audio_segments_for_test("session-gap", "source")
+            .unwrap();
+        assert_eq!(segments.len(), 2);
+        let (_, first) = audio::decrypt_flac_segment(
+            &repository.cipher(),
+            "session-gap",
+            AudioTrack::Source,
+            segments[0].0,
+            &segments[0].2,
+        )
+        .unwrap();
+        let (_, second) = audio::decrypt_flac_segment(
+            &repository.cipher(),
+            "session-gap",
+            AudioTrack::Source,
+            segments[1].0,
+            &segments[1].2,
+        )
+        .unwrap();
+        assert_eq!(first, vec![11; 100]);
+        assert_eq!(second, vec![22; 100]);
+    }
+
+    #[test]
+    fn failed_finish_keeps_the_active_session_for_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("subtitle-history.db");
+        let repository = Arc::new(
+            HistoryRepository::initialize(
+                database_path.clone(),
+                crypto::HistoryCipher::for_test([59; 32]),
+            )
+            .unwrap(),
+        );
+        repository.create_session("session-retry", 1_000).unwrap();
+        let store = HistoryStateStore::new();
+        install_test_state(&store, directory.path(), Some(repository), None);
+        store.inner.lock().unwrap().as_mut().unwrap().active_session_id =
+            Some("session-retry".to_string());
+        std::fs::remove_file(&database_path).unwrap();
+
+        assert!(store.finish_active_session().is_err());
+        assert_eq!(
+            store
+                .inner
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .active_session_id
+                .as_deref(),
+            Some("session-retry")
+        );
     }
 
     #[test]
@@ -1196,6 +1316,7 @@ mod tests {
                 sample_rate_hz: 100,
                 started_at_ms: 1_000,
                 duration_ms: 31_000,
+                gap_epoch: 0,
                 samples: vec![42; 3_100],
             },
         )

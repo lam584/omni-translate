@@ -10,7 +10,7 @@ mod cursor;
 mod cue_lineage_tests;
 use cursor::{decode_cue_cursor, decode_session_cursor};
 mod retention;
-use retention::RETENTION_MAX_BYTES;
+use retention::{database_footprint_bytes, RETENTION_MAX_BYTES};
 mod schema;
 use schema::{ensure_column, table_columns};
 #[cfg(test)]
@@ -462,12 +462,14 @@ impl HistoryRepository {
     }
 
     pub(super) fn audio_archive_allowed(&self) -> Result<bool, String> {
-        let bytes: i64 = self.open()?.query_row(
+        let audio_bytes: i64 = self.open()?.query_row(
             "SELECT COALESCE(SUM(audio_bytes), 0) FROM subtitle_sessions",
             [],
             |row| row.get(0),
         ).map_err(|error| error.to_string())?;
-        Ok(bytes < RETENTION_MAX_BYTES)
+        let footprint_bytes = audio_bytes
+            .saturating_add(database_footprint_bytes(&self.database_path)?);
+        Ok(footprint_bytes < RETENTION_MAX_BYTES)
     }
 
     pub(super) fn cue_audio_segments(
@@ -938,6 +940,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn database_footprint_includes_main_wal_and_shm_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("subtitle-history.db");
+        std::fs::write(&database_path, [0_u8; 11]).unwrap();
+        std::fs::write(directory.path().join("subtitle-history.db-wal"), [0_u8; 13]).unwrap();
+        std::fs::write(directory.path().join("subtitle-history.db-shm"), [0_u8; 17]).unwrap();
+
+        assert_eq!(database_footprint_bytes(&database_path).unwrap(), 41);
+    }
+
+    #[test]
     fn cues_are_encrypted_at_rest_and_round_trip() {
         let directory = tempfile::tempdir().unwrap();
         let database_path = directory.path().join("history.sqlite3");
@@ -1038,10 +1051,13 @@ mod tests {
             .unwrap();
         drop(connection);
 
-        assert_eq!(repository.run_retention(directory.path(), now_ms).unwrap(), 2);
+        // The fixed 5 GiB ceiling covers both archived audio and the SQLite
+        // footprint, so an ended session whose audio alone consumes the full
+        // allowance must also be removed.
+        assert_eq!(repository.run_retention(directory.path(), now_ms).unwrap(), 3);
         assert!(repository.get_session("expired").unwrap().is_none());
         assert!(repository.get_session("capacity-oldest").unwrap().is_none());
-        assert!(repository.get_session("capacity-newest").unwrap().is_some());
+        assert!(repository.get_session("capacity-newest").unwrap().is_none());
         assert!(repository.get_session("active").unwrap().is_some());
     }
 
@@ -1084,6 +1100,84 @@ mod tests {
             )
             .unwrap();
         assert_eq!(repository.list_cues("active", None, 50).unwrap().items.len(), 1);
+    }
+
+    #[test]
+    fn database_footprint_pressure_deletes_only_ended_sessions() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = HistoryRepository::initialize(
+            directory.path().join("subtitle-history.db"),
+            HistoryCipher::for_test([29; 32]),
+        )
+        .unwrap();
+        repository.create_session("ended", 100).unwrap();
+        repository.end_session("ended", 110).unwrap();
+        repository.create_session("active", 120).unwrap();
+        repository
+            .open()
+            .unwrap()
+            .execute(
+                "UPDATE subtitle_sessions SET audio_bytes = ?1",
+                [RETENTION_MAX_BYTES - 1],
+            )
+            .unwrap();
+
+        assert_eq!(repository.run_retention(directory.path(), 200).unwrap(), 1);
+        assert!(repository.get_session("ended").unwrap().is_none());
+        assert!(repository.get_session("active").unwrap().is_some());
+        assert!(!repository.audio_archive_allowed().unwrap());
+    }
+
+    #[test]
+    fn retention_compacts_database_after_deleting_victims() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("subtitle-history.db");
+        let repository = HistoryRepository::initialize(
+            database_path.clone(),
+            HistoryCipher::for_test([30; 32]),
+        )
+        .unwrap();
+        repository.create_session("victim", 1).unwrap();
+        let large_text = "x".repeat(16 * 1024);
+        for sequence in 0..64 {
+            let cue_id = format!("cue-{sequence}");
+            repository
+                .upsert_cue(
+                    CueWrite {
+                        session_id: "victim",
+                        cue_id: &cue_id,
+                        sequence,
+                        revision: 1,
+                        route_direction: "inbound",
+                        source_text: &large_text,
+                        translated_text: &large_text,
+                        source_committed: true,
+                        translation_committed: true,
+                        started_at_ms: sequence,
+                        ended_at_ms: sequence + 1,
+                    },
+                    sequence + 1,
+                )
+                .unwrap();
+        }
+        repository.end_session("victim", 100).unwrap();
+        let footprint_before = database_footprint_bytes(&database_path).unwrap();
+
+        assert_eq!(
+            repository
+                .run_retention(directory.path(), RETENTION_MAX_AGE_MS + 101)
+                .unwrap(),
+            1
+        );
+
+        let footprint_after = database_footprint_bytes(&database_path).unwrap();
+        let freelist_pages: i64 = repository
+            .open()
+            .unwrap()
+            .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+            .unwrap();
+        assert!(footprint_after < footprint_before);
+        assert_eq!(freelist_pages, 0);
     }
 
     #[test]

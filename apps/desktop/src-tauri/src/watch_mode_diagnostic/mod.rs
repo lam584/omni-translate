@@ -47,6 +47,8 @@ const MIN_AUTOSTART_CAPTURE_DURATION_MS: u64 = 1_000;
 const MAX_AUTOSTART_CAPTURE_DURATION_MS: u64 = 7_200_000;
 const PROCESS_EXCLUSION_RESTART_RECOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_EXCLUSION_RESTART_POLL: Duration = Duration::from_millis(50);
+const PROCESS_EXCLUSION_RESTART_PLAYBACK_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+const PROCESS_EXCLUSION_RESTART_PLAYBACK_IDLE_CONFIRMATION: Duration = Duration::from_millis(250);
 
 fn env_flag_enabled(name: &str) -> bool {
     std::env::var(name)

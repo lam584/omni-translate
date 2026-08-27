@@ -32,6 +32,34 @@ pub(super) fn schedule_process_exclusion_restart(
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(restart_after_ms)).await;
         let started_at_unix_ms = crate::audio::time_utils::unix_ms();
+        let playback_drain_started = Instant::now();
+        loop {
+            if !app
+                .state::<AudioStateStore>()
+                .inbound_speaker_playback_active()
+            {
+                tokio::time::sleep(PROCESS_EXCLUSION_RESTART_PLAYBACK_IDLE_CONFIRMATION).await;
+                if !app
+                    .state::<AudioStateStore>()
+                    .inbound_speaker_playback_active()
+                {
+                    break;
+                }
+            }
+            if playback_drain_started.elapsed()
+                >= PROCESS_EXCLUSION_RESTART_PLAYBACK_DRAIN_TIMEOUT
+            {
+                log_process_exclusion_restart_failure(
+                    &app,
+                    &run_marker,
+                    "playback-drain",
+                    started_at_unix_ms,
+                    "translated speaker playback did not reach a stable idle window before the controlled Bridge restart",
+                );
+                return;
+            }
+            tokio::time::sleep(PROCESS_EXCLUSION_RESTART_POLL).await;
+        }
         let old = match wait_for_process_exclusion_source(&app, None).await {
             Ok(observation) => observation,
             Err(error) => {

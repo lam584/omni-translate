@@ -347,6 +347,34 @@ test('provider usage authority binds coordinator launch receipt and ordered send
     assert.equal(usage.launchLeasePath, PROVIDER_INPUT_BUDGET_LEASE_FILE);
     assert.equal(usage.journalEventCount, 5);
 
+    const reconnectLedgerPath = path.join(root, PROVIDER_INPUT_BUDGET_LEDGER_FILE);
+    const reconnectJournalPath = path.join(root, PROVIDER_INPUT_BUDGET_JOURNAL_FILE);
+    const reconnectLedger = JSON.parse(fs.readFileSync(reconnectLedgerPath, 'utf8'));
+    const reconnectJournal = fs.readFileSync(reconnectJournalPath, 'utf8')
+      .trim().split(/\r?\n/u).map(JSON.parse);
+    reconnectLedger.terminalReason = 'reconnect-forbidden-socket-close';
+    const reconnectFinalized = reconnectJournal.pop();
+    reconnectJournal.push({
+      ...reconnectJournal.at(-1),
+      sequence: 5,
+      event: 'reconnect_rejected',
+      attemptedSamples: null,
+      terminalReason: reconnectLedger.terminalReason,
+    });
+    reconnectFinalized.sequence = 6;
+    reconnectFinalized.terminalReason = reconnectLedger.terminalReason;
+    writeJson(reconnectLedgerPath, reconnectLedger);
+    fs.writeFileSync(
+      reconnectJournalPath,
+      `${[...reconnectJournal, reconnectFinalized].map(JSON.stringify).join('\n')}\n`,
+      'utf8',
+    );
+    const disconnectedUsage = validateProviderUsageAuthority(root, { cell, lease });
+    assert.equal(disconnectedUsage.initialConnectAttempts, 1);
+    assert.equal(disconnectedUsage.terminalStatus, 'reconnect-forbidden-socket-close');
+
+    writeSuccessfulRun(root, cell, lease);
+
     const launchLease = JSON.parse(fs.readFileSync(path.join(root, PROVIDER_INPUT_BUDGET_LEASE_FILE), 'utf8'));
     launchLease.leaseId = 'locally-generated-lease';
     writeJson(path.join(root, PROVIDER_INPUT_BUDGET_LEASE_FILE), launchLease);

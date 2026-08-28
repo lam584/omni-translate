@@ -94,6 +94,7 @@ const ALLOWED_JOURNAL_EVENTS = new Set([
   'reserved',
   'reserve_rejected',
   'send_failed',
+  'reconnect_rejected',
   'reconnect',
   'finalized',
 ]);
@@ -1105,13 +1106,15 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
   if (!Number.isSafeInteger(appendAttempts) || appendAttempts <= 0) {
     throw new Error('provider input budget ledger appendAttempts must be positive');
   }
+  const reconnectRejectedTerminal = /^reconnect-forbidden-(?:socket-close|read-error|voice-fallback)$/u
+    .test(String(ledger.terminalReason ?? ''));
   if (
     Number(ledger.sendFailures) !== 0
     || Number(ledger.initialConnectAttempts) !== 1
     || Number(ledger.reconnects) !== 0
     || ledger.budgetExceeded !== false
     || ledger.finalized !== true
-    || ledger.terminalReason !== 'worker-completed'
+    || (ledger.terminalReason !== 'worker-completed' && !reconnectRejectedTerminal)
   ) throw new Error('provider input budget ledger is not a strict terminal success');
   const journalIdentity = {
     ...expectedIdentity,
@@ -1161,6 +1164,9 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
   }
   if (counts.reserved < 1 || counts.reserved !== appendAttempts || reservedSamples !== actualSamples) {
     throw new Error('provider input budget journal reserved events do not match the final ledger');
+  }
+  if (counts.reconnect_rejected !== (reconnectRejectedTerminal ? 1 : 0)) {
+    throw new Error('provider input budget journal reconnect rejection does not match the final terminal reason');
   }
   for (const forbidden of ['reserve_rejected', 'send_failed', 'reconnect']) {
     if (counts[forbidden] !== 0) throw new Error(`provider input budget journal contains forbidden ${forbidden}`);

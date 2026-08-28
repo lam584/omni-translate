@@ -203,7 +203,7 @@ function writeSuccessfulRun(runDirectory, cell, lease, { samples = 32_000 } = {}
     ...identity,
     maxSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
     totalAttemptedSamples: samples,
-    appendAttempts: 2,
+    appendAttempts: samples === 0 ? 0 : 2,
     sendFailures: 0,
     initialConnectAttempts: 1,
     reconnects: 0,
@@ -214,9 +214,11 @@ function writeSuccessfulRun(runDirectory, cell, lease, { samples = 32_000 } = {}
   const events = [
     { ...identity, sequence: 1, event: 'initialized', initialConnectAttempts: 0, finalized: false },
     { ...identity, sequence: 2, event: 'initial_connect_attempt', initialConnectAttempts: 1, finalized: false },
-    { ...identity, sequence: 3, event: 'reserved', initialConnectAttempts: 1, attemptedSamples: Math.floor(samples / 2), finalized: false },
-    { ...identity, sequence: 4, event: 'reserved', initialConnectAttempts: 1, attemptedSamples: samples - Math.floor(samples / 2), finalized: false },
-    { ...identity, sequence: 5, event: 'finalized', initialConnectAttempts: 1, finalized: true },
+    ...(samples === 0 ? [] : [
+      { ...identity, sequence: 3, event: 'reserved', initialConnectAttempts: 1, attemptedSamples: Math.floor(samples / 2), finalized: false },
+      { ...identity, sequence: 4, event: 'reserved', initialConnectAttempts: 1, attemptedSamples: samples - Math.floor(samples / 2), finalized: false },
+    ]),
+    { ...identity, sequence: samples === 0 ? 3 : 5, event: 'finalized', initialConnectAttempts: 1, finalized: true },
   ];
   fs.writeFileSync(
     path.join(runDirectory, PROVIDER_INPUT_BUDGET_JOURNAL_FILE),
@@ -346,6 +348,13 @@ test('provider usage authority binds coordinator launch receipt and ordered send
     assert.equal(usage.maxExternalAudioSamples, SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES);
     assert.equal(usage.launchLeasePath, PROVIDER_INPUT_BUDGET_LEASE_FILE);
     assert.equal(usage.journalEventCount, 5);
+
+    writeSuccessfulRun(root, cell, lease, { samples: 0 });
+    const zeroInputUsage = validateProviderUsageAuthority(root, { cell, lease });
+    assert.equal(zeroInputUsage.actualExternalAudioSamples, 0);
+    assert.equal(zeroInputUsage.journalEventCount, 3);
+
+    writeSuccessfulRun(root, cell, lease);
 
     const reconnectLedgerPath = path.join(root, PROVIDER_INPUT_BUDGET_LEDGER_FILE);
     const reconnectJournalPath = path.join(root, PROVIDER_INPUT_BUDGET_JOURNAL_FILE);

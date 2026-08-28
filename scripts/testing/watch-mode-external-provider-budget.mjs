@@ -164,11 +164,13 @@ function validateSendBoundaryAuthority({
   }
   if (lease.leaseId !== ledger.leaseId) violations.push('provider budget leaseId does not match send-boundary ledger');
   if (Number(ledger.maxSamples) !== maxSamples) violations.push('send-boundary final ledger maxSamples mismatch');
-  if (!Number.isInteger(Number(ledger.totalAttemptedSamples)) || Number(ledger.totalAttemptedSamples) <= 0) {
-    violations.push('send-boundary final ledger has no attempted input samples');
+  if (!Number.isInteger(Number(ledger.totalAttemptedSamples)) || Number(ledger.totalAttemptedSamples) < 0) {
+    violations.push('send-boundary final ledger has an invalid attempted input sample count');
   }
   if (Number(ledger.totalAttemptedSamples) > maxSamples) violations.push('send-boundary final ledger exceeded maxSamples');
-  if (Number(ledger.appendAttempts) <= 0) violations.push('send-boundary final ledger has no append attempts');
+  if (!Number.isInteger(Number(ledger.appendAttempts)) || Number(ledger.appendAttempts) < 0) {
+    violations.push('send-boundary final ledger has an invalid append attempt count');
+  }
   if (Number(ledger.sendFailures) !== 0) violations.push('send-boundary final ledger recorded send failures');
   if (Number(ledger.initialConnectAttempts) !== 1) {
     violations.push('send-boundary final ledger must record exactly one initial connect attempt');
@@ -396,7 +398,7 @@ export function buildCellExternalProviderBudget({
     violations.push('provider-input-16k-mono.pcm is missing');
   } else {
     const stats = fs.lstatSync(providerPcmPath);
-    if (!stats.isFile() || stats.isSymbolicLink() || stats.size <= 0 || stats.size % EXTERNAL_PROVIDER_INPUT_BYTES_PER_SAMPLE !== 0) {
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.size < 0 || stats.size % EXTERNAL_PROVIDER_INPUT_BYTES_PER_SAMPLE !== 0) {
       violations.push(`provider input PCM has invalid byte length ${stats.size}`);
     } else {
       const samples = stats.size / EXTERNAL_PROVIDER_INPUT_BYTES_PER_SAMPLE;
@@ -421,9 +423,6 @@ export function buildCellExternalProviderBudget({
     violations.push(error.message);
   }
   const tracedInput = actualProviderInputSamplesFromLog(scopedLog);
-  if (tracedInput.summaryCount <= 0 || tracedInput.samples <= 0) {
-    violations.push('no model-trace audio append summary was available to count actual provider input samples');
-  }
   const inputCeilingSamples = Math.floor(Math.max(0, ceilingSeconds) * EXTERNAL_PROVIDER_INPUT_SAMPLE_RATE_HZ);
   let sendBoundaryAuthority = null;
   try {

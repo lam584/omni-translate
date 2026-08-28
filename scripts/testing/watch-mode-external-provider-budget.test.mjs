@@ -352,6 +352,46 @@ test('strict paid cell accepts a proven reconnect rejection without accepting a 
   }
 });
 
+test('strict paid budget accepts a lease-bound zero-input terminal for collect-all reporting', () => {
+  const runDirectory = createRunDirectory({ feedbackMode: 'echo-cancel' });
+  try {
+    const ledgerPath = path.join(runDirectory, 'provider-input-budget-ledger.json');
+    const journalPath = path.join(runDirectory, 'provider-input-budget-ledger.json.journal.jsonl');
+    const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    const journal = fs.readFileSync(journalPath, 'utf8').trim().split(/\r?\n/u).map(JSON.parse);
+    ledger.totalAttemptedSamples = 0;
+    ledger.appendAttempts = 0;
+    const terminal = {
+      ...journal.at(-1),
+      sequence: 3,
+      totalAttemptedSamples: 0,
+      appendAttempts: 0,
+    };
+    fs.writeFileSync(ledgerPath, JSON.stringify(ledger), 'utf8');
+    fs.writeFileSync(
+      journalPath,
+      `${[journal[0], journal[1], terminal].map(JSON.stringify).join('\n')}\n`,
+      'utf8',
+    );
+    fs.writeFileSync(path.join(runDirectory, 'provider-input-16k-mono.pcm'), Buffer.alloc(0));
+    const appLogPath = path.join(runDirectory, 'app.log');
+    const appLog = fs.readFileSync(appLogPath, 'utf8')
+      .split(/\r?\n/u)
+      .filter((line) => !line.includes('input_audio_buffer.append.summary'))
+      .join('\n');
+    fs.writeFileSync(appLogPath, appLog, 'utf8');
+
+    const budget = buildCellExternalProviderBudget(buildOptions(runDirectory, {
+      feedbackLoopPrevention: 'echo-cancel',
+    }));
+    assert.equal(budget.passed, true);
+    assert.equal(budget.actualProviderInputSamples, 0);
+    assert.equal(budget.calls.mainRealtime, 1);
+  } finally {
+    fs.rmSync(runDirectory, { recursive: true, force: true });
+  }
+});
+
 test('strict paid cell rejects remote STT artifacts, secondary calls, reconnects, and input overrun', () => {
   const cases = [
     {

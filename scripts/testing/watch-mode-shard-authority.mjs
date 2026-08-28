@@ -1099,12 +1099,12 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
     throw new Error('provider input budget ledger maxSamples does not match the signed cell lease');
   }
   const actualSamples = Number(ledger.totalAttemptedSamples);
-  if (!Number.isSafeInteger(actualSamples) || actualSamples <= 0 || actualSamples > SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES) {
+  if (!Number.isSafeInteger(actualSamples) || actualSamples < 0 || actualSamples > SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES) {
     throw new Error('provider input budget ledger totalAttemptedSamples is outside the signed cell lease');
   }
   const appendAttempts = Number(ledger.appendAttempts);
-  if (!Number.isSafeInteger(appendAttempts) || appendAttempts <= 0) {
-    throw new Error('provider input budget ledger appendAttempts must be positive');
+  if (!Number.isSafeInteger(appendAttempts) || appendAttempts < 0) {
+    throw new Error('provider input budget ledger appendAttempts is invalid');
   }
   const reconnectRejectedTerminal = /^reconnect-forbidden-(?:socket-close|read-error|voice-fallback)$/u
     .test(String(ledger.terminalReason ?? ''));
@@ -1162,7 +1162,7 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
   if (journal.at(-1)?.event !== 'finalized' || journal.at(-1)?.finalized !== true || counts.finalized !== 1) {
     throw new Error('provider input budget journal must end with exactly one finalized event');
   }
-  if (counts.reserved < 1 || counts.reserved !== appendAttempts || reservedSamples !== actualSamples) {
+  if (counts.reserved !== appendAttempts || reservedSamples !== actualSamples) {
     throw new Error('provider input budget journal reserved events do not match the final ledger');
   }
   if (counts.reconnect_rejected !== (reconnectRejectedTerminal ? 1 : 0)) {

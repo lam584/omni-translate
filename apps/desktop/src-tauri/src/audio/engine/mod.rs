@@ -505,6 +505,13 @@ fn pick_device(enumerator: &DeviceEnumerator, spec: &RouteSpec) -> Result<Device
         );
     }
 
+    if !spec.requested_device_id.is_empty() {
+        return Err(format!(
+            "requested audio endpoint was not found; default endpoint fallback is forbidden: {}",
+            spec.requested_device_id
+        ));
+    }
+
     enumerator.get_default_device(&direction).map_err_str()
 }
 

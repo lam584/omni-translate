@@ -337,7 +337,7 @@ impl ProviderPreflightAuthorization {
         }
 
         let authorization_digest = sha256_canonical(&json!({
-            "schemaVersion": 1,
+            "schemaVersion": SIGNED_AUTHORITY_SCHEMA_VERSION,
             "artifactKind": profile.authorization_set_kind(),
             "executionId": required_str(&grant, "/executionId", "grant executionId")?,
             "grantDigest": required_str(&grant, "/digest", "grant digest")?,
@@ -349,7 +349,7 @@ impl ProviderPreflightAuthorization {
             return Err("provider preflight authorization digest mismatch".to_string());
         }
         let mut authority = json!({
-            "schemaVersion": 1,
+            "schemaVersion": SIGNED_AUTHORITY_SCHEMA_VERSION,
             "artifactKind": profile.consumption_kind(),
             "executionId": required_str(&grant, "/executionId", "grant executionId")?,
             "grantDigest": required_str(&grant, "/digest", "grant digest")?,
@@ -593,7 +593,7 @@ fn create_consumption_claim(
     let executable_bytes = fs::read(&executable)
         .map_err(|error| format!("provider preflight Desktop executable cannot be read: {error}"))?;
     let mut claim = json!({
-        "schemaVersion": 1,
+        "schemaVersion": SIGNED_AUTHORITY_SCHEMA_VERSION,
         "artifactKind": profile.consumption_claim_kind(),
         "executionId": required_str(grant, "/executionId", "grant executionId")?,
         "grantDigest": required_str(grant, "/digest", "grant digest")?,
@@ -1178,6 +1178,7 @@ mod tests {
 
     #[test]
     fn rejects_legacy_grant_schema_without_misclassifying_it_as_provenance() {
+        assert_eq!(SIGNED_AUTHORITY_SCHEMA_VERSION, 2);
         let legacy = json!({
             "schemaVersion": 1,
             "artifactKind": GRANT_KIND,

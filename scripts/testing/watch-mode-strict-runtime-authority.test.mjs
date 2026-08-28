@@ -21,3 +21,13 @@ test('strict runtime authority is explicitly local TESTSIGNING evidence, not pub
   assert.match(source, /3072/);
   assert.match(source, /SHA256/);
 });
+
+test('strict runtime freezes one coordinator signing key before Desktop compilation', () => {
+  const keyGeneration = source.indexOf('generateCoordinatorSigningKeyPair()');
+  const keyEnvironment = source.indexOf('OMNI_PROVIDER_PREFLIGHT_COORDINATOR_KEY_ID');
+  const desktop = source.indexOf("npm('run', 'build:desktop-shell')");
+  assert.ok(keyGeneration > 0 && keyGeneration < keyEnvironment && keyEnvironment < desktop);
+  assert.match(source, /coordinator-signing-public\.pem/u);
+  assert.match(source, /coordinator-signing-private\.pem/u);
+  assert.match(source, /strict runtime coordinator signing key pair mismatch/u);
+});

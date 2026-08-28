@@ -11,6 +11,10 @@ import {
   fileAuthorityEntry,
   resolveAuthorityPath,
 } from './watch-mode-evidence-authority.mjs';
+import {
+  coordinatorKeyIdForPublicKey,
+  generateCoordinatorSigningKeyPair,
+} from './watch-mode-shard-authority.mjs';
 
 export const STRICT_RUNTIME_AUTHORITY_SCHEMA_VERSION = 1;
 export const STRICT_RUNTIME_AUTHORITY_KIND = 'watch-mode-strict-runtime-authority';
@@ -86,6 +90,8 @@ export function verifyStrictRuntimeAuthority(authorityPath, {
     || authority?.certificate?.signingMode !== 'local-self-signed'
     || authority?.certificate?.trustScope !== 'vmware-testsigning-only'
     || authority?.certificate?.publicProductionTrust !== false
+    || authority?.coordinatorSigning?.algorithm !== 'Ed25519'
+    || !/^[a-f0-9]{64}$/u.test(String(authority?.coordinatorSigning?.keyId ?? ''))
     || authority?.aec3Gate?.verdict !== 'passed'
     || !Array.isArray(authority?.runtimeBinaryHashes)
     || !Array.isArray(authority?.implementationHashes)
@@ -100,13 +106,36 @@ export function verifyStrictRuntimeAuthority(authorityPath, {
   if (canonical(expectedImplementation) !== canonical(authority.implementationHashes)) {
     throw new Error('strict runtime authority implementation inventory does not match the current HEAD');
   }
-  for (const entry of [authority.certificate.certificateAuthority, authority.aec3Gate.authority]) {
+  for (const entry of [
+    authority.certificate.certificateAuthority,
+    authority.coordinatorSigning.publicKeyAuthority,
+    authority.coordinatorSigning.privateKeyAuthority,
+    authority.aec3Gate.authority,
+  ]) {
     const candidate = resolveAuthorityPath(path.dirname(resolved), entry.path, 'strict runtime authority artifact');
     const actual = fileAuthorityEntry(candidate, entry.path);
     if (actual.bytes !== entry.bytes || actual.sha256 !== entry.sha256) {
       throw new Error(`strict runtime authority artifact changed: ${entry.path}`);
     }
   }
+  const publicKeyPath = resolveAuthorityPath(
+    path.dirname(resolved),
+    authority.coordinatorSigning.publicKeyAuthority.path,
+    'strict runtime coordinator public key',
+  );
+  const privateKeyPath = resolveAuthorityPath(
+    path.dirname(resolved),
+    authority.coordinatorSigning.privateKeyAuthority.path,
+    'strict runtime coordinator private key',
+  );
+  const publicKeyPem = fs.readFileSync(publicKeyPath, 'utf8');
+  const privateKey = crypto.createPrivateKey(fs.readFileSync(privateKeyPath, 'utf8'));
+  const derivedPublicKeyPem = crypto.createPublicKey(privateKey)
+    .export({ type: 'spki', format: 'pem' }).toString();
+  if (
+    publicKeyPem !== derivedPublicKeyPem
+    || coordinatorKeyIdForPublicKey(publicKeyPem) !== authority.coordinatorSigning.keyId
+  ) throw new Error('strict runtime coordinator signing key pair mismatch');
   const packagedCertificate = expectedRuntime.find((entry) => entry.path.endsWith('/omni-translate-development-driver.cer'));
   if (packagedCertificate?.sha256 !== authority.certificate.certificateAuthority.sha256) {
     throw new Error('strict runtime packaged driver certificate does not match the per-release certificate');
@@ -132,6 +161,13 @@ export function prepareStrictRuntimeAuthority({
   fs.mkdirSync(root, { recursive: false });
   const environment = { ...process.env, CARGO_TARGET_DIR: path.join(workspaceRoot, 'target') };
   environment.OMNI_BUILD_COMMIT = provenance.headCommit;
+  const coordinatorSigningKeys = generateCoordinatorSigningKeyPair();
+  const coordinatorKeyId = coordinatorKeyIdForPublicKey(coordinatorSigningKeys.publicKeyPem);
+  const coordinatorPublicKeyPath = path.join(root, 'coordinator-signing-public.pem');
+  const coordinatorPrivateKeyPath = path.join(root, 'coordinator-signing-private.pem');
+  fs.writeFileSync(coordinatorPublicKeyPath, coordinatorSigningKeys.publicKeyPem, { encoding: 'utf8', flag: 'wx' });
+  fs.writeFileSync(coordinatorPrivateKeyPath, coordinatorSigningKeys.privateKeyPem, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+  environment.OMNI_PROVIDER_PREFLIGHT_COORDINATOR_KEY_ID = coordinatorKeyId;
   delete environment.CARGO_BUILD_TARGET;
   const command = process.env.ComSpec || 'cmd.exe';
   const npm = (...args) => runChecked(command, ['/d', '/s', '/c', 'npm.cmd', ...args], {
@@ -193,6 +229,12 @@ export function prepareStrictRuntimeAuthority({
       notBefore: certificate.notBefore,
       notAfter: certificate.notAfter,
       certificateAuthority: fileAuthorityEntry(copiedCertificate, 'release-code-signing.cer'),
+    },
+    coordinatorSigning: {
+      algorithm: 'Ed25519',
+      keyId: coordinatorKeyId,
+      publicKeyAuthority: fileAuthorityEntry(coordinatorPublicKeyPath, 'coordinator-signing-public.pem'),
+      privateKeyAuthority: fileAuthorityEntry(coordinatorPrivateKeyPath, 'coordinator-signing-private.pem'),
     },
     aec3Gate: {
       verdict: 'passed',

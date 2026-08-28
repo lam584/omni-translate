@@ -38,6 +38,7 @@ import {
   atomicWriteJson,
   createWorkerReadinessRequest,
   currentShardOrchestrationImplementationHashes,
+  coordinatorKeyIdForPublicKey,
   validateShardCellResult,
   validateShardManifest,
 } from './watch-mode-shard-authority.mjs';
@@ -1707,6 +1708,27 @@ async function runProductionCoordinatorCore({
   const verifyRuntimeAuthority = operations.verifyRuntimeAuthority
     ?? ((authorityPath) => verifyStrictRuntimeAuthority(authorityPath, { workspaceRoot: repoRoot }));
   const frozenRuntime = await verifyRuntimeAuthority(runtimeAuthority);
+  const runtimeAuthorityRoot = path.dirname(frozenRuntime.authorityPath);
+  const coordinatorPublicKeyPem = fs.readFileSync(resolveAuthorityPath(
+    runtimeAuthorityRoot,
+    frozenRuntime.authority.coordinatorSigning.publicKeyAuthority.path,
+    'frozen coordinator public key',
+  ), 'utf8');
+  const coordinatorPrivateKeyPem = fs.readFileSync(resolveAuthorityPath(
+    runtimeAuthorityRoot,
+    frozenRuntime.authority.coordinatorSigning.privateKeyAuthority.path,
+    'frozen coordinator private key',
+  ), 'utf8');
+  if (
+    coordinatorKeyIdForPublicKey(coordinatorPublicKeyPem)
+      !== frozenRuntime.authority.coordinatorSigning.keyId
+    || crypto.createPublicKey(coordinatorPrivateKeyPem)
+      .export({ type: 'spki', format: 'pem' }).toString() !== coordinatorPublicKeyPem
+  ) throw new Error('frozen runtime coordinator signing key pair is inconsistent');
+  const signingKeys = {
+    publicKeyPem: coordinatorPublicKeyPem,
+    privateKeyPem: coordinatorPrivateKeyPem,
+  };
   transitionCoordinatorState('runtime-verified', {
     runtimeAuthorityDigest: frozenRuntime.authority.authorityDigest,
     releaseId: frozenRuntime.authority.releaseId,
@@ -1903,6 +1925,7 @@ async function runProductionCoordinatorCore({
       productionWaveCount * PRODUCTION_REMOTE_CELL_TIMEOUT_MS
       + PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS
     ),
+    signingKeys,
   });
   transitionCoordinatorState('plan-published', {
     planDigest: preparation.plan.planDigest,

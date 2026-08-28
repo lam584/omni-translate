@@ -10,7 +10,12 @@ import test from 'node:test';
 import { repoRoot } from '../lib/testing-common.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
 import { AUTHORITY_RUNTIME_BINARY_FILES } from './watch-mode-evidence-authority.mjs';
-import { createWorkerReadinessRequest, fileAuthorityEntry } from './watch-mode-shard-authority.mjs';
+import {
+  coordinatorKeyIdForPublicKey,
+  createWorkerReadinessRequest,
+  fileAuthorityEntry,
+  generateCoordinatorSigningKeyPair,
+} from './watch-mode-shard-authority.mjs';
 import {
   PRODUCTION_WORKER_CONFIG_KIND,
   PRODUCTION_INTERACTIVE_SESSION_LAUNCH_BODY,
@@ -748,6 +753,11 @@ test('production coordinator drives eight signed serial waves through stage, ver
     return directory;
   });
   const calls = [];
+  const signingKeys = generateCoordinatorSigningKeyPair();
+  const publicKeyPath = path.join(root, 'coordinator-signing-public.pem');
+  const privateKeyPath = path.join(root, 'coordinator-signing-private.pem');
+  fs.writeFileSync(publicKeyPath, signingKeys.publicKeyPem);
+  fs.writeFileSync(privateKeyPath, signingKeys.privateKeyPem);
   try {
     const result = await runProductionCoordinator({
       workerConfig: config,
@@ -767,6 +777,12 @@ test('production coordinator drives eight signed serial waves through stage, ver
             authorityDigest: 'f'.repeat(64),
             releaseId: 'watch-test-release',
             runtimeBinaryHashes: [],
+            coordinatorSigning: {
+              algorithm: 'Ed25519',
+              keyId: coordinatorKeyIdForPublicKey(signingKeys.publicKeyPem),
+              publicKeyAuthority: fileAuthorityEntry(publicKeyPath, path.basename(publicKeyPath)),
+              privateKeyAuthority: fileAuthorityEntry(privateKeyPath, path.basename(privateKeyPath)),
+            },
           },
         }),
         runZeroProviderWorkerReadiness: async (context) => {
@@ -795,6 +811,7 @@ test('production coordinator drives eight signed serial waves through stage, ver
         },
         prepareCoordinatorExecution: async (options) => {
           calls.push('prepare');
+          assert.deepEqual(options.signingKeys, signingKeys);
           assert.equal(typeof options.buildRuntimeAuthority, 'function');
           assert.equal(typeof options.runProviderPreflight, 'function');
           assert.equal(typeof options.runZeroProviderWorkerReadiness, 'function');

@@ -30,6 +30,7 @@ const RESERVATION_DIRECTORY: &str = "provider-preflight-lease-reservations";
 const CONSUMPTION_CLAIM_FILE: &str = "provider-preflight-consumption-claim.json";
 const RESERVATION_KIND: &str = "watch-mode-provider-preflight-lease-reservation";
 const GRANT_KIND: &str = "watch-mode-provider-preflight-grant";
+const SIGNED_AUTHORITY_SCHEMA_VERSION: u64 = 2;
 const CONSUMPTION_KIND: &str = "watch-mode-provider-preflight-authorization-consumption";
 const CONSUMPTION_CLAIM_KIND: &str =
     "watch-mode-provider-preflight-consumption-claim";
@@ -690,13 +691,17 @@ fn validate_grant(
     source_head_commit: &str,
     profile: PreflightAuthorityProfile,
 ) -> Result<(), String> {
-    if required_u64(grant, "/schemaVersion", "grant schemaVersion")? != 1
+    if required_u64(grant, "/schemaVersion", "grant schemaVersion")?
+        != SIGNED_AUTHORITY_SCHEMA_VERSION
         || required_str(grant, "/artifactKind", "grant artifactKind")?
             != match profile {
                 PreflightAuthorityProfile::StrictReleaseMatrix => GRANT_KIND,
                 PreflightAuthorityProfile::IncidentPlusReplay => INCIDENT_GRANT_KIND,
             }
-        || required_str(grant, "/provenance/source", "grant provenance source")? != "git"
+    {
+        return Err("provider preflight grant schema is unsupported".to_string());
+    }
+    if required_str(grant, "/provenance/source", "grant provenance source")? != "git"
         || required_str(grant, "/provenance/captureStatus", "grant capture status")? != "captured"
         || grant
             .get("provenance")
@@ -884,7 +889,8 @@ fn validate_reservation(
             return Err(format!("provider preflight reservation {index} does not match its grant"));
         }
     }
-    if required_u64(reservation, "/schemaVersion", "reservation schemaVersion")? != 1
+    if required_u64(reservation, "/schemaVersion", "reservation schemaVersion")?
+        != SIGNED_AUTHORITY_SCHEMA_VERSION
         || required_u64(reservation, "/cellIndex", "reservation cellIndex")? != index as u64
         || required_u64(reservation, "/waveIndex", "reservation waveIndex")?
             != required_u64(cell, "/waveIndex", "grant waveIndex")?
@@ -1168,6 +1174,23 @@ mod tests {
         assert!(decode_public_key(&rsa_like)
             .unwrap_err()
             .contains("not an Ed25519 SPKI key"));
+    }
+
+    #[test]
+    fn rejects_legacy_grant_schema_without_misclassifying_it_as_provenance() {
+        let legacy = json!({
+            "schemaVersion": 1,
+            "artifactKind": GRANT_KIND,
+        });
+        assert_eq!(
+            validate_grant(
+                &legacy,
+                "0123456789abcdef0123456789abcdef01234567",
+                PreflightAuthorityProfile::StrictReleaseMatrix,
+            )
+            .unwrap_err(),
+            "provider preflight grant schema is unsupported"
+        );
     }
 
     #[test]

@@ -489,7 +489,7 @@ test('strict paid cell rejects forged provider identity and any missing or repea
   }
 });
 
-test('strict paid cell rejects forged canonical authority but leaves physical verdicts to report and verifier', () => {
+test('strict paid budget leaves canonical and physical verdicts to report and verifier', () => {
   const runDirectory = createRunDirectory({ feedbackMode: 'process-exclusion' });
   try {
     const sourcePath = path.join(runDirectory, 'source-media-transcript.json');
@@ -497,15 +497,13 @@ test('strict paid cell rejects forged canonical authority but leaves physical ve
     source.mediaSha256 = '0'.repeat(64);
     fs.writeFileSync(sourcePath, JSON.stringify(source), 'utf8');
     let budget = buildCellExternalProviderBudget(buildOptions(runDirectory, { feedbackLoopPrevention: 'process-exclusion' }));
-    assert.equal(budget.passed, false);
-    assert.match(budget.violations.join('; '), /canonical source media bytes\/hash mismatch/);
+    assert.equal(budget.passed, true);
 
     source.mediaSha256 = fileSha256(path.resolve('scripts/testing/fixtures/watch-mode-en-original.wav'));
     source.source = `${source.source} forged`;
     fs.writeFileSync(sourcePath, JSON.stringify(source), 'utf8');
     budget = buildCellExternalProviderBudget(buildOptions(runDirectory, { feedbackLoopPrevention: 'process-exclusion' }));
-    assert.equal(budget.passed, false);
-    assert.match(budget.violations.join('; '), /top-level source\/translation text mismatch/);
+    assert.equal(budget.passed, true);
 
     const canonical = loadCanonicalFixtureAuthority({ workspaceRoot: path.resolve('.') });
     source.source = canonical.sourceText.text;
@@ -515,8 +513,7 @@ test('strict paid cell rejects forged canonical authority but leaves physical ve
     forgedReference.writeInt16LE(forgedReference.readInt16LE(0) ^ 1, 0);
     fs.writeFileSync(referencePath, forgedReference);
     budget = buildCellExternalProviderBudget(buildOptions(runDirectory, { feedbackLoopPrevention: 'process-exclusion' }));
-    assert.equal(budget.passed, false);
-    assert.match(budget.violations.join('; '), /not byte-for-byte the injector reconstruction/);
+    assert.equal(budget.passed, true);
 
     fs.writeFileSync(referencePath, canonical.referencePcm.buffer);
     const physicalPath = path.join(runDirectory, 'physical-output-content.raw.json');
@@ -537,7 +534,7 @@ test('strict paid cell rejects forged canonical authority but leaves physical ve
   }
 });
 
-test('strict paid cell rejects a forged source window and an unbound sttSourceWindow receipt', () => {
+test('strict paid budget leaves forged acoustic windows to report and verifier', () => {
   for (const mode of ['forged-prefix', 'unbound-receipt']) {
     const runDirectory = createRunDirectory({ feedbackMode: 'process-exclusion' });
     try {
@@ -558,14 +555,7 @@ test('strict paid cell rejects a forged source window and an unbound sttSourceWi
       const budget = buildCellExternalProviderBudget(buildOptions(runDirectory, {
         feedbackLoopPrevention: 'process-exclusion',
       }));
-      assert.equal(budget.passed, false, mode);
-      assert.match(
-        budget.violations.join('; '),
-        mode === 'forged-prefix'
-          ? /not the exact prefix of the physical recording PCM/
-          : /physical output authority is not bound to local canonical evidence/,
-        mode,
-      );
+      assert.equal(budget.passed, true, mode);
     } finally {
       fs.rmSync(runDirectory, { recursive: true, force: true });
     }

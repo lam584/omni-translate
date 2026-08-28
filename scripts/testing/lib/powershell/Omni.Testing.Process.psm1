@@ -120,18 +120,20 @@ function Stop-OmniManagedProcessHandle {
     [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
     [ValidateRange(100, 30000)][int]$WaitMilliseconds = 3000
   )
-  if ($Process.HasExited) {
-    return [pscustomobject]@{ stopped = $false; pid = [int]$Process.Id; alreadyExited = $true }
-  }
+  if ($Process.HasExited) { return [pscustomobject]@{ stopped = $false; pid = [int]$Process.Id; alreadyExited = $true } }
   try {
     $lease = Get-OmniProcessIdentity -ProcessId ([int]$Process.Id) -Ownership managed
   } catch {
-    if (-not (Get-Process -Id ([int]$Process.Id) -ErrorAction SilentlyContinue)) {
-      return [pscustomobject]@{ stopped = $false; pid = [int]$Process.Id; alreadyExited = $true }
-    }
-    throw
+    if (Get-Process -Id ([int]$Process.Id) -ErrorAction SilentlyContinue) { throw }
+    return [pscustomobject]@{ stopped = $false; pid = [int]$Process.Id; alreadyExited = $true }
   }
-  Stop-OmniOwnedProcessTree -Lease $lease -WaitMilliseconds $WaitMilliseconds
+  try {
+    return Stop-OmniOwnedProcessTree -Lease $lease -WaitMilliseconds $WaitMilliseconds
+  } catch {
+    $Process.Refresh()
+    if (-not $Process.HasExited) { throw }
+    return [pscustomobject]@{ stopped = $false; pid = [int]$Process.Id; alreadyExited = $true; identityEndedDuringCleanup = $true }
+  }
 }
 
 Export-ModuleMember -Function @(

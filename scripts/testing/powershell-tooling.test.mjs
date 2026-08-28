@@ -153,6 +153,25 @@ test('process module refuses external and stale leases, then stops its managed p
   }
 });
 
+test('managed process cleanup accepts an owned process that already ended', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'omni-testing-process-ended-'));
+  try {
+    const output = runPowerShell(`
+      Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force
+      $child = Start-Process powershell.exe -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','exit 0' -WindowStyle Hidden -PassThru
+      $child.WaitForExit()
+      $result = Stop-OmniManagedProcessHandle -Process $child
+      [ordered]@{ stopped = $result.stopped; alreadyExited = $result.alreadyExited; pid = $result.pid } | ConvertTo-Json -Compress
+    `);
+    const parsed = JSON.parse(output);
+    assert.equal(parsed.stopped, false);
+    assert.equal(parsed.alreadyExited, true);
+    assert.ok(parsed.pid > 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('Watch Mode PowerShell boundaries stay thin and route termination through Process', () => {
   const watchFiles = fs.readdirSync(moduleRoot)
     .filter((name) => name.startsWith('Omni.Testing.WatchMode.') && name.endsWith('.psm1'));

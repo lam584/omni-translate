@@ -573,6 +573,30 @@ test('does not fail recovered provider timeout when physical output content pass
   assert.equal(report.layers.provider.status, 'passed');
 });
 
+test('does not classify strict local endpoint rejection as a Provider failure', () => {
+  const report = classify({
+    appLogText: [
+      'watch_mode.route_start | direction=inbound routeMode=watch',
+      '预热初始化失败，将回退到点击时冷启动。 | direction=outbound error=requested audio endpoint was not found; default endpoint fallback is forbidden: microphone-default',
+    ].join('\n'),
+  });
+
+  assert.equal(report.layers.provider.status, 'passed');
+  assert.deepEqual(report.layers.app.parsedLog.providerErrorLines, []);
+});
+
+test('does not classify a clean realtime websocket close as a Provider failure', () => {
+  const report = classify({
+    appLogText: [
+      'watch_mode.route_start | direction=inbound routeMode=watch',
+      '[SOCKET] WebSocket closed sid=fixture-session',
+    ].join('\n'),
+  });
+
+  assert.equal(report.layers.provider.status, 'passed');
+  assert.deepEqual(report.layers.app.parsedLog.providerErrorLines, []);
+});
+
 test('parses bridge source pacer metrics', () => {
   const parsed = parseBridgeLog('2026-01-01 00:00:01.000 [NORMAL] [bridge] - - source pacer summary: releasedFrames=10 queuedFrames=2 pendingBytes=3840 underruns=1 droppedFrames=0 driverBufferedBytes=960 driverDroppedBytes=0 monitorQueuedFrames=1 staleSourceFramesDropped=0 sid=bridge-0198testsid-1000');
 

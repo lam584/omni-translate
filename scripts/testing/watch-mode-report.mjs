@@ -181,6 +181,25 @@ function isBenignCredentialLifecycleLine(line) {
   return /\bstart action=|calling CredReadW|CredReadW succeeded|\boutcome=ok\b/i.test(text);
 }
 
+function isNonProviderLifecycleLine(line) {
+  const text = String(line ?? '');
+  // Audio endpoint resolution belongs to the local audio/infrastructure layer.
+  // In particular, release-evidence runs deliberately forbid default endpoint
+  // fallback; that failure must never be relabelled as a Provider failure just
+  // because the structured log field is named `error`.
+  if (/requested audio endpoint was not found; default endpoint fallback is forbidden/i.test(text)) {
+    return true;
+  }
+  // A clean websocket close is a lifecycle event. Actual transport failures
+  // carry a close code/reason or an explicit failed/error marker and remain
+  // eligible for Provider classification.
+  if (/\[SOCKET\]\s+WebSocket closed\b/i.test(text)
+    && !/\b(?:failed|error|timeout|timed out|ECONNRESET|ENOTFOUND)\b|\bcode=(?!1000\b)\d+|\breason=\S+/i.test(text)) {
+    return true;
+  }
+  return false;
+}
+
 export function normalizeSteps(steps) {
   if (!Array.isArray(steps)) return [];
   const unsupported = steps.find((step) => step?.schemaVersion !== 'watch-mode-step/v2');
@@ -329,7 +348,10 @@ export function parseAppLog(text) {
   const providerErrorLines = matchingLines(
     nonMarkerText,
     /\b(?:status|httpStatus|code)=(?:401|403|429)\b|\bHTTP\s+(?:401|403|429)\b|"status"\s*:\s*"failed"|"error"\s*:\s*(?!"?null\b|null\b)[{\["0-9tfa-zA-Z_-]|unauthori[sz]ed|forbidden|invalid api key|(?:credential|\bauth(?:orization|entication)?\b).{0,80}(?:failed|error|missing|invalid|denied)|(?:failed|error|missing|invalid|denied).{0,80}(?:credential|\bauth(?:orization|entication)?\b)|rate limit|quota|insufficient|billing|\btimeout\b|timed out|ECONNRESET|ENOTFOUND|network error|websocket.*(?:failed|closed)|model_trace failed|provider.*failed/i,
-  ).filter((line) => !isBenignCredentialLifecycleLine(line)).slice(-30);
+  ).filter((line) => (
+    !isBenignCredentialLifecycleLine(line)
+    && !isNonProviderLifecycleLine(line)
+  )).slice(-30);
   const errorLines = matchingLines(
     nonMarkerText,
     /error|failed|panic|\btimeout\b|timed out|unauthori[sz]ed|rate limit|credential/i,

@@ -255,6 +255,21 @@ function Invoke-WatchModeRun {
   } finally {
     Stop-WatchModeRunResources -State $state -Context $runContext -DesktopProcess $desktopProcess `
       -WorkspaceRoot $workspaceRoot -RuntimeRoot $RuntimeRoot -DesktopEnvironmentState $desktopEnvState
+
+    # The paid-cell ledger is terminal evidence, not a success-only artifact.
+    # Generate it even when an earlier phase failed so the coordinator can
+    # prove the consumed Provider budget and finish collect-all aggregation.
+    $strictBudgetPath = Join-Path $outputDir 'external-provider-budget.json'
+    if ($paidAuthorityEnabled -and -not (Test-Path -LiteralPath $strictBudgetPath -PathType Leaf)) {
+      $terminalBudgetStep = Invoke-Step -State $state "finalize strict paid external provider budget" -Phase artifactSave {
+        Write-StrictPaidCellBudget $outputDir $appLogBeforePlayback $runMarker $runContext
+      } -ContinueOnError
+      if ($terminalBudgetStep.status -ne 'passed' -and -not $runException) {
+        $runException = [System.Management.Automation.RuntimeException]::new(
+          "strict paid-cell provider budget finalization failed: $($terminalBudgetStep.error.message)"
+        )
+      }
+    }
   }
   Save-WatchModeRunArtifacts -OutputDirectory $outputDir -PlaybackStep $playbackStep `
     -RunMarker $runMarker -StartedAtLocal $startedAtLocal -Context $runContext -Request $request -State $state

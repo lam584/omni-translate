@@ -760,6 +760,15 @@ test('bridge probe policy uses v6 init fields and blocks a failed virtual-driver
   assert.equal(result.processFailure, null);
 });
 
+test('virtual-driver media preflight binds the explicit physical playback endpoint', () => {
+  const source = fs.readFileSync(
+    path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.VirtualDriverCapture.psm1'),
+    'utf8',
+  );
+  assert.match(source, /\[Parameter\(Mandatory = \$true\)\]\[string\]\$PhysicalPlaybackDeviceId/);
+  assert.match(source, /New-BridgeSourceProbeInitPayload "virtual-driver" \$sessionId \$PhysicalPlaybackDeviceId/);
+});
+
 test('elevated command guard refuses a delayed launch after its runner identity is gone', { skip: !isWindows }, () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-elevation-stale-parent-'));
   const markerPath = path.join(directory, 'must-not-launch.txt');

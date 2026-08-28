@@ -1570,6 +1570,13 @@ export function validateInteractiveSessionAuthority({
     + `-ExpectedRequestSha256 ${launch.files.command.sha256}`;
   const processStartedAtMs = Date.parse(String(processAuthority.startedAt ?? ''));
   const processCompletedAtMs = Date.parse(String(processAuthority.completedAt ?? ''));
+  const expectedRequiredRoles = ['shard-node', 'cell-powershell'];
+  if (Number(execution.exitCode) === 0) {
+    expectedRequiredRoles.push('desktop', 'bridge');
+    if (plan.cells[Number(lease.cellIndex)]?.feedbackLoopPrevention !== 'echo-cancel') {
+      expectedRequiredRoles.push('recorder');
+    }
+  }
   if (
     processAuthority.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
     || processAuthority.artifactKind !== 'watch-mode-interactive-process-authority'
@@ -1595,11 +1602,7 @@ export function validateInteractiveSessionAuthority({
     || processAuthority.errors.length !== 0
     || Number(processAuthority.executionExitCode) !== Number(execution.exitCode)
     || !Array.isArray(processAuthority.requiredRoles)
-    || !processAuthority.requiredRoles.includes('shard-node')
-    || !processAuthority.requiredRoles.includes('cell-powershell')
-    || (Number(execution.exitCode) === 0 && !processAuthority.requiredRoles.includes('desktop'))
-    || (Number(execution.exitCode) === 0 && !processAuthority.requiredRoles.includes('bridge'))
-    || (Number(execution.exitCode) !== 0 && processAuthority.requiredRoles.some((role) => role === 'desktop' || role === 'bridge' || role === 'recorder'))
+    || canonicalJson([...processAuthority.requiredRoles].sort()) !== canonicalJson([...expectedRequiredRoles].sort())
   ) throw new Error('interactive process authority is invalid');
   const processByPid = new Map();
   for (const [index, processEntry] of processAuthority.processes.entries()) {
@@ -1641,11 +1644,7 @@ export function validateInteractiveSessionAuthority({
       throw new Error(`interactive traced process ${processEntry.pid} is outside the captured root process tree`);
     }
   }
-  const requiredRoles = new Set(['shard-node', 'cell-powershell', 'desktop', 'bridge']);
-  if (plan.cells[Number(lease.cellIndex)]?.feedbackLoopPrevention !== 'echo-cancel') {
-    requiredRoles.add('recorder');
-  }
-  for (const role of requiredRoles) {
+  for (const role of expectedRequiredRoles) {
     if (!processAuthority.processes.some((entry) => entry.role === role)) {
       throw new Error(`interactive process authority is missing required role ${role}`);
     }

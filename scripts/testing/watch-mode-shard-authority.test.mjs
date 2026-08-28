@@ -511,6 +511,44 @@ test('ordinary failed report remains an identity-bound shard result for collect-
   }
 });
 
+test('blocked report is preserved and normalized to a collect-all failed shard result', () => {
+  const fixture = createFixture();
+  const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-shard-blocked-result-'));
+  try {
+    const cell = fixture.plan.cells[0];
+    const lease = fixture.leases.find((entry) => entry.cellId === cell.cellId);
+    const worker = fixture.plan.workers.find((entry) => entry.workerId === cell.workerId);
+    const runDirectory = path.join(shardRoot, 'runs', 'blocked-cell');
+    writeSuccessfulRun(runDirectory, cell, lease);
+    writeJson(path.join(runDirectory, 'report.json'), {
+      verdict: 'blocked',
+      failureLayer: 'environment',
+      lifecyclePhase: 'contentCapture',
+    });
+    const written = writeShardCellResult({
+      plan: fixture.plan,
+      lease,
+      workerId: worker.workerId,
+      vmIdentity: worker.vmIdentity,
+      shardRoot,
+      runDirectory,
+      ...fixture.snapshot,
+    });
+    const validated = validateShardCellResult({
+      resultPath: written.resultPath,
+      plan: fixture.plan,
+      lease,
+      shardRoot,
+      now: fixture.now,
+    });
+    assert.equal(validated.result.verdict, 'failed');
+    assert.equal(validated.result.reportVerdict, 'blocked');
+    assert.equal(validated.result.stableErrorCode, 'watch.strict-cell.blocked');
+  } finally {
+    fs.rmSync(shardRoot, { recursive: true, force: true });
+  }
+});
+
 test('result builder refuses a mismatched VM even when the source/runtime hashes match', () => {
   const fixture = createFixture();
   const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-shard-vm-'));

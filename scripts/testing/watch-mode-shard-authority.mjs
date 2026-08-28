@@ -1798,9 +1798,10 @@ export function buildShardCellResult({
   const resolvedRunDirectory = path.resolve(runDirectory);
   const runDirectoryRelative = relativeAuthorityChild(resolvedShardRoot, resolvedRunDirectory, 'shard run directory');
   const report = readJson(path.join(resolvedRunDirectory, 'report.json'), 'strict cell report');
-  if (!['passed', 'failed'].includes(report.verdict)) {
+  if (!['passed', 'failed', 'blocked'].includes(report.verdict)) {
     throw new Error(`shard cell report has unsupported verdict: ${report.verdict ?? 'missing'}`);
   }
+  const resultVerdict = report.verdict === 'passed' ? 'passed' : 'failed';
   const interactiveExecution = plan.workerReadinessRequest
     ? readJson(
       path.join(resolvedRunDirectory, SHARD_INTERACTIVE_CELL_EXECUTION_FILE),
@@ -1808,7 +1809,7 @@ export function buildShardCellResult({
     )
     : null;
   if (interactiveExecution
-    && Number(interactiveExecution.exitCode) !== (report.verdict === 'passed' ? 0 : 1)) {
+    && Number(interactiveExecution.exitCode) !== (resultVerdict === 'passed' ? 0 : 1)) {
     throw new Error('interactive cell execution exit code does not match the strict report verdict');
   }
   const usageAuthority = validateProviderUsageAuthority(resolvedRunDirectory, { cell, lease });
@@ -1863,10 +1864,12 @@ export function buildShardCellResult({
     schemaVersion: SHARD_AUTHORITY_SCHEMA_VERSION,
     artifactKind: SHARD_CELL_RESULT_KIND,
     generatedAt: generatedAt instanceof Date ? generatedAt.toISOString() : String(generatedAt),
-    verdict: report.verdict,
-    ...(report.verdict === 'failed' ? {
+    verdict: resultVerdict,
+    reportVerdict: report.verdict,
+    ...(resultVerdict === 'failed' ? {
       failureLayer: report.failureLayer ?? 'unknown',
-      stableErrorCode: report.stableErrorCode ?? report.failureCode ?? 'watch.strict-cell.failed',
+      stableErrorCode: report.stableErrorCode ?? report.failureCode
+        ?? (report.verdict === 'blocked' ? 'watch.strict-cell.blocked' : 'watch.strict-cell.failed'),
       lifecyclePhase: report.lifecyclePhase ?? null,
     } : {}),
     executionId: plan.executionId,
@@ -1986,6 +1989,13 @@ export function validateShardCellResult({
   const runDirectory = resolveAuthorityChild(shardRoot, result.runDirectory, 'shard cell run directory');
   const expectedResultPath = path.join(runDirectory, SHARD_CELL_RESULT_FILE);
   if (path.resolve(resultPath) !== path.resolve(expectedResultPath)) throw new Error('shard cell result path does not match its run directory');
+  const report = readJson(path.join(runDirectory, 'report.json'), 'strict cell report');
+  const expectedVerdict = report.verdict === 'passed' ? 'passed' : 'failed';
+  if (
+    !['passed', 'failed', 'blocked'].includes(report.verdict)
+    || result.reportVerdict !== report.verdict
+    || result.verdict !== expectedVerdict
+  ) throw new Error('shard cell result verdict does not match its strict report');
   const usage = validateProviderUsageAuthority(runDirectory, { cell: plannedCell, lease });
   if (canonicalJson(usage) !== canonicalJson(result.usageAuthority)) throw new Error('shard cell result usage authority mismatch');
   const device = readDeviceAuthority(runDirectory, plannedCell);

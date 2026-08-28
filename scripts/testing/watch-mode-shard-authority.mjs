@@ -1771,6 +1771,17 @@ function resultCore(result) {
   return core;
 }
 
+export function interactiveExecutionExitMatchesReport(exitCode, reportVerdict) {
+  const normalizedExitCode = Number(exitCode);
+  if (![0, 1].includes(normalizedExitCode)) return false;
+  // The interactive process reports evidence-collection execution, while the
+  // Node report is the sole verdict authority. A blocked/failed report may be
+  // produced after an otherwise successful collector exit (notably routes
+  // without a physical-output collector), so only a passing report requires a
+  // zero execution code.
+  return reportVerdict === 'passed' ? normalizedExitCode === 0 : true;
+}
+
 export function buildShardCellResult({
   plan,
   lease,
@@ -1811,7 +1822,7 @@ export function buildShardCellResult({
     )
     : null;
   if (interactiveExecution
-    && Number(interactiveExecution.exitCode) !== (resultVerdict === 'passed' ? 0 : 1)) {
+    && !interactiveExecutionExitMatchesReport(interactiveExecution.exitCode, report.verdict)) {
     throw new Error('interactive cell execution exit code does not match the strict report verdict');
   }
   const usageAuthority = validateProviderUsageAuthority(resolvedRunDirectory, { cell, lease });

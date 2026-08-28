@@ -19,6 +19,7 @@ import {
   createSignedExecutionPlan,
   generateCoordinatorSigningKeyPair,
   issueCellLeases,
+  interactiveExecutionExitMatchesReport,
   sha256Canonical,
   validateProviderUsageAuthority,
   validateShardCellResult,
@@ -39,6 +40,16 @@ const PROVENANCE = Object.freeze({
   headCommit: '1'.repeat(40),
   worktreeClean: true,
   dirtyEntryCount: 0,
+});
+
+test('interactive execution exit validates collection success independently from report failure', () => {
+  assert.equal(interactiveExecutionExitMatchesReport(0, 'passed'), true);
+  assert.equal(interactiveExecutionExitMatchesReport(1, 'passed'), false);
+  assert.equal(interactiveExecutionExitMatchesReport(0, 'blocked'), true);
+  assert.equal(interactiveExecutionExitMatchesReport(1, 'blocked'), true);
+  assert.equal(interactiveExecutionExitMatchesReport(0, 'failed'), true);
+  assert.equal(interactiveExecutionExitMatchesReport(1, 'failed'), true);
+  assert.equal(interactiveExecutionExitMatchesReport(2, 'failed'), false);
 });
 
 const inventory = (prefix, sha = SHA_A) => [{ path: `${prefix}/authority.bin`, bytes: 17, sha256: sha }];

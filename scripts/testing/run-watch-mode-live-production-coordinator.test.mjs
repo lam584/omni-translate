@@ -48,6 +48,21 @@ test('production cell failures stop only for safety boundaries and collect ordin
     outcome: { result: { verdict: 'failed', stableErrorCode: 'watch.acoustic.reference-mismatch' } },
     error: new Error('strict cell verdict failed: watch.acoustic.reference-mismatch'),
   }), 'collect');
+  assert.equal(productionCellFailureDisposition({
+    outcome: {
+      result: {
+        verdict: 'failed',
+        stableErrorCode: 'watch.strict-cell.blocked',
+        failureLayer: 'environment',
+        endpointId: '{physical-endpoint}',
+        diagnostics: { rejectedReference: 'wrong translated audio' },
+      },
+    },
+    error: new Error('strict cell verdict failed: watch.strict-cell.blocked'),
+  }), 'collect');
+  assert.equal(productionCellFailureDisposition({
+    error: new Error('endpoint ownership conflict detected before the next cell'),
+  }), 'stop');
 });
 
 test('production failure aggregation reports progress and shared root causes', () => {

@@ -76,7 +76,20 @@ const SAFETY_FAILURE_PATTERNS = Object.freeze([
 ]);
 
 export function productionCellFailureDisposition({ outcome, error }) {
-  const evidence = `${error?.message ?? ''}\n${JSON.stringify(outcome ?? {})}`;
+  // Classify only explicit failure identity fields. Stringifying the complete
+  // result made unrelated values adjacent (for example an endpointId followed
+  // later by an acoustic "wrong reference" diagnostic), which could satisfy a
+  // cross-field safety regexp and incorrectly turn an ordinary blocked verdict
+  // into fail-fast.
+  const result = outcome?.result ?? {};
+  const evidence = [
+    error?.message,
+    result.stableErrorCode,
+    result.failureLayer,
+    result.lifecyclePhase,
+    result.primaryError?.code,
+    result.primaryError?.message,
+  ].filter((value) => String(value ?? '').trim()).join('\n');
   return SAFETY_FAILURE_PATTERNS.some((pattern) => pattern.test(evidence)) ? 'stop' : 'collect';
 }
 

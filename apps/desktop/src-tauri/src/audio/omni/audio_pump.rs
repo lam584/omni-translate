@@ -317,6 +317,18 @@ impl OmniAudioPump {
                 silence_grace_chunks_sent = 0;
                 silence_chunks_skipped = 0;
             }
+            if !provider_input_budget.can_append(asr_chunk.len() as u64) {
+                let _ = diag_log(
+                    app,
+                    "omni",
+                    "info",
+                    format!(
+                        "[AUDIO] strict provider input ceiling reached cleanly before append: nextSamples={}",
+                        asr_chunk.len()
+                    ),
+                );
+                break;
+            }
             let b64 = base64_encode_i16(&asr_chunk);
             let append = super::build_dashscope_audio_append(&b64);
             let next_chunk_count = chunk_count.saturating_add(1);

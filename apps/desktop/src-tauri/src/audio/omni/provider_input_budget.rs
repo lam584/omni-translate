@@ -456,6 +456,20 @@ impl ProviderInputBudget {
             .map(|budget| budget.max_samples as usize)
     }
 
+    /// Returns whether a complete append still fits without mutating the
+    /// authority ledger. The subsequent atomic reservation remains the final
+    /// race-safe gate; this check lets the audio pump end cleanly at the exact
+    /// ceiling instead of deliberately attempting one rejected append.
+    pub(super) fn can_append(&self, sample_count: u64) -> bool {
+        self.enabled.as_ref().is_none_or(|budget| {
+            budget
+                .total_attempted_samples
+                .load(Ordering::SeqCst)
+                .checked_add(sample_count)
+                .is_some_and(|next| next <= budget.max_samples)
+        })
+    }
+
     pub(super) fn strict_paid_authority_enabled(&self) -> bool {
         self.enabled
             .as_ref()
@@ -1108,6 +1122,35 @@ mod tests {
         assert_eq!(final_record["budgetExceeded"], true);
         assert_eq!(final_record["totalAttemptedSamples"], 0);
         assert_eq!(final_record["terminalReason"], "budget-exceeded");
+    }
+
+    #[test]
+    fn exact_cap_can_be_observed_without_recording_a_rejected_attempt() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("ledger.json");
+        let environment = enabled_environment(&path, "10");
+        let budget = budget_from_map(&environment).expect("budget");
+
+        assert!(budget.can_append(10));
+        budget
+            .attempt_send(10, || Ok(()), || Ok::<_, ()>(()))
+            .expect("exact-cap reservation")
+            .expect("send");
+        assert!(!budget.can_append(1));
+        budget.finalize("worker-completed").expect("finalize");
+
+        let journal = journal_records(&path);
+        assert_eq!(
+            journal
+                .iter()
+                .filter(|entry| entry["event"] == "reserve_rejected")
+                .count(),
+            0
+        );
+        let final_record = final_record(&path);
+        assert_eq!(final_record["budgetExceeded"], false);
+        assert_eq!(final_record["totalAttemptedSamples"], 10);
+        assert_eq!(final_record["terminalReason"], "worker-completed");
     }
 
     #[test]

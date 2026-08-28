@@ -724,7 +724,7 @@ test('bridge probe policy uses v6 init fields and blocks a failed virtual-driver
   const probe = runPowerShell([
     '-Command',
     extractedBridgeProbePolicyFunctions() +
-      `$payload = New-BridgeSourceProbeInitPayload -FeedbackMode 'process-exclusion' -SessionId 'probe-session'; ` +
+      `$payload = New-BridgeSourceProbeInitPayload -FeedbackMode 'process-exclusion' -SessionId 'probe-session' -PhysicalPlaybackDeviceId '{explicit-hda-endpoint}'; ` +
       `$driverArgs = Get-WatchModeDriverProbeArguments -WorkspaceRoot 'E:\\workspace' -RequestedDevconPath 'E:\\workspace\\tools\\devcon.exe'; ` +
       `$virtualFailure = Get-VirtualDriverPreflightFailure 'virtual-driver' ([pscustomobject]@{ status = 'failed'; error = [pscustomobject]@{ message = 'installed driver hash differs from package' } }); ` +
       `$virtualSuccess = Get-VirtualDriverPreflightFailure 'virtual-driver' ([pscustomobject]@{ status = 'passed'; error = $null }); ` +
@@ -746,6 +746,7 @@ test('bridge probe policy uses v6 init fields and blocks a failed virtual-driver
   assert.equal(result.payload.protocolVersion, '2026-08-27-audio-routing-v8');
   assert.equal(result.payload.sourceCaptureMode, 'process-exclusion');
   assert.equal(result.payload.sessionId, 'probe-session');
+  assert.equal(result.payload.physicalPlaybackDeviceId, '{explicit-hda-endpoint}');
   assert.equal(result.payload.monitorPlaybackEnabled, false);
   assert.equal(result.payload.translationPlaybackEnabled, true);
   assert.equal(result.processUsesDriver, false);

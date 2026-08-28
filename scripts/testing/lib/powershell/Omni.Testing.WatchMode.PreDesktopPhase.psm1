@@ -96,7 +96,7 @@ function Invoke-WatchModePreDesktopPhase {
       } else {
         Invoke-PreDesktopStep -State $state "bridge source frame probe" -Phase bridgeProbe {
           Invoke-BridgeSourceProbe -OutputDirectory $outputDir -FeedbackMode $FeedbackLoopPrevention `
-            -WorkspaceRoot $workspaceRoot
+            -PhysicalPlaybackDeviceId $PhysicalPlaybackDeviceId -WorkspaceRoot $workspaceRoot
         } -ContinueOnError
       }
       if ($bridgeSourceProbe.status -eq 'passed') {

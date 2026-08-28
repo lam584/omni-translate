@@ -1,5 +1,4 @@
 #requires -Version 5.1
-
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.IO.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Process.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Configuration.psm1') -Force
@@ -66,7 +65,8 @@ function Read-BridgeSourceFrame {
 function New-BridgeSourceProbeInitPayload {
   param(
     [string]$FeedbackMode,
-    [string]$SessionId
+    [string]$SessionId,
+    [Parameter(Mandatory = $true)][string]$PhysicalPlaybackDeviceId
   )
   $sourceCaptureMode = if ($FeedbackMode -eq "process-exclusion") { "process-exclusion" } else { "virtual-driver" }
   return [ordered]@{
@@ -77,7 +77,7 @@ function New-BridgeSourceProbeInitPayload {
     installChannel = 'development'
     targetDeviceId = 'virtual-mic-default'
     virtualRenderDeviceId = 'virtual-speaker-default'
-    physicalPlaybackDeviceId = 'default'
+    physicalPlaybackDeviceId = $PhysicalPlaybackDeviceId
     physicalPlaybackLevel = 50
     monitorPlaybackEnabled = $false
     translationPlaybackEnabled = $true
@@ -100,6 +100,7 @@ function Invoke-BridgeSourceProbe {
   param(
     [string]$OutputDirectory,
     [string]$FeedbackMode = "virtual-driver",
+    [Parameter(Mandatory = $true)][string]$PhysicalPlaybackDeviceId,
     [Parameter(Mandatory = $true)][string]$WorkspaceRoot
   )
   $bridgeExe = Join-Path $WorkspaceRoot 'target/release/omni-bridge-service.exe'
@@ -142,7 +143,7 @@ function Invoke-BridgeSourceProbe {
     Start-Sleep -Milliseconds 600
     $phase = "init"
     $sessionId = "watch-mode-probe-session-$PID"
-    $initPayload = New-BridgeSourceProbeInitPayload $FeedbackMode $sessionId
+    $initPayload = New-BridgeSourceProbeInitPayload $FeedbackMode $sessionId $PhysicalPlaybackDeviceId
     $init = Write-NamedPipeJsonLine $pipeName $initPayload
     if (Test-UsesVirtualDriverBackend $FeedbackMode) {
       $phase = "source_frame"

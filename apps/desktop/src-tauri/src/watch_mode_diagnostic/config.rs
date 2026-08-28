@@ -234,12 +234,12 @@ pub(super) fn configure_watch_realtime_provider_with_environment(
         vec!["speech-to-text", "speech-to-speech"]
     };
     let realtime_audio_mode = match realtime_protocol {
-        "dashscope-omni" => "manual",
+        "dashscope-omni" => "semantic_vad",
         "gemini-live" => "gemini_auto_activity",
         _ => "server_vad",
     };
     let interaction_capabilities = if realtime_protocol == "dashscope-omni" {
-        vec!["manual_commit", "streaming"]
+        vec!["streaming", "auto_vad", "manual_commit"]
     } else {
         vec!["streaming", "auto_vad"]
     };

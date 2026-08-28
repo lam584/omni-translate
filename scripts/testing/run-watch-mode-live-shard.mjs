@@ -549,7 +549,7 @@ export function finalizeInteractiveShardCell({
     || execution.cellId !== lease.cellId
     || execution.workerId !== workerId
     || execution.vmIdentityDigest !== worker.vmIdentityDigest
-    || Number(execution.exitCode) !== 0
+    || ![0, 1].includes(Number(execution.exitCode))
   ) throw new Error('interactive cell execution receipt identity/status mismatch');
   const resolvedShardRoot = path.resolve(shardRoot);
   const runDirectory = path.resolve(resolvedShardRoot, ...String(execution.runDirectory).split('/'));

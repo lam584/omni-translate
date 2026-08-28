@@ -1679,7 +1679,7 @@ export function validateInteractiveSessionAuthority({
     || execution.artifactKind !== SHARD_INTERACTIVE_CELL_EXECUTION_KIND
     || interactiveIdentityFailure(execution, identity, 'interactive cell execution')
     || execution.vmIdentityDigest !== worker.vmIdentityDigest
-    || Number(execution.exitCode) !== 0
+    || ![0, 1].includes(Number(execution.exitCode))
     || !String(execution.runDirectory ?? '').trim()
     || path.isAbsolute(String(execution.runDirectory))
     || String(execution.runDirectory).replaceAll('\\', '/').split('/').includes('..')
@@ -1800,6 +1800,16 @@ export function buildShardCellResult({
   const report = readJson(path.join(resolvedRunDirectory, 'report.json'), 'strict cell report');
   if (!['passed', 'failed'].includes(report.verdict)) {
     throw new Error(`shard cell report has unsupported verdict: ${report.verdict ?? 'missing'}`);
+  }
+  const interactiveExecution = plan.workerReadinessRequest
+    ? readJson(
+      path.join(resolvedRunDirectory, SHARD_INTERACTIVE_CELL_EXECUTION_FILE),
+      'interactive cell execution receipt',
+    )
+    : null;
+  if (interactiveExecution
+    && Number(interactiveExecution.exitCode) !== (report.verdict === 'passed' ? 0 : 1)) {
+    throw new Error('interactive cell execution exit code does not match the strict report verdict');
   }
   const usageAuthority = validateProviderUsageAuthority(resolvedRunDirectory, { cell, lease });
   const deviceAuthority = readDeviceAuthority(resolvedRunDirectory, cell);

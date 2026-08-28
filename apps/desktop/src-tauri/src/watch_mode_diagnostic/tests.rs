@@ -313,7 +313,7 @@ fn explicit_dashscope_protocol_binds_model_to_dashscope_provider() {
     assert_eq!(
         config["providers"][1]["localModelCapabilityRegistry"][0]
             ["interactionCapabilities"],
-        json!(["manual_commit", "streaming"])
+        json!(["streaming", "auto_vad", "manual_commit"])
     );
 }
 

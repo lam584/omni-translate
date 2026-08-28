@@ -178,8 +178,10 @@ function validateSendBoundaryAuthority({
   if (Number(ledger.reconnects) !== 0) violations.push('send-boundary final ledger recorded reconnects');
   if (ledger.budgetExceeded !== false) violations.push('send-boundary final ledger reports a budget overrun');
   if (ledger.finalized !== true) violations.push('send-boundary final ledger was not finalized');
-  if (ledger.terminalReason !== 'worker-completed') {
-    violations.push(`send-boundary final ledger terminalReason must be worker-completed; got ${ledger.terminalReason ?? 'missing'}`);
+  const reconnectRejectedTerminal = /^reconnect-forbidden-(?:socket-close|read-error|voice-fallback)$/u
+    .test(String(ledger.terminalReason ?? ''));
+  if (ledger.terminalReason !== 'worker-completed' && !reconnectRejectedTerminal) {
+    violations.push(`send-boundary final ledger terminalReason is not an accepted no-reconnect terminal; got ${ledger.terminalReason ?? 'missing'}`);
   }
 
   let reservedSamples = 0;
@@ -192,6 +194,7 @@ function validateSendBoundaryAuthority({
     'reserved',
     'reserve_rejected',
     'send_failed',
+    'reconnect_rejected',
     'reconnect',
     'finalized',
   ]);
@@ -243,6 +246,9 @@ function validateSendBoundaryAuthority({
     violations.push('send-boundary journal must contain exactly one initial_connect_attempt event');
   }
   if (Number(eventCounts.finalized ?? 0) !== 1) violations.push('send-boundary journal must contain exactly one finalized event');
+  if (Number(eventCounts.reconnect_rejected ?? 0) !== (reconnectRejectedTerminal ? 1 : 0)) {
+    violations.push('send-boundary journal reconnect rejection does not match the final terminal reason');
+  }
   for (const forbiddenEvent of ['reserve_rejected', 'send_failed', 'reconnect']) {
     if (Number(eventCounts[forbiddenEvent] ?? 0) !== 0) violations.push(`send-boundary journal contains ${forbiddenEvent}`);
   }

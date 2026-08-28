@@ -316,6 +316,42 @@ test('strict paid cell accepts only the main realtime session and reconstructs i
   }
 });
 
+test('strict paid cell accepts a proven reconnect rejection without accepting a reconnect', () => {
+  const runDirectory = createRunDirectory();
+  try {
+    const ledgerPath = path.join(runDirectory, 'provider-input-budget-ledger.json');
+    const journalPath = path.join(runDirectory, 'provider-input-budget-ledger.json.journal.jsonl');
+    const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    const journal = fs.readFileSync(journalPath, 'utf8').trim().split(/\r?\n/u).map(JSON.parse);
+    ledger.terminalReason = 'reconnect-forbidden-socket-close';
+    const finalized = journal.pop();
+    const reconnectRejected = {
+      ...journal.at(-1),
+      event: 'reconnect_rejected',
+      sequence: journal.length + 1,
+      occurredAtMs: 4,
+      attemptedSamples: null,
+      terminalReason: ledger.terminalReason,
+    };
+    finalized.sequence = journal.length + 2;
+    finalized.occurredAtMs = 5;
+    finalized.terminalReason = ledger.terminalReason;
+    fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger)}\n`, 'utf8');
+    fs.writeFileSync(
+      journalPath,
+      `${[...journal, reconnectRejected, finalized].map(JSON.stringify).join('\n')}\n`,
+      'utf8',
+    );
+
+    const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
+    assert.equal(budget.passed, true);
+    assert.equal(budget.providerSendBoundary.journal.eventCounts.reconnect_rejected, 1);
+    assert.equal(budget.providerSendBoundary.reconnects, 0);
+  } finally {
+    fs.rmSync(runDirectory, { recursive: true, force: true });
+  }
+});
+
 test('strict paid cell rejects remote STT artifacts, secondary calls, reconnects, and input overrun', () => {
   const cases = [
     {

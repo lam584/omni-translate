@@ -33,6 +33,18 @@ test('local isolation creates its output root on a first clean-machine run', () 
   );
 });
 
+test('local isolation atomically replaces the latest-successful publication pointer', () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), 'scripts', 'testing', 'watch-mode-local-isolation.mjs'),
+    'utf8',
+  );
+  assert.match(
+    source,
+    /atomicWriteJson\(canonicalPath,[\s\S]*?\}, \{ overwrite: true \}\);/u,
+    'a new clean-HEAD isolation run must replace the canonical pointer without mutating its immutable source manifest',
+  );
+});
+
 test('development smoke runtime rebuilds Bridge and driver from the exact clean HEAD', () => {
   const calls = [];
   let recordedAecGate = null;

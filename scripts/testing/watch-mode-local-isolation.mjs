@@ -536,7 +536,7 @@ export async function runLocalIsolationMatrix({
       manifestPath,
       portable(path.relative(path.dirname(canonicalPath), manifestPath)),
     ),
-  });
+  }, { overwrite: true });
   return { manifestPath, canonicalPath, manifest };
 }
 

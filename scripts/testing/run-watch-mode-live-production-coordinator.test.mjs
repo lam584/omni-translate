@@ -286,8 +286,8 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /packageMetadata\.signerThumbprint/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /request-elevated-driver-operation\.ps1/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /Action = 'reinstall'/);
-  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /test-development-driver\.ps1/);
-  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /action = 'verify-existing'/);
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /Action = 'probe'/);
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /action = 'probe'/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /reinstall was skipped/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /if \(-not \$authority\) \{/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /driverOperation\.elevated -ne \$true/);
@@ -310,9 +310,10 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
     PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('if ($driverRequired) {'),
     PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('} else {'),
   );
+  const controlStart = PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('$control = [ordered]@{');
   const nonDriverBranch = PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.slice(
-    PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('} else {'),
-    PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('$control = [ordered]@{'),
+    PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.lastIndexOf('} else {', controlStart),
+    controlStart,
   );
   assert.match(driverRequiredBranch, /request-elevated-driver-operation\.ps1/);
   assert.doesNotMatch(nonDriverBranch, /request-elevated-driver-operation\.ps1|Resolve-OmniDevconPath|Action = 'reinstall'/);

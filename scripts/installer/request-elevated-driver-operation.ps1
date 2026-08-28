@@ -1,5 +1,5 @@
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('install', 'uninstall', 'reinstall')][string]$Action,
+  [Parameter(Mandatory = $true)][ValidateSet('install', 'uninstall', 'reinstall', 'probe')][string]$Action,
   [Parameter(Mandatory = $true)][string]$OperationId,
   [Parameter(Mandatory = $true)][string]$ResultPath,
   [Parameter(Mandatory = $true)][string]$WorkspaceRoot,

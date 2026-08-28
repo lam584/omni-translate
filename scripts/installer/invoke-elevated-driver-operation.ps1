@@ -1,5 +1,5 @@
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('install', 'uninstall', 'reinstall')][string]$Action,
+  [Parameter(Mandatory = $true)][ValidateSet('install', 'uninstall', 'reinstall', 'probe')][string]$Action,
   [Parameter(Mandatory = $true)][string]$OperationId,
   [Parameter(Mandatory = $true)][string]$ResultPath,
   [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
@@ -56,13 +56,18 @@ try {
     'install' { 'install-development-driver.ps1' }
     'uninstall' { 'uninstall-development-driver.ps1' }
     'reinstall' { 'repair-driver.ps1' }
+    'probe' { $null }
   }
   if ($InstallChannel -eq 'release') {
     # Fail closed on the stable package before any install, repair, or uninstall
     # action is allowed to mutate PnP/DriverStore/runtime state.
     & (Join-Path $PSScriptRoot 'install-development-driver.ps1') @common -ValidatePackageOnly *> $logPath
   }
-  if ($Action -eq 'reinstall') {
+  if ($Action -eq 'probe') {
+    if ([string]::IsNullOrWhiteSpace($ReadinessResultPath) -or [string]::IsNullOrWhiteSpace($VirtualMicEvidenceOutputDirectory)) {
+      throw 'elevated driver probe requires readiness and evidence paths'
+    }
+  } elseif ($Action -eq 'reinstall') {
     & (Join-Path $PSScriptRoot $script) @common -Action 'rollback-driver' *> $logPath
   } else {
     & (Join-Path $PSScriptRoot $script) @common *> $logPath

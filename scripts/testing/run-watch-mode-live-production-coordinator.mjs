@@ -156,13 +156,29 @@ if ($driverRequired) {
     [string]$packageMetadata.signerThumbprint -ne [string]$packageCertificate.Thumbprint
   ) { throw 'driver trust certificate does not match the signed runtime package signer' }
   $driverOperation = $null
-  $existingEvidenceRoot = Join-Path $remoteRoot 'logs\driver-runtime-existing\virtual-mic'
-  $driverTestScript = Join-Path $workspace 'scripts\installer\test-development-driver.ps1'
+  $existingRuntimeRoot = Join-Path $remoteRoot 'logs\driver-runtime-existing'
+  $existingEvidenceRoot = Join-Path $existingRuntimeRoot 'virtual-mic'
+  $existingOperationPath = Join-Path $existingRuntimeRoot 'operation.json'
+  $existingReadinessPath = Join-Path $existingRuntimeRoot 'readiness.json'
   try {
-    $existingTestOutput = @(& $driverTestScript -WorkspaceRoot $workspace -VirtualMicEvidenceOutputDirectory $existingEvidenceRoot)
-    $existingReadiness = $existingTestOutput |
-      Where-Object { $_ -and $_.PSObject.Properties['InstalledDriverAuthority'] } |
-      Select-Object -Last 1
+    $probeArguments = @{
+      Action = 'probe'
+      OperationId = "$( [string]$payload.executionId )-$( [string]$payload.workerId )-driver-existing-probe"
+      ResultPath = $existingOperationPath
+      WorkspaceRoot = $workspace
+      RuntimeRoot = $existingRuntimeRoot
+      InstallChannel = 'development'
+      DriverVersion = '0.10.0-dev'
+      BridgeVersion = '0.1.0'
+      TargetDeviceId = 'virtual-mic-default'
+      ReadinessResultPath = $existingReadinessPath
+      VirtualMicEvidenceOutputDirectory = $existingEvidenceRoot
+    }
+    & $elevationRequestScript @probeArguments
+    $existingOperation = Get-Content -LiteralPath $existingOperationPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $existingReadiness = if ($existingOperation.succeeded -eq $true -and (Test-Path -LiteralPath $existingReadinessPath -PathType Leaf)) {
+      Get-Content -LiteralPath $existingReadinessPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    } else { $null }
     if ($existingReadiness -and $existingReadiness.InstalledDriverAuthority) {
       $candidate = $existingReadiness.InstalledDriverAuthority
       if (
@@ -176,11 +192,11 @@ if ($driverRequired) {
       ) {
         $authority = $candidate
         $driverOperation = [ordered]@{
-          action = 'verify-existing'
+          action = 'probe'
           succeeded = $true
           phase = 'completed'
-          elevated = $false
-          elevationMode = 'not-required'
+          elevated = [bool]$existingOperation.elevated
+          elevationMode = [string]$existingOperation.elevationMode
           summary = 'The installed driver already matches the frozen runtime; reinstall was skipped.'
         }
       }

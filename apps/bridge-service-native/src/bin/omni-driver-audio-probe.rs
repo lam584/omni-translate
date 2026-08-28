@@ -276,7 +276,8 @@ mod probe {
 
     impl LoopbackCapture {
         fn start(device: &Device, format: &WaveFormat) -> Result<Self, String> {
-            let (audio_client, capture_client) = open_capture_stream(device, format)?;
+            let (audio_client, capture_client) = open_capture_stream(device, format)
+                .map_err(|error| format!("virtual-speaker-loopback-open: {error}"))?;
             Ok(Self {
                 audio_client,
                 capture_client,
@@ -303,7 +304,8 @@ mod probe {
 
     impl VirtualMicCapture {
         fn start(device: &Device, format: &WaveFormat) -> Result<Self, String> {
-            let (audio_client, capture_client) = open_capture_stream(device, format)?;
+            let (audio_client, capture_client) = open_capture_stream(device, format)
+                .map_err(|error| format!("virtual-microphone-capture-open: {error}"))?;
             Ok(Self {
                 audio_client,
                 capture_client,
@@ -387,7 +389,8 @@ mod probe {
 
     impl ToneRender {
         fn start(device: &Device, format: &WaveFormat) -> Result<Self, String> {
-            let (audio_client, render_client) = open_render_stream(device, format)?;
+            let (audio_client, render_client) = open_render_stream(device, format)
+                .map_err(|error| format!("virtual-speaker-render-open: {error}"))?;
             Ok(Self {
                 audio_client,
                 render_client,

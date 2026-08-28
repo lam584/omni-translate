@@ -191,8 +191,12 @@ pub mod probe_support {
         format: &WaveFormat,
         direction: &Direction,
     ) -> Result<AudioClient, String> {
-        let mut audio_client = device.get_iaudioclient().map_err(error_text)?;
-        let (_, minimum_period) = audio_client.get_device_period().map_err(error_text)?;
+        let mut audio_client = device
+            .get_iaudioclient()
+            .map_err(|error| format!("activate-audio-client: {}", error_text(error)))?;
+        let (_, minimum_period) = audio_client
+            .get_device_period()
+            .map_err(|error| format!("query-device-period: {}", error_text(error)))?;
         audio_client
             .initialize_client(
                 format,
@@ -202,7 +206,7 @@ pub mod probe_support {
                     buffer_duration_hns: minimum_period,
                 },
             )
-            .map_err(error_text)?;
+            .map_err(|error| format!("initialize-shared-{direction:?}: {}", error_text(error)))?;
         Ok(audio_client)
     }
 
@@ -212,8 +216,12 @@ pub mod probe_support {
         format: &WaveFormat,
     ) -> Result<(AudioClient, AudioCaptureClient), String> {
         let audio_client = initialize_shared_stream(device, format, &Direction::Capture)?;
-        let capture_client = audio_client.get_audiocaptureclient().map_err(error_text)?;
-        audio_client.start_stream().map_err(error_text)?;
+        let capture_client = audio_client
+            .get_audiocaptureclient()
+            .map_err(|error| format!("get-capture-client: {}", error_text(error)))?;
+        audio_client
+            .start_stream()
+            .map_err(|error| format!("start-capture-stream: {}", error_text(error)))?;
         Ok((audio_client, capture_client))
     }
 
@@ -223,8 +231,12 @@ pub mod probe_support {
         format: &WaveFormat,
     ) -> Result<(AudioClient, AudioRenderClient), String> {
         let audio_client = initialize_shared_stream(device, format, &Direction::Render)?;
-        let render_client = audio_client.get_audiorenderclient().map_err(error_text)?;
-        audio_client.start_stream().map_err(error_text)?;
+        let render_client = audio_client
+            .get_audiorenderclient()
+            .map_err(|error| format!("get-render-client: {}", error_text(error)))?;
+        audio_client
+            .start_stream()
+            .map_err(|error| format!("start-render-stream: {}", error_text(error)))?;
         Ok((audio_client, render_client))
     }
 

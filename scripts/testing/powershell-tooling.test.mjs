@@ -17,7 +17,15 @@ function quote(value) {
 function runPowerShell(source) {
   const result = spawnSync(
     powershell,
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', source],
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${source}`,
+    ],
     { cwd: repositoryRoot, encoding: 'utf8' },
   );
   assert.equal(result.status, 0, result.stderr || result.stdout);

@@ -397,6 +397,9 @@ test('interactive shard PowerShell emitters use shard authority schema v2', () =
   assert.ok(shardTerminalIndex >= 0);
   assert.match(launcher.slice(Math.max(0, shardTerminalIndex - 80), shardTerminalIndex + 80), /schemaVersion = 2/);
   assert.match(collector, /schemaVersion = 2\s*\r?\n\s*artifactKind = 'watch-mode-interactive-process-authority'/);
+  assert.match(collector, /for \(\$identityAttempt = 0; \$identityAttempt -lt 4 -and -not \$imagePath;/);
+  assert.match(collector, /Get-CimInstance Win32_Process -Filter "ProcessId=\$processId"/);
+  assert.match(collector, /if \(-not \$identityProcess -or -not \(Get-Process -Id \$processId[^\n]+\)\) \{ continue \}/);
 });
 
 test('interactive readiness decodes native UTF-8 endpoint JSON and restores console encoding', { skip: !isWindows }, () => {

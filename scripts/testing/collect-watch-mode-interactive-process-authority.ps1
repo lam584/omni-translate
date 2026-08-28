@@ -30,19 +30,15 @@ param(
   [ValidateRange(100, 5000)]
   [int]$SampleIntervalMs = 250
 )
-
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-
 Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.IO.psm1') -Force
-
 function Format-CollectionError {
   param([Parameter(Mandatory = $true)]$ErrorRecord)
   $position = [string]$ErrorRecord.InvocationInfo.PositionMessage
   $errorId = [string]$ErrorRecord.FullyQualifiedErrorId
   return "$($ErrorRecord.Exception.Message) | errorId=$errorId | $position"
 }
-
 function Get-DescendantProcesses {
   param([int]$RootId)
   $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)
@@ -67,12 +63,9 @@ function Get-DescendantProcesses {
       foreach ($child in $byParent[$processId]) { $queue.Enqueue([int]$child.ProcessId) }
     }
   }
-  # Windows PowerShell 5.1 can throw System.ArgumentException ("type
-  # mismatch") while expanding a generic List[object] through @(...).
-  # Materialize the list with its strongly typed API before returning it.
+  # Avoid Windows PowerShell 5.1 generic List[object] expansion type mismatches.
   return [object[]]$result.ToArray()
 }
-
 function Get-Role {
   param($Process, [int]$RootId)
   $name = ([string]$Process.Name).ToLowerInvariant()
@@ -84,7 +77,6 @@ function Get-Role {
   if ($name -eq 'omni-physical-output-probe.exe' -and $command -like '*--record-only*') { return 'recorder' }
   return 'supporting'
 }
-
 $startedAt = [DateTime]::UtcNow
 $observed = @{}
 $errors = New-Object Collections.Generic.List[string]
@@ -104,20 +96,28 @@ try {
         }
         try {
           if (-not (Get-Process -Id $processId -ErrorAction SilentlyContinue)) { continue }
-          $ownerSid = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid -ErrorAction Stop
-          $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwner -ErrorAction Stop
-          $imagePath = [string]$process.ExecutablePath
+          $identityProcess = $process
+          $imagePath = [string]$identityProcess.ExecutablePath
+          for ($identityAttempt = 0; $identityAttempt -lt 4 -and -not $imagePath; $identityAttempt++) {
+            Start-Sleep -Milliseconds 25
+            $identityProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$processId" -ErrorAction SilentlyContinue
+            if (-not $identityProcess) { break }
+            $imagePath = [string]$identityProcess.ExecutablePath
+          }
+          if (-not $identityProcess -or -not (Get-Process -Id $processId -ErrorAction SilentlyContinue)) { continue }
           if (-not $imagePath -or -not (Test-Path -LiteralPath $imagePath -PathType Leaf)) {
             throw "process $processId has no regular executable path"
           }
+          $ownerSid = Invoke-CimMethod -InputObject $identityProcess -MethodName GetOwnerSid -ErrorAction Stop
+          $owner = Invoke-CimMethod -InputObject $identityProcess -MethodName GetOwner -ErrorAction Stop
           $entry = [ordered]@{
-            role = Get-Role $process $RootProcessId
+            role = Get-Role $identityProcess $RootProcessId
             pid = $processId
-            parentPid = [int]$process.ParentProcessId
-            sessionId = [int]$process.SessionId
+            parentPid = [int]$identityProcess.ParentProcessId
+            sessionId = [int]$identityProcess.SessionId
             imagePath = [IO.Path]::GetFullPath($imagePath)
             imageSha256 = Get-OmniSha256 -LiteralPath $imagePath
-            commandLine = [string]$process.CommandLine
+            commandLine = [string]$identityProcess.CommandLine
             startedAt = (Get-Process -Id $processId -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')
             ownerUser = [string]$owner.User
             ownerDomain = [string]$owner.Domain

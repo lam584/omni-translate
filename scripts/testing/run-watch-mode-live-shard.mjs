@@ -408,7 +408,7 @@ export async function runLeasedShardCell({
         throw new Error('interactive shard run directory is outside the guest shard root');
       }
       const executionReceipt = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         artifactKind: INTERACTIVE_EXECUTION_KIND,
         completedAt: completedAt.toISOString(),
         executionId: plan.executionId,
@@ -540,7 +540,7 @@ export function finalizeInteractiveShardCell({
   }
   const execution = readRegularJson(executionReceiptPath, 'interactive cell execution receipt');
   if (
-    execution.schemaVersion !== 1
+    execution.schemaVersion !== 2
     || execution.artifactKind !== INTERACTIVE_EXECUTION_KIND
     || execution.executionId !== plan.executionId
     || execution.planDigest !== plan.planDigest

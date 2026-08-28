@@ -130,7 +130,10 @@ export async function runManagedProviderPreflight({
   closeOwnedProcess = requestClose,
   forceOwnedProcess = forceOwnedProcessTree,
 } = {}) {
-  fs.mkdirSync(outputDirectory, { recursive: false });
+  fs.mkdirSync(path.dirname(outputDirectory), { recursive: true });
+  if (fs.existsSync(outputDirectory)) {
+    throw new Error(`provider preflight output directory already exists: ${outputDirectory}`);
+  }
   const startedAt = now();
   const child = spawnProcess(executablePath, [], {
     cwd: path.dirname(executablePath), env: environment, windowsHide: false,
@@ -231,6 +234,10 @@ export async function runManagedProviderPreflight({
       stdoutTail: stdout.slice(-8_192),
       stderrTail: stderr.slice(-8_192),
     };
+    // The Desktop owns successful publication of outputDirectory by atomically
+    // renaming its sibling staging directory. Only a failed execution that did
+    // not publish evidence transfers directory ownership back to the runner.
+    if (!fs.existsSync(outputDirectory)) fs.mkdirSync(outputDirectory, { recursive: false });
     const failurePath = path.join(outputDirectory, PROVIDER_PREFLIGHT_FAILURE_FILE);
     atomicWriteJson(failurePath, failure);
     const error = new Error(primaryError.message);

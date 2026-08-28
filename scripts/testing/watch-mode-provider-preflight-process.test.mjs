@@ -16,15 +16,22 @@ function fakeChild(pid = 4242) {
   return child;
 }
 
+function publishEmitter(outputDirectory, value) {
+  const staging = `${outputDirectory}.staging`;
+  fs.mkdirSync(staging, { recursive: false });
+  fs.writeFileSync(path.join(staging, 'emitter-result.json'), JSON.stringify(value));
+  fs.renameSync(staging, outputDirectory);
+}
+
 test('terminal emitter failure remains primary when graceful cleanup fails', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-preflight-process-'));
   const executablePath = path.join(root, 'desktop.exe');
   fs.writeFileSync(executablePath, 'test-executable');
   const outputDirectory = path.join(root, 'evidence');
   const child = fakeChild();
-  setTimeout(() => fs.writeFileSync(
-    path.join(outputDirectory, 'emitter-result.json'),
-    JSON.stringify({ status: 'failed', error: 'latency 1218ms exceeds 1200ms' }),
+  setTimeout(() => publishEmitter(
+    outputDirectory,
+    { status: 'failed', error: 'latency 1218ms exceeds 1200ms' },
   ), 5);
   await assert.rejects(
     runManagedProviderPreflight({
@@ -58,7 +65,7 @@ test('completed emitter settles after the owned process exits', async () => {
   const outputDirectory = path.join(root, 'evidence');
   const child = fakeChild(4343);
   setTimeout(() => {
-    fs.writeFileSync(path.join(outputDirectory, 'emitter-result.json'), JSON.stringify({ status: 'completed' }));
+    publishEmitter(outputDirectory, { status: 'completed' });
     child.emit('exit', 0);
   }, 5);
   const result = await runManagedProviderPreflight({
@@ -82,10 +89,7 @@ test('completed emitter with an uncleanable owned process writes a terminal fail
   fs.writeFileSync(executablePath, 'test-executable');
   const outputDirectory = path.join(root, 'evidence');
   const child = fakeChild(4444);
-  setTimeout(() => fs.writeFileSync(
-    path.join(outputDirectory, 'emitter-result.json'),
-    JSON.stringify({ status: 'completed' }),
-  ), 5);
+  setTimeout(() => publishEmitter(outputDirectory, { status: 'completed' }), 5);
   await assert.rejects(runManagedProviderPreflight({
     executablePath,
     outputDirectory,
@@ -107,4 +111,16 @@ test('completed emitter with an uncleanable owned process writes a terminal fail
     assert.ok(fs.existsSync(error.failurePath));
     return true;
   });
+});
+
+test('runner reserves only the parent and rejects a pre-existing final evidence directory', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-preflight-existing-'));
+  const executablePath = path.join(root, 'desktop.exe');
+  fs.writeFileSync(executablePath, 'test-executable');
+  const outputDirectory = path.join(root, 'evidence');
+  fs.mkdirSync(outputDirectory);
+  await assert.rejects(
+    runManagedProviderPreflight({ executablePath, outputDirectory }),
+    /output directory already exists/,
+  );
 });

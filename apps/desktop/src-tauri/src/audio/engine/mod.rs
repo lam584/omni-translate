@@ -484,7 +484,7 @@ fn pick_device(enumerator: &DeviceEnumerator, spec: &RouteSpec) -> Result<Device
         for device_result in &collection {
             let device = device_result.map_err_str()?;
             let device_id = device.get_id().map_err_str()?;
-            if device_id == spec.requested_device_id {
+            if same_windows_audio_device_id(&device_id, &spec.requested_device_id) {
                 return Ok(device);
             }
             if spec.feedback_loop_prevention == "virtual-driver"
@@ -506,6 +506,10 @@ fn pick_device(enumerator: &DeviceEnumerator, spec: &RouteSpec) -> Result<Device
     }
 
     enumerator.get_default_device(&direction).map_err_str()
+}
+
+fn same_windows_audio_device_id(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
 }
 
 fn collect_render_device_ids(enumerator: &DeviceEnumerator) -> Result<Vec<String>, String> {
@@ -537,7 +541,7 @@ fn find_device_by_id(
     for device_result in &collection {
         let Ok(device) = device_result else { continue };
         if let Ok(device_id) = device.get_id() {
-            if device_id == target_id {
+            if same_windows_audio_device_id(&device_id, target_id) {
                 return Some(device);
             }
         }
@@ -964,6 +968,18 @@ mod tests {
             "inboundRoute": { "routeId": "inbound-route", "input": { "deviceId": "speaker-1" } }
           }
         })
+    }
+
+    #[test]
+    fn windows_audio_endpoint_identity_is_case_insensitive() {
+        assert!(same_windows_audio_device_id(
+            "{0.0.0.00000000}.{A609DEE5-4FFD-49D6-B7F2-705CFA934363}",
+            "{0.0.0.00000000}.{a609dee5-4ffd-49d6-b7f2-705cfa934363}",
+        ));
+        assert!(!same_windows_audio_device_id(
+            "{0.0.0.00000000}.{a609dee5-4ffd-49d6-b7f2-705cfa934363}",
+            "{0.0.0.00000000}.{27efe749-03d9-4ac0-88c6-2838b0beec7a}",
+        ));
     }
 
     #[test]

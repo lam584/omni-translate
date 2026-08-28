@@ -1593,6 +1593,13 @@ export function validateInteractiveSessionAuthority({
     || Number(processAuthority.sampleIntervalMs) > 5_000
     || !Array.isArray(processAuthority.errors)
     || processAuthority.errors.length !== 0
+    || Number(processAuthority.executionExitCode) !== Number(execution.exitCode)
+    || !Array.isArray(processAuthority.requiredRoles)
+    || !processAuthority.requiredRoles.includes('shard-node')
+    || !processAuthority.requiredRoles.includes('cell-powershell')
+    || (Number(execution.exitCode) === 0 && !processAuthority.requiredRoles.includes('desktop'))
+    || (Number(execution.exitCode) === 0 && !processAuthority.requiredRoles.includes('bridge'))
+    || (Number(execution.exitCode) !== 0 && processAuthority.requiredRoles.some((role) => role === 'desktop' || role === 'bridge' || role === 'recorder'))
   ) throw new Error('interactive process authority is invalid');
   const processByPid = new Map();
   for (const [index, processEntry] of processAuthority.processes.entries()) {

@@ -118,6 +118,7 @@ function Invoke-WatchModePreDesktopPhase {
           Invoke-VirtualDriverMediaSourcePreflight `
             -OutputDirectory $outputDir `
             -VirtualRenderEndpointId ([string]$driverProbe.data.WasapiEndpointId) `
+            -PhysicalPlaybackDeviceId $PhysicalPlaybackDeviceId `
             -PathToMedia $MediaPath `
             -WorkspaceRoot $workspaceRoot
         } -ContinueOnError

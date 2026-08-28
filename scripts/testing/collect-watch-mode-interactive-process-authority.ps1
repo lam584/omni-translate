@@ -26,9 +26,9 @@ param(
   [Parameter(Mandatory = $true)]
   [ValidatePattern('^[a-f0-9]{64}$')]
   [string]$VmIdentityDigest,
+  [Parameter(Mandatory = $true)][string]$ExecutionReceiptPath,
   [switch]$RequireRecorder,
-  [ValidateRange(100, 5000)]
-  [int]$SampleIntervalMs = 250
+  [ValidateRange(100, 5000)][int]$SampleIntervalMs = 250
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -141,48 +141,48 @@ try {
 } catch {
   [void]$errors.Add((Format-CollectionError $_))
 }
-
 $processes = @($observed.Values | Sort-Object @{ Expression = { $_.firstSeenAt } }, @{ Expression = { $_.pid } })
-$requiredRoles = @('shard-node', 'cell-powershell', 'desktop', 'bridge')
-if ($RequireRecorder) { $requiredRoles += 'recorder' }
+$executionExitCode = $null
+try {
+  $resolvedExecutionReceiptPath = [IO.Path]::GetFullPath($ExecutionReceiptPath)
+  if (-not (Test-Path -LiteralPath $resolvedExecutionReceiptPath -PathType Leaf)) { throw 'interactive cell execution receipt was not published' }
+  $executionReceipt = Get-Content -LiteralPath $resolvedExecutionReceiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $expectedReceiptIdentity = @{
+    executionId = $ExecutionId; planDigest = $PlanDigest; leaseId = $LeaseId; leaseDigest = $LeaseDigest
+    cellId = $CellId; workerId = $WorkerId; vmIdentityDigest = $VmIdentityDigest
+  }
+  foreach ($name in $expectedReceiptIdentity.Keys) {
+    if ([string]$executionReceipt.$name -cne [string]$expectedReceiptIdentity[$name]) { throw 'interactive cell execution receipt identity mismatch' }
+  }
+  $executionExitCode = [int]$executionReceipt.exitCode
+} catch { [void]$errors.Add((Format-CollectionError $_)) }
+$requiredRoles = @('shard-node', 'cell-powershell')
+if ($executionExitCode -eq 0) {
+  $requiredRoles += @('desktop', 'bridge')
+  if ($RequireRecorder) { $requiredRoles += 'recorder' }
+}
 foreach ($role in $requiredRoles) {
   if (@($processes | Where-Object { $_.role -eq $role }).Count -lt 1) {
     [void]$errors.Add("required process role was not observed: $role")
   }
 }
 $payload = [ordered]@{
-  schemaVersion = 2
-  artifactKind = 'watch-mode-interactive-process-authority'
-  executionId = $ExecutionId
-  planDigest = $PlanDigest
-  leaseId = $LeaseId
-  leaseDigest = $LeaseDigest
-  cellId = $CellId
-  workerId = $WorkerId
-  vmIdentityDigest = $VmIdentityDigest
-  rootProcessId = $RootProcessId
-  expectedSessionId = $ExpectedSessionId
-  expectedOwnerSid = $ExpectedOwnerSid
-  startedAt = $startedAt.ToString('o')
-  completedAt = [DateTime]::UtcNow.ToString('o')
-  sampleIntervalMs = $SampleIntervalMs
-  processCount = $processes.Count
-  processes = $processes
-  errors = $errors.ToArray()
+  schemaVersion = 2; artifactKind = 'watch-mode-interactive-process-authority'
+  executionId = $ExecutionId; planDigest = $PlanDigest
+  leaseId = $LeaseId; leaseDigest = $LeaseDigest; cellId = $CellId
+  workerId = $WorkerId; vmIdentityDigest = $VmIdentityDigest
+  rootProcessId = $RootProcessId; expectedSessionId = $ExpectedSessionId; expectedOwnerSid = $ExpectedOwnerSid
+  startedAt = $startedAt.ToString('o'); completedAt = [DateTime]::UtcNow.ToString('o')
+  sampleIntervalMs = $SampleIntervalMs; executionExitCode = $executionExitCode; requiredRoles = $requiredRoles
+  processCount = $processes.Count; processes = $processes; errors = $errors.ToArray()
   passed = $errors.Count -eq 0
 }
 $resolvedOutputPath = [IO.Path]::GetFullPath($OutputPath)
 [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($resolvedOutputPath))
 $encoding = New-Object Text.UTF8Encoding($false)
 $bytes = $encoding.GetBytes((($payload | ConvertTo-Json -Depth 12) + "`n"))
-$stream = New-Object IO.FileStream(
-  $resolvedOutputPath,
-  [IO.FileMode]::CreateNew,
-  [IO.FileAccess]::Write,
-  [IO.FileShare]::Read,
-  4096,
-  [IO.FileOptions]::WriteThrough
-)
+$stream = New-Object IO.FileStream($resolvedOutputPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+  [IO.FileShare]::Read, 4096, [IO.FileOptions]::WriteThrough)
 try {
   $stream.Write($bytes, 0, $bytes.Length)
   $stream.Flush($true)

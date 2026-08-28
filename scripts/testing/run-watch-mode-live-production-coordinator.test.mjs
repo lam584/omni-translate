@@ -415,6 +415,9 @@ test('interactive shard PowerShell emitters use shard authority schema v2', () =
   assert.match(collector, /for \(\$identityAttempt = 0; \$identityAttempt -lt 4 -and -not \$imagePath;/);
   assert.match(collector, /Get-CimInstance Win32_Process -Filter "ProcessId=\$processId"/);
   assert.match(collector, /if \(-not \$identityProcess -or -not \(Get-Process -Id \$processId[^\n]+\)\) \{ continue \}/);
+  assert.match(collector, /\$executionExitCode -eq 0/);
+  assert.match(collector, /interactive cell execution receipt identity mismatch/);
+  assert.match(launcher, /'-ExecutionReceiptPath'/);
 });
 
 test('interactive readiness decodes native UTF-8 endpoint JSON and restores console encoding', { skip: !isWindows }, () => {

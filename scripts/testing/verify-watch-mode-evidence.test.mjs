@@ -1201,6 +1201,8 @@ function writeInteractiveSessionBundleFixture(runDirectory, {
     startedAt: new Date(baseMs + 325).toISOString(),
     completedAt: new Date(baseMs + 650).toISOString(),
     sampleIntervalMs: 250,
+    executionExitCode: 0,
+    requiredRoles: roleSpecs.map(([role]) => role),
     processCount: processes.length,
     processes,
     errors: [],

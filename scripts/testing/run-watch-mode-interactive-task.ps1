@@ -8,7 +8,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-
 Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.IO.psm1') -Force
 
 function Invoke-Utf8JsonProcess {
@@ -426,7 +425,8 @@ $traceArguments = @(
     '-LeaseDigest', [string]$request.leaseDigest,
     '-CellId', ('"' + [string]$request.cellId + '"'),
     '-WorkerId', ('"' + [string]$request.workerId + '"'),
-    '-VmIdentityDigest', [string]$request.vmIdentityDigest
+    '-VmIdentityDigest', [string]$request.vmIdentityDigest,
+    '-ExecutionReceiptPath', ('"' + [string]$request.executionReceiptPath + '"')
   )
 if ([bool]$request.requireRecorder) { $traceArguments += '-RequireRecorder' }
 $trace = Start-Process -FilePath 'powershell.exe' `

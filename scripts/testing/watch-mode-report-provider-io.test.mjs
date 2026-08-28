@@ -26,6 +26,22 @@ test('report rejects legacy or missing step schemas instead of migrating them', 
     /unsupported watch-mode step schema/,
   );
 });
+
+test('step normalization preserves passed, skipped, failed, and blocked states', () => {
+  const steps = normalizeSteps([
+    { schemaVersion: 'watch-mode-step/v2', id: 'passed-step', status: 'passed', data: {}, error: null },
+    { schemaVersion: 'watch-mode-step/v2', id: 'skipped-step', status: 'skipped', data: { reason: 'policy skip' }, error: null },
+    { schemaVersion: 'watch-mode-step/v2', id: 'failed-step', status: 'failed', data: null, error: { message: 'failed' } },
+    { schemaVersion: 'watch-mode-step/v2', id: 'blocked-step', status: 'blocked', data: null, error: { message: 'blocked' } },
+  ]);
+
+  assert.deepEqual(steps.map(({ status, ok }) => ({ status, ok })), [
+    { status: 'passed', ok: true },
+    { status: 'skipped', ok: false },
+    { status: 'failed', ok: false },
+    { status: 'blocked', ok: false },
+  ]);
+});
 import {
   classify,
   healthyApp,

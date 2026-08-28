@@ -116,6 +116,42 @@ use super::*;
     }
 
     #[test]
+    fn final_pipeline_uses_confirmation_time_when_content_was_already_visible() {
+        let store = WatchSessionReportStore::new();
+        store.begin_or_reuse("test", "model");
+        store.record_source("cue-final", "inbound", "hello", true);
+        {
+            let mut guard = store.inner.lock().expect("report");
+            let cue = guard
+                .as_mut()
+                .expect("session")
+                .cues
+                .iter_mut()
+                .find(|cue| cue.cue_id == "cue-final")
+                .expect("cue");
+            cue.translation_state = Some(SubtitleTranslationStateRuntime::Final);
+            cue.llm_text = "translated".to_string();
+            cue.published_text = "translated".to_string();
+            cue.rendered_text = "translated".to_string();
+            cue.llm_first_at_ms = Some(100);
+            cue.published_first_at_ms = Some(110);
+            cue.rendered_first_at_ms = Some(120);
+            cue.rendered_final_at_ms = Some(150);
+            cue.published_final_at_ms = Some(180);
+            cue.llm_final_at_ms = Some(200);
+        }
+        store.complete();
+
+        let report = store.snapshot().expect("report");
+        let cue = &report.cues[0];
+        assert_eq!(cue.published_final_at_ms, Some(200));
+        assert_eq!(cue.rendered_final_at_ms, Some(200));
+        assert_eq!(cue.llm_final_to_publish_ms, Some(0));
+        assert_eq!(cue.published_final_to_render_ms, Some(0));
+        assert!(!cue.issues.iter().any(|issue| issue.code == "invalid-stage-order"));
+    }
+
+    #[test]
     fn capacity_retains_first_final_and_error_evidence_and_reports_drops() {
         let store = WatchSessionReportStore::new();
         store.begin_or_reuse("test", "model");

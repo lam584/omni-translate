@@ -42,6 +42,22 @@ test('echo-cancel environment failure is not attributed to its skipped driver la
   assert.equal(report.layers.driver.status, 'skipped');
 });
 
+test('frozen runtime policy skips are not environment precheck failures', () => {
+  const report = classify({
+    steps: [{
+      schemaVersion: 'watch-mode-step/v2',
+      id: 'build-bridge-service-native',
+      phase: 'initialize',
+      status: 'skipped',
+      data: { reason: 'frozen runtime authority forbids rebuilding inside evidence collection' },
+      error: null,
+    }],
+  });
+
+  assert.equal(report.layers.environment.status, 'passed');
+  assert.equal(report.diagnostics.failedSteps.some((step) => step.name === 'build bridge service native'), false);
+});
+
 test('process-exclusion reports unsupported capability at the bridge layer', () => {
   const report = classify({
     feedbackLoopPrevention: 'process-exclusion',

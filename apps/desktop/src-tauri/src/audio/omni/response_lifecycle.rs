@@ -94,7 +94,6 @@ impl ResponseLifecycle {
         let Some(started_at) = self.started_at else {
             return ResponseStallAction::None;
         };
-        let total_expired = now.saturating_duration_since(started_at) >= budget.total;
         let progress_expired = if self.output_observed {
             self.last_progress_at.is_some_and(|progress_at| {
                 now.saturating_duration_since(progress_at) >= budget.no_progress
@@ -102,7 +101,13 @@ impl ResponseLifecycle {
         } else {
             now.saturating_duration_since(started_at) >= budget.first_output
         };
-        if !total_expired && !progress_expired {
+        // A live-translation response may legitimately remain open for the
+        // entire captured conversation. Continuous provider output is proof
+        // of liveness; an absolute response-age limit would tear down a
+        // healthy single-connection stream even while audio and transcript
+        // deltas are arriving. The first-output and no-progress deadlines are
+        // the fail-closed stall authorities.
+        if !progress_expired {
             return ResponseStallAction::None;
         }
         if allow_cancel {
@@ -198,6 +203,20 @@ mod tests {
         assert_eq!(
             lifecycle.action(now + Duration::from_secs(5), budget, true),
             ResponseStallAction::Reconnect
+        );
+    }
+
+    #[test]
+    fn continuous_streaming_progress_outlives_the_absolute_budget() {
+        let now = Instant::now();
+        let budget = ResponseDeadlineBudget::from_provider_timeout_ms(5_000);
+        let mut lifecycle = ResponseLifecycle::default();
+        lifecycle.begin(Some("response-live"), now);
+        lifecycle.progress(Some("response-live"), now + Duration::from_secs(29));
+
+        assert_eq!(
+            lifecycle.action(now + Duration::from_secs(31), budget, false),
+            ResponseStallAction::None
         );
     }
 }

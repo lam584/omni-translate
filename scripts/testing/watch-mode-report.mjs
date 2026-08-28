@@ -189,6 +189,7 @@ export function normalizeSteps(steps) {
   }
   return steps.map((step) => ({
     name: String(step?.id ?? '(unnamed-step)').replaceAll('-', ' '),
+    status: step.status,
     ok: step?.status === 'passed',
     error: step?.error?.message ? String(step.error.message) : null,
     result: step?.data ?? null,
@@ -1853,7 +1854,7 @@ function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
   const driverlessVariant = feedbackLoopPrevention !== 'virtual-driver';
   const failedSteps = steps
     .filter((step) => (
-      !step.ok
+      ['failed', 'blocked'].includes(step.status)
       && !(
         driverlessVariant
         && /^(?:driver probe|driver probe after repair)$/i.test(step.name)
@@ -2056,7 +2057,7 @@ function isVirtualDriverDiagnosticFailure(message) {
 
 function environmentPrecheckFailed(input, feedbackLoopPrevention = 'virtual-driver') {
   const precheck = normalizeSteps(input.steps).find((step) => (
-    !step.ok
+    ['failed', 'blocked'].includes(step.status)
     && !(
       feedbackLoopPrevention !== 'virtual-driver'
       && /^(?:driver probe|driver probe after repair)$/i.test(step.name)

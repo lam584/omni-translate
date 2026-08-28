@@ -101,6 +101,7 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
         if superseded {
             cue.translation_state = Some(SubtitleTranslationStateRuntime::Superseded);
         }
+        normalize_final_pipeline_timestamps(cue);
         cue.source_to_llm_first_ms = duration_between(cue.source_at_ms, cue.llm_first_at_ms);
         cue.source_to_render_ms = duration_between(cue.source_at_ms, cue.rendered_first_at_ms);
         cue.llm_first_to_publish_ms =
@@ -305,6 +306,26 @@ fn duration_between(start: Option<u64>, end: Option<u64>) -> Option<u64> {
     match (start, end) {
         (Some(start), Some(end)) if end >= start => Some(end - start),
         _ => None,
+    }
+}
+
+fn normalize_final_pipeline_timestamps(cue: &mut WatchCueComparisonRuntime) {
+    if cue.translation_state != Some(SubtitleTranslationStateRuntime::Final) {
+        return;
+    }
+
+    let model = normalize_comparison_text(&cue.llm_text);
+    let published = normalize_comparison_text(&cue.published_text);
+    let rendered = normalize_comparison_text(&cue.rendered_text);
+    if !model.is_empty() && model == published {
+        if let Some(llm_final) = cue.llm_final_at_ms {
+            cue.published_final_at_ms = Some(cue.published_final_at_ms.unwrap_or(llm_final).max(llm_final));
+        }
+    }
+    if !published.is_empty() && published == rendered {
+        if let Some(published_final) = cue.published_final_at_ms {
+            cue.rendered_final_at_ms = Some(cue.rendered_final_at_ms.unwrap_or(published_final).max(published_final));
+        }
     }
 }
 

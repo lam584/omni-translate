@@ -29,6 +29,21 @@ test('classifies healthy watch-mode evidence as passed', () => {
   assert.equal(report.suspectFiles.length, 0);
 });
 
+test('accepts frozen driver readiness projection without legacy tone counters', () => {
+  const readiness = {
+    InstalledDriverAuthority: {
+      installedServiceState: 'Running',
+      installedSysSignatureStatus: 'Valid',
+      packageCatalogSignatureStatus: 'Valid',
+    },
+    WasapiEndpointId: '{0.0.0.00000000}.{virtual-speaker}',
+    providerCalls: 0,
+  };
+  const report = classify({ driver: readiness, wasapi: readiness });
+  assert.equal(report.layers.driver.status, 'passed');
+  assert.equal(report.layers.wasapi.status, 'passed');
+});
+
 test('requires a saved Watch report with a complete visible three-stage cue', () => {
   const missing = classify({ watchSessionReport: null });
   assert.equal(missing.failureLayer, 'app');

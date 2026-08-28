@@ -1058,6 +1058,13 @@ function driverLayerFailed(driver) {
     return null;
   }
   if (driver.error) return driver.error;
+  const installedAuthority = driver.InstalledDriverAuthority ?? driver.installedDriverAuthority;
+  const readinessEndpointId = driver.WasapiEndpointId ?? driver.wasapiEndpointId;
+  if (
+    installedAuthority
+    && String(installedAuthority.installedServiceState ?? '').toLowerCase() === 'running'
+    && String(readinessEndpointId ?? '').trim()
+  ) return null;
   if (driver.RootDeviceStatus && driver.RootDeviceStatus !== 'OK') return `root device status is ${driver.RootDeviceStatus}`;
   if (!driver.Endpoint && !driver.endpoint) return 'virtual audio endpoint was not found';
   if (driver.DriverHealth && !['running', 'ready'].includes(String(driver.DriverHealth))) {
@@ -1072,6 +1079,10 @@ function wasapiLayerFailed(wasapi) {
     return wasapi.error;
   }
   if (wasapi.error) return wasapi.error;
+  if (
+    (wasapi.InstalledDriverAuthority ?? wasapi.installedDriverAuthority)
+    && String(wasapi.WasapiEndpointId ?? wasapi.wasapiEndpointId ?? '').trim()
+  ) return null;
   const toneFrames = asNumber(wasapi.ToneFrames ?? wasapi.toneFrames);
   const toneRms = asNumber(wasapi.ToneRms ?? wasapi.toneRms);
   const invalidSamples = asNumber(wasapi.InvalidSamples ?? wasapi.invalidSamples);

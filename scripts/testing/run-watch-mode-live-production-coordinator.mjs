@@ -155,6 +155,42 @@ if ($driverRequired) {
     [string]$packageSysSignature.SignerCertificate.Thumbprint -ne [string]$packageCertificate.Thumbprint -or
     [string]$packageMetadata.signerThumbprint -ne [string]$packageCertificate.Thumbprint
   ) { throw 'driver trust certificate does not match the signed runtime package signer' }
+  $driverOperation = $null
+  $existingEvidenceRoot = Join-Path $remoteRoot 'logs\driver-runtime-existing\virtual-mic'
+  $driverTestScript = Join-Path $workspace 'scripts\installer\test-development-driver.ps1'
+  try {
+    $existingTestOutput = @(& $driverTestScript -WorkspaceRoot $workspace -VirtualMicEvidenceOutputDirectory $existingEvidenceRoot)
+    $existingReadiness = $existingTestOutput |
+      Where-Object { $_ -and $_.PSObject.Properties['InstalledDriverAuthority'] } |
+      Select-Object -Last 1
+    if ($existingReadiness -and $existingReadiness.InstalledDriverAuthority) {
+      $candidate = $existingReadiness.InstalledDriverAuthority
+      if (
+        [string]$candidate.installedServiceState -eq 'Running' -and
+        [string]$candidate.installedSysSha256 -eq [string]$expected.sysSha256 -and
+        [string]$candidate.packageSysSha256 -eq [string]$expected.sysSha256 -and
+        [string]$candidate.packageCatSha256 -eq [string]$expected.catSha256 -and
+        [string]$candidate.packageInfSha256 -eq [string]$expected.infSha256 -and
+        [string]$candidate.installedSysSignatureStatus -eq 'Valid' -and
+        [string]$candidate.packageCatalogSignatureStatus -eq 'Valid'
+      ) {
+        $authority = $candidate
+        $driverOperation = [ordered]@{
+          action = 'verify-existing'
+          succeeded = $true
+          phase = 'completed'
+          elevated = $false
+          elevationMode = 'not-required'
+          summary = 'The installed driver already matches the frozen runtime; reinstall was skipped.'
+        }
+      }
+    }
+  } catch {
+    # An unavailable or mismatched installed package is not accepted as
+    # readiness. It falls through to the exact UAC-bound reinstall below.
+    $authority = $null
+  }
+  if (-not $authority) {
   $driverOperationId = "$( [string]$payload.executionId )-$( [string]$payload.workerId )-driver-readiness"
   $driverOperationResultPath = Join-Path $driverRuntimeRoot 'elevated-operation.json'
   $driverReadinessResultPath = Join-Path $driverRuntimeRoot 'installed-driver-readiness.json'
@@ -194,6 +230,7 @@ if ($driverRequired) {
   $driver = Get-Content -LiteralPath $driverReadinessResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
   if (-not $driver -or -not $driver.InstalledDriverAuthority) { throw 'installed driver authority was not returned' }
   $authority = $driver.InstalledDriverAuthority
+  }
   if (
     [string]$authority.installedServiceState -ne 'Running' -or
     [string]$authority.installedSysSha256 -ne [string]$expected.sysSha256 -or

@@ -205,6 +205,11 @@ export async function runManagedProviderPreflight({
   termination.exited = exited;
   termination.exitCode = exitCode;
   const fields = probeFields(outputDirectory, emitter);
+  for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.destroy?.();
+  if (exited) {
+    child.removeAllListeners?.();
+    child.unref?.();
+  }
   if (!primaryError && (exitCode ?? 0) !== 0) primaryError = new Error(`provider preflight process failed with exit ${exitCode}`);
   if (!primaryError && (cleanupErrors.length > 0 || !exited)) {
     primaryError = new Error(`provider preflight cleanup failed: ${cleanupErrors.join('; ') || 'owned process did not exit'}`);

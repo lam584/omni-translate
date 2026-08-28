@@ -81,6 +81,8 @@ test('completed emitter settles after the owned process exits', async () => {
   });
   assert.equal(result.emitter.status, 'completed');
   assert.equal(result.termination.exited, true);
+  assert.equal(child.stdout.destroyed, true);
+  assert.equal(child.stderr.destroyed, true);
 });
 
 test('completed emitter with an uncleanable owned process writes a terminal failure artifact', async () => {

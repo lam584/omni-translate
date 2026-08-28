@@ -520,6 +520,10 @@ test('blocked report is preserved and normalized to a collect-all failed shard r
     const worker = fixture.plan.workers.find((entry) => entry.workerId === cell.workerId);
     const runDirectory = path.join(shardRoot, 'runs', 'blocked-cell');
     writeSuccessfulRun(runDirectory, cell, lease);
+    const devicePath = path.join(runDirectory, 'physical-playback-device.json');
+    const device = JSON.parse(fs.readFileSync(devicePath, 'utf8'));
+    device.resolvedDeviceName = `扬声器 (${cell.deviceProfileInstance.expectedPhysicalPlaybackDeviceName})`;
+    writeJson(devicePath, device);
     writeJson(path.join(runDirectory, 'report.json'), {
       verdict: 'blocked',
       failureLayer: 'environment',

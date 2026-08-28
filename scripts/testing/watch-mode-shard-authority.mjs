@@ -1220,7 +1220,9 @@ function readDeviceAuthority(runDirectory, cell) {
   ) throw new Error(`physical playback device does not match shard cell ${cell.cellId}`);
   if (
     planned.expectedPhysicalPlaybackDeviceName
-    && device.resolvedDeviceName !== planned.expectedPhysicalPlaybackDeviceName
+    && !device.resolvedDeviceName.toLocaleLowerCase().includes(
+      planned.expectedPhysicalPlaybackDeviceName.toLocaleLowerCase(),
+    )
   ) throw new Error(`physical playback device name does not match shard profile ${planned.profileId}`);
   return {
     ...fileAuthorityEntry(filePath, relativePath),

@@ -354,6 +354,17 @@ test('provider usage authority binds coordinator launch receipt and ordered send
     assert.equal(zeroInputUsage.actualExternalAudioSamples, 0);
     assert.equal(zeroInputUsage.journalEventCount, 3);
 
+    const timeoutLedgerPath = path.join(root, PROVIDER_INPUT_BUDGET_LEDGER_FILE);
+    const timeoutJournalPath = path.join(root, PROVIDER_INPUT_BUDGET_JOURNAL_FILE);
+    const timeoutLedger = JSON.parse(fs.readFileSync(timeoutLedgerPath, 'utf8'));
+    const timeoutJournal = fs.readFileSync(timeoutJournalPath, 'utf8').trim().split(/\r?\n/u).map(JSON.parse);
+    timeoutLedger.terminalReason = 'livetranslate-session-finished-timeout';
+    timeoutJournal.at(-1).terminalReason = timeoutLedger.terminalReason;
+    writeJson(timeoutLedgerPath, timeoutLedger);
+    fs.writeFileSync(timeoutJournalPath, `${timeoutJournal.map(JSON.stringify).join('\n')}\n`, 'utf8');
+    const timeoutUsage = validateProviderUsageAuthority(root, { cell, lease });
+    assert.equal(timeoutUsage.terminalStatus, 'livetranslate-session-finished-timeout');
+
     writeSuccessfulRun(root, cell, lease);
 
     const reconnectLedgerPath = path.join(root, PROVIDER_INPUT_BUDGET_LEDGER_FILE);

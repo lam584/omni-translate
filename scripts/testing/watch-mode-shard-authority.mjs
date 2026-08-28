@@ -1108,13 +1108,15 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
   }
   const reconnectRejectedTerminal = /^reconnect-forbidden-(?:socket-close|read-error|voice-fallback)$/u
     .test(String(ledger.terminalReason ?? ''));
+  const nonBudgetFailureTerminal = reconnectRejectedTerminal
+    || ledger.terminalReason === 'livetranslate-session-finished-timeout';
   if (
     Number(ledger.sendFailures) !== 0
     || Number(ledger.initialConnectAttempts) !== 1
     || Number(ledger.reconnects) !== 0
     || ledger.budgetExceeded !== false
     || ledger.finalized !== true
-    || (ledger.terminalReason !== 'worker-completed' && !reconnectRejectedTerminal)
+    || (ledger.terminalReason !== 'worker-completed' && !nonBudgetFailureTerminal)
   ) throw new Error('provider input budget ledger is not a strict terminal success');
   const journalIdentity = {
     ...expectedIdentity,

@@ -361,11 +361,13 @@ test('strict paid budget accepts a lease-bound zero-input terminal for collect-a
     const journal = fs.readFileSync(journalPath, 'utf8').trim().split(/\r?\n/u).map(JSON.parse);
     ledger.totalAttemptedSamples = 0;
     ledger.appendAttempts = 0;
+    ledger.terminalReason = 'livetranslate-session-finished-timeout';
     const terminal = {
       ...journal.at(-1),
       sequence: 3,
       totalAttemptedSamples: 0,
       appendAttempts: 0,
+      terminalReason: ledger.terminalReason,
     };
     fs.writeFileSync(ledgerPath, JSON.stringify(ledger), 'utf8');
     fs.writeFileSync(

@@ -447,7 +447,7 @@ test('strict paid cell rejects forged provider identity and any missing or repea
   }
 });
 
-test('strict paid cell rejects forged canonical and lifecycle-only physical authority', () => {
+test('strict paid cell rejects forged canonical authority but leaves physical verdicts to report and verifier', () => {
   const runDirectory = createRunDirectory({ feedbackMode: 'process-exclusion' });
   try {
     const sourcePath = path.join(runDirectory, 'source-media-transcript.json');
@@ -482,8 +482,14 @@ test('strict paid cell rejects forged canonical and lifecycle-only physical auth
     physical.translatedSpeech.acousticAuthority.passed = false;
     fs.writeFileSync(physicalPath, JSON.stringify(physical), 'utf8');
     budget = buildCellExternalProviderBudget(buildOptions(runDirectory, { feedbackLoopPrevention: 'process-exclusion' }));
+    assert.equal(budget.passed, true);
+    assert.equal(budget.physicalAuthority.translatedPcmLoopbackPassed, false);
+
+    physical.remoteProviderCalls = 1;
+    fs.writeFileSync(physicalPath, JSON.stringify(physical), 'utf8');
+    budget = buildCellExternalProviderBudget(buildOptions(runDirectory, { feedbackLoopPrevention: 'process-exclusion' }));
     assert.equal(budget.passed, false);
-    assert.match(budget.violations.join('; '), /translated-PCM loopback evidence/);
+    assert.match(budget.violations.join('; '), /declares external Provider usage/);
   } finally {
     fs.rmSync(runDirectory, { recursive: true, force: true });
   }
@@ -515,7 +521,7 @@ test('strict paid cell rejects a forged source window and an unbound sttSourceWi
         budget.violations.join('; '),
         mode === 'forged-prefix'
           ? /not the exact prefix of the physical recording PCM/
-          : /physical output authority lacks passed local source/,
+          : /physical output authority is not bound to local canonical evidence/,
         mode,
       );
     } finally {

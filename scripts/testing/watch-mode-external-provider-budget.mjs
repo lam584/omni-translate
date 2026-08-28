@@ -8,8 +8,6 @@ import {
   validateCanonicalSourceAuthority,
   validateRunCanonicalSourceAuthority,
 } from './watch-mode-canonical-source-authority.mjs';
-import { buildTranslatedPcmLoopbackAuthority } from './watch-mode-translated-pcm-loopback.mjs';
-import { derivePhysicalOutputContent } from './watch-mode-report.mjs';
 
 export const EXTERNAL_PROVIDER_BUDGET_SCHEMA_VERSION = 1;
 export const CELL_EXTERNAL_PROVIDER_BUDGET_KIND = 'watch-mode-paid-cell-external-provider-budget';
@@ -492,7 +490,6 @@ export function buildCellExternalProviderBudget({
     }
     try {
       physicalAuthority = readJson(physicalAuthorityPath, 'physical output authority');
-      const derivedPhysicalContent = derivePhysicalOutputContent(physicalAuthority);
       const recordingAuthority = readJson(
         path.join(resolvedRunDirectory, 'physical-output-recording.json'),
         'physical output recording authority',
@@ -503,23 +500,11 @@ export function buildCellExternalProviderBudget({
         sourceAuthority,
       });
       physicalSourceWaveform = rebuiltCanonicalAuthority.physicalSourceWaveform;
-      const rebuiltAcousticAuthority = buildTranslatedPcmLoopbackAuthority({
-        runDirectory: resolvedRunDirectory,
-        appLogPath,
-        runMarker,
-        recordingStartedAtEpochMs: Number(recordingAuthority.recordingStartedAtEpochMs),
-        cellId: normalizedCellId,
-        leaseId: sendBoundaryAuthority?.leaseId,
-        modelId: normalizedModel,
-        protocol: modelProtocols[normalizedModel],
-      });
       if (
-        derivedPhysicalContent?.passed !== true
-        || physicalAuthority.authorityMode !== 'local-pcm-cue-playback-v1'
+        physicalAuthority.authorityMode !== 'local-pcm-cue-playback-v1'
         || physicalAuthority.remoteProviderCalls !== 0
         || Number(physicalAuthority.externalAudioSeconds) !== 0
         || physicalAuthority.originalPassthrough?.authority !== 'canonical-source-signed-waveform-v1'
-        || physicalAuthority.originalPassthrough?.sourceSimilarity?.passed !== true
         || canonicalJson(physicalAuthority.originalPassthrough?.sourceSimilarity) !== canonicalJson(physicalSourceWaveform)
         || physicalSourceWaveform.physicalRecordingPcm.path !== PHYSICAL_OUTPUT_RECORDING_PCM_FILE
         || physicalSourceWaveform.sourceWindowPcm.path !== PHYSICAL_OUTPUT_SOURCE_WINDOW_PCM_FILE
@@ -534,13 +519,8 @@ export function buildCellExternalProviderBudget({
         || Number(physicalAuthority.sttSourceWindow?.sampleRateHz) !== 16_000
         || Number(physicalAuthority.sttSourceWindow?.bytes)
           !== physicalSourceWaveform.sourceWindowPcm.bytes
-        || derivedPhysicalContent.contentConsistency?.structuredEvidence?.passed !== true
-        || physicalAuthority.translatedSpeech?.playbackAuthority?.passed !== true
-        || Number(physicalAuthority.translatedSpeech?.playbackAuthority?.invalidCues?.length ?? 0) !== 0
-        || rebuiltAcousticAuthority.passed !== true
-        || canonicalJson(physicalAuthority.translatedSpeech?.acousticAuthority) !== canonicalJson(rebuiltAcousticAuthority)
       ) {
-        violations.push('physical output authority lacks passed local source, structured text, exactly-once completed playback, or translated-PCM loopback evidence');
+        violations.push('physical output authority is not bound to local canonical evidence or declares external Provider usage');
       }
     } catch (error) {
       violations.push(error.message);

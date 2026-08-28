@@ -433,11 +433,11 @@ $trace = Start-Process -FilePath 'powershell.exe' `
   -ArgumentList $traceArguments `
   -WindowStyle Hidden `
   -PassThru
-$node.WaitForExit()
+$node.WaitForExit(); $node.Refresh(); $nodeExitCode = [int]$node.ExitCode
 $trace.WaitForExit(30000) | Out-Null
 if (-not $trace.HasExited) { Stop-Process -Id $trace.Id -Force -ErrorAction SilentlyContinue }
 $executionReceiptObserved = $false
-if ($node.ExitCode -eq 0 -and (Test-Path -LiteralPath ([string]$request.executionReceiptPath) -PathType Leaf)) {
+if ($nodeExitCode -eq 0 -and (Test-Path -LiteralPath ([string]$request.executionReceiptPath) -PathType Leaf)) {
   $executionReceiptObserved = $true
 }
 $terminal = [ordered]@{
@@ -457,11 +457,11 @@ $terminal = [ordered]@{
   ownerSid = $common.ownerSid
   nodePid = $node.Id
   nodeStartedAt = $nodeIdentity.startedAt
-  exitCode = $node.ExitCode
+  exitCode = $nodeExitCode
   processAuthorityExitCode = if ($trace.HasExited) { $trace.ExitCode } else { -1 }
   executionReceiptPath = ('interactive/' + [string]$request.leaseId + '/execution.json')
   executionReceiptObserved = $executionReceiptObserved
   completedAt = [DateTime]::UtcNow.ToString('o')
 }
 Write-OmniImmutableJson -LiteralPath ([string]$request.terminalPath) -Value $terminal
-exit $node.ExitCode
+exit $nodeExitCode

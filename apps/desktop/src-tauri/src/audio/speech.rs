@@ -35,7 +35,7 @@ mod aec_live_scenario;
 mod speaker_render_event;
 
 use self::aec_live_scenario::{
-    active_aec_live_scenario_assignment, AecLiveScenarioRender,
+    active_aec_live_scenario_assignments, AecLiveScenarioRender,
 };
 use self::playback_engine::{SpeechPlaybackEngine, SpeechPlaybackResult, SynthesisOutput};
 pub(crate) use self::speaker_render_event::SpeakerRenderEvent;

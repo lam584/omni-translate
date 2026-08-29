@@ -49,8 +49,11 @@ mod injector {
         pub source_sample_rate_hz: u32,
         pub source_channels: usize,
         pub render_sample_rate_hz: u32,
+        pub source_gain_db: f32,
         pub rendered_frames: usize,
         pub rendered_seconds: f64,
+        pub postroll_silence_frames: usize,
+        pub postroll_silence_seconds: f64,
         pub detail: Option<String>,
     }
 
@@ -67,8 +70,11 @@ mod injector {
                 source_sample_rate_hz: 0,
                 source_channels: 0,
                 render_sample_rate_hz: 0,
+                source_gain_db: 0.0,
                 rendered_frames: 0,
                 rendered_seconds: 0.0,
+                postroll_silence_frames: 0,
+                postroll_silence_seconds: 0.0,
                 detail: Some(detail),
             }
         }
@@ -81,6 +87,8 @@ mod injector {
         max_seconds: Option<f64>,
         reference_pcm16k_mono_path: Option<PathBuf>,
         reference_only: bool,
+        source_gain_db: f32,
+        postroll_silence_seconds: f64,
     }
 
     struct DecodedAudio {
@@ -162,8 +170,11 @@ mod injector {
                 source_sample_rate_hz: decoded.source_sample_rate_hz,
                 source_channels: decoded.source_channels,
                 render_sample_rate_hz: 0,
+                source_gain_db: args.source_gain_db,
                 rendered_frames: 0,
                 rendered_seconds: 0.0,
+                postroll_silence_frames: 0,
+                postroll_silence_seconds: 0.0,
                 detail: Some("reference-only; no render endpoint opened".to_string()),
             });
         }
@@ -182,12 +193,13 @@ mod injector {
             .map_err(error_text)?
             .get_samplespersec()
             .max(1);
-        let target_samples = resample_to_render_stereo(
+        let mut target_samples = resample_to_render_stereo(
             &decoded.samples,
             decoded.source_sample_rate_hz,
             decoded.source_channels,
             render_sample_rate_hz,
         );
+        apply_gain_db(&mut target_samples, args.source_gain_db);
         let max_samples = args.max_seconds.map(|seconds| {
             (seconds.max(0.1) * render_sample_rate_hz as f64) as usize * TARGET_CHANNELS
         });
@@ -205,6 +217,12 @@ mod injector {
             write_pcm16le(path, &reference_samples)?;
         }
 
+        let media_frames = target_samples.len() / TARGET_CHANNELS;
+        let postroll_silence_frames =
+            (args.postroll_silence_seconds * render_sample_rate_hz as f64).round() as usize;
+        let mut render_samples = target_samples;
+        append_postroll_silence(&mut render_samples, postroll_silence_frames);
+
         let format = WaveFormat::new(
             32,
             32,
@@ -214,8 +232,8 @@ mod injector {
             None,
         );
         let mut render = MediaRender::start(&device, &format)?;
-        let total_frames = target_samples.len() / TARGET_CHANNELS;
-        let mut pending = VecDeque::from(target_samples);
+        let total_frames = render_samples.len() / TARGET_CHANNELS;
+        let mut pending = VecDeque::from(render_samples);
         let started = Instant::now();
         let timeout = render_timeout(total_frames, render_sample_rate_hz);
         let mut rendered_frames = 0usize;
@@ -242,8 +260,12 @@ mod injector {
             source_sample_rate_hz: decoded.source_sample_rate_hz,
             source_channels: decoded.source_channels,
             render_sample_rate_hz,
-            rendered_frames,
-            rendered_seconds: rendered_frames as f64 / render_sample_rate_hz as f64,
+            source_gain_db: args.source_gain_db,
+            rendered_frames: media_frames,
+            rendered_seconds: media_frames as f64 / render_sample_rate_hz as f64,
+            postroll_silence_frames,
+            postroll_silence_seconds: postroll_silence_frames as f64
+                / render_sample_rate_hz as f64,
             detail: None,
         })
     }
@@ -255,6 +277,8 @@ mod injector {
         let mut max_seconds = None;
         let mut reference_pcm16k_mono_path = None;
         let mut reference_only = false;
+        let mut source_gain_db = 0.0_f32;
+        let mut postroll_silence_seconds = 0.0_f64;
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -268,6 +292,29 @@ mod injector {
                     )?))
                 }
                 "--reference-only" => reference_only = true,
+                "--gain-db" => {
+                    let raw = next_arg(&mut args, "--gain-db")?;
+                    source_gain_db = raw
+                        .parse::<f32>()
+                        .map_err(|error| format!("invalid --gain-db '{raw}': {error}"))?;
+                    if !source_gain_db.is_finite() || !(-60.0..=0.0).contains(&source_gain_db) {
+                        return Err("--gain-db must be finite and between -60 and 0".to_string());
+                    }
+                }
+                "--postroll-silence-seconds" => {
+                    let raw = next_arg(&mut args, "--postroll-silence-seconds")?;
+                    postroll_silence_seconds = raw.parse::<f64>().map_err(|error| {
+                        format!("invalid --postroll-silence-seconds '{raw}': {error}")
+                    })?;
+                    if !postroll_silence_seconds.is_finite()
+                        || !(0.0..=10.0).contains(&postroll_silence_seconds)
+                    {
+                        return Err(
+                            "--postroll-silence-seconds must be finite and between 0 and 10"
+                                .to_string(),
+                        );
+                    }
+                }
                 "--max-seconds" => {
                     let raw = next_arg(&mut args, "--max-seconds")?;
                     max_seconds = Some(
@@ -277,7 +324,7 @@ mod injector {
                 }
                 "--help" | "-h" => {
                     return Err(
-                        "Usage: omni-watch-media-injector --media <wav-or-mp3> [--endpoint-id <id>] [--endpoint-name <name>] [--max-seconds <seconds>] [--reference-pcm16k-mono-path <path>] [--reference-only]".to_string(),
+                        "Usage: omni-watch-media-injector --media <wav-or-mp3> [--endpoint-id <id>] [--endpoint-name <name>] [--max-seconds <seconds>] [--gain-db <-60..0>] [--postroll-silence-seconds <0..10>] [--reference-pcm16k-mono-path <path>] [--reference-only]".to_string(),
                     );
                 }
                 other => return Err(format!("unknown argument: {other}")),
@@ -290,6 +337,8 @@ mod injector {
             max_seconds,
             reference_pcm16k_mono_path,
             reference_only,
+            source_gain_db,
+            postroll_silence_seconds,
         })
     }
 
@@ -356,6 +405,20 @@ mod injector {
         // stalled endpoint.
         let scheduling_allowance_seconds = (media_seconds * 0.15).clamp(15.0, 30.0);
         Duration::from_secs_f64(media_seconds + scheduling_allowance_seconds)
+    }
+
+    fn apply_gain_db(samples: &mut [f32], gain_db: f32) {
+        let linear = 10.0_f32.powf(gain_db / 20.0);
+        for sample in samples {
+            *sample = (*sample * linear).clamp(-1.0, 1.0);
+        }
+    }
+
+    fn append_postroll_silence(samples: &mut Vec<f32>, postroll_frames: usize) {
+        samples.resize(
+            samples.len() + postroll_frames * TARGET_CHANNELS,
+            0.0,
+        );
     }
 
     fn decode_media(path: &Path) -> Result<DecodedAudio, String> {
@@ -574,6 +637,25 @@ mod injector {
             let rendered_48k = resample_to_render_stereo(&source, 24_000, 1, 48_000);
             assert_eq!(rendered_16k.len(), 16_000 * TARGET_CHANNELS);
             assert_eq!(rendered_48k.len(), 48_000 * TARGET_CHANNELS);
+        }
+
+        #[test]
+        fn source_gain_is_applied_only_to_render_samples() {
+            let mut rendered = vec![1.0_f32, -0.5];
+            apply_gain_db(&mut rendered, -9.0);
+            let linear = 10.0_f32.powf(-9.0 / 20.0);
+            assert!((rendered[0] - linear).abs() < 0.000_001);
+            assert!((rendered[1] + 0.5 * linear).abs() < 0.000_001);
+        }
+
+        #[test]
+        fn postroll_silence_extends_render_without_changing_media_samples() {
+            let mut rendered = vec![0.5_f32, -0.5, 0.25, -0.25];
+            let media = rendered.clone();
+            append_postroll_silence(&mut rendered, 3);
+            assert_eq!(&rendered[..media.len()], media.as_slice());
+            assert_eq!(rendered.len(), media.len() + 3 * TARGET_CHANNELS);
+            assert!(rendered[media.len()..].iter().all(|sample| *sample == 0.0));
         }
 
         #[test]

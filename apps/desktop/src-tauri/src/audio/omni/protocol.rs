@@ -637,6 +637,16 @@ impl OmniEventDiagnostics {
         });
         let owner = if let Some(index) = exact_pending_index {
             self.pending_native_response_owners.remove(index)
+        } else if let Some(lineage) = ledger_owner.as_ref() {
+            // `response.created` may win the race with `speech_stopped`.
+            // ResponseLedger only synthesizes this owner for a response-only
+            // event with the active fallback cue; explicit item mismatches
+            // have already returned `None` above.
+            Some(NativeResponseOwner {
+                cue_id: lineage.cue_id.clone(),
+                input_item_id: lineage.source_item_id.clone(),
+                response_id: lineage.response_id.clone(),
+            })
         } else if has_provider_lineage {
             None
         } else {
@@ -1504,6 +1514,24 @@ mod native_response_owner_tests {
             None
         );
         assert!(diagnostics.native_response_cue_id.is_none());
+        assert_eq!(diagnostics.pending_native_response_owner_count(), 0);
+    }
+
+    #[test]
+    fn response_created_before_speech_stopped_claims_current_cue() {
+        let mut diagnostics = OmniEventDiagnostics::default();
+
+        diagnostics.claim_native_response_owner(
+            Some("resp-early"),
+            None,
+            None,
+            Some("cue-current"),
+        );
+
+        assert_eq!(
+            diagnostics.native_response_cue_for_response_id("resp-early"),
+            Some("cue-current".to_string())
+        );
         assert_eq!(diagnostics.pending_native_response_owner_count(), 0);
     }
 

@@ -365,14 +365,17 @@ where
             channel_count,
             output_level,
         );
-        let live_scenario = active_aec_live_scenario_assignment(cue_id)?.map(|assignment| {
-            AecLiveScenarioRender::build(
-                assignment,
-                &final_samples,
-                SPEAKER_SAMPLE_RATE_HZ,
-                SPEAKER_CHANNEL_COUNT,
-            )
-        });
+        let live_scenarios = active_aec_live_scenario_assignments(cue_id)?
+            .into_iter()
+            .map(|assignment| {
+                AecLiveScenarioRender::build(
+                    assignment,
+                    &final_samples,
+                    SPEAKER_SAMPLE_RATE_HZ,
+                    SPEAKER_CHANNEL_COUNT,
+                )
+            })
+            .collect::<Vec<_>>();
         let _com_apartment = WasapiComApartment::enter()?;
         let enumerator = DeviceEnumerator::new().map_err(|error| error.to_string())?;
         let device = resolve_wasapi_render_device(&enumerator, device_id)?;
@@ -410,48 +413,49 @@ where
         }
         playback_permit.ensure_active()?;
         let total_audio_frames = final_samples.len() / SPEAKER_CHANNEL_COUNT as usize;
-        let physical_samples = live_scenario
-            .as_ref()
-            .map(|scenario| scenario.physical_samples.as_slice())
-            .unwrap_or(final_samples.as_slice());
-        let physical_prefix_offset_frames = live_scenario
-            .as_ref()
-            .map(AecLiveScenarioRender::physical_prefix_offset_frames)
-            .unwrap_or(0);
-        let scenario_started_at_ms = live_scenario
-            .as_ref()
-            .map(|scenario| {
-                let started_at_ms = crate::shared::time::now_unix_millis();
-                on_render_event(SpeakerRenderEvent::AecLiveScenarioStage {
-                    status: "started",
-                    stage: scenario.assignment.phase.as_str(),
-                    ordinal: scenario.assignment.ordinal,
-                    delay_ms: scenario.assignment.phase.delay_ms(),
-                    nonlinearity: scenario.assignment.phase.nonlinearity(),
-                    reference_frames: scenario
-                        .reference_frames(&final_samples, SPEAKER_CHANNEL_COUNT),
-                    physical_frames: scenario.physical_frames(SPEAKER_CHANNEL_COUNT),
-                    changed_samples: scenario.changed_samples as u64,
-                    changed_ratio: scenario.changed_ratio,
-                    started_at_ms,
-                    completed_at_ms: 0,
-                })?;
-                Ok::<u64, String>(started_at_ms)
-            })
-            .transpose()?;
-        let render_result = render_wasapi_frames(
-            &audio_client,
-            &render_client,
-            &final_samples,
-            physical_samples,
-            physical_prefix_offset_frames,
-            buffer_frames,
-            &playback_permit,
-            on_render_event,
-        );
-        if let (Some(scenario), Some(started_at_ms)) =
-            (live_scenario.as_ref(), scenario_started_at_ms)
-        {
+        if live_scenarios.is_empty() {
+            render_wasapi_frames(
+                &audio_client,
+                &render_client,
+                &final_samples,
+                &final_samples,
+                0,
+                0,
+                buffer_frames,
+                &playback_permit,
+                on_render_event,
+            )?;
+            return Ok(total_audio_frames as u64);
+        }
+
+        let mut submitted_frame_base = 0_u64;
+        for scenario in &live_scenarios {
+            let started_at_ms = crate::shared::time::now_unix_millis();
+            on_render_event(SpeakerRenderEvent::AecLiveScenarioStage {
+                status: "started",
+                stage: scenario.assignment.phase.as_str(),
+                ordinal: scenario.assignment.ordinal,
+                delay_ms: scenario.assignment.phase.delay_ms(),
+                nonlinearity: scenario.assignment.phase.nonlinearity(),
+                reference_frames: scenario
+                    .reference_frames(&final_samples, SPEAKER_CHANNEL_COUNT),
+                physical_frames: scenario.physical_frames(SPEAKER_CHANNEL_COUNT),
+                changed_samples: scenario.changed_samples as u64,
+                changed_ratio: scenario.changed_ratio,
+                started_at_ms,
+                completed_at_ms: 0,
+            })?;
+            let render_result = render_wasapi_frames(
+                &audio_client,
+                &render_client,
+                &final_samples,
+                &scenario.physical_samples,
+                scenario.physical_prefix_offset_frames(),
+                submitted_frame_base,
+                buffer_frames,
+                &playback_permit,
+                on_render_event,
+            );
             let (status, completed_at_ms) = if render_result.is_ok() {
                 ("completed", crate::shared::time::now_unix_millis())
             } else {
@@ -471,9 +475,11 @@ where
                 started_at_ms,
                 completed_at_ms,
             })?;
+            render_result?;
+            submitted_frame_base = submitted_frame_base
+                .saturating_add(scenario.physical_frames(SPEAKER_CHANNEL_COUNT));
         }
-        render_result?;
-        Ok(total_audio_frames as u64)
+        Ok((total_audio_frames as u64).saturating_mul(live_scenarios.len() as u64))
     })
 }
 
@@ -550,6 +556,7 @@ struct RenderSubmitTracker {
     reference_frames: usize,
     reference_start_frame: usize,
     submitted_frames: usize,
+    submitted_frame_base: u64,
 }
 
 impl RenderSubmitTracker {
@@ -563,12 +570,27 @@ impl RenderSubmitTracker {
         total_reference_frames: usize,
         reference_frames: usize,
     ) -> Self {
+        Self::new_with_reference_at(
+            total_frames,
+            total_reference_frames,
+            reference_frames,
+            0,
+        )
+    }
+
+    fn new_with_reference_at(
+        total_frames: usize,
+        total_reference_frames: usize,
+        reference_frames: usize,
+        submitted_frame_base: u64,
+    ) -> Self {
         Self {
             total_frames,
             total_reference_frames: total_reference_frames.min(total_frames),
             reference_frames: reference_frames.max(1),
             reference_start_frame: 0,
             submitted_frames: 0,
+            submitted_frame_base,
         }
     }
 
@@ -610,11 +632,17 @@ impl RenderSubmitTracker {
         let window = RenderReferenceWindow {
             start_frame: reference_start_frame,
             end_frame: reference_end_frame,
-            submitted_frames: self.submitted_frames as u64,
+            submitted_frames: self
+                .submitted_frame_base
+                .saturating_add(self.submitted_frames as u64),
             endpoint_padding_frames,
             played_frames: self
-                .submitted_frames
-                .saturating_sub(endpoint_padding_frames as usize),
+                .submitted_frame_base
+                .saturating_add(
+                    self.submitted_frames
+                        .saturating_sub(endpoint_padding_frames as usize) as u64,
+                )
+                .min(usize::MAX as u64) as usize,
         };
         self.reference_start_frame = self.submitted_frames;
         Ok((reference_start_frame < reference_end_frame).then_some(window))
@@ -631,6 +659,7 @@ fn render_wasapi_frames<F>(
     reference_samples: &[f32],
     physical_samples: &[f32],
     physical_prefix_offset_frames: u32,
+    submitted_frame_base: u64,
     buffer_frames: u32,
     playback_permit: &super::playback_ownership::DesktopPlaybackPermit,
     on_render_event: &mut F,
@@ -645,10 +674,11 @@ where
         * RENDER_REFERENCE_FRAME_MS as usize
         / 1_000)
         .max(1);
-    let mut tracker = RenderSubmitTracker::new_with_reference(
+    let mut tracker = RenderSubmitTracker::new_with_reference_at(
         total_frames,
         total_reference_frames,
         reference_frames,
+        submitted_frame_base,
     );
     let prefill_frames = (reference_frames * 2).min(buffer_frames as usize);
     let mut started = false;
@@ -1006,6 +1036,26 @@ mod render_reference_pacer_tests {
         assert_eq!(window.submitted_frames, 480);
         assert_eq!(window.endpoint_padding_frames, 360);
         assert_eq!(window.played_frames, 120);
+    }
+
+    #[test]
+    fn consecutive_live_scenario_stages_keep_submit_and_player_positions_monotonic() {
+        let mut first_tracker = RenderSubmitTracker::new_with_reference_at(480, 480, 480, 0);
+        let first = first_tracker
+            .record_write(480, 120)
+            .expect("first stage write")
+            .expect("first stage reference");
+        let mut second_tracker =
+            RenderSubmitTracker::new_with_reference_at(480, 480, 480, 480);
+        let second = second_tracker
+            .record_write(480, 120)
+            .expect("second stage write")
+            .expect("second stage reference");
+
+        assert_eq!(first.submitted_frames, 480);
+        assert_eq!(first.played_frames, 360);
+        assert_eq!(second.submitted_frames, 960);
+        assert_eq!(second.played_frames, 840);
     }
 
     fn collect_paced_reference(submitted: &[f32]) -> Vec<f32> {

@@ -108,6 +108,21 @@ impl ResponseLedger {
                 return None;
             }
         }
+        // Some realtime providers emit `response.created` while the current
+        // speech segment is still open, before `speech_stopped` has captured a
+        // pending owner. A response id alone carries no conflicting item
+        // lineage, so the active fallback cue is the only authoritative owner
+        // for this race. Materialize it in the ledger once; explicit unknown
+        // source/output item ids above remain hard failures.
+        if exact_index.is_none()
+            && response_id.is_some()
+            && !has_item_lineage
+            && !self.lineages.iter().any(|lineage| !lineage.completed)
+        {
+            if let Some(cue_id) = fallback_cue_id.filter(|cue_id| !cue_id.trim().is_empty()) {
+                self.record_source(cue_id, None);
+            }
+        }
         let fifo_index = || self.lineages.iter().position(|lineage| !lineage.completed);
         let fallback_index = || {
             self.lineages.iter().position(|lineage| {
@@ -276,6 +291,23 @@ mod tests {
             .bind_response(Some("response-two"), None, None, Some("cue-two"))
             .expect("second response");
         assert_eq!(second.cue_id, "cue-two");
+    }
+
+    #[test]
+    fn response_only_event_can_bind_active_cue_before_speech_stop() {
+        let mut ledger = ResponseLedger::default();
+
+        let lineage = ledger
+            .bind_response(
+                Some("response-early"),
+                None,
+                None,
+                Some("cue-current"),
+            )
+            .expect("active cue should become the response owner");
+
+        assert_eq!(lineage.cue_id, "cue-current");
+        assert_eq!(lineage.response_id.as_deref(), Some("response-early"));
     }
 
     #[test]

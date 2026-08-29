@@ -62,22 +62,29 @@ pub(super) struct AecLiveScenarioAssignment {
 
 #[derive(Default)]
 struct AecLiveScenarioAssignments {
-    next_ordinal: u64,
-    by_cue_id: HashMap<String, AecLiveScenarioAssignment>,
+    first_cue_id: Option<String>,
+    by_cue_id: HashMap<String, Vec<AecLiveScenarioAssignment>>,
 }
 
 impl AecLiveScenarioAssignments {
-    fn assignment_for_cue(&mut self, cue_id: &str) -> AecLiveScenarioAssignment {
-        if let Some(assignment) = self.by_cue_id.get(cue_id) {
-            return *assignment;
+    fn assignments_for_cue(&mut self, cue_id: &str) -> Vec<AecLiveScenarioAssignment> {
+        if let Some(assignments) = self.by_cue_id.get(cue_id) {
+            return assignments.clone();
         }
-        self.next_ordinal = self.next_ordinal.saturating_add(1).max(1);
-        let assignment = AecLiveScenarioAssignment {
-            ordinal: self.next_ordinal,
-            phase: AecLiveScenarioPhase::for_ordinal(self.next_ordinal),
+        let assignments = if self.first_cue_id.is_none() {
+            self.first_cue_id = Some(cue_id.to_string());
+            (1..=3)
+                .map(|ordinal| AecLiveScenarioAssignment {
+                    ordinal,
+                    phase: AecLiveScenarioPhase::for_ordinal(ordinal),
+                })
+                .collect()
+        } else {
+            Vec::new()
         };
-        self.by_cue_id.insert(cue_id.to_string(), assignment);
-        assignment
+        self.by_cue_id
+            .insert(cue_id.to_string(), assignments.clone());
+        assignments
     }
 }
 
@@ -98,21 +105,21 @@ fn aec_live_scenario_should_run(
     watch_diagnostic_autostart && env_flag_value_enabled(scenario_env_value)
 }
 
-pub(super) fn active_aec_live_scenario_assignment(
+pub(super) fn active_aec_live_scenario_assignments(
     cue_id: &str,
-) -> Result<Option<AecLiveScenarioAssignment>, String> {
+) -> Result<Vec<AecLiveScenarioAssignment>, String> {
     let scenario_env_value = std::env::var(AEC_LIVE_SCENARIO_ENV).ok();
     if !aec_live_scenario_should_run(
         crate::watch_mode_diagnostic::autostart_enabled(),
         scenario_env_value.as_deref(),
     ) {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let assignments = AEC_LIVE_SCENARIO_ASSIGNMENTS
         .get_or_init(|| Mutex::new(AecLiveScenarioAssignments::default()));
     assignments
         .lock()
-        .map(|mut assignments| Some(assignments.assignment_for_cue(cue_id)))
+        .map(|mut assignments| assignments.assignments_for_cue(cue_id))
         .map_err(|_| "AEC live scenario cue assignment lock is poisoned".to_string())
 }
 
@@ -198,21 +205,22 @@ mod tests {
     }
 
     #[test]
-    fn consecutive_cues_cycle_three_stages_and_retry_keeps_the_assignment() {
+    fn first_cue_owns_all_three_stages_and_retry_keeps_the_program() {
         let mut assignments = AecLiveScenarioAssignments::default();
 
-        let first = assignments.assignment_for_cue("cue-a");
-        let second = assignments.assignment_for_cue("cue-b");
-        let third = assignments.assignment_for_cue("cue-c");
-        let retry = assignments.assignment_for_cue("cue-b");
+        let first = assignments.assignments_for_cue("cue-a");
+        let second = assignments.assignments_for_cue("cue-b");
+        let retry = assignments.assignments_for_cue("cue-a");
 
-        assert_eq!(first.ordinal, 1);
-        assert_eq!(first.phase, AecLiveScenarioPhase::DoubleTalk);
-        assert_eq!(second.ordinal, 2);
-        assert_eq!(second.phase, AecLiveScenarioPhase::DynamicDelay);
-        assert_eq!(third.ordinal, 3);
-        assert_eq!(third.phase, AecLiveScenarioPhase::Nonlinear);
-        assert_eq!(retry, second);
+        assert_eq!(
+            first.iter().map(|entry| entry.ordinal).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(first[0].phase, AecLiveScenarioPhase::DoubleTalk);
+        assert_eq!(first[1].phase, AecLiveScenarioPhase::DynamicDelay);
+        assert_eq!(first[2].phase, AecLiveScenarioPhase::Nonlinear);
+        assert!(second.is_empty());
+        assert_eq!(retry, first);
     }
 
     #[test]

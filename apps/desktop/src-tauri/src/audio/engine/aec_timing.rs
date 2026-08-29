@@ -48,8 +48,18 @@ pub(super) struct AecDelayEstimate {
     pub(super) render_reference_lead_frames: Option<u32>,
     pub(super) effective_render_reference_lead_frames: Option<u32>,
     pub(super) render_submitted_frames: Option<u64>,
-    pub(super) reset_required: bool,
+    /// Invalid timing authority always drops the delay smoother, but only a
+    /// real stream boundary may destroy AEC3's learned filter.
+    pub(super) delay_reset_required: bool,
+    pub(super) aec_reset_required: bool,
+    pub(super) aec_reset_reason: Option<&'static str>,
     pub(super) source: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureClockDiscontinuity {
+    Regression,
+    Drift,
 }
 
 /// External stream-delay estimator for AEC3.
@@ -93,26 +103,43 @@ impl AecDelayEstimator {
         &mut self,
         observation: CaptureClockObservation,
     ) -> AecDelayEstimate {
-        let clock_discontinuity = self.clock_discontinuity(observation);
+        // AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR makes both the device position
+        // and QPC timestamp non-authoritative for this packet. Do not compare
+        // them with the last good clock or install them as the next baseline.
+        let clock_discontinuity = (!observation.timestamp_error)
+            .then(|| self.clock_discontinuity(observation))
+            .flatten();
         let render_clock_discontinuity = self.render_clock_discontinuity(observation);
         let capture_padding_invalid = observation
             .capture_padding_frames
             .is_some_and(|padding| padding > observation.capture_buffer_frames);
-        let reset_required = observation.data_discontinuity
+        let delay_reset_required = observation.data_discontinuity
             || observation.timestamp_error
             || capture_padding_invalid
-            || clock_discontinuity
+            || clock_discontinuity.is_some()
             || render_clock_discontinuity;
+        let aec_reset_reason = if observation.data_discontinuity {
+            Some("wasapi-capture-data-discontinuity")
+        } else if render_clock_discontinuity {
+            Some("wasapi-render-session-discontinuity")
+        } else if clock_discontinuity == Some(CaptureClockDiscontinuity::Regression) {
+            Some("wasapi-capture-clock-regression")
+        } else {
+            None
+        };
+        let aec_reset_required = aec_reset_reason.is_some();
         if observation.timestamp_error {
             self.timestamp_error_count = self.timestamp_error_count.saturating_add(1);
         }
-        if reset_required {
+        if delay_reset_required {
             self.smoothed_delay_ms = None;
             self.reset_count = self.reset_count.saturating_add(1);
         }
 
-        self.last_device_frame_index = Some(observation.device_frame_index);
-        self.last_packet_qpc_100ns = Some(observation.packet_qpc_100ns);
+        if !observation.timestamp_error {
+            self.last_device_frame_index = Some(observation.device_frame_index);
+            self.last_packet_qpc_100ns = Some(observation.packet_qpc_100ns);
+        }
         if let Some(submitted) = observation.render_submitted_frames {
             self.last_render_submitted_frames = Some(submitted);
         }
@@ -167,7 +194,9 @@ impl AecDelayEstimator {
             render_reference_lead_frames: observation.render_reference_lead_frames,
             effective_render_reference_lead_frames,
             render_submitted_frames: observation.render_submitted_frames,
-            reset_required,
+            delay_reset_required,
+            aec_reset_required,
+            aec_reset_reason,
             source: "wasapi-capture-qpc+capture-padding-validated+render-submit-position+same-client-reference-lead",
         }
     }
@@ -180,22 +209,26 @@ impl AecDelayEstimator {
         self.timestamp_error_count
     }
 
-    fn clock_discontinuity(&self, observation: CaptureClockObservation) -> bool {
+    fn clock_discontinuity(
+        &self,
+        observation: CaptureClockObservation,
+    ) -> Option<CaptureClockDiscontinuity> {
         let (Some(previous_index), Some(previous_qpc)) =
             (self.last_device_frame_index, self.last_packet_qpc_100ns)
         else {
-            return false;
+            return None;
         };
         if observation.device_frame_index < previous_index
             || observation.packet_qpc_100ns < previous_qpc
         {
-            return true;
+            return Some(CaptureClockDiscontinuity::Regression);
         }
         let frame_delta = observation.device_frame_index - previous_index;
         let expected_delta_ms = frame_delta as f64 * 1_000.0 / self.sample_rate_hz as f64;
         let actual_delta_ms =
             (observation.packet_qpc_100ns - previous_qpc) as f64 / 10_000.0;
-        (actual_delta_ms - expected_delta_ms).abs() > CLOCK_DISCONTINUITY_TOLERANCE_MS
+        ((actual_delta_ms - expected_delta_ms).abs() > CLOCK_DISCONTINUITY_TOLERANCE_MS)
+            .then_some(CaptureClockDiscontinuity::Drift)
     }
 
     fn render_clock_discontinuity(&self, observation: CaptureClockObservation) -> bool {
@@ -280,7 +313,8 @@ mod tests {
             estimate.source,
             "wasapi-capture-qpc+capture-padding-validated+render-submit-position+same-client-reference-lead"
         );
-        assert!(!estimate.reset_required);
+        assert!(!estimate.delay_reset_required);
+        assert!(!estimate.aec_reset_required);
     }
 
     #[test]
@@ -347,7 +381,12 @@ mod tests {
         regressed.render_reference_lead_frames = Some(0);
         let estimate = estimator.observe_capture(regressed);
 
-        assert!(estimate.reset_required);
+        assert!(estimate.delay_reset_required);
+        assert!(estimate.aec_reset_required);
+        assert_eq!(
+            estimate.aec_reset_reason,
+            Some("wasapi-render-session-discontinuity")
+        );
         assert_eq!(estimate.render_submitted_frames, Some(480));
         assert_eq!(estimator.reset_count(), 1);
     }
@@ -361,7 +400,8 @@ mod tests {
         let estimate = estimator.observe_capture(invalid);
 
         assert!(estimate.capture_padding_invalid);
-        assert!(estimate.reset_required);
+        assert!(estimate.delay_reset_required);
+        assert!(!estimate.aec_reset_required);
         // Padding remains visible for diagnostics but is not added to the
         // official WebRTC delay formula.
         assert_eq!(estimate.capture_padding_frames, Some(1_921));
@@ -374,18 +414,24 @@ mod tests {
         let mut first = observation(0, 1_000_000, 1_100_000, 0);
         first.render_discontinuity_count = 4;
         let initial = estimator.observe_capture(first);
-        assert!(!initial.reset_required);
+        assert!(!initial.delay_reset_required);
+        assert!(!initial.aec_reset_required);
 
         let mut restarted = observation(480, 1_100_000, 1_400_000, 0);
         restarted.render_discontinuity_count = 5;
         let estimate = estimator.observe_capture(restarted);
 
-        assert!(estimate.reset_required);
+        assert!(estimate.delay_reset_required);
+        assert!(estimate.aec_reset_required);
+        assert_eq!(
+            estimate.aec_reset_reason,
+            Some("wasapi-render-session-discontinuity")
+        );
         assert_eq!(estimate.delay_ms, 30.0);
     }
 
     #[test]
-    fn bounds_and_smooths_large_delay_changes() {
+    fn delayed_observation_is_bounded_without_resetting_timing_or_aec() {
         let mut estimator = AecDelayEstimator::new(48_000, 2);
         let first = estimator.observe_capture(observation(0, 1_000_000, 1_100_000, 0));
         let second = estimator.observe_capture(observation(
@@ -396,8 +442,13 @@ mod tests {
         ));
 
         assert_eq!(first.delay_ms, 10.0);
-        // Candidate jumps to 800 ms, but one update may move only 20% of 25 ms.
+        // The packet clock itself advanced by the expected 10 ms; only the
+        // worker observed this packet late. Bound the hint without treating a
+        // desktop scheduling delay as a device discontinuity.
         assert_eq!(second.delay_ms, 15.0);
+        assert!(!second.delay_reset_required);
+        assert!(!second.aec_reset_required);
+        assert_eq!(second.aec_reset_reason, None);
     }
 
     #[test]
@@ -408,7 +459,12 @@ mod tests {
         regressed.data_discontinuity = true;
         let estimate = estimator.observe_capture(regressed);
 
-        assert!(estimate.reset_required);
+        assert!(estimate.delay_reset_required);
+        assert!(estimate.aec_reset_required);
+        assert_eq!(
+            estimate.aec_reset_reason,
+            Some("wasapi-capture-data-discontinuity")
+        );
         assert_eq!(estimate.delay_ms, 10.0);
         assert_eq!(estimator.reset_count(), 1);
     }
@@ -421,10 +477,25 @@ mod tests {
         invalid.timestamp_error = true;
         let estimate = estimator.observe_capture(invalid);
 
-        assert!(estimate.reset_required);
+        assert!(estimate.delay_reset_required);
+        assert!(!estimate.aec_reset_required);
         assert_eq!(estimate.packet_age_ms, None);
         assert_eq!(estimate.delay_ms, 0.0);
         assert_eq!(estimator.timestamp_error_count(), 1);
+    }
+
+    #[test]
+    fn monotonic_capture_clock_regression_resets_aec_filter() {
+        let mut estimator = AecDelayEstimator::new(48_000, 2);
+        let _ = estimator.observe_capture(observation(48_000, 10_000_000, 10_200_000, 0));
+        let estimate = estimator.observe_capture(observation(47_520, 9_900_000, 10_300_000, 0));
+
+        assert!(estimate.delay_reset_required);
+        assert!(estimate.aec_reset_required);
+        assert_eq!(
+            estimate.aec_reset_reason,
+            Some("wasapi-capture-clock-regression")
+        );
     }
 
     #[test]

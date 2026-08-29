@@ -55,7 +55,13 @@ function Start-TestMediaPlayback {
   if (Test-Path -LiteralPath $injectorExe -PathType Leaf) {
     $resolvedMediaPath = (Resolve-Path -LiteralPath $PathToMedia).Path
     $mediaSha256 = (Get-FileHash -LiteralPath $resolvedMediaPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $args = @("--media", $resolvedMediaPath)
+    $strictSourceGainDb = -9
+    $strictPostrollSilenceSeconds = 3
+    $args = @(
+      "--media", $resolvedMediaPath,
+      "--gain-db", "$strictSourceGainDb",
+      "--postroll-silence-seconds", "$strictPostrollSilenceSeconds"
+    )
     $referencePcmPath = $null
     if ($OutputDirectory) {
       $referencePcmPath = Join-Path $OutputDirectory "source-media-reference-16k-mono.pcm"
@@ -88,6 +94,9 @@ function Start-TestMediaPlayback {
       finishedAtMs = if ($result.finishedAtMs) { $result.finishedAtMs } else { $playbackFinishedAtMs }
       renderedFrames = $result.renderedFrames
       renderedSeconds = $result.renderedSeconds
+      sourceGainDb = $result.sourceGainDb
+      postrollSilenceFrames = $result.postrollSilenceFrames
+      postrollSilenceSeconds = $result.postrollSilenceSeconds
       referencePcmPath = $referencePcmPath
     }
   }

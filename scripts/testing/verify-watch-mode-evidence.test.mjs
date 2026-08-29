@@ -656,6 +656,9 @@ function writeAuthorityRawCell(root, directoryName, {
     'physical-playback-device.json': device,
     'playback.json': {
       playbackMode: 'wasapi-media-injector',
+      sourceGainDb: -9,
+      postrollSilenceFrames: 144000,
+      postrollSilenceSeconds: 3,
       mediaSha256: sha256File(path.resolve('scripts/testing/fixtures/watch-mode-en-original.wav')),
       injectorProcessId: 7001,
       startedAtMs: metricsStartedAt.getTime() + 1_000,
@@ -1998,6 +2001,30 @@ test('strict authority rebuilds report evidence from the fixed raw inventory', (
   assert.equal(
     verified.externalProviderBudget.cells[0].leaseId,
     manifest.externalProviderBudget.cells[0].leaseId,
+  );
+});
+
+test('strict authority rejects media playback without the fixed VAD-closing postroll', () => {
+  const root = makeTempRoot();
+  const runDirectory = writeAuthorityRawCell(root, 'authority-missing-postroll');
+  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  const playbackPath = path.join(runDirectory, 'playback.json');
+  const playback = JSON.parse(fs.readFileSync(playbackPath, 'utf8'));
+  playback.postrollSilenceFrames = 0;
+  playback.postrollSilenceSeconds = 0;
+  fs.writeFileSync(playbackPath, `${JSON.stringify(playback, null, 2)}\n`, 'utf8');
+  refreshCellReceiptArtifacts(root, manifest, 0, ['playback.json']);
+
+  assert.throws(
+    () => verifyStrictMatrixAuthority({
+      manifestPath,
+      manifest,
+      evidenceRoot: root,
+      currentProvenance: CLEAN_CURRENT_PROVENANCE,
+      workspaceRoot: path.resolve('.'),
+      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    }),
+    /playback\.json is not a completed production media-injector timeline/,
   );
 });
 

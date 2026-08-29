@@ -241,7 +241,7 @@ fn run_capture_loop(
                 timestamp_error: buffer_info.flags.timestamp_error,
             });
             current_aec_delay_samples = estimate.delay_samples;
-            if estimate.reset_required {
+            if estimate.aec_reset_required {
                 store.reset_echo_canceller()?;
                 diag_log_detail(
                     &app,
@@ -249,11 +249,13 @@ fn run_capture_loop(
                     "warn",
                     "event=echo_cancel_reset",
                     format!(
-                        "direction={} reason=capture-clock-discontinuity dataDiscontinuity={} timestampError={} capturePaddingInvalid={} packetDeviceFrameIndex={} queueHeadDeviceFrameIndex={} packetTimestamp100ns={} queueHeadTimestamp100ns={} queuedCaptureFrames={} paddingFrames={:?} bufferFrames={} delayMs={:.1} delaySource={} estimatorResetCount={} timestampErrorCount={}",
+                        "direction={} reason={} dataDiscontinuity={} timestampError={} capturePaddingInvalid={} delayResetRequired={} packetDeviceFrameIndex={} queueHeadDeviceFrameIndex={} packetTimestamp100ns={} queueHeadTimestamp100ns={} queuedCaptureFrames={} paddingFrames={:?} bufferFrames={} delayMs={:.1} delaySource={} estimatorResetCount={} timestampErrorCount={}",
                         direction,
+                        estimate.aec_reset_reason.unwrap_or("unknown"),
                         buffer_info.flags.data_discontinuity,
                         buffer_info.flags.timestamp_error,
                         estimate.capture_padding_invalid,
+                        estimate.delay_reset_required,
                         buffer_info.index,
                         queue_head_device_frame_index,
                         buffer_info.timestamp,

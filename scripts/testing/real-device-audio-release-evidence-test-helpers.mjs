@@ -210,6 +210,9 @@ export function createRealDeviceAudioAuthorityFixture({
     'playback.json': {
       passed: true,
       playbackMode: 'wasapi-media-injector',
+      sourceGainDb: -9,
+      postrollSilenceFrames: 144000,
+      postrollSilenceSeconds: 3,
       injectorProcessId: 1300,
     },
     'system-metrics.json': {

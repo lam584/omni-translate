@@ -425,6 +425,10 @@ function assertRawMediaAuthority(runDirectory, implementationHashes, cell, index
   const playbackFinishedAtMs = Number(playback.finishedAtMs);
   if (
     playback.playbackMode !== 'wasapi-media-injector'
+    || Number(playback.sourceGainDb) !== -9
+    || Number(playback.postrollSilenceSeconds) !== 3
+    || !Number.isInteger(Number(playback.postrollSilenceFrames))
+    || Number(playback.postrollSilenceFrames) <= 0
     || !Number.isInteger(Number(playback.injectorProcessId))
     || Number(playback.injectorProcessId) <= 0
     || !Number.isFinite(playbackStartedAtMs)

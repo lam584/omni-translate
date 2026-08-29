@@ -64,7 +64,8 @@ function Start-WatchModeDesktopShell {
   $watchReportAutoStopAfterMs = $desktopAutoStopAfterSeconds * 1000
   $liveScenarioEnvironment = Get-WatchModeLiveScenarioEnvironment `
     -FeedbackMode $FeedbackLoopPrevention `
-    -AutoStopAfterMs $watchReportAutoStopAfterMs
+    -AutoStopAfterMs $watchReportAutoStopAfterMs `
+    -ProviderInputCeilingMs ($WatchAutoStopAfterSeconds * 1000)
   Remove-Item -LiteralPath $watchSessionReportPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $watchReadinessPath -Force -ErrorAction SilentlyContinue
   $previousAutostart = $env:OMNI_WATCH_MODE_AUTOSTART

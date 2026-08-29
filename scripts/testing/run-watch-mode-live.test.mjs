@@ -511,6 +511,22 @@ test('paid and local smoke provider environments are exact, elevation-forwardabl
   }
 });
 
+test('strict Watch mix does not apply a second source attenuation after injector gain', { skip: !isWindows }, () => {
+  const command = `${extractedStrictPaidProviderFunctions()} ` +
+    `$native = [pscustomobject]@{}; ` +
+    `Set-WatchModeSecondaryConfig $native '' '' 'virtual-driver' 'native'; ` +
+    `$secondary = [pscustomobject]@{}; ` +
+    `Set-WatchModeSecondaryConfig $secondary '' 'qwen3.5-livetranslate-flash-realtime' 'process-exclusion' 'secondary'; ` +
+    `[pscustomobject]@{ native=$native.devices.inboundRoute.mixControl; secondary=$secondary.devices.inboundRoute.mixControl } | ConvertTo-Json -Depth 6 -Compress`;
+  const result = runPowerShell(['-Command', command]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const mixes = JSON.parse(result.stdout.trim());
+  assert.equal(mixes.native.originalAudioGainDb, 0);
+  assert.equal(mixes.secondary.originalAudioGainDb, 0);
+  assert.equal(mixes.native.translatedAudioGainDb, 0);
+  assert.equal(mixes.secondary.translatedAudioGainDb, 0);
+});
+
 test('local translated-audio lifecycle requires each rendered cue to reach queued, started, and completed exactly once in order', { skip: !isWindows }, () => {
   const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-cue-playback-'));
   const appLogPath = path.join(outputDirectory, 'app.log');
@@ -688,6 +704,21 @@ test('live runner schedules a midpoint process restart and does not truncate 180
   assert.equal(result.virtual.autoStopAfterMs, '1800000');
   assert.equal(result.virtual.processExclusionRestartAfterMs, null);
   assert.equal(result.virtual.aecLiveScenario, null);
+});
+
+test('formal restart midpoint uses the paid input window rather than the longer local drain lifetime', { skip: !isWindows }, () => {
+  const probe = runPowerShell([
+    '-Command',
+    extractedLiveScenarioEnvironmentFunctions() +
+      `$scenario = Get-WatchModeLiveScenarioEnvironment -FeedbackMode 'process-exclusion' ` +
+        `-AutoStopAfterMs 300000 -ProviderInputCeilingMs 180000; ` +
+      `$scenario | ConvertTo-Json -Compress`,
+  ]);
+
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+  const scenario = JSON.parse(probe.stdout.trim());
+  assert.equal(scenario.autoStopAfterMs, '300000');
+  assert.equal(scenario.processExclusionRestartAfterMs, '90000');
 });
 
 test('watch report deadline includes readiness, 30-minute capture, and atomic-write grace', { skip: !isWindows }, () => {

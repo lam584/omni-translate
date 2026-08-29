@@ -128,6 +128,65 @@ fn replay_speech_started_item_id_owns_response_without_asr_delta() {
     assert_eq!(matching[0].translated_text, translated);
 }
 
+/// LiveTranslate can start a response before it emits speech_stopped and it
+/// may provide only a response id on that early event. The active VAD cue is
+/// still the unique source owner; the later ASR final must enrich that cue
+/// instead of creating a text-only duplicate with no audio lifecycle.
+#[test]
+fn replay_response_created_before_speech_stopped_keeps_one_audio_owned_cue() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    let mut slice = WorkerSlice::new();
+    let source = "This benchmark remains one provider-owned cue.";
+    let translated = "这项基准测试仍属于同一个提示。";
+    let steps = vec![
+        ScriptStep::Event(json!({
+            "type": "input_audio_buffer.speech_started",
+            "item_id": "item-early-response"
+        })),
+        ScriptStep::Event(json!({
+            "type": "response.created",
+            "response": { "id": "response-early" }
+        })),
+        ScriptStep::Event(json!({
+            "type": "response.audio_transcript.done",
+            "response_id": "response-early",
+            "transcript": translated
+        })),
+        ScriptStep::Event(json!({
+            "type": "input_audio_buffer.speech_stopped",
+            "item_id": "item-early-response"
+        })),
+        ScriptStep::Event(json!({
+            "type": "response.done",
+            "response": { "id": "response-early", "status": "completed" }
+        })),
+        ScriptStep::Event(json!({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-early-response",
+            "transcript": source
+        })),
+    ];
+    let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
+    socket = harness.tick(socket, &mut slice);
+    let cue_id = slice.current_cue_id.clone().expect("speech start cue");
+    for _ in 1..6 {
+        socket = harness.tick(socket, &mut slice);
+    }
+
+    let snapshot = harness.store().snapshot();
+    let matching: Vec<_> = snapshot
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .filter(|cue| cue.source_text == source || cue.translated_text == translated)
+        .collect();
+    assert_eq!(matching.len(), 1, "response and ASR final must share one cue");
+    assert_eq!(matching[0].cue_id, cue_id);
+    assert_eq!(matching[0].source_text, source);
+    assert_eq!(matching[0].translated_text, translated);
+    assert!(matching[0].committed);
+}
+
 /// DashScope documents item_id on speech_stopped. That boundary must bind the
 /// response before an ASR delta exists, rather than depending on delta timing.
 #[test]

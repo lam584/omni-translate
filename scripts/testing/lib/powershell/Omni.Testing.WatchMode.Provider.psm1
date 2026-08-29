@@ -267,14 +267,14 @@ function Get-WatchModeLiveScenarioEnvironment {
     [Parameter(Mandatory = $true)]
     [ValidateSet('virtual-driver', 'process-exclusion', 'echo-cancel')]
     [string]$FeedbackMode,
-    [Parameter(Mandatory = $true)]
-    [ValidateRange(30000, 7200000)]
-    [int64]$AutoStopAfterMs
+    [Parameter(Mandatory = $true)] [ValidateRange(30000, 7200000)] [int64]$AutoStopAfterMs,
+    [ValidateRange(0, 7200000)] [int64]$ProviderInputCeilingMs = 0
   )
+  $restartWindowMs = if ($ProviderInputCeilingMs -gt 0) { $ProviderInputCeilingMs } else { $AutoStopAfterMs }
   return [pscustomobject]@{
     autoStopAfterMs = "$AutoStopAfterMs"
     processExclusionRestartAfterMs = if ($FeedbackMode -eq 'process-exclusion') {
-      "$([Math]::Floor($AutoStopAfterMs / 2))"
+      "$([Math]::Floor($restartWindowMs / 2))"
     } else { $null }
     aecLiveScenario = if ($FeedbackMode -eq 'echo-cancel') { '1' } else { $null }
   }

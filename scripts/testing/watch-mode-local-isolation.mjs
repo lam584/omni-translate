@@ -137,6 +137,10 @@ const isRetryableProcessFingerprintWindowFailure = (result, label) => {
   }
   const fingerprint = payload?.processExclusionFingerprint;
   const detail = String(payload?.detail ?? '');
+  const incompleteSourceWindow = detail.includes('Bridge source pipe captured only ')
+    && Number(fingerprint?.sourceCapturedFrames) > 0
+    && Number(fingerprint?.sourceCapturedFrames) < 48_000;
+  const incompleteExternalWindow = detail.includes('external fingerprint did not survive process loopback:');
   return payload?.passed === false
     && fingerprint?.sourceCaptureMode === 'process-exclusion'
     && fingerprint?.captureBackend === 'wasapi-process-exclusion'
@@ -145,7 +149,7 @@ const isRetryableProcessFingerprintWindowFailure = (result, label) => {
     && Number(fingerprint?.excludedProcessId) === Number(fingerprint?.bridgeProcessId)
     && Number(fingerprint?.physicalExternalComponent) >= 0.01
     && Number(fingerprint?.physicalBridgeChildComponent) >= 0.01
-    && detail.includes('external fingerprint did not survive process loopback:')
+    && (incompleteExternalWindow || incompleteSourceWindow)
     && !detail.includes('translation fingerprint was not physically detectable')
     && !detail.includes('leaked into source pipe');
 };

@@ -1108,11 +1108,19 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
   }
   const reconnectRejectedTerminal = /^reconnect-forbidden-(?:socket-close|read-error|voice-fallback)$/u
     .test(String(ledger.terminalReason ?? ''));
+  const preProviderTerminal = ledger.terminalReason === 'runner-failed-before-provider-session';
   const nonBudgetFailureTerminal = reconnectRejectedTerminal
+    || preProviderTerminal
     || ledger.terminalReason === 'livetranslate-session-finished-timeout';
+  const expectedInitialConnectAttempts = preProviderTerminal ? 0 : 1;
+  if (preProviderTerminal && (
+    Number(ledger.sessionGeneration) !== 0
+    || actualSamples !== 0
+    || appendAttempts !== 0
+  )) throw new Error('pre-provider terminal must bind generation, samples, and append attempts to zero');
   if (
     Number(ledger.sendFailures) !== 0
-    || Number(ledger.initialConnectAttempts) !== 1
+    || Number(ledger.initialConnectAttempts) !== expectedInitialConnectAttempts
     || Number(ledger.reconnects) !== 0
     || ledger.budgetExceeded !== false
     || ledger.finalized !== true
@@ -1158,8 +1166,8 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
   if (journal[0]?.event !== 'initialized' || counts.initialized !== 1) {
     throw new Error('provider input budget journal must begin with exactly one initialized event');
   }
-  if (counts.initial_connect_attempt !== 1) {
-    throw new Error('provider input budget journal must contain exactly one initial_connect_attempt event');
+  if (counts.initial_connect_attempt !== expectedInitialConnectAttempts) {
+    throw new Error(`provider input budget journal must contain exactly ${expectedInitialConnectAttempts} initial_connect_attempt event(s)`);
   }
   if (journal.at(-1)?.event !== 'finalized' || journal.at(-1)?.finalized !== true || counts.finalized !== 1) {
     throw new Error('provider input budget journal must end with exactly one finalized event');

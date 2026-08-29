@@ -74,6 +74,78 @@ function extractedMediaReferenceFunctions() {
   return `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.AudioCapture.psm1'))} -Force -DisableNameChecking; `;
 }
 
+function extractedPhysicalCaptureFunctions() {
+  return `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.PhysicalCapture.psm1'))} -Force -DisableNameChecking; `;
+}
+
+test('physical probe retries only narrow identity-bound incomplete windows', { skip: !isWindows }, () => {
+  const base = {
+    passed: false,
+    detail: 'external fingerprint did not survive process loopback: component=0.006 minimum=0.010',
+    processExclusionFingerprint: {
+      sourceCaptureMode: 'process-exclusion',
+      captureBackend: 'wasapi-process-exclusion',
+      processLoopbackStatus: 'ready',
+      bridgeProcessId: 42,
+      excludedProcessId: 42,
+      physicalExternalComponent: 0.02,
+      physicalBridgeChildComponent: 0.03,
+      sourceCapturedFrames: 50_000,
+    },
+  };
+  const cases = [
+    [base, 'process-exclusion', true],
+    [{ ...base, detail: 'Bridge source pipe captured only 39360 frame(s)', processExclusionFingerprint: { ...base.processExclusionFingerprint, sourceCapturedFrames: 39_360 } }, 'process-exclusion', true],
+    [{ ...base, detail: `${base.detail}; translation fingerprint was not physically detectable` }, 'process-exclusion', false],
+    [{ ...base, detail: `${base.detail}; leaked into source pipe` }, 'process-exclusion', false],
+    [{ ...base, processExclusionFingerprint: { ...base.processExclusionFingerprint, excludedProcessId: 43 } }, 'process-exclusion', false],
+    [{ ...base, processExclusionFingerprint: { ...base.processExclusionFingerprint, physicalExternalComponent: 0.009 } }, 'process-exclusion', false],
+    [base, 'virtual-driver', false],
+  ];
+  for (const [payload, mode, expected] of cases) {
+    const command = extractedPhysicalCaptureFunctions() +
+      `$value = ${quotePowerShell(JSON.stringify(payload))} | ConvertFrom-Json; ` +
+      `Test-RetryablePhysicalOutputProbeFailure -Result $value -FeedbackMode ${quotePowerShell(mode)}`;
+    const result = runPowerShell(['-Command', command]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.stdout.trim(), expected ? 'True' : 'False');
+  }
+});
+
+test('paid cell finalizes a zero-call budget before desktop launch', { skip: !isWindows }, () => {
+  const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-pre-desktop-budget-'));
+  const runMarker = 'watch_mode_diagnostic.run_id=pre_desktop_budget';
+  try {
+    const context = {
+      paths: { workspaceRoot: path.resolve('.') },
+      request: {
+        authorityMode: 'strict-paid',
+        feedbackMode: 'process-exclusion',
+        matrix: { cellId: 'c01' },
+        model: {
+          id: 'qwen3.5-omni-flash-realtime',
+          subtitleTranslationMode: 'native',
+        },
+        timeouts: { sessionSeconds: 180 },
+      },
+    };
+    const command = extractedLocalSmokeProviderSessionAuthorityFunction() +
+      `$env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID = 'coordinator-pre-desktop-lease'; ` +
+      `$context = ${quotePowerShell(JSON.stringify(context))} | ConvertFrom-Json; ` +
+      `Write-StrictPaidCellBudget ${quotePowerShell(runDirectory)} $null ${quotePowerShell(runMarker)} $context | ConvertTo-Json -Depth 4 -Compress`;
+    const result = runPowerShell(['-Command', command]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const budget = readJsonArtifact(path.join(runDirectory, 'external-provider-budget.json'));
+    assert.equal(budget.passed, true);
+    assert.equal(budget.calls.mainRealtime, 0);
+    assert.equal(budget.providerSendBoundary.terminalReason, 'runner-failed-before-provider-session');
+    assert.equal(fs.statSync(path.join(runDirectory, 'provider-input-16k-mono.pcm')).size, 0);
+    assert.match(fs.readFileSync(path.join(runDirectory, 'app.log'), 'utf8'), new RegExp(runMarker));
+  } finally {
+    fs.rmSync(runDirectory, { recursive: true, force: true });
+  }
+});
+
 function extractedStrictPaidProviderFunctions() {
   return `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.Provider.psm1'))} -Force -DisableNameChecking; `;
 }

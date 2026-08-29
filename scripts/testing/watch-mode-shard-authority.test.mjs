@@ -354,6 +354,38 @@ test('provider usage authority binds coordinator launch receipt and ordered send
     assert.equal(zeroInputUsage.actualExternalAudioSamples, 0);
     assert.equal(zeroInputUsage.journalEventCount, 3);
 
+    const preProviderLedgerPath = path.join(root, PROVIDER_INPUT_BUDGET_LEDGER_FILE);
+    const preProviderJournalPath = path.join(root, PROVIDER_INPUT_BUDGET_JOURNAL_FILE);
+    const preProviderLedger = JSON.parse(fs.readFileSync(preProviderLedgerPath, 'utf8'));
+    const preProviderJournal = fs.readFileSync(preProviderJournalPath, 'utf8')
+      .trim().split(/\r?\n/u).map(JSON.parse);
+    preProviderLedger.sessionGeneration = 0;
+    preProviderLedger.initialConnectAttempts = 0;
+    preProviderLedger.terminalReason = 'runner-failed-before-provider-session';
+    const preProviderFinalized = {
+      ...preProviderJournal.at(-1),
+      sequence: 2,
+      sessionGeneration: 0,
+      initialConnectAttempts: 0,
+      terminalReason: preProviderLedger.terminalReason,
+    };
+    const preProviderInitialized = {
+      ...preProviderJournal[0],
+      sessionGeneration: 0,
+      initialConnectAttempts: 0,
+    };
+    writeJson(preProviderLedgerPath, preProviderLedger);
+    fs.writeFileSync(
+      preProviderJournalPath,
+      `${[preProviderInitialized, preProviderFinalized].map(JSON.stringify).join('\n')}\n`,
+      'utf8',
+    );
+    const preProviderUsage = validateProviderUsageAuthority(root, { cell, lease });
+    assert.equal(preProviderUsage.initialConnectAttempts, 0);
+    assert.equal(preProviderUsage.sessionGeneration, 0);
+    assert.equal(preProviderUsage.terminalStatus, 'runner-failed-before-provider-session');
+
+    writeSuccessfulRun(root, cell, lease, { samples: 0 });
     const timeoutLedgerPath = path.join(root, PROVIDER_INPUT_BUDGET_LEDGER_FILE);
     const timeoutJournalPath = path.join(root, PROVIDER_INPUT_BUDGET_JOURNAL_FILE);
     const timeoutLedger = JSON.parse(fs.readFileSync(timeoutLedgerPath, 'utf8'));

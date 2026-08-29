@@ -47,6 +47,8 @@ export const INCIDENT_REPLAY_PLUS_PROVIDER_IDENTITY = Object.freeze({
   incidentId: INCIDENT_REPLAY_PLUS_ID,
 });
 
+export const PRE_PROVIDER_TERMINAL_REASON = 'runner-failed-before-provider-session';
+
 export const FORBIDDEN_REMOTE_AUXILIARY_ARTIFACTS = Object.freeze([
   'source-media-stt.stdout.log',
   'source-media-stt.stderr.log',
@@ -149,13 +151,14 @@ function validateSendBoundaryAuthority({
     runMarker,
     maxSamples,
   };
+  const preProviderTerminal = ledger.terminalReason === PRE_PROVIDER_TERMINAL_REASON;
   for (const [key, expected] of Object.entries(expectedLeaseIdentity)) {
     if (lease?.[key] !== expected) violations.push(`provider budget lease ${key} mismatch`);
   }
   if (typeof ledger.leaseId !== 'string' || !ledger.leaseId.trim()) {
     violations.push('send-boundary final ledger leaseId is missing');
   }
-  if (!Number.isInteger(Number(ledger.sessionGeneration)) || Number(ledger.sessionGeneration) <= 0) {
+  if (!Number.isInteger(Number(ledger.sessionGeneration)) || Number(ledger.sessionGeneration) < (preProviderTerminal ? 0 : 1)) {
     violations.push('send-boundary final ledger sessionGeneration is invalid');
   }
   if (lease.leaseId !== ledger.leaseId) violations.push('provider budget leaseId does not match send-boundary ledger');
@@ -168,8 +171,14 @@ function validateSendBoundaryAuthority({
     violations.push('send-boundary final ledger has an invalid append attempt count');
   }
   if (Number(ledger.sendFailures) !== 0) violations.push('send-boundary final ledger recorded send failures');
-  if (Number(ledger.initialConnectAttempts) !== 1) {
-    violations.push('send-boundary final ledger must record exactly one initial connect attempt');
+  const expectedInitialConnectAttempts = preProviderTerminal ? 0 : 1;
+  if (preProviderTerminal && (
+    Number(ledger.sessionGeneration) !== 0
+    || Number(ledger.totalAttemptedSamples) !== 0
+    || Number(ledger.appendAttempts) !== 0
+  )) violations.push('pre-provider terminal must bind generation, samples, and append attempts to zero');
+  if (Number(ledger.initialConnectAttempts) !== expectedInitialConnectAttempts) {
+    violations.push(`send-boundary final ledger must record exactly ${expectedInitialConnectAttempts} initial connect attempt(s)`);
   }
   if (Number(ledger.reconnects) !== 0) violations.push('send-boundary final ledger recorded reconnects');
   if (ledger.budgetExceeded !== false) violations.push('send-boundary final ledger reports a budget overrun');
@@ -177,6 +186,7 @@ function validateSendBoundaryAuthority({
   const reconnectRejectedTerminal = /^reconnect-forbidden-(?:socket-close|read-error|voice-fallback)$/u
     .test(String(ledger.terminalReason ?? ''));
   const nonBudgetFailureTerminal = reconnectRejectedTerminal
+    || preProviderTerminal
     || ledger.terminalReason === 'livetranslate-session-finished-timeout';
   if (ledger.terminalReason !== 'worker-completed' && !nonBudgetFailureTerminal) {
     violations.push(`send-boundary final ledger terminalReason is not an accepted no-reconnect terminal; got ${ledger.terminalReason ?? 'missing'}`);
@@ -240,8 +250,8 @@ function validateSendBoundaryAuthority({
     violations.push('send-boundary journal must end with finalized');
   }
   if (Number(eventCounts.initialized ?? 0) !== 1) violations.push('send-boundary journal must contain exactly one initialized event');
-  if (Number(eventCounts.initial_connect_attempt ?? 0) !== 1) {
-    violations.push('send-boundary journal must contain exactly one initial_connect_attempt event');
+  if (Number(eventCounts.initial_connect_attempt ?? 0) !== expectedInitialConnectAttempts) {
+    violations.push(`send-boundary journal must contain exactly ${expectedInitialConnectAttempts} initial_connect_attempt event(s)`);
   }
   if (Number(eventCounts.finalized ?? 0) !== 1) violations.push('send-boundary journal must contain exactly one finalized event');
   if (Number(eventCounts.reconnect_rejected ?? 0) !== (reconnectRejectedTerminal ? 1 : 0)) {
@@ -294,6 +304,88 @@ function validateSendBoundaryAuthority({
     terminalReason: ledger.terminalReason ?? null,
     violations,
   };
+}
+
+export function writePreProviderTerminalAuthority({
+  runDirectory,
+  runMarker,
+  cellId,
+  leaseId,
+  modelId,
+  sessionCeilingSeconds = STRICT_PAID_CELL_CEILING_SECONDS,
+  modelProtocols = STRICT_PAID_MODEL_PROTOCOLS,
+  providerIdentity = STRICT_PAID_PROVIDER_IDENTITY,
+  occurredAtMs = Date.now(),
+}) {
+  const resolvedRunDirectory = path.resolve(runDirectory);
+  const protocol = modelProtocols[modelId];
+  if (!protocol) throw new Error(`model ${modelId || '(missing)'} has no approved strict-paid realtime protocol`);
+  for (const [label, value] of Object.entries({ runMarker, cellId, leaseId, modelId })) {
+    if (!String(value ?? '').trim()) throw new Error(`pre-provider terminal ${label} is missing`);
+  }
+  const maxSamples = Number(sessionCeilingSeconds) * EXTERNAL_PROVIDER_INPUT_SAMPLE_RATE_HZ;
+  if (!Number.isSafeInteger(maxSamples) || maxSamples <= 0) throw new Error('pre-provider terminal sample ceiling is invalid');
+  fs.mkdirSync(resolvedRunDirectory, { recursive: true });
+  const ledgerPath = path.join(resolvedRunDirectory, PROVIDER_SEND_BOUNDARY_LEDGER_FILE);
+  const journalPath = path.join(resolvedRunDirectory, PROVIDER_SEND_BOUNDARY_JOURNAL_FILE);
+  if (fs.existsSync(ledgerPath) || fs.existsSync(journalPath)) {
+    throw new Error('refusing to replace an existing Provider send-boundary authority with a runner terminal');
+  }
+  const identity = {
+    schemaVersion: 1,
+    artifactKind: 'watch-mode-provider-input-budget-ledger',
+    cellId,
+    leaseId,
+    runMarker,
+    sessionGeneration: 0,
+    direction: 'inbound',
+    ...providerIdentity,
+    model: modelId,
+    protocol,
+  };
+  const initialized = {
+    ...identity,
+    event: 'initialized',
+    sequence: 1,
+    occurredAtMs,
+    attemptedSamples: null,
+    totalAttemptedSamples: 0,
+    maxSamples,
+    appendAttempts: 0,
+    sendFailures: 0,
+    initialConnectAttempts: 0,
+    reconnects: 0,
+    budgetExceeded: false,
+    finalized: false,
+    terminalReason: null,
+  };
+  const finalized = {
+    ...initialized,
+    event: 'finalized',
+    sequence: 2,
+    finalized: true,
+    terminalReason: PRE_PROVIDER_TERMINAL_REASON,
+  };
+  const leasePath = path.join(resolvedRunDirectory, PROVIDER_BUDGET_LEASE_FILE);
+  const leaseReceipt = {
+    schemaVersion: 1,
+    artifactKind: 'watch-mode-provider-input-budget-lease',
+    cellId,
+    leaseId,
+    runMarker,
+    maxSamples,
+  };
+  if (fs.existsSync(leasePath)) {
+    const existingLease = readJson(leasePath, 'existing provider budget lease receipt');
+    if (canonicalJson(existingLease) !== canonicalJson(leaseReceipt)) {
+      throw new Error('existing provider budget lease receipt does not match the pre-provider terminal');
+    }
+  } else {
+    fs.writeFileSync(leasePath, `${JSON.stringify(leaseReceipt, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+  }
+  fs.writeFileSync(ledgerPath, `${JSON.stringify(finalized, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+  fs.writeFileSync(journalPath, `${JSON.stringify(initialized)}\n${JSON.stringify(finalized)}\n`, { encoding: 'utf8', flag: 'wx' });
+  fs.writeFileSync(path.join(resolvedRunDirectory, 'provider-input-16k-mono.pcm'), Buffer.alloc(0), { flag: 'wx' });
 }
 
 function scopedRunLog(appLogText, runMarker) {
@@ -450,6 +542,9 @@ export function buildCellExternalProviderBudget({
   if (logReconnectCount !== Number(sendBoundaryAuthority?.reconnects ?? 0)) {
     violations.push(`log reconnect count ${logReconnectCount} does not match send-boundary authority ${sendBoundaryAuthority?.reconnects ?? 0}`);
   }
+  if (logConnectionCount !== Number(sendBoundaryAuthority?.initialConnectAttempts ?? 0)) {
+    violations.push(`log connection count ${logConnectionCount} does not match send-boundary authority ${sendBoundaryAuthority?.initialConnectAttempts ?? 0}`);
+  }
 
   const secondaryTranslationCalls = countMatches(scopedLog, /\[LLM_CALL\]|"category"\s*:\s*"subtitle-translate"/giu);
   const secondaryTtsCalls = countMatches(scopedLog, /speech\.segment_tts_requested/giu);
@@ -522,7 +617,9 @@ export function buildCellExternalProviderBudget({
     },
     providerSendBoundary: sendBoundaryAuthority,
     calls: {
-      mainRealtime: sendBoundaryAuthority?.passed ? 1 : 0,
+      mainRealtime: sendBoundaryAuthority?.passed
+        ? Number(sendBoundaryAuthority.initialConnectAttempts)
+        : 0,
       sourceTranscript: 0,
       physicalOutputStt: 0,
       secondaryTranslation: secondaryTranslationCalls,
@@ -715,6 +812,8 @@ if (isMain(import.meta.url)) {
         translationMode: 'native',
         sessionCeilingSeconds: STRICT_PAID_CELL_CEILING_SECONDS,
         authorityMode: 'strict-paid',
+        writePreProviderTerminal: 'false',
+        leaseId: '',
       },
     });
     for (const [key, value] of Object.entries({
@@ -731,6 +830,17 @@ if (isMain(import.meta.url)) {
     const incidentReplay = authorityMode === 'incident-replay-plus';
     if (!['strict-paid', 'incident-replay-plus'].includes(authorityMode)) {
       throw new Error(`unsupported provider budget authority mode: ${authorityMode || '(missing)'}`);
+    }
+    if (String(options.writePreProviderTerminal).toLowerCase() === 'true') {
+      if (authorityMode !== 'strict-paid') throw new Error('pre-provider terminal is only valid for strict-paid authority');
+      writePreProviderTerminalAuthority({
+        runDirectory: options.runDirectory,
+        runMarker: options.runMarker,
+        cellId: options.cellId,
+        leaseId: options.leaseId,
+        modelId: options.modelId,
+        sessionCeilingSeconds: Number(options.sessionCeilingSeconds),
+      });
     }
     const { filePath, ledger } = writeCellExternalProviderBudget({
       runDirectory: options.runDirectory,

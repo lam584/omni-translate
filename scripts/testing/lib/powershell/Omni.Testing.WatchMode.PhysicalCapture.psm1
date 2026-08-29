@@ -6,6 +6,27 @@ Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Windows.Audio.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Bridge.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.AudioAnalysis.psm1') -Force
 
+function Test-RetryablePhysicalOutputProbeFailure {
+  param($Result, [string]$FeedbackMode)
+  $fingerprint = $Result.processExclusionFingerprint
+  $detail = [string]$Result.detail
+  $incompleteSourceWindow = $detail.Contains('Bridge source pipe captured only ') -and
+    [long]$fingerprint.sourceCapturedFrames -gt 0 -and [long]$fingerprint.sourceCapturedFrames -lt 48000
+  $incompleteExternalWindow = $detail.Contains('external fingerprint did not survive process loopback:')
+  return $FeedbackMode -eq 'process-exclusion' -and
+    $Result.passed -eq $false -and
+    [string]$fingerprint.sourceCaptureMode -ceq 'process-exclusion' -and
+    [string]$fingerprint.captureBackend -ceq 'wasapi-process-exclusion' -and
+    [string]$fingerprint.processLoopbackStatus -ceq 'ready' -and
+    [long]$fingerprint.bridgeProcessId -gt 0 -and
+    [long]$fingerprint.excludedProcessId -eq [long]$fingerprint.bridgeProcessId -and
+    [double]$fingerprint.physicalExternalComponent -ge 0.01 -and
+    [double]$fingerprint.physicalBridgeChildComponent -ge 0.01 -and
+    ($incompleteExternalWindow -or $incompleteSourceWindow) -and
+    -not $detail.Contains('translation fingerprint was not physically detectable') -and
+    -not $detail.Contains('leaked into source pipe')
+}
+
 function Invoke-PhysicalOutputProbe {
   param([string]$OutputDirectory, [string]$FeedbackMode, [Parameter(Mandatory = $true)][string]$WorkspaceRoot, [string]$PhysicalPlaybackDeviceId, [string]$ExpectedPhysicalPlaybackDeviceName)
   $probeExe = Join-Path $WorkspaceRoot 'target/release/omni-physical-output-probe.exe'
@@ -40,17 +61,30 @@ function Invoke-PhysicalOutputProbe {
       "--process-exclusion-fingerprint"
     )
   }
-  $output = & $probeExe @probeArgs 2> $stderr
-  $exitCode = $LASTEXITCODE
-  $text = ($output -join [Environment]::NewLine)
-  Set-OmniUtf8NoBomContent $stdout $text
-  if (-not $text) {
-    throw "physical output probe returned no JSON output. ExitCode=$exitCode"
-  }
-  try {
-    $result = $text | ConvertFrom-Json
-  } catch {
-    throw "physical output probe returned invalid JSON. ExitCode=$exitCode Output=$text"
+  $result = $null
+  $exitCode = -1
+  for ($attempt = 1; $attempt -le 3; $attempt++) {
+    $attemptStdout = Join-Path $OutputDirectory "physical-output-probe.attempt-$attempt.stdout.log"
+    $attemptStderr = Join-Path $OutputDirectory "physical-output-probe.attempt-$attempt.stderr.log"
+    $output = & $probeExe @probeArgs 2> $attemptStderr
+    $exitCode = $LASTEXITCODE
+    $text = ($output -join [Environment]::NewLine)
+    Set-OmniUtf8NoBomContent $attemptStdout $text
+    Copy-Item -LiteralPath $attemptStdout -Destination $stdout -Force
+    Copy-Item -LiteralPath $attemptStderr -Destination $stderr -Force
+    if (-not $text) {
+      throw "physical output probe returned no JSON output. ExitCode=$exitCode"
+    }
+    try {
+      $result = $text | ConvertFrom-Json
+    } catch {
+      throw "physical output probe returned invalid JSON. ExitCode=$exitCode Output=$text"
+    }
+    if ($exitCode -eq 0 -and ($result.passed -or $result.skipped)) { break }
+
+    $retryable = Test-RetryablePhysicalOutputProbeFailure -Result $result -FeedbackMode $FeedbackMode
+    if (-not $retryable -or $attempt -eq 3) { break }
+    Start-Sleep -Milliseconds 750
   }
   if ($exitCode -ne 0 -or (-not $result.passed -and -not $result.skipped)) {
     throw "physical output probe failed. ExitCode=$exitCode Detail=$($result.detail)"
@@ -153,6 +187,7 @@ function Complete-PhysicalOutputContentRecorder {
 }
 
 Export-ModuleMember -Function @(
+  'Test-RetryablePhysicalOutputProbeFailure',
   'Invoke-PhysicalOutputProbe',
   'Start-PhysicalOutputContentRecorder',
   'Complete-PhysicalOutputContentRecorder'

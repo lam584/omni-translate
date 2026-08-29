@@ -142,6 +142,39 @@ function Write-StrictPaidCellBudget {
   $WatchAutoStopAfterSeconds = [int]$Context.request.timeouts.sessionSeconds
   $providerAuthorityMode = [string]$Context.request.authorityMode
   $budgetScript = Join-Path $workspaceRoot "scripts/testing/watch-mode-external-provider-budget.mjs"
+  if ([string]::IsNullOrWhiteSpace($AppLogPath) -or -not (Test-Path -LiteralPath $AppLogPath -PathType Leaf)) {
+    $AppLogPath = Join-Path $OutputDirectory 'app.log'
+    $scopedLog = Copy-WatchModeAppLog -SourcePath (Get-WatchModeDesktopAppLogPath) `
+      -DestinationPath $AppLogPath -RunMarker $RunMarker
+    if (-not $scopedLog) {
+      [System.IO.File]::WriteAllText($AppLogPath, "$RunMarker`n", [System.Text.UTF8Encoding]::new($false))
+    }
+  }
+  $sendBoundaryLedgerPath = Join-Path $OutputDirectory 'provider-input-budget-ledger.json'
+  if (-not (Test-Path -LiteralPath $sendBoundaryLedgerPath -PathType Leaf)) {
+    $leaseId = [string]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID
+    if ([string]::IsNullOrWhiteSpace($leaseId)) {
+      throw 'strict paid pre-provider terminal requires the coordinator-issued Provider input lease id'
+    }
+    $terminalArguments = @(
+      $budgetScript,
+      '--run-directory', $OutputDirectory,
+      '--app-log', $AppLogPath,
+      '--run-marker', $RunMarker,
+      '--cell-id', $MatrixCellId,
+      '--model-id', $WatchModelId,
+      '--feedback-mode', $FeedbackLoopPrevention,
+      '--translation-mode', $SubtitleTranslationMode,
+      '--session-ceiling-seconds', "$WatchAutoStopAfterSeconds",
+      '--authority-mode', $providerAuthorityMode,
+      '--write-pre-provider-terminal', 'true',
+      '--lease-id', $leaseId
+    )
+    $terminalOutput = @(& node @terminalArguments 2>&1 | ForEach-Object { "$_" })
+    if ($LASTEXITCODE -ne 0) {
+      throw "strict paid pre-provider terminal creation failed: $($terminalOutput -join ' ')"
+    }
+  }
   $arguments = @(
     $budgetScript,
     "--run-directory", $OutputDirectory,

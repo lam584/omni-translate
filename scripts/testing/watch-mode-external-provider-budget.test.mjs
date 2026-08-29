@@ -14,6 +14,7 @@ import {
   buildMatrixExternalProviderBudget,
   isAbsoluteEvidencePathForFixedFile,
   reserveStrictPaidCell,
+  writePreProviderTerminalAuthority,
   writeCellExternalProviderBudget,
 } from './watch-mode-external-provider-budget.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
@@ -389,6 +390,38 @@ test('strict paid budget accepts a lease-bound zero-input terminal for collect-a
     assert.equal(budget.passed, true);
     assert.equal(budget.actualProviderInputSamples, 0);
     assert.equal(budget.calls.mainRealtime, 1);
+  } finally {
+    fs.rmSync(runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('strict paid budget records an authentic zero-call terminal before Provider startup', () => {
+  const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-pre-provider-budget-'));
+  try {
+    fs.writeFileSync(path.join(runDirectory, 'app.log'), `${MARKER}\n`, 'utf8');
+    writePreProviderTerminalAuthority({
+      runDirectory,
+      runMarker: MARKER,
+      cellId: CELL_ID,
+      leaseId: 'coordinator-lease',
+      modelId: MODEL,
+      occurredAtMs: 7,
+    });
+    const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
+    assert.equal(budget.passed, true, budget.violations.join('; '));
+    assert.equal(budget.actualProviderInputSamples, 0);
+    assert.equal(budget.calls.mainRealtime, 0);
+    assert.equal(budget.providerSendBoundary.sessionGeneration, 0);
+    assert.equal(budget.providerSendBoundary.initialConnectAttempts, 0);
+    assert.equal(budget.providerSendBoundary.terminalReason, 'runner-failed-before-provider-session');
+    assert.deepEqual(budget.providerSendBoundary.journal.eventCounts, { initialized: 1, finalized: 1 });
+    assert.throws(() => writePreProviderTerminalAuthority({
+      runDirectory,
+      runMarker: MARKER,
+      cellId: CELL_ID,
+      leaseId: 'coordinator-lease',
+      modelId: MODEL,
+    }), /refusing to replace/);
   } finally {
     fs.rmSync(runDirectory, { recursive: true, force: true });
   }

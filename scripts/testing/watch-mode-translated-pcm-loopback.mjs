@@ -174,6 +174,24 @@ function playbackLifecycle(scopedLog, requiredCueIds) {
   return { byCue, violations };
 }
 
+function processExclusionRestartPlayback(scopedLog) {
+  const summaryLine = scopedLog
+    .split(/\r?\n/)
+    .findLast((line) => /\bevent=process_exclusion_restart_summary\b/.test(line));
+  if (!summaryLine) return null;
+  const value = (key) => summaryLine.match(new RegExp(`\\b${key}=([^\\s]+)`))?.[1] ?? '';
+  const number = (key) => Number(value(key));
+  return {
+    status: value('status'),
+    recoveredAtMs: number('recoveredAtUnixMs') || number('recoveredAtMs'),
+    oldPlaybackOwnerGeneration: number('oldPlaybackOwnerGeneration'),
+    newPlaybackOwnerGeneration: number('newPlaybackOwnerGeneration'),
+    oldPhysicalPlaybackDeviceId: value('oldPhysicalPlaybackDeviceId'),
+    newPhysicalPlaybackDeviceId: value('newPhysicalPlaybackDeviceId'),
+    physicalPlaybackStatus: value('physicalPlaybackStatus'),
+  };
+}
+
 function validateTranslatedAuthority({ authorityDirectory, expectedIdentity }) {
   const summaryPath = path.join(authorityDirectory, TRANSLATED_PCM_SUMMARY_FILE);
   const journalPath = path.join(authorityDirectory, TRANSLATED_PCM_JOURNAL_FILE);
@@ -303,6 +321,7 @@ export function buildTranslatedPcmLoopbackAuthority({
     violations.push(`translated PCM loopback requires at least ${MIN_COMPLETE_MATCHED_CUES} complete rendered cues; found ${requiredCueIds.length}`);
   }
   let lifecycle = new Map();
+  let scopedLog = '';
   try {
     const log = readRegularFile(appLogPath, 'run app.log').bytes.toString('utf8');
     // The run marker is intentionally repeated by later diagnostic events.
@@ -310,7 +329,8 @@ export function buildTranslatedPcmLoopbackAuthority({
     // lifecycle events are not discarded when the report-save event repeats it.
     const markerIndex = log.indexOf(runMarker);
     if (markerIndex < 0) throw new Error('run marker is absent from app.log');
-    const parsedLifecycle = playbackLifecycle(log.slice(markerIndex), requiredCueIds);
+    scopedLog = log.slice(markerIndex);
+    const parsedLifecycle = playbackLifecycle(scopedLog, requiredCueIds);
     lifecycle = parsedLifecycle.byCue;
     violations.push(...parsedLifecycle.violations);
   } catch (error) {
@@ -457,26 +477,28 @@ export function buildTranslatedPcmLoopbackAuthority({
   }
   let restartPlaybackEvidence = null;
   if (String(cellId).includes('process-exclusion')) {
-    const generations = matches
-      .map((entry) => entry.playbackOwnerGeneration)
-      .filter(Number.isSafeInteger);
-    const newOwnerGeneration = Math.max(...generations);
-    const endpointIds = [...new Set(matches.map((entry) => entry.physicalPlaybackDeviceId).filter(Boolean))];
-    const endpointId = String(endpointIds[0] ?? '');
+    const restart = processExclusionRestartPlayback(scopedLog);
+    const newOwnerGeneration = restart?.newPlaybackOwnerGeneration;
+    const endpointId = String(restart?.newPhysicalPlaybackDeviceId ?? '');
     const postRestartMatches = matches.filter((entry) => (
       entry.passed
       && entry.playbackOwnerGeneration === newOwnerGeneration
       && entry.physicalPlaybackDeviceId === endpointId
     ));
     restartPlaybackEvidence = {
-      recoveredAtMs: null,
-      playbackOwnerGeneration: Number.isFinite(newOwnerGeneration) ? newOwnerGeneration : null,
+      recoveredAtMs: Number.isFinite(restart?.recoveredAtMs) ? restart.recoveredAtMs : null,
+      playbackOwnerGeneration: Number.isSafeInteger(newOwnerGeneration) ? newOwnerGeneration : null,
       physicalPlaybackDeviceId: endpointId || null,
       matchedCueIds: postRestartMatches.map((entry) => entry.cueId),
       passed: (
-        new Set(generations).size >= 2
-        && newOwnerGeneration > Math.min(...generations)
-        && endpointIds.length === 1
+        restart?.status === 'passed'
+        && restart?.physicalPlaybackStatus === 'ready'
+        && Number.isSafeInteger(restart?.oldPlaybackOwnerGeneration)
+        && Number.isSafeInteger(newOwnerGeneration)
+        && newOwnerGeneration > restart.oldPlaybackOwnerGeneration
+        && restart.oldPhysicalPlaybackDeviceId !== ''
+        && endpointId === restart.oldPhysicalPlaybackDeviceId
+        && Number.isFinite(restart.recoveredAtMs)
         && postRestartMatches.length > 0
       ),
     };

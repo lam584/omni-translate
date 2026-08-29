@@ -92,6 +92,7 @@ function createFixture({
   renderedPlaybackOffsetsSeconds = providedOffsets,
   streamChunkGapSeconds = 0,
   cueSeconds = [2.6, 2.6],
+  playbackOwnerGenerations = [10, 20],
 } = {}) {
   const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'translated-loopback-'));
   const authorityDirectory = path.join(runDirectory, 'translated-cue-pcm');
@@ -152,7 +153,7 @@ function createFixture({
       createdAtMs: recordingStartedAtEpochMs + playbackOffsetsSeconds[index] * 1_000 - 50,
       completedAtMs: recordingStartedAtEpochMs + (playbackOffsetsSeconds[index] + cueSeconds[index]) * 1_000,
       bridgeInstanceId: index === 0 ? 'bridge-before-restart' : 'bridge-after-restart',
-      playbackOwnerGeneration: index === 0 ? 10 : 20,
+      playbackOwnerGeneration: playbackOwnerGenerations[index],
       physicalPlaybackDeviceId: '{hda-test-endpoint}',
     });
   }
@@ -249,6 +250,23 @@ test('matches every hashed Bridge-accepted translated cue in ordered physical lo
     assert.equal(authority.matchedCueCount, 2);
     assert.ok(authority.matches.every((match) => match.identityMargin >= 0.08));
     assert.deepEqual(authority.matches.map((match) => match.cueId), fixture.summary.acceptedCues.map((cue) => cue.cueId));
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('uses the signed restart summary when every auditable cue was accepted by the new owner', () => {
+  const fixture = createFixture({ playbackOwnerGenerations: [20, 20] });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, true, authority.violations.join('; '));
+    assert.deepEqual(authority.restartPlaybackEvidence, {
+      recoveredAtMs: fixture.recordingStartedAtEpochMs + 7_000,
+      playbackOwnerGeneration: 20,
+      physicalPlaybackDeviceId: '{hda-test-endpoint}',
+      matchedCueIds: ['omni-cue-test-1', 'omni-cue-test-2'],
+      passed: true,
+    });
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
   }

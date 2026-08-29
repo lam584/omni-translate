@@ -531,6 +531,12 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
     lifecycleLines.push(`${fixtureLocalTimestamp(startMs)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=started`);
     lifecycleLines.push(`${fixtureLocalTimestamp(startMs + 1_400)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=completed`);
   }
+  if (cellId.includes('process-exclusion')) {
+    const recoveredAtMs = recordingStartedAtEpochMs + 5_000;
+    lifecycleLines.push(
+      `${fixtureLocalTimestamp(recoveredAtMs)} [NORMAL] event=process_exclusion_restart_summary | status=passed runMarker=${runMarker} recoveredAtUnixMs=${recoveredAtMs} oldPlaybackOwnerGeneration=1001 newPlaybackOwnerGeneration=2002 oldPhysicalPlaybackDeviceId={hda-test-endpoint} newPhysicalPlaybackDeviceId={hda-test-endpoint} physicalPlaybackStatus=ready physicalPlaybackRebindDurationMs=200`,
+    );
+  }
   fs.appendFileSync(path.join(runDirectory, 'app.log'), `${lifecycleLines.join('\n')}\n`, 'utf8');
   const authority = buildTranslatedPcmLoopbackAuthority({
     runDirectory,
@@ -1352,6 +1358,29 @@ function writeProcessExclusionRestartFixture(runDirectory) {
     `${Object.entries(summary).map(([key, value]) => `${key}=${value}`).join(' ')}\n`,
     'utf8',
   );
+  const matcherPath = path.join(runDirectory, 'translated-pcm-loopback.stdout.json');
+  if (fs.existsSync(matcherPath)) {
+    const previous = JSON.parse(fs.readFileSync(matcherPath, 'utf8'));
+    const rebuilt = buildTranslatedPcmLoopbackAuthority({
+      runDirectory,
+      runMarker: previous.runMarker,
+      recordingStartedAtEpochMs: previous.recordingStartedAtEpochMs,
+      cellId: previous.cellId,
+      leaseId: previous.leaseId,
+      modelId: previous.modelId,
+      protocol: previous.protocol,
+    });
+    assert.equal(rebuilt.passed, true, rebuilt.violations.join('; '));
+    fs.writeFileSync(matcherPath, `${JSON.stringify(rebuilt, null, 2)}\n`, 'utf8');
+    const physicalAuthorityPath = path.join(runDirectory, 'physical-output-content.raw.json');
+    const physicalAuthority = JSON.parse(fs.readFileSync(physicalAuthorityPath, 'utf8'));
+    physicalAuthority.translatedSpeech.acousticAuthority = rebuilt;
+    fs.writeFileSync(
+      physicalAuthorityPath,
+      `${JSON.stringify(physicalAuthority, null, 2)}\n`,
+      'utf8',
+    );
+  }
 }
 
 function writeAuthorityMatrixManifest(root, entries, {

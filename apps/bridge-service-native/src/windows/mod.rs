@@ -946,7 +946,8 @@ mod tests {
         capture_route_is_ready, classify_process_loopback_capability,
         fail_process_loopback_route, handle_control, handle_process_loopback_probe,
         ducked_source_volume, is_omni_virtual_playback_device_name,
-        monitor_source_queue_needs_drop, normalized_device_name, playback_volume,
+        monitor_source_queue_needs_drop, normalized_device_name,
+        pending_physical_stream_command_is_ready, playback_volume,
         process_source_route_failure, publish_diagnostic_file, record_source_read_result,
         sanitize_capture_sample,
         request_playback_stop,
@@ -2358,5 +2359,19 @@ mod tests {
             false,
             Duration::from_millis(PHYSICAL_TRANSLATION_STREAM_STARTUP_MAX_WAIT_MS),
         ));
+    }
+
+    #[test]
+    fn pending_physical_stream_drains_only_for_the_active_cue() {
+        assert!(pending_physical_stream_command_is_ready(None, Some("cue-b")));
+        assert!(pending_physical_stream_command_is_ready(
+            Some("cue-b"),
+            Some("cue-b"),
+        ));
+        assert!(!pending_physical_stream_command_is_ready(
+            Some("cue-a"),
+            Some("cue-b"),
+        ));
+        assert!(!pending_physical_stream_command_is_ready(Some("cue-a"), None));
     }
 }

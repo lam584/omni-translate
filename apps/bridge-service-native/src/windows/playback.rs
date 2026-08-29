@@ -229,17 +229,23 @@ fn run_playback_worker(
         finish_completed_physical_stream(&mut output, &state, &mut physical_stream);
         finish_completed_translation(&output, &state, &translation_queue);
 
-        if physical_stream.is_none() {
-            if let Some(command) = pending_physical_streams.pop_front() {
-                play_physical_translation_stream(
-                    command,
-                    &mut output,
-                    &state,
-                    &mut physical_stream,
-                    &mut cancelled_physical_streams,
-                );
-                continue;
-            }
+        if pending_physical_stream_command_is_ready(
+            physical_stream.as_ref().map(|stream| stream.cue_id.as_str()),
+            pending_physical_streams
+                .front()
+                .and_then(|command| command.job.cue_id.as_deref()),
+        ) {
+            let command = pending_physical_streams
+                .pop_front()
+                .expect("a ready pending physical stream command exists");
+            play_physical_translation_stream(
+                command,
+                &mut output,
+                &state,
+                &mut physical_stream,
+                &mut cancelled_physical_streams,
+            );
+            continue;
         }
 
         let disconnected = match playback_rx.recv_timeout(Duration::from_millis(
@@ -296,6 +302,16 @@ fn run_playback_worker(
             start_next_translation(&mut output, &state, &translation_queue);
         }
     }
+}
+
+fn pending_physical_stream_command_is_ready(
+    active_cue_id: Option<&str>,
+    pending_cue_id: Option<&str>,
+) -> bool {
+    let Some(pending_cue_id) = pending_cue_id else {
+        return false;
+    };
+    active_cue_id.is_none_or(|active_cue_id| active_cue_id == pending_cue_id)
 }
 
 fn play_physical_translation_stream(

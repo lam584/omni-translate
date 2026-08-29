@@ -199,6 +199,124 @@ use super::*;
     }
 
     #[test]
+    fn runtime_sequence_supersedes_unrendered_streaming_frames_within_one_revision() {
+        let store = WatchSessionReportStore::new();
+        let session_id =
+            store.begin_or_reuse("test", "qwen3.5-livetranslate-flash-realtime");
+        let started = {
+            let guard = store.inner.lock().expect("report");
+            guard.as_ref().expect("session").started_unix_ms
+        };
+
+        store.record_source_runtime(
+            "cue-live",
+            "inbound",
+            "The first hypothesis.",
+            false,
+            7,
+            10,
+            Some(SubtitleTranslationStateRuntime::Streaming),
+        );
+        store.record_model_snapshot_for_cue(
+            "cue-live",
+            "dashscope-native-realtime",
+            "第一版",
+            true,
+            None,
+            None,
+        );
+        store.record_publish_runtime(
+            "cue-live",
+            "inbound",
+            "The first hypothesis.",
+            "第一版",
+            &[],
+            false,
+            7,
+            11,
+            Some(SubtitleTranslationStateRuntime::Streaming),
+        );
+        let mut first_render = receipt(&session_id, "cue-live", started.saturating_add(5));
+        first_render.source_text = "The first hypothesis.".to_string();
+        first_render.translated_text = "第一版".to_string();
+        store.record_overlay_receipt(first_render);
+
+        store.record_source_runtime(
+            "cue-live",
+            "inbound",
+            "The second hypothesis.",
+            false,
+            7,
+            12,
+            Some(SubtitleTranslationStateRuntime::Streaming),
+        );
+        store.record_model_snapshot_for_cue(
+            "cue-live",
+            "dashscope-native-realtime",
+            "第二版",
+            true,
+            None,
+            None,
+        );
+        store.record_publish_runtime(
+            "cue-live",
+            "inbound",
+            "The second hypothesis.",
+            "第二版",
+            &[],
+            false,
+            7,
+            13,
+            Some(SubtitleTranslationStateRuntime::Streaming),
+        );
+
+        store.record_source_runtime(
+            "cue-live",
+            "inbound",
+            "The final hypothesis.",
+            true,
+            7,
+            14,
+            Some(SubtitleTranslationStateRuntime::Streaming),
+        );
+        store.record_model_final_for_cue(
+            "cue-live",
+            "dashscope-native-realtime",
+            "最终版本",
+            true,
+            None,
+            None,
+        );
+        store.record_publish_runtime(
+            "cue-live",
+            "inbound",
+            "The final hypothesis.",
+            "最终版本",
+            &[],
+            true,
+            7,
+            15,
+            Some(SubtitleTranslationStateRuntime::Final),
+        );
+        let mut final_render = receipt(&session_id, "cue-live", started.saturating_add(10));
+        final_render.source_text = "The final hypothesis.".to_string();
+        final_render.translated_text = "最终版本".to_string();
+        final_render.committed = true;
+        store.record_overlay_receipt(final_render);
+        store.complete();
+
+        let report = store.snapshot().expect("report");
+        assert_eq!(report.cues.len(), 3);
+        assert_eq!(report.summary.cue_count, 1);
+        assert_eq!(report.summary.complete_cue_count, 1);
+        assert_eq!(report.summary.visible_render_cue_count, 1);
+        assert_eq!(report.summary.unrendered_cue_count, 0);
+        assert_eq!(report.cues[1].comparison_status, "superseded");
+        assert_eq!(report.cues[2].translation_state, Some(SubtitleTranslationStateRuntime::Final));
+        assert_eq!(report.cues[2].comparison_status, "exact");
+    }
+
+    #[test]
     fn overlay_layout_whitespace_matches_published_content() {
         let store = WatchSessionReportStore::new();
         let session_id = store.begin_or_reuse("test", "model");
@@ -272,4 +390,3 @@ use super::*;
         assert_eq!(report.summary.issue_count, 1);
         assert_eq!(report.summary.issue_occurrence_count, 2);
     }
-

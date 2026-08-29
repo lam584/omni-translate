@@ -565,6 +565,7 @@ impl RenderSubmitTracker {
         Self::new_with_reference(total_frames, total_frames, reference_frames)
     }
 
+    #[cfg(test)]
     fn new_with_reference(
         total_frames: usize,
         total_reference_frames: usize,

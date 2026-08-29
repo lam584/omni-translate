@@ -989,7 +989,7 @@ function writeStrictPaidBudgetFixture(runDirectory, cell, {
   const sessionGeneration = 1;
   fs.appendFileSync(
     path.join(runDirectory, 'app.log'),
-    `input_audio_buffer.append.summary {"resampledSamplesTotal":${totalAttemptedSamples}}\n`,
+    `[CONNECT] connected Omni\ninput_audio_buffer.append.summary {"resampledSamplesTotal":${totalAttemptedSamples}}\n`,
     'utf8',
   );
   fs.writeFileSync(path.join(runDirectory, 'provider-input-budget-lease.json'), `${JSON.stringify({

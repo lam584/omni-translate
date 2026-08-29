@@ -2613,6 +2613,7 @@ enum OmniPlaybackReceiveOutcome {
 }
 
 impl OmniPlaybackQueue {
+    #[cfg(test)]
     pub(super) fn new(capacity: usize) -> Self {
         Self::new_with_quiescence(capacity, None)
     }

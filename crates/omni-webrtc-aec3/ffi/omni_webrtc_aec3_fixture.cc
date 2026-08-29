@@ -113,6 +113,12 @@ int main() {
                  stats.residual_echo_likelihood);
     return 6;
   }
+  if (stats.reset_count != 0) {
+    std::fprintf(stderr,
+                 "AEC3 fixture: continuous 600-frame stream reset %llu times\n",
+                 static_cast<unsigned long long>(stats.reset_count));
+    return 7;
+  }
   std::printf("AEC3 fixture: ERLE %.2f dB, residual=%.6f, render=%llu, capture=%llu\n",
               erle_db, stats.residual_echo_likelihood,
               static_cast<unsigned long long>(stats.render_frames),

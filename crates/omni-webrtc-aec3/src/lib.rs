@@ -288,6 +288,7 @@ mod tests {
         let stats = aec.stats().expect("AEC3 stats");
         assert_eq!(stats.render_10ms_frames, TOTAL_FRAMES as u64);
         assert_eq!(stats.capture_10ms_frames, TOTAL_FRAMES as u64);
+        assert_eq!(stats.reset_count, 0);
     }
 
     #[cfg(feature = "linked")]

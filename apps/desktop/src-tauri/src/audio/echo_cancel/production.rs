@@ -145,8 +145,10 @@ impl EchoCancellerEngine for WebRtcAec3Engine {
             render_time.saturating_duration_since(previous) > Duration::from_millis(25)
         }) {
             self.render_underrun_count = self.render_underrun_count.saturating_add(1);
-            self.inner.reset().map_err(|error| error.to_string())?;
-            self.last_capture_time = None;
+            // This timestamp belongs to the desktop scheduling path, not the
+            // WASAPI render clock. A delayed callback is useful telemetry but
+            // is not authority to destroy AEC3 adaptation. Real render-session
+            // changes and the one-shot WASAPI underrun edge reset elsewhere.
         }
         let started_at = Instant::now();
         let result = self.inner.push_render_10ms(frame).map_err(|error| {
@@ -176,8 +178,9 @@ impl EchoCancellerEngine for WebRtcAec3Engine {
             capture_time.saturating_duration_since(previous) > Duration::from_millis(25)
         }) {
             self.capture_underrun_count = self.capture_underrun_count.saturating_add(1);
-            self.inner.reset().map_err(|error| error.to_string())?;
-            self.last_render_time = None;
+            // Capture callback latency alone is likewise not a device/session
+            // discontinuity. The capture worker resets from explicit WASAPI
+            // flags and validated clock regression.
         }
         let mut processed = frame.to_vec();
         let delay_ms = delay_samples

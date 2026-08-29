@@ -225,6 +225,7 @@ fn run_playback_worker(
             &mut cancelled_physical_streams,
             &mut pending_physical_streams,
         );
+        start_buffered_physical_stream_if_ready(&mut output, &state, &mut physical_stream);
         finish_completed_physical_stream(&mut output, &state, &mut physical_stream);
         finish_completed_translation(&output, &state, &translation_queue);
 
@@ -336,6 +337,7 @@ fn play_physical_translation_stream(
         if let Some(current) = active.as_mut().filter(|current| current.cue_id == cue_id) {
             current.ended = true;
         }
+        start_buffered_physical_stream_if_ready(output, state, active);
         return;
     }
     if stream_state == TranslationStreamState::Start {
@@ -375,31 +377,30 @@ fn play_physical_translation_stream(
             estimated_duration_ms: job.estimated_duration_ms,
             playback_frames: 0,
             translation_generation: job.translation_generation,
+            buffering_started_at: Instant::now(),
+            playback_started: false,
+            ducking_enabled: job.ducking_enabled,
+            ducking_depth_percent: job.ducking_depth_percent,
             ended: false,
         });
         let mut current = state.lock().unwrap();
-        current.monitor_playback_state = "playing".to_string();
+        current.monitor_playback_state = "queued".to_string();
         current.emit_translation_status(Some(&cue_id), TranslationPlaybackStatusKind::Queued, "accepted-stream", None);
-        current.emit_translation_status(Some(&cue_id), TranslationPlaybackStatusKind::Started, "physical-playback-stream-started", None);
-        if job.ducking_enabled {
-            let output = output.as_mut().expect("physical output was opened before stream start");
-            output.stream_ducking = true;
-            output.source_player.set_volume(ducked_source_volume(
-                output.source_volume,
-                job.ducking_depth_percent,
-            ));
-        }
+        output
+            .as_mut()
+            .expect("physical output was opened before stream start")
+            .translation_player
+            .pause();
     }
     let Some(stream) = active.as_mut().filter(|current| {
         current.cue_id == cue_id && current.translation_generation == job.translation_generation
     }) else { return; };
-    let Some(output) = output.as_mut() else { return; };
-    flush_source_pending(output);
-    output.translation_generation = Some(job.translation_generation);
-    output.translation_player.set_volume(job.volume);
-    output.translation_player.play();
+    let Some(playback_output) = output.as_mut() else { return; };
+    flush_source_pending(playback_output);
+    playback_output.translation_generation = Some(job.translation_generation);
+    playback_output.translation_player.set_volume(job.volume);
     let frames = job.samples.len() as u64 / INTERNAL_CHANNEL_COUNT as u64;
-    output.translation_player.append(SamplesBuffer::new(
+    playback_output.translation_player.append(SamplesBuffer::new(
         NonZeroU16::new(INTERNAL_CHANNEL_COUNT).unwrap(),
         NonZeroU32::new(INTERNAL_SAMPLE_RATE_HZ).unwrap(),
         job.samples,
@@ -409,10 +410,73 @@ fn play_physical_translation_stream(
         .estimated_duration_ms
         .saturating_add(job.playback_duration_ms);
     let mut current = state.lock().unwrap();
-    current.resolved_physical_playback_device_id = output.resolved_device_id.clone();
+    current.resolved_physical_playback_device_id = playback_output.resolved_device_id.clone();
     current.playback_frames_written = current.playback_frames_written.saturating_add(frames);
     current.translation_queue_end_timestamp_ms = unix_ms().saturating_add(
-        output.translation_player.len() as u64 * 1_000,
+        playback_output.translation_player.len() as u64 * 1_000,
+    );
+    drop(current);
+    start_buffered_physical_stream_if_ready(output, state, active);
+}
+
+fn physical_stream_ready_to_start(
+    playback_frames: u64,
+    ended: bool,
+    buffered_for: Duration,
+) -> bool {
+    let target_frames = INTERNAL_SAMPLE_RATE_HZ as u64
+        * PHYSICAL_TRANSLATION_STREAM_STARTUP_BUFFER_MS
+        / 1_000;
+    ended
+        || playback_frames >= target_frames
+        || buffered_for >= Duration::from_millis(PHYSICAL_TRANSLATION_STREAM_STARTUP_MAX_WAIT_MS)
+}
+
+fn start_buffered_physical_stream_if_ready(
+    output: &mut Option<PlaybackOutput>,
+    state: &Arc<Mutex<BridgeState>>,
+    active: &mut Option<ActivePhysicalTranslationStream>,
+) {
+    let Some(stream) = active.as_mut() else { return; };
+    if stream.playback_started
+        || !physical_stream_ready_to_start(
+            stream.playback_frames,
+            stream.ended,
+            stream.buffering_started_at.elapsed(),
+        )
+    {
+        return;
+    }
+    let Some(output) = output.as_mut() else { return; };
+    stream.playback_started = true;
+    if stream.ducking_enabled {
+        output.stream_ducking = true;
+        output.source_player.set_volume(ducked_source_volume(
+            output.source_volume,
+            stream.ducking_depth_percent,
+        ));
+    }
+    output.translation_player.play();
+    let now_ms = unix_ms();
+    let mut current = state.lock().unwrap();
+    current.monitor_playback_state = "playing".to_string();
+    current.emit_translation_status(
+        Some(&stream.cue_id),
+        TranslationPlaybackStatusKind::Started,
+        "physical-playback-stream-started",
+        None,
+    );
+    drop(current);
+    service_log(
+        LogLevel::Info,
+        &stream.cue_id,
+        &format!(
+            "event=translation_playback_status status=started cueId={} queueAgeMs={} startupBufferedMs={} playbackFrames={}",
+            stream.cue_id,
+            now_ms.saturating_sub(stream.created_at_ms),
+            stream.buffering_started_at.elapsed().as_millis(),
+            stream.playback_frames,
+        ),
     );
 }
 

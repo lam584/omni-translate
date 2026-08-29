@@ -829,3 +829,24 @@ fn replay_gate_timeout_then_late_completed() {
         Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Pending)
     );
 }
+
+#[test]
+fn replay_session_finished_returns_before_the_following_socket_close() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    let mut slice = WorkerSlice::new();
+    let socket = ScriptedRealtimeSocket::new(
+        vec![
+            ScriptStep::Event(json!({ "type": "session.finished" })),
+            ScriptStep::Close,
+        ],
+        harness.shared.clone(),
+    );
+
+    let _socket = harness.tick(socket, &mut slice);
+
+    assert_eq!(
+        harness.shared.lock().expect("scripted state").reconnect_count,
+        0,
+        "the terminal event must return to the shutdown worker before the provider close is read",
+    );
+}

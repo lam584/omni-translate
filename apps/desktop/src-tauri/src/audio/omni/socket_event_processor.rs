@@ -710,6 +710,13 @@ impl OmniSocketEventProcessor {
                             );
                         }
                     }
+                    // The shutdown wrapper marks an authoritative
+                    // `session.finished` before this processor receives it.
+                    // Return the accumulated state immediately so the worker
+                    // can accept that terminal acknowledgement instead of
+                    // running response-stall recovery against a socket the
+                    // provider is now entitled to close.
+                    "session.finished" => return poll_result!(false),
                     "error" => {
                         if is_idle_preconnect_session(
                             store,

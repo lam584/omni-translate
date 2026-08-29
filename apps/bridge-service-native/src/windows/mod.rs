@@ -116,6 +116,8 @@ const OMNI_SOURCE_SUMMARY_INTERVAL_SECS: u64 = 5;
 const TRANSLATION_MAX_PROJECTED_LATENCY_MS: u64 = 5_000;
 const TRANSLATION_PLAYBACK_QUEUE_CAPACITY: usize = 128;
 const PLAYBACK_WORKER_POLL_INTERVAL_MS: u64 = 10;
+const PHYSICAL_TRANSLATION_STREAM_STARTUP_BUFFER_MS: u64 = 4_000;
+const PHYSICAL_TRANSLATION_STREAM_STARTUP_MAX_WAIT_MS: u64 = 4_500;
 const VIRTUAL_MIC_TERMINAL_LEDGER_CAPACITY: usize = 128;
 // `wasapi::AudioClient::new_application_loopback_client` maps false to
 // PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE.
@@ -951,14 +953,18 @@ mod tests {
         start_next_translation, take_process_capture_chunk,
         source_playback_job_is_stale, source_route_error_header,
         source_subscription_is_owner, source_monitor_playback_enabled, source_watchdog_summary,
-        state_snapshot, translation_dispatch_error, AudioRouteDirection, BridgeHost,
+        state_snapshot, translation_dispatch_error, physical_stream_ready_to_start,
+        AudioRouteDirection, BridgeHost,
         CaptureBackend, PlaybackCommand, PlaybackControlCommand, PlaybackJob,
         ProcessLoopbackStatus, SourceCaptureMode, TranslationEnqueueFailureReason,
         TranslationPlaybackQueue, TranslationPlaybackStatusAck,
         TranslationAudioSink, TranslationPlaybackStatusKind, TranslationStatusOutbox,
         translation_non_playback_reason, translation_playback_enabled,
         translation_would_miss_realtime_budget,
-        BRIDGE_PROTOCOL_VERSION, INTERNAL_CHANNEL_COUNT, PROCESS_LOOPBACK_MINIMUM_WINDOWS_BUILD,
+        BRIDGE_PROTOCOL_VERSION, INTERNAL_CHANNEL_COUNT, INTERNAL_SAMPLE_RATE_HZ,
+        PHYSICAL_TRANSLATION_STREAM_STARTUP_BUFFER_MS,
+        PHYSICAL_TRANSLATION_STREAM_STARTUP_MAX_WAIT_MS,
+        PROCESS_LOOPBACK_MINIMUM_WINDOWS_BUILD,
         BridgeState, VirtualMicChunkAdmission, VirtualMicCueLedger,
     };
 
@@ -2325,5 +2331,32 @@ mod tests {
             snapshot["processLoopbackMinimumWindowsBuild"],
             PROCESS_LOOPBACK_MINIMUM_WINDOWS_BUILD
         );
+    }
+
+    #[test]
+    fn physical_stream_waits_for_a_bounded_startup_buffer() {
+        let target_frames = INTERNAL_SAMPLE_RATE_HZ as u64
+            * PHYSICAL_TRANSLATION_STREAM_STARTUP_BUFFER_MS
+            / 1_000;
+        assert!(!physical_stream_ready_to_start(
+            target_frames - 1,
+            false,
+            Duration::from_millis(PHYSICAL_TRANSLATION_STREAM_STARTUP_MAX_WAIT_MS - 1),
+        ));
+        assert!(physical_stream_ready_to_start(
+            target_frames,
+            false,
+            Duration::ZERO,
+        ));
+    }
+
+    #[test]
+    fn physical_stream_startup_is_forced_by_end_or_max_wait() {
+        assert!(physical_stream_ready_to_start(1, true, Duration::ZERO));
+        assert!(physical_stream_ready_to_start(
+            1,
+            false,
+            Duration::from_millis(PHYSICAL_TRANSLATION_STREAM_STARTUP_MAX_WAIT_MS),
+        ));
     }
 }

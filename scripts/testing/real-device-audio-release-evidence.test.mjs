@@ -243,7 +243,7 @@ function buildAuthorizedFixture({
     'playback.json': {
       passed: true,
       playbackMode: 'wasapi-media-injector',
-      sourceGainDb: -9,
+      sourceGainDb: -5,
       postrollSilenceFrames: 144000,
       postrollSilenceSeconds: 3,
       injectorProcessId: 1300,

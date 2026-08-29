@@ -656,7 +656,7 @@ function writeAuthorityRawCell(root, directoryName, {
     'physical-playback-device.json': device,
     'playback.json': {
       playbackMode: 'wasapi-media-injector',
-      sourceGainDb: -9,
+      sourceGainDb: -5,
       postrollSilenceFrames: 144000,
       postrollSilenceSeconds: 3,
       mediaSha256: sha256File(path.resolve('scripts/testing/fixtures/watch-mode-en-original.wav')),

@@ -71,6 +71,10 @@ struct ActivePhysicalTranslationStream {
     estimated_duration_ms: u64,
     playback_frames: u64,
     translation_generation: u64,
+    buffering_started_at: Instant,
+    playback_started: bool,
+    ducking_enabled: bool,
+    ducking_depth_percent: u64,
     ended: bool,
 }
 

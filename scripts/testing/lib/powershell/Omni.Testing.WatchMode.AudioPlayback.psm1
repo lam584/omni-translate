@@ -55,7 +55,7 @@ function Start-TestMediaPlayback {
   if (Test-Path -LiteralPath $injectorExe -PathType Leaf) {
     $resolvedMediaPath = (Resolve-Path -LiteralPath $PathToMedia).Path
     $mediaSha256 = (Get-FileHash -LiteralPath $resolvedMediaPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $strictSourceGainDb = -9
+    $strictSourceGainDb = -5
     $strictPostrollSilenceSeconds = 3
     $args = @(
       "--media", $resolvedMediaPath,

@@ -243,7 +243,7 @@ export const healthySystemMetrics = {
 
 export const healthyAecPlayback = {
   playbackMode: 'wasapi-media-injector',
-  sourceGainDb: -9,
+  sourceGainDb: -5,
   postrollSilenceFrames: 144000,
   postrollSilenceSeconds: 3,
   mediaPath: 'scripts/testing/fixtures/watch-mode-en-original.wav',

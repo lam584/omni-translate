@@ -101,6 +101,14 @@ fn midpoint_restart_requires_every_translated_playback_owner_to_be_idle() {
             pending_bridge_acks: 1,
             ..idle
         },
+        TranslationPlaybackQuiescenceSnapshot {
+            active_bridge_cues: 1,
+            ..idle
+        },
+        TranslationPlaybackQuiescenceSnapshot {
+            restart_barrier: true,
+            ..idle
+        },
     ] {
         assert!(!super::process_exclusion_restart_is_quiescent(false, busy));
     }

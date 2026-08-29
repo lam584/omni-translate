@@ -336,11 +336,12 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
     stream_state: Option<TranslationStreamState>,
     expected_owner: Option<&BridgeTranslationSinkOwner>,
 ) -> Result<u64, String> {
-    let _pending_ack = expected_owner.map(|_| {
-        app.state::<crate::audio::state::AudioStateStore>()
-            .translation_playback_quiescence()
-            .begin_bridge_ack()
-    });
+    let _pending_ack = matches!(translation_sink, TranslationAudioSink::PhysicalPlayback)
+        .then(|| {
+            app.state::<crate::audio::state::AudioStateStore>()
+                .translation_playback_quiescence()
+                .begin_bridge_ack()
+        });
     let route_direction = parse_route_direction(route_direction)?;
     let bridge_state = app.state::<BridgeStateStore>();
     let snapshot = bridge_state.snapshot();

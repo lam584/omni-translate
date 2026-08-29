@@ -41,15 +41,12 @@ function selectHighEnergyAnchors(cue) {
     const regionStart = Math.floor(totalFrames * regionIndex / anchorCount);
     const regionEnd = Math.floor(totalFrames * (regionIndex + 1) / anchorCount);
     const regionFrames = regionEnd - regionStart;
-    const windowFrames = Math.min(
-      Math.floor(sampleRateHz * 0.75),
-      Math.max(minimumFrames, Math.floor(regionFrames * 0.8)),
-    );
+    const windowFrames = minimumFrames;
     if (regionFrames < minimumFrames || windowFrames > regionFrames) {
       return { anchors: [], auditable: false, reason: 'cue cannot provide the required independent 400ms acoustic windows' };
     }
     const strideFrames = Math.max(1, Math.floor(sampleRateHz * 0.05));
-    let best = null;
+    const candidates = [];
     for (
       let frameOffset = regionStart;
       frameOffset + windowFrames <= regionEnd;
@@ -58,25 +55,61 @@ function selectHighEnergyAnchors(cue) {
       const sampleOffset = frameOffset * channelCount;
       const sampleCount = windowFrames * channelCount;
       const rms = pcmWindowRms(cue.pcmBytes, sampleOffset, sampleCount);
-      if (!best || rms > best.rms) best = { frameOffset, sampleOffset, sampleCount, rms };
+      candidates.push({ frameOffset, sampleOffset, sampleCount, rms });
     }
-    if (!best || best.rms < 0.003) {
+    candidates.sort((left, right) => right.rms - left.rms || left.frameOffset - right.frameOffset);
+    const maximumRms = candidates[0]?.rms ?? 0;
+    const highEnergyCandidates = [];
+    for (const candidate of candidates) {
+      if (candidate.rms < maximumRms * 0.8) break;
+      if (highEnergyCandidates.some((selected) => (
+        candidate.frameOffset < selected.frameOffset + windowFrames
+        && selected.frameOffset < candidate.frameOffset + windowFrames
+      ))) continue;
+      highEnergyCandidates.push(candidate);
+      if (highEnergyCandidates.length === 3) break;
+    }
+    if (maximumRms < 0.003 || highEnergyCandidates.length === 0) {
       return { anchors: [], auditable: false, reason: `cue ${anchorNames[regionIndex]} acoustic window is silent` };
     }
     anchors.push({
       name: anchorNames[regionIndex],
-      frameOffset: best.frameOffset,
-      rms: rounded(best.rms),
-      reference: {
-        referencePath: cue.pcmPath,
-        referenceSampleRateHz: sampleRateHz,
-        referenceChannels: channelCount,
-        referenceOffsetSamples: best.sampleOffset,
-        referenceSampleCount: best.sampleCount,
-      },
+      candidates: highEnergyCandidates.map((candidate) => ({
+        frameOffset: candidate.frameOffset,
+        rms: rounded(candidate.rms),
+        reference: {
+          referencePath: cue.pcmPath,
+          referenceSampleRateHz: sampleRateHz,
+          referenceChannels: channelCount,
+          referenceOffsetSamples: candidate.sampleOffset,
+          referenceSampleCount: candidate.sampleCount,
+        },
+      })),
     });
   }
   return { anchors, auditable: true, reason: null };
+}
+
+function expectedAnchorPlaybackAtMs(cue, anchor, startedAtMs) {
+  const sampleRateHz = Number(cue.sampleRateHz);
+  const channelCount = Number(cue.channelCount);
+  const anchorSampleOffset = anchor.frameOffset * channelCount;
+  let scheduledAtMs = startedAtMs;
+  for (const chunk of cue.chunks) {
+    const chunkSampleOffset = Number(chunk.sampleOffset);
+    const chunkSampleCount = Number(chunk.sampleCount);
+    const chunkDurationMs = chunkSampleCount * 1_000 / (sampleRateHz * channelCount);
+    scheduledAtMs = Math.max(scheduledAtMs, Number(chunk.acceptedAtMs));
+    if (
+      anchorSampleOffset >= chunkSampleOffset
+      && anchorSampleOffset < chunkSampleOffset + chunkSampleCount
+    ) {
+      return scheduledAtMs
+        + (anchorSampleOffset - chunkSampleOffset) * 1_000 / (sampleRateHz * channelCount);
+    }
+    scheduledAtMs += chunkDurationMs;
+  }
+  throw new Error(`anchor ${anchor.name} is outside translated PCM chunk coverage`);
 }
 
 function readRegularFile(filePath, label) {
@@ -238,6 +271,7 @@ function validateTranslatedAuthority({ authorityDirectory, expectedIdentity }) {
       violations.push(`translated PCM cue ${cue.cueId} chunk metadata is missing or inconsistent`);
     }
     let nextSampleOffset = 0;
+    let priorAcceptedAtMs = 0;
     for (const [chunkPosition, chunk] of chunks.entries()) {
       const chunkSampleCount = Number(chunk.sampleCount);
       if (
@@ -249,7 +283,9 @@ function validateTranslatedAuthority({ authorityDirectory, expectedIdentity }) {
         || chunk.requestId !== cue.requestIds?.[chunkPosition]
         || !Number.isSafeInteger(Number(chunk.acceptedAtMs))
         || Number(chunk.acceptedAtMs) <= 0
+        || Number(chunk.acceptedAtMs) < priorAcceptedAtMs
       ) violations.push(`translated PCM cue ${cue.cueId} chunk ${chunkPosition} metadata is invalid`);
+      priorAcceptedAtMs = Number(chunk.acceptedAtMs);
       nextSampleOffset += Number.isInteger(chunkSampleCount) && chunkSampleCount > 0 ? chunkSampleCount : 0;
     }
     if (nextSampleOffset !== sampleCount) violations.push(`translated PCM cue ${cue.cueId} chunk sample coverage mismatch`);
@@ -397,34 +433,45 @@ export function buildTranslatedPcmLoopbackAuthority({
     }
     const cue = cueById.get(cueId);
     const anchorMatches = referenceSet.anchors.map((anchor, anchorIndex) => {
-      const expectedStart = Math.round(
-        (startedAtMs - recordingStart) * LOOPBACK_SAMPLE_RATE_HZ / 1000
-        + anchor.frameOffset * LOOPBACK_SAMPLE_RATE_HZ / Number(cue.sampleRateHz),
-      );
-      const diagonal = matchReference(anchor.reference, expectedStart);
-      let strongestWrongAnchorScore = 0;
-      for (const [otherCueId, otherSet] of references.entries()) {
-        if (otherCueId === cueId || !otherSet.auditable || otherSet.anchors.length === 0) continue;
-        const relativeIndex = referenceSet.anchors.length === 1
-          ? 0
-          : anchorIndex / (referenceSet.anchors.length - 1);
-        const wrongAnchor = otherSet.anchors[Math.round(relativeIndex * (otherSet.anchors.length - 1))];
-        strongestWrongAnchorScore = Math.max(
-          strongestWrongAnchorScore,
-          matchReference(wrongAnchor.reference, expectedStart).score,
+      const candidateMatches = anchor.candidates.map((candidate) => {
+        const expectedAnchorAtMs = expectedAnchorPlaybackAtMs(cue, candidate, startedAtMs);
+        const expectedStart = Math.round(
+          (expectedAnchorAtMs - recordingStart) * LOOPBACK_SAMPLE_RATE_HZ / 1_000,
         );
-      }
-      const identityMargin = diagonal.score - strongestWrongAnchorScore;
-      return {
-        anchor: anchor.name,
-        referenceFrameOffset: anchor.frameOffset,
-        referenceRms: anchor.rms,
-        expectedPlaybackStartSeconds: rounded(expectedStart / LOOPBACK_SAMPLE_RATE_HZ),
-        strongestWrongAnchorScore: rounded(strongestWrongAnchorScore),
-        identityMargin: rounded(identityMargin),
-        ...diagonal,
-        passed: diagonal.passed && identityMargin >= 0.08,
-      };
+        const diagonal = matchReference(candidate.reference, expectedStart);
+        let strongestWrongAnchorScore = 0;
+        for (const [otherCueId, otherSet] of references.entries()) {
+          if (otherCueId === cueId || !otherSet.auditable || otherSet.anchors.length === 0) continue;
+          const relativeIndex = referenceSet.anchors.length === 1
+            ? 0
+            : anchorIndex / (referenceSet.anchors.length - 1);
+          const wrongAnchor = otherSet.anchors[Math.round(relativeIndex * (otherSet.anchors.length - 1))];
+          for (const wrongCandidate of wrongAnchor.candidates) {
+            strongestWrongAnchorScore = Math.max(
+              strongestWrongAnchorScore,
+              matchReference(wrongCandidate.reference, expectedStart).score,
+            );
+          }
+        }
+        const identityMargin = diagonal.score - strongestWrongAnchorScore;
+        return {
+          anchor: anchor.name,
+          candidateCount: anchor.candidates.length,
+          referenceFrameOffset: candidate.frameOffset,
+          referenceRms: candidate.rms,
+          expectedPlaybackStartSeconds: rounded(expectedStart / LOOPBACK_SAMPLE_RATE_HZ),
+          strongestWrongAnchorScore: rounded(strongestWrongAnchorScore),
+          identityMargin: rounded(identityMargin),
+          ...diagonal,
+          passed: diagonal.passed && identityMargin >= 0.08,
+        };
+      });
+      return candidateMatches.sort((left, right) => (
+        Number(right.passed) - Number(left.passed)
+        || right.score - left.score
+        || right.identityMargin - left.identityMargin
+        || left.referenceFrameOffset - right.referenceFrameOffset
+      ))[0];
     });
     const passingAnchors = anchorMatches.filter((entry) => entry.passed);
     const anchorsOrdered = anchorMatches.every((entry, index) => (

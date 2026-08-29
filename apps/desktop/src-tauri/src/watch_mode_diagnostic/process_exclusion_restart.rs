@@ -33,9 +33,10 @@ pub(super) fn schedule_process_exclusion_restart(
         tokio::time::sleep(Duration::from_millis(restart_after_ms)).await;
         let started_at_unix_ms = crate::audio::time_utils::unix_ms();
         let playback_drain_started = Instant::now();
-        loop {
+        let _restart_barrier = loop {
             let audio_state = app.state::<AudioStateStore>();
-            let playback = audio_state.translation_playback_quiescence().snapshot();
+            let quiescence = audio_state.translation_playback_quiescence();
+            let playback = quiescence.snapshot();
             if process_exclusion_restart_is_quiescent(
                 audio_state.inbound_speaker_playback_active(),
                 playback,
@@ -46,7 +47,9 @@ pub(super) fn schedule_process_exclusion_restart(
                     audio_state.inbound_speaker_playback_active(),
                     playback,
                 ) {
-                    break;
+                    if let Some(barrier) = quiescence.try_begin_restart_barrier() {
+                        break barrier;
+                    }
                 }
             }
             if playback_drain_started.elapsed()
@@ -58,17 +61,19 @@ pub(super) fn schedule_process_exclusion_restart(
                     "restart-quiescence",
                     started_at_unix_ms,
                     &format!(
-                        "restart-quiescence-timeout: translated playback did not reach a stable idle window before the controlled Bridge restart; pendingNativeAudio={} queuedCommands={} activeCommands={} pendingBridgeAcks={}",
+                        "restart-quiescence-timeout: translated playback did not reach a stable idle window before the controlled Bridge restart; pendingNativeAudio={} queuedCommands={} activeCommands={} pendingBridgeAcks={} activeBridgeCues={} restartBarrier={}",
                         playback.pending_native_audio,
                         playback.queued_commands,
                         playback.active_commands,
                         playback.pending_bridge_acks,
+                        playback.active_bridge_cues,
+                        playback.restart_barrier,
                     ),
                 );
                 return;
             }
             tokio::time::sleep(PROCESS_EXCLUSION_RESTART_POLL).await;
-        }
+        };
         let old = match wait_for_process_exclusion_source(&app, None).await {
             Ok(observation) => observation,
             Err(error) => {

@@ -1,5 +1,5 @@
 use std::collections::{HashSet, VecDeque};
-use std::sync::{mpsc::Sender, Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{mpsc::Sender, Arc, Condvar, Mutex, MutexGuard, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use super::contracts::{
@@ -101,6 +101,8 @@ pub(crate) struct TranslationPlaybackQuiescenceSnapshot {
     pub(crate) queued_commands: usize,
     pub(crate) active_commands: usize,
     pub(crate) pending_bridge_acks: usize,
+    pub(crate) active_bridge_cues: usize,
+    pub(crate) restart_barrier: bool,
 }
 
 impl TranslationPlaybackQuiescenceSnapshot {
@@ -109,27 +111,37 @@ impl TranslationPlaybackQuiescenceSnapshot {
             && self.queued_commands == 0
             && self.active_commands == 0
             && self.pending_bridge_acks == 0
+            && self.active_bridge_cues == 0
+            && !self.restart_barrier
     }
 }
 
 #[derive(Default)]
+struct TranslationPlaybackQuiescenceState {
+    snapshot: TranslationPlaybackQuiescenceSnapshot,
+    active_bridge_cues: HashSet<String>,
+}
+
+#[derive(Default)]
 pub(crate) struct TranslationPlaybackQuiescence {
-    state: Mutex<TranslationPlaybackQuiescenceSnapshot>,
+    state: Mutex<TranslationPlaybackQuiescenceState>,
+    restart_completed: Condvar,
 }
 
 impl TranslationPlaybackQuiescence {
     pub(crate) fn snapshot(&self) -> TranslationPlaybackQuiescenceSnapshot {
-        *self
+        self
             .state
             .lock()
             .expect("translation playback quiescence state poisoned")
+            .snapshot
     }
 
     pub(crate) fn set_pending_native_audio(&self, pending: bool) {
         self.state
             .lock()
             .expect("translation playback quiescence state poisoned")
-            .pending_native_audio = pending;
+            .snapshot.pending_native_audio = pending;
     }
 
     pub(crate) fn set_queue_state(&self, queued_commands: usize, active_commands: usize) {
@@ -137,8 +149,8 @@ impl TranslationPlaybackQuiescence {
             .state
             .lock()
             .expect("translation playback quiescence state poisoned");
-        state.queued_commands = queued_commands;
-        state.active_commands = active_commands;
+        state.snapshot.queued_commands = queued_commands;
+        state.snapshot.active_commands = active_commands;
     }
 
     pub(crate) fn begin_bridge_ack(self: &Arc<Self>) -> TranslationPlaybackAckGuard {
@@ -146,8 +158,58 @@ impl TranslationPlaybackQuiescence {
             .state
             .lock()
             .expect("translation playback quiescence state poisoned");
-        state.pending_bridge_acks = state.pending_bridge_acks.saturating_add(1);
+        while state.snapshot.restart_barrier {
+            state = self
+                .restart_completed
+                .wait(state)
+                .expect("translation playback quiescence state poisoned");
+        }
+        state.snapshot.pending_bridge_acks = state.snapshot.pending_bridge_acks.saturating_add(1);
         TranslationPlaybackAckGuard(self.clone())
+    }
+
+    pub(crate) fn observe_bridge_playback_status(&self, cue_id: &str, status: &str) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("translation playback quiescence state poisoned");
+        match status {
+            "queued" | "started" => {
+                state.active_bridge_cues.insert(cue_id.to_string());
+            }
+            "completed" | "route-failed" | "stale-dropped" => {
+                state.active_bridge_cues.remove(cue_id);
+            }
+            _ => return,
+        }
+        state.snapshot.active_bridge_cues = state.active_bridge_cues.len();
+    }
+
+    pub(crate) fn wait_for_restart_barrier(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("translation playback quiescence state poisoned");
+        while state.snapshot.restart_barrier {
+            state = self
+                .restart_completed
+                .wait(state)
+                .expect("translation playback quiescence state poisoned");
+        }
+    }
+
+    pub(crate) fn try_begin_restart_barrier(
+        self: &Arc<Self>,
+    ) -> Option<TranslationPlaybackRestartGuard> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("translation playback quiescence state poisoned");
+        if !state.snapshot.is_quiescent() {
+            return None;
+        }
+        state.snapshot.restart_barrier = true;
+        Some(TranslationPlaybackRestartGuard(self.clone()))
     }
 }
 
@@ -160,7 +222,22 @@ impl Drop for TranslationPlaybackAckGuard {
             .state
             .lock()
             .expect("translation playback quiescence state poisoned");
-        state.pending_bridge_acks = state.pending_bridge_acks.saturating_sub(1);
+        state.snapshot.pending_bridge_acks = state.snapshot.pending_bridge_acks.saturating_sub(1);
+    }
+}
+
+pub(crate) struct TranslationPlaybackRestartGuard(Arc<TranslationPlaybackQuiescence>);
+
+impl Drop for TranslationPlaybackRestartGuard {
+    fn drop(&mut self) {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .expect("translation playback quiescence state poisoned");
+        state.snapshot.restart_barrier = false;
+        drop(state);
+        self.0.restart_completed.notify_all();
     }
 }
 
@@ -1523,6 +1600,36 @@ mod tests {
             assert!(!quiescence.snapshot().is_quiescent());
         }
         assert!(quiescence.snapshot().is_quiescent());
+    }
+
+    #[test]
+    fn bridge_playback_status_holds_restart_quiescence_through_physical_completion() {
+        let store = AudioStateStore::new();
+        let quiescence = store.translation_playback_quiescence();
+        quiescence.observe_bridge_playback_status("cue-a", "queued");
+        quiescence.observe_bridge_playback_status("cue-a", "started");
+        assert_eq!(quiescence.snapshot().active_bridge_cues, 1);
+        assert!(!quiescence.snapshot().is_quiescent());
+
+        quiescence.observe_bridge_playback_status("cue-a", "completed");
+        assert_eq!(quiescence.snapshot().active_bridge_cues, 0);
+        assert!(quiescence.snapshot().is_quiescent());
+    }
+
+    #[test]
+    fn restart_barrier_is_acquired_only_from_idle_and_released_by_its_guard() {
+        let store = AudioStateStore::new();
+        let quiescence = store.translation_playback_quiescence();
+        let barrier = quiescence
+            .try_begin_restart_barrier()
+            .expect("idle playback should acquire the restart barrier");
+        assert!(quiescence.snapshot().restart_barrier);
+        assert!(quiescence.try_begin_restart_barrier().is_none());
+        drop(barrier);
+        assert!(!quiescence.snapshot().restart_barrier);
+
+        quiescence.observe_bridge_playback_status("cue-b", "started");
+        assert!(quiescence.try_begin_restart_barrier().is_none());
     }
 
     #[test]

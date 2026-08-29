@@ -648,6 +648,9 @@ fn run_bridge_source_route_worker(
                         &session_id,
                     );
                     if disposition == BridgeTranslationStatusDisposition::Apply {
+                        store
+                            .translation_playback_quiescence()
+                            .observe_bridge_playback_status(&cue_id, &status);
                         record_bridge_translation_status(
                             &app,
                             store,

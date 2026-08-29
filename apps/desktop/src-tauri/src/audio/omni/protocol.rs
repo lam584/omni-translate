@@ -1864,6 +1864,7 @@ pub(super) fn write_native_output_preview_to_cue(
     cue_id
 }
 
+#[cfg(test)]
 pub(super) fn write_native_output_final_to_cue(
     store: &AudioStateStore,
     direction: &str,
@@ -2461,12 +2462,21 @@ fn apply_model_specific_turn_detection(
     model: &str,
     audio_mode: RealtimeAudioMode,
 ) {
-    if audio_mode != RealtimeAudioMode::ServerVad
-        || !model
-            .trim()
-            .to_ascii_lowercase()
-            .starts_with("qwen-audio-3.0-realtime")
+    if audio_mode != RealtimeAudioMode::ServerVad {
+        return;
+    }
+    let model = model.trim().to_ascii_lowercase();
+    if model.starts_with("qwen3.5-omni-")
+        || model.starts_with("qwen3.5-livetranslate-")
     {
+        // Continuous Watch media contains sentence pauses in the 400-520ms
+        // range but no 800ms gaps. Keeping the generic 800ms terminal merges
+        // most of the programme into minute-long responses, which are then
+        // cancelled by the next turn and cannot meet realtime playback.
+        session_update["session"]["turn_detection"]["silence_duration_ms"] = json!(400);
+        return;
+    }
+    if !model.starts_with("qwen-audio-3.0-realtime") {
         return;
     }
     // The generic Omni defaults are intentionally sensitive for arbitrary

@@ -90,6 +90,11 @@ impl OmniEventProcessor {
     fn bridge_translation_owner<R: tauri::Runtime>(
         app: &AppHandle<R>,
     ) -> Option<crate::bridge::ipc::BridgeTranslationSinkOwner> {
+        if let Some(audio_state) = app.try_state::<AudioStateStore>() {
+            audio_state
+                .translation_playback_quiescence()
+                .wait_for_restart_barrier();
+        }
         app.try_state::<crate::bridge::state::BridgeStateStore>()
             .and_then(|state| {
                 crate::bridge::ipc::BridgeTranslationSinkOwner::from_snapshot(&state.snapshot())
@@ -226,6 +231,13 @@ impl OmniEventProcessor {
                         pending_audio_buffer.extend_from_slice(&samples);
                     }
                     let audio_state = app.state::<AudioStateStore>();
+                    // Publish admission before reading the Bridge owner. This
+                    // closes the idle-check race where restart could acquire
+                    // its barrier between the first full provider delta and
+                    // the queued stream command.
+                    audio_state
+                        .translation_playback_quiescence()
+                        .set_pending_native_audio(true);
                     if let Some(cue_id) = cue_id.filter(|value| !value.trim().is_empty()) {
                         audio_state.archive_translated_pcm(
                             cue_id,
@@ -744,12 +756,12 @@ impl OmniEventProcessor {
             Some(elapsed_ms_since(&session_started_at));
         event_diagnostics
             .claim_native_response_owner_for_event(evt, current_cue_id.as_deref());
-        let authoritative_output_final = output_mode == OmniOutputMode::TextAndAudio
+        let provider_audio_transcript_done = output_mode == OmniOutputMode::TextAndAudio
             && matches!(
                 event_type,
                 "response.audio_transcript.done" | "response.output_audio_transcript.done"
             );
-        if !subtitle_translate_active && authoritative_output_final {
+        if !subtitle_translate_active && provider_audio_transcript_done {
             if let Some(cue_id) = event_diagnostics
                 .native_response_cue_id
                 .as_deref()
@@ -775,11 +787,13 @@ impl OmniEventProcessor {
             current_cue_id.as_deref(),
             &pending_source_text,
         );
-        if !subtitle_translate_active
-            && authoritative_output_final
-            && !pending_translated_text.trim().is_empty()
-        {
-            let cue_id = write_native_output_final_to_cue(
+        if !subtitle_translate_active && !pending_translated_text.trim().is_empty() {
+            // An audio transcript may be marked done before the owning
+            // response terminal arrives. DashScope can still terminate that
+            // response as cancelled/failed (for example turn_detected), so
+            // keep the visible transcript replaceable here. response.done is
+            // the only event allowed to commit the translation final.
+            write_native_output_preview_to_cue(
                 store,
                 direction,
                 &mut event_diagnostics.native_response_cue_id,
@@ -790,22 +804,18 @@ impl OmniEventProcessor {
                 event_diagnostics.current_cue_origin =
                     Some("native_audio_transcript_done".to_string());
             }
+            let cue_id = event_diagnostics
+                .native_response_cue_id
+                .as_deref()
+                .unwrap_or("(none)");
             let _ = diag_log(
                 &app,
                 "omni",
                 "debug",
                 format!(
-                    "[TRANS_NATIVE_FINAL] native transcript display segments finalized cue_id={cue_id} translated_len={}",
+                    "[TRANS_NATIVE_PROVISIONAL] native transcript remains replaceable until response.done cue_id={cue_id} translated_len={}",
                     pending_translated_text.len()
                 ),
-            );
-        } else if !subtitle_translate_active && !pending_translated_text.trim().is_empty() {
-            write_native_output_preview_to_cue(
-                store,
-                direction,
-                &mut event_diagnostics.native_response_cue_id,
-                &response_source_text,
-                &pending_translated_text,
             );
         }
         let cue_id_str = event_diagnostics
@@ -909,7 +919,7 @@ mod audio_done_tests {
     }
 
     #[test]
-    fn text_and_audio_transcript_done_is_an_authoritative_final() {
+    fn text_and_audio_transcript_done_stays_provisional_until_response_done() {
         let app = app();
         let handle = app.handle().clone();
         let store = handle.state::<AudioStateStore>();
@@ -939,8 +949,8 @@ mod audio_done_tests {
             .iter()
             .find(|cue| cue.cue_id == "cue-audio")
             .expect("audio transcript cue");
-        assert!(cue.translation_committed);
-        assert!(cue.display_segments.iter().all(|segment| !segment.pending));
+        assert!(!cue.translation_committed);
+        assert!(cue.display_segments.iter().any(|segment| segment.pending));
     }
 
     #[test]

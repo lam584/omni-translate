@@ -856,14 +856,13 @@ use self::protocol::{
     response_stream_owns_current_cue,
     extract_response_done_text,
     set_socket_read_timeout, set_socket_write_timeout, start_omni_playback,
-    try_reconnect, write_live_source_to_cue, write_native_output_final_to_cue,
-    write_native_output_preview_to_cue,
+    try_reconnect, write_live_source_to_cue, write_native_output_preview_to_cue,
     update_native_response_cue_source,
     OmniEventDiagnostics, OmniPlaybackCommand, OmniPlaybackEnqueueOutcome,
     OmniPlaybackOverflowReason, OmniPlaybackQueue, OmniPlaybackWorker,
 };
 #[cfg(test)]
-use self::protocol::write_native_translation_to_cue;
+use self::protocol::{write_native_output_final_to_cue, write_native_translation_to_cue};
 #[cfg(test)]
 use protocol::{build_omni_session_update, build_omni_session_update_with_output_mode};
 #[cfg(test)]
@@ -983,6 +982,29 @@ mod native_translation_tests {
                 .and_then(Value::as_u64),
             Some(800)
         );
+    }
+
+    #[test]
+    fn qwen35_release_models_split_continuous_watch_audio_at_fixture_pauses() {
+        for model in [
+            "qwen3.5-omni-flash-realtime",
+            "qwen3.5-livetranslate-flash-realtime",
+        ] {
+            let session = build_omni_session_update(
+                model,
+                "longanqian",
+                "translate naturally",
+                RealtimeAudioMode::ServerVad,
+                "zh-CN",
+            );
+            assert_eq!(
+                session
+                    .pointer("/session/turn_detection/silence_duration_ms")
+                    .and_then(Value::as_u64),
+                Some(400),
+                "{model}",
+            );
+        }
     }
 
     #[test]

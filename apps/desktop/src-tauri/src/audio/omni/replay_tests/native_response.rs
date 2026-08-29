@@ -475,6 +475,11 @@ fn replay_turn_detected_response_uses_cancellation_terminal() {
             "delta": "不完整"
         })),
         ScriptStep::Event(json!({
+            "type": "response.audio_transcript.done",
+            "response_id": "resp-turn-detected",
+            "transcript": "不完整的译文"
+        })),
+        ScriptStep::Event(json!({
             "type": "response.done",
             "response": {
                 "id": "resp-turn-detected",
@@ -487,7 +492,7 @@ fn replay_turn_detected_response_uses_cancellation_terminal() {
         })),
     ];
     let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
-    for _ in 0..5 {
+    for _ in 0..6 {
         socket = harness.tick(socket, &mut slice);
     }
 

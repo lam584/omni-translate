@@ -91,6 +91,8 @@ function createFixture({
   playbackOffsetsSeconds: providedOffsets = [3.2, 9.4],
   renderedPlaybackOffsetsSeconds = providedOffsets,
   streamChunkGapSeconds = 0,
+  renderUsingAcceptedChunkSchedule = false,
+  interfereWithStrongestMiddleAnchor = false,
   cueSeconds = [2.6, 2.6],
   playbackOwnerGenerations = [10, 20],
 } = {}) {
@@ -101,7 +103,14 @@ function createFixture({
   const recordingStartedAtEpochMs = new Date(2026, 7, 13, 12, 0, 0, 0).getTime();
   const cueIds = ['omni-cue-test-1', 'omni-cue-test-2'];
   const playbackOffsetsSeconds = providedOffsets;
-  const recording = sourceMediaPcm();
+  const requiredRecordingSeconds = Math.max(
+    16,
+    ...renderedPlaybackOffsetsSeconds.map((offset, index) => offset + cueSeconds[index] + 4),
+  );
+  const recording = sourceMediaPcm(
+    16_000,
+    renderUsingAcceptedChunkSchedule ? Math.max(32, requiredRecordingSeconds) : requiredRecordingSeconds,
+  );
   const acceptedCues = [];
   for (let index = 0; index < cueIds.length; index += 1) {
     const cueSeed = 11 + index * 19;
@@ -116,9 +125,14 @@ function createFixture({
         : samples;
     const chunkLength = streamChunkGapSeconds > 0 ? Math.ceil(samples.length / 3) : samples.length;
     const chunks = [];
+    let priorRenderedChunkEndSeconds = renderedPlaybackOffsetsSeconds[index];
     for (let sampleOffset = 0, chunkIndex = 0; sampleOffset < samples.length; sampleOffset += chunkLength, chunkIndex += 1) {
       const sampleCount = Math.min(chunkLength, samples.length - sampleOffset);
-      const chunkStartSeconds = renderedPlaybackOffsetsSeconds[index] + sampleOffset / 24_000;
+      const acceptedAtSeconds = playbackOffsetsSeconds[index] - 0.8
+        + chunkIndex * streamChunkGapSeconds;
+      const chunkStartSeconds = renderUsingAcceptedChunkSchedule
+        ? Math.max(priorRenderedChunkEndSeconds, acceptedAtSeconds)
+        : renderedPlaybackOffsetsSeconds[index] + sampleOffset / 24_000;
       const loopback = renderBridgeReferenceToLoopback(
         renderedSamples.slice(sampleOffset, sampleOffset + sampleCount), 24_000,
       );
@@ -132,9 +146,9 @@ function createFixture({
         requestId: `request-${index}-${chunkIndex}`,
         sampleOffset,
         sampleCount,
-        acceptedAtMs: Math.round(recordingStartedAtEpochMs
-          + (playbackOffsetsSeconds[index] - 0.8 + chunkIndex * streamChunkGapSeconds) * 1_000),
+        acceptedAtMs: Math.round(recordingStartedAtEpochMs + acceptedAtSeconds * 1_000),
       });
+      priorRenderedChunkEndSeconds = chunkStartSeconds + sampleCount / 24_000;
     }
     acceptedCues.push({
       sequence: index + 1,
@@ -156,6 +170,27 @@ function createFixture({
       playbackOwnerGeneration: playbackOwnerGenerations[index],
       physicalPlaybackDeviceId: '{hda-test-endpoint}',
     });
+    if (interfereWithStrongestMiddleAnchor && index === 0) {
+      const windowFrames = Math.ceil(24_000 * 0.4);
+      const regionStart = Math.floor(samples.length / 3);
+      const regionEnd = Math.floor(samples.length * 2 / 3);
+      let strongest = { frameOffset: regionStart, rms: -1 };
+      for (let frameOffset = regionStart; frameOffset + windowFrames <= regionEnd; frameOffset += 1_200) {
+        let squareSum = 0;
+        for (let offset = 0; offset < windowFrames; offset += 1) {
+          squareSum += samples[frameOffset + offset] ** 2;
+        }
+        const rms = Math.sqrt(squareSum / windowFrames);
+        if (rms > strongest.rms) strongest = { frameOffset, rms };
+      }
+      const interferenceStart = Math.round(
+        (renderedPlaybackOffsetsSeconds[index] + strongest.frameOffset / 24_000) * 16_000,
+      );
+      for (let offset = 0; offset < Math.round(0.4 * 16_000); offset += 1) {
+        const time = offset / 16_000;
+        recording[interferenceStart + offset] = 0.75 * Math.sin(2 * Math.PI * 1_337 * time);
+      }
+    }
   }
   fs.writeFileSync(path.join(runDirectory, 'physical-output-recording-16k-mono.pcm'), pcmBuffer(recording));
   fs.writeFileSync(path.join(runDirectory, 'watch-session-report.json'), JSON.stringify({
@@ -279,6 +314,41 @@ test('uses started playback time plus PCM offsets even when ACK timestamps arriv
     assert.equal(authority.passed, true, JSON.stringify(authority.matches));
     assert.ok(authority.matches.every((match) => match.requiredAnchorMatches === 3));
     assert.ok(authority.matches.every((match) => match.matchedAnchorCount === 3));
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('maps anchors through accepted chunk gaps after the physical stream drains', () => {
+  const fixture = createFixture({
+    streamChunkGapSeconds: 4,
+    cueSeconds: [8, 8],
+    playbackOffsetsSeconds: [3.2, 16],
+    renderUsingAcceptedChunkSchedule: true,
+  });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, true, JSON.stringify(authority.matches));
+    assert.ok(authority.matches.every((match) => match.matchedAnchorCount === 3));
+    assert.ok(authority.matches.every((match) => (
+      match.anchorMatches.every((anchor) => Math.abs(anchor.timingErrorSeconds) <= 0.65)
+    )));
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('uses another independent high-energy window when the strongest window is masked by source audio', () => {
+  const fixture = createFixture({
+    interfereWithStrongestMiddleAnchor: true,
+    cueSeconds: [8, 8],
+    playbackOffsetsSeconds: [2, 14],
+  });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, true, JSON.stringify(authority.matches));
+    assert.ok(authority.matches[0].anchorMatches.some((anchor) => anchor.candidateCount > 1));
+    assert.equal(authority.matches[0].matchedAnchorCount, 3);
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
   }

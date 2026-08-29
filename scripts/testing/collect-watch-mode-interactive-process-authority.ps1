@@ -50,17 +50,27 @@ function Get-DescendantProcesses {
     }
     [void]$byParent[$parentId].Add($process)
   }
-  $queue = New-Object Collections.Generic.Queue[int]
+  $queue = New-Object Collections.Generic.Queue[object]
   $seen = New-Object Collections.Generic.HashSet[int]
   $result = New-Object Collections.Generic.List[object]
-  $queue.Enqueue($RootId)
+  $rootProcess = @($all | Where-Object { [int]$_.ProcessId -eq $RootId } | Select-Object -First 1)
+  if ($rootProcess.Count -ne 1) { return [object[]]@() }
+  $queue.Enqueue($rootProcess[0])
   while ($queue.Count -gt 0) {
-    $processId = $queue.Dequeue()
+    $process = $queue.Dequeue()
+    $processId = [int]$process.ProcessId
     if (-not $seen.Add($processId)) { continue }
-    $process = @($all | Where-Object { [int]$_.ProcessId -eq $processId } | Select-Object -First 1)
-    if ($process.Count -eq 1) { [void]$result.Add($process[0]) }
+    [void]$result.Add($process)
     if ($byParent.ContainsKey($processId)) {
-      foreach ($child in $byParent[$processId]) { $queue.Enqueue([int]$child.ProcessId) }
+      foreach ($child in $byParent[$processId]) {
+        # ParentProcessId is not an identity on Windows. A long-lived system
+        # process can retain a historical parent PID that has since been
+        # reused by this task. Creation-time monotonicity rejects that false
+        # edge without weakening the later session/SID/image checks.
+        if ([DateTime]$child.CreationDate -ge [DateTime]$process.CreationDate) {
+          $queue.Enqueue($child)
+        }
+      }
     }
   }
   # Avoid Windows PowerShell 5.1 generic List[object] expansion type mismatches.

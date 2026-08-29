@@ -5,7 +5,7 @@
   "scripts": {
     "scripts/testing/clean-vm3-test-storage.ps1": { "role": "entrypoint", "maxLines": 76, "allowedImports": [], "capabilities": ["fileDeletion"] },
     "scripts/testing/collect-install-release-state.ps1": { "role": "collector", "maxLines": 447, "allowedImports": ["lib/powershell/Omni.Testing.IO.psm1", "lib/powershell/Omni.Testing.Windows.psm1"], "capabilities": ["elevation"] },
-    "scripts/testing/collect-watch-mode-interactive-process-authority.ps1": { "role": "authority", "maxLines": 192, "allowedImports": ["lib/powershell/Omni.Testing.IO.psm1"], "capabilities": [] },
+    "scripts/testing/collect-watch-mode-interactive-process-authority.ps1": { "role": "authority", "maxLines": 202, "allowedImports": ["lib/powershell/Omni.Testing.IO.psm1"], "capabilities": [] },
     "scripts/testing/collect-watch-mode-system-metrics.ps1": { "role": "collector", "maxLines": 164, "allowedImports": [], "capabilities": [] },
     "scripts/testing/fixtures/generate-watch-mode-audio.ps1": { "role": "entrypoint", "maxLines": 22, "allowedImports": [], "capabilities": [] },
     "scripts/testing/invoke-watch-mode-interactive-task.ps1": { "role": "entrypoint", "maxLines": 20, "allowedImports": ["lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1", "lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1"], "capabilities": [] },

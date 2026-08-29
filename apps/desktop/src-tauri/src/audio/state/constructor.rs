@@ -29,6 +29,9 @@ impl AudioStateStore {
             bridge_translation_status_receipts: Mutex::new(
                 BridgeTranslationStatusReceipts::default(),
             ),
+            translation_playback_quiescence: Arc::new(
+                TranslationPlaybackQuiescence::default(),
+            ),
             bridge_source_runtime_evidence: Mutex::new(
                 BridgeSourceRuntimeEvidence::default(),
             ),

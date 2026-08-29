@@ -652,21 +652,18 @@ where
     );
     let prefill_frames = (reference_frames * 2).min(buffer_frames as usize);
     let mut started = false;
-    let mut underrun_reported = false;
+    let mut underrun_tracker = RenderUnderrunTracker::default();
 
     while !tracker.is_complete() {
         ensure_render_ownership(audio_client, playback_permit, started)?;
         let padding_before = audio_client
             .get_current_padding()
             .map_err(|error| error.to_string())?;
-        if started && tracker.submitted_frames > 0 && padding_before == 0 && !underrun_reported {
+        if underrun_tracker.observe(started, tracker.submitted_frames, padding_before) {
             on_render_event(SpeakerRenderEvent::Discontinuity {
                 reason: "wasapi-render-underrun",
                 observed_at: Instant::now(),
             })?;
-            underrun_reported = true;
-        } else if padding_before > 0 {
-            underrun_reported = false;
         }
 
         let available_frames = buffer_frames.saturating_sub(padding_before) as usize;
@@ -756,6 +753,21 @@ where
         audio_client.stop_stream().map_err(|error| error.to_string())
     })?;
     Ok(())
+}
+
+#[derive(Default)]
+struct RenderUnderrunTracker {
+    reported_in_session: bool,
+}
+
+impl RenderUnderrunTracker {
+    fn observe(&mut self, started: bool, submitted_frames: usize, padding_frames: u32) -> bool {
+        if !self.reported_in_session && started && submitted_frames > 0 && padding_frames == 0 {
+            self.reported_in_session = true;
+            return true;
+        }
+        false
+    }
 }
 
 fn ensure_render_ownership(
@@ -913,6 +925,30 @@ mod render_reference_pacer_tests {
 
         assert_eq!(tracker.next_write_frames(479), 0);
         assert_eq!(tracker.next_write_frames(480), 480);
+    }
+
+    #[test]
+    fn render_refill_cycles_emit_only_one_underrun_edge_per_session() {
+        let mut tracker = RenderUnderrunTracker::default();
+        let observations = [0, 480, 0, 480, 0, 480, 0];
+        let emitted = observations
+            .into_iter()
+            .filter(|padding| tracker.observe(true, 960, *padding))
+            .count();
+
+        assert_eq!(emitted, 1);
+        assert!(!tracker.observe(true, 1_440, 0));
+    }
+
+    #[test]
+    fn a_new_render_session_can_report_its_own_real_underrun_edge() {
+        let mut first_session = RenderUnderrunTracker::default();
+        assert!(first_session.observe(true, 480, 0));
+        assert!(!first_session.observe(true, 960, 0));
+
+        let mut second_session = RenderUnderrunTracker::default();
+        assert!(!second_session.observe(false, 0, 0));
+        assert!(second_session.observe(true, 480, 0));
     }
 
     #[test]

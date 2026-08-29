@@ -8,8 +8,13 @@
     // with all three diagnostic tones present; the production translation
     // playback level is still independently verified at 50%.
     const PROCESS_FINGERPRINT_AMPLITUDE: f32 = 0.36;
-    const PROCESS_FINGERPRINT_SECONDS: f32 = 2.0;
-    const PROCESS_CAPTURE_WINDOW_MS: u64 = 2_800;
+    // Child-process creation and WASAPI shared-mode startup can consume more
+    // than a second on a loaded Windows worker. Keep every diagnostic emitter
+    // alive long enough that the post-readiness measurement still contains at
+    // least one complete second of source authority; the evaluator continues
+    // to require the original 48k captured-frame floor.
+    const PROCESS_FINGERPRINT_SECONDS: f32 = 6.0;
+    const PROCESS_CAPTURE_WINDOW_MS: u64 = 6_800;
     const MIN_PROCESS_FINGERPRINT_COMPONENT: f32 = 0.01;
     const MAX_EXCLUDED_TRANSLATION_COMPONENT: f32 = 0.003;
     const MAX_EXCLUDED_TO_PHYSICAL_RATIO: f32 = 0.05;

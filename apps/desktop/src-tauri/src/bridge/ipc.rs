@@ -1120,6 +1120,9 @@ mod tests {
             lifecycle_state: "ready".to_string(),
             session_id: session_id.map(str::to_string),
             bridge_instance_id: bridge_instance_id.map(str::to_string),
+            physical_playback_status: "ready".to_string(),
+            resolved_physical_playback_device_id: "physical-endpoint".to_string(),
+            playback_owner_generation: 1,
             ..Default::default()
         }
     }
@@ -1185,7 +1188,7 @@ mod tests {
     }
 
     #[test]
-    fn translation_owner_requires_both_ready_connection_identifiers() {
+    fn translation_owner_requires_complete_ready_playback_authority() {
         assert!(BridgeTranslationSinkOwner::from_snapshot(&translation_owner_snapshot(
             Some("session"),
             Some("instance")
@@ -1201,5 +1204,16 @@ mod tests {
             Some("instance")
         ))
         .is_none());
+        let mut not_ready = translation_owner_snapshot(Some("session"), Some("instance"));
+        not_ready.physical_playback_status = "rebinding".to_string();
+        assert!(BridgeTranslationSinkOwner::from_snapshot(&not_ready).is_none());
+
+        let mut missing_endpoint = translation_owner_snapshot(Some("session"), Some("instance"));
+        missing_endpoint.resolved_physical_playback_device_id.clear();
+        assert!(BridgeTranslationSinkOwner::from_snapshot(&missing_endpoint).is_none());
+
+        let mut missing_generation = translation_owner_snapshot(Some("session"), Some("instance"));
+        missing_generation.playback_owner_generation = 0;
+        assert!(BridgeTranslationSinkOwner::from_snapshot(&missing_generation).is_none());
     }
 }

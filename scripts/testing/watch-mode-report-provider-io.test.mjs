@@ -435,6 +435,32 @@ test('classifies provider errors after local layers pass', () => {
   assert.match(report.failureReason, /provider|failed/);
 });
 
+test('assigns stable readiness identity to workspace access denial', () => {
+  const report = classify({
+    provider: { totalCalls: 1, failedCalls: 1, error: 'Workspace access denied.' },
+    appLogText: healthyAppLog,
+  });
+
+  assert.equal(report.failureLayer, 'provider');
+  assert.equal(report.stableErrorCode, 'provider.workspace-access-denied');
+  assert.equal(report.lifecyclePhase, 'provider-readiness');
+});
+
+test('assigns stable active-response identity to response stream timeout', () => {
+  const report = classify({
+    provider: {
+      totalCalls: 1,
+      failedCalls: 1,
+      error: 'COMMON_ERROR: Response stream timeout (timeout_seconds=60, elapsed_ms=68215)',
+    },
+    appLogText: healthyAppLog,
+  });
+
+  assert.equal(report.failureLayer, 'provider');
+  assert.equal(report.stableErrorCode, 'provider.response-stream-timeout');
+  assert.equal(report.lifecyclePhase, 'active-response');
+});
+
 test('preserves provider status code and model evidence in report and markdown', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-report-provider-'));
   const providerErrorLine = 'provider.translate_text end_call | {"payload":{"error":"HTTP 429 quota exceeded code=QuotaExceeded providerId=provider-dashscope modelId=qwen3.6-flash-2026-04-16","status":"failed"}}';

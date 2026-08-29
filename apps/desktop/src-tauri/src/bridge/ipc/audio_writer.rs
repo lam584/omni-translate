@@ -4,22 +4,35 @@ const BRIDGE_TRANSLATION_GENERATION_ENDED: &str = "bridge.translation-generation
 pub(crate) struct BridgeTranslationSinkOwner {
     session_id: String,
     bridge_instance_id: String,
+    resolved_physical_playback_device_id: String,
     playback_owner_generation: u64,
 }
 
 impl BridgeTranslationSinkOwner {
     pub(crate) fn from_snapshot(snapshot: &BridgeRuntimeSnapshot) -> Option<Self> {
+        if snapshot.physical_playback_status != "ready"
+            || snapshot.resolved_physical_playback_device_id.trim().is_empty()
+            || snapshot.playback_owner_generation == 0
+        {
+            return None;
+        }
         Some(Self {
             session_id: snapshot.session_id.clone()?,
             bridge_instance_id: snapshot.bridge_instance_id.clone()?,
+            resolved_physical_playback_device_id: snapshot
+                .resolved_physical_playback_device_id
+                .clone(),
             playback_owner_generation: snapshot.playback_owner_generation,
         })
     }
 
     fn evidence(&self) -> String {
         format!(
-            "sessionId={} bridgeInstanceId={} playbackOwnerGeneration={}",
-            self.session_id, self.bridge_instance_id, self.playback_owner_generation
+            "sessionId={} bridgeInstanceId={} endpointId={} playbackOwnerGeneration={}",
+            self.session_id,
+            self.bridge_instance_id,
+            self.resolved_physical_playback_device_id,
+            self.playback_owner_generation
         )
     }
 
@@ -323,6 +336,11 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
     stream_state: Option<TranslationStreamState>,
     expected_owner: Option<&BridgeTranslationSinkOwner>,
 ) -> Result<u64, String> {
+    let _pending_ack = expected_owner.map(|_| {
+        app.state::<crate::audio::state::AudioStateStore>()
+            .translation_playback_quiescence()
+            .begin_bridge_ack()
+    });
     let route_direction = parse_route_direction(route_direction)?;
     let bridge_state = app.state::<BridgeStateStore>();
     let snapshot = bridge_state.snapshot();

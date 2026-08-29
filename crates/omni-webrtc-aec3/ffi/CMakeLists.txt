@@ -5,7 +5,10 @@ include(CTest)
 
 find_package(unofficial-webrtc CONFIG REQUIRED)
 
-add_library(omni_webrtc_aec3_ffi STATIC omni_webrtc_aec3.cc)
+add_library(omni_webrtc_aec3_ffi STATIC
+  omni_webrtc_aec3.cc
+  webrtc_echo_detector_compat.cc
+)
 target_compile_features(omni_webrtc_aec3_ffi PRIVATE cxx_std_20)
 target_link_libraries(omni_webrtc_aec3_ffi PRIVATE unofficial::webrtc::webrtc)
 set_target_properties(omni_webrtc_aec3_ffi PROPERTIES

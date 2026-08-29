@@ -95,6 +95,75 @@ struct BridgeTranslationStatusReceipts {
     ids: HashSet<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TranslationPlaybackQuiescenceSnapshot {
+    pub(crate) pending_native_audio: bool,
+    pub(crate) queued_commands: usize,
+    pub(crate) active_commands: usize,
+    pub(crate) pending_bridge_acks: usize,
+}
+
+impl TranslationPlaybackQuiescenceSnapshot {
+    pub(crate) fn is_quiescent(self) -> bool {
+        !self.pending_native_audio
+            && self.queued_commands == 0
+            && self.active_commands == 0
+            && self.pending_bridge_acks == 0
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct TranslationPlaybackQuiescence {
+    state: Mutex<TranslationPlaybackQuiescenceSnapshot>,
+}
+
+impl TranslationPlaybackQuiescence {
+    pub(crate) fn snapshot(&self) -> TranslationPlaybackQuiescenceSnapshot {
+        *self
+            .state
+            .lock()
+            .expect("translation playback quiescence state poisoned")
+    }
+
+    pub(crate) fn set_pending_native_audio(&self, pending: bool) {
+        self.state
+            .lock()
+            .expect("translation playback quiescence state poisoned")
+            .pending_native_audio = pending;
+    }
+
+    pub(crate) fn set_queue_state(&self, queued_commands: usize, active_commands: usize) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("translation playback quiescence state poisoned");
+        state.queued_commands = queued_commands;
+        state.active_commands = active_commands;
+    }
+
+    pub(crate) fn begin_bridge_ack(self: &Arc<Self>) -> TranslationPlaybackAckGuard {
+        let mut state = self
+            .state
+            .lock()
+            .expect("translation playback quiescence state poisoned");
+        state.pending_bridge_acks = state.pending_bridge_acks.saturating_add(1);
+        TranslationPlaybackAckGuard(self.clone())
+    }
+}
+
+pub(crate) struct TranslationPlaybackAckGuard(Arc<TranslationPlaybackQuiescence>);
+
+impl Drop for TranslationPlaybackAckGuard {
+    fn drop(&mut self) {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .expect("translation playback quiescence state poisoned");
+        state.pending_bridge_acks = state.pending_bridge_acks.saturating_sub(1);
+    }
+}
+
 impl BridgeTranslationStatusReceipts {
     fn insert(&mut self, status_id: &str) -> bool {
         if status_id.trim().is_empty() || self.ids.contains(status_id) {
@@ -175,6 +244,7 @@ pub(crate) struct AudioStateStore {
     /// front event, so entries older than this bounded window cannot still be
     /// awaiting replay when they are evicted.
     bridge_translation_status_receipts: Mutex<BridgeTranslationStatusReceipts>,
+    translation_playback_quiescence: Arc<TranslationPlaybackQuiescence>,
     bridge_source_runtime_evidence: Mutex<BridgeSourceRuntimeEvidence>,
     /// Monotonically increasing snapshot sequence number. Incremented on every
     /// `snapshot()` call so the frontend can discard stale out-of-order events.
@@ -752,6 +822,12 @@ impl AudioStateStore {
     /// translated audio. AEC remains the hard pure-echo decision.
     pub(crate) fn inbound_speaker_playback_active(&self) -> bool {
         self.inbound_speaker_playback_context(Duration::ZERO).0
+    }
+
+    pub(crate) fn translation_playback_quiescence(
+        &self,
+    ) -> Arc<TranslationPlaybackQuiescence> {
+        self.translation_playback_quiescence.clone()
     }
 
     pub(crate) fn inbound_speaker_playback_context(
@@ -1434,6 +1510,19 @@ mod tests {
             speech.dispatch_state = "waiting-subtitle".to_string();
         });
         assert!(!store.inbound_speaker_playback_active());
+    }
+
+    #[test]
+    fn restart_quiescence_holds_until_bridge_ack_guard_is_released() {
+        let store = AudioStateStore::new();
+        let quiescence = store.translation_playback_quiescence();
+        assert!(quiescence.snapshot().is_quiescent());
+        {
+            let _ack = quiescence.begin_bridge_ack();
+            assert_eq!(quiescence.snapshot().pending_bridge_acks, 1);
+            assert!(!quiescence.snapshot().is_quiescent());
+        }
+        assert!(quiescence.snapshot().is_quiescent());
     }
 
     #[test]

@@ -1895,9 +1895,9 @@ export function buildShardCellResult({
     reportVerdict: report.verdict,
     ...(resultVerdict === 'failed' ? {
       failureLayer: report.failureLayer ?? 'unknown',
-      stableErrorCode: report.stableErrorCode ?? report.failureCode
-        ?? (report.verdict === 'blocked' ? 'watch.strict-cell.blocked' : 'watch.strict-cell.failed'),
-      lifecyclePhase: report.lifecyclePhase ?? null,
+      stableErrorCode: report.stableErrorCode,
+      lifecyclePhase: report.lifecyclePhase,
+      failureContext: structuredClone(report.failureContext ?? {}),
     } : {}),
     executionId: plan.executionId,
     planDigest: plan.planDigest,
@@ -1982,7 +1982,11 @@ export function validateShardCellResult({
     result.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
     || result.artifactKind !== SHARD_CELL_RESULT_KIND
     || !['passed', 'failed'].includes(result.verdict)
-    || (result.verdict === 'failed' && !String(result.stableErrorCode ?? '').trim())
+    || (result.verdict === 'failed' && (
+      !String(result.stableErrorCode ?? '').trim()
+      || !String(result.lifecyclePhase ?? '').trim()
+      || ['watch.strict-cell.failed', 'watch.strict-cell.blocked'].includes(result.stableErrorCode)
+    ))
   ) {
     throw new Error('unsupported shard cell result');
   }
@@ -2102,6 +2106,7 @@ export function buildShardManifest({
         failureLayer: result.failureLayer,
         stableErrorCode: result.stableErrorCode,
         lifecyclePhase: result.lifecyclePhase,
+        failureContext: result.failureContext,
       } : {}),
       actualExternalAudioSamples: result.usageAuthority.actualExternalAudioSamples,
     };

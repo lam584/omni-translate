@@ -105,8 +105,16 @@ int main() {
                  erle_db, kMinimumErleDb);
     return 5;
   }
-  std::printf("AEC3 fixture: ERLE %.2f dB, render=%llu, capture=%llu\n",
-              erle_db,
+  if (!std::isfinite(stats.residual_echo_likelihood) ||
+      stats.residual_echo_likelihood < 0.0 ||
+      stats.residual_echo_likelihood > 1.0) {
+    std::fprintf(stderr,
+                 "AEC3 fixture: invalid residual echo likelihood %.6f\n",
+                 stats.residual_echo_likelihood);
+    return 6;
+  }
+  std::printf("AEC3 fixture: ERLE %.2f dB, residual=%.6f, render=%llu, capture=%llu\n",
+              erle_db, stats.residual_echo_likelihood,
               static_cast<unsigned long long>(stats.render_frames),
               static_cast<unsigned long long>(stats.capture_frames));
   return 0;

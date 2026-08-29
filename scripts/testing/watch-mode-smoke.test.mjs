@@ -898,7 +898,11 @@ test('Windows timebox terminates its owned child process tree', { skip: process.
       '-StderrPath', path.join(root, 'stderr.log'),
       '-OutcomePath', outcomePath,
       '-PollIntervalMs', '50',
-    ], { encoding: 'utf8', timeout: 10_000, windowsHide: true });
+    // Windows PowerShell can spend several seconds loading CIM while the host
+    // is under concurrent test/build pressure. The wrapper still enforces its
+    // own 500 ms child deadline; this outer bound only prevents the harness
+    // from killing the wrapper while it is closing redirected handles.
+    ], { encoding: 'utf8', timeout: 30_000, windowsHide: true });
     assert.equal(result.status, 124);
     assert.equal(result.error, undefined);
     const outcome = JSON.parse(fs.readFileSync(outcomePath, 'utf8'));

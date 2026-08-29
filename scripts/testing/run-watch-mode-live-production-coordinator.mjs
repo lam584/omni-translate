@@ -1600,21 +1600,25 @@ export function productionFailureFingerprint(failure, plan) {
   const cell = plan.cells.find((candidate) => candidate.cellId === failure.cellId) ?? {};
   const report = result.report ?? result.summary?.report ?? result.cellAuthority?.report ?? {};
   const restart = result.restartSummary ?? report.restartSummary ?? result.bridgeRestart ?? {};
+  const context = result.failureContext ?? report.failureContext ?? {};
+  const ownerTransition = context.ownerGenerationTransition ?? {};
   return {
     failureLayer: firstDefined(result.failureLayer, report.failureLayer, report.verdict?.failureLayer, 'unknown'),
     stableErrorCode: firstDefined(result.stableErrorCode, result.errorCode, report.stableErrorCode, 'unknown'),
     feedbackMode: cell.feedbackLoopPrevention ?? null,
     lifecyclePhase: firstDefined(result.lifecyclePhase, report.lifecyclePhase, restart.phase, 'unknown'),
     endpointId: firstDefined(
+      context.endpointId,
       restart.afterEndpointId,
       restart.resolvedPhysicalPlaybackDeviceId,
       result.resolvedPhysicalPlaybackDeviceId,
       cell.deviceProfileInstance?.physicalPlaybackDeviceId,
     ),
     ownerGenerationTransition: {
-      before: firstDefined(restart.beforePlaybackOwnerGeneration, restart.previousPlaybackOwnerGeneration),
-      after: firstDefined(restart.afterPlaybackOwnerGeneration, restart.playbackOwnerGeneration),
+      before: firstDefined(ownerTransition.before, restart.beforePlaybackOwnerGeneration, restart.previousPlaybackOwnerGeneration),
+      after: firstDefined(ownerTransition.after, restart.afterPlaybackOwnerGeneration, restart.playbackOwnerGeneration),
     },
+    bridgeInstanceId: firstDefined(context.bridgeInstanceId, restart.newBridgeInstanceId),
   };
 }
 
@@ -1983,7 +1987,7 @@ async function runProductionCoordinatorCore({
   const failureFingerprints = failureSummary.failures;
   const failureFingerprintPath = path.join(preparation.executionRoot, 'failure-fingerprints.json');
   atomicWriteJson(failureFingerprintPath, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-production-failure-fingerprints',
     generatedAt: now().toISOString(),
     executionId: preparation.plan.executionId,

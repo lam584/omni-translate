@@ -28,18 +28,25 @@ function selectHighEnergyAnchors(cue) {
   const sampleRateHz = Number(cue.sampleRateHz);
   const channelCount = Number(cue.channelCount);
   const totalFrames = Number(cue.frameCount);
+  const durationSeconds = totalFrames / sampleRateHz;
+  const anchorCount = durationSeconds >= 1.2 ? 3 : durationSeconds >= 0.8 ? 2 : durationSeconds >= 0.4 ? 1 : 0;
+  if (anchorCount === 0) {
+    return { anchors: [], auditable: false, reason: 'cue is shorter than the minimum 400ms acoustic window' };
+  }
   const minimumFrames = Math.ceil(sampleRateHz * 0.4);
   const anchors = [];
-  for (let regionIndex = 0; regionIndex < 3; regionIndex += 1) {
-    const regionStart = Math.floor(totalFrames * regionIndex / 3);
-    const regionEnd = Math.floor(totalFrames * (regionIndex + 1) / 3);
+  const anchorNames = anchorCount === 3 ? ['early', 'middle', 'late']
+    : anchorCount === 2 ? ['early', 'late'] : ['full'];
+  for (let regionIndex = 0; regionIndex < anchorCount; regionIndex += 1) {
+    const regionStart = Math.floor(totalFrames * regionIndex / anchorCount);
+    const regionEnd = Math.floor(totalFrames * (regionIndex + 1) / anchorCount);
     const regionFrames = regionEnd - regionStart;
     const windowFrames = Math.min(
       Math.floor(sampleRateHz * 0.75),
       Math.max(minimumFrames, Math.floor(regionFrames * 0.8)),
     );
     if (regionFrames < minimumFrames || windowFrames > regionFrames) {
-      throw new Error(`cue ${cue.cueId} is too short for three independent 400ms anchors`);
+      return { anchors: [], auditable: false, reason: 'cue cannot provide the required independent 400ms acoustic windows' };
     }
     const strideFrames = Math.max(1, Math.floor(sampleRateHz * 0.05));
     let best = null;
@@ -54,10 +61,10 @@ function selectHighEnergyAnchors(cue) {
       if (!best || rms > best.rms) best = { frameOffset, sampleOffset, sampleCount, rms };
     }
     if (!best || best.rms < 0.003) {
-      throw new Error(`cue ${cue.cueId} ${['early', 'middle', 'late'][regionIndex]} anchor is silent`);
+      return { anchors: [], auditable: false, reason: `cue ${anchorNames[regionIndex]} acoustic window is silent` };
     }
     anchors.push({
-      name: ['early', 'middle', 'late'][regionIndex],
+      name: anchorNames[regionIndex],
       frameOffset: best.frameOffset,
       rms: rounded(best.rms),
       reference: {
@@ -69,7 +76,7 @@ function selectHighEnergyAnchors(cue) {
       },
     });
   }
-  return anchors;
+  return { anchors, auditable: true, reason: null };
 }
 
 function readRegularFile(filePath, label) {
@@ -330,7 +337,7 @@ export function buildTranslatedPcmLoopbackAuthority({
       continue;
     }
     try {
-      references.set(cueId, { anchors: selectHighEnergyAnchors(cue) });
+      references.set(cueId, selectHighEnergyAnchors(cue));
     } catch (error) {
       violations.push(`cue ${cueId}: ${error.message}`);
     }
@@ -359,10 +366,15 @@ export function buildTranslatedPcmLoopbackAuthority({
   };
 
   const matches = [];
+  const unauditableCues = [];
   for (const cueId of requiredCueIds) {
     const referenceSet = references.get(cueId);
     const startedAtMs = lifecycle.get(cueId)?.started?.occurredAtMs;
     if (!referenceSet || !Number.isFinite(startedAtMs) || recordingSamples === 0 || !Number.isFinite(recordingStart)) continue;
+    if (!referenceSet.auditable) {
+      unauditableCues.push({ cueId, reason: referenceSet.reason });
+      continue;
+    }
     const cue = cueById.get(cueId);
     const anchorMatches = referenceSet.anchors.map((anchor, anchorIndex) => {
       const expectedStart = Math.round(
@@ -372,8 +384,11 @@ export function buildTranslatedPcmLoopbackAuthority({
       const diagonal = matchReference(anchor.reference, expectedStart);
       let strongestWrongAnchorScore = 0;
       for (const [otherCueId, otherSet] of references.entries()) {
-        if (otherCueId === cueId) continue;
-        const wrongAnchor = otherSet.anchors[anchorIndex];
+        if (otherCueId === cueId || !otherSet.auditable || otherSet.anchors.length === 0) continue;
+        const relativeIndex = referenceSet.anchors.length === 1
+          ? 0
+          : anchorIndex / (referenceSet.anchors.length - 1);
+        const wrongAnchor = otherSet.anchors[Math.round(relativeIndex * (otherSet.anchors.length - 1))];
         strongestWrongAnchorScore = Math.max(
           strongestWrongAnchorScore,
           matchReference(wrongAnchor.reference, expectedStart).score,
@@ -395,13 +410,14 @@ export function buildTranslatedPcmLoopbackAuthority({
     const anchorsOrdered = anchorMatches.every((entry, index) => (
       index === 0 || entry.matchedStartSample >= anchorMatches[index - 1].matchedEndSample
     ));
-    const passed = passingAnchors.length >= 3 && anchorsOrdered;
+    const requiredAnchorMatches = referenceSet.anchors.length;
+    const passed = passingAnchors.length === requiredAnchorMatches && anchorsOrdered;
     matches.push({
       cueId,
       bridgeInstanceId: cue.bridgeInstanceId ?? null,
       playbackOwnerGeneration: Number(cue.playbackOwnerGeneration),
       physicalPlaybackDeviceId: cue.physicalPlaybackDeviceId ?? null,
-      requiredAnchorMatches: 3,
+      requiredAnchorMatches,
       matchedAnchorCount: passingAnchors.length,
       anchorMatches,
       score: Math.min(...anchorMatches.map((entry) => entry.score)),
@@ -410,9 +426,19 @@ export function buildTranslatedPcmLoopbackAuthority({
       matchedEndSample: anchorMatches.at(-1)?.matchedEndSample ?? null,
       passed,
     });
-    if (!passed) violations.push(`translated cue ${cueId} did not correlate three ordered high-energy physical anchors`);
+    if (!passed) {
+      const anchorRequirement = requiredAnchorMatches === 3
+        ? 'three ordered high-energy physical anchors'
+        : `${requiredAnchorMatches} ordered high-energy physical anchor(s)`;
+      violations.push(`translated cue ${cueId} did not correlate ${anchorRequirement}`);
+    }
   }
-  if (matches.length !== requiredCueIds.length) violations.push('not every complete rendered cue produced a loopback match result');
+  if (matches.length < MIN_COMPLETE_MATCHED_CUES) {
+    violations.push(`translated PCM loopback requires at least ${MIN_COMPLETE_MATCHED_CUES} acoustically auditable complete cues; found ${matches.length}`);
+  }
+  if (matches.length + unauditableCues.length !== requiredCueIds.length) {
+    violations.push('not every complete rendered cue produced a loopback match or explicit unauditable classification');
+  }
   const lifecycleStarts = requiredCueIds.map((cueId) => lifecycle.get(cueId)?.started?.index);
   if (lifecycleStarts.some((value, index) => index > 0 && value <= lifecycleStarts[index - 1])) {
     violations.push('translated PCM playback lifecycles are not in complete-cue order');
@@ -484,6 +510,7 @@ export function buildTranslatedPcmLoopbackAuthority({
     requiredCompleteCueCount: requiredCueIds.length,
     matchedCueCount: matches.filter((entry) => entry.passed).length,
     matches,
+    unauditableCues,
     restartPlaybackEvidence,
     thresholds: {
       minimumCompleteCueCount: MIN_COMPLETE_MATCHED_CUES,

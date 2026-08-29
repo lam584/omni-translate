@@ -11,6 +11,20 @@ pub(super) struct OmniAudioOutputState {
     pub(super) pending_audio_stream_aborted: bool,
 }
 
+impl OmniAudioOutputState {
+    fn publish_pending_native_audio<R: tauri::Runtime>(self, app: &AppHandle<R>) -> Self {
+        let pending = self.pending_audio_response_id.is_some()
+            || !self.pending_audio_buffer.is_empty()
+            || self.pending_audio_stream_cue_id.is_some()
+            || self.pending_audio_stream_chunk_index > 0
+            || self.pending_audio_stream_created_at_ms.is_some();
+        app.state::<AudioStateStore>()
+            .translation_playback_quiescence()
+            .set_pending_native_audio(pending);
+        self
+    }
+}
+
 pub(super) struct OmniSubtitleEventState {
     pub(super) current_cue_id: Option<String>,
     pub(super) pending_source_text: String,
@@ -351,6 +365,7 @@ impl OmniEventProcessor {
             pending_audio_stream_created_at_ms,
             pending_audio_stream_aborted,
         }
+        .publish_pending_native_audio(app)
     }
 
     pub(super) fn process_audio_done<R: tauri::Runtime>(
@@ -478,7 +493,8 @@ impl OmniEventProcessor {
                     pending_audio_stream_chunk_index,
                     pending_audio_stream_created_at_ms,
                     pending_audio_stream_aborted,
-                };
+                }
+                .publish_pending_native_audio(app);
             };
             let created_at_ms = unix_ms();
             let enqueue_status = match playback_queue.enqueue(OmniPlaybackCommand::Play {
@@ -584,6 +600,7 @@ impl OmniEventProcessor {
             pending_audio_stream_created_at_ms,
             pending_audio_stream_aborted,
         }
+        .publish_pending_native_audio(app)
     }
 
     pub(super) fn process_transcript_delta<R: tauri::Runtime>(

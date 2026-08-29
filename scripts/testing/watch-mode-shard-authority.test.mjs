@@ -586,7 +586,13 @@ test('blocked report is preserved and normalized to a collect-all failed shard r
     writeJson(path.join(runDirectory, 'report.json'), {
       verdict: 'blocked',
       failureLayer: 'environment',
-      lifecyclePhase: 'contentCapture',
+      stableErrorCode: 'watch.environment.blocked',
+      lifecyclePhase: 'environment-preflight',
+      failureContext: {
+        endpointId: cell.deviceProfileInstance.physicalPlaybackDeviceId,
+        bridgeInstanceId: null,
+        ownerGenerationTransition: { before: null, after: null },
+      },
     });
     const written = writeShardCellResult({
       plan: fixture.plan,
@@ -606,7 +612,8 @@ test('blocked report is preserved and normalized to a collect-all failed shard r
     });
     assert.equal(validated.result.verdict, 'failed');
     assert.equal(validated.result.reportVerdict, 'blocked');
-    assert.equal(validated.result.stableErrorCode, 'watch.strict-cell.blocked');
+    assert.equal(validated.result.stableErrorCode, 'watch.environment.blocked');
+    assert.equal(validated.result.lifecyclePhase, 'environment-preflight');
   } finally {
     fs.rmSync(shardRoot, { recursive: true, force: true });
   }

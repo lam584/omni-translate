@@ -2591,6 +2591,7 @@ struct OmniPlaybackQueueInner {
     state: std::sync::Mutex<OmniPlaybackQueueState>,
     available: std::sync::Condvar,
     capacity: usize,
+    quiescence: Option<Arc<crate::audio::state::TranslationPlaybackQuiescence>>,
 }
 
 /// Bounded native-translation playback queue. Congestion never replaces a
@@ -2613,6 +2614,13 @@ enum OmniPlaybackReceiveOutcome {
 
 impl OmniPlaybackQueue {
     pub(super) fn new(capacity: usize) -> Self {
+        Self::new_with_quiescence(capacity, None)
+    }
+
+    fn new_with_quiescence(
+        capacity: usize,
+        quiescence: Option<Arc<crate::audio::state::TranslationPlaybackQuiescence>>,
+    ) -> Self {
         assert!(capacity > 0, "omni playback queue capacity must be positive");
         Self {
             inner: Arc::new(OmniPlaybackQueueInner {
@@ -2624,7 +2632,17 @@ impl OmniPlaybackQueue {
                 }),
                 available: std::sync::Condvar::new(),
                 capacity,
+                quiescence,
             }),
+        }
+    }
+
+    fn publish_state(&self, state: &OmniPlaybackQueueState) {
+        if let Some(quiescence) = self.inner.quiescence.as_ref() {
+            quiescence.set_queue_state(
+                state.pending.len(),
+                usize::from(state.active_expected_end.is_some()),
+            );
         }
     }
 
@@ -2657,6 +2675,7 @@ impl OmniPlaybackQueue {
             .as_millis()
             .min(u64::MAX as u128) as u64;
         if state.pending.len() >= self.inner.capacity {
+            self.publish_state(&state);
             return OmniPlaybackEnqueueOutcome::Overflow {
                 reason: OmniPlaybackOverflowReason::QueueFull,
                 dropped,
@@ -2673,6 +2692,7 @@ impl OmniPlaybackQueue {
             _ => None,
         };
         if realtime_start_age.is_some_and(omni_playback_queue_age_expired) {
+            self.publish_state(&state);
             return OmniPlaybackEnqueueOutcome::Overflow {
                 reason: OmniPlaybackOverflowReason::RealtimeBudget,
                 dropped,
@@ -2680,6 +2700,7 @@ impl OmniPlaybackQueue {
             };
         }
         state.pending.push_back(command);
+        self.publish_state(&state);
         drop(state);
         self.inner.available.notify_one();
 
@@ -2721,6 +2742,7 @@ impl OmniPlaybackQueue {
             stream_state: omni_bridge_protocol::TranslationStreamState::Abort,
             bridge_owner: None,
         });
+        self.publish_state(&state);
         drop(state);
         self.inner.available.notify_one();
     }
@@ -2778,12 +2800,14 @@ impl OmniPlaybackQueue {
             if let Some(command) = state.pending.pop_front() {
                 state.active_expected_end =
                     Some(Instant::now() + command.estimated_duration());
+                self.publish_state(&state);
                 return OmniPlaybackReceiveOutcome::Command {
                     command,
                     dropped,
                 };
             }
             if !dropped.is_empty() {
+                self.publish_state(&state);
                 return OmniPlaybackReceiveOutcome::StaleDropped(dropped);
             }
             if state.shutdown == OmniPlaybackShutdown::Draining {
@@ -2818,6 +2842,7 @@ impl OmniPlaybackQueue {
         if state.shutdown == OmniPlaybackShutdown::Running {
             state.shutdown = OmniPlaybackShutdown::Draining;
         }
+        self.publish_state(&state);
         drop(state);
         self.inner.available.notify_all();
     }
@@ -2832,16 +2857,18 @@ impl OmniPlaybackQueue {
         state.pending.clear();
         state.terminated_stream_cues.clear();
         state.active_expected_end = None;
+        self.publish_state(&state);
         drop(state);
         self.inner.available.notify_all();
     }
 
     fn finish_active(&self) {
-        self.inner
+        let mut state = self.inner
             .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .active_expected_end = None;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.active_expected_end = None;
+        self.publish_state(&state);
     }
 
     #[cfg(test)]
@@ -3772,6 +3799,9 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
         s.dispatch_state = "idle".to_string();
         s.current_cue_id = None;
     });
+    audio_state
+        .translation_playback_quiescence()
+        .set_pending_native_audio(false);
     let _ = emit_audio_snapshot(&app, &audio_state);
     if let Err(error) = translated_pcm_authority.finalize("worker-completed") {
         audio_state.watch_session_report.record_session_issue(
@@ -3827,7 +3857,13 @@ pub(super) fn start_omni_playback<R: tauri::Runtime>(
     route_direction: String,
     translated_pcm_authority: TranslatedPcmAuthority,
 ) -> (OmniPlaybackQueue, OmniPlaybackWorker) {
-    let playback_queue = OmniPlaybackQueue::new(OMNI_PLAYBACK_QUEUE_CAPACITY);
+    let quiescence = app
+        .state::<AudioStateStore>()
+        .translation_playback_quiescence();
+    let playback_queue = OmniPlaybackQueue::new_with_quiescence(
+        OMNI_PLAYBACK_QUEUE_CAPACITY,
+        Some(quiescence),
+    );
     let playback_worker_queue = playback_queue.clone();
     let join = thread::Builder::new()
         .name("omni-playback".to_string())
@@ -4362,6 +4398,32 @@ mod omni_playback_tests {
     }
 
     #[test]
+    fn restart_quiescence_tracks_queued_and_active_native_playback() {
+        let quiescence = Arc::new(
+            crate::audio::state::TranslationPlaybackQuiescence::default(),
+        );
+        let queue = OmniPlaybackQueue::new_with_quiescence(4, Some(quiescence.clone()));
+        assert!(quiescence.snapshot().is_quiescent());
+
+        assert_eq!(
+            queue.enqueue(queued_stream("stream", 0, Duration::from_millis(20))),
+            OmniPlaybackEnqueueOutcome::Queued
+        );
+        assert_eq!(quiescence.snapshot().queued_commands, 1);
+        assert!(!quiescence.snapshot().is_quiescent());
+
+        assert!(matches!(
+            queue.recv_timeout(Duration::ZERO),
+            OmniPlaybackReceiveOutcome::Command { .. }
+        ));
+        assert_eq!(quiescence.snapshot().queued_commands, 0);
+        assert_eq!(quiescence.snapshot().active_commands, 1);
+
+        queue.finish_active();
+        assert!(quiescence.snapshot().is_quiescent());
+    }
+
+    #[test]
     fn a_current_stream_start_is_not_mistaken_for_stale_due_to_prior_playback() {
         let queue = OmniPlaybackQueue::new(260);
         for index in 0..251 {
@@ -4508,6 +4570,9 @@ mod omni_playback_tests {
         let old = crate::bridge::contracts::BridgeRuntimeSnapshot {
             session_id: Some("session-old".to_string()),
             bridge_instance_id: Some("instance-old".to_string()),
+            physical_playback_status: "ready".to_string(),
+            resolved_physical_playback_device_id: "physical-endpoint".to_string(),
+            playback_owner_generation: 1,
             ..Default::default()
         };
         let expected = crate::bridge::ipc::BridgeTranslationSinkOwner::from_snapshot(&old)
@@ -4515,6 +4580,9 @@ mod omni_playback_tests {
         let current = crate::bridge::contracts::BridgeRuntimeSnapshot {
             session_id: Some("session-new".to_string()),
             bridge_instance_id: Some("instance-new".to_string()),
+            physical_playback_status: "ready".to_string(),
+            resolved_physical_playback_device_id: "physical-endpoint".to_string(),
+            playback_owner_generation: 2,
             ..Default::default()
         };
 

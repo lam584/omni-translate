@@ -1370,6 +1370,53 @@ mod tests {
     }
 
     #[test]
+    fn virtual_driver_translation_init_binds_an_explicit_physical_playback_owner() {
+        let runtime_root = TempDir::new().unwrap();
+        let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
+        state.lock().unwrap().driver_health = "ready".to_string();
+        let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
+        let (playback_tx, _playback_rx) = mpsc::sync_channel(2);
+        let (playback_control_tx, playback_control_rx) = mpsc::channel();
+        let rebind = std::thread::spawn(move || {
+            let PlaybackControlCommand::RebindPhysicalOutput {
+                device_id,
+                response_tx,
+            } = playback_control_rx.recv().unwrap()
+            else {
+                panic!("expected physical playback rebind control");
+            };
+            assert_eq!(device_id, "hda-speaker");
+            response_tx.send(Ok(device_id)).unwrap();
+        });
+
+        let response = handle_control(
+            json!({
+                "type": "bridge.init",
+                "requestId": "virtual-driver-physical-owner",
+                "protocolVersion": BRIDGE_PROTOCOL_VERSION,
+                "sessionId": "session-virtual",
+                "sourceCaptureMode": "virtual-driver",
+                "physicalPlaybackDeviceId": "hda-speaker",
+                "previousPlaybackOwnerGeneration": 41,
+                "monitorPlaybackEnabled": false,
+                "translationPlaybackEnabled": true
+            }),
+            &state,
+            &playback_tx,
+            &playback_control_tx,
+            &translation_queue,
+            runtime_root.path(),
+        );
+
+        rebind.join().unwrap();
+        assert_eq!(response["type"], "bridge.init.ack");
+        assert_eq!(response["bridgeState"], "running");
+        assert_eq!(response["physicalPlaybackStatus"], "ready");
+        assert_eq!(response["resolvedPhysicalPlaybackDeviceId"], "hda-speaker");
+        assert!(response["playbackOwnerGeneration"].as_u64().unwrap() > 41);
+    }
+
+    #[test]
     fn intentionally_unplayed_translation_has_an_explicit_terminal_reason() {
         assert_eq!(
             translation_non_playback_reason(false, true, false),

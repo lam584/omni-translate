@@ -14,6 +14,7 @@ use super::{
     wait_for_frontend_ipc_ready, write_report_atomic,
 };
 use crate::audio::state::AudioStateStore;
+use crate::audio::state::TranslationPlaybackQuiescenceSnapshot;
 
 fn strict_watch_environment(name: &str) -> Option<String> {
     match name {
@@ -75,6 +76,34 @@ fn diagnostic_feedback_mode_accepts_all_three_routes_and_rejects_typos() {
     assert!(parse_feedback_loop_prevention(Some("process-loopback"))
         .unwrap_err()
         .contains("Unsupported"));
+}
+
+#[test]
+fn midpoint_restart_requires_every_translated_playback_owner_to_be_idle() {
+    let idle = TranslationPlaybackQuiescenceSnapshot::default();
+    assert!(super::process_exclusion_restart_is_quiescent(false, idle));
+    assert!(!super::process_exclusion_restart_is_quiescent(true, idle));
+
+    for busy in [
+        TranslationPlaybackQuiescenceSnapshot {
+            pending_native_audio: true,
+            ..idle
+        },
+        TranslationPlaybackQuiescenceSnapshot {
+            queued_commands: 1,
+            ..idle
+        },
+        TranslationPlaybackQuiescenceSnapshot {
+            active_commands: 1,
+            ..idle
+        },
+        TranslationPlaybackQuiescenceSnapshot {
+            pending_bridge_acks: 1,
+            ..idle
+        },
+    ] {
+        assert!(!super::process_exclusion_restart_is_quiescent(false, busy));
+    }
 }
 
 #[test]

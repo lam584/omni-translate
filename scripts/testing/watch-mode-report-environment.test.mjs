@@ -10,6 +10,7 @@ import {
   healthyPhysicalOutput,
   healthyProcessExclusionFingerprint,
   healthyProcessExclusionBridge,
+  healthyProcessExclusionRestartLog,
 } from './watch-mode-report-test-helpers.mjs';
 
 test('marks environment precheck failures blocked before downstream recording failures', () => {
@@ -176,6 +177,62 @@ test('process-exclusion live report rejects a route that never performed the con
   assert.equal(report.verdict, 'failed');
   assert.equal(report.failureLayer, 'bridge');
   assert.match(report.failureReason, /controlled live Bridge restart/i);
+  assert.equal(report.stableErrorCode, 'bridge.restart-authority-failed');
+  assert.equal(report.lifecyclePhase, 'bridge-restart');
+});
+
+test('process-exclusion restart idle timeout has a stable quiescence fingerprint', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'process-exclusion',
+    bridge: healthyProcessExclusionBridge,
+    driver: null,
+    wasapi: null,
+    physicalOutput: healthyProcessExclusionFingerprint,
+    appLogText: 'event=process_exclusion_restart_failed phase=restart-quiescence error=restart-quiescence-timeout: pendingNativeAudio=true queuedCommands=1 activeCommands=0 pendingBridgeAcks=0',
+    systemMetrics: null,
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.stableErrorCode, 'bridge.restart-quiescence-timeout');
+  assert.equal(report.lifecyclePhase, 'bridge-restart-quiescence');
+});
+
+test('process-exclusion restart owner failure has a stable authority fingerprint and transition', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'process-exclusion',
+    bridge: healthyProcessExclusionBridge,
+    driver: null,
+    wasapi: null,
+    physicalOutput: healthyProcessExclusionFingerprint,
+    appLogText: healthyProcessExclusionRestartLog.replace(
+      'newPlaybackOwnerGeneration=2002',
+      'newPlaybackOwnerGeneration=1000',
+    ),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'bridge');
+  assert.equal(report.stableErrorCode, 'playback.physical-owner-authority-failed');
+  assert.equal(report.lifecyclePhase, 'bridge-playback-rebind');
+  assert.equal(report.failureContext.endpointId, '{hda-test-endpoint}');
+  assert.deepEqual(report.failureContext.ownerGenerationTransition, {
+    before: 1001,
+    after: 1000,
+  });
+});
+
+test('translated PCM authority failure has a stable physical proof fingerprint', () => {
+  const report = classify({
+    physicalOutputContent: {
+      passed: false,
+      error: 'translated-pcm-authority-failed: no complete cue matched the physical endpoint',
+    },
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'physicalOutputContent');
+  assert.equal(report.stableErrorCode, 'playback.translated-pcm-authority-failed');
+  assert.equal(report.lifecyclePhase, 'physical-playback-proof');
 });
 
 test('surfaces bridge source probe diagnostics before generic bridge counters', () => {

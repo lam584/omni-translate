@@ -406,6 +406,18 @@ test('echo-cancel records runtime ERLE without applying the pure-echo fixture th
   assert.equal(report.layers.aec.data.maxErleDb, 14.9);
 });
 
+test('echo-cancel missing residual telemetry has a stable AEC evidence fingerprint', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replaceAll(/ residualEchoLikelihood=[^ ]+/g, ''),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.equal(report.stableErrorCode, 'aec.residual-echo-likelihood-unavailable');
+  assert.equal(report.lifecyclePhase, 'aec-evidence');
+});
+
 test('echo-cancel requires the build-time native pure-echo fixture gate', () => {
   const report = classify({
     feedbackLoopPrevention: 'echo-cancel',

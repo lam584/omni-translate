@@ -249,7 +249,8 @@ fn handle_control(
             } else {
                 None
             };
-            let mut current = if requested_capture_mode == SourceCaptureMode::ProcessExclusion {
+            let physical_playback_required = current.translation_playback_enabled;
+            let mut current = if physical_playback_required {
                 current.physical_playback_status = "rebinding".to_string();
                 current.resolved_physical_playback_device_id.clear();
                 current.bridge_state = "starting".to_string();
@@ -329,7 +330,7 @@ fn handle_control(
                 &current.driver_health,
                 current.process_loopback_status,
             );
-            let playback_ready = requested_capture_mode != SourceCaptureMode::ProcessExclusion
+            let playback_ready = !physical_playback_required
                 || current.physical_playback_status == "ready";
             let route_ready = capture_ready && playback_ready;
             current.bridge_state = if route_ready { "running" } else { "degraded" }.to_string();

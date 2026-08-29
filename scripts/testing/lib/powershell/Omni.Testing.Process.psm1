@@ -100,16 +100,17 @@ function Stop-OmniOwnedProcessTree {
   }
   $ids = @((Get-OmniDescendantProcessIds -RootProcessId ([int]$Lease.pid)))
   [array]::Reverse($ids)
-  foreach ($id in $ids) {
-    Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
-  }
+  $targetIds = @($ids) + @([int]$Lease.pid)
+  foreach ($id in $ids) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
   Stop-Process -Id ([int]$Lease.pid) -Force -ErrorAction SilentlyContinue
   $deadline = [DateTime]::UtcNow.AddMilliseconds($WaitMilliseconds)
-  while ((Get-Process -Id ([int]$Lease.pid) -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) {
+  do {
+    $remainingIds = @($targetIds | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+    if ($remainingIds.Count -eq 0) { break }
     Start-Sleep -Milliseconds 50
-  }
-  if (Get-Process -Id ([int]$Lease.pid) -ErrorAction SilentlyContinue) {
-    throw "owned process did not exit within ${WaitMilliseconds}ms: pid=$($Lease.pid)"
+  } while ([DateTime]::UtcNow -lt $deadline)
+  if ($remainingIds.Count -gt 0) {
+    throw "owned process tree did not exit within ${WaitMilliseconds}ms: rootPid=$($Lease.pid) remainingPids=$($remainingIds -join ',')"
   }
   return [pscustomobject]@{ stopped = $true; pid = [int]$Lease.pid }
 }
@@ -135,7 +136,6 @@ function Stop-OmniManagedProcessHandle {
     return [pscustomobject]@{ stopped = $false; pid = [int]$Process.Id; alreadyExited = $true; identityEndedDuringCleanup = $true }
   }
 }
-
 Export-ModuleMember -Function @(
   'Get-OmniProcessIdentity',
   'Test-OmniProcessIdentity',

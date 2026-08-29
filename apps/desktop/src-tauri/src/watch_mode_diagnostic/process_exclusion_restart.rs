@@ -34,15 +34,18 @@ pub(super) fn schedule_process_exclusion_restart(
         let started_at_unix_ms = crate::audio::time_utils::unix_ms();
         let playback_drain_started = Instant::now();
         loop {
-            if !app
-                .state::<AudioStateStore>()
-                .inbound_speaker_playback_active()
-            {
+            let audio_state = app.state::<AudioStateStore>();
+            let playback = audio_state.translation_playback_quiescence().snapshot();
+            if process_exclusion_restart_is_quiescent(
+                audio_state.inbound_speaker_playback_active(),
+                playback,
+            ) {
                 tokio::time::sleep(PROCESS_EXCLUSION_RESTART_PLAYBACK_IDLE_CONFIRMATION).await;
-                if !app
-                    .state::<AudioStateStore>()
-                    .inbound_speaker_playback_active()
-                {
+                let playback = audio_state.translation_playback_quiescence().snapshot();
+                if process_exclusion_restart_is_quiescent(
+                    audio_state.inbound_speaker_playback_active(),
+                    playback,
+                ) {
                     break;
                 }
             }
@@ -52,9 +55,15 @@ pub(super) fn schedule_process_exclusion_restart(
                 log_process_exclusion_restart_failure(
                     &app,
                     &run_marker,
-                    "playback-drain",
+                    "restart-quiescence",
                     started_at_unix_ms,
-                    "translated speaker playback did not reach a stable idle window before the controlled Bridge restart",
+                    &format!(
+                        "restart-quiescence-timeout: translated playback did not reach a stable idle window before the controlled Bridge restart; pendingNativeAudio={} queuedCommands={} activeCommands={} pendingBridgeAcks={}",
+                        playback.pending_native_audio,
+                        playback.queued_commands,
+                        playback.active_commands,
+                        playback.pending_bridge_acks,
+                    ),
                 );
                 return;
             }

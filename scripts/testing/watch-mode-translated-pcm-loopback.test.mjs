@@ -91,6 +91,7 @@ function createFixture({
   playbackOffsetsSeconds: providedOffsets = [3.2, 9.4],
   renderedPlaybackOffsetsSeconds = providedOffsets,
   streamChunkGapSeconds = 0,
+  cueSeconds = [2.6, 2.6],
 } = {}) {
   const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'translated-loopback-'));
   const authorityDirectory = path.join(runDirectory, 'translated-cue-pcm');
@@ -103,7 +104,7 @@ function createFixture({
   const acceptedCues = [];
   for (let index = 0; index < cueIds.length; index += 1) {
     const cueSeed = 11 + index * 19;
-    const samples = deterministicCue(cueSeed);
+    const samples = deterministicCue(cueSeed, { seconds: cueSeconds[index] });
     const bytes = pcmBuffer(samples);
     const relativePath = `cue-pcm/${index + 1}.pcm`;
     fs.writeFileSync(path.join(authorityDirectory, relativePath), bytes);
@@ -149,7 +150,7 @@ function createFixture({
       chunkCount: chunks.length,
       chunks,
       createdAtMs: recordingStartedAtEpochMs + playbackOffsetsSeconds[index] * 1_000 - 50,
-      completedAtMs: recordingStartedAtEpochMs + (playbackOffsetsSeconds[index] + 2.6) * 1_000,
+      completedAtMs: recordingStartedAtEpochMs + (playbackOffsetsSeconds[index] + cueSeconds[index]) * 1_000,
       bridgeInstanceId: index === 0 ? 'bridge-before-restart' : 'bridge-after-restart',
       playbackOwnerGeneration: index === 0 ? 10 : 20,
       physicalPlaybackDeviceId: '{hda-test-endpoint}',
@@ -211,7 +212,7 @@ function createFixture({
     const startMs = recordingStartedAtEpochMs + playbackOffsetsSeconds[index] * 1_000;
     lines.push(`${localTimestamp(startMs - 20)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=queued`);
     lines.push(`${localTimestamp(startMs)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=started`);
-    lines.push(`${localTimestamp(startMs + 2_600)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=completed`);
+    lines.push(`${localTimestamp(startMs + cueSeconds[index] * 1_000)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=completed`);
     if (index === 0) {
       const restartAtMs = recordingStartedAtEpochMs + 7_000;
       lines.push(`${localTimestamp(restartAtMs)} [NORMAL] event=process_exclusion_restart_summary | status=passed runMarker=${RUN_MARKER} recoveredAtUnixMs=${restartAtMs} oldPlaybackOwnerGeneration=10 newPlaybackOwnerGeneration=20 oldPhysicalPlaybackDeviceId={hda-test-endpoint} newPhysicalPlaybackDeviceId={hda-test-endpoint} physicalPlaybackStatus=ready physicalPlaybackRebindDurationMs=250`);
@@ -260,6 +261,37 @@ test('uses started playback time plus PCM offsets even when ACK timestamps arriv
     assert.equal(authority.passed, true, JSON.stringify(authority.matches));
     assert.ok(authority.matches.every((match) => match.requiredAnchorMatches === 3));
     assert.ok(authority.matches.every((match) => match.matchedAnchorCount === 3));
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('uses duration-adaptive anchors for medium and short complete cues', () => {
+  for (const { seconds, requiredAnchorMatches } of [
+    { seconds: 1.0, requiredAnchorMatches: 2 },
+    { seconds: 0.6, requiredAnchorMatches: 1 },
+  ]) {
+    const fixture = createFixture({ cueSeconds: [seconds, seconds] });
+    try {
+      const authority = build(fixture);
+      assert.equal(authority.passed, true, authority.violations.join('; '));
+      assert.equal(authority.matchedCueCount, 2);
+      assert.ok(authority.matches.every((match) => match.requiredAnchorMatches === requiredAnchorMatches));
+      assert.deepEqual(authority.unauditableCues, []);
+    } finally {
+      fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+    }
+  }
+});
+
+test('sub-400ms cues are explicit non-authority and cannot replace two acoustic proofs', () => {
+  const fixture = createFixture({ cueSeconds: [0.3, 0.3] });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    assert.equal(authority.matches.length, 0);
+    assert.equal(authority.unauditableCues.length, 2);
+    assert.match(authority.violations.join('; '), /at least 2 acoustically auditable complete cues/);
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
   }

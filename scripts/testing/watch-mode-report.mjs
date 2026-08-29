@@ -1930,6 +1930,73 @@ function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
   };
 }
 
+function stableFailureIdentity({ failureLayer, failureReason, diagnostics, layers }) {
+  if (!failureLayer) return null;
+  const evidence = [
+    failureReason,
+    diagnostics?.runnerFailure,
+    ...(diagnostics?.evidence?.providerErrors ?? []),
+    ...(diagnostics?.evidence?.appErrors ?? []),
+  ].filter(Boolean).join('\n');
+  let stableErrorCode;
+  let lifecyclePhase;
+  if (/workspace access denied/i.test(evidence)) {
+    stableErrorCode = 'provider.workspace-access-denied';
+    lifecyclePhase = 'provider-readiness';
+  } else if (/response stream timeout|timeout_seconds=.*elapsed_ms/i.test(evidence)) {
+    stableErrorCode = 'provider.response-stream-timeout';
+    lifecyclePhase = 'active-response';
+  } else if (/restart-quiescence-timeout/i.test(evidence)) {
+    stableErrorCode = 'bridge.restart-quiescence-timeout';
+    lifecyclePhase = 'bridge-restart-quiescence';
+  } else if (/residual echo likelihood is unavailable|residualEchoLikelihood/i.test(evidence)) {
+    stableErrorCode = 'aec.residual-echo-likelihood-unavailable';
+    lifecyclePhase = 'aec-evidence';
+  } else if (/translated(?:-pcm| PCM).*(?:authority|correlat)|translated-pcm-authority/i.test(evidence)) {
+    stableErrorCode = 'playback.translated-pcm-authority-failed';
+    lifecyclePhase = 'physical-playback-proof';
+  } else if (/controlled live Bridge restart|Bridge restart evidence/i.test(evidence)) {
+    stableErrorCode = 'bridge.restart-authority-failed';
+    lifecyclePhase = 'bridge-restart';
+  } else if (/playback owner|owner generation|physical endpoint|physical playback.*(?:ready|rebind)/i.test(evidence)) {
+    stableErrorCode = 'playback.physical-owner-authority-failed';
+    lifecyclePhase = 'bridge-playback-rebind';
+  } else {
+    const normalizedLayer = String(failureLayer).replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
+    stableErrorCode = `watch.${normalizedLayer}.failed`;
+    lifecyclePhase = {
+      environment: 'environment-preflight',
+      provider: 'provider-session',
+      app: 'application-runtime',
+      bridge: 'bridge-runtime',
+      aec: 'aec-runtime',
+      physicalOutput: 'physical-playback-proof',
+      physicalOutputContent: 'physical-content-proof',
+      strictContent: 'strict-content-proof',
+    }[failureLayer] ?? 'cell-runtime';
+  }
+
+  const restart = layers?.bridge?.data?.processExclusionRestart ?? {};
+  const physicalOutput = diagnostics?.evidence?.physicalOutput ?? {};
+  return {
+    stableErrorCode,
+    lifecyclePhase,
+    failureContext: {
+      endpointId: restart.newPhysicalPlaybackDeviceId
+        ?? restart.resolvedPhysicalPlaybackDeviceId
+        ?? physicalOutput.resolvedPhysicalPlaybackDeviceId
+        ?? null,
+      bridgeInstanceId: restart.newBridgeInstanceId ?? null,
+      ownerGenerationTransition: {
+        before: Number.isSafeInteger(Number(restart.oldPlaybackOwnerGeneration))
+          ? Number(restart.oldPlaybackOwnerGeneration) : null,
+        after: Number.isSafeInteger(Number(restart.newPlaybackOwnerGeneration))
+          ? Number(restart.newPlaybackOwnerGeneration) : null,
+      },
+    },
+  };
+}
+
 function speechSegmentationLayerFailed(segmentation, translationRoute) {
   if (translationRoute !== 'secondary') return null;
   if (!segmentation) return 'speech segmentation metrics were not collected';
@@ -1946,6 +2013,18 @@ function speechSegmentationLayerFailed(segmentation, translationRoute) {
 
 function processExclusionRestartLayerFailed(evidence, { required = false } = {}) {
   if (!required) return null;
+  if (
+    evidence
+    && evidence.completed !== true
+    && evidence.identityChanged === true
+    && evidence.frameContinuity === true
+    && evidence.runtimeReady === true
+    && evidence.playbackRebound !== true
+    && evidence.timingValid === true
+    && evidence.metricsProveTransition === true
+  ) {
+    return `physical playback owner authority failed during Bridge rebind: status=${evidence.physicalPlaybackStatus ?? 'missing'} endpoint=${evidence.oldPhysicalPlaybackDeviceId ?? 'missing'}->${evidence.newPhysicalPlaybackDeviceId ?? 'missing'} ownerGeneration=${evidence.oldPlaybackOwnerGeneration ?? 'missing'}->${evidence.newPlaybackOwnerGeneration ?? 'missing'}`;
+  }
   if (!evidence || evidence.completed !== true) {
     return 'process-exclusion did not prove a controlled live Bridge restart with new process/session/generation identity, physical playback ownership rebind, continuous source frames, and zero old frames';
   }
@@ -2275,9 +2354,11 @@ export function classifyWatchModeRun(input) {
 
   const { failureLayer, verdict } = resolveLayerVerdict({ activeChecks, layers, environmentReason });
   const diagnostics = buildReportDiagnostics(input, layers, activeChecks, appLog, bridgeLog);
+  const failureReason = failureLayer ? layers[failureLayer].reason : null;
+  const failureIdentity = stableFailureIdentity({ failureLayer, failureReason, diagnostics, layers });
   const provenance = input.provenance ?? currentGitProvenance();
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt: new Date().toISOString(),
     // Keep the legacy top-level commit for report consumers, while strict
     // verification uses the explicit clean-worktree provenance object below.
@@ -2293,7 +2374,8 @@ export function classifyWatchModeRun(input) {
     watchSessionReport: input.watchSessionReport ?? null,
     verdict,
     failureLayer,
-    failureReason: failureLayer ? layers[failureLayer].reason : null,
+    failureReason,
+    ...(failureIdentity ?? {}),
     suspectFiles: failureLayer ? DEFAULT_SUSPECT_FILES[failureLayer] : [],
     layers,
     diagnostics,
@@ -2313,6 +2395,8 @@ export function renderMarkdownReport(report) {
     `- Device: class=${report.deviceEvidence?.deviceClass ?? '-'} profile=${report.deviceEvidence?.profileId ?? '-'} id=${report.deviceEvidence?.resolvedDeviceId ?? '-'} name=${report.deviceEvidence?.resolvedDeviceName ?? '-'}`,
     `- Verdict: ${report.verdict}`,
     `- FailureLayer: ${report.failureLayer ?? '-'}`,
+    `- StableErrorCode: ${report.stableErrorCode ?? '-'}`,
+    `- LifecyclePhase: ${report.lifecyclePhase ?? '-'}`,
     `- FailureReason: ${report.failureReason ?? '-'}`,
     '',
     '## Layer Summary',

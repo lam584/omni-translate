@@ -18,6 +18,7 @@ use crate::audio::events::{
     preconnect_omni_realtime_inner, start_audio_route_inner, stop_audio_route,
 };
 use crate::audio::state::AudioStateStore;
+use crate::audio::state::TranslationPlaybackQuiescenceSnapshot;
 use crate::bridge::events::{repair_driver_runtime, start_bridge_service};
 use crate::bridge::ipc::{apply_query as apply_bridge_query, BridgeIpcClient};
 use crate::bridge::contracts::{
@@ -49,6 +50,13 @@ const PROCESS_EXCLUSION_RESTART_RECOVERY_TIMEOUT: Duration = Duration::from_secs
 const PROCESS_EXCLUSION_RESTART_POLL: Duration = Duration::from_millis(50);
 const PROCESS_EXCLUSION_RESTART_PLAYBACK_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_EXCLUSION_RESTART_PLAYBACK_IDLE_CONFIRMATION: Duration = Duration::from_millis(250);
+
+fn process_exclusion_restart_is_quiescent(
+    speaker_playback_active: bool,
+    playback: TranslationPlaybackQuiescenceSnapshot,
+) -> bool {
+    !speaker_playback_active && playback.is_quiescent()
+}
 
 fn env_flag_enabled(name: &str) -> bool {
     std::env::var(name)

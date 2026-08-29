@@ -93,7 +93,7 @@ pub(crate) fn bridge_translation_playback_enabled_for_config(config: &Value) -> 
 use std::mem::size_of;
 
 use wasapi::{
-    calculate_period_100ns, deinitialize, initialize_mta, AudioClient, AudioRenderClient, Device,
+    calculate_period_100ns, deinitialize, initialize_mta, AudioClient, AudioRenderClient,
     DeviceEnumerator, Direction as WasapiDirection, SampleType, StreamMode, WaveFormat,
 };
 
@@ -878,56 +878,6 @@ fn audio_frames_to_duration(frame_count: usize) -> Duration {
 
 fn playback_volume(output_level: u64) -> f32 {
     output_level.min(100) as f32 / 100.0
-}
-
-fn is_default_output_device_alias(device_id: &str) -> bool {
-    matches!(
-        device_id.trim(),
-        "" | "default" | "speaker-default" | "system-output-default"
-    )
-}
-
-fn resolve_wasapi_render_device(
-    enumerator: &DeviceEnumerator,
-    requested: Option<&str>,
-) -> Result<Device, String> {
-    let Some(requested) = requested.filter(|id| !is_default_output_device_alias(id)) else {
-        return enumerator
-            .get_default_device(&WasapiDirection::Render)
-            .map_err(|error| error.to_string());
-    };
-    if let Ok(device) = enumerator.get_device(requested) {
-        return Ok(device);
-    }
-    let requested_name = normalized_device_name(requested);
-    let collection = enumerator
-        .get_device_collection(&WasapiDirection::Render)
-        .map_err(|error| error.to_string())?;
-    for device in &collection {
-        let device = device.map_err(|error| error.to_string())?;
-        let id_matches = device
-            .get_id()
-            .map(|id| id == requested)
-            .unwrap_or(false);
-        let name_matches = device
-            .get_friendlyname()
-            .map(|name| normalized_device_name(&name).contains(&requested_name))
-            .unwrap_or(false);
-        if id_matches || name_matches {
-            return Ok(device);
-        }
-    }
-    Err(format!(
-        "configured speaker output device not found: {requested}"
-    ))
-}
-
-fn normalized_device_name(value: &str) -> String {
-    value
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .flat_map(char::to_lowercase)
-        .collect()
 }
 
 #[cfg(test)]

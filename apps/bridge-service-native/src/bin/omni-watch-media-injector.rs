@@ -52,6 +52,9 @@ mod injector {
         pub source_gain_db: f32,
         pub rendered_frames: usize,
         pub rendered_seconds: f64,
+        pub restart_quiet_window_after_seconds: f64,
+        pub restart_quiet_window_frames: usize,
+        pub restart_quiet_window_seconds: f64,
         pub postroll_silence_frames: usize,
         pub postroll_silence_seconds: f64,
         pub detail: Option<String>,
@@ -73,6 +76,9 @@ mod injector {
                 source_gain_db: 0.0,
                 rendered_frames: 0,
                 rendered_seconds: 0.0,
+                restart_quiet_window_after_seconds: 0.0,
+                restart_quiet_window_frames: 0,
+                restart_quiet_window_seconds: 0.0,
                 postroll_silence_frames: 0,
                 postroll_silence_seconds: 0.0,
                 detail: Some(detail),
@@ -88,6 +94,8 @@ mod injector {
         reference_pcm16k_mono_path: Option<PathBuf>,
         reference_only: bool,
         source_gain_db: f32,
+        restart_quiet_window_after_seconds: f64,
+        restart_quiet_window_seconds: f64,
         postroll_silence_seconds: f64,
     }
 
@@ -152,12 +160,19 @@ mod injector {
             let reference_path = args.reference_pcm16k_mono_path.as_ref().ok_or_else(|| {
                 "--reference-only requires --reference-pcm16k-mono-path <path>".to_string()
             })?;
-            let reference_samples = resample_to_16k_mono(
+            let mut reference_samples = resample_to_16k_mono(
                 &decoded.samples,
                 decoded.source_sample_rate_hz,
                 decoded.source_channels,
                 args.max_seconds,
             );
+            let restart_quiet_window_frames = insert_silence(
+                &mut reference_samples,
+                1,
+                16_000,
+                args.restart_quiet_window_after_seconds,
+                args.restart_quiet_window_seconds,
+            )?;
             write_pcm16le(reference_path, &reference_samples)?;
             return Ok(InjectorResult {
                 passed: true,
@@ -173,6 +188,9 @@ mod injector {
                 source_gain_db: args.source_gain_db,
                 rendered_frames: 0,
                 rendered_seconds: 0.0,
+                restart_quiet_window_after_seconds: args.restart_quiet_window_after_seconds,
+                restart_quiet_window_frames,
+                restart_quiet_window_seconds: restart_quiet_window_frames as f64 / 16_000.0,
                 postroll_silence_frames: 0,
                 postroll_silence_seconds: 0.0,
                 detail: Some("reference-only; no render endpoint opened".to_string()),
@@ -203,17 +221,31 @@ mod injector {
         let max_samples = args.max_seconds.map(|seconds| {
             (seconds.max(0.1) * render_sample_rate_hz as f64) as usize * TARGET_CHANNELS
         });
-        let target_samples = match max_samples {
+        let mut target_samples = match max_samples {
             Some(limit) => target_samples.into_iter().take(limit).collect::<Vec<_>>(),
             None => target_samples,
         };
+        let restart_quiet_window_frames = insert_silence(
+            &mut target_samples,
+            TARGET_CHANNELS,
+            render_sample_rate_hz,
+            args.restart_quiet_window_after_seconds,
+            args.restart_quiet_window_seconds,
+        )?;
         if let Some(path) = args.reference_pcm16k_mono_path.as_ref() {
-            let reference_samples = resample_to_16k_mono(
+            let mut reference_samples = resample_to_16k_mono(
                 &decoded.samples,
                 decoded.source_sample_rate_hz,
                 decoded.source_channels,
                 args.max_seconds,
             );
+            insert_silence(
+                &mut reference_samples,
+                1,
+                16_000,
+                args.restart_quiet_window_after_seconds,
+                args.restart_quiet_window_seconds,
+            )?;
             write_pcm16le(path, &reference_samples)?;
         }
 
@@ -263,6 +295,10 @@ mod injector {
             source_gain_db: args.source_gain_db,
             rendered_frames: media_frames,
             rendered_seconds: media_frames as f64 / render_sample_rate_hz as f64,
+            restart_quiet_window_after_seconds: args.restart_quiet_window_after_seconds,
+            restart_quiet_window_frames,
+            restart_quiet_window_seconds: restart_quiet_window_frames as f64
+                / render_sample_rate_hz as f64,
             postroll_silence_frames,
             postroll_silence_seconds: postroll_silence_frames as f64
                 / render_sample_rate_hz as f64,
@@ -278,6 +314,8 @@ mod injector {
         let mut reference_pcm16k_mono_path = None;
         let mut reference_only = false;
         let mut source_gain_db = 0.0_f32;
+        let mut restart_quiet_window_after_seconds = 0.0_f64;
+        let mut restart_quiet_window_seconds = 0.0_f64;
         let mut postroll_silence_seconds = 0.0_f64;
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -300,6 +338,18 @@ mod injector {
                     if !source_gain_db.is_finite() || !(-60.0..=0.0).contains(&source_gain_db) {
                         return Err("--gain-db must be finite and between -60 and 0".to_string());
                     }
+                }
+                "--restart-quiet-window-after-seconds" => {
+                    let raw = next_arg(&mut args, "--restart-quiet-window-after-seconds")?;
+                    restart_quiet_window_after_seconds = raw.parse::<f64>().map_err(|error| {
+                        format!("invalid --restart-quiet-window-after-seconds '{raw}': {error}")
+                    })?;
+                }
+                "--restart-quiet-window-seconds" => {
+                    let raw = next_arg(&mut args, "--restart-quiet-window-seconds")?;
+                    restart_quiet_window_seconds = raw.parse::<f64>().map_err(|error| {
+                        format!("invalid --restart-quiet-window-seconds '{raw}': {error}")
+                    })?;
                 }
                 "--postroll-silence-seconds" => {
                     let raw = next_arg(&mut args, "--postroll-silence-seconds")?;
@@ -324,11 +374,22 @@ mod injector {
                 }
                 "--help" | "-h" => {
                     return Err(
-                        "Usage: omni-watch-media-injector --media <wav-or-mp3> [--endpoint-id <id>] [--endpoint-name <name>] [--max-seconds <seconds>] [--gain-db <-60..0>] [--postroll-silence-seconds <0..10>] [--reference-pcm16k-mono-path <path>] [--reference-only]".to_string(),
+                        "Usage: omni-watch-media-injector --media <wav-or-mp3> [--endpoint-id <id>] [--endpoint-name <name>] [--max-seconds <seconds>] [--gain-db <-60..0>] [--restart-quiet-window-after-seconds <seconds> --restart-quiet-window-seconds <1..90>] [--postroll-silence-seconds <0..10>] [--reference-pcm16k-mono-path <path>] [--reference-only]".to_string(),
                     );
                 }
                 other => return Err(format!("unknown argument: {other}")),
             }
+        }
+        let restart_window_disabled = restart_quiet_window_after_seconds == 0.0
+            && restart_quiet_window_seconds == 0.0;
+        let restart_window_valid = restart_quiet_window_after_seconds.is_finite()
+            && restart_quiet_window_seconds.is_finite()
+            && restart_quiet_window_after_seconds >= 1.0
+            && restart_quiet_window_after_seconds <= 7_200.0
+            && restart_quiet_window_seconds >= 1.0
+            && restart_quiet_window_seconds <= 90.0;
+        if !restart_window_disabled && !restart_window_valid {
+            return Err("restart quiet window requires a finite after-seconds in 1..7200 and duration in 1..90".to_string());
         }
         Ok(Args {
             media_path: media_path.ok_or_else(|| "--media <mp3> is required".to_string())?,
@@ -338,6 +399,8 @@ mod injector {
             reference_pcm16k_mono_path,
             reference_only,
             source_gain_db,
+            restart_quiet_window_after_seconds,
+            restart_quiet_window_seconds,
             postroll_silence_seconds,
         })
     }
@@ -419,6 +482,32 @@ mod injector {
             samples.len() + postroll_frames * TARGET_CHANNELS,
             0.0,
         );
+    }
+
+    fn insert_silence<T: Clone + Default>(
+        samples: &mut Vec<T>,
+        channels: usize,
+        sample_rate_hz: u32,
+        after_seconds: f64,
+        silence_seconds: f64,
+    ) -> Result<usize, String> {
+        if after_seconds == 0.0 && silence_seconds == 0.0 {
+            return Ok(0);
+        }
+        let after_frames = (after_seconds * sample_rate_hz as f64).round() as usize;
+        let total_frames = samples.len() / channels.max(1);
+        if after_frames >= total_frames {
+            return Err(format!(
+                "restart quiet window begins outside media: afterFrames={after_frames} mediaFrames={total_frames}"
+            ));
+        }
+        let silence_frames = (silence_seconds * sample_rate_hz as f64).round() as usize;
+        let insertion = after_frames * channels;
+        samples.splice(
+            insertion..insertion,
+            std::iter::repeat_n(T::default(), silence_frames * channels),
+        );
+        Ok(silence_frames)
     }
 
     fn decode_media(path: &Path) -> Result<DecodedAudio, String> {
@@ -656,6 +745,24 @@ mod injector {
             assert_eq!(&rendered[..media.len()], media.as_slice());
             assert_eq!(rendered.len(), media.len() + 3 * TARGET_CHANNELS);
             assert!(rendered[media.len()..].iter().all(|sample| *sample == 0.0));
+        }
+
+        #[test]
+        fn restart_quiet_window_preserves_both_media_sides_and_exact_duration() {
+            let mut rendered = vec![1_i16, 2, 3, 4, 5, 6, 7, 8];
+            let inserted = insert_silence(&mut rendered, 2, 2, 1.0, 1.5).unwrap();
+            assert_eq!(inserted, 3);
+            assert_eq!(&rendered[..4], &[1, 2, 3, 4]);
+            assert_eq!(&rendered[4..10], &[0; 6]);
+            assert_eq!(&rendered[10..], &[5, 6, 7, 8]);
+        }
+
+        #[test]
+        fn restart_quiet_window_rejects_a_marker_after_media_end() {
+            let mut rendered = vec![1_i16; 8];
+            assert!(insert_silence(&mut rendered, 2, 2, 2.0, 1.0)
+                .unwrap_err()
+                .contains("outside media"));
         }
 
         #[test]

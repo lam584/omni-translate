@@ -40,6 +40,21 @@ function Invoke-Step {
   return $step
 }
 
+function Get-WatchModeRestartQuietWindow {
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateSet('virtual-driver', 'process-exclusion', 'echo-cancel')]
+    [string]$FeedbackMode,
+    [Parameter(Mandatory = $true)] [ValidateRange(30, 7200)] [int]$ProviderInputSeconds,
+    [bool]$StrictPaidAuthority
+  )
+  $enabled = $StrictPaidAuthority -and $FeedbackMode -eq 'process-exclusion'
+  return [pscustomobject]@{
+    afterSeconds = if ($enabled) { [Math]::Floor($ProviderInputSeconds / 2) } else { 0 }
+    durationSeconds = if ($enabled) { [Math]::Floor($ProviderInputSeconds / 4) } else { 0 }
+  }
+}
+
 function Invoke-WatchModeRun {
   param(
     [Parameter(Mandatory = $true)]$Context,
@@ -134,7 +149,15 @@ function Invoke-WatchModeRun {
                 Start-TestMediaPlaybackViaDefaultEndpoint $MediaPath $watchPlaybackEndpointId $outputDir $workspaceRoot $PlaybackSeconds
             } -ContinueOnError
           } else {
-              $playbackStep = Invoke-Step -State $state "play watch-mode media" -Phase playback { Start-TestMediaPlayback $MediaPath $watchPlaybackEndpointId $outputDir $workspaceRoot $PlaybackSeconds } -ContinueOnError
+              $restartQuietWindow = Get-WatchModeRestartQuietWindow `
+                -FeedbackMode $FeedbackLoopPrevention `
+                -ProviderInputSeconds $WatchAutoStopAfterSeconds `
+                -StrictPaidAuthority $StrictPaidAuthority
+              $playbackStep = Invoke-Step -State $state "play watch-mode media" -Phase playback {
+                Start-TestMediaPlayback $MediaPath $watchPlaybackEndpointId $outputDir $workspaceRoot $PlaybackSeconds `
+                  -RestartQuietWindowAfterSeconds ([int]$restartQuietWindow.afterSeconds) `
+                  -RestartQuietWindowSeconds ([int]$restartQuietWindow.durationSeconds)
+              } -ContinueOnError
           }
           $requiredWatchReportPath = Join-Path $outputDir "watch-session-report.json"
           $reportDeadlineUtc = Get-WatchSessionReportDeadlineUtc `
@@ -277,4 +300,4 @@ function Invoke-WatchModeRun {
   if ($runException) { throw $runException }
 }
 
-Export-ModuleMember -Function 'Invoke-WatchModeRun'
+Export-ModuleMember -Function @('Invoke-WatchModeRun', 'Get-WatchModeRestartQuietWindow')

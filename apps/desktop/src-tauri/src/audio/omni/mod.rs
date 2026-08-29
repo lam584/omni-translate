@@ -955,7 +955,7 @@ mod native_translation_tests {
     }
 
     #[test]
-    fn qwen35_omni_semantic_vad_uses_watch_defaults() {
+    fn qwen35_omni_semantic_vad_splits_continuous_watch_audio_at_fixture_pauses() {
         let session = build_omni_session_update(
             "qwen3.5-omni-plus-realtime",
             "longanqian",
@@ -980,30 +980,39 @@ mod native_translation_tests {
             session
                 .pointer("/session/turn_detection/silence_duration_ms")
                 .and_then(Value::as_u64),
-            Some(800)
+            Some(400)
         );
     }
 
     #[test]
     fn qwen35_release_models_split_continuous_watch_audio_at_fixture_pauses() {
-        for model in [
-            "qwen3.5-omni-flash-realtime",
-            "qwen3.5-livetranslate-flash-realtime",
-        ] {
-            let session = build_omni_session_update(
-                model,
-                "longanqian",
-                "translate naturally",
-                RealtimeAudioMode::ServerVad,
-                "zh-CN",
-            );
-            assert_eq!(
-                session
-                    .pointer("/session/turn_detection/silence_duration_ms")
-                    .and_then(Value::as_u64),
-                Some(400),
-                "{model}",
-            );
+        for model in ["qwen3.5-omni-flash-realtime", "qwen3.5-livetranslate-flash-realtime"] {
+            for (audio_mode, expected_type) in [
+                (RealtimeAudioMode::ServerVad, "server_vad"),
+                (RealtimeAudioMode::SemanticVad, "semantic_vad"),
+            ] {
+                let session = build_omni_session_update(
+                    model,
+                    "longanqian",
+                    "translate naturally",
+                    audio_mode,
+                    "zh-CN",
+                );
+                assert_eq!(
+                    session
+                        .pointer("/session/turn_detection/type")
+                        .and_then(Value::as_str),
+                    Some(expected_type),
+                    "{model} {audio_mode:?}",
+                );
+                assert_eq!(
+                    session
+                        .pointer("/session/turn_detection/silence_duration_ms")
+                        .and_then(Value::as_u64),
+                    Some(400),
+                    "{model} {audio_mode:?}",
+                );
+            }
         }
     }
 

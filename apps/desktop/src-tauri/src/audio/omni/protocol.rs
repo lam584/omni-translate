@@ -2462,18 +2462,23 @@ fn apply_model_specific_turn_detection(
     model: &str,
     audio_mode: RealtimeAudioMode,
 ) {
-    if audio_mode != RealtimeAudioMode::ServerVad {
-        return;
-    }
     let model = model.trim().to_ascii_lowercase();
-    if model.starts_with("qwen3.5-omni-")
-        || model.starts_with("qwen3.5-livetranslate-")
+    let is_qwen35_release_family = model.starts_with("qwen3.5-omni-")
+        || model.starts_with("qwen3.5-livetranslate-");
+    if is_qwen35_release_family
+        && matches!(
+            audio_mode,
+            RealtimeAudioMode::ServerVad | RealtimeAudioMode::SemanticVad
+        )
     {
         // Continuous Watch media contains sentence pauses in the 400-520ms
         // range but no 800ms gaps. Keeping the generic 800ms terminal merges
         // most of the programme into minute-long responses, which are then
         // cancelled by the next turn and cannot meet realtime playback.
         session_update["session"]["turn_detection"]["silence_duration_ms"] = json!(400);
+        return;
+    }
+    if audio_mode != RealtimeAudioMode::ServerVad {
         return;
     }
     if !model.starts_with("qwen-audio-3.0-realtime") {

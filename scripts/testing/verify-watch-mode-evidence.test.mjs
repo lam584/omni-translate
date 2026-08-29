@@ -399,11 +399,14 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
   const recordingStartedAtEpochMs = new Date(2026, 7, 13, 12, 0, 0, 0).getTime();
   const cueIds = ['authority-cue-1', 'authority-cue-2'];
   const playbackOffsetsSeconds = [2.2, 5.8];
-  const canonical = loadCanonicalFixtureAuthority();
+  const sourceReference = fs.readFileSync(
+    path.join(runDirectory, 'source-media-reference-16k-mono.pcm'),
+  );
+  const sourceReferenceSamples = sourceReference.length / 2;
   const sourceLagSamples = 16_000;
-  const recording = new Float32Array(canonical.referencePcm.samples + sourceLagSamples);
-  for (let index = 0; index < canonical.referencePcm.samples; index += 1) {
-    recording[sourceLagSamples + index] = canonical.referencePcm.buffer.readInt16LE(index * 2)
+  const recording = new Float32Array(sourceReferenceSamples + sourceLagSamples);
+  for (let index = 0; index < sourceReferenceSamples; index += 1) {
+    recording[sourceLagSamples + index] = sourceReference.readInt16LE(index * 2)
       / 32_768 * 0.25;
   }
   const acceptedCues = [];
@@ -663,6 +666,10 @@ function writeAuthorityRawCell(root, directoryName, {
     'playback.json': {
       playbackMode: 'wasapi-media-injector',
       sourceGainDb: -5,
+      restartQuietWindowAfterSeconds: feedbackLoopPrevention === 'process-exclusion' ? 90 : 0,
+      restartQuietWindowFrames: feedbackLoopPrevention === 'process-exclusion' ? 2_160_000 : 0,
+      restartQuietWindowSeconds: feedbackLoopPrevention === 'process-exclusion' ? 45 : 0,
+      renderSampleRateHz: 48_000,
       postrollSilenceFrames: 144000,
       postrollSilenceSeconds: 3,
       mediaSha256: sha256File(path.resolve('scripts/testing/fixtures/watch-mode-en-original.wav')),
@@ -777,13 +784,36 @@ function writeAuthorityRawCell(root, directoryName, {
   fs.writeFileSync(path.join(directory, 'app.log'), `${appLogLines.join('\n')}\n`, 'utf8');
   fs.writeFileSync(path.join(directory, 'bridge-service.log'), 'authority bridge log\n', 'utf8');
   const canonical = loadCanonicalFixtureAuthority();
+  const restartInsertionOffsetBytes = 90 * 16_000 * 2;
+  const referencePcmBuffer = feedbackLoopPrevention === 'process-exclusion'
+    ? Buffer.concat([
+        canonical.referencePcm.buffer.subarray(0, restartInsertionOffsetBytes),
+        Buffer.alloc(45 * 16_000 * 2),
+        canonical.referencePcm.buffer.subarray(restartInsertionOffsetBytes),
+      ])
+    : canonical.referencePcm.buffer;
+  const referencePcmAuthority = {
+    path: 'source-media-reference-16k-mono.pcm',
+    bytes: referencePcmBuffer.length,
+    samples: referencePcmBuffer.length / 2,
+    sampleRateHz: 16_000,
+    channels: 1,
+    durationSeconds: Number((referencePcmBuffer.length / 2 / 16_000).toFixed(6)),
+    sha256: crypto.createHash('sha256').update(referencePcmBuffer).digest('hex'),
+    transformation: feedbackLoopPrevention === 'process-exclusion'
+      ? 'restart-quiet-window-v1'
+      : 'none',
+    restartQuietWindowAfterSeconds: feedbackLoopPrevention === 'process-exclusion' ? 90 : 0,
+    restartQuietWindowSeconds: feedbackLoopPrevention === 'process-exclusion' ? 45 : 0,
+    insertedSilenceSamples: feedbackLoopPrevention === 'process-exclusion' ? 45 * 16_000 : 0,
+  };
   fs.writeFileSync(
     path.join(directory, 'source-media-reference-16k-mono.pcm'),
-    canonical.referencePcm.buffer,
+    referencePcmBuffer,
   );
   fs.writeFileSync(
     path.join(directory, 'provider-input-16k-mono.pcm'),
-    canonical.referencePcm.buffer,
+    referencePcmBuffer,
   );
   for (const relativePath of requiredCellArtifactPaths(feedbackLoopPrevention)) {
     const filePath = path.join(directory, ...relativePath.split('/'));
@@ -934,15 +964,7 @@ function writeAuthorityRawCell(root, directoryName, {
         bytes: canonical.translationText.bytes,
         sha256: canonical.translationText.sha256,
       },
-      referencePcm: {
-        path: 'source-media-reference-16k-mono.pcm',
-        bytes: canonical.referencePcm.bytes,
-        samples: canonical.referencePcm.samples,
-        sampleRateHz: 16_000,
-        channels: 1,
-        durationSeconds: Number(canonical.referencePcm.durationSeconds.toFixed(6)),
-        sha256: canonical.referencePcm.sha256,
-      },
+      referencePcm: referencePcmAuthority,
       fixture: canonical.fixture,
     }, null, 2)}\n`, 'utf8');
     fs.writeFileSync(path.join(directory, 'physical-output-content.raw.json'), `${JSON.stringify({
@@ -2054,6 +2076,89 @@ test('strict authority rejects media playback without the fixed VAD-closing post
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
     /playback\.json is not a completed production media-injector timeline/,
+  );
+});
+
+test('strict process-exclusion authority rejects playback without the midpoint restart quiet window', () => {
+  const root = makeTempRoot();
+  const options = {
+    feedbackLoopPrevention: 'process-exclusion',
+    modelId: 'qwen3.5-omni-flash-realtime',
+  };
+  const runDirectory = writeAuthorityRawCell(root, 'authority-missing-restart-window', options);
+  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, options);
+  const playbackPath = path.join(runDirectory, 'playback.json');
+  const playback = JSON.parse(fs.readFileSync(playbackPath, 'utf8'));
+  playback.restartQuietWindowFrames = 0;
+  playback.restartQuietWindowSeconds = 0;
+  fs.writeFileSync(playbackPath, `${JSON.stringify(playback, null, 2)}\n`, 'utf8');
+  refreshCellReceiptArtifacts(root, manifest, 0, ['playback.json']);
+
+  assert.throws(
+    () => verifyStrictMatrixAuthority({
+      manifestPath,
+      manifest,
+      evidenceRoot: root,
+      currentProvenance: CLEAN_CURRENT_PROVENANCE,
+      workspaceRoot: path.resolve('.'),
+      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    }),
+    /restart quiet-window authority is invalid/,
+  );
+});
+
+test('strict process-exclusion authority binds quiet-window frames to the render clock', () => {
+  const root = makeTempRoot();
+  const options = {
+    feedbackLoopPrevention: 'process-exclusion',
+    modelId: 'qwen3.5-omni-flash-realtime',
+  };
+  const runDirectory = writeAuthorityRawCell(root, 'authority-wrong-restart-window-frames', options);
+  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, options);
+  const playbackPath = path.join(runDirectory, 'playback.json');
+  const playback = JSON.parse(fs.readFileSync(playbackPath, 'utf8'));
+  playback.restartQuietWindowFrames = 1;
+  fs.writeFileSync(playbackPath, `${JSON.stringify(playback, null, 2)}\n`, 'utf8');
+  refreshCellReceiptArtifacts(root, manifest, 0, ['playback.json']);
+
+  assert.throws(
+    () => verifyStrictMatrixAuthority({
+      manifestPath,
+      manifest,
+      evidenceRoot: root,
+      currentProvenance: CLEAN_CURRENT_PROVENANCE,
+      workspaceRoot: path.resolve('.'),
+      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    }),
+    /restart quiet-window authority is invalid/,
+  );
+});
+
+test('strict non-process authority rejects any injected restart quiet window', () => {
+  const root = makeTempRoot();
+  const options = {
+    feedbackLoopPrevention: 'virtual-driver',
+    modelId: 'qwen3.5-omni-flash-realtime',
+  };
+  const runDirectory = writeAuthorityRawCell(root, 'authority-unexpected-restart-window', options);
+  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, options);
+  const playbackPath = path.join(runDirectory, 'playback.json');
+  const playback = JSON.parse(fs.readFileSync(playbackPath, 'utf8'));
+  playback.restartQuietWindowAfterSeconds = 90;
+  playback.restartQuietWindowFrames = 2_160_000;
+  fs.writeFileSync(playbackPath, `${JSON.stringify(playback, null, 2)}\n`, 'utf8');
+  refreshCellReceiptArtifacts(root, manifest, 0, ['playback.json']);
+
+  assert.throws(
+    () => verifyStrictMatrixAuthority({
+      manifestPath,
+      manifest,
+      evidenceRoot: root,
+      currentProvenance: CLEAN_CURRENT_PROVENANCE,
+      workspaceRoot: path.resolve('.'),
+      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    }),
+    /restart quiet-window authority is invalid/,
   );
 });
 

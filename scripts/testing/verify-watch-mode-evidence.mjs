@@ -73,7 +73,10 @@ import {
   validateCoordinatorAggregate,
 } from './run-watch-mode-live-coordinator.mjs';
 import { buildTranslatedPcmLoopbackAuthority } from './watch-mode-translated-pcm-loopback.mjs';
-import { validateRunCanonicalSourceAuthority } from './watch-mode-canonical-source-authority.mjs';
+import {
+  loadCanonicalFixtureAuthority,
+  validateRunCanonicalSourceAuthority,
+} from './watch-mode-canonical-source-authority.mjs';
 import { verifyLocalIsolationManifest } from './watch-mode-local-isolation.mjs';
 import { validateProviderPreflightRawAuthority } from './watch-mode-provider-preflight-authority.mjs';
 import {
@@ -413,7 +416,7 @@ function assertVirtualDriverBinaryAuthority(runDirectory, runtimeBinaryHashes, i
   }
 }
 
-function assertRawMediaAuthority(runDirectory, implementationHashes, cell, index) {
+function assertRawMediaAuthority(runDirectory, implementationHashes, cell, index, workspaceRoot) {
   const playback = readJson(path.join(runDirectory, 'playback.json'));
   const canonicalMedia = implementationHashes.find(
     (entry) => entry.path === 'scripts/testing/fixtures/watch-mode-en-original.wav',
@@ -437,10 +440,33 @@ function assertRawMediaAuthority(runDirectory, implementationHashes, cell, index
   ) {
     throw new Error(`strict matrix cell ${index} playback.json is not a completed production media-injector timeline`);
   }
+  const restartQuietWindowExpected = cell.feedbackLoopPrevention === 'process-exclusion';
+  const renderSampleRateHz = Number(playback.renderSampleRateHz);
+  if (
+    !Number.isInteger(renderSampleRateHz)
+    || renderSampleRateHz <= 0
+    ||
+    (restartQuietWindowExpected && (
+      Number(playback.restartQuietWindowAfterSeconds) !== 90
+      || Number(playback.restartQuietWindowSeconds) !== 45
+      || !Number.isInteger(Number(playback.restartQuietWindowFrames))
+      || Number(playback.restartQuietWindowFrames) !== 45 * renderSampleRateHz
+    ))
+    || (!restartQuietWindowExpected && (
+      Number(playback.restartQuietWindowAfterSeconds ?? 0) !== 0
+      || Number(playback.restartQuietWindowFrames ?? 0) !== 0
+      || Number(playback.restartQuietWindowSeconds ?? 0) !== 0
+    ))
+  ) {
+    throw new Error(`strict matrix cell ${index} media-injector restart quiet-window authority is invalid`);
+  }
   const referencePcmBytes = fs.statSync(path.join(runDirectory, 'source-media-reference-16k-mono.pcm')).size;
   const providerInputBytes = fs.statSync(path.join(runDirectory, 'provider-input-16k-mono.pcm')).size;
-  if (referencePcmBytes < 60 * 16_000 * 2 || referencePcmBytes % 2 !== 0) {
-    throw new Error(`strict matrix cell ${index} source reference PCM is too short or malformed`);
+  const canonicalReferenceBytes = loadCanonicalFixtureAuthority({ workspaceRoot }).referencePcm.bytes;
+  const expectedReferenceBytes = canonicalReferenceBytes
+    + (restartQuietWindowExpected ? 45 * 16_000 * 2 : 0);
+  if (referencePcmBytes !== expectedReferenceBytes || referencePcmBytes % 2 !== 0) {
+    throw new Error(`strict matrix cell ${index} source reference PCM does not have the exact canonical quiet-window duration`);
   }
   if (providerInputBytes < referencePcmBytes || providerInputBytes % 2 !== 0) {
     throw new Error(`strict matrix cell ${index} provider input PCM does not contain the complete reference-media duration`);
@@ -2506,7 +2532,7 @@ export function verifyStrictMatrixAuthority({
       provenance: receipt.provenance,
     });
     assertSystemMetricsAuthority(runDirectory, index, cell.durationSeconds * 1_000);
-    assertRawMediaAuthority(runDirectory, currentImplementationHashes, cell, index);
+    assertRawMediaAuthority(runDirectory, currentImplementationHashes, cell, index, workspaceRoot);
     if (cell.feedbackLoopPrevention === 'virtual-driver') {
       assertVirtualDriverBinaryAuthority(runDirectory, currentRuntimeBinaryHashes, index);
     }

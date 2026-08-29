@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { isMain, parseCliArgs } from '../lib/testing-common.mjs';
-import { matchTranslatedLoopbackWithRust } from './watch-mode-rust-audio-analysis.mjs';
+import { matchTranslatedLoopbackBatchWithRust } from './watch-mode-rust-audio-analysis.mjs';
 
 export const TRANSLATED_PCM_AUTHORITY_KIND = 'watch-mode-translated-cue-pcm-authority';
 export const TRANSLATED_PCM_LOOPBACK_KIND = 'watch-mode-translated-pcm-loopback-correlation';
@@ -399,30 +399,11 @@ export function buildTranslatedPcmLoopbackAuthority({
     }
   }
 
-  const matchReference = (reference, expectedStartSamples) => {
-    try {
-      const metrics = matchTranslatedLoopbackWithRust({
-        ...reference,
-        recordingPath,
-        expectedStartSamples,
-      });
-      return {
-        ...metrics,
-        passed: (
-          metrics.waveformMedian >= 0.32
-          && metrics.waveformMinimum >= 0.20
-          && metrics.derivativeMedian >= 0.24
-          && metrics.derivativeMinimum >= 0.14
-          && Math.abs(metrics.timingErrorSeconds) <= 0.65
-        ),
-      };
-    } catch (error) {
-      return { passed: false, score: 0, segmentMatches: [], reason: error.message };
-    }
-  };
-
   const matches = [];
   const unauditableCues = [];
+  const cueContexts = [];
+  const diagonalRequests = [];
+  let requestSequence = 0;
   for (const cueId of requiredCueIds) {
     const referenceSet = references.get(cueId);
     const startedAtMs = lifecycle.get(cueId)?.started?.occurredAtMs;
@@ -432,34 +413,94 @@ export function buildTranslatedPcmLoopbackAuthority({
       continue;
     }
     const cue = cueById.get(cueId);
-    const anchorMatches = referenceSet.anchors.map((anchor, anchorIndex) => {
-      const candidateMatches = anchor.candidates.map((candidate) => {
+    const anchorTasks = referenceSet.anchors.map((anchor, anchorIndex) => (
+      anchor.candidates.map((candidate) => {
         const expectedAnchorAtMs = expectedAnchorPlaybackAtMs(cue, candidate, startedAtMs);
         const expectedStart = Math.round(
           (expectedAnchorAtMs - recordingStart) * LOOPBACK_SAMPLE_RATE_HZ / 1_000,
         );
-        const diagonal = matchReference(candidate.reference, expectedStart);
-        let strongestWrongAnchorScore = 0;
+        const requestId = `diagonal-${requestSequence += 1}`;
+        diagonalRequests.push({ requestId, ...candidate.reference, expectedStartSamples: expectedStart });
+        return { requestId, anchor, anchorIndex, candidate, expectedStart, wrongRequestIds: [] };
+      })
+    ));
+    cueContexts.push({ cueId, cue, referenceSet, anchorTasks });
+  }
+
+  let diagonalMetrics = new Map();
+  if (diagonalRequests.length > 0) {
+    try {
+      diagonalMetrics = matchTranslatedLoopbackBatchWithRust({ recordingPath, requests: diagonalRequests });
+    } catch (error) {
+      violations.push(error.message);
+    }
+  }
+  const wrongRequests = [];
+  for (const context of cueContexts) {
+    for (const tasks of context.anchorTasks) {
+      for (const task of tasks) {
+        const diagonal = diagonalMetrics.get(task.requestId);
+        if (!diagonal) continue;
         for (const [otherCueId, otherSet] of references.entries()) {
-          if (otherCueId === cueId || !otherSet.auditable || otherSet.anchors.length === 0) continue;
-          const relativeIndex = referenceSet.anchors.length === 1
+          if (otherCueId === context.cueId || !otherSet.auditable || otherSet.anchors.length === 0) continue;
+          const relativeIndex = context.referenceSet.anchors.length === 1
             ? 0
-            : anchorIndex / (referenceSet.anchors.length - 1);
+            : task.anchorIndex / (context.referenceSet.anchors.length - 1);
           const wrongAnchor = otherSet.anchors[Math.round(relativeIndex * (otherSet.anchors.length - 1))];
           for (const wrongCandidate of wrongAnchor.candidates) {
-            strongestWrongAnchorScore = Math.max(
-              strongestWrongAnchorScore,
-              matchReference(wrongCandidate.reference, expectedStart).score,
-            );
+            const requestId = `wrong-${requestSequence += 1}`;
+            task.wrongRequestIds.push(requestId);
+            wrongRequests.push({
+              requestId,
+              ...wrongCandidate.reference,
+              // The diagonal search has already located the physical window.
+              // Wrong cues are compared at that exact window rather than
+              // independently searching for unrelated audio nearby.
+              expectedStartSamples: diagonal.matchedStartSample,
+              searchRadiusSamples: 0,
+            });
           }
         }
+      }
+    }
+  }
+  let wrongMetrics = new Map();
+  if (wrongRequests.length > 0) {
+    try {
+      wrongMetrics = matchTranslatedLoopbackBatchWithRust({ recordingPath, requests: wrongRequests });
+    } catch (error) {
+      violations.push(error.message);
+    }
+  }
+  const failedMetrics = (reason) => ({ passed: false, score: 0, segmentMatches: [], reason });
+  const withThresholdResult = (metrics) => ({
+    ...metrics,
+    passed: (
+      metrics.waveformMedian >= 0.32
+      && metrics.waveformMinimum >= 0.20
+      && metrics.derivativeMedian >= 0.24
+      && metrics.derivativeMinimum >= 0.14
+      && Math.abs(metrics.timingErrorSeconds) <= 0.65
+    ),
+  });
+  for (const { cueId, cue, referenceSet, anchorTasks } of cueContexts) {
+    const anchorMatches = anchorTasks.map((tasks) => {
+      const candidateMatches = tasks.map((task) => {
+        const rawDiagonal = diagonalMetrics.get(task.requestId);
+        const diagonal = rawDiagonal
+          ? withThresholdResult(rawDiagonal)
+          : failedMetrics('translated loopback diagonal batch result is missing');
+        const strongestWrongAnchorScore = Math.max(
+          0,
+          ...task.wrongRequestIds.map((requestId) => wrongMetrics.get(requestId)?.score ?? 0),
+        );
         const identityMargin = diagonal.score - strongestWrongAnchorScore;
         return {
-          anchor: anchor.name,
-          candidateCount: anchor.candidates.length,
-          referenceFrameOffset: candidate.frameOffset,
-          referenceRms: candidate.rms,
-          expectedPlaybackStartSeconds: rounded(expectedStart / LOOPBACK_SAMPLE_RATE_HZ),
+          anchor: task.anchor.name,
+          candidateCount: task.anchor.candidates.length,
+          referenceFrameOffset: task.candidate.frameOffset,
+          referenceRms: task.candidate.rms,
+          expectedPlaybackStartSeconds: rounded(task.expectedStart / LOOPBACK_SAMPLE_RATE_HZ),
           strongestWrongAnchorScore: rounded(strongestWrongAnchorScore),
           identityMargin: rounded(identityMargin),
           ...diagonal,

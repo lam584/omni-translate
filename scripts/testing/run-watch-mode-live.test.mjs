@@ -203,6 +203,7 @@ test('paid source authorities use canonical hashes, fixture texts, and injector 
       assert.equal(authority.referencePcm.path, 'source-media-reference-16k-mono.pcm');
       assert.equal(authority.mediaSha256, 'cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f');
       assert.equal(authority.referencePcm.samples, 2_013_045);
+      assert.equal(authority.referencePcm.transformation, 'none');
       assert.equal(typeof authority.source, 'string', JSON.stringify(authority.source));
       assert.equal(typeof authority.translation, 'string', JSON.stringify(authority.translation));
       assert.equal(
@@ -227,7 +228,10 @@ test('paid source authorities use canonical hashes, fixture texts, and injector 
     assert.equal(rejected.status, 0, rejected.stderr || rejected.stdout);
     const rejectedAuthority = JSON.parse(rejected.stdout.trim());
     assert.equal(rejectedAuthority.passed, false);
-    assert.match(rejectedAuthority.error, /not byte-for-byte the injector reconstruction/);
+    assert.match(
+      rejectedAuthority.error,
+      /neither the byte-for-byte injector reconstruction nor its exact 90s\/45s restart quiet-window variant/,
+    );
   } finally {
     fs.rmSync(outputDirectory, { recursive: true, force: true });
   }
@@ -607,6 +611,10 @@ function extractedLiveScenarioEnvironmentFunctions() {
   return `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.Provider.psm1'))} -Force -DisableNameChecking; `;
 }
 
+function extractedRunnerPolicyFunctions() {
+  return `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.Runner.psm1'))} -Force -DisableNameChecking; `;
+}
+
 test('run-watch-mode-live.ps1 parses without PowerShell syntax errors', { skip: !isWindows }, () => {
   const probe = runPowerShell([
     '-Command',
@@ -719,6 +727,23 @@ test('formal restart midpoint uses the paid input window rather than the longer 
   const scenario = JSON.parse(probe.stdout.trim());
   assert.equal(scenario.autoStopAfterMs, '300000');
   assert.equal(scenario.processExclusionRestartAfterMs, '90000');
+});
+
+test('formal process-exclusion playback creates a bounded midpoint quiet window for a safe restart', { skip: !isWindows }, () => {
+  const probe = runPowerShell([
+    '-Command',
+    extractedRunnerPolicyFunctions() +
+      `$process = Get-WatchModeRestartQuietWindow -FeedbackMode 'process-exclusion' -ProviderInputSeconds 180 -StrictPaidAuthority $true; ` +
+      `$virtual = Get-WatchModeRestartQuietWindow -FeedbackMode 'virtual-driver' -ProviderInputSeconds 180 -StrictPaidAuthority $true; ` +
+      `$smoke = Get-WatchModeRestartQuietWindow -FeedbackMode 'process-exclusion' -ProviderInputSeconds 180 -StrictPaidAuthority $false; ` +
+      `[pscustomobject]@{ process = $process; virtual = $virtual; smoke = $smoke } | ConvertTo-Json -Depth 4 -Compress`,
+  ]);
+
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+  const result = JSON.parse(probe.stdout.trim());
+  assert.deepEqual(result.process, { afterSeconds: 90, durationSeconds: 45 });
+  assert.deepEqual(result.virtual, { afterSeconds: 0, durationSeconds: 0 });
+  assert.deepEqual(result.smoke, { afterSeconds: 0, durationSeconds: 0 });
 });
 
 test('watch report deadline includes readiness, 30-minute capture, and atomic-write grace', { skip: !isWindows }, () => {

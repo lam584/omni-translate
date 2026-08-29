@@ -33,12 +33,16 @@ const PLAYBACK_START_DEADLINE_MS: u64 = 4_000;
 mod playback_engine;
 mod aec_live_scenario;
 mod speaker_render_event;
+mod output_device;
 
 use self::aec_live_scenario::{
     active_aec_live_scenario_assignments, AecLiveScenarioRender,
 };
 use self::playback_engine::{SpeechPlaybackEngine, SpeechPlaybackResult, SynthesisOutput};
 pub(crate) use self::speaker_render_event::SpeakerRenderEvent;
+use self::output_device::resolve_wasapi_render_device;
+#[cfg(test)]
+use self::output_device::normalized_device_name;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TranslationAudioSource {

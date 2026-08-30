@@ -42,6 +42,7 @@ pub const BRIDGE_ERROR_CODES: &[&str] = &[
     "bridge.process-loopback-unsupported",
     "bridge.process-loopback-activation-failed",
     "bridge.process-loopback-capture-failed",
+    "bridge.source-flush-failed",
     "bridge.physical-playback-rebind-failed",
     "bridge.playback-ownership-barrier-failed",
     "bridge.translation-generation-ended",
@@ -264,6 +265,12 @@ pub struct AudioFrameHeader {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub source_generation_token: Option<String>,
+    /// Concrete physical render endpoint bound to this write. Translation
+    /// frames must echo the endpoint returned by Bridge initialization; a
+    /// default-device alias is not an authority identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub physical_playback_device_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub cue_id: Option<String>,
@@ -366,6 +373,11 @@ pub struct TranslationPlaybackStatusEvent {
     pub status_id: String,
     pub request_id: String,
     pub session_id: String,
+    pub bridge_instance_id: String,
+    pub source_generation: u64,
+    pub source_generation_token: String,
+    pub playback_owner_generation: u64,
+    pub physical_playback_device_id: String,
     pub cue_id: String,
     pub playback_status: TranslationPlaybackStatusKind,
     pub reason: String,
@@ -383,6 +395,11 @@ pub struct TranslationPlaybackStatusAck {
     pub event_type: String,
     pub status_id: String,
     pub session_id: String,
+    pub bridge_instance_id: String,
+    pub source_generation: u64,
+    pub source_generation_token: String,
+    pub playback_owner_generation: u64,
+    pub physical_playback_device_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -393,6 +410,15 @@ pub struct AudioFrameAck {
     pub event_type: String,
     pub request_id: String,
     pub frame_id: String,
+    /// Full write authority echoed from the accepted or rejected frame. These
+    /// fields are intentionally required on decode so a legacy ACK cannot be
+    /// rebound to a new Bridge owner that reused request/frame identifiers.
+    pub session_id: String,
+    pub bridge_instance_id: String,
+    pub source_generation: u64,
+    pub source_generation_token: String,
+    pub playback_owner_generation: u64,
+    pub physical_playback_device_id: String,
     pub accepted_frames: usize,
     pub playback_frames_written: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -411,6 +437,15 @@ pub fn accepted_audio_frame_ack(
         event_type: "bridge.translation.ack".to_string(),
         request_id: header.request_id.clone(),
         frame_id: header.frame_id.clone(),
+        session_id: header.session_id.clone(),
+        bridge_instance_id: header.bridge_instance_id.clone().unwrap_or_default(),
+        source_generation: header.source_generation.unwrap_or_default(),
+        source_generation_token: header.source_generation_token.clone().unwrap_or_default(),
+        playback_owner_generation: header.playback_owner_generation.unwrap_or_default(),
+        physical_playback_device_id: header
+            .physical_playback_device_id
+            .clone()
+            .unwrap_or_default(),
         accepted_frames: header.frame_count,
         playback_frames_written,
         error_code: None,
@@ -427,6 +462,15 @@ pub fn rejected_audio_frame_ack(
         event_type: "bridge.translation.nack".to_string(),
         request_id: header.request_id.clone(),
         frame_id: header.frame_id.clone(),
+        session_id: header.session_id.clone(),
+        bridge_instance_id: header.bridge_instance_id.clone().unwrap_or_default(),
+        source_generation: header.source_generation.unwrap_or_default(),
+        source_generation_token: header.source_generation_token.clone().unwrap_or_default(),
+        playback_owner_generation: header.playback_owner_generation.unwrap_or_default(),
+        physical_playback_device_id: header
+            .physical_playback_device_id
+            .clone()
+            .unwrap_or_default(),
         accepted_frames: 0,
         playback_frames_written: 0,
         error_code: Some(error_code.to_string()),
@@ -472,10 +516,11 @@ pub fn translation_header_fixture() -> AudioFrameHeader {
         timestamp_ms: 1,
         payload_bytes: 4,
         bridge_process_id: None,
-        bridge_instance_id: None,
+        bridge_instance_id: Some("bridge-instance-1".to_string()),
         playback_owner_generation: Some(1),
-        source_generation: None,
-        source_generation_token: None,
+        source_generation: Some(1),
+        source_generation_token: Some("bridge-instance-1:session-1:1".to_string()),
+        physical_playback_device_id: Some("physical-endpoint-1".to_string()),
         cue_id: None,
         created_at_ms: None,
         estimated_duration_ms: None,
@@ -632,6 +677,11 @@ mod tests {
             status_id: "bridge-status-instance-1".to_string(),
             request_id: "status-1".to_string(),
             session_id: "session-1".to_string(),
+            bridge_instance_id: "bridge-instance-1".to_string(),
+            source_generation: 7,
+            source_generation_token: "bridge-instance-1:session-1:7".to_string(),
+            playback_owner_generation: 9,
+            physical_playback_device_id: "physical-endpoint-1".to_string(),
             cue_id: "cue-1".to_string(),
             playback_status: TranslationPlaybackStatusKind::RouteFailed,
             reason: "physical-output-open-failed".to_string(),
@@ -672,8 +722,13 @@ mod tests {
 
         let ack = TranslationPlaybackStatusAck {
             event_type: "bridge.translation.status.ack".to_string(),
-            status_id: event.status_id,
-            session_id: event.session_id,
+            status_id: event.status_id.clone(),
+            session_id: event.session_id.clone(),
+            bridge_instance_id: event.bridge_instance_id.clone(),
+            source_generation: event.source_generation,
+            source_generation_token: event.source_generation_token.clone(),
+            playback_owner_generation: event.playback_owner_generation,
+            physical_playback_device_id: event.physical_playback_device_id.clone(),
         };
         let ack_wire = serde_json::to_value(&ack).unwrap();
         assert_eq!(ack_wire["type"], "bridge.translation.status.ack");

@@ -4,6 +4,11 @@ import { resolve, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import process from 'node:process';
 
+import {
+  assertPinnedVcpkgWebRtcPort,
+  verifyAec3OfficialSourceProvenance,
+} from './verify-aec3-official-source-provenance.mjs';
+
 const BASELINE = 'ea1a7396b05637a53bf23c078647ecc0edee4b80';
 const TRIPLET = 'x64-windows-static-md';
 const VCPKG_TOOL_VERSION = '2026-07-27-98d7cb0cf1f4686a3e43aa5672b6230c1d56bce8';
@@ -26,6 +31,11 @@ const downloadsRoot = resolve(
 const temporaryRoot = resolve(
   process.env.OMNI_AEC3_TEMP_ROOT ?? join(workspace, 'artifacts', 'tmp', 'aec3-msvc'),
 );
+
+// This check is deliberately independent of runtime telemetry and executes
+// before toolchain/network work. A local class or factory with an "official"
+// label cannot satisfy exact upstream source hashes.
+verifyAec3OfficialSourceProvenance(workspace);
 
 if (process.platform !== 'win32' || process.arch !== 'x64') {
   throw new Error('AEC3 MSVC gate requires Windows x64');
@@ -180,6 +190,11 @@ const actualBaseline = output('git', ['-C', vcpkgRoot, 'rev-parse', 'HEAD']);
 if (actualBaseline !== BASELINE) {
   throw new Error(`vcpkg baseline mismatch: expected=${BASELINE} actual=${actualBaseline}`);
 }
+assertPinnedVcpkgWebRtcPort({
+  baseline: actualBaseline,
+  portTree: output('git', ['-C', vcpkgRoot, 'rev-parse', 'HEAD:ports/webrtc']),
+  portfile: readFileSync(join(vcpkgRoot, 'ports', 'webrtc', 'portfile.cmake'), 'utf8'),
+});
 
 const vcpkgExecutable = join(vcpkgRoot, 'vcpkg.exe');
 if (!assertPinnedVcpkgTool(vcpkgExecutable)) {

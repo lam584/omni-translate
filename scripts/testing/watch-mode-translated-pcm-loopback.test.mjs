@@ -11,10 +11,10 @@ import {
 } from './watch-mode-translated-pcm-loopback.mjs';
 
 const RUN_MARKER = 'watch_mode_diagnostic.run_id=translated-pcm-test';
-const CELL_ID = 'pairwise-live::qwen3.5-omni-flash-realtime::process-exclusion::default-speaker';
+const CELL_ID = 'pairwise-live::qwen3.5-livetranslate-flash-realtime::process-exclusion::default-speaker';
 const LEASE_ID = 'translated-pcm-test-lease';
-const MODEL_ID = 'qwen3.5-omni-flash-realtime';
-const PROTOCOL = 'dashscope-omni';
+const MODEL_ID = 'qwen3.5-livetranslate-flash-realtime';
+const PROTOCOL = 'dashscope-livetranslate';
 
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 
@@ -95,13 +95,18 @@ function createFixture({
   interfereWithStrongestMiddleAnchor = false,
   cueSeconds = [2.6, 2.6],
   playbackOwnerGenerations = [10, 20],
+  feedbackLoopPrevention = 'process-exclusion',
 } = {}) {
   const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'translated-loopback-'));
   const authorityDirectory = path.join(runDirectory, 'translated-cue-pcm');
   const cueDirectory = path.join(authorityDirectory, 'cue-pcm');
   fs.mkdirSync(cueDirectory, { recursive: true });
   const recordingStartedAtEpochMs = new Date(2026, 7, 13, 12, 0, 0, 0).getTime();
-  const cueIds = ['omni-cue-test-1', 'omni-cue-test-2'];
+  const cellId = CELL_ID.replace('::process-exclusion::', `::${feedbackLoopPrevention}::`);
+  const rendererKind = feedbackLoopPrevention === 'echo-cancel'
+    ? 'desktop-speaker'
+    : 'bridge-physical-playback';
+  const cueIds = cueSeconds.map((_, index) => `omni-cue-test-${index + 1}`);
   const playbackOffsetsSeconds = providedOffsets;
   const requiredRecordingSeconds = Math.max(
     16,
@@ -153,6 +158,8 @@ function createFixture({
     acceptedCues.push({
       sequence: index + 1,
       cueId: cueIds[index],
+      responseId: `response-${index + 1}`,
+      rendererKind,
       requestIds: chunks.map((chunk) => chunk.requestId),
       sampleRateHz: 24_000,
       channelCount: 1,
@@ -161,13 +168,30 @@ function createFixture({
       bytes: bytes.length,
       sha256: sha256(bytes),
       relativePath,
-      acceptedFrames: samples.length,
+      ...(rendererKind === 'bridge-physical-playback' ? {
+        acceptedFrames: samples.length,
+      } : {}),
       chunkCount: chunks.length,
       chunks,
       createdAtMs: recordingStartedAtEpochMs + playbackOffsetsSeconds[index] * 1_000 - 50,
       completedAtMs: recordingStartedAtEpochMs + (playbackOffsetsSeconds[index] + cueSeconds[index]) * 1_000,
-      bridgeInstanceId: index === 0 ? 'bridge-before-restart' : 'bridge-after-restart',
-      playbackOwnerGeneration: playbackOwnerGenerations[index],
+      ...(rendererKind === 'bridge-physical-playback' ? {
+        sessionId: index === 0 ? 'session-before-restart' : 'session-after-restart',
+        bridgeInstanceId: index === 0 ? 'bridge-before-restart' : 'bridge-after-restart',
+        sourceGeneration: index === 0 ? 1 : 2,
+        sourceGenerationToken: index === 0
+          ? 'bridge-before-restart:session-before-restart:1'
+          : 'bridge-after-restart:session-after-restart:2',
+        playbackOwnerGeneration: playbackOwnerGenerations[index]
+          ?? playbackOwnerGenerations.at(-1),
+      } : {
+        rendererInstanceId: 'desktop-renderer-instance-1',
+        rendererOwnerGeneration: 1,
+        renderAttemptId: `desktop-render-attempt-${index + 1}`,
+        playedFrames: samples.length * 2,
+        playedSampleRateHz: 48_000,
+        playedChannelCount: 2,
+      }),
       physicalPlaybackDeviceId: '{hda-test-endpoint}',
     });
     if (interfereWithStrongestMiddleAnchor && index === 0) {
@@ -203,9 +227,9 @@ function createFixture({
     })),
   }), 'utf8');
   const identity = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-translated-cue-pcm-authority',
-    cellId: CELL_ID,
+    cellId,
     leaseId: LEASE_ID,
     runMarker: RUN_MARKER,
     sessionGeneration: 1,
@@ -231,12 +255,19 @@ function createFixture({
     { ...identity, event: 'initialized', sequence: 1, occurredAtMs: recordingStartedAtEpochMs },
     ...acceptedCues.map((cue, index) => ({
       ...identity,
-      event: 'bridge_write_accepted',
+      event: cue.rendererKind === 'bridge-physical-playback'
+        ? 'bridge_write_accepted'
+        : 'desktop_speaker_played',
       sequence: index + 2,
       occurredAtMs: cue.completedAtMs,
       detail: cue,
     })),
-    { ...identity, event: 'finalized', sequence: acceptedCues.length + 2, occurredAtMs: recordingStartedAtEpochMs + 15_000 },
+    {
+      ...identity,
+      event: 'finalized',
+      sequence: acceptedCues.length + 2,
+      occurredAtMs: Math.max(...acceptedCues.map((cue) => cue.completedAtMs)) + 100,
+    },
   ];
   fs.writeFileSync(
     path.join(authorityDirectory, 'translated-cue-pcm-authority.jsonl'),
@@ -249,7 +280,7 @@ function createFixture({
     lines.push(`${localTimestamp(startMs - 20)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=queued`);
     lines.push(`${localTimestamp(startMs)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=started`);
     lines.push(`${localTimestamp(startMs + cueSeconds[index] * 1_000)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=completed`);
-    if (index === 0) {
+    if (index === 0 && feedbackLoopPrevention === 'process-exclusion') {
       const restartAtMs = recordingStartedAtEpochMs + 7_000;
       lines.push(`${localTimestamp(restartAtMs)} [NORMAL] event=process_exclusion_restart_summary | status=passed runMarker=${RUN_MARKER} recoveredAtUnixMs=${restartAtMs} oldPlaybackOwnerGeneration=10 newPlaybackOwnerGeneration=20 oldPhysicalPlaybackDeviceId={hda-test-endpoint} newPhysicalPlaybackDeviceId={hda-test-endpoint} physicalPlaybackStatus=ready physicalPlaybackRebindDurationMs=250`);
     }
@@ -260,6 +291,8 @@ function createFixture({
     authorityDirectory,
     recordingStartedAtEpochMs,
     summary,
+    cellId,
+    feedbackLoopPrevention,
     sourceMediaPeak: recording.reduce((peak, sample) => Math.max(peak, Math.abs(sample)), 0),
   };
 }
@@ -269,14 +302,15 @@ function build(fixture) {
     runDirectory: fixture.runDirectory,
     runMarker: RUN_MARKER,
     recordingStartedAtEpochMs: fixture.recordingStartedAtEpochMs,
-    cellId: CELL_ID,
+    cellId: fixture.cellId,
     leaseId: LEASE_ID,
     modelId: MODEL_ID,
     protocol: PROTOCOL,
+    feedbackLoopPrevention: fixture.feedbackLoopPrevention,
   });
 }
 
-test('matches every hashed Bridge-accepted translated cue in ordered physical loopback windows', () => {
+test('matches every schema-v2 Bridge-rendered translated cue in ordered physical loopback windows', () => {
   const fixture = createFixture();
   try {
     const authority = build(fixture);
@@ -290,8 +324,77 @@ test('matches every hashed Bridge-accepted translated cue in ordered physical lo
   }
 });
 
-test('uses the signed restart summary when every auditable cue was accepted by the new owner', () => {
-  const fixture = createFixture({ playbackOwnerGenerations: [20, 20] });
+test('accepts schema-v2 echo-cancel cues only from the Desktop speaker renderer', () => {
+  const fixture = createFixture({ feedbackLoopPrevention: 'echo-cancel' });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, true, authority.violations.join('; '));
+    assert.equal(authority.feedbackLoopPrevention, 'echo-cancel');
+    assert.equal(authority.finalRequiredCueId, 'omni-cue-test-2');
+    assert.ok(authority.matches.every((match) => (
+      match.rendererKind === 'desktop-speaker'
+      && match.renderAttemptId
+      && match.bridgeInstanceId === null
+      && match.playbackOwnerGeneration === null
+    )));
+    assert.equal(authority.matches.at(-1).passed, true);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('rejects mixed renderer fields, wrong completion events, and aborted echo authority', () => {
+  const fixture = createFixture({ feedbackLoopPrevention: 'echo-cancel' });
+  try {
+    const summaryPath = path.join(
+      fixture.authorityDirectory,
+      'translated-cue-pcm-summary.json',
+    );
+    const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+    summary.acceptedCues[0].responseId = '';
+    summary.acceptedCues[0].sessionId = 'forged-bridge-session';
+    fs.writeFileSync(summaryPath, JSON.stringify(summary), 'utf8');
+
+    const journalPath = path.join(
+      fixture.authorityDirectory,
+      'translated-cue-pcm-authority.jsonl',
+    );
+    const journal = fs.readFileSync(journalPath, 'utf8')
+      .trim()
+      .split(/\r?\n/u)
+      .map(JSON.parse);
+    journal[1].detail = structuredClone(summary.acceptedCues[0]);
+    journal[2].event = 'bridge_write_accepted';
+    const finalized = journal.pop();
+    journal.push({
+      ...journal[0],
+      event: 'stream_aborted',
+      sequence: journal.length + 1,
+      occurredAtMs: finalized.occurredAtMs - 1,
+      detail: { cueId: summary.acceptedCues[1].cueId, reason: 'fixture-cancelled' },
+    });
+    finalized.sequence = journal.length + 1;
+    journal.push(finalized);
+    fs.writeFileSync(
+      journalPath,
+      `${journal.map(JSON.stringify).join('\n')}\n`,
+      'utf8',
+    );
+
+    const authority = build(fixture);
+    const violations = authority.violations.join('; ');
+    assert.equal(authority.passed, false);
+    assert.match(violations, /response identity is missing/);
+    assert.match(violations, /Desktop renderer contains forbidden Bridge fields/);
+    assert.match(violations, /journal event does not bind its renderer completion/);
+    assert.match(violations, /journal contains stream_aborted/);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('uses the signed restart summary only for complete post-recovery playback on the new owner', () => {
+  const fixture = createFixture({ playbackOwnerGenerations: [10, 20] });
   try {
     const authority = build(fixture);
     assert.equal(authority.passed, true, authority.violations.join('; '));
@@ -299,9 +402,37 @@ test('uses the signed restart summary when every auditable cue was accepted by t
       recoveredAtMs: fixture.recordingStartedAtEpochMs + 7_000,
       playbackOwnerGeneration: 20,
       physicalPlaybackDeviceId: '{hda-test-endpoint}',
-      matchedCueIds: ['omni-cue-test-1', 'omni-cue-test-2'],
+      matchedCueIds: ['omni-cue-test-2'],
       passed: true,
     });
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('rejects new-owner labels when every complete cue finished before restart recovery', () => {
+  const fixture = createFixture({
+    playbackOffsetsSeconds: [1, 4],
+    playbackOwnerGenerations: [20, 20],
+  });
+  try {
+    const recoveredAtMs = fixture.recordingStartedAtEpochMs + 7_000;
+    assert.ok(
+      fixture.summary.acceptedCues.every((cue) => cue.completedAtMs < recoveredAtMs),
+      'the counterexample must contain no complete cue after recoveredAt',
+    );
+
+    const authority = build(fixture);
+    assert.equal(
+      authority.passed,
+      false,
+      'a claimed new owner cannot turn pre-recovery acoustic playback into post-restart authority',
+    );
+    assert.equal(authority.restartPlaybackEvidence?.passed, false);
+    assert.match(
+      authority.violations.join('; '),
+      /post-restart|recoveredAt|recovery/i,
+    );
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
   }
@@ -385,6 +516,26 @@ test('sub-400ms cues are explicit non-authority and cannot replace two acoustic 
   }
 });
 
+test('rejects an unauditable final cue even when two earlier cues have complete acoustic proof', () => {
+  const fixture = createFixture({
+    cueSeconds: [2.6, 2.6, 0.3],
+    playbackOffsetsSeconds: [1, 5, 10],
+    playbackOwnerGenerations: [10, 20, 20],
+  });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.matchedCueCount, 2);
+    assert.equal(authority.finalRequiredCueId, 'omni-cue-test-3');
+    assert.equal(authority.passed, false);
+    assert.match(
+      authority.violations.join('; '),
+      /final complete rendered cue omni-cue-test-3 must itself be acoustically auditable and passed/,
+    );
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
 test('keeps playback lifecycle events when later diagnostics repeat the run marker', () => {
   const fixture = createFixture();
   try {
@@ -410,15 +561,16 @@ test('CLI accepts the complete strict runner argument contract', () => {
       '--app-log', path.join(fixture.runDirectory, 'app.log'),
       '--run-marker', RUN_MARKER,
       '--recording-started-at-ms', String(fixture.recordingStartedAtEpochMs),
-      '--cell-id', CELL_ID,
+      '--cell-id', fixture.cellId,
       '--lease-id', LEASE_ID,
       '--model-id', MODEL_ID,
       '--protocol', PROTOCOL,
+      '--feedback-loop-prevention', fixture.feedbackLoopPrevention,
     ], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     const authority = JSON.parse(result.stdout);
     assert.equal(authority.passed, true, authority.violations?.join('; '));
-    assert.equal(authority.cellId, CELL_ID);
+    assert.equal(authority.cellId, fixture.cellId);
     assert.equal(authority.leaseId, LEASE_ID);
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });

@@ -9,11 +9,13 @@ export const STRICT_MATRIX_ARTIFACT_KIND = 'watch-mode-strict-matrix-authority';
 export const CELL_AUTHORITY_SCHEMA_VERSION = 3;
 export const CELL_AUTHORITY_ARTIFACT_KIND = 'watch-mode-live-cell-authority';
 export const CELL_AUTHORITY_FILE = 'matrix-cell-authority.json';
-export const MATRIX_RUNNER_ID = 'scripts/testing/run-watch-mode-live-matrix.mjs';
+export const MATRIX_RUNNER_ID = 'scripts/testing/run-watch-mode-live-production-coordinator.mjs';
+export const LEGACY_MATRIX_RUNNER_ID = 'scripts/testing/run-watch-mode-live-matrix.mjs';
 export const LIVE_RUN_COLLECTOR_ID = 'scripts/testing/run-watch-mode-live.ps1';
 
 export const AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   MATRIX_RUNNER_ID,
+  LEGACY_MATRIX_RUNNER_ID,
   LIVE_RUN_COLLECTOR_ID,
   'scripts/testing/lib/powershell/Omni.Testing.IO.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.Process.psm1',
@@ -106,6 +108,8 @@ const COMMON_CELL_ARTIFACTS = Object.freeze([
   'virtual-driver-media-source-preflight.json',
   'driver.json',
   'external-provider-budget.json',
+  'evidence-driven-terminal.json',
+  'input-complete.json',
   'physical-output-probe.json',
   'physical-playback-device.json',
   'playback.json',
@@ -148,7 +152,7 @@ export function sha256File(filePath) {
 export function requiredCellArtifactPaths(feedbackLoopPrevention) {
   const mode = String(feedbackLoopPrevention ?? '').trim();
   const paths = [...COMMON_CELL_ARTIFACTS];
-  if (mode === 'virtual-driver' || mode === 'process-exclusion') {
+  if (['echo-cancel', 'virtual-driver', 'process-exclusion'].includes(mode)) {
     paths.push(...PHYSICAL_CONTENT_ARTIFACTS);
   }
   if (mode === 'process-exclusion') paths.push(...PROCESS_EXCLUSION_ARTIFACTS);
@@ -156,9 +160,8 @@ export function requiredCellArtifactPaths(feedbackLoopPrevention) {
 }
 
 export function forbiddenCellArtifactPaths(feedbackLoopPrevention) {
-  const paths = [];
-  if (feedbackLoopPrevention === 'echo-cancel') paths.push(...PHYSICAL_CONTENT_ARTIFACTS);
-  return paths.sort();
+  void feedbackLoopPrevention;
+  return [];
 }
 
 function assertRegularEvidenceFile(filePath, label) {
@@ -271,7 +274,18 @@ export function writeCellAuthorityReceipt({
       cellId: matrixCell.cellId,
       tier: matrixCell.tier,
       providerMode: matrixCell.providerMode,
-      durationSeconds: matrixCell.durationSeconds,
+      inputCompletionWatchdogSeconds: matrixCell.inputCompletionWatchdogSeconds,
+      processExclusionRestartAfterSeconds: matrixCell.processExclusionRestartAfterSeconds,
+      processExclusionRestartQuietSeconds: matrixCell.processExclusionRestartQuietSeconds,
+      providerFinishTimeoutSeconds: matrixCell.providerFinishTimeoutSeconds,
+      localPlaybackDrainTimeoutSeconds: matrixCell.localPlaybackDrainTimeoutSeconds,
+      reportWriteTimeoutSeconds: matrixCell.reportWriteTimeoutSeconds,
+      cellHardWatchdogSeconds: matrixCell.cellHardWatchdogSeconds,
+      authoritativeTransformedReferenceFrames: matrixCell.authoritativeTransformedReferenceFrames,
+      boundedCaptureGraceFrames: matrixCell.boundedCaptureGraceFrames,
+      maxExternalAudioSamples: matrixCell.maxExternalAudioSamples,
+      auxiliaryExternalAudioSeconds: matrixCell.auxiliaryExternalAudioSeconds,
+      subtitleTranslationMode: matrixCell.subtitleTranslationMode,
       modelId: matrixCell.modelId,
       feedbackLoopPrevention: matrixCell.feedbackLoopPrevention,
       deviceClass: matrixCell.deviceClass,

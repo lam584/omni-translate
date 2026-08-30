@@ -17,7 +17,10 @@ import {
   parseRealDeviceAudioReleaseArgs,
   runRealDeviceAudioReleaseEvidence,
 } from './run-real-device-audio-release-evidence.mjs';
-import { requiredCellArtifactPaths } from './watch-mode-evidence-authority.mjs';
+import {
+  STRICT_MATRIX_SCHEMA_VERSION,
+  requiredCellArtifactPaths,
+} from './watch-mode-evidence-authority.mjs';
 import {
   DEFAULT_FEEDBACK_MODES,
   DEFAULT_MODELS,
@@ -321,7 +324,7 @@ function buildAuthorizedFixture({
   const receiptPath = path.join(runDirectory, 'matrix-cell-authority.json');
   writeJson(receiptPath, receipt);
   const manifest = {
-    schemaVersion: 4,
+    schemaVersion: STRICT_MATRIX_SCHEMA_VERSION,
     artifactKind: 'watch-mode-strict-matrix-authority',
     strict: true,
     evidenceMode: 'live',
@@ -390,7 +393,7 @@ test('canonical release grid binds each device class to its declared profileId',
     bluetooth: 'headset-a2dp',
   };
   const manifest = {
-    schemaVersion: 4,
+    schemaVersion: STRICT_MATRIX_SCHEMA_VERSION,
     artifactKind: 'watch-mode-strict-matrix-authority',
     strict: true,
     evidenceMode: 'live',
@@ -517,20 +520,28 @@ test('wrong endpoint, missing WAV, hash tampering, and skip markers fail closed'
   assert.match(validate(), /identity\/selected cell is invalid|hash-bound/);
 });
 
-test('short session and failed translation route are rejected before assembly', async () => {
-  for (const fixture of [
-    buildAuthorizedFixture({ durationMs: 120_000 }),
-    buildAuthorizedFixture({ failedPlayback: true }),
-  ]) {
-    const plan = buildPlan(fixture);
-    await assert.rejects(
-      runRealDeviceAudioReleaseEvidence({
-        plan,
-        authorityResolver: () => fixture.resolved,
-        collectEvidence: async () => ({ packageDirectory: 'package', manifestPath: 'manifest' }),
-      }),
-      /budget-approved pairwise-live session|zero route failures/,
-    );
-    assert.equal(fs.existsSync(plan.runDirectory), false);
-  }
+test('evidence-complete real-device session does not depend on the former 173-second floor', async () => {
+  const fixture = buildAuthorizedFixture({ durationMs: 120_000 });
+  const plan = buildPlan(fixture);
+  await runRealDeviceAudioReleaseEvidence({
+    plan,
+    authorityResolver: () => fixture.resolved,
+    collectEvidence: async () => ({ packageDirectory: 'package', manifestPath: 'manifest' }),
+    now: () => new Date('2026-08-10T10:01:00.000Z'),
+  });
+  assert.equal(fs.existsSync(plan.runDirectory), true);
+});
+
+test('failed translation route is rejected before assembly', async () => {
+  const fixture = buildAuthorizedFixture({ failedPlayback: true });
+  const plan = buildPlan(fixture);
+  await assert.rejects(
+    runRealDeviceAudioReleaseEvidence({
+      plan,
+      authorityResolver: () => fixture.resolved,
+      collectEvidence: async () => ({ packageDirectory: 'package', manifestPath: 'manifest' }),
+    }),
+    /zero route failures/,
+  );
+  assert.equal(fs.existsSync(plan.runDirectory), false);
 });

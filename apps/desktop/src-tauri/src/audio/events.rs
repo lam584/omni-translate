@@ -10,7 +10,7 @@ use super::engine::AudioRouteSupervisor;
 use super::gemini_live;
 use super::speech;
 use super::session_supervisor::AudioSessionSupervisor;
-use super::state::AudioStateStore;
+use super::state::{AudioStateStore, RouteInputCompletionEvidence};
 use super::subtitle_translate;
 use super::translate;
 use crate::bridge::{ipc::BridgeIpcClient, state::BridgeStateStore};
@@ -117,22 +117,91 @@ fn stop_existing_inbound_pipeline(
     state: &AudioStateStore,
     keep_omni: bool,
 ) -> Result<(), String> {
-    AudioRouteSupervisor::new(app.clone(), state).stop("inbound")?;
-    if let Some(bridge_state) = app.try_state::<BridgeStateStore>() {
-        let snapshot = bridge_state.snapshot();
-        let _ = BridgeIpcClient::new(&snapshot).flush_source();
+    complete_inbound_capture_and_provider(app, state, keep_omni, false)?;
+    finalize_inbound_capture_consumers(app, state)?;
+    Ok(())
+}
+
+fn complete_inbound_capture_and_provider(
+    app: &AppHandle,
+    state: &AudioStateStore,
+    keep_omni: bool,
+    require_omni_owner: bool,
+) -> Result<RouteInputCompletionEvidence, String> {
+    let mut input_completion = AudioRouteSupervisor::new(app.clone(), state)
+        .complete_input("inbound")?;
+    if !input_completion.provider_sender_released {
+        return Err(
+            "inbound capture did not release its Provider input sender | code: watch.capture-input-fence-failed"
+                .to_string(),
+        );
     }
+    input_completion.provider_input_closed_source_sequence =
+        state.record_strict_watch_provider_input_closed()?;
     if let Some(handle) = state.take_stt_handle("inbound") {
         let _ = handle.stop_tx.send(());
     }
     if !keep_omni {
-        if let Some(handle) = state.take_omni_handle("inbound") {
-            handle.stop_and_join("inbound")?;
+        match state.take_omni_handle("inbound") {
+            Some(handle) => handle.stop_and_join("inbound")?,
+            None if require_omni_owner => {
+                return Err(
+                    "strict inbound Provider session owner is missing at input completion | code: watch.provider-owner-missing"
+                        .to_string(),
+                )
+            }
+            None => {}
         }
+    }
+    Ok(input_completion)
+}
+
+fn finalize_inbound_capture_consumers(
+    app: &AppHandle,
+    state: &AudioStateStore,
+) -> Result<(), String> {
+    AudioRouteSupervisor::new(app.clone(), state).stop("inbound")?;
+    if let Some(bridge_state) = app.try_state::<BridgeStateStore>() {
+        let snapshot = bridge_state.snapshot();
+        BridgeIpcClient::new(&snapshot).flush_source()?;
     }
     let _ = subtitle_translate::stop_subtitle_translate(app.clone(), state);
     let _ = speech::stop_dispatch(app.clone(), state);
     Ok(())
+}
+
+pub(crate) fn finish_strict_watch_provider_after_input_complete(
+    app: &AppHandle,
+    state: &AudioStateStore,
+) -> Result<RouteInputCompletionEvidence, String> {
+    state.bump_inbound_route_generation();
+    let _pipeline_guard = state.lock_inbound_pipeline();
+    let input_completion = complete_inbound_capture_and_provider(app, state, false, true)?;
+    if !state.strict_watch_session_finished_received()? {
+        return Err(
+            "strict inbound Provider worker joined without session.finished authority | code: watch.provider-finish-authority-missing"
+                .to_string(),
+        );
+    }
+    Ok(input_completion)
+}
+
+pub(crate) fn finalize_strict_watch_inbound_after_terminal_drain(
+    app: &AppHandle,
+    state: &AudioStateStore,
+) -> Result<AudioRuntimeSnapshot, String> {
+    let _pipeline_guard = state.lock_inbound_pipeline();
+    finalize_inbound_capture_consumers(app, state)?;
+    let snapshot = state.snapshot();
+    if snapshot.inbound.stream_bound || snapshot.stt_connected {
+        return Err(
+            "strict inbound terminal teardown returned with capture/provider still active | code: watch.terminal-teardown-incomplete"
+                .to_string(),
+        );
+    }
+    state.watch_session_report.complete();
+    crate::history::finalize_session_if_routes_idle(app, &snapshot);
+    Ok(state.snapshot())
 }
 
 /// Tear down any prior session for `direction` before a new route start.

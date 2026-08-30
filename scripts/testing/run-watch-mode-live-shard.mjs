@@ -5,12 +5,12 @@ import { spawn, spawnSync } from 'node:child_process';
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { currentGitProvenance } from './git-provenance.mjs';
 import { buildLiveWatchModeRunRequest } from './watch-mode-run-request.mjs';
+import { WATCH_SHARD_WORKER_TIMEOUT_MS } from './watch-mode-release-timeout-budget.mjs';
 import {
   currentAuthorityImplementationHashes,
   currentAuthorityRuntimeBinaryHashes,
 } from './watch-mode-evidence-authority.mjs';
 import {
-  SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
   SHARD_CELL_RESULT_FILE,
   SHARD_INPUT_SAMPLE_RATE_HZ,
   SHARD_INTERACTIVE_SESSION_AUTHORITY_FILE,
@@ -37,12 +37,11 @@ import {
 export const SHARD_WORKER_RUNNER_ID = 'scripts/testing/run-watch-mode-live-shard.mjs';
 export const SHARD_LEASE_CLAIM_KIND = 'watch-mode-paid-shard-lease-claim';
 export const SHARD_LEASE_TERMINAL_KIND = 'watch-mode-paid-shard-lease-terminal';
-export const SHARD_WORKER_TIMEOUT_MS = 578_000;
+export const SHARD_WORKER_TIMEOUT_MS = WATCH_SHARD_WORKER_TIMEOUT_MS;
 export const SHARD_LIVE_RUNNER_SCRIPT = path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.ps1');
 const SHARD_LIVE_RUNNER_ENTRY = path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.mjs');
 
 const WATCH_PROTOCOLS = Object.freeze({
-  'qwen3.5-omni-flash-realtime': 'dashscope-omni',
   'qwen3.5-livetranslate-flash-realtime': 'dashscope-livetranslate',
 });
 
@@ -163,9 +162,19 @@ export function buildShardCellExecutionRequest({
       watchRealtimeProtocol: protocol,
       subtitleTranslationMode: 'native',
       playbackSeconds: 0,
-      postPlaybackWaitSeconds: 120,
+      postPlaybackWaitSeconds: 0,
       sessionReadyTimeoutSeconds: 90,
-      watchAutoStopAfterSeconds: 180,
+      watchAutoStopAfterSeconds: cell.inputCompletionWatchdogSeconds,
+      inputCompletionWatchdogSeconds: cell.inputCompletionWatchdogSeconds,
+      processExclusionRestartAfterSeconds: cell.processExclusionRestartAfterSeconds,
+      processExclusionRestartQuietSeconds: cell.processExclusionRestartQuietSeconds,
+      providerFinishTimeoutSeconds: cell.providerFinishTimeoutSeconds,
+      localPlaybackDrainTimeoutSeconds: cell.localPlaybackDrainTimeoutSeconds,
+      reportWriteTimeoutSeconds: cell.reportWriteTimeoutSeconds,
+      cellHardWatchdogSeconds: cell.cellHardWatchdogSeconds,
+      physicalRecorderTailSeconds: 2,
+      inputCompletePath: path.join(cellOutputRoot, 'input-complete.json'),
+      terminalAuthorityPath: path.join(cellOutputRoot, 'evidence-driven-terminal.json'),
       physicalPlaybackDeviceId: profile.physicalPlaybackDeviceId,
       physicalPlaybackDeviceClass: profile.deviceClass,
       physicalPlaybackDeviceProfileId: profile.profileId,
@@ -184,8 +193,10 @@ export function buildShardCellExecutionRequest({
       OMNI_WATCH_MODE_EXPECTED_PROVIDER_CREDENTIAL_REFERENCE:
         plan.providerIdentity.credentialReference,
       OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID: lease.leaseId,
-      OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES: String(SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES),
+      OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES: String(cell.maxExternalAudioSamples),
       OMNI_WATCH_MODE_CELL_ID: cell.cellId,
+      OMNI_WATCH_MODE_SOURCE_HEAD_COMMIT: plan.provenance.headCommit,
+      OMNI_WATCH_MODE_RUNTIME_BUNDLE_DIGEST: plan.authority.runtimeBundleDigest,
       OMNI_SHARD_EXECUTION_ID: plan.executionId,
       OMNI_SHARD_PLAN_DIGEST: plan.planDigest,
       OMNI_SHARD_LEASE_DIGEST: lease.leaseDigest,

@@ -6,11 +6,9 @@ import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
 import {
   SHARD_AUTHORITY_SCHEMA_VERSION,
-  SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
   SHARD_EXECUTION_PLAN_FILE,
   SHARD_MATRIX_CELL_COUNT,
   SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
-  SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SECONDS,
   atomicWriteJson,
   canonicalJson,
   coordinatorKeyIdForPublicKey,
@@ -72,28 +70,6 @@ export const COORDINATOR_AGGREGATE_KIND = 'watch-mode-paid-shard-coordinator-agg
 export const COORDINATOR_AGGREGATE_FILE = 'coordinator-aggregate.json';
 export const COORDINATOR_PREFLIGHT_AUTHORIZATION_DIRECTORY_SUFFIX = '.preflight-authorization';
 
-const DEFAULT_CELL_PLACEMENT = Object.freeze([
-  Object.freeze({ workerIndex: 0, waveIndex: 0 }),
-  Object.freeze({ workerIndex: 1, waveIndex: 0 }),
-  Object.freeze({ workerIndex: 2, waveIndex: 0 }),
-  Object.freeze({ workerIndex: 1, waveIndex: 1 }),
-  Object.freeze({ workerIndex: 0, waveIndex: 1 }),
-  Object.freeze({ workerIndex: 1, waveIndex: 2 }),
-  Object.freeze({ workerIndex: 0, waveIndex: 2 }),
-  Object.freeze({ workerIndex: 2, waveIndex: 1 }),
-]);
-
-const TWO_WORKER_CELL_PLACEMENT = Object.freeze([
-  Object.freeze({ capability: 'default-only', waveIndex: 0 }),
-  Object.freeze({ capability: 'usb', waveIndex: 0 }),
-  Object.freeze({ capability: 'default-only', waveIndex: 1 }),
-  Object.freeze({ capability: 'usb', waveIndex: 1 }),
-  Object.freeze({ capability: 'usb', waveIndex: 2 }),
-  Object.freeze({ capability: 'usb', waveIndex: 3 }),
-  Object.freeze({ capability: 'default-only', waveIndex: 2 }),
-  Object.freeze({ capability: 'default-only', waveIndex: 3 }),
-]);
-
 const safeCellId = (cellId) => String(cellId).replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '');
 const EXECUTION_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{7,127}$/i;
 
@@ -149,8 +125,8 @@ export function defaultSingleWorkerAssignments(workers) {
   });
 }
 
-// Transitional source-level alias only. It does not enable multi-worker
-// placement or evidence compatibility; all current plans require one worker.
+// Compatibility export for existing offline authority fixtures. Production
+// call sites use the single-worker name and accept no multi-worker placement.
 export const defaultThreeVmAssignments = defaultSingleWorkerAssignments;
 
 function assertPreflightOutcome(outcome) {
@@ -404,7 +380,7 @@ export async function prepareCoordinatorExecution({
   workspaceRoot = repoRoot,
   executionId = `watch-shard-${crypto.randomUUID()}`,
   workers,
-  assignments = defaultThreeVmAssignments(workers),
+  assignments = defaultSingleWorkerAssignments(workers),
   generatedAt = new Date(),
   expiresAt = new Date(generatedAt.getTime() + 86_400_000),
   now = () => new Date(),
@@ -732,9 +708,11 @@ export async function prepareCoordinatorExecution({
     if (
       leases.length !== SHARD_MATRIX_CELL_COUNT
       || new Set(leases.map((lease) => lease.leaseId)).size !== SHARD_MATRIX_CELL_COUNT
-      || leases.some((lease) => Number(lease.maxExternalAudioSamples) !== SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES)
+      || leases.some((lease, index) => (
+        Number(lease.maxExternalAudioSamples) !== Number(plan.cells[index].maxExternalAudioSamples)
+      ))
       || leases.reduce((sum, lease) => sum + Number(lease.maxExternalAudioSamples), 0) !== SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES
-    ) throw new Error('coordinator did not allocate the exact eight disjoint paid-cell leases');
+    ) throw new Error(`coordinator did not allocate the exact ${SHARD_MATRIX_CELL_COUNT} disjoint paid-cell leases`);
     const planPath = path.join(stagingRoot, SHARD_EXECUTION_PLAN_FILE);
     atomicWriteJson(planPath, plan);
     const leaseDirectory = path.join(stagingRoot, 'leases');
@@ -746,7 +724,7 @@ export async function prepareCoordinatorExecution({
       atomicWriteJson(leasePath, lease);
       return leasePath;
     });
-    // Publishing the directory last makes plan + all eight leases visible as
+    // Publishing the directory last makes the plan and every lease visible as
     // one immutable allocation. A crash cannot expose a partial grant set.
     fs.renameSync(stagingRoot, finalExecutionRoot);
     const finalPlanPath = path.join(finalExecutionRoot, SHARD_EXECUTION_PLAN_FILE);
@@ -801,7 +779,7 @@ function assertExactLeaseSet(plan, leases, now) {
   }
   if (plan.cells.some((cell) => !byId.has(cell.leaseId))) throw new Error('coordinator lease set is incomplete');
   const reserved = [...byId.values()].reduce((sum, entry) => sum + Number(entry.lease.maxExternalAudioSamples), 0);
-  if (reserved !== SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES) throw new Error('coordinator lease set is not the exact 1440-second allocation');
+  if (reserved !== SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES) throw new Error('coordinator lease set is not the exact mode-derived allocation');
   return byId;
 }
 
@@ -1173,7 +1151,18 @@ export function collectCoordinatorAggregation({
       cellId: cell.cellId,
       tier: cell.tier,
       providerMode: cell.providerMode,
-      durationSeconds: cell.durationSeconds,
+      inputCompletionWatchdogSeconds: cell.inputCompletionWatchdogSeconds,
+      processExclusionRestartAfterSeconds: cell.processExclusionRestartAfterSeconds,
+      processExclusionRestartQuietSeconds: cell.processExclusionRestartQuietSeconds,
+      providerFinishTimeoutSeconds: cell.providerFinishTimeoutSeconds,
+      localPlaybackDrainTimeoutSeconds: cell.localPlaybackDrainTimeoutSeconds,
+      reportWriteTimeoutSeconds: cell.reportWriteTimeoutSeconds,
+      cellHardWatchdogSeconds: cell.cellHardWatchdogSeconds,
+      authoritativeTransformedReferenceFrames: cell.authoritativeTransformedReferenceFrames,
+      boundedCaptureGraceFrames: cell.boundedCaptureGraceFrames,
+      maxExternalAudioSamples: cell.maxExternalAudioSamples,
+      auxiliaryExternalAudioSeconds: cell.auxiliaryExternalAudioSeconds,
+      subtitleTranslationMode: cell.subtitleTranslationMode,
       modelId: cell.modelId,
       feedbackLoopPrevention: cell.feedbackLoopPrevention,
       deviceClass: cell.deviceClass,
@@ -1208,7 +1197,10 @@ export function collectCoordinatorAggregation({
     0,
   );
   if (actualExternalAudioSamples <= 0 || actualExternalAudioSamples > SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES) {
-    throw new Error('coordinator aggregate external audio usage is outside the approved 1440-second budget');
+    throw new Error(
+      `coordinator aggregate external audio usage is outside the approved `
+      + `${SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES}-sample mode-derived budget`,
+    );
   }
   const executionAuthority = validateCoordinatorExecutionAuthority({
     executionRoot,
@@ -1233,7 +1225,7 @@ export function collectCoordinatorAggregation({
       allocationMode: 'immutable-disjoint-cell-leases',
       reservedExternalAudioSamples: SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
       actualExternalAudioSamples,
-      maxExternalAudioSeconds: SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SECONDS,
+      inputSampleRateHz: 16_000,
       cellLeaseCount: SHARD_MATRIX_CELL_COUNT,
       auxiliaryExternalAudioSamples: 0,
       preflightExternalAudioSamples: 0,

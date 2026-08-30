@@ -98,6 +98,14 @@ fn midpoint_restart_requires_every_translated_playback_owner_to_be_idle() {
             ..idle
         },
         TranslationPlaybackQuiescenceSnapshot {
+            pending_audio_frames: Some(1),
+            ..idle
+        },
+        TranslationPlaybackQuiescenceSnapshot {
+            pending_playback_submissions: 1,
+            ..idle
+        },
+        TranslationPlaybackQuiescenceSnapshot {
             pending_bridge_acks: 1,
             ..idle
         },
@@ -366,24 +374,24 @@ fn strict_paid_provider_selection_cannot_be_hijacked_by_an_earlier_dashscope_pro
 
     let effective = configure_watch_realtime_provider_with_environment(
         &mut config,
-        "qwen3.5-omni-flash-realtime",
-        "dashscope-omni",
+        "qwen3.5-livetranslate-flash-realtime",
+        "dashscope-livetranslate",
         strict_watch_environment,
     )
     .expect("strict provider authority should select the exact provider id");
 
     assert_eq!(
         effective,
-        "template-dashscope-realtime::qwen3.5-omni-flash-realtime"
+        "template-dashscope-realtime::qwen3.5-livetranslate-flash-realtime"
     );
     assert_eq!(config["providers"][0]["providerId"], "provider-dashscope");
     assert_eq!(
         config["providers"][0]["model"],
-        "qwen3.5-omni-flash-realtime"
+        "qwen3.5-livetranslate-flash-realtime"
     );
     assert_eq!(
         config["providers"][0]["realtimeProtocol"],
-        "dashscope-omni"
+        "dashscope-livetranslate"
     );
     assert_eq!(
         config["providers"][1]["providerId"],
@@ -397,7 +405,7 @@ fn strict_paid_provider_selection_cannot_be_hijacked_by_an_earlier_dashscope_pro
     )
     .expect("downstream route resolution should preserve the authorized provider");
     assert_eq!(resolved.provider_id, "provider-dashscope");
-    assert_eq!(resolved.model, "qwen3.5-omni-flash-realtime");
+    assert_eq!(resolved.model, "qwen3.5-livetranslate-flash-realtime");
 }
 
 #[test]
@@ -408,8 +416,8 @@ fn strict_paid_provider_selection_fails_when_the_expected_provider_is_missing() 
 
     let error = configure_watch_realtime_provider_with_environment(
         &mut config,
-        "qwen3.5-omni-flash-realtime",
-        "dashscope-omni",
+        "qwen3.5-livetranslate-flash-realtime",
+        "dashscope-livetranslate",
         strict_watch_environment,
     )
     .expect_err("strict provider authority must fail before selecting an alternate provider");
@@ -435,8 +443,8 @@ fn strict_paid_provider_selection_requires_the_fixed_expected_provider_input() {
 
         let error = configure_watch_realtime_provider_with_environment(
             &mut config,
-            "qwen3.5-omni-flash-realtime",
-            "dashscope-omni",
+            "qwen3.5-livetranslate-flash-realtime",
+            "dashscope-livetranslate",
             |name| match name {
                 "OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY" => Some("1".to_string()),
                 "OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID" => {
@@ -448,6 +456,36 @@ fn strict_paid_provider_selection_requires_the_fixed_expected_provider_input() {
         .expect_err("strict provider authority must require the fixed expected provider input");
 
         assert!(error.contains(expected_error), "unexpected error: {error}");
+        assert_eq!(config, before);
+    }
+}
+
+#[test]
+fn strict_paid_provider_selection_rejects_non_release_model_or_protocol() {
+    for (model_id, realtime_protocol) in [
+        ("qwen3.5-omni-flash-realtime", "dashscope-omni"),
+        (
+            "qwen3.5-livetranslate-flash-realtime",
+            "dashscope-omni",
+        ),
+    ] {
+        let mut config = default_watch_config();
+        let before = config.clone();
+
+        let error = configure_watch_realtime_provider_with_environment(
+            &mut config,
+            model_id,
+            realtime_protocol,
+            strict_watch_environment,
+        )
+        .expect_err("strict provider authority must reject non-release identities");
+
+        assert!(
+            error.contains(
+                "requires model=qwen3.5-livetranslate-flash-realtime protocol=dashscope-livetranslate"
+            ),
+            "unexpected error: {error}"
+        );
         assert_eq!(config, before);
     }
 }
@@ -472,8 +510,8 @@ fn strict_paid_provider_selection_rejects_kind_and_template_mismatches() {
 
         let error = configure_watch_realtime_provider_with_environment(
             &mut config,
-            "qwen3.5-omni-flash-realtime",
-            "dashscope-omni",
+            "qwen3.5-livetranslate-flash-realtime",
+            "dashscope-livetranslate",
             strict_watch_environment,
         )
         .expect_err("strict provider authority must reject identity metadata mismatches");

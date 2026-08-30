@@ -151,6 +151,33 @@ impl<'a, R: tauri::Runtime> BridgeAudioWriter<'a, R> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(crate) fn write_process_playback_cue_for_owner(
+        &self,
+        cue_id: &str,
+        request_id: &str,
+        route_direction: &str,
+        samples: &[i16],
+        sample_rate_hz: u32,
+        channels: u16,
+        created_at_ms: u64,
+        estimated_duration_ms: u64,
+        expected_owner: &BridgeTranslationSinkOwner,
+    ) -> Result<u64, String> {
+        crate::bridge::ipc::write_process_playback_cue_for_owner(
+            self.app,
+            cue_id,
+            request_id,
+            route_direction,
+            samples,
+            sample_rate_hz,
+            channels,
+            created_at_ms,
+            estimated_duration_ms,
+            Some(expected_owner),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn write_process_playback_stream(
         &self,
         cue_id: &str,

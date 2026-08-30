@@ -1,13 +1,17 @@
-// v2 is intentionally incompatible with the former three-device matrix.  A
-// strict receipt must never make the now-unavailable Bluetooth class look
-// covered by the two independently verified physical endpoint classes.
-export const BALANCED_RELEASE_PLAN_ID = 'watch-mode-balanced-v7-single-machine';
-export const BALANCED_RELEASE_PLAN_SCHEMA_VERSION = 7;
-export const PAID_PROVIDER_SESSION_CEILING_SECONDS = 24 * 60;
-export const PAID_PROVIDER_CELL_CEILING_SECONDS = 3 * 60;
+// v10 is intentionally incompatible with the former uniform-duration budget
+// matrix. A strict receipt may cover only the exact LiveTranslate release
+// model and the explicitly validated default-speaker endpoint. Process
+// exclusion restart timing is explicit and independent of watchdog duration.
+export const BALANCED_RELEASE_PLAN_ID = 'watch-mode-balanced-v10-livetranslate-terminal-authority';
+export const BALANCED_RELEASE_PLAN_SCHEMA_VERSION = 10;
+export const CANONICAL_PROVIDER_REFERENCE_FRAMES = 2_013_045;
+export const PROCESS_EXCLUSION_RESTART_AFTER_SECONDS = 90;
+export const PROCESS_EXCLUSION_RESTART_QUIET_SECONDS = 45;
+export const PROCESS_EXCLUSION_QUIET_FRAMES = PROCESS_EXCLUSION_RESTART_QUIET_SECONDS * 16_000;
+export const ORDINARY_CAPTURE_GRACE_FRAMES = 10 * 16_000;
+export const PROCESS_EXCLUSION_CAPTURE_GRACE_FRAMES = 9 * 16_000;
 
 export const RELEASE_MODELS = Object.freeze([
-  'qwen3.5-omni-flash-realtime',
   'qwen3.5-livetranslate-flash-realtime',
 ]);
 
@@ -21,30 +25,70 @@ export const RELEASE_DEVICE_CLASSES = Object.freeze([
   'default-speaker',
 ]);
 
-export const RELEASE_TIER_DURATIONS_SECONDS = Object.freeze({
-  'local-isolation': 300,
-  // The canonical source is about 126 seconds. The strict runner's audited
-  // three-minute floor leaves roughly 54 seconds for the final provider and
-  // physical-output drain while avoiding paid idle tail. Eight cells cap the
-  // total provider budget at 24 minutes.
-  'pairwise-live': 180,
-  'model-stability': 180,
+export const RELEASE_INPUT_COMPLETION_WATCHDOG_SECONDS = Object.freeze({
+  'process-exclusion': 225,
+  'virtual-driver': 180,
+  'echo-cancel': 180,
 });
+export const RELEASE_PROVIDER_FINISH_TIMEOUT_SECONDS = 15;
+export const RELEASE_LOCAL_PLAYBACK_DRAIN_TIMEOUT_SECONDS = 30;
+export const RELEASE_REPORT_WRITE_TIMEOUT_SECONDS = 10;
+export const RELEASE_CELL_HARD_WATCHDOG_SECONDS = Object.freeze(
+  Object.fromEntries(RELEASE_FEEDBACK_MODES.map((feedbackMode) => [
+    feedbackMode,
+    RELEASE_INPUT_COMPLETION_WATCHDOG_SECONDS[feedbackMode]
+      + RELEASE_PROVIDER_FINISH_TIMEOUT_SECONDS
+      + RELEASE_LOCAL_PLAYBACK_DRAIN_TIMEOUT_SECONDS
+      + RELEASE_REPORT_WRITE_TIMEOUT_SECONDS,
+  ])),
+);
+export const RELEASE_MAX_CELL_HARD_WATCHDOG_SECONDS = Math.max(
+  ...Object.values(RELEASE_CELL_HARD_WATCHDOG_SECONDS),
+);
 
-const cell = ({ tier, modelId = null, feedbackLoopPrevention, deviceClass }) => Object.freeze({
+const cell = ({ tier, modelId = null, feedbackLoopPrevention, deviceClass }) => {
+  const paid = tier !== 'local-isolation';
+  const quietFrames = paid && feedbackLoopPrevention === 'process-exclusion'
+    ? PROCESS_EXCLUSION_QUIET_FRAMES
+    : 0;
+  const captureGraceFrames = paid && feedbackLoopPrevention === 'process-exclusion'
+    ? PROCESS_EXCLUSION_CAPTURE_GRACE_FRAMES
+    : paid ? ORDINARY_CAPTURE_GRACE_FRAMES : 0;
+  const authoritativeTransformedReferenceFrames = paid
+    ? CANONICAL_PROVIDER_REFERENCE_FRAMES + quietFrames
+    : 0;
+  const inputCompletionWatchdogSeconds = paid
+    ? RELEASE_INPUT_COMPLETION_WATCHDOG_SECONDS[feedbackLoopPrevention]
+    : 0;
+  const processExclusionRestartAfterSeconds = paid && feedbackLoopPrevention === 'process-exclusion'
+    ? PROCESS_EXCLUSION_RESTART_AFTER_SECONDS
+    : 0;
+  const processExclusionRestartQuietSeconds = paid && feedbackLoopPrevention === 'process-exclusion'
+    ? PROCESS_EXCLUSION_RESTART_QUIET_SECONDS
+    : 0;
+  return Object.freeze({
   cellId: [tier, modelId ?? 'no-provider', feedbackLoopPrevention, deviceClass].join('::'),
   tier,
   providerMode: tier === 'local-isolation' ? 'disabled' : 'live-dashscope',
-  durationSeconds: RELEASE_TIER_DURATIONS_SECONDS[tier],
-  externalProviderSessionCeilingSeconds: tier === 'local-isolation'
-    ? 0
-    : RELEASE_TIER_DURATIONS_SECONDS[tier],
+  ...(paid ? {
+    inputCompletionWatchdogSeconds,
+    processExclusionRestartAfterSeconds,
+    processExclusionRestartQuietSeconds,
+    providerFinishTimeoutSeconds: RELEASE_PROVIDER_FINISH_TIMEOUT_SECONDS,
+    localPlaybackDrainTimeoutSeconds: RELEASE_LOCAL_PLAYBACK_DRAIN_TIMEOUT_SECONDS,
+    reportWriteTimeoutSeconds: RELEASE_REPORT_WRITE_TIMEOUT_SECONDS,
+    cellHardWatchdogSeconds: RELEASE_CELL_HARD_WATCHDOG_SECONDS[feedbackLoopPrevention],
+  } : { durationSeconds: 300 }),
+  authoritativeTransformedReferenceFrames,
+  boundedCaptureGraceFrames: captureGraceFrames,
+  maxExternalAudioSamples: authoritativeTransformedReferenceFrames + captureGraceFrames,
   auxiliaryExternalAudioSeconds: 0,
   subtitleTranslationMode: tier === 'local-isolation' ? 'disabled' : 'native',
   modelId,
   feedbackLoopPrevention,
   deviceClass,
-});
+  });
+};
 
 export const LOCAL_ISOLATION_CELLS = Object.freeze(
   RELEASE_FEEDBACK_MODES.flatMap((feedbackLoopPrevention) => (
@@ -56,44 +100,14 @@ export const LOCAL_ISOLATION_CELLS = Object.freeze(
   )),
 );
 
-export const PAIRWISE_LIVE_CELLS = Object.freeze([
-  cell({
+export const PAIRWISE_LIVE_CELLS = Object.freeze(
+  RELEASE_FEEDBACK_MODES.map((feedbackLoopPrevention) => cell({
     tier: 'pairwise-live',
     modelId: RELEASE_MODELS[0],
-    feedbackLoopPrevention: 'process-exclusion',
+    feedbackLoopPrevention,
     deviceClass: 'default-speaker',
-  }),
-  cell({
-    tier: 'pairwise-live',
-    modelId: RELEASE_MODELS[0],
-    feedbackLoopPrevention: 'virtual-driver',
-    deviceClass: 'default-speaker',
-  }),
-  cell({
-    tier: 'pairwise-live',
-    modelId: RELEASE_MODELS[0],
-    feedbackLoopPrevention: 'echo-cancel',
-    deviceClass: 'default-speaker',
-  }),
-  cell({
-    tier: 'pairwise-live',
-    modelId: RELEASE_MODELS[1],
-    feedbackLoopPrevention: 'process-exclusion',
-    deviceClass: 'default-speaker',
-  }),
-  cell({
-    tier: 'pairwise-live',
-    modelId: RELEASE_MODELS[1],
-    feedbackLoopPrevention: 'virtual-driver',
-    deviceClass: 'default-speaker',
-  }),
-  cell({
-    tier: 'pairwise-live',
-    modelId: RELEASE_MODELS[1],
-    feedbackLoopPrevention: 'echo-cancel',
-    deviceClass: 'default-speaker',
-  }),
-]);
+  })),
+);
 
 export const MODEL_STABILITY_CELLS = Object.freeze(
   RELEASE_MODELS.map((modelId) => cell({
@@ -124,32 +138,40 @@ export const BALANCED_RELEASE_PLAN = Object.freeze({
     Object.freeze({
       tier: 'local-isolation',
       providerMode: 'disabled',
-      durationSeconds: RELEASE_TIER_DURATIONS_SECONDS['local-isolation'],
+      durationSeconds: 300,
       cellCount: LOCAL_ISOLATION_CELLS.length,
     }),
     Object.freeze({
       tier: 'pairwise-live',
       providerMode: 'live-dashscope',
-      durationSeconds: RELEASE_TIER_DURATIONS_SECONDS['pairwise-live'],
+      inputCompletionWatchdogSecondsByFeedbackMode:
+        RELEASE_INPUT_COMPLETION_WATCHDOG_SECONDS,
       cellCount: PAIRWISE_LIVE_CELLS.length,
     }),
     Object.freeze({
       tier: 'model-stability',
       providerMode: 'live-dashscope',
-      durationSeconds: RELEASE_TIER_DURATIONS_SECONDS['model-stability'],
+      inputCompletionWatchdogSecondsByFeedbackMode:
+        RELEASE_INPUT_COMPLETION_WATCHDOG_SECONDS,
       cellCount: MODEL_STABILITY_CELLS.length,
     }),
   ]),
   cells: BALANCED_RELEASE_CELLS,
-  paidLlmSeconds: LIVE_LLM_CELLS.reduce((total, entry) => total + entry.durationSeconds, 0),
-  paidProviderSessionCeilingSeconds: LIVE_LLM_CELLS.reduce(
-    (total, entry) => total + entry.externalProviderSessionCeilingSeconds,
+  paidLlmSeconds: LIVE_LLM_CELLS.reduce(
+    (total, entry) => total + entry.maxExternalAudioSamples / 16_000,
+    0,
+  ),
+  paidProviderInputSampleCeiling: LIVE_LLM_CELLS.reduce(
+    (total, entry) => total + entry.maxExternalAudioSamples,
     0,
   ),
   externalProviderBudget: Object.freeze({
-    scope: 'strict-paid-realtime-session-window',
-    cellCeilingSeconds: PAID_PROVIDER_CELL_CEILING_SECONDS,
-    matrixCeilingSeconds: PAID_PROVIDER_SESSION_CEILING_SECONDS,
+    scope: 'strict-paid-provider-input-samples',
+    cellMaxInputSamples: Math.max(...LIVE_LLM_CELLS.map((entry) => entry.maxExternalAudioSamples)),
+    matrixMaxInputSamples: LIVE_LLM_CELLS.reduce(
+      (total, entry) => total + entry.maxExternalAudioSamples,
+      0,
+    ),
     inputSampleRateHz: 16_000,
     sourceTranscriptCalls: 0,
     physicalOutputSttCalls: 0,
@@ -181,8 +203,18 @@ export function balancedReleasePlanFailure(plan) {
     for (const key of [
       'tier',
       'providerMode',
-      'durationSeconds',
-      'externalProviderSessionCeilingSeconds',
+      ...(expected.providerMode === 'disabled' ? ['durationSeconds'] : [
+        'inputCompletionWatchdogSeconds',
+        'processExclusionRestartAfterSeconds',
+        'processExclusionRestartQuietSeconds',
+        'providerFinishTimeoutSeconds',
+        'localPlaybackDrainTimeoutSeconds',
+        'reportWriteTimeoutSeconds',
+        'cellHardWatchdogSeconds',
+      ]),
+      'authoritativeTransformedReferenceFrames',
+      'boundedCaptureGraceFrames',
+      'maxExternalAudioSamples',
       'auxiliaryExternalAudioSeconds',
       'subtitleTranslationMode',
       'modelId',
@@ -198,7 +230,8 @@ export function balancedReleasePlanFailure(plan) {
     return 'balanced release validation plan paid LLM budget is inconsistent';
   }
   if (
-    Number(plan.paidProviderSessionCeilingSeconds) !== PAID_PROVIDER_SESSION_CEILING_SECONDS
+    Number(plan.paidProviderInputSampleCeiling)
+      !== BALANCED_RELEASE_PLAN.paidProviderInputSampleCeiling
     || JSON.stringify(plan.externalProviderBudget) !== JSON.stringify(BALANCED_RELEASE_PLAN.externalProviderBudget)
   ) {
     return 'balanced release validation plan external provider budget is inconsistent';

@@ -2539,6 +2539,7 @@ pub(super) enum OmniPlaybackCommand {
     Play {
         samples: Vec<i16>,
         cue_id: String,
+        response_id: Option<String>,
         sample_rate_hz: u32,
         queued_at: Instant,
         created_at_ms: u64,
@@ -2547,6 +2548,7 @@ pub(super) enum OmniPlaybackCommand {
     Stream {
         samples: Vec<i16>,
         cue_id: String,
+        response_id: Option<String>,
         sample_rate_hz: u32,
         queued_at: Instant,
         created_at_ms: u64,
@@ -2683,9 +2685,19 @@ impl OmniPlaybackQueue {
 
     fn publish_state(&self, state: &OmniPlaybackQueueState) {
         if let Some(quiescence) = self.inner.quiescence.as_ref() {
+            let now = Instant::now();
+            let pending_duration =
+                Self::projected_start(state, now).saturating_duration_since(now);
+            let pending_frames = pending_duration
+                .as_nanos()
+                .saturating_mul(u128::from(OMNI_OUTPUT_SAMPLE_RATE_HZ))
+                .saturating_add(999_999_999)
+                / 1_000_000_000;
             quiescence.set_queue_state(
                 state.pending.len(),
                 usize::from(state.active_expected_end.is_some()),
+                pending_frames.min(u128::from(u64::MAX)) as u64,
+                OMNI_OUTPUT_SAMPLE_RATE_HZ,
             );
         }
     }
@@ -2778,6 +2790,7 @@ impl OmniPlaybackQueue {
         state.pending.push_front(OmniPlaybackCommand::Stream {
             samples: Vec::new(),
             cue_id: cue_id.to_string(),
+            response_id: None,
             sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
             queued_at: Instant::now(),
             created_at_ms,
@@ -3098,7 +3111,7 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
     sample_rate_hz: u32,
     speaker_device_id: Option<&str>,
     cue_id: &str,
-) -> u64 {
+) -> Option<crate::audio::speech::SpeakerPlaybackReceipt> {
     let result = crate::audio::speech::play_to_speaker(
         output_samples,
         sample_rate_hz,
@@ -3165,18 +3178,22 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
         },
     );
     match result {
-        Ok(frames) => {
+        Ok(receipt) => {
             let _ = diag_log(
                 app,
                 "omni",
                 "info",
                 format!(
-                    "[AUDIO] speaker playback completed: cue_id={cue_id} frames={frames} sample_rate_hz={} channels={}",
-                    crate::audio::speech::SPEAKER_SAMPLE_RATE_HZ,
-                    crate::audio::speech::SPEAKER_CHANNEL_COUNT,
+                    "[AUDIO] speaker playback completed: cue_id={cue_id} frames={} sample_rate_hz={} channels={} physical_playback_device_id={} renderer_instance_id={} renderer_owner_generation={}",
+                    receipt.rendered_frames,
+                    receipt.output_sample_rate_hz,
+                    receipt.output_channel_count,
+                    receipt.physical_playback_device_id,
+                    receipt.renderer_instance_id,
+                    receipt.renderer_owner_generation,
                 ),
             );
-            frames
+            Some(receipt)
         }
         Err(error) if crate::audio::playback_ownership::desktop_playback_was_cancelled(&error) => {
             let _ = diag_log(
@@ -3187,7 +3204,7 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
                     "[AUDIO] speaker playback cancelled by ownership transition: cue_id={cue_id} error={error}"
                 ),
             );
-            0
+            None
         }
         Err(error) => {
             audio_state.watch_session_report.record_session_issue(
@@ -3202,7 +3219,7 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
                 "error",
                 format!("[AUDIO] speaker playback failed: cue_id={cue_id} error={error}"),
             );
-            0
+            None
         }
     }
 }
@@ -3245,7 +3262,7 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
     command: OmniPlaybackCommand,
 ) {
     let OmniPlaybackCommand::Stream {
-        samples, cue_id, sample_rate_hz, created_at_ms, estimated_duration_ms,
+        samples, cue_id, response_id, sample_rate_hz, created_at_ms, estimated_duration_ms,
         chunk_index, stream_state, bridge_owner, ..
     } = command else { unreachable!() };
     if stream_state == omni_bridge_protocol::TranslationStreamState::Abort {
@@ -3372,6 +3389,20 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
         );
         return;
     };
+    if stream_state == omni_bridge_protocol::TranslationStreamState::Start {
+        if let Err(error) = audio_state.record_strict_watch_renderer_cue_submitted(
+            &cue_id,
+            response_id.as_deref().unwrap_or(""),
+        ) {
+            audio_state.watch_session_report.record_session_issue(
+                "output",
+                "strict-renderer-cue-authority-failed",
+                "error",
+                &error,
+            );
+            return;
+        }
+    }
     let output_samples = if stream_state == omni_bridge_protocol::TranslationStreamState::End {
         Vec::new()
     } else {
@@ -3399,6 +3430,7 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
     let write_succeeded = match write_result {
         Ok(accepted_frames) => match translated_pcm_authority.accept_stream_write(
             &cue_id,
+            response_id.as_deref().unwrap_or(""),
             &request_id,
             &output_samples,
             sample_rate_hz,
@@ -3407,13 +3439,14 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
             chunk_index,
             stream_state,
             created_at_ms,
-            expected_owner.bridge_instance_id(),
-            expected_owner.playback_owner_generation(),
-            &bridge_snapshot.resolved_physical_playback_device_id,
+            &expected_owner,
         ) {
             Ok(()) => true,
             Err(error) => {
                 playback_queue.abort_stream(&cue_id, chunk_index, created_at_ms);
+                audio_state
+                    .translation_playback_quiescence()
+                    .observe_bridge_playback_status(&cue_id, "route-failed");
                 audio_state.watch_session_report.record_session_issue(
                     "output",
                     "translated-pcm-authority-failed",
@@ -3434,6 +3467,9 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
                 },
             );
             playback_queue.abort_stream(&cue_id, chunk_index, created_at_ms);
+            audio_state
+                .translation_playback_quiescence()
+                .observe_bridge_playback_status(&cue_id, "route-failed");
             let current_bridge_snapshot = app
                 .state::<crate::bridge::state::BridgeStateStore>()
                 .snapshot();
@@ -3494,6 +3530,7 @@ fn write_native_bridge_or_virtual_output<R: tauri::Runtime>(
     translated_pcm_authority: &mut TranslatedPcmAuthority,
     output_route: &crate::audio::speech::SpeechOutputRoutePlan,
     cue_id: &str,
+    response_id: &str,
     route_direction: &str,
     output_samples: &[i16],
     sample_rate_hz: u32,
@@ -3510,17 +3547,30 @@ fn write_native_bridge_or_virtual_output<R: tauri::Runtime>(
     };
     let request_id = format!("omni-play-{}", unix_ms());
     let writer = BridgeAudioWriter::new(app);
+    let bridge_owner = output_route.write_to_bridge_playback.then(|| {
+        let snapshot = app
+            .state::<crate::bridge::state::BridgeStateStore>()
+            .snapshot();
+        crate::bridge::ipc::BridgeTranslationSinkOwner::from_snapshot(&snapshot)
+    });
     let result = if output_route.write_to_bridge_playback {
-        writer.write_process_playback_cue(
-            cue_id,
-            &request_id,
-            route_direction,
-            output_samples,
-            sample_rate_hz,
-            1,
-            created_at_ms,
-            estimated_duration_ms,
-        )
+        match bridge_owner.as_ref().and_then(Option::as_ref) {
+            Some(owner) => writer.write_process_playback_cue_for_owner(
+                cue_id,
+                &request_id,
+                route_direction,
+                output_samples,
+                sample_rate_hz,
+                1,
+                created_at_ms,
+                estimated_duration_ms,
+                owner,
+            ),
+            None => Err(
+                "bridge.translation-generation-ended: complete cue owner is incomplete"
+                    .to_string(),
+            ),
+        }
     } else {
         writer.write_virtual_mic_frame(
             cue_id,
@@ -3554,20 +3604,20 @@ fn write_native_bridge_or_virtual_output<R: tauri::Runtime>(
         }
     };
     if output_route.write_to_bridge_playback {
-        let bridge_snapshot = app
-            .state::<crate::bridge::state::BridgeStateStore>()
-            .snapshot();
-        if let Err(error) = translated_pcm_authority.accept_complete_cue(
+        let owner = bridge_owner
+            .as_ref()
+            .and_then(Option::as_ref)
+            .expect("a successful owner-bound Bridge write has an owner");
+        if let Err(error) = translated_pcm_authority.accept_complete_bridge_cue(
             cue_id,
+            response_id,
             &request_id,
             output_samples,
             sample_rate_hz,
             1,
             frames,
             created_at_ms,
-            bridge_snapshot.bridge_instance_id.as_deref().unwrap_or(""),
-            bridge_snapshot.playback_owner_generation,
-            &bridge_snapshot.resolved_physical_playback_device_id,
+            owner,
         ) {
             audio_state.watch_session_report.record_session_issue(
                 "output",
@@ -3597,12 +3647,179 @@ fn write_native_bridge_or_virtual_output<R: tauri::Runtime>(
     frames
 }
 
+fn reject_expired_omni_playback<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    audio_state: &AudioStateStore,
+    cue_id: &str,
+    queued_at: Instant,
+) -> bool {
+    let queued_for = queued_at.elapsed();
+    if !omni_playback_queue_age_expired(queued_for) {
+        return false;
+    }
+    let queued_ms = queued_for.as_millis().min(u64::MAX as u128) as u64;
+    audio_state.watch_session_report.record_session_issue(
+        "output",
+        "native-playback-queue-expired",
+        "warning",
+        &format!(
+            "原生翻译语音排队 {queued_ms} ms 后过期，已丢弃。cueId={cue_id} predictedStartMs={queued_ms} observedQueueAgeMs={queued_ms} reason=worker-start-expired"
+        ),
+    );
+    let _ = diag_log(
+        app,
+        "omni",
+        "warning",
+        format!(
+            "[AUDIO] stale native playback dropped: cue_id={cue_id} predicted_start_ms={queued_ms} observed_queue_age_ms={queued_ms} reason=worker-start-expired"
+        ),
+    );
+    true
+}
+
+struct SpeakerPlaybackOutcome {
+    frames: u64,
+    render_attempt_id: Option<String>,
+    authority_committed: bool,
+}
+
+fn play_and_commit_speaker_authority<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    audio_state: &AudioStateStore,
+    translated_pcm_authority: &mut TranslatedPcmAuthority,
+    native_speaker_renderer: NativeSpeakerRenderer<R>,
+    output_route: &crate::audio::speech::SpeechOutputRoutePlan,
+    output_samples: &[i16],
+    sample_rate_hz: u32,
+    speaker_device_id: Option<&str>,
+    cue_id: &str,
+    response_id: &str,
+    created_at_ms: u64,
+) -> SpeakerPlaybackOutcome {
+    let receipt = if output_route.play_to_speaker {
+        native_speaker_renderer(
+            app,
+            audio_state,
+            output_samples,
+            sample_rate_hz,
+            speaker_device_id,
+            cue_id,
+        )
+    } else {
+        None
+    };
+    let frames = receipt
+        .as_ref()
+        .map(|receipt| receipt.rendered_frames)
+        .unwrap_or(0);
+    let render_attempt_id = receipt.as_ref().map(|receipt| {
+        format!(
+            "{}:{}:{cue_id}:{created_at_ms}",
+            receipt.renderer_instance_id, receipt.renderer_owner_generation,
+        )
+    });
+    let authority_committed = match (receipt.as_ref(), render_attempt_id.as_deref()) {
+        (Some(receipt), Some(render_attempt_id)) if receipt.rendered_frames > 0 => {
+            match translated_pcm_authority.accept_complete_speaker_cue(
+                cue_id,
+                response_id,
+                render_attempt_id,
+                output_samples,
+                sample_rate_hz,
+                1,
+                output_samples.len() as u64,
+                created_at_ms,
+                receipt,
+                render_attempt_id,
+            ) {
+                Ok(()) => true,
+                Err(error) => {
+                    audio_state.watch_session_report.record_session_issue(
+                        "output",
+                        "translated-pcm-authority-failed",
+                        "error",
+                        &error,
+                    );
+                    let _ = diag_log(
+                        app,
+                        "omni",
+                        "error",
+                        format!(
+                            "[AUDIO] Desktop speaker translated PCM authority failed: cue_id={cue_id} error={error}"
+                        ),
+                    );
+                    false
+                }
+            }
+        }
+        _ => !output_route.play_to_speaker,
+    };
+    SpeakerPlaybackOutcome {
+        frames,
+        render_attempt_id,
+        authority_committed,
+    }
+}
+
+fn record_complete_playback_ack(
+    audio_state: &AudioStateStore,
+    output_route: &crate::audio::speech::SpeechOutputRoutePlan,
+    cue_id: &str,
+    speaker: &SpeakerPlaybackOutcome,
+    virtual_mic_frames: u64,
+    bridge_playback_frames: u64,
+) {
+    if output_route.write_to_bridge_playback && bridge_playback_frames == 0 {
+        audio_state
+            .translation_playback_quiescence()
+            .observe_bridge_playback_status(cue_id, "route-failed");
+        return;
+    }
+    if output_route.write_to_bridge_playback {
+        return;
+    }
+    let speaker_acked = !output_route.play_to_speaker
+        || (speaker.frames > 0 && speaker.authority_committed);
+    let virtual_mic_acked = !output_route.write_to_virtual_mic || virtual_mic_frames > 0;
+    if !speaker_acked || !virtual_mic_acked {
+        return;
+    }
+    let receipt_authority = match (
+        output_route.play_to_speaker,
+        output_route.write_to_virtual_mic,
+    ) {
+        (true, true) => "desktop-speaker-and-virtual-mic-ack",
+        (true, false) => "speaker-render-completed",
+        (false, true) => "virtual-mic-frame-ack",
+        (false, false) => "desktop-renderer-no-output",
+    };
+    if let Err(error) = audio_state.record_strict_watch_renderer_ack(
+        cue_id,
+        receipt_authority,
+        speaker.render_attempt_id.as_deref().unwrap_or_else(|| {
+            if output_route.write_to_virtual_mic {
+                "virtual-mic-frame-ack"
+            } else {
+                "desktop-renderer-no-output"
+            }
+        }),
+    ) {
+        audio_state.watch_session_report.record_session_issue(
+            "output",
+            "strict-renderer-ack-authority-failed",
+            "error",
+            &error,
+        );
+    }
+}
+
 fn run_omni_playback_worker<R: tauri::Runtime>(
     app: AppHandle<R>,
     speech_config: Arc<std::sync::RwLock<OmniSpeechConfig>>,
     route_direction: String,
     playback_worker_queue: OmniPlaybackQueue,
     mut translated_pcm_authority: TranslatedPcmAuthority,
+    native_speaker_renderer: NativeSpeakerRenderer<R>,
 ) {
     let audio_state = app.state::<AudioStateStore>(); let mut active_stream_instances = std::collections::HashMap::new();
     loop {
@@ -3648,30 +3865,18 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
                     OmniPlaybackCommand::Play {
                         samples,
                         cue_id,
+                        response_id,
                         sample_rate_hz,
                         queued_at,
                         created_at_ms,
                         estimated_duration_ms,
                     } => {
-                        let queued_for = queued_at.elapsed();
-                        if omni_playback_queue_age_expired(queued_for) {
-                            let queued_ms = queued_for.as_millis().min(u64::MAX as u128) as u64;
-                            audio_state.watch_session_report.record_session_issue(
-                                "output",
-                                "native-playback-queue-expired",
-                                "warning",
-                                &format!(
-                                    "原生翻译语音排队 {queued_ms} ms 后过期，已丢弃。cueId={cue_id} predictedStartMs={queued_ms} observedQueueAgeMs={queued_ms} reason=worker-start-expired"
-                                ),
-                            );
-                            let _ = diag_log(
-                                &app,
-                                "omni",
-                                "warning",
-                                format!(
-                                    "[AUDIO] stale native playback dropped: cue_id={cue_id} predicted_start_ms={queued_ms} observed_queue_age_ms={queued_ms} reason=worker-start-expired"
-                                ),
-                            );
+                        if reject_expired_omni_playback(
+                            &app,
+                            &audio_state,
+                            &cue_id,
+                            queued_at,
+                        ) {
                             continue;
                         }
                         // Re-read the shared config for every Play command:
@@ -3774,6 +3979,20 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
                             cfg.translated_audio_gain_db,
                             cfg.translated_audio_auto_gain_enabled,
                         );
+                        if let Err(error) =
+                            audio_state.record_strict_watch_renderer_cue_submitted(
+                                &cue_id,
+                                response_id.as_deref().unwrap_or(""),
+                            )
+                        {
+                            audio_state.watch_session_report.record_session_issue(
+                                "output",
+                                "strict-renderer-cue-authority-failed",
+                                "error",
+                                &error,
+                            );
+                            continue;
+                        }
                         let _ = diag_log(
                             &app,
                             "omni",
@@ -3789,18 +4008,19 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
                                 enhancement.muted,
                             ),
                         );
-                        let speaker_frames = if output_route.play_to_speaker {
-                            play_native_translation_to_speaker(
-                                &app,
-                                &audio_state,
-                                &output_samples,
-                                sample_rate_hz,
-                                cfg.speaker_device_id.as_deref(),
-                                &cue_id,
-                            )
-                        } else {
-                            0
-                        };
+                        let speaker = play_and_commit_speaker_authority(
+                            &app,
+                            &audio_state,
+                            &mut translated_pcm_authority,
+                            native_speaker_renderer,
+                            &output_route,
+                            &output_samples,
+                            sample_rate_hz,
+                            cfg.speaker_device_id.as_deref(),
+                            &cue_id,
+                            response_id.as_deref().unwrap_or(""),
+                            created_at_ms,
+                        );
 
                         let bridge_or_virtual_frames = write_native_bridge_or_virtual_output(
                             &app,
@@ -3808,6 +4028,7 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
                             &mut translated_pcm_authority,
                             &output_route,
                             &cue_id,
+                            response_id.as_deref().unwrap_or(""),
                             &route_direction,
                             &output_samples,
                             sample_rate_hz,
@@ -3825,16 +4046,26 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
                             0
                         };
 
+                        record_complete_playback_ack(
+                            &audio_state,
+                            &output_route,
+                            &cue_id,
+                            &speaker,
+                            vmic_frames,
+                            bridge_playback_frames,
+                        );
+
                         audio_state.update_speech(|s| {
                             s.dispatch_state = "waiting-subtitle".to_string();
                             s.current_cue_id = None;
-                            s.speaker_frames_written += speaker_frames;
+                            s.speaker_frames_written += speaker.frames;
                             s.virtual_mic_frames_written += vmic_frames;
                         });
                         let _ = emit_audio_snapshot(&app, &audio_state);
                         let _ = diag_log(&app, "omni", "info",
                             format!(
-                                "[AUDIO] 输出提交完成: cue_id={cue_id} speaker={speaker_frames} frames, bridge={bridge_playback_frames} frames, virtual_mic={vmic_frames} frames"
+                                "[AUDIO] 输出提交完成: cue_id={cue_id} speaker={} frames, bridge={bridge_playback_frames} frames, virtual_mic={vmic_frames} frames",
+                                speaker.frames,
                             ));
                     }
                 }
@@ -3861,6 +4092,15 @@ pub(super) struct OmniPlaybackWorker {
     queue: OmniPlaybackQueue,
     join: Option<JoinHandle<()>>,
 }
+
+type NativeSpeakerRenderer<R> = fn(
+    &AppHandle<R>,
+    &AudioStateStore,
+    &[i16],
+    u32,
+    Option<&str>,
+    &str,
+) -> Option<crate::audio::speech::SpeakerPlaybackReceipt>;
 
 impl OmniPlaybackWorker {
     /// Normal session teardown must wait for accepted translated PCM to reach
@@ -3901,6 +4141,22 @@ pub(super) fn start_omni_playback<R: tauri::Runtime>(
     route_direction: String,
     translated_pcm_authority: TranslatedPcmAuthority,
 ) -> (OmniPlaybackQueue, OmniPlaybackWorker) {
+    start_omni_playback_with_renderer(
+        app,
+        speech_config,
+        route_direction,
+        translated_pcm_authority,
+        play_native_translation_to_speaker::<R>,
+    )
+}
+
+fn start_omni_playback_with_renderer<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    speech_config: Arc<std::sync::RwLock<OmniSpeechConfig>>,
+    route_direction: String,
+    translated_pcm_authority: TranslatedPcmAuthority,
+    native_speaker_renderer: NativeSpeakerRenderer<R>,
+) -> (OmniPlaybackQueue, OmniPlaybackWorker) {
     let quiescence = app
         .state::<AudioStateStore>()
         .translation_playback_quiescence();
@@ -3918,6 +4174,7 @@ pub(super) fn start_omni_playback<R: tauri::Runtime>(
                 route_direction,
                 playback_worker_queue,
                 translated_pcm_authority,
+                native_speaker_renderer,
             );
         })
         .expect("failed to spawn omni-playback thread");
@@ -3942,11 +4199,105 @@ mod omni_playback_tests {
         OmniPlaybackCommand::Play {
             samples: vec![1, -1],
             cue_id: cue_id.to_string(),
+            response_id: Some(format!("response-{cue_id}")),
             sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
             queued_at: Instant::now(),
             created_at_ms: unix_ms(),
             estimated_duration_ms: duration.as_millis() as u64,
         }
+    }
+
+    fn completed_test_speaker_render(
+        _app: &AppHandle<tauri::test::MockRuntime>,
+        _audio_state: &AudioStateStore,
+        _samples: &[i16],
+        _sample_rate_hz: u32,
+        _speaker_device_id: Option<&str>,
+        _cue_id: &str,
+    ) -> Option<crate::audio::speech::SpeakerPlaybackReceipt> {
+        Some(crate::audio::speech::SpeakerPlaybackReceipt {
+            rendered_frames: 4,
+            output_sample_rate_hz: crate::audio::speech::SPEAKER_SAMPLE_RATE_HZ,
+            output_channel_count: crate::audio::speech::SPEAKER_CHANNEL_COUNT,
+            physical_playback_device_id: "{test-speaker-endpoint}".to_string(),
+            renderer_instance_id: "desktop-process-test".to_string(),
+            renderer_owner_generation: 7,
+        })
+    }
+
+    #[test]
+    fn echo_cancel_production_route_persists_completed_speaker_pcm_authority() {
+        use std::collections::HashMap;
+        use tauri::Manager;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let authority_directory = root.path().join("translated-authority");
+        let environment = HashMap::from([
+            (
+                "OMNI_WATCH_MODE_TRANSLATED_PCM_AUTHORITY_DIR".to_string(),
+                authority_directory.to_string_lossy().to_string(),
+            ),
+            (
+                "OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES".to_string(),
+                "2173045".to_string(),
+            ),
+            ("OMNI_WATCH_MODE_CELL_ID".to_string(), "pairwise-echo-cancel".to_string()),
+            ("OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID".to_string(), "lease-speaker".to_string()),
+            ("OMNI_WATCH_MODE_RUN_MARKER".to_string(), "run-speaker".to_string()),
+            ("OMNI_WATCH_MODE_AUTOSTART".to_string(), "1".to_string()),
+        ]);
+        let authority = TranslatedPcmAuthority::from_environment(
+            "inbound",
+            9,
+            "qwen3.5-livetranslate-flash-realtime",
+            "dashscope-livetranslate",
+            |name| environment.get(name).cloned(),
+        )
+        .expect("strict translated PCM authority");
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock tauri app");
+        app.manage(AudioStateStore::new());
+        app.manage(crate::bridge::state::BridgeStateStore::new());
+        let handle = app.handle().clone();
+        let audio_state = handle.state::<AudioStateStore>();
+        let shared = audio_state.register_omni_speech_config(
+            OmniSpeechConfig::from_config(&json!({
+                "devices": {
+                    "feedbackLoopPrevention": "echo-cancel",
+                    "outputSpeechEnabled": true,
+                    "outputLevel": 100
+                },
+                "speech": {
+                    "enabled": true,
+                    "localPlaybackEnabled": true,
+                    "translationAudioSource": "omni-native"
+                }
+            })),
+        );
+        let (queue, mut worker) = start_omni_playback_with_renderer(
+            handle,
+            shared,
+            "inbound".to_string(),
+            authority,
+            completed_test_speaker_render,
+        );
+        assert_eq!(
+            queue.enqueue(queued_play("cue-speaker-authority")),
+            OmniPlaybackEnqueueOutcome::Queued
+        );
+        worker.shutdown_gracefully().expect("playback shutdown");
+
+        let summary: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(authority_directory.join("translated-cue-pcm-summary.json"))
+                .expect("translated PCM summary"),
+        )
+        .expect("translated PCM summary JSON");
+        assert_eq!(
+            summary["cueCount"],
+            1,
+            "a completed production speaker render must enter translated PCM authority"
+        );
     }
 
     #[test]
@@ -4168,6 +4519,7 @@ mod omni_playback_tests {
             // routing accidentally retained the virtual-mic target.
             samples: Vec::new(),
             cue_id: "omni-audio-route-test".to_string(),
+            response_id: Some("response-audio-route-test".to_string()),
             sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
             queued_at: Instant::now(),
             created_at_ms: unix_ms(),
@@ -4414,6 +4766,7 @@ mod omni_playback_tests {
         OmniPlaybackCommand::Stream {
             samples: vec![0; (duration.as_millis() as usize * OMNI_OUTPUT_SAMPLE_RATE_HZ as usize) / 1_000],
             cue_id: cue_id.to_string(),
+            response_id: Some(format!("response-{cue_id}")),
             sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
             queued_at: Instant::now(),
             created_at_ms: unix_ms(),
@@ -4453,18 +4806,25 @@ mod omni_playback_tests {
             queue.enqueue(queued_stream("stream", 0, Duration::from_millis(20))),
             OmniPlaybackEnqueueOutcome::Queued
         );
-        assert_eq!(quiescence.snapshot().queued_commands, 1);
+        let queued = quiescence.snapshot();
+        assert_eq!(queued.queued_commands, 1);
+        assert_eq!(queued.pending_audio_frames, Some(480));
+        assert_eq!(queued.output_sample_rate_hz, Some(OMNI_OUTPUT_SAMPLE_RATE_HZ));
         assert!(!quiescence.snapshot().is_quiescent());
 
         assert!(matches!(
             queue.recv_timeout(Duration::ZERO),
             OmniPlaybackReceiveOutcome::Command { .. }
         ));
-        assert_eq!(quiescence.snapshot().queued_commands, 0);
-        assert_eq!(quiescence.snapshot().active_commands, 1);
+        let active = quiescence.snapshot();
+        assert_eq!(active.queued_commands, 0);
+        assert_eq!(active.active_commands, 1);
+        assert!(active.pending_audio_frames.is_some_and(|frames| frames <= 480));
 
         queue.finish_active();
-        assert!(quiescence.snapshot().is_quiescent());
+        let finished = quiescence.snapshot();
+        assert!(finished.is_quiescent());
+        assert_eq!(finished.pending_audio_frames, Some(0));
     }
 
     #[test]
@@ -4543,6 +4903,7 @@ mod omni_playback_tests {
             queue.enqueue(OmniPlaybackCommand::Stream {
                 samples: Vec::new(),
                 cue_id: "stream".to_string(),
+                response_id: Some("response-stream".to_string()),
                 sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
                 queued_at: Instant::now(),
                 created_at_ms: unix_ms(),
@@ -4614,6 +4975,8 @@ mod omni_playback_tests {
         let old = crate::bridge::contracts::BridgeRuntimeSnapshot {
             session_id: Some("session-old".to_string()),
             bridge_instance_id: Some("instance-old".to_string()),
+            source_generation: 1,
+            source_generation_token: Some("instance-old:session-old:1".to_string()),
             physical_playback_status: "ready".to_string(),
             resolved_physical_playback_device_id: "physical-endpoint".to_string(),
             playback_owner_generation: 1,
@@ -4624,6 +4987,8 @@ mod omni_playback_tests {
         let current = crate::bridge::contracts::BridgeRuntimeSnapshot {
             session_id: Some("session-new".to_string()),
             bridge_instance_id: Some("instance-new".to_string()),
+            source_generation: 2,
+            source_generation_token: Some("instance-new:session-new:2".to_string()),
             physical_playback_status: "ready".to_string(),
             resolved_physical_playback_device_id: "physical-endpoint".to_string(),
             playback_owner_generation: 2,

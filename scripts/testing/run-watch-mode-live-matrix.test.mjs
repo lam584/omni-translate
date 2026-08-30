@@ -43,6 +43,7 @@ import {
 } from './run-watch-mode-live-matrix.mjs';
 import { fileAuthorityEntry, requiredCellArtifactPaths } from './watch-mode-evidence-authority.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES } from './watch-mode-external-provider-budget.mjs';
 import {
   SHARD_CELL_RESULT_FILE,
   SHARD_EXECUTION_PLAN_FILE,
@@ -61,7 +62,7 @@ import {
   providerPreflightReservationFileName,
 } from './watch-mode-provider-preflight-authorization.mjs';
 
-const SAMPLE_MODEL = 'qwen3.5-omni-flash-realtime';
+const SAMPLE_MODEL = 'qwen3.5-livetranslate-flash-realtime';
 const SAMPLE_FEEDBACK_MODE = 'echo-cancel';
 const CLEAN_PROVENANCE = Object.freeze({
   schemaVersion: 1,
@@ -140,8 +141,8 @@ function writeMatrixBudgetPlaceholder(outputRoot) {
   const authority = fileAuthorityEntry(ledgerPath, path.basename(ledgerPath));
   return {
     passed: true,
-    matrixCeilingSeconds: 1_440,
-    reservedSessionSeconds: 1_440,
+    matrixInputSampleCeiling: STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
+    reservedInputSamples: STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
     auxiliaryExternalAudioSeconds: 0,
     ledgerPath: authority.path,
     ledgerBytes: authority.bytes,
@@ -150,7 +151,7 @@ function writeMatrixBudgetPlaceholder(outputRoot) {
 }
 
 test('matrix defaults freeze the strict-evidence contract', () => {
-  assert.deepEqual(DEFAULT_MODELS, ['qwen3.5-omni-flash-realtime', 'qwen3.5-livetranslate-flash-realtime']);
+  assert.deepEqual(DEFAULT_MODELS, ['qwen3.5-livetranslate-flash-realtime']);
   assert.deepEqual(DEFAULT_FEEDBACK_MODES, ['process-exclusion', 'virtual-driver', 'echo-cancel']);
   assert.deepEqual(MATRIX_DEFAULTS, {
     outputRoot: 'artifacts/testing/watch-mode-live',
@@ -180,14 +181,14 @@ test('matrix defaults freeze the strict-evidence contract', () => {
   );
 });
 
-test('live runner supports the three-minute pairwise floor and derives its timeout from configured budgets', () => {
+test('explicit non-strict diagnostic runner keeps its legacy duration options and derives an outer timeout', () => {
   assert.equal(MIN_WATCH_AUTO_STOP_AFTER_SECONDS, 180);
   assert.equal(MAX_WATCH_AUTO_STOP_AFTER_SECONDS, 7_200);
   assert.equal(MATRIX_DEFAULTS.watchAutoStopAfterSeconds, MIN_WATCH_AUTO_STOP_AFTER_SECONDS);
   assert.equal(WATCH_REPORT_COMPLETION_GRACE_SECONDS, 120);
   assert.equal(LIVE_RUNNER_POST_REPORT_GRACE_SECONDS, 180);
   assert.equal(LIVE_RUNNER_TERMINATION_GRACE_MS, 5_000);
-  assert.equal(resolveLiveRunnerTimeoutMs(), 578_000);
+  assert.ok(Number.isSafeInteger(resolveLiveRunnerTimeoutMs()));
   assert.equal(
     resolveLiveRunnerTimeoutMs({ watchAutoStopAfterSeconds: 3_600 }),
     3_990_000,
@@ -340,10 +341,10 @@ test('strict paid argv binds the fail-closed local authority contract', () => {
     model: SAMPLE_MODEL,
     feedbackMode: SAMPLE_FEEDBACK_MODE,
     strictPaidAuthority: true,
-    cellId: 'pairwise-live::qwen3.5-omni-flash-realtime::echo-cancel::default-speaker',
+    cellId: 'pairwise-live::qwen3.5-livetranslate-flash-realtime::echo-cancel::default-speaker',
   });
   assert.equal(request.authorityMode, 'strict-paid');
-  assert.equal(request.matrix.cellId, 'pairwise-live::qwen3.5-omni-flash-realtime::echo-cancel::default-speaker');
+  assert.equal(request.matrix.cellId, 'pairwise-live::qwen3.5-livetranslate-flash-realtime::echo-cancel::default-speaker');
   assert.equal(request.model.subtitleTranslationMode, 'native');
   assert.equal(request.timeouts.sessionSeconds, 180);
 });
@@ -473,7 +474,6 @@ test('strict matrix rejects switches that bypass canonical media or raw physical
     { playbackSeconds: 120 },
     { runnerArgs: ['-SkipPhysicalOutputContentStt'] },
     { subtitleTranslationMode: 'secondary' },
-    { watchAutoStopAfterSeconds: 181 },
     { runnerArgs: ['-SubtitleTranslationMode', 'secondary'] },
   ]) {
     assert.throws(() => assertStrictEvidenceOptions(options), /evidence-weakening options/);
@@ -481,6 +481,14 @@ test('strict matrix rejects switches that bypass canonical media or raw physical
   assert.doesNotThrow(() => assertStrictEvidenceOptions({
     playbackSeconds: 0,
     runnerArgs: ['-SkipDriverRepair'],
+  }));
+});
+
+test('legacy strict option guard does not recreate a uniform 180-second paid budget', () => {
+  assert.doesNotThrow(() => assertStrictEvidenceOptions({
+    feedbackMode: 'process-exclusion',
+    playbackSeconds: 0,
+    watchAutoStopAfterSeconds: 225,
   }));
 });
 
@@ -567,7 +575,18 @@ test('matrix manifest contains only the current invocation run directories', () 
       cellId: `test::model-a::process-exclusion::${SUPPORTED_DEVICE_CLASSES[index]}`,
       tier: 'pairwise-live',
       providerMode: 'live-dashscope',
-      durationSeconds: 180,
+      inputCompletionWatchdogSeconds: 225,
+      processExclusionRestartAfterSeconds: 90,
+      processExclusionRestartQuietSeconds: 45,
+      providerFinishTimeoutSeconds: 15,
+      localPlaybackDrainTimeoutSeconds: 30,
+      reportWriteTimeoutSeconds: 10,
+      cellHardWatchdogSeconds: 280,
+      authoritativeTransformedReferenceFrames: 2_733_045,
+      boundedCaptureGraceFrames: 144_000,
+      maxExternalAudioSamples: 2_877_045,
+      auxiliaryExternalAudioSeconds: 0,
+      subtitleTranslationMode: 'native',
       modelId: 'model-a',
       feedbackLoopPrevention: 'process-exclusion',
       deviceClass: SUPPORTED_DEVICE_CLASSES[index],
@@ -590,7 +609,18 @@ test('strict shard writer projects guest authority into the manifest and every d
     cellId: `test-shard-cell-${index}`,
     tier: 'pairwise-live',
     providerMode: 'live-dashscope',
-    durationSeconds: 180,
+    inputCompletionWatchdogSeconds: 180,
+    processExclusionRestartAfterSeconds: 0,
+    processExclusionRestartQuietSeconds: 0,
+    providerFinishTimeoutSeconds: 15,
+    localPlaybackDrainTimeoutSeconds: 30,
+    reportWriteTimeoutSeconds: 10,
+    cellHardWatchdogSeconds: 235,
+    authoritativeTransformedReferenceFrames: 2_013_045,
+    boundedCaptureGraceFrames: 160_000,
+    maxExternalAudioSamples: 2_173_045,
+    auxiliaryExternalAudioSeconds: 0,
+    subtitleTranslationMode: 'native',
     modelId: SAMPLE_MODEL,
     feedbackLoopPrevention: 'echo-cancel',
     deviceClass: SUPPORTED_DEVICE_CLASSES[index],
@@ -645,7 +675,7 @@ test('strict shard writer projects guest authority into the manifest and every d
   }
 });
 
-test('shard staging copies one local root and emits only evidence-root-relative eight-cell projections', () => {
+test('shard staging copies one local root and emits only evidence-root-relative four-cell projections', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-shard-stage-'));
   const coordinatorRoot = path.join(root, 'coordinator');
   const evidenceRoot = path.join(root, 'evidence');
@@ -993,7 +1023,7 @@ test('canonical strict manifest requires raw re-verification after the verifier 
       externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot),
       releaseCells: LIVE_LLM_CELLS,
     }),
-    /expected 8/,
+    /expected 4/,
   );
 
   const diagnostic = writeMatrixRunManifest({

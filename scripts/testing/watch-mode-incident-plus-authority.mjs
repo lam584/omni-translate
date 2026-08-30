@@ -8,7 +8,6 @@ import {
   INCIDENT_REPLAY_PLUS_MODEL,
   INCIDENT_REPLAY_PLUS_MODEL_PROTOCOLS,
   INCIDENT_REPLAY_PLUS_PROVIDER_IDENTITY,
-  STRICT_PAID_CELL_CEILING_SECONDS,
   assertCellExternalProviderBudget,
   buildMatrixExternalProviderBudget,
 } from './watch-mode-external-provider-budget.mjs';
@@ -90,7 +89,7 @@ const incidentCell = ({ feedbackLoopPrevention, deviceClass }) => Object.freeze(
   tier: 'incident-replay',
   providerMode: 'live-dashscope',
   durationSeconds: INCIDENT_PLUS_CELL_MAX_EXTERNAL_AUDIO_SECONDS,
-  externalProviderSessionCeilingSeconds: INCIDENT_PLUS_CELL_MAX_EXTERNAL_AUDIO_SECONDS,
+  maxExternalAudioSamples: INCIDENT_PLUS_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
   auxiliaryExternalAudioSeconds: 0,
   subtitleTranslationMode: 'native',
   modelId: INCIDENT_REPLAY_PLUS_MODEL,
@@ -287,7 +286,7 @@ function cellProjection(cell) {
     tier: cell.tier,
     providerMode: cell.providerMode,
     durationSeconds: cell.durationSeconds,
-    externalProviderSessionCeilingSeconds: cell.externalProviderSessionCeilingSeconds,
+    maxExternalAudioSamples: cell.maxExternalAudioSamples,
     auxiliaryExternalAudioSeconds: cell.auxiliaryExternalAudioSeconds,
     subtitleTranslationMode: cell.subtitleTranslationMode,
     modelId: cell.modelId,
@@ -1498,7 +1497,7 @@ export function buildIncidentPlusCellResult({
     cellId: cell.cellId,
     modelId: cell.modelId,
     feedbackLoopPrevention: cell.feedbackLoopPrevention,
-    sessionCeilingSeconds: cell.durationSeconds,
+    inputCeilingSamples: cell.maxExternalAudioSamples,
     approvedModels: [INCIDENT_REPLAY_PLUS_MODEL],
     modelProtocols: INCIDENT_REPLAY_PLUS_MODEL_PROTOCOLS,
     providerIdentity: INCIDENT_REPLAY_PLUS_PROVIDER_IDENTITY,
@@ -1678,7 +1677,7 @@ export function buildIncidentPlusManifest({
   const budgets = resultEntries.map(({ raw }) => raw.externalProviderBudget);
   const aggregateBudget = buildMatrixExternalProviderBudget(budgets, {
     generatedAt,
-    matrixCeilingSeconds: INCIDENT_PLUS_MAX_EXTERNAL_AUDIO_SECONDS,
+    matrixInputSampleCeiling: INCIDENT_PLUS_MAX_EXTERNAL_AUDIO_SAMPLES,
     expectedCells: INCIDENT_PLUS_CELLS,
   });
   if (!aggregateBudget.passed) throw new Error(`incident Plus aggregate budget failed: ${aggregateBudget.violations.join('; ')}`);
@@ -1826,7 +1825,7 @@ export function validateIncidentPlusManifest({
   const recordedBudget = readRegularJson(budgetAuthority, 'incident Plus aggregate budget');
   const rebuiltBudget = buildMatrixExternalProviderBudget(validated.map((entry) => entry.result.externalProviderBudget), {
     generatedAt: manifest.externalProviderBudget.generatedAt,
-    matrixCeilingSeconds: INCIDENT_PLUS_MAX_EXTERNAL_AUDIO_SECONDS,
+    matrixInputSampleCeiling: INCIDENT_PLUS_MAX_EXTERNAL_AUDIO_SAMPLES,
     expectedCells: INCIDENT_PLUS_CELLS,
   });
   const expectedBudget = { ...rebuiltBudget, incidentId: INCIDENT_REPLAY_PLUS_ID };
@@ -1880,7 +1879,7 @@ export function writeIncidentPlusVerificationReceipt({
     externalProviderBudget: {
       actualProviderInputSamples: verified.externalProviderBudget.actualProviderInputSamples,
       actualProviderInputSeconds: verified.externalProviderBudget.actualProviderInputSeconds,
-      matrixCeilingSeconds: verified.externalProviderBudget.matrixCeilingSeconds,
+      matrixInputSampleCeiling: verified.externalProviderBudget.matrixInputSampleCeiling,
       auxiliaryExternalAudioSeconds: verified.externalProviderBudget.auxiliaryExternalAudioSeconds,
     },
     historicalRegressionChecks: verified.validatedResults.map((entry) => ({

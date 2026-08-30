@@ -43,6 +43,7 @@
     #[derive(Default)]
     struct CaptureMetrics {
         samples: Vec<f32>,
+        pcm_chunks: Vec<Vec<f32>>,
         peak: f32,
         silent_packets: usize,
         invalid_samples: usize,
@@ -50,11 +51,16 @@
 
     impl CaptureMetrics {
         fn append_pcm16le(&mut self, payload: &[u8]) {
+            let mut pcm_chunk = Vec::with_capacity(payload.len() / 2);
             for chunk in payload.chunks_exact(2) {
                 let value = i16::from_le_bytes(chunk.try_into().unwrap()) as f32
                     / i16::MAX as f32;
                 self.samples.push(value);
+                pcm_chunk.push(value);
                 self.peak = self.peak.max(value.abs());
+            }
+            if !pcm_chunk.is_empty() {
+                self.pcm_chunks.push(pcm_chunk);
             }
         }
 
@@ -74,4 +80,3 @@
             (sum / self.samples.len() as f64).sqrt() as f32
         }
     }
-

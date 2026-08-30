@@ -20,7 +20,18 @@
     "profileId": "default-speaker",
     "expectedName": null
   },
-  "timeouts": { "warmupSeconds": 12, "readinessSeconds": 90, "sessionSeconds": 180, "postPlaybackSeconds": 120 },
+  "timeouts": {
+    "warmupSeconds": 12,
+    "readinessSeconds": 90,
+    "sessionSeconds": 180,
+    "postPlaybackSeconds": 0,
+    "inputCompletionWatchdogSeconds": 180,
+    "providerFinishTimeoutSeconds": 15,
+    "localPlaybackDrainTimeoutSeconds": 30,
+    "reportWriteTimeoutSeconds": 10,
+    "cellHardWatchdogSeconds": 235,
+    "physicalRecorderTailSeconds": 2
+  },
   "paths": {
     "outputRoot": "artifacts/testing/watch-mode-live",
     "runtimeRoot": "artifacts/diagnostics/logs",

@@ -961,6 +961,17 @@ mod tests {
     }
 
     #[test]
+    fn source_flush_cannot_report_success_when_the_bridge_rejects_the_boundary() {
+        let mut snapshot = BridgeRuntimeSnapshot::default();
+        snapshot.pipe_path = r"\\.\pipe\omni-bridge-missing-source-flush-test-pipe".to_string();
+
+        let error = flush_bridge_source(&snapshot)
+            .expect_err("a missing Bridge cannot acknowledge the source flush boundary");
+
+        assert!(!error.trim().is_empty());
+    }
+
+    #[test]
     fn control_response_limit_excludes_the_line_terminator() {
         let maximum_payload = "x".repeat(omni_bridge_protocol::MAX_CONTROL_MESSAGE_BYTES);
 
@@ -992,6 +1003,12 @@ mod tests {
             event_type: "bridge.translation.nack".to_string(),
             request_id: "request-1".to_string(),
             frame_id: "frame-1".to_string(),
+            session_id: "session-1".to_string(),
+            bridge_instance_id: "bridge-instance-1".to_string(),
+            source_generation: 1,
+            source_generation_token: "bridge-instance-1:session-1:1".to_string(),
+            playback_owner_generation: 1,
+            physical_playback_device_id: "physical-endpoint-1".to_string(),
             accepted_frames: 0,
             playback_frames_written: 0,
             error_code: Some("bridge.session-mismatch".to_string()),
@@ -1008,6 +1025,12 @@ mod tests {
                 event_type: "bridge.translation.ack".to_string(),
                 request_id: "request-1".to_string(),
                 frame_id: "frame-1".to_string(),
+                session_id: "session-1".to_string(),
+                bridge_instance_id: "bridge-instance-1".to_string(),
+                source_generation: 1,
+                source_generation_token: "bridge-instance-1:session-1:1".to_string(),
+                playback_owner_generation: 1,
+                physical_playback_device_id: "physical-endpoint-1".to_string(),
                 accepted_frames: 32,
                 playback_frames_written: 64,
                 error_code: None,
@@ -1087,7 +1110,10 @@ mod tests {
             None,
             Some(4242),
             Some("bridge-instance-timing".to_string()),
+            Some(3),
+            Some("bridge-instance-timing:session-timing:3".to_string()),
             Some(7),
+            Some("physical-endpoint-timing".to_string()),
         );
 
         assert_eq!(header.cue_id.as_deref(), Some("cue-timing"));
@@ -1114,12 +1140,18 @@ mod tests {
         session_id: Option<&str>,
         bridge_instance_id: Option<&str>,
     ) -> BridgeRuntimeSnapshot {
+        let session = session_id.map(str::to_string);
+        let instance = bridge_instance_id.map(str::to_string);
         BridgeRuntimeSnapshot {
             process_status: "running".to_string(),
             bridge_state: "running".to_string(),
             lifecycle_state: "ready".to_string(),
-            session_id: session_id.map(str::to_string),
-            bridge_instance_id: bridge_instance_id.map(str::to_string),
+            session_id: session.clone(),
+            bridge_instance_id: instance.clone(),
+            source_generation: 1,
+            source_generation_token: instance
+                .zip(session)
+                .map(|(instance, session)| format!("{instance}:{session}:1")),
             physical_playback_status: "ready".to_string(),
             resolved_physical_playback_device_id: "physical-endpoint".to_string(),
             playback_owner_generation: 1,

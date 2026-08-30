@@ -7,6 +7,7 @@ pub(crate) struct OmniHandle {
         reason = "join handle is retained for supervised shutdown on supported runners"
     )]
     pub join_handle: JoinHandle<()>,
+    completion_rx: Option<mpsc::Receiver<Result<(), String>>>,
 }
 
 pub(crate) struct OmniStopSender {
@@ -40,14 +41,39 @@ impl OmniHandle {
                 stop_requested,
             },
             join_handle,
+            completion_rx: None,
         }
     }
 
+    fn with_completion_signal(
+        stop_tx: mpsc::Sender<()>,
+        join_handle: JoinHandle<()>,
+        stop_requested: Arc<AtomicBool>,
+        completion_rx: mpsc::Receiver<Result<(), String>>,
+    ) -> Self {
+        let mut handle = Self::with_stop_signal(stop_tx, join_handle, stop_requested);
+        handle.completion_rx = Some(completion_rx);
+        handle
+    }
+
     pub(crate) fn stop_and_join(self, direction: &str) -> Result<(), String> {
-        let _ = self.stop_tx.send(());
-        self.join_handle
+        let Self {
+            stop_tx,
+            join_handle,
+            completion_rx,
+        } = self;
+        let _ = stop_tx.send(());
+        join_handle
             .join()
-            .map_err(|_| format!("Omni {direction} worker panicked during route stop"))
+            .map_err(|_| format!("Omni {direction} worker panicked during route stop"))?;
+        match completion_rx {
+            Some(receiver) => receiver.recv().map_err(|error| {
+                format!(
+                    "Omni {direction} worker completion authority disconnected after join: {error}"
+                )
+            })?,
+            None => Ok(()),
+        }
     }
 }
 
@@ -78,6 +104,7 @@ pub(crate) fn start_omni(
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let stop_requested = Arc::new(AtomicBool::new(false));
     let (readiness_tx, readiness_rx) = mpsc::channel::<Result<u64, String>>();
+    let (completion_tx, completion_rx) = mpsc::channel::<Result<(), String>>();
     let readiness_sent = Arc::new(AtomicBool::new(false));
 
     store.set_stt_connected(false, 0);
@@ -134,7 +161,7 @@ pub(crate) fn start_omni(
                 stop_requested: stop_requested_for_worker,
             };
             let result = worker.run(&audio_state);
-            finish_worker(
+            let completion = finish_worker(
                 &app_handle,
                 &audio_state,
                 &worker_direction,
@@ -144,12 +171,18 @@ pub(crate) fn start_omni(
                 &readiness_tx_for_worker,
                 &readiness_sent_for_worker,
             );
+            let _ = completion_tx.send(completion);
         })
         .map_err(|error| format!("无法启动 Omni 线程: {error}"))?;
 
     Ok((
         audio_tx,
-        OmniHandle::with_stop_signal(stop_tx, join_handle, stop_requested),
+        OmniHandle::with_completion_signal(
+            stop_tx,
+            join_handle,
+            stop_requested,
+            completion_rx,
+        ),
         readiness_rx,
     ))
 }
@@ -164,7 +197,7 @@ fn finish_worker<R: tauri::Runtime>(
     result: Result<OmniWorkerShutdown, String>,
     readiness_tx: &mpsc::Sender<Result<u64, String>>,
     readiness_sent: &AtomicBool,
-) {
+) -> Result<(), String> {
     if should_discard_uncommitted_after_worker(&result)
         && audio_state.is_current_omni_session(direction, session_generation)
     {
@@ -220,7 +253,12 @@ fn finish_worker<R: tauri::Runtime>(
             ),
         );
         let _ = emit_audio_snapshot(app, audio_state);
-        let _ = audio_state.clear_omni_session(direction, session_generation, normalized_error);
+        let _ = audio_state.clear_omni_session(
+            direction,
+            session_generation,
+            normalized_error.clone(),
+        );
+        Err(normalized_error)
     } else {
         if !readiness_sent.swap(true, Ordering::SeqCst) {
             let _ = readiness_tx.send(Err(
@@ -228,6 +266,7 @@ fn finish_worker<R: tauri::Runtime>(
             ));
         }
         let _ = audio_state.clear_omni_session(direction, session_generation, "worker_exit");
+        Ok(())
     }
 }
 
@@ -264,5 +303,32 @@ mod tests {
         assert!(should_discard_uncommitted_after_worker(&Err(
             "provider ended early".to_string(),
         )));
+    }
+
+    #[test]
+    fn stop_and_join_propagates_the_worker_terminal_error_after_finalization() {
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (completion_tx, completion_rx) = mpsc::channel();
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let join_handle = thread::spawn(move || {
+            stop_rx.recv().expect("stop signal");
+            completion_tx
+                .send(Err(
+                    "LiveTranslate session.finished timeout | code: provider-finish-timeout"
+                        .to_string(),
+                ))
+                .expect("completion receiver remains owned");
+        });
+
+        let error = OmniHandle::with_completion_signal(
+            stop_tx,
+            join_handle,
+            stop_requested,
+            completion_rx,
+        )
+        .stop_and_join("inbound")
+        .expect_err("worker terminal failure must cross the join boundary");
+
+        assert!(error.contains("provider-finish-timeout"));
     }
 }

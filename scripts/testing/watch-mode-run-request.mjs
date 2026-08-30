@@ -18,7 +18,9 @@ const requestFields = new Set([
   'schemaVersion', 'runMode', 'authorityMode', 'feedbackMode', 'desktop', 'driverPolicy',
   'physicalContentMode', 'model', 'media', 'physicalDevice', 'timeouts', 'paths', 'matrix',
 ]);
-const pathFields = new Set(['outputRoot', 'runtimeRoot', 'workerReadinessReceipt']);
+const pathFields = new Set([
+  'outputRoot', 'runtimeRoot', 'workerReadinessReceipt', 'inputComplete', 'terminalAuthority',
+]);
 
 function object(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -80,11 +82,68 @@ export function validateWatchModeRunRequest(input) {
   request.timeouts.readinessSeconds = integer(request.timeouts.readinessSeconds, 'timeouts.readinessSeconds', 1, 100);
   request.timeouts.sessionSeconds = integer(request.timeouts.sessionSeconds, 'timeouts.sessionSeconds', 30, 7200);
   request.timeouts.postPlaybackSeconds = integer(request.timeouts.postPlaybackSeconds, 'timeouts.postPlaybackSeconds', 0, 7200);
+  request.timeouts.inputCompletionWatchdogSeconds = integer(
+    request.timeouts.inputCompletionWatchdogSeconds ?? request.timeouts.sessionSeconds,
+    'timeouts.inputCompletionWatchdogSeconds',
+    30,
+    7200,
+  );
+  request.timeouts.processExclusionRestartAfterSeconds = integer(
+    request.timeouts.processExclusionRestartAfterSeconds
+      ?? (request.feedbackMode === 'process-exclusion' ? 90 : 0),
+    'timeouts.processExclusionRestartAfterSeconds',
+    0,
+    7200,
+  );
+  request.timeouts.processExclusionRestartQuietSeconds = integer(
+    request.timeouts.processExclusionRestartQuietSeconds
+      ?? (request.feedbackMode === 'process-exclusion' ? 45 : 0),
+    'timeouts.processExclusionRestartQuietSeconds',
+    0,
+    7200,
+  );
+  request.timeouts.providerFinishTimeoutSeconds = integer(
+    request.timeouts.providerFinishTimeoutSeconds ?? 15,
+    'timeouts.providerFinishTimeoutSeconds',
+    1,
+    60,
+  );
+  request.timeouts.localPlaybackDrainTimeoutSeconds = integer(
+    request.timeouts.localPlaybackDrainTimeoutSeconds ?? request.timeouts.postPlaybackSeconds,
+    'timeouts.localPlaybackDrainTimeoutSeconds',
+    0,
+    300,
+  );
+  request.timeouts.reportWriteTimeoutSeconds = integer(
+    request.timeouts.reportWriteTimeoutSeconds ?? 10,
+    'timeouts.reportWriteTimeoutSeconds',
+    1,
+    60,
+  );
+  request.timeouts.cellHardWatchdogSeconds = integer(
+    request.timeouts.cellHardWatchdogSeconds ?? (
+      request.timeouts.inputCompletionWatchdogSeconds
+      + request.timeouts.providerFinishTimeoutSeconds
+      + request.timeouts.localPlaybackDrainTimeoutSeconds
+      + request.timeouts.reportWriteTimeoutSeconds
+    ),
+    'timeouts.cellHardWatchdogSeconds',
+    30,
+    7200,
+  );
+  request.timeouts.physicalRecorderTailSeconds = integer(
+    request.timeouts.physicalRecorderTailSeconds ?? 2,
+    'timeouts.physicalRecorderTailSeconds',
+    1,
+    5,
+  );
   request.paths = object(request.paths, 'paths');
   const unknownPathFields = Object.keys(request.paths).filter((field) => !pathFields.has(field));
   if (unknownPathFields.length > 0) throw new Error(`paths has unknown fields: ${unknownPathFields.join(', ')}`);
   request.paths.outputRoot = nonEmpty(request.paths.outputRoot, 'paths.outputRoot');
   request.paths.runtimeRoot = nonEmpty(request.paths.runtimeRoot, 'paths.runtimeRoot');
+  request.paths.inputComplete = nonEmpty(request.paths.inputComplete, 'paths.inputComplete', { optional: true });
+  request.paths.terminalAuthority = nonEmpty(request.paths.terminalAuthority, 'paths.terminalAuthority', { optional: true });
 
   if (request.feedbackMode === 'virtual-driver' && request.driverPolicy === 'not-applicable') {
     throw new Error('virtual-driver requires driverPolicy probe-only or repair-if-needed');
@@ -102,6 +161,20 @@ export function validateWatchModeRunRequest(input) {
       throw new Error(`${request.authorityMode} requires live + managed + native + local-canonical`);
     }
   }
+  if (request.authorityMode === 'strict-paid') {
+    const expectedRestartAfterSeconds = request.feedbackMode === 'process-exclusion' ? 90 : 0;
+    const expectedRestartQuietSeconds = request.feedbackMode === 'process-exclusion' ? 45 : 0;
+    if (
+      request.model.id !== 'qwen3.5-livetranslate-flash-realtime'
+      || request.model.protocol !== 'dashscope-livetranslate'
+      || !request.paths.inputComplete
+      || !request.paths.terminalAuthority
+      || request.timeouts.processExclusionRestartAfterSeconds !== expectedRestartAfterSeconds
+      || request.timeouts.processExclusionRestartQuietSeconds !== expectedRestartQuietSeconds
+    ) {
+      throw new Error('strict-paid requires exact LiveTranslate identity, explicit 90/45 process restart policy, and evidence-driven terminal paths');
+    }
+  }
   return request;
 }
 
@@ -117,6 +190,14 @@ export function buildLiveWatchModeRunRequest(options, {
   runtimeRoot = path.join(process.env.LOCALAPPDATA ?? 'artifacts/diagnostics', 'OmniTranslate/diagnostics/logs'),
 } = {}) {
   const feedbackMode = options.feedbackMode;
+  const inputCompletionWatchdogSeconds = Number(
+    options.inputCompletionWatchdogSeconds ?? options.watchAutoStopAfterSeconds,
+  );
+  const providerFinishTimeoutSeconds = Number(options.providerFinishTimeoutSeconds ?? 15);
+  const localPlaybackDrainTimeoutSeconds = Number(
+    options.localPlaybackDrainTimeoutSeconds ?? options.postPlaybackWaitSeconds,
+  );
+  const reportWriteTimeoutSeconds = Number(options.reportWriteTimeoutSeconds ?? 10);
   return validateWatchModeRunRequest({
     schemaVersion: WATCH_MODE_RUN_REQUEST_SCHEMA,
     runMode: 'live',
@@ -146,11 +227,32 @@ export function buildLiveWatchModeRunRequest(options, {
       readinessSeconds: Number(options.sessionReadyTimeoutSeconds),
       sessionSeconds: Number(options.watchAutoStopAfterSeconds),
       postPlaybackSeconds: Number(options.postPlaybackWaitSeconds),
+      inputCompletionWatchdogSeconds,
+      processExclusionRestartAfterSeconds: Number(
+        options.processExclusionRestartAfterSeconds ?? (feedbackMode === 'process-exclusion' ? 90 : 0),
+      ),
+      processExclusionRestartQuietSeconds: Number(
+        options.processExclusionRestartQuietSeconds ?? (feedbackMode === 'process-exclusion' ? 45 : 0),
+      ),
+      providerFinishTimeoutSeconds,
+      localPlaybackDrainTimeoutSeconds,
+      reportWriteTimeoutSeconds,
+      cellHardWatchdogSeconds: Number(
+        options.cellHardWatchdogSeconds ?? (
+          inputCompletionWatchdogSeconds
+          + providerFinishTimeoutSeconds
+          + localPlaybackDrainTimeoutSeconds
+          + reportWriteTimeoutSeconds
+        ),
+      ),
+      physicalRecorderTailSeconds: Number(options.physicalRecorderTailSeconds ?? 2),
     },
     paths: {
       outputRoot: options.outputRoot,
       runtimeRoot,
       workerReadinessReceipt,
+      inputComplete: options.inputCompletePath ?? null,
+      terminalAuthority: options.terminalAuthorityPath ?? null,
     },
     matrix: { cellId: options.matrixCellId ?? options.cellId ?? null, leaseId: null },
   });

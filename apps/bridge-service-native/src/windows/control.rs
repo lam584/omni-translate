@@ -98,10 +98,13 @@ fn handle_control(
             let virtual_mic_capability =
                 virtual_mic_output_requested.then(probe_virtual_mic_output);
             let mut current = state.lock().unwrap();
+            current.init_epoch = current.init_epoch.wrapping_add(1);
+            let init_epoch = current.init_epoch;
             let capture_mode_changed = current.source_capture_mode != requested_capture_mode;
             let session_changed = current.session_id != requested_session_id;
             let virtual_mic_output_changed =
                 current.virtual_mic_output_requested != virtual_mic_output_requested;
+            let reset_physical_stream_ledger = capture_mode_changed || session_changed;
             if capture_mode_changed || session_changed || virtual_mic_output_changed {
                 if let Err(error) = stop_virtual_mic_session() {
                     service_log(
@@ -114,7 +117,7 @@ fn handle_control(
                     );
                 }
                 current.virtual_mic_session_active = false;
-                current.reset_translation_cue_ledgers();
+                current.virtual_mic_cue_ledger.reset();
             }
             current.virtual_mic_output_requested = virtual_mic_output_requested;
             current.process_loopback_supported = process_loopback_supported;
@@ -249,6 +252,25 @@ fn handle_control(
             } else {
                 None
             };
+            let accepted_translation_work = !current
+                .physical_translation_stream_ledger
+                .active_cue_ids()
+                .is_empty()
+                || {
+                    let queue = translation_queue.lock().unwrap();
+                    queue.active.is_some() || !queue.pending.is_empty()
+                };
+            if accepted_translation_work {
+                request_playback_stop(
+                    &mut current,
+                    translation_queue,
+                    playback_control_tx,
+                    reconfiguration_reason.unwrap_or("bridge-init-owner-change"),
+                    None,
+                );
+            } else if reset_physical_stream_ledger {
+                current.physical_translation_stream_ledger.reset();
+            }
             let physical_playback_required = current.translation_playback_enabled;
             let mut current = if physical_playback_required {
                 current.physical_playback_status = "rebinding".to_string();
@@ -258,7 +280,9 @@ fn handle_control(
                 let requested_endpoint = current.physical_playback_device_id.clone();
                 let next_owner_generation = unix_ms()
                     .max(previous_playback_owner_generation.saturating_add(1))
-                    .max(current.playback_owner_generation.saturating_add(1));
+                    .max(current.playback_owner_generation.saturating_add(1))
+                    .max(current.playback_owner_reservation.saturating_add(1));
+                current.playback_owner_reservation = next_owner_generation;
                 drop(current);
 
                 let (response_tx, response_rx) = mpsc::sync_channel(1);
@@ -274,6 +298,14 @@ fn handle_control(
                             .map_err(|error| format!("physical playback rebind timed out: {error}"))?
                     });
                 let mut current = state.lock().unwrap();
+                if current.init_epoch != init_epoch {
+                    return bridge_error(
+                        request_id,
+                        "bridge.timeout",
+                        "bridge.init completion was superseded by a newer init owner",
+                        &current,
+                    );
+                }
                 match rebind_result {
                     Ok(resolved_endpoint) => {
                         current.resolved_physical_playback_device_id = resolved_endpoint.clone();
@@ -314,7 +346,7 @@ fn handle_control(
             } else {
                 current.physical_playback_status = "uninitialized".to_string();
                 current.resolved_physical_playback_device_id.clear();
-                if let Some(reason) = reconfiguration_reason {
+                if let Some(reason) = reconfiguration_reason.filter(|_| !accepted_translation_work) {
                     request_playback_stop(
                         &mut current,
                         translation_queue,
@@ -387,8 +419,31 @@ fn flush_source_capture(
     current.source_pending_bytes = 0;
     current.source_pacer_queued_frames = 0;
     current.monitor_source_queued_frames = 0;
-    let _ = playback_tx.send(PlaybackCommand::FlushSource);
-    state_snapshot(request_id, &current)
+    drop(current);
+    let (applied_tx, applied_rx) = mpsc::sync_channel(1);
+    if let Err(error) = playback_tx.send(PlaybackCommand::FlushSource {
+        applied_tx: Some(applied_tx),
+    }) {
+        let mut current = state.lock().unwrap();
+        current.last_error_code = Some("bridge.source-flush-failed".to_string());
+        return bridge_error(
+            request_id,
+            "bridge.source-flush-failed",
+            &format!("source playback boundary consumer disconnected: {error}"),
+            &current,
+        );
+    }
+    if let Err(error) = applied_rx.recv() {
+        let mut current = state.lock().unwrap();
+        current.last_error_code = Some("bridge.source-flush-failed".to_string());
+        return bridge_error(
+            request_id,
+            "bridge.source-flush-failed",
+            &format!("source playback boundary was not applied: {error}"),
+            &current,
+        );
+    }
+    state_snapshot(request_id, &state.lock().unwrap())
 }
 
 fn read_install_state(runtime_root: &Path) -> Option<DriverInstallState> {

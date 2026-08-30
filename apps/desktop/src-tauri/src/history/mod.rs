@@ -22,9 +22,10 @@ use crate::audio::contracts::{AudioRuntimeSnapshot, SubtitleCueRuntime};
 pub(crate) use repository::{
     HistoryCuePage, HistorySessionDetail, HistorySessionPage, HistoryStatistics,
 };
+pub(crate) use playback::{HistoryAudioTrack, HistoryChangedEventV2};
+#[cfg(test)]
 pub(crate) use playback::{
-    HistoryAudioTrack, HistoryChangedEventV2, HistoryPlaybackEventV2,
-    HistoryPlaybackStartV2, HistoryPlaybackStopV2,
+    HistoryPlaybackEventV2, HistoryPlaybackStartV2, HistoryPlaybackStopV2,
 };
 pub(crate) use playback::emit_changed;
 use audio::AudioTrack;

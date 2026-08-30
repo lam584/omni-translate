@@ -27,7 +27,7 @@ fn main() {
 mod probe {
     use omni_bridge_service::probe_support::{
         coarse_dominant_frequency, component_amplitude, for_each_capture_packet,
-        isolated_component_amplitude, open_capture_stream,
+        isolated_component_amplitude, open_capture_stream, IsolatedComponentAmplitude,
     };
     use omni_bridge_service::{
         AudioFrameHeader, AudioRouteDirection, AudioSampleFormat, TranslationAudioSink,
@@ -74,6 +74,42 @@ mod probe {
     const STREAM_TONE_FREQUENCIES_HZ: [f32; 4] = [700.0, 900.0, 1_100.0, 1_300.0];
     const MIN_OUTPUT_RMS: f32 = 0.015;
     const MIN_OUTPUT_COMPONENT: f32 = 0.015;
+    #[derive(Clone)]
+    struct TranslationAuthority {
+        bridge_instance_id: String,
+        source_generation: u64,
+        source_generation_token: String,
+        playback_owner_generation: u64,
+        physical_playback_device_id: String,
+    }
+
+    fn translation_authority_from_init(init: &Value) -> Result<TranslationAuthority, String> {
+        Ok(TranslationAuthority {
+            bridge_instance_id: init["bridgeInstanceId"]
+                .as_str()
+                .ok_or_else(|| format!("bridge init omitted bridgeInstanceId: {init}"))?
+                .to_string(),
+            source_generation: init["sourceGeneration"]
+                .as_u64()
+                .ok_or_else(|| format!("bridge init omitted sourceGeneration: {init}"))?,
+            source_generation_token: init["sourceGenerationToken"]
+                .as_str()
+                .ok_or_else(|| format!("bridge init omitted sourceGenerationToken: {init}"))?
+                .to_string(),
+            playback_owner_generation: init["playbackOwnerGeneration"]
+                .as_u64()
+                .ok_or_else(|| format!("bridge init omitted playbackOwnerGeneration: {init}"))?,
+            physical_playback_device_id: init["resolvedPhysicalPlaybackDeviceId"]
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    format!("bridge init omitted resolvedPhysicalPlaybackDeviceId: {init}")
+                })?
+                .to_string(),
+        })
+    }
+    include!("omni_physical_output_probe/process_exclusion_detectability.rs");
+    include!("omni_physical_output_probe/process_exclusion_evidence.rs");
     include!("omni_physical_output_probe/process_exclusion.rs");
 
     #[derive(Serialize)]
@@ -272,28 +308,25 @@ mod probe {
             }),
         )?;
         let before_frames = before["playbackFramesWritten"].as_u64().unwrap_or(0);
-        let bridge_instance_id = init["bridgeInstanceId"].as_str().map(str::to_string);
-        let playback_owner_generation = init["playbackOwnerGeneration"].as_u64();
+        let translation_authority = translation_authority_from_init(&init)?;
         let capture = LoopbackCapture::start(&capture_device)?;
         thread::sleep(Duration::from_millis(250));
         let sender_pipe_name = pipe_name.clone();
         let sender_session_id = session_id.clone();
-        let sender_bridge_instance_id = bridge_instance_id.clone();
+        let sender_translation_authority = translation_authority.clone();
         let streaming_tone = args.streaming_tone;
         let sender = thread::spawn(move || {
             if streaming_tone {
                 send_streaming_translation_tone(
                     &sender_pipe_name,
                     &sender_session_id,
-                    sender_bridge_instance_id,
-                    playback_owner_generation,
+                    sender_translation_authority,
                 )
             } else {
                 send_translation_tone(
                     &sender_pipe_name,
                     &sender_session_id,
-                    sender_bridge_instance_id,
-                    playback_owner_generation,
+                    sender_translation_authority,
                 )
             }
         });
@@ -613,8 +646,7 @@ mod probe {
     fn send_translation_tone(
         pipe_name: &str,
         session_id: &str,
-        bridge_instance_id: Option<String>,
-        playback_owner_generation: Option<u64>,
+        authority: TranslationAuthority,
     ) -> Result<(), String> {
         send_translation_tone_at(
             pipe_name,
@@ -623,16 +655,14 @@ mod probe {
             TONE_AMPLITUDE,
             TONE_SECONDS,
             "physical-output",
-            bridge_instance_id,
-            playback_owner_generation,
+            authority,
         )
     }
 
     fn send_streaming_translation_tone(
         pipe_name: &str,
         session_id: &str,
-        bridge_instance_id: Option<String>,
-        playback_owner_generation: Option<u64>,
+        authority: TranslationAuthority,
     ) -> Result<(), String> {
         let chunk_seconds = 0.5;
         for (chunk_index, frequency_hz) in STREAM_TONE_FREQUENCIES_HZ.iter().enumerate() {
@@ -647,8 +677,7 @@ mod probe {
                 } else {
                     TranslationStreamState::Chunk
                 },
-                bridge_instance_id.clone(),
-                playback_owner_generation,
+                authority.clone(),
             )?;
             thread::sleep(Duration::from_millis(500));
         }
@@ -659,8 +688,7 @@ mod probe {
             0.0,
             4,
             TranslationStreamState::End,
-            bridge_instance_id,
-            playback_owner_generation,
+            authority,
         )
     }
 
@@ -671,8 +699,7 @@ mod probe {
         seconds: f32,
         chunk_index: u32,
         stream_state: TranslationStreamState,
-        bridge_instance_id: Option<String>,
-        playback_owner_generation: Option<u64>,
+        authority: TranslationAuthority,
     ) -> Result<(), String> {
         let payload = if stream_state == TranslationStreamState::End {
             Vec::new()
@@ -687,8 +714,7 @@ mod probe {
             Some(chunk_index),
             Some(stream_state),
             (seconds.max(0.0) * 1_000.0).ceil() as u64,
-            bridge_instance_id,
-            playback_owner_generation,
+            authority,
         )
     }
 
@@ -699,8 +725,7 @@ mod probe {
         amplitude: f32,
         seconds: f32,
         label: &str,
-        bridge_instance_id: Option<String>,
-        playback_owner_generation: Option<u64>,
+        authority: TranslationAuthority,
     ) -> Result<(), String> {
         let payload = tone_pcm16le_at(frequency_hz, amplitude, seconds);
         let duration_ms = (seconds.max(0.0) * 1_000.0).ceil() as u64;
@@ -712,8 +737,7 @@ mod probe {
             None,
             None,
             duration_ms,
-            bridge_instance_id,
-            playback_owner_generation,
+            authority,
         )
     }
 
@@ -725,8 +749,7 @@ mod probe {
         chunk_index: Option<u32>,
         stream_state: Option<TranslationStreamState>,
         duration_ms: u64,
-        bridge_instance_id: Option<String>,
-        playback_owner_generation: Option<u64>,
+        authority: TranslationAuthority,
     ) -> Result<(), String> {
         let path = format!(r"\\.\pipe\{pipe_name}-audio");
         let mut pipe = open_pipe(&path)?;
@@ -744,10 +767,11 @@ mod probe {
             timestamp_ms: created_at_ms,
             payload_bytes: payload.len(),
             bridge_process_id: None,
-            bridge_instance_id,
-            playback_owner_generation,
-            source_generation: None,
-            source_generation_token: None,
+            bridge_instance_id: Some(authority.bridge_instance_id),
+            playback_owner_generation: Some(authority.playback_owner_generation),
+            source_generation: Some(authority.source_generation),
+            source_generation_token: Some(authority.source_generation_token),
+            physical_playback_device_id: Some(authority.physical_playback_device_id),
             cue_id: Some(format!("{label}-cue")),
             created_at_ms: Some(created_at_ms),
             estimated_duration_ms: Some(duration_ms),

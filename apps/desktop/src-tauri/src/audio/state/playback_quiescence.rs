@@ -1,13 +1,29 @@
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     sync::{Arc, Condvar, Mutex},
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TranslationPlaybackAuthority {
+    pub(crate) session_id: String,
+    pub(crate) bridge_instance_id: String,
+    pub(crate) source_generation: u64,
+    pub(crate) source_generation_token: String,
+    pub(crate) playback_owner_generation: u64,
+    pub(crate) physical_playback_device_id: String,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TranslationPlaybackQuiescenceSnapshot {
     pub(crate) pending_native_audio: bool,
     pub(crate) queued_commands: usize,
     pub(crate) active_commands: usize,
+    /// Native playback frames still projected ahead of the speaker cursor.
+    /// `None` means that the active playback owner cannot expose an exact PCM
+    /// duration, so terminal drain must use its bounded fail-closed cap.
+    pub(crate) pending_audio_frames: Option<u64>,
+    pub(crate) output_sample_rate_hz: Option<u32>,
+    pub(crate) pending_playback_submissions: usize,
     pub(crate) pending_bridge_acks: usize,
     pub(crate) active_bridge_cues: usize,
     pub(crate) restart_barrier: bool,
@@ -18,6 +34,8 @@ impl TranslationPlaybackQuiescenceSnapshot {
         !self.pending_native_audio
             && self.queued_commands == 0
             && self.active_commands == 0
+            && !matches!(self.pending_audio_frames, Some(frames) if frames > 0)
+            && self.pending_playback_submissions == 0
             && self.pending_bridge_acks == 0
             && self.active_bridge_cues == 0
             && !self.restart_barrier
@@ -27,7 +45,7 @@ impl TranslationPlaybackQuiescenceSnapshot {
 #[derive(Default)]
 struct TranslationPlaybackQuiescenceState {
     snapshot: TranslationPlaybackQuiescenceSnapshot,
-    active_bridge_cues: HashSet<String>,
+    active_bridge_cues: HashMap<String, Option<TranslationPlaybackAuthority>>,
 }
 
 #[derive(Default)]
@@ -45,19 +63,33 @@ impl TranslationPlaybackQuiescence {
     }
 
     pub(crate) fn set_pending_native_audio(&self, pending: bool) {
-        self.state
+        let mut state = self.state
             .lock()
-            .expect("translation playback quiescence state poisoned")
-            .snapshot.pending_native_audio = pending;
+            .expect("translation playback quiescence state poisoned");
+        while pending && state.snapshot.restart_barrier {
+            state = self
+                .restart_completed
+                .wait(state)
+                .expect("translation playback quiescence state poisoned");
+        }
+        state.snapshot.pending_native_audio = pending;
     }
 
-    pub(crate) fn set_queue_state(&self, queued_commands: usize, active_commands: usize) {
+    pub(crate) fn set_queue_state(
+        &self,
+        queued_commands: usize,
+        active_commands: usize,
+        pending_audio_frames: u64,
+        output_sample_rate_hz: u32,
+    ) {
         let mut state = self
             .state
             .lock()
             .expect("translation playback quiescence state poisoned");
         state.snapshot.queued_commands = queued_commands;
         state.snapshot.active_commands = active_commands;
+        state.snapshot.pending_audio_frames = Some(pending_audio_frames);
+        state.snapshot.output_sample_rate_hz = Some(output_sample_rate_hz);
     }
 
     pub(crate) fn begin_bridge_ack(self: &Arc<Self>) -> TranslationPlaybackAckGuard {
@@ -82,17 +114,26 @@ impl TranslationPlaybackQuiescence {
             .expect("translation playback quiescence state poisoned");
         match status {
             "queued" | "started" => {
-                state.active_bridge_cues.insert(cue_id.to_string());
+                state.active_bridge_cues.entry(cue_id.to_string()).or_insert(None);
             }
             "completed" | "route-failed" | "stale-dropped" => {
-                state.active_bridge_cues.remove(cue_id);
+                if state.active_bridge_cues.get(cue_id) == Some(&None) {
+                    state.active_bridge_cues.remove(cue_id);
+                }
             }
             _ => return,
         }
         state.snapshot.active_bridge_cues = state.active_bridge_cues.len();
     }
 
-    pub(crate) fn wait_for_restart_barrier(&self) {
+    /// Register Bridge-owned playback before releasing the synchronous audio
+    /// write ACK. The cue remains active through any source-pipe delivery gap;
+    /// only an acknowledged terminal status may remove it.
+    #[cfg(test)]
+    pub(crate) fn expect_bridge_playback_cue(&self, cue_id: &str) {
+        if cue_id.trim().is_empty() {
+            return;
+        }
         let mut state = self
             .state
             .lock()
@@ -103,6 +144,93 @@ impl TranslationPlaybackQuiescence {
                 .wait(state)
                 .expect("translation playback quiescence state poisoned");
         }
+        state.active_bridge_cues.entry(cue_id.to_string()).or_insert(None);
+        state.snapshot.active_bridge_cues = state.active_bridge_cues.len();
+    }
+
+    pub(crate) fn expect_bridge_playback_cue_for_owner(
+        &self,
+        cue_id: &str,
+        authority: TranslationPlaybackAuthority,
+    ) {
+        if cue_id.trim().is_empty() {
+            return;
+        }
+        let mut state = self
+            .state
+            .lock()
+            .expect("translation playback quiescence state poisoned");
+        while state.snapshot.restart_barrier {
+            state = self
+                .restart_completed
+                .wait(state)
+                .expect("translation playback quiescence state poisoned");
+        }
+        state
+            .active_bridge_cues
+            .insert(cue_id.to_string(), Some(authority));
+        state.snapshot.active_bridge_cues = state.active_bridge_cues.len();
+    }
+
+    pub(crate) fn observe_bridge_playback_status_for_owner(
+        &self,
+        cue_id: &str,
+        status: &str,
+        authority: &TranslationPlaybackAuthority,
+    ) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("translation playback quiescence state poisoned");
+        let matches_expected = state
+            .active_bridge_cues
+            .get(cue_id)
+            .is_some_and(|expected| expected.as_ref() == Some(authority));
+        if !matches_expected {
+            return false;
+        }
+        if matches!(status, "completed" | "route-failed" | "stale-dropped") {
+            state.active_bridge_cues.remove(cue_id);
+            state.snapshot.active_bridge_cues = state.active_bridge_cues.len();
+        }
+        true
+    }
+
+    pub(crate) fn bridge_playback_cue_matches_owner(
+        &self,
+        cue_id: &str,
+        authority: &TranslationPlaybackAuthority,
+    ) -> bool {
+        self.state
+            .lock()
+            .expect("translation playback quiescence state poisoned")
+            .active_bridge_cues
+            .get(cue_id)
+            .is_some_and(|expected| expected.as_ref() == Some(authority))
+    }
+
+    /// Reserve the gap between observing the current playback owner and
+    /// publishing the resulting command into the bounded playback queue.
+    /// Restart acquisition checks this reservation under the same mutex, so a
+    /// caller that has passed the barrier cannot race a generation switch.
+    pub(crate) fn wait_for_restart_barrier(
+        self: &Arc<Self>,
+    ) -> TranslationPlaybackSubmissionGuard {
+        let mut state = self
+            .state
+            .lock()
+            .expect("translation playback quiescence state poisoned");
+        while state.snapshot.restart_barrier {
+            state = self
+                .restart_completed
+                .wait(state)
+                .expect("translation playback quiescence state poisoned");
+        }
+        state.snapshot.pending_playback_submissions = state
+            .snapshot
+            .pending_playback_submissions
+            .saturating_add(1);
+        TranslationPlaybackSubmissionGuard(self.clone())
     }
 
     pub(crate) fn try_begin_restart_barrier(
@@ -121,6 +249,22 @@ impl TranslationPlaybackQuiescence {
 }
 
 pub(crate) struct TranslationPlaybackAckGuard(Arc<TranslationPlaybackQuiescence>);
+
+pub(crate) struct TranslationPlaybackSubmissionGuard(Arc<TranslationPlaybackQuiescence>);
+
+impl Drop for TranslationPlaybackSubmissionGuard {
+    fn drop(&mut self) {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .expect("translation playback quiescence state poisoned");
+        state.snapshot.pending_playback_submissions = state
+            .snapshot
+            .pending_playback_submissions
+            .saturating_sub(1);
+    }
+}
 
 impl Drop for TranslationPlaybackAckGuard {
     fn drop(&mut self) {
@@ -145,5 +289,46 @@ impl Drop for TranslationPlaybackRestartGuard {
         state.snapshot.restart_barrier = false;
         drop(state);
         self.0.restart_completed.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Barrier};
+
+    use super::TranslationPlaybackQuiescence;
+
+    #[test]
+    fn playback_submission_reservation_closes_restart_check_then_act_window() {
+        let quiescence = Arc::new(TranslationPlaybackQuiescence::default());
+        let owner_checked = Arc::new(Barrier::new(2));
+        let resume_submission = Arc::new(Barrier::new(2));
+        let submission_quiescence = quiescence.clone();
+        let submission_checked = owner_checked.clone();
+        let submission_resume = resume_submission.clone();
+        let submission = std::thread::spawn(move || {
+            let reservation = submission_quiescence.wait_for_restart_barrier();
+            submission_checked.wait();
+            submission_resume.wait();
+            submission_quiescence.expect_bridge_playback_cue("cue-after-owner-check");
+            drop(reservation);
+        });
+
+        owner_checked.wait();
+        let restart = quiescence.try_begin_restart_barrier();
+        resume_submission.wait();
+        submission.join().expect("submission thread joins");
+
+        assert!(
+            restart.is_none(),
+            "restart must not acquire its barrier after a playback submission has reserved the owner-to-enqueue window"
+        );
+        let snapshot = quiescence.snapshot();
+        assert!(!snapshot.restart_barrier || snapshot.active_bridge_cues == 0);
+        quiescence.observe_bridge_playback_status("cue-after-owner-check", "completed");
+        assert!(
+            quiescence.try_begin_restart_barrier().is_some(),
+            "the next generation may acquire the restart barrier after the submission and cue drain"
+        );
     }
 }

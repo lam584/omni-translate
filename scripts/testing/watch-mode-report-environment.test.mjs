@@ -221,6 +221,27 @@ test('process-exclusion restart owner failure has a stable authority fingerprint
   });
 });
 
+test('process-exclusion restart rejects duplicate terminal summaries', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'process-exclusion',
+    bridge: healthyProcessExclusionBridge,
+    driver: null,
+    wasapi: null,
+    physicalOutput: healthyProcessExclusionFingerprint,
+    appLogText: [
+      healthyProcessExclusionRestartLog,
+      healthyProcessExclusionRestartLog,
+    ].join('\n'),
+  });
+  const restart = report.layers.bridge.data.processExclusionRestart;
+
+  assert.equal(restart.summaryCount, 2);
+  assert.equal(restart.completed, false);
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.stableErrorCode, 'bridge.restart-authority-failed');
+  assert.equal(report.lifecyclePhase, 'bridge-restart');
+});
+
 test('translated PCM authority failure has a stable physical proof fingerprint', () => {
   const report = classify({
     physicalOutputContent: {
@@ -233,6 +254,59 @@ test('translated PCM authority failure has a stable physical proof fingerprint',
   assert.equal(report.failureLayer, 'physicalOutputContent');
   assert.equal(report.stableErrorCode, 'playback.translated-pcm-authority-failed');
   assert.equal(report.lifecyclePhase, 'physical-playback-proof');
+});
+
+test('evidence-driven terminal failures retain their exact lifecycle phase', () => {
+  const cases = [
+    ['input-complete-timeout', 'watch.input-complete-timeout', 'input-completion'],
+    ['input-complete-invalid', 'watch.input-complete-invalid', 'input-completion'],
+    ['capture-input-fence-timeout', 'watch.capture-input-fence-timeout', 'capture-input-fence'],
+    ['capture-input-fence-disconnected', 'watch.capture-input-fence-disconnected', 'capture-input-fence'],
+    ['capture-join-timeout', 'watch.capture-join-timeout', 'terminal-teardown'],
+    ['provider-finish-timeout', 'provider.session-finished-timeout', 'provider-finish'],
+    ['provider-finish-protocol-order-invalid', 'provider.session-finished-order-invalid', 'provider-finish'],
+    ['provider-finish-authority-invalid', 'provider.session-finished-authority-invalid', 'provider-finish'],
+    ['provider-owner-task-failed', 'provider.owner-task-failed', 'provider-finish'],
+    ['local-playback-drain-timeout', 'playback.local-drain-timeout', 'local-playback-drain'],
+    ['terminal-owner-evidence-incomplete', 'watch.terminal-owner-evidence-incomplete', 'terminal-evidence'],
+    ['terminal-teardown-task-failed', 'watch.terminal-teardown-task-failed', 'terminal-teardown'],
+    ['report-write-timeout', 'watch.report-write-timeout', 'report-write'],
+    ['report-write-immutable-exists', 'watch.report-write-immutable-exists', 'report-write'],
+  ];
+
+  for (const [terminalErrorCode, stableErrorCode, lifecyclePhase] of cases) {
+    const report = classify({
+      failure: {
+        message: `custodied Watch desktop terminal failed: exitCode=1 terminalErrorCode=${terminalErrorCode}`,
+      },
+    });
+    assert.equal(report.stableErrorCode, stableErrorCode, terminalErrorCode);
+    assert.equal(report.lifecyclePhase, lifecyclePhase, terminalErrorCode);
+  }
+
+  const sourceFlush = classify({
+    failure: {
+      message: 'custodied Watch desktop terminal failed: exitCode=1 terminalErrorCode=terminal-teardown-failed terminalError=Bridge flush failed | code: bridge.source-flush-failed',
+    },
+  });
+  assert.equal(sourceFlush.stableErrorCode, 'bridge.source-flush-failed');
+  assert.equal(sourceFlush.lifecyclePhase, 'terminal-teardown');
+
+  const terminalTimeoutWithCompetingText = classify({
+    failure: {
+      message: 'custodied Watch desktop terminal failed: terminalErrorCode=provider-finish-timeout terminalError=response stream timeout',
+    },
+  });
+  assert.equal(terminalTimeoutWithCompetingText.stableErrorCode, 'provider.session-finished-timeout');
+  assert.equal(terminalTimeoutWithCompetingText.lifecyclePhase, 'provider-finish');
+
+  const unknownTerminalCode = classify({
+    failure: {
+      message: 'custodied Watch desktop terminal failed: terminalErrorCode=new-unregistered-stage terminalError=response stream timeout',
+    },
+  });
+  assert.equal(unknownTerminalCode.stableErrorCode, 'watch.terminal-error-code-unregistered');
+  assert.equal(unknownTerminalCode.lifecyclePhase, 'terminal-evidence');
 });
 
 test('surfaces bridge source probe diagnostics before generic bridge counters', () => {

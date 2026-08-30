@@ -315,6 +315,109 @@ test('strict native reference-media content accepts completed native cues instea
   assert.equal(result.finalWriteCount, 0);
 });
 
+test('strict native content coverage includes every selected visible cue instead of only the final overlay snapshot', () => {
+  const nativeVisibleParagraphs = testMediaReferenceTranslation.split(/\n\n/u);
+  const nativeVisibleHead = nativeVisibleParagraphs.slice(0, 3).join('\n\n');
+  const nativeVisibleTail = nativeVisibleParagraphs.slice(3).join('\n\n');
+  const result = evaluateStrictContent({
+    translationRoute: 'native',
+    physicalOutputContent: strictTestMediaContent({
+      translation: '',
+      subtitleText: '',
+      segmentTranslationText: '',
+      subtitleQueue: { finalWriteCount: 0, queuedSegmentCount: 0, playedSegmentCount: 2 },
+      translatedSpeech: {
+        passed: true,
+        queuedSegments: 0,
+        playedSegments: 2,
+        transcriptChars: testMediaReferenceTranslation.length,
+      },
+    }),
+    watchSessionReport: {
+      cues: [
+        {
+          cueId: 'native-visible-1',
+          comparisonStatus: 'exact',
+          translationState: 'final',
+          llmText: nativeVisibleHead,
+          publishedText: nativeVisibleHead,
+          renderedText: nativeVisibleHead,
+        },
+        {
+          cueId: 'native-visible-2',
+          comparisonStatus: 'formatting-only',
+          translationState: 'final',
+          llmText: nativeVisibleTail,
+          publishedText: nativeVisibleTail,
+          renderedText: nativeVisibleTail,
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.passed, true);
+  assert.equal(result.nativeCompletedCueCount, 2);
+  assert.equal(result.structuredCoverage, 1);
+});
+
+test('strict native content coverage excludes superseded and mismatched cue text', () => {
+  const result = evaluateStrictContent({
+    translationRoute: 'native',
+    physicalOutputContent: strictTestMediaContent({
+      translation: '',
+      subtitleText: '',
+      segmentTranslationText: '',
+      subtitleQueue: { finalWriteCount: 0, queuedSegmentCount: 0, playedSegmentCount: 1 },
+      translatedSpeech: {
+        passed: true,
+        queuedSegments: 0,
+        playedSegments: 1,
+        transcriptChars: testMediaReferenceTranslation.length,
+      },
+    }),
+    watchSessionReport: {
+      cues: [
+        {
+          cueId: 'native-selected',
+          comparisonStatus: 'exact',
+          translationState: 'final',
+          llmText: '少量有效译文',
+          publishedText: '少量有效译文',
+          renderedText: '少量有效译文',
+        },
+        {
+          cueId: 'native-superseded',
+          comparisonStatus: 'superseded',
+          translationState: 'superseded',
+          llmText: testMediaReferenceTranslation,
+          publishedText: testMediaReferenceTranslation,
+          renderedText: testMediaReferenceTranslation,
+        },
+        {
+          cueId: 'native-mismatched',
+          comparisonStatus: 'different',
+          translationState: 'error',
+          llmText: testMediaReferenceTranslation,
+          publishedText: testMediaReferenceTranslation,
+          renderedText: testMediaReferenceTranslation,
+        },
+        {
+          cueId: 'native-contradictory-error',
+          comparisonStatus: 'exact',
+          translationState: 'error',
+          llmText: testMediaReferenceTranslation,
+          publishedText: testMediaReferenceTranslation,
+          renderedText: testMediaReferenceTranslation,
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.passed, false);
+  assert.equal(result.nativeCompletedCueCount, 1);
+  assert.equal(result.structuredCoverage < 0.2, true);
+});
+
 test('strict native reference-media content accepts one complete continuous-source cue', () => {
   const result = evaluateStrictContent({
     translationRoute: 'native',

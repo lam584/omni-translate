@@ -7,7 +7,10 @@ import {
   fileReceipt,
 } from './real-device-audio-release-evidence.mjs';
 import { materializeRealDeviceAudioReleaseEvidence } from './run-real-device-audio-release-evidence.mjs';
-import { requiredCellArtifactPaths } from './watch-mode-evidence-authority.mjs';
+import {
+  STRICT_MATRIX_SCHEMA_VERSION,
+  requiredCellArtifactPaths,
+} from './watch-mode-evidence-authority.mjs';
 
 const writeText = (candidate, value) => {
   ensureDir(path.dirname(candidate));
@@ -294,7 +297,7 @@ export function createRealDeviceAudioAuthorityFixture({
   const receiptPath = path.join(runDirectory, 'matrix-cell-authority.json');
   writeJson(receiptPath, receipt);
   const manifest = {
-    schemaVersion: 4,
+    schemaVersion: STRICT_MATRIX_SCHEMA_VERSION,
     artifactKind: 'watch-mode-strict-matrix-authority',
     strict: true,
     evidenceMode: 'live',

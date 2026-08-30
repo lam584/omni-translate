@@ -7,6 +7,7 @@ import {
   BALANCED_RELEASE_PLAN,
   LIVE_LLM_CELLS,
 } from './watch-mode-balanced-release-plan.mjs';
+import { rebuildReportFromDirectory } from './watch-mode-report.mjs';
 
 export const SHARD_AUTHORITY_SCHEMA_VERSION = 2;
 export const SHARD_EXECUTION_PLAN_KIND = 'watch-mode-paid-shard-execution-plan';
@@ -50,28 +51,26 @@ export const SHARD_STRICT_PAID_PROVIDER_IDENTITY = Object.freeze({
   customHeaderCount: 0,
 });
 export const SHARD_STRICT_PAID_MODEL_PROTOCOLS = Object.freeze({
-  'qwen3.5-omni-flash-realtime': 'dashscope-omni',
   'qwen3.5-livetranslate-flash-realtime': 'dashscope-livetranslate',
 });
 
 export const SHARD_INPUT_SAMPLE_RATE_HZ = 16_000;
-export const SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES = 2_880_000;
-export const SHARD_CELL_MAX_EXTERNAL_AUDIO_SECONDS = 180;
-export const SHARD_MATRIX_CELL_COUNT = 8;
-export const SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES = 23_040_000;
-export const SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SECONDS = 1_440;
+export const SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES = 2_877_045;
+export const SHARD_MATRIX_CELL_COUNT = 4;
+export const SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES = 10_100_180;
 export const SHARD_ALLOWED_WORKER_COUNTS = Object.freeze([1]);
 export const SHARD_MIN_WORKER_COUNT = 1;
 export const SHARD_MAX_WORKER_COUNT = 1;
 
 // This inventory is intentionally separate from AUTHORITY_IMPLEMENTATION_FILES.
-// Adding shard orchestration must not invalidate a previously captured six-cell
+// Adding shard orchestration must not invalidate a previously captured three-cell
 // zero-Provider local-isolation authority.
 export const SHARD_ORCHESTRATION_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/watch-mode-shard-authority.mjs',
   'scripts/testing/run-watch-mode-live-shard.mjs',
   'scripts/testing/run-watch-mode-live-coordinator.mjs',
   'scripts/testing/run-watch-mode-live-production-coordinator.mjs',
+  'scripts/testing/watch-mode-release-timeout-budget.mjs',
   'scripts/testing/watch-mode-strict-runtime-authority.mjs',
   'scripts/testing/watch-mode-provider-preflight-process.mjs',
   'scripts/testing/watch-mode-provider-network-health.mjs',
@@ -342,9 +341,16 @@ function approvedCellProjection(cell) {
     cellId: cell.cellId,
     tier: cell.tier,
     providerMode: cell.providerMode,
-    durationSeconds: cell.durationSeconds,
-    externalProviderSessionCeilingSeconds:
-      cell.externalProviderSessionCeilingSeconds ?? cell.durationSeconds,
+    inputCompletionWatchdogSeconds: cell.inputCompletionWatchdogSeconds,
+    processExclusionRestartAfterSeconds: cell.processExclusionRestartAfterSeconds,
+    processExclusionRestartQuietSeconds: cell.processExclusionRestartQuietSeconds,
+    providerFinishTimeoutSeconds: cell.providerFinishTimeoutSeconds,
+    localPlaybackDrainTimeoutSeconds: cell.localPlaybackDrainTimeoutSeconds,
+    reportWriteTimeoutSeconds: cell.reportWriteTimeoutSeconds,
+    cellHardWatchdogSeconds: cell.cellHardWatchdogSeconds,
+    authoritativeTransformedReferenceFrames: cell.authoritativeTransformedReferenceFrames,
+    boundedCaptureGraceFrames: cell.boundedCaptureGraceFrames,
+    maxExternalAudioSamples: cell.maxExternalAudioSamples,
     auxiliaryExternalAudioSeconds: cell.auxiliaryExternalAudioSeconds ?? 0,
     subtitleTranslationMode: cell.subtitleTranslationMode ?? 'native',
     modelId: cell.modelId,
@@ -478,7 +484,7 @@ function assertBoundPrerequisites(plan) {
     if (
       !Array.isArray(plan.providerPreflightLeaseReservations)
       || plan.providerPreflightLeaseReservations.length !== SHARD_MATRIX_CELL_COUNT
-    ) throw new Error('execution plan must bind exactly eight provider preflight lease reservations');
+    ) throw new Error(`execution plan must bind exactly ${SHARD_MATRIX_CELL_COUNT} provider preflight lease reservations`);
     plan.providerPreflightLeaseReservations.forEach((entry, index) => {
       opaqueAuthority(entry, `provider preflight lease reservation authority ${index}`, (value) => {
         if (
@@ -572,7 +578,7 @@ export function createWorkerReadinessRequest({
   for (const worker of normalizedWorkers) worker.vmIdentityDigest = sha256Canonical(worker.vmIdentity);
   assertWorkers(normalizedWorkers);
   if (!Array.isArray(assignments) || assignments.length !== LIVE_LLM_CELLS.length) {
-    throw new Error('worker readiness request requires all eight fixed cell assignments');
+    throw new Error(`worker readiness request requires all ${SHARD_MATRIX_CELL_COUNT} fixed cell assignments`);
   }
   const assigned = assignments.map((assignment, cellIndex) => {
     const approved = LIVE_LLM_CELLS[cellIndex];
@@ -755,7 +761,7 @@ export function createSignedExecutionPlan({
       deviceProfileInstance: structuredClone(profile),
       deviceProfileInstanceDigest: sha256Canonical(profile),
       leaseId: assignment.leaseId ?? `lease-${randomHex(randomBytes)}`,
-      maxExternalAudioSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+      maxExternalAudioSamples: approvedCell.maxExternalAudioSamples,
       inputSampleRateHz: SHARD_INPUT_SAMPLE_RATE_HZ,
     };
   });
@@ -815,10 +821,11 @@ export function createSignedExecutionPlan({
       allocationMode: 'immutable-disjoint-cell-leases',
       inputSampleRateHz: SHARD_INPUT_SAMPLE_RATE_HZ,
       cellMaxExternalAudioSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
-      cellMaxExternalAudioSeconds: SHARD_CELL_MAX_EXTERNAL_AUDIO_SECONDS,
       matrixMaxExternalAudioSamples: SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
-      matrixMaxExternalAudioSeconds: SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SECONDS,
-      allocatedExternalAudioSamples: plannedCells.length * SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+      allocatedExternalAudioSamples: plannedCells.reduce(
+        (sum, cell) => sum + cell.maxExternalAudioSamples,
+        0,
+      ),
       cellCount: plannedCells.length,
       reclaimPolicy: 'never-within-execution',
       retryPolicy: 'new-execution-required',
@@ -888,8 +895,11 @@ export function verifySignedExecutionPlan(plan, {
       || cell.deviceProfileInstanceDigest !== sha256Canonical(profile)
       || profile.deviceClass !== cell.deviceClass
     ) throw new Error(`shard cell ${index} device profile binding mismatch`);
-    if (Number(cell.maxExternalAudioSamples) !== SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES || Number(cell.inputSampleRateHz) !== SHARD_INPUT_SAMPLE_RATE_HZ) {
-      throw new Error(`shard cell ${index} does not have the fixed external audio lease`);
+    if (
+      Number(cell.maxExternalAudioSamples) !== Number(LIVE_LLM_CELLS[index].maxExternalAudioSamples)
+      || Number(cell.inputSampleRateHz) !== SHARD_INPUT_SAMPLE_RATE_HZ
+    ) {
+      throw new Error(`shard cell ${index} does not have its mode-derived external audio lease`);
     }
     const slot = `${cell.workerId}::${cell.waveIndex}`;
     if (workerWaveSlots.has(slot)) throw new Error(`worker ${cell.workerId} has two cells in wave ${cell.waveIndex}`);
@@ -938,7 +948,7 @@ export function verifySignedExecutionPlan(plan, {
     || Number(plan.budget.cellCount) !== SHARD_MATRIX_CELL_COUNT
     || plan.budget.reclaimPolicy !== 'never-within-execution'
     || plan.budget.retryPolicy !== 'new-execution-required'
-  ) throw new Error('shard execution plan budget is not the fixed fail-closed 24-minute allocation');
+  ) throw new Error('shard execution plan budget is not the fixed fail-closed LiveTranslate allocation');
   assertBoundPrerequisites(plan);
   if (currentProvenance && canonicalJson(currentProvenance) !== canonicalJson(plan.provenance)) {
     throw new Error('worker/coordinator source provenance does not exactly match the execution plan');
@@ -981,7 +991,7 @@ export function issueCellLeases(plan, privateKeyPem, { issuedAt = new Date() } =
       sourceHeadCommit: plan.provenance.headCommit,
       runtimeBundleDigest: plan.authority.runtimeBundleDigest,
       inputSampleRateHz: SHARD_INPUT_SAMPLE_RATE_HZ,
-      maxExternalAudioSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+      maxExternalAudioSamples: cell.maxExternalAudioSamples,
       reclaimPolicy: 'never-within-execution',
       retryPolicy: 'new-execution-required',
     };
@@ -1016,7 +1026,7 @@ export function verifyCellLease(lease, plan, { now = new Date(), checkExpiry = t
     sourceHeadCommit: plan.provenance.headCommit,
     runtimeBundleDigest: plan.authority.runtimeBundleDigest,
     inputSampleRateHz: SHARD_INPUT_SAMPLE_RATE_HZ,
-    maxExternalAudioSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+    maxExternalAudioSamples: cell.maxExternalAudioSamples,
     reclaimPolicy: 'never-within-execution',
     retryPolicy: 'new-execution-required',
   };
@@ -1093,13 +1103,13 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
     cellId: cell.cellId,
     leaseId: lease.leaseId,
     runMarker: ledger.runMarker,
-    maxSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+    maxSamples: cell.maxExternalAudioSamples,
   }, 'provider input launch lease');
-  if (Number(ledger.maxSamples) !== SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES || Number(ledger.maxSamples) !== lease.maxExternalAudioSamples) {
+  if (Number(ledger.maxSamples) !== Number(cell.maxExternalAudioSamples) || Number(ledger.maxSamples) !== lease.maxExternalAudioSamples) {
     throw new Error('provider input budget ledger maxSamples does not match the signed cell lease');
   }
   const actualSamples = Number(ledger.totalAttemptedSamples);
-  if (!Number.isSafeInteger(actualSamples) || actualSamples < 0 || actualSamples > SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES) {
+  if (!Number.isSafeInteger(actualSamples) || actualSamples < 0 || actualSamples > Number(cell.maxExternalAudioSamples)) {
     throw new Error('provider input budget ledger totalAttemptedSamples is outside the signed cell lease');
   }
   const appendAttempts = Number(ledger.appendAttempts);
@@ -1582,10 +1592,7 @@ export function validateInteractiveSessionAuthority({
   const processCompletedAtMs = Date.parse(String(processAuthority.completedAt ?? ''));
   const expectedRequiredRoles = ['shard-node', 'cell-powershell'];
   if (Number(execution.exitCode) === 0) {
-    expectedRequiredRoles.push('desktop', 'bridge');
-    if (plan.cells[Number(lease.cellIndex)]?.feedbackLoopPrevention !== 'echo-cancel') {
-      expectedRequiredRoles.push('recorder');
-    }
+    expectedRequiredRoles.push('desktop', 'bridge', 'recorder');
   }
   if (
     processAuthority.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
@@ -1793,6 +1800,108 @@ function resultCore(result) {
   return core;
 }
 
+const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+
+function strictFailureIdentityString(value, label) {
+  if (typeof value !== 'string' || value.trim() !== value || !value) {
+    throw new Error(`${label} must be a non-empty canonical string`);
+  }
+  if (value.toLowerCase() === 'unknown') {
+    throw new Error(`${label} must not be unknown`);
+  }
+  return value;
+}
+
+function strictNullableFailureIdentityString(value, label) {
+  if (value === null) return null;
+  return strictFailureIdentityString(value, label);
+}
+
+function strictNullableOwnerGeneration(value, label) {
+  if (value === null) return null;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative safe integer or null`);
+  }
+  return value;
+}
+
+function strictReportAuthorityProjection(report) {
+  if (!report || typeof report !== 'object' || Array.isArray(report)) return report;
+  const {
+    generatedAt: _generatedAt,
+    commit: _commit,
+    provenance: _provenance,
+    artifacts: _artifacts,
+    ...stable
+  } = report;
+  return stable;
+}
+
+function assertStoredReportMatchesRawEvidence(runDirectory, report, provenance) {
+  let rebuilt;
+  try {
+    rebuilt = rebuildReportFromDirectory(runDirectory, {
+      mode: 'live',
+      provenance,
+    });
+  } catch (error) {
+    throw new Error(`strict cell report raw evidence could not be rebuilt: ${error.message}`);
+  }
+  if (
+    canonicalJson(strictReportAuthorityProjection(report))
+      !== canonicalJson(strictReportAuthorityProjection(rebuilt))
+  ) {
+    throw new Error('strict cell report authority does not match the independently rebuilt raw evidence');
+  }
+  return rebuilt;
+}
+
+export function strictFailureIdentityProjection(value, label = 'failure identity') {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const failureLayer = strictFailureIdentityString(value.failureLayer, `${label} failureLayer`);
+  const stableErrorCode = strictFailureIdentityString(
+    value.stableErrorCode,
+    `${label} stableErrorCode`,
+  );
+  if (['watch.strict-cell.failed', 'watch.strict-cell.blocked'].includes(stableErrorCode)) {
+    throw new Error(`${label} stableErrorCode is not a stable specific failure identity`);
+  }
+  const lifecyclePhase = strictFailureIdentityString(
+    value.lifecyclePhase,
+    `${label} lifecyclePhase`,
+  );
+  const context = value.failureContext;
+  if (!context || typeof context !== 'object' || Array.isArray(context)) {
+    throw new Error(`${label} failure context must be an object`);
+  }
+  for (const key of ['endpointId', 'bridgeInstanceId', 'ownerGenerationTransition']) {
+    if (!hasOwn(context, key)) {
+      throw new Error(`${label} failure context is missing ${key}`);
+    }
+  }
+  const transition = context.ownerGenerationTransition;
+  if (!transition || typeof transition !== 'object' || Array.isArray(transition)) {
+    throw new Error(`${label} owner generation transition must be an object`);
+  }
+  for (const key of ['before', 'after']) {
+    if (!hasOwn(transition, key)) {
+      throw new Error(`${label} owner generation transition is missing ${key}`);
+    }
+  }
+  strictNullableFailureIdentityString(context.endpointId, `${label} endpointId`);
+  strictNullableFailureIdentityString(context.bridgeInstanceId, `${label} bridgeInstanceId`);
+  strictNullableOwnerGeneration(transition.before, `${label} owner generation before`);
+  strictNullableOwnerGeneration(transition.after, `${label} owner generation after`);
+  return {
+    failureLayer,
+    stableErrorCode,
+    lifecyclePhase,
+    failureContext: structuredClone(context),
+  };
+}
+
 export function interactiveExecutionExitMatchesReport(exitCode, reportVerdict) {
   const normalizedExitCode = Number(exitCode);
   if (![0, 1].includes(normalizedExitCode)) return false;
@@ -1837,6 +1946,10 @@ export function buildShardCellResult({
     throw new Error(`shard cell report has unsupported verdict: ${report.verdict ?? 'missing'}`);
   }
   const resultVerdict = report.verdict === 'passed' ? 'passed' : 'failed';
+  const failureIdentity = resultVerdict === 'failed'
+    ? strictFailureIdentityProjection(report, 'strict cell report failure identity')
+    : null;
+  assertStoredReportMatchesRawEvidence(resolvedRunDirectory, report, plan.provenance);
   const interactiveExecution = plan.workerReadinessRequest
     ? readJson(
       path.join(resolvedRunDirectory, SHARD_INTERACTIVE_CELL_EXECUTION_FILE),
@@ -1901,12 +2014,7 @@ export function buildShardCellResult({
     generatedAt: generatedAt instanceof Date ? generatedAt.toISOString() : String(generatedAt),
     verdict: resultVerdict,
     reportVerdict: report.verdict,
-    ...(resultVerdict === 'failed' ? {
-      failureLayer: report.failureLayer ?? 'unknown',
-      stableErrorCode: report.stableErrorCode,
-      lifecyclePhase: report.lifecyclePhase,
-      failureContext: structuredClone(report.failureContext ?? {}),
-    } : {}),
+    ...(failureIdentity ?? {}),
     executionId: plan.executionId,
     planDigest: plan.planDigest,
     leaseDigest: lease.leaseDigest,
@@ -1990,13 +2098,19 @@ export function validateShardCellResult({
     result.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
     || result.artifactKind !== SHARD_CELL_RESULT_KIND
     || !['passed', 'failed'].includes(result.verdict)
-    || (result.verdict === 'failed' && (
-      !String(result.stableErrorCode ?? '').trim()
-      || !String(result.lifecyclePhase ?? '').trim()
-      || ['watch.strict-cell.failed', 'watch.strict-cell.blocked'].includes(result.stableErrorCode)
-    ))
   ) {
     throw new Error('unsupported shard cell result');
+  }
+  const resultFailureIdentity = result.verdict === 'failed'
+    ? strictFailureIdentityProjection(result, 'shard cell result failure identity')
+    : null;
+  if (result.verdict === 'passed' && [
+    'failureLayer',
+    'stableErrorCode',
+    'lifecyclePhase',
+    'failureContext',
+  ].some((key) => hasOwn(result, key))) {
+    throw new Error('passing shard cell result must not contain failure identity fields');
   }
   if (result.resultDigest !== sha256Canonical(resultCore(result))) throw new Error('shard cell result digest mismatch');
   const resultGeneratedAtMs = assertIsoDate(result.generatedAt, 'shard cell result generatedAt');
@@ -2035,6 +2149,16 @@ export function validateShardCellResult({
     || result.reportVerdict !== report.verdict
     || result.verdict !== expectedVerdict
   ) throw new Error('shard cell result verdict does not match its strict report');
+  if (result.verdict === 'failed') {
+    const reportFailureIdentity = strictFailureIdentityProjection(
+      report,
+      'strict cell report failure identity',
+    );
+    if (canonicalJson(resultFailureIdentity) !== canonicalJson(reportFailureIdentity)) {
+      throw new Error('shard cell result failure identity does not match its strict report');
+    }
+  }
+  assertStoredReportMatchesRawEvidence(runDirectory, report, plan.provenance);
   const usage = validateProviderUsageAuthority(runDirectory, { cell: plannedCell, lease });
   if (canonicalJson(usage) !== canonicalJson(result.usageAuthority)) throw new Error('shard cell result usage authority mismatch');
   const device = readDeviceAuthority(runDirectory, plannedCell);
@@ -2123,7 +2247,11 @@ export function buildShardManifest({
     (sum, entry) => sum + Number(entry.actualExternalAudioSamples),
     0,
   );
-  if (actualExternalAudioSamples > expectedCells.length * SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES) {
+  const reservedExternalAudioSamples = expectedCells.reduce(
+    (sum, cell) => sum + Number(cell.maxExternalAudioSamples),
+    0,
+  );
+  if (actualExternalAudioSamples > reservedExternalAudioSamples) {
     throw new Error(`worker ${workerId} shard usage exceeds its immutable leases`);
   }
   const core = {
@@ -2138,7 +2266,7 @@ export function buildShardManifest({
     runtimeBundleDigest: plan.authority.runtimeBundleDigest,
     shardOrchestrationDigest: plan.authority.shardOrchestrationDigest,
     assignedCellCount: expectedCells.length,
-    reservedExternalAudioSamples: expectedCells.length * SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+    reservedExternalAudioSamples,
     actualExternalAudioSamples,
     results: resultAuthorities,
   };
@@ -2221,6 +2349,26 @@ export function validateShardManifest({
       || validated.result.verdict !== binding.verdict
       || Number(validated.result.usageAuthority.actualExternalAudioSamples) !== Number(binding.actualExternalAudioSamples)
     ) throw new Error(`shard manifest result ${index} authority mismatch`);
+    if (validated.result.verdict === 'failed') {
+      const manifestFailureIdentity = strictFailureIdentityProjection(
+        binding,
+        `shard manifest result ${index} failure identity`,
+      );
+      const resultFailureIdentity = strictFailureIdentityProjection(
+        validated.result,
+        `shard cell result ${index} failure identity`,
+      );
+      if (canonicalJson(manifestFailureIdentity) !== canonicalJson(resultFailureIdentity)) {
+        throw new Error(`shard manifest result ${index} failure identity authority mismatch`);
+      }
+    } else if ([
+      'failureLayer',
+      'stableErrorCode',
+      'lifecyclePhase',
+      'failureContext',
+    ].some((key) => hasOwn(binding, key))) {
+      throw new Error(`passing shard manifest result ${index} must not contain failure identity fields`);
+    }
     validatedResults.push(validated);
   }
   const expectedVerdict = validatedResults.every(({ result }) => result.verdict === 'passed') ? 'passed' : 'failed';
@@ -2231,7 +2379,10 @@ export function validateShardManifest({
   );
   if (
     Number(manifest.assignedCellCount) !== expectedCells.length
-    || Number(manifest.reservedExternalAudioSamples) !== expectedCells.length * SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES
+    || Number(manifest.reservedExternalAudioSamples) !== expectedCells.reduce(
+      (sum, cell) => sum + Number(cell.maxExternalAudioSamples),
+      0,
+    )
     || Number(manifest.actualExternalAudioSamples) !== actual
     || actual > Number(manifest.reservedExternalAudioSamples)
   ) throw new Error('shard manifest aggregate budget mismatch');

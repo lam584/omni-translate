@@ -10,7 +10,13 @@ use url::Url;
 
 use crate::provider::contracts::ProviderDraftInput;
 
-const MAX_STRICT_PROVIDER_INPUT_SAMPLES: u64 = 180 * 16_000;
+// Absolute ceiling shared with the separately signed 180-second incident
+// replay authority. Formal LiveTranslate release cells always receive the
+// lower exact mode-derived lease from the coordinator and are reverified
+// against that signed value; this constant is not their budget.
+const MAX_PROVIDER_INPUT_AUTHORITY_SAMPLES: u64 = 2_880_000;
+const STRICT_ORDINARY_CELL_MAX_SAMPLES: u64 = 2_173_045;
+const STRICT_PROCESS_CELL_MAX_SAMPLES: u64 = 2_877_045;
 const MAX_SAMPLES_ENV: &str = "OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES";
 const LEDGER_PATH_ENV: &str = "OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH";
 const CELL_ID_ENV: &str = "OMNI_WATCH_MODE_CELL_ID";
@@ -44,6 +50,31 @@ const STRICT_LIVETRANSLATE_PROTOCOL: &str = "dashscope-livetranslate";
 const INCIDENT_PLUS_MODEL: &str = "qwen3.5-omni-plus-realtime";
 const INCIDENT_PLUS_PROTOCOL: &str = "dashscope-omni";
 const INCIDENT_PLUS_ID: &str = "watch-mode-loss-incident-plus-v1";
+
+fn strict_release_cell_max_samples(cell_id: &str) -> Result<u64, String> {
+    let parts = cell_id.split("::").collect::<Vec<_>>();
+    let [tier, model, feedback_mode, device_class] = parts.as_slice() else {
+        return Err(format!(
+            "strict paid Provider input cellId is not a formal four-part release cell: {cell_id}"
+        ));
+    };
+    if *model != STRICT_LIVETRANSLATE_MODEL || *device_class != "default-speaker" {
+        return Err(format!(
+            "strict paid Provider input cellId is outside the formal LiveTranslate release authority: {cell_id}"
+        ));
+    }
+    match (*tier, *feedback_mode) {
+        ("pairwise-live", "virtual-driver" | "echo-cancel") => {
+            Ok(STRICT_ORDINARY_CELL_MAX_SAMPLES)
+        }
+        ("pairwise-live" | "model-stability", "process-exclusion") => {
+            Ok(STRICT_PROCESS_CELL_MAX_SAMPLES)
+        }
+        _ => Err(format!(
+            "strict paid Provider input cellId is not an approved formal release cell: {cell_id}"
+        )),
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct ProviderInputBudget {
@@ -190,13 +221,21 @@ impl ProviderInputBudget {
             .map_err(|error| {
                 format!("{MAX_SAMPLES_ENV} must be a positive integer: {error}")
             })?;
-        if max_samples == 0 || max_samples > MAX_STRICT_PROVIDER_INPUT_SAMPLES {
+        if max_samples == 0 || max_samples > MAX_PROVIDER_INPUT_AUTHORITY_SAMPLES {
             return Err(format!(
-                "{MAX_SAMPLES_ENV} must be within 1..={MAX_STRICT_PROVIDER_INPUT_SAMPLES}"
+                "{MAX_SAMPLES_ENV} must be within 1..={MAX_PROVIDER_INPUT_AUTHORITY_SAMPLES}"
             ));
         }
         let ledger_path = required(LEDGER_PATH_ENV, ledger_path)?;
         let cell_id = required(CELL_ID_ENV, cell_id)?;
+        if strict_paid_authority {
+            let expected_max_samples = strict_release_cell_max_samples(&cell_id)?;
+            if max_samples != expected_max_samples {
+                return Err(format!(
+                    "strict paid Provider input cell {cell_id} requires exactly {expected_max_samples} samples; got {max_samples}"
+                ));
+            }
+        }
         let lease_id = required(LEASE_ID_ENV, lease_id)?;
         let run_marker = required(RUN_MARKER_ENV, read_env(RUN_MARKER_ENV))?;
         let autostart = required(AUTOSTART_ENV, read_env(AUTOSTART_ENV))?;
@@ -325,8 +364,7 @@ impl ProviderInputBudget {
             let approved_pair = if strict_paid_authority {
                 matches!(
                     (expected_model.as_str(), expected_protocol.as_str()),
-                    (STRICT_OMNI_MODEL, STRICT_OMNI_PROTOCOL)
-                        | (STRICT_LIVETRANSLATE_MODEL, STRICT_LIVETRANSLATE_PROTOCOL)
+                    (STRICT_LIVETRANSLATE_MODEL, STRICT_LIVETRANSLATE_PROTOCOL)
                 )
             } else {
                 matches!(
@@ -585,17 +623,19 @@ impl ProviderInputBudget {
             "inbound",
             7,
             &provider.model,
-            STRICT_OMNI_PROTOCOL,
+            STRICT_LIVETRANSLATE_PROTOCOL,
             |name| match name {
-                MAX_SAMPLES_ENV => Some("32000".to_string()),
+                MAX_SAMPLES_ENV => Some(STRICT_ORDINARY_CELL_MAX_SAMPLES.to_string()),
                 LEDGER_PATH_ENV => Some(ledger_path.clone()),
-                CELL_ID_ENV => Some("strict-reconnect-test".to_string()),
+                CELL_ID_ENV => Some(format!(
+                    "pairwise-live::{STRICT_LIVETRANSLATE_MODEL}::virtual-driver::default-speaker"
+                )),
                 LEASE_ID_ENV => Some("strict-reconnect-lease".to_string()),
                 AUTOSTART_ENV => Some("1".to_string()),
                 RUN_MARKER_ENV => Some("strict-reconnect-run".to_string()),
                 PCM_PATH_ENV => Some(pcm_path.clone()),
-                MODEL_ENV => Some(STRICT_OMNI_MODEL.to_string()),
-                PROTOCOL_ENV => Some(STRICT_OMNI_PROTOCOL.to_string()),
+                MODEL_ENV => Some(STRICT_LIVETRANSLATE_MODEL.to_string()),
+                PROTOCOL_ENV => Some(STRICT_LIVETRANSLATE_PROTOCOL.to_string()),
                 STRICT_PAID_AUTHORITY_ENV => Some("1".to_string()),
                 EXPECTED_PROVIDER_ID_ENV => Some(STRICT_PROVIDER_ID.to_string()),
                 EXPECTED_TEMPLATE_ID_ENV => Some(STRICT_TEMPLATE_ID.to_string()),
@@ -615,10 +655,10 @@ impl ProviderInputBudget {
             "templateId": STRICT_TEMPLATE_ID,
             "providerId": STRICT_PROVIDER_ID,
             "kind": STRICT_PROVIDER_KIND,
-            "templateRealtimeProtocol": STRICT_OMNI_PROTOCOL,
-            "realtimeProtocol": STRICT_OMNI_PROTOCOL,
+            "templateRealtimeProtocol": STRICT_LIVETRANSLATE_PROTOCOL,
+            "realtimeProtocol": STRICT_LIVETRANSLATE_PROTOCOL,
             "displayName": "DashScope strict reconnect test",
-            "model": STRICT_OMNI_MODEL,
+            "model": STRICT_LIVETRANSLATE_MODEL,
             "baseUrl": format!("https://{STRICT_ENDPOINT_HOST}/api/v1"),
             "transport": "websocket",
             "authRef": {
@@ -906,10 +946,10 @@ mod tests {
             template_id: STRICT_TEMPLATE_ID.to_string(),
             provider_id: provider_id.to_string(),
             kind: STRICT_PROVIDER_KIND.to_string(),
-            template_realtime_protocol: Some(STRICT_OMNI_PROTOCOL.to_string()),
-            realtime_protocol: Some(STRICT_OMNI_PROTOCOL.to_string()),
+            template_realtime_protocol: Some(STRICT_LIVETRANSLATE_PROTOCOL.to_string()),
+            realtime_protocol: Some(STRICT_LIVETRANSLATE_PROTOCOL.to_string()),
             display_name: "DashScope".to_string(),
-            model: STRICT_OMNI_MODEL.to_string(),
+            model: STRICT_LIVETRANSLATE_MODEL.to_string(),
             base_url: format!("https://{STRICT_ENDPOINT_HOST}/api/v1"),
             transport: "websocket".to_string(),
             auth_ref: ProviderAuthRefInput {
@@ -944,9 +984,8 @@ mod tests {
             (AUTOSTART_ENV.to_string(), "1".to_string()),
             (RUN_MARKER_ENV.to_string(), "run-1".to_string()),
             (PCM_PATH_ENV.to_string(), path.with_extension("pcm").to_string_lossy().into_owned()),
-            (MODEL_ENV.to_string(), STRICT_OMNI_MODEL.to_string()),
-            (PROTOCOL_ENV.to_string(), STRICT_OMNI_PROTOCOL.to_string()),
-            (STRICT_PAID_AUTHORITY_ENV.to_string(), "1".to_string()),
+            (MODEL_ENV.to_string(), STRICT_LIVETRANSLATE_MODEL.to_string()),
+            (PROTOCOL_ENV.to_string(), STRICT_LIVETRANSLATE_PROTOCOL.to_string()),
             (EXPECTED_PROVIDER_ID_ENV.to_string(), STRICT_PROVIDER_ID.to_string()),
             (EXPECTED_TEMPLATE_ID_ENV.to_string(), STRICT_TEMPLATE_ID.to_string()),
             (EXPECTED_PROVIDER_KIND_ENV.to_string(), STRICT_PROVIDER_KIND.to_string()),
@@ -956,6 +995,23 @@ mod tests {
                 STRICT_CREDENTIAL_REFERENCE.to_string(),
             ),
         ])
+    }
+
+    fn strict_environment(path: &Path, feedback_mode: &str) -> HashMap<String, String> {
+        let max_samples = match feedback_mode {
+            "virtual-driver" | "echo-cancel" => STRICT_ORDINARY_CELL_MAX_SAMPLES,
+            "process-exclusion" => STRICT_PROCESS_CELL_MAX_SAMPLES,
+            _ => panic!("unsupported strict feedback mode: {feedback_mode}"),
+        };
+        let mut environment = enabled_environment(path, &max_samples.to_string());
+        environment.insert(STRICT_PAID_AUTHORITY_ENV.to_string(), "1".to_string());
+        environment.insert(
+            CELL_ID_ENV.to_string(),
+            format!(
+                "pairwise-live::{STRICT_LIVETRANSLATE_MODEL}::{feedback_mode}::default-speaker"
+            ),
+        );
+        environment
     }
 
     fn budget_from_map(
@@ -973,7 +1029,10 @@ mod tests {
             "inbound",
             7,
             &provider.model,
-            STRICT_OMNI_PROTOCOL,
+            provider
+                .realtime_protocol
+                .as_deref()
+                .unwrap_or(STRICT_LIVETRANSLATE_PROTOCOL),
             |name| environment.get(name).cloned(),
         )
     }
@@ -1065,10 +1124,10 @@ mod tests {
         assert_eq!(final_record["cellId"], "paid-cell-1");
         assert_eq!(final_record["leaseId"], "lease-1");
         assert_eq!(final_record["runMarker"], "run-1");
-        assert_eq!(final_record["model"], "qwen3.5-omni-flash-realtime");
-        assert_eq!(final_record["protocol"], "dashscope-omni");
+        assert_eq!(final_record["model"], STRICT_LIVETRANSLATE_MODEL);
+        assert_eq!(final_record["protocol"], STRICT_LIVETRANSLATE_PROTOCOL);
         assert_eq!(final_record["sessionGeneration"], 7);
-        assert_eq!(final_record["strictPaidAuthority"], true);
+        assert_eq!(final_record["strictPaidAuthority"], false);
         assert_eq!(final_record["providerId"], STRICT_PROVIDER_ID);
         assert_eq!(final_record["templateId"], STRICT_TEMPLATE_ID);
         assert_eq!(final_record["providerKind"], STRICT_PROVIDER_KIND);
@@ -1198,7 +1257,7 @@ mod tests {
     fn strict_reconnect_authorization_persists_terminal_rejection_before_connector_call() {
         let directory = tempdir().expect("tempdir");
         let path = directory.path().join("ledger.json");
-        let environment = enabled_environment(&path, "20");
+        let environment = strict_environment(&path, "virtual-driver");
         let budget = budget_from_map(&environment).expect("budget");
         let connector_attempts = Cell::new(0);
         budget
@@ -1271,6 +1330,48 @@ mod tests {
             .expect_err("strict sentinel without budget authority must fail");
 
         assert!(error.contains(MAX_SAMPLES_ENV), "{error}");
+    }
+
+    #[test]
+    fn strict_release_cell_rejects_a_cross_mode_sample_lease_before_ledger_creation() {
+        let directory = tempdir().expect("tempdir");
+        let virtual_path = directory.path().join("virtual-mismatch.json");
+        let mut virtual_environment = enabled_environment(&virtual_path, "2877045");
+        virtual_environment.insert(STRICT_PAID_AUTHORITY_ENV.to_string(), "1".to_string());
+        virtual_environment.insert(
+            CELL_ID_ENV.to_string(),
+            format!(
+                "pairwise-live::{STRICT_LIVETRANSLATE_MODEL}::virtual-driver::default-speaker"
+            ),
+        );
+        let virtual_error = budget_from_map(&virtual_environment)
+            .expect_err("virtual-driver cannot borrow the process-exclusion sample ceiling");
+        assert!(virtual_error.contains("2173045"), "{virtual_error}");
+        assert!(!virtual_path.exists());
+
+        let process_path = directory.path().join("process-mismatch.json");
+        let mut process_environment = enabled_environment(&process_path, "2173045");
+        process_environment.insert(STRICT_PAID_AUTHORITY_ENV.to_string(), "1".to_string());
+        process_environment.insert(
+            CELL_ID_ENV.to_string(),
+            format!(
+                "pairwise-live::{STRICT_LIVETRANSLATE_MODEL}::process-exclusion::default-speaker"
+            ),
+        );
+        let process_error = budget_from_map(&process_environment)
+            .expect_err("process-exclusion cannot accept a truncating ordinary sample ceiling");
+        assert!(process_error.contains("2877045"), "{process_error}");
+        assert!(!process_path.exists());
+
+        let exact_process_path = directory.path().join("process-exact.json");
+        let exact_process_environment =
+            strict_environment(&exact_process_path, "process-exclusion");
+        let exact_process = budget_from_map(&exact_process_environment)
+            .expect("process-exclusion accepts its exact formal sample ceiling");
+        assert_eq!(
+            exact_process.max_samples(),
+            Some(STRICT_PROCESS_CELL_MAX_SAMPLES as usize),
+        );
     }
 
     #[test]
@@ -1416,7 +1517,7 @@ mod tests {
     fn strict_authority_rejects_an_earlier_alternate_dashscope_provider() {
         let directory = tempdir().expect("tempdir");
         let path = directory.path().join("ledger.json");
-        let environment = enabled_environment(&path, "10");
+        let environment = strict_environment(&path, "virtual-driver");
         let alternate = provider("provider-dashscope-alternate");
 
         let error = budget_from_map_with_provider(&environment, &alternate)
@@ -1456,7 +1557,7 @@ mod tests {
             ),
         ] {
             let path = directory.path().join(format!("{label}.json"));
-            let environment = enabled_environment(&path, "10");
+            let environment = strict_environment(&path, "virtual-driver");
             let mut candidate = provider(STRICT_PROVIDER_ID);
             mutate(&mut candidate);
             let error = budget_from_map_with_provider(&environment, &candidate)
@@ -1470,7 +1571,7 @@ mod tests {
     fn strict_authority_records_one_initial_attempt_and_rejects_retry() {
         let directory = tempdir().expect("tempdir");
         let path = directory.path().join("ledger.json");
-        let environment = enabled_environment(&path, "10");
+        let environment = strict_environment(&path, "virtual-driver");
         let budget = budget_from_map(&environment).expect("budget");
 
         budget
@@ -1512,7 +1613,7 @@ mod tests {
     fn strict_pcm_write_failure_charges_reservation_and_blocks_socket_send() {
         let directory = tempdir().expect("tempdir");
         let ledger_path = directory.path().join("ledger.json");
-        let environment = enabled_environment(&ledger_path, "10");
+        let environment = strict_environment(&ledger_path, "virtual-driver");
         let budget = budget_from_map(&environment).expect("budget");
         let read_only_path = directory.path().join("read-only.pcm");
         fs::write(&read_only_path, b"").expect("seed PCM file");

@@ -40,10 +40,10 @@ import {
 } from './watch-mode-balanced-release-plan.mjs';
 import { runLocalIsolationMatrix, verifyLocalIsolationManifest } from './watch-mode-local-isolation.mjs';
 import {
-  STRICT_PAID_MATRIX_CEILING_SECONDS,
+  STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
   assertCellExternalProviderBudget,
   assertMatrixExternalProviderBudget,
-  reserveStrictPaidCell,
+  reserveStrictPaidCellInputSamples,
   writeMatrixExternalProviderBudget,
 } from './watch-mode-external-provider-budget.mjs';
 import {
@@ -177,7 +177,7 @@ const USAGE = `Usage: node scripts/testing/run-watch-mode-live-matrix.mjs [optio
 
 Options:
   --models <a,b>                                   diagnostic override; strict release matrix is fixed to
-                                                   the two default Watch Mode model ids
+                                                   the exact Watch Mode release model id
                                                    (default: ${DEFAULT_MODELS.join(',')})
   --alias-model <id>                               optional keyword-free deployed alias to append
   --alias-protocol <dialect>                       explicit protocol for --alias-model
@@ -199,7 +199,7 @@ Options:
   --provider-id <id>                               strict paid-cell preflight provider
                                                     (default: ${MATRIX_DEFAULTS.providerId})
   --device-profiles <json-or-file>                  required for strict matrix; must contain exactly one
-                                                    default-speaker and usb profile
+                                                    ${SUPPORTED_DEVICE_CLASSES.join(', ')} profile
   --diagnostic-single-device                       explicit non-strict single-device diagnostic; never
                                                    produces release matrix evidence
   --skip-desktop-launch
@@ -478,9 +478,6 @@ export const assertStrictEvidenceOptions = (options = {}) => {
   if ((options.subtitleTranslationMode ?? 'native') !== 'native') {
     weakened.push('subtitle translation mode must remain native');
   }
-  if (Number(options.watchAutoStopAfterSeconds ?? MATRIX_DEFAULTS.watchAutoStopAfterSeconds) !== 180) {
-    weakened.push('--watch-auto-stop-after-seconds must remain 180 for the paid budget');
-  }
   const forbiddenRunnerSwitches = new Set([
     'dryrun',
     'skipdesktoplaunch',
@@ -702,7 +699,7 @@ export function stageShardMatrixIntegration({
     throw new Error(`refusing to overwrite staged shard execution root: ${finalExecutionRoot}`);
   }
   if (!Array.isArray(leasePaths) || leasePaths.length !== LIVE_LLM_CELLS.length) {
-    throw new Error('shard staging requires exactly eight signed lease files');
+    throw new Error(`shard staging requires exactly ${LIVE_LLM_CELLS.length} signed lease files`);
   }
   if (!Array.isArray(shards) || shards.length !== 1) {
     throw new Error('strict staging requires exactly one local shard root');
@@ -1171,7 +1168,18 @@ export const writeMatrixRunManifest = ({
               cellId: plannedCell.cellId,
               tier: plannedCell.tier,
               providerMode: plannedCell.providerMode,
-              durationSeconds: plannedCell.durationSeconds,
+              inputCompletionWatchdogSeconds: plannedCell.inputCompletionWatchdogSeconds,
+              processExclusionRestartAfterSeconds: plannedCell.processExclusionRestartAfterSeconds,
+              processExclusionRestartQuietSeconds: plannedCell.processExclusionRestartQuietSeconds,
+              providerFinishTimeoutSeconds: plannedCell.providerFinishTimeoutSeconds,
+              localPlaybackDrainTimeoutSeconds: plannedCell.localPlaybackDrainTimeoutSeconds,
+              reportWriteTimeoutSeconds: plannedCell.reportWriteTimeoutSeconds,
+              cellHardWatchdogSeconds: plannedCell.cellHardWatchdogSeconds,
+              authoritativeTransformedReferenceFrames: plannedCell.authoritativeTransformedReferenceFrames,
+              boundedCaptureGraceFrames: plannedCell.boundedCaptureGraceFrames,
+              maxExternalAudioSamples: plannedCell.maxExternalAudioSamples,
+              auxiliaryExternalAudioSeconds: plannedCell.auxiliaryExternalAudioSeconds,
+              subtitleTranslationMode: plannedCell.subtitleTranslationMode,
               modelId: plannedCell.modelId,
               feedbackLoopPrevention: plannedCell.feedbackLoopPrevention,
               deviceClass: deviceProfile.deviceClass,
@@ -1267,8 +1275,10 @@ export const publishSuccessfulStrictMatrixManifest = ({
       && manifest.collectAll.failed.length === 0
       && manifest.collectAll.completed?.length === LIVE_LLM_CELLS.length
     ))
-    && Number(manifest.externalProviderBudget?.matrixCeilingSeconds) === STRICT_PAID_MATRIX_CEILING_SECONDS
-    && Number(manifest.externalProviderBudget?.reservedSessionSeconds) === STRICT_PAID_MATRIX_CEILING_SECONDS
+    && Number(manifest.externalProviderBudget?.matrixInputSampleCeiling)
+      === STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES
+    && Number(manifest.externalProviderBudget?.reservedInputSamples)
+      === STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES
     && Number(manifest.externalProviderBudget?.auxiliaryExternalAudioSeconds) === 0
     && manifest.externalProviderBudget?.ledgerPath
     && manifest.externalProviderBudget?.ledgerSha256
@@ -1304,7 +1314,7 @@ export const publishSuccessfulStrictMatrixManifest = ({
         cellId: LIVE_LLM_CELLS[index]?.cellId,
         modelId: LIVE_LLM_CELLS[index]?.modelId,
         feedbackLoopPrevention: LIVE_LLM_CELLS[index]?.feedbackLoopPrevention,
-        sessionCeilingSeconds: LIVE_LLM_CELLS[index]?.durationSeconds,
+        inputCeilingSamples: LIVE_LLM_CELLS[index]?.maxExternalAudioSamples,
       },
     )
   ));
@@ -1599,7 +1609,7 @@ export const runMatrix = async (options) => {
   let localIsolationAuthority = null;
   const runDirectories = [];
   const cellExternalProviderBudgets = [];
-  let reservedPaidSessionSeconds = 0;
+  let reservedPaidInputSamples = 0;
   const deviceProfileByClass = new Map(deviceProfiles.map((profile) => [profile.deviceClass, profile]));
   const executionCells = strict
     ? LIVE_LLM_CELLS
@@ -1628,16 +1638,16 @@ export const runMatrix = async (options) => {
           watchRealtimeProtocol,
           physicalPlaybackDeviceClass: deviceProfile.deviceClass,
           physicalPlaybackDeviceProfileId: deviceProfile.profileId,
-          watchAutoStopAfterSeconds: plannedCell.durationSeconds,
+          watchAutoStopAfterSeconds: plannedCell.inputCompletionWatchdogSeconds,
           strictPaidAuthority: strict,
           cellId: plannedCell.cellId,
         };
         if (strict) {
-          // Reserve the complete provider window before launching Desktop. A
+          // Reserve the exact mode-derived input samples before launching Desktop. A
           // malformed plan therefore fails before it can send any audio.
-          reservedPaidSessionSeconds = reserveStrictPaidCell({
-            reservedSeconds: reservedPaidSessionSeconds,
-            nextCellSeconds: plannedCell.durationSeconds,
+          reservedPaidInputSamples = reserveStrictPaidCellInputSamples({
+            reservedSamples: reservedPaidInputSamples,
+            nextCellSamples: plannedCell.maxExternalAudioSamples,
           });
         }
         const { exitCode, stdout } = await runLiveRunner(
@@ -1667,7 +1677,7 @@ export const runMatrix = async (options) => {
             cellId: plannedCell.cellId,
             modelId: model,
             feedbackLoopPrevention: feedbackMode,
-            sessionCeilingSeconds: plannedCell.durationSeconds,
+            inputCeilingSamples: plannedCell.maxExternalAudioSamples,
           });
           cellExternalProviderBudgets.push(budget);
           assertStrictLiveReportPassed(resolvedRunDirectory);

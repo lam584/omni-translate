@@ -95,12 +95,12 @@ const reportLines = (generatedAt, provenance) => [
   ),
   ...scenario(
     MANUAL_E2E_SCENARIOS[2],
-    'Use the fixed qwen3.5-omni pairwise-live/process-exclusion/default-speaker cell from the current canonical strict Watch Mode schema-v4 budget-balanced authority. The assembler re-verifies the complete release plan, copies the selected cell receipt and fixed raw inventory, and proves that Desktop-generated translated cues completed through Bridge-owned physical playback on the actual Windows MMDevice endpoint.',
+    'Use the fixed qwen3.5-livetranslate-flash-realtime pairwise-live/process-exclusion/default-speaker cell from the current canonical strict Watch Mode schema-v5 budget-balanced authority. The assembler re-verifies the complete LiveTranslate-only release plan, copies the selected cell receipt and fixed raw inventory, and proves that Desktop-generated translated cues completed through Bridge-owned physical playback on the actual Windows MMDevice endpoint.',
     [
       '- CollectorProfile: omni.release.real-device-audio/v1',
-      '- AuthorityStatus: ready (canonical strict-v2 Watch Mode authority; requires the complete current-HEAD live matrix)',
+      '- AuthorityStatus: ready (canonical strict Watch Mode schema-v5 budget-balanced authority; requires the complete current-HEAD live matrix)',
       '- ProductionCommand: npm run collect:release-evidence:real-device-audio',
-      '- SelectedCell: qwen3.5-omni-flash-realtime/process-exclusion/default-speaker',
+      '- SelectedCell: qwen3.5-livetranslate-flash-realtime/process-exclusion/default-speaker',
       '- RequiredArtifacts: emitter-result.json, real-device-audio-probe.json, real-device-audio-timeline.json, canonical-matrix-manifest.json, matrix-cell-authority.json, real-device-audio.wav, real-device-audio-16k-mono.pcm, real-device-source-16k-mono.pcm, real-device-reference-16k-mono.pcm, process-exclusion-physical-output.wav, process-exclusion-source-pipe.wav, cell-raw/',
     ],
   ),

@@ -57,45 +57,39 @@ const PROVIDER_TEMPLATE_ID: &str = "template-dashscope-realtime";
 const PROVIDER_KIND: &str = "dashscope";
 const PROVIDER_ENDPOINT_HOST: &str = "dashscope.aliyuncs.com";
 const PROVIDER_CREDENTIAL_REFERENCE: &str = "credential://provider/dashscope/default";
-const PREFLIGHT_MODEL: &str = "qwen3.5-omni-flash-realtime";
-const PREFLIGHT_PROTOCOL: &str = "dashscope-omni";
+const PREFLIGHT_MODEL: &str = "qwen3.5-livetranslate-flash-realtime";
+const PREFLIGHT_PROTOCOL: &str = "dashscope-livetranslate";
 const INCIDENT_PREFLIGHT_MODEL: &str = "qwen3.5-omni-plus-realtime";
 const INCIDENT_PREFLIGHT_PROTOCOL: &str = "dashscope-omni";
-const CELL_MAX_SAMPLES: u64 = 2_880_000;
-const MATRIX_MAX_SAMPLES: u64 = 23_040_000;
+const INCIDENT_CELL_MAX_SAMPLES: u64 = 2_880_000;
+const MATRIX_MAX_SAMPLES: u64 = 10_100_180;
 const INCIDENT_MATRIX_MAX_SAMPLES: u64 = 8_640_000;
 const PREFLIGHT_MAX_INPUT_TOKENS: u64 = 4_096;
 const PREFLIGHT_MAX_OUTPUT_TOKENS: u64 = 256;
 
-const CELL_MODELS: [&str; 8] = [
-    "qwen3.5-omni-flash-realtime",
-    "qwen3.5-omni-flash-realtime",
-    "qwen3.5-omni-flash-realtime",
-    "qwen3.5-livetranslate-flash-realtime",
-    "qwen3.5-livetranslate-flash-realtime",
-    "qwen3.5-livetranslate-flash-realtime",
-    "qwen3.5-omni-flash-realtime",
-    "qwen3.5-livetranslate-flash-realtime",
+const CELL_MODELS: [&str; 4] = [
+    PREFLIGHT_MODEL,
+    PREFLIGHT_MODEL,
+    PREFLIGHT_MODEL,
+    PREFLIGHT_MODEL,
 ];
-const CELL_FEEDBACK_MODES: [&str; 8] = [
+const CELL_FEEDBACK_MODES: [&str; 4] = [
     "process-exclusion",
     "virtual-driver",
     "echo-cancel",
     "process-exclusion",
-    "virtual-driver",
-    "echo-cancel",
-    "process-exclusion",
-    "process-exclusion",
 ];
-const CELL_DEVICE_CLASSES: [&str; 8] = [
+const CELL_DEVICE_CLASSES: [&str; 4] = [
     "default-speaker",
     "default-speaker",
     "default-speaker",
     "default-speaker",
-    "default-speaker",
-    "default-speaker",
-    "default-speaker",
-    "default-speaker",
+];
+const CELL_MAX_EXTERNAL_AUDIO_SAMPLES: [u64; 4] = [
+    2_877_045,
+    2_173_045,
+    2_173_045,
+    2_877_045,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,7 +172,7 @@ impl PreflightAuthorityProfile {
 
     fn cell_count(self) -> usize {
         match self {
-            Self::StrictReleaseMatrix => 8,
+            Self::StrictReleaseMatrix => 4,
             Self::IncidentPlusReplay => 3,
         }
     }
@@ -187,6 +181,23 @@ impl PreflightAuthorityProfile {
         match self {
             Self::StrictReleaseMatrix => MATRIX_MAX_SAMPLES,
             Self::IncidentPlusReplay => INCIDENT_MATRIX_MAX_SAMPLES,
+        }
+    }
+
+    fn cell_max_samples(self, index: usize) -> u64 {
+        match self {
+            Self::StrictReleaseMatrix => CELL_MAX_EXTERNAL_AUDIO_SAMPLES[index],
+            Self::IncidentPlusReplay => INCIDENT_CELL_MAX_SAMPLES,
+        }
+    }
+
+    fn declared_cell_max_samples(self) -> u64 {
+        match self {
+            Self::StrictReleaseMatrix => *CELL_MAX_EXTERNAL_AUDIO_SAMPLES
+                .iter()
+                .max()
+                .expect("strict release sample authority is non-empty"),
+            Self::IncidentPlusReplay => INCIDENT_CELL_MAX_SAMPLES,
         }
     }
 }
@@ -330,7 +341,11 @@ impl ProviderPreflightAuthorization {
                 "workerId": required_str(&reservation, "/workerId", "reservation workerId")?,
                 "waveIndex": required_u64(&reservation, "/waveIndex", "reservation waveIndex")?,
                 "leaseId": required_str(&reservation, "/leaseId", "reservation leaseId")?,
-                "maxExternalAudioSamples": CELL_MAX_SAMPLES,
+                "maxExternalAudioSamples": required_u64(
+                    &reservation,
+                    "/maxExternalAudioSamples",
+                    "reservation budget",
+                )?,
                 "digest": digest,
                 "issuedAt": issued_at,
             }));
@@ -721,7 +736,8 @@ fn validate_grant(
     if workers.len() != expected_worker_count
         || required_u64(grant, "/localIsolationAuthority/providerCalls", "local provider calls")? != 0
         || required_u64(grant, "/budget/inputSampleRateHz", "budget sample rate")? != 16_000
-        || required_u64(grant, "/budget/cellMaxExternalAudioSamples", "cell budget")? != CELL_MAX_SAMPLES
+        || required_u64(grant, "/budget/cellMaxExternalAudioSamples", "cell budget")?
+            != profile.declared_cell_max_samples()
         || required_u64(grant, "/budget/matrixMaxExternalAudioSamples", "matrix budget")?
             != profile.matrix_max_samples()
         || required_str(grant, "/budget/reclaimPolicy", "budget reclaim policy")? != "never-within-execution"
@@ -783,18 +799,14 @@ fn validate_grant(
         let (expected_id, expected_model, expected_protocol, expected_feedback, expected_device) =
             match profile {
                 PreflightAuthorityProfile::StrictReleaseMatrix => {
-                    let tier = if index < 6 { "pairwise-live" } else { "model-stability" };
+                    let tier = if index < 3 { "pairwise-live" } else { "model-stability" };
                     (
                         format!(
                             "{tier}::{}::{}::{}",
                             CELL_MODELS[index], CELL_FEEDBACK_MODES[index], CELL_DEVICE_CLASSES[index]
                         ),
                         CELL_MODELS[index],
-                        if CELL_MODELS[index].contains("livetranslate") {
-                            "dashscope-livetranslate"
-                        } else {
-                            "dashscope-omni"
-                        },
+                        PREFLIGHT_PROTOCOL,
                         CELL_FEEDBACK_MODES[index],
                         CELL_DEVICE_CLASSES[index],
                     )
@@ -827,7 +839,7 @@ fn validate_grant(
             || required_str(cell, "/deviceClass", "grant device class")?
                 != expected_device
             || required_u64(cell, "/maxExternalAudioSamples", "grant cell budget")?
-                != CELL_MAX_SAMPLES
+                != profile.cell_max_samples(index)
             || !worker_ids.contains(worker_id)
             || required_str(cell, "/deviceProfileInstanceId", "grant device profile")?.is_empty()
             || !lease_ids.insert(lease_id.to_string())
@@ -895,7 +907,7 @@ fn validate_reservation(
         || required_u64(reservation, "/waveIndex", "reservation waveIndex")?
             != required_u64(cell, "/waveIndex", "grant waveIndex")?
         || required_u64(reservation, "/maxExternalAudioSamples", "reservation budget")?
-            != CELL_MAX_SAMPLES
+            != required_u64(cell, "/maxExternalAudioSamples", "grant cell budget")?
         || issued_at <= grant_generated_at
         || issued_at >= grant_expires_at
         || expires_at != grant_expires_at
@@ -1140,10 +1152,31 @@ mod tests {
     fn reservation_filenames_match_node_safe_cell_ids() {
         assert_eq!(
             safe_cell_id(
-                "pairwise-live::qwen3.5-omni-flash-realtime::process-exclusion::default-speaker"
+                "pairwise-live::qwen3.5-livetranslate-flash-realtime::process-exclusion::default-speaker"
             ),
-            "pairwise-live-qwen3.5-omni-flash-realtime-process-exclusion-default-speaker"
+            "pairwise-live-qwen3.5-livetranslate-flash-realtime-process-exclusion-default-speaker"
         );
+    }
+
+    #[test]
+    fn strict_release_sample_authority_is_mode_derived_not_a_uniform_180_seconds() {
+        let strict = PreflightAuthorityProfile::StrictReleaseMatrix;
+        assert_eq!(strict.declared_cell_max_samples(), 2_877_045);
+        assert_eq!(
+            (0..strict.cell_count())
+                .map(|index| strict.cell_max_samples(index))
+                .collect::<Vec<_>>(),
+            vec![2_877_045, 2_173_045, 2_173_045, 2_877_045]
+        );
+        assert_eq!(
+            (0..strict.cell_count())
+                .map(|index| strict.cell_max_samples(index))
+                .sum::<u64>(),
+            strict.matrix_max_samples()
+        );
+
+        let incident = PreflightAuthorityProfile::IncidentPlusReplay;
+        assert_eq!(incident.declared_cell_max_samples(), 2_880_000);
     }
 
     #[cfg(windows)]

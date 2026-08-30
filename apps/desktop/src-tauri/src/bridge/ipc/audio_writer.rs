@@ -4,33 +4,52 @@ const BRIDGE_TRANSLATION_GENERATION_ENDED: &str = "bridge.translation-generation
 pub(crate) struct BridgeTranslationSinkOwner {
     session_id: String,
     bridge_instance_id: String,
+    source_generation: u64,
+    source_generation_token: String,
     resolved_physical_playback_device_id: String,
     playback_owner_generation: u64,
 }
 
 impl BridgeTranslationSinkOwner {
     pub(crate) fn from_snapshot(snapshot: &BridgeRuntimeSnapshot) -> Option<Self> {
+        let endpoint_id = snapshot.resolved_physical_playback_device_id.trim();
         if snapshot.physical_playback_status != "ready"
-            || snapshot.resolved_physical_playback_device_id.trim().is_empty()
+            || matches!(
+                endpoint_id.to_ascii_lowercase().as_str(),
+                "" | "default" | "speaker-default" | "system-output-default"
+            )
+            || snapshot.source_generation == 0
             || snapshot.playback_owner_generation == 0
         {
             return None;
         }
+        let session_id = snapshot.session_id.clone()?;
+        let bridge_instance_id = snapshot.bridge_instance_id.clone()?;
+        let source_generation_token = snapshot.source_generation_token.clone()?;
+        let expected_token = format!(
+            "{}:{}:{}",
+            bridge_instance_id, session_id, snapshot.source_generation
+        );
+        if source_generation_token != expected_token {
+            return None;
+        }
         Some(Self {
-            session_id: snapshot.session_id.clone()?,
-            bridge_instance_id: snapshot.bridge_instance_id.clone()?,
-            resolved_physical_playback_device_id: snapshot
-                .resolved_physical_playback_device_id
-                .clone(),
+            session_id,
+            bridge_instance_id,
+            source_generation: snapshot.source_generation,
+            source_generation_token,
+            resolved_physical_playback_device_id: endpoint_id.to_string(),
             playback_owner_generation: snapshot.playback_owner_generation,
         })
     }
 
     fn evidence(&self) -> String {
         format!(
-            "sessionId={} bridgeInstanceId={} endpointId={} playbackOwnerGeneration={}",
+            "sessionId={} bridgeInstanceId={} sourceGeneration={} sourceGenerationToken={} endpointId={} playbackOwnerGeneration={}",
             self.session_id,
             self.bridge_instance_id,
+            self.source_generation,
+            self.source_generation_token,
             self.resolved_physical_playback_device_id,
             self.playback_owner_generation
         )
@@ -40,8 +59,44 @@ impl BridgeTranslationSinkOwner {
         &self.bridge_instance_id
     }
 
+    pub(crate) fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub(crate) fn source_generation(&self) -> u64 {
+        self.source_generation
+    }
+
+    pub(crate) fn source_generation_token(&self) -> &str {
+        &self.source_generation_token
+    }
+
     pub(crate) fn playback_owner_generation(&self) -> u64 {
         self.playback_owner_generation
+    }
+
+    pub(crate) fn physical_playback_device_id(&self) -> &str {
+        &self.resolved_physical_playback_device_id
+    }
+
+    pub(crate) fn playback_authority(
+        &self,
+    ) -> crate::audio::state::TranslationPlaybackAuthority {
+        crate::audio::state::TranslationPlaybackAuthority {
+            session_id: self.session_id.clone(),
+            bridge_instance_id: self.bridge_instance_id.clone(),
+            source_generation: self.source_generation,
+            source_generation_token: self.source_generation_token.clone(),
+            playback_owner_generation: self.playback_owner_generation,
+            physical_playback_device_id: self.resolved_physical_playback_device_id.clone(),
+        }
+    }
+
+    pub(crate) fn matches_playback_authority(
+        &self,
+        authority: &crate::audio::state::TranslationPlaybackAuthority,
+    ) -> bool {
+        self.playback_authority() == *authority
     }
 }
 
@@ -76,6 +131,24 @@ fn translation_generation_ended_error(
         "{BRIDGE_TRANSLATION_GENERATION_ENDED}: expectedOwner=[{}] currentOwner=[{current}] cause={error}",
         expected.evidence()
     )
+}
+
+fn close_failed_translation_cue<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    cue_id: &str,
+    owner: Option<&BridgeTranslationSinkOwner>,
+    error: String,
+) -> String {
+    if let Some(owner) = owner {
+        app.state::<crate::audio::state::AudioStateStore>()
+            .translation_playback_quiescence()
+            .observe_bridge_playback_status_for_owner(
+                cue_id,
+                "route-failed",
+                &owner.playback_authority(),
+            );
+    }
+    error
 }
 
 pub(crate) fn is_bridge_translation_generation_ended_error(error: &str) -> bool {
@@ -140,6 +213,33 @@ pub(crate) fn write_process_playback_cue<R: tauri::Runtime>(
     created_at_ms: u64,
     estimated_duration_ms: u64,
 ) -> Result<u64, String> {
+    write_process_playback_cue_for_owner(
+        app,
+        cue_id,
+        request_id,
+        route_direction,
+        samples,
+        sample_rate_hz,
+        channel_count,
+        created_at_ms,
+        estimated_duration_ms,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_process_playback_cue_for_owner<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    cue_id: &str,
+    request_id: &str,
+    route_direction: &str,
+    samples: &[i16],
+    sample_rate_hz: u32,
+    channel_count: u16,
+    created_at_ms: u64,
+    estimated_duration_ms: u64,
+    expected_owner: Option<&BridgeTranslationSinkOwner>,
+) -> Result<u64, String> {
     let chunks = process_playback_cue_chunks(samples, sample_rate_hz, channel_count)?;
     let Some(cue) = chunks.first() else {
         return Ok(0);
@@ -159,7 +259,7 @@ pub(crate) fn write_process_playback_cue<R: tauri::Runtime>(
         None,
         None,
         None,
-        None,
+        expected_owner,
     )
 }
 
@@ -259,6 +359,26 @@ fn accepted_translation_frames(ack: &BridgeTranslationFrameAck) -> Result<u64, S
     Ok(ack.accepted_frames as u64)
 }
 
+fn accepted_translation_frames_for_header(
+    header: &BridgeTranslationFrameHeader,
+    ack: &BridgeTranslationFrameAck,
+) -> Result<u64, String> {
+    let authority_matches = ack.request_id == header.request_id
+        && ack.frame_id == header.frame_id
+        && ack.session_id == header.session_id
+        && Some(ack.bridge_instance_id.as_str()) == header.bridge_instance_id.as_deref()
+        && Some(ack.source_generation) == header.source_generation
+        && Some(ack.source_generation_token.as_str()) == header.source_generation_token.as_deref()
+        && Some(ack.playback_owner_generation) == header.playback_owner_generation
+        && Some(ack.physical_playback_device_id.as_str())
+            == header.physical_playback_device_id.as_deref();
+    if !authority_matches {
+        return Err("Bridge Service returned a translation ACK for a different authority tuple."
+            .to_string());
+    }
+    accepted_translation_frames(ack)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn translation_frame_header(
     event_type: &str,
@@ -278,7 +398,10 @@ fn translation_frame_header(
     stream_state: Option<TranslationStreamState>,
     bridge_process_id: Option<u32>,
     bridge_instance_id: Option<String>,
+    source_generation: Option<u64>,
+    source_generation_token: Option<String>,
     playback_owner_generation: Option<u64>,
+    physical_playback_device_id: Option<String>,
 ) -> BridgeTranslationFrameHeader {
     BridgeTranslationFrameHeader {
         event_type: event_type.to_string(),
@@ -295,8 +418,9 @@ fn translation_frame_header(
         bridge_process_id,
         bridge_instance_id,
         playback_owner_generation,
-        source_generation: None,
-        source_generation_token: None,
+        source_generation,
+        source_generation_token,
+        physical_playback_device_id,
         cue_id: Some(cue_id.to_string()),
         created_at_ms: Some(created_at_ms),
         estimated_duration_ms: Some(estimated_duration_ms),
@@ -345,7 +469,23 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
     let route_direction = parse_route_direction(route_direction)?;
     let bridge_state = app.state::<BridgeStateStore>();
     let snapshot = bridge_state.snapshot();
-    if let Some(expected_owner) = expected_owner {
+    let frame_owner = BridgeTranslationSinkOwner::from_snapshot(&snapshot).ok_or_else(|| {
+        "bridge.translation-generation-ended: translation frame authority is incomplete"
+            .to_string()
+    })?;
+    let physical_owner = if matches!(translation_sink, TranslationAudioSink::PhysicalPlayback) {
+        let owner = expected_owner
+            .cloned()
+            .or_else(|| Some(frame_owner.clone()))
+            .ok_or_else(|| {
+                "bridge.translation-generation-ended: physical playback authority is incomplete"
+                    .to_string()
+            })?;
+        Some(owner)
+    } else {
+        None
+    };
+    if let Some(expected_owner) = physical_owner.as_ref() {
         if translation_sink_owner_changed(expected_owner, &snapshot) {
             return Err(translation_write_error_for_owner(
                 Some(expected_owner),
@@ -399,19 +539,34 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
         chunk_count,
         stream_state,
         snapshot.bridge_process_id,
-        snapshot.bridge_instance_id.clone(),
-        Some(snapshot.playback_owner_generation),
+        Some(frame_owner.bridge_instance_id.clone()),
+        Some(frame_owner.source_generation),
+        Some(frame_owner.source_generation_token.clone()),
+        Some(frame_owner.playback_owner_generation),
+        Some(frame_owner.resolved_physical_playback_device_id.clone()),
     );
-    let header_bytes = serde_json::to_vec(&header).map_err(|error| error.to_string())?;
+    if let Some(owner) = physical_owner.as_ref() {
+        app.state::<crate::audio::state::AudioStateStore>()
+            .translation_playback_quiescence()
+            .expect_bridge_playback_cue_for_owner(cue_id, owner.playback_authority());
+    }
+    let header_bytes = serde_json::to_vec(&header).map_err(|error| {
+        close_failed_translation_cue(app, cue_id, physical_owner.as_ref(), error.to_string())
+    })?;
     let mut audio_pipe = OpenOptions::new()
         .read(true)
         .write(true)
         .open(&snapshot.audio_pipe_path)
         .map_err(|error| {
-            translation_write_error_for_owner(
-                expected_owner,
-                &bridge_state.snapshot(),
-                format!("Bridge audio pipe open failed: {}", error),
+            close_failed_translation_cue(
+                app,
+                cue_id,
+                physical_owner.as_ref(),
+                translation_write_error_for_owner(
+                    physical_owner.as_ref(),
+                    &bridge_state.snapshot(),
+                    format!("Bridge audio pipe open failed: {}", error),
+                ),
             )
         })?;
     audio_pipe
@@ -420,63 +575,64 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
         .and_then(|_| audio_pipe.write_all(&bytes))
         .and_then(|_| audio_pipe.flush())
         .map_err(|error| {
-            translation_write_error_for_owner(
-                expected_owner,
-                &bridge_state.snapshot(),
-                format!("Bridge audio pipe write failed: {}", error),
-            )
+            close_failed_translation_cue(app, cue_id, physical_owner.as_ref(), translation_write_error_for_owner(
+                physical_owner.as_ref(), &bridge_state.snapshot(), format!("Bridge audio pipe write failed: {}", error),
+            ))
         })?;
     let mut ack_size = [0_u8; 4];
     audio_pipe
         .read_exact(&mut ack_size)
         .map_err(|error| {
-            translation_write_error_for_owner(
-                expected_owner,
-                &bridge_state.snapshot(),
-                format!("Bridge audio pipe ack size read failed: {}", error),
-            )
+            close_failed_translation_cue(app, cue_id, physical_owner.as_ref(), translation_write_error_for_owner(
+                physical_owner.as_ref(), &bridge_state.snapshot(), format!("Bridge audio pipe ack size read failed: {}", error),
+            ))
         })?;
     let mut ack_bytes = vec![0_u8; u32::from_le_bytes(ack_size) as usize];
     audio_pipe
         .read_exact(&mut ack_bytes)
         .map_err(|error| {
-            translation_write_error_for_owner(
-                expected_owner,
-                &bridge_state.snapshot(),
-                format!("Bridge audio pipe ack read failed: {}", error),
-            )
+            close_failed_translation_cue(app, cue_id, physical_owner.as_ref(), translation_write_error_for_owner(
+                physical_owner.as_ref(), &bridge_state.snapshot(), format!("Bridge audio pipe ack read failed: {}", error),
+            ))
         })?;
-    let ack: BridgeTranslationFrameAck =
-        serde_json::from_slice(&ack_bytes).map_err(|error| error.to_string())?;
+    let ack: BridgeTranslationFrameAck = serde_json::from_slice(&ack_bytes).map_err(|error| {
+        close_failed_translation_cue(app, cue_id, physical_owner.as_ref(), error.to_string())
+    })?;
 
-    if let Some(expected_owner) = expected_owner {
+    let accepted_result = accepted_translation_frames_for_header(&header, &ack);
+
+    {
         let current = bridge_state.snapshot();
-        if translation_sink_owner_changed(expected_owner, &current) {
-            return Err(translation_write_error_for_owner(
-                Some(expected_owner),
+        if translation_sink_owner_changed(&frame_owner, &current) {
+            return Err(close_failed_translation_cue(app, cue_id, physical_owner.as_ref(), translation_write_error_for_owner(
+                Some(&frame_owner),
                 &current,
                 "translation acknowledgement arrived after the Bridge owner changed".to_string(),
-            ));
+            )));
         }
     }
 
     if let Some(error_code) = ack.error_code.as_deref() {
         if error_code == "bridge.session-mismatch" {
-            if let Some(expected_owner) = expected_owner {
-                return Err(translation_generation_ended_error(
+            if let Some(expected_owner) = physical_owner.as_ref() {
+                return Err(close_failed_translation_cue(app, cue_id, physical_owner.as_ref(), translation_generation_ended_error(
                     expected_owner,
                     &bridge_state.snapshot(),
-                    accepted_translation_frames(&ack).unwrap_err(),
-                ));
+                    accepted_result.unwrap_err(),
+                )));
             }
         }
         bridge_state.update_snapshot(|current| {
             current.last_error_code = Some(error_code.to_string());
             reconcile_bridge_snapshot(current);
         });
-        return accepted_translation_frames(&ack);
+        return accepted_result.map_err(|error| {
+            close_failed_translation_cue(app, cue_id, physical_owner.as_ref(), error)
+        });
     }
-    let accepted_frames = accepted_translation_frames(&ack)?;
+    let accepted_frames = accepted_result.map_err(|error| {
+        close_failed_translation_cue(app, cue_id, physical_owner.as_ref(), error)
+    })?;
     if stream_state == Some(TranslationStreamState::Start) {
         let owner = expected_owner
             .map(BridgeTranslationSinkOwner::evidence)
@@ -507,11 +663,32 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
 
 
 pub(crate) fn flush_bridge_source(snapshot: &BridgeRuntimeSnapshot) -> Result<(), String> {
-    let _ = write_command_once_quiet(
+    let request_id = format!("bridge-source-flush-{}", now_unix_ms());
+    let event = write_command_once_quiet(
         &snapshot.pipe_path,
         &DriverBridgeCommand::SourceFlush(BridgeSourceFlushRequest {
-            request_id: format!("bridge-source-flush-{}", now_unix_ms()),
+            request_id: request_id.clone(),
         }),
-    );
-    Ok(())
+    )?;
+    match event {
+        DriverBridgeEvent::StateSnapshot(state)
+            if state.request_id == request_id
+                && !state.source_subscriber_active
+                && state.source_pending_bytes == 0
+                && state.source_pacer_queued_frames == 0
+                && state.monitor_source_queued_frames == 0 => {
+            Ok(())
+        }
+        DriverBridgeEvent::StateSnapshot(state) => Err(format!(
+            "bridge.source.flush acknowledgement did not close the source boundary: requestId={} responseRequestId={} subscriberActive={} pendingBytes={} pacerQueuedFrames={} monitorQueuedFrames={}",
+            request_id,
+            state.request_id,
+            state.source_subscriber_active,
+            state.source_pending_bytes,
+            state.source_pacer_queued_frames,
+            state.monitor_source_queued_frames,
+        )),
+        DriverBridgeEvent::Error(error) => Err(format!("{}: {}", error.code, error.message)),
+        _ => Err("Bridge Service returned an unexpected source flush response".to_string()),
+    }
 }

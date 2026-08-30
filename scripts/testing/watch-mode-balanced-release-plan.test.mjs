@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -11,16 +12,19 @@ import {
   RELEASE_DEVICE_CLASSES,
   RELEASE_FEEDBACK_MODES,
   RELEASE_MODELS,
+  PROCESS_EXCLUSION_RESTART_AFTER_SECONDS,
+  PROCESS_EXCLUSION_RESTART_QUIET_SECONDS,
   balancedReleasePlanFailure,
 } from './watch-mode-balanced-release-plan.mjs';
 
-test('balanced release plan caps paid LLM time at 24 minutes', () => {
-  assert.equal(BALANCED_RELEASE_PLAN.paidLlmSeconds, 24 * 60);
-  assert.equal(BALANCED_RELEASE_PLAN.paidProviderSessionCeilingSeconds, 24 * 60);
+test('balanced release plan binds the sole formal LiveTranslate model and exact input samples', () => {
+  assert.deepEqual(RELEASE_MODELS, ['qwen3.5-livetranslate-flash-realtime']);
+  assert.equal(BALANCED_RELEASE_PLAN.paidLlmSeconds, 631.26125);
+  assert.equal(BALANCED_RELEASE_PLAN.paidProviderInputSampleCeiling, 10_100_180);
   assert.deepEqual(BALANCED_RELEASE_PLAN.externalProviderBudget, {
-    scope: 'strict-paid-realtime-session-window',
-    cellCeilingSeconds: 180,
-    matrixCeilingSeconds: 1_440,
+    scope: 'strict-paid-provider-input-samples',
+    cellMaxInputSamples: 2_877_045,
+    matrixMaxInputSamples: 10_100_180,
     inputSampleRateHz: 16_000,
     sourceTranscriptCalls: 0,
     physicalOutputSttCalls: 0,
@@ -30,10 +34,30 @@ test('balanced release plan caps paid LLM time at 24 minutes', () => {
     subtitleTranslationMode: 'native',
   });
   assert.equal(LOCAL_ISOLATION_CELLS.length, 3);
-  assert.equal(PAIRWISE_LIVE_CELLS.length, 6);
-  assert.equal(MODEL_STABILITY_CELLS.length, 2);
-  assert.equal(LIVE_LLM_CELLS.length, 8);
-  assert.equal(BALANCED_RELEASE_CELLS.length, 11);
+  assert.equal(PAIRWISE_LIVE_CELLS.length, 3);
+  assert.equal(MODEL_STABILITY_CELLS.length, 1);
+  assert.equal(LIVE_LLM_CELLS.length, 4);
+  assert.equal(BALANCED_RELEASE_CELLS.length, 7);
+  assert.deepEqual(
+    LIVE_LLM_CELLS.map((cell) => cell.maxExternalAudioSamples),
+    [2_877_045, 2_173_045, 2_173_045, 2_877_045],
+  );
+  assert.ok(LIVE_LLM_CELLS.every((cell) => (
+    cell.authoritativeTransformedReferenceFrames + cell.boundedCaptureGraceFrames
+      === cell.maxExternalAudioSamples
+    && cell.maxExternalAudioSamples <= 2_877_045
+  )));
+  assert.equal(PROCESS_EXCLUSION_RESTART_AFTER_SECONDS, 90);
+  assert.equal(PROCESS_EXCLUSION_RESTART_QUIET_SECONDS, 45);
+  assert.ok(LIVE_LLM_CELLS.every((cell) => !('normalCompletionTargetSeconds' in cell)));
+  assert.deepEqual(
+    LIVE_LLM_CELLS.filter((cell) => cell.feedbackLoopPrevention === 'process-exclusion')
+      .map((cell) => [
+        cell.processExclusionRestartAfterSeconds,
+        cell.processExclusionRestartQuietSeconds,
+      ]),
+    [[90, 45], [90, 45]],
+  );
   assert.equal(balancedReleasePlanFailure(BALANCED_RELEASE_PLAN), null);
 
   const formerThreeDevicePlan = structuredClone(BALANCED_RELEASE_PLAN);
@@ -69,27 +93,35 @@ test('pairwise live cells cover every model/route pair on the default speaker', 
       new Set(RELEASE_DEVICE_CLASSES),
     );
   }
-  assert.ok(PAIRWISE_LIVE_CELLS.every((entry) => entry.durationSeconds === 180));
+  assert.deepEqual(
+    PAIRWISE_LIVE_CELLS.map((entry) => entry.inputCompletionWatchdogSeconds),
+    [225, 180, 180],
+  );
   assert.ok(PAIRWISE_LIVE_CELLS.every((entry) => (
-    entry.externalProviderSessionCeilingSeconds === 180
+    entry.providerFinishTimeoutSeconds === 15
+    && entry.localPlaybackDrainTimeoutSeconds === 30
+    && entry.reportWriteTimeoutSeconds === 10
+    && entry.cellHardWatchdogSeconds === (
+      entry.inputCompletionWatchdogSeconds + 15 + 30 + 10
+    )
     && entry.auxiliaryExternalAudioSeconds === 0
     && entry.subtitleTranslationMode === 'native'
   )));
 });
 
-test('model stability uses one three-minute cell per model', () => {
+test('model stability uses one process-exclusion evidence cell per model', () => {
   assert.deepEqual(MODEL_STABILITY_CELLS.map((entry) => entry.modelId), RELEASE_MODELS);
   assert.ok(MODEL_STABILITY_CELLS.every((entry) => (
-    entry.durationSeconds === 180
+    entry.inputCompletionWatchdogSeconds === 225
     && entry.feedbackLoopPrevention === 'process-exclusion'
     && entry.deviceClass === 'default-speaker'
   )));
 });
 
-test('balanced plan rejects duration and provider-mode weakening', () => {
+test('balanced plan rejects watchdog and provider-mode weakening', () => {
   const weakenedDuration = structuredClone(BALANCED_RELEASE_PLAN);
-  weakenedDuration.cells[9].durationSeconds = 30;
-  assert.match(balancedReleasePlanFailure(weakenedDuration), /durationSeconds/);
+  weakenedDuration.cells[6].inputCompletionWatchdogSeconds = 30;
+  assert.match(balancedReleasePlanFailure(weakenedDuration), /inputCompletionWatchdogSeconds/);
 
   const paidLocal = structuredClone(BALANCED_RELEASE_PLAN);
   paidLocal.cells[0].providerMode = 'live-dashscope';
@@ -100,6 +132,31 @@ test('balanced plan rejects duration and provider-mode weakening', () => {
   assert.match(balancedReleasePlanFailure(auxiliaryStt), /external provider budget/);
 
   const secondary = structuredClone(BALANCED_RELEASE_PLAN);
-  secondary.cells[6].subtitleTranslationMode = 'secondary';
+  secondary.cells[4].subtitleTranslationMode = 'secondary';
   assert.match(balancedReleasePlanFailure(secondary), /subtitleTranslationMode/);
+});
+
+test('formal Watch documentation stays aligned with the LiveTranslate-only release authority', () => {
+  const liveGuide = fs.readFileSync(
+    new URL('../../docs/项目/Watch Mode 真实链路自动化测试.md', import.meta.url),
+    'utf8',
+  );
+  const qualityGuide = fs.readFileSync(
+    new URL('../../docs/项目/测试与质量门禁.md', import.meta.url),
+    'utf8',
+  );
+  const fixtureGuide = fs.readFileSync(
+    new URL('./fixtures/README.md', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(liveGuide, /3 个零 Provider local-isolation 格[\s\S]*4 个 LiveTranslate paid 格/u);
+  assert.match(liveGuide, /10,100,180/u);
+  assert.doesNotMatch(liveGuide, /8 份 live report|9 格本地隔离 authority|4 分钟配对时长|7 分钟稳定时长/u);
+
+  assert.match(qualityGuide, /schema v5[\s\S]*4 份付费 live `report\.json`[\s\S]*3 个零 LLM 本地格/u);
+  assert.doesNotMatch(qualityGuide, /8 份付费 live|6 个零 LLM 本地格|两条 3 分钟 `model-stability`/u);
+
+  assert.match(fixtureGuide, /evidence-driven terminal/u);
+  assert.doesNotMatch(fixtureGuide, /180-second Watch capture budget/u);
 });

@@ -10,7 +10,6 @@ import {
   PROVIDER_INPUT_BUDGET_LEASE_KIND,
   PROVIDER_INPUT_BUDGET_LEDGER_FILE,
   PROVIDER_INPUT_BUDGET_LEDGER_KIND,
-  SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
   createSignedExecutionPlan,
   generateCoordinatorSigningKeyPair,
   issueCellLeases,
@@ -19,8 +18,37 @@ import {
   buildPowerShellRunnerArgv,
   buildShardCellExecutionRequest,
   runLeasedShardCell,
+  SHARD_WORKER_TIMEOUT_MS,
 } from './run-watch-mode-live-shard.mjs';
 import { defaultSingleWorkerAssignments } from './run-watch-mode-live-coordinator.mjs';
+import {
+  WATCH_RUNNER_INTERNAL_DEADLINE_MS,
+  WATCH_SHARD_POST_REPORT_ENVELOPE_MS,
+  WATCH_SHARD_PRE_DESKTOP_ENVELOPE_MS,
+  WATCH_SHARD_PROCESS_TERMINATION_GRACE_MS,
+} from './watch-mode-release-timeout-budget.mjs';
+import { rebuildReportFromDirectory } from './watch-mode-report.mjs';
+import {
+  healthyApp,
+  healthyAppLog,
+  healthyAecPlayback,
+  healthyBridge,
+  healthyBridgeLog,
+  healthyDriver,
+  healthyPhysicalOutput,
+  healthyPhysicalOutputContent,
+  healthyProcessExclusionBridge,
+  healthyProcessExclusionFingerprint,
+  healthyProcessExclusionRestartLog,
+  healthyProvider,
+  healthySystemMetrics,
+  healthyWasapi,
+  healthyWatchSessionReport,
+} from './watch-mode-report-test-helpers.mjs';
+import {
+  WATCH_MODE_RUN_COLLECTION_SCHEMA,
+  writeWatchModeRunCollection,
+} from './watch-mode-run-collection.mjs';
 
 const SHA_A = 'a'.repeat(64);
 const SHA_B = 'b'.repeat(64);
@@ -107,7 +135,6 @@ function writeSuccessfulRun(runDirectory, cell, lease) {
     model: cell.modelId,
     protocol: cell.modelId.includes('livetranslate') ? 'dashscope-livetranslate' : 'dashscope-omni',
   };
-  writeJson(path.join(runDirectory, 'report.json'), { verdict: 'passed' });
   writeJson(path.join(runDirectory, 'physical-playback-device.json'), {
     profileId: cell.deviceProfileInstance.profileId,
     deviceClass: cell.deviceClass,
@@ -123,11 +150,11 @@ function writeSuccessfulRun(runDirectory, cell, lease) {
     cellId: cell.cellId,
     leaseId: lease.leaseId,
     runMarker,
-    maxSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+    maxSamples: cell.maxExternalAudioSamples,
   });
   writeJson(path.join(runDirectory, PROVIDER_INPUT_BUDGET_LEDGER_FILE), {
     ...identity,
-    maxSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+    maxSamples: cell.maxExternalAudioSamples,
     totalAttemptedSamples: 16_000,
     appendAttempts: 1,
     sendFailures: 0,
@@ -148,6 +175,65 @@ function writeSuccessfulRun(runDirectory, cell, lease) {
     `${events.map(JSON.stringify).join('\n')}\n`,
     'utf8',
   );
+  const processExclusion = cell.feedbackLoopPrevention === 'process-exclusion';
+  const echoCancel = cell.feedbackLoopPrevention === 'echo-cancel';
+  const snapshots = {
+    schemaVersion: 1,
+    modelId: cell.modelId,
+    feedbackLoopPrevention: cell.feedbackLoopPrevention,
+    deviceEvidence: {
+      deviceClass: cell.deviceClass,
+      profileId: cell.deviceProfileId ?? cell.deviceProfileInstance.profileId,
+      resolvedDeviceId: cell.deviceProfileInstance.physicalPlaybackDeviceId,
+      resolvedDeviceName: 'VMware HDA Test Device',
+    },
+    driver: healthyDriver,
+    wasapi: healthyWasapi,
+    bridge: processExclusion ? healthyProcessExclusionBridge : healthyBridge,
+    physicalOutput: processExclusion ? healthyProcessExclusionFingerprint : healthyPhysicalOutput,
+    physicalOutputContentRaw: healthyPhysicalOutputContent,
+    app: healthyApp,
+    provider: healthyProvider,
+    watchSessionReport: healthyWatchSessionReport,
+    playback: echoCancel ? healthyAecPlayback : null,
+    systemMetrics: processExclusion ? healthySystemMetrics : null,
+  };
+  writeJson(path.join(runDirectory, 'fixture-evidence.raw.json'), snapshots);
+  writeJson(path.join(runDirectory, 'run-metadata.json'), {
+    schemaVersion: 'watch-mode-run-metadata/v1',
+    runMarker: null,
+    startedAtLocal: null,
+    modelId: cell.modelId,
+    feedbackMode: cell.feedbackLoopPrevention,
+  });
+  fs.writeFileSync(
+    path.join(runDirectory, 'app.log'),
+    `${processExclusion
+      ? [healthyAppLog, healthyProcessExclusionRestartLog].join('\n')
+      : healthyAppLog}\n`,
+    'utf8',
+  );
+  fs.writeFileSync(path.join(runDirectory, 'bridge-service.log'), `${healthyBridgeLog}\n`, 'utf8');
+  writeWatchModeRunCollection(runDirectory, {
+    schemaVersion: WATCH_MODE_RUN_COLLECTION_SCHEMA,
+    artifactKind: 'watch-mode-run-collection',
+    request: { schemaVersion: 'watch-mode-run-request/v1', runMode: 'live' },
+    collectionStatus: 'completed',
+    steps: [],
+    ownedProcesses: [],
+    artifacts: {
+      appLog: 'app.log',
+      bridgeLog: 'bridge-service.log',
+      runMetadata: 'run-metadata.json',
+      fixtureEvidence: 'fixture-evidence.raw.json',
+    },
+    primaryError: null,
+    cleanupErrors: [],
+  });
+  writeJson(path.join(runDirectory, 'report.json'), rebuildReportFromDirectory(runDirectory, {
+    mode: 'live',
+    provenance: PROVENANCE,
+  }));
 }
 
 test('worker request carries only its signed paid cell and never contains build/preflight/local work', () => {
@@ -183,11 +269,28 @@ test('worker request carries only its signed paid cell and never contains build/
   });
   assert.equal(
     request.environment.OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES,
-    String(SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES),
+    String(cell.maxExternalAudioSamples),
   );
   assert.equal(request.runnerOptions.strictPaidAuthority, true);
   assert.equal(request.runnerOptions.matrixCellId, cell.cellId);
   assert.equal(request.runnerOptions.subtitleTranslationMode, 'native');
+  assert.equal(request.runnerOptions.model, 'qwen3.5-livetranslate-flash-realtime');
+  assert.equal(request.runnerOptions.postPlaybackWaitSeconds, 0);
+  assert.equal(request.runnerOptions.watchAutoStopAfterSeconds, 225);
+  assert.equal(request.runnerOptions.processExclusionRestartAfterSeconds, 90);
+  assert.equal(request.runnerOptions.processExclusionRestartQuietSeconds, 45);
+  assert.equal(request.runnerOptions.providerFinishTimeoutSeconds, 15);
+  assert.equal(request.runnerOptions.localPlaybackDrainTimeoutSeconds, 30);
+  assert.equal(request.runnerOptions.physicalRecorderTailSeconds, 2);
+  assert.equal(
+    SHARD_WORKER_TIMEOUT_MS,
+    WATCH_SHARD_PRE_DESKTOP_ENVELOPE_MS
+      + WATCH_RUNNER_INTERNAL_DEADLINE_MS
+      + WATCH_SHARD_POST_REPORT_ENVELOPE_MS
+      + WATCH_SHARD_PROCESS_TERMINATION_GRACE_MS,
+  );
+  assert.equal(request.runnerOptions.inputCompletePath, path.join(request.cellOutputRoot, 'input-complete.json'));
+  assert.equal(request.runnerOptions.terminalAuthorityPath, path.join(request.cellOutputRoot, 'evidence-driven-terminal.json'));
   assert.equal(path.basename(request.cellOutputRoot), 'c01');
   assert.ok(request.cellOutputRoot.length < path.join(
     path.join(os.tmpdir(), 'omni-request-only'),

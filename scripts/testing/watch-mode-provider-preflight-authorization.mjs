@@ -48,7 +48,7 @@ export const PROVIDER_PREFLIGHT_AUTHORIZATION_DIGEST_ENV =
 
 export const PROVIDER_PREFLIGHT_PROVIDER_ID = 'provider-dashscope';
 export const PROVIDER_PREFLIGHT_MODEL = RELEASE_MODELS[0];
-export const PROVIDER_PREFLIGHT_PROTOCOL = 'dashscope-omni';
+export const PROVIDER_PREFLIGHT_PROTOCOL = 'dashscope-livetranslate';
 export const PROVIDER_PREFLIGHT_OPERATION = 'text-translation-preflight';
 export const PROVIDER_PREFLIGHT_INPUT_MODE = 'text-only';
 export const PROVIDER_PREFLIGHT_INVOCATION_COUNT = 1;
@@ -72,11 +72,10 @@ export const providerPreflightReservationFileName = (cell, cellIndex = cell.cell
   `${String(Number(cellIndex) + 1).padStart(2, '0')}-${safeCellId(cell.cellId)}.json`
 );
 
-const protocolForModel = (modelId) => (
-  modelId === 'qwen3.5-livetranslate-flash-realtime'
-    ? 'dashscope-livetranslate'
-    : 'dashscope-omni'
-);
+const protocolForModel = (modelId) => {
+  if (modelId === 'qwen3.5-livetranslate-flash-realtime') return 'dashscope-livetranslate';
+  throw new Error(`formal provider preflight rejected unapproved model ${modelId}`);
+};
 
 function isoMs(value, label) {
   const timestamp = Date.parse(String(value ?? ''));
@@ -133,7 +132,7 @@ function grantCells(assignments) {
     waveIndex: assignments[cellIndex].waveIndex,
     deviceProfileInstanceId: assignments[cellIndex].deviceProfileInstanceId,
     leaseId: assignments[cellIndex].leaseId,
-    maxExternalAudioSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+    maxExternalAudioSamples: cell.maxExternalAudioSamples,
   }));
 }
 
@@ -281,7 +280,7 @@ export function createProviderPreflightGrant({
   signingKeys,
 }) {
   if (!Array.isArray(assignments) || assignments.length !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error('provider preflight grant requires all eight paid assignments');
+    throw new Error(`provider preflight grant requires all ${SHARD_MATRIX_CELL_COUNT} paid assignments`);
   }
   const cells = grantCells(assignments);
   if (
@@ -289,7 +288,7 @@ export function createProviderPreflightGrant({
     || cells.some((cell) => !String(cell.leaseId ?? '').trim())
     || cells.reduce((sum, cell) => sum + cell.maxExternalAudioSamples, 0)
       !== SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES
-  ) throw new Error('provider preflight grant requires eight unique fixed-budget lease IDs');
+  ) throw new Error(`provider preflight grant requires ${SHARD_MATRIX_CELL_COUNT} unique fixed-budget lease IDs`);
   const core = {
     schemaVersion: SHARD_AUTHORITY_SCHEMA_VERSION,
     artifactKind: PROVIDER_PREFLIGHT_GRANT_KIND,
@@ -396,7 +395,7 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
     );
   });
   if (!Array.isArray(grant.cells) || grant.cells.length !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error('provider preflight grant requires the exact eight paid cells');
+    throw new Error(`provider preflight grant requires the exact ${SHARD_MATRIX_CELL_COUNT} paid cells`);
   }
   const workerIds = new Set(grant.workers.map((worker) => worker.workerId));
   const slots = new Set();
@@ -421,7 +420,7 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
       || !String(cell.leaseId ?? '').trim()
       || !Number.isInteger(Number(cell.waveIndex))
       || Number(cell.waveIndex) < 0
-      || Number(cell.maxExternalAudioSamples) !== SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES
+      || Number(cell.maxExternalAudioSamples) !== Number(approved.maxExternalAudioSamples)
     ) throw new Error(`provider preflight grant cell ${index} assignment/budget is invalid`);
     if (slots.has(`${cell.workerId}::${cell.waveIndex}`)) {
       throw new Error(`provider preflight grant worker ${cell.workerId} has duplicate wave slot`);
@@ -452,7 +451,7 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
     || grant.authorization?.temperature !== PROVIDER_PREFLIGHT_TEMPERATURE
     || grant.authorization?.tokenBudget?.maxInputTokens !== PROVIDER_PREFLIGHT_MAX_INPUT_TOKENS
     || grant.authorization?.tokenBudget?.maxOutputTokens !== PROVIDER_PREFLIGHT_MAX_OUTPUT_TOKENS
-  ) throw new Error('provider preflight grant is not the fixed text-only/24-minute authorization');
+  ) throw new Error('provider preflight grant is not the fixed text-only LiveTranslate authorization');
   if (expected.executionId && grant.executionId !== expected.executionId) {
     throw new Error('provider preflight grant executionId mismatch');
   }
@@ -500,7 +499,7 @@ export function createProviderPreflightLeaseReservations({ grant, issuedAt, sign
 export function verifyProviderPreflightLeaseReservations(reservations, grant) {
   verifyProviderPreflightGrant(grant);
   if (!Array.isArray(reservations) || reservations.length !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error('provider preflight requires exactly eight signed lease reservations');
+    throw new Error(`provider preflight requires exactly ${SHARD_MATRIX_CELL_COUNT} signed lease reservations`);
   }
   const grantAt = isoMs(grant.generatedAt, 'provider preflight grant generatedAt');
   const expiresAt = isoMs(grant.expiresAt, 'provider preflight grant expiresAt');
@@ -522,7 +521,7 @@ export function verifyProviderPreflightLeaseReservations(reservations, grant) {
       || reservation.workerId !== cell.workerId
       || Number(reservation.waveIndex) !== Number(cell.waveIndex)
       || reservation.leaseId !== cell.leaseId
-      || Number(reservation.maxExternalAudioSamples) !== SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES
+      || Number(reservation.maxExternalAudioSamples) !== Number(cell.maxExternalAudioSamples)
       || reservation.expiresAt !== grant.expiresAt
       || issuedAt <= grantAt
       || issuedAt >= expiresAt
@@ -565,7 +564,7 @@ export function loadProviderPreflightAuthorizationPackage({
   if (
     entries.some((entry) => !entry.isFile() || entry.isSymbolicLink())
     || canonicalJson(entries.map((entry) => entry.name).sort()) !== canonicalJson([...expectedFiles].sort())
-  ) throw new Error('provider preflight reservation directory is not the exact eight-file set');
+  ) throw new Error(`provider preflight reservation directory is not the exact ${SHARD_MATRIX_CELL_COUNT}-file set`);
   const leaseReservations = expectedFiles.map((fileName, index) => readRegularJson(
     path.join(resolvedReservationDirectory, fileName),
     `provider preflight reservation ${index}`,
@@ -609,7 +608,7 @@ export function validateProviderPreflightAuthorizationAuthorities({
   );
   if (!Array.isArray(leaseReservationAuthorities)
     || leaseReservationAuthorities.length !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error('provider preflight reservation authority inventory must contain eight entries');
+    throw new Error(`provider preflight reservation authority inventory must contain ${SHARD_MATRIX_CELL_COUNT} entries`);
   }
   leaseReservationAuthorities.forEach((entry, index) => validateFileAuthorityEntry(
     root,

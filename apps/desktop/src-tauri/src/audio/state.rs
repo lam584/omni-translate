@@ -29,6 +29,7 @@ mod source_finality;
 mod source_publish;
 mod translation_lifecycle;
 mod playback_quiescence;
+mod watch_terminal_lifecycle;
 
 use self::source_finality::SourceFinalityStore;
 mod bridge_source_evidence;
@@ -49,14 +50,17 @@ use cue_lifecycle::{
 use deferred_translation::DeferredTranslationStore;
 use audio_cache::AudioCacheStore;
 use omni_sessions::OmniSessionStore;
+pub(crate) use session_registry::{RouteInputCompletionEvidence, RouteInputCompletionRequest};
 use session_registry::SessionRegistry;
 use metrics::AudioMetricsStore;
 use route_state::route_mut;
 use route_state::{clear_session_start_if_idle, reset_route_to_idle};
 use subtitle_store::SubtitleStore;
 pub(crate) use playback_quiescence::{
-    TranslationPlaybackQuiescence, TranslationPlaybackQuiescenceSnapshot,
+    TranslationPlaybackAuthority, TranslationPlaybackQuiescence,
+    TranslationPlaybackQuiescenceSnapshot,
 };
+pub(crate) use watch_terminal_lifecycle::StrictWatchTerminalLifecycleSnapshot;
 use translation_lifecycle::cue_revision;
 pub(crate) struct AudioRouteHandle {
     pub stop_tx: Sender<()>,
@@ -180,6 +184,7 @@ pub(crate) struct AudioStateStore {
     /// awaiting replay when they are evicted.
     bridge_translation_status_receipts: Mutex<BridgeTranslationStatusReceipts>,
     translation_playback_quiescence: Arc<TranslationPlaybackQuiescence>,
+    strict_watch_terminal_lifecycle: watch_terminal_lifecycle::StrictWatchTerminalLifecycle,
     bridge_source_runtime_evidence: Mutex<BridgeSourceRuntimeEvidence>,
     /// Monotonically increasing snapshot sequence number. Incremented on every
     /// `snapshot()` call so the frontend can discard stale out-of-order events.
@@ -866,6 +871,23 @@ impl AudioStateStore {
     pub(crate) fn take_session(&self, direction: &str) -> Option<AudioRouteHandle> {
         self.session_registry.take(direction)
     }
+
+    pub(crate) fn store_route_input_completion_sender(
+        &self,
+        direction: &str,
+        sender: Sender<RouteInputCompletionRequest>,
+    ) {
+        self.session_registry
+            .store_route_input_completion_sender(direction, sender);
+    }
+
+    pub(crate) fn take_route_input_completion_sender(
+        &self,
+        direction: &str,
+    ) -> Option<Sender<RouteInputCompletionRequest>> {
+        self.session_registry
+            .take_route_input_completion_sender(direction)
+    }
 }
 
 #[cfg(test)]
@@ -1471,6 +1493,25 @@ mod tests {
 
         quiescence.observe_bridge_playback_status("cue-a", "completed");
         assert_eq!(quiescence.snapshot().active_bridge_cues, 0);
+        assert!(quiescence.snapshot().is_quiescent());
+    }
+
+    #[test]
+    fn accepted_bridge_cue_cannot_expose_a_false_quiet_gap_before_status_delivery() {
+        let store = AudioStateStore::new();
+        let quiescence = store.translation_playback_quiescence();
+        quiescence.expect_bridge_playback_cue("cue-accepted");
+        assert_eq!(quiescence.snapshot().active_bridge_cues, 1);
+        assert!(!quiescence.snapshot().is_quiescent());
+
+        let ack_guard = quiescence.begin_bridge_ack();
+        quiescence.observe_bridge_playback_status("cue-accepted", "completed");
+        let before_ack_flush = quiescence.snapshot();
+        assert_eq!(before_ack_flush.active_bridge_cues, 0);
+        assert_eq!(before_ack_flush.pending_bridge_acks, 1);
+        assert!(!before_ack_flush.is_quiescent());
+
+        drop(ack_guard);
         assert!(quiescence.snapshot().is_quiescent());
     }
 

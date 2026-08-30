@@ -177,6 +177,7 @@ fn build_virtual_mic_header(
         playback_owner_generation: None,
         source_generation: None,
         source_generation_token: None,
+        physical_playback_device_id: None,
         cue_id: Some(cue_id.to_string()),
         created_at_ms: Some(created_at_ms),
         estimated_duration_ms: Some((frame_count as u64 * 1_000).div_ceil(48_000)),
@@ -232,6 +233,11 @@ fn acknowledge_translation_status(
         event_type: "bridge.translation.status.ack".to_string(),
         status_id: event.status_id.clone(),
         session_id: event.session_id.clone(),
+        bridge_instance_id: event.bridge_instance_id.clone(),
+        source_generation: event.source_generation,
+        source_generation_token: event.source_generation_token.clone(),
+        playback_owner_generation: event.playback_owner_generation,
+        physical_playback_device_id: event.physical_playback_device_id.clone(),
     };
     let header = serde_json::to_vec(&ack).map_err(error_text)?;
     pipe.write_all(&(header.len() as u32).to_le_bytes())

@@ -6,14 +6,14 @@ import test from 'node:test';
 import crypto from 'node:crypto';
 
 import {
-  STRICT_PAID_MATRIX_CEILING_SECONDS,
+  STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
   actualProviderInputSamplesFromLog,
   assertCellExternalProviderBudget,
   assertMatrixExternalProviderBudget,
   buildCellExternalProviderBudget,
   buildMatrixExternalProviderBudget,
   isAbsoluteEvidencePathForFixedFile,
-  reserveStrictPaidCell,
+  reserveStrictPaidCellInputSamples,
   writePreProviderTerminalAuthority,
   writeCellExternalProviderBudget,
 } from './watch-mode-external-provider-budget.mjs';
@@ -24,9 +24,12 @@ import {
 } from './watch-mode-canonical-source-authority.mjs';
 
 const MARKER = 'watch_mode_diagnostic.run_id=0123456789abcdef0123456789abcdef';
-const MODEL = 'qwen3.5-omni-flash-realtime';
+const MODEL = 'qwen3.5-livetranslate-flash-realtime';
 const CELL_ID = LIVE_LLM_CELLS[0].cellId;
 const fileSha256 = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+const inputCeilingSamplesForMode = (feedbackLoopPrevention) => LIVE_LLM_CELLS.find(
+  (cell) => cell.feedbackLoopPrevention === feedbackLoopPrevention,
+)?.maxExternalAudioSamples;
 
 function createRunDirectory({
   feedbackMode = 'echo-cancel',
@@ -36,6 +39,7 @@ function createRunDirectory({
 } = {}) {
   const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-paid-budget-'));
   const diagnosticPcmSamples = samples;
+  const inputCeilingSamples = inputCeilingSamplesForMode(feedbackMode);
   fs.writeFileSync(
     path.join(runDirectory, 'provider-input-16k-mono.pcm'),
     Buffer.alloc(diagnosticPcmSamples * 2, 1),
@@ -65,7 +69,7 @@ function createRunDirectory({
     authScheme: 'bearer',
     customHeaderCount: 0,
     model: MODEL,
-    protocol: 'dashscope-omni',
+    protocol: 'dashscope-livetranslate',
   };
   fs.writeFileSync(
     path.join(runDirectory, 'provider-input-budget-lease.json'),
@@ -75,7 +79,7 @@ function createRunDirectory({
       cellId: CELL_ID,
       leaseId: identity.leaseId,
       runMarker: MARKER,
-      maxSamples: 16_000 * 180,
+      maxSamples: inputCeilingSamples,
     }),
     'utf8',
   );
@@ -86,7 +90,7 @@ function createRunDirectory({
     occurredAtMs: 1,
     attemptedSamples: null,
     totalAttemptedSamples: 0,
-    maxSamples: 16_000 * 180,
+    maxSamples: inputCeilingSamples,
     appendAttempts: 0,
     sendFailures: 0,
     initialConnectAttempts: 0,
@@ -248,7 +252,9 @@ function buildOptions(runDirectory, overrides = {}) {
     modelId: MODEL,
     feedbackLoopPrevention: 'echo-cancel',
     translationMode: 'native',
-    sessionCeilingSeconds: 180,
+    inputCeilingSamples: inputCeilingSamplesForMode(
+      overrides.feedbackLoopPrevention ?? 'echo-cancel',
+    ),
     generatedAt: new Date('2026-08-13T01:03:00.000Z'),
     ...overrides,
   };
@@ -405,6 +411,7 @@ test('strict paid budget records an authentic zero-call terminal before Provider
       cellId: CELL_ID,
       leaseId: 'coordinator-lease',
       modelId: MODEL,
+      inputCeilingSamples: inputCeilingSamplesForMode('echo-cancel'),
       occurredAtMs: 7,
     });
     const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
@@ -463,7 +470,7 @@ test('strict paid cell rejects a send-boundary ledger for the wrong realtime pro
   try {
     const ledgerPath = path.join(runDirectory, 'provider-input-budget-ledger.json');
     const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
-    ledger.protocol = 'dashscope-livetranslate';
+    ledger.protocol = 'dashscope-omni';
     fs.writeFileSync(ledgerPath, JSON.stringify(ledger), 'utf8');
     const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
     assert.equal(budget.passed, false);
@@ -595,25 +602,28 @@ test('strict paid budget leaves forged acoustic windows to report and verifier',
   }
 });
 
-test('strict paid reservation fails before a ninth three-minute provider session', () => {
-  let reservedSeconds = 0;
-  for (let index = 0; index < 8; index += 1) {
-    reservedSeconds = reserveStrictPaidCell({ reservedSeconds });
+test('strict paid reservation fails before any sample allocation beyond the four-cell matrix', () => {
+  let reservedSamples = 0;
+  for (const cell of LIVE_LLM_CELLS) {
+    reservedSamples = reserveStrictPaidCellInputSamples({
+      reservedSamples,
+      nextCellSamples: cell.maxExternalAudioSamples,
+    });
   }
-  assert.equal(reservedSeconds, STRICT_PAID_MATRIX_CEILING_SECONDS);
+  assert.equal(reservedSamples, STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES);
   assert.throws(
-    () => reserveStrictPaidCell({ reservedSeconds }),
-    /before the next provider session; ceiling is 1440s/,
+    () => reserveStrictPaidCellInputSamples({ reservedSamples, nextCellSamples: 1 }),
+    /would reserve .* input samples/,
   );
 });
 
-test('matrix ledger binds eight cells, actual samples, and zero auxiliary calls', () => {
+test('matrix ledger binds four cells, actual samples, and zero auxiliary calls', () => {
   const cells = LIVE_LLM_CELLS.map((plannedCell, index) => ({
     passed: true,
     cellId: plannedCell.cellId,
     modelId: plannedCell.modelId,
     feedbackLoopPrevention: plannedCell.feedbackLoopPrevention,
-    sessionCeilingSeconds: 180,
+    providerInputSampleCeiling: plannedCell.maxExternalAudioSamples,
     actualProviderInputSamples: 16_000 * 126,
     actualProviderInputSeconds: 126,
     auxiliaryExternalAudioSeconds: 0,
@@ -629,8 +639,8 @@ test('matrix ledger binds eight cells, actual samples, and zero auxiliary calls'
     generatedAt: new Date('2026-08-13T02:00:00.000Z'),
   });
   assert.equal(ledger.passed, true);
-  assert.equal(ledger.reservedSessionSeconds, 1_440);
-  assert.equal(ledger.actualProviderInputSeconds, 1_008);
+  assert.equal(ledger.reservedInputSamples, 10_100_180);
+  assert.equal(ledger.actualProviderInputSeconds, 504);
   const matrixDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-paid-matrix-budget-'));
   try {
     const matrixPath = path.join(matrixDirectory, 'external-provider-budget-matrix.json');

@@ -7,9 +7,15 @@ find_package(unofficial-webrtc CONFIG REQUIRED)
 
 add_library(omni_webrtc_aec3_ffi STATIC
   omni_webrtc_aec3.cc
-  webrtc_echo_detector_compat.cc
+  upstream/webrtc/api/audio/echo_detector_creator.cc
+  upstream/webrtc/modules/audio_processing/residual_echo_detector.cc
+  upstream/webrtc/modules/audio_processing/echo_detector/circular_buffer.cc
+  upstream/webrtc/modules/audio_processing/echo_detector/mean_variance_estimator.cc
+  upstream/webrtc/modules/audio_processing/echo_detector/moving_max.cc
+  upstream/webrtc/modules/audio_processing/echo_detector/normalized_covariance_estimator.cc
 )
 target_compile_features(omni_webrtc_aec3_ffi PRIVATE cxx_std_20)
+target_compile_definitions(omni_webrtc_aec3_ffi PRIVATE WEBRTC_APM_DEBUG_DUMP=0)
 target_link_libraries(omni_webrtc_aec3_ffi PRIVATE unofficial::webrtc::webrtc)
 set_target_properties(omni_webrtc_aec3_ffi PROPERTIES
   CXX_EXTENSIONS OFF

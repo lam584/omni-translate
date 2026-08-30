@@ -47,7 +47,8 @@ function quotePowerShell(value) {
 }
 
 function extractedReportWaitFunctions() {
-  return `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.Report.psm1'))} -Force -DisableNameChecking; `;
+  return `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.Process.psm1'))} -Force -DisableNameChecking; ` +
+    `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.Report.psm1'))} -Force -DisableNameChecking; `;
 }
 
 function extractedAppReadinessFunctions() {
@@ -76,6 +77,14 @@ function extractedMediaReferenceFunctions() {
 
 function extractedPhysicalCaptureFunctions() {
   return `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.PhysicalCapture.psm1'))} -Force -DisableNameChecking; `;
+}
+
+function extractedExecutionContextFunctions() {
+  return `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.ExecutionContext.psm1'))} -Force -DisableNameChecking; `;
+}
+
+function extractedRunLifecycleFunctions() {
+  return `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.RunLifecycle.psm1'))} -Force -DisableNameChecking; `;
 }
 
 test('physical probe retries only narrow identity-bound incomplete windows', { skip: !isWindows }, () => {
@@ -123,7 +132,7 @@ test('paid cell finalizes a zero-call budget before desktop launch', { skip: !is
         feedbackMode: 'process-exclusion',
         matrix: { cellId: 'c01' },
         model: {
-          id: 'qwen3.5-omni-flash-realtime',
+          id: 'qwen3.5-livetranslate-flash-realtime',
           subtitleTranslationMode: 'native',
         },
         timeouts: { sessionSeconds: 180 },
@@ -131,6 +140,7 @@ test('paid cell finalizes a zero-call budget before desktop launch', { skip: !is
     };
     const command = extractedLocalSmokeProviderSessionAuthorityFunction() +
       `$env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID = 'coordinator-pre-desktop-lease'; ` +
+      `$env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES = '2877045'; ` +
       `$context = ${quotePowerShell(JSON.stringify(context))} | ConvertFrom-Json; ` +
       `Write-StrictPaidCellBudget ${quotePowerShell(runDirectory)} $null ${quotePowerShell(runMarker)} $context | ConvertTo-Json -Depth 4 -Compress`;
     const result = runPowerShell(['-Command', command]);
@@ -239,7 +249,7 @@ test('paid source authorities use canonical hashes, fixture texts, and injector 
 
 test('local smoke Provider-session authority binds one non-authoritative session and zero auxiliary calls', { skip: !isWindows }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-smoke-provider-authority-'));
-  const writeInputs = (directory, feedbackMode) => {
+  const writeInputs = (directory) => {
     fs.mkdirSync(directory, { recursive: true });
     fs.writeFileSync(path.join(directory, 'smoke-provider-session-lease.json'), JSON.stringify({
       schemaVersion: 1,
@@ -282,27 +292,25 @@ test('local smoke Provider-session authority binds one non-authoritative session
       model: 'qwen3.5-omni-plus-realtime',
       protocol: 'dashscope-omni',
     }));
-    if (feedbackMode !== 'echo-cancel') {
-      fs.writeFileSync(path.join(directory, 'source-media-transcript.json'), JSON.stringify({
-        schemaVersion: 2,
-        authorityMode: 'canonical-fixture-local-v2',
-        passed: true,
-        remoteProviderCalls: 0,
-        externalAudioSeconds: 0,
-      }));
-      fs.writeFileSync(path.join(directory, 'physical-output-content.raw.json'), JSON.stringify({
-        schemaVersion: 1,
-        authorityMode: 'local-pcm-cue-playback-v1',
-        passed: true,
-        remoteProviderCalls: 0,
-        externalAudioSeconds: 0,
-      }));
-    }
+    fs.writeFileSync(path.join(directory, 'source-media-transcript.json'), JSON.stringify({
+      schemaVersion: 2,
+      authorityMode: 'canonical-fixture-local-v2',
+      passed: true,
+      remoteProviderCalls: 0,
+      externalAudioSeconds: 0,
+    }));
+    fs.writeFileSync(path.join(directory, 'physical-output-content.raw.json'), JSON.stringify({
+      schemaVersion: 1,
+      authorityMode: 'local-pcm-cue-playback-v1',
+      passed: true,
+      remoteProviderCalls: 0,
+      externalAudioSeconds: 0,
+    }));
   };
   try {
     for (const feedbackMode of ['virtual-driver', 'echo-cancel']) {
       const directory = path.join(root, feedbackMode);
-      writeInputs(directory, feedbackMode);
+      writeInputs(directory);
       const command = extractedLocalSmokeProviderSessionAuthorityFunction() +
         `$context = [pscustomobject]@{ request=[pscustomobject]@{ feedbackMode='${feedbackMode}'; matrix=[pscustomobject]@{ cellId='smoke-cell' }; timeouts=[pscustomobject]@{ sessionSeconds=180 }; model=[pscustomobject]@{ id='qwen3.5-omni-plus-realtime'; protocol='dashscope-omni' } } }; ` +
         `Write-LocalSmokeProviderSessionAuthority ${quotePowerShell(directory)} 'smoke-marker' $context | ConvertTo-Json -Depth 5 -Compress`;
@@ -315,7 +323,7 @@ test('local smoke Provider-session authority binds one non-authoritative session
       assert.equal(authority.auxiliaryProviderSessions, 0);
     }
     const retryDirectory = path.join(root, 'retry-forbidden');
-    writeInputs(retryDirectory, 'virtual-driver');
+    writeInputs(retryDirectory);
     const retryLedgerPath = path.join(retryDirectory, 'smoke-provider-session-ledger.json');
     const retryLedger = readJsonArtifact(retryLedgerPath);
     retryLedger.terminalReason = 'initial-connect-retry-forbidden';
@@ -330,7 +338,7 @@ test('local smoke Provider-session authority binds one non-authoritative session
     assert.match(rejected.violations.join(' '), /normal completion terminal/);
 
     const incompleteDirectory = path.join(root, 'incomplete-local-content');
-    writeInputs(incompleteDirectory, 'virtual-driver');
+    writeInputs(incompleteDirectory);
     const incompleteSourcePath = path.join(incompleteDirectory, 'source-media-transcript.json');
     const incompleteSource = readJsonArtifact(incompleteSourcePath);
     delete incompleteSource.remoteProviderCalls;
@@ -425,10 +433,14 @@ test('strict paid provider selection ignores a preceding alternate and rejects f
     localModelCapabilityRegistry: [],
   }];
   const run = (strict, mutate = '') => {
+    const model = strict
+      ? 'qwen3.5-livetranslate-flash-realtime'
+      : 'qwen3.5-omni-flash-realtime';
+    const protocol = strict ? 'dashscope-livetranslate' : 'dashscope-omni';
     const command = `${extractedStrictPaidProviderFunctions()} ` +
       `$config = ${quotePowerShell(JSON.stringify({ providers }))} | ConvertFrom-Json; ` +
       `${mutate} ` +
-      `Set-WatchModelOnConfig $config 'qwen3.5-omni-flash-realtime' 'dashscope-omni' $${strict ? 'true' : 'false'}; ` +
+      `Set-WatchModelOnConfig $config '${model}' '${protocol}' $${strict ? 'true' : 'false'}; ` +
       `$config | ConvertTo-Json -Depth 10 -Compress`;
     return runPowerShell(['-Command', command]);
   };
@@ -436,7 +448,7 @@ test('strict paid provider selection ignores a preceding alternate and rejects f
   assert.equal(strict.status, 0, strict.stderr || strict.stdout);
   const strictConfig = JSON.parse(strict.stdout.trim());
   assert.equal(strictConfig.providers[0].model, 'alternate-before-canonical');
-  assert.equal(strictConfig.providers[1].model, 'qwen3.5-omni-flash-realtime');
+  assert.equal(strictConfig.providers[1].model, 'qwen3.5-livetranslate-flash-realtime');
 
   const legacy = run(false);
   assert.equal(legacy.status, 0, legacy.stderr || legacy.stdout);
@@ -686,12 +698,19 @@ test('run context keeps the paid input ceiling separate from local playback drai
 
   assert.equal(probe.status, 0, probe.stderr || probe.stdout);
   assert.deepEqual(JSON.parse(probe.stdout.trim()), {
-    providerInputSeconds: 180,
-    desktopAutoStopSeconds: 300,
+    sessionWatchdogSeconds: 180,
+    inputCompletionWatchdogSeconds: 180,
+    processExclusionRestartAfterSeconds: 0,
+    processExclusionRestartQuietSeconds: 0,
+    providerFinishTimeoutSeconds: 15,
+    localPlaybackDrainTimeoutSeconds: 30,
+    reportWriteTimeoutSeconds: 10,
+    cellHardWatchdogSeconds: 235,
+    physicalRecorderTailSeconds: 2,
   });
 });
 
-test('live runner schedules a midpoint process restart and does not truncate 1800 seconds to five minutes', { skip: !isWindows }, () => {
+test('live runner keeps process restart explicit at 90 seconds regardless of the session watchdog', { skip: !isWindows }, () => {
   const probe = runPowerShell([
     '-Command',
     extractedLiveScenarioEnvironmentFunctions() +
@@ -704,7 +723,7 @@ test('live runner schedules a midpoint process restart and does not truncate 180
   assert.equal(probe.status, 0, probe.stderr || probe.stdout);
   const result = JSON.parse(probe.stdout.trim());
   assert.equal(result.process.autoStopAfterMs, '1800000');
-  assert.equal(result.process.processExclusionRestartAfterMs, '900000');
+  assert.equal(result.process.processExclusionRestartAfterMs, '90000');
   assert.equal(result.process.aecLiveScenario, null);
   assert.equal(result.aec.autoStopAfterMs, '1800000');
   assert.equal(result.aec.processExclusionRestartAfterMs, null);
@@ -714,12 +733,12 @@ test('live runner schedules a midpoint process restart and does not truncate 180
   assert.equal(result.virtual.aecLiveScenario, null);
 });
 
-test('formal restart midpoint uses the paid input window rather than the longer local drain lifetime', { skip: !isWindows }, () => {
+test('formal process restart is the explicit 90-second contract, not half of the paid watchdog', { skip: !isWindows }, () => {
   const probe = runPowerShell([
     '-Command',
     extractedLiveScenarioEnvironmentFunctions() +
       `$scenario = Get-WatchModeLiveScenarioEnvironment -FeedbackMode 'process-exclusion' ` +
-        `-AutoStopAfterMs 300000 -ProviderInputCeilingMs 180000; ` +
+        `-AutoStopAfterMs 300000 -ProcessExclusionRestartAfterMs 90000; ` +
       `$scenario | ConvertTo-Json -Compress`,
   ]);
 
@@ -729,21 +748,177 @@ test('formal restart midpoint uses the paid input window rather than the longer 
   assert.equal(scenario.processExclusionRestartAfterMs, '90000');
 });
 
-test('formal process-exclusion playback creates a bounded midpoint quiet window for a safe restart', { skip: !isWindows }, () => {
+test('formal process-exclusion playback consumes the explicit signed 90/45 restart window', { skip: !isWindows }, () => {
   const probe = runPowerShell([
     '-Command',
     extractedRunnerPolicyFunctions() +
       `$process = Get-WatchModeRestartQuietWindow -FeedbackMode 'process-exclusion' -ProviderInputSeconds 180 -StrictPaidAuthority $true; ` +
+      `$signed = Get-WatchModeRestartQuietWindow -FeedbackMode 'process-exclusion' -ProviderInputSeconds 225 -StrictPaidAuthority $true -RestartAfterSeconds 90 -RestartQuietSeconds 45; ` +
       `$virtual = Get-WatchModeRestartQuietWindow -FeedbackMode 'virtual-driver' -ProviderInputSeconds 180 -StrictPaidAuthority $true; ` +
       `$smoke = Get-WatchModeRestartQuietWindow -FeedbackMode 'process-exclusion' -ProviderInputSeconds 180 -StrictPaidAuthority $false; ` +
-      `[pscustomobject]@{ process = $process; virtual = $virtual; smoke = $smoke } | ConvertTo-Json -Depth 4 -Compress`,
+      `[pscustomobject]@{ process = $process; signed = $signed; virtual = $virtual; smoke = $smoke } | ConvertTo-Json -Depth 4 -Compress`,
   ]);
 
   assert.equal(probe.status, 0, probe.stderr || probe.stdout);
   const result = JSON.parse(probe.stdout.trim());
   assert.deepEqual(result.process, { afterSeconds: 90, durationSeconds: 45 });
+  assert.deepEqual(result.signed, { afterSeconds: 90, durationSeconds: 45 });
   assert.deepEqual(result.virtual, { afterSeconds: 0, durationSeconds: 0 });
   assert.deepEqual(result.smoke, { afterSeconds: 0, durationSeconds: 0 });
+});
+
+test('input-complete marker is request-path bound, atomically published, and create-once', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-input-complete-'));
+  const referencePath = path.join(root, 'reference.pcm');
+  const markerPath = path.join(root, 'input-complete.json');
+  fs.writeFileSync(referencePath, Buffer.from([1, 0, 2, 0]));
+  const probe = runPowerShell([
+    '-Command',
+    extractedRunnerPolicyFunctions() +
+      `$env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES = '4'; ` +
+      `$playback = [pscustomobject]@{ referencePcmPath = ${quotePowerShell(referencePath)}; finishedAtMs = 1000 }; ` +
+      `$first = Write-WatchModeInputCompleteMarker -Path ${quotePowerShell(markerPath)} ` +
+        `-RunMarker 'run-1' -CellId 'cell-1' -LeaseId 'lease-1' -Playback $playback; ` +
+      `$before = [System.IO.File]::ReadAllBytes(${quotePowerShell(markerPath)}); ` +
+      `$secondFailed = $false; ` +
+      `try { Write-WatchModeInputCompleteMarker -Path ${quotePowerShell(markerPath)} ` +
+        `-RunMarker 'run-1' -CellId 'cell-1' -LeaseId 'lease-1' -Playback $playback | Out-Null } ` +
+      `catch { $secondFailed = $_.Exception.Message -match 'immutable JSON publish failed' }; ` +
+      `$after = [System.IO.File]::ReadAllBytes(${quotePowerShell(markerPath)}); ` +
+      `$marker = Get-Content -LiteralPath ${quotePowerShell(markerPath)} -Raw | ConvertFrom-Json; ` +
+      `[pscustomobject]@{ first = [int64]$first; secondFailed = $secondFailed; unchanged = ` +
+        `[Convert]::ToBase64String($before) -ceq [Convert]::ToBase64String($after); marker = $marker } ` +
+      `| ConvertTo-Json -Depth 6 -Compress`,
+  ]);
+
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+  const result = JSON.parse(probe.stdout.trim().split(/\r?\n/).at(-1));
+  assert.equal(result.secondFailed, true);
+  assert.equal(result.unchanged, true);
+  assert.equal(result.marker.signaledAtUnixMs, result.marker.completedAtUnixMs);
+  assert.equal(result.marker.runMarker, 'run-1');
+  assert.equal(fs.readdirSync(root).some((name) => name.endsWith('.tmp')), false);
+});
+
+test('strict execution context rejects signed terminal paths outside their canonical directory', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-execution-path-'));
+  const outputRoot = path.join(root, 'cell');
+  const canonicalHash = fs.readFileSync(
+    path.resolve('scripts/testing/fixtures/watch-mode-en-original.sha256'),
+    'utf8',
+  ).trim().split(/\s+/u)[0];
+  const baseRequest = {
+    runMode: 'live',
+    authorityMode: 'strict-paid',
+    feedbackMode: 'virtual-driver',
+    desktop: { elevation: 'forbid' },
+    driverPolicy: 'probe-only',
+    physicalContentMode: 'remote-stt',
+    model: {
+      id: 'qwen3.5-livetranslate-flash-realtime',
+      protocol: 'dashscope-livetranslate',
+      subtitleTranslationMode: 'native',
+      subtitleModelId: null,
+      secondaryAudioModelId: null,
+    },
+    media: {
+      path: path.resolve('scripts/testing/fixtures/watch-mode-en-original.wav'),
+      playbackSeconds: 0,
+    },
+    physicalDevice: { id: 'default', class: 'default-speaker', profileId: 'default-speaker' },
+    timeouts: {
+      warmupSeconds: 12, readinessSeconds: 90, sessionSeconds: 180,
+      inputCompletionWatchdogSeconds: 180, providerFinishTimeoutSeconds: 15,
+      localPlaybackDrainTimeoutSeconds: 30, reportWriteTimeoutSeconds: 10,
+      cellHardWatchdogSeconds: 235, physicalRecorderTailSeconds: 2,
+    },
+    paths: {
+      outputRoot,
+      runtimeRoot: path.join(root, 'runtime'),
+      workerReadinessReceipt: null,
+      inputComplete: path.join(outputRoot, 'input-complete.json'),
+      terminalAuthority: path.join(outputRoot, 'evidence-driven-terminal.json'),
+    },
+    matrix: { cellId: 'formal-cell-1' },
+  };
+  const cases = [
+    { inputComplete: path.join(root, 'outside-input.json') },
+    { terminalAuthority: path.join(root, 'outside-terminal.json') },
+    { inputComplete: path.join(outputRoot, 'forged-input.json') },
+    { terminalAuthority: path.join(outputRoot, 'forged-terminal.json') },
+  ];
+  for (const mutation of cases) {
+    const request = structuredClone(baseRequest);
+    Object.assign(request.paths, mutation);
+    const context = { paths: { workspaceRoot: path.resolve('.') }, request };
+    const probe = runPowerShell([
+      '-Command',
+      extractedExecutionContextFunctions() +
+        `function global:Get-FileHash { [pscustomobject]@{ Hash = ${quotePowerShell(canonicalHash)} } }; ` +
+        `$env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID = 'lease-path-test'; ` +
+        `$request = ${quotePowerShell(JSON.stringify(request))} | ConvertFrom-Json; ` +
+        `$context = ${quotePowerShell(JSON.stringify(context))} | ConvertFrom-Json; ` +
+        `New-WatchModeExecutionContext -Context $context -Request $request | Out-Null`,
+    ]);
+    assert.notEqual(probe.status, 0, 'forged signed authority path unexpectedly passed');
+    assert.match(`${probe.stderr}\n${probe.stdout}`, /canonical files directly under paths\.outputRoot/i);
+  }
+});
+
+test('physical recorder stops immediately on failure and reserves tail only for terminal success', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-recorder-stop-'));
+  const probe = runPowerShell([
+    '-Command',
+    extractedPhysicalCaptureFunctions() +
+      `function New-FakeRecorder([string]$name, [bool]$terminal) { ` +
+        `$dir = Join-Path ${quotePowerShell(root)} $name; [void](New-Item -ItemType Directory -Path $dir); ` +
+        `$stdout = Join-Path $dir 'stdout.log'; $stderr = Join-Path $dir 'stderr.log'; ` +
+        `$process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-Command','Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru; ` +
+        `$terminalPath = Join-Path $dir 'evidence-driven-terminal.json'; if ($terminal) { Set-Content -LiteralPath $terminalPath -Value '{}' -Encoding utf8 }; ` +
+        `return [pscustomobject]@{ pid=$process.Id; process=$process; recordSeconds=30; startedAtEpochMs=1; ` +
+          `recordingPath=(Join-Path $dir 'recording.wav'); transcriptionPcmPath=(Join-Path $dir 'recording.pcm'); ` +
+          `stdout=$stdout; stderr=$stderr; terminalTailSeconds=1; terminalAuthorityPath=$terminalPath } ` +
+      `}; ` +
+      `$failed = New-FakeRecorder 'failed' $false; $failedWatch = [Diagnostics.Stopwatch]::StartNew(); ` +
+      `try { Complete-PhysicalOutputContentRecorder $failed ${quotePowerShell(process.cwd())} | Out-Null } catch {}; ` +
+      `$failedWatch.Stop(); $failed.process.Refresh(); ` +
+      `$success = New-FakeRecorder 'success' $true; $successWatch = [Diagnostics.Stopwatch]::StartNew(); ` +
+      `try { Complete-PhysicalOutputContentRecorder $success ${quotePowerShell(process.cwd())} -TerminalSucceeded | Out-Null } catch {}; ` +
+      `$successWatch.Stop(); $success.process.Refresh(); ` +
+      `[pscustomobject]@{ failedExited=$failed.process.HasExited; failedMs=$failedWatch.ElapsedMilliseconds; ` +
+        `successExited=$success.process.HasExited; successMs=$successWatch.ElapsedMilliseconds } | ConvertTo-Json -Compress`,
+  ]);
+
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+  const result = JSON.parse(probe.stdout.trim().split(/\r?\n/).at(-1));
+  assert.equal(result.failedExited, true);
+  assert.ok(result.failedMs < 5_000, `failure cleanup took ${result.failedMs}ms`);
+  assert.equal(result.successExited, true);
+  assert.ok(result.successMs >= 900, `terminal tail was not retained: ${result.successMs}ms`);
+});
+
+test('recorder cleanup retains terminal tail when a later runner step has failed', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-recorder-terminal-cleanup-'));
+  const probe = runPowerShell([
+    '-Command',
+    extractedRunLifecycleFunctions() +
+      `$process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-Command','Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru; ` +
+      `$terminalPath = Join-Path ${quotePowerShell(root)} 'evidence-driven-terminal.json'; ` +
+      `Set-Content -LiteralPath $terminalPath -Value '{}' -Encoding utf8; ` +
+      `$recorder = [pscustomobject]@{ pid=$process.Id; process=$process; recordSeconds=30; startedAtEpochMs=1; ` +
+        `recordingPath=(Join-Path ${quotePowerShell(root)} 'recording.wav'); transcriptionPcmPath=(Join-Path ${quotePowerShell(root)} 'recording.pcm'); ` +
+        `stdout=(Join-Path ${quotePowerShell(root)} 'stdout.log'); stderr=(Join-Path ${quotePowerShell(root)} 'stderr.log'); ` +
+        `terminalTailSeconds=1; terminalAuthorityPath=$terminalPath }; ` +
+      `$laterStepFailed = $true; $watch = [Diagnostics.Stopwatch]::StartNew(); ` +
+      `try { Complete-WatchModePhysicalRecorderAfterRun $recorder ${quotePowerShell(process.cwd())} $terminalPath | Out-Null } catch {}; ` +
+      `$watch.Stop(); $process.Refresh(); ` +
+      `[pscustomobject]@{ laterStepFailed=$laterStepFailed; exited=$process.HasExited; elapsedMs=$watch.ElapsedMilliseconds } | ConvertTo-Json -Compress`,
+  ]);
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+  const result = JSON.parse(probe.stdout.trim().split(/\r?\n/).at(-1));
+  assert.equal(result.laterStepFailed, true);
+  assert.equal(result.exited, true);
+  assert.ok(result.elapsedMs >= 900, `terminal tail was dropped after later failure: ${result.elapsedMs}ms`);
 });
 
 test('watch report deadline includes readiness, 30-minute capture, and atomic-write grace', { skip: !isWindows }, () => {
@@ -760,7 +935,7 @@ test('watch report deadline includes readiness, 30-minute capture, and atomic-wr
   assert.equal(Number(probe.stdout.trim()), 2_010);
 });
 
-test('echo-cancel skips virtual-driver physical-output content recording', { skip: !isWindows }, () => {
+test('every paid route records physical output unless content capture is explicitly disabled', { skip: !isWindows }, () => {
   const policy = runPowerShell([
     '-Command',
     `${extractedPhysicalOutputContentPolicyFunctions()} ` +
@@ -768,13 +943,13 @@ test('echo-cancel skips virtual-driver physical-output content recording', { ski
       `$process = Get-PhysicalOutputContentSkipReason -FeedbackMode 'process-exclusion' -SkipContentStt $false; ` +
       `$explicit = Get-PhysicalOutputContentSkipReason -FeedbackMode 'virtual-driver' -SkipContentStt $true; ` +
       `$normal = Get-PhysicalOutputContentSkipReason -FeedbackMode 'virtual-driver' -SkipContentStt $false; ` +
-      `if ($echo -and $explicit -and -not $normal -and -not $process) { exit 0 }; exit 1`,
+      `if (-not $echo -and $explicit -and -not $normal -and -not $process) { exit 0 }; exit 1`,
   ]);
 
   assert.equal(policy.status, 0, policy.stderr || policy.stdout);
 });
 
-test('artifact saving omits echo-cancel physical-content placeholders but preserves non-echo skip diagnostics', { skip: !isWindows }, () => {
+test('artifact saving preserves explicit physical-content skip diagnostics for every route', { skip: !isWindows }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-content-artifact-policy-'));
   const echoDirectory = path.join(root, 'echo-cancel');
   const virtualDirectory = path.join(root, 'virtual-driver');
@@ -812,15 +987,10 @@ test('artifact saving omits echo-cancel physical-content placeholders but preser
     ]);
 
     assert.equal(probe.status, 0, probe.stderr || probe.stdout);
-    assert.ok(
-      forbiddenCellArtifactPaths('echo-cancel').includes('physical-output-content.json'),
-      'the collector test must stay aligned with the strict authority exclusion',
-    );
-    assert.equal(
-      fs.existsSync(path.join(echoDirectory, 'physical-output-content.raw.json')),
-      false,
-      'echo-cancel must not emit an artifact forbidden by strict authority',
-    );
+    assert.equal(forbiddenCellArtifactPaths('echo-cancel').length, 0);
+    const echoArtifact = readJsonArtifact(path.join(echoDirectory, 'physical-output-content.raw.json'));
+    assert.equal(echoArtifact.skipped, true);
+    assert.equal(echoArtifact.reason, 'policy skip');
     const virtualArtifact = readJsonArtifact(path.join(virtualDirectory, 'physical-output-content.raw.json'));
     assert.equal(virtualArtifact.skipped, true);
     assert.equal(virtualArtifact.reason, 'policy skip');
@@ -1056,43 +1226,178 @@ test('partial structured readiness cannot start playback and preserves process d
   }
 });
 
-test('same-process report wait accepts only completed JSON and has an absolute deadline', { skip: !isWindows }, () => {
+test('same-process report wait requires launch custody, terminal identity, and exit code zero', { skip: !isWindows }, () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-report-wait-'));
-  const completedPath = path.join(directory, 'completed.json');
-  const activePath = path.join(directory, 'active.json');
-  const missingPath = path.join(directory, 'missing.json');
-  fs.writeFileSync(completedPath, JSON.stringify({ sessionId: 'watch-complete', status: 'completed' }));
-  fs.writeFileSync(activePath, JSON.stringify({ sessionId: 'watch-active', status: 'active' }));
+  const helperPath = path.join(directory, 'desktop-helper.ps1');
+  fs.writeFileSync(helperPath, `param(
+  [string]$ReportPath, [string]$TerminalPath, [string]$ReleasePath, [string]$RunMarker,
+  [string]$CellId, [string]$LeaseId, [string]$LaunchId, [string]$TerminalLeaseId, [int]$RequestedExitCode,
+  [string]$ReportStatus = 'completed', [string]$TerminalStatus = 'completed',
+  [string]$TerminalErrorCode = 'none', [string]$TerminalIdentityMode = 'exact'
+)
+$releaseDeadlineUtc = [DateTime]::UtcNow.AddSeconds(10)
+while (-not (Test-Path -LiteralPath $ReleasePath -PathType Leaf)) {
+  if ([DateTime]::UtcNow -ge $releaseDeadlineUtc) { [Environment]::Exit(124) }
+  Start-Sleep -Milliseconds 10
+}
+$custody = Get-Content -LiteralPath $ReleasePath -Raw -Encoding UTF8 | ConvertFrom-Json
+$report = @{ sessionId = 'watch-helper'; status = $ReportStatus }
+[System.IO.File]::WriteAllText($ReportPath, ($report | ConvertTo-Json -Compress), [System.Text.UTF8Encoding]::new($false))
+$reportItem = Get-Item -LiteralPath $ReportPath
+$stream = [System.IO.File]::OpenRead($ReportPath)
+$algorithm = [System.Security.Cryptography.SHA256]::Create()
+try { $reportHash = ([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+finally { $algorithm.Dispose(); $stream.Dispose() }
+if ([string]::IsNullOrWhiteSpace($TerminalLeaseId)) { $TerminalLeaseId = $LeaseId }
+$producerStartTimeUtcTicks = [string]$custody.startTimeUtcTicks
+$producerStartedAtUnixMs = [DateTimeOffset]::new([DateTime]::new([long]$producerStartTimeUtcTicks, [DateTimeKind]::Utc)).ToUnixTimeMilliseconds()
+$producerExecutableSha256 = [string]$custody.executableSha256
+if ($TerminalIdentityMode -ceq 'old-start') { $producerStartedAtUnixMs = 1 }
+if ($TerminalIdentityMode -ceq 'wrong-hash') { $producerExecutableSha256 = ('f' * 64) }
+$terminalStartedAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+$terminal = @{ artifactKind = 'watch-mode-evidence-driven-terminal'; schemaVersion = 2
+  runMarker = $RunMarker; cellId = $CellId; leaseId = $TerminalLeaseId; status = $TerminalStatus
+  startedAtUnixMs = $terminalStartedAtUnixMs; completedAtUnixMs = ($terminalStartedAtUnixMs + 20); launchId = $LaunchId
+  producerProcessId = $PID; producerStartTimeUtcTicks = $producerStartTimeUtcTicks
+  producerStartedAtUnixMs = $producerStartedAtUnixMs; producerExecutableSha256 = $producerExecutableSha256
+  sourceHeadCommit = ('a' * 40); runtimeBundleDigest = ('b' * 64)
+  events = @(
+    @{ sequence = 1; stage = 'mediaPlaybackCompleted'; observedAtUnixMs = ($terminalStartedAtUnixMs + 1); detail = @{} },
+    @{ sequence = 2; stage = 'inputCompleteSignaled'; observedAtUnixMs = ($terminalStartedAtUnixMs + 2); detail = @{} },
+    @{ sequence = 3; stage = 'inputCompleteObserved'; observedAtUnixMs = ($terminalStartedAtUnixMs + 3); detail = @{} },
+    @{ sequence = 4; stage = 'lastProviderAppend'; observedAtUnixMs = ($terminalStartedAtUnixMs + 4); detail = @{} },
+    @{ sequence = 5; stage = 'sessionFinishSent'; observedAtUnixMs = ($terminalStartedAtUnixMs + 5); detail = @{} },
+    @{ sequence = 6; stage = 'lastResponseAudioDone'; observedAtUnixMs = ($terminalStartedAtUnixMs + 6); detail = @{} },
+    @{ sequence = 7; stage = 'sessionFinishedReceived'; observedAtUnixMs = ($terminalStartedAtUnixMs + 7); detail = @{} },
+    @{ sequence = 8; stage = 'finalRendererAck'; observedAtUnixMs = ($terminalStartedAtUnixMs + 8); detail = @{} },
+    @{ sequence = 9; stage = 'localPlaybackQuiescent'; observedAtUnixMs = ($terminalStartedAtUnixMs + 9); detail = @{} },
+    @{ sequence = 10; stage = 'reportWritten'; observedAtUnixMs = ($terminalStartedAtUnixMs + 10)
+      detail = @{ reportPath = 'watch-session-report.json'
+        byteLength = [int64]$reportItem.Length; sha256 = $reportHash } }
+  ) }
+if ($TerminalIdentityMode -ceq 'gapped-sequence') { $terminal.events[9].sequence = 11 }
+if ($TerminalIdentityMode -ceq 'completed-before-last') { $terminal.completedAtUnixMs = $terminalStartedAtUnixMs + 5 }
+if ($TerminalIdentityMode -ceq 'report-not-final') {
+  $reportEvent = $terminal.events[9]
+  $terminal.events[9] = $terminal.events[8]
+  $terminal.events[8] = $reportEvent
+  $terminal.events[8].sequence = 9
+  $terminal.events[9].sequence = 10
+}
+if ($TerminalErrorCode -cne 'none') {
+  $terminal['errorCode'] = $TerminalErrorCode
+  $terminal['error'] = "terminal phase failed: $TerminalErrorCode"
+}
+[System.IO.File]::WriteAllText($TerminalPath, ($terminal | ConvertTo-Json -Depth 8 -Compress), [System.Text.UTF8Encoding]::new($false))
+[Environment]::Exit($RequestedExitCode)
+`, 'utf8');
+  const runMarker = 'run-custody-1';
+  const cellId = 'cell-custody-1';
+  const leaseId = 'provider-lease-custody-1';
+  const invokeHelper = (
+    name,
+    exitCode,
+    reportStatus = 'completed',
+    terminalLeaseId = leaseId,
+    terminalStatus = 'completed',
+    terminalErrorCode = 'none',
+    terminalIdentityMode = 'exact',
+  ) => {
+    const helperDirectory = path.join(directory, name);
+    fs.mkdirSync(helperDirectory);
+    const reportPath = path.join(helperDirectory, 'watch-session-report.json');
+    const terminalPath = path.join(helperDirectory, 'evidence-driven-terminal.json');
+    const releasePath = path.join(helperDirectory, 'custody-ready.marker');
+    const helperStderrPath = path.join(helperDirectory, 'desktop-helper.stderr.log');
+    const command = extractedReportWaitFunctions() +
+      `$launchId = [guid]::NewGuid().ToString(); ` +
+      `$child = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',` +
+        `${quotePowerShell(helperPath)},'-ReportPath',${quotePowerShell(reportPath)},'-TerminalPath',${quotePowerShell(terminalPath)},` +
+        `'-ReleasePath',${quotePowerShell(releasePath)},` +
+        `'-RunMarker',${quotePowerShell(runMarker)},'-CellId',${quotePowerShell(cellId)},'-LeaseId',${quotePowerShell(leaseId)},` +
+        `'-LaunchId',$launchId,'-TerminalLeaseId',${quotePowerShell(terminalLeaseId)},` +
+        `'-RequestedExitCode','${exitCode}','-ReportStatus',${quotePowerShell(reportStatus)},` +
+        `'-TerminalStatus',${quotePowerShell(terminalStatus)},'-TerminalErrorCode',${quotePowerShell(terminalErrorCode)},` +
+        `'-TerminalIdentityMode',${quotePowerShell(terminalIdentityMode)}) ` +
+        `-WindowStyle Hidden -RedirectStandardError ${quotePowerShell(helperStderrPath)} -PassThru; ` +
+      `$lease = Get-OmniProcessIdentity -ProcessId $child.Id -Ownership managed -LaunchId $launchId -ProcessHandle $child; ` +
+      `[System.IO.File]::WriteAllText(${quotePowerShell(releasePath)}, ($lease | ConvertTo-Json -Compress), [System.Text.UTF8Encoding]::new($false)); ` +
+      `try { Wait-WatchSessionReportAndDesktopExit -Path ${quotePowerShell(reportPath)} -ProcessLease $lease ` +
+          `-TerminalAuthorityPath ${quotePowerShell(terminalPath)} -RunMarker ${quotePowerShell(runMarker)} ` +
+          `-CellId ${quotePowerShell(cellId)} -LeaseId ${quotePowerShell(leaseId)} ` +
+          `-SourceHeadCommit ('a' * 40) -RuntimeBundleDigest ('b' * 64) ` +
+          `-DeadlineUtc ([DateTime]::UtcNow.AddSeconds(5)) | Out-Null ` +
+        `} catch { $helperError = if (Test-Path -LiteralPath ${quotePowerShell(helperStderrPath)}) { ` +
+            `Get-Content -LiteralPath ${quotePowerShell(helperStderrPath)} -Raw ` +
+          `} else { '<missing helper stderr>' }; throw "$($_.Exception.Message) helperStderr=$helperError" }`;
+    return runPowerShell(['-Command', command]);
+  };
   try {
-    const completed = runPowerShell([
+    const forgedReportPath = path.join(directory, 'forged-report.json');
+    const forgedTerminalPath = path.join(directory, 'forged-terminal.json');
+    fs.writeFileSync(forgedReportPath, JSON.stringify({ sessionId: 'watch-forged', status: 'completed' }));
+    fs.writeFileSync(forgedTerminalPath, JSON.stringify({
+      artifactKind: 'watch-mode-evidence-driven-terminal', schemaVersion: 2,
+      runMarker, cellId, leaseId, status: 'completed',
+    }));
+    const forged = runPowerShell([
       '-Command',
       extractedReportWaitFunctions() +
-        `Wait-WatchSessionReportAndDesktopExit -Path ${quotePowerShell(completedPath)} ` +
-        `-ProcessId 2147483647 -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) | Out-Null`,
+        `$forgedLease = [pscustomobject]@{ schemaVersion='omni-process-lease/v1'; custodyId='not-launched-here'; ` +
+          `pid=2147483647; startTimeUtcTicks=1; executablePath='C:\\forged.exe'; executableSha256=('0' * 64); ownership='managed' }; ` +
+        `Wait-WatchSessionReportAndDesktopExit -Path ${quotePowerShell(forgedReportPath)} -ProcessLease $forgedLease ` +
+          `-TerminalAuthorityPath ${quotePowerShell(forgedTerminalPath)} -RunMarker ${quotePowerShell(runMarker)} ` +
+          `-CellId ${quotePowerShell(cellId)} -LeaseId ${quotePowerShell(leaseId)} ` +
+          `-SourceHeadCommit ('a' * 40) -RuntimeBundleDigest ('b' * 64) ` +
+          `-DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) | Out-Null`,
     ]);
-    assert.equal(completed.status, 0, `completed report should pass:\n${completed.stderr}`);
+    assert.notEqual(forged.status, 0, 'a handwritten report and nonexistent PID must not establish launch custody');
+    assert.match(`${forged.stderr}\n${forged.stdout}`, /launch custody|custody lease/i);
 
-    const active = runPowerShell([
-      '-Command',
-      extractedReportWaitFunctions() +
-        `Wait-WatchSessionReportAndDesktopExit -Path ${quotePowerShell(activePath)} ` +
-        `-ProcessId 2147483647 -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) | Out-Null`,
-    ]);
+    const nonzero = invokeHelper('nonzero', 7);
+    assert.notEqual(nonzero.status, 0, 'a custodied desktop exit code 7 must fail');
+    assert.match(`${nonzero.stderr}\n${nonzero.stdout}`, /exit code 7/i);
+
+    const preciseFailure = invokeHelper(
+      'precise-terminal-failure',
+      1,
+      'completed',
+      leaseId,
+      'failed',
+      'provider-finish-timeout',
+    );
+    assert.notEqual(preciseFailure.status, 0, 'a failed terminal must remain fail-closed');
+    assert.match(
+      `${preciseFailure.stderr}\n${preciseFailure.stdout}`,
+      /terminalErrorCode=provider-finish-timeout/,
+    );
+
+    const active = invokeHelper('active', 0, 'active');
     assert.notEqual(active.status, 0, 'an active report must fail the completed-report contract');
-    assert.match(active.stderr, /report is not completed/i);
+    assert.match(`${active.stderr}\n${active.stdout}`, /report is not completed/i);
 
-    const startedAt = Date.now();
-    const missing = runPowerShell([
-      '-Command',
-      extractedReportWaitFunctions() +
-        `Wait-WatchSessionReportAndDesktopExit -Path ${quotePowerShell(missingPath)} ` +
-        `-ProcessId $PID -DeadlineUtc ([DateTime]::UtcNow.AddMilliseconds(300)) | Out-Null`,
-    ]);
-    assert.notEqual(missing.status, 0, 'a missing report must fail at the absolute deadline');
-    assert.match(missing.stderr, /timed out waiting for same-process Watch report/i);
-    // powershell.exe process startup can take several seconds on a busy Windows
-    // CI/dev host; the function-level deadline above remains 300 ms.
-    assert.ok(Date.now() - startedAt < 10_000, 'absolute-deadline wait should remain bounded');
+    const wrongIdentity = invokeHelper('wrong-identity', 0, 'completed', 'another-provider-lease');
+    assert.notEqual(wrongIdentity.status, 0, 'terminal identity from another lease must fail');
+    assert.match(`${wrongIdentity.stderr}\n${wrongIdentity.stdout}`, /terminal leaseId does not match this launch/i);
+
+    for (const [name, mode] of [['old-producer-start', 'old-start'], ['wrong-executable-hash', 'wrong-hash']]) {
+      const mismatchedProducer = invokeHelper(name, 0, 'completed', leaseId, 'completed', 'none', mode);
+      assert.notEqual(mismatchedProducer.status, 0, `${mode} must not match launch custody`);
+      assert.match(`${mismatchedProducer.stderr}\n${mismatchedProducer.stdout}`, /producer identity/i);
+    }
+
+    for (const [name, mode] of [
+      ['gapped-terminal-sequence', 'gapped-sequence'],
+      ['completed-before-last-event', 'completed-before-last'],
+      ['report-written-not-final', 'report-not-final'],
+    ]) {
+      const malformedTerminal = invokeHelper(name, 0, 'completed', leaseId, 'completed', 'none', mode);
+      assert.notEqual(malformedTerminal.status, 0, `${mode} must fail the strict terminal boundary`);
+      assert.match(`${malformedTerminal.stderr}\n${malformedTerminal.stdout}`, /terminal event|reportWritten/i);
+    }
+
+    const completed = invokeHelper('completed', 0);
+    assert.equal(completed.status, 0, `custodied zero-exit completed report should pass:\n${completed.stderr}`);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -1170,10 +1475,10 @@ test('dry-run executes end to end and produces passing, content-checked artifact
   }
 });
 
-test('matrix runner executes both strict watch models and verifies strict evidence', async () => {
+test('matrix runner defaults to the exact release model and preserves explicit diagnostic routing', async () => {
   const matrix = await import('./run-watch-mode-live-matrix.mjs');
 
-  assert.deepEqual(matrix.DEFAULT_MODELS, ['qwen3.5-omni-flash-realtime', 'qwen3.5-livetranslate-flash-realtime']);
+  assert.deepEqual(matrix.DEFAULT_MODELS, ['qwen3.5-livetranslate-flash-realtime']);
   assert.deepEqual(matrix.DEFAULT_FEEDBACK_MODES, ['process-exclusion', 'virtual-driver', 'echo-cancel']);
 
   const request = matrix.buildRunnerRequest({

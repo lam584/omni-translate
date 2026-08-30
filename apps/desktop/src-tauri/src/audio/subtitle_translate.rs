@@ -25,9 +25,11 @@ use super::translation_scheduler::{
     should_accept_translation, should_dedupe_written_translation, should_retry_translation,
     translation_attempt_key, translation_job_key, translation_rank, TranslationDelta,
     TranslationEnqueueResult, TranslationJob, TranslationOutcome, TranslationRank,
-    TranslationScheduler, TranslationUpdate, TranslationWriteState, FINAL_TRANSLATION_DEADLINE,
-    FORCED_TRANSLATION_DEADLINE, MAX_RATE_LIMIT_ATTEMPTS, MAX_RETRIABLE_SENTENCE_ATTEMPTS,
+    TranslationScheduler, TranslationUpdate, TranslationWriteState, MAX_RATE_LIMIT_ATTEMPTS,
+    MAX_RETRIABLE_SENTENCE_ATTEMPTS,
 };
+#[cfg(test)]
+use super::translation_scheduler::{FINAL_TRANSLATION_DEADLINE, FORCED_TRANSLATION_DEADLINE};
 
 const POLL_INTERVAL_MS: u64 = 50;
 // A speech turn can produce several sentences at once. Eight slots keep the

@@ -18,10 +18,9 @@ export const PHYSICAL_OUTPUT_SOURCE_WINDOW_PCM_FILE =
   'physical-output-recording-source-window-16k-mono.pcm';
 export const EXTERNAL_PROVIDER_INPUT_SAMPLE_RATE_HZ = 16_000;
 export const EXTERNAL_PROVIDER_INPUT_BYTES_PER_SAMPLE = 2;
-export const STRICT_PAID_CELL_CEILING_SECONDS = 180;
-export const STRICT_PAID_MATRIX_CEILING_SECONDS = 24 * 60;
+export const STRICT_PAID_CELL_MAX_INPUT_SAMPLES = 2_877_045;
+export const STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES = 10_100_180;
 export const STRICT_PAID_MODEL_PROTOCOLS = Object.freeze({
-  'qwen3.5-omni-flash-realtime': 'dashscope-omni',
   'qwen3.5-livetranslate-flash-realtime': 'dashscope-livetranslate',
 });
 export const INCIDENT_REPLAY_PLUS_MODEL = 'qwen3.5-omni-plus-realtime';
@@ -312,7 +311,7 @@ export function writePreProviderTerminalAuthority({
   cellId,
   leaseId,
   modelId,
-  sessionCeilingSeconds = STRICT_PAID_CELL_CEILING_SECONDS,
+  inputCeilingSamples = STRICT_PAID_CELL_MAX_INPUT_SAMPLES,
   modelProtocols = STRICT_PAID_MODEL_PROTOCOLS,
   providerIdentity = STRICT_PAID_PROVIDER_IDENTITY,
   occurredAtMs = Date.now(),
@@ -323,7 +322,7 @@ export function writePreProviderTerminalAuthority({
   for (const [label, value] of Object.entries({ runMarker, cellId, leaseId, modelId })) {
     if (!String(value ?? '').trim()) throw new Error(`pre-provider terminal ${label} is missing`);
   }
-  const maxSamples = Number(sessionCeilingSeconds) * EXTERNAL_PROVIDER_INPUT_SAMPLE_RATE_HZ;
+  const maxSamples = Number(inputCeilingSamples);
   if (!Number.isSafeInteger(maxSamples) || maxSamples <= 0) throw new Error('pre-provider terminal sample ceiling is invalid');
   fs.mkdirSync(resolvedRunDirectory, { recursive: true });
   const ledgerPath = path.join(resolvedRunDirectory, PROVIDER_SEND_BOUNDARY_LEDGER_FILE);
@@ -426,22 +425,28 @@ export function actualProviderInputSamplesFromLog(scopedLog) {
   return { samples, summaryCount };
 }
 
-export function reserveStrictPaidCell({
-  reservedSeconds,
-  nextCellSeconds = STRICT_PAID_CELL_CEILING_SECONDS,
-  matrixCeilingSeconds = STRICT_PAID_MATRIX_CEILING_SECONDS,
+export function reserveStrictPaidCellInputSamples({
+  reservedSamples,
+  nextCellSamples,
+  matrixCeilingSamples = STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
+  cellCeilingSamples = STRICT_PAID_CELL_MAX_INPUT_SAMPLES,
 }) {
-  const current = Number(reservedSeconds);
-  const next = Number(nextCellSeconds);
-  const ceiling = Number(matrixCeilingSeconds);
-  if (![current, next, ceiling].every(Number.isFinite) || current < 0 || next <= 0 || ceiling <= 0) {
-    throw new Error('strict paid-cell reservation requires finite positive budget values');
+  const current = Number(reservedSamples);
+  const next = Number(nextCellSamples);
+  const ceiling = Number(matrixCeilingSamples);
+  const cellCeiling = Number(cellCeilingSamples);
+  if (![current, next, ceiling, cellCeiling].every(Number.isFinite)
+    || current < 0 || next <= 0 || ceiling <= 0 || cellCeiling <= 0) {
+    throw new Error('strict paid-cell reservation requires finite positive sample budget values');
   }
-  if (next > STRICT_PAID_CELL_CEILING_SECONDS) {
-    throw new Error(`strict paid cell requests ${next}s; per-cell ceiling is ${STRICT_PAID_CELL_CEILING_SECONDS}s`);
+  if (![current, next, ceiling, cellCeiling].every(Number.isSafeInteger)) {
+    throw new Error('strict paid-cell reservation sample budgets must be safe integers');
+  }
+  if (next > cellCeiling) {
+    throw new Error(`strict paid cell requests ${next} samples; per-cell maximum is ${cellCeiling}`);
   }
   if (current + next > ceiling) {
-    throw new Error(`strict paid matrix would reserve ${current + next}s before the next provider session; ceiling is ${ceiling}s`);
+    throw new Error(`strict paid matrix would reserve ${current + next} input samples; ceiling is ${ceiling}`);
   }
   return current + next;
 }
@@ -454,7 +459,7 @@ export function buildCellExternalProviderBudget({
   modelId,
   feedbackLoopPrevention,
   translationMode = 'native',
-  sessionCeilingSeconds = STRICT_PAID_CELL_CEILING_SECONDS,
+  inputCeilingSamples = STRICT_PAID_CELL_MAX_INPUT_SAMPLES,
   generatedAt = new Date(),
   approvedModels = RELEASE_MODELS,
   modelProtocols = STRICT_PAID_MODEL_PROTOCOLS,
@@ -466,7 +471,7 @@ export function buildCellExternalProviderBudget({
   const normalizedModel = String(modelId ?? '').trim();
   const normalizedCellId = String(cellId ?? '').trim();
   const feedbackMode = String(feedbackLoopPrevention ?? '').trim();
-  const ceilingSeconds = Number(sessionCeilingSeconds);
+  const resolvedInputCeilingSamples = Number(inputCeilingSamples);
 
   if (!Array.isArray(approvedModels) || !approvedModels.includes(normalizedModel)) {
     violations.push(`model ${normalizedModel || '(missing)'} is not in the approved ${authorityMode} model set`);
@@ -478,8 +483,10 @@ export function buildCellExternalProviderBudget({
   if (translationMode !== 'native') {
     violations.push(`strict paid subtitle translation mode must be native; got ${translationMode}`);
   }
-  if (!Number.isFinite(ceilingSeconds) || ceilingSeconds <= 0 || ceilingSeconds > STRICT_PAID_CELL_CEILING_SECONDS) {
-    violations.push(`strict paid session ceiling must be within 1-${STRICT_PAID_CELL_CEILING_SECONDS}s; got ${sessionCeilingSeconds}`);
+  if (!Number.isSafeInteger(resolvedInputCeilingSamples)
+    || resolvedInputCeilingSamples <= 0
+    || resolvedInputCeilingSamples > STRICT_PAID_CELL_MAX_INPUT_SAMPLES) {
+    violations.push('strict paid input sample ceiling is invalid or exceeds the hard per-cell sample maximum');
   }
 
   const providerPcmPath = path.join(resolvedRunDirectory, 'provider-input-16k-mono.pcm');
@@ -513,7 +520,6 @@ export function buildCellExternalProviderBudget({
     violations.push(error.message);
   }
   const tracedInput = actualProviderInputSamplesFromLog(scopedLog);
-  const inputCeilingSamples = Math.floor(Math.max(0, ceilingSeconds) * EXTERNAL_PROVIDER_INPUT_SAMPLE_RATE_HZ);
   let sendBoundaryAuthority = null;
   try {
     sendBoundaryAuthority = validateSendBoundaryAuthority({
@@ -521,7 +527,7 @@ export function buildCellExternalProviderBudget({
       cellId: normalizedCellId,
       runMarker,
       modelId: normalizedModel,
-      maxSamples: inputCeilingSamples,
+      maxSamples: resolvedInputCeilingSamples,
       modelProtocols,
       providerIdentity,
     });
@@ -562,7 +568,7 @@ export function buildCellExternalProviderBudget({
     violations.push(`remote auxiliary diagnostic artifacts are forbidden: ${forbiddenArtifacts.join(', ')}`);
   }
 
-  const contentRequired = feedbackMode !== 'echo-cancel';
+  const contentRequired = true;
   const sourceAuthorityPath = path.join(resolvedRunDirectory, 'source-media-transcript.json');
   const physicalAuthorityPath = path.join(resolvedRunDirectory, 'physical-output-content.raw.json');
   let sourceAuthority = null;
@@ -591,8 +597,8 @@ export function buildCellExternalProviderBudget({
     generatedAt: generatedAt instanceof Date ? generatedAt.toISOString() : String(generatedAt),
     passed: violations.length === 0,
     scope: authorityMode === 'strict-paid'
-      ? 'strict-paid-realtime-session-window'
-      : `${authorityMode}-realtime-session-window`,
+      ? 'strict-paid-provider-input-samples'
+      : `${authorityMode}-provider-input-samples`,
     runMarker: String(runMarker ?? ''),
     cellId: normalizedCellId,
     modelId: normalizedModel,
@@ -602,9 +608,8 @@ export function buildCellExternalProviderBudget({
     ...(authorityMode === 'strict-paid' ? {} : {
       incidentId: providerIdentity.incidentId,
     }),
-    sessionCeilingSeconds: ceilingSeconds,
     inputSampleRateHz: EXTERNAL_PROVIDER_INPUT_SAMPLE_RATE_HZ,
-    inputCeilingSamples,
+    providerInputSampleCeiling: resolvedInputCeilingSamples,
     actualProviderInputSamples: authoritativeInputSamples,
     actualProviderInputSeconds: actualInputSeconds,
     providerInputPcm: providerPcm,
@@ -666,7 +671,8 @@ export function assertCellExternalProviderBudget(runDirectory, expected = {}) {
     modelId: expected.modelId ?? recorded.modelId,
     feedbackLoopPrevention: expected.feedbackLoopPrevention ?? recorded.feedbackLoopPrevention,
     translationMode: recorded.translationMode,
-    sessionCeilingSeconds: expected.sessionCeilingSeconds ?? recorded.sessionCeilingSeconds,
+    inputCeilingSamples:
+      expected.inputCeilingSamples ?? recorded.providerInputSampleCeiling,
     generatedAt: recorded.generatedAt,
     approvedModels: expected.approvedModels ?? recorded.approvedModels ?? RELEASE_MODELS,
     modelProtocols: expected.modelProtocols ?? STRICT_PAID_MODEL_PROTOCOLS,
@@ -689,18 +695,32 @@ export function assertCellExternalProviderBudget(runDirectory, expected = {}) {
 
 export function buildMatrixExternalProviderBudget(cellLedgers, {
   generatedAt = new Date(),
-  matrixCeilingSeconds = STRICT_PAID_MATRIX_CEILING_SECONDS,
+  matrixInputSampleCeiling = null,
   expectedCells = LIVE_LLM_CELLS,
 } = {}) {
   const ledgers = Array.isArray(cellLedgers) ? cellLedgers : [];
   const violations = [];
-  let reservedSeconds = 0;
+  let reservedInputSamples = 0;
   let actualInputSamples = 0;
   const expectedCellIds = expectedCells.map((cell) => cell.cellId);
   const recordedCellIds = ledgers.map((ledger) => ledger?.cellId);
   const leaseIds = ledgers.map((ledger) => ledger?.providerSendBoundary?.leaseId);
+  const cellMaxInputSamples = Math.max(
+    0,
+    ...expectedCells.map((cell) => Number(
+      cell.maxExternalAudioSamples ?? cell.providerInputSampleCeiling ?? 0,
+    )),
+  );
+  const resolvedMatrixInputSampleCeiling = Number(
+    matrixInputSampleCeiling ?? expectedCells.reduce(
+      (total, cell) => total + Number(
+        cell.maxExternalAudioSamples ?? cell.providerInputSampleCeiling ?? 0,
+      ),
+      0,
+    ),
+  );
   if (JSON.stringify(recordedCellIds) !== JSON.stringify(expectedCellIds)) {
-    violations.push('strict paid matrix cell ids/order do not match the fixed eight-cell release plan');
+    violations.push(`strict paid matrix cell ids/order do not match the fixed ${expectedCells.length}-cell plan`);
   }
   if (new Set(recordedCellIds).size !== recordedCellIds.length) {
     violations.push('strict paid matrix contains duplicate cellId values');
@@ -712,12 +732,18 @@ export function buildMatrixExternalProviderBudget(cellLedgers, {
     violations.push('strict paid matrix contains duplicate provider leaseId values');
   }
   for (const [index, ledger] of ledgers.entries()) {
-    if (ledger?.passed !== true) violations.push(`cell ${index} budget did not pass`);
+    if (ledger?.passed !== true) {
+      const details = Array.isArray(ledger?.violations) && ledger.violations.length > 0
+        ? `: ${ledger.violations.join('; ')}`
+        : '';
+      violations.push(`cell ${index} budget did not pass${details}`);
+    }
     try {
-      reservedSeconds = reserveStrictPaidCell({
-        reservedSeconds,
-        nextCellSeconds: Number(ledger?.sessionCeilingSeconds),
-        matrixCeilingSeconds,
+      reservedInputSamples = reserveStrictPaidCellInputSamples({
+        reservedSamples: reservedInputSamples,
+        nextCellSamples: Number(ledger?.providerInputSampleCeiling),
+        matrixCeilingSamples: resolvedMatrixInputSampleCeiling,
+        cellCeilingSamples: cellMaxInputSamples,
       });
     } catch (error) {
       violations.push(`cell ${index}: ${error.message}`);
@@ -731,22 +757,22 @@ export function buildMatrixExternalProviderBudget(cellLedgers, {
     }
   }
   const actualInputSeconds = roundedSeconds(actualInputSamples);
-  if (reservedSeconds > matrixCeilingSeconds) {
-    violations.push(`reserved provider session window ${reservedSeconds}s exceeds ${matrixCeilingSeconds}s`);
+  if (reservedInputSamples > resolvedMatrixInputSampleCeiling) {
+    violations.push(`reserved provider input ${reservedInputSamples} samples exceeds ${resolvedMatrixInputSampleCeiling}`);
   }
-  if (actualInputSeconds > matrixCeilingSeconds) {
-    violations.push(`actual provider input audio ${actualInputSeconds}s exceeds ${matrixCeilingSeconds}s`);
+  if (actualInputSamples > resolvedMatrixInputSampleCeiling) {
+    violations.push(`actual provider input audio ${actualInputSamples} samples exceeds ${resolvedMatrixInputSampleCeiling}`);
   }
   return {
     schemaVersion: EXTERNAL_PROVIDER_BUDGET_SCHEMA_VERSION,
     artifactKind: MATRIX_EXTERNAL_PROVIDER_BUDGET_KIND,
     generatedAt: generatedAt instanceof Date ? generatedAt.toISOString() : String(generatedAt),
     passed: violations.length === 0,
-    scope: 'strict-paid-realtime-session-window',
-    matrixCeilingSeconds,
-    cellCeilingSeconds: STRICT_PAID_CELL_CEILING_SECONDS,
+    scope: 'strict-paid-provider-input-samples',
+    matrixInputSampleCeiling: resolvedMatrixInputSampleCeiling,
+    cellMaxInputSamples,
     cellCount: ledgers.length,
-    reservedSessionSeconds: reservedSeconds,
+    reservedInputSamples,
     actualProviderInputSamples: actualInputSamples,
     actualProviderInputSeconds: actualInputSeconds,
     auxiliaryExternalAudioSeconds: 0,
@@ -760,7 +786,7 @@ export function buildMatrixExternalProviderBudget(cellLedgers, {
       modelId: ledger.modelId,
       cellId: ledger.cellId,
       feedbackLoopPrevention: ledger.feedbackLoopPrevention,
-      sessionCeilingSeconds: ledger.sessionCeilingSeconds,
+      providerInputSampleCeiling: ledger.providerInputSampleCeiling,
       actualProviderInputSamples: ledger.actualProviderInputSamples,
       actualProviderInputSeconds: ledger.actualProviderInputSeconds,
       leaseId: ledger.providerSendBoundary?.leaseId ?? null,
@@ -775,7 +801,7 @@ export function assertMatrixExternalProviderBudget(filePath, cellLedgers, option
     throw new Error(`strict paid-matrix budget ledger has an unsupported schema/kind: ${filePath}`);
   }
   const rebuilt = buildMatrixExternalProviderBudget(cellLedgers, {
-    matrixCeilingSeconds: recorded.matrixCeilingSeconds,
+    matrixInputSampleCeiling: recorded.matrixInputSampleCeiling,
     generatedAt: recorded.generatedAt,
     expectedCells: options.expectedCells ?? LIVE_LLM_CELLS,
   });
@@ -810,10 +836,10 @@ if (isMain(import.meta.url)) {
         modelId: '',
         feedbackMode: '',
         translationMode: 'native',
-        sessionCeilingSeconds: STRICT_PAID_CELL_CEILING_SECONDS,
         authorityMode: 'strict-paid',
         writePreProviderTerminal: 'false',
         leaseId: '',
+        inputCeilingSamples: '',
       },
     });
     for (const [key, value] of Object.entries({
@@ -839,7 +865,9 @@ if (isMain(import.meta.url)) {
         cellId: options.cellId,
         leaseId: options.leaseId,
         modelId: options.modelId,
-        sessionCeilingSeconds: Number(options.sessionCeilingSeconds),
+        inputCeilingSamples: String(options.inputCeilingSamples ?? '').trim()
+          ? Number(options.inputCeilingSamples)
+          : STRICT_PAID_CELL_MAX_INPUT_SAMPLES,
       });
     }
     const { filePath, ledger } = writeCellExternalProviderBudget({
@@ -850,7 +878,9 @@ if (isMain(import.meta.url)) {
       modelId: options.modelId,
       feedbackLoopPrevention: options.feedbackMode,
       translationMode: options.translationMode,
-      sessionCeilingSeconds: Number(options.sessionCeilingSeconds),
+      inputCeilingSamples: String(options.inputCeilingSamples ?? '').trim()
+        ? Number(options.inputCeilingSamples)
+        : STRICT_PAID_CELL_MAX_INPUT_SAMPLES,
       authorityMode,
       ...(incidentReplay ? {
         approvedModels: [INCIDENT_REPLAY_PLUS_MODEL],

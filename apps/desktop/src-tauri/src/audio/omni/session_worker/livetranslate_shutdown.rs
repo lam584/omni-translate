@@ -1,5 +1,5 @@
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,12 +21,15 @@ struct LivetranslateShutdownShared {
     shutdown_requested: Arc<AtomicBool>,
     session_finish_sent: AtomicBool,
     session_finished_received: AtomicBool,
+    pre_finish_session_finished_observed: AtomicBool,
+    idle_read_observation_count: AtomicU64,
 }
 
 pub(super) struct LivetranslateShutdown {
     enabled: bool,
     shared: Arc<LivetranslateShutdownShared>,
     requested_at: Option<Instant>,
+    pre_finish_drain_barrier: Option<u64>,
 }
 
 impl LivetranslateShutdown {
@@ -56,8 +59,11 @@ impl LivetranslateShutdown {
                 shutdown_requested,
                 session_finish_sent: AtomicBool::new(false),
                 session_finished_received: AtomicBool::new(false),
+                pre_finish_session_finished_observed: AtomicBool::new(false),
+                idle_read_observation_count: AtomicU64::new(0),
             }),
             requested_at: None,
+            pre_finish_drain_barrier: None,
         }
     }
 
@@ -95,14 +101,43 @@ impl LivetranslateShutdown {
     }
 
     pub(super) fn should_send_finish(
-        &self,
+        &mut self,
         chunks_sent_this_tick: usize,
         pre_session_audio_queue_is_empty: bool,
-    ) -> bool {
-        self.is_requested()
+        audio_input_disconnected: bool,
+    ) -> Result<bool, String> {
+        if self
+            .shared
+            .pre_finish_session_finished_observed
+            .load(Ordering::SeqCst)
+        {
+            return Err(
+                "LiveTranslate fail-closed: session.finished was observed before the local session.finish send boundary | code: livetranslate-session-finished-before-finish"
+                    .to_string(),
+            );
+        }
+        let input_fenced = self.is_requested()
             && !self.shared.session_finish_sent.load(Ordering::SeqCst)
             && chunks_sent_this_tick == 0
             && pre_session_audio_queue_is_empty
+            && audio_input_disconnected;
+        if !input_fenced {
+            self.pre_finish_drain_barrier = None;
+            return Ok(false);
+        }
+        let idle_reads = self
+            .shared
+            .idle_read_observation_count
+            .load(Ordering::SeqCst);
+        let Some(barrier) = self.pre_finish_drain_barrier else {
+            // Force at least one nonblocking socket read to observe an empty
+            // inbound queue after the capture/send fence. This prevents an
+            // already-queued, out-of-order session.finished from being
+            // reclassified as the acknowledgement to our later finish.
+            self.pre_finish_drain_barrier = Some(idle_reads);
+            return Ok(false);
+        };
+        Ok(idle_reads > barrier)
     }
 
     pub(super) fn finish_event(&self, event_id: &str) -> Value {
@@ -157,16 +192,34 @@ pub(super) struct LivetranslateSocket<S> {
 
 impl<S: RealtimeSocket> RealtimeSocket for LivetranslateSocket<S> {
     fn read_message(&mut self) -> Result<Message, tungstenite::Error> {
-        let message = self.inner.read_message()?;
-        if self.shared.session_finish_sent.load(Ordering::SeqCst)
-            && message_event_type(&message) == Some("session.finished")
-        {
-            // Mark receipt before returning the exact event. The ordinary
-            // processor still consumes it (and every preceding final event)
-            // before the worker closes the socket.
-            self.shared
-                .session_finished_received
-                .store(true, Ordering::SeqCst);
+        let message = match self.inner.read_message() {
+            Ok(message) => message,
+            Err(error) => {
+                if matches!(
+                    &error,
+                    tungstenite::Error::Io(io_error)
+                        if matches!(io_error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+                ) {
+                    self.shared
+                        .idle_read_observation_count
+                        .fetch_add(1, Ordering::SeqCst);
+                }
+                return Err(error);
+            }
+        };
+        if message_event_type(&message) == Some("session.finished") {
+            if self.shared.session_finish_sent.load(Ordering::SeqCst) {
+                // Mark receipt before returning the exact event. The ordinary
+                // processor still consumes it (and every preceding final event)
+                // before the worker closes the socket.
+                self.shared
+                    .session_finished_received
+                    .store(true, Ordering::SeqCst);
+            } else {
+                self.shared
+                    .pre_finish_session_finished_observed
+                    .store(true, Ordering::SeqCst);
+            }
         }
         Ok(message)
     }
@@ -413,6 +466,18 @@ mod tests {
     }
 
     #[test]
+    fn empty_but_still_connected_audio_input_cannot_authorize_session_finish() {
+        let mut shutdown = LivetranslateShutdown::new(true);
+        assert!(shutdown.request(Instant::now()));
+
+        assert!(
+            !shutdown.should_send_finish(0, true, false).unwrap(),
+            "an instantaneous empty queue is not a producer completion fence"
+        );
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+    }
+
+    #[test]
     fn unsolicited_session_finished_before_our_finish_is_not_an_ack() {
         let mut shutdown = LivetranslateShutdown::new(true);
         shutdown.request(Instant::now());
@@ -425,6 +490,45 @@ mod tests {
 
         assert_eq!(socket.read_message().expect("forwarded event"), event);
         assert!(!shutdown.session_finished_received());
+        assert!(shutdown.should_send_finish(0, true, true).is_err());
+    }
+
+    #[test]
+    fn prequeued_session_finished_is_rejected_before_finish_can_cross_the_send_boundary() {
+        let mut shutdown = LivetranslateShutdown::new(true);
+        shutdown.request(Instant::now());
+        let state = Arc::new(Mutex::new(FakeSocketState::default()));
+        let event = text_event("session.finished");
+        let mut socket = shutdown.wrap_socket(FakeSocket {
+            inbound: VecDeque::from([event.clone()]),
+            state,
+        });
+
+        assert!(
+            !shutdown.should_send_finish(0, true, true).unwrap(),
+            "the first eligible tick must arm an inbound drain barrier"
+        );
+        assert_eq!(socket.read_message().expect("prequeued event"), event);
+        assert!(
+            shutdown.should_send_finish(0, true, true).is_err(),
+            "an event queued before finish cannot become its acknowledgement"
+        );
+        assert!(!shutdown.session_finished_received());
+    }
+
+    #[test]
+    fn finish_requires_a_post_fence_idle_socket_read() {
+        let mut shutdown = LivetranslateShutdown::new(true);
+        shutdown.request(Instant::now());
+        let state = Arc::new(Mutex::new(FakeSocketState::default()));
+        let mut socket = shutdown.wrap_socket(FakeSocket {
+            inbound: VecDeque::new(),
+            state,
+        });
+
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        assert!(socket.read_message().is_err(), "empty scripted socket is idle");
+        assert!(shutdown.should_send_finish(0, true, true).unwrap());
     }
 
     #[test]

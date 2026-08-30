@@ -42,7 +42,7 @@ fn handle_source_subscriber(
         ),
     );
     if source_subscription_is_owner(&state.lock().unwrap(), my_generation) {
-        let _ = playback_tx.try_send(PlaybackCommand::FlushSource);
+        let _ = playback_tx.try_send(PlaybackCommand::FlushSource { applied_tx: None });
     }
     let mut frame_index = 0_u64;
     loop {
@@ -134,6 +134,7 @@ fn handle_source_subscriber(
             playback_owner_generation: None,
             source_generation: Some(my_generation),
             source_generation_token: Some(source_generation_token),
+            physical_playback_device_id: None,
             cue_id: None,
             created_at_ms: None,
             estimated_duration_ms: None,
@@ -152,7 +153,7 @@ fn handle_source_subscriber(
     if end_source_subscription(&mut current, my_generation) {
         let next_generation = current.source_generation;
         drop(current);
-        let _ = playback_tx.try_send(PlaybackCommand::FlushSource);
+        let _ = playback_tx.try_send(PlaybackCommand::FlushSource { applied_tx: None });
         append_bridge_service_log(
             runtime_root,
             &format!(
@@ -229,15 +230,22 @@ fn run_playback_worker(
         finish_completed_physical_stream(&mut output, &state, &mut physical_stream);
         finish_completed_translation(&output, &state, &translation_queue);
 
-        if pending_physical_stream_command_is_ready(
+        let (complete_playback_active, pending_complete_sequence) = {
+            let queue = translation_queue.lock().unwrap();
+            (
+                queue.active.is_some(),
+                queue
+                    .pending
+                    .front()
+                    .map(|job| job.translation_arrival_sequence),
+            )
+        };
+        if let Some(command) = take_ready_physical_stream_command(
             physical_stream.as_ref().map(|stream| stream.cue_id.as_str()),
-            pending_physical_streams
-                .front()
-                .and_then(|command| command.job.cue_id.as_deref()),
+            &mut pending_physical_streams,
+            complete_playback_active,
+            pending_complete_sequence,
         ) {
-            let command = pending_physical_streams
-                .pop_front()
-                .expect("a ready pending physical stream command exists");
             play_physical_translation_stream(
                 command,
                 &mut output,
@@ -251,7 +259,7 @@ fn run_playback_worker(
         let disconnected = match playback_rx.recv_timeout(Duration::from_millis(
             PLAYBACK_WORKER_POLL_INTERVAL_MS,
         )) {
-            Ok(PlaybackCommand::FlushSource) => {
+            Ok(PlaybackCommand::FlushSource { applied_tx }) => {
                 if let Some(output) = output.as_mut() {
                     flush_source_pending(output);
                     output.source_player.clear();
@@ -259,6 +267,9 @@ fn run_playback_worker(
                     output.source_pending_samples.clear();
                 }
                 state.lock().unwrap().monitor_source_queued_frames = 0;
+                if let Some(applied_tx) = applied_tx {
+                    let _ = applied_tx.send(());
+                }
                 false
             }
             Ok(PlaybackCommand::Play(job)) => {
@@ -266,11 +277,22 @@ fn run_playback_worker(
                 false
             }
             Ok(PlaybackCommand::TranslationStream(command)) => {
-                let cue_id = command.job.cue_id.as_deref().unwrap_or_default();
-                if physical_stream
-                    .as_ref()
-                    .is_some_and(|active| active.cue_id != cue_id)
-                {
+                let (complete_playback_active, pending_complete_sequence) = {
+                    let queue = translation_queue.lock().unwrap();
+                    (
+                        queue.active.is_some(),
+                        queue
+                            .pending
+                            .front()
+                            .map(|job| job.translation_arrival_sequence),
+                    )
+                };
+                if !pending_physical_stream_command_is_ready(
+                    physical_stream.as_ref().map(|stream| stream.cue_id.as_str()),
+                    Some(&command),
+                    complete_playback_active,
+                    pending_complete_sequence,
+                ) {
                     pending_physical_streams.push_back(command);
                 } else {
                     play_physical_translation_stream(
@@ -298,7 +320,25 @@ fn run_playback_worker(
             &mut cancelled_physical_streams,
             &mut pending_physical_streams,
         );
-        if physical_stream.is_none() {
+        let (complete_playback_active, pending_complete_sequence) = {
+            let queue = translation_queue.lock().unwrap();
+            (
+                queue.active.is_some(),
+                queue
+                    .pending
+                    .front()
+                    .map(|job| job.translation_arrival_sequence),
+            )
+        };
+        let pending_stream_sequence = pending_physical_streams
+            .front()
+            .map(|command| command.job.translation_arrival_sequence);
+        if complete_translation_command_is_ready(
+            physical_stream.is_some(),
+            complete_playback_active,
+            pending_complete_sequence,
+            pending_stream_sequence,
+        ) {
             start_next_translation(&mut output, &state, &translation_queue);
         }
     }
@@ -306,12 +346,61 @@ fn run_playback_worker(
 
 fn pending_physical_stream_command_is_ready(
     active_cue_id: Option<&str>,
-    pending_cue_id: Option<&str>,
+    pending_command: Option<&PhysicalTranslationStreamCommand>,
+    complete_playback_active: bool,
+    pending_complete_sequence: Option<u64>,
 ) -> bool {
-    let Some(pending_cue_id) = pending_cue_id else {
+    let Some(pending_command) = pending_command else {
         return false;
     };
-    active_cue_id.is_none_or(|active_cue_id| active_cue_id == pending_cue_id)
+    let pending_cue_id = pending_command.job.cue_id.as_deref().unwrap_or_default();
+    if let Some(active_cue_id) = active_cue_id {
+        return active_cue_id == pending_cue_id;
+    }
+    !complete_playback_active
+        && pending_complete_sequence.is_none_or(|complete_sequence| {
+            pending_command.job.translation_arrival_sequence < complete_sequence
+        })
+}
+
+fn take_ready_physical_stream_command(
+    active_cue_id: Option<&str>,
+    pending_commands: &mut VecDeque<PhysicalTranslationStreamCommand>,
+    complete_playback_active: bool,
+    pending_complete_sequence: Option<u64>,
+) -> Option<PhysicalTranslationStreamCommand> {
+    if let Some(active_cue_id) = active_cue_id {
+        let position = pending_commands.iter().position(|command| {
+            command.job.cue_id.as_deref() == Some(active_cue_id)
+        })?;
+        return pending_commands.remove(position);
+    }
+    if pending_physical_stream_command_is_ready(
+        None,
+        pending_commands.front(),
+        complete_playback_active,
+        pending_complete_sequence,
+    ) {
+        pending_commands.pop_front()
+    } else {
+        None
+    }
+}
+
+fn complete_translation_command_is_ready(
+    physical_stream_active: bool,
+    complete_playback_active: bool,
+    pending_complete_sequence: Option<u64>,
+    pending_stream_sequence: Option<u64>,
+) -> bool {
+    if physical_stream_active || complete_playback_active {
+        return false;
+    }
+    let Some(pending_complete_sequence) = pending_complete_sequence else {
+        return false;
+    };
+    pending_stream_sequence
+        .is_none_or(|stream_sequence| pending_complete_sequence < stream_sequence)
 }
 
 fn play_physical_translation_stream(
@@ -322,6 +411,9 @@ fn play_physical_translation_stream(
     cancelled: &mut std::collections::HashSet<String>,
 ) {
     let PhysicalTranslationStreamCommand { job, state: stream_state } = command;
+    if job.translation_generation != state.lock().unwrap().translation_generation {
+        return;
+    }
     let cue_id = job.cue_id.clone().unwrap_or_default();
     if cancelled.contains(&cue_id) {
         if matches!(stream_state, TranslationStreamState::End | TranslationStreamState::Abort) {
@@ -338,14 +430,18 @@ fn play_physical_translation_stream(
             }
             *active = None;
             let mut current = state.lock().unwrap();
-            current.physical_translation_stream_ledger.finish(&cue_id);
-            current.monitor_playback_state = "ready".to_string();
-            current.emit_translation_status(
-                Some(&cue_id),
-                TranslationPlaybackStatusKind::RouteFailed,
-                "physical-playback-stream-aborted",
-                Some("bridge.translation-playback-failed"),
-            );
+            if current
+                .physical_translation_stream_ledger
+                .claim_terminal(&cue_id, job.translation_generation)
+            {
+                current.monitor_playback_state = "ready".to_string();
+                current.emit_translation_status(
+                    Some(&cue_id),
+                    TranslationPlaybackStatusKind::RouteFailed,
+                    "physical-playback-stream-aborted",
+                    Some("bridge.translation-playback-failed"),
+                );
+            }
         }
         return;
     }
@@ -362,12 +458,17 @@ fn play_physical_translation_stream(
             current.dropped_frame_count += job.playback_duration_ms
                 .saturating_mul(INTERNAL_SAMPLE_RATE_HZ as u64) / 1_000;
             current.last_error_code = Some("bridge.queue-overflow".to_string());
-            current.emit_translation_status(
-                Some(&cue_id),
-                TranslationPlaybackStatusKind::RouteFailed,
-                "physical-stream-overlap",
-                Some("bridge.queue-overflow"),
-            );
+            if current
+                .physical_translation_stream_ledger
+                .claim_terminal(&cue_id, job.translation_generation)
+            {
+                current.emit_translation_status(
+                    Some(&cue_id),
+                    TranslationPlaybackStatusKind::RouteFailed,
+                    "physical-stream-overlap",
+                    Some("bridge.queue-overflow"),
+                );
+            }
             return;
         }
         if output.as_ref().map(|current| current.device_id.as_str()) != Some(job.device_id.as_str()) {
@@ -375,14 +476,18 @@ fn play_physical_translation_stream(
                 Ok(next) => Some(next),
                 Err(error) => {
                     let mut current = state.lock().unwrap();
-                    current.physical_translation_stream_ledger.finish(&cue_id);
                     current.last_error_code = Some("bridge.translation-playback-failed".to_string());
-                    current.emit_translation_status(
-                        Some(&cue_id),
-                        TranslationPlaybackStatusKind::RouteFailed,
-                        &format!("physical-output-open-failed:{error}"),
-                        Some("bridge.translation-playback-failed"),
-                    );
+                    if current
+                        .physical_translation_stream_ledger
+                        .claim_terminal(&cue_id, job.translation_generation)
+                    {
+                        current.emit_translation_status(
+                            Some(&cue_id),
+                            TranslationPlaybackStatusKind::RouteFailed,
+                            &format!("physical-output-open-failed:{error}"),
+                            Some("bridge.translation-playback-failed"),
+                        );
+                    }
                     return;
                 }
             };
@@ -530,7 +635,7 @@ fn apply_playback_control_commands(
             continue;
         }
         let PlaybackControlCommand::StopAll(request) = command else {
-            let PlaybackControlCommand::TerminateTranslationStream { cue_id, terminal } = command else { unreachable!() };
+            let PlaybackControlCommand::TerminateTranslationStream { cue_id } = command else { unreachable!() };
             if physical_stream.as_ref().is_some_and(|stream| stream.cue_id == cue_id) {
                 if let Some(output) = output.as_mut() {
                     output.translation_player.clear();
@@ -544,14 +649,7 @@ fn apply_playback_control_commands(
             });
             let mut current = state.lock().unwrap();
             cancelled_physical_streams.insert(cue_id.clone());
-            current.physical_translation_stream_ledger.finish(&cue_id);
             current.monitor_playback_state = "ready".to_string();
-            current.emit_translation_status(
-                terminal.cue_id.as_deref(),
-                terminal.status,
-                &terminal.reason,
-                terminal.error_code.as_deref(),
-            );
             continue;
         };
         if let Some(output) = output.as_mut() {

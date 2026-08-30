@@ -48,11 +48,14 @@ mod win32;
 use self::audio_client::{
     handle_physical_translation_frame, handle_virtual_mic_frame, spawn_audio_pipe_server,
 };
+#[cfg(test)]
+use self::audio_client::handle_virtual_mic_frame_with_writer;
 use self::capture_process::ProcessLoopbackCaptureWorker;
 use self::virtual_mic::{
     apply_virtual_mic_driver_status, probe_virtual_mic_output, stop_virtual_mic_session,
     virtual_mic_generation, virtual_mic_output_status_for_error,
     write_stereo_f32_to_virtual_mic, VirtualMicCapability, VirtualMicWriteError,
+    VirtualMicWriteOutcome,
 };
 #[cfg(test)]
 use self::capture_process::{fail_process_loopback_route, take_process_capture_chunk};
@@ -244,6 +247,8 @@ struct BridgeState {
     resolved_physical_playback_device_id: String,
     physical_playback_status: String,
     playback_owner_generation: u64,
+    init_epoch: u64,
+    playback_owner_reservation: u64,
     physical_playback_level: u64,
     translation_playback_enabled: bool,
     source_monitor_playback_enabled: bool,
@@ -270,6 +275,7 @@ struct BridgeState {
     virtual_mic_cue_ledger: VirtualMicCueLedger,
     physical_translation_stream_ledger: PhysicalTranslationStreamLedger,
     translation_generation: u64,
+    translation_arrival_sequence: u64,
     translation_queue_end_timestamp_ms: u64,
     playback_frames_written: u64,
     underrun_count: u64,
@@ -303,9 +309,51 @@ struct BridgeState {
     last_frame_timestamp_ms: Option<u64>,
     last_error_code: Option<String>,
     translation_status_outbox: Option<Arc<Mutex<TranslationStatusOutbox>>>,
+    translation_cue_authorities: Mutex<HashMap<String, TranslationCueAuthority>>,
+}
+
+#[derive(Clone)]
+struct TranslationCueAuthority {
+    session_id: String,
+    bridge_instance_id: String,
+    source_generation: u64,
+    source_generation_token: String,
+    playback_owner_generation: u64,
+    physical_playback_device_id: String,
 }
 
 impl BridgeState {
+    fn emit_translation_status_with_authority(
+        &self,
+        authority: TranslationCueAuthority,
+        cue_id: Option<&str>,
+        status: TranslationPlaybackStatusKind,
+        reason: &str,
+        error_code: Option<&str>,
+    ) {
+        let Some(outbox) = self.translation_status_outbox.as_ref() else {
+            return;
+        };
+        let mut outbox = outbox.lock().unwrap();
+        let status_id = outbox.next_status_id();
+        outbox.push(TranslationPlaybackStatusEvent {
+            event_type: "bridge.translation.status".to_string(),
+            request_id: status_id.clone(),
+            status_id,
+            session_id: authority.session_id,
+            bridge_instance_id: authority.bridge_instance_id,
+            source_generation: authority.source_generation,
+            source_generation_token: authority.source_generation_token,
+            playback_owner_generation: authority.playback_owner_generation,
+            physical_playback_device_id: authority.physical_playback_device_id,
+            cue_id: cue_id.unwrap_or("-").to_string(),
+            playback_status: status,
+            reason: reason.to_string(),
+            error_code: error_code.map(str::to_string),
+            timestamp_ms: unix_ms(),
+        });
+    }
+
     fn new(bridge_version: String) -> Self {
         let windows_build_number = windows_build_number();
         let (process_loopback_supported, process_loopback_status) =
@@ -352,25 +400,94 @@ impl BridgeState {
         reason: &str,
         error_code: Option<&str>,
     ) {
-        let Some(outbox) = self.translation_status_outbox.as_ref() else {
+        let cue_authority = cue_id.and_then(|cue_id| {
+            let mut authorities = self.translation_cue_authorities.lock().unwrap();
+            if status.is_terminal() {
+                authorities.remove(cue_id)
+            } else {
+                authorities.get(cue_id).cloned()
+            }
+        });
+        // Status is formal evidence for an already accepted cue. If no ledger
+        // entry exists, borrowing the current owner would let an old or
+        // malformed frame terminalize a different incarnation's reused cueId.
+        let Some(authority) = cue_authority else {
             return;
         };
-        let timestamp_ms = unix_ms();
-        let mut outbox = outbox.lock().unwrap();
-        let status_id = outbox.next_status_id();
-        let header = TranslationPlaybackStatusEvent {
-            event_type: "bridge.translation.status".to_string(),
-            request_id: status_id.clone(),
-            status_id,
-            session_id: self.session_id.clone().unwrap_or_default(),
-            cue_id: cue_id.unwrap_or("-").to_string(),
-            playback_status: status,
-            reason: reason.to_string(),
-            error_code: error_code.map(str::to_string),
-            timestamp_ms,
-        };
-        outbox.push(header);
+        self.emit_translation_status_with_authority(
+            authority,
+            cue_id,
+            status,
+            reason,
+            error_code,
+        );
     }
+
+    fn bind_translation_cue_authority(&self, header: &AudioFrameHeader) {
+        let Some(cue_id) = header.cue_id.as_deref().filter(|value| !value.trim().is_empty()) else {
+            return;
+        };
+        let Some(bridge_instance_id) = header.bridge_instance_id.clone() else {
+            return;
+        };
+        let Some(source_generation) = header.source_generation else {
+            return;
+        };
+        let Some(source_generation_token) = header.source_generation_token.clone() else {
+            return;
+        };
+        let Some(playback_owner_generation) = header.playback_owner_generation else {
+            return;
+        };
+        let Some(physical_playback_device_id) = header.physical_playback_device_id.clone() else {
+            return;
+        };
+        self.translation_cue_authorities.lock().unwrap().insert(
+            cue_id.to_string(),
+            TranslationCueAuthority {
+                session_id: header.session_id.clone(),
+                bridge_instance_id,
+                source_generation,
+                source_generation_token,
+                playback_owner_generation,
+                physical_playback_device_id,
+            },
+        );
+    }
+
+    fn next_translation_arrival_sequence(&mut self) -> u64 {
+        self.translation_arrival_sequence = self
+            .translation_arrival_sequence
+            .checked_add(1)
+            .expect("translation arrival sequence exhausted");
+        self.translation_arrival_sequence
+    }
+}
+
+fn translation_cue_authority_from_header(
+    header: &AudioFrameHeader,
+) -> Option<TranslationCueAuthority> {
+    Some(TranslationCueAuthority {
+        session_id: header.session_id.clone(),
+        bridge_instance_id: header.bridge_instance_id.clone()?,
+        source_generation: header.source_generation?,
+        source_generation_token: header.source_generation_token.clone()?,
+        playback_owner_generation: header.playback_owner_generation?,
+        physical_playback_device_id: header.physical_playback_device_id.clone()?,
+    })
+}
+
+fn virtual_mic_ledger_key(header: &AudioFrameHeader) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        header.cue_id.as_deref().unwrap_or_default(),
+        header.session_id,
+        header.bridge_instance_id.as_deref().unwrap_or_default(),
+        header.source_generation.unwrap_or_default(),
+        header.source_generation_token.as_deref().unwrap_or_default(),
+        header.playback_owner_generation.unwrap_or_default(),
+        header.physical_playback_device_id.as_deref().unwrap_or_default(),
+    )
 }
 
 fn source_generation_token(state: &BridgeState, generation: u64) -> String {
@@ -735,6 +852,22 @@ fn translation_dispatch_error(
     }
 }
 
+fn translation_frame_has_current_authority(
+    current: &BridgeState,
+    header: &AudioFrameHeader,
+) -> bool {
+    !header.session_id.trim().is_empty()
+        && header.session_id == current.session_id.as_deref().unwrap_or_default()
+        && header.bridge_instance_id.as_deref() == Some(current.bridge_instance_id.as_str())
+        && header.source_generation == Some(current.source_generation)
+        && header.source_generation_token.as_deref()
+            == Some(source_generation_token(current, current.source_generation).as_str())
+        && header.playback_owner_generation == Some(current.playback_owner_generation)
+        && !current.resolved_physical_playback_device_id.trim().is_empty()
+        && header.physical_playback_device_id.as_deref()
+            == Some(current.resolved_physical_playback_device_id.as_str())
+}
+
 fn handle_audio_client(
     handle: HANDLE,
     state: &Arc<Mutex<BridgeState>>,
@@ -763,6 +896,27 @@ fn handle_audio_client(
         return;
     };
     let mut current = state.lock().unwrap();
+    if !translation_frame_has_current_authority(&current, &header) {
+        let code = "bridge.translation-generation-ended";
+        let ack = rejected_audio_frame_ack(
+            &header,
+            code,
+            "translation frame belongs to a superseded or incomplete authority tuple",
+        );
+        current.dropped_frame_count += header.frame_count as u64;
+        service_log(
+            LogLevel::Warning,
+            &header.request_id,
+            &format!(
+                "event=translation_frame_rejected status=nack cueId={} errorCode={} reason=authority-mismatch",
+                header.cue_id.as_deref().unwrap_or("-"),
+                code,
+            ),
+        );
+        drop(current);
+        let _ = write_framed_json(handle, &ack);
+        return;
+    }
     if let Some((code, reason, message)) = translation_dispatch_error(&header) {
         let ack = rejected_audio_frame_ack(&header, code, message);
         current.dropped_frame_count += header.frame_count as u64;
@@ -813,26 +967,17 @@ fn handle_audio_client(
             LogLevel::Error,
             &header.request_id,
             &format!(
-                "event=translation_playback_status status=route-failed cueId={} errorCode={code}",
+                "event=translation_frame_rejected status=nack cueId={} errorCode={code}",
                 header.cue_id.as_deref().unwrap_or("-")
             ),
-        );
-        current.emit_translation_status(
-            header.cue_id.as_deref(),
-            TranslationPlaybackStatusKind::RouteFailed,
-            "process-exclusion-route-not-ready",
-            Some(&code),
         );
         drop(current);
         let _ = write_framed_json(handle, &ack);
         return;
     }
     if header.translation_sink == Some(TranslationAudioSink::PhysicalPlayback)
-        && current.source_capture_mode == SourceCaptureMode::ProcessExclusion
-        && (current.physical_playback_status != "ready"
-            || header.bridge_instance_id.as_deref()
-                != Some(current.bridge_instance_id.as_str())
-            || header.playback_owner_generation != Some(current.playback_owner_generation))
+        && current.translation_playback_enabled
+        && current.physical_playback_status != "ready"
     {
         let code = "bridge.translation-generation-ended";
         let ack = rejected_audio_frame_ack(
@@ -845,20 +990,18 @@ fn handle_audio_client(
             LogLevel::Warning,
             &header.request_id,
             &format!(
-                "event=translation_playback_status status=stale-dropped cueId={} errorCode={} expectedBridgeInstanceId={} actualBridgeInstanceId={} expectedPlaybackOwnerGeneration={} actualPlaybackOwnerGeneration={}",
+                "event=translation_frame_rejected status=nack cueId={} errorCode={} expectedBridgeInstanceId={} actualBridgeInstanceId={} expectedSourceGeneration={} actualSourceGeneration={} expectedPlaybackOwnerGeneration={} actualPlaybackOwnerGeneration={} expectedEndpointId={} actualEndpointId={}",
                 header.cue_id.as_deref().unwrap_or("-"),
                 code,
                 current.bridge_instance_id,
                 header.bridge_instance_id.as_deref().unwrap_or("-"),
+                current.source_generation,
+                header.source_generation.map(|value| value.to_string()).unwrap_or_else(|| "-".to_string()),
                 current.playback_owner_generation,
                 header.playback_owner_generation.map(|value| value.to_string()).unwrap_or_else(|| "-".to_string()),
+                current.resolved_physical_playback_device_id,
+                header.physical_playback_device_id.as_deref().unwrap_or("-"),
             ),
-        );
-        current.emit_translation_status(
-            header.cue_id.as_deref(),
-            TranslationPlaybackStatusKind::StaleDropped,
-            "physical-playback-owner-generation-ended",
-            Some(code),
         );
         drop(current);
         let _ = write_framed_json(handle, &ack);
@@ -875,6 +1018,7 @@ fn handle_audio_client(
             return;
         }
     };
+    current.bind_translation_cue_authority(&header);
     current.last_frame_timestamp_ms = Some(header.timestamp_ms);
     let playback_mix = mix_control_for_translation_frame(
         &current.mix_control,
@@ -937,17 +1081,26 @@ mod tests {
     use std::sync::{mpsc, Arc, Mutex};
     use std::time::Duration;
 
-    use serde_json::json;
+    use serde_json::{json, Value};
     use tempfile::TempDir;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::Pipes::CreatePipe;
 
     use super::{
-        append_capture_packet, begin_source_subscription, dispatch_source_frame,
+        append_capture_packet, apply_playback_control_commands, begin_source_subscription,
+        dispatch_source_frame,
         end_source_subscription,
         capture_route_is_ready, classify_process_loopback_capability,
-        fail_process_loopback_route, handle_control, handle_process_loopback_probe,
+        fail_process_loopback_route, finish_completed_physical_stream, handle_control,
+        handle_physical_translation_frame,
+        handle_virtual_mic_frame_with_writer,
+        handle_process_loopback_probe,
+        flush_source_capture,
         ducked_source_volume, is_omni_virtual_playback_device_name,
         monitor_source_queue_needs_drop, normalized_device_name,
-        pending_physical_stream_command_is_ready, playback_volume,
+        complete_translation_command_is_ready, pending_physical_stream_command_is_ready,
+        playback_volume, play_physical_translation_stream,
+        take_ready_physical_stream_command,
         process_source_route_failure, publish_diagnostic_file, record_source_read_result,
         sanitize_capture_sample,
         request_playback_stop,
@@ -955,18 +1108,23 @@ mod tests {
         source_playback_job_is_stale, source_route_error_header,
         source_subscription_is_owner, source_monitor_playback_enabled, source_watchdog_summary,
         state_snapshot, translation_dispatch_error, physical_stream_ready_to_start,
-        AudioRouteDirection, BridgeHost,
-        CaptureBackend, PlaybackCommand, PlaybackControlCommand, PlaybackJob,
+        translation_frame_has_current_authority,
+        virtual_mic_ledger_key,
+        ActivePhysicalTranslationStream, AudioFrameHeader, AudioRouteDirection, BridgeHost,
+        CaptureBackend, PhysicalTranslationStreamCommand, PlaybackCommand,
+        PlaybackControlCommand, PlaybackJob,
         ProcessLoopbackStatus, SourceCaptureMode, TranslationEnqueueFailureReason,
         TranslationPlaybackQueue, TranslationPlaybackStatusAck,
         TranslationAudioSink, TranslationPlaybackStatusKind, TranslationStatusOutbox,
+        TranslationStreamState,
         translation_non_playback_reason, translation_playback_enabled,
         translation_would_miss_realtime_budget,
         BRIDGE_PROTOCOL_VERSION, INTERNAL_CHANNEL_COUNT, INTERNAL_SAMPLE_RATE_HZ,
         PHYSICAL_TRANSLATION_STREAM_STARTUP_BUFFER_MS,
         PHYSICAL_TRANSLATION_STREAM_STARTUP_MAX_WAIT_MS,
         PROCESS_LOOPBACK_MINIMUM_WINDOWS_BUILD,
-        BridgeState, VirtualMicChunkAdmission, VirtualMicCueLedger,
+        BridgeState, DriverStatus, VirtualMicChunkAdmission, VirtualMicCueLedger,
+        VirtualMicWriteOutcome,
     };
 
     fn translation_job(cue_id: &str, created_at_ms: u64, duration_ms: u64) -> PlaybackJob {
@@ -984,7 +1142,110 @@ mod tests {
             estimated_duration_ms: duration_ms,
             playback_duration_ms: duration_ms,
             translation_generation: 0,
+            translation_arrival_sequence: 0,
         }
+    }
+
+    fn bind_test_cue_authority(state: &BridgeState, cue_id: &str) {
+        let mut header = omni_bridge_protocol::translation_header_fixture();
+        header.cue_id = Some(cue_id.to_string());
+        header.session_id = state
+            .session_id
+            .clone()
+            .unwrap_or_else(|| "test-session".to_string());
+        header.bridge_instance_id = Some(state.bridge_instance_id.clone());
+        header.source_generation = Some(state.source_generation);
+        header.source_generation_token = Some(super::source_generation_token(
+            state,
+            state.source_generation,
+        ));
+        header.playback_owner_generation = Some(state.playback_owner_generation);
+        header.physical_playback_device_id = Some(
+            (!state.resolved_physical_playback_device_id.is_empty())
+                .then(|| state.resolved_physical_playback_device_id.clone())
+                .unwrap_or_else(|| "test-endpoint".to_string()),
+        );
+        state.bind_translation_cue_authority(&header);
+    }
+
+    #[test]
+    fn source_flush_ack_waits_until_worker_applies_flush() {
+        let state = Arc::new(Mutex::new(BridgeState::new("test".to_string())));
+        let (playback_tx, playback_rx) = mpsc::sync_channel(1);
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let state_for_flush = Arc::clone(&state);
+        std::thread::spawn(move || {
+            let response = flush_source_capture("flush-1", &state_for_flush, &playback_tx);
+            let _ = result_tx.send(response);
+        });
+
+        assert!(
+            result_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "bridge.source.flush must not ACK while FlushSource is only queued"
+        );
+        let PlaybackCommand::FlushSource { applied_tx } = playback_rx.recv().unwrap() else {
+            panic!("expected FlushSource");
+        };
+        applied_tx.unwrap().send(()).unwrap();
+        assert_eq!(
+            result_rx.recv_timeout(Duration::from_secs(1)).unwrap()["type"],
+            "bridge.state.snapshot"
+        );
+    }
+
+    struct TestResponsePipe {
+        read_handle: HANDLE,
+        write_handle: HANDLE,
+    }
+
+    impl TestResponsePipe {
+        fn new() -> Self {
+            let mut read_handle = std::ptr::null_mut();
+            let mut write_handle = std::ptr::null_mut();
+            let created = unsafe {
+                CreatePipe(
+                    &mut read_handle,
+                    &mut write_handle,
+                    std::ptr::null(),
+                    0,
+                )
+            };
+            assert_ne!(created, 0, "test response pipe should be created");
+            Self {
+                read_handle,
+                write_handle,
+            }
+        }
+
+        fn read_json(&self) -> Value {
+            let length = super::read_exact(self.read_handle, 4).expect("response length");
+            let length = u32::from_le_bytes(length.try_into().unwrap()) as usize;
+            let body = super::read_exact(self.read_handle, length).expect("response body");
+            serde_json::from_slice(&body).expect("response json")
+        }
+    }
+
+    impl Drop for TestResponsePipe {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.read_handle);
+                CloseHandle(self.write_handle);
+            }
+        }
+    }
+
+    fn physical_translation_header(
+        cue_id: &str,
+        stream_state: Option<TranslationStreamState>,
+    ) -> AudioFrameHeader {
+        let mut header = omni_bridge_protocol::translation_header_fixture();
+        header.request_id = format!("request-{cue_id}");
+        header.frame_id = format!("frame-{cue_id}");
+        header.cue_id = Some(cue_id.to_string());
+        header.estimated_duration_ms = Some(100);
+        header.chunk_index = stream_state.map(|_| 0);
+        header.stream_state = stream_state;
+        header
     }
 
     #[test]
@@ -1096,6 +1357,7 @@ mod tests {
             translation_status_outbox: Some(outbox.clone()),
             ..BridgeState::default()
         };
+        bind_test_cue_authority(&state, "cue-status");
 
         state.emit_translation_status(
             Some("cue-status"),
@@ -1105,7 +1367,7 @@ mod tests {
         );
 
         let mut pending = outbox.lock().unwrap();
-        let status = pending.front().expect("status event");
+        let status = pending.front().expect("status event").clone();
         assert_eq!(status.event_type, "bridge.translation.status");
         assert!(status.status_id.starts_with("bridge-translation-status-"));
         assert_eq!(status.session_id, "session-status");
@@ -1128,6 +1390,11 @@ mod tests {
             event_type: "bridge.translation.status.ack".to_string(),
             status_id: "different-status".to_string(),
             session_id: "session-status".to_string(),
+            bridge_instance_id: status.bridge_instance_id.clone(),
+            source_generation: status.source_generation,
+            source_generation_token: status.source_generation_token.clone(),
+            playback_owner_generation: status.playback_owner_generation,
+            physical_playback_device_id: status.physical_playback_device_id.clone(),
         }));
         assert_eq!(
             pending.front().map(|event| event.status_id.as_str()),
@@ -1138,8 +1405,205 @@ mod tests {
             event_type: "bridge.translation.status.ack".to_string(),
             status_id,
             session_id: "session-status".to_string(),
+            bridge_instance_id: status.bridge_instance_id,
+            source_generation: status.source_generation,
+            source_generation_token: status.source_generation_token,
+            playback_owner_generation: status.playback_owner_generation,
+            physical_playback_device_id: status.physical_playback_device_id,
         }));
         assert!(pending.front().is_none());
+    }
+
+    #[test]
+    fn delayed_terminal_status_retains_the_cue_write_authority_after_state_rebind() {
+        let outbox = Arc::new(Mutex::new(TranslationStatusOutbox::default()));
+        let mut state = BridgeState {
+            session_id: Some("session-old".to_string()),
+            bridge_instance_id: "instance-old".to_string(),
+            source_generation: 41,
+            playback_owner_generation: 73,
+            resolved_physical_playback_device_id: "physical-old".to_string(),
+            translation_status_outbox: Some(outbox.clone()),
+            ..BridgeState::default()
+        };
+        let mut header = omni_bridge_protocol::translation_header_fixture();
+        header.session_id = "session-old".to_string();
+        header.bridge_instance_id = Some("instance-old".to_string());
+        header.source_generation = Some(41);
+        header.source_generation_token = Some("instance-old:session-old:41".to_string());
+        header.playback_owner_generation = Some(73);
+        header.physical_playback_device_id = Some("physical-old".to_string());
+        header.cue_id = Some("cue-delayed".to_string());
+        state.bind_translation_cue_authority(&header);
+
+        state.session_id = Some("session-new".to_string());
+        state.bridge_instance_id = "instance-new".to_string();
+        state.source_generation = 42;
+        state.playback_owner_generation = 74;
+        state.resolved_physical_playback_device_id = "physical-new".to_string();
+        state.emit_translation_status(
+            Some("cue-delayed"),
+            TranslationPlaybackStatusKind::Completed,
+            "physical-playback-completed",
+            None,
+        );
+
+        let pending = outbox.lock().unwrap();
+        let delayed = pending.front().unwrap();
+        assert_eq!(delayed.session_id, "session-old");
+        assert_eq!(delayed.bridge_instance_id, "instance-old");
+        assert_eq!(delayed.source_generation, 41);
+        assert_eq!(delayed.source_generation_token, "instance-old:session-old:41");
+        assert_eq!(delayed.playback_owner_generation, 73);
+        assert_eq!(delayed.physical_playback_device_id, "physical-old");
+    }
+
+    #[test]
+    fn unbound_malformed_cue_cannot_fabricate_a_terminal_from_current_authority() {
+        let outbox = Arc::new(Mutex::new(TranslationStatusOutbox::default()));
+        let state = BridgeState {
+            session_id: Some("session-new".to_string()),
+            bridge_instance_id: "instance-new".to_string(),
+            source_generation: 42,
+            playback_owner_generation: 74,
+            resolved_physical_playback_device_id: "physical-new".to_string(),
+            translation_status_outbox: Some(outbox.clone()),
+            ..BridgeState::default()
+        };
+        state.emit_translation_status(
+            Some("cue-from-malformed-old-frame"),
+            TranslationPlaybackStatusKind::RouteFailed,
+            "invalid-translation-sink-direction",
+            Some("bridge.invalid-audio-direction"),
+        );
+
+        assert!(
+            outbox.lock().unwrap().front().is_none(),
+            "an unbound cue must not inherit the current owner tuple"
+        );
+    }
+
+    #[test]
+    fn physical_playback_disabled_still_rejects_authorityless_complete_frame() {
+        let state = BridgeState {
+            session_id: Some("session".to_string()),
+            bridge_instance_id: "instance".to_string(),
+            source_generation: 42,
+            playback_owner_generation: 74,
+            resolved_physical_playback_device_id: "endpoint".to_string(),
+            translation_playback_enabled: false,
+            ..BridgeState::default()
+        };
+        let mut header = omni_bridge_protocol::translation_header_fixture();
+        header.session_id = "session".to_string();
+        header.bridge_instance_id = None;
+        header.source_generation = None;
+        header.source_generation_token = None;
+        header.playback_owner_generation = None;
+        header.physical_playback_device_id = None;
+
+        assert!(!translation_frame_has_current_authority(&state, &header));
+    }
+
+    #[test]
+    fn virtual_mic_rejects_same_session_stale_source_generation() {
+        let state = BridgeState {
+            session_id: Some("session".to_string()),
+            bridge_instance_id: "instance".to_string(),
+            source_generation: 43,
+            playback_owner_generation: 74,
+            resolved_physical_playback_device_id: "endpoint".to_string(),
+            ..BridgeState::default()
+        };
+        let mut header = omni_bridge_protocol::translation_header_fixture();
+        header.translation_sink = Some(TranslationAudioSink::VirtualMic);
+        header.route_direction = Some(AudioRouteDirection::Outbound);
+        header.session_id = "session".to_string();
+        header.bridge_instance_id = Some("instance".to_string());
+        header.source_generation = Some(42);
+        header.source_generation_token = Some("instance:session:42".to_string());
+        header.playback_owner_generation = Some(74);
+        header.physical_playback_device_id = Some("endpoint".to_string());
+
+        assert!(!translation_frame_has_current_authority(&state, &header));
+    }
+
+    #[test]
+    fn virtual_mic_write_in_flight_rebind_keeps_terminal_on_old_authority() {
+        let runtime_root = TempDir::new().unwrap();
+        let outbox = Arc::new(Mutex::new(TranslationStatusOutbox::default()));
+        let state = Arc::new(Mutex::new(BridgeState {
+            session_id: Some("session".to_string()),
+            bridge_instance_id: "instance".to_string(),
+            source_generation: 42,
+            playback_owner_generation: 74,
+            resolved_physical_playback_device_id: "endpoint".to_string(),
+            virtual_mic_output_requested: true,
+            translation_status_outbox: Some(outbox.clone()),
+            ..BridgeState::default()
+        }));
+        let mut header = omni_bridge_protocol::translation_header_fixture();
+        header.translation_sink = Some(TranslationAudioSink::VirtualMic);
+        header.route_direction = Some(AudioRouteDirection::Outbound);
+        header.session_id = "session".to_string();
+        header.bridge_instance_id = Some("instance".to_string());
+        header.source_generation = Some(42);
+        header.source_generation_token = Some("instance:session:42".to_string());
+        header.playback_owner_generation = Some(74);
+        header.physical_playback_device_id = Some("endpoint".to_string());
+        header.cue_id = Some("reused-cue".to_string());
+        header.chunk_index = Some(0);
+        header.chunk_count = Some(1);
+        state.lock().unwrap().bind_translation_cue_authority(&header);
+        let pipe = TestResponsePipe::new();
+        let state_during_write = Arc::clone(&state);
+        let header_for_new_owner = header.clone();
+        let current = state.lock().unwrap();
+
+        handle_virtual_mic_frame_with_writer(
+            pipe.write_handle,
+            &state,
+            runtime_root.path(),
+            &header,
+            &[0_u8; 4],
+            &[0.25, 0.25],
+            current,
+            move |_, _| {
+                let mut next = state_during_write.lock().unwrap();
+                next.source_generation = 43;
+                next.playback_owner_generation = 75;
+                let mut new_header = header_for_new_owner;
+                new_header.source_generation = Some(43);
+                new_header.source_generation_token = Some("instance:session:43".to_string());
+                new_header.playback_owner_generation = Some(75);
+                next.bind_translation_cue_authority(&new_header);
+                let new_key = virtual_mic_ledger_key(&new_header);
+                next.virtual_mic_cue_ledger.begin(&new_key, 0, 1).unwrap();
+                Ok(VirtualMicWriteOutcome {
+                    frames_written: 1,
+                    capture_endpoint_name: "virtual-mic".to_string(),
+                    format: "pcm16".to_string(),
+                    driver_status: DriverStatus::default(),
+                })
+            },
+        );
+
+        let ack = pipe.read_json();
+        assert_eq!(ack["type"], "bridge.translation.nack");
+        assert_eq!(ack["acceptedFrames"], 0);
+        assert_eq!(ack["errorCode"], "bridge.translation-generation-ended");
+        let status = outbox.lock().unwrap().front().cloned().unwrap();
+        assert_eq!(status.source_generation, 42);
+        assert_eq!(status.playback_owner_generation, 74);
+        let current = state.lock().unwrap();
+        let mut new_header = header.clone();
+        new_header.source_generation = Some(43);
+        new_header.source_generation_token = Some("instance:session:43".to_string());
+        new_header.playback_owner_generation = Some(75);
+        assert!(current
+            .virtual_mic_cue_ledger
+            .active
+            .contains_key(&virtual_mic_ledger_key(&new_header)));
     }
 
     #[test]
@@ -1150,6 +1614,7 @@ mod tests {
             translation_status_outbox: Some(outbox.clone()),
             ..BridgeState::default()
         };
+        bind_test_cue_authority(&state, "cue-status");
 
         state.emit_translation_status(
             Some("cue-status"),
@@ -1377,6 +1842,31 @@ mod tests {
     }
 
     #[test]
+    fn source_flush_rejects_a_disconnected_playback_boundary_consumer() {
+        let runtime_root = TempDir::new().unwrap();
+        let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
+        let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
+        let (playback_tx, playback_rx) = mpsc::sync_channel(1);
+        drop(playback_rx);
+        let (playback_control_tx, _playback_control_rx) = mpsc::channel();
+
+        let response = handle_control(
+            json!({
+                "type": "bridge.source.flush",
+                "requestId": "source-flush-disconnected",
+            }),
+            &state,
+            &playback_tx,
+            &playback_control_tx,
+            &translation_queue,
+            runtime_root.path(),
+        );
+
+        assert_eq!(response["type"], "bridge.error");
+        assert_eq!(response["code"], "bridge.source-flush-failed");
+    }
+
+    #[test]
     fn virtual_driver_translation_init_binds_an_explicit_physical_playback_owner() {
         let runtime_root = TempDir::new().unwrap();
         let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
@@ -1465,6 +1955,16 @@ mod tests {
         let (playback_tx, playback_rx) = mpsc::sync_channel(2);
         let (playback_control_tx, playback_control_rx) = mpsc::channel();
         let rebind = std::thread::spawn(move || {
+            let PlaybackControlCommand::StopAll(stop) = playback_control_rx.recv().unwrap()
+            else {
+                panic!("accepted translation work must be terminalized before physical output rebind");
+            };
+            assert_eq!(stop.reason, "physical-playback-device-changed");
+            assert_eq!(stop.terminated_cues.len(), 1);
+            assert_eq!(
+                stop.terminated_cues[0].cue_id.as_deref(),
+                Some("old-device-cue")
+            );
             let PlaybackControlCommand::RebindPhysicalOutput {
                 device_id,
                 response_tx,
@@ -1507,6 +2007,7 @@ mod tests {
         assert_eq!(current.physical_playback_status, "ready");
         assert_eq!(current.resolved_physical_playback_device_id, "speaker-b");
         assert_eq!(current.playback_owner_generation, 9_000_000_000_001);
+        assert!(translation_queue.lock().unwrap().pending.is_empty());
         assert_eq!(
             current.source_generation, 9,
             "an output-device change must not rebuild the source capture backend"
@@ -1570,7 +2071,67 @@ mod tests {
     }
 
     #[test]
-    fn reinit_volume_only_keeps_pending_translation_and_capture_generation() {
+    fn concurrent_init_stale_completion_cannot_overwrite_new_owner() {
+        let runtime_root = TempDir::new().unwrap();
+        let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
+        let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
+        let (playback_tx, _playback_rx) = mpsc::sync_channel(2);
+        let (playback_control_tx, playback_control_rx) = mpsc::channel();
+        let run_init = |request_id: &'static str, endpoint: &'static str| {
+            let state = Arc::clone(&state);
+            let queue = Arc::clone(&translation_queue);
+            let playback_tx = playback_tx.clone();
+            let control_tx = playback_control_tx.clone();
+            let root = runtime_root.path().to_path_buf();
+            std::thread::spawn(move || {
+                handle_control(
+                    json!({
+                        "type": "bridge.init",
+                        "requestId": request_id,
+                        "protocolVersion": BRIDGE_PROTOCOL_VERSION,
+                        "sessionId": format!("session-{request_id}"),
+                        "sourceCaptureMode": "none",
+                        "physicalPlaybackDeviceId": endpoint,
+                        "previousPlaybackOwnerGeneration": 100,
+                        "monitorPlaybackEnabled": false,
+                        "translationPlaybackEnabled": true
+                    }),
+                    &state,
+                    &playback_tx,
+                    &control_tx,
+                    &queue,
+                    &root,
+                )
+            })
+        };
+
+        let init_a = run_init("a", "speaker-a");
+        let PlaybackControlCommand::RebindPhysicalOutput { response_tx: a_tx, .. } =
+            playback_control_rx.recv().unwrap()
+        else {
+            panic!("expected init A rebind");
+        };
+        let init_b = run_init("b", "speaker-b");
+        let PlaybackControlCommand::RebindPhysicalOutput { response_tx: b_tx, .. } =
+            playback_control_rx.recv().unwrap()
+        else {
+            panic!("expected init B rebind");
+        };
+        b_tx.send(Ok("speaker-b".to_string())).unwrap();
+        let response_b = init_b.join().unwrap();
+        a_tx.send(Ok("speaker-a".to_string())).unwrap();
+        let response_a = init_a.join().unwrap();
+
+        assert_eq!(response_b["type"], "bridge.init.ack");
+        assert_eq!(response_a["type"], "bridge.error");
+        let current = state.lock().unwrap();
+        assert_eq!(current.session_id.as_deref(), Some("session-b"));
+        assert_eq!(current.physical_playback_device_id, "speaker-b");
+        assert_eq!(current.resolved_physical_playback_device_id, "speaker-b");
+    }
+
+    #[test]
+    fn reinit_volume_only_terminalizes_pending_translation_before_owner_change() {
         let runtime_root = TempDir::new().unwrap();
         let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
         {
@@ -1611,9 +2172,14 @@ mod tests {
         );
 
         assert_eq!(response["type"], "bridge.init.ack");
-        assert_eq!(translation_queue.lock().unwrap().pending.len(), 1);
+        assert!(translation_queue.lock().unwrap().pending.is_empty());
         assert!(playback_rx.try_recv().is_err());
-        assert!(playback_control_rx.try_recv().is_err());
+        let PlaybackControlCommand::StopAll(stop) = playback_control_rx.try_recv().unwrap() else {
+            panic!("accepted cue must receive an old-owner terminal before reinit");
+        };
+        assert_eq!(stop.reason, "bridge-init-owner-change");
+        assert_eq!(stop.terminated_cues.len(), 1);
+        assert_eq!(stop.terminated_cues[0].cue_id.as_deref(), Some("same-device-cue"));
         let current = state.lock().unwrap();
         assert_eq!(current.physical_playback_level, 75);
         assert_eq!(current.source_generation, 9);
@@ -1794,6 +2360,293 @@ mod tests {
             Some("long-active")
         );
         assert!(queue.pending.is_empty());
+    }
+
+    #[test]
+    fn stream_arriving_while_complete_cue_is_active_is_accepted_without_interrupting_complete() {
+        let runtime_root = TempDir::new().unwrap();
+        let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
+        {
+            let mut current = state.lock().unwrap();
+            current.translation_playback_enabled = true;
+            current.physical_playback_status = "ready".to_string();
+            current.physical_playback_device_id = "default".to_string();
+        }
+        let now_ms = super::unix_ms();
+        let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
+        {
+            let mut queue = translation_queue.lock().unwrap();
+            queue
+                .enqueue(translation_job("complete-a", now_ms, 100), now_ms)
+                .unwrap();
+            queue.start_next(now_ms).job.unwrap();
+        }
+        let (playback_tx, playback_rx) = mpsc::sync_channel(2);
+        let (playback_control_tx, _playback_control_rx) = mpsc::channel();
+        let header = physical_translation_header(
+            "stream-b",
+            Some(TranslationStreamState::Start),
+        );
+        let payload = vec![0_u8; header.payload_bytes];
+        let pipe = TestResponsePipe::new();
+
+        handle_physical_translation_frame(
+            pipe.write_handle,
+            runtime_root.path(),
+            &playback_tx,
+            &playback_control_tx,
+            &translation_queue,
+            &header,
+            &payload,
+            vec![0.0; INTERNAL_CHANNEL_COUNT as usize * header.frame_count],
+            state.lock().unwrap(),
+        );
+
+        let ack = pipe.read_json();
+        assert_eq!(
+            ack["type"],
+            "bridge.translation.ack",
+            "a valid stream start must wait behind complete-a instead of being mislabeled as queue overflow"
+        );
+        assert_eq!(
+            translation_queue
+                .lock()
+                .unwrap()
+                .active
+                .as_ref()
+                .and_then(|active| active.cue_id.as_deref()),
+            Some("complete-a"),
+            "admitting stream-b must not interrupt the active complete cue"
+        );
+        let PlaybackCommand::TranslationStream(command) = playback_rx.try_recv().unwrap() else {
+            panic!("accepted stream-b should be handed to the cross-mode scheduler");
+        };
+        assert_eq!(command.job.cue_id.as_deref(), Some("stream-b"));
+    }
+
+    #[test]
+    fn rebinding_route_rejects_new_complete_and_stream_work_before_acceptance() {
+        for stream_state in [None, Some(TranslationStreamState::Start)] {
+            let runtime_root = TempDir::new().unwrap();
+            let status_outbox = Arc::new(Mutex::new(TranslationStatusOutbox::default()));
+            let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
+            {
+                let mut current = state.lock().unwrap();
+                current.session_id = Some("session-rebinding".to_string());
+                current.translation_status_outbox = Some(status_outbox.clone());
+                current.translation_playback_enabled = true;
+                current.physical_playback_status = "rebinding".to_string();
+                current.physical_playback_device_id = "hda-speaker".to_string();
+            }
+            let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
+            let (playback_tx, playback_rx) = mpsc::sync_channel(2);
+            let (playback_control_tx, _playback_control_rx) = mpsc::channel();
+            let header = physical_translation_header("rebind-race", stream_state);
+            let payload = vec![0_u8; header.payload_bytes];
+            let pipe = TestResponsePipe::new();
+
+            handle_physical_translation_frame(
+                pipe.write_handle,
+                runtime_root.path(),
+                &playback_tx,
+                &playback_control_tx,
+                &translation_queue,
+                &header,
+                &payload,
+                vec![0.0; INTERNAL_CHANNEL_COUNT as usize * header.frame_count],
+                state.lock().unwrap(),
+            );
+
+            let ack = pipe.read_json();
+            assert_eq!(ack["type"], "bridge.translation.nack");
+            assert_eq!(ack["errorCode"], "bridge.translation-generation-ended");
+            assert!(translation_queue.lock().unwrap().active.is_none());
+            assert!(translation_queue.lock().unwrap().pending.is_empty());
+            assert!(!state.lock().unwrap().physical_translation_stream_active());
+            assert!(playback_rx.try_recv().is_err());
+            assert!(
+                status_outbox.lock().unwrap().pending.is_empty(),
+                "a frame rejected before acceptance must not manufacture a terminal status"
+            );
+        }
+    }
+
+    #[test]
+    fn complete_arriving_while_stream_is_active_waits_without_superseding_stream() {
+        let runtime_root = TempDir::new().unwrap();
+        let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
+        {
+            let mut current = state.lock().unwrap();
+            current.translation_playback_enabled = true;
+            current.physical_playback_status = "ready".to_string();
+            current.physical_playback_device_id = "default".to_string();
+            current
+                .physical_translation_stream_ledger
+                .admit("stream-a", 0, TranslationStreamState::Start, 0)
+                .unwrap();
+        }
+        let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
+        let (playback_tx, _playback_rx) = mpsc::sync_channel(2);
+        let (playback_control_tx, playback_control_rx) = mpsc::channel();
+        let header = physical_translation_header("complete-b", None);
+        let payload = vec![0_u8; header.payload_bytes];
+        let pipe = TestResponsePipe::new();
+
+        handle_physical_translation_frame(
+            pipe.write_handle,
+            runtime_root.path(),
+            &playback_tx,
+            &playback_control_tx,
+            &translation_queue,
+            &header,
+            &payload,
+            vec![0.0; INTERNAL_CHANNEL_COUNT as usize * header.frame_count],
+            state.lock().unwrap(),
+        );
+
+        let ack = pipe.read_json();
+        assert_eq!(ack["type"], "bridge.translation.ack");
+        assert_eq!(
+            translation_queue
+                .lock()
+                .unwrap()
+                .pending
+                .front()
+                .and_then(|job| job.cue_id.as_deref()),
+            Some("complete-b"),
+            "complete-b should be retained for playback after stream-a"
+        );
+        assert!(
+            state.lock().unwrap().physical_translation_stream_active(),
+            "complete-b must not stale-drop the active stream-a"
+        );
+        assert!(
+            playback_control_rx.try_recv().is_err(),
+            "waiting complete-b must not emit TerminateTranslationStream for stream-a"
+        );
+    }
+
+    #[test]
+    fn stream_abort_is_rejected_when_the_terminal_cannot_reach_the_playback_worker() {
+        let runtime_root = TempDir::new().unwrap();
+        let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
+        {
+            let mut current = state.lock().unwrap();
+            current.translation_playback_enabled = true;
+            current.physical_playback_status = "ready".to_string();
+            current.physical_playback_device_id = "default".to_string();
+            current
+                .physical_translation_stream_ledger
+                .admit("stream-abort", 0, TranslationStreamState::Start, 0)
+                .unwrap();
+        }
+        let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
+        let (playback_tx, _playback_rx) = mpsc::sync_channel(1);
+        let (playback_control_tx, playback_control_rx) = mpsc::channel();
+        drop(playback_control_rx);
+        let mut header = physical_translation_header(
+            "stream-abort",
+            Some(TranslationStreamState::Abort),
+        );
+        header.chunk_index = Some(1);
+        let pipe = TestResponsePipe::new();
+
+        handle_physical_translation_frame(
+            pipe.write_handle,
+            runtime_root.path(),
+            &playback_tx,
+            &playback_control_tx,
+            &translation_queue,
+            &header,
+            &[],
+            Vec::new(),
+            state.lock().unwrap(),
+        );
+
+        let ack = pipe.read_json();
+        assert_eq!(ack["type"], "bridge.translation.nack");
+        assert_eq!(ack["errorCode"], "bridge.translation-playback-failed");
+        assert!(
+            state.lock().unwrap().physical_translation_stream_active(),
+            "a failed Abort handoff must remain retryable instead of losing the only terminal owner"
+        );
+    }
+
+    #[test]
+    fn accepted_abort_owns_the_only_terminal_against_late_natural_completion() {
+        let runtime_root = TempDir::new().unwrap();
+        let status_outbox = Arc::new(Mutex::new(TranslationStatusOutbox::default()));
+        let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
+        {
+            let mut current = state.lock().unwrap();
+            current.session_id = Some("session-abort".to_string());
+            current.translation_status_outbox = Some(status_outbox.clone());
+            current.translation_playback_enabled = true;
+            current.physical_playback_status = "ready".to_string();
+            current.physical_playback_device_id = "hda-speaker".to_string();
+            current
+                .physical_translation_stream_ledger
+                .admit("stream-abort-race", 0, TranslationStreamState::Start, 0)
+                .unwrap();
+            bind_test_cue_authority(&current, "stream-abort-race");
+        }
+        let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
+        let (playback_tx, _playback_rx) = mpsc::sync_channel(1);
+        let (playback_control_tx, playback_control_rx) = mpsc::channel();
+        let mut header = physical_translation_header(
+            "stream-abort-race",
+            Some(TranslationStreamState::Abort),
+        );
+        header.chunk_index = Some(1);
+        let pipe = TestResponsePipe::new();
+
+        handle_physical_translation_frame(
+            pipe.write_handle,
+            runtime_root.path(),
+            &playback_tx,
+            &playback_control_tx,
+            &translation_queue,
+            &header,
+            &[],
+            Vec::new(),
+            state.lock().unwrap(),
+        );
+        assert_eq!(pipe.read_json()["type"], "bridge.translation.ack");
+
+        let mut output = None;
+        let mut physical_stream = Some(ActivePhysicalTranslationStream {
+            cue_id: "stream-abort-race".to_string(),
+            created_at_ms: 1_000,
+            estimated_duration_ms: 100,
+            playback_frames: 960,
+            translation_generation: 0,
+            buffering_started_at: std::time::Instant::now(),
+            playback_started: true,
+            ducking_enabled: false,
+            ducking_depth_percent: 0,
+            ended: true,
+        });
+        finish_completed_physical_stream(&mut output, &state, &mut physical_stream);
+        let mut cancelled = std::collections::HashSet::new();
+        let mut pending = std::collections::VecDeque::new();
+        apply_playback_control_commands(
+            &playback_control_rx,
+            &mut output,
+            &state,
+            &translation_queue,
+            &mut physical_stream,
+            &mut cancelled,
+            &mut pending,
+        );
+
+        let statuses = status_outbox.lock().unwrap();
+        assert_eq!(statuses.pending.len(), 1);
+        assert_eq!(
+            statuses.pending[0].playback_status,
+            TranslationPlaybackStatusKind::RouteFailed
+        );
+        assert_eq!(statuses.pending[0].cue_id, "stream-abort-race");
+        assert!(physical_stream.is_none());
     }
 
     #[test]
@@ -1989,6 +2842,7 @@ mod tests {
             current.source_subscriber_active = true;
             current.source_generation = 77;
             current.translation_status_outbox = Some(status_outbox.clone());
+            bind_test_cue_authority(&current, "missing-endpoint-cue");
         }
         let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
         let now_ms = super::unix_ms();
@@ -2108,6 +2962,8 @@ mod tests {
             current.bridge_state = "running".to_string();
             current.lifecycle_state = "ready".to_string();
             current.translation_status_outbox = Some(status_outbox.clone());
+            bind_test_cue_authority(&current, "active-cue");
+            bind_test_cue_authority(&current, "pending-cue");
         }
         let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
         {
@@ -2176,6 +3032,11 @@ mod tests {
                     event_type: "bridge.translation.status.ack".to_string(),
                     status_id: second.status_id.clone(),
                     session_id: second.session_id.clone(),
+                    bridge_instance_id: second.bridge_instance_id.clone(),
+                    source_generation: second.source_generation,
+                    source_generation_token: second.source_generation_token.clone(),
+                    playback_owner_generation: second.playback_owner_generation,
+                    physical_playback_device_id: second.physical_playback_device_id.clone(),
                 }),
                 "the second capture-failure terminal cannot bypass the unacknowledged front"
             );
@@ -2183,12 +3044,22 @@ mod tests {
                 event_type: "bridge.translation.status.ack".to_string(),
                 status_id: first.status_id,
                 session_id: first.session_id,
+                bridge_instance_id: first.bridge_instance_id,
+                source_generation: first.source_generation,
+                source_generation_token: first.source_generation_token,
+                playback_owner_generation: first.playback_owner_generation,
+                physical_playback_device_id: first.physical_playback_device_id,
             }));
             assert_eq!(pending_statuses.front().map(|event| event.cue_id.as_str()), Some("pending-cue"));
             assert!(pending_statuses.acknowledge(&TranslationPlaybackStatusAck {
                 event_type: "bridge.translation.status.ack".to_string(),
                 status_id: second.status_id,
                 session_id: second.session_id,
+                bridge_instance_id: second.bridge_instance_id,
+                source_generation: second.source_generation,
+                source_generation_token: second.source_generation_token,
+                playback_owner_generation: second.playback_owner_generation,
+                physical_playback_device_id: second.physical_playback_device_id,
             }));
             assert!(pending_statuses.front().is_none());
         }
@@ -2363,15 +3234,325 @@ mod tests {
 
     #[test]
     fn pending_physical_stream_drains_only_for_the_active_cue() {
-        assert!(pending_physical_stream_command_is_ready(None, Some("cue-b")));
+        let mut cue_b = PhysicalTranslationStreamCommand {
+            job: translation_job("cue-b", 1_000, 100),
+            state: TranslationStreamState::Start,
+        };
+        cue_b.job.translation_arrival_sequence = 2;
+        assert!(pending_physical_stream_command_is_ready(
+            None,
+            Some(&cue_b),
+            false,
+            None,
+        ));
         assert!(pending_physical_stream_command_is_ready(
             Some("cue-b"),
-            Some("cue-b"),
+            Some(&cue_b),
+            true,
+            Some(1),
         ));
         assert!(!pending_physical_stream_command_is_ready(
             Some("cue-a"),
-            Some("cue-b"),
+            Some(&cue_b),
+            false,
+            None,
         ));
-        assert!(!pending_physical_stream_command_is_ready(Some("cue-a"), None));
+        assert!(!pending_physical_stream_command_is_ready(
+            None,
+            Some(&cue_b),
+            true,
+            None,
+        ));
+        assert!(!pending_physical_stream_command_is_ready(
+            None,
+            Some(&cue_b),
+            false,
+            Some(1),
+        ));
+        assert!(!pending_physical_stream_command_is_ready(
+            Some("cue-a"),
+            None,
+            false,
+            None,
+        ));
+    }
+
+    #[test]
+    fn idle_cross_mode_scheduler_selects_the_earliest_accepted_cue() {
+        let mut stream = PhysicalTranslationStreamCommand {
+            job: translation_job("stream", 1_000, 100),
+            state: TranslationStreamState::Start,
+        };
+        stream.job.translation_arrival_sequence = 2;
+
+        assert!(pending_physical_stream_command_is_ready(
+            None,
+            Some(&stream),
+            false,
+            Some(3),
+        ));
+        assert!(!complete_translation_command_is_ready(
+            false,
+            false,
+            Some(3),
+            Some(2),
+        ));
+
+        stream.job.translation_arrival_sequence = 4;
+        assert!(!pending_physical_stream_command_is_ready(
+            None,
+            Some(&stream),
+            false,
+            Some(3),
+        ));
+        assert!(complete_translation_command_is_ready(
+            false,
+            false,
+            Some(3),
+            Some(4),
+        ));
+    }
+
+    #[test]
+    fn active_cross_mode_cue_retains_the_sink_until_its_terminal() {
+        let mut next_stream = PhysicalTranslationStreamCommand {
+            job: translation_job("stream-b", 1_000, 100),
+            state: TranslationStreamState::Start,
+        };
+        next_stream.job.translation_arrival_sequence = 2;
+
+        assert!(!pending_physical_stream_command_is_ready(
+            None,
+            Some(&next_stream),
+            true,
+            None,
+        ));
+        assert!(!complete_translation_command_is_ready(
+            true,
+            false,
+            Some(3),
+            None,
+        ));
+    }
+
+    #[test]
+    fn active_stream_continuation_bypasses_a_later_stream_start_at_the_pending_head() {
+        let mut later_start = PhysicalTranslationStreamCommand {
+            job: translation_job("stream-b", 1_000, 100),
+            state: TranslationStreamState::Start,
+        };
+        later_start.job.translation_arrival_sequence = 2;
+        let mut active_chunk = PhysicalTranslationStreamCommand {
+            job: translation_job("stream-a", 1_000, 100),
+            state: TranslationStreamState::Chunk,
+        };
+        active_chunk.job.translation_arrival_sequence = 3;
+        let mut pending = std::collections::VecDeque::from([later_start, active_chunk]);
+
+        let ready = take_ready_physical_stream_command(
+            Some("stream-a"),
+            &mut pending,
+            false,
+            None,
+        );
+        assert_eq!(
+            ready.and_then(|command| command.job.cue_id),
+            Some("stream-a".to_string()),
+        );
+        assert_eq!(
+            pending.front().and_then(|command| command.job.cue_id.as_deref()),
+            Some("stream-b"),
+            "a later stream Start must retain its FIFO position while the active cue drains"
+        );
+    }
+
+    #[test]
+    fn stopped_generation_stream_command_cannot_mutate_worker_playback_state() {
+        let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
+        state.lock().unwrap().translation_generation = 2;
+        let mut stale_end = PhysicalTranslationStreamCommand {
+            job: translation_job("stopped-stream", 1_000, 100),
+            state: TranslationStreamState::End,
+        };
+        stale_end.job.translation_generation = 1;
+        let mut active = Some(ActivePhysicalTranslationStream {
+            cue_id: "stopped-stream".to_string(),
+            created_at_ms: 1_000,
+            estimated_duration_ms: 100,
+            playback_frames: 0,
+            translation_generation: 1,
+            buffering_started_at: std::time::Instant::now(),
+            playback_started: false,
+            ducking_enabled: false,
+            ducking_depth_percent: 0,
+            ended: false,
+        });
+        let mut output = None;
+        let mut cancelled = std::collections::HashSet::new();
+
+        play_physical_translation_stream(
+            stale_end,
+            &mut output,
+            &state,
+            &mut active,
+            &mut cancelled,
+        );
+
+        assert!(
+            !active.as_ref().unwrap().ended,
+            "a command accepted before StopAll must not mutate worker state after the generation advances"
+        );
+        assert!(output.is_none());
+    }
+
+    #[test]
+    fn stop_all_terminal_prevents_a_late_natural_completion_terminal() {
+        let status_outbox = Arc::new(Mutex::new(TranslationStatusOutbox::default()));
+        let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
+        {
+            let mut current = state.lock().unwrap();
+            current.session_id = Some("session-stop".to_string());
+            current.translation_status_outbox = Some(status_outbox.clone());
+            current
+                .physical_translation_stream_ledger
+                .admit("stopped-completion", 0, TranslationStreamState::Start, 0)
+                .unwrap();
+            bind_test_cue_authority(&current, "stopped-completion");
+        }
+        let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
+        let (playback_control_tx, playback_control_rx) = mpsc::channel();
+        let mut physical_stream = Some(ActivePhysicalTranslationStream {
+            cue_id: "stopped-completion".to_string(),
+            created_at_ms: 1_000,
+            estimated_duration_ms: 100,
+            playback_frames: 960,
+            translation_generation: 0,
+            buffering_started_at: std::time::Instant::now(),
+            playback_started: true,
+            ducking_enabled: false,
+            ducking_depth_percent: 0,
+            ended: true,
+        });
+
+        request_playback_stop(
+            &mut state.lock().unwrap(),
+            &translation_queue,
+            &playback_control_tx,
+            "session-changed",
+            None,
+        );
+        let mut output = None;
+        finish_completed_physical_stream(&mut output, &state, &mut physical_stream);
+        let mut cancelled = std::collections::HashSet::new();
+        let mut pending = std::collections::VecDeque::new();
+        apply_playback_control_commands(
+            &playback_control_rx,
+            &mut output,
+            &state,
+            &translation_queue,
+            &mut physical_stream,
+            &mut cancelled,
+            &mut pending,
+        );
+
+        let statuses = status_outbox.lock().unwrap();
+        assert_eq!(statuses.pending.len(), 1);
+        assert_eq!(
+            statuses.pending[0].playback_status,
+            TranslationPlaybackStatusKind::StaleDropped
+        );
+        assert_eq!(statuses.pending[0].cue_id, "stopped-completion");
+    }
+
+    #[test]
+    fn old_generation_completion_cannot_claim_a_reused_cue_id() {
+        let status_outbox = Arc::new(Mutex::new(TranslationStatusOutbox::default()));
+        let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
+        {
+            let mut current = state.lock().unwrap();
+            current.session_id = Some("session-new-generation".to_string());
+            current.translation_status_outbox = Some(status_outbox.clone());
+            current.translation_generation = 2;
+            current
+                .physical_translation_stream_ledger
+                .admit("reused-cue", 0, TranslationStreamState::Start, 2)
+                .unwrap();
+        }
+        let mut physical_stream = Some(ActivePhysicalTranslationStream {
+            cue_id: "reused-cue".to_string(),
+            created_at_ms: 1_000,
+            estimated_duration_ms: 100,
+            playback_frames: 960,
+            translation_generation: 1,
+            buffering_started_at: std::time::Instant::now(),
+            playback_started: true,
+            ducking_enabled: false,
+            ducking_depth_percent: 0,
+            ended: true,
+        });
+        let mut output = None;
+
+        finish_completed_physical_stream(&mut output, &state, &mut physical_stream);
+
+        assert!(status_outbox.lock().unwrap().pending.is_empty());
+        let current = state.lock().unwrap();
+        assert_eq!(
+            current
+                .physical_translation_stream_ledger
+                .active
+                .get("reused-cue")
+                .map(|cursor| cursor.translation_generation),
+            Some(2),
+            "an old local worker snapshot must not steal terminal ownership from the new generation"
+        );
+    }
+
+    #[test]
+    fn committed_completion_remains_the_only_terminal_when_stop_arrives_later() {
+        let status_outbox = Arc::new(Mutex::new(TranslationStatusOutbox::default()));
+        let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
+        {
+            let mut current = state.lock().unwrap();
+            current.session_id = Some("session-completed".to_string());
+            current.translation_status_outbox = Some(status_outbox.clone());
+            current
+                .physical_translation_stream_ledger
+                .admit("completed-before-stop", 0, TranslationStreamState::Start, 0)
+                .unwrap();
+            bind_test_cue_authority(&current, "completed-before-stop");
+        }
+        let mut physical_stream = Some(ActivePhysicalTranslationStream {
+            cue_id: "completed-before-stop".to_string(),
+            created_at_ms: 1_000,
+            estimated_duration_ms: 100,
+            playback_frames: 960,
+            translation_generation: 0,
+            buffering_started_at: std::time::Instant::now(),
+            playback_started: true,
+            ducking_enabled: false,
+            ducking_depth_percent: 0,
+            ended: true,
+        });
+        let mut output = None;
+        finish_completed_physical_stream(&mut output, &state, &mut physical_stream);
+
+        let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
+        let (playback_control_tx, _playback_control_rx) = mpsc::channel();
+        let stop = request_playback_stop(
+            &mut state.lock().unwrap(),
+            &translation_queue,
+            &playback_control_tx,
+            "session-changed",
+            None,
+        );
+
+        assert!(stop.terminated_cues.is_empty());
+        let statuses = status_outbox.lock().unwrap();
+        assert_eq!(statuses.pending.len(), 1);
+        assert_eq!(
+            statuses.pending[0].playback_status,
+            TranslationPlaybackStatusKind::Completed
+        );
+        assert_eq!(statuses.pending[0].cue_id, "completed-before-stop");
     }
 }

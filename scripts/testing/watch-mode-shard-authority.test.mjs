@@ -11,12 +11,12 @@ import {
   PROVIDER_INPUT_BUDGET_LEASE_KIND,
   PROVIDER_INPUT_BUDGET_LEDGER_FILE,
   PROVIDER_INPUT_BUDGET_LEDGER_KIND,
-  SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
   SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
   SHARD_ORCHESTRATION_IMPLEMENTATION_FILES,
   authorityInventoryDigest,
   buildShardCellResult,
   createSignedExecutionPlan,
+  fileAuthorityEntry,
   generateCoordinatorSigningKeyPair,
   issueCellLeases,
   interactiveExecutionExitMatchesReport,
@@ -29,7 +29,29 @@ import {
   writeShardCellResult,
   writeShardManifest,
 } from './watch-mode-shard-authority.mjs';
-import { defaultThreeVmAssignments } from './run-watch-mode-live-coordinator.mjs';
+import { defaultSingleWorkerAssignments } from './run-watch-mode-live-coordinator.mjs';
+import { rebuildReportFromDirectory } from './watch-mode-report.mjs';
+import {
+  healthyApp,
+  healthyAppLog,
+  healthyAecPlayback,
+  healthyBridge,
+  healthyBridgeLog,
+  healthyDriver,
+  healthyPhysicalOutput,
+  healthyPhysicalOutputContent,
+  healthyProcessExclusionBridge,
+  healthyProcessExclusionFingerprint,
+  healthyProcessExclusionRestartLog,
+  healthyProvider,
+  healthySystemMetrics,
+  healthyWasapi,
+  healthyWatchSessionReport,
+} from './watch-mode-report-test-helpers.mjs';
+import {
+  WATCH_MODE_RUN_COLLECTION_SCHEMA,
+  writeWatchModeRunCollection,
+} from './watch-mode-run-collection.mjs';
 
 const SHA_A = 'a'.repeat(64);
 const SHA_B = 'b'.repeat(64);
@@ -107,7 +129,7 @@ function createFixture({ providerPreflightOverrides = {} } = {}) {
        ...providerPreflightOverrides,
      },
     workers,
-    assignments: defaultThreeVmAssignments(workers),
+    assignments: defaultSingleWorkerAssignments(workers),
     ...signingKeys,
   });
   const leases = issueCellLeases(plan, signingKeys.privateKeyPem, { issuedAt: generatedAt });
@@ -132,7 +154,17 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
-function providerIdentity(cell, lease, runMarker, protocol = 'dashscope-omni') {
+function refreshForgedResultAuthority(resultPath, result, reportPath) {
+  const reportArtifactIndex = result.artifacts.findIndex((entry) => entry.path === 'report.json');
+  assert.ok(reportArtifactIndex >= 0, 'fixture shard result must bind report.json');
+  result.artifacts[reportArtifactIndex] = fileAuthorityEntry(reportPath, 'report.json');
+  const core = structuredClone(result);
+  delete core.resultDigest;
+  result.resultDigest = sha256Canonical(core);
+  writeJson(resultPath, result);
+}
+
+function providerIdentity(cell, lease, runMarker, protocol = 'dashscope-livetranslate') {
   return {
     schemaVersion: 1,
     artifactKind: PROVIDER_INPUT_BUDGET_LEDGER_KIND,
@@ -164,7 +196,6 @@ function writeSuccessfulRun(runDirectory, cell, lease, { samples = 32_000 } = {}
     runMarker,
     cell.modelId.includes('livetranslate') ? 'dashscope-livetranslate' : 'dashscope-omni',
   );
-  writeJson(path.join(runDirectory, 'report.json'), { verdict: 'passed' });
   writeJson(path.join(runDirectory, 'physical-playback-device.json'), {
     profileId: cell.deviceProfileInstance.profileId,
     deviceClass: cell.deviceClass,
@@ -197,11 +228,11 @@ function writeSuccessfulRun(runDirectory, cell, lease, { samples = 32_000 } = {}
     cellId: cell.cellId,
     leaseId: lease.leaseId,
     runMarker,
-    maxSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+    maxSamples: cell.maxExternalAudioSamples,
   });
   writeJson(path.join(runDirectory, PROVIDER_INPUT_BUDGET_LEDGER_FILE), {
     ...identity,
-    maxSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+    maxSamples: cell.maxExternalAudioSamples,
     totalAttemptedSamples: samples,
     appendAttempts: samples === 0 ? 0 : 2,
     sendFailures: 0,
@@ -225,6 +256,81 @@ function writeSuccessfulRun(runDirectory, cell, lease, { samples = 32_000 } = {}
     `${events.map((event) => JSON.stringify(event)).join('\n')}\n`,
     'utf8',
   );
+  writeRawReportAuthority(runDirectory, cell);
+}
+
+function writeRawReportAuthority(runDirectory, cell, {
+  bridgeDroppedFrameCount = 0,
+  collectionFailure = null,
+  steps = [],
+} = {}) {
+  const processExclusion = cell.feedbackLoopPrevention === 'process-exclusion';
+  const echoCancel = cell.feedbackLoopPrevention === 'echo-cancel';
+  const snapshots = {
+    schemaVersion: 1,
+    modelId: cell.modelId,
+    feedbackLoopPrevention: cell.feedbackLoopPrevention,
+    deviceEvidence: {
+      deviceClass: cell.deviceClass,
+      profileId: cell.deviceProfileId ?? cell.deviceProfileInstance.profileId,
+      resolvedDeviceId: cell.deviceProfileInstance.physicalPlaybackDeviceId,
+      resolvedDeviceName: 'VMware HDA Test Device',
+    },
+    driver: healthyDriver,
+    wasapi: healthyWasapi,
+    bridge: processExclusion
+      ? healthyProcessExclusionBridge
+      : { ...healthyBridge, droppedFrameCount: bridgeDroppedFrameCount },
+    physicalOutput: processExclusion
+      ? healthyProcessExclusionFingerprint
+      : healthyPhysicalOutput,
+    physicalOutputContentRaw: healthyPhysicalOutputContent,
+    app: healthyApp,
+    provider: healthyProvider,
+    watchSessionReport: healthyWatchSessionReport,
+    playback: echoCancel ? healthyAecPlayback : null,
+    systemMetrics: processExclusion ? healthySystemMetrics : null,
+  };
+  writeJson(path.join(runDirectory, 'fixture-evidence.raw.json'), snapshots);
+  writeJson(path.join(runDirectory, 'run-metadata.json'), {
+    schemaVersion: 'watch-mode-run-metadata/v1',
+    runMarker: null,
+    startedAtLocal: null,
+    modelId: cell.modelId,
+    feedbackMode: cell.feedbackLoopPrevention,
+  });
+  const appLog = processExclusion
+    ? [healthyAppLog, healthyProcessExclusionRestartLog].join('\n')
+    : healthyAppLog;
+  fs.writeFileSync(path.join(runDirectory, 'app.log'), `${appLog}\n`, 'utf8');
+  fs.writeFileSync(path.join(runDirectory, 'bridge-service.log'), `${healthyBridgeLog}\n`, 'utf8');
+  writeWatchModeRunCollection(runDirectory, {
+    schemaVersion: WATCH_MODE_RUN_COLLECTION_SCHEMA,
+    artifactKind: 'watch-mode-run-collection',
+    request: { schemaVersion: 'watch-mode-run-request/v1', runMode: 'live' },
+    collectionStatus: collectionFailure ? 'failed' : 'completed',
+    steps,
+    ownedProcesses: [],
+    artifacts: {
+      appLog: 'app.log',
+      bridgeLog: 'bridge-service.log',
+      runMetadata: 'run-metadata.json',
+      fixtureEvidence: 'fixture-evidence.raw.json',
+    },
+    primaryError: collectionFailure,
+    cleanupErrors: [],
+  });
+  const report = rebuildReportFromDirectory(runDirectory, {
+    mode: 'live',
+    provenance: PROVENANCE,
+  });
+  const reportPath = path.join(runDirectory, 'report.json');
+  writeJson(reportPath, report);
+  return JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+}
+
+function writeRawBridgeFailureAuthority(runDirectory, cell) {
+  return writeRawReportAuthority(runDirectory, cell, { bridgeDroppedFrameCount: 1 });
 }
 
 test('shard orchestration inventory is independent from local/matrix implementation authority', () => {
@@ -233,6 +339,7 @@ test('shard orchestration inventory is independent from local/matrix implementat
     'scripts/testing/run-watch-mode-live-shard.mjs',
     'scripts/testing/run-watch-mode-live-coordinator.mjs',
     'scripts/testing/run-watch-mode-live-production-coordinator.mjs',
+    'scripts/testing/watch-mode-release-timeout-budget.mjs',
     'scripts/testing/watch-mode-strict-runtime-authority.mjs',
     'scripts/testing/watch-mode-provider-preflight-process.mjs',
     'scripts/testing/watch-mode-provider-network-health.mjs',
@@ -248,17 +355,17 @@ test('shard orchestration inventory is independent from local/matrix implementat
   assert.equal(SHARD_ORCHESTRATION_IMPLEMENTATION_FILES.includes('scripts/testing/run-watch-mode-live-matrix.mjs'), false);
 });
 
-test('signed plan and leases bind exact eight cells, eight serial waves, machine/runtime identities and 1440 seconds', () => {
+test('signed plan and leases bind exact four cells, serial waves, identities and mode-derived samples', () => {
   const fixture = createFixture();
   assert.throws(
     () => createFixture({ providerPreflightOverrides: { inputTokens: '64' } }),
     /exactly one completed text-only invocation/,
   );
   assert.equal(verifySignedExecutionPlan(fixture.plan, { now: fixture.now }), fixture.plan);
-  assert.equal(fixture.plan.cells.length, 8);
-  assert.deepEqual(fixture.plan.waves.map((wave) => wave.cellIds.length), [1, 1, 1, 1, 1, 1, 1, 1]);
-  assert.equal(fixture.leases.length, 8);
-  assert.equal(new Set(fixture.leases.map((lease) => lease.leaseId)).size, 8);
+  assert.equal(fixture.plan.cells.length, 4);
+  assert.deepEqual(fixture.plan.waves.map((wave) => wave.cellIds.length), [1, 1, 1, 1]);
+  assert.equal(fixture.leases.length, 4);
+  assert.equal(new Set(fixture.leases.map((lease) => lease.leaseId)).size, 4);
   assert.equal(
     fixture.leases.reduce((sum, lease) => sum + lease.maxExternalAudioSamples, 0),
     SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
@@ -321,13 +428,13 @@ test('signed plan accepts exactly one local worker and rejects additional worker
      },
     workers,
     assignments: workers.length === 1
-      ? defaultThreeVmAssignments(workers)
+      ? defaultSingleWorkerAssignments(workers)
       : [],
     ...fixture.signingKeys,
   });
   const oneWorkerPlan = createWithWorkers(testWorkers());
   assert.equal(oneWorkerPlan.workers.length, 1);
-  assert.deepEqual(oneWorkerPlan.waves.map((wave) => wave.cellIds.length), [1, 1, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(oneWorkerPlan.waves.map((wave) => wave.cellIds.length), [1, 1, 1, 1]);
   const fourth = {
     ...structuredClone(testWorkers()[0]),
     workerId: 'vm4',
@@ -340,12 +447,12 @@ test('provider usage authority binds coordinator launch receipt and ordered send
   const fixture = createFixture();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-shard-usage-'));
   try {
-    const cell = fixture.plan.cells[0];
-    const lease = fixture.leases[0];
+    const cell = fixture.plan.cells.find((entry) => entry.feedbackLoopPrevention === 'virtual-driver');
+    const lease = fixture.leases.find((entry) => entry.cellId === cell.cellId);
     writeSuccessfulRun(root, cell, lease);
     const usage = validateProviderUsageAuthority(root, { cell, lease });
     assert.equal(usage.actualExternalAudioSamples, 32_000);
-    assert.equal(usage.maxExternalAudioSamples, SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES);
+    assert.equal(usage.maxExternalAudioSamples, cell.maxExternalAudioSamples);
     assert.equal(usage.launchLeasePath, PROVIDER_INPUT_BUDGET_LEASE_FILE);
     assert.equal(usage.journalEventCount, 5);
 
@@ -568,17 +675,12 @@ test('ordinary failed report remains an identity-bound shard result for collect-
   const fixture = createFixture();
   const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-shard-failed-result-'));
   try {
-    const cell = fixture.plan.cells[0];
+    const cell = fixture.plan.cells.find((entry) => entry.feedbackLoopPrevention === 'virtual-driver');
     const lease = fixture.leases.find((entry) => entry.cellId === cell.cellId);
     const worker = fixture.plan.workers.find((entry) => entry.workerId === cell.workerId);
     const runDirectory = path.join(shardRoot, 'runs', 'failed-cell');
     writeSuccessfulRun(runDirectory, cell, lease);
-    writeJson(path.join(runDirectory, 'report.json'), {
-      verdict: 'failed',
-      failureLayer: 'acoustic',
-      stableErrorCode: 'watch.acoustic.reference-mismatch',
-      lifecyclePhase: 'contentCapture',
-    });
+    const rawReport = writeRawBridgeFailureAuthority(runDirectory, cell);
     const written = writeShardCellResult({
       plan: fixture.plan,
       lease,
@@ -596,7 +698,342 @@ test('ordinary failed report remains an identity-bound shard result for collect-
       now: fixture.now,
     });
     assert.equal(validated.result.verdict, 'failed');
-    assert.equal(validated.result.stableErrorCode, 'watch.acoustic.reference-mismatch');
+    assert.equal(validated.result.stableErrorCode, rawReport.stableErrorCode);
+  } finally {
+    fs.rmSync(shardRoot, { recursive: true, force: true });
+  }
+});
+
+test('failed shard result builder rejects unknown failure identity fields', () => {
+  const fixture = createFixture();
+  const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-shard-unknown-failure-'));
+  try {
+    const cell = fixture.plan.cells.find((entry) => entry.feedbackLoopPrevention === 'virtual-driver');
+    const lease = fixture.leases.find((entry) => entry.cellId === cell.cellId);
+    const worker = fixture.plan.workers.find((entry) => entry.workerId === cell.workerId);
+    const runDirectory = path.join(shardRoot, 'runs', 'unknown-failure-cell');
+    writeSuccessfulRun(runDirectory, cell, lease);
+    writeJson(path.join(runDirectory, 'report.json'), {
+      verdict: 'failed',
+      failureLayer: 'unknown',
+      stableErrorCode: 'unknown',
+      lifecyclePhase: 'unknown',
+      failureContext: {
+        endpointId: cell.deviceProfileInstance.physicalPlaybackDeviceId,
+        bridgeInstanceId: 'bridge-report-authority',
+        ownerGenerationTransition: { before: 41, after: 42 },
+      },
+    });
+
+    assert.throws(
+      () => buildShardCellResult({
+        plan: fixture.plan,
+        lease,
+        workerId: worker.workerId,
+        vmIdentity: worker.vmIdentity,
+        shardRoot,
+        runDirectory,
+        ...fixture.snapshot,
+      }),
+      /unknown|failure identity/i,
+    );
+  } finally {
+    fs.rmSync(shardRoot, { recursive: true, force: true });
+  }
+});
+
+test('failed shard result builder requires structured endpoint, bridge, and owner transition context', () => {
+  const fixture = createFixture();
+  const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-shard-missing-failure-context-'));
+  try {
+    const cell = fixture.plan.cells[0];
+    const lease = fixture.leases.find((entry) => entry.cellId === cell.cellId);
+    const worker = fixture.plan.workers.find((entry) => entry.workerId === cell.workerId);
+    const runDirectory = path.join(shardRoot, 'runs', 'missing-failure-context-cell');
+    writeSuccessfulRun(runDirectory, cell, lease);
+    writeJson(path.join(runDirectory, 'report.json'), {
+      verdict: 'failed',
+      failureLayer: 'bridge',
+      stableErrorCode: 'bridge.restart-authority-failed',
+      lifecyclePhase: 'bridge-restart',
+      failureContext: {},
+    });
+
+    assert.throws(
+      () => buildShardCellResult({
+        plan: fixture.plan,
+        lease,
+        workerId: worker.workerId,
+        vmIdentity: worker.vmIdentity,
+        shardRoot,
+        runDirectory,
+        ...fixture.snapshot,
+      }),
+      /endpoint|bridge|owner.*transition|failure context/i,
+    );
+  } finally {
+    fs.rmSync(shardRoot, { recursive: true, force: true });
+  }
+});
+
+test('self-consistently rehashed shard failure fields must exactly match the original report', () => {
+  const fixture = createFixture();
+  const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-shard-forged-failure-'));
+  try {
+    const cell = fixture.plan.cells.find((entry) => entry.feedbackLoopPrevention === 'virtual-driver');
+    const lease = fixture.leases.find((entry) => entry.cellId === cell.cellId);
+    const worker = fixture.plan.workers.find((entry) => entry.workerId === cell.workerId);
+    const runDirectory = path.join(shardRoot, 'runs', 'forged-failure-cell');
+    writeSuccessfulRun(runDirectory, cell, lease);
+    const originalReport = writeRawBridgeFailureAuthority(runDirectory, cell);
+    const written = writeShardCellResult({
+      plan: fixture.plan,
+      lease,
+      workerId: worker.workerId,
+      vmIdentity: worker.vmIdentity,
+      shardRoot,
+      runDirectory,
+      ...fixture.snapshot,
+    });
+    const forged = JSON.parse(fs.readFileSync(written.resultPath, 'utf8'));
+    forged.failureLayer = 'provider';
+    forged.stableErrorCode = 'provider.response-stream-timeout';
+    forged.lifecyclePhase = 'active-response';
+    forged.failureContext = {
+      endpointId: '{forged-endpoint}',
+      bridgeInstanceId: 'bridge-instance-forged-result',
+      ownerGenerationTransition: { before: 99, after: 100 },
+    };
+    const forgedCore = structuredClone(forged);
+    delete forgedCore.resultDigest;
+    forged.resultDigest = sha256Canonical(forgedCore);
+    writeJson(written.resultPath, forged);
+
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(path.join(runDirectory, 'report.json'), 'utf8')),
+      originalReport,
+      'the oracle is the unchanged original report, not a regenerated product report',
+    );
+    assert.throws(
+      () => validateShardCellResult({
+        resultPath: written.resultPath,
+        plan: fixture.plan,
+        lease,
+        shardRoot,
+        now: fixture.now,
+      }),
+      /strict report|failure.*mismatch|does not match/i,
+    );
+  } finally {
+    fs.rmSync(shardRoot, { recursive: true, force: true });
+  }
+});
+
+test('validator rejects a legal alternate failure identity rehashed over an unchanged raw run', () => {
+  const fixture = createFixture();
+  const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-shard-raw-failure-authority-'));
+  try {
+    const cell = fixture.plan.cells.find((entry) => entry.feedbackLoopPrevention === 'virtual-driver');
+    const lease = fixture.leases.find((entry) => entry.cellId === cell.cellId);
+    const worker = fixture.plan.workers.find((entry) => entry.workerId === cell.workerId);
+    const runDirectory = path.join(shardRoot, 'runs', 'raw-failure-authority-cell');
+    writeSuccessfulRun(runDirectory, cell, lease);
+    const rawReport = writeRawBridgeFailureAuthority(runDirectory, cell);
+    assert.equal(rawReport.verdict, 'failed');
+    assert.equal(rawReport.failureLayer, 'bridge');
+
+    const written = writeShardCellResult({
+      plan: fixture.plan,
+      lease,
+      workerId: worker.workerId,
+      vmIdentity: worker.vmIdentity,
+      shardRoot,
+      runDirectory,
+      ...fixture.snapshot,
+    });
+    const reportPath = path.join(runDirectory, 'report.json');
+    const forgedReport = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+    forgedReport.failureLayer = 'app';
+    forgedReport.failureReason = 'provider response stream timeout';
+    forgedReport.stableErrorCode = 'provider.response-stream-timeout';
+    forgedReport.lifecyclePhase = 'active-response';
+    forgedReport.failureContext = {
+      endpointId: cell.deviceProfileInstance.physicalPlaybackDeviceId,
+      bridgeInstanceId: 'bridge-valid-but-not-from-raw-evidence',
+      ownerGenerationTransition: { before: 101, after: 102 },
+      nativeResponseCancellation: null,
+    };
+    writeJson(reportPath, forgedReport);
+    const forgedResult = JSON.parse(fs.readFileSync(written.resultPath, 'utf8'));
+    forgedResult.failureLayer = forgedReport.failureLayer;
+    forgedResult.stableErrorCode = forgedReport.stableErrorCode;
+    forgedResult.lifecyclePhase = forgedReport.lifecyclePhase;
+    forgedResult.failureContext = forgedReport.failureContext;
+    refreshForgedResultAuthority(written.resultPath, forgedResult, reportPath);
+
+    assert.equal(
+      rebuildReportFromDirectory(runDirectory, { mode: 'live', provenance: PROVENANCE }).failureLayer,
+      'bridge',
+      'the independent oracle remains the unchanged raw Bridge failure',
+    );
+    assert.throws(
+      () => validateShardCellResult({
+        resultPath: written.resultPath,
+        plan: fixture.plan,
+        lease,
+        shardRoot,
+        now: fixture.now,
+      }),
+      /raw evidence|independently rebuilt|report authority/i,
+    );
+  } finally {
+    fs.rmSync(shardRoot, { recursive: true, force: true });
+  }
+});
+
+test('validator rejects self-consistent unknown failure identity even when report bytes agree', () => {
+  const fixture = createFixture();
+  const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-shard-unknown-validator-'));
+  try {
+    const cell = fixture.plan.cells.find((entry) => entry.feedbackLoopPrevention === 'virtual-driver');
+    const lease = fixture.leases.find((entry) => entry.cellId === cell.cellId);
+    const worker = fixture.plan.workers.find((entry) => entry.workerId === cell.workerId);
+    const runDirectory = path.join(shardRoot, 'runs', 'unknown-validator-cell');
+    writeSuccessfulRun(runDirectory, cell, lease);
+    const reportPath = path.join(runDirectory, 'report.json');
+    writeRawBridgeFailureAuthority(runDirectory, cell);
+    const written = writeShardCellResult({
+      plan: fixture.plan,
+      lease,
+      workerId: worker.workerId,
+      vmIdentity: worker.vmIdentity,
+      shardRoot,
+      runDirectory,
+      ...fixture.snapshot,
+    });
+    const forgedReport = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+    forgedReport.failureLayer = 'unknown';
+    forgedReport.stableErrorCode = 'unknown';
+    forgedReport.lifecyclePhase = 'unknown';
+    writeJson(reportPath, forgedReport);
+    const forgedResult = JSON.parse(fs.readFileSync(written.resultPath, 'utf8'));
+    forgedResult.failureLayer = forgedReport.failureLayer;
+    forgedResult.stableErrorCode = forgedReport.stableErrorCode;
+    forgedResult.lifecyclePhase = forgedReport.lifecyclePhase;
+    refreshForgedResultAuthority(written.resultPath, forgedResult, reportPath);
+
+    assert.throws(
+      () => validateShardCellResult({
+        resultPath: written.resultPath,
+        plan: fixture.plan,
+        lease,
+        shardRoot,
+        now: fixture.now,
+      }),
+      /unknown|failure identity/i,
+    );
+  } finally {
+    fs.rmSync(shardRoot, { recursive: true, force: true });
+  }
+});
+
+test('validator rejects self-consistent malformed endpoint, bridge, and owner context', () => {
+  const fixture = createFixture();
+  const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-shard-context-validator-'));
+  try {
+    const cell = fixture.plan.cells.find((entry) => entry.feedbackLoopPrevention === 'virtual-driver');
+    const lease = fixture.leases.find((entry) => entry.cellId === cell.cellId);
+    const worker = fixture.plan.workers.find((entry) => entry.workerId === cell.workerId);
+    const runDirectory = path.join(shardRoot, 'runs', 'context-validator-cell');
+    writeSuccessfulRun(runDirectory, cell, lease);
+    const reportPath = path.join(runDirectory, 'report.json');
+    writeRawBridgeFailureAuthority(runDirectory, cell);
+    const written = writeShardCellResult({
+      plan: fixture.plan,
+      lease,
+      workerId: worker.workerId,
+      vmIdentity: worker.vmIdentity,
+      shardRoot,
+      runDirectory,
+      ...fixture.snapshot,
+    });
+    const forgedReport = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+    forgedReport.failureContext = {};
+    writeJson(reportPath, forgedReport);
+    const forgedResult = JSON.parse(fs.readFileSync(written.resultPath, 'utf8'));
+    forgedResult.failureContext = {};
+    refreshForgedResultAuthority(written.resultPath, forgedResult, reportPath);
+
+    assert.throws(
+      () => validateShardCellResult({
+        resultPath: written.resultPath,
+        plan: fixture.plan,
+        lease,
+        shardRoot,
+        now: fixture.now,
+      }),
+      /endpoint|bridge|owner.*transition|failure context/i,
+    );
+  } finally {
+    fs.rmSync(shardRoot, { recursive: true, force: true });
+  }
+});
+
+test('self-consistently rehashed manifest failure identity must match its validated cell result', () => {
+  const fixture = createFixture();
+  const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-shard-manifest-failure-'));
+  try {
+    const worker = fixture.plan.workers[0];
+    const resultPaths = [];
+    for (const cell of fixture.plan.cells) {
+      const lease = fixture.leases.find((entry) => entry.cellId === cell.cellId);
+      const runDirectory = path.join(shardRoot, 'runs', `cell-${cell.cellIndex}`);
+      writeSuccessfulRun(runDirectory, cell, lease);
+      if (cell.feedbackLoopPrevention === 'virtual-driver') {
+        writeRawBridgeFailureAuthority(runDirectory, cell);
+      }
+      resultPaths.push(writeShardCellResult({
+        plan: fixture.plan,
+        lease,
+        workerId: worker.workerId,
+        vmIdentity: worker.vmIdentity,
+        shardRoot,
+        runDirectory,
+        ...fixture.snapshot,
+      }).resultPath);
+    }
+    const written = writeShardManifest({
+      plan: fixture.plan,
+      leases: fixture.leases,
+      workerId: worker.workerId,
+      shardRoot,
+      resultPaths,
+    });
+    const forged = JSON.parse(fs.readFileSync(written.manifestPath, 'utf8'));
+    const failedBinding = forged.results.find((entry) => entry.verdict === 'failed');
+    failedBinding.failureLayer = 'provider';
+    failedBinding.stableErrorCode = 'provider.response-stream-timeout';
+    failedBinding.lifecyclePhase = 'active-response';
+    failedBinding.failureContext = {
+      endpointId: '{forged-manifest-endpoint}',
+      bridgeInstanceId: 'forged-manifest-bridge',
+      ownerGenerationTransition: { before: 700, after: 701 },
+    };
+    const forgedCore = structuredClone(forged);
+    delete forgedCore.manifestDigest;
+    forged.manifestDigest = sha256Canonical(forgedCore);
+    writeJson(written.manifestPath, forged);
+
+    assert.throws(
+      () => validateShardManifest({
+        manifestPath: written.manifestPath,
+        shardRoot,
+        plan: fixture.plan,
+        leases: fixture.leases,
+        now: fixture.now,
+      }),
+      /manifest result.*failure identity.*mismatch/i,
+    );
   } finally {
     fs.rmSync(shardRoot, { recursive: true, force: true });
   }
@@ -615,17 +1052,18 @@ test('blocked report is preserved and normalized to a collect-all failed shard r
     const device = JSON.parse(fs.readFileSync(devicePath, 'utf8'));
     device.resolvedDeviceName = `扬声器 (${cell.deviceProfileInstance.expectedPhysicalPlaybackDeviceName})`;
     writeJson(devicePath, device);
-    writeJson(path.join(runDirectory, 'report.json'), {
-      verdict: 'blocked',
-      failureLayer: 'environment',
-      stableErrorCode: 'watch.environment.blocked',
-      lifecyclePhase: 'environment-preflight',
-      failureContext: {
-        endpointId: cell.deviceProfileInstance.physicalPlaybackDeviceId,
-        bridgeInstanceId: null,
-        ownerGenerationTransition: { before: null, after: null },
-      },
+    const blockedReport = writeRawReportAuthority(runDirectory, cell, {
+      collectionFailure: { message: 'environment prerequisite unavailable' },
+      steps: [{
+        schemaVersion: 'watch-mode-step/v2',
+        id: 'start-desktop-shell',
+        name: 'start desktop shell',
+        status: 'blocked',
+        data: null,
+        error: { message: 'environment prerequisite unavailable' },
+      }],
     });
+    assert.equal(blockedReport.verdict, 'blocked');
     const written = writeShardCellResult({
       plan: fixture.plan,
       lease,
@@ -644,7 +1082,7 @@ test('blocked report is preserved and normalized to a collect-all failed shard r
     });
     assert.equal(validated.result.verdict, 'failed');
     assert.equal(validated.result.reportVerdict, 'blocked');
-    assert.equal(validated.result.stableErrorCode, 'watch.environment.blocked');
+    assert.equal(validated.result.stableErrorCode, blockedReport.stableErrorCode);
     assert.equal(validated.result.lifecyclePhase, 'environment-preflight');
   } finally {
     fs.rmSync(shardRoot, { recursive: true, force: true });

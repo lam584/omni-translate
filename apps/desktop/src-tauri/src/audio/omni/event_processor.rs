@@ -87,18 +87,24 @@ impl OmniEventProcessor {
         }
     }
 
-    fn bridge_translation_owner<R: tauri::Runtime>(
+    fn enqueue_playback_command<R: tauri::Runtime>(
         app: &AppHandle<R>,
-    ) -> Option<crate::bridge::ipc::BridgeTranslationSinkOwner> {
-        if let Some(audio_state) = app.try_state::<AudioStateStore>() {
+        playback_queue: &OmniPlaybackQueue,
+        command: impl FnOnce(
+            Option<crate::bridge::ipc::BridgeTranslationSinkOwner>,
+        ) -> OmniPlaybackCommand,
+    ) -> OmniPlaybackEnqueueOutcome {
+        let _submission_reservation = app.try_state::<AudioStateStore>().map(|audio_state| {
             audio_state
                 .translation_playback_quiescence()
-                .wait_for_restart_barrier();
-        }
-        app.try_state::<crate::bridge::state::BridgeStateStore>()
+                .wait_for_restart_barrier()
+        });
+        let bridge_owner = app
+            .try_state::<crate::bridge::state::BridgeStateStore>()
             .and_then(|state| {
                 crate::bridge::ipc::BridgeTranslationSinkOwner::from_snapshot(&state.snapshot())
-            })
+            });
+        playback_queue.enqueue(command(bridge_owner))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -295,17 +301,22 @@ impl OmniEventProcessor {
                                     let chunk_duration_ms = (raw.len() as u64)
                                         .saturating_mul(1_000)
                                         .div_ceil(OMNI_OUTPUT_SAMPLE_RATE_HZ as u64);
-                                    let enqueue = playback_queue.enqueue(OmniPlaybackCommand::Stream {
-                                        samples: raw,
-                                        cue_id: cue_id.to_string(),
-                                        sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
-                                        queued_at: Instant::now(),
-                                        created_at_ms,
-                                        estimated_duration_ms: chunk_duration_ms,
-                                        chunk_index: pending_audio_stream_chunk_index,
-                                        stream_state,
-                                        bridge_owner: Self::bridge_translation_owner(app),
-                                    });
+                                    let enqueue = Self::enqueue_playback_command(
+                                        app,
+                                        playback_queue,
+                                        |bridge_owner| OmniPlaybackCommand::Stream {
+                                            samples: raw,
+                                            cue_id: cue_id.to_string(),
+                                            response_id: pending_audio_response_id.clone(),
+                                            sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
+                                            queued_at: Instant::now(),
+                                            created_at_ms,
+                                            estimated_duration_ms: chunk_duration_ms,
+                                            chunk_index: pending_audio_stream_chunk_index,
+                                            stream_state,
+                                            bridge_owner,
+                                        },
+                                    );
                                     if matches!(
                                         &enqueue,
                                         OmniPlaybackEnqueueOutcome::Overflow { .. }
@@ -404,17 +415,22 @@ impl OmniEventProcessor {
                 let duration_ms = (raw.len() as u64)
                     .saturating_mul(1_000)
                     .div_ceil(OMNI_OUTPUT_SAMPLE_RATE_HZ as u64);
-                let result = playback_queue.enqueue(OmniPlaybackCommand::Stream {
-                    samples: raw,
-                    cue_id: stream_cue_id.clone(),
-                    sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
-                    queued_at: Instant::now(),
-                    created_at_ms,
-                    estimated_duration_ms: duration_ms,
-                    chunk_index: pending_audio_stream_chunk_index,
-                    stream_state: omni_bridge_protocol::TranslationStreamState::Chunk,
-                    bridge_owner: Self::bridge_translation_owner(app),
-                });
+                let result = Self::enqueue_playback_command(
+                    app,
+                    playback_queue,
+                    |bridge_owner| OmniPlaybackCommand::Stream {
+                        samples: raw,
+                        cue_id: stream_cue_id.clone(),
+                        response_id: pending_audio_response_id.clone(),
+                        sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
+                        queued_at: Instant::now(),
+                        created_at_ms,
+                        estimated_duration_ms: duration_ms,
+                        chunk_index: pending_audio_stream_chunk_index,
+                        stream_state: omni_bridge_protocol::TranslationStreamState::Chunk,
+                        bridge_owner,
+                    },
+                );
                 if matches!(&result, OmniPlaybackEnqueueOutcome::Overflow { .. } | OmniPlaybackEnqueueOutcome::Stopped) {
                     playback_queue.abort_stream(
                         &stream_cue_id,
@@ -437,17 +453,22 @@ impl OmniEventProcessor {
             if pending_audio_stream_aborted {
                 pending_audio_buffer.clear();
             } else {
-                let result = playback_queue.enqueue(OmniPlaybackCommand::Stream {
-                    samples: Vec::new(),
-                    cue_id: stream_cue_id,
-                    sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
-                    queued_at: Instant::now(),
-                    created_at_ms,
-                    estimated_duration_ms: 0,
-                    chunk_index: pending_audio_stream_chunk_index,
-                    stream_state: omni_bridge_protocol::TranslationStreamState::End,
-                    bridge_owner: Self::bridge_translation_owner(app),
-                });
+                let result = Self::enqueue_playback_command(
+                    app,
+                    playback_queue,
+                    |bridge_owner| OmniPlaybackCommand::Stream {
+                        samples: Vec::new(),
+                        cue_id: stream_cue_id,
+                        response_id: pending_audio_response_id.clone(),
+                        sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
+                        queued_at: Instant::now(),
+                        created_at_ms,
+                        estimated_duration_ms: 0,
+                        chunk_index: pending_audio_stream_chunk_index,
+                        stream_state: omni_bridge_protocol::TranslationStreamState::End,
+                        bridge_owner,
+                    },
+                );
                 if matches!(&result, OmniPlaybackEnqueueOutcome::Overflow { .. } | OmniPlaybackEnqueueOutcome::Stopped) {
                     playback_queue.abort_stream(
                         cue_id.unwrap_or("unknown-native-cue"),
@@ -509,14 +530,19 @@ impl OmniEventProcessor {
                 .publish_pending_native_audio(app);
             };
             let created_at_ms = unix_ms();
-            let enqueue_status = match playback_queue.enqueue(OmniPlaybackCommand::Play {
-                samples: std::mem::take(&mut pending_audio_buffer),
-                cue_id: cue_id.to_string(),
-                sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
-                queued_at: Instant::now(),
-                created_at_ms,
-                estimated_duration_ms: duration_ms,
-            }) {
+            let enqueue_status = match Self::enqueue_playback_command(
+                app,
+                playback_queue,
+                |_| OmniPlaybackCommand::Play {
+                    samples: std::mem::take(&mut pending_audio_buffer),
+                    cue_id: cue_id.to_string(),
+                    response_id: pending_audio_response_id.clone(),
+                    sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
+                    queued_at: Instant::now(),
+                    created_at_ms,
+                    estimated_duration_ms: duration_ms,
+                },
+            ) {
                 OmniPlaybackEnqueueOutcome::Queued => "queued",
                 OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale { dropped } => {
                     record_native_playback_stale(

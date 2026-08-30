@@ -43,6 +43,10 @@ pub(super) struct OmniAudioPumpState {
     pub(super) pending_audio_buffer: Vec<i16>,
     pub(super) provider_input_dump: Option<ProviderInputPcmDump>,
     pub(super) provider_input_budget: ProviderInputBudget,
+    /// True only after the sole capture producer has released every sender and
+    /// the receiver has observed `Disconnected`. `Empty` is not terminal: a
+    /// still-live producer may enqueue another chunk after the check.
+    pub(super) audio_input_disconnected: bool,
     pub(super) chunks_sent_this_tick: usize,
     /// The send path replaced the socket via reconnect during this tick. The
     /// worker must reset the manual response gate tied to the old session.
@@ -63,6 +67,20 @@ fn provider_input_is_writable(
     // the bounded pre-session queue faster than it can drain and silently
     // drops the live source.
     session_ready_for_audio
+}
+
+fn try_receive_provider_input(
+    audio_rx: &mpsc::Receiver<Vec<u8>>,
+    audio_input_disconnected: &mut bool,
+) -> Option<Vec<u8>> {
+    match audio_rx.try_recv() {
+        Ok(chunk) => Some(chunk),
+        Err(mpsc::TryRecvError::Empty) => None,
+        Err(mpsc::TryRecvError::Disconnected) => {
+            *audio_input_disconnected = true;
+            None
+        }
+    }
 }
 
 fn record_append_attempt_progress<R: tauri::Runtime>(
@@ -219,6 +237,7 @@ impl OmniAudioPump {
             mut pending_audio_buffer,
             mut provider_input_dump,
             provider_input_budget,
+            mut audio_input_disconnected,
             chunks_sent_this_tick: _,
             socket_reconnected: _,
         } = self.state;
@@ -227,16 +246,20 @@ impl OmniAudioPump {
         let mut pre_session_chunks_drained_this_tick = 0usize;
         loop {
             let raw_chunk = if provider_input_is_writable(session_ready_for_audio, defer_audio_until_response_done) {
-                match pre_session_audio_queue
-                    .pop_front()
-                    .or_else(|| audio_rx.try_recv().ok())
-                {
-                    Some(chunk) => chunk,
-                    None => break,
+                if let Some(chunk) = pre_session_audio_queue.pop_front() {
+                    chunk
+                } else {
+                    let Some(chunk) = try_receive_provider_input(
+                        audio_rx,
+                        &mut audio_input_disconnected,
+                    ) else {
+                        break;
+                    };
+                    chunk
                 }
             } else {
-                match audio_rx.try_recv() {
-                    Ok(chunk) => {
+                match try_receive_provider_input(audio_rx, &mut audio_input_disconnected) {
+                    Some(chunk) => {
                         pre_session_chunks_drained_this_tick += 1;
                         if pre_session_audio_queue.len() >= OMNI_PRE_SESSION_AUDIO_QUEUE_LIMIT {
                             pre_session_audio_queue.pop_front();
@@ -263,7 +286,7 @@ impl OmniAudioPump {
                         }
                         continue;
                     }
-                    Err(_) => break,
+                    None => break,
                 }
             };
             let asr_chunk = resample_48k_stereo_to_16k_mono(&raw_chunk);
@@ -396,6 +419,7 @@ impl OmniAudioPump {
                 pre_session_audio_queue.push_front(raw_chunk);
                 continue;
             }
+            store.record_strict_watch_provider_append(asr_chunk.len() as u64)?;
             manual_turn_audio_after_response = true;
             // Only audio accepted by the current socket belongs to the
             // provider's current input buffer. A failed append that triggers
@@ -457,6 +481,7 @@ impl OmniAudioPump {
             pending_audio_buffer,
             provider_input_dump,
             provider_input_budget,
+            audio_input_disconnected,
             chunks_sent_this_tick,
             socket_reconnected,
         })
@@ -571,6 +596,24 @@ mod tests {
     }
 
     #[test]
+    fn provider_input_receiver_distinguishes_empty_from_disconnected() {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let mut disconnected = false;
+        assert_eq!(try_receive_provider_input(&rx, &mut disconnected), None);
+        assert!(!disconnected, "Empty is not a producer completion fence");
+
+        tx.send(vec![1, 2, 3]).expect("producer sends final chunk");
+        drop(tx);
+        assert_eq!(
+            try_receive_provider_input(&rx, &mut disconnected),
+            Some(vec![1, 2, 3])
+        );
+        assert!(!disconnected, "queued input must drain before the fence");
+        assert_eq!(try_receive_provider_input(&rx, &mut disconnected), None);
+        assert!(disconnected, "Disconnected proves every sender was released");
+    }
+
+    #[test]
     fn strict_send_failure_never_reaches_the_reconnect_connector() {
         let app = tauri::test::mock_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -627,6 +670,7 @@ mod tests {
             pending_audio_buffer: Vec::new(),
             provider_input_dump: None,
             provider_input_budget: budget,
+            audio_input_disconnected: false,
             chunks_sent_this_tick: 0,
             socket_reconnected: false,
         })

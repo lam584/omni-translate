@@ -268,6 +268,7 @@ fn run_omni_worker(
     } = OmniSessionRuntime::new();
     let mut livetranslate_shutdown =
         LivetranslateShutdown::for_provider(&provider, stop_requested);
+    let mut audio_input_disconnected = false;
     let mut socket = livetranslate_shutdown.wrap_socket(socket);
     let connector = livetranslate_shutdown.wrap_connector(TungsteniteConnector);
     let mut shutdown_outcome = OmniWorkerShutdown::Immediate;
@@ -378,6 +379,7 @@ fn run_omni_worker(
             pending_audio_buffer,
             provider_input_dump,
             provider_input_budget,
+            audio_input_disconnected,
             chunks_sent_this_tick: 0,
             socket_reconnected: false,
         })
@@ -439,10 +441,27 @@ fn run_omni_worker(
         pending_audio_buffer = pump_state.pending_audio_buffer;
         provider_input_dump = pump_state.provider_input_dump;
         provider_input_budget = pump_state.provider_input_budget;
+        audio_input_disconnected = pump_state.audio_input_disconnected;
         let chunks_sent_this_tick = pump_state.chunks_sent_this_tick;
-        if livetranslate_shutdown
-            .should_send_finish(chunks_sent_this_tick, pre_session_audio_queue.is_empty())
-        {
+        let should_send_livetranslate_finish = livetranslate_shutdown.should_send_finish(
+            chunks_sent_this_tick,
+            pre_session_audio_queue.is_empty(),
+            audio_input_disconnected,
+        );
+        let should_send_livetranslate_finish = match should_send_livetranslate_finish {
+            Ok(value) => value,
+            Err(error) => {
+                provider_input_budget.mark_terminal(
+                    "livetranslate-session-finished-before-finish",
+                );
+                terminalize_livetranslate_shutdown!();
+                let _ = socket.close();
+                let _ = playback_worker.shutdown_gracefully();
+                let _ = emit_audio_snapshot(&app, store);
+                return Err(error);
+            }
+        };
+        if should_send_livetranslate_finish {
             let finish_event = livetranslate_shutdown.finish_event(&format!(
                 "event_session_finish_{}",
                 unix_ms()
@@ -467,6 +486,18 @@ fn run_omni_worker(
                 return Err(format!(
                     "LiveTranslate fail-closed: session.finish send failed on the existing socket: {error}"
                 ));
+            }
+            if direction == "inbound" {
+                if let Err(error) = store.record_strict_watch_session_finish_sent() {
+                    provider_input_budget.mark_terminal(
+                        "livetranslate-session-finish-authority-invalid",
+                    );
+                    terminalize_livetranslate_shutdown!();
+                    let _ = socket.close();
+                    let _ = playback_worker.shutdown_gracefully();
+                    let _ = emit_audio_snapshot(&app, store);
+                    return Err(error);
+                }
             }
             livetranslate_shutdown.record_finish_sent(Instant::now());
             let _ = diag_log(
@@ -776,6 +807,9 @@ fn run_omni_worker(
             reset_gate_after_reconnect!();
         }
         if livetranslate_shutdown.session_finished_received() {
+            if direction == "inbound" {
+                store.record_strict_watch_session_finished_received()?;
+            }
             let _ = socket.close();
             store.set_stt_connected(false, buffer_size);
             let _ = diag_log(

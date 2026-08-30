@@ -5,6 +5,8 @@ const EXPECTED_PROVIDER_ID_ENV: &str = "OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID";
 const STRICT_PROVIDER_ID: &str = "provider-dashscope";
 const STRICT_PROVIDER_KIND: &str = "dashscope";
 const STRICT_PROVIDER_TEMPLATE_ID: &str = "template-dashscope-realtime";
+const STRICT_MODEL_ID: &str = "qwen3.5-livetranslate-flash-realtime";
+const STRICT_REALTIME_PROTOCOL: &str = "dashscope-livetranslate";
 
 fn set_json_pointer_value(config: &mut Value, path: &[&str], value: Value) {
     if path.is_empty() {
@@ -136,6 +138,13 @@ pub(super) fn configure_watch_realtime_provider_with_environment(
         .split_once("::")
         .map(|(template_id, model_id)| (Some(template_id), model_id))
         .unwrap_or((None, requested_model_id));
+    if strict_expected_provider_id.is_some()
+        && (resolved_model_id != STRICT_MODEL_ID || realtime_protocol != STRICT_REALTIME_PROTOCOL)
+    {
+        return Err(format!(
+            "strict paid Watch authority requires model={STRICT_MODEL_ID} protocol={STRICT_REALTIME_PROTOCOL}; observed model={resolved_model_id} protocol={realtime_protocol}"
+        ));
+    }
     let providers = config
         .get_mut("providers")
         .and_then(Value::as_array_mut)

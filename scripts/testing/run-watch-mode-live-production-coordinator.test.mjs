@@ -11,6 +11,10 @@ import { repoRoot } from '../lib/testing-common.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
 import { AUTHORITY_RUNTIME_BINARY_FILES } from './watch-mode-evidence-authority.mjs';
 import {
+  WATCH_REMOTE_DISPATCH_AND_RECEIPT_ENVELOPE_MS,
+  WATCH_SHARD_WORKER_TIMEOUT_MS,
+} from './watch-mode-release-timeout-budget.mjs';
+import {
   coordinatorKeyIdForPublicKey,
   createWorkerReadinessRequest,
   fileAuthorityEntry,
@@ -18,6 +22,8 @@ import {
 } from './watch-mode-shard-authority.mjs';
 import {
   PRODUCTION_WORKER_CONFIG_KIND,
+  PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
+  PRODUCTION_COORDINATOR_TIMEOUT_MS,
   PRODUCTION_INTERACTIVE_SESSION_LAUNCH_BODY,
   PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS,
   PRODUCTION_PRESERVED_WORKER_READINESS_BODY,
@@ -28,6 +34,7 @@ import {
   parseProductionCoordinatorCliArgs,
   aggregateProductionCellFailures,
   productionCellFailureDisposition,
+  productionFailureFingerprint,
   remotePowerShellInvocation,
   decodeRemotePowerShellFileOutput,
   runRemoteJsonWithRetries,
@@ -76,7 +83,19 @@ test('production failure aggregation reports progress and shared root causes', (
   const failed = (cellId) => ({
     cellId,
     error: 'acoustic mismatch',
-    outcome: { result: { failureLayer: 'acoustic', stableErrorCode: 'watch.acoustic.mismatch' } },
+    outcome: {
+      result: {
+        verdict: 'failed',
+        failureLayer: 'acoustic',
+        stableErrorCode: 'watch.acoustic.mismatch',
+        lifecyclePhase: 'physical-playback-proof',
+        failureContext: {
+          endpointId: '{shared-endpoint}',
+          bridgeInstanceId: 'shared-bridge-instance',
+          ownerGenerationTransition: { before: 10, after: 11 },
+        },
+      },
+    },
   });
   const summary = aggregateProductionCellFailures({
     plan,
@@ -92,6 +111,88 @@ test('production failure aggregation reports progress and shared root causes', (
   assert.equal(summary.sharedRootCauses.length, 1);
   assert.deepEqual(summary.sharedRootCauses[0].cellIds, ['a', 'b']);
   assert.equal(summary.cellSpecificFailures.length, 0);
+});
+
+test('production fingerprint rejects nested report fallbacks when validated direct fields are absent', () => {
+  const plan = {
+    cells: [{
+      cellId: 'cell-a',
+      feedbackLoopPrevention: 'process-exclusion',
+      deviceProfileInstance: { physicalPlaybackDeviceId: '{plan-endpoint}' },
+    }],
+  };
+  const failure = {
+    cellId: 'cell-a',
+    outcome: {
+      result: {
+        verdict: 'failed',
+        report: {
+          failureLayer: 'bridge',
+          stableErrorCode: 'bridge.restart-authority-failed',
+          lifecyclePhase: 'bridge-restart',
+          failureContext: {
+            endpointId: '{nested-report-endpoint}',
+            bridgeInstanceId: 'nested-report-bridge',
+            ownerGenerationTransition: { before: 1, after: 2 },
+          },
+        },
+        restartSummary: {
+          phase: 'nested-restart-phase',
+          newBridgeInstanceId: 'nested-restart-bridge',
+          playbackOwnerGeneration: 2,
+        },
+      },
+    },
+  };
+
+  assert.throws(
+    () => productionFailureFingerprint(failure, plan),
+    'a coordinator fingerprint must require validated shard-result fields instead of guessing from nested objects',
+  );
+});
+
+test('production failure grouping includes the bridge instance authority', () => {
+  const plan = {
+    cells: [
+      { cellId: 'cell-a', feedbackLoopPrevention: 'process-exclusion' },
+      { cellId: 'cell-b', feedbackLoopPrevention: 'process-exclusion' },
+    ],
+  };
+  const failed = (cellId, bridgeInstanceId) => ({
+    cellId,
+    error: 'bridge restart authority failed',
+    outcome: {
+      result: {
+        verdict: 'failed',
+        failureLayer: 'bridge',
+        stableErrorCode: 'bridge.restart-authority-failed',
+        lifecyclePhase: 'bridge-restart',
+        failureContext: {
+          endpointId: '{same-endpoint}',
+          bridgeInstanceId,
+          ownerGenerationTransition: { before: 10, after: 11 },
+        },
+      },
+    },
+  });
+  const summary = aggregateProductionCellFailures({
+    plan,
+    waveOutcome: {
+      startedCellIds: ['cell-a', 'cell-b'],
+      completedCellIds: ['cell-a', 'cell-b'],
+      collectedFailures: [
+        failed('cell-a', 'bridge-instance-a'),
+        failed('cell-b', 'bridge-instance-b'),
+      ],
+    },
+  });
+
+  assert.equal(summary.sharedRootCauses.length, 0);
+  assert.equal(summary.cellSpecificFailures.length, 2);
+  assert.deepEqual(
+    summary.cellSpecificFailures.map((entry) => entry.fingerprint.bridgeInstanceId),
+    ['bridge-instance-a', 'bridge-instance-b'],
+  );
 });
 
 test('remote runtime verification has a bounded slow-disk timeout', () => {
@@ -163,7 +264,20 @@ const isWindows = process.platform === 'win32';
 
 test('zero-provider readiness reserves enough time for signed driver reinstall and verification', () => {
   assert.equal(PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS, 10 * 60_000);
-  assert.ok(PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS < PRODUCTION_REMOTE_CELL_TIMEOUT_MS);
+  assert.ok(PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS < PRODUCTION_COORDINATOR_TIMEOUT_MS);
+  assert.equal(
+    PRODUCTION_REMOTE_CELL_TIMEOUT_MS,
+    WATCH_SHARD_WORKER_TIMEOUT_MS + WATCH_REMOTE_DISPATCH_AND_RECEIPT_ENVELOPE_MS,
+  );
+  assert.equal(PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS, 300_000);
+  assert.equal(
+    PRODUCTION_COORDINATOR_TIMEOUT_MS,
+    PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS
+      + LIVE_LLM_CELLS.length * (
+        PRODUCTION_REMOTE_CELL_TIMEOUT_MS + PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS
+      )
+      + PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS,
+  );
 });
 
 test('remote runtime verification retries transient failures but never accepts a persistent failure', async () => {
@@ -736,7 +850,7 @@ test('SSH transport finalizes manifests in the guest and cancellation is task/la
   assert.doesNotMatch(source, /logs\\\\" \+ \[string\]\$payload\.leaseId \+ '\\.pid'/);
 });
 
-test('production coordinator drives eight signed serial waves through stage, verify, and publish', async () => {
+test('production coordinator drives four signed serial waves through stage, verify, and publish', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-production-orchestrator-'));
   const config = rawWorkerConfig(root);
   const normalized = validateProductionWorkerConfig(config, { configDirectory: root });
@@ -840,7 +954,9 @@ test('production coordinator drives eight signed serial waves through stage, ver
           assert.equal(typeof options.runZeroProviderWorkerReadiness, 'function');
           assert.equal(
             options.minimumRemainingExecutionMs,
-            8 * PRODUCTION_REMOTE_CELL_TIMEOUT_MS
+            LIVE_LLM_CELLS.length * (
+              PRODUCTION_REMOTE_CELL_TIMEOUT_MS + PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS
+            )
               + PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS,
           );
           const workerReadiness = await options.runZeroProviderWorkerReadiness({
@@ -934,15 +1050,15 @@ test('production coordinator drives eight signed serial waves through stage, ver
         },
       },
     });
-    assert.deepEqual(calls.filter((entry) => entry.startsWith('wave:')), [
-      'wave:0', 'wave:1', 'wave:2', 'wave:3',
-      'wave:4', 'wave:5', 'wave:6', 'wave:7',
-    ]);
+    assert.deepEqual(
+      calls.filter((entry) => entry.startsWith('wave:')),
+      LIVE_LLM_CELLS.map((_, index) => `wave:${index}`),
+    );
     assert.ok(calls.indexOf('zero-provider-readiness') < calls.indexOf('provider-preflight'));
-    assert.equal(calls.filter((entry) => entry.startsWith('paid:')).length, 8);
+    assert.equal(calls.filter((entry) => entry.startsWith('paid:')).length, LIVE_LLM_CELLS.length);
     assert.ok(calls.indexOf('verify') < calls.indexOf('publish'));
     assert.equal(result.workerCount, 1);
-    assert.equal(result.waveCount, 8);
+    assert.equal(result.waveCount, LIVE_LLM_CELLS.length);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

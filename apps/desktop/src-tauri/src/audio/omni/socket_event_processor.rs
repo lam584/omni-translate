@@ -563,6 +563,7 @@ impl OmniSocketEventProcessor {
                     "response.audio.done" => {
                         let audio_response_id = native_response_id_from_event(&evt)
                             .or(pending_audio_response_id.as_deref());
+                        let terminal_response_id = audio_response_id.unwrap_or("").to_string();
                         event_diagnostics.claim_native_response_owner_for_event(
                             &evt,
                             current_cue_id.as_deref(),
@@ -603,6 +604,11 @@ impl OmniSocketEventProcessor {
                         pending_audio_stream_chunk_index = output.pending_audio_stream_chunk_index;
                         pending_audio_stream_created_at_ms = output.pending_audio_stream_created_at_ms;
                         pending_audio_stream_aborted = output.pending_audio_stream_aborted;
+                        if direction == "inbound" {
+                            store.record_strict_watch_response_audio_done(
+                                &terminal_response_id,
+                            )?;
+                        }
                     }
                     "input_audio_buffer.speech_stopped" => {
                         event_diagnostics.begin_native_response_lifecycle(None);
@@ -658,6 +664,9 @@ impl OmniSocketEventProcessor {
                         );
                     }
                     "response.done" => {
+                        let terminal_response_id = native_response_id_from_event(&evt)
+                            .unwrap_or("")
+                            .to_string();
                         handle_response_done(
                             &app,
                             store,
@@ -684,6 +693,11 @@ impl OmniSocketEventProcessor {
                             "",
                             "",
                         );
+                        if direction == "inbound" {
+                            store.record_strict_watch_response_done(
+                                &terminal_response_id,
+                            )?;
+                        }
                         if audio_mode.uses_manual_commit() && manual_response_pending {
                             manual_response_pending = false;
                             manual_response_requested = false;

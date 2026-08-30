@@ -30,6 +30,9 @@ function Start-WatchModeDesktopShell {
   $StrictPaidAuthority = [string]$request.authorityMode -eq 'strict-paid'
   $IncidentReplayAuthority = [string]$request.authorityMode -eq 'incident-replay-plus'
   $LocalCanonicalContentAuthority = [string]$request.authorityMode -eq 'local-canonical-smoke'
+  if ($StrictPaidAuthority -and $AllowElevatedDesktopLaunch) {
+    throw 'strict paid Watch desktop launch requires direct process custody; the UAC guardian has no verified terminal exit receipt'
+  }
   $localContentAuthorityEnabled = $StrictPaidAuthority -or $IncidentReplayAuthority -or $LocalCanonicalContentAuthority
   $MatrixCellId = [string]$request.matrix.cellId
   $WatchModelId = [string]$request.model.id
@@ -57,45 +60,38 @@ function Start-WatchModeDesktopShell {
   $watchSessionReportPath = Join-Path $OutputDirectory "watch-session-report.json"
   $watchReadinessPath = Join-Path $OutputDirectory "watch-runtime-status.json"
   # The provider input ceiling and the desktop lifetime are deliberately
-  # separate. Strict runs stop accepting paid input at sessionSeconds, while
-  # the local desktop remains alive long enough to drain already accepted
-  # translated audio and emit terminal playback receipts.
-  $desktopAutoStopAfterSeconds = [int]$Context.lifecycle.desktopAutoStopSeconds
-  $watchReportAutoStopAfterMs = $desktopAutoStopAfterSeconds * 1000
+  # separate. Strict runs stop accepting paid input at the coordinator-signed
+  # transformed-PCM-plus-grace sample ceiling, while the local desktop remains
+  # alive long enough to drain accepted audio and emit terminal receipts.
+  $cellHardWatchdogSeconds = [int]$Context.lifecycle.cellHardWatchdogSeconds
+  $watchReportAutoStopAfterMs = $cellHardWatchdogSeconds * 1000
   $liveScenarioEnvironment = Get-WatchModeLiveScenarioEnvironment `
     -FeedbackMode $FeedbackLoopPrevention `
     -AutoStopAfterMs $watchReportAutoStopAfterMs `
-    -ProviderInputCeilingMs ($WatchAutoStopAfterSeconds * 1000)
+    -ProcessExclusionRestartAfterMs ([int64]$Context.lifecycle.processExclusionRestartAfterSeconds * 1000)
   Remove-Item -LiteralPath $watchSessionReportPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $watchReadinessPath -Force -ErrorAction SilentlyContinue
-  $previousAutostart = $env:OMNI_WATCH_MODE_AUTOSTART
-  $previousRunMarker = $env:OMNI_WATCH_MODE_RUN_MARKER
-  $previousOutputDevice = $env:OMNI_WATCH_MODE_OUTPUT_DEVICE_ID
-  $previousOutputLevel = $env:OMNI_WATCH_MODE_OUTPUT_LEVEL
-  $previousSubtitleTranslationMode = $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE
-  $previousTranslationAudioSource = $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE
-  $previousProviderInputPcmPath = $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH
-  $previousProviderInputMaxSamples = $env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES
-  $previousProviderInputLedgerPath = $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH
-  $previousProviderInputCellId = $env:OMNI_WATCH_MODE_CELL_ID
-  $previousProviderInputLeaseId = $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID
-  $previousIncidentReplayAuthority = $env:OMNI_WATCH_MODE_INCIDENT_REPLAY_AUTHORITY
-  $previousIncidentId = $env:OMNI_WATCH_MODE_INCIDENT_ID
-  $previousTranslatedPcmAuthorityDir = $env:OMNI_WATCH_MODE_TRANSLATED_PCM_AUTHORITY_DIR
-  $previousWatchModelId = $env:OMNI_WATCH_MODE_MODEL_ID
-  $previousWatchRealtimeProtocol = $env:OMNI_WATCH_MODE_REALTIME_PROTOCOL
-  $previousSubtitleTranslationModelId = $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID
-  $previousInboundSecondaryAudioModelId = $env:OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID
-  $previousFeedbackLoopPrevention = $env:OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION
-  $previousProcessExclusionRestartAfterMs = $env:OMNI_WATCH_MODE_PROCESS_EXCLUSION_RESTART_AFTER_MS
-  $previousAecLiveScenario = $env:OMNI_WATCH_MODE_AEC_LIVE_SCENARIO
-  $previousAutoStopAfterMs = $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS
-  $previousReportPath = $env:OMNI_WATCH_MODE_REPORT_PATH
-  $previousExitAfterReport = $env:OMNI_WATCH_MODE_EXIT_AFTER_REPORT
-  $previousReadinessPath = $env:OMNI_WATCH_MODE_READINESS_PATH
-  $previousLogLevel = $env:OMNI_LOG_LEVEL
+  $watchEnvironmentNames = @(
+    "OMNI_WATCH_MODE_AUTOSTART", "OMNI_WATCH_MODE_RUN_MARKER", "OMNI_WATCH_MODE_OUTPUT_DEVICE_ID",
+    "OMNI_WATCH_MODE_OUTPUT_LEVEL", "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE", "OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE",
+    "OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH", "OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES", "OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH",
+    "OMNI_WATCH_MODE_CELL_ID", "OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID", "OMNI_WATCH_MODE_INCIDENT_REPLAY_AUTHORITY",
+    "OMNI_WATCH_MODE_INCIDENT_ID", "OMNI_WATCH_MODE_TRANSLATED_PCM_AUTHORITY_DIR", "OMNI_WATCH_MODE_MODEL_ID",
+    "OMNI_WATCH_MODE_REALTIME_PROTOCOL", "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID", "OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID",
+    "OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION", "OMNI_WATCH_MODE_PROCESS_EXCLUSION_RESTART_AFTER_MS", "OMNI_WATCH_MODE_AEC_LIVE_SCENARIO",
+    "OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS", "OMNI_WATCH_MODE_REPORT_PATH", "OMNI_WATCH_MODE_READINESS_PATH",
+    "OMNI_WATCH_MODE_INPUT_COMPLETE_PATH", "OMNI_WATCH_MODE_TERMINAL_AUTHORITY_PATH", "OMNI_WATCH_MODE_INPUT_COMPLETION_WATCHDOG_MS",
+    "OMNI_WATCH_MODE_PROVIDER_FINISH_TIMEOUT_MS", "OMNI_WATCH_MODE_LOCAL_PLAYBACK_DRAIN_TIMEOUT_MS", "OMNI_WATCH_MODE_REPORT_WRITE_TIMEOUT_MS",
+    "OMNI_WATCH_MODE_EXIT_AFTER_REPORT", "OMNI_WATCH_MODE_LAUNCH_ID", "OMNI_WATCH_MODE_SOURCE_HEAD_COMMIT",
+    "OMNI_WATCH_MODE_RUNTIME_BUNDLE_DIGEST", "OMNI_WATCH_MODE_EXECUTABLE_SHA256", "OMNI_LOG_LEVEL"
+  )
+  $previousWatchEnvironment = @{}
+  foreach ($name in $watchEnvironmentNames) {
+    $previousWatchEnvironment[$name] = [System.Environment]::GetEnvironmentVariable($name, [System.EnvironmentVariableTarget]::Process)
+  }
   $elevatedLaunch = $null
   $strictPaidProviderEnvironment = $null
+  $launchId = [guid]::NewGuid().ToString()
   try {
     $strictPaidProviderEnvironment = Enter-StrictPaidProviderEnvironment `
       -Enabled $StrictPaidAuthority `
@@ -103,6 +99,8 @@ function Start-WatchModeDesktopShell {
       -LocalSingleSession $LocalCanonicalContentAuthority
     $env:OMNI_WATCH_MODE_AUTOSTART = "1"
     $env:OMNI_WATCH_MODE_RUN_MARKER = $RunMarker
+    $env:OMNI_WATCH_MODE_LAUNCH_ID = $launchId
+    $env:OMNI_WATCH_MODE_EXECUTABLE_SHA256 = Get-OmniSha256 -LiteralPath $exe
     $diagnosticOutputDeviceId = if ($PhysicalDeviceId) { $PhysicalDeviceId } else { "default" }
     $diagnosticSubtitleTranslationMode = $SubtitleTranslationMode
     $env:OMNI_WATCH_MODE_OUTPUT_DEVICE_ID = $diagnosticOutputDeviceId
@@ -114,7 +112,16 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE = if ($SubtitleTranslationMode -eq "native") { "omni-native" } else { "subtitle-tts" }
     $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH = $providerInputPcmPath
     if ($localContentAuthorityEnabled) {
-      $env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES = "$($WatchAutoStopAfterSeconds * 16000)"
+      if ($StrictPaidAuthority) {
+        $signedProviderInputMaxSamples = [string]$previousWatchEnvironment['OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES']
+        if ([string]::IsNullOrWhiteSpace($signedProviderInputMaxSamples) -or
+            $signedProviderInputMaxSamples -notmatch '^[1-9][0-9]*$') {
+          throw "strict paid Watch Mode requires the coordinator-signed per-cell Provider input sample ceiling"
+        }
+        $env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES = $signedProviderInputMaxSamples
+      } else {
+        $env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES = "$($WatchAutoStopAfterSeconds * 16000)"
+      }
       $ledgerFileName = if ($LocalCanonicalContentAuthority) {
         "smoke-provider-session-ledger.json"
       } else {
@@ -133,7 +140,7 @@ function Start-WatchModeDesktopShell {
       $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID = if ($LocalCanonicalContentAuthority) {
         "smoke-$([guid]::NewGuid().ToString('N'))"
       } else {
-        $previousProviderInputLeaseId.Trim()
+        ([string]$previousWatchEnvironment['OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID']).Trim()
       }
       $leaseArtifactKind = if ($LocalCanonicalContentAuthority) {
         "watch-mode-smoke-provider-session-lease"
@@ -183,6 +190,28 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS = $liveScenarioEnvironment.autoStopAfterMs
     $env:OMNI_WATCH_MODE_REPORT_PATH = $watchSessionReportPath
     $env:OMNI_WATCH_MODE_READINESS_PATH = $watchReadinessPath
+    $requestedInputCompletePath = if ($StrictPaidAuthority) {
+      [System.IO.Path]::GetFullPath([string]$request.paths.inputComplete)
+    } else {
+      Join-Path $OutputDirectory 'input-complete.json'
+    }
+    $requestedTerminalAuthorityPath = if ($StrictPaidAuthority) {
+      [System.IO.Path]::GetFullPath([string]$request.paths.terminalAuthority)
+    } else {
+      Join-Path $OutputDirectory 'evidence-driven-terminal.json'
+    }
+    if ($StrictPaidAuthority -and (
+      [System.IO.Path]::GetDirectoryName($requestedInputCompletePath) -cne [System.IO.Path]::GetFullPath($OutputDirectory) -or
+      [System.IO.Path]::GetDirectoryName($requestedTerminalAuthorityPath) -cne [System.IO.Path]::GetFullPath($OutputDirectory)
+    )) {
+      throw 'desktop strict terminal authority paths do not match the request-bound output directory'
+    }
+    $env:OMNI_WATCH_MODE_INPUT_COMPLETE_PATH = $requestedInputCompletePath
+    $env:OMNI_WATCH_MODE_TERMINAL_AUTHORITY_PATH = $requestedTerminalAuthorityPath
+    $env:OMNI_WATCH_MODE_INPUT_COMPLETION_WATCHDOG_MS = "$([int]$Context.lifecycle.inputCompletionWatchdogSeconds * 1000)"
+    $env:OMNI_WATCH_MODE_PROVIDER_FINISH_TIMEOUT_MS = "$([int]$Context.lifecycle.providerFinishTimeoutSeconds * 1000)"
+    $env:OMNI_WATCH_MODE_LOCAL_PLAYBACK_DRAIN_TIMEOUT_MS = "$([int]$Context.lifecycle.localPlaybackDrainTimeoutSeconds * 1000)"
+    $env:OMNI_WATCH_MODE_REPORT_WRITE_TIMEOUT_MS = "$([int]$Context.lifecycle.reportWriteTimeoutSeconds * 1000)"
     $env:OMNI_WATCH_MODE_EXIT_AFTER_REPORT = "1"
     if ($localContentAuthorityEnabled) {
       # Debug model-trace summaries and the PCM dump cross-check the Rust
@@ -190,34 +219,6 @@ function Start-WatchModeDesktopShell {
       $env:OMNI_LOG_LEVEL = "debug"
     }
     if ($AllowElevatedDesktopLaunch) {
-      $watchEnvironmentNames = @(
-        "OMNI_WATCH_MODE_AUTOSTART",
-        "OMNI_WATCH_MODE_RUN_MARKER",
-        "OMNI_WATCH_MODE_OUTPUT_DEVICE_ID",
-        "OMNI_WATCH_MODE_OUTPUT_LEVEL",
-        "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE",
-        "OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE",
-        "OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH",
-        "OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES",
-        "OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH",
-        "OMNI_WATCH_MODE_CELL_ID",
-        "OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID",
-        "OMNI_WATCH_MODE_INCIDENT_REPLAY_AUTHORITY",
-        "OMNI_WATCH_MODE_INCIDENT_ID",
-        "OMNI_WATCH_MODE_TRANSLATED_PCM_AUTHORITY_DIR",
-        "OMNI_WATCH_MODE_MODEL_ID",
-        "OMNI_WATCH_MODE_REALTIME_PROTOCOL",
-        "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID",
-        "OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID",
-        "OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION",
-        "OMNI_WATCH_MODE_PROCESS_EXCLUSION_RESTART_AFTER_MS",
-        "OMNI_WATCH_MODE_AEC_LIVE_SCENARIO",
-        "OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS",
-        "OMNI_WATCH_MODE_REPORT_PATH",
-        "OMNI_WATCH_MODE_READINESS_PATH",
-        "OMNI_WATCH_MODE_EXIT_AFTER_REPORT",
-        "OMNI_LOG_LEVEL"
-      )
       if ($localContentAuthorityEnabled) {
         $watchEnvironmentNames += @($strictPaidProviderEnvironment.names)
       }
@@ -249,36 +250,13 @@ function Start-WatchModeDesktopShell {
     $processLease = if ($elevatedLaunch) {
       $null
     } else {
-      Get-OmniProcessIdentity -ProcessId $process.Id -Ownership managed
+      Get-OmniProcessIdentity -ProcessId $process.Id -Ownership managed -LaunchId $launchId -ProcessHandle $process
     }
   } finally {
-    $env:OMNI_WATCH_MODE_AUTOSTART = $previousAutostart
-    $env:OMNI_WATCH_MODE_RUN_MARKER = $previousRunMarker
-    $env:OMNI_WATCH_MODE_OUTPUT_DEVICE_ID = $previousOutputDevice
-    $env:OMNI_WATCH_MODE_OUTPUT_LEVEL = $previousOutputLevel
-    $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE = $previousSubtitleTranslationMode
-    $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE = $previousTranslationAudioSource
-    $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH = $previousProviderInputPcmPath
-    $env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES = $previousProviderInputMaxSamples
-    $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH = $previousProviderInputLedgerPath
-    $env:OMNI_WATCH_MODE_CELL_ID = $previousProviderInputCellId
-    $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID = $previousProviderInputLeaseId
-    $env:OMNI_WATCH_MODE_INCIDENT_REPLAY_AUTHORITY = $previousIncidentReplayAuthority
-    $env:OMNI_WATCH_MODE_INCIDENT_ID = $previousIncidentId
     Exit-StrictPaidProviderEnvironment $strictPaidProviderEnvironment
-    $env:OMNI_WATCH_MODE_TRANSLATED_PCM_AUTHORITY_DIR = $previousTranslatedPcmAuthorityDir
-    $env:OMNI_WATCH_MODE_MODEL_ID = $previousWatchModelId
-    $env:OMNI_WATCH_MODE_REALTIME_PROTOCOL = $previousWatchRealtimeProtocol
-    $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID = $previousSubtitleTranslationModelId
-    $env:OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID = $previousInboundSecondaryAudioModelId
-    $env:OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION = $previousFeedbackLoopPrevention
-    $env:OMNI_WATCH_MODE_PROCESS_EXCLUSION_RESTART_AFTER_MS = $previousProcessExclusionRestartAfterMs
-    $env:OMNI_WATCH_MODE_AEC_LIVE_SCENARIO = $previousAecLiveScenario
-    $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS = $previousAutoStopAfterMs
-    $env:OMNI_WATCH_MODE_REPORT_PATH = $previousReportPath
-    $env:OMNI_WATCH_MODE_READINESS_PATH = $previousReadinessPath
-    $env:OMNI_WATCH_MODE_EXIT_AFTER_REPORT = $previousExitAfterReport
-    $env:OMNI_LOG_LEVEL = $previousLogLevel
+    foreach ($name in $previousWatchEnvironment.Keys) {
+      [System.Environment]::SetEnvironmentVariable($name, $previousWatchEnvironment[$name], [System.EnvironmentVariableTarget]::Process)
+    }
   }
   $systemMetricsSampler = $null
   try {
@@ -297,8 +275,10 @@ function Start-WatchModeDesktopShell {
     throw
   }
   return [pscustomobject]@{
-    pid = $process.Id; runMarker = $RunMarker; diagnosticsRoot = $OutputDirectory; appLogPath = [string]$Context.paths.appLogPath
+    pid = $process.Id; runMarker = $RunMarker; launchId = $launchId; diagnosticsRoot = $OutputDirectory; appLogPath = [string]$Context.paths.appLogPath
     processLease = $processLease
+    processStartTimeUtcTicks = if ($processLease) { [string]$processLease.startTimeUtcTicks } else { $null }
+    processExecutableSha256 = if ($processLease) { [string]$processLease.executableSha256 } else { $null }
     stdout = $stdout
     stderr = $stderr
     buildLog = $buildLog

@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
   SHARD_EXECUTION_PLAN_FILE,
+  SHARD_MATRIX_CELL_COUNT,
   SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
   createWorkerReadinessRequest,
   createSignedExecutionPlan,
@@ -21,12 +22,16 @@ import {
   COORDINATOR_PROVIDER_PREFLIGHT_FILE,
   CoordinatorWaveFailure,
   collectCoordinatorAggregation,
-  defaultThreeVmAssignments,
+  defaultSingleWorkerAssignments,
   prepareCoordinatorExecution,
   runCoordinatorWaves,
   validateCoordinatorAggregate,
   validateCoordinatorExecutionAuthority,
 } from './run-watch-mode-live-coordinator.mjs';
+import {
+  PROVIDER_PREFLIGHT_MODEL,
+  PROVIDER_PREFLIGHT_PROTOCOL,
+} from './watch-mode-provider-preflight-authorization.mjs';
 
 const SHA_A = 'a'.repeat(64);
 const SHA_B = 'b'.repeat(64);
@@ -171,7 +176,7 @@ function signedFixture() {
        inputTokens: 64, outputTokens: 12, audioSeconds: null,
      },
     workers: workerList,
-    assignments: defaultThreeVmAssignments(workerList),
+    assignments: defaultSingleWorkerAssignments(workerList),
     ...keys,
   });
   return {
@@ -184,8 +189,11 @@ function signedFixture() {
 
 test('single-machine placement assigns every paid cell to one distinct serial wave', () => {
   const workerList = workers();
-  const assignments = defaultThreeVmAssignments(workerList);
-  assert.deepEqual(assignments.map((entry) => entry.waveIndex), [0, 1, 2, 3, 4, 5, 6, 7]);
+  const assignments = defaultSingleWorkerAssignments(workerList);
+  assert.deepEqual(
+    assignments.map((entry) => entry.waveIndex),
+    Array.from({ length: SHARD_MATRIX_CELL_COUNT }, (_, index) => index),
+  );
   assert.ok(assignments.every((entry) => entry.workerId === 'vm1'));
   assert.equal(
     new Set(assignments.map((entry) => `${entry.workerId}:${entry.waveIndex}`)).size,
@@ -194,12 +202,12 @@ test('single-machine placement assigns every paid cell to one distinct serial wa
 });
 
 test('single-machine placement rejects additional workers', () => {
-  assert.throws(() => defaultThreeVmAssignments([...workers(), {
+  assert.throws(() => defaultSingleWorkerAssignments([...workers(), {
     ...workers()[0], workerId: 'vm4', vmIdentity: { provider: 'vmware', uuidBios: 'vm-four' },
   }]), /exactly one local worker/);
 });
 
-test('coordinator prepares build/preflight/local once and atomically publishes exactly eight signed leases', async () => {
+test('coordinator prepares build/preflight/local once and atomically publishes the exact signed leases', async () => {
   const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-coordinator-prepare-'));
   try {
     const preflightEvidenceDirectory = path.join(outputRoot, 'preflight-raw');
@@ -247,8 +255,8 @@ test('coordinator prepares build/preflight/local once and atomically publishes e
         calls.preflight += 1;
         assert.equal(calls.local, 1, 'local authority must precede provider authorization');
         assert.equal(fs.existsSync(grantPath), true, 'signed grant must be published before provider connect');
-        assert.equal(fs.readdirSync(leaseReservationDirectory).length, 8);
-        assert.equal(new Set(grant.cells.map((cell) => cell.leaseId)).size, 8);
+        assert.equal(fs.readdirSync(leaseReservationDirectory).length, SHARD_MATRIX_CELL_COUNT);
+        assert.equal(new Set(grant.cells.map((cell) => cell.leaseId)).size, SHARD_MATRIX_CELL_COUNT);
         const desktop = runtimeAuthority.find((entry) => entry.path === 'target/release/omni-desktop-shell.exe');
         fs.writeFileSync(path.join(path.dirname(grantPath), 'provider-preflight-consumption-claim.json'), `${JSON.stringify({
           schemaVersion: 2,
@@ -286,8 +294,8 @@ test('coordinator prepares build/preflight/local once and atomically publishes e
         ).toISOString()],
         summary: {
           providerId: 'provider-dashscope',
-          model: 'qwen3.5-omni-flash-realtime',
-          protocol: 'dashscope-omni',
+          model: PROVIDER_PREFLIGHT_MODEL,
+          protocol: PROVIDER_PREFLIGHT_PROTOCOL,
           operation: 'text-translation-preflight',
           inputMode: 'text-only',
           externalAudioSamples: 0,
@@ -314,13 +322,13 @@ test('coordinator prepares build/preflight/local once and atomically publishes e
       local: 1,
     });
     assert.equal(path.basename(result.planPath), SHARD_EXECUTION_PLAN_FILE);
-    assert.equal(result.leasePaths.length, 8);
+    assert.equal(result.leasePaths.length, SHARD_MATRIX_CELL_COUNT);
     assert.deepEqual(
       result.leases.map((lease) => lease.leaseId),
       result.plan.cells.map((cell) => cell.leaseId),
     );
     assert.ok(result.leasePaths.every((leasePath) => fs.existsSync(leasePath)));
-    assert.equal(new Set(result.leases.map((lease) => lease.leaseId)).size, 8);
+    assert.equal(new Set(result.leases.map((lease) => lease.leaseId)).size, SHARD_MATRIX_CELL_COUNT);
     assert.equal(
       result.leases.reduce((sum, lease) => sum + lease.maxExternalAudioSamples, 0),
       SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
@@ -334,7 +342,7 @@ test('coordinator prepares build/preflight/local once and atomically publishes e
     assert.equal(preflight.invocationCount, 1);
     assert.equal(preflight.operation, 'text-translation-preflight');
     assert.equal(preflight.inputMode, 'text-only');
-    assert.equal(preflight.model, 'qwen3.5-omni-flash-realtime');
+    assert.equal(preflight.model, PROVIDER_PREFLIGHT_MODEL);
     assert.equal(preflight.externalAudioSamples, 0);
     const publishedText = fs.readdirSync(result.executionRoot, { recursive: true, encoding: 'utf8' })
       .filter((entry) => entry.endsWith('.json'))
@@ -513,7 +521,7 @@ test('coordinator fully validates staged driver and credential readiness before 
   }
 });
 
-test('coordinator completes eight bounded serial waves without redispatch or local retries', async () => {
+test('coordinator completes every bounded serial wave without redispatch or local retries', async () => {
   const value = signedFixture();
   const executionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-coordinator-waves-'));
   fs.writeFileSync(path.join(executionRoot, SHARD_EXECUTION_PLAN_FILE), `${JSON.stringify(value.plan)}\n`, 'utf8');
@@ -534,13 +542,17 @@ test('coordinator completes eight bounded serial waves without redispatch or loc
       onWaveCompleted: async ({ waveIndex }) => { completedWaves.push(waveIndex); },
     });
     assert.deepEqual(ready.sort(), ['vm1']);
-    assert.equal(dispatches.length, 8);
-    assert.equal(new Set(dispatches.map((entry) => entry.cellId)).size, 8);
-    assert.equal(new Set(dispatches.map((entry) => entry.leaseId)).size, 8);
-    assert.deepEqual(dispatches.map((entry) => entry.waveIndex), [0, 1, 2, 3, 4, 5, 6, 7]);
-    assert.deepEqual(completedWaves, [0, 1, 2, 3, 4, 5, 6, 7]);
-    assert.equal(outcome.completedCellIds.length, 8);
-    assert.equal(fs.readdirSync(path.join(executionRoot, 'dispatch-claims')).length, 8);
+    assert.equal(dispatches.length, SHARD_MATRIX_CELL_COUNT);
+    assert.equal(new Set(dispatches.map((entry) => entry.cellId)).size, SHARD_MATRIX_CELL_COUNT);
+    assert.equal(new Set(dispatches.map((entry) => entry.leaseId)).size, SHARD_MATRIX_CELL_COUNT);
+    const expectedWaves = Array.from({ length: SHARD_MATRIX_CELL_COUNT }, (_, index) => index);
+    assert.deepEqual(dispatches.map((entry) => entry.waveIndex), expectedWaves);
+    assert.deepEqual(completedWaves, expectedWaves);
+    assert.equal(outcome.completedCellIds.length, SHARD_MATRIX_CELL_COUNT);
+    assert.equal(
+      fs.readdirSync(path.join(executionRoot, 'dispatch-claims')).length,
+      SHARD_MATRIX_CELL_COUNT,
+    );
   } finally {
     fs.rmSync(executionRoot, { recursive: true, force: true });
   }
@@ -808,10 +820,13 @@ test('coordinator aggregate canonicalizes arrival order and binds every cell to 
       result.aggregate.cells.map((cell) => cell.cellId),
       value.plan.cells.map((cell) => cell.cellId),
     );
-    assert.equal(new Set(result.aggregate.cells.map((cell) => cell.leaseId)).size, 8);
+    assert.equal(
+      new Set(result.aggregate.cells.map((cell) => cell.leaseId)).size,
+      SHARD_MATRIX_CELL_COUNT,
+    );
     assert.equal(result.aggregate.budget.reservedExternalAudioSamples, SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES);
     assert.equal(result.aggregate.budget.preflightExternalAudioSamples, 0);
-    assert.equal(result.matrixIntegration.cells.length, 8);
+    assert.equal(result.matrixIntegration.cells.length, SHARD_MATRIX_CELL_COUNT);
     assert.ok(result.matrixIntegration.cells.every((cell) => path.isAbsolute(cell.sourceRunDirectory)));
     assert.equal(validateCoordinatorAggregate(result.aggregate), result.aggregate);
   } finally {

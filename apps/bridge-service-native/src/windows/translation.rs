@@ -13,13 +13,19 @@ struct PlaybackJob {
     estimated_duration_ms: u64,
     playback_duration_ms: u64,
     translation_generation: u64,
+    /// Monotonic acceptance order shared by complete and streaming
+    /// translation cues. Source-monitor jobs use zero because they are
+    /// scheduled on the independent source player.
+    translation_arrival_sequence: u64,
 }
 
 enum PlaybackCommand {
     Play(PlaybackJob),
     TranslationQueued,
     TranslationStream(PhysicalTranslationStreamCommand),
-    FlushSource,
+    FlushSource {
+        applied_tx: Option<mpsc::SyncSender<()>>,
+    },
 }
 
 #[derive(Debug)]
@@ -53,7 +59,6 @@ enum PlaybackControlCommand {
     },
     TerminateTranslationStream {
         cue_id: String,
-        terminal: TranslationCueTerminal,
     },
 }
 
@@ -96,10 +101,16 @@ fn finish_completed_physical_stream(
     if let Some(output) = output.as_mut() {
         output.stream_ducking = false;
         output.source_player.set_volume(output.source_volume);
+        output.translation_generation = None;
     }
     let now_ms = unix_ms();
     let mut current = state.lock().unwrap();
-    current.physical_translation_stream_ledger.finish(&completed.cue_id);
+    if !current
+        .physical_translation_stream_ledger
+        .claim_terminal(&completed.cue_id, completed.translation_generation)
+    {
+        return;
+    }
     current.monitor_playback_state = "ready".to_string();
     current.translation_queue_end_timestamp_ms = now_ms;
     current.emit_translation_status(
@@ -189,7 +200,14 @@ impl TranslationStatusOutbox {
         let Some(front) = self.pending.front() else {
             return false;
         };
-        if front.status_id != ack.status_id || front.session_id != ack.session_id {
+        if front.status_id != ack.status_id
+            || front.session_id != ack.session_id
+            || front.bridge_instance_id != ack.bridge_instance_id
+            || front.source_generation != ack.source_generation
+            || front.source_generation_token != ack.source_generation_token
+            || front.playback_owner_generation != ack.playback_owner_generation
+            || front.physical_playback_device_id != ack.physical_playback_device_id
+        {
             return false;
         }
         self.pending.pop_front();
@@ -214,13 +232,14 @@ enum PhysicalStreamAdmission {
 #[derive(Clone, Default)]
 struct PhysicalTranslationStreamLedger {
     active: std::collections::HashMap<String, PhysicalTranslationStreamCursor>,
-    completed: std::collections::HashSet<String>,
+    completed: std::collections::HashSet<(String, u64)>,
 }
 
 #[derive(Clone)]
 struct PhysicalTranslationStreamCursor {
     next_chunk_index: u32,
     ended: bool,
+    translation_generation: u64,
 }
 
 impl PhysicalTranslationStreamLedger {
@@ -232,8 +251,12 @@ impl PhysicalTranslationStreamLedger {
         cue_id: &str,
         chunk_index: u32,
         state: TranslationStreamState,
+        translation_generation: u64,
     ) -> Result<PhysicalStreamAdmission, &'static str> {
-        if self.completed.contains(cue_id) {
+        if self
+            .completed
+            .contains(&(cue_id.to_string(), translation_generation))
+        {
             return Ok(PhysicalStreamAdmission::Duplicate);
         }
         match state {
@@ -241,14 +264,19 @@ impl PhysicalTranslationStreamLedger {
                 if chunk_index != 0 {
                     return Err("physical stream start must be the first chunk");
                 }
-                if self.active.contains_key(cue_id) {
-                    return Ok(PhysicalStreamAdmission::Duplicate);
+                if let Some(active) = self.active.get(cue_id) {
+                    return if active.translation_generation == translation_generation {
+                        Ok(PhysicalStreamAdmission::Duplicate)
+                    } else {
+                        Err("physical stream cueId is active in another translation generation")
+                    };
                 }
                 self.active.insert(
                     cue_id.to_string(),
                     PhysicalTranslationStreamCursor {
                         next_chunk_index: 1,
                         ended: false,
+                        translation_generation,
                     },
                 );
                 Ok(PhysicalStreamAdmission::Start)
@@ -257,6 +285,9 @@ impl PhysicalTranslationStreamLedger {
                 let Some(next) = self.active.get_mut(cue_id) else {
                     return Err("physical stream chunk requires an active cue");
                 };
+                if next.translation_generation != translation_generation {
+                    return Err("physical stream chunk belongs to a superseded translation generation");
+                }
                 if next.ended {
                     return Err("physical stream chunk cannot follow stream end");
                 }
@@ -273,6 +304,9 @@ impl PhysicalTranslationStreamLedger {
                 let Some(next) = self.active.get_mut(cue_id) else {
                     return Err("physical stream end requires an active cue");
                 };
+                if next.translation_generation != translation_generation {
+                    return Err("physical stream end belongs to a superseded translation generation");
+                }
                 if next.ended && chunk_index == next.next_chunk_index {
                     return Ok(PhysicalStreamAdmission::Duplicate);
                 }
@@ -283,18 +317,27 @@ impl PhysicalTranslationStreamLedger {
                 Ok(PhysicalStreamAdmission::End)
             }
             TranslationStreamState::Abort => {
-                if !self.active.contains_key(cue_id) {
+                let Some(active) = self.active.get(cue_id) else {
                     return Err("physical stream abort requires an active cue");
+                };
+                if active.translation_generation != translation_generation {
+                    return Err("physical stream abort belongs to a superseded translation generation");
                 }
                 Ok(PhysicalStreamAdmission::End)
             }
         }
     }
 
-    fn finish(&mut self, cue_id: &str) {
-        if self.active.remove(cue_id).is_some() {
-            self.completed.insert(cue_id.to_string());
+    fn claim_terminal(&mut self, cue_id: &str, translation_generation: u64) -> bool {
+        if !self.active.get(cue_id).is_some_and(|active| {
+            active.translation_generation == translation_generation
+        }) {
+            return false;
         }
+        self.active.remove(cue_id);
+        self.completed
+            .insert((cue_id.to_string(), translation_generation));
+        true
     }
 
     fn reset(&mut self) {
@@ -309,17 +352,11 @@ impl BridgeState {
         self.physical_translation_stream_ledger.reset();
     }
 
+    #[cfg(test)]
     fn physical_translation_stream_active(&self) -> bool {
         !self.physical_translation_stream_ledger.active.is_empty()
     }
 
-    fn supersede_physical_translation_streams(&mut self) -> Vec<String> {
-        let cue_ids = self.physical_translation_stream_ledger.active_cue_ids();
-        for cue_id in &cue_ids {
-            self.physical_translation_stream_ledger.finish(cue_id);
-        }
-        cue_ids
-    }
 }
 
 fn prepare_physical_stream_admission(
@@ -327,9 +364,10 @@ fn prepare_physical_stream_admission(
     cue_id: &str,
     chunk_index: u32,
     state: TranslationStreamState,
+    translation_generation: u64,
 ) -> Result<(PhysicalTranslationStreamLedger, PhysicalStreamAdmission), &'static str> {
     let mut next = ledger.clone();
-    let admission = next.admit(cue_id, chunk_index, state)?;
+    let admission = next.admit(cue_id, chunk_index, state, translation_generation)?;
     Ok((next, admission))
 }
 
@@ -341,19 +379,19 @@ mod physical_stream_tests {
     fn open_ended_physical_stream_requires_contiguous_start_chunks_and_end() {
         let mut ledger = PhysicalTranslationStreamLedger::default();
         assert_eq!(
-            ledger.admit("cue", 0, TranslationStreamState::Start),
+            ledger.admit("cue", 0, TranslationStreamState::Start, 0),
             Ok(PhysicalStreamAdmission::Start)
         );
         assert_eq!(
-            ledger.admit("cue", 1, TranslationStreamState::Chunk),
+            ledger.admit("cue", 1, TranslationStreamState::Chunk, 0),
             Ok(PhysicalStreamAdmission::Chunk)
         );
         assert_eq!(
-            ledger.admit("cue", 2, TranslationStreamState::Chunk),
+            ledger.admit("cue", 2, TranslationStreamState::Chunk, 0),
             Ok(PhysicalStreamAdmission::Chunk)
         );
         assert_eq!(
-            ledger.admit("cue", 3, TranslationStreamState::End),
+            ledger.admit("cue", 3, TranslationStreamState::End, 0),
             Ok(PhysicalStreamAdmission::End)
         );
     }
@@ -362,21 +400,21 @@ mod physical_stream_tests {
     fn physical_stream_rejects_gaps_and_is_idempotent_after_completion() {
         let mut ledger = PhysicalTranslationStreamLedger::default();
         assert!(ledger
-            .admit("cue", 1, TranslationStreamState::Start)
+            .admit("cue", 1, TranslationStreamState::Start, 0)
             .is_err());
         assert_eq!(
-            ledger.admit("cue", 0, TranslationStreamState::Start),
+            ledger.admit("cue", 0, TranslationStreamState::Start, 0),
             Ok(PhysicalStreamAdmission::Start)
         );
         assert!(ledger
-            .admit("cue", 2, TranslationStreamState::Chunk)
+            .admit("cue", 2, TranslationStreamState::Chunk, 0)
             .is_err());
         assert_eq!(
-            ledger.admit("cue", 1, TranslationStreamState::End),
+            ledger.admit("cue", 1, TranslationStreamState::End, 0),
             Ok(PhysicalStreamAdmission::End)
         );
         assert_eq!(
-            ledger.admit("cue", 1, TranslationStreamState::End),
+            ledger.admit("cue", 1, TranslationStreamState::End, 0),
             Ok(PhysicalStreamAdmission::Duplicate)
         );
     }
@@ -385,20 +423,20 @@ mod physical_stream_tests {
     fn physical_stream_tracks_interleaved_cues_by_their_own_chunk_sequence() {
         let mut ledger = PhysicalTranslationStreamLedger::default();
         assert_eq!(
-            ledger.admit("first", 0, TranslationStreamState::Start),
+            ledger.admit("first", 0, TranslationStreamState::Start, 0),
             Ok(PhysicalStreamAdmission::Start)
         );
         assert_eq!(
-            ledger.admit("second", 0, TranslationStreamState::Start),
+            ledger.admit("second", 0, TranslationStreamState::Start, 0),
             Ok(PhysicalStreamAdmission::Start)
         );
         assert_eq!(ledger.active_cue_ids().len(), 2);
         assert_eq!(
-            ledger.admit("first", 1, TranslationStreamState::End),
+            ledger.admit("first", 1, TranslationStreamState::End, 0),
             Ok(PhysicalStreamAdmission::End)
         );
         assert_eq!(
-            ledger.admit("second", 1, TranslationStreamState::End),
+            ledger.admit("second", 1, TranslationStreamState::End, 0),
             Ok(PhysicalStreamAdmission::End)
         );
     }
@@ -407,7 +445,7 @@ mod physical_stream_tests {
     fn an_admitted_stream_can_continue_well_beyond_five_seconds() {
         let mut ledger = PhysicalTranslationStreamLedger::default();
         assert_eq!(
-            ledger.admit("long-cue", 0, TranslationStreamState::Start),
+            ledger.admit("long-cue", 0, TranslationStreamState::Start, 0),
             Ok(PhysicalStreamAdmission::Start)
         );
         // One thousand provider deltas is deliberately much longer than the
@@ -415,43 +453,13 @@ mod physical_stream_tests {
         // is not a queue-start deadline and must not abort the active cue.
         for chunk_index in 1..=1_000 {
             assert_eq!(
-                ledger.admit("long-cue", chunk_index, TranslationStreamState::Chunk),
+                ledger.admit("long-cue", chunk_index, TranslationStreamState::Chunk, 0),
                 Ok(PhysicalStreamAdmission::Chunk)
             );
         }
         assert_eq!(
-            ledger.admit("long-cue", 1_001, TranslationStreamState::End),
+            ledger.admit("long-cue", 1_001, TranslationStreamState::End, 0),
             Ok(PhysicalStreamAdmission::End)
-        );
-    }
-
-    #[test]
-    fn superseding_open_streams_finishes_them_and_absorbs_late_frames() {
-        let mut state = BridgeState::default();
-        state
-            .physical_translation_stream_ledger
-            .admit("first", 0, TranslationStreamState::Start)
-            .expect("first stream start");
-        state
-            .physical_translation_stream_ledger
-            .admit("second", 0, TranslationStreamState::Start)
-            .expect("second stream start");
-
-        let mut superseded = state.supersede_physical_translation_streams();
-        superseded.sort();
-        assert_eq!(superseded, ["first", "second"]);
-        assert!(!state.physical_translation_stream_active());
-        assert_eq!(
-            state
-                .physical_translation_stream_ledger
-                .admit("first", 1, TranslationStreamState::Chunk),
-            Ok(PhysicalStreamAdmission::Duplicate)
-        );
-        assert_eq!(
-            state
-                .physical_translation_stream_ledger
-                .admit("second", 1, TranslationStreamState::End),
-            Ok(PhysicalStreamAdmission::Duplicate)
         );
     }
 

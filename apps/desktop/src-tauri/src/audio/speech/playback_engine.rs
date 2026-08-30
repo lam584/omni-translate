@@ -100,7 +100,7 @@ impl<'a> SpeechPlaybackEngine<'a> {
             None,
         );
         let speaker_frames = if output_route.play_to_speaker {
-            let frames = play_to_speaker(
+            let receipt = play_to_speaker(
                 &mix.speaker_samples,
                 mix.sample_rate_hz,
                 mix.channel_count,
@@ -171,6 +171,7 @@ impl<'a> SpeechPlaybackEngine<'a> {
                     }
                 },
             )?;
+            let frames = receipt.rendered_frames;
             let _ = append_diagnostics_log(
                 self.app,
                 "audio",
@@ -188,7 +189,7 @@ impl<'a> SpeechPlaybackEngine<'a> {
                     SPEAKER_SAMPLE_RATE_HZ,
                     SPEAKER_CHANNEL_COUNT,
                     self.config.speaker_output_level,
-                    self.config.speaker_device_id.as_deref().unwrap_or("default")
+                    receipt.physical_playback_device_id
                 )),
                 None,
                 None,

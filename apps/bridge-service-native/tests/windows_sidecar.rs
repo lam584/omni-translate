@@ -140,9 +140,11 @@ fn shutdown(pipe_name: &str) {
     assert_eq!(response["bridgeState"], "stopped");
 }
 
-/// Binds the sidecar to a desktop session over the control pipe without any
-/// physical playback so the audio-pipe tests run on machines with no devices.
-fn init_session(pipe_name: &str, session_id: &str) {
+/// Binds the sidecar to a desktop session and a concrete playback owner while
+/// muting translated audio so audio-pipe tests never render their fixtures.
+fn init_session(pipe_name: &str, session_id: &str) -> TranslationAuthority {
+    let physical_endpoint = default_physical_output_endpoint_id()
+        .expect("translation sidecar integration requires an explicit physical output endpoint");
     let response = send_control(
         pipe_name,
         json!({
@@ -152,12 +154,57 @@ fn init_session(pipe_name: &str, session_id: &str) {
             "protocolVersion": BRIDGE_PROTOCOL_VERSION,
             "expectedDriverVersion": "0.0.0-test",
             "expectedBridgeVersion": "0.0.0-test",
+            "physicalPlaybackDeviceId": physical_endpoint,
             "monitorPlaybackEnabled": false,
-            "translationPlaybackEnabled": false
+            "translationPlaybackEnabled": true,
+            "mixControl": {
+                "keepOriginalAudio": true,
+                "translatedAudioEnabled": false,
+                "translatedAudioGainDb": 0.0,
+                "translatedAudioAutoGainEnabled": true,
+                "originalAudioGainDb": 0.0,
+                "duckingEnabled": false,
+                "duckingDepthPercent": 0,
+                "monitorMode": "original-only"
+            }
         }),
     );
     assert_eq!(response["type"], "bridge.init.ack");
     assert_eq!(response["protocolVersion"], BRIDGE_PROTOCOL_VERSION);
+    translation_authority(session_id, &response)
+}
+
+struct TranslationAuthority {
+    session_id: String,
+    bridge_instance_id: String,
+    source_generation: u64,
+    source_generation_token: String,
+    playback_owner_generation: u64,
+    physical_playback_device_id: String,
+}
+
+fn translation_authority(session_id: &str, init_ack: &Value) -> TranslationAuthority {
+    TranslationAuthority {
+        session_id: session_id.to_string(),
+        bridge_instance_id: init_ack["bridgeInstanceId"]
+            .as_str()
+            .expect("init ack must publish bridgeInstanceId")
+            .to_string(),
+        source_generation: init_ack["sourceGeneration"]
+            .as_u64()
+            .expect("init ack must publish sourceGeneration"),
+        source_generation_token: init_ack["sourceGenerationToken"]
+            .as_str()
+            .expect("init ack must publish sourceGenerationToken")
+            .to_string(),
+        playback_owner_generation: init_ack["playbackOwnerGeneration"]
+            .as_u64()
+            .expect("init ack must publish playbackOwnerGeneration"),
+        physical_playback_device_id: init_ack["resolvedPhysicalPlaybackDeviceId"]
+            .as_str()
+            .expect("init ack must publish resolvedPhysicalPlaybackDeviceId")
+            .to_string(),
+    }
 }
 
 fn wait_for_process_source_running(pipe_name: &str) -> Value {
@@ -206,6 +253,11 @@ fn acknowledge_translation_status(pipe: &mut File, status: &Value) {
             .as_str()
             .expect("translation sessionId")
             .to_string(),
+        bridge_instance_id: status["bridgeInstanceId"].as_str().unwrap().to_string(),
+        source_generation: status["sourceGeneration"].as_u64().unwrap(),
+        source_generation_token: status["sourceGenerationToken"].as_str().unwrap().to_string(),
+        playback_owner_generation: status["playbackOwnerGeneration"].as_u64().unwrap(),
+        physical_playback_device_id: status["physicalPlaybackDeviceId"].as_str().unwrap().to_string(),
     };
     let header = serde_json::to_vec(&ack).unwrap();
     pipe.write_all(&(header.len() as u32).to_le_bytes())
@@ -220,11 +272,11 @@ fn translation_terminal_replays_after_disconnect_until_desktop_acknowledges_stat
     let pipe_name = format!("omni-bridge-status-replay-{}", std::process::id());
     let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
     wait_until_ready(&mut sidecar);
-    init_session(&pipe_name, "session-1");
+    let authority = init_session(&pipe_name, "session-1");
 
-    let header = translation_header("session-1", "bridge.translation.frame", 2, 4);
+    let header = translation_header(&authority, "bridge.translation.frame", 2, 4);
     let ack = exchange_audio_frame(&pipe_name, &header, &[1, 0, 2, 0]).unwrap();
-    assert_eq!(ack["type"], "bridge.translation.ack");
+    assert_eq!(ack["type"], "bridge.translation.ack", "{ack}");
 
     let source_path = format!(r"\\.\pipe\{pipe_name}-source");
     let mut first_source = open_pipe(&source_path);
@@ -557,8 +609,8 @@ fn process_exclusion_intentional_mute_acknowledges_with_a_terminal_cue_reason() 
     assert_eq!(response["type"], "bridge.init.ack");
     assert_eq!(response["processLoopbackStatus"], "ready");
 
-    let mut stale_header = translation_header("session-1", "bridge.translation.frame", 2, 4);
-    stale_header["bridgeInstanceId"] = response["bridgeInstanceId"].clone();
+    let authority = translation_authority("session-1", &response);
+    let mut stale_header = translation_header(&authority, "bridge.translation.frame", 2, 4);
     stale_header["playbackOwnerGeneration"] = json!(
         response["playbackOwnerGeneration"].as_u64().unwrap().saturating_sub(1)
     );
@@ -566,9 +618,7 @@ fn process_exclusion_intentional_mute_acknowledges_with_a_terminal_cue_reason() 
     assert_eq!(stale_ack["type"], "bridge.translation.nack");
     assert_eq!(stale_ack["errorCode"], "bridge.translation-generation-ended");
 
-    let mut header = translation_header("session-1", "bridge.translation.frame", 2, 4);
-    header["bridgeInstanceId"] = response["bridgeInstanceId"].clone();
-    header["playbackOwnerGeneration"] = response["playbackOwnerGeneration"].clone();
+    let header = translation_header(&authority, "bridge.translation.frame", 2, 4);
     let ack = exchange_audio_frame(&pipe_name, &header, &[1, 0, 2, 0]).unwrap();
     assert_eq!(ack["type"], "bridge.translation.ack");
     let log = wait_for_log_text(
@@ -679,6 +729,16 @@ fn process_exclusion_fingerprint_excludes_bridge_and_preserves_external_process_
         "external fingerprint must survive the Bridge source pipe: {evidence}"
     );
     assert!(
+        evidence["sourceFingerprintObservedChunks"].as_u64().unwrap()
+            >= evidence["sourceFingerprintRequiredChunks"].as_u64().unwrap(),
+        "the source authority must retain one sustained second of payload windows: {evidence}"
+    );
+    assert!(
+        evidence["sourceFramesCapturedAfter"].as_u64().unwrap()
+            > evidence["sourceFramesCapturedBefore"].as_u64().unwrap(),
+        "Bridge capture telemetry must advance across the authority window: {evidence}"
+    );
+    assert!(
         evidence["sourceTranslationComponent"].as_f64().unwrap()
             <= evidence["translationComponentLimit"].as_f64().unwrap(),
         "Bridge fingerprint leaked into the source pipe: {evidence}"
@@ -757,21 +817,16 @@ fn concurrent_process_exclusion_fingerprint_probes_are_serialized_without_cross_
             assert!(output.status.success(), "{label} skip must exit zero: {result}");
             continue;
         }
-        if result["passed"] == false
-            && result["detail"]
-                .as_str()
-                .is_some_and(|detail| detail.starts_with("external fingerprint did not survive process loopback:"))
-        {
-            eprintln!(
-                "{label} concurrent fingerprint was inconclusive because the external baseline was below the authority threshold: {result}"
-            );
-            continue;
-        }
         assert!(
             output.status.success(),
             "{label} concurrent fingerprint failed: {result}; stderr={stderr}"
         );
         let evidence = &result["processExclusionFingerprint"];
+        assert!(
+            evidence["sourceFingerprintObservedChunks"].as_u64().unwrap()
+                >= evidence["sourceFingerprintRequiredChunks"].as_u64().unwrap(),
+            "{label} probe did not retain sustained payload-window authority: {evidence}"
+        );
         assert!(
             evidence["sourceTranslationComponent"].as_f64().unwrap()
                 <= evidence["translationComponentLimit"].as_f64().unwrap(),
@@ -914,11 +969,21 @@ fn process_exclusion_restart_retargets_the_new_bridge_without_old_source_frames(
     assert!(second.wait().unwrap().success());
 }
 
-fn translation_header(session_id: &str, event_type: &str, frame_count: u64, payload_bytes: u64) -> Value {
+fn translation_header(
+    authority: &TranslationAuthority,
+    event_type: &str,
+    frame_count: u64,
+    payload_bytes: u64,
+) -> Value {
     json!({
         "type": event_type,
         "requestId": "translation-1",
-        "sessionId": session_id,
+        "sessionId": authority.session_id,
+        "bridgeInstanceId": authority.bridge_instance_id,
+        "sourceGeneration": authority.source_generation,
+        "sourceGenerationToken": authority.source_generation_token,
+        "playbackOwnerGeneration": authority.playback_owner_generation,
+        "physicalPlaybackDeviceId": authority.physical_playback_device_id,
         "frameId": "frame-1",
         "streamId": "stream-1",
         "sampleRateHz": 24000,
@@ -984,42 +1049,18 @@ fn duplicate_sidecar_is_rejected_until_the_running_instance_shuts_down() {
 }
 
 #[test]
-fn audio_pipe_returns_a_framed_session_mismatch_nack() {
+fn audio_pipe_rejects_a_stale_session_authority_tuple() {
     let runtime_root = TempDir::new().unwrap();
     let pipe_name = format!("omni-bridge-nack-{}", std::process::id());
     let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
     wait_until_ready(&mut sidecar);
+    let authority = init_session(&pipe_name, "session-1");
 
-    let mut pipe = open_pipe(&format!(r"\\.\pipe\{pipe_name}-audio"));
-    let header = json!({
-        "type": "bridge.translation.frame",
-        "requestId": "translation-1",
-        "sessionId": "wrong-session",
-        "frameId": "frame-1",
-        "streamId": "stream-1",
-        "sampleRateHz": 24000,
-        "sampleFormat": "pcm-s16le",
-        "channelCount": 1,
-        "frameCount": 2,
-        "timestampMs": 1,
-        "payloadBytes": 4,
-        "translationSink": "physical-playback",
-        "routeDirection": "inbound"
-    });
-    let encoded = serde_json::to_vec(&header).unwrap();
-    pipe.write_all(&(encoded.len() as u32).to_le_bytes())
-        .unwrap();
-    pipe.write_all(&encoded).unwrap();
-    pipe.write_all(&[1, 0, 2, 0]).unwrap();
-
-    let mut length = [0u8; 4];
-    pipe.read_exact(&mut length).unwrap();
-    let mut body = vec![0u8; u32::from_le_bytes(length) as usize];
-    pipe.read_exact(&mut body).unwrap();
-    let nack: Value = serde_json::from_slice(&body).unwrap();
+    let mut header = translation_header(&authority, "bridge.translation.frame", 2, 4);
+    header["sessionId"] = json!("wrong-session");
+    let nack = exchange_audio_frame(&pipe_name, &header, &[1, 0, 2, 0]).unwrap();
     assert_eq!(nack["type"], "bridge.translation.nack");
-    assert_eq!(nack["errorCode"], "bridge.session-mismatch");
-    drop(pipe);
+    assert_eq!(nack["errorCode"], "bridge.translation-generation-ended");
 
     shutdown(&pipe_name);
     assert!(sidecar.wait().unwrap().success());
@@ -1032,12 +1073,12 @@ fn audio_pipe_acknowledges_a_valid_translation_frame() {
     let pipe_name = format!("omni-bridge-ack-{}", std::process::id());
     let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
     wait_until_ready(&mut sidecar);
-    init_session(&pipe_name, "session-1");
+    let authority = init_session(&pipe_name, "session-1");
 
-    let header = translation_header("session-1", "bridge.translation.frame", 2, 4);
+    let header = translation_header(&authority, "bridge.translation.frame", 2, 4);
     let ack = exchange_audio_frame(&pipe_name, &header, &[1, 0, 2, 0])
         .expect("a valid translation frame must be acknowledged");
-    assert_eq!(ack["type"], "bridge.translation.ack");
+    assert_eq!(ack["type"], "bridge.translation.ack", "{ack}");
     assert_eq!(ack["requestId"], "translation-1");
     assert_eq!(ack["frameId"], "frame-1");
     assert_eq!(ack["acceptedFrames"], 2);
@@ -1045,7 +1086,7 @@ fn audio_pipe_acknowledges_a_valid_translation_frame() {
 
     let log = wait_for_log_text(
         &runtime_root.path().join("bridge-service.log"),
-        "event=translation_playback_status status=stale-dropped cueId=cue-1 reason=translation-playback-disabled",
+        "event=translation_playback_status status=stale-dropped cueId=cue-1 reason=translated-audio-muted",
     );
     assert!(!log.contains("status=completed cueId=cue-1"));
 
@@ -1066,9 +1107,9 @@ fn audio_pipe_rejects_virtual_mic_output_without_entering_physical_playback() {
     let pipe_name = format!("omni-bridge-virtual-mic-nack-{}", std::process::id());
     let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
     wait_until_ready(&mut sidecar);
-    init_session(&pipe_name, "session-1");
+    let authority = init_session(&pipe_name, "session-1");
 
-    let mut header = translation_header("session-1", "bridge.translation.frame", 2, 4);
+    let mut header = translation_header(&authority, "bridge.translation.frame", 2, 4);
     header["translationSink"] = json!("virtual-mic");
     header["routeDirection"] = json!("outbound");
     header["chunkIndex"] = json!(0);
@@ -1106,10 +1147,10 @@ fn audio_pipe_rejects_wrong_direction_and_bad_payload_metadata_with_typed_nacks(
     let pipe_name = format!("omni-bridge-typed-nack-{}", std::process::id());
     let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
     wait_until_ready(&mut sidecar);
-    init_session(&pipe_name, "session-1");
+    let authority = init_session(&pipe_name, "session-1");
 
     // Source frames belong on the source pipe, never on the audio pipe.
-    let wrong_direction = translation_header("session-1", "bridge.source.frame", 2, 4);
+    let wrong_direction = translation_header(&authority, "bridge.source.frame", 2, 4);
     let nack = exchange_audio_frame(&pipe_name, &wrong_direction, &[1, 0, 2, 0])
         .expect("a wrong-direction frame must be nacked, not dropped");
     assert_eq!(nack["type"], "bridge.translation.nack");
@@ -1117,14 +1158,14 @@ fn audio_pipe_rejects_wrong_direction_and_bad_payload_metadata_with_typed_nacks(
     assert_eq!(nack["acceptedFrames"], 0);
 
     // frameCount=3 mono claims 6 bytes of pcm16le but the header pins 4.
-    let bad_metadata = translation_header("session-1", "bridge.translation.frame", 3, 4);
+    let bad_metadata = translation_header(&authority, "bridge.translation.frame", 3, 4);
     let nack = exchange_audio_frame(&pipe_name, &bad_metadata, &[1, 0, 2, 0])
         .expect("mismatched payload metadata must be nacked, not dropped");
     assert_eq!(nack["errorCode"], "bridge.invalid-pcm-payload");
 
     // A rejected frame must not corrupt the session: a valid frame right
     // after the nacks is still accepted.
-    let valid = translation_header("session-1", "bridge.translation.frame", 2, 4);
+    let valid = translation_header(&authority, "bridge.translation.frame", 2, 4);
     let ack = exchange_audio_frame(&pipe_name, &valid, &[1, 0, 2, 0]).unwrap();
     assert_eq!(ack["type"], "bridge.translation.ack");
 
@@ -1139,12 +1180,12 @@ fn malformed_and_truncated_audio_frames_do_not_kill_the_sidecar() {
     let pipe_name = format!("omni-bridge-malformed-{}", std::process::id());
     let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
     wait_until_ready(&mut sidecar);
-    init_session(&pipe_name, "session-1");
+    let authority = init_session(&pipe_name, "session-1");
 
     // v4 never infers a PCM representation from the other dimensions. A
     // frame without the explicit sample format is malformed at the envelope.
     let mut missing_sample_format =
-        translation_header("session-1", "bridge.translation.frame", 2, 4);
+        translation_header(&authority, "bridge.translation.frame", 2, 4);
     missing_sample_format
         .as_object_mut()
         .unwrap()
@@ -1171,13 +1212,18 @@ fn malformed_and_truncated_audio_frames_do_not_kill_the_sidecar() {
     // dropping the connection mid-frame must not wedge the audio pipe server.
     {
         let mut pipe = open_pipe(&format!(r"\\.\pipe\{pipe_name}-audio"));
-        let truncated = translation_header("session-1", "bridge.translation.frame", 1_000_000, 4_000_000);
+        let truncated = translation_header(
+            &authority,
+            "bridge.translation.frame",
+            1_000_000,
+            4_000_000,
+        );
         write_framed_header(&mut pipe, &serde_json::to_vec(&truncated).unwrap());
         pipe.write_all(&[1, 0]).unwrap();
     }
 
     // The sidecar survived both: the next valid frame is still acknowledged.
-    let valid = translation_header("session-1", "bridge.translation.frame", 2, 4);
+    let valid = translation_header(&authority, "bridge.translation.frame", 2, 4);
     let ack = exchange_audio_frame(&pipe_name, &valid, &[1, 0, 2, 0])
         .expect("sidecar must keep serving after malformed and truncated frames");
     assert_eq!(ack["type"], "bridge.translation.ack");
@@ -1244,7 +1290,7 @@ fn invalid_audio_header_lengths_are_dropped_without_killing_the_sidecar() {
     let pipe_name = format!("omni-bridge-header-limit-{}", std::process::id());
     let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
     wait_until_ready(&mut sidecar);
-    init_session(&pipe_name, "session-1");
+    let authority = init_session(&pipe_name, "session-1");
 
     for header_length in [0, MAX_AUDIO_FRAME_HEADER_BYTES + 1] {
         let mut pipe = open_pipe(&format!(r"\\.\pipe\{pipe_name}-audio"));
@@ -1257,7 +1303,7 @@ fn invalid_audio_header_lengths_are_dropped_without_killing_the_sidecar() {
         );
     }
 
-    let valid = translation_header("session-1", "bridge.translation.frame", 2, 4);
+    let valid = translation_header(&authority, "bridge.translation.frame", 2, 4);
     let ack = exchange_audio_frame(&pipe_name, &valid, &[1, 0, 2, 0])
         .expect("sidecar must keep serving after invalid header lengths");
     assert_eq!(ack["type"], "bridge.translation.ack");
@@ -1273,10 +1319,10 @@ fn oversized_audio_payload_declaration_is_dropped_before_allocation() {
     let pipe_name = format!("omni-bridge-payload-limit-{}", std::process::id());
     let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
     wait_until_ready(&mut sidecar);
-    init_session(&pipe_name, "session-1");
+    let authority = init_session(&pipe_name, "session-1");
 
     let oversized = translation_header(
-        "session-1",
+        &authority,
         "bridge.translation.frame",
         2,
         (MAX_AUDIO_FRAME_PAYLOAD_BYTES + 1) as u64,
@@ -1286,7 +1332,7 @@ fn oversized_audio_payload_declaration_is_dropped_before_allocation() {
         "an oversized payload declaration must be rejected before reading or allocating the body"
     );
 
-    let valid = translation_header("session-1", "bridge.translation.frame", 2, 4);
+    let valid = translation_header(&authority, "bridge.translation.frame", 2, 4);
     let ack = exchange_audio_frame(&pipe_name, &valid, &[1, 0, 2, 0])
         .expect("sidecar must keep serving after an oversized payload declaration");
     assert_eq!(ack["type"], "bridge.translation.ack");

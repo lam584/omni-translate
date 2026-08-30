@@ -750,9 +750,10 @@ function parseProcessExclusionRestart(appLog, input) {
   const events = appLog.processExclusionRestartLines
     .map(parseKeyValueLine)
     .filter((event) => Object.keys(event).length > 0);
-  const summary = [...events].reverse().find((event) => (
+  const summaries = events.filter((event) => (
     event.event === 'process_exclusion_restart_summary'
-  )) ?? {};
+  ));
+  const summary = summaries.length === 1 ? summaries[0] : {};
   const oldBridgeProcessId = asNumber(summary.oldBridgeProcessId, NaN);
   const newBridgeProcessId = asNumber(summary.newBridgeProcessId, NaN);
   const oldSourceGeneration = String(summary.oldSourceGeneration ?? '');
@@ -883,7 +884,8 @@ function parseProcessExclusionRestart(appLog, input) {
     && samplesWithNewPid.length > 0
     && oldPidAbsentAfterNew
   );
-  const completed = identityChanged
+  const completed = summaries.length === 1
+    && identityChanged
     && frameContinuity
     && runtimeReady
     && playbackRebound
@@ -891,6 +893,8 @@ function parseProcessExclusionRestart(appLog, input) {
     && metricsProveTransition;
   return {
     requested: input.feedbackLoopPrevention === 'process-exclusion' && input.mode === 'live',
+    summaryCount: summaries.length,
+    terminalStatus: summary.status ?? null,
     evidenceMode: completed && input.mode === 'live' ? 'live' : input.mode ?? 'unknown',
     fixtureOnly: !(completed && input.mode === 'live'),
     completed,
@@ -1570,10 +1574,26 @@ export function evaluateStrictContent(input) {
   const fullMedia = content?.sourceReference?.fullMedia === true
     || sourcePlaybackSeconds == null
     || sourcePlaybackSeconds <= 0;
+  // Keep the historical strict-content helper default on the secondary
+  // contract. A live native route is explicit at classification time, so it
+  // alone selects native completion evidence below.
+  const translationRoute = input.translationRoute === 'native' ? 'native' : 'secondary';
+  const completedNativeCues = (Array.isArray(input.watchSessionReport?.cues)
+    ? input.watchSessionReport.cues : []).filter((cue) => (
+    ['exact', 'formatting-only'].includes(cue?.comparisonStatus)
+    && cue?.translationState !== 'error'
+    && cue?.translationState !== 'superseded'
+    && String(cue?.llmText ?? '').trim()
+    && String(cue?.publishedText ?? '').trim()
+    && String(cue?.renderedText ?? '').trim()
+  ));
   const outputText = uniqueEvidenceText([
     content?.translation,
     content?.subtitleText,
     content?.segmentTranslationText,
+    ...(translationRoute === 'native'
+      ? completedNativeCues.map((cue) => cue.renderedText)
+      : []),
   ]);
   const referenceClauses = splitMeaningClauses(referenceText);
   const outputClauses = splitMeaningClauses(outputText);
@@ -1601,18 +1621,8 @@ export function evaluateStrictContent(input) {
   const lengthRatio = referenceChars > 0 ? outputChars / referenceChars : 0;
   const subtitleQueue = content?.subtitleQueue ?? {};
   const speechSegmentation = input.speechSegmentation ?? {};
-  // Keep the historical strict-content helper default on the secondary
-  // contract. A live native route is explicit at classification time, so it
-  // alone selects native completion evidence below.
-  const translationRoute = input.translationRoute === 'native' ? 'native' : 'secondary';
   const completedNativeCueIds = new Set(
-    (Array.isArray(input.watchSessionReport?.cues) ? input.watchSessionReport.cues : [])
-      .filter((cue) => (
-        ['exact', 'formatting-only'].includes(cue?.comparisonStatus)
-        && String(cue?.llmText ?? '').trim()
-        && String(cue?.publishedText ?? '').trim()
-        && String(cue?.renderedText ?? '').trim()
-      ))
+    completedNativeCues
       .map((cue) => String(cue.cueId ?? '').trim())
       .filter(Boolean),
   );
@@ -1963,31 +1973,100 @@ function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
   };
 }
 
+const EVIDENCE_DRIVEN_TERMINAL_FAILURES = Object.freeze({
+  'input-complete-timeout': ['watch.input-complete-timeout', 'input-completion'],
+  'input-complete-invalid': ['watch.input-complete-invalid', 'input-completion'],
+  'capture-input-fence-timeout': ['watch.capture-input-fence-timeout', 'capture-input-fence'],
+  'capture-input-fence-disconnected': ['watch.capture-input-fence-disconnected', 'capture-input-fence'],
+  'capture-input-fence-failed': ['watch.capture-input-fence-failed', 'capture-input-fence'],
+  'capture-join-timeout': ['watch.capture-join-timeout', 'terminal-teardown'],
+  'capture-join-disconnected': ['watch.capture-join-disconnected', 'terminal-teardown'],
+  'provider-finish-timeout': ['provider.session-finished-timeout', 'provider-finish'],
+  'provider-finish-protocol-order-invalid': ['provider.session-finished-order-invalid', 'provider-finish'],
+  'provider-finish-authority-invalid': ['provider.session-finished-authority-invalid', 'provider-finish'],
+  'provider-finish-failed': ['provider.session-finish-failed', 'provider-finish'],
+  'provider-owner-missing': ['provider.owner-missing', 'provider-finish'],
+  'provider-owner-task-failed': ['provider.owner-task-failed', 'provider-finish'],
+  'local-playback-drain-timeout': ['playback.local-drain-timeout', 'local-playback-drain'],
+  'terminal-owner-evidence-incomplete': ['watch.terminal-owner-evidence-incomplete', 'terminal-evidence'],
+  'terminal-owner-identity-mismatch': ['watch.terminal-owner-identity-mismatch', 'terminal-evidence'],
+  'terminal-teardown-failed': ['watch.terminal-teardown-failed', 'terminal-teardown'],
+  'terminal-teardown-task-failed': ['watch.terminal-teardown-task-failed', 'terminal-teardown'],
+  'report-write-timeout': ['watch.report-write-timeout', 'report-write'],
+  'report-write-immutable-exists': ['watch.report-write-immutable-exists', 'report-write'],
+  'report-write-serialization-failed': ['watch.report-write-serialization-failed', 'report-write'],
+  'report-write-io-failed': ['watch.report-write-io-failed', 'report-write'],
+  'report-write-task-failed': ['watch.report-write-task-failed', 'report-write'],
+});
+
+function evidenceDrivenTerminalFailureIdentity(evidence) {
+  const terminalErrorCode = evidence.match(/\bterminalErrorCode=([a-z0-9.-]+)/i)?.[1]?.toLowerCase();
+  if (!terminalErrorCode) return null;
+  if (terminalErrorCode === 'terminal-teardown-failed' && /bridge\.source-flush-failed/i.test(evidence)) {
+    return { stableErrorCode: 'bridge.source-flush-failed', lifecyclePhase: 'terminal-teardown' };
+  }
+  const identity = EVIDENCE_DRIVEN_TERMINAL_FAILURES[terminalErrorCode];
+  return identity
+    ? { stableErrorCode: identity[0], lifecyclePhase: identity[1] }
+    : { stableErrorCode: 'watch.terminal-error-code-unregistered', lifecyclePhase: 'terminal-evidence' };
+}
+
 function stableFailureIdentity({ failureLayer, failureReason, diagnostics, layers, watchSessionReport }) {
   if (!failureLayer) return null;
-  const physicalPlaybackQueueOverflow = (Array.isArray(watchSessionReport?.issues)
-    ? watchSessionReport.issues : []).some((issue) => (
+  const sessionIssues = Array.isArray(watchSessionReport?.issues)
+    ? watchSessionReport.issues : [];
+  const reportCues = Array.isArray(watchSessionReport?.cues)
+    ? watchSessionReport.cues : [];
+  const physicalPlaybackQueueOverflow = sessionIssues.some((issue) => (
     issue?.code === 'bridge-translation-write-failed'
     && /bridge\.queue-overflow|physical translation stream cannot start while a complete cue is queued or playing/i
       .test(String(issue?.message ?? ''))
   ));
+  const nativeTurnCancellationIssue = sessionIssues.find((issue) => (
+    issue?.code === 'native-response-cancelled'
+    && /(?:^|\s)reason=turn_detected(?:\s|$)/i.test(String(issue?.message ?? ''))
+  ));
+  const nativeTurnCancelledCues = nativeTurnCancellationIssue
+    ? reportCues.filter((cue) => (
+      cue?.translationState === 'error'
+      && cue?.comparisonStatus === 'different'
+      && (Array.isArray(cue?.issues) ? cue.issues : [])
+        .some((issue) => issue?.code === 'translation-terminal-error')
+    ))
+    : [];
+  const nativeResponseCancellation = nativeTurnCancelledCues.length > 0
+    ? {
+        reason: 'turn_detected',
+        occurrenceCount: Math.max(1, asNumber(nativeTurnCancellationIssue?.occurrenceCount, 1)),
+        failedCueCount: nativeTurnCancelledCues.length,
+      }
+    : null;
   const evidence = [
     failureReason,
     diagnostics?.runnerFailure,
     ...(diagnostics?.evidence?.providerErrors ?? []),
     ...(diagnostics?.evidence?.appErrors ?? []),
   ].filter(Boolean).join('\n');
+  const terminalFailureIdentity = evidenceDrivenTerminalFailureIdentity(evidence);
   let stableErrorCode;
   let lifecyclePhase;
-  if (/workspace access denied/i.test(evidence)) {
+  if (terminalFailureIdentity) {
+    ({ stableErrorCode, lifecyclePhase } = terminalFailureIdentity);
+  } else if (/workspace access denied/i.test(evidence)) {
     stableErrorCode = 'provider.workspace-access-denied';
     lifecyclePhase = 'provider-readiness';
   } else if (/response stream timeout|timeout_seconds=.*elapsed_ms/i.test(evidence)) {
     stableErrorCode = 'provider.response-stream-timeout';
     lifecyclePhase = 'active-response';
+  } else if (/bridge\.source-flush-failed/i.test(evidence)) {
+    stableErrorCode = 'bridge.source-flush-failed';
+    lifecyclePhase = 'terminal-teardown';
   } else if (physicalPlaybackQueueOverflow) {
     stableErrorCode = 'bridge.queue-overflow';
     lifecyclePhase = 'physical-playback-queue';
+  } else if (nativeResponseCancellation) {
+    stableErrorCode = 'watch.native-response-turn-cancelled';
+    lifecyclePhase = 'active-response';
   } else if (/restart-quiescence-timeout/i.test(evidence)) {
     stableErrorCode = 'bridge.restart-quiescence-timeout';
     lifecyclePhase = 'bridge-restart-quiescence';
@@ -2035,6 +2114,7 @@ function stableFailureIdentity({ failureLayer, failureReason, diagnostics, layer
         after: Number.isSafeInteger(Number(restart.newPlaybackOwnerGeneration))
           ? Number(restart.newPlaybackOwnerGeneration) : null,
       },
+      nativeResponseCancellation,
     },
   };
 }

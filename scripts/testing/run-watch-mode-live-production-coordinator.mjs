@@ -39,6 +39,7 @@ import {
   createWorkerReadinessRequest,
   currentShardOrchestrationImplementationHashes,
   coordinatorKeyIdForPublicKey,
+  strictFailureIdentityProjection,
   validateShardCellResult,
   validateShardManifest,
 } from './watch-mode-shard-authority.mjs';
@@ -55,15 +56,26 @@ import {
 } from './watch-mode-provider-preflight-authorization.mjs';
 import { runManagedProviderPreflight } from './watch-mode-provider-preflight-process.mjs';
 import { runProviderNetworkHealth } from './watch-mode-provider-network-health.mjs';
+import {
+  WATCH_PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
+  WATCH_PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS,
+  WATCH_PRODUCTION_REMOTE_CELL_TIMEOUT_MS,
+  WATCH_PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS,
+  deriveWatchPostReadinessExecutionBudgetMs,
+  deriveWatchProductionCoordinatorTimeoutMs,
+} from './watch-mode-release-timeout-budget.mjs';
 
 export const PRODUCTION_COORDINATOR_RUNNER_ID =
   'scripts/testing/run-watch-mode-live-production-coordinator.mjs';
 export const PRODUCTION_WORKER_CONFIG_SCHEMA_VERSION = 1;
 export const PRODUCTION_WORKER_CONFIG_KIND = 'watch-mode-production-shard-workers';
-export const PRODUCTION_REMOTE_CELL_TIMEOUT_MS = 650_000;
-export const PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS = 15 * 60 * 1_000;
-export const PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS = 10 * 60 * 1_000;
-export const PRODUCTION_COORDINATOR_TIMEOUT_MS = 150 * 60 * 1_000;
+export const PRODUCTION_REMOTE_CELL_TIMEOUT_MS = WATCH_PRODUCTION_REMOTE_CELL_TIMEOUT_MS;
+export const PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS = WATCH_PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS;
+export const PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS =
+  WATCH_PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS;
+export const PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS =
+  WATCH_PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS;
+export const PRODUCTION_COORDINATOR_TIMEOUT_MS = deriveWatchProductionCoordinatorTimeoutMs();
 
 const SAFETY_FAILURE_PATTERNS = Object.freeze([
   /provider.*(?:authorization|budget|unauthorized|unreserved|extra connection|duplicate connection|connection[- ]owner|lease)/iu,
@@ -1355,7 +1367,9 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
     const validationRoot = validationRoots.get(worker.workerId);
     const localRunDirectory = path.join(validationRoot, ...runRelative.split(path.win32.sep));
     if (fs.existsSync(localRunDirectory)) throw new Error(`refusing to overwrite validation result for ${cell.cellId}`);
-    await downloadTree(worker, remoteRunDirectory, path.dirname(localRunDirectory), { timeoutMs: 300_000 });
+    await downloadTree(worker, remoteRunDirectory, path.dirname(localRunDirectory), {
+      timeoutMs: PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
+    });
     const localResultPath = path.join(localRunDirectory, SHARD_CELL_RESULT_FILE);
     const validated = validateShardCellResult({
       resultPath: localResultPath,
@@ -1591,34 +1605,26 @@ function productionDeviceProfiles(plan) {
   );
 }
 
-function firstDefined(...values) {
-  return values.find((value) => value !== undefined && value !== null && value !== '') ?? null;
-}
-
 export function productionFailureFingerprint(failure, plan) {
-  const result = failure?.outcome?.result ?? {};
+  const result = failure?.outcome?.result;
   const cell = plan.cells.find((candidate) => candidate.cellId === failure.cellId) ?? {};
-  const report = result.report ?? result.summary?.report ?? result.cellAuthority?.report ?? {};
-  const restart = result.restartSummary ?? report.restartSummary ?? result.bridgeRestart ?? {};
-  const context = result.failureContext ?? report.failureContext ?? {};
-  const ownerTransition = context.ownerGenerationTransition ?? {};
+  if (result?.verdict !== 'failed') {
+    throw new Error(`production failure ${failure?.cellId ?? 'unknown cell'} lacks a validated failed shard result`);
+  }
+  const identity = strictFailureIdentityProjection(
+    result,
+    `production failure ${failure.cellId} validated shard result`,
+  );
+  const context = identity.failureContext;
   return {
-    failureLayer: firstDefined(result.failureLayer, report.failureLayer, report.verdict?.failureLayer, 'unknown'),
-    stableErrorCode: firstDefined(result.stableErrorCode, result.errorCode, report.stableErrorCode, 'unknown'),
+    authoritySource: 'validated-shard-result',
+    failureLayer: identity.failureLayer,
+    stableErrorCode: identity.stableErrorCode,
     feedbackMode: cell.feedbackLoopPrevention ?? null,
-    lifecyclePhase: firstDefined(result.lifecyclePhase, report.lifecyclePhase, restart.phase, 'unknown'),
-    endpointId: firstDefined(
-      context.endpointId,
-      restart.afterEndpointId,
-      restart.resolvedPhysicalPlaybackDeviceId,
-      result.resolvedPhysicalPlaybackDeviceId,
-      cell.deviceProfileInstance?.physicalPlaybackDeviceId,
-    ),
-    ownerGenerationTransition: {
-      before: firstDefined(ownerTransition.before, restart.beforePlaybackOwnerGeneration, restart.previousPlaybackOwnerGeneration),
-      after: firstDefined(ownerTransition.after, restart.afterPlaybackOwnerGeneration, restart.playbackOwnerGeneration),
-    },
-    bridgeInstanceId: firstDefined(context.bridgeInstanceId, restart.newBridgeInstanceId),
+    lifecyclePhase: identity.lifecyclePhase,
+    endpointId: context.endpointId,
+    ownerGenerationTransition: structuredClone(context.ownerGenerationTransition),
+    bridgeInstanceId: context.bridgeInstanceId,
   };
 }
 
@@ -1641,6 +1647,7 @@ function fingerprintKey(fingerprint) {
     fingerprint.feedbackMode,
     fingerprint.lifecyclePhase,
     fingerprint.endpointId,
+    fingerprint.bridgeInstanceId,
     fingerprint.ownerGenerationTransition?.before,
     fingerprint.ownerGenerationTransition?.after,
   ]);
@@ -1719,7 +1726,6 @@ async function runProductionCoordinatorCore({
     workerId, interactiveUser: user, vmIdentity, deviceProfileInstances,
   }));
   const productionAssignments = defaultSingleWorkerAssignments(config.workers);
-  const productionWaveCount = Math.max(...productionAssignments.map((entry) => entry.waveIndex)) + 1;
   const captureProvenance = operations.captureProvenance
     ?? (async () => currentGitProvenance({ cwd: repoRoot }));
   const verifyRuntimeAuthority = operations.verifyRuntimeAuthority
@@ -1938,10 +1944,9 @@ async function runProductionCoordinatorCore({
     runZeroProviderWorkerReadiness,
     runProviderPreflight,
     obtainLocalIsolationAuthority,
-    minimumRemainingExecutionMs: (
-      productionWaveCount * PRODUCTION_REMOTE_CELL_TIMEOUT_MS
-      + PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS
-    ),
+    minimumRemainingExecutionMs: deriveWatchPostReadinessExecutionBudgetMs({
+      cellCount: productionAssignments.length,
+    }),
     signingKeys,
   });
   transitionCoordinatorState('plan-published', {
@@ -2036,7 +2041,7 @@ async function runProductionCoordinatorCore({
       cellId: LIVE_LLM_CELLS[index].cellId,
       modelId: LIVE_LLM_CELLS[index].modelId,
       feedbackLoopPrevention: LIVE_LLM_CELLS[index].feedbackLoopPrevention,
-      sessionCeilingSeconds: LIVE_LLM_CELLS[index].durationSeconds,
+      inputCeilingSamples: LIVE_LLM_CELLS[index].maxExternalAudioSamples,
     },
   ));
   const matrixBudget = (operations.writeMatrixExternalProviderBudget ?? writeMatrixExternalProviderBudget)(evidenceOutputRoot, rawBudgets, {

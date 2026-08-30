@@ -26,49 +26,6 @@
         r"Local\OmniTranslate.ProcessExclusionFingerprintProbe.v1";
     const PROCESS_FINGERPRINT_MUTEX_TIMEOUT_MS: u32 = 120_000;
 
-    #[derive(Serialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct ProcessExclusionFingerprintEvidence {
-        bridge_process_id: u32,
-        excluded_process_id: u32,
-        external_player_process_id: u32,
-        bridge_child_player_process_id: u32,
-        bridge_child_parent_process_id: u32,
-        bridge_child_exit_code: i64,
-        source_capture_mode: String,
-        capture_backend: String,
-        process_loopback_status: String,
-        translation_frequency_hz: f32,
-        external_frequency_hz: f32,
-        bridge_child_frequency_hz: f32,
-        physical_translation_component: f32,
-        physical_translation_raw_component: f32,
-        physical_translation_local_noise_floor: f32,
-        physical_translation_noise_margin: f32,
-        physical_translation_snr_ratio: f32,
-        physical_translation_to_external_ratio: f32,
-        minimum_physical_translation_to_external_ratio: f32,
-        physical_external_component: f32,
-        physical_bridge_child_component: f32,
-        source_translation_component: f32,
-        source_translation_raw_component: f32,
-        source_translation_local_noise_floor: f32,
-        source_external_component: f32,
-        source_bridge_child_component: f32,
-        source_bridge_child_raw_component: f32,
-        source_bridge_child_local_noise_floor: f32,
-        source_to_physical_translation_ratio: f32,
-        source_translation_to_external_ratio: f32,
-        source_to_physical_bridge_child_ratio: f32,
-        source_captured_frames: usize,
-        source_rms: f32,
-        physical_recording_path: String,
-        source_recording_path: String,
-        translation_component_limit: f32,
-        source_to_physical_ratio_limit: f32,
-        source_to_external_ratio_limit: f32,
-    }
-
     struct DiagnosticBridgeChildTone {
         executable: PathBuf,
         trigger_path: PathBuf,
@@ -232,14 +189,6 @@
                     "process exclusion fingerprint init did not return a ready process backend: {init}"
                 )));
             }
-            let bridge_instance_id = init["bridgeInstanceId"]
-                .as_str()
-                .map(str::to_string)
-                .ok_or_else(|| format!("process exclusion init omitted bridgeInstanceId: {init}"))?;
-            let playback_owner_generation = init["playbackOwnerGeneration"]
-                .as_u64()
-                .ok_or_else(|| format!("process exclusion init omitted playbackOwnerGeneration: {init}"))?;
-
             let source_pipe = open_pipe(&format!(r"\\.\pipe\{pipe_name}-source"))?;
             let collect_source = Arc::new(AtomicBool::new(false));
             let stop_source = Arc::new(AtomicBool::new(false));
@@ -254,6 +203,7 @@
 
             let window_result = (|| {
                 let ready = wait_for_process_capture_ready(&pipe_name)?;
+                let translation_authority = translation_authority_from_init(&ready)?;
                 let excluded_process_id = ready["excludedProcessId"]
                     .as_u64()
                     .and_then(|pid| u32::try_from(pid).ok())
@@ -291,8 +241,7 @@
                     PROCESS_FINGERPRINT_AMPLITUDE,
                     PROCESS_FINGERPRINT_SECONDS,
                     "process-exclusion-translation",
-                    Some(bridge_instance_id.clone()),
-                    Some(playback_owner_generation),
+                    translation_authority.clone(),
                 )?;
                 let mut external_player = start_external_tone_player(
                     &tone_player_exe,
@@ -442,8 +391,15 @@
             excluded_process_id,
         } = window;
         let playback_frames_after = after["playbackFramesWritten"].as_u64().unwrap_or(0);
+        let source_frames_captured_before = ready["sourceFramesCaptured"].as_u64().unwrap_or(0);
+        let source_frames_captured_after = after["sourceFramesCaptured"].as_u64().unwrap_or(0);
+        let source_frames_captured_delta =
+            source_frames_captured_after.saturating_sub(source_frames_captured_before);
+        let dropped_frame_count_before = ready["droppedFrameCount"].as_u64().unwrap_or(0);
+        let dropped_frame_count_after = after["droppedFrameCount"].as_u64().unwrap_or(0);
+        let dropped_frame_count_delta =
+            dropped_frame_count_after.saturating_sub(dropped_frame_count_before);
         let physical_samples = first_channel_samples(&physical_metrics.samples);
-        let source_samples = first_channel_samples(&source_metrics.samples);
         let physical_translation_evidence = isolated_component_amplitude(
             &physical_samples,
             PROCESS_TRANSLATION_FINGERPRINT_HZ,
@@ -457,20 +413,33 @@
             &physical_samples,
             PROCESS_CHILD_FINGERPRINT_HZ,
         );
-        let source_translation_evidence = isolated_component_amplitude(
-            &source_samples,
+        let empty_component_evidence = IsolatedComponentAmplitude {
+            raw: 0.0,
+            local_noise_floor: 0.0,
+            isolated: 0.0,
+        };
+        let source_translation_evidence = sustained_isolated_component_amplitude(
+            &source_metrics.pcm_chunks,
             PROCESS_TRANSLATION_FINGERPRINT_HZ,
-        );
+        )
+        .unwrap_or(empty_component_evidence);
         let source_translation_component = source_translation_evidence.isolated;
-        let source_external_component = component_amplitude(
-            &source_samples,
+        let source_external_component = sustained_component_amplitude(
+            &source_metrics.pcm_chunks,
             PROCESS_EXTERNAL_FINGERPRINT_HZ,
-        );
-        let source_bridge_child_evidence = isolated_component_amplitude(
-            &source_samples,
+        )
+        .unwrap_or(0.0);
+        let source_bridge_child_evidence = sustained_isolated_component_amplitude(
+            &source_metrics.pcm_chunks,
             PROCESS_CHILD_FINGERPRINT_HZ,
-        );
+        )
+        .unwrap_or(empty_component_evidence);
         let source_bridge_child_component = source_bridge_child_evidence.isolated;
+        let source_fingerprint_observed_chunks = source_metrics
+            .pcm_chunks
+            .iter()
+            .filter(|chunk| chunk.len() >= CHANNELS)
+            .count();
         let source_to_physical_translation_ratio = source_translation_component
             / physical_translation_component.max(f32::EPSILON);
         let source_translation_to_external_ratio = source_translation_component
@@ -525,6 +494,16 @@
             failures.push(format!(
                 "Bridge source pipe captured only {} frame(s)",
                 source_metrics.frames()
+            ));
+        }
+        if source_fingerprint_observed_chunks < REQUIRED_SUSTAINED_FINGERPRINT_CHUNKS {
+            failures.push(format!(
+                "Bridge source pipe retained only {source_fingerprint_observed_chunks} auditable 20ms fingerprint chunk(s), requires {REQUIRED_SUSTAINED_FINGERPRINT_CHUNKS}"
+            ));
+        }
+        if source_frames_captured_after <= source_frames_captured_before {
+            failures.push(format!(
+                "Bridge capture telemetry did not advance during the fingerprint window: before={source_frames_captured_before} after={source_frames_captured_after}"
             ));
         }
         if !physical_translation_is_detectable(
@@ -636,6 +615,14 @@
             source_translation_to_external_ratio,
             source_to_physical_bridge_child_ratio,
             source_captured_frames: source_metrics.frames(),
+            source_fingerprint_observed_chunks,
+            source_fingerprint_required_chunks: REQUIRED_SUSTAINED_FINGERPRINT_CHUNKS,
+            source_frames_captured_before,
+            source_frames_captured_after,
+            source_frames_captured_delta,
+            dropped_frame_count_before,
+            dropped_frame_count_after,
+            dropped_frame_count_delta,
             source_rms: source_metrics.rms(),
             physical_recording_path: physical_recording_path.display().to_string(),
             source_recording_path: source_recording_path.display().to_string(),
@@ -760,6 +747,11 @@
                     event_type: "bridge.translation.status.ack".to_string(),
                     status_id: status.status_id,
                     session_id: status.session_id,
+                    bridge_instance_id: status.bridge_instance_id,
+                    source_generation: status.source_generation,
+                    source_generation_token: status.source_generation_token,
+                    playback_owner_generation: status.playback_owner_generation,
+                    physical_playback_device_id: status.physical_playback_device_id,
                 };
                 let ack = serde_json::to_vec(&ack).map_err(error_text)?;
                 pipe.write_all(&(ack.len() as u32).to_le_bytes())

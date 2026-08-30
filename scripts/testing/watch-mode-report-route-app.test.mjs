@@ -160,13 +160,39 @@ test('preserves physical playback queue overflow identity and the incomplete cue
   const report = classify({
     watchSessionReport: {
       ...healthyWatchSessionReport,
-      issues: [{
-        category: 'output',
-        code: 'bridge-translation-write-failed',
-        severity: 'error',
-        message: 'bridge.queue-overflow: physical translation stream cannot start while a complete cue is queued or playing',
-        cueId: null,
-      }],
+      issues: [
+        {
+          category: 'model',
+          code: 'native-response-cancelled',
+          severity: 'warning',
+          message: '实时响应被取消：status=cancelled reason=turn_detected responseId=resp-cancelled',
+          occurrenceCount: 2,
+        },
+        {
+          category: 'output',
+          code: 'bridge-translation-write-failed',
+          severity: 'error',
+          message: 'bridge.queue-overflow: physical translation stream cannot start while a complete cue is queued or playing',
+          cueId: null,
+        },
+      ],
+      cues: [
+        ...healthyWatchSessionReport.cues,
+        {
+          ...healthyWatchSessionReport.cues[0],
+          cueId: 'cue-cancelled-before-queue-overflow',
+          translationState: 'error',
+          comparisonStatus: 'different',
+          llmText: '模型已经产生了候选译文。',
+          publishedText: '[翻译失败] 实时响应被后续语音打断。',
+          renderedText: '[翻译失败] 实时响应被后续语音打断。',
+          issues: [{
+            category: 'publish',
+            code: 'translation-terminal-error',
+            severity: 'error',
+          }],
+        },
+      ],
     },
     physicalOutputContent: {
       ...healthyPhysicalOutputContent,
@@ -202,6 +228,11 @@ test('preserves physical playback queue overflow identity and the incomplete cue
   assert.equal(report.failureLayer, 'app');
   assert.equal(report.stableErrorCode, 'bridge.queue-overflow');
   assert.equal(report.lifecyclePhase, 'physical-playback-queue');
+  assert.deepEqual(report.failureContext.nativeResponseCancellation, {
+    reason: 'turn_detected',
+    occurrenceCount: 2,
+    failedCueCount: 1,
+  });
   assert.match(report.layers.physicalOutputContent.reason, /cue-stale-dropped/);
   assert.match(report.layers.physicalOutputContent.reason, /completedCueCount=24/);
   assert.doesNotMatch(report.layers.physicalOutputContent.reason, /was not written to physical output/);
@@ -223,6 +254,61 @@ test('does not label an unrelated Bridge queue error as a physical playback queu
   assert.equal(report.failureLayer, 'app');
   assert.equal(report.stableErrorCode, 'watch.app.failed');
   assert.equal(report.lifecyclePhase, 'application-runtime');
+});
+
+test('identifies turn-detected native response terminals at the active-response phase', () => {
+  const report = classify({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      issues: [{
+        category: 'model',
+        code: 'native-response-cancelled',
+        severity: 'warning',
+        message: '实时响应被取消：status=cancelled reason=turn_detected responseId=resp-cancelled',
+        occurrenceCount: 3,
+      }],
+      cues: [{
+        ...healthyWatchSessionReport.cues[0],
+        translationState: 'error',
+        comparisonStatus: 'different',
+        llmText: '模型已经产生了候选译文。',
+        publishedText: '[翻译失败] 实时响应被后续语音打断。',
+        renderedText: '[翻译失败] 实时响应被后续语音打断。',
+        issues: [{
+          category: 'publish',
+          code: 'translation-terminal-error',
+          severity: 'error',
+        }],
+      }],
+    },
+  });
+
+  assert.equal(report.failureLayer, 'app');
+  assert.equal(report.stableErrorCode, 'watch.native-response-turn-cancelled');
+  assert.equal(report.lifecyclePhase, 'active-response');
+  assert.deepEqual(report.failureContext.nativeResponseCancellation, {
+    reason: 'turn_detected',
+    occurrenceCount: 3,
+    failedCueCount: 1,
+  });
+});
+
+test('keeps an uncorrelated native cancellation warning non-blocking', () => {
+  const report = classify({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      issues: [{
+        category: 'model',
+        code: 'native-response-cancelled',
+        severity: 'warning',
+        message: '实时响应被取消：status=cancelled reason=turn_detected responseId=resp-warning-only',
+        occurrenceCount: 1,
+      }],
+    },
+  });
+
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.failureLayer, null);
 });
 
 test('report records explicit git HEAD and clean-worktree provenance', () => {

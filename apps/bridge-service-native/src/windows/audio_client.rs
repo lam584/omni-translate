@@ -29,17 +29,42 @@ pub(super) fn handle_virtual_mic_frame(
     header: &AudioFrameHeader,
     payload: &[u8],
     monitor_samples: &[f32],
-    mut current: std::sync::MutexGuard<'_, BridgeState>,
+    current: std::sync::MutexGuard<'_, BridgeState>,
 ) {
+    handle_virtual_mic_frame_with_writer(
+        handle,
+        state,
+        runtime_root,
+        header,
+        payload,
+        monitor_samples,
+        current,
+        write_stereo_f32_to_virtual_mic,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn handle_virtual_mic_frame_with_writer<F>(
+    handle: HANDLE,
+    state: &Arc<Mutex<BridgeState>>,
+    runtime_root: &Path,
+    header: &AudioFrameHeader,
+    payload: &[u8],
+    monitor_samples: &[f32],
+    mut current: std::sync::MutexGuard<'_, BridgeState>,
+    writer: F,
+) where
+    F: FnOnce(u64, &[f32]) -> Result<VirtualMicWriteOutcome, VirtualMicWriteError>,
+{
     let chunk_index = header.chunk_index.unwrap_or_default();
     let chunk_count = header.chunk_count.unwrap_or(1);
     let cue_id = header.cue_id.clone();
-    let cue_key = cue_id.as_deref().unwrap_or_default();
+    let cue_key = virtual_mic_ledger_key(header);
     if !current.virtual_mic_output_requested {
         let code = "bridge.virtual-mic-output-unavailable";
         current.dropped_frame_count += header.frame_count as u64;
         current.last_error_code = Some(code.to_string());
-        if current.virtual_mic_cue_ledger.complete_terminal(cue_key) {
+        if current.virtual_mic_cue_ledger.complete_terminal(&cue_key) {
             current.emit_translation_status(
                 cue_id.as_deref(),
                 TranslationPlaybackStatusKind::RouteFailed,
@@ -58,7 +83,7 @@ pub(super) fn handle_virtual_mic_frame(
     }
     let admission = match current
         .virtual_mic_cue_ledger
-        .begin(cue_key, chunk_index, chunk_count)
+        .begin(&cue_key, chunk_index, chunk_count)
     {
         Ok(VirtualMicChunkAdmission::Duplicate) => {
             let ack = accepted_audio_frame_ack(header, current.playback_frames_written);
@@ -69,7 +94,7 @@ pub(super) fn handle_virtual_mic_frame(
         Ok(admission) => admission,
         Err(reason) => {
             let code = "bridge.invalid-pcm-payload";
-            let emit_terminal = current.virtual_mic_cue_ledger.complete_terminal(cue_key);
+            let emit_terminal = current.virtual_mic_cue_ledger.complete_terminal(&cue_key);
             current.dropped_frame_count += header.frame_count as u64;
             current.last_error_code = Some(code.to_string());
             if emit_terminal {
@@ -96,7 +121,7 @@ pub(super) fn handle_virtual_mic_frame(
         monitor_samples.is_empty(),
     ) {
         current.dropped_frame_count += header.frame_count as u64;
-        if current.virtual_mic_cue_ledger.complete_terminal(cue_key) {
+        if current.virtual_mic_cue_ledger.complete_terminal(&cue_key) {
             emit_translation_terminal(
                 &current,
                 &TranslationCueTerminal {
@@ -127,14 +152,34 @@ pub(super) fn handle_virtual_mic_frame(
         );
     }
     drop(current);
-    let write_result = write_stereo_f32_to_virtual_mic(generation, monitor_samples);
+    let write_result = writer(generation, monitor_samples);
     let mut current = state.lock().unwrap();
+    if !translation_frame_has_current_authority(&current, header) {
+        current.virtual_mic_cue_ledger.complete_terminal(&cue_key);
+        if let Some(authority) = translation_cue_authority_from_header(header) {
+            current.emit_translation_status_with_authority(
+                authority,
+                cue_id.as_deref(),
+                TranslationPlaybackStatusKind::RouteFailed,
+                "virtual-mic-authority-superseded-during-write",
+                Some("bridge.translation-generation-ended"),
+            );
+        }
+        let ack = rejected_audio_frame_ack(
+            header,
+            "bridge.translation-generation-ended",
+            "virtual microphone authority changed while the driver write was in flight",
+        );
+        drop(current);
+        let _ = write_framed_json(handle, &ack);
+        return;
+    }
     match write_result {
         Ok(outcome) => {
             let driver_frames = outcome.frames_written;
             let lifecycle = current
                 .virtual_mic_cue_ledger
-                .complete_success(cue_key, chunk_index);
+                .complete_success(&cue_key, chunk_index);
             let (emit_started, emit_completed) = lifecycle.unwrap_or((false, false));
             current.translated_frames_accepted += header.frame_count as u64;
             current.virtual_mic_frames_written = current
@@ -181,7 +226,7 @@ pub(super) fn handle_virtual_mic_frame(
             let _ = write_framed_json(handle, &ack);
         }
         Err(error) => {
-            let emit_terminal = current.virtual_mic_cue_ledger.complete_terminal(cue_key);
+            let emit_terminal = current.virtual_mic_cue_ledger.complete_terminal(&cue_key);
             current.dropped_frame_count += header.frame_count as u64;
             current.virtual_mic_write_failures =
                 current.virtual_mic_write_failures.saturating_add(1);
@@ -227,13 +272,27 @@ pub(super) fn handle_physical_translation_frame(
     monitor_samples: Vec<f32>,
     mut current: std::sync::MutexGuard<'_, BridgeState>,
 ) {
+    if current.translation_playback_enabled
+        && current.mix_control.translated_audio_enabled
+        && current.physical_playback_status != "ready"
+    {
+        let code = "bridge.translation-generation-ended";
+        let ack = rejected_audio_frame_ack(
+            header,
+            code,
+            "physical translation playback owner is not ready",
+        );
+        current.dropped_frame_count += header.frame_count as u64;
+        drop(current);
+        let _ = write_framed_json(handle, &ack);
+        return;
+    }
     if let Some(stream_state) = header.stream_state {
         handle_physical_translation_stream_frame(
             handle,
             runtime_root,
             playback_tx,
             playback_control_tx,
-            translation_queue,
             header,
             payload,
             monitor_samples,
@@ -241,40 +300,6 @@ pub(super) fn handle_physical_translation_frame(
             stream_state,
         );
         return;
-    }
-    if current.physical_translation_stream_active() {
-        let superseded_cues = current.supersede_physical_translation_streams();
-        for cue_id in superseded_cues {
-            if playback_control_tx
-                .send(PlaybackControlCommand::TerminateTranslationStream {
-                    cue_id: cue_id.clone(),
-                    terminal: TranslationCueTerminal {
-                        cue_id: Some(cue_id.clone()),
-                        status: TranslationPlaybackStatusKind::StaleDropped,
-                        reason: "physical-playback-stream-superseded-by-complete-cue".to_string(),
-                        error_code: None,
-                    },
-                })
-                .is_err()
-            {
-                let ack = rejected_audio_frame_ack(
-                    header,
-                    "bridge.translation-playback-failed",
-                    "playback worker is unavailable to finish an open physical translation stream",
-                );
-                drop(current);
-                let _ = write_framed_json(handle, &ack);
-                return;
-            }
-            service_log(
-                LogLevel::Warning,
-                &header.request_id,
-                &format!(
-                    "event=translation_stream status=superseded cueId={cue_id} replacementCueId={}",
-                    header.cue_id.as_deref().unwrap_or("-"),
-                ),
-            );
-        }
     }
     if let Some(reason) = translation_non_playback_reason(
         current.translation_playback_enabled,
@@ -298,6 +323,7 @@ pub(super) fn handle_physical_translation_frame(
         let duration_ms = playback_frames
             .saturating_mul(1_000)
             .div_ceil(INTERNAL_SAMPLE_RATE_HZ as u64);
+        let translation_arrival_sequence = current.next_translation_arrival_sequence();
         let job = PlaybackJob {
             samples: monitor_samples,
             device_id: current.physical_playback_device_id.clone(),
@@ -312,6 +338,7 @@ pub(super) fn handle_physical_translation_frame(
             estimated_duration_ms: header.estimated_duration_ms.unwrap_or(duration_ms),
             playback_duration_ms: duration_ms,
             translation_generation: current.translation_generation,
+            translation_arrival_sequence,
         };
         let enqueue_result = translation_queue.lock().unwrap().enqueue(job, now_ms);
         match enqueue_result {
@@ -431,7 +458,6 @@ fn handle_physical_translation_stream_frame(
     runtime_root: &Path,
     playback_tx: &mpsc::SyncSender<PlaybackCommand>,
     playback_control_tx: &mpsc::Sender<PlaybackControlCommand>,
-    translation_queue: &Arc<Mutex<TranslationPlaybackQueue>>,
     header: &AudioFrameHeader,
     payload: &[u8],
     monitor_samples: Vec<f32>,
@@ -482,6 +508,7 @@ fn handle_physical_translation_stream_frame(
         cue_id,
         chunk_index,
         stream_state,
+        current.translation_generation,
     ) {
         Ok(value) => value,
         Err(detail) => {
@@ -491,20 +518,6 @@ fn handle_physical_translation_stream_frame(
             return;
         }
     };
-    if admission == PhysicalStreamAdmission::Start {
-        let queue = translation_queue.lock().unwrap();
-        if queue.active.is_some() || !queue.pending.is_empty() {
-            let ack = rejected_audio_frame_ack(
-                header,
-                "bridge.queue-overflow",
-                "physical translation stream cannot start while a complete cue is queued or playing",
-            );
-            drop(queue);
-            drop(current);
-            let _ = write_framed_json(handle, &ack);
-            return;
-        }
-    }
     if admission == PhysicalStreamAdmission::Duplicate {
         let ack = accepted_audio_frame_ack(header, current.playback_frames_written);
         drop(current);
@@ -512,16 +525,35 @@ fn handle_physical_translation_stream_frame(
         return;
     }
     if stream_state == TranslationStreamState::Abort {
-        current.physical_translation_stream_ledger.finish(cue_id);
-        let _ = playback_control_tx.send(PlaybackControlCommand::TerminateTranslationStream {
-            cue_id: cue_id.to_string(),
-            terminal: TranslationCueTerminal {
-                cue_id: Some(cue_id.to_string()),
-                status: TranslationPlaybackStatusKind::RouteFailed,
-                reason: "physical-playback-stream-aborted".to_string(),
-                error_code: Some("bridge.translation-playback-failed".to_string()),
-            },
-        });
+        let terminal = TranslationCueTerminal {
+            cue_id: Some(cue_id.to_string()),
+            status: TranslationPlaybackStatusKind::RouteFailed,
+            reason: "physical-playback-stream-aborted".to_string(),
+            error_code: Some("bridge.translation-playback-failed".to_string()),
+        };
+        if playback_control_tx
+            .send(PlaybackControlCommand::TerminateTranslationStream {
+                cue_id: cue_id.to_string(),
+            })
+            .is_err()
+        {
+            let ack = rejected_audio_frame_ack(
+                header,
+                "bridge.translation-playback-failed",
+                "playback worker is unavailable to terminalize the physical translation stream",
+            );
+            drop(current);
+            let _ = write_framed_json(handle, &ack);
+            return;
+        }
+        let translation_generation = current.translation_generation;
+        let claimed = current
+            .physical_translation_stream_ledger
+            .claim_terminal(cue_id, translation_generation);
+        debug_assert!(claimed, "an admitted Abort must own its active stream terminal");
+        if claimed {
+            emit_translation_terminal(&current, &terminal);
+        }
         let ack = accepted_audio_frame_ack(header, current.playback_frames_written);
         drop(current);
         let _ = write_framed_json(handle, &ack);
@@ -532,6 +564,7 @@ fn handle_physical_translation_stream_frame(
     let duration_ms = playback_frames
         .saturating_mul(1_000)
         .div_ceil(INTERNAL_SAMPLE_RATE_HZ as u64);
+    let translation_arrival_sequence = current.next_translation_arrival_sequence();
     let job = PlaybackJob {
         samples: monitor_samples,
         device_id: current.physical_playback_device_id.clone(),
@@ -546,6 +579,7 @@ fn handle_physical_translation_stream_frame(
         estimated_duration_ms: header.estimated_duration_ms.unwrap_or(duration_ms),
         playback_duration_ms: duration_ms,
         translation_generation: current.translation_generation,
+        translation_arrival_sequence,
     };
     if playback_tx
         .try_send(PlaybackCommand::TranslationStream(PhysicalTranslationStreamCommand {

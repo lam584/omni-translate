@@ -38,6 +38,7 @@ function Get-TranslatedPcmLoopbackAuthority {
   $MatrixCellId = [string]$Context.request.matrix.cellId
   $WatchModelId = [string]$Context.request.model.id
   $WatchRealtimeProtocol = [string]$Context.request.model.protocol
+  $FeedbackLoopPrevention = [string]$Context.request.feedbackMode
   $matcherPath = Join-Path $workspaceRoot "scripts/testing/watch-mode-translated-pcm-loopback.mjs"
   $leaseFileName = if ($LocalCanonicalContentAuthority) {
     "smoke-provider-session-lease.json"
@@ -65,7 +66,8 @@ function Get-TranslatedPcmLoopbackAuthority {
     "--cell-id", $MatrixCellId,
     "--lease-id", ([string]$lease.leaseId),
     "--model-id", $WatchModelId,
-    "--protocol", $protocol
+    "--protocol", $protocol,
+    "--feedback-loop-prevention", $FeedbackLoopPrevention
   )
   $stdoutPath = Join-Path $OutputDirectory "translated-pcm-loopback.stdout.json"
   $stderrPath = Join-Path $OutputDirectory "translated-pcm-loopback.stderr.log"

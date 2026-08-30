@@ -99,7 +99,11 @@ function Invoke-PhysicalOutputProbe {
 }
 
 function Start-PhysicalOutputContentRecorder {
-  param([string]$OutputDirectory, [string]$PhysicalDeviceId, [Parameter(Mandatory = $true)][string]$WorkspaceRoot, [Parameter(Mandatory = $true)][int]$PlaybackSeconds, [Parameter(Mandatory = $true)][int]$PostPlaybackWaitSeconds)
+  param(
+    [string]$OutputDirectory, [string]$PhysicalDeviceId, [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
+    [Parameter(Mandatory = $true)][int]$CellHardWatchdogSeconds, [Parameter(Mandatory = $true)][int]$TerminalTailSeconds,
+    [string]$TerminalAuthorityPath
+  )
   $probeExe = Join-Path $WorkspaceRoot 'target/release/omni-physical-output-probe.exe'
   if (-not (Test-Path -LiteralPath $probeExe -PathType Leaf)) {
     throw "Physical output recorder executable not found: $probeExe"
@@ -107,8 +111,7 @@ function Start-PhysicalOutputContentRecorder {
   if (-not $PhysicalDeviceId) {
     throw "Physical output recorder requires a resolved physical playback endpoint id"
   }
-  $mediaBudgetSeconds = if ($PlaybackSeconds -gt 0) { $PlaybackSeconds } else { 180 }
-  $recordSeconds = [Math]::Max(8, $mediaBudgetSeconds + $PostPlaybackWaitSeconds + 8)
+  $recordSeconds = [Math]::Max(8, $CellHardWatchdogSeconds + 8)
   $recordingPath = Join-Path $OutputDirectory "physical-output-recording.wav"
   $transcriptionPcmPath = Join-Path $OutputDirectory "physical-output-recording-16k-mono.pcm"
   $stdout = Join-Path $OutputDirectory "physical-output-recorder.stdout.log"
@@ -130,27 +133,23 @@ function Start-PhysicalOutputContentRecorder {
     transcriptionPcmPath = $transcriptionPcmPath
     stdout = $stdout
     stderr = $stderr
+    terminalTailSeconds = $TerminalTailSeconds
+    terminalAuthorityPath = $TerminalAuthorityPath
   }
 }
 
 function Complete-PhysicalOutputContentRecorder {
-  param($Recorder, [Parameter(Mandatory = $true)][string]$WorkspaceRoot)
-  if (-not $Recorder) {
-    return $null
-  }
-  $timeoutMs = ([int]$Recorder.recordSeconds + 20) * 1000
-  $exited = $Recorder.process.WaitForExit($timeoutMs)
-  if (-not $exited) {
+  param($Recorder, [Parameter(Mandatory = $true)][string]$WorkspaceRoot, [switch]$TerminalSucceeded)
+  if (-not $Recorder) { return $null }
+  $terminalAuthorityObserved = $Recorder.terminalAuthorityPath -and (Test-Path -LiteralPath $Recorder.terminalAuthorityPath -PathType Leaf)
+  if ($TerminalSucceeded -and $terminalAuthorityObserved) { Start-Sleep -Seconds ([int]$Recorder.terminalTailSeconds) }
+  if (-not $Recorder.process.HasExited) {
     Stop-OmniManagedProcessHandle -Process $Recorder.process -WaitMilliseconds 5000 | Out-Null
-    # Owned-process termination is bounded. Do not allow the
-    # next serialized matrix cell to start while its physical-output recorder
-    # may still retain the endpoint; that would contaminate the single-device
-    # evidence window.
-    $exited = $Recorder.process.WaitForExit(5000)
-    if (-not $exited) {
-      throw "physical output recorder did not exit after forced stop; refusing to start another serialized matrix cell (Pid=$($Recorder.pid))"
-    }
   }
+  # Refuse the next serialized cell while its recorder may retain the endpoint.
+  $exited = $Recorder.process.HasExited -or $Recorder.process.WaitForExit(5000)
+  if (-not $exited) { throw "physical output recorder did not exit after forced stop; refusing to start another serialized matrix cell (Pid=$($Recorder.pid))" }
+  if ($TerminalSucceeded -and -not $terminalAuthorityObserved) { throw "physical output recorder terminal-success stop requires the immutable desktop terminal authority" }
   $text = if (Test-Path -LiteralPath $Recorder.stdout -PathType Leaf) {
     Get-Content -LiteralPath $Recorder.stdout -Raw -ErrorAction SilentlyContinue
   } else {

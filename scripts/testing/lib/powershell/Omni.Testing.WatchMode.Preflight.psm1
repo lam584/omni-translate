@@ -26,7 +26,7 @@ function Assert-WatchModeAuthorityRequest {
   if ($localContentAuthorityEnabled) {
       if ($DryRun) { throw "$providerAuthorityMode authority is only valid for a live cell" }
       $approvedAuthorityModels = if ($StrictPaidAuthority) {
-        @("qwen3.5-omni-flash-realtime", "qwen3.5-livetranslate-flash-realtime")
+        @("qwen3.5-livetranslate-flash-realtime")
       } elseif ($IncidentReplayAuthority) {
         @("qwen3.5-omni-plus-realtime")
       } else {
@@ -58,8 +58,9 @@ function Assert-WatchModeAuthorityRequest {
       if ($SubtitleTranslationMode -ne "native") {
         throw "$providerAuthorityMode forbids secondary translation/TTS; SubtitleTranslationMode must be native"
       }
-      if ($WatchAutoStopAfterSeconds -ne 180) {
-        throw "$providerAuthorityMode requires a 180-second provider session ceiling; got $WatchAutoStopAfterSeconds"
+      $expectedInputCompletionWatchdogSeconds = if ($StrictPaidAuthority -and [string]$request.feedbackMode -eq 'process-exclusion') { 225 } elseif ($StrictPaidAuthority) { 180 } else { $WatchAutoStopAfterSeconds }
+      if ($StrictPaidAuthority -and $WatchAutoStopAfterSeconds -ne $expectedInputCompletionWatchdogSeconds) {
+        throw "$providerAuthorityMode input-completion watchdog mismatch for $($request.feedbackMode): expected $expectedInputCompletionWatchdogSeconds got $WatchAutoStopAfterSeconds"
       }
       if ($PlaybackSeconds -ne 0) {
         throw "$providerAuthorityMode requires complete canonical media playback; PlaybackSeconds must be 0"
@@ -79,5 +80,4 @@ function Assert-WatchModeAuthorityRequest {
       }
     }
 }
-
 Export-ModuleMember -Function 'Assert-WatchModeAuthorityRequest'

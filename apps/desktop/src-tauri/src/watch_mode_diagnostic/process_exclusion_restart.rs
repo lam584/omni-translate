@@ -88,6 +88,13 @@ pub(super) fn schedule_process_exclusion_restart(
             }
         };
         let old_instance_id = old.frame.bridge_instance_id.clone();
+        // Freeze the old-producer acceptance baseline at the restart trigger,
+        // before identity revocation and process recovery. Sampling only after
+        // rebind loses stale frames accepted during trigger -> recovery.
+        let old_accepted_at_trigger = app
+            .state::<AudioStateStore>()
+            .bridge_source_runtime_evidence()
+            .accepted_for_instance(&old_instance_id);
         let _ = append_diagnostics_log(
             &app,
             "runtime",
@@ -197,10 +204,6 @@ pub(super) fn schedule_process_exclusion_restart(
                 return;
             }
         };
-        let old_accepted_at_rebind = app
-            .state::<AudioStateStore>()
-            .bridge_source_runtime_evidence()
-            .accepted_for_instance(&old_instance_id);
         if new.bridge.physical_playback_status != "ready"
             || new.bridge.playback_owner_generation <= old.bridge.playback_owner_generation
             || new.bridge.resolved_physical_playback_device_id
@@ -280,7 +283,7 @@ pub(super) fn schedule_process_exclusion_restart(
             .bridge_source_runtime_evidence();
         let old_frames_after_restart = evidence_after
             .accepted_for_instance(&old_instance_id)
-            .saturating_sub(old_accepted_at_rebind);
+            .saturating_sub(old_accepted_at_trigger);
         let old_frame_rejected_count = evidence_after.rejected_for_instance_since(
             &old_instance_id,
             restart_triggered_at_unix_ms,

@@ -1,24 +1,53 @@
 mod config;
+mod playback_drain;
 mod process_exclusion_restart;
+mod terminal_authority;
+mod terminal_capture;
 pub(crate) mod readiness;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod terminal_authority_tests;
+#[cfg(test)]
+mod terminal_lifecycle_tests;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 use self::config::{configure_watch_mode, configure_watch_realtime_provider};
 use self::process_exclusion_restart::schedule_process_exclusion_restart;
-use crate::audio::events::{
-    preconnect_omni_realtime_inner, start_audio_route_inner, stop_audio_route,
+use self::playback_drain::wait_for_local_playback_quiescence;
+use self::terminal_authority::{
+    current_process_start_time_utc_ticks, process_start_unix_ms_from_utc_ticks,
+    ExpectedInputCompleteIdentity, InputCompleteMarker, StrictPaidTerminalConfig, TerminalAuthority,
+    TerminalAuthorityRecorder, TerminalProducerIdentity,
 };
-use crate::audio::state::AudioStateStore;
-use crate::audio::state::TranslationPlaybackQuiescenceSnapshot;
+use self::terminal_capture::{
+    log_process_exclusion_restart_failure, query_and_cache_bridge_runtime,
+    start_diagnostic_audio_route, wait_for_process_exclusion_source,
+};
+#[cfg(test)]
+use self::playback_drain::{
+    local_playback_drain_authority, local_playback_drain_budget,
+};
+#[cfg(test)]
+use self::terminal_capture::{
+    write_json_immutable, write_report_atomic, write_terminal_authority_immutable,
+};
+use crate::audio::events::{
+    finalize_strict_watch_inbound_after_terminal_drain,
+    finish_strict_watch_provider_after_input_complete, preconnect_omni_realtime_inner,
+    start_audio_route_inner, stop_audio_route,
+};
+use crate::audio::state::{
+    AudioStateStore, StrictWatchTerminalLifecycleSnapshot,
+    TranslationPlaybackQuiescenceSnapshot,
+};
 use crate::bridge::events::{repair_driver_runtime, start_bridge_service};
 use crate::bridge::ipc::{apply_query as apply_bridge_query, BridgeIpcClient};
 use crate::bridge::contracts::{
@@ -50,6 +79,37 @@ const PROCESS_EXCLUSION_RESTART_RECOVERY_TIMEOUT: Duration = Duration::from_secs
 const PROCESS_EXCLUSION_RESTART_POLL: Duration = Duration::from_millis(50);
 const PROCESS_EXCLUSION_RESTART_PLAYBACK_DRAIN_TIMEOUT: Duration = Duration::from_secs(90);
 const PROCESS_EXCLUSION_RESTART_PLAYBACK_IDLE_CONFIRMATION: Duration = Duration::from_millis(250);
+const INPUT_COMPLETE_POLL: Duration = Duration::from_millis(50);
+const PROVIDER_FINISH_OBSERVATION_GRACE: Duration = Duration::from_millis(250);
+const LOCAL_PLAYBACK_IDLE_CONFIRMATION: Duration = Duration::from_millis(750);
+const LOCAL_PLAYBACK_DRAIN_MARGIN: Duration = Duration::from_secs(2);
+const LOCAL_PLAYBACK_DRAIN_MIN_CAP: Duration = Duration::from_secs(15);
+const LOCAL_PLAYBACK_DRAIN_MAX_CAP: Duration = Duration::from_secs(30);
+const STRICT_LIVETRANSLATE_MODEL: &str = "qwen3.5-livetranslate-flash-realtime";
+const STRICT_LIVETRANSLATE_PROTOCOL: &str = "dashscope-livetranslate";
+
+struct PlaybackDrainConfirmation {
+    confirmation: Duration,
+    quiescent_since: Option<Instant>,
+}
+
+impl PlaybackDrainConfirmation {
+    fn new(confirmation: Duration) -> Self {
+        Self {
+            confirmation,
+            quiescent_since: None,
+        }
+    }
+
+    fn observe(&mut self, now: Instant, quiescent: bool) -> bool {
+        if !quiescent {
+            self.quiescent_since = None;
+            return false;
+        }
+        let since = self.quiescent_since.get_or_insert(now);
+        now.saturating_duration_since(*since) >= self.confirmation
+    }
+}
 
 fn process_exclusion_restart_is_quiescent(
     speaker_playback_active: bool,
@@ -69,6 +129,213 @@ fn bounded_autostart_capture_duration_ms(value: u64) -> u64 {
         MIN_AUTOSTART_CAPTURE_DURATION_MS,
         MAX_AUTOSTART_CAPTURE_DURATION_MS,
     )
+}
+
+fn required_environment_value<F>(read_env: &F, name: &str) -> Result<String, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    read_env(name)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{name} is required for strict paid LiveTranslate terminal authority"))
+}
+
+fn required_lower_hex_environment_value<F>(
+    read_env: &F,
+    name: &str,
+    expected_length: usize,
+) -> Result<String, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let value = required_environment_value(read_env, name)?;
+    if value.len() != expected_length
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(format!(
+            "{name} must be exactly {expected_length} lowercase hexadecimal characters"
+        ));
+    }
+    Ok(value)
+}
+
+fn strict_paid_terminal_config_with_environment<F>(
+    read_env: F,
+) -> Result<StrictPaidTerminalConfig, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if read_env("OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY").as_deref() != Some("1") {
+        return Err(
+            "OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY must be exactly 1 for strict paid terminal authority"
+                .to_string(),
+        );
+    }
+    let model = required_environment_value(&read_env, "OMNI_WATCH_MODE_MODEL_ID")?;
+    let protocol = required_environment_value(&read_env, "OMNI_WATCH_MODE_REALTIME_PROTOCOL")?;
+    if model != STRICT_LIVETRANSLATE_MODEL || protocol != STRICT_LIVETRANSLATE_PROTOCOL {
+        return Err(format!(
+            "strict paid terminal authority requires model={STRICT_LIVETRANSLATE_MODEL} protocol={STRICT_LIVETRANSLATE_PROTOCOL}; observed model={model} protocol={protocol}"
+        ));
+    }
+    let auto_stop_watchdog_ms = required_environment_value(
+        &read_env,
+        "OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS",
+    )?
+    .parse::<u64>()
+    .map_err(|error| {
+        format!("OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS must be a positive integer: {error}")
+    })?;
+    if auto_stop_watchdog_ms == 0 {
+        return Err("OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS must be greater than zero".to_string());
+    }
+    let timeout_ms = |name: &str| -> Result<u64, String> {
+        let value = required_environment_value(&read_env, name)?
+            .parse::<u64>()
+            .map_err(|error| format!("{name} must be a positive integer: {error}"))?;
+        if value == 0 || value > MAX_AUTOSTART_CAPTURE_DURATION_MS {
+            return Err(format!(
+                "{name} must be between 1 and {MAX_AUTOSTART_CAPTURE_DURATION_MS}"
+            ));
+        }
+        Ok(value)
+    };
+    let input_completion_watchdog_ms = timeout_ms(
+        "OMNI_WATCH_MODE_INPUT_COMPLETION_WATCHDOG_MS",
+    )?;
+    if read_env("OMNI_WATCH_MODE_EXIT_AFTER_REPORT").as_deref() != Some("1") {
+        return Err(
+            "OMNI_WATCH_MODE_EXIT_AFTER_REPORT must be exactly 1 for strict paid terminal authority"
+                .to_string(),
+        );
+    }
+    let producer_start_time_utc_ticks = current_process_start_time_utc_ticks()?;
+    let producer_started_at_unix_ms =
+        process_start_unix_ms_from_utc_ticks(producer_start_time_utc_ticks)?;
+    Ok(StrictPaidTerminalConfig {
+        identity: ExpectedInputCompleteIdentity {
+            run_marker: required_environment_value(&read_env, "OMNI_WATCH_MODE_RUN_MARKER")?,
+            cell_id: required_environment_value(&read_env, "OMNI_WATCH_MODE_CELL_ID")?,
+            lease_id: required_environment_value(
+                &read_env,
+                "OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID",
+            )?,
+        },
+        producer: TerminalProducerIdentity {
+            process_id: std::process::id(),
+            start_time_utc_ticks: producer_start_time_utc_ticks,
+            started_at_unix_ms: producer_started_at_unix_ms,
+            executable_sha256: required_lower_hex_environment_value(
+                &read_env,
+                "OMNI_WATCH_MODE_EXECUTABLE_SHA256",
+                64,
+            )?,
+            source_head_commit: required_lower_hex_environment_value(
+                &read_env,
+                "OMNI_WATCH_MODE_SOURCE_HEAD_COMMIT",
+                40,
+            )?,
+            runtime_bundle_digest: required_lower_hex_environment_value(
+                &read_env,
+                "OMNI_WATCH_MODE_RUNTIME_BUNDLE_DIGEST",
+                64,
+            )?,
+            launch_id: {
+                let value = required_environment_value(&read_env, "OMNI_WATCH_MODE_LAUNCH_ID")?;
+                let parsed = Uuid::parse_str(&value)
+                    .map_err(|error| format!("OMNI_WATCH_MODE_LAUNCH_ID must be a UUID: {error}"))?;
+                if parsed.to_string() != value {
+                    return Err(
+                        "OMNI_WATCH_MODE_LAUNCH_ID must use canonical lowercase UUID form"
+                            .to_string(),
+                    );
+                }
+                value
+            },
+        },
+        input_complete_path: required_environment_value(
+            &read_env,
+            "OMNI_WATCH_MODE_INPUT_COMPLETE_PATH",
+        )?,
+        terminal_authority_path: required_environment_value(
+            &read_env,
+            "OMNI_WATCH_MODE_TERMINAL_AUTHORITY_PATH",
+        )?,
+        report_path: required_environment_value(&read_env, "OMNI_WATCH_MODE_REPORT_PATH")?,
+        // The legacy auto-stop is retained only as a hard watchdog. Whichever
+        // watchdog is shorter wins; neither is a successful completion path.
+        input_completion_watchdog: Duration::from_millis(
+            bounded_autostart_capture_duration_ms(
+                auto_stop_watchdog_ms.min(input_completion_watchdog_ms),
+            ),
+        ),
+        provider_shutdown_timeout: Duration::from_millis(timeout_ms(
+            "OMNI_WATCH_MODE_PROVIDER_FINISH_TIMEOUT_MS",
+        )?),
+        local_playback_drain_timeout: Duration::from_millis(timeout_ms(
+            "OMNI_WATCH_MODE_LOCAL_PLAYBACK_DRAIN_TIMEOUT_MS",
+        )?),
+        report_write_timeout: Duration::from_millis(timeout_ms(
+            "OMNI_WATCH_MODE_REPORT_WRITE_TIMEOUT_MS",
+        )?),
+    })
+}
+
+fn parse_input_complete_marker(
+    bytes: &[u8],
+    expected: &ExpectedInputCompleteIdentity,
+) -> Result<InputCompleteMarker, String> {
+    let marker: InputCompleteMarker =
+        serde_json::from_slice(bytes).map_err(|error| format!("input-complete JSON is invalid: {error}"))?;
+    if marker.artifact_kind != "watch-mode-input-complete" {
+        return Err(format!(
+            "artifactKind mismatch: expected watch-mode-input-complete, observed {}",
+            marker.artifact_kind
+        ));
+    }
+    if marker.schema_version != 1 {
+        return Err(format!(
+            "schemaVersion mismatch: expected 1, observed {}",
+            marker.schema_version
+        ));
+    }
+    for (field, observed, required) in [
+        ("runMarker", marker.run_marker.as_str(), expected.run_marker.as_str()),
+        ("cellId", marker.cell_id.as_str(), expected.cell_id.as_str()),
+        ("leaseId", marker.lease_id.as_str(), expected.lease_id.as_str()),
+    ] {
+        if observed != required {
+            return Err(format!(
+                "{field} mismatch: expected {required}, observed {observed}"
+            ));
+        }
+    }
+    if marker.completed_at_unix_ms == 0 {
+        return Err("completedAtUnixMs must be greater than zero".to_string());
+    }
+    if marker.signaled_at_unix_ms == 0 {
+        return Err("signaledAtUnixMs must be greater than zero".to_string());
+    }
+    if marker.signaled_at_unix_ms < marker.media_playback_completed_at_unix_ms.unwrap_or(0)
+        || marker.completed_at_unix_ms < marker.signaled_at_unix_ms
+    {
+        return Err(
+            "input-complete marker timestamps do not preserve media -> signal -> completion order"
+                .to_string(),
+        );
+    }
+    Ok(marker)
+}
+
+fn unix_ms_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
 }
 
 fn parse_feedback_loop_prevention(value: Option<&str>) -> Result<String, String> {
@@ -240,6 +507,51 @@ pub(crate) fn schedule_after_ipc(app: &tauri::App, ipc_ping_received: &'static A
     });
 }
 
+fn initialize_strict_paid_terminal(app: &AppHandle, run_marker: &str) -> bool {
+    if std::env::var("OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY").as_deref() != Ok("1") {
+        return true;
+    }
+    let strict_terminal_config =
+        strict_paid_terminal_config_with_environment(|name| std::env::var(name).ok());
+    let strict_terminal_config = strict_terminal_config.and_then(|config| {
+        for (label, path) in [
+            ("input-complete marker", config.input_complete_path.as_str()),
+            ("terminal authority", config.terminal_authority_path.as_str()),
+            ("Watch report", config.report_path.as_str()),
+        ] {
+            if std::path::Path::new(path).exists() {
+                return Err(format!(
+                    "strict paid {label} path must not exist before provider preconnect: {path}"
+                ));
+            }
+        }
+        app.state::<AudioStateStore>()
+            .begin_strict_watch_terminal_lifecycle(
+                &config.identity.run_marker,
+                &config.identity.cell_id,
+                &config.identity.lease_id,
+            )?;
+        Ok(config)
+    });
+    if let Err(error) = strict_terminal_config {
+        readiness::fail("terminal", "watch.terminal.config-invalid", error.clone());
+        let _ = append_diagnostics_log(
+            app,
+            "runtime",
+            "error",
+            "watch_mode.evidence_driven_terminal_config_failed",
+            Some(format!("runMarker={run_marker} error={error}")),
+            None,
+            None,
+        );
+        if env_flag_enabled("OMNI_WATCH_MODE_EXIT_AFTER_REPORT") {
+            app.exit(2);
+        }
+        return false;
+    }
+    true
+}
+
 fn start(app: &AppHandle) {
     let app_handle = app.clone();
     let run_marker = std::env::var("OMNI_WATCH_MODE_RUN_MARKER").unwrap_or_default();
@@ -357,6 +669,14 @@ fn start(app: &AppHandle) {
         None,
         None,
     );
+
+    // Strict paid LiveTranslate runs must establish the runner-to-desktop
+    // terminal contract before any provider preconnect or route start. This
+    // prevents a missing marker path from degrading into timer-based success
+    // after a paid socket has already been opened.
+    if !initialize_strict_paid_terminal(&app_handle, &run_marker) {
+        return;
+    }
 
     let storage = app.state::<StorageStateStore>();
     let mut config = match storage.load_config() {
@@ -507,337 +827,4 @@ fn start(app: &AppHandle) {
         config,
         &feedback_loop_prevention,
     );
-}
-
-fn start_diagnostic_audio_route(
-    app: &AppHandle,
-    run_marker: &str,
-    output_device_id: &str,
-    config: Value,
-    feedback_loop_prevention: &str,
-) {
-    match start_audio_route_inner(
-        app.clone(),
-        &app.state::<AudioStateStore>(),
-        "inbound".to_string(),
-        config.clone(),
-    ) {
-        Ok(snapshot) => {
-            readiness::mark_route_ready();
-            let _ = append_diagnostics_log(
-                app,
-                "runtime",
-                "info",
-                "watch_mode.diagnostic_autostart_route_started",
-                Some(format!(
-                    "runMarker={} status={} outputDeviceId={}",
-                    if run_marker.is_empty() {
-                        "-"
-                    } else {
-                        run_marker
-                    },
-                    snapshot.status,
-                    if output_device_id.is_empty() {
-                        "-"
-                    } else {
-                        output_device_id
-                    }
-                )),
-                None,
-                None,
-            );
-            schedule_process_exclusion_restart(
-                app,
-                run_marker,
-                config,
-                feedback_loop_prevention,
-            );
-            schedule_capture(app, run_marker);
-        }
-        Err(error) => {
-            readiness::fail("route", "watch.route.start-failed", error.clone());
-            let _ = append_diagnostics_log(
-                app,
-                "runtime",
-                "error",
-                "watch_mode.diagnostic_autostart_route_failed",
-                Some(error),
-                None,
-                None,
-            );
-        }
-    }
-}
-
-#[derive(Clone)]
-struct ProcessExclusionSourceObservation {
-    bridge: BridgeRuntimeSnapshot,
-    frame: crate::audio::state::BridgeSourceFrameIdentity,
-}
-
-fn query_and_cache_bridge_runtime(app: &AppHandle) -> Result<BridgeRuntimeSnapshot, String> {
-    let bridge_state = app.state::<BridgeStateStore>();
-    let cached = bridge_state.snapshot();
-    let query = BridgeIpcClient::new(&cached).query_state(true)?;
-    Ok(bridge_state.update_snapshot(|current| {
-        apply_bridge_query(current, query);
-    }))
-}
-
-fn process_exclusion_source_is_ready(
-    bridge: &BridgeRuntimeSnapshot,
-    frame: &crate::audio::state::BridgeSourceFrameIdentity,
-) -> bool {
-    bridge.process_status == "running"
-        && bridge.bridge_state == "running"
-        && bridge.source_capture_mode == SourceCaptureMode::ProcessExclusion
-        && bridge.capture_backend == CaptureBackend::WasapiProcessExclusion
-        && bridge.process_loopback_status == ProcessLoopbackStatus::Ready
-        && bridge.physical_playback_status == "ready"
-        && !bridge.resolved_physical_playback_device_id.trim().is_empty()
-        && bridge.playback_owner_generation > 0
-        && bridge.source_subscriber_active
-        && bridge.bridge_process_id == Some(frame.bridge_process_id)
-        && bridge.excluded_process_id == Some(frame.bridge_process_id)
-        && bridge.bridge_instance_id.as_deref() == Some(frame.bridge_instance_id.as_str())
-        && bridge.session_id.as_deref() == Some(frame.session_id.as_str())
-        && bridge.source_generation == frame.source_generation
-        && bridge.source_generation_token.as_deref()
-            == Some(frame.source_generation_token.as_str())
-        && bridge.source_frames_captured > 0
-        && bridge.last_frame_timestamp_ms.is_some()
-}
-
-async fn wait_for_process_exclusion_source(
-    app: &AppHandle,
-    previous: Option<&ProcessExclusionSourceObservation>,
-) -> Result<ProcessExclusionSourceObservation, String> {
-    let started = Instant::now();
-    let mut last_detail = "no Bridge state query completed".to_string();
-    while started.elapsed() < PROCESS_EXCLUSION_RESTART_RECOVERY_TIMEOUT {
-        match query_and_cache_bridge_runtime(app) {
-            Ok(bridge) => {
-                let evidence = app
-                    .state::<AudioStateStore>()
-                    .bridge_source_runtime_evidence();
-                let frame = bridge.bridge_instance_id.as_deref().and_then(|instance_id| {
-                    if previous.is_some() {
-                        bridge
-                            .source_generation_token
-                            .as_deref()
-                            .and_then(|token| evidence.first_frame_for_generation(token))
-                            .cloned()
-                    } else {
-                        evidence
-                            .last_accepted
-                            .as_ref()
-                            .filter(|identity| identity.bridge_instance_id == instance_id)
-                            .cloned()
-                    }
-                });
-                if let Some(frame) = frame {
-                    let changed = previous.is_none_or(|old| {
-                        bridge.bridge_process_id != old.bridge.bridge_process_id
-                            && bridge.bridge_instance_id != old.bridge.bridge_instance_id
-                            && bridge.session_id != old.bridge.session_id
-                            && bridge.source_generation != old.bridge.source_generation
-                            && bridge.source_generation_token
-                                != old.bridge.source_generation_token
-                            && bridge.playback_owner_generation
-                                > old.bridge.playback_owner_generation
-                    });
-                    if changed && process_exclusion_source_is_ready(&bridge, &frame) {
-                        return Ok(ProcessExclusionSourceObservation { bridge, frame });
-                    }
-                }
-                last_detail = format!(
-                    "bridgeProcessId={} bridgeInstanceId={} sessionId={} sourceGeneration={} sourceGenerationToken={} sourceFramesCaptured={} sourceSubscriberActive={} processLoopbackStatus={} physicalPlaybackStatus={} playbackOwnerGeneration={} resolvedPhysicalPlaybackDeviceId={} excludedProcessId={} evidenceAcceptedFrames={}",
-                    bridge
-                        .bridge_process_id
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "none".to_string()),
-                    bridge.bridge_instance_id.as_deref().unwrap_or("none"),
-                    bridge.session_id.as_deref().unwrap_or("none"),
-                    bridge.source_generation,
-                    bridge.source_generation_token.as_deref().unwrap_or("none"),
-                    bridge.source_frames_captured,
-                    bridge.source_subscriber_active,
-                    bridge.process_loopback_status.as_str(),
-                    bridge.physical_playback_status,
-                    bridge.playback_owner_generation,
-                    bridge.resolved_physical_playback_device_id,
-                    bridge
-                        .excluded_process_id
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "none".to_string()),
-                    evidence.accepted_frame_count,
-                );
-            }
-            Err(error) => last_detail = error,
-        }
-        tokio::time::sleep(PROCESS_EXCLUSION_RESTART_POLL).await;
-    }
-    Err(format!(
-        "process-exclusion source did not reach an identity-bound ready state within {}ms: {last_detail}",
-        PROCESS_EXCLUSION_RESTART_RECOVERY_TIMEOUT.as_millis()
-    ))
-}
-
-fn log_process_exclusion_restart_failure(
-    app: &AppHandle,
-    run_marker: &str,
-    stage: &str,
-    started_at_unix_ms: u64,
-    error: &str,
-) {
-    let _ = append_diagnostics_log(
-        app,
-        "runtime",
-        "error",
-        "event=process_exclusion_restart_summary",
-        Some(format!(
-            "status=failed runMarker={} stage={stage} startedAtUnixMs={started_at_unix_ms} recoveredAtMs=0 recoveredAtUnixMs=0 error={}",
-            if run_marker.is_empty() { "-" } else { run_marker },
-            error.replace(char::is_whitespace, "_"),
-        )),
-        None,
-        None,
-    );
-}
-
-/// The live Watch matrix must stop the same desktop process that owns the
-/// in-memory report. Launching a second executable with `tauri invoke` creates
-/// another app instance and can never read that report. Keep this diagnostic
-/// escape hatch opt-in and bounded: normal application sessions neither stop
-/// automatically nor write a report to disk.
-fn schedule_capture(app: &AppHandle, run_marker: &str) {
-    let duration_ms = std::env::var("OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS")
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        // Keep the user-requested matrix duration intact up to the runner's
-        // documented two-hour ceiling.
-        .map(bounded_autostart_capture_duration_ms);
-    let report_path = std::env::var("OMNI_WATCH_MODE_REPORT_PATH")
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-
-    let (Some(duration_ms), false) = (duration_ms, report_path.is_empty()) else {
-        return;
-    };
-
-    let app = app.clone();
-    let run_marker = run_marker.to_string();
-    let exit_after_report = env_flag_enabled("OMNI_WATCH_MODE_EXIT_AFTER_REPORT");
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(duration_ms)).await;
-        let stop_result = stop_audio_route(app.clone(), "inbound".to_string()).await;
-        if let Err(error) = &stop_result {
-            let _ = append_diagnostics_log(
-                &app,
-                "runtime",
-                "error",
-                "watch_mode.diagnostic_auto_stop_failed",
-                Some(format!("runMarker={run_marker} error={error}")),
-                None,
-                None,
-            );
-        }
-
-        // `stop_audio_route` marks the report completed before returning, but
-        // the renderer receipt crosses a browser frame and can arrive a few
-        // hundred milliseconds later. Preserve that final evidence before
-        // taking the immutable snapshot.
-        tokio::time::sleep(Duration::from_millis(750)).await;
-        let report = app
-            .state::<AudioStateStore>()
-            .watch_session_report
-            .snapshot();
-        let report_completed = report
-            .as_ref()
-            .is_some_and(|report| report.status == "completed");
-        let write_path = report_path.clone();
-        let write_result = tauri::async_runtime::spawn_blocking(move || {
-            let report = report.ok_or_else(|| "Watch session report is missing".to_string())?;
-            write_report_atomic(&write_path, &report)
-        })
-        .await
-        .map_err(|error| format!("report writer task failed: {error}"))
-        .and_then(|result| result);
-
-        let succeeded = stop_result.is_ok() && report_completed && write_result.is_ok();
-        let (level, message, detail) = if succeeded {
-            (
-                "info",
-                "watch_mode.diagnostic_report_saved",
-                format!(
-                    "runMarker={run_marker} durationMs={duration_ms} reportPath={report_path} stopOk=true reportCompleted=true"
-                ),
-            )
-        } else {
-            (
-                "error",
-                "watch_mode.diagnostic_report_capture_failed",
-                format!(
-                    "runMarker={run_marker} durationMs={duration_ms} reportPath={report_path} stopOk={} reportCompleted={report_completed} reportSaved={} stopError={} writeError={}",
-                    stop_result.is_ok(),
-                    write_result.is_ok(),
-                    stop_result
-                        .as_ref()
-                        .err()
-                        .map(String::as_str)
-                        .unwrap_or("-"),
-                    write_result
-                        .as_ref()
-                        .err()
-                        .map(String::as_str)
-                        .unwrap_or("-"),
-                ),
-            )
-        };
-        let _ = append_diagnostics_log(
-            &app,
-            "runtime",
-            level,
-            message,
-            Some(detail),
-            None,
-            None,
-        );
-        if exit_after_report {
-            app.exit(if succeeded { 0 } else { 1 });
-        }
-    });
-}
-
-fn write_report_atomic(
-    report_path: &str,
-    report: &crate::audio::contracts::WatchSessionReportRuntime,
-) -> Result<(), String> {
-    let path = std::path::PathBuf::from(report_path);
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("Watch report path has no file name: {report_path}"))?;
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-
-    let temporary_path = path.with_file_name(format!(
-        ".{file_name}.{}.tmp",
-        Uuid::new_v4().simple()
-    ));
-    let result = (|| -> Result<(), String> {
-        let json = serde_json::to_vec_pretty(report).map_err(|error| error.to_string())?;
-        std::fs::write(&temporary_path, json).map_err(|error| error.to_string())?;
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|error| error.to_string())?;
-        }
-        std::fs::rename(&temporary_path, &path).map_err(|error| error.to_string())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary_path);
-    }
-    result
 }

@@ -1,39 +1,10 @@
-/// Owns a single capture route's lifecycle dependencies.
-///
-/// Keeping the channel, route specification and UI handle together prevents
-/// the thread launcher from becoming a second orchestration implementation.
-
-struct RouteWorker {
-    app: AppHandle,
-    direction: String,
-    spec: RouteSpec,
-    stop_rx: mpsc::Receiver<()>,
-    stt_sender: Option<mpsc::Sender<Vec<u8>>>,
-    init_done: Option<Arc<AtomicBool>>,
-    bridge_source_context: Option<BridgeSourceWorkerContext>,
-}
-
-impl RouteWorker {
-    fn run(self, store: &AudioStateStore) -> Result<(), String> {
-        run_route_worker(
-            self.app,
-            store,
-            &self.direction,
-            self.spec,
-            self.stop_rx,
-            self.stt_sender,
-            self.init_done,
-            self.bridge_source_context,
-        )
-    }
-}
-
 fn run_route_worker(
     app: AppHandle,
     store: &AudioStateStore,
     direction: &str,
     spec: RouteSpec,
     stop_rx: mpsc::Receiver<()>,
+    input_completion_rx: Option<mpsc::Receiver<RouteInputCompletionRequest>>,
     stt_sender: Option<mpsc::Sender<Vec<u8>>>,
     init_done: Option<Arc<AtomicBool>>,
     bridge_source_context: Option<BridgeSourceWorkerContext>,
@@ -46,6 +17,9 @@ fn run_route_worker(
             direction,
             spec,
             stop_rx,
+            input_completion_rx.ok_or_else(|| {
+                "Bridge source worker started without an input-completion receiver".to_string()
+            })?,
             stt_sender,
             init_done,
             bridge_source_context.ok_or_else(|| {
@@ -402,21 +376,23 @@ fn accept_bridge_source_identity(
     );
     let authoritative = bridge_state.update_snapshot(|current| {
         disposition = bridge_source_identity_disposition(current, identity);
-        apply_bridge_source_identity_observation(current, identity, &disposition, is_pcm_frame);
+        let accepted =
+            apply_bridge_source_identity_observation(current, identity, &disposition, is_pcm_frame);
+        if accepted && is_pcm_frame {
+            // Keep the disposition/current-owner check, snapshot mutation and
+            // accepted-frame evidence under the Bridge state lock. A restart
+            // cannot otherwise interleave after acceptance but before the
+            // diagnostic ledger records which owner supplied the frame.
+            store.record_bridge_source_frame_accepted(identity.clone());
+        }
     });
     match disposition {
         BridgeSourceIdentityDisposition::Current => {
             worker_context.rebind(authoritative);
-            if is_pcm_frame {
-                store.record_bridge_source_frame_accepted(identity.clone());
-            }
             true
         }
         BridgeSourceIdentityDisposition::Rebind => {
             worker_context.rebind(authoritative);
-            if is_pcm_frame {
-                store.record_bridge_source_frame_accepted(identity.clone());
-            }
             diag_log_detail(
                 app,
                 "bridge",
@@ -467,7 +443,8 @@ fn run_bridge_source_route_worker(
     direction: &str,
     spec: RouteSpec,
     stop_rx: mpsc::Receiver<()>,
-    stt_sender: Option<mpsc::Sender<Vec<u8>>>,
+    input_completion_rx: mpsc::Receiver<RouteInputCompletionRequest>,
+    mut stt_sender: Option<mpsc::Sender<Vec<u8>>>,
     init_done: Option<Arc<AtomicBool>>,
     bridge_source_context: BridgeSourceWorkerContext,
 ) -> Result<(), String> {
@@ -486,11 +463,22 @@ fn run_bridge_source_route_worker(
     let mut last_summary_at = Instant::now();
     let mut first_heartbeat_logged = false;
     let mut first_pcm_logged = false;
+    let mut provider_input_completed = false;
     loop {
         let mut source_pipe = loop {
             if stop_rx.try_recv().is_ok() {
                 return Ok(());
             }
+            observe_bridge_input_completion_request(
+                &app,
+                store,
+                direction,
+                &input_completion_rx,
+                &mut processor,
+                &mut sample_queue,
+                &mut stt_sender,
+                &mut provider_input_completed,
+            )?;
             match OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -563,6 +551,16 @@ fn run_bridge_source_route_worker(
             if stop_rx.try_recv().is_ok() {
                 return Ok(());
             }
+            observe_bridge_input_completion_request(
+                &app,
+                store,
+                direction,
+                &input_completion_rx,
+                &mut processor,
+                &mut sample_queue,
+                &mut stt_sender,
+                &mut provider_input_completed,
+            )?;
             let payload = match read_bridge_source_payload(&mut source_pipe) {
                 Ok(BridgeSourceEnvelope::Frame { payload, identity }) => {
                     if !accept_bridge_source_identity(
@@ -572,6 +570,10 @@ fn run_bridge_source_route_worker(
                         &identity,
                         true,
                     ) {
+                        continue;
+                    }
+                    if provider_input_completed {
+                        ignored_envelope_count = ignored_envelope_count.saturating_add(1);
                         continue;
                     }
                     pcm_frame_count += 1;
@@ -631,62 +633,35 @@ fn run_bridge_source_route_worker(
                 Ok(BridgeSourceEnvelope::TranslationStatus {
                     status_id,
                     session_id,
+                    bridge_instance_id,
+                    source_generation,
+                    source_generation_token,
+                    playback_owner_generation,
+                    physical_playback_device_id,
                     cue_id,
                     status,
                     reason,
                     error_code,
                     timestamp_ms,
                 }) => {
-                    let active_session_id = app
-                        .state::<BridgeStateStore>()
-                        .snapshot()
-                        .session_id;
-                    let disposition = bridge_translation_status_disposition(
+                    if !handle_bridge_translation_status(
+                        &app,
                         store,
-                        active_session_id.as_deref(),
-                        &status_id,
-                        &session_id,
-                    );
-                    if disposition == BridgeTranslationStatusDisposition::Apply {
-                        store
-                            .translation_playback_quiescence()
-                            .observe_bridge_playback_status(&cue_id, &status);
-                        record_bridge_translation_status(
-                            &app,
-                            store,
-                            &status_id,
-                            &cue_id,
-                            &status,
-                            &reason,
-                            error_code.as_deref(),
-                            timestamp_ms,
-                        );
-                    } else {
-                        diag_log_detail(
-                            &app,
-                            "bridge",
-                            "info",
-                            "event=translation_playback_status_idempotent_skip",
-                            format!(
-                                "statusId={status_id} cueId={cue_id} reason={} eventSessionId={session_id} activeSessionId={}",
-                                disposition.as_str(),
-                                active_session_id.as_deref().unwrap_or("-")
-                            ),
-                        );
-                    }
-                    if let Err(error) = write_bridge_translation_status_ack(
                         &mut source_pipe,
                         &status_id,
                         &session_id,
+                        &bridge_instance_id,
+                        source_generation,
+                        &source_generation_token,
+                        playback_owner_generation,
+                        &physical_playback_device_id,
+                        &cue_id,
+                        &status,
+                        &reason,
+                        error_code.as_deref(),
+                        timestamp_ms,
                     ) {
                         sample_queue.clear();
-                        diag_log_detail(
-                            &app,
-                            "audio",
-                            "warning",
-                            "Bridge translation status acknowledgement failed. Reconnecting.",
-                            error,
-                        );
                         break;
                     }
                     continue;

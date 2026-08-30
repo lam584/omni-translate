@@ -58,6 +58,7 @@ import {
   BALANCED_RELEASE_PLAN,
   LIVE_LLM_CELLS,
 } from './watch-mode-balanced-release-plan.mjs';
+import { STRICT_MATRIX_SCHEMA_VERSION } from './watch-mode-evidence-authority.mjs';
 import { buildSteps } from './run-all-tests.mjs';
 import { buildAutoSteps } from './run-quality-gate-auto.mjs';
 import {
@@ -88,6 +89,14 @@ const validationOptions = (workspaceRoot, currentProvenance = TEST_PROVENANCE) =
 });
 
 const runGit = (cwd, args) => spawnSync('git', args, { cwd, encoding: 'utf8' });
+
+test('performance contract uses a finite evidence-driven terminal coverage threshold', () => {
+  assert.equal(Number.isFinite(PERFORMANCE_THRESHOLDS.terminalStageCoveragePercent), true);
+  assert.equal(PERFORMANCE_THRESHOLDS.terminalStageCoveragePercent, 100);
+  assert.equal('stabilityWindowMinutes' in PERFORMANCE_THRESHOLDS, false);
+  assert.ok(PERFORMANCE_MEASUREMENT_NAMES.includes('terminalStageCoveragePercent'));
+  assert.equal(PERFORMANCE_MEASUREMENT_NAMES.includes('stabilityDurationMinutes'), false);
+});
 
 const makeCleanGitWorkspace = () => {
   const workspaceRoot = makeTempDir();
@@ -988,20 +997,20 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
       break;
     case 'E2E-PROVIDER-PROBE': {
       const grantGeneratedAt = new Date(TEST_NOW.getTime() - 10_000).toISOString();
-      const reservationIssuedAts = Array.from({ length: 8 }, (_, index) => (
+      const reservationIssuedAts = Array.from({ length: LIVE_LLM_CELLS.length }, (_, index) => (
         new Date(TEST_NOW.getTime() - 9_500 + index).toISOString()
       ));
       const authorizationObservedAt = new Date(TEST_NOW.getTime() - 2_000).toISOString();
       const consumptionClaimedAt = new Date(TEST_NOW.getTime() - 1_750).toISOString();
       const providerConnectStartedAt = new Date(TEST_NOW.getTime() - 1_500).toISOString();
       const providerConnectCompletedAt = TEST_NOW.toISOString();
-      const leaseReservations = Array.from({ length: 8 }, (_, index) => ({
+      const leaseReservations = LIVE_LLM_CELLS.map((cell, index) => ({
         cellIndex: index,
-        cellId: `paid-cell-${index + 1}`,
-        workerId: `vm${(index % 2) + 1}`,
-        waveIndex: Math.floor(index / 2),
+        cellId: cell.cellId,
+        workerId: 'vm1',
+        waveIndex: index,
         leaseId: `lease-${index + 1}`,
-        maxExternalAudioSamples: 2_880_000,
+        maxExternalAudioSamples: cell.maxExternalAudioSamples,
         digest: `${index + 1}`.repeat(64),
         issuedAt: reservationIssuedAts[index],
       }));
@@ -1013,8 +1022,8 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
         leaseReservationDigests: leaseReservations.map((entry) => entry.digest),
         authorizationDigest: 'b'.repeat(64),
         providerId: 'provider-dashscope',
-        model: 'qwen3.5-omni-flash-realtime',
-        protocol: 'dashscope-omni',
+        model: 'qwen3.5-livetranslate-flash-realtime',
+        protocol: 'dashscope-livetranslate',
         operation: 'text-translation-preflight',
         inputMode: 'text-only',
         invocationCount: 1,
@@ -1428,6 +1437,7 @@ const buildPerformanceWorkspace = ({
   memoryMb = 400,
   dropouts = 0,
   omitMetricsCell = null,
+  omitTerminalCell = null,
 } = {}) => {
   const workspaceRoot = makeTempDir();
   const evidenceRoot = path.join(workspaceRoot, 'artifacts/testing/watch-mode-live');
@@ -1438,13 +1448,11 @@ const buildPerformanceWorkspace = ({
   for (const plannedCell of LIVE_LLM_CELLS) {
         const {
           cellId: cellKey,
-          tier,
           modelId,
           feedbackLoopPrevention,
           deviceClass,
-          durationSeconds,
         } = plannedCell;
-        const cellDurationMs = durationMs ?? durationSeconds * 1000;
+        const cellDurationMs = durationMs ?? 180_000;
         processId += 1;
         const runDirectory = path.join(evidenceRoot, 'runs', String(runDirectories.length + 1).padStart(2, '0'));
         fs.mkdirSync(runDirectory, { recursive: true });
@@ -1507,6 +1515,14 @@ const buildPerformanceWorkspace = ({
           },
         };
         writeJson(path.join(runDirectory, 'report.json'), report);
+        if (omitTerminalCell !== cellKey) {
+          writeJson(path.join(runDirectory, 'evidence-driven-terminal.json'), {
+            schemaVersion: 1,
+            artifactKind: 'watch-mode-evidence-driven-terminal',
+            status: 'completed',
+            cellId: cellKey,
+          });
+        }
         if (omitMetricsCell !== cellKey) {
           writeJson(path.join(runDirectory, 'system-metrics.json'), buildSystemMetrics({
             processId,
@@ -1518,13 +1534,7 @@ const buildPerformanceWorkspace = ({
         runDirectories.push(runDirectory);
         const runDirectoryRelative = path.relative(evidenceRoot, runDirectory).split(path.sep).join('/');
         cells.push({
-          cellId: cellKey,
-          tier,
-          providerMode: 'live-dashscope',
-          durationSeconds,
-          modelId,
-          feedbackLoopPrevention,
-          deviceClass,
+          ...plannedCell,
           deviceProfileId: deviceClass,
           runDirectory: runDirectoryRelative,
           receiptPath: `${runDirectoryRelative}/matrix-cell-authority.json`,
@@ -1549,7 +1559,7 @@ const buildPerformanceWorkspace = ({
     testFixture: true,
   });
   writeJson(manifestPath, {
-    schemaVersion: 3,
+    schemaVersion: STRICT_MATRIX_SCHEMA_VERSION,
     artifactKind: 'watch-mode-strict-matrix-authority',
     generatedAt: TEST_NOW.toISOString(),
     evidenceMode: 'live',
@@ -1581,8 +1591,8 @@ function testPerformanceAuthorityResolver({ workspaceRoot, manifestPath }) {
   );
   assert.equal(path.resolve(manifestPath), path.resolve(expectedManifestPath));
   const manifest = readJson(manifestPath);
-  if (manifest.schemaVersion !== 3 || manifest.artifactKind !== 'watch-mode-strict-matrix-authority') {
-    throw new Error('test performance authority requires the schema-v3 strict manifest');
+  if (manifest.schemaVersion !== STRICT_MATRIX_SCHEMA_VERSION || manifest.artifactKind !== 'watch-mode-strict-matrix-authority') {
+    throw new Error(`test performance authority requires the schema-v${STRICT_MATRIX_SCHEMA_VERSION} strict manifest`);
   }
   const runDirectories = manifest.runDirectories.map((candidate) => (
     path.resolve(path.dirname(manifestPath), candidate)
@@ -1600,6 +1610,8 @@ function testPerformanceAuthorityResolver({ workspaceRoot, manifestPath }) {
     const reportHash = hashEvidenceArtifact(path.join(runDirectory, 'report.json'));
     const metricsPath = path.join(runDirectory, 'system-metrics.json');
     const metricsHash = fs.existsSync(metricsPath) ? hashEvidenceArtifact(metricsPath) : null;
+    const terminalPath = path.join(runDirectory, 'evidence-driven-terminal.json');
+    const terminalHash = fs.existsSync(terminalPath) ? hashEvidenceArtifact(terminalPath) : null;
     rawArtifactsByCell.set(cellKey, {
       receiptPath: path.join(runDirectory, 'matrix-cell-authority.json'),
       report: {
@@ -1611,6 +1623,11 @@ function testPerformanceAuthorityResolver({ workspaceRoot, manifestPath }) {
         path: 'system-metrics.json',
         bytes: metricsHash.byteCount,
         sha256: metricsHash.sha256,
+      } : null,
+      terminal: terminalHash ? {
+        path: 'evidence-driven-terminal.json',
+        bytes: terminalHash.byteCount,
+        sha256: terminalHash.sha256,
       } : null,
     });
     authorizedReports.set(
@@ -2877,7 +2894,9 @@ test('prepare helpers expose ready Desktop, real-device, overlay, and v6 virtual
     const e2e = fs.readFileSync(e2ePath, 'utf8');
     assert.match(e2e, /E2E-PROVIDER-CONFIG[\s\S]*AuthorityStatus: ready \(same-process production Desktop emitter\)/);
     assert.match(e2e, /E2E-PROVIDER-PROBE[\s\S]*run-desktop-release-evidence\.mjs --scenario-id E2E-PROVIDER-PROBE/);
-    assert.match(e2e, /E2E-REAL-DEVICE-AUDIO[\s\S]*AuthorityStatus: ready \(canonical strict-v2 Watch Mode authority/);
+    assert.match(e2e, /E2E-REAL-DEVICE-AUDIO[\s\S]*canonical strict Watch Mode schema-v5 budget-balanced authority/);
+    assert.match(e2e, /E2E-REAL-DEVICE-AUDIO[\s\S]*SelectedCell: qwen3\.5-livetranslate-flash-realtime\/process-exclusion\/default-speaker/);
+    assert.doesNotMatch(e2e, /qwen3\.5-omni pairwise-live|schema-v4 budget-balanced authority/);
     assert.match(e2e, /E2E-REAL-DEVICE-AUDIO[\s\S]*ProductionCommand: npm run collect:release-evidence:real-device-audio/);
     assert.match(e2e, /E2E-REAL-DEVICE-AUDIO[\s\S]*cell-raw\//);
     assert.match(e2e, /E2E-DIAGNOSTICS-EXPORT[\s\S]*RequiredArtifacts: emitter-result\.json, diagnostics-export-receipt\.json, diagnostics-bundle\//);
@@ -2907,7 +2926,7 @@ test('prepare helpers expose ready Desktop, real-device, overlay, and v6 virtual
     assert.deepEqual(Object.keys(performance.measurements), PERFORMANCE_MEASUREMENT_NAMES);
     assert.ok(testPerformanceReport(performance).includes('verdict is not PASS'));
     assert.ok(testPerformanceReport(performance)
-      .includes('missing or invalid measurement: stabilityDurationMinutes'));
+      .includes('missing or invalid measurement: terminalStageCoveragePercent'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -2939,13 +2958,13 @@ test('production performance authority rejects a legacy schema-v1 canonical mani
       manifestPath: fixture.manifestPath,
       currentProvenance: TEST_PROVENANCE,
       now: TEST_NOW.getTime(),
-    }), /schemaVersion=4/);
+    }), new RegExp(`schemaVersion=${STRICT_MATRIX_SCHEMA_VERSION}`));
   } finally {
     fs.rmSync(fixture.workspaceRoot, { recursive: true, force: true });
   }
 });
 
-test('performance assembler and validator recompute the eight paid balanced-plan cells', () => {
+test('performance assembler and validator recompute the four paid balanced-plan cells', () => {
   const fixture = assembleFixture();
   try {
     assert.equal(fixture.verdict, 'PASS');
@@ -2956,7 +2975,7 @@ test('performance assembler and validator recompute the eight paid balanced-plan
       cpuP95Percent: 20,
       memoryPeakMb: 400,
       observedDropouts: 0,
-      stabilityDurationMinutes: 3,
+      terminalStageCoveragePercent: 100,
     });
     assert.deepEqual(
       testPerformanceReport(fixture.report, validationOptions(fixture.workspaceRoot)),
@@ -3077,11 +3096,10 @@ test('performance validator rejects rehashed hand-edited aggregate numbers', () 
   }
 });
 
-test('performance gate rejects threshold violations, dropouts, and short stability runs', () => {
+test('performance gate rejects latency threshold violations and dropouts', () => {
   for (const [options, expectedIssue] of [
     [{ providerLatencyMs: 1300 }, 'providerFirstEventLatencyMs=1300 exceeds threshold 1200'],
     [{ dropouts: 1 }, 'observedDropouts must be 0'],
-    [{ durationMs: 2 * 60 * 1000 }, 'stabilityDurationMinutes=2 is shorter than 3'],
   ]) {
     const fixture = assembleFixture(options);
     try {
@@ -3119,6 +3137,22 @@ test('performance assembler refuses a canonical matrix cell without raw system m
       now: TEST_NOW,
       performanceAuthorityResolver: testPerformanceAuthorityResolver,
     }), /raw system metrics are missing/);
+  } finally {
+    fs.rmSync(fixture.workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test('performance assembler refuses a paid cell without receipt-bound terminal evidence', () => {
+  const missingCell = LIVE_LLM_CELLS[0].cellId;
+  const fixture = buildPerformanceWorkspace({ omitTerminalCell: missingCell });
+  try {
+    assert.throws(() => assemblePerformanceBaseline({
+      operator: 'QA Robot',
+      workspaceRoot: fixture.workspaceRoot,
+      provenance: TEST_PROVENANCE,
+      now: TEST_NOW,
+      performanceAuthorityResolver: testPerformanceAuthorityResolver,
+    }), /evidence-driven terminal authority is missing/);
   } finally {
     fs.rmSync(fixture.workspaceRoot, { recursive: true, force: true });
   }
@@ -3313,6 +3347,7 @@ test('buildAutoSteps honors the skip switches', () => {
     'integration-bridge-contract',
     'driver-boundaries',
     'watch-mode-tooling',
+    'watch-mode-coordinator-tooling',
     'release-tooling',
     'quality-gate-tooling',
     'startup-tooling',
@@ -3329,7 +3364,7 @@ test('buildAutoSteps honors the skip switches', () => {
       'audit-architecture', 'audit-powershell-boundaries', 'audit-dead-code', 'audit-error-handling', 'audit-rust-warnings', 'i18n-ratchet',
       'verify-desktop', 'benchmark-core-tests', 'diagnostics-benchmark-tests',
       'contracts', 'config-paths', 'integration-bridge-contract',
-      'driver-boundaries', 'watch-mode-tooling', 'release-tooling', 'quality-gate-tooling',
+      'driver-boundaries', 'watch-mode-tooling', 'watch-mode-coordinator-tooling', 'release-tooling', 'quality-gate-tooling',
       'startup-tooling', 'powershell-tooling', 'coverage-base',
     ],
   );
@@ -3347,6 +3382,7 @@ test('test:all includes every deterministic cross-layer gate', () => {
     'integration-bridge-contract',
     'driver-boundaries',
     'watch-mode-tooling',
+    'watch-mode-coordinator-tooling',
     'release-tooling',
     'quality-gate-tooling',
     'startup-tooling',

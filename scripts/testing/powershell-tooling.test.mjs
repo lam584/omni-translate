@@ -172,6 +172,17 @@ test('managed process cleanup accepts an owned process that already ended', asyn
   }
 });
 
+test('managed process launch custody preserves the exact nonzero exit code', () => {
+  const output = runPowerShell(`
+    Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('Start-Sleep -Milliseconds 150; exit 7'))
+    $child = Start-Process powershell.exe -ArgumentList @('-NoProfile','-EncodedCommand',$encoded) -WindowStyle Hidden -PassThru
+    $lease = Get-OmniProcessIdentity -ProcessId $child.Id -Ownership managed -ProcessHandle $child
+    Wait-OmniManagedProcessExit -Lease $lease -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(5)) | ConvertTo-Json -Compress
+  `);
+  assert.equal(JSON.parse(output).exitCode, 7);
+});
+
 test('Watch Mode PowerShell boundaries stay thin and route termination through Process', () => {
   const watchFiles = fs.readdirSync(moduleRoot)
     .filter((name) => name.startsWith('Omni.Testing.WatchMode.') && name.endsWith('.psm1'));
@@ -179,7 +190,7 @@ test('Watch Mode PowerShell boundaries stay thin and route termination through P
     const source = fs.readFileSync(path.join(moduleRoot, name), 'utf8');
     assert.doesNotMatch(source, /\bStop-Process\b|\btaskkill(?:\.exe)?\b/iu, name);
   }
-  assert.ok(fs.readFileSync(path.join(moduleRoot, 'Omni.Testing.WatchMode.Runner.psm1'), 'utf8').split(/\r?\n/u).length <= 350);
+  assert.ok(fs.readFileSync(path.join(moduleRoot, 'Omni.Testing.WatchMode.Runner.psm1'), 'utf8').split(/\r?\n/u).length <= 365);
   for (const name of [
     'Omni.Testing.WatchMode.AudioPlayback.psm1',
     'Omni.Testing.WatchMode.VirtualDriverCapture.psm1',

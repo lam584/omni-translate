@@ -32,6 +32,8 @@ impl AudioStateStore {
             translation_playback_quiescence: Arc::new(
                 TranslationPlaybackQuiescence::default(),
             ),
+            strict_watch_terminal_lifecycle:
+                watch_terminal_lifecycle::StrictWatchTerminalLifecycle::default(),
             bridge_source_runtime_evidence: Mutex::new(
                 BridgeSourceRuntimeEvidence::default(),
             ),

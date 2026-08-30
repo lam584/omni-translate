@@ -13,10 +13,10 @@
 5. native 路线不额外启动二次分句文本翻译/二次字幕 TTS；secondary 路线才逐句调用文本翻译和二次字幕译音。
 6. bridge 的物理播放路径能把原声实时写到指定物理播放设备，译音启用时与原声混合输出。
 7. WASAPI loopback 能在物理播放设备上捕获到实际输出电平，并验证原声/译音内容证据。
-8. 默认播放完整 `scripts/testing/fixtures/watch-mode-en-original.wav`，播放结束后继续观察 120 秒再停止 watch mode 和 bridge，用来捕捉短音频触发长时间复述、循环输出、漏句和多句。
+8. 默认播放完整 `scripts/testing/fixtures/watch-mode-en-original.wav`；injector 完成后发布身份绑定的 input-complete，随后按 Provider 终态、播放队列、speaker 与 renderer/物理 receipt 证据结束，不再把固定 120 秒尾窗当作成功条件。
 9. 使用真实 STT 对源音频生成基准转录并缓存；再对物理输出录音做 STT，把两份文本做内容一致性检查。
 10. 对原创 WAV 素材增加 `strictContent` 层，用固定中文参考译文做确定性评分，拦截只覆盖开头、漏掉关键短语或把 `十亿美元` 误成 `一亿美元` 等严重数字错误。
-11. 发布前严格证据门槛必须同时覆盖 `qwen3.5-omni-flash-realtime` 和 `qwen3.5-livetranslate-flash-realtime` 两个模型；任意一个缺失或失败都不能通过。
+11. 发布前严格证据门槛只覆盖精确模型 `qwen3.5-livetranslate-flash-realtime`。其他显式模型仍可用于非正式诊断，但不能进入 release authority。
 
 ## 核心命令
 
@@ -26,29 +26,30 @@
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& { . .\scripts\testing\run-watch-mode-live.ps1 -DryRun -Fixture pass }"
 ```
 
-单模型真实 live run 建议在管理员 PowerShell 中运行：
+下面的 Omni 命令是非正式、显式模型诊断示例，不会产生 release authority：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-watch-mode-live.ps1 -SkipDriverRepair -AllowElevatedDesktopLaunch -WatchModelId qwen3.5-omni-flash-realtime -PlaybackSeconds 0 -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90 -MediaPath .\scripts\testing\fixtures\watch-mode-en-original.wav
 ```
 
-双模型 × 三路线 × 两个真实物理设备严格矩阵必须通过已签的两或三 worker production coordinator：
+正式单模型 × 三路线矩阵必须通过已签的单 worker production coordinator：
 
 ```powershell
-npm run test:watch-mode-live:production-coordinator -- -- --workers-config artifacts/testing/watch-mode-local-worker.json --reuse-local-isolation artifacts/testing/watch-mode-local-isolation/<run>/local-isolation-manifest.json
+npm run test:watch-mode-live:production-coordinator -- -- --workers-config artifacts/testing/watch-mode-local-worker.json --runtime-authority artifacts/testing/watch-mode-strict-runtime/<release>/strict-runtime-authority.json --local-isolation-authority artifacts/testing/watch-mode-local-isolation/<run>/local-isolation-manifest.json
 ```
 
-npm 11 在 Windows 上会把通常单个 `npm run ... --` 后面的具名选项吞成 npm 配置；上面的第二个字面 `--` 是必需的。生产配置只接受一个本机 worker，不包含 SSH、known_hosts 或私钥字段；八个付费单元在同一交互会话中串行执行。
+npm 11 在 Windows 上会把通常单个 `npm run ... --` 后面的具名选项吞成 npm 配置；上面的第二个字面 `--` 是必需的。生产配置只接受一个本机 worker，不包含 SSH、known_hosts 或私钥字段；四个付费单元在同一交互会话中串行执行。
 
 旧 `test:watch-mode-live:matrix` / `run-watch-mode-live-matrix.mjs` strict 入口已在 build、preflight 和任何 Provider 调用前 fail-closed，只用于提示迁移；不能再用于生成发布证据。
 
-严格入口必须显式传入 `--workers-config` 和 `--reuse-local-isolation`。worker JSON 必须绑定一个真实 `default-speaker` profile、当前 clean workspace、VM UUID 和交互用户。平衡版固定复验 3 个零 Provider local-isolation 格，再串行运行 8 个 paid live 格；verifier 只读取本次签名 manifest，不扫描 output root 中的历史报告，也不迁移旧 schema 或历史证据。支持 Windows build 20348 及以上时，`process-exclusion` 是推荐路线；能力探测失败时该变体必须明确失败，不能静默改跑其他后端。
+严格入口必须显式传入 `--workers-config`、`--runtime-authority` 和 `--local-isolation-authority`。worker JSON 必须绑定唯一真实 `default-speaker` profile、当前 clean workspace、VM UUID 和交互用户；USB 或其他端点只能进入显式的非正式诊断。平衡版固定复验 3 个零 Provider local-isolation 格，再串行运行 4 个 LiveTranslate paid 格；每个付费格都只允许精确模型 `qwen3.5-livetranslate-flash-realtime`。verifier 只读取本次签名 manifest，不扫描 output root 中的历史报告，也不迁移旧 schema 或历史证据。支持 Windows build 20348 及以上时，`process-exclusion` 是推荐路线；能力探测失败时该变体必须明确失败，不能静默改跑其他后端。
+以下 process-exclusion 和 echo-cancel 的 Omni 命令同样只是非正式诊断，不产生 release authority：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-watch-mode-live.ps1 -SkipDriverRepair -AllowElevatedDesktopLaunch -WatchModelId qwen3.5-omni-flash-realtime -FeedbackLoopPrevention process-exclusion -PlaybackSeconds 0 -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90 -MediaPath .\scripts\testing\fixtures\watch-mode-en-original.wav
 ```
 
-单独跑 echo-cancel 变体：
+单独跑非正式 echo-cancel 诊断变体：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-watch-mode-live.ps1 -SkipDriverRepair -AllowElevatedDesktopLaunch -WatchModelId qwen3.5-omni-flash-realtime -FeedbackLoopPrevention echo-cancel -PlaybackSeconds 0 -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90 -MediaPath .\scripts\testing\fixtures\watch-mode-en-original.wav
@@ -60,15 +61,23 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-wa
 npm run test:watch-mode-evidence:strict
 ```
 
-该命令固定读取 `artifacts/testing/watch-mode-live/latest-successful-watch-mode-strict-matrix.json`。发布验证采用预算平衡方案：复用 6 个零 LLM 本地隔离 authority（3 路线 × 2 个真实物理设备类），再运行 8 个严格付费格（每格 Provider 输入最多 3 分钟）。只有这 14 个格子的固定 authority 全部通过，本次 scoped verifier 才会原子替换 canonical manifest；失败、中断、single-device diagnostic 和 `-DryRun` 都不能覆盖它。旧的单进程 strict matrix 入口会在任何 Provider 调用前 fail-closed；正式入口是 `npm run test:watch-mode-live:production-coordinator`。
+该命令固定读取 `artifacts/testing/watch-mode-live/latest-successful-watch-mode-strict-matrix.json`。发布验证采用预算平衡方案：复用 3 个零 LLM 本地隔离 authority，再运行 4 个严格 LiveTranslate 付费格。只有这 7 个格子的固定 authority 全部通过，本次 scoped verifier 才会原子替换 canonical manifest；失败、中断、single-device diagnostic 和 `-DryRun` 都不能覆盖它。旧的单进程 strict matrix 入口会在任何 Provider 调用前 fail-closed；正式入口是 `npm run test:watch-mode-live:production-coordinator`。
 
-付费 live 层固定为最多 24 分钟外部音频，而不是原来的 18 × 30 分钟：
+付费 live 矩阵不再声明统一的 Provider session 秒数。Provider 费用 authority 只按媒体派生的输入样本计数；`paidLlmSeconds=631.26125` 只是 `10,100,180 / 16,000` 的样本等价展示，不是 socket 墙钟、正常等待或会话 hard ceiling：
 
-- `pairwise-live` + `model-stability`：共 8 格，每格 Rust 发送边界最多 2,880,000 个 16 kHz 样本（3 分钟），矩阵总上限 23,040,000 个样本（24 分钟）。
+- `pairwise-live` + `model-stability`：共 4 格。virtual-driver/echo-cancel 每格 `2,013,045 + 160,000 = 2,173,045` 样本；process-exclusion 每格 `2,013,045 + 720,000 + 144,000 = 2,877,045` 样本；矩阵总上限 10,100,180 样本。
 - strict paid 格只允许一次主实时 Provider 连接；source transcript、physical-output STT、secondary translation 和 secondary TTS 的远程调用均为 0。
-- `local-isolation`：复用 6 个已验证格，Provider 完全禁用，`providerCalls=0`，不消耗 LLM token。
+- `local-isolation`：复用 3 个已验证格，Provider 完全禁用，`providerCalls=0`，不消耗 LLM token。
 
-正式协调器的固定顺序是：一次 release build → 2 或 3 个 worker 的零 Provider readiness（clean HEAD/runtime、按分配要求检查驱动、session-1 endpoint/profile、Credential Manager 引用存在且 blob 非空）→ 复核可复用的 6 格 local-isolation authority → 签发 preflight grant 与 8 个唯一预算 reservation → 对 `provider-dashscope` 执行一次 text-only、0-audio production preflight → 签发 completion/final plan → 按波次执行 8 个付费格。任何 readiness、凭据、有效期余量或本地 authority 失败都会在 preflight 前停止；preflight 的输入/输出 token 上限为 4096/256，成功后也不会重新分配 lease。
+正式模型名以阿里云百炼官方文档 [Qwen3.5-LiveTranslate-Flash-Realtime](https://help.aliyun.com/zh/model-studio/qwen3-5-livetranslate-flash-realtime) 和指定的[百炼控制台文档 2983281](https://bailian.console.aliyun.com/cn-beijing?tab=doc#/doc/?type=model&url=2983281) 为准。结束顺序严格遵循同页“结束会话”：输入完成后只发送一次 `session.finish`，继续消费至 `session.finished`，再关闭 WebSocket；跳过该顺序会丢失尾部识别或翻译。
+
+时序上必须区分媒体墙钟、Provider samples、本地 drain 与 watchdog。canonical reference 为 125.815333 秒，全模式 postroll 3 秒；process-exclusion 另在 90 秒处插入固定 45 秒 quiet window，因此媒体墙钟分别约 128.815 秒与 173.815 秒。180/225 秒只是各模式的 input-complete 失败上限。正常成功由 input-complete marker 驱动，Provider finish 上限 15 秒。本地播放 drain 的严格预算为 `min(ceil(pendingPcmFrames * 1000 / outputRateHz) + 2000ms 余量 + 750ms 连续稳定窗, 30000ms)`；缺帧数或输出率时使用配置值并夹在 15–30 秒内 fail-closed。renderer/物理 receipt 连续稳定 750ms 后立即写 immutable report。cell hard watchdog 也按模式派生：virtual-driver/echo-cancel 为 `180+15+30+10=235s`，process-exclusion 为 `225+15+30+10=280s`；它只给失败路径封顶。
+
+`evidence-driven-terminal.json` 必须由真实生产 owner 逐项记录并由 verifier 验证 10 个原始阶段：`mediaPlaybackCompleted`、`inputCompleteSignaled`、`inputCompleteObserved`、`lastProviderAppend`、`sessionFinishSent`、`lastResponseAudioDone` 或 `responseDone`、`sessionFinishedReceived`、`localPlaybackQuiescent`、`finalRendererAck`、`reportWritten`。这是证据清单，不是强制 response terminal 晚于 `session.finish` 的伪偏序：LiveTranslate 会在输入过程中流式返回响应，因此最后 response terminal 可以早于 `sessionFinishSent`，但必须早于 `sessionFinishedReceived`并与最后 cue/renderer ACK 同一 lineage。signal 与 desktop observation 不能合并；`sessionFinishSent` 必须晚于最后一次合法 append 且 exactly-once，finish 后 Provider writes 必须为 0；必须收到 `session.finished`；最终 renderer ACK 必须覆盖最后 cue sequence；`reportWritten` 最后。缺失、重复、违反上述必要偏序、未知阶段或身份不一致均 fail closed。
+
+外层超时只包络失败清理，不制造正常等待。当前最坏模式 runner 内部由 `90s readiness + 280s cell hard + 30s report receipt + 20s scheduling` 派生；shard、远端单格和 production coordinator 再逐层叠加 pre/post cleanup、dispatch/receipt、下载与 post-preflight margin。代码只以阶段预算公式为 authority；当前计算值 578/620 秒和下载包络 300 秒只是派生结果，不能作为正常成功等待或另一个固定 session floor。
+
+正式协调器的固定顺序是：一次 release build → 单 worker 零 Provider readiness（clean HEAD/runtime、驱动、endpoint/profile、Credential Manager 引用）→ 复核 3 格 local-isolation authority → 签发 preflight grant 与 4 个唯一预算 reservation → 对精确 LiveTranslate 模型执行一次 text-only、0-audio production preflight → 签发 completion/final plan → 串行执行 4 个付费格。任何 readiness、凭据、有效期余量或本地 authority 失败都会在 preflight 前停止；preflight 的输入/输出 token 上限为 4096/256，成功后也不会重新分配 lease。
 
 Strict matrix 启动前要求 Git 工作树完全 clean（包括未跟踪源码），并固定当时的精确 `HEAD`。每份 `report.json`、本次 matrix manifest 和 canonical manifest 都记录 `provenance`（`headCommit`、`worktreeClean`、`dirtyEntryCount`）；matrix 结束、scoped verifier 和 canonical 发布会再次读取当前 checkout。只有生成时与验证时均 clean 且 `headCommit` 与当前 `HEAD` 完全相等才通过；旧 ancestor commit 即使可达也不能作为当前发布证据。运行期间提交、修改或新增未跟踪源码会使整次 strict matrix 失效，必须在 clean checkout 上重跑。
 
@@ -92,7 +101,7 @@ artifacts/testing/watch-mode-live/<timestamp>/
 - `report.json`: agent 优先读取的机器可读报告；包含生成时的精确 Git `provenance`。
 - `report.md`: 人类可读摘要。
 - `../watch-mode-live-matrix-*.json`: 单次 matrix 的精确 run directory 清单和 source provenance。
-- `../latest-successful-watch-mode-strict-matrix.json`: 最近一次成功完成 scoped strict 验证、并与当前 clean `HEAD` 精确绑定的预算平衡 canonical manifest（6 个零 LLM 本地格 + 8 个付费 live 格）。
+- `../latest-successful-watch-mode-strict-matrix.json`: 最近一次成功完成 scoped strict 验证、并与当前 clean `HEAD` 精确绑定的预算平衡 canonical manifest（3 个零 LLM 本地格 + 4 个付费 LiveTranslate 格）。
 - `../latest-watch-mode-live.json`: 最新 live run 的轻量索引，只包含 `timestamp`、`reportPath`、`verdict`、`failureLayer`、`modelId`。
 - `snapshots.json`: driver、wasapi、bridge、physicalOutput、app、provider、playback 快照。
 - `steps.json`: 每个编排步骤的执行结果。
@@ -114,7 +123,7 @@ Get-Content artifacts\testing\watch-mode-live\<timestamp>\physical-output-probe.
 Get-Content artifacts\testing\watch-mode-live\<timestamp>\physical-output-content.json -Raw
 ```
 
-不要把仓库根目录下的 `report.json` 或 `report.md` 当作当前项目状态来源。普通本地诊断用 `npm run test:watch-mode-evidence` 扫描 `artifacts/testing/watch-mode-live/<timestamp>/report.json`；发布前严格证据只认 canonical manifest 绑定的本次 6 个本地 authority 格和 8 个 live 目录，禁止从 output root 自动挑选历史报告补格。
+不要把仓库根目录下的 `report.json` 或 `report.md` 当作当前项目状态来源。普通本地诊断用 `npm run test:watch-mode-evidence` 扫描 `artifacts/testing/watch-mode-live/<timestamp>/report.json`；发布前严格证据只认 canonical manifest 绑定的本次 3 个本地 authority 格和 4 个 LiveTranslate 目录，禁止从 output root 自动挑选历史报告补格。
 
 ## 分层判定
 
@@ -149,7 +158,7 @@ npm run test:watch-mode-evidence
 npm run test:watch-mode-evidence:strict
 ```
 
-普通 `npm run test:watch-mode-evidence` 会扫描 `artifacts/testing/watch-mode-live/*/report.json`，并跳过 `cache`、`physical-output-smoke-*`、`reference-pcm-smoke-*` 等非完整 live 目录。严格命令不执行这种扫描，只读取 canonical manifest 精确绑定的 8 份 live report 和 9 格本地隔离 authority，并按 `cellId/tier` 分别校验 4 分钟配对时长、7 分钟稳定时长、5 分钟零 Provider 本地时长、设备身份、唯一 session、report/manifest provenance 与当前 clean `HEAD` 精确相等，以及 `strictContent.passed=true`。ancestor commit、生成时 dirty、验证时 dirty 或未跟踪源码都会失败。普通 `npm run quality:gate` 不会启动真实硬件链路；`release:verify` 会额外执行严格 evidence 门禁。
+普通 `npm run test:watch-mode-evidence` 会扫描 `artifacts/testing/watch-mode-live/*/report.json`，并跳过 `cache`、`physical-output-smoke-*`、`reference-pcm-smoke-*` 等非完整 live 目录。严格命令不执行这种扫描，只读取 canonical manifest 精确绑定的 4 份 LiveTranslate paid report 和 3 格本地隔离 authority。它按 `cellId/tier` 重验精确模型、三路线、唯一 session、每格样本 lease、10 个 raw terminal stages、最后 cue 的 renderer/物理 receipt、report/manifest provenance 与当前 clean `HEAD` 完全一致，以及 `strictContent.passed=true`；正常成功不再依赖统一的分钟数下限。ancestor commit、生成时 dirty、验证时 dirty 或未跟踪源码都会失败。普通 `npm run quality:gate` 不会启动真实硬件链路；`release:verify` 会额外执行严格 evidence 门禁。
 
 失败时重点看：
 
@@ -198,7 +207,7 @@ scripts/diagnostics/omni-benchmark/target/debug/omni-benchmark.exe --audio scrip
 artifacts/testing/watch-mode-live/cache/source-transcripts/<media-sha256>-full-v2.json
 ```
 
-随后 runner 会在播放测试音频前启动物理输出录音，完整播放后继续等待 120 秒，再停止录音并把录音提交给同一个 STT 诊断程序。`physical-output-content.json` 会包含：
+随后 runner 会在播放测试音频前启动物理输出录音。完整播放后，desktop 完成 Provider `session.finished` 与本地播放/renderer receipt 终态并写出 terminal marker；录音器再保留 1–2 秒物理尾段后主动停止，只有 terminal marker 缺失时才使用按 cell watchdog 派生的 hard cap。录音随后提交给同一个 STT 诊断程序。`physical-output-content.json` 会包含：
 
 - `sourceReference`: 源音频基准转录。
 - `source` / `translation`: 物理输出录音转录结果。
@@ -360,16 +369,16 @@ Get-Process omni-desktop-shell,omni-bridge-service -ErrorAction SilentlyContinue
 
 真实付费验收必须严格分两阶段，顺序不可交换：
 
-1. **Plus 事故专项。** 使用 `scripts/testing/run-watch-mode-incident-plus.mjs` 生成独立的 signed execution authority，产物位于 `artifacts/testing/watch-mode-incident-plus/<execution-id>/`。入口必须先以本次 coordinator 公钥 ID 重建 Desktop/Bridge/driver runtime，再签发 text-only preflight grant；否则当前 Desktop 会拒绝未编入自身的 grant。远端单格仅能由 `scripts/testing/run-watch-mode-incident-plus-cell.mjs` 经受哈希约束的 `incident-plus-cell` Interactive Session 启动。固定三格为 `qwen3.5-omni-plus-realtime` × process-exclusion/default-speaker、virtual-driver/USB、echo-cancel/default-speaker；前两格为第一波，AEC 格为第二波。每格 180 秒/2,880,000 个 16 kHz 样本，总计 540 秒/8,640,000 样本，辅助外部音频必须为零。专项有自己的三份 lease、text-only preflight grant/reservation/consumption claim、预算账本、manifest 和 verification receipt，绝不复用八格 release matrix 的任何授权或结果。
+1. **Plus 事故专项。** 使用 `scripts/testing/run-watch-mode-incident-plus.mjs` 生成独立的 signed execution authority，产物位于 `artifacts/testing/watch-mode-incident-plus/<execution-id>/`。入口必须先以本次 coordinator 公钥 ID 重建 Desktop/Bridge/driver runtime，再签发 text-only preflight grant；否则当前 Desktop 会拒绝未编入自身的 grant。远端单格仅能由 `scripts/testing/run-watch-mode-incident-plus-cell.mjs` 经受哈希约束的 `incident-plus-cell` Interactive Session 启动。固定三格为 `qwen3.5-omni-plus-realtime` × process-exclusion/default-speaker、virtual-driver/USB、echo-cancel/default-speaker；前两格为第一波，AEC 格为第二波。每格 180 秒/2,880,000 个 16 kHz 样本，总计 540 秒/8,640,000 样本，辅助外部音频必须为零。专项有自己的三份 lease、text-only preflight grant/reservation/consumption claim、预算账本、manifest 和 verification receipt，绝不复用四格 release matrix 的任何授权或结果。
 
    `--dispatch` 是唯一会发起 Plus Provider 调用的显式开关；它要求 `--workers-config` 指向两台已钉住 SSH host key 的 VM、`--local-isolation-authority` 指向当前 clean commit 的 zero-provider authority。没有该开关时，脚本只执行当前 runtime 重建并签发准备包，绝不调用 Provider。执行中任一 first-wave 单元失败会取消同波剩余任务并禁止进入 AEC 第二波；三个结果仅在同一 coordinator 进程保留的私钥下写成 Plus manifest/verification receipt。
-2. **固定八格严格发布矩阵。** 仅当 Plus 三格均通过后，才启动 `npm run test:watch-mode-live:production-coordinator` 的原有两模型八格计划。不得把 Plus 加入、替换或缩减 `LIVE_LLM_CELLS`、`SHARD_MATRIX_CELL_COUNT = 8` 或严格 verifier。
+2. **固定四格严格发布矩阵。** Plus 三格只属于显式 incident 诊断；正式 `npm run test:watch-mode-live:production-coordinator` 只运行 LiveTranslate 的三路线 pairwise 与一个 process-exclusion stability 格。不得把 Plus 或 Omni Flash 加入、替换或缩减 `LIVE_LLM_CELLS`、`SHARD_MATRIX_CELL_COUNT = 4` 或严格 verifier。
 
 两阶段前均需从最终 clean commit 重建并重做本地 authority：AEC3 MSVC、WebRTC fixture/release 绑定、Desktop/Bridge/必要 driver/probe runtime、local-isolation authority，以及两台 VM 的 zero-provider readiness（设备 profile、进程排除/虚拟驱动能力、Bridge source、Interactive Session、凭据可见性）。旧 `E:\omni-paid-execution-f2541ac` 仅作为失败历史，不可覆盖、删除或混入新 execution。
 
 Plus 专项每格除既有报告层和 canonical source 严格内容校验外，还必须满足：非空 final 不出现上述三种历史文本原因；正常 stream 不出现 `native-playback-queue-expired`、`native-playback-queue-overflow` 或 `native-playback-stream-stale-dropped`；AEC 格须具有完整 AEC 诊断且没有异常 reset/underrun 或整段字幕/译文被吞掉。真正陈旧的独立 Play 可以拒绝，但报告必须包含 cue ID、预测开始时间和明确原因。
 
-任一零费用门禁失败时停止进入 Provider 阶段，沿 `ASR final → manual gate → cue lifecycle → response.create → subtitle/translation` 或 `audio delta → stream batch → playback queue → Bridge receipt → Watch report` 调用链复现并补最小回归。任一付费格失败时停止该 execution 的后续 dispatch，保留计划、lease、日志、trace、预算和 VM 诊断；修复后从新的 clean commit、新 execution ID、新本地 authority/readiness/preflight 开始，完整重跑受影响的专项三格或严格八格，不能拼接旧结果。
+任一零费用门禁失败时停止进入 Provider 阶段，沿 `ASR final → manual gate → cue lifecycle → response.create → subtitle/translation` 或 `audio delta → stream batch → playback queue → Bridge receipt → Watch report` 调用链复现并补最小回归。任一付费格失败时停止该 execution 的后续 dispatch，保留计划、lease、日志、trace、预算和 VM 诊断；修复后从新的 clean commit、新 execution ID、新本地 authority/readiness/preflight 开始，完整重跑受影响的专项三格或严格四格，不能拼接旧结果。
 
 `incident-plus-20260816-c7c2503-closeout-e` 是失败证据而非通过证据：第一波 virtual-driver/USB 在 Provider 返回 `<50002> InternalError.Algo.ModelServingError` 并关闭 socket 后严格拒绝重连，只发送约 12.8 秒输入；同波 process-exclusion 虽完成 180 秒输入和 8 个可见 cue，却在前一个长译音仍播放时把新的 stream `Start` 记录为 `native-playback-stream-stale-dropped`。反查后，stream 起点只按自身创建年龄执行五秒实时准入，不能用前序当前流的预计播放结束时间把新流判旧；独立 `Play` 仍按预计开始时间过期，队列容量仍受界。Provider delta 必须拆成最多一秒的 stream 命令，不能用 `take()` 把 1.28 秒或更大的瞬时缓冲当成“一秒批次”。对应零费用回归同时覆盖当前 Start 在长前序流后仍入队、真正旧 Start 仍拒绝、超大 delta 精确分批和 stale 诊断四个字段。
 
@@ -380,7 +389,7 @@ npm run test:watch-mode-evidence:strict
 npm run quality:gate:release
 ```
 
-收尾 manifest 必须同时引用当前 commit 的 local-isolation manifest、worker readiness、Provider preflight receipt、Plus incident manifest/receipt、八格 shard manifest/strict verification receipt、运行时二进制哈希和两套预算账本。
+收尾 manifest 必须同时引用当前 commit 的 local-isolation manifest、worker readiness、Provider preflight receipt、Plus incident manifest/receipt、四格 shard manifest/strict verification receipt、运行时二进制哈希和两套预算账本。
 
 ### 2026-08-16 首轮失败证据如何重放
 
@@ -412,10 +421,10 @@ npm run quality:gate:release
 - 报告归因优先级：认证、限流、配额这类硬 provider 错误仍归 `provider`；单次 timeout、网络抖动等 transient provider 错误不能盖过 `physicalOutputContent` 失败。若物理输出录音为 0 帧或内容不一致，应先修真实输出链路。
 - live 报告必须同时检查启动前 `physical-output-probe.json` 和看片期间 `physical-output-content.json`。前者只能证明 bridge 可以向设备写 tone，不能证明 watch route 实际把原声/译音写到了用户耳机。
 
-## 2026-06-05 120 秒尾窗与音质约束
+## 2026-06-05 历史 120 秒尾窗与当前终态约束
 
-- 历史 live 样例曾使用 30 秒播放窗口和 120 秒尾窗；当前严格门槛改为默认播放完整原创 WAV 素材，并保留 120 秒尾窗。测试必须能捕捉“媒体结束后仍持续复述/翻译”的错误，不能只在短尾窗内提前通过。
-- `physical-output-recording.wav` 继续覆盖完整播放窗口和 120 秒尾窗；`physical-output-recording-source-window-16k-mono.pcm` 只截取播放窗口加 8 秒，用于验证原声可识别，避免超长录音提交给 realtime STT 后无响应。
+- 历史 live 样例曾使用 30 秒播放窗口和固定 120 秒尾窗。当前严格门槛播放完整原创 WAV，并要求上文 10 个独立 raw stages 的身份绑定、单调顺序和 exactly-once/zero-write/last-cue-ACK 不变量；不再用 `providerShutdownConfirmed` 聚合项替代原始 Provider 阶段。没有 terminal evidence 就失败，不能靠缩短尾窗提前通过。
+- `physical-output-recording.wav` 覆盖完整播放并在 desktop terminal/report marker 后保留 2 秒 tail 主动停止，另有独立 hard cap；`physical-output-recording-source-window-16k-mono.pcm` 仍只用于原声 authority，不把超长录音交给远程 STT。
 - 报告新增 `app.subtitleQueue`：记录 cue 开始、final/forced 翻译写入、segment TTS 排队和播放时间，精确到秒；`cueOrderInversions > 0` 或明显重复 final 翻译应判为失败。
 - 实时会话页的“字幕队列”必须显示每条 cue 的开始/结束时间，便于人工截图和自动报告互相对应。
 - `physicalOutputContent.audioQuality` 必须记录 RMS、peak、crestFactor、clippingRatio、zeroCrossingRate 和 nonSilentRatio。削波属于 `physicalOutputContent` 失败；高 zero-crossing 先作为 `noiseRisk` 证据记录，后续结合听感样本再调成硬失败。
@@ -437,7 +446,7 @@ npm run quality:gate:release
 - 二次翻译路线允许较短的 forced 分句先显示临时译文：`MIN_FORCE_CHARS=28`、`MIN_FORCE_WORDS=6`、`MIN_FORCE_GROWTH_CHARS=18`。forced 片段只用于字幕低延迟预览；副翻译语音仍只播放 `pending=false` 的最终 segment。
 - 字幕写入层必须去重较长最终译文。`Final` 和 `Replacement` 写入成功后记录 normalized translation key，后续 ASR revision 或 slot 重排再次返回同一较长译文时跳过；短感叹句不作为去重 key，避免误伤合法重复。
 - live 报告的 app 层门槛保持：secondary 路线首个可见翻译应不超过 8 秒，首个最终翻译应不超过 15 秒，`duplicateFinalTranslations` 必须为 0。
-- 历史通过样例：`artifacts/testing/watch-mode-live/20260605-103543/`，`verdict=passed`，`translationRoute=secondary`，`firstVisibleTranslationLatencySeconds=7`，`firstFinalTranslationLatencySeconds=7`，`duplicateFinalTranslations=0`，`queuedSegmentCount=10`，`playedSegmentCount=10`。该样例不包含当前双模型 strictContent 门槛。
+- 历史通过样例：`artifacts/testing/watch-mode-live/20260605-103543/`，`verdict=passed`，`translationRoute=secondary`，`firstVisibleTranslationLatencySeconds=7`，`firstFinalTranslationLatencySeconds=7`，`duplicateFinalTranslations=0`，`queuedSegmentCount=10`，`playedSegmentCount=10`。该样例不包含当前 LiveTranslate-only release authority 与 strictContent 门槛。
 - 同一次历史样例的物理输出内容通过：`physicalOutputContent.contentConsistency.coverage=0.938`，`lengthRatio=1.016`，`audioQuality.noiseRisk=false`，`clippingRatio=0`，`discontinuityRate=0.000055`。这证明当时的 30 秒源音频加 120 秒尾窗没有复述成超长输出，且录到的 iBasso 物理输出没有削波或明显断裂。
 
 ## 2026-06-05 原声音质相似度约束

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { parseLooseArgs } from '../lib/testing-common.mjs';
@@ -32,15 +33,15 @@ import {
 import {
   BALANCED_RELEASE_PLAN,
   LIVE_LLM_CELLS,
+  PROCESS_EXCLUSION_RESTART_AFTER_SECONDS,
+  PROCESS_EXCLUSION_RESTART_QUIET_SECONDS,
   RELEASE_DEVICE_CLASSES,
   RELEASE_MODELS,
   balancedReleasePlanFailure,
 } from './watch-mode-balanced-release-plan.mjs';
 import {
-  EXTERNAL_PROVIDER_INPUT_SAMPLE_RATE_HZ,
   MATRIX_EXTERNAL_PROVIDER_BUDGET_FILE,
-  STRICT_PAID_CELL_CEILING_SECONDS,
-  STRICT_PAID_MATRIX_CEILING_SECONDS,
+  STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
   STRICT_PAID_MODEL_PROTOCOLS,
   STRICT_PAID_PROVIDER_IDENTITY,
   assertCellExternalProviderBudget,
@@ -54,6 +55,7 @@ import {
   SHARD_MANIFEST_FILE,
   SHARD_MATRIX_CELL_COUNT,
   SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
+  authorityInventoryDigest,
   currentShardOrchestrationImplementationHashes,
   sameAuthorityInventory as sameShardAuthorityInventory,
   sha256Canonical,
@@ -96,6 +98,309 @@ import {
 
 export const STRICT_MATRIX_VERIFICATION_ARTIFACT_KIND = 'watch-mode-strict-matrix-verification';
 
+const strictPaidCellTimingProjection = (cell) => ({
+  inputCompletionWatchdogSeconds: cell.inputCompletionWatchdogSeconds,
+  processExclusionRestartAfterSeconds: cell.processExclusionRestartAfterSeconds,
+  processExclusionRestartQuietSeconds: cell.processExclusionRestartQuietSeconds,
+  providerFinishTimeoutSeconds: cell.providerFinishTimeoutSeconds,
+  localPlaybackDrainTimeoutSeconds: cell.localPlaybackDrainTimeoutSeconds,
+  reportWriteTimeoutSeconds: cell.reportWriteTimeoutSeconds,
+  cellHardWatchdogSeconds: cell.cellHardWatchdogSeconds,
+  authoritativeTransformedReferenceFrames: cell.authoritativeTransformedReferenceFrames,
+  boundedCaptureGraceFrames: cell.boundedCaptureGraceFrames,
+  maxExternalAudioSamples: cell.maxExternalAudioSamples,
+  auxiliaryExternalAudioSeconds: cell.auxiliaryExternalAudioSeconds,
+  subtitleTranslationMode: cell.subtitleTranslationMode,
+});
+
+const EVIDENCE_DRIVEN_REQUIRED_TERMINAL_STAGES = Object.freeze([
+  'mediaPlaybackCompleted',
+  'inputCompleteSignaled',
+  'inputCompleteObserved',
+  'lastProviderAppend',
+  'sessionFinishSent',
+  'sessionFinishedReceived',
+  'localPlaybackQuiescent',
+  'finalRendererAck',
+  'reportWritten',
+]);
+const EVIDENCE_DRIVEN_RESPONSE_TERMINAL_STAGES = Object.freeze([
+  'lastResponseAudioDone',
+  'responseDone',
+]);
+
+const runtimeBundleDigest = (entries) => (
+  Array.isArray(entries) && entries.length === 0
+    ? sha256Canonical([])
+    : authorityInventoryDigest(entries)
+);
+
+export function validateEvidenceDrivenTerminal(runDirectory, plannedCell, expectedIdentity) {
+  const readAuthoritySnapshot = (name) => {
+    const filePath = path.join(path.resolve(runDirectory), name);
+    const stats = fs.lstatSync(filePath);
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.size <= 0) {
+      throw new Error(`${name} must be a non-empty regular non-symlink file`);
+    }
+    const bytes = fs.readFileSync(filePath);
+    return {
+      bytes,
+      json: JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/u, '')),
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    };
+  };
+  const marker = readAuthoritySnapshot('input-complete.json').json;
+  const terminal = readAuthoritySnapshot('evidence-driven-terminal.json').json;
+  const identity = {
+    runMarker: expectedIdentity.runMarker,
+    cellId: plannedCell.cellId,
+    leaseId: expectedIdentity.leaseId,
+  };
+  if (marker.schemaVersion !== 1 || marker.artifactKind !== 'watch-mode-input-complete') {
+    throw new Error('input-complete authority schema/kind mismatch');
+  }
+  if (terminal.schemaVersion !== 2
+    || terminal.artifactKind !== 'watch-mode-evidence-driven-terminal'
+    || terminal.status !== 'completed') {
+    throw new Error('evidence-driven terminal schema/kind/status mismatch');
+  }
+  for (const [key, value] of Object.entries(identity)) {
+    if (marker[key] !== value || terminal[key] !== value) {
+      throw new Error(`evidence-driven terminal ${key} identity mismatch`);
+    }
+  }
+  const expectedSourceHeadCommit = String(expectedIdentity.sourceHeadCommit ?? '');
+  const expectedRuntimeBundleDigest = String(expectedIdentity.runtimeBundleDigest ?? '');
+  const expectedLaunchId = String(expectedIdentity.launchId ?? '');
+  const expectedProducerProcessId = Number(expectedIdentity.producerProcessId);
+  const expectedProducerStartTimeUtcTicks = String(expectedIdentity.producerStartTimeUtcTicks ?? '');
+  const expectedProducerExecutableSha256 = String(expectedIdentity.producerExecutableSha256 ?? '');
+  const expectedProducerStartedAtUnixMs = /^\d{18}$/u.test(expectedProducerStartTimeUtcTicks)
+    ? Number((BigInt(expectedProducerStartTimeUtcTicks) - 621_355_968_000_000_000n) / 10_000n)
+    : Number.NaN;
+  if (!/^[a-f0-9]{40}$/u.test(expectedSourceHeadCommit)
+    || !/^[a-f0-9]{64}$/u.test(expectedRuntimeBundleDigest)
+    || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(expectedLaunchId)
+    || !Number.isSafeInteger(expectedProducerProcessId)
+    || expectedProducerProcessId <= 0
+    || !/^\d{18}$/u.test(expectedProducerStartTimeUtcTicks)
+    || BigInt(expectedProducerStartTimeUtcTicks) <= 621_355_968_000_000_000n
+    || !/^[a-f0-9]{64}$/u.test(expectedProducerExecutableSha256)
+    || terminal.sourceHeadCommit !== expectedSourceHeadCommit
+    || terminal.runtimeBundleDigest !== expectedRuntimeBundleDigest
+    || terminal.launchId !== expectedLaunchId
+    || Number(terminal.producerProcessId) !== expectedProducerProcessId
+    || String(terminal.producerStartTimeUtcTicks ?? '') !== expectedProducerStartTimeUtcTicks
+    || terminal.producerExecutableSha256 !== expectedProducerExecutableSha256
+    || !Number.isSafeInteger(Number(terminal.producerStartedAtUnixMs))
+    || Number(terminal.producerStartedAtUnixMs) <= 0
+    || Number(terminal.producerStartedAtUnixMs) !== expectedProducerStartedAtUnixMs
+    || Number(terminal.startedAtUnixMs) < expectedProducerStartedAtUnixMs) {
+    throw new Error('evidence-driven terminal producer/process/source/runtime identity mismatch');
+  }
+  if (
+    Number(marker.authoritativeTransformedReferenceFrames)
+      !== Number(plannedCell.authoritativeTransformedReferenceFrames)
+    || Number(marker.boundedCaptureGraceFrames) !== Number(plannedCell.boundedCaptureGraceFrames)
+    || Number(marker.maxExternalAudioSamples) !== Number(plannedCell.maxExternalAudioSamples)
+    || Number(marker.authoritativeTransformedReferenceFrames)
+      + Number(marker.boundedCaptureGraceFrames) !== Number(marker.maxExternalAudioSamples)
+  ) throw new Error('input-complete sample authority does not match the mode-derived release cell');
+  const events = Array.isArray(terminal.events) ? terminal.events : [];
+  if (events.length !== EVIDENCE_DRIVEN_REQUIRED_TERMINAL_STAGES.length + 1) {
+    throw new Error('evidence-driven terminal event inventory is incomplete');
+  }
+  const mediaPlaybackCompletedAt = Number(marker.mediaPlaybackCompletedAtUnixMs);
+  const inputCompleteSignaledAt = Number(marker.signaledAtUnixMs);
+  const markerCompletedAt = Number(marker.completedAtUnixMs);
+  if (!Number.isSafeInteger(mediaPlaybackCompletedAt) || mediaPlaybackCompletedAt <= 0
+    || !Number.isSafeInteger(inputCompleteSignaledAt)
+    || inputCompleteSignaledAt < mediaPlaybackCompletedAt
+    || !Number.isSafeInteger(markerCompletedAt)
+    || markerCompletedAt < inputCompleteSignaledAt) {
+    throw new Error('input-complete media/signal/completion timestamps are invalid');
+  }
+  let previousAt = Number(terminal.startedAtUnixMs);
+  const completedAt = Number(terminal.completedAtUnixMs);
+  if (!Number.isSafeInteger(previousAt) || previousAt <= 0
+    || !Number.isSafeInteger(completedAt) || completedAt < previousAt) {
+    throw new Error('evidence-driven terminal startedAtUnixMs/completedAtUnixMs boundary is invalid');
+  }
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    const observedAt = Number(event?.observedAtUnixMs);
+    if (Number(event?.sequence) !== index + 1
+      || !Number.isSafeInteger(observedAt)
+      || observedAt < previousAt
+      || observedAt > completedAt) {
+      throw new Error(`evidence-driven terminal event ${index + 1} is missing or non-monotonic`);
+    }
+    previousAt = observedAt;
+  }
+  const eventsByStage = new Map();
+  for (const event of events) {
+    if (!event?.stage || eventsByStage.has(event.stage)) {
+      throw new Error('evidence-driven terminal contains a missing or duplicate raw stage');
+    }
+    eventsByStage.set(event.stage, event);
+  }
+  for (const stage of EVIDENCE_DRIVEN_REQUIRED_TERMINAL_STAGES) {
+    if (!eventsByStage.has(stage)) {
+      throw new Error(`evidence-driven terminal is missing raw stage ${stage}`);
+    }
+  }
+  const responseStages = EVIDENCE_DRIVEN_RESPONSE_TERMINAL_STAGES
+    .filter((stage) => eventsByStage.has(stage));
+  if (responseStages.length !== 1) {
+    throw new Error('evidence-driven terminal requires exactly one last response audio/done raw stage');
+  }
+  const permittedStages = new Set([
+    ...EVIDENCE_DRIVEN_REQUIRED_TERMINAL_STAGES,
+    ...EVIDENCE_DRIVEN_RESPONSE_TERMINAL_STAGES,
+  ]);
+  if (events.some((event) => !permittedStages.has(event.stage))) {
+    throw new Error('evidence-driven terminal contains a non-authoritative aggregate/unknown stage');
+  }
+
+  const mediaEvent = eventsByStage.get('mediaPlaybackCompleted');
+  const signalEvent = eventsByStage.get('inputCompleteSignaled');
+  const observedEvent = eventsByStage.get('inputCompleteObserved');
+  const inputClosedSourceSequence = Number(observedEvent.detail?.sourceSequence);
+  if (Number(mediaEvent.observedAtUnixMs) !== mediaPlaybackCompletedAt
+    || Number(signalEvent.observedAtUnixMs) !== inputCompleteSignaledAt
+    || Number(observedEvent.observedAtUnixMs) < inputCompleteSignaledAt
+    || Number(observedEvent.detail?.markerSignaledAtUnixMs) !== inputCompleteSignaledAt
+    || observedEvent.detail?.acceptedExactlyOnce !== true
+    || observedEvent.detail?.captureProducerFenced !== true
+    || observedEvent.detail?.providerInputSenderReleased !== true
+    || !Number.isSafeInteger(inputClosedSourceSequence)
+    || inputClosedSourceSequence <= 0) {
+    throw new Error('input-complete signal/desktop observation raw authorities do not bind the immutable marker');
+  }
+
+  const appendEvent = eventsByStage.get('lastProviderAppend');
+  const finishEvent = eventsByStage.get('sessionFinishSent');
+  const responseEvent = eventsByStage.get(responseStages[0]);
+  const finishedEvent = eventsByStage.get('sessionFinishedReceived');
+  const append = appendEvent.detail ?? {};
+  const finish = finishEvent.detail ?? {};
+  const response = responseEvent.detail ?? {};
+  const finished = finishedEvent.detail ?? {};
+  const appendSourceSequence = Number(append.sourceSequence);
+  const finishSourceSequence = Number(finish.sourceSequence);
+  const responseSourceSequence = Number(response.sourceSequence);
+  const finishedSourceSequence = Number(finished.sourceSequence);
+  if (!Number.isSafeInteger(appendSourceSequence) || appendSourceSequence <= 0
+    || !Number.isSafeInteger(Number(append.appendIndex)) || Number(append.appendIndex) <= 0
+    || !Number.isSafeInteger(Number(append.samples)) || Number(append.samples) <= 0
+    || !Number.isSafeInteger(Number(append.acceptedSamplesTotal))
+    || Number(append.acceptedSamplesTotal) < Number(append.samples)
+    || Number(append.acceptedSamplesTotal) > Number(marker.maxExternalAudioSamples)
+    || !Number.isSafeInteger(finishSourceSequence)
+    || finishSourceSequence <= appendSourceSequence
+    || Number(finish.lastProviderAppendSourceSequence) !== appendSourceSequence
+    || Number(finish.providerInputClosedSourceSequence) !== inputClosedSourceSequence
+    || finishSourceSequence <= inputClosedSourceSequence
+    || Number(finish.finishCount) !== 1
+    || Number(finish.providerWritesAfterFinish) !== 0
+    || Number(finishEvent.observedAtUnixMs) < Number(appendEvent.observedAtUnixMs)) {
+    throw new Error('session.finish is not exactly-once and strictly ordered after the last legal Provider append');
+  }
+  if (!Number.isSafeInteger(responseSourceSequence)
+    || responseSourceSequence <= 0
+    || typeof response.responseId !== 'string'
+    || !response.responseId.trim()
+    || !Number.isSafeInteger(finishedSourceSequence)
+    || finishedSourceSequence <= responseSourceSequence
+    || Number(finished.finishCount) !== 1
+    || Number(finished.providerWritesAfterFinish) !== 0
+    || Number(finishedEvent.observedAtUnixMs) < Number(finishEvent.observedAtUnixMs)
+    || Number(finishedEvent.observedAtUnixMs) - Number(finishEvent.observedAtUnixMs) > 15_000) {
+    throw new Error('Provider terminal authority is missing a pre-session.finished response completion, session.finished, or exceeds the 15s finish phase');
+  }
+
+  const ackEvent = eventsByStage.get('finalRendererAck');
+  const ack = ackEvent.detail ?? {};
+  if (!Number.isSafeInteger(Number(ack.sourceSequence)) || Number(ack.sourceSequence) <= 0
+    || typeof ack.cueId !== 'string' || !ack.cueId.trim()
+    || typeof ack.responseId !== 'string' || ack.responseId !== response.responseId
+    || !Number.isSafeInteger(Number(ack.cueSequence)) || Number(ack.cueSequence) <= 0
+    || Number(ack.cueSequence) !== Number(ack.lastCueSequence)
+    || ack.coversLastCue !== true
+    || typeof ack.receiptAuthority !== 'string' || !ack.receiptAuthority.trim()
+    || typeof ack.receiptId !== 'string' || !ack.receiptId.trim()) {
+    throw new Error('final renderer ACK identity does not cover the last cue/Provider response lineage');
+  }
+
+  const drainEvent = eventsByStage.get('localPlaybackQuiescent');
+  const drainDetail = drainEvent?.detail;
+  const stableForMs = Number(drainDetail?.stableForMs);
+  const drainBudgetMs = Number(drainDetail?.drainBudgetMs);
+  if (!Number.isSafeInteger(stableForMs) || stableForMs < 500 || stableForMs > 1_000
+    || !Number.isSafeInteger(drainBudgetMs) || drainBudgetMs <= 0 || drainBudgetMs > 30_000
+    || drainDetail?.speakerPlaybackActive !== false
+    || typeof drainDetail?.usedFallbackCap !== 'boolean') {
+    throw new Error('local playback drain is missing its bounded frame/rate authority');
+  }
+  if (drainDetail.usedFallbackCap) {
+    if (drainBudgetMs < 15_000
+      || drainDetail.initialPendingAudioFrames != null
+      || drainDetail.outputSampleRateHz != null) {
+      throw new Error('local playback drain fallback authority is not fail-closed within 15-30 seconds');
+    }
+  } else {
+    const pendingFrames = Number(drainDetail.initialPendingAudioFrames);
+    const outputRateHz = Number(drainDetail.outputSampleRateHz);
+    if (!Number.isSafeInteger(pendingFrames) || pendingFrames < 0
+      || !Number.isSafeInteger(outputRateHz) || outputRateHz <= 0) {
+      throw new Error('local playback drain frame/rate authority is invalid');
+    }
+    const derivedBudgetMs = Math.min(
+      Math.ceil((pendingFrames * 1_000) / outputRateHz) + 2_000 + stableForMs,
+      30_000,
+    );
+    if (drainBudgetMs !== derivedBudgetMs) {
+      throw new Error('local playback drain budget does not match pending frames/output rate');
+    }
+  }
+  if (Number(drainEvent.observedAtUnixMs) < Number(finishedEvent.observedAtUnixMs)
+    || Number(drainEvent.observedAtUnixMs) < Number(ackEvent.observedAtUnixMs)) {
+    throw new Error('local playback quiescence was claimed before Provider/renderer terminal evidence');
+  }
+  const reportEvent = eventsByStage.get('reportWritten');
+  if (events.at(-1) !== reportEvent
+    || Number(reportEvent.observedAtUnixMs) < Number(drainEvent.observedAtUnixMs)
+    || Number(terminal.completedAtUnixMs) < Number(reportEvent.observedAtUnixMs)) {
+    throw new Error('reportWritten must be the final monotonic terminal stage');
+  }
+  const reportDetail = reportEvent.detail ?? {};
+  if (reportDetail.reportPath !== 'watch-session-report.json') {
+    throw new Error('reportWritten reportPath must be the canonical Watch session report path');
+  }
+  const reportPath = path.join(path.resolve(runDirectory), reportDetail.reportPath);
+  const reportStats = fs.lstatSync(reportPath);
+  if (!reportStats.isFile() || reportStats.isSymbolicLink() || reportStats.size <= 0) {
+    throw new Error('reportWritten must bind a non-empty regular non-symlink report');
+  }
+  const reportSnapshot = readAuthoritySnapshot(reportDetail.reportPath);
+  const reportAuthority = {
+    path: reportDetail.reportPath,
+    bytes: reportSnapshot.bytes.length,
+    sha256: reportSnapshot.sha256,
+  };
+  if (!Number.isSafeInteger(Number(reportDetail.byteLength))
+    || Number(reportDetail.byteLength) !== reportAuthority.bytes
+    || !/^[a-f0-9]{64}$/u.test(String(reportDetail.sha256 ?? ''))
+    || reportDetail.sha256 !== reportAuthority.sha256) {
+    throw new Error('reportWritten byte length/hash does not match the immutable report bytes');
+  }
+  const report = reportSnapshot.json;
+  if (report.status !== 'completed') {
+    throw new Error('reportWritten immutable report is not completed');
+  }
+  return { marker, terminal, reportAuthority };
+}
+
 export function strictMatrixVerificationReceiptPath(manifestPath) {
   return `${path.resolve(manifestPath)}.verified.json`;
 }
@@ -136,7 +441,7 @@ export function writeStrictMatrixVerificationReceipt({
       cellId: cell.cellId,
       tier: cell.tier,
       providerMode: cell.providerMode,
-      durationSeconds: cell.durationSeconds,
+      ...strictPaidCellTimingProjection(cell),
       modelId: cell.modelId,
       feedbackLoopPrevention: cell.feedbackLoopPrevention,
       deviceClass: cell.deviceClass,
@@ -223,7 +528,7 @@ export function validateStrictMatrixVerificationReceipt({
     cellId: cell.cellId,
     tier: cell.tier,
     providerMode: cell.providerMode,
-    durationSeconds: cell.durationSeconds,
+    ...strictPaidCellTimingProjection(cell),
     modelId: cell.modelId,
     feedbackLoopPrevention: cell.feedbackLoopPrevention,
     deviceClass: cell.deviceClass,
@@ -265,7 +570,6 @@ export const PROCESS_EXCLUSION_REQUIRED_LAYERS = REQUIRED_LAYERS.filter(
 const DEFAULT_ROOT = 'artifacts/testing/watch-mode-live';
 const DEFAULT_STRICT_MODELS = RELEASE_MODELS;
 export const DEFAULT_STRICT_DEVICE_CLASSES = RELEASE_DEVICE_CLASSES;
-export const MIN_STRICT_SESSION_DURATION_MS = 180_000;
 const EXCLUDED_DIRECTORY_PATTERNS = [
   /^cache$/i,
   /^physical-output-smoke-/i,
@@ -349,7 +653,7 @@ function assertCellIdentity(receiptCell, manifestCell, report, index) {
     cellId: manifestCell.cellId,
     tier: manifestCell.tier,
     providerMode: manifestCell.providerMode,
-    durationSeconds: manifestCell.durationSeconds,
+    ...strictPaidCellTimingProjection(manifestCell),
     modelId: manifestCell.modelId,
     feedbackLoopPrevention: manifestCell.feedbackLoopPrevention,
     deviceClass: manifestCell.deviceClass,
@@ -495,7 +799,7 @@ function assertRawMediaAuthority(runDirectory, implementationHashes, cell, index
 function assertSystemMetricsAuthority(
   runDirectory,
   index,
-  minimumDurationMs = MIN_STRICT_SESSION_DURATION_MS,
+  terminalAuthority,
 ) {
   const steps = readWatchModeRunCollection(runDirectory).collection.steps;
   const desktopStep = Array.isArray(steps)
@@ -516,6 +820,13 @@ function assertSystemMetricsAuthority(
   const samples = Array.isArray(metrics.samples) ? metrics.samples : [];
   const startedAtMs = Date.parse(metrics.startedAt ?? '');
   const finishedAtMs = Date.parse(metrics.finishedAt ?? '');
+  const mediaPlaybackCompletedAtMs = Number(
+    terminalAuthority?.marker?.mediaPlaybackCompletedAtUnixMs,
+  );
+  const reportWrittenAtMs = Number(
+    terminalAuthority?.terminal?.events?.find((event) => event?.stage === 'reportWritten')
+      ?.observedAtUnixMs,
+  );
   if (
     metrics.artifactKind !== 'watch-mode-system-metrics'
     || metrics.collector !== 'scripts/testing/collect-watch-mode-system-metrics.ps1'
@@ -528,9 +839,16 @@ function assertSystemMetricsAuthority(
     || metrics.collectionErrors.length !== 0
     || !Number.isFinite(startedAtMs)
     || !Number.isFinite(finishedAtMs)
-    || finishedAtMs - startedAtMs < minimumDurationMs - 15_000
+    || !Number.isSafeInteger(mediaPlaybackCompletedAtMs)
+    || !Number.isSafeInteger(reportWrittenAtMs)
+    || startedAtMs > mediaPlaybackCompletedAtMs
+    || finishedAtMs < reportWrittenAtMs
   ) {
-    throw new Error(`strict matrix cell ${index} system metrics do not prove the complete production Desktop process-tree lifetime`);
+    throw new Error(
+      `strict matrix cell ${index} system metrics do not prove the complete production Desktop process-tree lifetime `
+      + `(started=${startedAtMs} mediaCompleted=${mediaPlaybackCompletedAtMs} `
+      + `finished=${finishedAtMs} reportWritten=${reportWrittenAtMs} samples=${samples.length})`,
+    );
   }
 
   let previousElapsedMs = -1;
@@ -571,8 +889,10 @@ function assertSystemMetricsAuthority(
     previousElapsedMs = elapsedMs;
     previousTimestampMs = timestampMs;
   }
-  if (previousElapsedMs < minimumDurationMs - 15_000) {
-    throw new Error(`strict matrix cell ${index} system metrics samples do not span the required live window`);
+  const firstSampleAtMs = Date.parse(samples[0]?.timestamp ?? '');
+  if (firstSampleAtMs > mediaPlaybackCompletedAtMs + 15_000
+    || previousTimestampMs < reportWrittenAtMs - 15_000) {
+    throw new Error(`strict matrix cell ${index} system metrics samples do not cover media completion through terminal report authority`);
   }
 }
 
@@ -754,7 +1074,7 @@ function assertCanonicalVerificationBinding({
     cellId: cell.cellId,
     tier: cell.tier,
     providerMode: cell.providerMode,
-    durationSeconds: cell.durationSeconds,
+    ...strictPaidCellTimingProjection(cell),
     modelId: cell.modelId,
     feedbackLoopPrevention: cell.feedbackLoopPrevention,
     deviceClass: cell.deviceClass,
@@ -805,29 +1125,31 @@ function assertStrictMatrixExternalProviderBudget({
     'strict matrix external provider budget manifest projection',
   );
 
-  const expectedReservedSeconds = releaseCells.reduce(
-    (total, cell) => total + Number(cell.durationSeconds),
+  const expectedReservedInputSamples = releaseCells.reduce(
+    (total, cell) => total + Number(cell.maxExternalAudioSamples),
     0,
   );
-  const matrixSampleCap = STRICT_PAID_MATRIX_CEILING_SECONDS
-    * EXTERNAL_PROVIDER_INPUT_SAMPLE_RATE_HZ;
+  const expectedCellMaxInputSamples = Math.max(
+    ...releaseCells.map((cell) => Number(cell.maxExternalAudioSamples)),
+  );
   if (
     recorded.passed !== true
-    || Number(recorded.matrixCeilingSeconds) !== STRICT_PAID_MATRIX_CEILING_SECONDS
-    || Number(recorded.cellCeilingSeconds) !== STRICT_PAID_CELL_CEILING_SECONDS
+    || Number(recorded.matrixInputSampleCeiling) !== expectedReservedInputSamples
+    || Number(recorded.cellMaxInputSamples) !== expectedCellMaxInputSamples
     || Number(recorded.cellCount) !== releaseCells.length
-    || Number(recorded.reservedSessionSeconds) !== expectedReservedSeconds
-    || expectedReservedSeconds > STRICT_PAID_MATRIX_CEILING_SECONDS
+    || Number(recorded.reservedInputSamples) !== expectedReservedInputSamples
+    || expectedReservedInputSamples > STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES
     || !Number.isInteger(Number(recorded.actualProviderInputSamples))
     || Number(recorded.actualProviderInputSamples) <= 0
-    || Number(recorded.actualProviderInputSamples) > matrixSampleCap
+    || Number(recorded.actualProviderInputSamples) > expectedReservedInputSamples
     || Number(recorded.auxiliaryExternalAudioSeconds) !== 0
     || !Array.isArray(recorded.violations)
     || recorded.violations.length !== 0
   ) {
     throw new Error(
       `strict matrix external provider budget must bind ${releaseCells.length} ordered cells, `
-      + `${expectedReservedSeconds}s reserved, and at most ${matrixSampleCap} actual 16 kHz samples`,
+      + `${expectedReservedInputSamples} reserved samples, and at most `
+      + `${expectedReservedInputSamples} actual 16 kHz samples`,
     );
   }
   const expectedCellIds = releaseCells.map((cell) => cell.cellId);
@@ -852,8 +1174,8 @@ export function assertStrictTranslatedPcmLoopbackAuthority({
   cell,
   cellExternalProviderBudget,
   index,
+  evidenceDrivenTerminal = null,
 }) {
-  if (cell.feedbackLoopPrevention === 'echo-cancel') return null;
   const recordingAuthority = readJson(path.join(runDirectory, 'physical-output-recording.json'));
   const rebuilt = buildTranslatedPcmLoopbackAuthority({
     runDirectory,
@@ -864,6 +1186,7 @@ export function assertStrictTranslatedPcmLoopbackAuthority({
     leaseId: cellExternalProviderBudget.providerSendBoundary?.leaseId,
     modelId: cell.modelId,
     protocol: cellExternalProviderBudget.providerSendBoundary?.protocol,
+    feedbackLoopPrevention: cell.feedbackLoopPrevention,
   });
   if (rebuilt.passed !== true) {
     throw new Error(
@@ -883,6 +1206,27 @@ export function assertStrictTranslatedPcmLoopbackAuthority({
     rebuilt,
     `strict matrix cell ${index} physical translated PCM acoustic authority`,
   );
+  if (evidenceDrivenTerminal) {
+    const finalMatch = rebuilt.matches.find(
+      (entry) => entry.cueId === rebuilt.finalRequiredCueId && entry.passed === true,
+    );
+    const finalRendererAck = evidenceDrivenTerminal.terminal.events.find(
+      (event) => event.stage === 'finalRendererAck',
+    )?.detail;
+    const expectedReceiptAuthority = finalMatch?.rendererKind === 'desktop-speaker'
+      ? 'speaker-render-completed'
+      : 'bridge-translation-status-ack';
+    if (!finalMatch
+      || finalRendererAck?.cueId !== finalMatch.cueId
+      || finalRendererAck?.responseId !== finalMatch.responseId
+      || finalRendererAck?.receiptAuthority !== expectedReceiptAuthority
+      || (finalMatch.rendererKind === 'desktop-speaker'
+        && finalRendererAck?.receiptId !== finalMatch.renderAttemptId)) {
+      throw new Error(
+        `strict matrix cell ${index} terminal renderer ACK does not bind the final acoustically passed translated cue`,
+      );
+    }
+  }
   return rebuilt;
 }
 
@@ -2114,7 +2458,10 @@ export function verifyStrictShardMatrixAuthority({
     }
   }
   if (workers.size !== expectedWorkerCount || validatedByCell.size !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error(`strict shard guest manifests do not contain the signed ${expectedWorkerCount} workers and eight unique cells`);
+    throw new Error(
+      `strict shard guest manifests do not contain the signed ${expectedWorkerCount} workers `
+      + `and ${SHARD_MATRIX_CELL_COUNT} unique cells`,
+    );
   }
 
   const shardCellAuthorities = [];
@@ -2349,7 +2696,10 @@ export function verifyStrictMatrixAuthority({
     requiresShardAuthority
     && (!manifest.shardExecution || !manifest.matrixIntegration)
   ) {
-    throw new Error('strict eight-cell paid matrix requires guest shardExecution/matrixIntegration authority');
+    throw new Error(
+      `strict ${SHARD_MATRIX_CELL_COUNT}-cell paid matrix requires `
+      + 'guest shardExecution/matrixIntegration authority',
+    );
   }
   const manifestGeneratedAtMs = Date.parse(manifest.generatedAt ?? '');
   if (!Number.isFinite(manifestGeneratedAtMs)) {
@@ -2390,7 +2740,26 @@ export function verifyStrictMatrixAuthority({
   for (let index = 0; index < manifest.cells.length; index += 1) {
     const cell = manifest.cells[index];
     const plannedCell = releaseCells[index];
-    for (const key of ['cellId', 'tier', 'providerMode', 'durationSeconds', 'modelId', 'feedbackLoopPrevention', 'deviceClass']) {
+    for (const key of [
+      'cellId',
+      'tier',
+      'providerMode',
+      'inputCompletionWatchdogSeconds',
+      'processExclusionRestartAfterSeconds',
+      'processExclusionRestartQuietSeconds',
+      'providerFinishTimeoutSeconds',
+      'localPlaybackDrainTimeoutSeconds',
+      'reportWriteTimeoutSeconds',
+      'cellHardWatchdogSeconds',
+      'authoritativeTransformedReferenceFrames',
+      'boundedCaptureGraceFrames',
+      'maxExternalAudioSamples',
+      'auxiliaryExternalAudioSeconds',
+      'subtitleTranslationMode',
+      'modelId',
+      'feedbackLoopPrevention',
+      'deviceClass',
+    ]) {
       if (cell?.[key] !== plannedCell?.[key]) {
         throw new Error(`strict matrix cell ${index} does not match balanced release plan field ${key}`);
       }
@@ -2477,15 +2846,14 @@ export function verifyStrictMatrixAuthority({
         cellId: plannedCell.cellId,
         modelId: plannedCell.modelId,
         feedbackLoopPrevention: plannedCell.feedbackLoopPrevention,
-        sessionCeilingSeconds: plannedCell.durationSeconds,
+        inputCeilingSamples: plannedCell.maxExternalAudioSamples,
       });
     } catch (error) {
       throw new Error(`strict matrix cell ${index} external provider budget authority failed: ${error.message}`);
     }
     const expectedProtocol = STRICT_PAID_MODEL_PROTOCOLS[plannedCell.modelId];
     const leaseId = cellExternalProviderBudget.providerSendBoundary?.leaseId;
-    const cellSampleCap = Number(plannedCell.durationSeconds)
-      * EXTERNAL_PROVIDER_INPUT_SAMPLE_RATE_HZ;
+    const cellSampleCap = Number(plannedCell.maxExternalAudioSamples);
     if (
       cellExternalProviderBudget.calls?.mainRealtime !== 1
       || cellExternalProviderBudget.providerSendBoundary?.protocol !== expectedProtocol
@@ -2504,41 +2872,55 @@ export function verifyStrictMatrixAuthority({
     if (seenProviderLeaseIds.has(leaseId)) {
       throw new Error(`strict matrix cell ${index} reuses Rust provider leaseId ${leaseId}`);
     }
+    const desktopLaunchStep = readWatchModeRunCollection(runDirectory).collection.steps
+      ?.find((step) => step?.id === 'start-desktop-shell');
+    let evidenceDrivenTerminal;
+    try {
+      evidenceDrivenTerminal = validateEvidenceDrivenTerminal(runDirectory, plannedCell, {
+        runMarker: cellExternalProviderBudget.runMarker,
+        leaseId,
+        sourceHeadCommit: receipt.provenance?.headCommit,
+        runtimeBundleDigest: runtimeBundleDigest(receipt.runtimeBinaryHashes),
+        launchId: desktopLaunchStep?.data?.launchId,
+        producerProcessId: desktopLaunchStep?.data?.pid,
+        producerStartTimeUtcTicks: desktopLaunchStep?.data?.processStartTimeUtcTicks,
+        producerExecutableSha256: desktopLaunchStep?.data?.processExecutableSha256,
+      });
+    } catch (error) {
+      throw new Error(`strict matrix cell ${index} evidence-driven terminal failed: ${error.message}`);
+    }
     seenProviderLeaseIds.add(leaseId);
     cellExternalProviderBudgets.push(cellExternalProviderBudget);
-    if (cell.feedbackLoopPrevention !== 'echo-cancel') {
-      try {
-        const canonicalAuthority = validateRunCanonicalSourceAuthority({
-          runDirectory,
-          workspaceRoot,
-        });
-        assertPhysicalSourceWindowPrefix(runDirectory, canonicalAuthority, index);
-      } catch (error) {
-        throw new Error(
-          `strict matrix cell ${index} canonical source/physical waveform authority failed: `
-          + error.message,
-        );
-      }
-      translatedPcmLoopbackAuthorities.push(assertStrictTranslatedPcmLoopbackAuthority({
+    try {
+      const canonicalAuthority = validateRunCanonicalSourceAuthority({
         runDirectory,
-        cell,
-        cellExternalProviderBudget,
-        index,
-      }));
+        workspaceRoot,
+      });
+      assertPhysicalSourceWindowPrefix(runDirectory, canonicalAuthority, index);
+    } catch (error) {
+      throw new Error(
+        `strict matrix cell ${index} canonical source/physical waveform authority failed: `
+        + error.message,
+      );
     }
+    translatedPcmLoopbackAuthorities.push(assertStrictTranslatedPcmLoopbackAuthority({
+      runDirectory,
+      cell,
+      cellExternalProviderBudget,
+      index,
+      evidenceDrivenTerminal,
+    }));
     cellAuthorityReceipts.push(receipt);
     const rebuiltReport = rebuildReportFromDirectory(runDirectory, {
       mode: 'live',
       provenance: receipt.provenance,
     });
-    assertSystemMetricsAuthority(runDirectory, index, cell.durationSeconds * 1_000);
+    assertSystemMetricsAuthority(runDirectory, index, evidenceDrivenTerminal);
     assertRawMediaAuthority(runDirectory, currentImplementationHashes, cell, index, workspaceRoot);
     if (cell.feedbackLoopPrevention === 'virtual-driver') {
       assertVirtualDriverBinaryAuthority(runDirectory, currentRuntimeBinaryHashes, index);
     }
-    if (cell.feedbackLoopPrevention !== 'echo-cancel') {
-      assertPhysicalRecordingAuthority(runDirectory, index);
-    }
+    assertPhysicalRecordingAuthority(runDirectory, index);
     if (cell.feedbackLoopPrevention === 'process-exclusion') {
       assertProcessExclusionAudioAuthority(runDirectory, index);
     }
@@ -2671,7 +3053,7 @@ function strictContentFailure(report) {
   return null;
 }
 
-export function strictWatchSessionReportFailure(report, minimumDurationMs = MIN_STRICT_SESSION_DURATION_MS) {
+export function strictWatchSessionReportFailure(report) {
   const watch = report?.watchSessionReport;
   if (!watch) return 'strict evidence requires a saved watchSessionReport';
   if (watch.status !== 'completed') {
@@ -2682,8 +3064,8 @@ export function strictWatchSessionReportFailure(report, minimumDurationMs = MIN_
   if (!Number.isFinite(elapsedMs) || !Number.isFinite(summaryDurationMs)) {
     return 'watchSessionReport must include numeric elapsedMs and summary.durationMs';
   }
-  if (elapsedMs < minimumDurationMs || summaryDurationMs < minimumDurationMs) {
-    return `watchSessionReport duration is too short: elapsedMs=${elapsedMs} summary.durationMs=${summaryDurationMs} minimum=${minimumDurationMs}`;
+  if (elapsedMs <= 0 || summaryDurationMs <= 0) {
+    return `watchSessionReport duration must be positive: elapsedMs=${elapsedMs} summary.durationMs=${summaryDurationMs}`;
   }
   if (Math.abs(elapsedMs - summaryDurationMs) > 1_000) {
     return `watchSessionReport duration fields disagree: elapsedMs=${elapsedMs} summary.durationMs=${summaryDurationMs}`;
@@ -2843,10 +3225,7 @@ export function strictAecScenarioFailure(report) {
   return null;
 }
 
-export function strictProcessExclusionRestartFailure(
-  report,
-  minimumDurationMs = MIN_STRICT_SESSION_DURATION_MS,
-) {
+export function strictProcessExclusionRestartFailure(report) {
   if (report?.mode !== 'live') return 'process-exclusion restart evidence must come from a live run';
   const restart = report?.layers?.bridge?.data?.processExclusionRestart;
   if (!restart || restart.completed !== true) {
@@ -2925,19 +3304,23 @@ export function strictProcessExclusionRestartFailure(
   const metricsFinishedAtMs = Date.parse(metrics.finishedAt ?? '');
   const metricsWallDurationMs = metricsFinishedAtMs - metricsStartedAtMs;
   const restartOffsetMs = Number(restart.restartTriggeredAtMs) - metricsStartedAtMs;
+  const postRestartEvidenceMs = metricsFinishedAtMs - Number(restart.restartTriggeredAtMs);
+  const expectedRestartOffsetMs = PROCESS_EXCLUSION_RESTART_AFTER_SECONDS * 1_000;
+  const requiredPostRestartEvidenceMs = PROCESS_EXCLUSION_RESTART_QUIET_SECONDS * 1_000;
   if (
     restart.metricsProveTransition !== true
     || metrics.valid !== true
-    || Number(metrics.durationMs) < minimumDurationMs - 15_000
     || !Number.isFinite(metricsWallDurationMs)
-    || metricsWallDurationMs < minimumDurationMs - 15_000
+    || metricsWallDurationMs <= 0
+    || Math.abs(Number(metrics.durationMs) - metricsWallDurationMs) > 1_000
     || Number(metrics.samplesWithOldPid) <= 0
     || Number(metrics.samplesWithNewPid) <= 0
     || metrics.oldPidAbsentAfterNew !== true
-    || restartOffsetMs < metricsWallDurationMs * 0.35
-    || restartOffsetMs > metricsWallDurationMs * 0.65
+    || restartOffsetMs < expectedRestartOffsetMs - 5_000
+    || restartOffsetMs > expectedRestartOffsetMs + 5_000
+    || postRestartEvidenceMs < requiredPostRestartEvidenceMs
   ) {
-    return 'process-exclusion restart is not corroborated near the midpoint of the required real process-tree metrics timeline';
+    return 'process-exclusion restart metrics do not cover the frozen 90-second trigger and 45-second post-restart evidence window';
   }
   return null;
 }
@@ -3174,10 +3557,7 @@ function basicFailure(entry, options = {}) {
     }
   }
   if (options.strict) {
-    const watchReportReason = strictWatchSessionReportFailure(
-      entry.report,
-      options.minimumDurationMs,
-    );
+    const watchReportReason = strictWatchSessionReportFailure(entry.report);
     if (watchReportReason) {
       return {
         failedLayers: ['watchSessionReport'],
@@ -3188,7 +3568,7 @@ function basicFailure(entry, options = {}) {
     const scenarioReason = feedbackMode === 'echo-cancel'
       ? strictAecScenarioFailure(entry.report)
       : feedbackMode === 'process-exclusion'
-        ? strictProcessExclusionRestartFailure(entry.report, options.minimumDurationMs)
+        ? strictProcessExclusionRestartFailure(entry.report)
         : null;
     if (scenarioReason) {
       const failedLayer = feedbackMode === 'echo-cancel' ? 'aecScenario' : 'processExclusionRestart';
@@ -3537,7 +3917,7 @@ export function findWatchModeEvidence(options = {}) {
   if (strict && runDirectories === null) {
     return {
       ok: false,
-      reason: `strict Watch Mode evidence requires the schema-v${STRICT_MATRIX_SCHEMA_VERSION} budget-balanced authority manifest emitted by run-watch-mode-live-matrix.mjs; scanning outputRoot and --run-directories are disabled`,
+      reason: `strict Watch Mode evidence requires the schema-v${STRICT_MATRIX_SCHEMA_VERSION} budget-balanced authority manifest emitted by run-watch-mode-live-production-coordinator.mjs; scanning outputRoot and --run-directories are disabled`,
       root,
       latest: null,
       candidates: [],
@@ -3665,7 +4045,6 @@ export function findWatchModeEvidence(options = {}) {
       const failure = basicFailure(latest, {
         strict,
         expectedDeviceClass: plannedCell.deviceClass,
-        minimumDurationMs: plannedCell.durationSeconds * 1_000,
         now: options.now,
         maxAgeDays: options.maxAgeDays,
         currentProvenance,
@@ -3925,7 +4304,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       if (!strict) runDirectories = resolved.runDirectories;
     } else if (args['run-directories']) {
       if (strict) {
-        throw new Error(`strict evidence does not accept --run-directories; use the schema-v${STRICT_MATRIX_SCHEMA_VERSION} authority manifest emitted by run-watch-mode-live-matrix.mjs`);
+        throw new Error(`strict evidence does not accept --run-directories; use the schema-v${STRICT_MATRIX_SCHEMA_VERSION} authority manifest emitted by run-watch-mode-live-production-coordinator.mjs`);
       }
       runDirectories = normalizeRunDirectories(String(args['run-directories']), {
         baseDirectory: path.resolve(args.root ?? DEFAULT_ROOT),

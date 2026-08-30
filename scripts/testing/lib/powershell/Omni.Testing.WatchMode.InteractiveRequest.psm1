@@ -189,7 +189,7 @@ function Resolve-OmniInteractiveTaskRequest {
   }
   if ($mode -in @('shard-cell', 'incident-plus-cell')) {
     foreach ($name in $cellFields.Keys) { $command[$name] = $cellFields[$name] }
-    $command['requireRecorder'] = $cellFields.feedbackLoopPrevention -ne 'echo-cancel'
+    $command['requireRecorder'] = $true
     if ((Get-OmniSha256 -LiteralPath $command.planPath) -cne $command.planSha256 -or (Get-OmniSha256 -LiteralPath $command.leasePath) -cne $command.leaseSha256) {
       throw 'interactive task plan/lease bytes do not match coordinator authority'
     }

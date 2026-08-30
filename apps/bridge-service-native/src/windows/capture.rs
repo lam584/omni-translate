@@ -695,6 +695,7 @@ fn dispatch_source_frame(
             estimated_duration_ms: OMNI_SOURCE_FRAME_INTERVAL_MS,
             playback_duration_ms: OMNI_SOURCE_FRAME_INTERVAL_MS,
             translation_generation: 0,
+            translation_arrival_sequence: 0,
         }));
         if result.is_err() {
             current.dropped_frame_count += frame_count;

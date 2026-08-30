@@ -362,7 +362,7 @@ function compatibilityTransportPlan(plan) {
     // The production readiness helper needs one digest binding its temporary
     // control receipt.  The actual Plus readiness request remains per-worker
     // and is validated separately below; it is never substituted into the
-    // strict eight-cell plan or result schema.
+    // strict four-cell plan or result schema.
     workerReadinessRequest: { requestDigest: plan.planDigest },
   };
 }

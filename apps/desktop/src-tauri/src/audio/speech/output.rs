@@ -329,6 +329,16 @@ impl Drop for WasapiComApartment {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SpeakerPlaybackReceipt {
+    pub(crate) rendered_frames: u64,
+    pub(crate) output_sample_rate_hz: u32,
+    pub(crate) output_channel_count: u16,
+    pub(crate) physical_playback_device_id: String,
+    pub(crate) renderer_instance_id: String,
+    pub(crate) renderer_owner_generation: u64,
+}
+
 pub(crate) fn play_to_speaker<F>(
     samples: &[i16],
     sample_rate_hz: u32,
@@ -339,12 +349,19 @@ pub(crate) fn play_to_speaker<F>(
     cue_id: &str,
     playback_source: &'static str,
     mut on_render_event: F,
-) -> Result<u64, String>
+) -> Result<SpeakerPlaybackReceipt, String>
 where
     F: for<'a> FnMut(SpeakerRenderEvent<'a>) -> Result<(), String>,
 {
     if samples.is_empty() {
-        return Ok(0);
+        return Ok(SpeakerPlaybackReceipt {
+            rendered_frames: 0,
+            output_sample_rate_hz: SPEAKER_SAMPLE_RATE_HZ,
+            output_channel_count: SPEAKER_CHANNEL_COUNT,
+            physical_playback_device_id: device_id.unwrap_or_default().to_string(),
+            renderer_instance_id: format!("desktop-process-{}", std::process::id()),
+            renderer_owner_generation: 0,
+        });
     }
     let playback_permit = playback_ownership.acquire(cue_id, playback_source)?;
     run_wasapi_render_attempt(&mut on_render_event, |on_render_event| {
@@ -379,6 +396,7 @@ where
         let _com_apartment = WasapiComApartment::enter()?;
         let enumerator = DeviceEnumerator::new().map_err(|error| error.to_string())?;
         let device = resolve_wasapi_render_device(&enumerator, device_id)?;
+        let physical_playback_device_id = device.get_id().map_err(|error| error.to_string())?;
         let mut audio_client = device.get_iaudioclient().map_err(|error| error.to_string())?;
         let desired_format = WaveFormat::new(
             32,
@@ -425,7 +443,7 @@ where
                 &playback_permit,
                 on_render_event,
             )?;
-            return Ok(total_audio_frames as u64);
+            return Ok((total_audio_frames as u64, physical_playback_device_id));
         }
 
         let mut submitted_frame_base = 0_u64;
@@ -479,7 +497,18 @@ where
             submitted_frame_base = submitted_frame_base
                 .saturating_add(scenario.physical_frames(SPEAKER_CHANNEL_COUNT));
         }
-        Ok((total_audio_frames as u64).saturating_mul(live_scenarios.len() as u64))
+        Ok((
+            (total_audio_frames as u64).saturating_mul(live_scenarios.len() as u64),
+            physical_playback_device_id,
+        ))
+    })
+    .map(|(rendered_frames, physical_playback_device_id)| SpeakerPlaybackReceipt {
+        rendered_frames,
+        output_sample_rate_hz: SPEAKER_SAMPLE_RATE_HZ,
+        output_channel_count: SPEAKER_CHANNEL_COUNT,
+        physical_playback_device_id,
+        renderer_instance_id: format!("desktop-process-{}", std::process::id()),
+        renderer_owner_generation: playback_permit.generation(),
     })
 }
 

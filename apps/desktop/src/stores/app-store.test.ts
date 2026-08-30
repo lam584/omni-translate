@@ -4,7 +4,7 @@ import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import type { RuntimeNotification } from '../schema/runtime-core';
 import type { SubtitleDeltaRuntime } from '../schema/audio-runtime';
-import { appStoreTestHelpers, useAppStore } from './app-store';
+import { applySubtitleDeltaToIndex, appStoreTestHelpers, useAppStore } from './app-store';
 
 const initialState = useAppStore.getState();
 
@@ -19,6 +19,19 @@ function notification(id: string): RuntimeNotification {
     source: 'test',
     message: id,
     emittedAt: `time-${id}`,
+  };
+}
+
+function cue(cueId: string) {
+  return {
+    cueId,
+    routeDirection: 'inbound' as const,
+    sourceText: `source ${cueId}`,
+    translatedText: `translated ${cueId}`,
+    startedAt: 'unix:1',
+    endedAt: 'unix:2',
+    committed: true,
+    translationCommitted: true,
   };
 }
 
@@ -261,6 +274,178 @@ describe('app store', () => {
     expect(result).toBe('resync');
     expect(useAppStore.getState().subtitleOrderedCueIds).toBe(before);
     expect(useAppStore.getState().subtitleSeq).toBe(40);
+  });
+
+  it('classifies every subtitle delta ordering and identity failure', () => {
+    const current = {
+      cueById: { existing: cue('existing') },
+      orderedCueIds: ['existing'],
+      streamId: 'stream-a',
+      generation: 4,
+      seq: 10,
+    };
+    const baseDelta = {
+      streamId: 'stream-a', generation: 4, seq: 11, operation: 'upsert' as const, cue: cue('next'),
+    };
+
+    expect(applySubtitleDeltaToIndex({ ...current, streamId: '' }, baseDelta).result).toBe('resync');
+    expect(applySubtitleDeltaToIndex(current, { ...baseDelta, streamId: 'stream-b' }).result).toBe('resync');
+    expect(applySubtitleDeltaToIndex(current, { ...baseDelta, generation: 5 }).result).toBe('resync');
+    expect(applySubtitleDeltaToIndex(current, { ...baseDelta, seq: 10 }).result).toBe('ignored');
+    expect(applySubtitleDeltaToIndex(current, { ...baseDelta, cue: null }).result).toBe('resync');
+    expect(applySubtitleDeltaToIndex(current, {
+      ...baseDelta,
+      operation: 'unsupported' as never,
+    }).result).toBe('resync');
+  });
+
+  it('applies reset and both existing and absent removal operations', () => {
+    const current = {
+      cueById: { first: cue('first'), second: cue('second') },
+      orderedCueIds: ['first', 'second'],
+      streamId: 'stream-reset',
+      generation: 8,
+      seq: 20,
+    };
+
+    const reset = applySubtitleDeltaToIndex(current, {
+      streamId: 'stream-reset', generation: 9, seq: 1, operation: 'reset', cue: null,
+    });
+    expect(reset).toEqual({
+      result: 'applied',
+      index: { cueById: {}, orderedCueIds: [], streamId: 'stream-reset', generation: 9, seq: 1 },
+    });
+
+    const absent = applySubtitleDeltaToIndex(current, {
+      streamId: 'stream-reset', generation: 8, seq: 21, operation: 'remove', cue: cue('absent'),
+    });
+    expect(absent.result).toBe('applied');
+    expect(absent.index.cueById).toBe(current.cueById);
+    expect(absent.index.seq).toBe(21);
+
+    const removed = applySubtitleDeltaToIndex(current, {
+      streamId: 'stream-reset', generation: 8, seq: 21, operation: 'remove', cue: cue('first'),
+    });
+    expect(removed.result).toBe('applied');
+    expect(removed.index.orderedCueIds).toEqual(['second']);
+    expect(removed.index.cueById.first).toBeUndefined();
+  });
+
+  it('updates an existing cue without reordering it and filters missing indexed entries', () => {
+    const current = {
+      cueById: { first: cue('first') },
+      orderedCueIds: ['missing', 'first'],
+      streamId: 'stream-update',
+      generation: 2,
+      seq: 3,
+    };
+    const updated = applySubtitleDeltaToIndex(current, {
+      streamId: 'stream-update', generation: 2, seq: 4, operation: 'upsert',
+      cue: { ...cue('first'), translatedText: 'updated' },
+    });
+    expect(updated.index.orderedCueIds).toEqual(['missing', 'first']);
+
+    useAppStore.setState({
+      subtitleCueById: updated.index.cueById,
+      subtitleOrderedCueIds: updated.index.orderedCueIds,
+      subtitleStreamId: updated.index.streamId,
+      subtitleGeneration: updated.index.generation,
+      subtitleSeq: updated.index.seq,
+    });
+    const result = useAppStore.getState().applySubtitleDelta({
+      streamId: 'stream-update', generation: 2, seq: 5, operation: 'remove', cue: cue('first'),
+    });
+    expect(result).toBe('applied');
+    expect(useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay.recentCues).toEqual([]);
+    expect(useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay.activeCue).toBeNull();
+  });
+
+  it('drops stale snapshots and preserves subtitle state when no baseline is included', () => {
+    const current = structuredClone(audioRuntimeSnapshotMock);
+    current.snapshotSeq = 50;
+    current.subtitleOverlay.streamId = 'preserved-stream';
+    current.subtitleOverlay.generation = 5;
+    current.subtitleOverlay.seq = 7;
+    current.subtitleOverlay.recentCues = [cue('preserved')];
+    current.subtitleOverlay.activeCue = cue('preserved');
+    useAppStore.setState({ audioRuntimeSnapshot: current });
+    useAppStore.setState({
+      subtitleCueById: { preserved: cue('preserved') },
+      subtitleOrderedCueIds: ['preserved'],
+      subtitleStreamId: 'preserved-stream',
+      subtitleGeneration: 5,
+      subtitleSeq: 7,
+    });
+
+    const stale = structuredClone(current);
+    stale.snapshotSeq = 49;
+    stale.subtitleOverlay.recentCues = [];
+    useAppStore.getState().setAudioRuntimeSnapshot(stale);
+    expect(useAppStore.getState().audioRuntimeSnapshot).toBe(current);
+
+    const deltaOnly = structuredClone(current);
+    deltaOnly.snapshotSeq = 51;
+    deltaOnly.subtitleOverlay.baselineIncluded = false;
+    deltaOnly.subtitleOverlay.streamId = 'ignored-stream';
+    deltaOnly.subtitleOverlay.activeCue = cue('not-in-index');
+    useAppStore.getState().setAudioRuntimeSnapshot(deltaOnly);
+    const state = useAppStore.getState();
+    expect(state.subtitleStreamId).toBe('preserved-stream');
+    expect(state.audioRuntimeSnapshot.subtitleOverlay.recentCues.map((item) => item.cueId)).toEqual(['preserved']);
+    expect(state.audioRuntimeSnapshot.subtitleOverlay.activeCue?.cueId).toBe('preserved');
+  });
+
+  it('deduplicates the bounded raw baseline window and falls back to its first cue', () => {
+    const snapshot = structuredClone(audioRuntimeSnapshotMock);
+    snapshot.snapshotSeq = 100;
+    snapshot.subtitleOverlay.streamId = 'baseline-stream';
+    snapshot.subtitleOverlay.generation = 10;
+    snapshot.subtitleOverlay.seq = 20;
+    snapshot.subtitleOverlay.activeCue = cue('missing-active');
+    snapshot.subtitleOverlay.recentCues = [
+      cue('cue-0'),
+      cue('cue-0'),
+      ...Array.from({ length: 40 }, (_, index) => cue(`cue-${index + 1}`)),
+    ];
+
+    useAppStore.getState().setAudioRuntimeSnapshot(snapshot);
+    const state = useAppStore.getState();
+    expect(state.subtitleOrderedCueIds.length).toBeLessThanOrEqual(32);
+    expect(new Set(state.subtitleOrderedCueIds).size).toBe(state.subtitleOrderedCueIds.length);
+    expect(state.subtitleOrderedCueIds.slice(0, 2)).toEqual(['cue-0', 'cue-1']);
+    expect(state.audioRuntimeSnapshot.subtitleOverlay.activeCue?.cueId).toBe('cue-0');
+  });
+
+  it('replaces matching native notifications and hydrates config through the store action', () => {
+    const local = notification('same-id');
+    useAppStore.getState().pushRuntimeNotification(local);
+    const native = { ...notification('same-id'), message: 'native replacement' };
+    useAppStore.getState().setRuntimeSnapshot({ ...runtimeSnapshotMock, notifications: [native] });
+    expect(useAppStore.getState().runtimeNotifications.filter((item) => item.id === 'same-id')).toEqual([native]);
+
+    const draft = structuredClone(useAppStore.getState().configDraft);
+    draft.onboarding.activePresetId = 'preset-from-config';
+    useAppStore.getState().setConfigDraft(draft);
+    expect(useAppStore.getState().activePresetId).toBe('preset-from-config');
+  });
+
+  it('uses legacy color and snapshot sequence defaults when fields are absent', () => {
+    const legacyDraft = structuredClone(useAppStore.getState().configDraft);
+    delete (legacyDraft.subtitles as Partial<typeof legacyDraft.subtitles>).overlayTextColor;
+    delete (legacyDraft.subtitles as Partial<typeof legacyDraft.subtitles>).overlaySourceTextStyle;
+    delete (legacyDraft.subtitles as Partial<typeof legacyDraft.subtitles>).overlayTranslationTextStyle;
+    const merged = appStoreTestHelpers.mergeConfigDraftWithDefaults(legacyDraft);
+    expect(merged.subtitles.overlaySourceTextStyle.color).toBe(
+      initialState.configDraft.subtitles.overlaySourceTextStyle.color,
+    );
+
+    const current = structuredClone(audioRuntimeSnapshotMock);
+    delete (current as Partial<typeof current>).snapshotSeq;
+    useAppStore.setState({ audioRuntimeSnapshot: current });
+    const incoming = structuredClone(current);
+    incoming.subtitleOverlay.recentCues = [cue('no-sequence')];
+    useAppStore.getState().setAudioRuntimeSnapshot(incoming);
+    expect(useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay.recentCues[0]?.cueId).toBe('no-sequence');
   });
 
   it('updates runtime snapshots and each nested configuration section', () => {

@@ -156,6 +156,75 @@ test('does not fail a fully rendered cue whose retry error was recovered by a fi
   assert.equal(report.failureLayer, null);
 });
 
+test('preserves physical playback queue overflow identity and the incomplete cue authority', () => {
+  const report = classify({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      issues: [{
+        category: 'output',
+        code: 'bridge-translation-write-failed',
+        severity: 'error',
+        message: 'bridge.queue-overflow: physical translation stream cannot start while a complete cue is queued or playing',
+        cueId: null,
+      }],
+    },
+    physicalOutputContent: {
+      ...healthyPhysicalOutputContent,
+      passed: false,
+      translatedSpeech: {
+        passed: false,
+        queuedSegments: 25,
+        playedSegments: 25,
+        playbackAuthority: {
+          passed: false,
+          queuedCueCount: 25,
+          startedCueCount: 25,
+          completedCueCount: 24,
+          invalidCues: [{
+            cueId: 'cue-stale-dropped',
+            queuedCount: 1,
+            startedCount: 1,
+            completedCount: 0,
+            ordered: false,
+          }],
+          detail: 'every complete native cue must have exactly one ordered queued, started, and completed physical playback event',
+        },
+        acousticAuthority: {
+          passed: false,
+          violations: [
+            'cue cue-stale-dropped does not have exactly one ordered timestamped queued/started/completed lifecycle',
+          ],
+        },
+      },
+    },
+  });
+
+  assert.equal(report.failureLayer, 'app');
+  assert.equal(report.stableErrorCode, 'bridge.queue-overflow');
+  assert.equal(report.lifecyclePhase, 'physical-playback-queue');
+  assert.match(report.layers.physicalOutputContent.reason, /cue-stale-dropped/);
+  assert.match(report.layers.physicalOutputContent.reason, /completedCueCount=24/);
+  assert.doesNotMatch(report.layers.physicalOutputContent.reason, /was not written to physical output/);
+});
+
+test('does not label an unrelated Bridge queue error as a physical playback queue overflow', () => {
+  const report = classify({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      issues: [{
+        category: 'bridge',
+        code: 'bridge-source-write-failed',
+        severity: 'error',
+        message: 'bridge.queue-overflow: source capture queue is full',
+      }],
+    },
+  });
+
+  assert.equal(report.failureLayer, 'app');
+  assert.equal(report.stableErrorCode, 'watch.app.failed');
+  assert.equal(report.lifecyclePhase, 'application-runtime');
+});
+
 test('report records explicit git HEAD and clean-worktree provenance', () => {
   const provenance = {
     schemaVersion: 1,

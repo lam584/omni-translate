@@ -1277,7 +1277,8 @@ export function watchSessionReportFailure(report, { required = true } = {}) {
     return code === 'speaker-playback-failed' || severity === 'error';
   });
   if (sessionIssue) {
-    return `watch session report contains a session-level error; category=${sessionIssue.category ?? '-'} code=${sessionIssue.code ?? '-'} severity=${sessionIssue.severity ?? '-'}`;
+    const message = String(sessionIssue.message ?? '').replace(/\s+/gu, ' ').trim().slice(0, 512);
+    return `watch session report contains a session-level error; category=${sessionIssue.category ?? '-'} code=${sessionIssue.code ?? '-'} severity=${sessionIssue.severity ?? '-'}${message ? ` message=${message}` : ''}`;
   }
   const cues = Array.isArray(report.cues) ? report.cues : [];
   const completeCues = cues.filter((cue) => (
@@ -1748,6 +1749,38 @@ function physicalOutputContentLayerFailed(content) {
         ?? `physical output recording did not contain mixed audible output; rms=${asNumber(content.mixedOutput.rms)} peak=${asNumber(content.mixedOutput.peak)}`;
     }
     if (content.translatedSpeech?.passed === false) {
+      const playbackAuthority = content.translatedSpeech.playbackAuthority ?? {};
+      const acousticAuthority = content.translatedSpeech.acousticAuthority ?? {};
+      const allInvalidCueIds = Array.isArray(playbackAuthority.invalidCues)
+        ? playbackAuthority.invalidCues.map((cue) => String(cue?.cueId ?? '').trim()).filter(Boolean)
+        : [];
+      const allViolations = Array.isArray(acousticAuthority.violations)
+        ? acousticAuthority.violations.map((violation) => String(violation).replace(/\s+/gu, ' ').trim()).filter(Boolean)
+        : [];
+      const invalidCueIds = allInvalidCueIds.slice(0, 5);
+      const violations = allViolations.slice(0, 3).map((violation) => violation.slice(0, 512));
+      if (
+        playbackAuthority.passed === false
+        || acousticAuthority.passed === false
+        || invalidCueIds.length > 0
+        || violations.length > 0
+      ) {
+        const authorityDetails = [
+          `queuedSegments=${asNumber(content.translatedSpeech.queuedSegments)}`,
+          `playedSegments=${asNumber(content.translatedSpeech.playedSegments)}`,
+          Number.isFinite(Number(playbackAuthority.queuedCueCount))
+            ? `queuedCueCount=${Number(playbackAuthority.queuedCueCount)}` : null,
+          Number.isFinite(Number(playbackAuthority.startedCueCount))
+            ? `startedCueCount=${Number(playbackAuthority.startedCueCount)}` : null,
+          Number.isFinite(Number(playbackAuthority.completedCueCount))
+            ? `completedCueCount=${Number(playbackAuthority.completedCueCount)}` : null,
+          allInvalidCueIds.length > 0 ? `invalidCueCount=${allInvalidCueIds.length}` : null,
+          invalidCueIds.length > 0 ? `invalidCueIds=${invalidCueIds.join(',')}` : null,
+          allViolations.length > 0 ? `violationCount=${allViolations.length}` : null,
+          violations.length > 0 ? `violations=${violations.join(' | ')}` : null,
+        ].filter(Boolean);
+        return `translated speech physical authority failed; ${authorityDetails.join(' ')}`;
+      }
       return content.translatedSpeech.detail
         ?? content.translatedSpeech.error
         ?? `secondary translated speech was not written to physical output; queuedSegments=${asNumber(content.translatedSpeech.queuedSegments)} playedSegments=${asNumber(content.translatedSpeech.playedSegments)}`;
@@ -1930,8 +1963,14 @@ function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
   };
 }
 
-function stableFailureIdentity({ failureLayer, failureReason, diagnostics, layers }) {
+function stableFailureIdentity({ failureLayer, failureReason, diagnostics, layers, watchSessionReport }) {
   if (!failureLayer) return null;
+  const physicalPlaybackQueueOverflow = (Array.isArray(watchSessionReport?.issues)
+    ? watchSessionReport.issues : []).some((issue) => (
+    issue?.code === 'bridge-translation-write-failed'
+    && /bridge\.queue-overflow|physical translation stream cannot start while a complete cue is queued or playing/i
+      .test(String(issue?.message ?? ''))
+  ));
   const evidence = [
     failureReason,
     diagnostics?.runnerFailure,
@@ -1946,6 +1985,9 @@ function stableFailureIdentity({ failureLayer, failureReason, diagnostics, layer
   } else if (/response stream timeout|timeout_seconds=.*elapsed_ms/i.test(evidence)) {
     stableErrorCode = 'provider.response-stream-timeout';
     lifecyclePhase = 'active-response';
+  } else if (physicalPlaybackQueueOverflow) {
+    stableErrorCode = 'bridge.queue-overflow';
+    lifecyclePhase = 'physical-playback-queue';
   } else if (/restart-quiescence-timeout/i.test(evidence)) {
     stableErrorCode = 'bridge.restart-quiescence-timeout';
     lifecyclePhase = 'bridge-restart-quiescence';
@@ -2355,7 +2397,13 @@ export function classifyWatchModeRun(input) {
   const { failureLayer, verdict } = resolveLayerVerdict({ activeChecks, layers, environmentReason });
   const diagnostics = buildReportDiagnostics(input, layers, activeChecks, appLog, bridgeLog);
   const failureReason = failureLayer ? layers[failureLayer].reason : null;
-  const failureIdentity = stableFailureIdentity({ failureLayer, failureReason, diagnostics, layers });
+  const failureIdentity = stableFailureIdentity({
+    failureLayer,
+    failureReason,
+    diagnostics,
+    layers,
+    watchSessionReport: input.watchSessionReport,
+  });
   const provenance = input.provenance ?? currentGitProvenance();
   return {
     schemaVersion: 2,

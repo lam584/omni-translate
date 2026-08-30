@@ -141,6 +141,18 @@ $driverRequired = [bool]$payload.driverRequired
 $expected = $payload.driver
 $authority = $null
 if ($driverRequired) {
+  $physicalPlaybackDeviceIds = @($payload.profiles | ForEach-Object {
+    [string]$_.physicalPlaybackDeviceId
+  } | Where-Object {
+    -not [string]::IsNullOrWhiteSpace($_)
+  } | Sort-Object -Unique)
+  if ($physicalPlaybackDeviceIds.Count -ne 1) {
+    throw "driver readiness requires exactly one explicit physical playback endpoint; found $($physicalPlaybackDeviceIds.Count)"
+  }
+  $physicalPlaybackDeviceId = [string]$physicalPlaybackDeviceIds[0]
+  if ($physicalPlaybackDeviceId.Trim().ToLowerInvariant() -in @('default', 'speaker-default', 'system-output-default')) {
+    throw 'driver readiness rejects physical playback endpoint aliases'
+  }
   # A development Authenticode signature and the WDK-stamped DriverVer make a
   # freshly rebuilt package byte-distinct even when the driver source did not
   # change.  Synchronize the exact runtime package that this execution signed
@@ -197,6 +209,7 @@ if ($driverRequired) {
       DriverVersion = '0.10.0-dev'
       BridgeVersion = '0.1.0'
       TargetDeviceId = 'virtual-mic-default'
+      PhysicalPlaybackDeviceId = $physicalPlaybackDeviceId
       ReadinessResultPath = $existingReadinessPath
       VirtualMicEvidenceOutputDirectory = $existingEvidenceRoot
     }
@@ -247,6 +260,7 @@ if ($driverRequired) {
     DriverVersion = '0.10.0-dev'
     BridgeVersion = '0.1.0'
     TargetDeviceId = 'virtual-mic-default'
+    PhysicalPlaybackDeviceId = $physicalPlaybackDeviceId
     ReadinessResultPath = $driverReadinessResultPath
     VirtualMicEvidenceOutputDirectory = $driverEvidenceRoot
   }

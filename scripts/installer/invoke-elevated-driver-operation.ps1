@@ -9,6 +9,7 @@ param(
   [Parameter(Mandatory = $true)][string]$BridgeVersion,
   [Parameter(Mandatory = $true)][string]$TargetDeviceId,
   [string]$VirtualRenderDeviceId = 'omni-virtual-speaker-default',
+  [string]$PhysicalPlaybackDeviceId = '',
   [long]$RequestProcessId = 0,
   [ValidateSet('already-elevated', 'uac-runas', 'unknown')][string]$ElevationMode = 'unknown',
   [string]$ReadinessResultPath = '',
@@ -81,7 +82,14 @@ try {
       -not $evidencePath.StartsWith($runtimePrefix, [System.StringComparison]::OrdinalIgnoreCase)
     ) { throw 'elevated driver readiness evidence paths must stay inside RuntimeRoot' }
     $testScript = Join-Path $PSScriptRoot 'test-development-driver.ps1'
-    $testOutput = @(& $testScript -WorkspaceRoot $WorkspaceRoot -VirtualMicEvidenceOutputDirectory $evidencePath)
+    $testArguments = @{
+      WorkspaceRoot = $WorkspaceRoot
+      VirtualMicEvidenceOutputDirectory = $evidencePath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PhysicalPlaybackDeviceId)) {
+      $testArguments.PhysicalPlaybackDeviceId = $PhysicalPlaybackDeviceId
+    }
+    $testOutput = @(& $testScript @testArguments)
     $readiness = $testOutput | Where-Object { $_ -and $_.PSObject.Properties['InstalledDriverAuthority'] } | Select-Object -Last 1
     if (-not $readiness -or -not $readiness.InstalledDriverAuthority) {
       throw 'elevated driver readiness did not return installed driver authority'

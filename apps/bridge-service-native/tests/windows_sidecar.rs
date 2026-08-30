@@ -184,7 +184,7 @@ struct TranslationAuthority {
 }
 
 fn translation_authority(session_id: &str, init_ack: &Value) -> TranslationAuthority {
-    TranslationAuthority {
+    let authority = TranslationAuthority {
         session_id: session_id.to_string(),
         bridge_instance_id: init_ack["bridgeInstanceId"]
             .as_str()
@@ -204,7 +204,19 @@ fn translation_authority(session_id: &str, init_ack: &Value) -> TranslationAutho
             .as_str()
             .expect("init ack must publish resolvedPhysicalPlaybackDeviceId")
             .to_string(),
-    }
+    };
+    assert!(!authority.bridge_instance_id.trim().is_empty());
+    assert!(authority.source_generation > 0);
+    assert!(!authority.physical_playback_device_id.trim().is_empty());
+    assert_eq!(
+        authority.source_generation_token,
+        format!(
+            "{}:{}:{}",
+            authority.bridge_instance_id, authority.session_id, authority.source_generation
+        ),
+        "init ACK must publish one internally coherent authority tuple"
+    );
+    authority
 }
 
 fn wait_for_process_source_running(pipe_name: &str) -> Value {
@@ -998,6 +1010,15 @@ fn translation_header(
     })
 }
 
+fn virtual_mic_translation_header(authority: &TranslationAuthority) -> Value {
+    let mut header = translation_header(authority, "bridge.translation.frame", 2, 4);
+    header["translationSink"] = json!("virtual-mic");
+    header["routeDirection"] = json!("outbound");
+    header["chunkIndex"] = json!(0);
+    header["chunkCount"] = json!(1);
+    header
+}
+
 fn write_framed_header(pipe: &mut File, header_bytes: &[u8]) {
     pipe.write_all(&(header_bytes.len() as u32).to_le_bytes()).unwrap();
     pipe.write_all(header_bytes).unwrap();
@@ -1094,6 +1115,92 @@ fn audio_pipe_acknowledges_a_valid_translation_frame() {
     assert_eq!(
         fs::read(runtime_root.path().join("last-translation-frame.pcm")).unwrap(),
         vec![1, 0, 2, 0]
+    );
+
+    shutdown(&pipe_name);
+    assert!(sidecar.wait().unwrap().success());
+    fs::remove_dir_all(runtime_root.path()).ok();
+}
+
+#[test]
+fn audio_pipe_authority_gate_rejects_incomplete_and_stale_probe_tuples_but_accepts_current_tuple() {
+    let runtime_root = TempDir::new().unwrap();
+    let pipe_name = format!("omni-bridge-probe-authority-{}", std::process::id());
+    let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
+    wait_until_ready(&mut sidecar);
+    let authority = init_session(&pipe_name, "session-1");
+
+    // Reproduce the production-probe regression: the frame is otherwise a
+    // canonical outbound virtual-mic chunk, but its authority tuple is empty.
+    let mut incomplete = virtual_mic_translation_header(&authority);
+    for field in [
+        "bridgeInstanceId",
+        "sourceGeneration",
+        "sourceGenerationToken",
+        "playbackOwnerGeneration",
+        "physicalPlaybackDeviceId",
+    ] {
+        incomplete.as_object_mut().unwrap().remove(field);
+    }
+    let nack = exchange_audio_frame(&pipe_name, &incomplete, &[1, 0, 2, 0])
+        .expect("an incomplete probe tuple must receive a deterministic nack");
+    assert_eq!(nack["type"], "bridge.translation.nack", "{nack}");
+    assert_eq!(
+        nack["errorCode"],
+        "bridge.translation-generation-ended",
+        "{nack}"
+    );
+    assert_eq!(nack["acceptedFrames"], 0, "{nack}");
+
+    // A non-empty but superseded tuple must fail at the same authority gate.
+    let mut stale = virtual_mic_translation_header(&authority);
+    stale["sourceGeneration"] = json!(authority.source_generation.saturating_add(1));
+    let nack = exchange_audio_frame(&pipe_name, &stale, &[1, 0, 2, 0])
+        .expect("a stale probe tuple must receive a deterministic nack");
+    assert_eq!(nack["type"], "bridge.translation.nack", "{nack}");
+    assert_eq!(
+        nack["errorCode"],
+        "bridge.translation-generation-ended",
+        "{nack}"
+    );
+    assert_eq!(nack["acceptedFrames"], 0, "{nack}");
+
+    // This machine may not have the development virtual-mic driver installed,
+    // so the current virtual-mic tuple can advance to the capability gate while
+    // still being nacked there. A current physical frame proves the same tuple
+    // is accepted by the real Bridge and receives its original framed ACK.
+    let current_virtual_mic = virtual_mic_translation_header(&authority);
+    let capability = exchange_audio_frame(&pipe_name, &current_virtual_mic, &[1, 0, 2, 0])
+        .expect("the current tuple must advance beyond the authority gate");
+    assert_ne!(
+        capability["errorCode"],
+        "bridge.translation-generation-ended",
+        "{capability}"
+    );
+
+    let current = translation_header(&authority, "bridge.translation.frame", 2, 4);
+    let ack = exchange_audio_frame(&pipe_name, &current, &[1, 0, 2, 0])
+        .expect("a current tuple must receive the original Bridge ACK");
+    assert_eq!(ack["type"], "bridge.translation.ack", "{ack}");
+    assert_eq!(ack["acceptedFrames"], 2, "{ack}");
+    assert!(ack.get("errorCode").is_none_or(Value::is_null), "{ack}");
+    assert_eq!(ack["sessionId"], authority.session_id, "{ack}");
+    assert_eq!(ack["bridgeInstanceId"], authority.bridge_instance_id, "{ack}");
+    assert_eq!(ack["sourceGeneration"], authority.source_generation, "{ack}");
+    assert_eq!(
+        ack["sourceGenerationToken"],
+        authority.source_generation_token,
+        "{ack}"
+    );
+    assert_eq!(
+        ack["playbackOwnerGeneration"],
+        authority.playback_owner_generation,
+        "{ack}"
+    );
+    assert_eq!(
+        ack["physicalPlaybackDeviceId"],
+        authority.physical_playback_device_id,
+        "{ack}"
     );
 
     shutdown(&pipe_name);

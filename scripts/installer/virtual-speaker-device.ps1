@@ -324,7 +324,8 @@ function Invoke-OmniWasapiAudioProbe([string]$WorkspaceRoot = (Join-Path $PSScri
 
 function Invoke-OmniVirtualMicTargetCaptureProbe(
   [string]$WorkspaceRoot = (Join-Path $PSScriptRoot '..\..'),
-  [string]$OutputDirectory
+  [string]$OutputDirectory,
+  [string]$PhysicalPlaybackDeviceId = ''
 ) {
   if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     throw 'Virtual microphone target capture requires a non-empty evidence output directory.'
@@ -351,7 +352,15 @@ function Invoke-OmniVirtualMicTargetCaptureProbe(
 
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
   $runtimeRoot = Join-Path $workspacePath "artifacts\diagnostics\virtual-mic-target-capture\$stamp"
-  $probeOutput = & $capturePath --output-directory $OutputDirectory --bridge-exe $bridgePath --runtime-root $runtimeRoot
+  $captureArguments = @(
+    '--output-directory', $OutputDirectory,
+    '--bridge-exe', $bridgePath,
+    '--runtime-root', $runtimeRoot
+  )
+  if (-not [string]::IsNullOrWhiteSpace($PhysicalPlaybackDeviceId)) {
+    $captureArguments += @('--physical-playback-device-id', $PhysicalPlaybackDeviceId)
+  }
+  $probeOutput = & $capturePath @captureArguments
   $probeExitCode = $LASTEXITCODE
   if (-not $probeOutput) {
     throw "The virtual microphone target capture returned no JSON output. ExitCode=$probeExitCode"

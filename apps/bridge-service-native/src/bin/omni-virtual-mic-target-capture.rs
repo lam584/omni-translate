@@ -61,8 +61,10 @@ mod app {
     };
     use super::ipc::{
         collect_cue_statuses, control, send_virtual_mic_cue, shutdown_bridge, unix_ms,
+        TranslationAuthority,
     };
     use omni_bridge_service::BRIDGE_PROTOCOL_VERSION;
+    use cpal::traits::{DeviceTrait, HostTrait};
     use serde::Serialize;
     use serde_json::{json, Value};
     use std::fs::{self, OpenOptions};
@@ -103,6 +105,7 @@ mod app {
         pub(super) output_directory: PathBuf,
         pub(super) bridge_exe: PathBuf,
         runtime_root: PathBuf,
+        pub(super) physical_playback_device_id: Option<String>,
     }
 
     struct BridgeGuard {
@@ -162,6 +165,8 @@ mod app {
         }
         ensure_evidence_targets_absent(&args.output_directory)?;
         fs::create_dir_all(&args.runtime_root).map_err(error_text)?;
+        let physical_playback_device_id =
+            resolve_physical_playback_device_id(args.physical_playback_device_id.as_deref())?;
 
         let run_id = Uuid::new_v4().to_string();
         let pipe_name = format!("omni-virtual-mic-target-capture-{}", &run_id[..12]);
@@ -181,12 +186,12 @@ mod app {
                 "installChannel": "development",
                 "targetDeviceId": "virtual-mic-default",
                 "virtualRenderDeviceId": "virtual-speaker-default",
-                "physicalPlaybackDeviceId": "",
+                "physicalPlaybackDeviceId": physical_playback_device_id,
                 "physicalPlaybackLevel": 0,
                 "sourceCaptureMode": "none",
                 "virtualMicOutputRequested": true,
                 "monitorPlaybackEnabled": false,
-                "translationPlaybackEnabled": false,
+                "translationPlaybackEnabled": true,
                 "expectedDriverVersion": "0.10.0-dev",
                 "expectedBridgeVersion": "0.1.0",
                 "mixControl": {
@@ -202,6 +207,11 @@ mod app {
             }),
         )?;
         let endpoint_name = require_ready_virtual_mic(&init)?;
+        let translation_authority = TranslationAuthority::from_init(
+            &session_id,
+            &physical_playback_device_id,
+            &init,
+        )?;
         let before = query_bridge_state(&pipe_name, "before")?;
         require_ready_virtual_mic(&before)?;
 
@@ -215,8 +225,13 @@ mod app {
             unix_ms() ^ u64::from(std::process::id()),
         );
         let cue_pcm = build_cue_pcm(&fingerprint);
-        let ack = send_virtual_mic_cue(&pipe_name, &session_id, &cue_id, &cue_pcm)?;
-        let statuses = collect_cue_statuses(&pipe_name, &cue_id, Duration::from_secs(5))?;
+        let ack = send_virtual_mic_cue(&pipe_name, &translation_authority, &cue_id, &cue_pcm)?;
+        let statuses = collect_cue_statuses(
+            &pipe_name,
+            &translation_authority,
+            &cue_id,
+            Duration::from_secs(5),
+        )?;
         let lifecycle = CueLifecycleEvidence::from_timeline(&cue_id, &session_id, &statuses)?;
 
         let child_result = wait_for_capture_result(
@@ -477,6 +492,7 @@ mod app {
         let mut output_directory = None;
         let mut bridge_exe = None;
         let mut runtime_root = None;
+        let mut physical_playback_device_id = None;
         let mut index = 0;
         while index < args.len() {
             let key = args[index].as_str();
@@ -490,6 +506,16 @@ mod app {
                 }
                 "--runtime-root" => {
                     runtime_root = Some(PathBuf::from(next_arg(args, &mut index, key)?))
+                }
+                "--physical-playback-device-id" => {
+                    physical_playback_device_id = Some(
+                        require_exact_physical_playback_device_id(next_arg(
+                            args,
+                            &mut index,
+                            key,
+                        )?)?
+                        .to_string(),
+                    )
                 }
                 _ => return Err(format!("unknown argument: {key}")),
             }
@@ -508,7 +534,42 @@ mod app {
             output_directory,
             bridge_exe,
             runtime_root,
+            physical_playback_device_id,
         })
+    }
+
+    fn require_exact_physical_playback_device_id(value: &str) -> Result<&str, String> {
+        let value = value.trim();
+        if value.is_empty()
+            || matches!(
+                value,
+                "default" | "speaker-default" | "system-output-default"
+            )
+        {
+            return Err(
+                "physical playback device id cannot be empty or a default alias; provide an exact physical render endpoint ID"
+                    .to_string(),
+            );
+        }
+        Ok(value)
+    }
+
+    fn resolve_physical_playback_device_id(explicit: Option<&str>) -> Result<String, String> {
+        if let Some(explicit) = explicit {
+            return Ok(require_exact_physical_playback_device_id(explicit)?.to_string());
+        }
+        let device = cpal::default_host()
+            .default_output_device()
+            .ok_or_else(|| "default physical playback device was not found".to_string())?;
+        let description = device.description().map_err(error_text)?;
+        let name = description.name().to_string();
+        if name.contains("Omni Translate Virtual Speaker") {
+            return Err(format!(
+                "default playback device is the Omni virtual speaker, not a physical endpoint: {name}"
+            ));
+        }
+        let endpoint_id = device.id().map_err(error_text)?.1;
+        require_exact_physical_playback_device_id(&endpoint_id).map(str::to_string)
     }
 
     fn next_arg<'a>(args: &'a [String], index: &mut usize, key: &str) -> Result<&'a str, String> {

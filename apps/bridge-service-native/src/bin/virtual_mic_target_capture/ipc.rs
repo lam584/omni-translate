@@ -13,6 +13,77 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_FRAMED_HEADER_BYTES: usize = 1024 * 1024;
 
+#[derive(Clone, Debug)]
+pub(super) struct TranslationAuthority {
+    session_id: String,
+    bridge_instance_id: String,
+    source_generation: u64,
+    source_generation_token: String,
+    playback_owner_generation: u64,
+    physical_playback_device_id: String,
+}
+
+impl TranslationAuthority {
+    pub(super) fn from_init(
+        session_id: &str,
+        expected_physical_playback_device_id: &str,
+        init: &Value,
+    ) -> Result<Self, String> {
+        if session_id.trim().is_empty() {
+            return Err("virtual microphone probe session authority is empty".to_string());
+        }
+        if init["physicalPlaybackStatus"].as_str() != Some("ready") {
+            return Err(format!(
+                "Bridge init did not establish a ready physical playback owner: {init}"
+            ));
+        }
+        let authority = Self {
+            session_id: session_id.to_string(),
+            bridge_instance_id: required_nonempty_string(init, "bridgeInstanceId")?,
+            source_generation: required_u64(init, "sourceGeneration")?,
+            source_generation_token: required_nonempty_string(init, "sourceGenerationToken")?,
+            playback_owner_generation: required_u64(init, "playbackOwnerGeneration")?,
+            physical_playback_device_id: required_nonempty_string(
+                init,
+                "resolvedPhysicalPlaybackDeviceId",
+            )?,
+        };
+        if authority.physical_playback_device_id != expected_physical_playback_device_id {
+            return Err(format!(
+                "Bridge init resolved a different physical playback owner: requested={} resolved={}",
+                expected_physical_playback_device_id,
+                authority.physical_playback_device_id,
+            ));
+        }
+        let expected_source_generation_token = format!(
+            "{}:{}:{}",
+            authority.bridge_instance_id, authority.session_id, authority.source_generation,
+        );
+        if authority.source_generation_token != expected_source_generation_token {
+            return Err(format!(
+                "Bridge init source generation token is incoherent: expected={} actual={}",
+                expected_source_generation_token, authority.source_generation_token,
+            ));
+        }
+        Ok(authority)
+    }
+
+    fn validate_status_event(&self, event: &TranslationPlaybackStatusEvent) -> Result<(), String> {
+        if event.session_id != self.session_id
+            || event.bridge_instance_id != self.bridge_instance_id
+            || event.source_generation != self.source_generation
+            || event.source_generation_token != self.source_generation_token
+            || event.playback_owner_generation != self.playback_owner_generation
+            || event.physical_playback_device_id != self.physical_playback_device_id
+        {
+            return Err(format!(
+                "Bridge translation status did not echo the target cue authority: {event:?}"
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub(super) fn control(pipe_name: &str, payload: Value) -> Result<Value, String> {
     let mut pipe = open_pipe(&format!(r"\\.\pipe\{pipe_name}"), Duration::from_secs(5))?;
     writeln!(
@@ -32,7 +103,7 @@ pub(super) fn control(pipe_name: &str, payload: Value) -> Result<Value, String> 
 
 pub(super) fn send_virtual_mic_cue(
     pipe_name: &str,
-    session_id: &str,
+    authority: &TranslationAuthority,
     cue_id: &str,
     pcm: &[i16],
 ) -> Result<AudioFrameAck, String> {
@@ -42,7 +113,7 @@ pub(super) fn send_virtual_mic_cue(
         .collect::<Vec<_>>();
     let created_at_ms = unix_ms();
     let header = build_virtual_mic_header(
-        session_id,
+        authority,
         cue_id,
         pcm.len(),
         payload.len(),
@@ -62,14 +133,25 @@ pub(super) fn send_virtual_mic_cue(
     if ack.event_type != "bridge.translation.ack"
         || ack.error_code.is_some()
         || ack.accepted_frames != pcm.len()
+        || ack.request_id != header.request_id
+        || ack.frame_id != header.frame_id
+        || ack.session_id != authority.session_id
+        || ack.bridge_instance_id != authority.bridge_instance_id
+        || ack.source_generation != authority.source_generation
+        || ack.source_generation_token != authority.source_generation_token
+        || ack.playback_owner_generation != authority.playback_owner_generation
+        || ack.physical_playback_device_id != authority.physical_playback_device_id
     {
-        return Err(format!("Bridge rejected virtual microphone cue: {ack:?}"));
+        return Err(format!(
+            "Bridge did not accept and echo the virtual microphone cue authority: {ack:?}"
+        ));
     }
     Ok(ack)
 }
 
 pub(super) fn collect_cue_statuses(
     pipe_name: &str,
+    authority: &TranslationAuthority,
     cue_id: &str,
     timeout: Duration,
 ) -> Result<Vec<CueStatusTimelineEventEvidence>, String> {
@@ -92,6 +174,7 @@ pub(super) fn collect_cue_statuses(
         if header["type"].as_str() == Some("bridge.translation.status") {
             let event: TranslationPlaybackStatusEvent =
                 serde_json::from_value(header).map_err(error_text)?;
+            authority.validate_status_event(&event)?;
             acknowledge_translation_status(reader.get_mut(), &event)?;
             if event.cue_id == cue_id {
                 if event.playback_status.is_terminal() {
@@ -154,7 +237,7 @@ pub(super) fn unix_ms() -> u64 {
 }
 
 fn build_virtual_mic_header(
-    session_id: &str,
+    authority: &TranslationAuthority,
     cue_id: &str,
     frame_count: usize,
     payload_bytes: usize,
@@ -163,7 +246,7 @@ fn build_virtual_mic_header(
     AudioFrameHeader {
         event_type: "bridge.translation.frame".to_string(),
         request_id: format!("virtual-mic-target-capture-{created_at_ms}"),
-        session_id: session_id.to_string(),
+        session_id: authority.session_id.clone(),
         frame_id: format!("virtual-mic-target-frame-{created_at_ms}"),
         stream_id: "virtual-mic-target-capture".to_string(),
         sample_rate_hz: 48_000,
@@ -173,11 +256,11 @@ fn build_virtual_mic_header(
         timestamp_ms: created_at_ms,
         payload_bytes,
         bridge_process_id: None,
-        bridge_instance_id: None,
-        playback_owner_generation: None,
-        source_generation: None,
-        source_generation_token: None,
-        physical_playback_device_id: None,
+        bridge_instance_id: Some(authority.bridge_instance_id.clone()),
+        playback_owner_generation: Some(authority.playback_owner_generation),
+        source_generation: Some(authority.source_generation),
+        source_generation_token: Some(authority.source_generation_token.clone()),
+        physical_playback_device_id: Some(authority.physical_playback_device_id.clone()),
         cue_id: Some(cue_id.to_string()),
         created_at_ms: Some(created_at_ms),
         estimated_duration_ms: Some((frame_count as u64 * 1_000).div_ceil(48_000)),
@@ -188,6 +271,21 @@ fn build_virtual_mic_header(
         translation_sink: Some(TranslationAudioSink::VirtualMic),
         route_direction: Some(AudioRouteDirection::Outbound),
     }
+}
+
+fn required_nonempty_string(value: &Value, field: &str) -> Result<String, String> {
+    value[field]
+        .as_str()
+        .filter(|field_value| !field_value.trim().is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("Bridge init omitted current {field} authority: {value}"))
+}
+
+fn required_u64(value: &Value, field: &str) -> Result<u64, String> {
+    value[field]
+        .as_u64()
+        .filter(|field_value| *field_value > 0)
+        .ok_or_else(|| format!("Bridge init omitted current {field} authority: {value}"))
 }
 
 fn read_framed_json<T: serde::de::DeserializeOwned>(pipe: &mut File) -> Result<T, String> {
@@ -256,7 +354,15 @@ mod tests {
 
     #[test]
     fn virtual_mic_frame_is_explicitly_outbound_and_generation_chunked() {
-        let header = build_virtual_mic_header("session", "cue", 960, 1_920, 42);
+        let authority = TranslationAuthority {
+            session_id: "session".to_string(),
+            bridge_instance_id: "bridge-instance".to_string(),
+            source_generation: 41,
+            source_generation_token: "bridge-instance:session:41".to_string(),
+            playback_owner_generation: 73,
+            physical_playback_device_id: "physical-endpoint".to_string(),
+        };
+        let header = build_virtual_mic_header(&authority, "cue", 960, 1_920, 42);
         assert_eq!(header.translation_sink, Some(TranslationAudioSink::VirtualMic));
         assert_eq!(header.route_direction, Some(AudioRouteDirection::Outbound));
         assert_eq!(header.chunk_index, Some(0));
@@ -265,5 +371,23 @@ mod tests {
         assert_eq!(header.sample_rate_hz, 48_000);
         assert_eq!(header.channel_count, 1);
         assert_eq!(header.payload_bytes, 1_920);
+        assert_eq!(header.session_id, authority.session_id);
+        assert_eq!(
+            header.bridge_instance_id.as_deref(),
+            Some(authority.bridge_instance_id.as_str())
+        );
+        assert_eq!(header.source_generation, Some(authority.source_generation));
+        assert_eq!(
+            header.source_generation_token.as_deref(),
+            Some(authority.source_generation_token.as_str())
+        );
+        assert_eq!(
+            header.playback_owner_generation,
+            Some(authority.playback_owner_generation)
+        );
+        assert_eq!(
+            header.physical_playback_device_id.as_deref(),
+            Some(authority.physical_playback_device_id.as_str())
+        );
     }
 }

@@ -504,6 +504,115 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
   assert.doesNotMatch(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /omni-desktop-shell|DashScope|providerId/i);
 });
 
+test('zero-provider readiness virtual-mic probe binds the current Bridge authority and preserves raw acceptance and capture evidence', () => {
+  const targetCaptureApp = fs.readFileSync(
+    path.join(repoRoot, 'apps/bridge-service-native/src/bin/omni-virtual-mic-target-capture.rs'),
+    'utf8',
+  );
+  const targetCaptureIpc = fs.readFileSync(
+    path.join(repoRoot, 'apps/bridge-service-native/src/bin/virtual_mic_target_capture/ipc.rs'),
+    'utf8',
+  );
+  const driverTest = fs.readFileSync(
+    path.join(repoRoot, 'scripts/installer/test-development-driver.ps1'),
+    'utf8',
+  );
+  const elevatedRequest = fs.readFileSync(
+    path.join(repoRoot, 'scripts/installer/request-elevated-driver-operation.ps1'),
+    'utf8',
+  );
+  const elevatedOperation = fs.readFileSync(
+    path.join(repoRoot, 'scripts/installer/invoke-elevated-driver-operation.ps1'),
+    'utf8',
+  );
+  const deviceProbe = fs.readFileSync(
+    path.join(repoRoot, 'scripts/installer/virtual-speaker-device.ps1'),
+    'utf8',
+  );
+
+  // The formal zero-Provider worker readiness must reach the real production
+  // capture process and preserve its raw device artifacts; helper-only or
+  // aggregate-counter readiness is not a substitute for target capture.
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /VirtualMicEvidenceOutputDirectory/);
+  assert.match(driverTest, /Invoke-OmniVirtualMicTargetCaptureProbe/);
+  assert.match(deviceProbe, /omni-virtual-mic-target-capture\.exe/);
+  assert.match(deviceProbe, /--output-directory/);
+  for (const artifact of [
+    'virtual-mic-capture.wav',
+    'virtual-mic-capture-probe.json',
+    'runtime-snapshot.json',
+  ]) {
+    assert.match(targetCaptureApp, new RegExp(artifact.replace('.', '\\.')));
+  }
+
+  // Bridge authority requires a concrete playback owner. The profile's exact
+  // endpoint id must cross the coordinator/UAC/driver/probe boundary unchanged;
+  // an empty or "default" alias is not a production authority.
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /physicalPlaybackDeviceId/);
+  for (const boundary of [elevatedRequest, elevatedOperation, driverTest, deviceProbe]) {
+    assert.match(boundary, /PhysicalPlaybackDeviceId/);
+  }
+  assert.match(deviceProbe, /--physical-playback-device-id/);
+  assert.match(targetCaptureApp, /--physical-playback-device-id/);
+  assert.match(targetCaptureApp, /physical playback device id[^\n]*(?:empty|default)/i);
+  assert.match(targetCaptureApp, /"physicalPlaybackDeviceId":\s*physical_playback_device_id/);
+
+  // This is intentionally checked at the serialized production frame, not at
+  // a convenience helper: every member must be present and sourced rather than
+  // reset to the legacy empty tuple that the real Bridge deterministically nacks.
+  const headerBuilder = targetCaptureIpc.slice(
+    targetCaptureIpc.indexOf('fn build_virtual_mic_header'),
+    targetCaptureIpc.indexOf('fn read_framed_json'),
+  );
+  for (const field of [
+    'bridge_instance_id',
+    'source_generation',
+    'source_generation_token',
+    'playback_owner_generation',
+    'physical_playback_device_id',
+  ]) {
+    assert.doesNotMatch(
+      headerBuilder,
+      new RegExp(`${field}:\\s*None`),
+      `${field} must be bound on the production probe frame`,
+    );
+    assert.match(
+      headerBuilder,
+      new RegExp(`${field}:\\s*Some\\(`),
+      `${field} must be serialized as part of the current authority tuple`,
+    );
+  }
+
+  // Attempted, Bridge-accepted, Bridge-committed, and device-played remain
+  // separate oracles. In particular, counters cannot replace the original ACK
+  // or the capture fingerprint computed from the target application's PCM.
+  const runProbe = targetCaptureApp.slice(
+    targetCaptureApp.indexOf('fn run_probe'),
+    targetCaptureApp.indexOf('struct BridgeIdentity'),
+  );
+  const attempted = runProbe.indexOf('send_virtual_mic_cue');
+  const committed = runProbe.indexOf('collect_cue_statuses');
+  const captured = runProbe.indexOf('wait_for_capture_result');
+  const played = runProbe.indexOf('find_unique_fingerprint');
+  const counters = runProbe.indexOf('CounterEvidence::from_snapshots');
+  assert.ok(attempted >= 0 && attempted < committed);
+  assert.ok(committed < captured && captured < played && played < counters);
+  assert.match(targetCaptureIpc, /ack\.event_type != "bridge\.translation\.ack"/);
+  assert.match(targetCaptureIpc, /ack\.accepted_frames != pcm\.len\(\)/);
+  for (const ackField of [
+    'session_id',
+    'bridge_instance_id',
+    'source_generation',
+    'source_generation_token',
+    'playback_owner_generation',
+    'physical_playback_device_id',
+  ]) {
+    assert.match(targetCaptureIpc, new RegExp(`ack\\.${ackField}`));
+  }
+  assert.match(targetCaptureApp, /CueLifecycleEvidence::from_timeline/);
+  assert.match(targetCaptureApp, /require_fingerprint_spectrum/);
+});
+
 test('interactive shard PowerShell emitters use shard authority schema v2', () => {
   const launcher = fs.readFileSync(
     path.join(repoRoot, 'scripts/testing/run-watch-mode-interactive-task.ps1'),

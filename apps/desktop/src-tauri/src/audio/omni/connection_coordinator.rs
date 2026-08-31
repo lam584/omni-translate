@@ -1,4 +1,5 @@
 use super::*;
+use super::realtime_socket::ReconnectedRealtimeSocket;
 
 // Continuous media often has no clean silence boundary. One second is both the
 // observed safe provider buffer size and the earliest existing silence path,
@@ -148,6 +149,8 @@ pub(super) struct OmniReconnectState<S: RealtimeSocket> {
     /// Set when a reconnect replaced the socket, so the worker can drop the
     /// manual response gate and stale response output tied to the old session.
     pub(super) socket_reconnected: bool,
+    /// Exact `session.update` admitted and sent on the replacement socket.
+    pub(super) reconnected_session_update: Option<Value>,
 }
 
 pub(super) struct OmniConnectionCoordinator;
@@ -259,8 +262,9 @@ impl OmniConnectionCoordinator {
                 "voice-fallback",
                 &format!("provider rejected voice: {err_msg}"),
             ) {
-                Ok(new_socket) => {
-                    state.socket = new_socket;
+                Ok(reconnected) => {
+                    state.socket = reconnected.socket;
+                    state.reconnected_session_update = Some(reconnected.session_update);
                     state.socket_reconnected = true;
                 }
                 Err(reconnect_error) => {
@@ -326,7 +330,7 @@ impl OmniConnectionCoordinator {
         provider_input_budget: &ProviderInputBudget,
     ) -> Result<OmniReconnectState<C::Socket>, String> {
         let _ = diag_log(app, "omni", "warning", "[SOCKET] WebSocket closed");
-        state.socket = Self::reconnect_socket(
+        let reconnected = Self::reconnect_socket(
             &mut state,
             connector,
             app,
@@ -342,6 +346,8 @@ impl OmniConnectionCoordinator {
             "socket-close",
             "provider closed the WebSocket",
         )?;
+        state.socket = reconnected.socket;
+        state.reconnected_session_update = Some(reconnected.session_update);
         state.socket_reconnected = true;
         Ok(state)
     }
@@ -387,7 +393,7 @@ impl OmniConnectionCoordinator {
             "warning",
             format!("[SOCKET] read error: {error}"),
         );
-        state.socket = Self::reconnect_socket(
+        let reconnected = Self::reconnect_socket(
             &mut state,
             connector,
             app,
@@ -414,6 +420,8 @@ impl OmniConnectionCoordinator {
                 )
             }
         })?;
+        state.socket = reconnected.socket;
+        state.reconnected_session_update = Some(reconnected.session_update);
         state.socket_reconnected = true;
         Ok(state)
     }
@@ -437,7 +445,7 @@ impl OmniConnectionCoordinator {
         provider_input_budget: &ProviderInputBudget,
         reconnect_trigger: &str,
         reason: &str,
-    ) -> Result<C::Socket, String> {
+    ) -> Result<ReconnectedRealtimeSocket<C::Socket>, String> {
         provider_input_budget.authorize_reconnect_before_connect(reconnect_trigger)?;
         try_reconnect(
             connector,
@@ -1046,9 +1054,12 @@ mod strict_reconnect_authority_tests {
             _output_mode: OmniOutputMode,
             _source_language: &str,
             _target_language: &str,
-        ) -> Result<Self::Socket, String> {
+        ) -> Result<ReconnectedRealtimeSocket<Self::Socket>, String> {
             self.attempts.fetch_add(1, Ordering::SeqCst);
-            Ok(CountingSocket)
+            Ok(ReconnectedRealtimeSocket {
+                socket: CountingSocket,
+                session_update: json!({"type":"session.update"}),
+            })
         }
     }
 
@@ -1068,6 +1079,7 @@ mod strict_reconnect_authority_tests {
             active_voice: active_voice.to_string(),
             voice_fallback_applied: false,
             socket_reconnected: false,
+            reconnected_session_update: None,
         }
     }
 
@@ -1376,6 +1388,9 @@ impl OmniConnectionCoordinator {
 
 pub(super) struct OmniConnectedSession {
     pub(super) socket: tungstenite::WebSocket<MaybeTlsStream<TcpStream>>,
+    /// The exact JSON value admitted and written to this socket. Consumers
+    /// bind server `session.updated` to this value, never to a reconstruction.
+    pub(super) session_update: Value,
     pub(super) trace_call: crate::diagnostics::model_trace::ModelTraceCall,
     pub(super) session_started_at: SystemTime,
     pub(super) active_voice: String,
@@ -1428,6 +1443,22 @@ impl OmniConnectionCoordinator {
             ));
         }
         let request = build_dashscope_ws_request(provider)?;
+        let active_voice = voice.to_string();
+        let session_cfg = build_omni_session_update_for_provider_with_output_mode(
+            provider,
+            &active_voice,
+            &instructions,
+            audio_mode,
+            source_language,
+            &target_language,
+            output_mode,
+        );
+        if crate::audio::events::is_livetranslate_route_model(provider, &provider.model) {
+            crate::audio::bailian_protocol::admit_livetranslate_client_event_for_provider(
+                provider,
+                &session_cfg,
+            )?;
+        }
 
         store
             .watch_session_report
@@ -1490,17 +1521,7 @@ impl OmniConnectionCoordinator {
             format!("[CONNECT] 已连接 Omni 服务, model={}", provider.model),
         );
 
-        let active_voice = voice.to_string();
         let voice_fallback_applied = false;
-        let session_cfg = build_omni_session_update_for_provider_with_output_mode(
-            provider,
-            &active_voice,
-            &instructions,
-            audio_mode,
-            source_language,
-            &target_language,
-            output_mode,
-        );
         let input_audio_format = session_cfg
             .pointer("/session/input_audio_format")
             .and_then(Value::as_str)
@@ -1576,6 +1597,7 @@ impl OmniConnectionCoordinator {
         );
         Ok(OmniConnectedSession {
             socket,
+            session_update: session_cfg,
             trace_call,
             session_started_at,
             active_voice,

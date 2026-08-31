@@ -16,6 +16,7 @@ import {
   PROCESS_EXCLUSION_RESTART_QUIET_SECONDS,
   balancedReleasePlanFailure,
 } from './watch-mode-balanced-release-plan.mjs';
+import { deriveWatchModelProtocolIdentity } from './watch-mode-model-protocol-authority.mjs';
 
 test('balanced release plan binds the sole formal LiveTranslate model and exact input samples', () => {
   assert.deepEqual(RELEASE_MODELS, ['qwen3.5-livetranslate-flash-realtime']);
@@ -37,6 +38,10 @@ test('balanced release plan binds the sole formal LiveTranslate model and exact 
   assert.equal(PAIRWISE_LIVE_CELLS.length, 3);
   assert.equal(MODEL_STABILITY_CELLS.length, 1);
   assert.equal(LIVE_LLM_CELLS.length, 4);
+  assert.ok(LIVE_LLM_CELLS.every((cell) => (
+    JSON.stringify(cell.modelProtocolProfileIdentity)
+      === JSON.stringify(deriveWatchModelProtocolIdentity(cell.modelId))
+  )));
   assert.equal(BALANCED_RELEASE_CELLS.length, 7);
   assert.deepEqual(
     LIVE_LLM_CELLS.map((cell) => cell.maxExternalAudioSamples),
@@ -154,7 +159,7 @@ test('formal Watch documentation stays aligned with the LiveTranslate-only relea
   assert.match(liveGuide, /10,100,180/u);
   assert.doesNotMatch(liveGuide, /8 份 live report|9 格本地隔离 authority|4 分钟配对时长|7 分钟稳定时长/u);
 
-  assert.match(qualityGuide, /schema v5[\s\S]*4 份付费 live `report\.json`[\s\S]*3 个零 LLM 本地格/u);
+  assert.match(qualityGuide, /schema v6[\s\S]*4 份付费 live `report\.json`[\s\S]*3 个零 LLM 本地格/u);
   assert.doesNotMatch(qualityGuide, /8 份付费 live|6 个零 LLM 本地格|两条 3 分钟 `model-stability`/u);
 
   assert.match(fixtureGuide, /evidence-driven terminal/u);

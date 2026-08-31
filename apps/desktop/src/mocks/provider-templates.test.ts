@@ -14,6 +14,17 @@ describe('default provider template', () => {
   it('uses Aliyun Bailian realtime as the desktop default', () => {
     expect(defaultProviderTemplate.id).toBe('template-dashscope-realtime');
     expect(defaultProviderTemplate.displayName).toContain('API');
+    expect(defaultProviderTemplate.realtimeProtocol).toBeUndefined();
+    expect(defaultProviderTemplate.defaultDraft.model).toBe('qwen3.5-livetranslate-flash-realtime');
+  });
+
+  it('keeps text-only DashScope presets out of speech scenarios', () => {
+    const dashscope = providerTemplates.find((template) => template.id === 'template-dashscope-realtime');
+    for (const modelId of ['qwen-plus', 'qwen-max', 'qwen-turbo']) {
+      expect(dashscope?.presetModels.find((model) => model.model === modelId)?.capabilities).toEqual([
+        'text-generation',
+      ]);
+    }
   });
 
   it('includes common provider presets in the platform catalog', () => {
@@ -56,9 +67,9 @@ describe('default provider template', () => {
       ['subtitle-translate', []],
     ]);
     expect(buildDefaultSceneModelAssignments(dashscope!).map((item) => [item.scenario, item.modelIds])).toEqual([
-      ['watch', ['qwen3.5-omni-plus-realtime']],
-      ['game', ['qwen3.5-omni-plus-realtime']],
-      ['voice-room', ['qwen3.5-omni-plus-realtime']],
+      ['watch', ['qwen3.5-livetranslate-flash-realtime']],
+      ['game', ['qwen3.5-livetranslate-flash-realtime']],
+      ['voice-room', ['qwen3.5-livetranslate-flash-realtime']],
       ['subtitle-translate', ['qwen3.6-flash']],
     ]);
     expect(buildDefaultSceneModelAssignments(deepseek!).find((item) => item.scenario === 'subtitle-translate')?.modelIds).toEqual(['deepseek-v4-flash']);

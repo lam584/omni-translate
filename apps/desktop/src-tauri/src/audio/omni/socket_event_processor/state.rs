@@ -67,5 +67,6 @@ pub(in crate::audio::omni) struct OmniSocketPollResult<S: RealtimeSocket, R: tau
     pub(in crate::audio::omni) state: OmniSocketEventState<S, R>,
     pub(in crate::audio::omni) skip_tick: bool,
     pub(in crate::audio::omni) socket_reconnected: bool,
+    pub(in crate::audio::omni) reconnected_session_update: Option<Value>,
     pub(in crate::audio::omni) stop_worker: bool,
 }

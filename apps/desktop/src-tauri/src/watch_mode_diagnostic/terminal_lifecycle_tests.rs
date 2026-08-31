@@ -182,6 +182,7 @@ fn strict_terminal_lifecycle_is_owned_by_real_provider_and_renderer_receipts() {
     store
         .begin_strict_watch_terminal_lifecycle("run-1", "cell-1", "lease-1")
         .expect("strict lifecycle begins once");
+    store.record_strict_watch_test_session_updated().unwrap();
     store
         .record_strict_watch_provider_append(320)
         .expect("successful socket append is recorded");
@@ -230,6 +231,7 @@ fn strict_terminal_lifecycle_accepts_final_renderer_ack_before_session_finished(
     store
         .begin_strict_watch_terminal_lifecycle("run-early-ack", "cell-1", "lease-1")
         .unwrap();
+    store.record_strict_watch_test_session_updated().unwrap();
     store.record_strict_watch_provider_append(320).unwrap();
     store.record_strict_watch_provider_input_closed().unwrap();
     store.record_strict_watch_session_finish_sent().unwrap();
@@ -262,6 +264,7 @@ fn strict_terminal_lifecycle_rejects_duplicate_finish_and_post_finish_provider_w
     duplicate
         .begin_strict_watch_terminal_lifecycle("run-1", "cell-1", "lease-1")
         .unwrap();
+    duplicate.record_strict_watch_test_session_updated().unwrap();
     duplicate.record_strict_watch_provider_append(320).unwrap();
     duplicate.record_strict_watch_provider_input_closed().unwrap();
     duplicate.record_strict_watch_session_finish_sent().unwrap();
@@ -272,6 +275,7 @@ fn strict_terminal_lifecycle_rejects_duplicate_finish_and_post_finish_provider_w
     post_finish
         .begin_strict_watch_terminal_lifecycle("run-2", "cell-2", "lease-2")
         .unwrap();
+    post_finish.record_strict_watch_test_session_updated().unwrap();
     post_finish.record_strict_watch_provider_append(320).unwrap();
     post_finish.record_strict_watch_provider_input_closed().unwrap();
     post_finish.record_strict_watch_session_finish_sent().unwrap();

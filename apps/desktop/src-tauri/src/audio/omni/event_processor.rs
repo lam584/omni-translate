@@ -115,6 +115,7 @@ impl OmniEventProcessor {
         direction: &str,
         session_generation: u64,
         session_started_at: &SystemTime,
+        session_created_is_ready: bool,
         event_type: &str,
         evt: &Value,
         queued_audio_chunks: usize,
@@ -125,6 +126,7 @@ impl OmniEventProcessor {
         let was_ready_for_audio = state.session_ready_for_audio;
         handle_session_ready_event(
             app,
+            session_created_is_ready,
             event_type,
             evt,
             &mut state.session_ready_for_audio,

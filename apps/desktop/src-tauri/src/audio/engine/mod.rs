@@ -1036,16 +1036,17 @@ mod tests {
     }
 
     #[test]
-    fn route_spec_skips_local_vad_only_for_realtime_omni_models_of_the_route_direction() {
+    fn route_spec_skips_local_vad_only_for_manifest_authorized_realtime_models_of_the_route_direction() {
         let config = json!({
           "providers": [{
             "templateId": "template-dashscope-realtime",
             "providerId": "dashscope",
             "kind": "dashscope",
             "displayName": "DashScope",
-            "model": "qwen3.5-omni-plus-realtime",
+            "model": "qwen3.5-livetranslate-flash-realtime",
             "baseUrl": "https://dashscope.aliyuncs.com/api/v1",
             "transport": "websocket",
+            "region": "cn-beijing",
             "authRef": { "kind": "system", "reference": "dashscope", "headerName": "Authorization", "scheme": "bearer" },
             "streamEnabled": true,
             "timeoutMs": 30000,
@@ -1054,7 +1055,7 @@ mod tests {
             "localModelCapabilityRegistry": []
           }],
           "devices": {
-            "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+            "inboundVoiceModelId": "qwen3.5-livetranslate-flash-realtime",
             "outboundVoiceModelId": "gpt-4o-mini-transcribe",
             "inboundRoute": { "routeId": "inbound-route", "input": { "deviceId": "speaker-1" } },
             "outboundRoute": { "routeId": "outbound-route", "input": { "deviceId": "mic-7" } }
@@ -1062,41 +1063,56 @@ mod tests {
         });
 
         let inbound = RouteSpec::from_config(&config, "inbound").expect("inbound spec");
-        assert!(inbound.skip_local_vad, "omni realtime model does server-side VAD");
+        assert!(inbound.skip_local_vad, "the exact enabled manifest profile does server-side VAD");
 
         let outbound = RouteSpec::from_config(&config, "outbound").expect("outbound spec");
         assert!(!outbound.skip_local_vad, "non-realtime outbound model keeps local VAD");
 
         let unset = RouteSpec::from_config(&json!({ "devices": {} }), "inbound").expect("unset spec");
         assert!(!unset.skip_local_vad, "missing model id keeps local VAD");
+
+        let mut manifest_only = config.clone();
+        manifest_only["providers"][0]["model"] = json!("qwen3.5-omni-plus-realtime");
+        manifest_only["devices"]["inboundVoiceModelId"] =
+            json!("qwen3.5-omni-plus-realtime");
+        let denied = RouteSpec::from_config(&manifest_only, "inbound")
+            .expect("manifest-only route spec remains locally processable");
+        assert!(
+            !denied.skip_local_vad,
+            "a manifest-only adapter must not authorize server segmentation"
+        );
     }
 
     #[test]
-    fn route_spec_uses_registry_profile_for_unhinted_alias_vad_policy() {
+    fn route_spec_uses_exact_manifest_profile_for_registry_vad_policy() {
         let config = json!({
           "providers": [{
             "templateId": "template-dashscope-realtime",
             "providerId": "dashscope",
             "kind": "dashscope",
             "displayName": "DashScope",
-            "model": "qwen-audio-3.0-realtime-plus",
+            "model": "qwen3.5-livetranslate-flash-realtime",
             "baseUrl": "https://dashscope.aliyuncs.com/api/v1",
             "transport": "websocket",
+            "region": "cn-beijing",
             "authRef": { "kind": "system", "reference": "dashscope", "headerName": "Authorization", "scheme": "bearer" },
             "streamEnabled": true,
             "timeoutMs": 30000,
             "systemPromptTemplate": "",
             "sceneModelAssignments": [],
             "localModelCapabilityRegistry": [{
-              "id": "alias", "modelId": "qwen-audio-3.0-realtime-plus",
+              "id": "alias", "modelId": "qwen3.5-livetranslate-flash-realtime",
               "capabilities": ["speech-to-speech"],
-              "realtimeProtocol": "dashscope-omni",
+              "registryVersion": "bailian-model-protocol-registry/v1",
+              "profileId": "bailian.livetranslate.realtime.ws",
+              "profileVersion": 1,
+              "realtimeProtocol": "dashscope-livetranslate",
               "realtimeAudioMode": "server_vad",
               "interactionCapabilities": ["streaming", "auto_vad"]
             }]
           }],
           "devices": {
-            "inboundVoiceModelId": "qwen-audio-3.0-realtime-plus",
+            "inboundVoiceModelId": "qwen3.5-livetranslate-flash-realtime",
             "inboundRoute": { "routeId": "inbound-route", "input": { "deviceId": "speaker-1" } }
           }
         });

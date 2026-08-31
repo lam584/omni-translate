@@ -10,6 +10,7 @@
 use std::net::TcpStream;
 
 use tauri::AppHandle;
+use serde_json::Value;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::Message;
 
@@ -24,6 +25,13 @@ pub(crate) trait RealtimeSocket {
 }
 
 pub(crate) type TungsteniteSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
+
+/// Replacement socket plus the exact `session.update` value admitted and
+/// written to that socket. The value is provenance, not a rebuild hint.
+pub(crate) struct ReconnectedRealtimeSocket<S> {
+    pub(crate) socket: S,
+    pub(crate) session_update: Value,
+}
 
 impl RealtimeSocket for TungsteniteSocket {
     fn read_message(&mut self) -> Result<Message, tungstenite::Error> {
@@ -51,7 +59,7 @@ pub(crate) trait RealtimeSocketConnector {
         output_mode: OmniOutputMode,
         source_language: &str,
         target_language: &str,
-    ) -> Result<Self::Socket, String>;
+    ) -> Result<ReconnectedRealtimeSocket<Self::Socket>, String>;
 }
 
 /// Production connector: real WebSocket connect + session.update replay.
@@ -70,7 +78,7 @@ impl RealtimeSocketConnector for TungsteniteConnector {
         output_mode: OmniOutputMode,
         source_language: &str,
         target_language: &str,
-    ) -> Result<Self::Socket, String> {
+    ) -> Result<ReconnectedRealtimeSocket<Self::Socket>, String> {
         reconnect_socket(
             app,
             provider,
@@ -92,6 +100,7 @@ pub(crate) mod scripted {
     use serde_json::Value;
 
     use super::*;
+    use crate::audio::omni::build_omni_session_update_for_provider_with_output_mode;
 
     /// One step of a scripted realtime session, consumed per `read_message`.
     #[derive(Clone, Debug)]
@@ -168,22 +177,41 @@ pub(crate) mod scripted {
         fn reconnect<R: tauri::Runtime>(
             &self,
             _app: &AppHandle<R>,
-            _provider: &ProviderDraftInput,
-            _voice: &str,
-            _instructions: &str,
-            _audio_mode: RealtimeAudioMode,
-            _output_mode: OmniOutputMode,
-            _source_language: &str,
-            _target_language: &str,
-        ) -> Result<Self::Socket, String> {
+            provider: &ProviderDraftInput,
+            voice: &str,
+            instructions: &str,
+            audio_mode: RealtimeAudioMode,
+            output_mode: OmniOutputMode,
+            source_language: &str,
+            target_language: &str,
+        ) -> Result<ReconnectedRealtimeSocket<Self::Socket>, String> {
+            let session_update = build_omni_session_update_for_provider_with_output_mode(
+                provider,
+                voice,
+                instructions,
+                audio_mode,
+                source_language,
+                target_language,
+                output_mode,
+            );
+            if crate::audio::events::is_livetranslate_route_model(provider, &provider.model) {
+                crate::audio::bailian_protocol::admit_livetranslate_client_event_for_provider(
+                    provider,
+                    &session_update,
+                )?;
+            }
             let mut shared = self.shared.lock().expect("scripted state");
             shared.reconnect_count += 1;
             let script = shared
                 .reconnect_scripts
                 .pop_front()
                 .ok_or_else(|| "scripted connector has no further sessions".to_string())?;
+            shared.sent.push(session_update.clone());
             drop(shared);
-            Ok(ScriptedRealtimeSocket::new(script, self.shared.clone()))
+            Ok(ReconnectedRealtimeSocket {
+                socket: ScriptedRealtimeSocket::new(script, self.shared.clone()),
+                session_update,
+            })
         }
     }
 }

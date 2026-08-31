@@ -1,9 +1,15 @@
-// v10 is intentionally incompatible with the former uniform-duration budget
+import {
+  deriveWatchModelProtocolIdentity,
+  watchModelProtocolIdentityFailure,
+} from './watch-mode-model-protocol-authority.mjs';
+
+// v11 binds every paid cell to the exact registry-authorized model protocol
+// profile identity while preserving the v10 sample and timeout budgets.
 // matrix. A strict receipt may cover only the exact LiveTranslate release
 // model and the explicitly validated default-speaker endpoint. Process
 // exclusion restart timing is explicit and independent of watchdog duration.
-export const BALANCED_RELEASE_PLAN_ID = 'watch-mode-balanced-v10-livetranslate-terminal-authority';
-export const BALANCED_RELEASE_PLAN_SCHEMA_VERSION = 10;
+export const BALANCED_RELEASE_PLAN_ID = 'watch-mode-balanced-v11-livetranslate-profile-authority';
+export const BALANCED_RELEASE_PLAN_SCHEMA_VERSION = 11;
 export const CANONICAL_PROVIDER_REFERENCE_FRAMES = 2_013_045;
 export const PROCESS_EXCLUSION_RESTART_AFTER_SECONDS = 90;
 export const PROCESS_EXCLUSION_RESTART_QUIET_SECONDS = 45;
@@ -85,6 +91,9 @@ const cell = ({ tier, modelId = null, feedbackLoopPrevention, deviceClass }) => 
   auxiliaryExternalAudioSeconds: 0,
   subtitleTranslationMode: tier === 'local-isolation' ? 'disabled' : 'native',
   modelId,
+  ...(paid ? {
+    modelProtocolProfileIdentity: deriveWatchModelProtocolIdentity(modelId),
+  } : {}),
   feedbackLoopPrevention,
   deviceClass,
   });
@@ -224,6 +233,14 @@ export function balancedReleasePlanFailure(plan) {
       if (recorded?.[key] !== expected[key]) {
         return `balanced release validation plan cell ${expected.cellId} has invalid ${key}`;
       }
+    }
+    if (expected.providerMode !== 'disabled') {
+      const profileFailure = watchModelProtocolIdentityFailure(
+        recorded?.modelProtocolProfileIdentity,
+        expected.modelProtocolProfileIdentity,
+        `balanced release validation plan cell ${expected.cellId} model protocol profile identity`,
+      );
+      if (profileFailure) return profileFailure;
     }
   }
   if (Number(plan.paidLlmSeconds) !== BALANCED_RELEASE_PLAN.paidLlmSeconds) {

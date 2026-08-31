@@ -222,6 +222,7 @@ describe('ProvidersPage helpers', () => {
 
       expect(patch.probe?.checkedAt).toBe(PENDING_PROBE_CHECKED_AT);
       expect(patch.probe?.profileId.endsWith('-pending')).toBe(true);
+      expect(patch).not.toHaveProperty('templateRealtimeProtocol');
     });
   });
 });

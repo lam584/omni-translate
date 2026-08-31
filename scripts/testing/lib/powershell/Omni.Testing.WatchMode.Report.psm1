@@ -95,10 +95,10 @@ function Assert-WatchTerminalAuthorityFile {
   $events = @($terminal.events)
   $requiredStages = @(
     'mediaPlaybackCompleted', 'inputCompleteSignaled', 'inputCompleteObserved',
-    'lastProviderAppend', 'sessionFinishSent', 'sessionFinishedReceived',
+    'sessionUpdatedReceived', 'lastProviderAppend', 'sessionFinishSent', 'sessionFinishedReceived',
     'localPlaybackQuiescent', 'finalRendererAck', 'reportWritten'
   )
-  if ($events.Count -ne 10) { throw 'evidence-driven terminal requires exactly ten raw owner stages' }
+  if ($events.Count -ne 11) { throw 'evidence-driven terminal requires exactly eleven raw owner stages' }
   $startedAt = [int64]$terminal.startedAtUnixMs
   $completedAt = [int64]$terminal.completedAtUnixMs
   if ($startedAt -le 0 -or $completedAt -lt $startedAt) {
@@ -121,7 +121,7 @@ function Assert-WatchTerminalAuthorityFile {
     if (-not $seenStages.Contains($stage)) { throw "evidence-driven terminal is missing raw stage $stage" }
   }
   $responseStageCount = @('lastResponseAudioDone', 'responseDone').Where({ $seenStages.Contains($_) }).Count
-  if ($responseStageCount -ne 1 -or $seenStages.Count -ne 10) {
+  if ($responseStageCount -ne 1 -or $seenStages.Count -ne 11) {
     throw 'evidence-driven terminal requires exactly one response terminal stage and no unknown stages'
   }
   if ([string]$events[-1].stage -cne 'reportWritten') {
@@ -226,7 +226,12 @@ function Get-WatchSessionReportDeadlineUtc {
     [Parameter(Mandatory = $true)][int]$AutoStopAfterSeconds,
     [int]$CompletionGraceSeconds = 120
   )
-  return $LaunchedAtUtc.AddSeconds($ReadyTimeoutSeconds + $AutoStopAfterSeconds + $CompletionGraceSeconds)
+  # Readiness and the input-complete watchdog share the Desktop launch clock.
+  # The Node runner owns its separate scheduling envelope, so this inner wait
+  # adds only the slower launch-clock phase and report-receipt grace.
+  return $LaunchedAtUtc.AddSeconds(
+    [Math]::Max($ReadyTimeoutSeconds, $AutoStopAfterSeconds) + $CompletionGraceSeconds
+  )
 }
 
 function Write-LatestWatchModeSummary {

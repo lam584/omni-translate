@@ -1,3 +1,15 @@
+#[path = "runners/connection.rs"]
+mod connection;
+#[path = "runners/livetranslate_plan.rs"]
+mod livetranslate_plan;
+use connection::{
+    authorize_bailian_model_operation_for_benchmark_invocation,
+    connect_benchmark_websocket,
+};
+use livetranslate_plan::{
+    with_prepared_livetranslate_plan, PreparedLiveTranslateBenchmarkPlan,
+};
+
 pub(crate) async fn run_model_benchmark(
     app: AppHandle,
     model: String,
@@ -13,9 +25,34 @@ pub(crate) async fn run_model_benchmark(
     provider: Option<crate::provider::contracts::ProviderDraftInput>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let requested_provider_kind = provider_kind
+            .as_deref()
+            .or_else(|| provider.as_ref().map(|provider| provider.kind.as_str()))
+            .unwrap_or("dashscope")
+            .to_string();
+        let model_protocol_authority =
+            authorize_bailian_model_operation_for_benchmark_invocation(
+                &model,
+                &requested_provider_kind,
+                provider.as_ref(),
+                base_url.as_deref(),
+                auth_header_name.as_deref(),
+                auth_scheme.as_deref(),
+            )?;
         let resolved_profile = provider
             .as_ref()
             .map(|provider| crate::audio::events::resolve_realtime_profile(provider, &model));
+        if let Some(authority) = model_protocol_authority.as_ref() {
+            let resolved_authority = resolved_profile
+                .as_ref()
+                .and_then(|profile| profile.model_protocol_authority.as_ref());
+            if resolved_authority != Some(authority) {
+                return Err(
+                    "model_protocol.authorization_identity_mismatch: benchmark route resolution does not match the pre-connect invocation authority"
+                        .to_string(),
+                );
+            }
+        }
         let resolved_mode = resolved_profile
             .as_ref()
             .map(|profile| profile.realtime_audio_mode.as_str())
@@ -27,19 +64,31 @@ pub(crate) async fn run_model_benchmark(
             model: model.clone(),
             audio_mode,
             interaction_capabilities: interaction_capabilities.unwrap_or_default(),
-            provider_kind: provider_kind.unwrap_or_else(|| "dashscope".to_string()),
+            provider_kind: requested_provider_kind,
             base_url: base_url
                 .filter(|value| !value.trim().is_empty())
+                .or_else(|| provider.as_ref().map(|provider| provider.base_url.clone()))
                 .unwrap_or_else(|| DEFAULT_WS_BASE_URL.to_string()),
             auth_header_name: auth_header_name
                 .filter(|value| !value.trim().is_empty())
+                .or_else(|| {
+                    provider
+                        .as_ref()
+                        .map(|provider| provider.auth_ref.header_name.clone())
+                })
                 .unwrap_or_else(|| "Authorization".to_string()),
             auth_scheme: auth_scheme
                 .filter(|value| !value.trim().is_empty())
+                .or_else(|| {
+                    provider
+                        .as_ref()
+                        .map(|provider| provider.auth_ref.scheme.clone())
+                })
                 .unwrap_or_else(|| "bearer".to_string()),
             voice: "Ethan".to_string(),
             target_language: "zh".to_string(),
             protocol_dialect: resolved_profile.and_then(|profile| profile.protocol_dialect),
+            model_protocol_authority,
         };
 
         if !config.mp3_path.exists() {
@@ -163,42 +212,6 @@ struct IntermediateResult {
     raw: RawResult,
 }
 
-const BENCHMARK_CONNECT_MAX_ATTEMPTS: usize = 4;
-const BENCHMARK_CONNECT_INITIAL_BACKOFF_MS: u64 = 250;
-
-/// A benchmark is an explicit connectivity probe, but a single TCP attempt is
-/// too brittle on Windows when a VPN/TUN adapter has just changed routes. Keep
-/// retries bounded so a genuinely unavailable endpoint still fails quickly.
-fn connect_benchmark_websocket(
-    request: tungstenite::handshake::client::Request,
-    error_context: &str,
-) -> Result<
-    (
-        WebSocket<MaybeTlsStream<TcpStream>>,
-        tungstenite::handshake::client::Response,
-    ),
-    String,
-> {
-    let mut last_error = None;
-    for attempt in 1..=BENCHMARK_CONNECT_MAX_ATTEMPTS {
-        match connect(request.clone()) {
-            Ok(connected) => return Ok(connected),
-            Err(error) => {
-                last_error = Some(error);
-                if attempt < BENCHMARK_CONNECT_MAX_ATTEMPTS {
-                    let delay_ms = BENCHMARK_CONNECT_INITIAL_BACKOFF_MS << (attempt - 1);
-                    thread::sleep(Duration::from_millis(delay_ms));
-                }
-            }
-        }
-    }
-
-    Err(format!(
-        "{error_context} after {BENCHMARK_CONNECT_MAX_ATTEMPTS} attempts: {}",
-        last_error.expect("at least one websocket connection attempt")
-    ))
-}
-
 fn run_single_benchmark(
     _run_idx: usize,
     config: &BenchmarkConfig,
@@ -229,10 +242,11 @@ fn run_single_benchmark(
         return run_single_openai_benchmark(config, samples, audio_duration, progress);
     }
 
+    let requires_livetranslate_plan = config.provider_kind == "dashscope";
+
     // ── Phase 1: Connect ──
     let audio_mode_driver = benchmark_audio_mode_driver(config.audio_mode);
     let manual_response = audio_mode_driver.uses_manual_response();
-    let connect_start = Instant::now();
     let ws_url = build_default_benchmark_url(&config.base_url, &config.model)?;
     let mut request = ws_url
         .as_str()
@@ -245,8 +259,23 @@ fn run_single_benchmark(
             .map_err(|e| format!("auth header parse: {e}"))?,
     );
 
-    let (mut socket, _) = connect_benchmark_websocket(request, "connect failed")?;
-    let connect_ms = elapsed_ms(&connect_start);
+    let (mut live_translate_plan, mut socket, connect_ms) = if requires_livetranslate_plan {
+        let (plan, (socket, connect_ms)) = with_prepared_livetranslate_plan(
+            config,
+            samples,
+            || {
+                let connect_start = Instant::now();
+                let (socket, _) =
+                    connect_benchmark_websocket(config, request, "connect failed")?;
+                Ok((socket, elapsed_ms(&connect_start)))
+            },
+        )?;
+        (Some(plan), socket, connect_ms)
+    } else {
+        let connect_start = Instant::now();
+        let (socket, _) = connect_benchmark_websocket(config, request, "connect failed")?;
+        (None, socket, elapsed_ms(&connect_start))
+    };
     progress.run.connect_ms = connect_ms;
     progress.emit("running", "connected", "WebSocket 已连接", None);
 
@@ -254,11 +283,19 @@ fn run_single_benchmark(
 
     // ── Phase 2: Session setup ──
     let session_start = Instant::now();
-    let session_cfg = build_session_update(config);
+    let session_cfg = live_translate_plan
+        .as_ref()
+        .map(|plan| plan.session_update())
+        .cloned()
+        .unwrap_or_else(|| build_session_update(config));
     socket
         .send(Message::Text(session_cfg.to_string().into()))
         .map_err(|e| format!("session.update send: {e}"))?;
-    wait_session_ready(&mut socket)?;
+    if let Some(plan) = live_translate_plan.as_mut() {
+        plan.wait_until_ready(&mut socket)?;
+    } else {
+        wait_session_ready(&mut socket)?;
+    }
     let session_ready_ms = elapsed_ms(&session_start);
     progress.run.session_ready_ms = session_ready_ms;
     progress.emit("running", "session-ready", "Session 已就绪", None);
@@ -271,7 +308,10 @@ fn run_single_benchmark(
     let chunks: Vec<&[i16]> = samples.chunks(CHUNK_SAMPLES).collect();
     let audio_start = Instant::now();
 
-    let mut raw = RawResult::default();
+    let mut raw = RawResult {
+        live_translate_plan,
+        ..Default::default()
+    };
     progress.emit(
         "running",
         "audio-streaming",
@@ -279,7 +319,13 @@ fn run_single_benchmark(
         None,
     );
 
-    let idle_timeout = Duration::from_secs(10);
+    let requires_session_finished = config
+        .model_protocol_authority
+        .as_ref()
+        .is_some_and(|authority| {
+            authority.terminal_lifecycle == "session.finish->session.finished"
+        });
+    let idle_timeout = Duration::from_secs(if requires_session_finished { 15 } else { 10 });
     let mut last_event = Instant::now();
     let total_timeout = Duration::from_secs(TOTAL_TIMEOUT_SECS);
 
@@ -291,11 +337,18 @@ fn run_single_benchmark(
             &mut raw,
             &mut last_event,
             progress,
+            config.model_protocol_authority.as_ref(),
         )?;
 
         // 2. Send the next audio chunk
-        let encoded = base64_encode_i16(chunk);
-        let msg = crate::audio::omni::build_dashscope_audio_append(&encoded);
+        let msg = raw
+            .live_translate_plan
+            .as_ref()
+            .map(|plan| plan.audio_append(i).cloned())
+            .transpose()?
+            .unwrap_or_else(|| {
+                crate::audio::omni::build_dashscope_audio_append(&base64_encode_i16(chunk))
+            });
         socket
             .send(Message::Text(msg.to_string().into()))
             .map_err(|e| format!("audio send at chunk {i}: {e}"))?;
@@ -315,6 +368,7 @@ fn run_single_benchmark(
             deadline,
             Some(total_timeout),
             drain_available,
+            config.model_protocol_authority.as_ref(),
         )?;
 
         if audio_start.elapsed() > total_timeout {
@@ -322,28 +376,58 @@ fn run_single_benchmark(
         }
     }
 
+    if progress.run.audio_chunks_sent != chunks.len() {
+        return Err(format!(
+            "benchmark input watchdog expired before the authoritative audio completed: sentChunks={} expectedChunks={}",
+            progress.run.audio_chunks_sent,
+            chunks.len()
+        ));
+    }
     let audio_send_ms = finish_audio_send(progress, &audio_start, chunks.len());
     if manual_response {
+        let commit = raw
+            .live_translate_plan
+            .as_ref()
+            .and_then(|plan| plan.manual_commit())
+            .cloned()
+            .unwrap_or_else(crate::audio::omni::build_dashscope_input_audio_commit);
         socket
-            .send(Message::Text(
-                crate::audio::omni::build_dashscope_input_audio_commit()
-                    .to_string()
-                    .into(),
-            ))
+            .send(Message::Text(commit.to_string().into()))
             .map_err(|e| format!("audio commit send: {e}"))?;
-        if let Some(response_create) = config
-            .protocol_dialect
-            .or(Some(crate::audio::events::RealtimeProtocol::DashscopeOmni))
-            .and_then(crate::audio::omni::build_dashscope_response_create_for_protocol)
-        {
-            socket
-                .send(Message::Text(response_create.to_string().into()))
-                .map_err(|e| format!("response.create send: {e}"))?;
+        if raw.live_translate_plan.is_none() {
+            if let Some(response_create) = config
+                .protocol_dialect
+                .or(Some(crate::audio::events::RealtimeProtocol::DashscopeOmni))
+                .and_then(crate::audio::omni::build_dashscope_response_create_for_protocol)
+            {
+                socket
+                    .send(Message::Text(response_create.to_string().into()))
+                    .map_err(|e| format!("response.create send: {e}"))?;
+            }
         }
         progress.emit(
             "running",
             "response-requested",
             "音频发送完成，已请求模型生成完整响应",
+            None,
+        );
+    }
+    if requires_session_finished {
+        let finish = raw
+            .live_translate_plan
+            .as_mut()
+            .ok_or_else(|| {
+                "model_protocol.adapter_unavailable: session.finish has no typed LiveTranslate plan"
+                    .to_string()
+            })?
+            .take_session_finish()?;
+        socket
+            .send(Message::Text(finish.to_string().into()))
+            .map_err(|error| format!("session.finish send: {error}"))?;
+        progress.emit(
+            "running",
+            "session-finish-sent",
+            "音频发送完成，等待 LiveTranslate session.finished",
             None,
         );
     }
@@ -367,6 +451,7 @@ fn run_single_benchmark(
         session_ready_ms,
         audio_send_ms,
         chunks.len(),
+        config.model_protocol_authority.as_ref(),
     )
 }
 
@@ -395,7 +480,8 @@ fn run_single_openai_benchmark(
         .map_err(|e| format!("OpenAI request build failed: {e}"))?;
     apply_benchmark_auth(request.headers_mut(), config)?;
 
-    let (mut socket, _) = connect_benchmark_websocket(request, "OpenAI connect failed")?;
+    let (mut socket, _) =
+        connect_benchmark_websocket(config, request, "OpenAI connect failed")?;
     let connect_ms = elapsed_ms(&connect_start);
     progress.run.connect_ms = connect_ms;
     progress.emit(
@@ -454,6 +540,7 @@ fn run_single_openai_benchmark(
             &mut raw,
             &mut last_event,
             progress,
+            None,
         )?;
     }
 
@@ -490,6 +577,7 @@ fn run_single_openai_benchmark(
         session_ready_ms,
         audio_send_ms,
         chunks.len(),
+        None,
     )
 }
 
@@ -507,7 +595,8 @@ fn run_single_gemini_benchmark(
         .map_err(|e| format!("Gemini request build failed: {e}"))?;
     apply_benchmark_auth(request.headers_mut(), config)?;
 
-    let (mut socket, _) = connect_benchmark_websocket(request, "Gemini connect failed")?;
+    let (mut socket, _) =
+        connect_benchmark_websocket(config, request, "Gemini connect failed")?;
     let connect_ms = elapsed_ms(&connect_start);
     progress.run.connect_ms = connect_ms;
     progress.emit("running", "connected", "Gemini Live WebSocket 已连接", None);
@@ -568,6 +657,7 @@ fn run_single_gemini_benchmark(
             &mut raw,
             &mut last_event,
             progress,
+            None,
         )?;
     }
 
@@ -599,6 +689,7 @@ fn run_single_gemini_benchmark(
         session_ready_ms,
         audio_send_ms,
         chunks.len(),
+        None,
     )
 }
 
@@ -610,6 +701,7 @@ type DrainEventsFn = fn(
     &mut RawResult,
     &mut Instant,
     &mut BenchmarkProgressState,
+    Option<&crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile>,
 ) -> Result<(), String>;
 
 /// Marks the audio-send phase complete and returns its duration.
@@ -635,6 +727,9 @@ fn poll_events_until_deadline(
     deadline: Instant,
     total_timeout: Option<Duration>,
     drain: DrainEventsFn,
+    model_protocol_authority: Option<
+        &crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile,
+    >,
 ) -> Result<(), String> {
     while Instant::now() < deadline {
         if let Some(total) = total_timeout {
@@ -642,7 +737,14 @@ fn poll_events_until_deadline(
                 break;
             }
         }
-        drain(socket, audio_start, raw, last_event, progress)?;
+        drain(
+            socket,
+            audio_start,
+            raw,
+            last_event,
+            progress,
+            model_protocol_authority,
+        )?;
         let remain = deadline.saturating_duration_since(Instant::now());
         if remain > Duration::from_millis(1) {
             thread::sleep(remain.min(Duration::from_millis(5)));
@@ -659,10 +761,21 @@ fn poll_chunk_gap_events(
     raw: &mut RawResult,
     last_event: &mut Instant,
     progress: &mut BenchmarkProgressState,
+    model_protocol_authority: Option<
+        &crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile,
+    >,
 ) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_millis(CHUNK_SEND_INTERVAL_MS);
     poll_events_until_deadline(
-        socket, audio_start, raw, last_event, progress, deadline, None, drain,
+        socket,
+        audio_start,
+        raw,
+        last_event,
+        progress,
+        deadline,
+        None,
+        drain,
+        model_protocol_authority,
     )
 }
 
@@ -681,16 +794,43 @@ fn drain_remaining_and_finish(
     session_ready_ms: f64,
     audio_send_ms: f64,
     audio_chunks_sent: usize,
+    model_protocol_authority: Option<
+        &crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile,
+    >,
 ) -> Result<IntermediateResult, String> {
     let total_timeout = Duration::from_secs(TOTAL_TIMEOUT_SECS);
     let done_quiet_period = Duration::from_millis(700);
     set_read_timeout(socket, Duration::from_secs(5));
     while last_event.elapsed() < idle_timeout && audio_start.elapsed() < total_timeout {
-        drain(socket, audio_start, &mut raw, last_event, progress)?;
-        if raw.response_done_ms.is_some() && last_event.elapsed() >= done_quiet_period {
+        drain(
+            socket,
+            audio_start,
+            &mut raw,
+            last_event,
+            progress,
+            model_protocol_authority,
+        )?;
+        let requires_session_finished = model_protocol_authority.is_some_and(|authority| {
+            authority.terminal_lifecycle == "session.finish->session.finished"
+        });
+        if (requires_session_finished && raw.session_finished)
+            || (!requires_session_finished
+                && raw.response_done_ms.is_some()
+                && last_event.elapsed() >= done_quiet_period)
+        {
             break;
         }
         thread::sleep(Duration::from_millis(100));
+    }
+    if model_protocol_authority.is_some_and(|authority| {
+        authority.terminal_lifecycle == "session.finish->session.finished"
+    }) && !raw.session_finished
+    {
+        let _ = socket.close(None);
+        return Err(
+            "provider-finish-timeout: LiveTranslate benchmark did not receive session.finished after session.finish"
+                .to_string(),
+        );
     }
     let _ = socket.close(None);
 

@@ -5,7 +5,13 @@ import { spawn, spawnSync } from 'node:child_process';
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { currentGitProvenance } from './git-provenance.mjs';
 import { buildLiveWatchModeRunRequest } from './watch-mode-run-request.mjs';
-import { WATCH_SHARD_WORKER_TIMEOUT_MS } from './watch-mode-release-timeout-budget.mjs';
+import {
+  WATCH_RUNNER_READINESS_TIMEOUT_SECONDS,
+  WATCH_SHARD_AUTHORITY_FILE_WAIT_TIMEOUT_MS,
+  WATCH_SHARD_PROCESS_IDENTITY_TIMEOUT_MS,
+  WATCH_SHARD_PROCESS_KILL_TIMEOUT_MS,
+  deriveWatchShardWorkerTimeoutMs,
+} from './watch-mode-release-timeout-budget.mjs';
 import {
   currentAuthorityImplementationHashes,
   currentAuthorityRuntimeBinaryHashes,
@@ -37,7 +43,6 @@ import {
 export const SHARD_WORKER_RUNNER_ID = 'scripts/testing/run-watch-mode-live-shard.mjs';
 export const SHARD_LEASE_CLAIM_KIND = 'watch-mode-paid-shard-lease-claim';
 export const SHARD_LEASE_TERMINAL_KIND = 'watch-mode-paid-shard-lease-terminal';
-export const SHARD_WORKER_TIMEOUT_MS = WATCH_SHARD_WORKER_TIMEOUT_MS;
 export const SHARD_LIVE_RUNNER_SCRIPT = path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.ps1');
 const SHARD_LIVE_RUNNER_ENTRY = path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.mjs');
 
@@ -58,7 +63,11 @@ function readRegularJson(filePath, label) {
   return JSON.parse(fs.readFileSync(resolved, 'utf8').replace(/^\uFEFF/, ''));
 }
 
-async function waitForRegularFile(filePath, label, timeoutMs = 15_000) {
+async function waitForRegularFile(
+  filePath,
+  label,
+  timeoutMs = WATCH_SHARD_AUTHORITY_FILE_WAIT_TIMEOUT_MS,
+) {
   const deadline = Date.now() + timeoutMs;
   do {
     try {
@@ -73,7 +82,10 @@ async function waitForRegularFile(filePath, label, timeoutMs = 15_000) {
   throw new Error(`${label} was not published before the lease-claim deadline`);
 }
 
-function currentWindowsProcessIdentity() {
+function currentWindowsProcessIdentity({
+  spawnProcess = spawnSync,
+  timeoutMs = WATCH_SHARD_PROCESS_IDENTITY_TIMEOUT_MS,
+} = {}) {
   if (process.platform !== 'win32') {
     throw new Error('production interactive shard identity is only available on Windows');
   }
@@ -90,14 +102,66 @@ function currentWindowsProcessIdentity() {
     "$h=(Get-FileHash -LiteralPath ([string]$p.ExecutablePath) -Algorithm SHA256).Hash.ToLowerInvariant()",
     '[ordered]@{pid=[int]$p.ProcessId;parentPid=[int]$p.ParentProcessId;sessionId=[int]$p.SessionId;imagePath=[IO.Path]::GetFullPath([string]$p.ExecutablePath);imageSha256=$h;startedAt=$g.StartTime.ToUniversalTime().ToString(\'o\');ownerUser=[string]$o.User;ownerDomain=[string]$o.Domain;ownerSid=[string]$s.Sid}|ConvertTo-Json -Compress',
   ].join(';');
-  const result = spawnSync('powershell.exe', [
+  const result = spawnProcess('powershell.exe', [
     '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-Command', script,
-  ], { encoding: 'utf8', windowsHide: true, timeout: 15_000 });
+  ], { encoding: 'utf8', windowsHide: true, timeout: timeoutMs });
   if ((result.status ?? 1) !== 0) {
     throw new Error(`failed to inspect interactive shard Node identity: ${result.stderr || result.error?.message}`);
   }
   return JSON.parse(String(result.stdout).trim().split(/\r?\n/).at(-1));
+}
+
+export async function acquireInteractiveShardAuthorities({
+  interactiveCommandPath,
+  interactiveLaunchAuthorityPath,
+  interactiveReleasePath,
+  plan,
+  lease,
+  worker,
+}, {
+  waitForAuthorityFile = waitForRegularFile,
+  inspectCurrentProcess = currentWindowsProcessIdentity,
+  validateLaunchAuthority = validateInteractiveLaunchAuthority,
+} = {}) {
+  await waitForAuthorityFile(
+    interactiveLaunchAuthorityPath,
+    'interactive launch authority',
+    WATCH_SHARD_AUTHORITY_FILE_WAIT_TIMEOUT_MS,
+  );
+  await waitForAuthorityFile(
+    interactiveReleasePath,
+    'interactive claim release',
+    WATCH_SHARD_AUTHORITY_FILE_WAIT_TIMEOUT_MS,
+  );
+  const currentProcess = inspectCurrentProcess({
+    timeoutMs: WATCH_SHARD_PROCESS_IDENTITY_TIMEOUT_MS,
+  });
+  validateLaunchAuthority({
+    commandPath: path.resolve(interactiveCommandPath),
+    launchPath: path.resolve(interactiveLaunchAuthorityPath),
+    releasePath: path.resolve(interactiveReleasePath),
+    plan,
+    lease,
+    worker,
+    currentProcess,
+  });
+  return currentProcess;
+}
+
+export function terminatePowerShellShardChild(child, {
+  platform = process.platform,
+  killProcessTree = spawnSync,
+} = {}) {
+  if (platform === 'win32' && child.pid) {
+    killProcessTree('taskkill.exe', ['/PID', String(child.pid), '/F', '/T'], {
+      cwd: repoRoot,
+      stdio: 'ignore',
+      timeout: WATCH_SHARD_PROCESS_KILL_TIMEOUT_MS,
+    });
+  } else {
+    child.kill('SIGKILL');
+  }
 }
 
 export function shardAuthoritySnapshot({ workspaceRoot = repoRoot } = {}) {
@@ -160,10 +224,11 @@ export function buildShardCellExecutionRequest({
       warmupSeconds: 12,
       model: cell.modelId,
       watchRealtimeProtocol: protocol,
+      modelProtocolProfileIdentity: structuredClone(cell.modelProtocolProfileIdentity),
       subtitleTranslationMode: 'native',
       playbackSeconds: 0,
       postPlaybackWaitSeconds: 0,
-      sessionReadyTimeoutSeconds: 90,
+      sessionReadyTimeoutSeconds: WATCH_RUNNER_READINESS_TIMEOUT_SECONDS,
       watchAutoStopAfterSeconds: cell.inputCompletionWatchdogSeconds,
       inputCompletionWatchdogSeconds: cell.inputCompletionWatchdogSeconds,
       processExclusionRestartAfterSeconds: cell.processExclusionRestartAfterSeconds,
@@ -194,6 +259,9 @@ export function buildShardCellExecutionRequest({
         plan.providerIdentity.credentialReference,
       OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID: lease.leaseId,
       OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES: String(cell.maxExternalAudioSamples),
+      OMNI_WATCH_MODE_MODEL_PROTOCOL_PROFILE_IDENTITY: JSON.stringify(
+        cell.modelProtocolProfileIdentity,
+      ),
       OMNI_WATCH_MODE_CELL_ID: cell.cellId,
       OMNI_WATCH_MODE_SOURCE_HEAD_COMMIT: plan.provenance.headCommit,
       OMNI_WATCH_MODE_RUNTIME_BUNDLE_DIGEST: plan.authority.runtimeBundleDigest,
@@ -223,13 +291,16 @@ function lastExistingRunDirectory(text, rootDirectory) {
 export function executePowerShellShardCell(request, {
   signal,
   environment = process.env,
-  timeoutMs = SHARD_WORKER_TIMEOUT_MS,
+  timeoutMs = deriveWatchShardWorkerTimeoutMs(request.cell),
 } = {}) {
   return new Promise((resolve, reject) => {
     const runRequest = buildLiveWatchModeRunRequest(request.runnerOptions, {
       authorityMode: 'strict-paid',
       workerReadinessReceipt: request.runnerOptions.readinessReceiptPath,
     });
+    runRequest.model.protocolProfileIdentity = structuredClone(
+      request.cell.modelProtocolProfileIdentity,
+    );
     const requestPath = path.join(request.runnerOptions.outputRoot, 'run-request.json');
     atomicWriteJson(requestPath, runRequest);
     const child = spawn(process.execPath, buildPowerShellRunnerArgv(requestPath), {
@@ -248,17 +319,7 @@ export function executePowerShellShardCell(request, {
       child.stdout?.destroy();
       callback();
     };
-    const terminate = () => {
-      if (process.platform === 'win32' && child.pid) {
-        spawnSync('taskkill.exe', ['/PID', String(child.pid), '/F', '/T'], {
-          cwd: repoRoot,
-          stdio: 'ignore',
-          timeout: 5_000,
-        });
-      } else {
-        child.kill('SIGKILL');
-      }
-    };
+    const terminate = () => terminatePowerShellShardChild(child);
     const abort = () => terminate();
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
@@ -374,16 +435,13 @@ export async function runLeasedShardCell({
       if (!interactiveReleasePath || !interactiveExecutionReceiptPath) {
         throw new Error('production interactive shard requires claim release/execution receipt paths');
       }
-      await waitForRegularFile(interactiveLaunchAuthorityPath, 'interactive launch authority');
-      await waitForRegularFile(interactiveReleasePath, 'interactive claim release');
-      validateInteractiveLaunchAuthority({
-        commandPath: path.resolve(interactiveCommandPath),
-        launchPath: path.resolve(interactiveLaunchAuthorityPath),
-        releasePath: path.resolve(interactiveReleasePath),
+      await acquireInteractiveShardAuthorities({
+        interactiveCommandPath,
+        interactiveLaunchAuthorityPath,
+        interactiveReleasePath,
         plan,
         lease,
         worker: plan.workers.find((entry) => entry.workerId === workerId),
-        currentProcess: currentWindowsProcessIdentity(),
       });
     } else {
       validateInteractiveSessionAuthority({
@@ -395,7 +453,10 @@ export async function runLeasedShardCell({
   }
   claimLease({ plan, lease, workerId, shardRoot, now: startedAt });
   try {
-    const execution = await executeCell(request, { signal });
+    const execution = await executeCell(request, {
+      signal,
+      timeoutMs: deriveWatchShardWorkerTimeoutMs(cell),
+    });
     if (!execution.runDirectory) {
       const exitCode = execution.status ?? execution.exitCode;
       if (Number(exitCode) !== 0) {

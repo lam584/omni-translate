@@ -199,6 +199,7 @@ fn run_omni_worker(
     )?;
     let OmniConnectedSession {
         socket,
+        session_update,
         mut trace_call,
         session_started_at,
         mut active_voice,
@@ -266,8 +267,23 @@ fn run_omni_worker(
         mut first_audio_sent_ms,
         mut pending_audio_buffer,
     } = OmniSessionRuntime::new();
+    let livetranslate_authority = if crate::audio::events::is_livetranslate_route_model(
+        &provider,
+        &provider.model,
+    ) {
+        Some(crate::audio::events::authorize_bailian_native_translate(
+            &provider,
+        )?)
+    } else {
+        None
+    };
+    if let Some(authority) = livetranslate_authority.as_ref() {
+        event_diagnostics
+            .livetranslate_server_state
+            .record_client_session_update(authority, &session_update)?;
+    }
     let mut livetranslate_shutdown =
-        LivetranslateShutdown::for_provider(&provider, stop_requested);
+        LivetranslateShutdown::for_provider(&provider, stop_requested)?;
     let mut audio_input_disconnected = false;
     let mut socket = livetranslate_shutdown.wrap_socket(socket);
     let connector = livetranslate_shutdown.wrap_connector(TungsteniteConnector);
@@ -382,6 +398,7 @@ fn run_omni_worker(
             audio_input_disconnected,
             chunks_sent_this_tick: 0,
             socket_reconnected: false,
+            reconnected_session_update: None,
         })
         .pump(
             &connector,
@@ -419,6 +436,8 @@ fn run_omni_worker(
             }
             Err(error) => return Err(error),
         };
+        let pump_socket_reconnected = pump_state.socket_reconnected;
+        let pump_reconnected_session_update = pump_state.reconnected_session_update;
         buffer_size = pump_state.buffer_size;
         reconnect_count = pump_state.reconnect_count;
         chunk_count = pump_state.chunk_count;
@@ -466,6 +485,9 @@ fn run_omni_worker(
                 "event_session_finish_{}",
                 unix_ms()
             ));
+            event_diagnostics
+                .livetranslate_server_state
+                .record_client_finish()?;
             trace_call.record_ws_send("session.finish", finish_event.clone());
             if let Err(error) = socket.send_message(Message::Text(
                 finish_event.to_string().into(),
@@ -512,7 +534,19 @@ fn run_omni_worker(
         // that 18-argument call in one place without threading the locals
         // through a helper struct across the whole pump loop.
         macro_rules! reset_gate_after_reconnect {
-            () => {
+            ($sent_session_update:expr) => {{
+                let sent_session_update = ($sent_session_update).ok_or_else(|| {
+                    "Omni reconnect invariant violated: replacement socket lacks exact sent session.update provenance"
+                        .to_string()
+                })?;
+                event_diagnostics
+                    .livetranslate_server_state
+                    .reset_for_reconnect();
+                if let Some(authority) = livetranslate_authority.as_ref() {
+                    event_diagnostics
+                        .livetranslate_server_state
+                        .record_client_session_update(authority, sent_session_update)?;
+                }
                 if let Some(cue_id) = pending_audio_stream_cue_id.as_deref() {
                     playback_tx.abort_stream(
                         cue_id,
@@ -549,10 +583,10 @@ fn run_omni_worker(
                     &mut pending_audio_stream_aborted,
                     &mut session_ready_for_audio,
                 )
-            };
+            }};
         }
-        if pump_state.socket_reconnected {
-            reset_gate_after_reconnect!();
+        if pump_socket_reconnected {
+            reset_gate_after_reconnect!(pump_reconnected_session_update.as_ref());
         }
 
         OmniAudioPump::log_waiting_if_needed(
@@ -772,6 +806,8 @@ fn run_omni_worker(
             }
             Err(error) => return Err(error),
         };
+        let poll_socket_reconnected = poll.socket_reconnected;
+        let poll_reconnected_session_update = poll.reconnected_session_update;
         socket = poll.state.socket;
         trace_call = poll.state.trace_call;
         reconnect_count = poll.state.reconnect_count;
@@ -802,9 +838,9 @@ fn run_omni_worker(
         sent_audio_since_commit = poll.state.sent_audio_since_commit;
         audio_samples_since_commit = poll.state.audio_samples_since_commit;
         manual_turn_audio_after_response = poll.state.manual_turn_audio_after_response;
-        if poll.socket_reconnected {
+        if poll_socket_reconnected {
             provider_input_budget.record_reconnect()?;
-            reset_gate_after_reconnect!();
+            reset_gate_after_reconnect!(poll_reconnected_session_update.as_ref());
         }
         if livetranslate_shutdown.session_finished_received() {
             if direction == "inbound" {

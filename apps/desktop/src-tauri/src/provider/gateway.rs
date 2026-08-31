@@ -30,6 +30,104 @@ fn next_translation_request_id() -> String {
     format!("req-{}-{}", now_unix_millis_marker(), sequence)
 }
 
+fn model_protocol_runtime_error(message: String) -> ProviderRuntimeError {
+    let code = message
+        .split_once(':')
+        .map(|(code, _)| code)
+        .filter(|code| code.starts_with("model_protocol."))
+        .unwrap_or("model_protocol.authorization_failed")
+        .to_string();
+    ProviderRuntimeError::new(&code, message)
+}
+
+fn provider_declares_bailian_voice_protocol(
+    provider: &ProviderDraftInput,
+    exact_model_id: &str,
+) -> bool {
+    // Provider/template defaults are not bound to the selected exact model.
+    // Only an exact registry row may opt an otherwise unknown model into the
+    // voice-protocol fail-closed boundary.
+    provider
+        .local_model_capability_registry
+        .iter()
+        .filter(|entry| entry.model_id.trim().eq_ignore_ascii_case(exact_model_id.trim()))
+        .any(|entry| {
+            entry.model_protocol_registry_version.is_some()
+                || entry.model_protocol_profile_id.is_some()
+                || entry.model_protocol_profile_version.is_some()
+                || entry.capabilities.iter().any(|capability| {
+                    matches!(
+                        capability.as_str(),
+                        "speech-to-speech" | "speech-to-text" | "text-to-speech"
+                    )
+                })
+                || entry
+                    .realtime_protocol
+                    .as_deref()
+                    .is_some_and(|protocol| protocol.trim().starts_with("dashscope-"))
+        })
+}
+
+/// Central fail-closed authority check shared by provider and benchmark paid
+/// boundaries. Exact manifest membership and explicit provider declarations
+/// can require authorization; model-name patterns never grant authority.
+pub(crate) fn authorize_bailian_model_operation_before_provider_access(
+    provider: &ProviderDraftInput,
+    exact_model_id: &str,
+    operation: &str,
+) -> Result<
+    Option<crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile>,
+    ProviderRuntimeError,
+> {
+    let profiles = crate::provider::model_protocol_profile::lookup_model_protocol_profiles_for_inspection(
+        exact_model_id,
+    )
+    .map_err(|error| {
+        ProviderRuntimeError::new(
+            error.code(),
+            format!(
+                "{}: unable to inspect model protocol authority for '{}'",
+                error.code(), exact_model_id
+            ),
+        )
+    })?;
+    let explicit_bailian_voice_protocol =
+        provider_declares_bailian_voice_protocol(provider, exact_model_id);
+    if profiles.is_empty() && !explicit_bailian_voice_protocol {
+        return Ok(None);
+    }
+    if !provider.model.trim().eq_ignore_ascii_case(exact_model_id.trim()) {
+        return Err(ProviderRuntimeError::new(
+            "model_protocol.authorization_identity_mismatch",
+            format!(
+                "model_protocol.authorization_identity_mismatch: provider model '{}' does not match invocation model '{}'",
+                provider.model, exact_model_id
+            ),
+        ));
+    }
+    if profiles.is_empty() {
+        return Err(ProviderRuntimeError::new(
+            "model_protocol.model_not_registered",
+            format!(
+                "model_protocol.model_not_registered: explicitly declared Bailian voice model '{}' has no exact manifest profile",
+                exact_model_id
+            ),
+        ));
+    }
+    if provider.kind != "dashscope" {
+        return Err(ProviderRuntimeError::new(
+            "model_protocol.provider_family_mismatch",
+            format!(
+                "model_protocol.provider_family_mismatch: Bailian voice model '{}' requires provider kind 'dashscope', got '{}'",
+                exact_model_id, provider.kind
+            ),
+        ));
+    }
+    crate::audio::events::authorize_bailian_model_operation(provider, exact_model_id, operation)
+        .map(Some)
+        .map_err(model_protocol_runtime_error)
+}
+
 #[derive(Clone)]
 pub(crate) struct ProviderGateway {
     model_catalog: ModelCatalogService,
@@ -96,6 +194,7 @@ impl ProviderGateway {
                 source_language,
                 target_language,
                 glossary_prompt,
+                false,
                 &mut forward_delta,
             )
         };
@@ -150,11 +249,15 @@ impl ProviderGateway {
     }
 
     pub(crate) fn probe(&self, provider: ProviderDraftInput) -> ProviderProbeProfileRuntime {
-        let smoke = self.execute_smoke(
+        let mut discard_delta = discard_provider_delta;
+        let smoke = self.execute_smoke_with_delta(
             provider.clone(),
             "请把这句中文翻译成英文，并保留语气自然。".to_string(),
             "zh-CN".to_string(),
             "en-US".to_string(),
+            None,
+            true,
+            &mut discard_delta,
         );
         self.probe_service.evaluate(provider, smoke)
     }
@@ -173,6 +276,7 @@ impl ProviderGateway {
             source_language,
             target_language,
             None,
+            false,
             &mut discard_delta,
         )
     }
@@ -184,21 +288,31 @@ impl ProviderGateway {
         source_language: String,
         target_language: String,
         glossary_prompt: Option<&str>,
+        livetranslate_session_probe: bool,
         on_delta: &mut dyn FnMut(&str) -> Result<(), ProviderRuntimeError>,
     ) -> ProviderSmokeResult {
         let request_id = next_translation_request_id();
         let transport_requested = provider.transport.clone();
         let (transport_effective, fallback_applied) = resolve_transport(&provider);
         let started_at = Instant::now();
-        let connection_lease = connection_lease::acquire(&provider);
+        let boundary_authorization = authorize_bailian_model_operation_before_provider_access(
+            &provider,
+            &provider.model,
+            "native_translate",
+        );
+        let boundary_authorized = boundary_authorization.is_ok();
+        let connection_attempts = if boundary_authorized { 1 } else { 0 };
+        let connection_lease = boundary_authorized.then(|| connection_lease::acquire(&provider));
         let (connection_owner, connection_generation) = connection_lease
             .as_ref()
-            .ok()
+            .and_then(|lease| lease.as_ref().ok())
             .and_then(|lease| lease.owner())
             .map(|owner| (Some(owner.label()), Some(owner.generation)))
             .unwrap_or((None, None));
 
-        let execution = match connection_lease {
+        let execution = match boundary_authorization {
+            Err(error) => Err(error),
+            Ok(_) => match connection_lease.expect("authorized boundary must acquire a lease") {
             Err(error) => Err(error),
             Ok(_lease) => match provider.kind.as_str() {
             kind if is_openai_compatible_kind(kind) => self.openai_adapter.execute(
@@ -209,6 +323,7 @@ impl ProviderGateway {
                 &source_language,
                 &target_language,
                 glossary_prompt,
+                livetranslate_session_probe,
                 on_delta,
             ),
             "dashscope" => self.dashscope_adapter.execute(
@@ -219,12 +334,14 @@ impl ProviderGateway {
                 &source_language,
                 &target_language,
                 glossary_prompt,
+                livetranslate_session_probe,
                 on_delta,
             ),
             other => Err(ProviderRuntimeError::new(
                 "request.invalid",
                 format!("unsupported provider kind: {other}"),
             )),
+            },
             },
         };
 
@@ -253,10 +370,7 @@ impl ProviderGateway {
                 execution.source_language = source_language;
                 execution.target_language = target_language;
                 execution.transport_requested = transport_requested;
-                execution.connection_attempts = 1;
-                execution.connection_count = 1;
-                execution.connection_opened = true;
-                execution.connection_closed = true;
+                execution.connection_attempts = connection_attempts;
                 execution.connection_owner = connection_owner;
                 execution.connection_generation = connection_generation;
                 execution
@@ -278,7 +392,7 @@ impl ProviderGateway {
                 input_tokens: None,
                 output_tokens: None,
                 audio_seconds: None,
-                connection_attempts: 1,
+                connection_attempts,
                 connection_count: 0,
                 connection_opened: false,
                 connection_closed: false,
@@ -290,6 +404,7 @@ impl ProviderGateway {
                     fallback_applied,
                 ),
                 error: Some(error),
+                wire_evidence: None,
             },
         }
     }
@@ -318,6 +433,11 @@ impl ProviderGateway {
         target_language: String,
         voice: String,
     ) -> Result<TtsSynthesisResult, ProviderRuntimeError> {
+        authorize_bailian_model_operation_before_provider_access(
+            &provider,
+            &provider.model,
+            "tts",
+        )?;
         self.realtime_audio
             .synthesize(provider, text, target_language, voice)
     }
@@ -337,17 +457,20 @@ mod tests {
     use crate::shared::time::now_unix_seconds_marker;
     use crate::provider::gateway_parts::transport::{
         build_client, normalize_transport_error, normalize_websocket_read_error,
-        redirect_target_is_same_origin, to_websocket_url, WebSocketTransport,
+        redirect_target_is_same_origin, set_test_websocket_connect_override, to_websocket_url,
+        WebSocketTransport,
     };
     use rodio::{Decoder, Source};
     use serde::Deserialize;
     use serde_json::{json, Value};
+    use sha2::Digest;
     use std::collections::HashMap;
     use std::fs;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::path::PathBuf;
-    use std::sync::mpsc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::{mpsc, Arc};
     use std::thread;
     use std::time::Duration;
     use tungstenite::{accept, Message};
@@ -429,6 +552,37 @@ mod tests {
         provider
     }
 
+    fn dashscope_text_provider(base_url: String) -> ProviderDraftInput {
+        let mut provider = dashscope_provider(base_url);
+        provider.model = "qwen-plus".to_string();
+        provider.transport = "http".to_string();
+        provider.realtime_protocol = None;
+        provider.local_model_capability_registry = vec![serde_json::from_value(json!({
+            "id": "seed-qwen-plus",
+            "modelId": "qwen-plus",
+            "capabilities": ["text-generation"],
+            "realtimeAudioMode": "server_vad",
+            "interactionCapabilities": [],
+            "source": "official"
+        }))
+        .expect("explicit DashScope text model registry fixture must deserialize")];
+        provider
+    }
+
+    fn declare_exact_unknown_bailian_voice_model(provider: &mut ProviderDraftInput) {
+        provider.realtime_protocol = None;
+        provider.local_model_capability_registry = vec![serde_json::from_value(json!({
+            "id": "custom-unknown-bailian-voice",
+            "modelId": provider.model,
+            "capabilities": ["speech-to-speech"],
+            "realtimeProtocol": "dashscope-omni",
+            "realtimeAudioMode": "server_vad",
+            "interactionCapabilities": ["streaming", "auto_vad"],
+            "source": "custom"
+        }))
+        .expect("exact unknown Bailian voice registry fixture must deserialize")];
+    }
+
     fn realtime_provider(base_url: String) -> ProviderDraftInput {
         let mut provider = provider_draft(
             "template-dashscope-realtime",
@@ -443,6 +597,46 @@ mod tests {
         );
         provider.realtime_protocol = Some("dashscope-omni".to_string());
         provider
+    }
+
+    fn livetranslate_provider(base_url: String) -> ProviderDraftInput {
+        set_test_websocket_connect_override(&base_url);
+        let mut provider = provider_draft(
+            "template-dashscope-realtime",
+            "provider-dashscope",
+            "dashscope",
+            "DashScope LiveTranslate",
+            "qwen3.5-livetranslate-flash-realtime",
+            "https://dashscope.aliyuncs.com/api/v1".to_string(),
+            "websocket",
+            Some("cn-beijing".to_string()),
+            "game-live-translation-cn",
+        );
+        provider.realtime_protocol = Some("dashscope-livetranslate".to_string());
+        provider
+    }
+
+    fn openai_misrouted_bailian_provider(
+        base_url: String,
+        model: &str,
+    ) -> ProviderDraftInput {
+        let mut provider = provider_draft(
+            "template-openai-compatible-realtime",
+            "provider-openai-compatible-bailian-misroute",
+            "openai-compatible",
+            "Misrouted Bailian Voice",
+            model,
+            base_url,
+            "streaming-http",
+            Some("cn-beijing".to_string()),
+            "game-live-translation-cn",
+        );
+        provider.realtime_protocol = Some("dashscope-livetranslate".to_string());
+        provider
+    }
+
+    fn sha256_hex(value: &str) -> String {
+        format!("{:x}", sha2::Sha256::digest(value.as_bytes()))
     }
 
     #[test]
@@ -734,226 +928,861 @@ mod tests {
     }
 
     #[test]
-    fn dashscope_websocket_smoke_reads_text_frames() {
-        let (ws_url, _server) = spawn_ws_server(|websocket| {
-            for _ in 0..3 {
-                let _ = websocket.read().expect("realtime request payload should arrive");
-            }
-            websocket
-                .send(Message::Text(
-                    "{\"type\":\"response.text.delta\",\"delta\":\"Realtime \"}"
-                        .to_string()
-                        .into(),
-                ))
-                .expect("delta frame should send");
-            websocket
-        .send(Message::Text(
-          "{\"type\":\"response.text.delta\",\"delta\":\"translation\"}"
-            .to_string()
-            .into(),
-        ))
-        .expect("completion frame should send");
-        websocket.send(Message::Text(
-          "{\"type\":\"response.done\",\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}"
-            .to_string().into(),
-        )).expect("done frame should send");
-        });
+    fn registered_bailian_voice_model_with_openai_kind_is_rejected_before_network() {
+        let (base_url, attempts, stop, server) = spawn_counted_loopback_http_server();
+        let smoke = ProviderGateway::new().execute_smoke(
+            openai_misrouted_bailian_provider(
+                base_url,
+                "qwen3.5-livetranslate-flash-realtime",
+            ),
+            "hello".to_string(),
+            "en-US".to_string(),
+            "zh-CN".to_string(),
+        );
+        stop.store(true, AtomicOrdering::SeqCst);
+        server.join().expect("counter server should stop");
 
+        assert_eq!(attempts.load(AtomicOrdering::SeqCst), 0);
+        let error = smoke
+            .error
+            .expect("cross-kind Bailian voice routing must fail closed");
+        assert_eq!(error.code, "model_protocol.provider_family_mismatch");
+    }
+
+    #[test]
+    fn registered_bailian_voice_model_with_wrong_transport_is_rejected_before_network() {
+        let (base_url, attempts, stop, server) = spawn_counted_loopback_http_server();
+        let mut provider = provider_draft(
+            "template-dashscope-realtime",
+            "provider-dashscope-wrong-transport",
+            "dashscope",
+            "DashScope Wrong Transport",
+            "qwen3.5-livetranslate-flash-realtime",
+            base_url,
+            "http",
+            Some("cn-beijing".to_string()),
+            "game-live-translation-cn",
+        );
+        provider.realtime_protocol = Some("dashscope-livetranslate".to_string());
+        let smoke = ProviderGateway::new().execute_smoke(
+            provider,
+            "hello".to_string(),
+            "en-US".to_string(),
+            "zh-CN".to_string(),
+        );
+        stop.store(true, AtomicOrdering::SeqCst);
+        server.join().expect("counter server should stop");
+
+        assert_eq!(attempts.load(AtomicOrdering::SeqCst), 0);
+        let error = smoke
+            .error
+            .expect("wrong Bailian voice transport must fail closed");
+        assert_eq!(error.code, "model_protocol.transport_mismatch");
+    }
+
+    #[test]
+    fn registered_bailian_voice_model_with_wrong_operation_is_rejected_before_network() {
+        let (base_url, attempts, stop, server) = spawn_counted_loopback_http_server();
+        let mut provider = provider_draft(
+            "template-dashscope-realtime",
+            "provider-dashscope-wrong-operation",
+            "dashscope",
+            "DashScope Wrong Operation",
+            "qwen3-tts-flash-realtime",
+            base_url,
+            "websocket",
+            Some("cn-beijing".to_string()),
+            "game-live-translation-cn",
+        );
+        provider.realtime_protocol = Some("dashscope-livetranslate".to_string());
+        let smoke = ProviderGateway::new().execute_smoke(
+            provider,
+            "hello".to_string(),
+            "en-US".to_string(),
+            "zh-CN".to_string(),
+        );
+        stop.store(true, AtomicOrdering::SeqCst);
+        server.join().expect("counter server should stop");
+
+        assert_eq!(attempts.load(AtomicOrdering::SeqCst), 0);
+        let error = smoke
+            .error
+            .expect("wrong Bailian voice operation must fail closed");
+        assert_eq!(error.code, "model_protocol.operation_not_supported");
+    }
+
+    #[test]
+    fn registered_bailian_voice_model_with_wrong_endpoint_is_rejected_before_network() {
+        let (base_url, attempts, stop, server) = spawn_counted_loopback_http_server();
+        let mut provider = provider_draft(
+            "template-dashscope-realtime",
+            "provider-dashscope-wrong-endpoint",
+            "dashscope",
+            "DashScope Wrong Endpoint",
+            "qwen3.5-livetranslate-flash-realtime",
+            base_url,
+            "websocket",
+            Some("cn-beijing".to_string()),
+            "game-live-translation-cn",
+        );
+        provider.realtime_protocol = Some("dashscope-livetranslate".to_string());
+        let smoke = ProviderGateway::new().execute_smoke(
+            provider,
+            "hello".to_string(),
+            "en-US".to_string(),
+            "zh-CN".to_string(),
+        );
+        stop.store(true, AtomicOrdering::SeqCst);
+        server.join().expect("counter server should stop");
+
+        assert_eq!(attempts.load(AtomicOrdering::SeqCst), 0);
+        let error = smoke
+            .error
+            .expect("wrong Bailian voice endpoint must fail closed");
+        assert_eq!(error.code, "model_protocol.endpoint_host_region_mismatch");
+    }
+
+    #[test]
+    fn unknown_bailian_voice_snapshot_is_rejected_before_network() {
+        let (base_url, attempts, stop, server) = spawn_counted_loopback_http_server();
+        let mut provider = openai_misrouted_bailian_provider(
+            base_url,
+            "qwen3.5-livetranslate-flash-realtime-2099-12-31",
+        );
+        provider.realtime_protocol = None;
+        provider.local_model_capability_registry = vec![serde_json::from_value(json!({
+            "id": "custom-unknown-bailian-voice-snapshot",
+            "modelId": "qwen3.5-livetranslate-flash-realtime-2099-12-31",
+            "capabilities": ["speech-to-speech"],
+            "realtimeAudioMode": "server_vad",
+            "interactionCapabilities": [],
+            "source": "custom"
+        }))
+        .expect("explicit voice capability fixture must deserialize")];
+        let smoke = ProviderGateway::new().execute_smoke(
+            provider,
+            "hello".to_string(),
+            "en-US".to_string(),
+            "zh-CN".to_string(),
+        );
+        stop.store(true, AtomicOrdering::SeqCst);
+        server.join().expect("counter server should stop");
+
+        assert_eq!(attempts.load(AtomicOrdering::SeqCst), 0);
+        let error = smoke
+            .error
+            .expect("unknown Bailian voice snapshot must fail closed");
+        assert_eq!(error.code, "model_protocol.model_not_registered");
+    }
+
+    #[test]
+    fn unknown_dashscope_websocket_model_is_rejected_before_connector_access() {
+        let (base_url, attempts, stop, server) = spawn_counted_loopback_ws_server();
+        let mut provider = dashscope_provider(base_url);
+        declare_exact_unknown_bailian_voice_model(&mut provider);
         let gateway = ProviderGateway::new();
         let smoke = gateway.execute_smoke(
-            dashscope_provider(ws_url),
+            provider,
+            "你好，世界".to_string(),
+            "zh-CN".to_string(),
+            "en-US".to_string(),
+        );
+        stop.store(true, AtomicOrdering::SeqCst);
+        server.join().expect("WebSocket counter server should stop");
+
+        assert_eq!(attempts.load(AtomicOrdering::SeqCst), 0);
+        let error = smoke.error.expect("unknown model must fail closed");
+        assert_eq!(smoke.status, "failed");
+        assert_eq!(error.code, "model_protocol.model_not_registered");
+        assert!(error.message.contains("model_protocol.model_not_registered"));
+    }
+
+    #[test]
+    fn unknown_dashscope_streaming_model_emits_no_delta_before_rejection() {
+        let mut provider = dashscope_provider("ws://127.0.0.1:9/api/v1".to_string());
+        declare_exact_unknown_bailian_voice_model(&mut provider);
+        let mut deltas = Vec::new();
+        let error = ProviderGateway::new()
+            .translate_text_streaming_traced_with_glossary(
+                provider,
+                "hello".to_string(),
+                "en-US".to_string(),
+                "zh-CN".to_string(),
+                None,
+                None,
+                |delta| {
+                    deltas.push(delta.to_string());
+                    Ok(())
+                },
+            )
+            .expect_err("unknown model must fail before streaming starts");
+        assert_eq!(error.code, "model_protocol.model_not_registered");
+        assert!(error.message.contains("model_protocol.model_not_registered"));
+        assert!(deltas.is_empty());
+    }
+
+    #[test]
+    fn dashscope_text_model_with_requested_websocket_uses_http_fallback() {
+        let (base_url, server) = spawn_http_server(|stream| {
+            write_http_response(
+                stream,
+                "application/json",
+                r#"{"choices":[{"message":{"content":"HTTP fallback translation"}}]}"#,
+            );
+        });
+        let mut provider = dashscope_text_provider(base_url);
+        provider.transport = "websocket".to_string();
+        provider.template_realtime_protocol = Some("dashscope-omni".to_string());
+
+        let (effective_transport, fallback_applied) = resolve_transport(&provider);
+        assert_eq!(effective_transport, "http");
+        assert!(fallback_applied);
+
+        let smoke = ProviderGateway::new().execute_smoke(
+            provider,
+            "hello".to_string(),
+            "en-US".to_string(),
+            "zh-CN".to_string(),
+        );
+
+        assert_eq!(smoke.status, "completed");
+        assert_eq!(smoke.transport_requested, "websocket");
+        assert_eq!(smoke.transport_effective, "http");
+        assert!(smoke.fallback_applied);
+        assert_eq!(smoke.transcript, "HTTP fallback translation");
+        server.join().expect("HTTP fallback server should stop");
+    }
+
+    #[test]
+    fn manifest_only_omni_text_gateway_is_rejected_before_connector_access() {
+        let gateway = ProviderGateway::new();
+        let smoke = gateway.execute_smoke(
+            realtime_provider("https://dashscope.aliyuncs.com/api/v1".to_string()),
             "你好，世界".to_string(),
             "zh-CN".to_string(),
             "en-US".to_string(),
         );
 
-        assert_eq!(smoke.status, "completed");
-        assert!(smoke.stream_observed);
-        assert_eq!(smoke.transcript, "Realtime translation");
-        assert_eq!(smoke.input_tokens, Some(10));
-        assert_eq!(smoke.output_tokens, Some(2));
+        let error = smoke.error.expect("manifest-only Omni must fail closed");
+        assert_eq!(smoke.status, "failed");
+        assert_eq!(error.code, "model_protocol.adapter_unavailable");
+        assert!(error.message.contains("model_protocol.adapter_unavailable"));
     }
 
     #[test]
-    fn dashscope_translation_forwards_delta_before_stream_completion() {
-        let (release_tx, release_rx) = mpsc::channel();
-        let (ws_url, server) = spawn_ws_server(move |websocket| {
-            for _ in 0..3 {
-                let _ = websocket.read().expect("realtime request payload should arrive");
-            }
+    fn livetranslate_probe_uses_zero_audio_finish_lifecycle_in_wire_order() {
+        let (ws_url, server) = spawn_ws_server(|websocket| {
             websocket
                 .send(Message::Text(
-                    "{\"type\":\"response.text.delta\",\"delta\":\"Realtime \"}"
-                        .to_string()
-                        .into(),
-                ))
-                .expect("first delta frame should send");
-            release_rx
-                .recv_timeout(Duration::from_secs(2))
-                .expect("test should release the completion frame");
-            websocket
-                .send(Message::Text(
-                    "{\"type\":\"response.text.delta\",\"delta\":\"translation\"}"
-                        .to_string()
-                        .into(),
-                ))
-                .expect("completion frame should send");
-            websocket
-                .send(Message::Text(
-                    "{\"type\":\"response.done\",\"response\":{}}"
-                        .to_string()
-                        .into(),
-                ))
-                .expect("done frame should send");
-        });
-
-        let (delta_rx, client) = spawn_delta_forwarding_client(
-            dashscope_provider(ws_url),
-            "hello",
-            "en-US",
-            "zh-CN",
-        );
-
-        assert_eq!(
-            delta_rx
-                .recv_timeout(Duration::from_secs(1))
-                .expect("DashScope delta should arrive before completion"),
-            "Realtime "
-        );
-        release_tx
-            .send(())
-            .expect("completion frame should be released");
-        assert_eq!(
-            delta_rx
-                .recv_timeout(Duration::from_secs(1))
-                .expect("DashScope completion delta should arrive"),
-            "translation"
-        );
-        assert_eq!(
-            client
-                .join()
-                .expect("client thread should finish")
-                .expect("translation should succeed"),
-            "Realtime translation"
-        );
-        server.join().expect("server thread should finish");
-    }
-
-    #[test]
-    fn realtime_websocket_smoke_uses_realtime_api_protocol() {
-        let (ws_url, _server) = spawn_ws_server(|websocket| {
-            let session = websocket.read().expect("session.update should arrive");
-            let session: serde_json::Value = serde_json::from_str(session.to_text().unwrap())
-                .expect("session.update should be valid JSON");
-            assert_eq!(session.pointer("/session/modalities"), Some(&serde_json::json!(["text"])));
-            let _ = websocket
-                .read()
-                .expect("conversation.item.create should arrive");
-            let _ = websocket.read().expect("response.create should arrive");
-            websocket
-                .send(Message::Text(
-                    "{\"type\":\"session.created\",\"session\":{\"id\":\"sess_1\"}}"
+                    r#"{"event_id":"evt_server_created","type":"session.created","session":{"id":"session-test","object":"realtime.session","model":"qwen3.5-livetranslate-flash-realtime"}}"#
                         .to_string()
                         .into(),
                 ))
                 .expect("session.created should send");
+            let session_update = websocket.read().expect("session.update should arrive");
+            let session_update: Value = serde_json::from_str(session_update.to_text().unwrap())
+                .expect("session.update should be JSON");
+            assert_eq!(session_update["type"], "session.update");
+            assert!(session_update["event_id"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty()));
+            assert_eq!(
+                session_update["session"],
+                json!({
+                    "modalities": ["text"],
+                    "sample_rate": 16_000,
+                    "input_audio_format": "pcm",
+                    "input_audio_transcription": {
+                        "model": "qwen3-asr-flash-realtime",
+                        "language": "zh"
+                    },
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.0,
+                        "silence_duration_ms": 400
+                    },
+                    "translation": { "language": "en" },
+                })
+            );
+            let top_level = session_update
+                .as_object()
+                .expect("session.update object");
+            assert_eq!(top_level.len(), 3);
+            assert!(["event_id", "session", "type"]
+                .iter()
+                .all(|key| top_level.contains_key(*key)));
+
             websocket
                 .send(Message::Text(
-                    "{\"type\":\"response.text.delta\",\"delta\":\"Hello\"}"
+                    r#"{"event_id":"evt_server_updated","type":"session.updated","session":{"id":"session-test","object":"realtime.session","model":"qwen3.5-livetranslate-flash-realtime","modalities":["text"],"sample_rate":16000,"input_audio_format":"pcm","turn_detection":{"type":"server_vad","threshold":0.0,"silence_duration_ms":400},"input_audio_transcription":{"model":"qwen3-asr-flash-realtime","language":"zh"},"translation":{"language":"en"}}}"#
                         .to_string()
                         .into(),
                 ))
-                .expect("first delta should send");
+                .expect("session.updated should send");
+            let finish = websocket.read().expect("session.finish should arrive");
+            let finish: Value = serde_json::from_str(finish.to_text().unwrap())
+                .expect("session.finish should be JSON");
+            assert_eq!(finish["type"], "session.finish");
             websocket
                 .send(Message::Text(
-                    "{\"type\":\"response.text.delta\",\"delta\":\" world\"}"
-                        .to_string()
-                        .into(),
+                    r#"{"event_id":"evt_server_finished","type":"session.finished"}"#.to_string().into(),
                 ))
-                .expect("second delta should send");
-            websocket
-        .send(Message::Text(
-          "{\"type\":\"response.done\",\"response\":{\"usage\":{\"input_tokens\":12,\"output_tokens\":4}}}"
-            .to_string()
-            .into(),
-        ))
-        .expect("response.done should send");
+                .expect("session.finished should send");
         });
 
-        let gateway = ProviderGateway::new();
-        let smoke = gateway.execute_smoke(
-            realtime_provider(ws_url),
-            "你好，世界".to_string(),
-            "zh-CN".to_string(),
-            "en-US".to_string(),
-        );
+        let profile = ProviderGateway::new().probe(livetranslate_provider(ws_url));
+        server.join().expect("server should complete");
 
-        assert_eq!(smoke.status, "completed");
-        assert!(smoke.stream_observed);
-        assert_eq!(smoke.transcript, "Hello world");
-        assert_eq!(smoke.input_tokens, Some(12));
-        assert_eq!(smoke.output_tokens, Some(4));
-        assert!(smoke
-            .event_log
+        assert_eq!(profile.verdict, "available");
+        assert_eq!(profile.latency_budget_ms, 1_200);
+        assert!(profile.input_tokens.is_none());
+        assert!(profile.output_tokens.is_none());
+        assert_eq!(profile.connection_attempts, 1);
+        assert_eq!(profile.connection_count, 1);
+        assert!(profile.connection_opened);
+        assert!(profile.connection_closed);
+        let evidence = profile.wire_evidence.expect("wire evidence should be retained");
+        assert_eq!(evidence.evidence_outcome, "livetranslate-session-finished");
+        assert_eq!(evidence.provider_input_mode, "none");
+        assert_eq!(evidence.external_audio_samples, 0);
+        assert_eq!(evidence.conversation_item_create_input_text_count, 0);
+        assert_eq!(evidence.response_create_count, 0);
+        assert_eq!(evidence.connection_count, 1);
+        let session_authority = evidence
+            .session_authority
+            .as_ref()
+            .expect("session authority should be retained");
+        assert_eq!(
+            session_authority.server_model,
+            "qwen3.5-livetranslate-flash-realtime"
+        );
+        assert_eq!(session_authority.session_identity_sha256.len(), 64);
+        assert_eq!(session_authority.echoed_session_config_sha256.len(), 64);
+        assert_eq!(
+            evidence
+                .trace
+                .iter()
+                .map(|entry| (entry.direction.as_str(), entry.event_type.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("transport", "websocket.upgrade"),
+                ("server-to-client", "session.created"),
+                ("client-to-server", "session.update"),
+                ("server-to-client", "session.updated"),
+                ("client-to-server", "session.finish"),
+                ("server-to-client", "session.finished"),
+            ]
+        );
+        assert_eq!(
+            evidence
+                .trace
+                .iter()
+                .filter(|entry| entry.event_type == "session.finish")
+                .count(),
+            1
+        );
+        let server_event_ids = evidence
+            .trace
             .iter()
-            .any(|item| item.event_type == "translation.delta"));
-        assert!(smoke
-            .event_log
+            .filter(|entry| {
+                matches!(
+                    entry.event_type.as_str(),
+                    "session.created" | "session.updated" | "session.finished"
+                )
+            })
+            .map(|entry| {
+                let payload = entry
+                    .raw_redacted_payload
+                    .as_deref()
+                    .expect("server lifecycle payload should be retained");
+                let value: Value = serde_json::from_str(payload)
+                    .expect("server lifecycle payload should remain JSON");
+                value["event_id"]
+                    .as_str()
+                    .expect("validated server event_id should be retained")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(server_event_ids.len(), 3);
+        let unique_server_event_ids = server_event_ids
             .iter()
-            .any(|item| item.event_type == "translation.completed"));
-        assert!(smoke
-            .event_log
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(unique_server_event_ids.len(), 3);
+        for entry in evidence
+            .trace
             .iter()
-            .any(|item| item.event_type == "response.completed"));
+            .filter(|entry| entry.raw_redacted_payload.is_some())
+        {
+            let payload = entry
+                .raw_redacted_payload
+                .as_deref()
+                .expect("payload should exist");
+            let expected_digest = sha256_hex(payload);
+            assert_eq!(
+                entry.sha256.as_deref(),
+                Some(expected_digest.as_str())
+            );
+        }
+        assert!(evidence.trace.windows(2).all(|pair| {
+            pair[0].monotonic_ms < pair[1].monotonic_ms
+        }));
     }
 
     #[test]
-    fn dashscope_realtime_audio_synthesis_reads_audio_delta() {
-        let (ws_url, _server) = spawn_ws_server(|websocket| {
-            let session = websocket.read().expect("session.update should arrive");
-            let item = websocket
-                .read()
-                .expect("conversation.item.create should arrive");
-            let response = websocket.read().expect("response.create should arrive");
-            assert!(session
-                .to_text()
-                .unwrap()
-                .contains("\"modalities\":[\"text\",\"audio\"]"));
-            assert!(item.to_text().unwrap().contains("你好，世界。"));
-            assert!(response.to_text().unwrap().contains("response.create"));
-            let mut bytes = Vec::new();
-            bytes.extend_from_slice(&1000_i16.to_le_bytes());
-            bytes.extend_from_slice(&(-1000_i16).to_le_bytes());
-            let delta = BASE64_STANDARD.encode(bytes);
+    fn livetranslate_probe_rejects_out_of_order_server_lifecycle() {
+        let (ws_url, server) = spawn_ws_server(|websocket| {
             websocket
                 .send(Message::Text(
-                    format!("{{\"type\":\"response.audio.delta\",\"delta\":\"{delta}\"}}").into(),
+                    r#"{"event_id":"evt_server_updated_first","type":"session.updated"}"#.to_string().into(),
                 ))
-                .expect("audio delta should send");
-            websocket
-                .send(Message::Text(
-                    "{\"type\":\"response.audio.done\"}".to_string().into(),
-                ))
-                .expect("audio done should send");
+                .expect("out-of-order session.updated should send");
         });
 
+        let profile = ProviderGateway::new().probe(livetranslate_provider(ws_url));
+        server.join().expect("server should complete");
+        assert_eq!(profile.verdict, "unavailable");
+        assert_eq!(profile.error.as_ref().map(|error| error.code.as_str()), Some("protocol.invalid"));
+        let evidence = profile.wire_evidence.expect("wire evidence should be retained");
+        assert_eq!(
+            evidence.evidence_outcome,
+            "incomplete-livetranslate-lifecycle"
+        );
+        assert!(evidence.trace.iter().all(|entry| {
+            !matches!(
+                entry.event_type.as_str(),
+                "conversation.item.create" | "response.create" | "input_audio_buffer.append"
+            )
+        }));
+    }
+
+    #[test]
+    fn livetranslate_probe_rejects_missing_blank_or_reused_server_event_ids() {
+        let cases = [
+            (
+                r#"{"type":"session.created","session":{"id":"session-event-id","model":"qwen3.5-livetranslate-flash-realtime"}}"#,
+                r#"{"event_id":"evt_server_updated","type":"session.updated","session":{"id":"session-event-id","model":"qwen3.5-livetranslate-flash-realtime","modalities":["text"],"sample_rate":16000,"input_audio_format":"pcm","input_audio_transcription":{"model":"qwen3-asr-flash-realtime","language":"zh"},"translation":{"language":"en"}}}"#,
+                r#"{"event_id":"evt_server_finished","type":"session.finished"}"#,
+            ),
+            (
+                r#"{"event_id":"   ","type":"session.created","session":{"id":"session-event-id","model":"qwen3.5-livetranslate-flash-realtime"}}"#,
+                r#"{"event_id":"evt_server_updated","type":"session.updated","session":{"id":"session-event-id","model":"qwen3.5-livetranslate-flash-realtime","modalities":["text"],"sample_rate":16000,"input_audio_format":"pcm","input_audio_transcription":{"model":"qwen3-asr-flash-realtime","language":"zh"},"translation":{"language":"en"}}}"#,
+                r#"{"event_id":"evt_server_finished","type":"session.finished"}"#,
+            ),
+            (
+                r#"{"event_id":"evt_server_duplicate","type":"session.created","session":{"id":"session-event-id","object":"realtime.session","model":"qwen3.5-livetranslate-flash-realtime"}}"#,
+                r#"{"event_id":"evt_server_duplicate","type":"session.updated","session":{"id":"session-event-id","model":"qwen3.5-livetranslate-flash-realtime","modalities":["text"],"sample_rate":16000,"input_audio_format":"pcm","input_audio_transcription":{"model":"qwen3-asr-flash-realtime","language":"zh"},"translation":{"language":"en"}}}"#,
+                r#"{"event_id":"evt_server_duplicate","type":"session.finished"}"#,
+            ),
+        ];
+
+        for (created, updated, finished) in cases {
+            let created = created.to_string();
+            let updated = updated.to_string();
+            let finished = finished.to_string();
+            let (ws_url, server) = spawn_ws_server(move |websocket| {
+                let _ = websocket.send(Message::Text(created.into()));
+                let _ = websocket.send(Message::Text(updated.into()));
+                let _ = websocket.send(Message::Text(finished.into()));
+            });
+
+            let profile = ProviderGateway::new().probe(livetranslate_provider(ws_url));
+            server.join().expect("server should complete");
+            assert_eq!(profile.verdict, "unavailable");
+            assert!(matches!(
+                profile.error.as_ref().map(|error| error.code.as_str()),
+                Some("protocol.event-id-invalid" | "protocol.event-id-reused")
+            ));
+            assert_eq!(
+                profile
+                    .wire_evidence
+                    .as_ref()
+                    .map(|evidence| evidence.evidence_outcome.as_str()),
+                Some("invalid-livetranslate-server-event-id")
+            );
+        }
+    }
+
+    #[test]
+    fn livetranslate_probe_fails_immediately_with_redacted_provider_error_evidence() {
+        let (ws_url, server) = spawn_ws_server(|websocket| {
+            let long_context = "x".repeat(700);
+            websocket
+                .send(Message::Text(
+                    format!(
+                        "{{\"type\":\"error\",\"error\":{{\"code\":\"InvalidApiKey\\r\\nAuthorization: Bearer super-secret\",\"message\":\"rate limit diagnostic api_key=message-secret {long_context}\"}}}}"
+                    )
+                    .into(),
+                ))
+                .expect("provider error should send");
+        });
+
+        let profile = ProviderGateway::new().probe(livetranslate_provider(ws_url));
+        server.join().expect("server should complete");
+        assert_eq!(profile.verdict, "unavailable");
+        let evidence = profile.wire_evidence.expect("wire evidence should be retained");
+        assert_eq!(evidence.evidence_outcome, "provider-error-frame");
+        let error = evidence
+            .provider_error_frame
+            .expect("provider error frame should be retained");
+        assert!(error.provider_code.contains("InvalidApiKey"));
+        assert!(!error.provider_code.contains("super-secret"));
+        assert!(!error.provider_code.chars().any(char::is_control));
+        assert!(error.provider_code.chars().count() <= 128);
+        assert!(error.raw_redacted_payload.contains("[REDACTED]"));
+        assert!(error.raw_redacted_payload.contains("rate limit diagnostic"));
+        assert!(!error.raw_redacted_payload.contains("super-secret"));
+        assert!(!error.raw_redacted_payload.contains("message-secret"));
+        assert!(error.raw_redacted_payload.chars().count() <= 2_048);
+        assert_eq!(
+            error.sha256,
+            format!(
+                "{:x}",
+                sha2::Sha256::digest(error.raw_redacted_payload.as_bytes())
+            )
+        );
+    }
+
+    #[test]
+    fn livetranslate_probe_preserves_abnormal_websocket_close_authority() {
+        let (ws_url, server) = spawn_ws_server(|websocket| {
+            let reason = format!(
+                "upstream failed\r\nAuthorization: Bearer close-secret api_key=key-secret diagnostic-context-{}",
+                "x".repeat(24)
+            );
+            assert!(reason.len() <= 123, "fixture must fit a WebSocket close frame");
+            websocket
+                .close(Some(tungstenite::protocol::CloseFrame {
+                    code: tungstenite::protocol::frame::coding::CloseCode::Error,
+                    reason: reason.into(),
+                }))
+                .expect("close frame should send");
+        });
+
+        let profile = ProviderGateway::new().probe(livetranslate_provider(ws_url));
+        server.join().expect("server should complete");
+        assert_eq!(profile.verdict, "unavailable");
+        let evidence = profile.wire_evidence.expect("wire evidence should be retained");
+        assert_eq!(evidence.evidence_outcome, "websocket-close-abnormal");
+        let close = evidence.websocket_close.expect("close authority should exist");
+        assert_eq!(close.code, 1_011);
+        assert!(close.reason.contains("upstream failed"));
+        assert!(!close.reason.contains("close-secret"));
+        assert!(!close.reason.contains("key-secret"));
+        assert!(!close.reason.chars().any(char::is_control));
+        assert!(close.reason.chars().count() <= 96);
+        assert!(!close.normal);
+        let terminal = evidence.trace.last().expect("close trace should exist");
+        assert_eq!(terminal.reason.as_deref(), Some(close.reason.as_str()));
+        let raw_redacted_payload = terminal
+            .raw_redacted_payload
+            .as_deref()
+            .expect("close trace should retain sanitized authority");
+        assert!(!raw_redacted_payload.contains("close-secret"));
+        assert!(!raw_redacted_payload.contains("key-secret"));
+        assert_eq!(
+            terminal.sha256.as_deref(),
+            Some(sha256_hex(raw_redacted_payload).as_str())
+        );
+    }
+
+    #[test]
+    fn livetranslate_probe_distinguishes_first_event_and_completion_timeouts() {
+        for response_completion in [false, true] {
+            let (ws_url, server) = spawn_ws_server(move |websocket| {
+                if response_completion {
+                    websocket
+                        .send(Message::Text(
+                            r#"{"event_id":"evt_server_timeout_created","type":"session.created","session":{"id":"session-timeout","object":"realtime.session","model":"qwen3.5-livetranslate-flash-realtime"}}"#
+                                .to_string()
+                                .into(),
+                        ))
+                        .expect("session.created should send");
+                    let update = websocket.read().expect("session.update should arrive");
+                    assert!(update.to_text().unwrap().contains("session.update"));
+                }
+                thread::sleep(Duration::from_millis(1_200));
+            });
+            let mut provider = livetranslate_provider(ws_url);
+            provider.timeout_ms = 1_000;
+            let profile = ProviderGateway::new().probe(provider);
+            server.join().expect("server should complete");
+            assert_eq!(profile.verdict, "unavailable");
+            let evidence = profile.wire_evidence.expect("wire evidence should be retained");
+            let expected_phase = if response_completion {
+                "response-completion"
+            } else {
+                "read-first-event"
+            };
+            assert_eq!(evidence.timeout_phase.as_deref(), Some(expected_phase));
+            assert_eq!(evidence.timeout_budget_ms, Some(1_000));
+            assert_eq!(
+                evidence.evidence_outcome,
+                format!("timeout:{expected_phase}")
+            );
+            let terminal = evidence.trace.last().expect("timeout trace should exist");
+            assert_eq!(
+                terminal.deadline_monotonic_ms.unwrap()
+                    - terminal.started_monotonic_ms.unwrap(),
+                1_000
+            );
+            assert!(terminal.monotonic_ms >= terminal.deadline_monotonic_ms.unwrap());
+            if response_completion {
+                let session_update = evidence
+                    .trace
+                    .iter()
+                    .find(|entry| entry.event_type == "session.update")
+                    .expect("session.update trace should be retained");
+                assert_eq!(
+                    terminal.started_monotonic_ms,
+                    Some(session_update.monotonic_ms),
+                    "completion timeout must reuse the raw session.update phase authority"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn livetranslate_probe_ping_frames_do_not_extend_the_absolute_first_event_deadline() {
+        let (ws_url, server) = spawn_ws_server(|websocket| {
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_millis(1_300) {
+                if websocket
+                    .send(Message::Ping(Vec::from("keepalive").into()))
+                    .is_err()
+                {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let mut provider = livetranslate_provider(ws_url);
+        provider.timeout_ms = 1_000;
+        let started = Instant::now();
+        let profile = ProviderGateway::new().probe(provider);
+        let elapsed = started.elapsed();
+        server.join().expect("server should complete");
+
+        assert_eq!(profile.verdict, "unavailable");
+        assert!(elapsed < Duration::from_millis(1_500));
+        let evidence = profile.wire_evidence.expect("wire evidence should exist");
+        assert_eq!(evidence.timeout_phase.as_deref(), Some("read-first-event"));
+        assert_eq!(evidence.timeout_budget_ms, Some(1_000));
+    }
+
+    #[test]
+    fn livetranslate_probe_rejects_binary_application_frames() {
+        let (ws_url, server) = spawn_ws_server(|websocket| {
+            websocket
+                .send(Message::Binary(vec![1, 2, 3].into()))
+                .expect("binary frame should send");
+        });
+
+        let profile = ProviderGateway::new().probe(livetranslate_provider(ws_url));
+        server.join().expect("server should complete");
+        assert_eq!(profile.verdict, "unavailable");
+        assert_eq!(
+            profile.error.as_ref().map(|error| error.code.as_str()),
+            Some("response.unparseable")
+        );
+        let evidence = profile.wire_evidence.expect("wire evidence should exist");
+        assert_eq!(
+            evidence.evidence_outcome,
+            "invalid-livetranslate-binary-frame"
+        );
+        assert_eq!(
+            evidence.trace.last().map(|entry| entry.event_type.as_str()),
+            Some("websocket.binary")
+        );
+    }
+
+    #[test]
+    fn livetranslate_probe_rejects_session_model_and_echoed_config_mismatch() {
+        for config_mismatch in [false, true] {
+            let (ws_url, server) = spawn_ws_server(move |websocket| {
+                let model = if config_mismatch {
+                    "qwen3.5-livetranslate-flash-realtime"
+                } else {
+                    "wrong-model"
+                };
+                websocket
+                    .send(Message::Text(
+                        format!(
+                            "{{\"event_id\":\"evt_server_authority_created\",\"type\":\"session.created\",\"session\":{{\"id\":\"session-authority\",\"object\":\"realtime.session\",\"model\":\"{model}\"}}}}"
+                        )
+                        .into(),
+                    ))
+                    .expect("session.created should send");
+                if config_mismatch {
+                    let _ = websocket.read().expect("session.update should arrive");
+                    websocket
+                        .send(Message::Text(
+                            r#"{"event_id":"evt_server_authority_updated","type":"session.updated","session":{"id":"session-authority","object":"realtime.session","model":"qwen3.5-livetranslate-flash-realtime","modalities":["text"],"sample_rate":16000,"input_audio_format":"pcm","turn_detection":{"type":"server_vad","threshold":0.0,"silence_duration_ms":400},"input_audio_transcription":{"model":"qwen3-asr-flash-realtime","language":"zh"},"translation":{"language":"fr"}}}"#
+                                .to_string()
+                                .into(),
+                        ))
+                        .expect("session.updated should send");
+                }
+            });
+
+            let profile = ProviderGateway::new().probe(livetranslate_provider(ws_url));
+            server.join().expect("server should complete");
+            assert_eq!(profile.verdict, "unavailable");
+            assert!(matches!(
+                profile.error.as_ref().map(|error| error.code.as_str()),
+                Some("protocol.identity-invalid" | "protocol.config-mismatch")
+            ));
+            assert_eq!(
+                profile
+                    .wire_evidence
+                    .expect("wire evidence should exist")
+                    .evidence_outcome,
+                "invalid-livetranslate-session-authority"
+            );
+        }
+    }
+
+    #[test]
+    fn livetranslate_probe_reuses_production_session_object_authority() {
+        for wrong_updated_object in [false, true] {
+            let (ws_url, server) = spawn_ws_server(move |websocket| {
+                let created_object = if wrong_updated_object {
+                    ",\"object\":\"realtime.session\""
+                } else {
+                    ""
+                };
+                websocket
+                    .send(Message::Text(
+                        format!(
+                            "{{\"event_id\":\"evt_server_object_created\",\"type\":\"session.created\",\"session\":{{\"id\":\"session-object\"{created_object},\"model\":\"qwen3.5-livetranslate-flash-realtime\"}}}}"
+                        )
+                        .into(),
+                    ))
+                    .expect("session.created should send");
+                if wrong_updated_object {
+                    let _ = websocket.read().expect("session.update should arrive");
+                    websocket
+                        .send(Message::Text(
+                            r#"{"event_id":"evt_server_object_updated","type":"session.updated","session":{"id":"session-object","object":"wrong.session","model":"qwen3.5-livetranslate-flash-realtime","modalities":["text"],"sample_rate":16000,"input_audio_format":"pcm","turn_detection":{"type":"server_vad","threshold":0.0,"silence_duration_ms":400},"input_audio_transcription":{"model":"qwen3-asr-flash-realtime","language":"zh"},"translation":{"language":"en"}}}"#
+                                .to_string()
+                                .into(),
+                        ))
+                        .expect("session.updated should send");
+                }
+            });
+
+            let profile = ProviderGateway::new().probe(livetranslate_provider(ws_url));
+            server.join().expect("server should complete");
+            assert_eq!(profile.verdict, "unavailable");
+            assert!(matches!(
+                profile.error.as_ref().map(|error| error.code.as_str()),
+                Some("protocol.identity-invalid" | "protocol.config-mismatch")
+            ));
+            assert_eq!(
+                profile
+                    .wire_evidence
+                    .expect("wire evidence should exist")
+                    .evidence_outcome,
+                "invalid-livetranslate-session-authority"
+            );
+        }
+    }
+
+    #[test]
+    fn livetranslate_probe_marks_complete_lifecycle_over_1200ms_as_realtime_risk() {
+        let (ws_url, server) = spawn_ws_server(|websocket| {
+            thread::sleep(Duration::from_millis(1_250));
+            websocket
+                .send(Message::Text(
+                    r#"{"event_id":"evt_server_late_created","type":"session.created","session":{"id":"session-late","object":"realtime.session","model":"qwen3.5-livetranslate-flash-realtime"}}"#
+                        .to_string()
+                        .into(),
+                ))
+                .expect("session.created should send");
+            let _ = websocket.read().expect("session.update should arrive");
+            websocket
+                .send(Message::Text(
+                    r#"{"event_id":"evt_server_late_updated","type":"session.updated","session":{"id":"session-late","object":"realtime.session","model":"qwen3.5-livetranslate-flash-realtime","modalities":["text"],"sample_rate":16000,"input_audio_format":"pcm","turn_detection":{"type":"server_vad","threshold":0.0,"silence_duration_ms":400},"input_audio_transcription":{"model":"qwen3-asr-flash-realtime","language":"zh"},"translation":{"language":"en"}}}"#
+                        .to_string()
+                        .into(),
+                ))
+                .expect("session.updated should send");
+            let _ = websocket.read().expect("session.finish should arrive");
+            websocket
+                .send(Message::Text(
+                    r#"{"event_id":"evt_server_late_finished","type":"session.finished"}"#.to_string().into(),
+                ))
+                .expect("session.finished should send");
+        });
+        let mut provider = livetranslate_provider(ws_url);
+        provider.timeout_ms = 3_000;
+        let profile = ProviderGateway::new().probe(provider);
+        server.join().expect("server should complete");
+
+        assert_eq!(profile.verdict, "realtime-risk");
+        assert_eq!(profile.latency_budget_ms, 1_200);
+        assert!(profile.measured_latency_ms > 1_200);
+        assert_eq!(
+            profile
+                .wire_evidence
+                .as_ref()
+                .map(|evidence| evidence.evidence_outcome.as_str()),
+            Some("livetranslate-session-finished")
+        );
+    }
+
+    #[test]
+    fn livetranslate_probe_preserves_upgrade_timeout_without_fake_101() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have address");
+        let server = thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("client should connect");
+            thread::sleep(Duration::from_millis(1_200));
+        });
+        let mut provider = livetranslate_provider(format!("ws://{addr}"));
+        provider.timeout_ms = 1_000;
+        let profile = ProviderGateway::new().probe(provider);
+        server.join().expect("server should complete");
+
+        assert_eq!(profile.verdict, "unavailable");
+        let evidence = profile.wire_evidence.expect("wire evidence should exist");
+        assert_eq!(evidence.evidence_outcome, "timeout:websocket-upgrade");
+        assert_eq!(evidence.timeout_phase.as_deref(), Some("websocket-upgrade"));
+        assert_eq!(profile.connection_attempts, 1);
+        assert_eq!(profile.connection_count, 0);
+        assert!(!profile.connection_opened);
+        assert!(!profile.connection_closed);
+        assert_eq!(evidence.connection_count, 0);
+        assert_eq!(
+            evidence.trace.last().map(|entry| entry.event_type.as_str()),
+            Some("websocket.upgrade.timeout")
+        );
+        assert!(evidence.trace.iter().all(|entry| entry.status != Some(101)));
+        let terminal = evidence.trace.last().expect("terminal trace should exist");
+        assert_eq!(terminal.started_monotonic_ms, Some(0));
+        assert_eq!(terminal.deadline_monotonic_ms, Some(1_000));
+        let payload = terminal
+            .raw_redacted_payload
+            .as_deref()
+            .expect("sanitized request authority should exist");
+        assert!(!payload.to_ascii_lowercase().contains("bearer"));
+        assert!(!payload.to_ascii_lowercase().contains("api-key"));
+        let expected_digest = sha256_hex(payload);
+        assert_eq!(terminal.sha256.as_deref(), Some(expected_digest.as_str()));
+    }
+
+    #[test]
+    fn omni_profile_cannot_be_used_as_tts_before_connector_access() {
         let gateway = ProviderGateway::new();
-        let synthesis = gateway
+        let error = gateway
             .synthesize_realtime_audio(
-                realtime_provider(ws_url),
+                realtime_provider("ws://127.0.0.1:9/api/v1".to_string()),
                 "你好，世界。".to_string(),
                 "zh-CN".to_string(),
                 "Ethan".to_string(),
             )
-            .expect("realtime audio should synthesize");
+            .expect_err("Omni profile is not a TTS product profile");
 
-        assert_eq!(synthesis.audio.sample_rate_hz, 24_000);
-        assert_eq!(synthesis.audio.channel_count, 1);
-        assert_eq!(synthesis.audio.pcm_i16, vec![1000, -1000]);
-        assert!(synthesis
-            .event_log
-            .iter()
-            .any(|item| item.event_type == "realtime-audio.completed"));
+        assert_eq!(error.code, "model_protocol.operation_not_supported");
     }
 
     #[test]
@@ -1134,8 +1963,7 @@ mod tests {
             );
         });
 
-        let mut provider = dashscope_provider(base_url);
-        provider.transport = "http".to_string();
+        let provider = dashscope_text_provider(base_url);
         let gateway = ProviderGateway::new();
         let smoke = gateway.execute_smoke(
             provider,
@@ -1251,6 +2079,46 @@ mod tests {
         (format!("http://{}", addr), handle)
     }
 
+    fn spawn_counted_loopback_http_server() -> (
+        String,
+        Arc<AtomicUsize>,
+        Arc<AtomicBool>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        listener
+            .set_nonblocking(true)
+            .expect("counter listener should be nonblocking");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let attempts_for_server = Arc::clone(&attempts);
+        let stop_for_server = Arc::clone(&stop);
+        let handle = thread::spawn(move || {
+            while !stop_for_server.load(AtomicOrdering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        attempts_for_server.fetch_add(1, AtomicOrdering::SeqCst);
+                        read_http_request(&mut stream);
+                        write_http_response(
+                            &mut stream,
+                            "text/event-stream",
+                            concat!(
+                                "data: {\"choices\":[{\"delta\":{\"content\":\"unexpected network access\"}}]}\n\n",
+                                "data: [DONE]\n\n"
+                            ),
+                        );
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("counter listener failed: {error}"),
+                }
+            }
+        });
+        (format!("http://{addr}"), attempts, stop, handle)
+    }
+
     /// Bind an ephemeral loopback WebSocket server that accepts one connection
     /// and completes the handshake, then hands the live socket to `exchange` so
     /// each test drives its own frame read/write sequence. Returns the
@@ -1268,6 +2136,38 @@ mod tests {
             exchange(&mut websocket);
         });
         (format!("ws://{}/ws", addr), handle)
+    }
+
+    fn spawn_counted_loopback_ws_server() -> (
+        String,
+        Arc<AtomicUsize>,
+        Arc<AtomicBool>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        listener
+            .set_nonblocking(true)
+            .expect("counter listener should be nonblocking");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let attempts_for_server = Arc::clone(&attempts);
+        let stop_for_server = Arc::clone(&stop);
+        let handle = thread::spawn(move || {
+            while !stop_for_server.load(AtomicOrdering::SeqCst) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        attempts_for_server.fetch_add(1, AtomicOrdering::SeqCst);
+                        let _ = accept(stream);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("WebSocket counter listener failed: {error}"),
+                }
+            }
+        });
+        (format!("ws://{addr}/ws"), attempts, stop, handle)
     }
 
     fn write_http_response(stream: &mut TcpStream, content_type: &str, body: &str) {
@@ -1598,10 +2498,52 @@ mod tests {
         total_ms: u64,
     }
 
+    const LEGACY_AUDIO_INTEGRATION_WIRE_DIALECT: &str =
+        "bailian-omni-realtime-ws-v1";
+
+    fn authorize_legacy_audio_integration_adapter(
+        provider: &ProviderDraftInput,
+    ) -> Result<(), ProviderRuntimeError> {
+        let authority = authorize_bailian_model_operation_before_provider_access(
+            provider,
+            &provider.model,
+            "native_translate",
+        )?
+        .ok_or_else(|| {
+            ProviderRuntimeError::new(
+                "model_protocol.profile_declaration_missing",
+                format!(
+                    "model_protocol.profile_declaration_missing: legacy realtime audio integration requires an exact typed Bailian voice profile for '{}'",
+                    provider.model
+                ),
+            )
+        })?;
+        if authority.wire_dialect != LEGACY_AUDIO_INTEGRATION_WIRE_DIALECT {
+            return Err(ProviderRuntimeError::new(
+                "model_protocol.wire_dialect_mismatch",
+                format!(
+                    "model_protocol.wire_dialect_mismatch: legacy realtime audio integration implements '{}' but model '{}' is authorized for '{}'",
+                    LEGACY_AUDIO_INTEGRATION_WIRE_DIALECT,
+                    provider.model,
+                    authority.wire_dialect
+                ),
+            ));
+        }
+
+        Err(ProviderRuntimeError::new(
+            "model_protocol.adapter_unavailable",
+            format!(
+                "model_protocol.adapter_unavailable: legacy realtime audio integration has no enabled typed adapter for '{}' and cannot use manifest authority alone",
+                authority.wire_dialect
+            ),
+        ))
+    }
+
     fn run_realtime_audio_file_integration(
         provider: ProviderDraftInput,
         audio_path: &str,
     ) -> Result<RealtimeAudioIntegrationResult, ProviderRuntimeError> {
+        authorize_legacy_audio_integration_adapter(&provider)?;
         let overall_started = Instant::now();
         let samples = decode_audio_file_to_mono_16k(audio_path);
         if samples.is_empty() {
@@ -1611,8 +2553,8 @@ mod tests {
             ));
         }
 
-        let (mut socket, websocket_timeout) =
-            WebSocketTransport::default().connect_provider(&provider)?;
+        let (mut socket, websocket_timeout) = WebSocketTransport::default()
+            .connect_provider(&provider, "native_translate")?;
 
         let request_id = format!("audio-integration-{}", now_unix_seconds_marker());
         let safe_id = request_id.replace([':', '-'], "_");
@@ -1808,6 +2750,74 @@ mod tests {
             commit_to_response_done_ms,
             total_ms: overall_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
         })
+    }
+
+    #[test]
+    fn livetranslate_cannot_reach_legacy_omni_audio_integration_socket() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../scripts/testing/fixtures/watch-mode-en-original.wav");
+        let (connect_url, connection_count, stop, server) =
+            spawn_counted_loopback_ws_server();
+        let client = thread::spawn(move || {
+            let mut provider = livetranslate_provider(connect_url);
+            provider.timeout_ms = 1_000;
+            run_realtime_audio_file_integration(provider, &fixture.to_string_lossy())
+        });
+
+        let result = client.join().expect("integration client should not panic");
+        stop.store(true, AtomicOrdering::SeqCst);
+        server.join().expect("counter server should stop");
+
+        let error = match result {
+            Ok(_) => panic!("LiveTranslate must not enter an Omni-only test adapter"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            connection_count.load(AtomicOrdering::SeqCst),
+            0,
+            "protocol admission must fail before any paid-capable connection"
+        );
+        assert_eq!(error.code, "model_protocol.wire_dialect_mismatch");
+    }
+
+    #[test]
+    fn legacy_omni_audio_integration_rejects_manifest_only_and_unknown_models_before_io() {
+        for (model, expected_code) in [
+            (
+                "qwen3.5-omni-plus-realtime",
+                "model_protocol.adapter_unavailable",
+            ),
+            (
+                "qwen-new-voice-realtime",
+                "model_protocol.model_not_registered",
+            ),
+        ] {
+            let mut provider = provider_draft(
+                "template-dashscope-realtime",
+                "provider-dashscope-audio-integration",
+                "dashscope",
+                "DashScope audio integration",
+                model,
+                "https://dashscope.aliyuncs.com/api/v1".to_string(),
+                "websocket",
+                Some("cn-beijing".to_string()),
+                "audio-realtime-integration",
+            );
+            provider.realtime_protocol = Some("dashscope-omni".to_string());
+            if model == "qwen-new-voice-realtime" {
+                declare_exact_unknown_bailian_voice_model(&mut provider);
+            }
+
+            let result = run_realtime_audio_file_integration(
+                provider,
+                "this-path-must-not-be-read-before-protocol-admission.wav",
+            );
+            let error = match result {
+                Ok(_) => panic!("{model} must not enter the legacy audio integration adapter"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code, expected_code, "unexpected result for {model}");
+        }
     }
 
     fn llm_integration_audio_only() -> bool {

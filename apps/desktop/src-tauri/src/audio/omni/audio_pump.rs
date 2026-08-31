@@ -1,4 +1,5 @@
 use super::*;
+use super::realtime_socket::ReconnectedRealtimeSocket;
 
 // A continuously fed receiver must yield back to the session worker so it can
 // poll provider events and run the manual-commit timer. Without this bound,
@@ -51,6 +52,8 @@ pub(super) struct OmniAudioPumpState {
     /// The send path replaced the socket via reconnect during this tick. The
     /// worker must reset the manual response gate tied to the old session.
     pub(super) socket_reconnected: bool,
+    /// Exact `session.update` admitted and sent on the replacement socket.
+    pub(super) reconnected_session_update: Option<Value>,
 }
 
 pub(super) struct OmniAudioPump {
@@ -133,7 +136,7 @@ fn reconnect_after_audio_send_failure<C: RealtimeSocketConnector, R: tauri::Runt
     pending_audio_buffer: &mut Vec<i16>,
     provider_input_budget: &ProviderInputBudget,
     send_error: &tungstenite::Error,
-) -> Result<C::Socket, String> {
+) -> Result<ReconnectedRealtimeSocket<C::Socket>, String> {
     let _ = diag_log(
         app,
         "omni",
@@ -240,9 +243,11 @@ impl OmniAudioPump {
             mut audio_input_disconnected,
             chunks_sent_this_tick: _,
             socket_reconnected: _,
+            reconnected_session_update: _,
         } = self.state;
         let mut chunks_sent_this_tick: usize = 0;
         let mut socket_reconnected = false;
+        let mut reconnected_session_update = None;
         let mut pre_session_chunks_drained_this_tick = 0usize;
         loop {
             let raw_chunk = if provider_input_is_writable(session_ready_for_audio, defer_audio_until_response_done) {
@@ -394,7 +399,7 @@ impl OmniAudioPump {
             )?;
             archive_successful_source_audio(store, &send_result, &asr_chunk);
             if let Err(error) = send_result {
-                *socket = reconnect_after_audio_send_failure(
+                let reconnected = reconnect_after_audio_send_failure(
                     connector,
                     app,
                     store,
@@ -411,6 +416,8 @@ impl OmniAudioPump {
                     &provider_input_budget,
                     &error,
                 )?;
+                *socket = reconnected.socket;
+                reconnected_session_update = Some(reconnected.session_update);
                 socket_reconnected = true;
                 session_ready_for_audio = false;
                 buffer_size = buffer_size.wrapping_sub(raw_chunk.len() as u64);
@@ -484,6 +491,7 @@ impl OmniAudioPump {
             audio_input_disconnected,
             chunks_sent_this_tick,
             socket_reconnected,
+            reconnected_session_update,
         })
     }
 }
@@ -575,9 +583,12 @@ mod tests {
             _output_mode: OmniOutputMode,
             _source_language: &str,
             _target_language: &str,
-        ) -> Result<Self::Socket, String> {
+        ) -> Result<ReconnectedRealtimeSocket<Self::Socket>, String> {
             self.attempts.fetch_add(1, Ordering::SeqCst);
-            Ok(SendFailSocket)
+            Ok(ReconnectedRealtimeSocket {
+                socket: SendFailSocket,
+                session_update: json!({"type":"session.update"}),
+            })
         }
     }
 
@@ -673,6 +684,7 @@ mod tests {
             audio_input_disconnected: false,
             chunks_sent_this_tick: 0,
             socket_reconnected: false,
+            reconnected_session_update: None,
         })
         .pump(
             &connector,

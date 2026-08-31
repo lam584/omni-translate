@@ -31,7 +31,8 @@ pub(crate) fn synthesize(
         ));
     }
 
-    let (mut socket, websocket_timeout) = WebSocketTransport::default().connect_provider(&provider)?;
+    let (mut socket, websocket_timeout) =
+        WebSocketTransport::default().connect_provider(&provider, "tts")?;
 
     let request_id = format!("realtime-audio-{}", now_unix_seconds_marker());
     let safe_id = request_id.replace([':', '-'], "_");
@@ -121,7 +122,8 @@ pub(crate) fn synthesize(
                     _ => {}
                 }
             }
-            WebSocketFrame::Closed => break,
+            WebSocketFrame::Closed(_) => break,
+            WebSocketFrame::Binary => {}
             WebSocketFrame::Ignored => {}
         }
     }

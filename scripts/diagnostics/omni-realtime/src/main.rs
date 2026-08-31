@@ -1,5 +1,6 @@
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -9,9 +10,13 @@ use serde_json::{json, Value};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::{connect, Message};
 
-const DEFAULT_MODEL: &str = "qwen3.5-omni-plus-realtime-2026-03-15";
+#[path = "../../omni-benchmark/src/bailian_contract/mod.rs"]
+mod bailian_contract;
+
+const DEFAULT_MODEL: &str = "qwen3.5-livetranslate-flash-realtime";
 const DEFAULT_BASE_URL: &str = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime";
 const CHUNK_SAMPLES: usize = 320;
+static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
 struct Config {
@@ -27,7 +32,6 @@ struct Config {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DashscopeProtocol {
-    Omni,
     LiveTranslate,
 }
 
@@ -39,23 +43,18 @@ enum AudioInput {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RealtimeMode {
-    Manual,
     ServerVad,
-    SemanticVad,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReadinessMode {
     UpdatedOnly,
-    CreatedOrUpdated,
 }
 
 impl RealtimeMode {
     fn as_str(self) -> &'static str {
         match self {
-            Self::Manual => "manual",
             Self::ServerVad => "server_vad",
-            Self::SemanticVad => "semantic_vad",
         }
     }
 }
@@ -64,7 +63,6 @@ impl ReadinessMode {
     fn as_str(self) -> &'static str {
         match self {
             Self::UpdatedOnly => "updated_only",
-            Self::CreatedOrUpdated => "created_or_updated",
         }
     }
 }
@@ -100,7 +98,7 @@ fn parse_args() -> Result<Config, String> {
     let mut input_audio_format: Option<String> = None;
     let mut readiness = ReadinessMode::UpdatedOnly;
     let mut limit_seconds = None;
-    let mut protocol = DashscopeProtocol::Omni;
+    let mut protocol = DashscopeProtocol::LiveTranslate;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -123,9 +121,9 @@ fn parse_args() -> Result<Config, String> {
             }
             "--input-audio-format" => {
                 let raw = next_value(&mut args, "--input-audio-format")?;
-                if raw != "pcm" && raw != "pcm16" {
+                if raw != "pcm" {
                     return Err(format!(
-                        "invalid --input-audio-format '{raw}'; expected pcm or pcm16"
+                        "invalid --input-audio-format '{raw}'; the enabled LiveTranslate adapter requires pcm"
                     ));
                 }
                 input_audio_format = Some(raw);
@@ -144,7 +142,12 @@ fn parse_args() -> Result<Config, String> {
                 }
                 limit_seconds = Some(value);
             }
-            "--manual" => mode = RealtimeMode::Manual,
+            "--manual" => {
+                return Err(
+                    "--manual is not supported by the enabled LiveTranslate server_vad adapter"
+                        .to_string(),
+                )
+            }
             "--help" | "-h" => {
                 print_usage();
                 std::process::exit(0);
@@ -155,14 +158,7 @@ fn parse_args() -> Result<Config, String> {
 
     let audio_input =
         audio_input.ok_or_else(|| "--pcm <path> or --mp3 <path> is required".to_string())?;
-    let input_audio_format = input_audio_format.unwrap_or_else(|| {
-        if protocol == DashscopeProtocol::LiveTranslate {
-            "pcm"
-        } else {
-            "pcm16"
-        }
-        .to_string()
-    });
+    let input_audio_format = input_audio_format.unwrap_or_else(|| "pcm".to_string());
     Ok(Config {
         api_key,
         audio_input,
@@ -177,21 +173,18 @@ fn parse_args() -> Result<Config, String> {
 
 fn parse_protocol(value: &str) -> Result<DashscopeProtocol, String> {
     match value {
-        "dashscope-omni" => Ok(DashscopeProtocol::Omni),
         "dashscope-livetranslate" => Ok(DashscopeProtocol::LiveTranslate),
         other => Err(format!(
-            "invalid --protocol '{other}'; expected dashscope-omni or dashscope-livetranslate"
+            "invalid --protocol '{other}'; only the enabled dashscope-livetranslate profile is authorized"
         )),
     }
 }
 
 fn parse_realtime_mode(value: &str) -> Result<RealtimeMode, String> {
     match value {
-        "manual" => Ok(RealtimeMode::Manual),
         "server_vad" => Ok(RealtimeMode::ServerVad),
-        "semantic_vad" => Ok(RealtimeMode::SemanticVad),
         other => Err(format!(
-            "invalid --mode '{other}'; expected manual, server_vad, or semantic_vad"
+            "invalid --mode '{other}'; the enabled LiveTranslate adapter requires server_vad"
         )),
     }
 }
@@ -199,9 +192,8 @@ fn parse_realtime_mode(value: &str) -> Result<RealtimeMode, String> {
 fn parse_readiness_mode(value: &str) -> Result<ReadinessMode, String> {
     match value {
         "updated_only" => Ok(ReadinessMode::UpdatedOnly),
-        "created_or_updated" => Ok(ReadinessMode::CreatedOrUpdated),
         other => Err(format!(
-            "invalid --readiness '{other}'; expected updated_only or created_or_updated"
+            "invalid --readiness '{other}'; readiness requires a typed, ordered session.updated"
         )),
     }
 }
@@ -213,10 +205,41 @@ fn next_value(args: &mut impl Iterator<Item = String>, name: &str) -> Result<Str
 }
 
 fn print_usage() {
-    eprintln!("Usage: omni-realtime-diagnostic (--pcm <16k_mono_pcm> | --mp3 <path>) [--protocol dashscope-omni|dashscope-livetranslate] [--manual | --mode manual|server_vad|semantic_vad] [--input-audio-format pcm|pcm16] [--readiness updated_only|created_or_updated] [--model <model>] [--limit-seconds <seconds>]");
+    eprintln!("Usage: omni-realtime-diagnostic (--pcm <16k_mono_pcm> | --mp3 <path>) [--protocol dashscope-livetranslate] [--mode server_vad] [--input-audio-format pcm] [--readiness updated_only] [--model <model>] [--limit-seconds <seconds>]");
 }
 
 fn run(config: Config) -> Result<(), String> {
+    if config.protocol != DashscopeProtocol::LiveTranslate
+        || config.mode != RealtimeMode::ServerVad
+        || config.readiness != ReadinessMode::UpdatedOnly
+        || config.input_audio_format != "pcm"
+    {
+        return Err(
+            "model_protocol.not_authorized: only the enabled LiveTranslate pcm/server_vad adapter is supported"
+                .to_string(),
+        );
+    }
+    let session_cfg = session_update();
+    let session_finish = json!({
+        "event_id": next_event_id("session_finish"),
+        "type": "session.finish"
+    });
+    let audio_append_template = json!({
+        "type": "input_audio_buffer.append",
+        "audio": base64_encode_i16(&[0])
+    });
+    let client_plan = bailian_contract::preflight_livetranslate_client_plan(
+        &config.model,
+        DEFAULT_BASE_URL,
+        session_cfg,
+        &audio_append_template,
+        session_finish,
+    )?;
+    let mut lifecycle = bailian_contract::LiveTranslateLifecycle::new(
+        client_plan.authority(),
+        &config.model,
+        client_plan.session_update(),
+    )?;
     let mut samples = read_audio_samples(&config.audio_input)?;
     if let Some(limit_seconds) = config.limit_seconds {
         let max_samples = (limit_seconds * 16_000.0).ceil() as usize;
@@ -252,11 +275,19 @@ fn run(config: Config) -> Result<(), String> {
     let (mut socket, _) = connect(request).map_err(|error| format!("connect failed: {error}"))?;
     set_read_timeout(&mut socket);
 
-    let session_cfg = session_update(config.protocol, config.mode, &config.input_audio_format);
+    wait_for_handshake_action(
+        &mut socket,
+        &mut lifecycle,
+        bailian_contract::ServerAction::SendSessionUpdate,
+    )?;
     socket
-        .send(Message::Text(session_cfg.to_string().into()))
+        .send(Message::Text(client_plan.session_update().to_string().into()))
         .map_err(|error| format!("failed to send session.update: {error}"))?;
-    wait_for_session_ready(&mut socket, config.readiness)?;
+    wait_for_handshake_action(
+        &mut socket,
+        &mut lifecycle,
+        bailian_contract::ServerAction::Ready,
+    )?;
 
     println!("streaming audio...");
     let audio_start = Instant::now();
@@ -265,6 +296,7 @@ fn run(config: Config) -> Result<(), String> {
             "type": "input_audio_buffer.append",
             "audio": base64_encode_i16(chunk),
         });
+        client_plan.admit_audio_append(&append)?;
         socket
             .send(Message::Text(append.to_string().into()))
             .map_err(|error| format!("audio send failed at chunk {index}: {error}"))?;
@@ -274,26 +306,12 @@ fn run(config: Config) -> Result<(), String> {
         thread::sleep(Duration::from_millis(18));
     }
 
-    if config.mode == RealtimeMode::Manual {
-        socket
-            .send(Message::Text(
-                json!({ "type": "input_audio_buffer.commit" })
-                    .to_string()
-                    .into(),
-            ))
-            .map_err(|error| format!("failed to send commit: {error}"))?;
-        socket
-            .send(Message::Text(
-                json!({ "type": "response.create" }).to_string().into(),
-            ))
-            .map_err(|error| format!("failed to send response.create: {error}"))?;
-    }
+    lifecycle.record_finish_sent()?;
+    socket
+        .send(Message::Text(client_plan.session_finish().to_string().into()))
+        .map_err(|error| format!("failed to send session.finish: {error}"))?;
 
-    receive_result(
-        &mut socket,
-        audio_start,
-        config.mode == RealtimeMode::Manual,
-    )?;
+    receive_result(&mut socket, audio_start, &mut lifecycle)?;
     let _ = socket.close(None);
     Ok(())
 }
@@ -360,53 +378,34 @@ fn resample_mono_to_16k_i16(samples: &[f32], source_rate: u32) -> Vec<i16> {
     resampled
 }
 
-fn session_update(
-    protocol: DashscopeProtocol,
-    mode: RealtimeMode,
-    input_audio_format: &str,
-) -> Value {
-    let turn_detection = match mode {
-        RealtimeMode::Manual => Value::Null,
-        RealtimeMode::ServerVad => json!({
-            "type": "server_vad",
-            "threshold": 0.0,
-            "silence_duration_ms": 800,
-        }),
-        RealtimeMode::SemanticVad => json!({
-            "type": "semantic_vad",
-            "eagerness": "auto",
-        }),
-    };
-
-    let mut session = json!({
+fn session_update() -> Value {
+    json!({
+        "event_id": next_event_id("session_update"),
         "type": "session.update",
         "session": {
-            "modalities": ["text", "audio"],
-            "voice": "Ethan",
-            "instructions": "Transcribe the input audio and translate it to Chinese. Keep the response concise.",
-            "input_audio_format": input_audio_format,
+            "modalities": ["text"],
+            "input_audio_format": "pcm",
             "sample_rate": 16000,
-            "output_audio_format": "pcm",
-            "turn_detection": turn_detection,
+            "turn_detection": {
+                "type": "server_vad",
+                "threshold": 0.0,
+                "silence_duration_ms": 400
+            },
+            "input_audio_transcription": {
+                "model": "qwen3-asr-flash-realtime",
+                "language": "en"
+            },
+            "translation": {
+                "language": "zh"
+            }
         }
-    });
-
-    if protocol == DashscopeProtocol::LiveTranslate {
-        session["session"]["input_audio_transcription"] = json!({
-            "model": "qwen3-asr-flash-realtime",
-            "language": "en"
-        });
-        session["session"]["translation"] = json!({
-            "language": "zh"
-        });
-    }
-
-    session
+    })
 }
 
-fn wait_for_session_ready(
+fn wait_for_handshake_action(
     socket: &mut tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
-    readiness: ReadinessMode,
+    lifecycle: &mut bailian_contract::LiveTranslateLifecycle,
+    expected: bailian_contract::ServerAction,
 ) -> Result<(), String> {
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(15) {
@@ -414,23 +413,20 @@ fn wait_for_session_ready(
             Ok(Message::Text(text)) => {
                 let event: Value = serde_json::from_str(&text)
                     .map_err(|error| format!("invalid JSON from server: {error}"))?;
-                match event["type"].as_str().unwrap_or("?") {
-                    "session.created" => {
-                        println!("session.created");
-                        if readiness == ReadinessMode::CreatedOrUpdated {
-                            return Ok(());
-                        }
-                    }
-                    "session.updated" => {
-                        println!("session.updated");
-                        return Ok(());
-                    }
-                    "error" => return Err(format!("server error: {}", event["error"])),
-                    _ => {}
+                let action = lifecycle.admit_server_event(&event)?;
+                if action == expected {
+                    println!("{}", event["type"].as_str().unwrap_or("session.event"));
+                    return Ok(());
                 }
+                return Err(format!(
+                    "model_protocol.event_out_of_order: expected {expected:?}, observed {action:?}"
+                ));
             }
             Ok(Message::Close(_)) => {
                 return Err("server closed before session was ready".to_string())
+            }
+            Ok(Message::Binary(_)) => {
+                return Err("unexpected binary frame during LiveTranslate handshake".to_string())
             }
             Err(error) if is_timeout(&error.to_string()) => continue,
             Err(error) => return Err(format!("read failed while waiting for session: {error}")),
@@ -439,15 +435,14 @@ fn wait_for_session_ready(
     }
 
     Err(format!(
-        "timed out waiting for readiness event mode={}",
-        readiness.as_str()
+        "timed out waiting for LiveTranslate handshake action {expected:?}"
     ))
 }
 
 fn receive_result(
     socket: &mut tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
     start: Instant,
-    manual: bool,
+    lifecycle: &mut bailian_contract::LiveTranslateLifecycle,
 ) -> Result<(), String> {
     let total_timeout = Duration::from_secs(120);
     let idle_timeout = Duration::from_secs(15);
@@ -458,7 +453,7 @@ fn receive_result(
 
     loop {
         if start.elapsed() > total_timeout || last_event.elapsed() > idle_timeout {
-            break;
+            return Err("timed out before LiveTranslate session.finished".to_string());
         }
 
         match socket.read() {
@@ -466,6 +461,11 @@ fn receive_result(
                 last_event = Instant::now();
                 let event: Value = serde_json::from_str(&text)
                     .map_err(|error| format!("invalid JSON from server: {error}"))?;
+                let action = lifecycle.admit_server_event(&event)?;
+                if action == bailian_contract::ServerAction::Finished {
+                    println!("session.finished");
+                    break;
+                }
                 match event["type"].as_str().unwrap_or("?") {
                     "input_audio_buffer.speech_started" => println!("speech_started"),
                     "input_audio_buffer.speech_stopped" => println!("speech_stopped"),
@@ -481,10 +481,11 @@ fn receive_result(
                         source = event["transcript"].as_str().unwrap_or("").to_string();
                         println!("source={source}");
                     }
-                    "response.text.delta" => {
-                        if let Some(delta) = event["delta"].as_str() {
-                            translation.push_str(delta);
-                        }
+                    "response.text.text" | "response.audio_transcript.text" => {
+                        let text = event["text"].as_str().unwrap_or("");
+                        let stash = event["stash"].as_str().unwrap_or("");
+                        translation = format!("{text}{stash}");
+                        println!("translation.preview={translation}");
                     }
                     "response.text.done" => {
                         if let Some(text) = event["text"].as_str() {
@@ -493,11 +494,6 @@ fn receive_result(
                             }
                         }
                         println!("translation={translation}");
-                    }
-                    "response.audio_transcript.delta" => {
-                        if let Some(delta) = event["delta"].as_str() {
-                            translation.push_str(delta);
-                        }
                     }
                     "response.audio_transcript.done" => {
                         if let Some(transcript) = event["transcript"].as_str() {
@@ -510,15 +506,17 @@ fn receive_result(
                     "response.done" => {
                         response_count += 1;
                         println!("response.done count={response_count}");
-                        if manual {
-                            break;
-                        }
                     }
                     "error" => return Err(format!("server error: {}", event["error"])),
                     _ => {}
                 }
             }
-            Ok(Message::Close(_)) => break,
+            Ok(Message::Close(_)) => {
+                return lifecycle.record_transport_closed()
+            }
+            Ok(Message::Binary(_)) => {
+                return Err("unexpected binary frame before LiveTranslate session.finished".to_string())
+            }
             Err(error) if is_timeout(&error.to_string()) => continue,
             Err(error) => return Err(format!("read failed: {error}")),
             _ => {}
@@ -552,10 +550,97 @@ fn is_timeout(message: &str) -> bool {
     message.contains("timed out") || message.contains("TimedOut") || message.contains("10060")
 }
 
+fn next_event_id(kind: &str) -> String {
+    let sequence = EVENT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "event_omni_realtime_{}_{}_{}",
+        std::process::id(),
+        kind,
+        sequence
+    )
+}
+
 fn base64_encode_i16(samples: &[i16]) -> String {
     let bytes: Vec<u8> = samples
         .iter()
         .flat_map(|sample| sample.to_le_bytes())
         .collect();
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[cfg(test)]
+mod old_red_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_dialects_and_readiness_shortcuts_are_rejected() {
+        assert!(parse_protocol("dashscope-omni").is_err());
+        assert!(parse_readiness_mode("created_or_updated").is_err());
+        assert!(parse_realtime_mode("manual").is_err());
+        assert!(parse_realtime_mode("semantic_vad").is_err());
+    }
+
+    #[test]
+    fn livetranslate_session_update_is_the_official_server_vad_shape() {
+        let event = session_update();
+        assert_eq!(event.pointer("/session/modalities"), Some(&json!(["text"])));
+        assert_eq!(
+            event.pointer("/session/turn_detection"),
+            Some(&json!({
+                "type": "server_vad",
+                "threshold": 0.0,
+                "silence_duration_ms": 400,
+            }))
+        );
+        assert!(event.pointer("/session/instructions").is_none());
+        assert!(event.pointer("/session/voice").is_none());
+        assert!(event.pointer("/session/output_audio_format").is_none());
+    }
+
+    #[test]
+    fn production_builder_echo_is_required_before_audio_readiness() {
+        let update = session_update();
+        let client_plan = bailian_contract::preflight_livetranslate_client_plan(
+            DEFAULT_MODEL,
+            DEFAULT_BASE_URL,
+            update,
+            &json!({"type":"input_audio_buffer.append","audio":"AAA="}),
+            json!({"event_id":"evt-finish","type":"session.finish"}),
+        )
+        .unwrap();
+        let mut lifecycle = bailian_contract::LiveTranslateLifecycle::new(
+            client_plan.authority(),
+            DEFAULT_MODEL,
+            client_plan.session_update(),
+        )
+        .unwrap();
+        assert_eq!(
+            lifecycle
+                .admit_server_event(&json!({
+                    "type":"session.created",
+                    "event_id":"evt-created",
+                    "session":{
+                        "id":"session-builder",
+                        "object":"realtime.session",
+                        "model":DEFAULT_MODEL
+                    }
+                }))
+                .unwrap(),
+            bailian_contract::ServerAction::SendSessionUpdate
+        );
+        let mut echoed = client_plan.session_update()["session"].clone();
+        echoed["id"] = json!("session-builder");
+        echoed["object"] = json!("realtime.session");
+        echoed["model"] = json!(DEFAULT_MODEL);
+        assert_eq!(
+            lifecycle
+                .admit_server_event(&json!({
+                    "type":"session.updated",
+                    "event_id":"evt-updated",
+                    "session":echoed
+                }))
+                .unwrap(),
+            bailian_contract::ServerAction::Ready
+        );
+    }
 }

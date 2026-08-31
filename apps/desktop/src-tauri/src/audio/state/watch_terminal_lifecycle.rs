@@ -21,6 +21,15 @@ pub(crate) struct StrictWatchProviderAppendEvidence {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StrictWatchSessionUpdatedEvidence {
+    pub(crate) source_sequence: u64,
+    pub(crate) observed_at_unix_ms: u64,
+    pub(crate) session_identity_sha256: String,
+    pub(crate) sent_session_config_sha256: String,
+    pub(crate) echoed_session_config_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StrictWatchSessionFinishEvidence {
     pub(crate) source_sequence: u64,
     pub(crate) observed_at_unix_ms: u64,
@@ -61,6 +70,7 @@ pub(crate) struct StrictWatchRendererAckEvidence {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StrictWatchTerminalLifecycleSnapshot {
     pub(crate) identity: StrictWatchTerminalIdentity,
+    pub(crate) session_updated_received: StrictWatchSessionUpdatedEvidence,
     pub(crate) last_provider_append: StrictWatchProviderAppendEvidence,
     pub(crate) session_finish_sent: StrictWatchSessionFinishEvidence,
     pub(crate) session_finished_received: StrictWatchProviderTerminalEvidence,
@@ -87,6 +97,7 @@ struct StrictWatchTerminalLifecycleState {
     accepted_samples_total: u64,
     provider_writes_after_finish: u64,
     finish_count: u64,
+    session_updated_received: Option<StrictWatchSessionUpdatedEvidence>,
     last_provider_append: Option<StrictWatchProviderAppendEvidence>,
     provider_input_closed_source_sequence: Option<u64>,
     session_finish_sent: Option<StrictWatchSessionFinishEvidence>,
@@ -95,6 +106,7 @@ struct StrictWatchTerminalLifecycleState {
     last_response_done: Option<StrictWatchResponseTerminalEvidence>,
     response_audio_done_ids: HashSet<String>,
     response_done_ids: HashSet<String>,
+    failed_response_statuses: HashMap<String, String>,
     next_cue_sequence: u64,
     cue_sequences: HashMap<String, u64>,
     cue_response_ids: HashMap<String, String>,
@@ -182,6 +194,7 @@ impl StrictWatchTerminalLifecycle {
             accepted_samples_total: 0,
             provider_writes_after_finish: 0,
             finish_count: 0,
+            session_updated_received: None,
             last_provider_append: None,
             provider_input_closed_source_sequence: None,
             session_finish_sent: None,
@@ -190,6 +203,7 @@ impl StrictWatchTerminalLifecycle {
             last_response_done: None,
             response_audio_done_ids: HashSet::new(),
             response_done_ids: HashSet::new(),
+            failed_response_statuses: HashMap::new(),
             next_cue_sequence: 0,
             cue_sequences: HashMap::new(),
             cue_response_ids: HashMap::new(),
@@ -198,6 +212,59 @@ impl StrictWatchTerminalLifecycle {
             renderer_receipt_ids: HashSet::new(),
         });
         Ok(())
+    }
+
+    fn record_session_updated_received(
+        &self,
+        session_identity_sha256: &str,
+        sent_session_config_sha256: &str,
+        echoed_session_config_sha256: &str,
+    ) -> Result<(), String> {
+        self.with_active_mut(
+            |state| {
+                if state.session_updated_received.is_some() {
+                    return Err(
+                        "strict Watch session.updated was received more than once".to_string(),
+                    );
+                }
+                if state.last_provider_append.is_some() {
+                    return Err(
+                        "strict Watch session.updated arrived after Provider input began"
+                            .to_string(),
+                    );
+                }
+                for (label, digest) in [
+                    ("session identity", session_identity_sha256),
+                    ("sent session config", sent_session_config_sha256),
+                    ("echoed session config", echoed_session_config_sha256),
+                ] {
+                    if digest.len() != 64
+                        || !digest
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    {
+                        return Err(format!(
+                            "strict Watch {label} SHA-256 authority is invalid"
+                        ));
+                    }
+                }
+                if sent_session_config_sha256 != echoed_session_config_sha256 {
+                    return Err(
+                        "strict Watch session.updated does not echo the exact sent session configuration"
+                            .to_string(),
+                    );
+                }
+                state.session_updated_received = Some(StrictWatchSessionUpdatedEvidence {
+                    source_sequence: state.next_source_sequence(),
+                    observed_at_unix_ms: unix_ms(),
+                    session_identity_sha256: session_identity_sha256.to_string(),
+                    sent_session_config_sha256: sent_session_config_sha256.to_string(),
+                    echoed_session_config_sha256: echoed_session_config_sha256.to_string(),
+                });
+                Ok(())
+            },
+            (),
+        )
     }
 
     fn record_provider_append(&self, samples: u64) -> Result<(), String> {
@@ -333,6 +400,53 @@ impl StrictWatchTerminalLifecycle {
         )
     }
 
+    fn record_response_failed(&self, response_id: &str, status: &str) -> Result<(), String> {
+        self.with_active_mut(
+            |state| {
+                if response_id.trim().is_empty() {
+                    return Err("strict Watch failed response identity is empty".to_string());
+                }
+                if !matches!(status, "failed" | "incomplete") {
+                    return Err(format!(
+                        "strict Watch response failure status is unsupported: {status}"
+                    ));
+                }
+                if state.session_finished_received.is_some() {
+                    return Err(
+                        "strict Watch failed response arrived after session.finished".to_string(),
+                    );
+                }
+                if state
+                    .failed_response_statuses
+                    .insert(response_id.to_string(), status.to_string())
+                    .is_some()
+                {
+                    return Err(format!(
+                        "strict Watch failed response terminal was received more than once for {response_id}"
+                    ));
+                }
+                state.response_audio_done_ids.remove(response_id);
+                state.response_done_ids.remove(response_id);
+                if state
+                    .last_response_audio_done
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.response_id == response_id)
+                {
+                    state.last_response_audio_done = None;
+                }
+                if state
+                    .last_response_done
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.response_id == response_id)
+                {
+                    state.last_response_done = None;
+                }
+                Ok(())
+            },
+            (),
+        )
+    }
+
     fn record_session_finished_received(&self) -> Result<(), String> {
         self.with_active_mut(
             |state| {
@@ -342,6 +456,14 @@ impl StrictWatchTerminalLifecycle {
                 if state.session_finish_sent.is_none() {
                     return Err(
                         "strict Watch session.finished arrived before session.finish"
+                            .to_string(),
+                    );
+                }
+                if state.last_response_audio_done.is_none()
+                    && state.last_response_done.is_none()
+                {
+                    return Err(
+                        "strict Watch session.finished has no completed response terminal authority"
                             .to_string(),
                     );
                 }
@@ -413,6 +535,21 @@ impl StrictWatchTerminalLifecycle {
         let state = guard.as_ref().ok_or_else(|| {
             "strict Watch terminal lifecycle is not initialized".to_string()
         })?;
+        if !state.failed_response_statuses.is_empty() {
+            let failures = state
+                .failed_response_statuses
+                .iter()
+                .map(|(response_id, status)| format!("{response_id}:{status}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            return Err(format!(
+                "strict Watch terminal lifecycle contains failed Provider responses: {failures}"
+            ));
+        }
+        let session_updated_received =
+            state.session_updated_received.clone().ok_or_else(|| {
+                "strict Watch terminal lifecycle is missing sessionUpdatedReceived".to_string()
+            })?;
         let last_provider_append = state.last_provider_append.clone().ok_or_else(|| {
             "strict Watch terminal lifecycle is missing lastProviderAppend".to_string()
         })?;
@@ -430,6 +567,7 @@ impl StrictWatchTerminalLifecycle {
             state.provider_writes_after_finish;
         if state.finish_count != 1
             || state.provider_writes_after_finish != 0
+            || session_updated_received.source_sequence >= last_provider_append.source_sequence
             || session_finish_sent.provider_input_closed_source_sequence
                 >= session_finish_sent.source_sequence
             || session_finish_sent.source_sequence <= last_provider_append.source_sequence
@@ -481,6 +619,7 @@ impl StrictWatchTerminalLifecycle {
         }
         Ok(StrictWatchTerminalLifecycleSnapshot {
             identity: state.identity.clone(),
+            session_updated_received,
             last_provider_append,
             session_finish_sent,
             session_finished_received,
@@ -529,6 +668,20 @@ impl AudioStateStore {
             .record_provider_append(samples)
     }
 
+    pub(crate) fn record_strict_watch_session_updated_received(
+        &self,
+        session_identity_sha256: &str,
+        sent_session_config_sha256: &str,
+        echoed_session_config_sha256: &str,
+    ) -> Result<(), String> {
+        self.strict_watch_terminal_lifecycle
+            .record_session_updated_received(
+                session_identity_sha256,
+                sent_session_config_sha256,
+                echoed_session_config_sha256,
+            )
+    }
+
     pub(crate) fn record_strict_watch_session_finish_sent(&self) -> Result<(), String> {
         self.strict_watch_terminal_lifecycle
             .record_session_finish_sent()
@@ -553,6 +706,15 @@ impl AudioStateStore {
     ) -> Result<(), String> {
         self.strict_watch_terminal_lifecycle
             .record_response_terminal("responseDone", response_id)
+    }
+
+    pub(crate) fn record_strict_watch_response_failed(
+        &self,
+        response_id: &str,
+        status: &str,
+    ) -> Result<(), String> {
+        self.strict_watch_terminal_lifecycle
+            .record_response_failed(response_id, status)
     }
 
     pub(crate) fn record_strict_watch_session_finished_received(&self) -> Result<(), String> {
@@ -592,6 +754,15 @@ impl AudioStateStore {
         self.strict_watch_terminal_lifecycle
             .session_finished_received()
     }
+
+    #[cfg(test)]
+    pub(crate) fn record_strict_watch_test_session_updated(&self) -> Result<(), String> {
+        self.record_strict_watch_session_updated_received(
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &"b".repeat(64),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -599,11 +770,71 @@ mod tests {
     use super::*;
 
     #[test]
+    fn session_finished_requires_a_completed_response_terminal() {
+        let store = AudioStateStore::new();
+        store
+            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
+            .unwrap();
+        store.record_strict_watch_test_session_updated().unwrap();
+        store.record_strict_watch_provider_append(480).unwrap();
+        store.record_strict_watch_provider_input_closed().unwrap();
+        store.record_strict_watch_session_finish_sent().unwrap();
+
+        let error = store
+            .record_strict_watch_session_finished_received()
+            .expect_err(
+                "strict session.finished cannot authorize success without a completed response terminal",
+            );
+        assert!(
+            error.contains("completed response terminal"),
+            "the missing response authority must be explicit: {error}"
+        );
+        assert!(
+            !store.strict_watch_session_finished_received().unwrap(),
+            "a rejected session.finished must not write terminal authority"
+        );
+    }
+
+    #[test]
+    fn provider_input_cannot_precede_typed_session_updated_authority() {
+        let store = AudioStateStore::new();
+        store
+            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
+            .unwrap();
+        store.record_strict_watch_provider_append(320).unwrap();
+
+        assert!(store.record_strict_watch_test_session_updated().is_err());
+        assert!(store
+            .strict_watch_terminal_lifecycle_snapshot()
+            .expect_err("session.updated is required before Provider input")
+            .contains("sessionUpdatedReceived"));
+    }
+
+    #[test]
+    fn session_updated_digest_mismatch_is_rejected_without_consuming_the_boundary() {
+        let store = AudioStateStore::new();
+        store
+            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
+            .unwrap();
+        assert!(store
+            .record_strict_watch_session_updated_received(
+                &"a".repeat(64),
+                &"b".repeat(64),
+                &"c".repeat(64),
+            )
+            .is_err());
+        store
+            .record_strict_watch_test_session_updated()
+            .expect("a rejected echo must not consume session.updated authority");
+    }
+
+    #[test]
     fn never_submitted_renderer_ack_cannot_create_terminal_cue() {
         let store = AudioStateStore::new();
         store
             .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
             .expect("strict lifecycle begins");
+        store.record_strict_watch_test_session_updated().unwrap();
         store
             .record_strict_watch_provider_append(480)
             .expect("provider append records");
@@ -642,6 +873,7 @@ mod tests {
         store
             .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
             .expect("strict lifecycle begins");
+        store.record_strict_watch_test_session_updated().unwrap();
         store
             .record_strict_watch_provider_append(480)
             .expect("provider append records");
@@ -658,6 +890,7 @@ mod tests {
         store
             .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
             .unwrap();
+        store.record_strict_watch_test_session_updated().unwrap();
         store.record_strict_watch_provider_append(480).unwrap();
         store.record_strict_watch_provider_input_closed().unwrap();
         store.record_strict_watch_session_finish_sent().unwrap();
@@ -693,6 +926,7 @@ mod tests {
         store
             .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
             .unwrap();
+        store.record_strict_watch_test_session_updated().unwrap();
         store.record_strict_watch_provider_append(480).unwrap();
         store.record_strict_watch_provider_input_closed().unwrap();
         store
@@ -730,6 +964,7 @@ mod tests {
         store
             .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
             .unwrap();
+        store.record_strict_watch_test_session_updated().unwrap();
         store.record_strict_watch_provider_append(480).unwrap();
         store.record_strict_watch_provider_input_closed().unwrap();
         store.record_strict_watch_session_finish_sent().unwrap();
@@ -742,6 +977,48 @@ mod tests {
                 .record_strict_watch_response_audio_done("response-1")
                 .is_err(),
             "response.done is final for its response and cannot be followed by audio.done"
+        );
+    }
+
+    #[test]
+    fn failed_response_revokes_prior_audio_terminal_and_blocks_snapshot() {
+        let store = AudioStateStore::new();
+        store
+            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
+            .unwrap();
+        store.record_strict_watch_test_session_updated().unwrap();
+        store.record_strict_watch_provider_append(480).unwrap();
+        store.record_strict_watch_provider_input_closed().unwrap();
+        store.record_strict_watch_session_finish_sent().unwrap();
+        store
+            .record_strict_watch_response_audio_done("response-1")
+            .unwrap();
+        store
+            .record_strict_watch_renderer_cue_submitted("cue-1", "response-1")
+            .unwrap();
+        store
+            .record_strict_watch_renderer_ack(
+                "cue-1",
+                "bridge-translation-status-ack",
+                "receipt-1",
+            )
+            .unwrap();
+        store
+            .record_strict_watch_response_failed("response-1", "failed")
+            .unwrap();
+        assert!(
+            store
+                .record_strict_watch_session_finished_received()
+                .expect_err("the failed response revoked the only completed terminal")
+                .contains("completed response terminal")
+        );
+        assert!(!store.strict_watch_session_finished_received().unwrap());
+
+        assert!(
+            store
+                .strict_watch_terminal_lifecycle_snapshot()
+                .expect_err("a failed response can never authorize strict success")
+                .contains("response-1:failed")
         );
     }
 }

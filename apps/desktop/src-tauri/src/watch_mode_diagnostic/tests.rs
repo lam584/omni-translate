@@ -324,7 +324,7 @@ fn diagnostic_report_writer_replaces_the_target_with_complete_json() {
 }
 
 #[test]
-fn explicit_dashscope_protocol_binds_model_to_dashscope_provider() {
+fn explicit_dashscope_protocol_rejects_manifest_only_adapter_before_mutation() {
     let model = "qwen3.5-omni-plus-realtime";
     let mut config = json!({
         "providers": [
@@ -342,24 +342,12 @@ fn explicit_dashscope_protocol_binds_model_to_dashscope_provider() {
         ]
     });
 
-    let effective = configure_watch_realtime_provider(&mut config, model, "dashscope-omni")
-        .expect("DashScope provider should be selected");
+    let before = config.clone();
+    let error = configure_watch_realtime_provider(&mut config, model, "dashscope-omni")
+        .expect_err("manifest-only Omni adapter must not receive Watch connection authority");
 
-    assert_eq!(
-        effective,
-        "template-dashscope-realtime::qwen3.5-omni-plus-realtime"
-    );
-    assert_eq!(config["providers"][0]["kind"], "openai-compatible");
-    assert_eq!(config["providers"][1]["model"], model);
-    assert_eq!(
-        config["providers"][1]["localModelCapabilityRegistry"][0]["realtimeProtocol"],
-        "dashscope-omni"
-    );
-    assert_eq!(
-        config["providers"][1]["localModelCapabilityRegistry"][0]
-            ["interactionCapabilities"],
-        json!(["streaming", "auto_vad", "manual_commit"])
-    );
+    assert!(error.contains("model_protocol.adapter_unavailable"));
+    assert_eq!(config, before);
 }
 
 #[test]
@@ -406,6 +394,20 @@ fn strict_paid_provider_selection_cannot_be_hijacked_by_an_earlier_dashscope_pro
     .expect("downstream route resolution should preserve the authorized provider");
     assert_eq!(resolved.provider_id, "provider-dashscope");
     assert_eq!(resolved.model, "qwen3.5-livetranslate-flash-realtime");
+    let declaration = &config["providers"][0]["localModelCapabilityRegistry"][0];
+    assert_eq!(
+        declaration["registryVersion"],
+        "bailian-model-protocol-registry/v1"
+    );
+    assert_eq!(
+        declaration["profileId"],
+        "bailian.livetranslate.realtime.ws"
+    );
+    assert_eq!(declaration["profileVersion"], 1);
+    let profile = crate::audio::events::resolve_realtime_profile(&resolved, &resolved.model);
+    assert_eq!(profile.source.as_str(), "manifest");
+    assert!(profile.preconnect_allowed);
+    assert!(profile.model_protocol_error.is_none());
 }
 
 #[test]
@@ -522,7 +524,7 @@ fn strict_paid_provider_selection_rejects_kind_and_template_mismatches() {
 }
 
 #[test]
-fn non_strict_provider_selection_keeps_legacy_first_compatible_behavior() {
+fn non_strict_provider_selection_still_rejects_manifest_only_adapter() {
     let mut config = default_watch_config();
     let exact = config["providers"][0].clone();
     let mut alternate = exact.clone();
@@ -530,27 +532,17 @@ fn non_strict_provider_selection_keeps_legacy_first_compatible_behavior() {
     alternate["model"] = json!("alternate-stale-model");
     config["providers"] = json!([alternate, exact]);
 
-    let effective = configure_watch_realtime_provider_with_environment(
+    let before = config.clone();
+    let error = configure_watch_realtime_provider_with_environment(
         &mut config,
         "qwen3.5-omni-flash-realtime",
         "dashscope-omni",
         |_| None,
     )
-    .expect("ordinary diagnostics should retain compatibility selection");
+    .expect_err("ordinary diagnostics must not bypass manifest adapter status");
 
-    assert_eq!(
-        effective,
-        "template-dashscope-realtime::qwen3.5-omni-flash-realtime"
-    );
-    assert_eq!(
-        config["providers"][0]["providerId"],
-        "provider-dashscope-alternate"
-    );
-    assert_eq!(
-        config["providers"][0]["model"],
-        "qwen3.5-omni-flash-realtime"
-    );
-    assert_eq!(config["providers"][1]["providerId"], "provider-dashscope");
+    assert!(error.contains("model_protocol.adapter_unavailable"));
+    assert_eq!(config, before);
 }
 
 #[test]
@@ -565,8 +557,8 @@ fn explicit_protocol_fails_when_matching_provider_is_missing() {
 
     let error = configure_watch_realtime_provider(
         &mut config,
-        "qwen3.5-omni-plus-realtime",
-        "dashscope-omni",
+        "qwen3.5-livetranslate-flash-realtime",
+        "dashscope-livetranslate",
     )
     .expect_err("missing DashScope provider should fail autostart config");
 

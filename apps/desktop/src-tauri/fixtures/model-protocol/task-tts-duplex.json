@@ -1,0 +1,117 @@
+{
+  "schemaVersion": "model-protocol-wire-fixture/v1",
+  "dialectId": "bailian-speech-synthesizer-duplex-task-ws-v1",
+  "checkedAt": "2026-08-30",
+  "sanitized": true,
+  "sources": [
+    { "url": "https://help.aliyun.com/zh/model-studio/realtime-tts-user-guide", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-websocket-api", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-client-events", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-server-events", "checkedAt": "2026-08-30" }
+  ],
+  "sequence": [
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "run-task",
+      "wire": {
+        "header": { "action": "run-task", "task_id": "77777777-7777-4777-8777-777777777777", "streaming": "duplex" },
+        "payload": {
+          "task_group": "audio",
+          "task": "tts",
+          "function": "SpeechSynthesizer",
+          "model": "cosyvoice-v3-flash",
+          "parameters": { "text_type": "PlainText", "voice": "longxiaochun", "format": "pcm", "sample_rate": 24000 },
+          "input": {}
+        }
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "task-started",
+      "wire": { "header": { "event": "task-started", "task_id": "77777777-7777-4777-8777-777777777777", "attributes": {} }, "payload": {} }
+    },
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "continue-task",
+      "wire": { "header": { "action": "continue-task", "task_id": "77777777-7777-4777-8777-777777777777", "streaming": "duplex" }, "payload": { "input": { "text": "hello" } } }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "result-generated",
+      "wire": { "header": { "event": "result-generated", "task_id": "77777777-7777-4777-8777-777777777777", "attributes": {} }, "payload": { "output": {} } }
+    },
+    { "direction": "server", "frameKind": "binary", "eventType": "binary.audio", "activeTaskId": "77777777-7777-4777-8777-777777777777" },
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "finish-task",
+      "wire": { "header": { "action": "finish-task", "task_id": "77777777-7777-4777-8777-777777777777", "streaming": "duplex" }, "payload": { "input": {} } }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "task-finished",
+      "wire": { "header": { "event": "task-finished", "task_id": "77777777-7777-4777-8777-777777777777", "attributes": {} }, "payload": { "output": {}, "usage": null } }
+    },
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "run-task",
+      "wire": {
+        "header": { "action": "run-task", "task_id": "88888888-8888-4888-8888-888888888888", "streaming": "duplex" },
+        "payload": {
+          "task_group": "audio",
+          "task": "tts",
+          "function": "SpeechSynthesizer",
+          "model": "cosyvoice-v3-flash",
+          "parameters": { "text_type": "PlainText", "voice": "longxiaochun", "format": "pcm", "sample_rate": 24000 },
+          "input": {}
+        }
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "task-started",
+      "wire": { "header": { "event": "task-started", "task_id": "88888888-8888-4888-8888-888888888888", "attributes": {} }, "payload": {} }
+    },
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "continue-task",
+      "wire": { "header": { "action": "continue-task", "task_id": "88888888-8888-4888-8888-888888888888", "streaming": "duplex" }, "payload": { "input": { "text": "second task" } } }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "result-generated",
+      "wire": { "header": { "event": "result-generated", "task_id": "88888888-8888-4888-8888-888888888888", "attributes": {} }, "payload": { "output": {} } }
+    },
+    { "direction": "server", "frameKind": "binary", "eventType": "binary.audio", "activeTaskId": "88888888-8888-4888-8888-888888888888" },
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "finish-task",
+      "wire": { "header": { "action": "finish-task", "task_id": "88888888-8888-4888-8888-888888888888", "streaming": "duplex" }, "payload": { "input": {} } }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "task-finished",
+      "wire": { "header": { "event": "task-finished", "task_id": "88888888-8888-4888-8888-888888888888", "attributes": {} }, "payload": { "output": {}, "usage": null } }
+    }
+  ],
+  "expect": {
+    "textReadyAfter": "task-started",
+    "audioFrameKind": "binary",
+    "terminalOrder": ["finish-task", "task-finished"],
+    "forbiddenEvents": ["input_text_buffer.append", "session.finished"],
+    "sameConnectionSequentialReuse": true,
+    "freshTaskIdPerTask": true,
+    "failureInvalidatesConnection": true
+  }
+}

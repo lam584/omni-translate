@@ -266,6 +266,7 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
         route_mode: session.route_mode.clone(),
         provider_id: session.provider_id.clone(),
         model: session.model.clone(),
+        model_protocol_profile_identity: session.model_protocol_profile_identity.clone(),
         started_at: session.started_at.clone(),
         ended_at: session.ended_at.clone(),
         elapsed_ms: session_elapsed_ms,

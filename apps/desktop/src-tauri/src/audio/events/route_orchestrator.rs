@@ -736,6 +736,11 @@ fn start_recognized_route_locked(
                     &plan.provider.provider_id,
                     &plan.provider.model,
                 );
+                if let Some(authority) = plan.model_protocol_authority.as_ref() {
+                    state
+                        .watch_session_report
+                        .bind_authorized_model_protocol_profile(authority)?;
+                }
             }
             if let Some(error) = plan.configuration_error.clone() {
                 return Err(error);

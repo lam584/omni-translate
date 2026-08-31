@@ -1,0 +1,1428 @@
+{
+  "$schema": "./model-protocol-profiles.schema.json",
+  "schemaVersion": "model-protocol-profiles/v1",
+  "registryVersion": "bailian-model-protocol-registry/v1",
+  "checkedAt": "2026-08-30",
+  "endpointHostPolicies": [
+    {
+      "region": "cn-beijing",
+      "allowedHostFamilies": [
+        {
+          "hostFamilyId": "dashscope-cn-beijing-generic",
+          "hostPattern": "dashscope.aliyuncs.com",
+          "workspaceScoped": false
+        },
+        {
+          "hostFamilyId": "maas-cn-beijing-workspace",
+          "hostPattern": "*.cn-beijing.maas.aliyuncs.com",
+          "workspaceScoped": true
+        }
+      ],
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/regions/", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "region": "ap-southeast-1",
+      "allowedHostFamilies": [
+        {
+          "hostFamilyId": "dashscope-ap-southeast-1-generic",
+          "hostPattern": "dashscope-intl.aliyuncs.com",
+          "workspaceScoped": false
+        },
+        {
+          "hostFamilyId": "maas-ap-southeast-1-workspace",
+          "hostPattern": "*.ap-southeast-1.maas.aliyuncs.com",
+          "workspaceScoped": true
+        }
+      ],
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/regions/", "checkedAt": "2026-08-30" }
+      ]
+    }
+  ],
+  "dialects": [
+    {
+      "dialectId": "bailian-livetranslate-session-ws-v1",
+      "dialectVersion": 1,
+      "transport": "websocket",
+      "endpointFamily": "dashscope-realtime-v1",
+      "endpointPath": "/api-ws/v1/realtime",
+      "modelPlacement": "query",
+      "inputFraming": "json-base64",
+      "outputFraming": "json-base64",
+      "handshake": ["session.created", "session.update", "session.updated"],
+      "turnControl": "server-vad or manual input_audio_buffer.commit; commit itself triggers translation",
+      "previewSemantics": "replaceable-snapshot",
+      "textEventSemantics": [
+        {
+          "eventType": "conversation.item.input_audio_transcription.text",
+          "updateMode": "replaceable-snapshot",
+          "identityKeys": ["item_id", "content_index"],
+          "previewFields": ["text", "stash"],
+          "finalEventType": "conversation.item.input_audio_transcription.completed"
+        },
+        {
+          "eventType": "response.text.text",
+          "updateMode": "replaceable-snapshot",
+          "identityKeys": ["response_id", "item_id", "output_index", "content_index"],
+          "previewFields": ["text", "stash"],
+          "finalEventType": "response.text.done"
+        },
+        {
+          "eventType": "response.audio_transcript.text",
+          "updateMode": "replaceable-snapshot",
+          "identityKeys": ["response_id", "item_id", "output_index", "content_index"],
+          "previewFields": ["text", "stash"],
+          "finalEventType": "response.audio_transcript.done"
+        }
+      ],
+      "commitSemantics": "response.text.done or response.audio_transcript.done commits translated text",
+      "responseTrigger": "server-vad or input_audio_buffer.commit; response.create is forbidden",
+      "terminalLifecycle": "session.finish->session.finished",
+      "reusePolicy": "single-session",
+      "regionPolicy": "region-key-endpoint-model-must-match",
+      "audioInput": { "required": true, "codecs": ["pcm16", "opus"], "sampleRatesHz": [8000, 16000], "channels": [1] },
+      "audioOutput": { "required": false, "codecs": ["pcm16"], "sampleRatesHz": [24000], "channels": [1] },
+      "clientEventTypes": [
+        "session.update",
+        "input_audio_buffer.append",
+        "input_audio_buffer.commit",
+        "input_audio_buffer.clear",
+        "input_image_buffer.append",
+        "session.finish"
+      ],
+      "serverEventTypes": [
+        "session.created",
+        "session.updated",
+        "input_audio_buffer.speech_started",
+        "input_audio_buffer.speech_stopped",
+        "input_audio_buffer.committed",
+        "input_audio_buffer.cleared",
+        "conversation.item.created",
+        "conversation.item.input_audio_transcription.text",
+        "conversation.item.input_audio_transcription.completed",
+        "conversation.item.input_audio_transcription.failed",
+        "response.created",
+        "response.text.text",
+        "response.text.done",
+        "response.audio_transcript.text",
+        "response.audio_transcript.done",
+        "response.audio.delta",
+        "response.audio.done",
+        "response.output_item.added",
+        "response.output_item.done",
+        "response.content_part.added",
+        "response.content_part.done",
+        "response.done",
+        "session.finished",
+        "error"
+      ],
+      "clientJsonBase64EventTypes": ["input_audio_buffer.append", "input_image_buffer.append"],
+      "clientBinaryEventTypes": [],
+      "serverJsonBase64EventTypes": ["response.audio.delta"],
+      "serverBinaryEventTypes": [],
+      "forbiddenClientEventTypes": ["conversation.item.create", "response.create", "finish-task"],
+      "forbiddenServerEventTypes": ["response.text.delta", "task-started", "task-finished"],
+      "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/livetranslate-session.json",
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/qwen3-5-livetranslate-flash-realtime", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/live-translator-client-events", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/live-translator-server-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "dialectId": "bailian-omni-realtime-ws-v1",
+      "dialectVersion": 1,
+      "transport": "websocket",
+      "endpointFamily": "dashscope-realtime-v1",
+      "endpointPath": "/api-ws/v1/realtime",
+      "modelPlacement": "query",
+      "inputFraming": "json-base64",
+      "outputFraming": "json-base64",
+      "handshake": ["session.created", "session.update", "session.updated"],
+      "turnControl": "server-vad or manual input_audio_buffer.commit followed by response.create",
+      "previewSemantics": "mixed-by-event",
+      "textEventSemantics": [
+        {
+          "eventType": "conversation.item.input_audio_transcription.delta",
+          "updateMode": "replaceable-snapshot",
+          "identityKeys": ["item_id", "content_index"],
+          "previewFields": ["text", "stash"],
+          "finalEventType": "conversation.item.input_audio_transcription.completed"
+        },
+        {
+          "eventType": "response.text.delta",
+          "updateMode": "append-delta",
+          "identityKeys": ["response_id", "item_id", "output_index", "content_index"],
+          "previewFields": ["delta"],
+          "finalEventType": "response.text.done"
+        },
+        {
+          "eventType": "response.audio_transcript.delta",
+          "updateMode": "append-delta",
+          "identityKeys": ["response_id", "item_id", "output_index", "content_index"],
+          "previewFields": ["delta"],
+          "finalEventType": "response.audio_transcript.done"
+        },
+        {
+          "eventType": "response.function_call_arguments.delta",
+          "updateMode": "append-delta",
+          "identityKeys": ["response_id", "item_id", "output_index", "call_id"],
+          "previewFields": ["delta"],
+          "finalEventType": "response.function_call_arguments.done"
+        }
+      ],
+      "commitSemantics": "response content done events commit one response; response.done is not a session terminal",
+      "responseTrigger": "response.create for manual turns",
+      "terminalLifecycle": "owner-close-after-response-drain",
+      "reusePolicy": "multi-turn-session",
+      "regionPolicy": "region-key-endpoint-model-must-match",
+      "audioInput": { "required": false, "codecs": ["pcm16"], "sampleRatesHz": [16000], "channels": [1] },
+      "audioOutput": { "required": false, "codecs": ["pcm16"], "sampleRatesHz": [24000], "channels": [1] },
+      "clientEventTypes": [
+        "session.update",
+        "input_audio_buffer.append",
+        "input_audio_buffer.commit",
+        "input_audio_buffer.clear",
+        "input_image_buffer.append",
+        "conversation.item.create",
+        "response.create",
+        "response.cancel"
+      ],
+      "serverEventTypes": [
+        "session.created",
+        "session.updated",
+        "input_audio_buffer.speech_started",
+        "input_audio_buffer.speech_stopped",
+        "input_audio_buffer.committed",
+        "input_audio_buffer.cleared",
+        "conversation.item.created",
+        "conversation.item.input_audio_transcription.delta",
+        "conversation.item.input_audio_transcription.completed",
+        "conversation.item.input_audio_transcription.failed",
+        "response.created",
+        "response.text.delta",
+        "response.text.done",
+        "response.audio_transcript.delta",
+        "response.audio_transcript.done",
+        "response.audio.delta",
+        "response.audio.done",
+        "response.function_call_arguments.delta",
+        "response.function_call_arguments.done",
+        "response.output_item.added",
+        "response.output_item.done",
+        "response.content_part.added",
+        "response.content_part.done",
+        "response.done",
+        "error"
+      ],
+      "clientJsonBase64EventTypes": ["input_audio_buffer.append", "input_image_buffer.append"],
+      "clientBinaryEventTypes": [],
+      "serverJsonBase64EventTypes": ["response.audio.delta"],
+      "serverBinaryEventTypes": [],
+      "forbiddenClientEventTypes": ["session.finish", "finish-task", "input_text_buffer.append"],
+      "forbiddenServerEventTypes": ["response.text.text", "session.finished", "task-finished"],
+      "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/omni-session.json",
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/realtime", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/client-events", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/server-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "dialectId": "bailian-qwen-audio-chat-realtime-ws-v1",
+      "dialectVersion": 1,
+      "transport": "websocket",
+      "endpointFamily": "dashscope-realtime-v1",
+      "endpointPath": "/api-ws/v1/realtime",
+      "modelPlacement": "query",
+      "inputFraming": "json-base64",
+      "outputFraming": "json-base64",
+      "handshake": ["session.created", "session.update", "session.updated"],
+      "turnControl": "server-vad, push-to-talk, or smart_turn with product-specific invalid-turn handling",
+      "previewSemantics": "mixed-by-event",
+      "textEventSemantics": [
+        {
+          "eventType": "conversation.item.input_audio_transcription.delta",
+          "updateMode": "replaceable-snapshot",
+          "identityKeys": ["item_id", "content_index"],
+          "previewFields": ["text", "stash"],
+          "finalEventType": "conversation.item.input_audio_transcription.completed"
+        },
+        {
+          "eventType": "conversation.item.ambient_audio_transcription.delta",
+          "updateMode": "replaceable-snapshot",
+          "identityKeys": ["item_id", "content_index"],
+          "previewFields": ["text", "stash"],
+          "finalEventType": "conversation.item.ambient_audio_transcription.completed"
+        },
+        {
+          "eventType": "response.text.delta",
+          "updateMode": "append-delta",
+          "identityKeys": ["response_id", "item_id", "output_index", "content_index"],
+          "previewFields": ["delta"],
+          "finalEventType": "response.text.done"
+        },
+        {
+          "eventType": "response.audio_transcript.delta",
+          "updateMode": "append-delta",
+          "identityKeys": ["response_id", "item_id", "output_index", "content_index"],
+          "previewFields": ["delta"],
+          "finalEventType": "response.audio_transcript.done"
+        },
+        {
+          "eventType": "response.function_call_arguments.delta",
+          "updateMode": "append-delta",
+          "identityKeys": ["response_id", "item_id", "output_index", "call_id"],
+          "previewFields": ["delta"],
+          "finalEventType": "response.function_call_arguments.done"
+        }
+      ],
+      "commitSemantics": "product-specific transcription and response done events commit a turn",
+      "responseTrigger": "automatic or response.create according to the configured Qwen-Audio turn mode",
+      "terminalLifecycle": "owner-close-after-response-drain",
+      "reusePolicy": "multi-turn-session",
+      "regionPolicy": "region-key-endpoint-model-must-match",
+      "audioInput": { "required": true, "codecs": ["pcm16"], "sampleRatesHz": [16000], "channels": [1] },
+      "audioOutput": { "required": true, "codecs": ["pcm16"], "sampleRatesHz": [24000], "channels": [1] },
+      "clientEventTypes": [
+        "session.update",
+        "input_audio_buffer.append",
+        "input_audio_buffer.commit",
+        "input_audio_buffer.clear",
+        "conversation.item.create",
+        "conversation.item.retrieve",
+        "conversation.item.delete",
+        "response.create",
+        "response.cancel"
+      ],
+      "serverEventTypes": [
+        "session.created",
+        "session.updated",
+        "input_audio_buffer.speech_started",
+        "input_audio_buffer.speech_stopped",
+        "input_audio_buffer.committed",
+        "input_audio_buffer.cleared",
+        "conversation.item.created",
+        "conversation.item.deleted",
+        "conversation.item.retrieved",
+        "conversation.item.input_audio_transcription.delta",
+        "conversation.item.input_audio_transcription.completed",
+        "conversation.item.input_audio_transcription.failed",
+        "conversation.item.ambient_audio_transcription.delta",
+        "conversation.item.ambient_audio_transcription.completed",
+        "response.created",
+        "response.output_item.added",
+        "response.content_part.added",
+        "response.text.delta",
+        "response.text.done",
+        "response.audio_transcript.delta",
+        "response.audio_transcript.done",
+        "response.audio.delta",
+        "response.audio.done",
+        "response.content_part.done",
+        "response.output_item.done",
+        "response.function_call_arguments.delta",
+        "response.function_call_arguments.done",
+        "response.done",
+        "voiceprint_audio_list.in_progress",
+        "voiceprint_audio_list.completed",
+        "voiceprint_audio_list.failed",
+        "error"
+      ],
+      "clientJsonBase64EventTypes": ["input_audio_buffer.append"],
+      "clientBinaryEventTypes": [],
+      "serverJsonBase64EventTypes": ["response.audio.delta"],
+      "serverBinaryEventTypes": [],
+      "forbiddenClientEventTypes": ["session.finish", "finish-task", "input_text_buffer.append"],
+      "forbiddenServerEventTypes": ["session.finished", "task-finished"],
+      "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/qwen-audio-chat-session.json",
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-user-guides", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-client-events", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-server-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "dialectId": "bailian-qwen-asr-session-ws-v1",
+      "dialectVersion": 1,
+      "transport": "websocket",
+      "endpointFamily": "dashscope-realtime-v1",
+      "endpointPath": "/api-ws/v1/realtime",
+      "modelPlacement": "query",
+      "inputFraming": "json-base64",
+      "outputFraming": "json-events",
+      "handshake": ["session.created", "session.update", "session.updated"],
+      "turnControl": "server-vad or manual input_audio_buffer.commit",
+      "previewSemantics": "replaceable-snapshot",
+      "textEventSemantics": [
+        {
+          "eventType": "conversation.item.input_audio_transcription.text",
+          "updateMode": "replaceable-snapshot",
+          "identityKeys": ["item_id", "content_index"],
+          "previewFields": ["text", "stash"],
+          "finalEventType": "conversation.item.input_audio_transcription.completed"
+        }
+      ],
+      "commitSemantics": "conversation.item.input_audio_transcription.completed commits one item",
+      "responseTrigger": "server-vad or input_audio_buffer.commit",
+      "terminalLifecycle": "session.finish->session.finished",
+      "reusePolicy": "single-session",
+      "regionPolicy": "region-key-endpoint-model-must-match",
+      "audioInput": { "required": true, "codecs": ["pcm16", "opus"], "sampleRatesHz": [8000, 16000], "channels": [1] },
+      "audioOutput": { "required": false, "codecs": [], "sampleRatesHz": [], "channels": [] },
+      "clientEventTypes": ["session.update", "input_audio_buffer.append", "input_audio_buffer.commit", "session.finish"],
+      "serverEventTypes": [
+        "session.created",
+        "session.updated",
+        "input_audio_buffer.speech_started",
+        "input_audio_buffer.speech_stopped",
+        "input_audio_buffer.committed",
+        "conversation.item.created",
+        "conversation.item.input_audio_transcription.text",
+        "conversation.item.input_audio_transcription.completed",
+        "conversation.item.input_audio_transcription.failed",
+        "session.finished",
+        "error"
+      ],
+      "clientJsonBase64EventTypes": ["input_audio_buffer.append"],
+      "clientBinaryEventTypes": [],
+      "serverJsonBase64EventTypes": [],
+      "serverBinaryEventTypes": [],
+      "forbiddenClientEventTypes": ["response.create", "run-task", "finish-task"],
+      "forbiddenServerEventTypes": ["response.text.delta", "task-started", "task-finished"],
+      "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/qwen-asr-session.json",
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-interaction-process", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-client-events", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-server-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "dialectId": "bailian-qwen-audio-asr-task-ws-v1",
+      "dialectVersion": 1,
+      "transport": "websocket",
+      "endpointFamily": "dashscope-inference-v1",
+      "endpointPath": "/api-ws/v1/inference",
+      "modelPlacement": "payload",
+      "inputFraming": "binary",
+      "outputFraming": "json-events",
+      "handshake": ["run-task", "task-started"],
+      "turnControl": "binary audio is forbidden until task-started",
+      "previewSemantics": "sentence-identity-replacement",
+      "textEventSemantics": [
+        {
+          "eventType": "result-generated",
+          "updateMode": "sentence-identity-replacement",
+          "identityKeys": ["task_id", "sentence_id"],
+          "previewFields": ["text"],
+          "finalEventType": "result-generated"
+        }
+      ],
+      "commitSemantics": "result-generated sentence_end=true commits the sentence identity",
+      "responseTrigger": "binary audio frames after task-started",
+      "terminalLifecycle": "finish-task->task-finished",
+      "reusePolicy": "sequential-tasks-after-terminal",
+      "connectionReuse": {
+        "successBoundaryEvent": "task-finished",
+        "nextStartEvent": "run-task",
+        "freshIdentityKeys": ["task_id"],
+        "failureBehavior": "connection-closes-no-reuse",
+        "idleTimeoutSeconds": null
+      },
+      "regionPolicy": "region-key-endpoint-model-must-match",
+      "audioInput": { "required": true, "codecs": ["pcm", "wav", "mp3", "opus", "speex", "aac", "amr"], "sampleRatesHz": [8000, 16000], "channels": [1] },
+      "audioOutput": { "required": false, "codecs": [], "sampleRatesHz": [], "channels": [] },
+      "clientEventTypes": ["run-task", "continue-task", "binary.audio", "finish-task"],
+      "serverEventTypes": ["task-started", "result-generated", "task-finished", "task-failed"],
+      "clientJsonBase64EventTypes": [],
+      "clientBinaryEventTypes": ["binary.audio"],
+      "serverJsonBase64EventTypes": [],
+      "serverBinaryEventTypes": [],
+      "forbiddenClientEventTypes": ["session.update", "input_audio_buffer.append", "session.finish"],
+      "forbiddenServerEventTypes": ["session.created", "session.finished"],
+      "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/task-asr-qwen-audio.json",
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/fun-asr-client-events", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/fun-asr-server-events", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-3-0-asr-flash-streaming", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "dialectId": "bailian-fun-asr-task-ws-v1",
+      "dialectVersion": 1,
+      "transport": "websocket",
+      "endpointFamily": "dashscope-inference-v1",
+      "endpointPath": "/api-ws/v1/inference",
+      "modelPlacement": "payload",
+      "inputFraming": "binary",
+      "outputFraming": "json-events",
+      "handshake": ["run-task", "task-started"],
+      "turnControl": "binary audio is forbidden until task-started",
+      "previewSemantics": "sentence-identity-replacement",
+      "textEventSemantics": [
+        {
+          "eventType": "result-generated",
+          "updateMode": "sentence-identity-replacement",
+          "identityKeys": ["task_id", "sentence_id"],
+          "previewFields": ["text"],
+          "finalEventType": "result-generated"
+        }
+      ],
+      "commitSemantics": "result-generated sentence_end=true commits the sentence identity",
+      "responseTrigger": "binary audio frames after task-started",
+      "terminalLifecycle": "finish-task->task-finished",
+      "reusePolicy": "sequential-tasks-after-terminal",
+      "connectionReuse": {
+        "successBoundaryEvent": "task-finished",
+        "nextStartEvent": "run-task",
+        "freshIdentityKeys": ["task_id"],
+        "failureBehavior": "connection-closes-no-reuse",
+        "idleTimeoutSeconds": null
+      },
+      "regionPolicy": "region-key-endpoint-model-must-match",
+      "audioInput": { "required": true, "codecs": ["pcm", "wav", "mp3", "opus", "speex", "aac", "amr"], "sampleRatesHz": [8000, 16000], "channels": [1] },
+      "audioOutput": { "required": false, "codecs": [], "sampleRatesHz": [], "channels": [] },
+      "clientEventTypes": ["run-task", "continue-task", "binary.audio", "finish-task"],
+      "serverEventTypes": ["task-started", "result-generated", "task-finished", "task-failed"],
+      "clientJsonBase64EventTypes": [],
+      "clientBinaryEventTypes": ["binary.audio"],
+      "serverJsonBase64EventTypes": [],
+      "serverBinaryEventTypes": [],
+      "forbiddenClientEventTypes": ["session.update", "input_audio_buffer.append", "session.finish"],
+      "forbiddenServerEventTypes": ["session.created", "session.finished"],
+      "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/task-asr-fun.json",
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/fun-asr-client-events", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/fun-asr-server-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "dialectId": "bailian-paraformer-task-ws-v1",
+      "dialectVersion": 1,
+      "transport": "websocket",
+      "endpointFamily": "dashscope-inference-v1",
+      "endpointPath": "/api-ws/v1/inference",
+      "modelPlacement": "payload",
+      "inputFraming": "binary",
+      "outputFraming": "json-events",
+      "handshake": ["run-task", "task-started"],
+      "turnControl": "binary audio is forbidden until task-started; Paraformer parameters remain profile-local",
+      "previewSemantics": "sentence-identity-replacement",
+      "textEventSemantics": [
+        {
+          "eventType": "result-generated",
+          "updateMode": "sentence-identity-replacement",
+          "identityKeys": ["task_id", "begin_time"],
+          "previewFields": ["text"],
+          "finalEventType": "result-generated"
+        }
+      ],
+      "commitSemantics": "result-generated sentence_end=true commits the sentence identity",
+      "responseTrigger": "binary audio frames after task-started",
+      "terminalLifecycle": "finish-task->task-finished",
+      "reusePolicy": "sequential-tasks-after-terminal",
+      "connectionReuse": {
+        "successBoundaryEvent": "task-finished",
+        "nextStartEvent": "run-task",
+        "freshIdentityKeys": ["task_id"],
+        "failureBehavior": "connection-closes-no-reuse",
+        "idleTimeoutSeconds": null
+      },
+      "regionPolicy": "region-key-endpoint-model-must-match",
+      "audioInput": { "required": true, "codecs": ["pcm16", "wav", "mp3", "opus", "speex", "aac", "amr"], "sampleRatesHz": [8000, 16000], "channels": [1] },
+      "audioOutput": { "required": false, "codecs": [], "sampleRatesHz": [], "channels": [] },
+      "clientEventTypes": ["run-task", "binary.audio", "finish-task"],
+      "serverEventTypes": ["task-started", "result-generated", "task-finished", "task-failed"],
+      "clientJsonBase64EventTypes": [],
+      "clientBinaryEventTypes": ["binary.audio"],
+      "serverJsonBase64EventTypes": [],
+      "serverBinaryEventTypes": [],
+      "forbiddenClientEventTypes": ["session.update", "input_audio_buffer.append", "session.finish"],
+      "forbiddenServerEventTypes": ["session.created", "session.finished"],
+      "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/task-asr-paraformer.json",
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/websocket-for-paraformer-real-time-service", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/paraformer-client-events", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/paraformer-server-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "dialectId": "bailian-gummy-task-ws-v1",
+      "dialectVersion": 1,
+      "transport": "websocket",
+      "endpointFamily": "dashscope-inference-v1",
+      "endpointPath": "/api-ws/v1/inference",
+      "modelPlacement": "payload",
+      "inputFraming": "binary",
+      "outputFraming": "json-events",
+      "handshake": ["run-task", "task-started"],
+      "turnControl": "binary audio is forbidden until task-started",
+      "previewSemantics": "sentence-identity-replacement",
+      "textEventSemantics": [
+        {
+          "eventType": "result-generated",
+          "updateMode": "sentence-identity-replacement",
+          "identityKeys": ["task_id", "sentence_id"],
+          "previewFields": ["text", "translations"],
+          "finalEventType": "result-generated"
+        }
+      ],
+      "commitSemantics": "final transcription and translation sentence identities commit independently",
+      "responseTrigger": "binary audio frames after task-started",
+      "terminalLifecycle": "finish-task->task-finished",
+      "reusePolicy": "sequential-tasks-after-terminal",
+      "connectionReuse": {
+        "successBoundaryEvent": "task-finished",
+        "nextStartEvent": "run-task",
+        "freshIdentityKeys": ["task_id"],
+        "failureBehavior": "connection-closes-no-reuse",
+        "idleTimeoutSeconds": 60
+      },
+      "regionPolicy": "region-key-endpoint-model-must-match",
+      "audioInput": { "required": true, "codecs": ["pcm16", "wav", "mp3", "opus", "speex", "aac", "amr"], "sampleRatesHz": [16000], "channels": [1] },
+      "audioOutput": { "required": false, "codecs": [], "sampleRatesHz": [], "channels": [] },
+      "clientEventTypes": ["run-task", "binary.audio", "finish-task"],
+      "serverEventTypes": ["task-started", "result-generated", "task-finished", "task-failed"],
+      "clientJsonBase64EventTypes": [],
+      "clientBinaryEventTypes": ["binary.audio"],
+      "serverJsonBase64EventTypes": [],
+      "serverBinaryEventTypes": [],
+      "forbiddenClientEventTypes": ["session.update", "input_audio_buffer.append", "session.finish"],
+      "forbiddenServerEventTypes": ["session.created", "session.finished"],
+      "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/task-translation-gummy.json",
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/real-time-websocket-api-1", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/real-time-speech-translation/", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "dialectId": "bailian-speech-synthesizer-duplex-task-ws-v1",
+      "dialectVersion": 1,
+      "transport": "websocket",
+      "endpointFamily": "dashscope-inference-v1",
+      "endpointPath": "/api-ws/v1/inference",
+      "modelPlacement": "payload",
+      "inputFraming": "json-events",
+      "outputFraming": "binary",
+      "handshake": ["run-task", "task-started"],
+      "turnControl": "continue-task text is forbidden until task-started",
+      "previewSemantics": "none",
+      "textEventSemantics": [],
+      "commitSemantics": "binary audio after result-generated belongs to that task and task-finished commits the task",
+      "responseTrigger": "continue-task text",
+      "terminalLifecycle": "finish-task->task-finished",
+      "reusePolicy": "sequential-tasks-after-terminal",
+      "connectionReuse": {
+        "successBoundaryEvent": "task-finished",
+        "nextStartEvent": "run-task",
+        "freshIdentityKeys": ["task_id"],
+        "failureBehavior": "connection-closes-no-reuse",
+        "idleTimeoutSeconds": 60
+      },
+      "regionPolicy": "region-key-endpoint-model-must-match",
+      "audioInput": { "required": false, "codecs": [], "sampleRatesHz": [], "channels": [] },
+      "audioOutput": { "required": true, "codecs": ["pcm16", "wav", "mp3", "opus"], "sampleRatesHz": [8000, 16000, 22050, 24000, 44100, 48000], "channels": [1] },
+      "clientEventTypes": ["run-task", "continue-task", "finish-task"],
+      "serverEventTypes": ["task-started", "result-generated", "binary.audio", "task-finished", "task-failed"],
+      "clientJsonBase64EventTypes": [],
+      "clientBinaryEventTypes": [],
+      "serverJsonBase64EventTypes": [],
+      "serverBinaryEventTypes": ["binary.audio"],
+      "forbiddenClientEventTypes": ["session.update", "input_text_buffer.append", "session.finish"],
+      "forbiddenServerEventTypes": ["session.created", "response.audio.delta", "session.finished"],
+      "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/task-tts-duplex.json",
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/realtime-tts-user-guide", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-websocket-api", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-client-events", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-server-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "dialectId": "bailian-sambert-one-shot-task-ws-v1",
+      "dialectVersion": 1,
+      "transport": "websocket",
+      "endpointFamily": "dashscope-inference-v1",
+      "endpointPath": "/api-ws/v1/inference",
+      "modelPlacement": "payload",
+      "inputFraming": "json-events",
+      "outputFraming": "binary",
+      "handshake": ["run-task(streaming=out)", "task-started"],
+      "turnControl": "all input text is carried by the one-shot run-task payload",
+      "previewSemantics": "none",
+      "textEventSemantics": [],
+      "commitSemantics": "binary audio belongs to the one-shot task; task-finished commits the task",
+      "responseTrigger": "run-task input.text",
+      "terminalLifecycle": "task-finished-after-one-shot",
+      "reusePolicy": "sequential-tasks-after-terminal",
+      "connectionReuse": {
+        "successBoundaryEvent": "task-finished",
+        "nextStartEvent": "run-task",
+        "freshIdentityKeys": ["task_id"],
+        "failureBehavior": "connection-closes-no-reuse",
+        "idleTimeoutSeconds": 60
+      },
+      "regionPolicy": "region-key-endpoint-model-must-match",
+      "audioInput": { "required": false, "codecs": [], "sampleRatesHz": [], "channels": [] },
+      "audioOutput": { "required": true, "codecs": ["pcm16", "wav", "mp3"], "sampleRatesHz": [16000], "channels": [1] },
+      "clientEventTypes": ["run-task"],
+      "serverEventTypes": ["task-started", "result-generated", "binary.audio", "task-finished", "task-failed"],
+      "clientJsonBase64EventTypes": [],
+      "clientBinaryEventTypes": [],
+      "serverJsonBase64EventTypes": [],
+      "serverBinaryEventTypes": ["binary.audio"],
+      "forbiddenClientEventTypes": ["continue-task", "finish-task", "session.finish", "input_text_buffer.append"],
+      "forbiddenServerEventTypes": ["session.created", "response.audio.delta", "session.finished"],
+      "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/task-tts-sambert.json",
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/realtime-tts-user-guide", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/sambert-client-events", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/sambert-server-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "dialectId": "bailian-qwen-tts-session-ws-v1",
+      "dialectVersion": 1,
+      "transport": "websocket",
+      "endpointFamily": "dashscope-realtime-v1",
+      "endpointPath": "/api-ws/v1/realtime",
+      "modelPlacement": "query",
+      "inputFraming": "json-events",
+      "outputFraming": "json-base64",
+      "handshake": ["session.created", "session.update", "session.updated"],
+      "turnControl": "server_commit or explicit input_text_buffer.commit",
+      "previewSemantics": "none",
+      "textEventSemantics": [],
+      "commitSemantics": "response.audio.done commits one audio response; response.done does not replace session.finished",
+      "responseTrigger": "server_commit or input_text_buffer.commit",
+      "terminalLifecycle": "session.finish->session.finished",
+      "reusePolicy": "single-session",
+      "regionPolicy": "region-key-endpoint-model-must-match",
+      "audioInput": { "required": false, "codecs": [], "sampleRatesHz": [], "channels": [] },
+      "audioOutput": { "required": true, "codecs": ["pcm16"], "sampleRatesHz": [24000], "channels": [1] },
+      "clientEventTypes": ["session.update", "input_text_buffer.append", "input_text_buffer.commit", "input_text_buffer.clear", "session.finish"],
+      "serverEventTypes": [
+        "session.created",
+        "session.updated",
+        "input_text_buffer.committed",
+        "input_text_buffer.cleared",
+        "response.created",
+        "response.output_item.added",
+        "response.content_part.added",
+        "response.audio.delta",
+        "response.content_part.done",
+        "response.output_item.done",
+        "response.audio.done",
+        "response.done",
+        "session.finished",
+        "error"
+      ],
+      "clientJsonBase64EventTypes": [],
+      "clientBinaryEventTypes": [],
+      "serverJsonBase64EventTypes": ["response.audio.delta"],
+      "serverBinaryEventTypes": [],
+      "forbiddenClientEventTypes": ["input_audio_buffer.append", "conversation.item.create", "response.create", "finish-task"],
+      "forbiddenServerEventTypes": ["task-started", "task-finished", "response.text.text"],
+      "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/qwen-tts-session.json",
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/interactive-process-of-qwen-tts-realtime-synthesis", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/qwen-tts-realtime-client-events", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/qwen-tts-realtime-server-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "dialectId": "bailian-multimodal-dialog-task-ws-v1",
+      "dialectVersion": 1,
+      "transport": "websocket",
+      "endpointFamily": "dashscope-inference-v1",
+      "endpointPath": "/api-ws/v1/inference",
+      "modelPlacement": "payload",
+      "inputFraming": "json-events-and-binary",
+      "outputFraming": "json-events-and-binary",
+      "handshake": [
+        "run-task/payload.input.directive=Start",
+        "result-generated/payload.output.event=Started",
+        "result-generated/payload.output.event=DialogStateChanged(state=Listening)"
+      ],
+      "turnControl": "Started is not media-ready; binary audio is forbidden until DialogStateChanged(Listening)",
+      "previewSemantics": "none",
+      "textEventSemantics": [],
+      "commitSemantics": "application directives and dialog-state transitions own turn completion",
+      "responseTrigger": "dialog application state machine",
+      "terminalLifecycle": "Stop->Stopped",
+      "reusePolicy": "single-task",
+      "regionPolicy": "region-key-endpoint-model-must-match",
+      "eventEnvelope": {
+        "client": {
+          "outerEventField": "header.action",
+          "innerEventField": "payload.input.directive"
+        },
+        "server": {
+          "outerEventField": "header.event",
+          "innerEventField": "payload.output.event"
+        }
+      },
+      "mediaSendGate": {
+        "outerEventType": "result-generated",
+        "innerEventType": "DialogStateChanged",
+        "fieldPath": "payload.output.state",
+        "equals": "Listening"
+      },
+      "terminalEnvelope": {
+        "client": {
+          "outerEventType": "finish-task",
+          "innerEventType": "Stop"
+        },
+        "server": {
+          "outerEventType": "result-generated",
+          "innerEventType": "Stopped"
+        }
+      },
+      "audioInput": { "required": true, "codecs": ["pcm16"], "sampleRatesHz": [16000], "channels": [1] },
+      "audioOutput": { "required": true, "codecs": ["pcm16"], "sampleRatesHz": [24000], "channels": [1] },
+      "clientEventTypes": ["run-task", "continue-task", "finish-task", "binary.audio"],
+      "serverEventTypes": ["result-generated", "binary.audio"],
+      "clientInnerEventTypes": [
+        "Start",
+        "Stop",
+        "RequestToSpeak",
+        "SendSpeech",
+        "StopSpeech",
+        "CancelSpeech",
+        "RequestToRespond",
+        "LocalRespondingStarted",
+        "LocalRespondingEnded",
+        "UpdateInfo",
+        "HeartBeat"
+      ],
+      "serverInnerEventTypes": [
+        "Started",
+        "Stopped",
+        "DialogStateChanged",
+        "RequestAccepted",
+        "SpeechStarted",
+        "SpeechEnded",
+        "RespondingStarted",
+        "RespondingEnded",
+        "SpeechContent",
+        "RespondingContent",
+        "HeartBeat",
+        "Error"
+      ],
+      "clientJsonBase64EventTypes": [],
+      "clientBinaryEventTypes": ["binary.audio"],
+      "serverJsonBase64EventTypes": [],
+      "serverBinaryEventTypes": ["binary.audio"],
+      "forbiddenClientEventTypes": ["Start", "Stop", "session.finish", "input_audio_buffer.append"],
+      "forbiddenServerEventTypes": ["session.created", "session.finished"],
+      "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/multimodal-dialog.json",
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/multimodal-interaction-protocol", "checkedAt": "2026-08-30" }
+      ]
+    }
+  ],
+  "profiles": [
+    {
+      "profileId": "bailian.livetranslate.realtime.ws",
+      "profileVersion": 1,
+      "product": "qwen3.5-livetranslate-realtime",
+      "exactModelIds": ["qwen3.5-livetranslate-flash-realtime"],
+      "operations": ["native_translate"],
+      "dialectId": "bailian-livetranslate-session-ws-v1",
+      "regions": ["cn-beijing", "ap-southeast-1"],
+      "adapter": {
+        "status": "enabled",
+        "adapterId": "desktop-livetranslate-session-v1",
+        "reason": "Current production adapter has replaceable snapshot handling and session.finish/session.finished shutdown coverage."
+      },
+      "legacy": false,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/qwen3-5-livetranslate-flash-realtime", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.livetranslate.realtime.ws.snapshots",
+      "profileVersion": 1,
+      "product": "qwen-livetranslate-realtime-snapshots",
+      "exactModelIds": [
+        "qwen3.5-livetranslate-flash-realtime-2026-05-19",
+        "qwen3-livetranslate-flash-realtime",
+        "qwen3-livetranslate-flash-realtime-2025-09-22"
+      ],
+      "operations": ["native_translate"],
+      "dialectId": "bailian-livetranslate-session-ws-v1",
+      "regions": ["cn-beijing", "ap-southeast-1"],
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "Exact snapshots are documented but are not part of the current formal release adapter authority."
+      },
+      "legacy": true,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/qwen3-5-livetranslate-flash-realtime", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.omni.realtime.ws",
+      "profileVersion": 1,
+      "product": "qwen-omni-realtime",
+      "exactModelIds": [
+        "qwen3.5-omni-plus-realtime",
+        "qwen3.5-omni-plus-realtime-2026-03-15",
+        "qwen3.5-omni-flash-realtime",
+        "qwen3.5-omni-flash-realtime-2026-03-15"
+      ],
+      "operations": ["dialogue", "native_translate"],
+      "dialectId": "bailian-omni-realtime-ws-v1",
+      "regions": ["cn-beijing", "ap-southeast-1"],
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "Existing broad Omni worker is not yet sealed against other Bailian dialect event sets."
+      },
+      "legacy": false,
+      "modelAudio": {
+        "input": {
+          "required": true,
+          "codecs": ["pcm", "wav"],
+          "sampleRateConstraint": { "kind": "allow-list", "valuesHz": [8000, 16000, 24000, 48000] },
+          "channels": [1]
+        },
+        "output": {
+          "required": false,
+          "codecs": ["pcm", "wav"],
+          "sampleRateConstraint": { "kind": "allow-list", "valuesHz": [8000, 16000, 24000, 48000] },
+          "channels": [1]
+        }
+      },
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/realtime", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/client-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.omni.legacy-realtime.ws",
+      "profileVersion": 1,
+      "product": "qwen-omni-realtime-legacy",
+      "exactModelIds": [
+        "qwen3-omni-flash-realtime",
+        "qwen3-omni-flash-realtime-2025-12-01",
+        "qwen3-omni-flash-realtime-2025-09-15",
+        "qwen-omni-turbo-realtime",
+        "qwen-omni-turbo-realtime-latest",
+        "qwen-omni-turbo-realtime-2025-05-08"
+      ],
+      "operations": ["dialogue", "native_translate"],
+      "dialectId": "bailian-omni-realtime-ws-v1",
+      "regions": ["cn-beijing", "ap-southeast-1"],
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "Existing broad Omni worker is not yet sealed against other Bailian dialect event sets."
+      },
+      "legacy": true,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/realtime", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.qwen-audio-chat.realtime.ws",
+      "profileVersion": 1,
+      "product": "qwen-audio-realtime-dialogue",
+      "exactModelIds": ["qwen-audio-3.0-realtime-plus", "qwen-audio-3.0-realtime-flash"],
+      "operations": ["dialogue"],
+      "dialectId": "bailian-qwen-audio-chat-realtime-ws-v1",
+      "regions": ["cn-beijing", "ap-southeast-1"],
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "A typed smart_turn/ambient/turn_invalid adapter is not registered."
+      },
+      "legacy": false,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-user-guides", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.qwen-asr.realtime.ws",
+      "profileVersion": 1,
+      "product": "qwen-asr-realtime",
+      "exactModelIds": ["qwen3-asr-flash-realtime"],
+      "operations": ["asr"],
+      "dialectId": "bailian-qwen-asr-session-ws-v1",
+      "regions": ["cn-beijing", "ap-southeast-1"],
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "Current STT worker does not prove session.finish/session.finished before close."
+      },
+      "legacy": false,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-interaction-process", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.task-asr.qwen-audio-3.0.ws",
+      "profileVersion": 1,
+      "product": "qwen-audio-3.0-asr-streaming",
+      "exactModelIds": ["qwen-audio-3.0-asr-flash-streaming"],
+      "operations": ["asr"],
+      "dialectId": "bailian-qwen-audio-asr-task-ws-v1",
+      "regions": ["cn-beijing", "ap-southeast-1"],
+      "modelAudio": {
+        "input": {
+          "required": true,
+          "codecs": ["pcm", "wav", "mp3", "opus", "speex", "aac", "amr"],
+          "sampleRateConstraint": { "kind": "any-positive-integer" },
+          "channels": [1]
+        },
+        "output": {
+          "required": false,
+          "codecs": [],
+          "sampleRateConstraint": { "kind": "not-applicable" },
+          "channels": []
+        }
+      },
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "Qwen-Audio-ASR-specific parameters and typed result reducer are not registered."
+      },
+      "legacy": false,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-3-0-asr-flash-streaming", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.task-asr.fun-realtime.ws",
+      "profileVersion": 1,
+      "product": "fun-asr-realtime",
+      "exactModelIds": ["fun-asr-realtime"],
+      "operations": ["asr"],
+      "dialectId": "bailian-fun-asr-task-ws-v1",
+      "regions": ["cn-beijing", "ap-southeast-1"],
+      "modelAudio": {
+        "input": {
+          "required": true,
+          "codecs": ["pcm", "wav", "mp3", "opus", "speex", "aac", "amr"],
+          "sampleRateConstraint": { "kind": "any-positive-integer" },
+          "channels": [1]
+        },
+        "output": {
+          "required": false,
+          "codecs": [],
+          "sampleRateConstraint": { "kind": "not-applicable" },
+          "channels": []
+        }
+      },
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "Fun-ASR-specific parameters and typed result reducer are not registered."
+      },
+      "legacy": false,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.task-asr.paraformer.realtime-v2.ws",
+      "profileVersion": 1,
+      "product": "paraformer-realtime-v2",
+      "exactModelIds": ["paraformer-realtime-v2"],
+      "operations": ["asr"],
+      "dialectId": "bailian-paraformer-task-ws-v1",
+      "regions": ["cn-beijing"],
+      "modelAudio": {
+        "input": {
+          "required": true,
+          "codecs": ["pcm", "wav", "mp3", "opus", "speex", "aac", "amr"],
+          "sampleRateConstraint": { "kind": "any-positive-integer" },
+          "channels": [1]
+        },
+        "output": {
+          "required": false,
+          "codecs": [],
+          "sampleRateConstraint": { "kind": "not-applicable" },
+          "channels": []
+        }
+      },
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "Paraformer-v2-specific parameters and result reducer are not registered."
+      },
+      "legacy": false,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/paraformer-client-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.task-asr.paraformer.realtime-v1.ws",
+      "profileVersion": 1,
+      "product": "paraformer-realtime-v1",
+      "exactModelIds": ["paraformer-realtime-v1"],
+      "operations": ["asr"],
+      "dialectId": "bailian-paraformer-task-ws-v1",
+      "regions": ["cn-beijing"],
+      "modelAudio": {
+        "input": {
+          "required": true,
+          "codecs": ["pcm", "wav", "mp3", "opus", "speex", "aac", "amr"],
+          "sampleRateConstraint": { "kind": "allow-list", "valuesHz": [16000] },
+          "channels": [1]
+        },
+        "output": {
+          "required": false,
+          "codecs": [],
+          "sampleRateConstraint": { "kind": "not-applicable" },
+          "channels": []
+        }
+      },
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "Paraformer-v1-specific parameters and result reducer are not registered."
+      },
+      "legacy": false,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/paraformer-client-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.task-asr.paraformer.realtime-8k-v2.ws",
+      "profileVersion": 1,
+      "product": "paraformer-realtime-8k-v2",
+      "exactModelIds": ["paraformer-realtime-8k-v2"],
+      "operations": ["asr"],
+      "dialectId": "bailian-paraformer-task-ws-v1",
+      "regions": ["cn-beijing"],
+      "modelAudio": {
+        "input": {
+          "required": true,
+          "codecs": ["pcm", "wav", "mp3", "opus", "speex", "aac", "amr"],
+          "sampleRateConstraint": { "kind": "allow-list", "valuesHz": [8000] },
+          "channels": [1]
+        },
+        "output": {
+          "required": false,
+          "codecs": [],
+          "sampleRateConstraint": { "kind": "not-applicable" },
+          "channels": []
+        }
+      },
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "Paraformer-8k-v2-specific parameters and result reducer are not registered."
+      },
+      "legacy": false,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/paraformer-client-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.task-asr.paraformer.realtime-8k-v1.ws",
+      "profileVersion": 1,
+      "product": "paraformer-realtime-8k-v1",
+      "exactModelIds": ["paraformer-realtime-8k-v1"],
+      "operations": ["asr"],
+      "dialectId": "bailian-paraformer-task-ws-v1",
+      "regions": ["cn-beijing"],
+      "modelAudio": {
+        "input": {
+          "required": true,
+          "codecs": ["pcm", "wav", "mp3", "opus", "speex", "aac", "amr"],
+          "sampleRateConstraint": { "kind": "allow-list", "valuesHz": [8000] },
+          "channels": [1]
+        },
+        "output": {
+          "required": false,
+          "codecs": [],
+          "sampleRateConstraint": { "kind": "not-applicable" },
+          "channels": []
+        }
+      },
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "Paraformer-8k-v1-specific parameters and result reducer are not registered."
+      },
+      "legacy": false,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/paraformer-client-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.task-translation.gummy.ws",
+      "profileVersion": 1,
+      "product": "gummy-realtime-translation",
+      "exactModelIds": ["gummy-realtime-v1", "gummy-chat-v1"],
+      "operations": ["asr", "native_translate"],
+      "dialectId": "bailian-gummy-task-ws-v1",
+      "regions": ["cn-beijing"],
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "Legacy translation task adapter is not registered."
+      },
+      "legacy": true,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/real-time-speech-translation/", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.task-tts.qwen-audio-3.0.ws",
+      "profileVersion": 1,
+      "product": "qwen-audio-3.0-tts",
+      "exactModelIds": ["qwen-audio-3.0-tts-plus", "qwen-audio-3.0-tts-flash"],
+      "operations": ["tts"],
+      "dialectId": "bailian-speech-synthesizer-duplex-task-ws-v1",
+      "regions": ["cn-beijing", "ap-southeast-1"],
+      "modelAudio": {
+        "input": {
+          "required": false,
+          "codecs": [],
+          "sampleRateConstraint": { "kind": "not-applicable" },
+          "channels": []
+        },
+        "output": {
+          "required": true,
+          "codecs": ["pcm", "wav", "mp3", "opus"],
+          "sampleRateConstraint": { "kind": "allow-list", "valuesHz": [8000, 16000, 22050, 24000, 44100, 48000] },
+          "channels": [1]
+        }
+      },
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "Qwen-Audio-TTS duplex task adapter is not registered."
+      },
+      "legacy": false,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/realtime-tts-user-guide", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-client-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.task-tts.cosyvoice-v3.5.ws",
+      "profileVersion": 1,
+      "product": "cosyvoice-v3.5",
+      "exactModelIds": ["cosyvoice-v3.5-plus", "cosyvoice-v3.5-flash"],
+      "operations": ["tts"],
+      "dialectId": "bailian-speech-synthesizer-duplex-task-ws-v1",
+      "regions": ["cn-beijing"],
+      "modelAudio": {
+        "input": {
+          "required": false,
+          "codecs": [],
+          "sampleRateConstraint": { "kind": "not-applicable" },
+          "channels": []
+        },
+        "output": {
+          "required": true,
+          "codecs": ["pcm", "wav", "mp3", "opus"],
+          "sampleRateConstraint": { "kind": "allow-list", "valuesHz": [8000, 16000, 22050, 24000, 44100, 48000] },
+          "channels": [1]
+        }
+      },
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "CosyVoice v3.5 duplex task adapter is not registered."
+      },
+      "legacy": false,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/realtime-tts-user-guide", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-client-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.task-tts.cosyvoice-v3.ws",
+      "profileVersion": 1,
+      "product": "cosyvoice-v3",
+      "exactModelIds": ["cosyvoice-v3-plus", "cosyvoice-v3-flash"],
+      "operations": ["tts"],
+      "dialectId": "bailian-speech-synthesizer-duplex-task-ws-v1",
+      "regions": ["cn-beijing", "ap-southeast-1"],
+      "modelAudio": {
+        "input": {
+          "required": false,
+          "codecs": [],
+          "sampleRateConstraint": { "kind": "not-applicable" },
+          "channels": []
+        },
+        "output": {
+          "required": true,
+          "codecs": ["pcm", "wav", "mp3", "opus"],
+          "sampleRateConstraint": { "kind": "allow-list", "valuesHz": [8000, 16000, 22050, 24000, 44100, 48000] },
+          "channels": [1]
+        }
+      },
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "CosyVoice v3 duplex task adapter is not registered."
+      },
+      "legacy": false,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/realtime-tts-user-guide", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-client-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.task-tts.cosyvoice-v2.ws",
+      "profileVersion": 1,
+      "product": "cosyvoice-v2",
+      "exactModelIds": ["cosyvoice-v2"],
+      "operations": ["tts"],
+      "dialectId": "bailian-speech-synthesizer-duplex-task-ws-v1",
+      "regions": ["cn-beijing"],
+      "modelAudio": {
+        "input": {
+          "required": false,
+          "codecs": [],
+          "sampleRateConstraint": { "kind": "not-applicable" },
+          "channels": []
+        },
+        "output": {
+          "required": true,
+          "codecs": ["pcm", "wav", "mp3", "opus"],
+          "sampleRateConstraint": { "kind": "allow-list", "valuesHz": [8000, 16000, 22050, 24000, 44100, 48000] },
+          "channels": [1]
+        }
+      },
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "CosyVoice v2 duplex task adapter is not registered."
+      },
+      "legacy": false,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/realtime-tts-user-guide", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-client-events", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.task-tts.sambert.ws",
+      "profileVersion": 1,
+      "product": "sambert-one-shot-tts",
+      "exactModelIds": ["sambert-zhichu-v1"],
+      "operations": ["tts"],
+      "dialectId": "bailian-sambert-one-shot-task-ws-v1",
+      "regions": ["cn-beijing"],
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "One-shot Sambert task adapter is not registered; no family wildcard is authorized."
+      },
+      "legacy": true,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/realtime-tts-user-guide", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.qwen3-tts.realtime.ws",
+      "profileVersion": 1,
+      "product": "qwen3-tts-realtime",
+      "exactModelIds": [
+        "qwen3-tts-instruct-flash-realtime",
+        "qwen3-tts-instruct-flash-realtime-2026-01-22",
+        "qwen3-tts-vd-realtime-2026-01-15",
+        "qwen3-tts-vd-realtime-2025-12-16",
+        "qwen3-tts-vc-realtime-2026-01-15",
+        "qwen3-tts-vc-realtime-2025-11-27",
+        "qwen3-tts-flash-realtime",
+        "qwen3-tts-flash-realtime-2025-11-27",
+        "qwen3-tts-flash-realtime-2025-09-18"
+      ],
+      "operations": ["tts"],
+      "dialectId": "bailian-qwen-tts-session-ws-v1",
+      "regions": ["cn-beijing", "ap-southeast-1"],
+      "modelAudio": {
+        "input": {
+          "required": false,
+          "codecs": [],
+          "sampleRateConstraint": { "kind": "not-applicable" },
+          "channels": []
+        },
+        "output": {
+          "required": true,
+          "codecs": ["pcm", "wav", "mp3", "opus"],
+          "sampleRateConstraint": { "kind": "allow-list", "valuesHz": [8000, 16000, 24000, 48000] },
+          "channels": [1]
+        }
+      },
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "Qwen3-TTS input_text_buffer session adapter is not registered."
+      },
+      "legacy": false,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/qwen-tts-realtime-client-events", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/realtime-tts-user-guide", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.qwen-tts.legacy-realtime.ws",
+      "profileVersion": 1,
+      "product": "qwen-tts-realtime-legacy",
+      "exactModelIds": [
+        "qwen-tts-realtime",
+        "qwen-tts-realtime-latest",
+        "qwen-tts-realtime-2025-07-15"
+      ],
+      "operations": ["tts"],
+      "dialectId": "bailian-qwen-tts-session-ws-v1",
+      "regions": ["cn-beijing"],
+      "modelAudio": {
+        "input": {
+          "required": false,
+          "codecs": [],
+          "sampleRateConstraint": { "kind": "not-applicable" },
+          "channels": []
+        },
+        "output": {
+          "required": true,
+          "codecs": ["pcm"],
+          "sampleRateConstraint": { "kind": "allow-list", "valuesHz": [24000] },
+          "channels": [1]
+        }
+      },
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "Legacy Qwen-TTS input_text_buffer session adapter is not registered."
+      },
+      "legacy": true,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/qwen-tts-realtime-client-events", "checkedAt": "2026-08-30" },
+        { "url": "https://help.aliyun.com/zh/model-studio/realtime-tts-user-guide", "checkedAt": "2026-08-30" }
+      ]
+    },
+    {
+      "profileId": "bailian.multimodal-dialog.ws",
+      "profileVersion": 1,
+      "product": "multimodal-dialog-application",
+      "exactModelIds": ["multimodal-dialog"],
+      "operations": ["dialogue"],
+      "dialectId": "bailian-multimodal-dialog-task-ws-v1",
+      "regions": ["cn-beijing"],
+      "adapter": {
+        "status": "manifest-only",
+        "adapterId": null,
+        "reason": "Listening-gated multimodal application adapter is not registered."
+      },
+      "legacy": false,
+      "sources": [
+        { "url": "https://help.aliyun.com/zh/model-studio/multimodal-interaction-protocol", "checkedAt": "2026-08-30" }
+      ]
+    }
+  ]
+}

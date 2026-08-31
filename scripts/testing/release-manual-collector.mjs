@@ -796,7 +796,14 @@ const validateDesktopEmitter = (root, scenarioId, options) => {
     ))
   ) issues.push('desktop emitter timeline must bind every ordered event to its invocationId');
 
-  const expectedArtifacts = desktopEmitterArtifactRecords(root, spec.payloadPaths);
+  const strictLive = scenarioId === 'E2E-PROVIDER-PROBE'
+    && readJson(path.join(root, 'provider-probe-result.json'))?.protocol
+      === 'dashscope-livetranslate';
+  const payloadPaths = [
+    ...spec.payloadPaths,
+    ...(strictLive ? ['raw'] : []),
+  ];
+  const expectedArtifacts = desktopEmitterArtifactRecords(root, payloadPaths);
   if (JSON.stringify(result?.artifacts) !== JSON.stringify(expectedArtifacts)) {
     issues.push('desktop emitter raw artifact hashes/sizes do not match the fixed payload');
   }
@@ -945,17 +952,26 @@ const validateProviderProbe = (root, options) => {
   const value = readJson(path.join(root, 'provider-probe-result.json'));
   const emitter = validateDesktopEmitter(root, 'E2E-PROVIDER-PROBE', options);
   const issues = [...emitter.issues];
+  const strictLive = value?.protocol === 'dashscope-livetranslate'
+    || value?.operation === 'livetranslate-session-lifecycle-preflight';
   requireJsonIdentity(issues, value, 'provider-production-probe-result');
   if (value?.source !== 'desktop-api-v2' || value?.productionMode !== true) {
     issues.push('provider probe must come from the production desktop-api-v2 runtime');
   }
   if (
-    value?.operation !== 'text-translation-preflight'
-    || value?.inputMode !== 'text-only'
+    value?.operation !== (strictLive
+      ? 'livetranslate-session-lifecycle-preflight'
+      : 'text-translation-preflight')
+    || value?.inputMode !== (strictLive ? 'none' : 'text-only')
+    || (strictLive && value?.providerInputMode !== 'none')
+    || (strictLive && value?.responseMode !== 'text-only')
+    || (strictLive && value?.terminalEvent !== 'session.finished')
     || Number(value?.externalAudioSamples) !== 0
     || Number(value?.providerInvocationCount) !== 1
   ) {
-    issues.push('provider probe must bind one text-only invocation with zero external audio samples');
+    issues.push(strictLive
+      ? 'provider probe must bind one zero-input LiveTranslate session.finished lifecycle'
+      : 'provider probe must bind one text-only invocation with zero external audio samples');
   }
   const timeIssue = timestampIssue(value?.checkedAt, 'provider probe checkedAt', options);
   if (timeIssue) issues.push(timeIssue);
@@ -1025,7 +1041,9 @@ const validateProviderProbe = (root, options) => {
     }),
     'response-shape': Object.freeze({
       label: '响应格式稳定性',
-      summary: '已完整得到 translation.completed 与 response.completed。',
+      summary: strictLive
+        ? '已完整得到 session.created、session.updated 与 session.finished。'
+        : '已完整得到 translation.completed 与 response.completed。',
     }),
   });
   const checks = Array.isArray(raw?.checks) ? raw.checks : [];
@@ -1121,6 +1139,9 @@ const validateProviderProbe = (root, options) => {
       model: value?.model ?? null,
       operation: value?.operation ?? null,
       inputMode: value?.inputMode ?? null,
+      providerInputMode: strictLive ? value?.providerInputMode ?? null : null,
+      responseMode: strictLive ? value?.responseMode ?? null : null,
+      terminalEvent: strictLive ? value?.terminalEvent ?? null : null,
       externalAudioSamples: Number(value?.externalAudioSamples ?? -1),
       providerInvocationCount: Number(value?.providerInvocationCount ?? 0),
       effectiveTransport: value?.effectiveTransport ?? null,
@@ -1741,6 +1762,31 @@ const exactSourceEntries = (sourceRoot, profileValue) => {
     : `source artifact set must be exactly: ${expected.join(', ')}; received: ${actual.join(', ') || '(empty)'}`;
 };
 
+const effectiveCollectorProfile = (sourceRoot, scenarioId, profileValue) => {
+  if (
+    scenarioId !== 'E2E-PROVIDER-PROBE'
+    || !profileValue
+    || !fs.existsSync(path.join(sourceRoot, 'provider-probe-result.json'))
+  ) return profileValue;
+  let strictLive = false;
+  try {
+    strictLive = readJson(path.join(sourceRoot, 'provider-probe-result.json'))?.protocol
+      === 'dashscope-livetranslate';
+  } catch {
+    return profileValue;
+  }
+  if (!strictLive || profileValue.artifacts.some((artifact) => artifact.path === 'raw')) {
+    return profileValue;
+  }
+  return {
+    ...profileValue,
+    artifacts: [
+      ...profileValue.artifacts,
+      { role: 'provider-websocket-raw-trace', path: 'raw', kind: 'directory' },
+    ],
+  };
+};
+
 export function validateRawReleaseManualEvidence(
   sourceRoot,
   scenarioId,
@@ -1761,9 +1807,10 @@ export function validateRawReleaseManualEvidence(
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
     return { issues: ['release manual collector source must be a directory'], summary: null };
   }
-  const entryIssue = exactSourceEntries(root, profileValue);
+  const effectiveProfile = effectiveCollectorProfile(root, scenarioId, profileValue);
+  const entryIssue = exactSourceEntries(root, effectiveProfile);
   if (entryIssue) issues.push(entryIssue);
-  for (const artifact of profileValue.artifacts) {
+  for (const artifact of effectiveProfile.artifacts) {
     const candidate = path.join(root, artifact.path);
     if (!fs.existsSync(candidate)) {
       issues.push(`required ${artifact.role} artifact is missing: ${artifact.path}`);
@@ -2074,8 +2121,8 @@ function collectRawReleaseManualEvidence({
   runnerProcessAuthority = null,
   testOnlyRealDeviceAuthorityResolver,
 } = {}) {
-  const profileValue = RELEASE_MANUAL_COLLECTOR_PROFILES[scenarioId];
-  if (!profileValue) throw new Error(`no official collector profile exists for ${scenarioId}`);
+  const baseProfileValue = RELEASE_MANUAL_COLLECTOR_PROFILES[scenarioId];
+  if (!baseProfileValue) throw new Error(`no official collector profile exists for ${scenarioId}`);
   const productionEmitter = RELEASE_MANUAL_PRODUCTION_EMITTERS[scenarioId];
   if (!productionEmitter && !testOnlyAllowSyntheticAuthority) {
     throw new Error(
@@ -2102,6 +2149,7 @@ function collectRawReleaseManualEvidence({
   const provenanceIssue = cleanProvenanceIssue(provenance);
   if (provenanceIssue) throw new Error(provenanceIssue);
   const sourceRoot = path.resolve(workspaceRoot, String(source ?? ''));
+  const profileValue = effectiveCollectorProfile(sourceRoot, scenarioId, baseProfileValue);
   if (
     DESKTOP_RELEASE_EMITTER_SCENARIOS[scenarioId]
     || scenarioId === 'E2E-REAL-DEVICE-AUDIO'
@@ -2389,9 +2437,9 @@ export function validateReleaseManualCollectorPackage(
   } = {},
 ) {
   const root = path.resolve(packageRoot);
-  const profileValue = RELEASE_MANUAL_COLLECTOR_PROFILES[scenarioId];
+  const baseProfileValue = RELEASE_MANUAL_COLLECTOR_PROFILES[scenarioId];
   const issues = [];
-  if (!profileValue) return { issues: [`no official collector profile exists for ${scenarioId}`], manifest: null };
+  if (!baseProfileValue) return { issues: [`no official collector profile exists for ${scenarioId}`], manifest: null };
   const productionEmitter = RELEASE_MANUAL_PRODUCTION_EMITTERS[scenarioId];
   if (testOnlyRealDeviceAuthorityResolver && !testOnlyAllowSyntheticAuthority) {
     issues.push('real-device authorityResolver injection is test-only');
@@ -2404,6 +2452,8 @@ export function validateReleaseManualCollectorPackage(
   }
   const packageIssue = exactPackageEntries(root);
   if (packageIssue) issues.push(packageIssue);
+  const artifactRoot = path.join(root, 'artifacts');
+  const profileValue = effectiveCollectorProfile(artifactRoot, scenarioId, baseProfileValue);
   const manifestPath = path.join(root, 'collector-manifest.json');
   if (!fs.existsSync(manifestPath)) return { issues, manifest: null };
   let manifest;
@@ -2507,7 +2557,6 @@ export function validateReleaseManualCollectorPackage(
   if (JSON.stringify(manifest?.artifacts) !== JSON.stringify(expectedRecords)) {
     issues.push('collector manifest artifact roles, paths, hashes, or sizes do not match the fixed payload');
   }
-  const artifactRoot = path.join(root, 'artifacts');
   if (fs.existsSync(artifactRoot) && fs.statSync(artifactRoot).isDirectory()) {
     const artifactEntryIssue = exactSourceEntries(artifactRoot, profileValue);
     if (artifactEntryIssue) issues.push(`collector artifacts: ${artifactEntryIssue}`);

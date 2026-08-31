@@ -25,6 +25,7 @@ mod text_only_reconnect;
 mod echo_suppression_incident;
 mod late_completion;
 mod secondary_finality;
+mod bailian_protocol_old_red;
 
 type MockHandle = tauri::AppHandle<tauri::test::MockRuntime>;
 
@@ -43,6 +44,7 @@ fn fixture_provider() -> ProviderDraftInput {
         "templateId": "t",
         "providerId": "p",
         "kind": "dashscope",
+        "realtimeProtocol": "dashscope-omni",
         "displayName": "P",
         "model": "qwen3.5-omni-plus-realtime",
         "baseUrl": "wss://example.invalid",
@@ -195,6 +197,15 @@ impl ReplayHarness {
     /// maintenance (with its timed-out turn handling), stale-transcription
     /// expiry, socket poll, and the post-reconnect gate reset.
     fn tick(&self, socket: ScriptedRealtimeSocket, slice: &mut WorkerSlice) -> ScriptedRealtimeSocket {
+        self.try_tick(socket, slice)
+            .expect("replay poll must not fail the session")
+    }
+
+    fn try_tick(
+        &self,
+        socket: ScriptedRealtimeSocket,
+        slice: &mut WorkerSlice,
+    ) -> Result<ScriptedRealtimeSocket, String> {
         let app = self.handle();
         let store = self.store();
         let recorder = crate::diagnostics::model_trace::ModelTraceRecorder::new(
@@ -342,8 +353,7 @@ impl ReplayHarness {
                 echo_guard_enabled: false,
             },
             &self.connector,
-        )
-        .expect("replay poll must not fail the session");
+        )?;
 
         let state = poll.state;
         slice.reconnect_count = state.reconnect_count;
@@ -404,7 +414,7 @@ impl ReplayHarness {
             );
         }
         let _ = &mut socket;
-        socket
+        Ok(socket)
     }
 }
 
@@ -769,8 +779,8 @@ fn replay_gate_timeout_then_late_completed() {
         .map(|cue| cue.cue_id.clone())
         .expect("late final cue");
 
-    // Tick 3: a newer, correlated turn must receive its own cue and response.
-    // It must not overwrite the display-only late final left by the timeout.
+    // Tick 3: a newer correlated source remains isolated, but the legacy Omni
+    // replay has no enabled adapter and therefore cannot authorize response.create.
     slice.manual_response_pending = true;
     slice.manual_response_requested = false;
     slice.manual_response_item_id = Some("item-current".to_string());
@@ -786,15 +796,16 @@ fn replay_gate_timeout_then_late_completed() {
     drop(late_socket);
     let _socket = harness.tick(current_socket, &mut slice);
 
-    assert!(slice.manual_response_pending);
-    assert!(slice.manual_response_requested);
+    assert!(!slice.manual_response_pending);
+    assert!(!slice.manual_response_requested);
     assert_eq!(
         harness
             .sent_types()
             .iter()
             .filter(|kind| kind.as_str() == "response.create")
             .count(),
-        1
+        0,
+        "manifest-only Omni authority must grant zero response.create writes"
     );
     let snapshot = harness.store().snapshot();
     let late_cue = snapshot
@@ -819,9 +830,6 @@ fn replay_gate_timeout_then_late_completed() {
         .find(|cue| cue.cue_id != late_cue_id && cue.source_text == "the current turn")
         .expect("current source final remains separate from the timed-out cue");
     assert!(current_cue.committed);
-    assert!(harness
-        .store()
-        .subtitle_source_is_final(&current_cue.cue_id));
     assert!(!current_cue.translation_committed);
     assert!(current_cue.translated_text.is_empty());
     assert_eq!(

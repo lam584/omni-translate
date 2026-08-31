@@ -101,6 +101,7 @@ test('performance contract uses a finite evidence-driven terminal coverage thres
 const makeCleanGitWorkspace = () => {
   const workspaceRoot = makeTempDir();
   fs.cpSync(path.resolve('scripts'), path.join(workspaceRoot, 'scripts'), { recursive: true });
+  fs.cpSync(path.resolve('contracts'), path.join(workspaceRoot, 'contracts'), { recursive: true });
   fs.writeFileSync(path.join(workspaceRoot, '.gitignore'), 'target/\n', 'utf8');
   fs.writeFileSync(path.join(workspaceRoot, 'tracked.txt'), 'release evidence CLI fixture\n', 'utf8');
   for (const args of [
@@ -854,7 +855,12 @@ const writeDesktopEmitterFixture = (
        audioSeconds: payload.audioSeconds,
     } : {}),
   });
-  const payloadPaths = [payloadFile, 'diagnostics-bundle'];
+  const payloadPaths = [
+    payloadFile,
+    'diagnostics-bundle',
+    ...(scenarioId === 'E2E-PROVIDER-PROBE'
+      && payload.protocol === 'dashscope-livetranslate' ? ['raw'] : []),
+  ];
   writeJson(path.join(rawDirectory, 'emitter-result.json'), {
     schemaVersion: 1,
     artifactKind: 'desktop-release-evidence-emitter-result',
@@ -1024,13 +1030,16 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
         providerId: 'provider-dashscope',
         model: 'qwen3.5-livetranslate-flash-realtime',
         protocol: 'dashscope-livetranslate',
-        operation: 'text-translation-preflight',
-        inputMode: 'text-only',
+        operation: 'livetranslate-session-lifecycle-preflight',
+        inputMode: 'none',
+        providerInputMode: 'none',
+        responseMode: 'text-only',
+        terminalEvent: 'session.finished',
         invocationCount: 1,
         externalAudioSamples: 0,
-        tokenBudget: {
-          maxInputTokens: 4_096,
-          maxOutputTokens: 256,
+        lifecycleBudget: {
+          firstServerEventLatencyMs: 1_200,
+          socketEventTimeoutMs: 12_000,
         },
         leaseReservations,
         grantGeneratedAt,
@@ -1055,17 +1064,100 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
         },
         authorizationObservedAt,
       };
+      const sessionIdentitySha256 = 'f'.repeat(64);
+      const sessionUpdate = {
+        event_id: 'evt_fixture_session',
+        type: 'session.update',
+        session: {
+          modalities: ['text'],
+          sample_rate: 16_000,
+          input_audio_format: 'pcm',
+          input_audio_transcription: { language: 'zh' },
+          translation: { language: 'en' },
+        },
+      };
+      const sessionFinish = { event_id: 'evt_fixture_finish', type: 'session.finish' };
+      const tracePayload = (direction, type, monotonicMs, payload, extra = {}) => {
+        const rawRedactedPayload = JSON.stringify(payload);
+        return {
+          monotonicMs,
+          direction,
+          type,
+          ...extra,
+          rawRedactedPayload,
+          sha256: sha256(rawRedactedPayload),
+        };
+      };
+      const traceEntries = [
+        tracePayload('transport', 'websocket.upgrade', 0, {
+          scheme: 'wss',
+          host: 'dashscope.aliyuncs.com',
+          path: '/api-ws/v1/realtime',
+          query: { model: preflightAuthorization.model },
+          requestHeaderNames: ['authorization'],
+        }, { status: 101 }),
+        tracePayload('server-to-client', 'session.created', 420, {
+          type: 'session.created',
+          session: {
+            id: sessionIdentitySha256,
+            model: preflightAuthorization.model,
+          },
+        }),
+        tracePayload('client-to-server', 'session.update', 421, sessionUpdate),
+        tracePayload('server-to-client', 'session.updated', 422, {
+          type: 'session.updated',
+          session: {
+            id: sessionIdentitySha256,
+            model: preflightAuthorization.model,
+            ...sessionUpdate.session,
+          },
+        }),
+        tracePayload('client-to-server', 'session.finish', 423, sessionFinish),
+        tracePayload('server-to-client', 'session.finished', 424, {
+          type: 'session.finished',
+        }),
+      ];
+      const traceDirectory = path.join(rawDirectory, 'raw');
+      const tracePath = path.join(traceDirectory, 'provider-websocket-trace.jsonl');
+      fs.mkdirSync(traceDirectory, { recursive: true });
+      const traceBytes = Buffer.from(`${traceEntries.map((entry) => JSON.stringify(entry)).join('\n')}\n`);
+      fs.writeFileSync(tracePath, traceBytes);
+      const rawTrace = {
+        path: 'raw/provider-websocket-trace.jsonl',
+        bytes: traceBytes.byteLength,
+        sha256: sha256(traceBytes),
+        eventCount: traceEntries.length,
+      };
+      const lifecycleEvidence = {
+        providerInputMode: 'none',
+        responseMode: 'text-only',
+        terminalEvent: 'session.finished',
+        lifecycleBudget: {
+          firstServerEventLatencyMs: 1_200,
+          socketEventTimeoutMs: 12_000,
+        },
+        evidenceOutcome: 'livetranslate-session-finished',
+        firstServerEvent: { type: 'session.created', monotonicMs: 420 },
+        firstServerEventLatencyMs: 420,
+        sessionAuthority: {
+          sessionIdentitySha256,
+          serverModel: preflightAuthorization.model,
+          echoedSessionConfigSha256: sha256(JSON.stringify(sessionUpdate.session)),
+        },
+        rawTrace,
+      };
       writeDesktopEmitterFixture(rawDirectory, scenarioId, 'provider-probe-result.json', {
         schemaVersion: 1,
         artifactKind: 'provider-production-probe-result',
         source: 'desktop-api-v2',
         productionMode: true,
-        operation: 'text-translation-preflight',
-        inputMode: 'text-only',
+        operation: 'livetranslate-session-lifecycle-preflight',
+        inputMode: 'none',
+        ...lifecycleEvidence,
         externalAudioSamples: 0,
         providerInvocationCount: 1,
-        inputTokens: 64,
-        outputTokens: 12,
+        inputTokens: null,
+        outputTokens: null,
         audioSeconds: null,
         checkedAt: TEST_NOW.toISOString(),
         desktopProcessId: 5101,
@@ -1098,6 +1190,8 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
           reference: 'credential://provider/dashscope/default',
         },
         rawProbeResult: {
+          productionMode: true,
+          ...lifecycleEvidence,
           id: 'probe-fixture',
           templateId: 'template-dashscope-realtime',
           providerId: 'provider-dashscope',
@@ -1107,8 +1201,13 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
           preflightAuthorization,
           providerConnectStartedAt,
           providerConnectCompletedAt,
-          inputTokens: 64,
-          outputTokens: 12,
+          providerInvocationCount: 1,
+          externalAudioSamples: 0,
+          inputAudioBufferCommitCount: 0,
+          conversationItemCreateInputTextCount: 0,
+          responseCreateCount: 0,
+          inputTokens: null,
+          outputTokens: null,
           audioSeconds: null,
           verdict: 'available',
           checkedAt: TEST_NOW.toISOString(),
@@ -1130,7 +1229,7 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
             { id: 'dashscope-streaming', key: 'streaming', label: '流式能力', status: 'pass', summary: '已观察到增量事件，实际传输模式为 websocket。' },
             { id: 'dashscope-latency', key: 'latency', label: '实时适用性', status: 'pass', summary: '首个有效事件耗时 420 ms，预算 1200 ms。' },
             { id: 'dashscope-error-shape', key: 'error-shape', label: '错误结构', status: 'pass', summary: '本次请求未触发上游错误，当前归一化链路可用。' },
-            { id: 'dashscope-response-shape', key: 'response-shape', label: '响应格式稳定性', status: 'pass', summary: '已完整得到 translation.completed 与 response.completed。' },
+            { id: 'dashscope-response-shape', key: 'response-shape', label: '响应格式稳定性', status: 'pass', summary: '已完整得到 session.created、session.updated 与 session.finished。' },
           ],
           guidance: [
             '当前延迟 420 ms，允许字幕与译音并行。',
@@ -2556,25 +2655,25 @@ test('Provider probe validator cross-checks raw result, top-level fields, and di
       expected: /routingDecision\/guidance is not the production available route/,
     },
     {
-      name: 'missing-input-token-usage',
+      name: 'synthetic-input-token-usage',
       mutate(value) {
-        value.inputTokens = null;
+        value.inputTokens = 1;
       },
-      expected: /token\/audio usage exceeds or omits the signed text-only budget/,
+      expected: /zero audio and no synthetic token usage/,
     },
     {
       name: 'output-token-budget-exceeded',
       mutate(value) {
         value.outputTokens = 257;
       },
-      expected: /token\/audio usage exceeds or omits the signed text-only budget/,
+      expected: /zero audio and no synthetic token usage/,
     },
     {
       name: 'text-preflight-reports-audio',
       mutate(value) {
         value.audioSeconds = 0.01;
       },
-      expected: /token\/audio usage exceeds or omits the signed text-only budget/,
+      expected: /zero audio and no synthetic token usage/,
     },
     {
       name: 'http-endpoint',
@@ -2894,7 +2993,7 @@ test('prepare helpers expose ready Desktop, real-device, overlay, and v6 virtual
     const e2e = fs.readFileSync(e2ePath, 'utf8');
     assert.match(e2e, /E2E-PROVIDER-CONFIG[\s\S]*AuthorityStatus: ready \(same-process production Desktop emitter\)/);
     assert.match(e2e, /E2E-PROVIDER-PROBE[\s\S]*run-desktop-release-evidence\.mjs --scenario-id E2E-PROVIDER-PROBE/);
-    assert.match(e2e, /E2E-REAL-DEVICE-AUDIO[\s\S]*canonical strict Watch Mode schema-v5 budget-balanced authority/);
+    assert.match(e2e, /E2E-REAL-DEVICE-AUDIO[\s\S]*canonical strict Watch Mode schema-v6 budget-balanced authority/);
     assert.match(e2e, /E2E-REAL-DEVICE-AUDIO[\s\S]*SelectedCell: qwen3\.5-livetranslate-flash-realtime\/process-exclusion\/default-speaker/);
     assert.doesNotMatch(e2e, /qwen3\.5-omni pairwise-live|schema-v4 budget-balanced authority/);
     assert.match(e2e, /E2E-REAL-DEVICE-AUDIO[\s\S]*ProductionCommand: npm run collect:release-evidence:real-device-audio/);

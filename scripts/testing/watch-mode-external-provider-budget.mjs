@@ -4,8 +4,12 @@ import path from 'node:path';
 
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { LIVE_LLM_CELLS, RELEASE_MODELS } from './watch-mode-balanced-release-plan.mjs';
+import {
+  assertWatchModelProtocolIdentity,
+  deriveWatchModelProtocolIdentity,
+} from './watch-mode-model-protocol-authority.mjs';
 
-export const EXTERNAL_PROVIDER_BUDGET_SCHEMA_VERSION = 1;
+export const EXTERNAL_PROVIDER_BUDGET_SCHEMA_VERSION = 2;
 export const CELL_EXTERNAL_PROVIDER_BUDGET_KIND = 'watch-mode-paid-cell-external-provider-budget';
 export const MATRIX_EXTERNAL_PROVIDER_BUDGET_KIND = 'watch-mode-paid-matrix-external-provider-budget';
 export const CELL_EXTERNAL_PROVIDER_BUDGET_FILE = 'external-provider-budget.json';
@@ -122,6 +126,7 @@ function validateSendBoundaryAuthority({
   maxSamples,
   modelProtocols = STRICT_PAID_MODEL_PROTOCOLS,
   providerIdentity = STRICT_PAID_PROVIDER_IDENTITY,
+  modelProtocolProfileIdentity = null,
 }) {
   const ledgerPath = path.join(runDirectory, PROVIDER_SEND_BOUNDARY_LEDGER_FILE);
   const journalPath = path.join(runDirectory, PROVIDER_SEND_BOUNDARY_JOURNAL_FILE);
@@ -131,28 +136,50 @@ function validateSendBoundaryAuthority({
   const lease = readJson(leasePath, 'provider budget lease receipt');
   const violations = [];
   const expectedIdentity = {
-    schemaVersion: 1,
+    schemaVersion: EXTERNAL_PROVIDER_BUDGET_SCHEMA_VERSION,
     artifactKind: 'watch-mode-provider-input-budget-ledger',
     cellId,
     runMarker,
     direction: 'inbound',
     model: modelId,
     protocol: modelProtocols[modelId],
+    ...(modelProtocolProfileIdentity ? { modelProtocolProfileIdentity } : {}),
     ...providerIdentity,
   };
   for (const [key, expected] of Object.entries(expectedIdentity)) {
-    if (ledger?.[key] !== expected) violations.push(`send-boundary final ledger ${key} mismatch`);
+    if (key === 'modelProtocolProfileIdentity') {
+      try {
+        assertWatchModelProtocolIdentity(
+          ledger?.[key],
+          expected,
+          'send-boundary final ledger model protocol profile identity',
+        );
+      } catch (error) {
+        violations.push(error.message);
+      }
+    } else if (ledger?.[key] !== expected) violations.push(`send-boundary final ledger ${key} mismatch`);
   }
   const expectedLeaseIdentity = {
-    schemaVersion: 1,
+    schemaVersion: EXTERNAL_PROVIDER_BUDGET_SCHEMA_VERSION,
     artifactKind: 'watch-mode-provider-input-budget-lease',
     cellId,
     runMarker,
     maxSamples,
+    ...(modelProtocolProfileIdentity ? { modelProtocolProfileIdentity } : {}),
   };
   const preProviderTerminal = ledger.terminalReason === PRE_PROVIDER_TERMINAL_REASON;
   for (const [key, expected] of Object.entries(expectedLeaseIdentity)) {
-    if (lease?.[key] !== expected) violations.push(`provider budget lease ${key} mismatch`);
+    if (key === 'modelProtocolProfileIdentity') {
+      try {
+        assertWatchModelProtocolIdentity(
+          lease?.[key],
+          expected,
+          'provider budget lease model protocol profile identity',
+        );
+      } catch (error) {
+        violations.push(error.message);
+      }
+    } else if (lease?.[key] !== expected) violations.push(`provider budget lease ${key} mismatch`);
   }
   if (typeof ledger.leaseId !== 'string' || !ledger.leaseId.trim()) {
     violations.push('send-boundary final ledger leaseId is missing');
@@ -210,7 +237,17 @@ function validateSendBoundaryAuthority({
     const entry = journal[index];
     if (Number(entry.sequence) !== index + 1) violations.push(`send-boundary journal sequence mismatch at ${index + 1}`);
     for (const [key, expected] of Object.entries(expectedIdentity)) {
-      if (entry?.[key] !== expected) violations.push(`send-boundary journal ${key} mismatch at sequence ${index + 1}`);
+      if (key === 'modelProtocolProfileIdentity') {
+        try {
+          assertWatchModelProtocolIdentity(
+            entry?.[key],
+            expected,
+            `send-boundary journal sequence ${index + 1} model protocol profile identity`,
+          );
+        } catch (error) {
+          violations.push(error.message);
+        }
+      } else if (entry?.[key] !== expected) violations.push(`send-boundary journal ${key} mismatch at sequence ${index + 1}`);
     }
     if (entry.leaseId !== ledger.leaseId || entry.sessionGeneration !== ledger.sessionGeneration) {
       violations.push(`send-boundary journal lease/session mismatch at sequence ${index + 1}`);
@@ -284,6 +321,7 @@ function validateSendBoundaryAuthority({
     leaseId: ledger.leaseId ?? null,
     sessionGeneration: ledger.sessionGeneration ?? null,
     protocol: ledger.protocol ?? null,
+    modelProtocolProfileIdentity: ledger.modelProtocolProfileIdentity ?? null,
     strictPaidAuthority: ledger.strictPaidAuthority,
     providerId: ledger.providerId ?? null,
     templateId: ledger.templateId ?? null,
@@ -319,6 +357,7 @@ export function writePreProviderTerminalAuthority({
   const resolvedRunDirectory = path.resolve(runDirectory);
   const protocol = modelProtocols[modelId];
   if (!protocol) throw new Error(`model ${modelId || '(missing)'} has no approved strict-paid realtime protocol`);
+  const modelProtocolProfileIdentity = deriveWatchModelProtocolIdentity(modelId);
   for (const [label, value] of Object.entries({ runMarker, cellId, leaseId, modelId })) {
     if (!String(value ?? '').trim()) throw new Error(`pre-provider terminal ${label} is missing`);
   }
@@ -331,7 +370,7 @@ export function writePreProviderTerminalAuthority({
     throw new Error('refusing to replace an existing Provider send-boundary authority with a runner terminal');
   }
   const identity = {
-    schemaVersion: 1,
+    schemaVersion: EXTERNAL_PROVIDER_BUDGET_SCHEMA_VERSION,
     artifactKind: 'watch-mode-provider-input-budget-ledger',
     cellId,
     leaseId,
@@ -341,6 +380,7 @@ export function writePreProviderTerminalAuthority({
     ...providerIdentity,
     model: modelId,
     protocol,
+    modelProtocolProfileIdentity: structuredClone(modelProtocolProfileIdentity),
   };
   const initialized = {
     ...identity,
@@ -367,12 +407,13 @@ export function writePreProviderTerminalAuthority({
   };
   const leasePath = path.join(resolvedRunDirectory, PROVIDER_BUDGET_LEASE_FILE);
   const leaseReceipt = {
-    schemaVersion: 1,
+    schemaVersion: EXTERNAL_PROVIDER_BUDGET_SCHEMA_VERSION,
     artifactKind: 'watch-mode-provider-input-budget-lease',
     cellId,
     leaseId,
     runMarker,
     maxSamples,
+    modelProtocolProfileIdentity: structuredClone(modelProtocolProfileIdentity),
   };
   if (fs.existsSync(leasePath)) {
     const existingLease = readJson(leasePath, 'existing provider budget lease receipt');
@@ -464,6 +505,7 @@ export function buildCellExternalProviderBudget({
   approvedModels = RELEASE_MODELS,
   modelProtocols = STRICT_PAID_MODEL_PROTOCOLS,
   providerIdentity = STRICT_PAID_PROVIDER_IDENTITY,
+  expectedModelProtocolProfileIdentity = null,
   authorityMode = 'strict-paid',
 }) {
   const resolvedRunDirectory = path.resolve(runDirectory);
@@ -472,6 +514,21 @@ export function buildCellExternalProviderBudget({
   const normalizedCellId = String(cellId ?? '').trim();
   const feedbackMode = String(feedbackLoopPrevention ?? '').trim();
   const resolvedInputCeilingSamples = Number(inputCeilingSamples);
+  let modelProtocolProfileIdentity = null;
+  if (authorityMode === 'strict-paid') {
+    try {
+      modelProtocolProfileIdentity = deriveWatchModelProtocolIdentity(normalizedModel);
+      if (expectedModelProtocolProfileIdentity) {
+        assertWatchModelProtocolIdentity(
+          expectedModelProtocolProfileIdentity,
+          modelProtocolProfileIdentity,
+          'strict paid expected model protocol profile identity',
+        );
+      }
+    } catch (error) {
+      violations.push(error.message);
+    }
+  }
 
   if (!Array.isArray(approvedModels) || !approvedModels.includes(normalizedModel)) {
     violations.push(`model ${normalizedModel || '(missing)'} is not in the approved ${authorityMode} model set`);
@@ -530,6 +587,7 @@ export function buildCellExternalProviderBudget({
       maxSamples: resolvedInputCeilingSamples,
       modelProtocols,
       providerIdentity,
+      modelProtocolProfileIdentity,
     });
     violations.push(...sendBoundaryAuthority.violations);
   } catch (error) {
@@ -602,6 +660,9 @@ export function buildCellExternalProviderBudget({
     runMarker: String(runMarker ?? ''),
     cellId: normalizedCellId,
     modelId: normalizedModel,
+    ...(modelProtocolProfileIdentity ? {
+      modelProtocolProfileIdentity: structuredClone(modelProtocolProfileIdentity),
+    } : {}),
     feedbackLoopPrevention: feedbackMode,
     translationMode,
     approvedModels: [...approvedModels],
@@ -677,6 +738,7 @@ export function assertCellExternalProviderBudget(runDirectory, expected = {}) {
     approvedModels: expected.approvedModels ?? recorded.approvedModels ?? RELEASE_MODELS,
     modelProtocols: expected.modelProtocols ?? STRICT_PAID_MODEL_PROTOCOLS,
     providerIdentity: expected.providerIdentity ?? STRICT_PAID_PROVIDER_IDENTITY,
+    expectedModelProtocolProfileIdentity: expected.modelProtocolProfileIdentity ?? null,
     authorityMode: expected.authorityMode ?? recorded.authorityMode ?? 'strict-paid',
   });
   // The marker prevents a copied ledger from selecting an unrelated
@@ -755,6 +817,15 @@ export function buildMatrixExternalProviderBudget(cellLedgers, {
     if (Number(ledger?.auxiliaryExternalAudioSeconds ?? 0) !== 0) {
       violations.push(`cell ${index} has non-zero auxiliary external audio`);
     }
+    try {
+      assertWatchModelProtocolIdentity(
+        ledger?.modelProtocolProfileIdentity,
+        expectedCells[index]?.modelProtocolProfileIdentity,
+        `strict paid matrix cell ${index} model protocol profile identity`,
+      );
+    } catch (error) {
+      violations.push(error.message);
+    }
   }
   const actualInputSeconds = roundedSeconds(actualInputSamples);
   if (reservedInputSamples > resolvedMatrixInputSampleCeiling) {
@@ -784,6 +855,7 @@ export function buildMatrixExternalProviderBudget(cellLedgers, {
     },
     cells: ledgers.map((ledger) => ({
       modelId: ledger.modelId,
+      modelProtocolProfileIdentity: structuredClone(ledger.modelProtocolProfileIdentity),
       cellId: ledger.cellId,
       feedbackLoopPrevention: ledger.feedbackLoopPrevention,
       providerInputSampleCeiling: ledger.providerInputSampleCeiling,

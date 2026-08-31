@@ -216,6 +216,7 @@ fn generated_files() -> Vec<GeneratedFile> {
                     decl::<audio::WatchIssueRuntime>(),
                     decl::<audio::WatchCueComparisonRuntime>(),
                     decl::<audio::WatchSessionReportSummaryRuntime>(),
+                    decl::<audio::ModelProtocolProfileIdentityRuntime>(),
                     decl::<audio::WatchSessionReportRuntime>(),
                     decl::<audio::OverlayRenderReceiptRuntime>(),
                     decl::<audio::SpeechDispatchEventRuntime>(),

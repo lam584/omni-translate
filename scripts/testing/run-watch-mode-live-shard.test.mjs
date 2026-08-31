@@ -15,17 +15,24 @@ import {
   issueCellLeases,
 } from './watch-mode-shard-authority.mjs';
 import {
+  acquireInteractiveShardAuthorities,
   buildPowerShellRunnerArgv,
   buildShardCellExecutionRequest,
   runLeasedShardCell,
-  SHARD_WORKER_TIMEOUT_MS,
+  terminatePowerShellShardChild,
 } from './run-watch-mode-live-shard.mjs';
 import { defaultSingleWorkerAssignments } from './run-watch-mode-live-coordinator.mjs';
+import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
 import {
-  WATCH_RUNNER_INTERNAL_DEADLINE_MS,
+  WATCH_RUNNER_READINESS_TIMEOUT_SECONDS,
   WATCH_SHARD_POST_REPORT_ENVELOPE_MS,
   WATCH_SHARD_PRE_DESKTOP_ENVELOPE_MS,
+  WATCH_SHARD_PROCESS_IDENTITY_TIMEOUT_MS,
+  WATCH_SHARD_PROCESS_KILL_TIMEOUT_MS,
   WATCH_SHARD_PROCESS_TERMINATION_GRACE_MS,
+  deriveWatchRunnerInternalDeadlineMs,
+  deriveWatchShardPreExecutionBudgetMs,
+  deriveWatchShardWorkerTimeoutMs,
 } from './watch-mode-release-timeout-budget.mjs';
 import { rebuildReportFromDirectory } from './watch-mode-report.mjs';
 import {
@@ -52,6 +59,7 @@ import {
 
 const SHA_A = 'a'.repeat(64);
 const SHA_B = 'b'.repeat(64);
+const MODEL_PROTOCOL_PROFILE_IDENTITY = LIVE_LLM_CELLS[0].modelProtocolProfileIdentity;
 const PROVENANCE = Object.freeze({
   schemaVersion: 1,
   source: 'git',
@@ -90,9 +98,35 @@ function fixture() {
     localIsolationAuthority: { path: 'local.json', bytes: 1, sha256: SHA_A, providerCalls: 0 },
     providerPreflightAuthority: {
       path: 'preflight.json', bytes: 1, sha256: SHA_B, status: 'completed',
-      operation: 'text-translation-preflight', externalAudioSamples: 0, invocationCount: 1,
-      tokenBudget: { maxInputTokens: 4_096, maxOutputTokens: 256 },
-      inputTokens: 64, outputTokens: 12, audioSeconds: null,
+      providerId: 'provider-dashscope',
+      model: 'qwen3.5-livetranslate-flash-realtime',
+      protocol: 'dashscope-livetranslate',
+      operation: 'livetranslate-session-lifecycle-preflight',
+      modelProtocolProfileIdentity: MODEL_PROTOCOL_PROFILE_IDENTITY,
+      inputMode: 'none',
+      providerInputMode: 'none',
+      responseMode: 'text-only',
+      terminalEvent: 'session.finished',
+      externalAudioSamples: 0,
+      invocationCount: 1,
+      lifecycleBudget: {
+        firstServerEventLatencyMs: 1_200,
+        socketEventTimeoutMs: 12_000,
+      },
+      evidenceOutcome: 'livetranslate-session-finished',
+      firstServerEvent: { type: 'session.created', monotonicMs: 606 },
+      sessionAuthority: {
+        sessionIdentitySha256: SHA_A,
+        serverModel: 'qwen3.5-livetranslate-flash-realtime',
+        echoedSessionConfigSha256: SHA_B,
+      },
+      rawTrace: {
+        path: 'raw/provider-websocket-trace.jsonl',
+        bytes: 256,
+        sha256: SHA_A,
+        eventCount: 6,
+      },
+      audioSeconds: null,
     },
     workers,
     assignments: defaultSingleWorkerAssignments(workers),
@@ -116,7 +150,7 @@ function writeSuccessfulRun(runDirectory, cell, lease) {
   fs.mkdirSync(runDirectory, { recursive: true });
   const runMarker = `watch_mode_diagnostic.run_id=${cell.cellIndex}`;
   const identity = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: PROVIDER_INPUT_BUDGET_LEDGER_KIND,
     cellId: cell.cellId,
     leaseId: lease.leaseId,
@@ -134,6 +168,7 @@ function writeSuccessfulRun(runDirectory, cell, lease) {
     customHeaderCount: 0,
     model: cell.modelId,
     protocol: cell.modelId.includes('livetranslate') ? 'dashscope-livetranslate' : 'dashscope-omni',
+    modelProtocolProfileIdentity: structuredClone(cell.modelProtocolProfileIdentity),
   };
   writeJson(path.join(runDirectory, 'physical-playback-device.json'), {
     profileId: cell.deviceProfileInstance.profileId,
@@ -145,12 +180,13 @@ function writeSuccessfulRun(runDirectory, cell, lease) {
     fixtureOnly: false,
   });
   writeJson(path.join(runDirectory, PROVIDER_INPUT_BUDGET_LEASE_FILE), {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: PROVIDER_INPUT_BUDGET_LEASE_KIND,
     cellId: cell.cellId,
     leaseId: lease.leaseId,
     runMarker,
     maxSamples: cell.maxExternalAudioSamples,
+    modelProtocolProfileIdentity: structuredClone(cell.modelProtocolProfileIdentity),
   });
   writeJson(path.join(runDirectory, PROVIDER_INPUT_BUDGET_LEDGER_FILE), {
     ...identity,
@@ -275,7 +311,16 @@ test('worker request carries only its signed paid cell and never contains build/
   assert.equal(request.runnerOptions.matrixCellId, cell.cellId);
   assert.equal(request.runnerOptions.subtitleTranslationMode, 'native');
   assert.equal(request.runnerOptions.model, 'qwen3.5-livetranslate-flash-realtime');
+  assert.deepEqual(
+    request.runnerOptions.modelProtocolProfileIdentity,
+    cell.modelProtocolProfileIdentity,
+  );
+  assert.deepEqual(
+    JSON.parse(request.environment.OMNI_WATCH_MODE_MODEL_PROTOCOL_PROFILE_IDENTITY),
+    cell.modelProtocolProfileIdentity,
+  );
   assert.equal(request.runnerOptions.postPlaybackWaitSeconds, 0);
+  assert.equal(request.runnerOptions.sessionReadyTimeoutSeconds, WATCH_RUNNER_READINESS_TIMEOUT_SECONDS);
   assert.equal(request.runnerOptions.watchAutoStopAfterSeconds, 225);
   assert.equal(request.runnerOptions.processExclusionRestartAfterSeconds, 90);
   assert.equal(request.runnerOptions.processExclusionRestartQuietSeconds, 45);
@@ -283,12 +328,13 @@ test('worker request carries only its signed paid cell and never contains build/
   assert.equal(request.runnerOptions.localPlaybackDrainTimeoutSeconds, 30);
   assert.equal(request.runnerOptions.physicalRecorderTailSeconds, 2);
   assert.equal(
-    SHARD_WORKER_TIMEOUT_MS,
+    deriveWatchShardWorkerTimeoutMs(cell),
     WATCH_SHARD_PRE_DESKTOP_ENVELOPE_MS
-      + WATCH_RUNNER_INTERNAL_DEADLINE_MS
+      + deriveWatchRunnerInternalDeadlineMs(cell)
       + WATCH_SHARD_POST_REPORT_ENVELOPE_MS
       + WATCH_SHARD_PROCESS_TERMINATION_GRACE_MS,
   );
+  assert.equal(deriveWatchShardWorkerTimeoutMs(cell), 458_000);
   assert.equal(request.runnerOptions.inputCompletePath, path.join(request.cellOutputRoot, 'input-complete.json'));
   assert.equal(request.runnerOptions.terminalAuthorityPath, path.join(request.cellOutputRoot, 'evidence-driven-terminal.json'));
   assert.equal(path.basename(request.cellOutputRoot), 'c01');
@@ -322,6 +368,59 @@ test('validated worker readiness is forwarded to the strict live runner', async 
   assert.equal(request.runnerOptions.readinessReceiptPath, 'E:\\signed\\zero-provider-readiness.json');
 });
 
+test('delayed interactive authorities, identity, and taskkill consume formula-owned outer phases', async () => {
+  const events = [];
+  let elapsedMs = 0;
+  const currentProcess = { pid: 42, startedAt: '2026-08-31T00:00:00.000Z' };
+  await acquireInteractiveShardAuthorities({
+    interactiveCommandPath: 'interactive-command.json',
+    interactiveLaunchAuthorityPath: 'interactive-launch.json',
+    interactiveReleasePath: 'interactive-release.json',
+    plan: { executionId: 'fake-delayed-authority' },
+    lease: { leaseId: 'lease-delayed-authority' },
+    worker: { workerId: 'worker-delayed-authority' },
+  }, {
+    waitForAuthorityFile: async (_filePath, label, timeoutMs) => {
+      events.push(label);
+      elapsedMs += timeoutMs;
+    },
+    inspectCurrentProcess: ({ timeoutMs }) => {
+      events.push('process identity');
+      elapsedMs += timeoutMs;
+      return currentProcess;
+    },
+    validateLaunchAuthority: ({ currentProcess: received }) => {
+      events.push('validated');
+      assert.equal(received, currentProcess);
+    },
+  });
+  assert.deepEqual(events, [
+    'interactive launch authority',
+    'interactive claim release',
+    'process identity',
+    'validated',
+  ]);
+  assert.equal(elapsedMs, deriveWatchShardPreExecutionBudgetMs());
+  assert.ok(elapsedMs >= WATCH_SHARD_PROCESS_IDENTITY_TIMEOUT_MS);
+
+  let killInvocation = null;
+  terminatePowerShellShardChild({ pid: 4242 }, {
+    platform: 'win32',
+    killProcessTree: (executable, args, options) => {
+      killInvocation = { executable, args, options };
+      elapsedMs += options.timeout;
+      return { status: 0 };
+    },
+  });
+  assert.equal(killInvocation.executable, 'taskkill.exe');
+  assert.deepEqual(killInvocation.args, ['/PID', '4242', '/F', '/T']);
+  assert.equal(killInvocation.options.timeout, WATCH_SHARD_PROCESS_KILL_TIMEOUT_MS);
+  assert.equal(
+    elapsedMs,
+    deriveWatchShardPreExecutionBudgetMs() + WATCH_SHARD_PROCESS_KILL_TIMEOUT_MS,
+  );
+});
+
 test('worker executes exactly one coordinator lease, verifies continuity, and writes result/terminal authority', async () => {
   const value = fixture();
   const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-worker-run-'));
@@ -330,6 +429,7 @@ test('worker executes exactly one coordinator lease, verifies continuity, and wr
     const lease = value.leases[0];
     const worker = value.plan.workers.find((entry) => entry.workerId === cell.workerId);
     let executions = 0;
+    let executionTimeoutMs = null;
     const outcome = await runLeasedShardCell({
       plan: value.plan,
       lease,
@@ -339,8 +439,9 @@ test('worker executes exactly one coordinator lease, verifies continuity, and wr
       authoritySnapshot: value.snapshot,
       readAuthoritySnapshot: () => value.snapshot,
       now: () => value.now,
-      executeCell: async (request) => {
+      executeCell: async (request, { timeoutMs }) => {
         executions += 1;
+        executionTimeoutMs = timeoutMs;
         assert.equal(request.environment.OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID, lease.leaseId);
         const runDirectory = path.join(request.cellOutputRoot, 'run-1');
         writeSuccessfulRun(runDirectory, cell, lease);
@@ -348,6 +449,7 @@ test('worker executes exactly one coordinator lease, verifies continuity, and wr
       },
     });
     assert.equal(executions, 1);
+    assert.equal(executionTimeoutMs, deriveWatchShardWorkerTimeoutMs(cell));
     assert.equal(outcome.result.verdict, 'passed');
     assert.equal(outcome.result.usageAuthority.leaseId, lease.leaseId);
     assert.equal(JSON.parse(fs.readFileSync(outcome.terminalPath, 'utf8')).status, 'passed');

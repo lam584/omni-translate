@@ -8,8 +8,9 @@ use tauri::AppHandle;
 use tungstenite::Message;
 
 use crate::provider::contracts::ProviderDraftInput;
+use crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile;
 
-use super::super::realtime_socket::TungsteniteSocket;
+use super::super::realtime_socket::{ReconnectedRealtimeSocket, TungsteniteSocket};
 use super::super::{
     OmniOutputMode, RealtimeAudioMode, RealtimeSocket, RealtimeSocketConnector,
 };
@@ -18,6 +19,7 @@ const LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
 
 struct LivetranslateShutdownShared {
     enabled: bool,
+    authority: Option<AuthorizedModelProtocolProfile>,
     shutdown_requested: Arc<AtomicBool>,
     session_finish_sent: AtomicBool,
     session_finished_received: AtomicBool,
@@ -36,14 +38,15 @@ impl LivetranslateShutdown {
     pub(super) fn for_provider(
         provider: &ProviderDraftInput,
         stop_requested: Arc<AtomicBool>,
-    ) -> Self {
-        Self::with_stop_signal(
-            crate::audio::events::is_livetranslate_route_model(
-                provider,
-                &provider.model,
-            ),
-            stop_requested,
-        )
+    ) -> Result<Self, String> {
+        let enabled = crate::audio::events::is_livetranslate_route_model(
+            provider,
+            &provider.model,
+        );
+        let authority = enabled
+            .then(|| crate::audio::events::authorize_bailian_native_translate(provider))
+            .transpose()?;
+        Ok(Self::with_authority(enabled, authority, stop_requested))
     }
 
     #[cfg(test)]
@@ -51,11 +54,22 @@ impl LivetranslateShutdown {
         Self::with_stop_signal(enabled, Arc::new(AtomicBool::new(false)))
     }
 
+    #[cfg(test)]
     fn with_stop_signal(enabled: bool, shutdown_requested: Arc<AtomicBool>) -> Self {
+        let authority = enabled.then(crate::audio::bailian_protocol::livetranslate_test_authority);
+        Self::with_authority(enabled, authority, shutdown_requested)
+    }
+
+    fn with_authority(
+        enabled: bool,
+        authority: Option<AuthorizedModelProtocolProfile>,
+        shutdown_requested: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             enabled,
             shared: Arc::new(LivetranslateShutdownShared {
                 enabled,
+                authority,
                 shutdown_requested,
                 session_finish_sent: AtomicBool::new(false),
                 session_finished_received: AtomicBool::new(false),
@@ -231,6 +245,38 @@ impl<S: RealtimeSocket> RealtimeSocket for LivetranslateSocket<S> {
                 "LiveTranslate session.finish already sent; further writes are forbidden",
             )));
         }
+        if let Some(authority) = self.shared.authority.as_ref() {
+            let Message::Text(text) = &message else {
+                return Err(tungstenite::Error::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "LiveTranslate typed sender forbids non-JSON client frames",
+                )));
+            };
+            let event = serde_json::from_str::<Value>(text).map_err(|error| {
+                tungstenite::Error::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("LiveTranslate typed sender requires JSON: {error}"),
+                ))
+            })?;
+            crate::audio::bailian_protocol::admit_livetranslate_client_event(
+                authority,
+                &event,
+            )
+            .map_err(|error| {
+                tungstenite::Error::Io(io::Error::new(io::ErrorKind::InvalidData, error))
+            })?;
+            if event.get("type").and_then(Value::as_str) == Some("session.finish") {
+                self.shared
+                    .session_finish_sent
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .map_err(|_| {
+                        tungstenite::Error::Io(io::Error::new(
+                            io::ErrorKind::ConnectionAborted,
+                            "LiveTranslate session.finish already sent",
+                        ))
+                    })?;
+            }
+        }
         self.inner.send_message(message)
     }
 }
@@ -274,7 +320,7 @@ impl<C: RealtimeSocketConnector> RealtimeSocketConnector for LivetranslateConnec
         output_mode: OmniOutputMode,
         source_language: &str,
         target_language: &str,
-    ) -> Result<Self::Socket, String> {
+    ) -> Result<ReconnectedRealtimeSocket<Self::Socket>, String> {
         // This check happens before the inner connector, so a shutdown-time
         // transport failure cannot create or bill a replacement session.
         self.authorize_reconnect()?;
@@ -289,9 +335,12 @@ impl<C: RealtimeSocketConnector> RealtimeSocketConnector for LivetranslateConnec
                 source_language,
                 target_language,
             )
-            .map(|inner| LivetranslateSocket {
-                inner,
-                shared: self.shared.clone(),
+            .map(|reconnected| ReconnectedRealtimeSocket {
+                socket: LivetranslateSocket {
+                    inner: reconnected.socket,
+                    shared: self.shared.clone(),
+                },
+                session_update: reconnected.session_update,
             })
     }
 }
@@ -394,8 +443,17 @@ mod tests {
             .expect("first finish send");
         shutdown.record_finish_sent(Instant::now());
         let duplicate = socket.send_message(Message::Text(finish.to_string().into()));
+        let append_after_finish = socket.send_message(Message::Text(
+            json!({"type":"input_audio_buffer.append","audio":"AA=="})
+                .to_string()
+                .into(),
+        ));
 
         assert!(duplicate.is_err());
+        assert!(
+            append_after_finish.is_err(),
+            "the real socket wrapper must reject every Provider write after session.finish"
+        );
         let sent = &state.lock().expect("fake socket state").sent;
         assert_eq!(sent.len(), 1);
         assert_eq!(
@@ -403,6 +461,27 @@ mod tests {
                 .expect("json event"),
             finish
         );
+    }
+
+    #[test]
+    fn typed_sender_rejects_livetranslate_response_create_before_inner_write() {
+        let shutdown = LivetranslateShutdown::new(true);
+        let state = Arc::new(Mutex::new(FakeSocketState::default()));
+        let mut socket = shutdown.wrap_socket(FakeSocket {
+            inbound: VecDeque::new(),
+            state: state.clone(),
+        });
+
+        assert!(socket.send_message(text_event("response.create")).is_err());
+        assert!(state.lock().expect("fake socket state").sent.is_empty());
+        socket
+            .send_message(Message::Text(
+                json!({"type":"input_audio_buffer.append","audio":"AA=="})
+                    .to_string()
+                    .into(),
+            ))
+            .expect("admitted audio append reaches the inner socket");
+        assert_eq!(state.lock().expect("fake socket state").sent.len(), 1);
     }
 
     #[test]

@@ -26,6 +26,7 @@ import {
 const MARKER = 'watch_mode_diagnostic.run_id=0123456789abcdef0123456789abcdef';
 const MODEL = 'qwen3.5-livetranslate-flash-realtime';
 const CELL_ID = LIVE_LLM_CELLS[0].cellId;
+const MODEL_PROTOCOL_PROFILE_IDENTITY = LIVE_LLM_CELLS[0].modelProtocolProfileIdentity;
 const fileSha256 = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 const inputCeilingSamplesForMode = (feedbackLoopPrevention) => LIVE_LLM_CELLS.find(
   (cell) => cell.feedbackLoopPrevention === feedbackLoopPrevention,
@@ -52,7 +53,7 @@ function createRunDirectory({
     extraLog,
   ].join('\n'), 'utf8');
   const identity = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-provider-input-budget-ledger',
     cellId: CELL_ID,
     leaseId: 'fixture-lease',
@@ -70,16 +71,18 @@ function createRunDirectory({
     customHeaderCount: 0,
     model: MODEL,
     protocol: 'dashscope-livetranslate',
+    modelProtocolProfileIdentity: structuredClone(MODEL_PROTOCOL_PROFILE_IDENTITY),
   };
   fs.writeFileSync(
     path.join(runDirectory, 'provider-input-budget-lease.json'),
     JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       artifactKind: 'watch-mode-provider-input-budget-lease',
       cellId: CELL_ID,
       leaseId: identity.leaseId,
       runMarker: MARKER,
       maxSamples: inputCeilingSamples,
+      modelProtocolProfileIdentity: structuredClone(MODEL_PROTOCOL_PROFILE_IDENTITY),
     }),
     'utf8',
   );
@@ -255,6 +258,7 @@ function buildOptions(runDirectory, overrides = {}) {
     inputCeilingSamples: inputCeilingSamplesForMode(
       overrides.feedbackLoopPrevention ?? 'echo-cancel',
     ),
+    expectedModelProtocolProfileIdentity: MODEL_PROTOCOL_PROFILE_IDENTITY,
     generatedAt: new Date('2026-08-13T01:03:00.000Z'),
     ...overrides,
   };
@@ -622,6 +626,7 @@ test('matrix ledger binds four cells, actual samples, and zero auxiliary calls',
     passed: true,
     cellId: plannedCell.cellId,
     modelId: plannedCell.modelId,
+    modelProtocolProfileIdentity: structuredClone(plannedCell.modelProtocolProfileIdentity),
     feedbackLoopPrevention: plannedCell.feedbackLoopPrevention,
     providerInputSampleCeiling: plannedCell.maxExternalAudioSamples,
     actualProviderInputSamples: 16_000 * 126,

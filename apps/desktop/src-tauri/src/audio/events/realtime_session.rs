@@ -599,6 +599,11 @@ pub(crate) fn preconnect_omni_realtime_inner(
             &plan.provider.provider_id,
             &plan.provider.model,
         );
+        if let Some(authority) = plan.model_protocol_authority.as_ref() {
+            state
+                .watch_session_report
+                .bind_authorized_model_protocol_profile(authority)?;
+        }
     }
     let st_active = plan.session_reuse_key.subtitle_translate_active;
     if state

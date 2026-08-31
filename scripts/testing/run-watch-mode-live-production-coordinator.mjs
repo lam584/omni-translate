@@ -1,7 +1,8 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
@@ -52,30 +53,149 @@ import {
 import {
   PROVIDER_PREFLIGHT_AUTHORIZATION_DIGEST_ENV,
   PROVIDER_PREFLIGHT_GRANT_PATH_ENV,
+  PROVIDER_PREFLIGHT_INPUT_MODE,
+  PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET,
+  PROVIDER_PREFLIGHT_OPERATION,
+  PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE,
+  PROVIDER_PREFLIGHT_RESPONSE_MODE,
   PROVIDER_PREFLIGHT_RESERVATION_DIRECTORY_ENV,
+  PROVIDER_PREFLIGHT_TERMINAL_EVENT,
 } from './watch-mode-provider-preflight-authorization.mjs';
-import { runManagedProviderPreflight } from './watch-mode-provider-preflight-process.mjs';
+import {
+  PROVIDER_PREFLIGHT_CLEANUP_TIMEOUT_MS,
+  PROVIDER_PREFLIGHT_CLOSE_GRACE_MS,
+  PROVIDER_PREFLIGHT_EMITTER_TIMEOUT_MS,
+  PROVIDER_PREFLIGHT_EXIT_GRACE_MS,
+  runManagedProviderPreflight,
+} from './watch-mode-provider-preflight-process.mjs';
 import { runProviderNetworkHealth } from './watch-mode-provider-network-health.mjs';
 import {
   WATCH_PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
+  WATCH_PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS,
+  WATCH_PRODUCTION_AUTHORITY_INVENTORY_CAPTURE_TIMEOUT_MS,
+  WATCH_PRODUCTION_ENDPOINT_READINESS_REMOTE_TIMEOUT_MS,
+  WATCH_PRODUCTION_ENDPOINT_READINESS_TASK_TIMEOUT_MS,
+  WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
+  WATCH_PRODUCTION_GUEST_FINALIZER_TIMEOUT_MS,
   WATCH_PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS,
-  WATCH_PRODUCTION_REMOTE_CELL_TIMEOUT_MS,
+  WATCH_PRODUCTION_PROVENANCE_CAPTURE_TIMEOUT_MS,
+  WATCH_PRODUCTION_PRESERVED_READINESS_TIMEOUT_MS,
+  WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS,
+  WATCH_PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS,
+  WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_ATTEMPTS,
+  WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_RETRY_DELAY_MS,
+  WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS,
+  WATCH_PRODUCTION_RUNTIME_AUTHORITY_VERIFICATION_TIMEOUT_MS,
+  WATCH_PRODUCTION_LOCAL_ISOLATION_VERIFICATION_TIMEOUT_MS,
+  WATCH_PRODUCTION_SHARD_COLLECTION_TIMEOUT_MS,
+  WATCH_PRODUCTION_WORKER_QUERY_TIMEOUT_MS,
   WATCH_PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS,
   deriveWatchPostReadinessExecutionBudgetMs,
+  deriveWatchProductionCoordinatorPreparationBudgetMs,
+  deriveWatchProductionInteractiveCellTimeoutMs,
   deriveWatchProductionCoordinatorTimeoutMs,
+  deriveWatchProductionFinalEvidenceBudgetMs,
+  deriveWatchProductionInitialWorkerReadinessBudgetMs,
+  deriveWatchProductionNetworkHealthBudgetMs,
+  deriveWatchProductionProviderPreflightBudgetMs,
+  deriveWatchProductionRemoteCellTimeoutMs,
 } from './watch-mode-release-timeout-budget.mjs';
 
 export const PRODUCTION_COORDINATOR_RUNNER_ID =
   'scripts/testing/run-watch-mode-live-production-coordinator.mjs';
 export const PRODUCTION_WORKER_CONFIG_SCHEMA_VERSION = 1;
 export const PRODUCTION_WORKER_CONFIG_KIND = 'watch-mode-production-shard-workers';
-export const PRODUCTION_REMOTE_CELL_TIMEOUT_MS = WATCH_PRODUCTION_REMOTE_CELL_TIMEOUT_MS;
+export const PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS =
+  WATCH_PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS;
 export const PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS = WATCH_PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS;
 export const PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS =
   WATCH_PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS;
 export const PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS =
   WATCH_PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS;
+export const PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS =
+  WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS;
+export const PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS =
+  WATCH_PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS;
 export const PRODUCTION_COORDINATOR_TIMEOUT_MS = deriveWatchProductionCoordinatorTimeoutMs();
+
+export function assertProductionCoordinatorWaveBudget({
+  coordinatorDeadlineMs,
+  currentTimeMs,
+  cells = LIVE_LLM_CELLS,
+  workerCount = 1,
+}) {
+  if (!Number.isFinite(coordinatorDeadlineMs) || !Number.isFinite(currentTimeMs)) {
+    throw new Error('production coordinator wave budget requires finite deadline timestamps');
+  }
+  const requiredExecutionMs = deriveWatchPostReadinessExecutionBudgetMs({ cells, workerCount });
+  const remainingMs = coordinatorDeadlineMs - currentTimeMs;
+  if (remainingMs < requiredExecutionMs) {
+    throw new Error(
+      `production coordinator refuses paid waves with ${remainingMs}ms remaining; `
+      + `${requiredExecutionMs}ms is required for complete post-readiness execution`,
+    );
+  }
+  return { remainingMs, requiredExecutionMs };
+}
+
+export function runBoundedCoordinatorStage(operation, label, timeoutMs) {
+  if (typeof operation !== 'function' || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('bounded coordinator stage requires an operation and positive timeout');
+  }
+  const startedAtMs = Date.now();
+  const timeoutError = () => new Error(`${label} timed out after ${timeoutMs}ms`);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback();
+    };
+    const timer = setTimeout(() => finish(() => reject(timeoutError())), timeoutMs);
+    Promise.resolve()
+      .then(operation)
+      .then(
+        (value) => finish(() => {
+          // A synchronous operation can starve this Promise's timer. It still
+          // must not turn a missed deadline into successful authority. Critical
+          // filesystem/hash stages use the killable child boundary below; this
+          // elapsed-time check makes the remaining cooperative seam fail closed.
+          if (Date.now() - startedAtMs >= timeoutMs) reject(timeoutError());
+          else resolve(value);
+        }),
+        (error) => finish(() => reject(error)),
+      );
+  });
+}
+
+function remainingAbsoluteStageMs({ deadlineMs, deadlineNow, label, maximumTimeoutMs }) {
+  const remainingMs = Math.ceil(deadlineMs - deadlineNow());
+  if (remainingMs <= 0) {
+    throw new Error(`${label} shared post-final evidence deadline expired before stage`);
+  }
+  return Math.min(remainingMs, maximumTimeoutMs);
+}
+
+export async function runBoundedCoordinatorStageWithinDeadline({
+  operation,
+  label,
+  deadlineMs,
+  deadlineNow,
+  maximumTimeoutMs,
+}) {
+  const timeoutMs = remainingAbsoluteStageMs({
+    deadlineMs,
+    deadlineNow,
+    label,
+    maximumTimeoutMs,
+  });
+  const result = await runBoundedCoordinatorStage(operation, label, timeoutMs);
+  if (deadlineNow() > deadlineMs) {
+    throw new Error(`${label} completed after the shared post-final evidence deadline`);
+  }
+  return result;
+}
 
 const SAFETY_FAILURE_PATTERNS = Object.freeze([
   /provider.*(?:authorization|budget|unauthorized|unreserved|extra connection|duplicate connection|connection[- ]owner|lease)/iu,
@@ -360,7 +480,7 @@ if (
   @($interactive.profiles).Count -ne @($payload.profiles).Count
 ) { throw 'worker readiness component identity/session binding mismatch' }
 $receipt = [ordered]@{
-  schemaVersion = 2
+  schemaVersion = 3
   artifactKind = 'watch-mode-production-worker-zero-provider-readiness'
   generatedAt = [DateTime]::UtcNow.ToString('o')
   executionId = [string]$payload.executionId
@@ -606,16 +726,17 @@ export function scpBaseArgs(worker) {
   ];
 }
 
-function runChildProcess(executable, args, {
+export function runChildProcess(executable, args, {
   cwd = repoRoot,
   signal,
-  timeoutMs = 60_000,
+  timeoutMs = WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS,
   environment = process.env,
   input = '',
   completionMarker = null,
+  spawnProcess = spawn,
 } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, {
+    const child = spawnProcess(executable, args, {
       cwd,
       env: environment,
       shell: false,
@@ -689,8 +810,273 @@ function runChildProcess(executable, args, {
   });
 }
 
-export const PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS = 5 * 60 * 1000;
-export const PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS = 5 * 60 * 1000;
+const COORDINATOR_CHILD_STAGE_FLAG = '--internal-coordinator-child-stage';
+const COORDINATOR_CHILD_RESULT_PREFIX = '__OMNI_COORDINATOR_CHILD_RESULT_V1__';
+const COORDINATOR_MODULE_PATH = fileURLToPath(import.meta.url);
+
+export async function runKillableCoordinatorProcessStage({
+  stageLabel,
+  executable,
+  args = [],
+  input = '',
+  deadlineMs,
+  maximumTimeoutMs = Number.POSITIVE_INFINITY,
+  deadlineNow = Date.now,
+  signal,
+  cwd = repoRoot,
+  environment = process.env,
+  runProcess = runChildProcess,
+  spawnProcess,
+}) {
+  if (
+    !String(stageLabel ?? '').trim()
+    || !String(executable ?? '').trim()
+    || !Number.isFinite(deadlineMs)
+    || !(maximumTimeoutMs === Number.POSITIVE_INFINITY
+      || (Number.isSafeInteger(maximumTimeoutMs) && maximumTimeoutMs > 0))
+  ) throw new Error('killable coordinator process stage requires label, executable, and deadlines');
+  const remainingCoordinatorMs = Math.ceil(deadlineMs - deadlineNow());
+  if (remainingCoordinatorMs <= 0) {
+    throw new Error(`${stageLabel} shared coordinator deadline expired before child launch`);
+  }
+  const timeoutMs = Math.max(1, Math.min(remainingCoordinatorMs, maximumTimeoutMs));
+  const timeoutBoundary = remainingCoordinatorMs <= maximumTimeoutMs
+    ? 'the shared coordinator deadline'
+    : 'its stage ceiling';
+  const result = await runProcess(executable, args, {
+    cwd,
+    signal,
+    timeoutMs,
+    environment,
+    input,
+    spawnProcess,
+  });
+  const exitCode = Number(result?.exitCode ?? result?.status ?? 1);
+  if (exitCode === 124) {
+    throw new Error(
+      `${stageLabel} timed out after ${timeoutMs}ms at ${timeoutBoundary}`,
+    );
+  }
+  if (exitCode !== 0) {
+    const detail = String(result?.stderr ?? result?.stdout ?? '').trim().slice(0, 2_000);
+    throw new Error(`${stageLabel} child failed with exit ${exitCode}${detail ? `: ${detail}` : ''}`);
+  }
+  if (deadlineNow() > deadlineMs) {
+    throw new Error(`${stageLabel} completed after the shared coordinator deadline`);
+  }
+  return result;
+}
+
+async function runCoordinatorChildStage({
+  stage,
+  payload,
+  stageLabel,
+  coordinatorDeadlineMs,
+  maximumTimeoutMs,
+  deadlineNow,
+  signal,
+  runProcess,
+  spawnProcess,
+}) {
+  const result = await runKillableCoordinatorProcessStage({
+    stageLabel,
+    executable: process.execPath,
+    args: [COORDINATOR_MODULE_PATH, COORDINATOR_CHILD_STAGE_FLAG, stage],
+    input: JSON.stringify({ schemaVersion: 1, stage, payload }),
+    deadlineMs: coordinatorDeadlineMs,
+    maximumTimeoutMs,
+    deadlineNow,
+    signal,
+    runProcess,
+    spawnProcess,
+  });
+  const resultLine = String(result.stdout ?? '')
+    .split(/\r?\n/u)
+    .find((line) => line.startsWith(COORDINATOR_CHILD_RESULT_PREFIX));
+  if (!resultLine) throw new Error(`${stageLabel} child omitted its result envelope`);
+  try {
+    return JSON.parse(resultLine.slice(COORDINATOR_CHILD_RESULT_PREFIX.length));
+  } catch (error) {
+    throw new Error(`${stageLabel} child returned invalid result JSON: ${error.message}`);
+  }
+}
+
+export async function runProductionEvidenceVerifier({
+  evidenceOutputRoot,
+  manifestPath,
+  timeoutMs = WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
+  runProcess = runChildProcess,
+  spawnProcess,
+  signal,
+}) {
+  const result = await runProcess(
+    process.execPath,
+    buildVerifyArgv(
+      evidenceOutputRoot,
+      DEFAULT_MODELS,
+      DEFAULT_FEEDBACK_MODES,
+      SUPPORTED_DEVICE_CLASSES,
+      manifestPath,
+      { strict: true },
+    ),
+    {
+      cwd: repoRoot,
+      timeoutMs,
+      environment: process.env,
+      spawnProcess,
+      signal,
+    },
+  );
+  const exitCode = Number(result?.exitCode ?? result?.status ?? 1);
+  if (exitCode === 124) {
+    throw new Error(
+      `strict-evidence-verifier timed out after ${timeoutMs}ms; canonical manifest was not published`,
+    );
+  }
+  if (exitCode !== 0) {
+    throw new Error(
+      `strict-evidence-verifier failed with exit ${exitCode}; canonical manifest was not published`,
+    );
+  }
+  return result;
+}
+
+function performFinalEvidenceStaging(payload, operations = {}) {
+  const generatedAt = new Date(payload.generatedAt);
+  if (Number.isNaN(generatedAt.getTime())) {
+    throw new Error('final evidence staging requires a valid generatedAt timestamp');
+  }
+  const aggregation = (operations.writeCoordinatorAggregate ?? writeCoordinatorAggregate)({
+    outputRoot: payload.executionRoot,
+    executionRoot: payload.executionRoot,
+    plan: payload.plan,
+    leases: payload.leases,
+    shards: payload.shards,
+    generatedAt,
+  });
+  const staged = (operations.stageShardMatrixIntegration ?? stageShardMatrixIntegration)({
+    evidenceRoot: payload.evidenceOutputRoot,
+    executionRootName: `shards-${payload.plan.executionId}`,
+    planPath: payload.planPath,
+    leasePaths: payload.leasePaths,
+    coordinatorAggregatePath: aggregation.aggregatePath,
+    shards: payload.shards,
+    collectedMatrixIntegration: aggregation.matrixIntegration,
+  });
+  const stagedFailureFingerprintPath = path.join(
+    staged.finalExecutionRoot,
+    'failure-fingerprints.json',
+  );
+  fs.copyFileSync(
+    payload.failureFingerprintPath,
+    stagedFailureFingerprintPath,
+    fs.constants.COPYFILE_EXCL,
+  );
+  const failureFingerprintAuthority = fileAuthorityEntry(
+    stagedFailureFingerprintPath,
+    relativeChildPath(
+      payload.evidenceOutputRoot,
+      stagedFailureFingerprintPath,
+      'staged failure fingerprints',
+    ),
+  );
+  const assertBudget = operations.assertCellExternalProviderBudget
+    ?? assertCellExternalProviderBudget;
+  const rawBudgets = staged.runDirectories.map((runDirectory, index) => assertBudget(
+    runDirectory,
+    {
+      cellId: LIVE_LLM_CELLS[index].cellId,
+      modelId: LIVE_LLM_CELLS[index].modelId,
+      feedbackLoopPrevention: LIVE_LLM_CELLS[index].feedbackLoopPrevention,
+      inputCeilingSamples: LIVE_LLM_CELLS[index].maxExternalAudioSamples,
+    },
+  ));
+  const matrixBudget = (
+    operations.writeMatrixExternalProviderBudget ?? writeMatrixExternalProviderBudget
+  )(payload.evidenceOutputRoot, rawBudgets, {
+    fileName: `watch-mode-external-provider-budget-${payload.plan.executionId}.json`,
+  });
+  const budgetAuthority = fileAuthorityEntry(
+    matrixBudget.filePath,
+    path.basename(matrixBudget.filePath),
+  );
+  const externalProviderBudget = {
+    ...matrixBudget.ledger,
+    ledgerPath: budgetAuthority.path,
+    ledgerBytes: budgetAuthority.bytes,
+    ledgerSha256: budgetAuthority.sha256,
+  };
+  const manifestResult = (operations.writeMatrixRunManifest ?? writeMatrixRunManifest)({
+    outputRoot: payload.evidenceOutputRoot,
+    modelList: DEFAULT_MODELS,
+    feedbackModeList: DEFAULT_FEEDBACK_MODES,
+    deviceProfiles: productionDeviceProfiles(payload.plan),
+    runDirectories: staged.runDirectories,
+    strict: true,
+    now: generatedAt,
+    provenance: payload.plan.provenance,
+    authorityRuntimeBinaryHashes: payload.plan.authority.runtimeBinaryHashes,
+    releaseCells: LIVE_LLM_CELLS,
+    localIsolationAuthority: payload.plan.localIsolationAuthority,
+    externalProviderBudget,
+    failureSummary: payload.failureSummary,
+    failureFingerprintAuthority,
+    shardExecution: staged.shardExecution,
+    matrixIntegration: staged.matrixIntegration,
+  });
+  return { staged, externalProviderBudget, manifestResult };
+}
+
+function performCanonicalManifestPublication(payload, operations = {}) {
+  const verifiedAt = new Date(payload.verifiedAt);
+  if (Number.isNaN(verifiedAt.getTime())) {
+    throw new Error('canonical manifest publication requires a valid verifiedAt timestamp');
+  }
+  return (operations.publishSuccessfulStrictMatrixManifest
+    ?? publishSuccessfulStrictMatrixManifest)({
+    outputRoot: payload.evidenceOutputRoot,
+    manifestPath: payload.manifestPath,
+    verifiedAt,
+    currentProvenance: payload.currentProvenance,
+    currentRuntimeBinaryHashes: payload.currentRuntimeBinaryHashes,
+  });
+}
+
+async function executeCoordinatorChildStage(stage, payload) {
+  if (stage.startsWith('runtime-authority-')) {
+    return verifyStrictRuntimeAuthority(payload.authorityPath, {
+      workspaceRoot: payload.workspaceRoot,
+    });
+  }
+  if (stage === 'final-evidence-staging') return performFinalEvidenceStaging(payload);
+  if (stage === 'canonical-manifest-publication') {
+    return performCanonicalManifestPublication(payload);
+  }
+  throw new Error(`unknown internal coordinator child stage: ${stage}`);
+}
+
+export function createProductionWorkerReadinessTransportPlan({
+  executionId,
+  provenance,
+  authorityImplementationHashes,
+  shardOrchestrationImplementationHashes,
+  workerReadinessRequest,
+}) {
+  return {
+    executionId,
+    provenance,
+    authority: {
+      implementationHashes: authorityImplementationHashes,
+      runtimeBinaryHashes: workerReadinessRequest.runtimeBinaryHashes,
+      runtimeBundleDigest: workerReadinessRequest.runtimeBundleDigest,
+      shardOrchestrationImplementationHashes,
+    },
+    workers: workerReadinessRequest.workers,
+    cells: workerReadinessRequest.assignments,
+    planDigest: workerReadinessRequest.requestDigest,
+  };
+}
+
 const REMOTE_POWERSHELL_COMPLETION_MARKER = '__OMNI_REMOTE_COMPLETE_V1__';
 const REMOTE_POWERSHELL_OUTPUT_FRAME_PREFIX = '__OMNI_REMOTE_OUTPUT_V1__';
 
@@ -931,6 +1317,7 @@ export function createSshProductionTransport({
   reusePreparedWorkers = false,
   runProcess = runChildProcess,
   workspaceRoot = repoRoot,
+  deadlineNow = () => Date.now(),
 }) {
   const workersById = new Map(config.workers.map((worker) => [worker.workerId, worker]));
   const leasePathById = new Map(leasePaths.map((leasePath) => {
@@ -954,6 +1341,24 @@ export function createSshProductionTransport({
 
   const runRemote = async (worker, body, payload, options = {}) => {
     const { requireControlPlane: _requireControlPlane = false, ...processOptions } = options;
+    const stageTimeoutMs = processOptions.timeoutMs ?? WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS;
+    if (!Number.isSafeInteger(stageTimeoutMs) || stageTimeoutMs <= 0) {
+      throw new Error('remote command shared deadline requires a positive timeoutMs');
+    }
+    const stageStartedAtMs = deadlineNow();
+    const stageDeadlineMs = stageStartedAtMs + stageTimeoutMs;
+    const remainingStageTimeoutMs = (phase, maximumMs = stageTimeoutMs) => {
+      const remainingMs = Math.ceil(stageDeadlineMs - deadlineNow());
+      if (remainingMs <= 0) {
+        throw new Error(`remote command shared deadline expired before ${phase}`);
+      }
+      return Math.min(remainingMs, maximumMs);
+    };
+    const stageProcessOptions = (phase, overrides = {}, maximumMs = stageTimeoutMs) => ({
+      ...processOptions,
+      ...overrides,
+      timeoutMs: remainingStageTimeoutMs(phase, maximumMs),
+    });
     const invocation = remotePowerShellInvocation(body, payload);
     if (isCoordinatorLocalWorker(worker)) {
       const transportRoot = path.join(coordinatorExecutionRoot, '.transport', worker.workerId);
@@ -967,13 +1372,15 @@ export function createSshProductionTransport({
         const localResult = await runProcess('powershell.exe', [
           '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
           '-File', localScriptPath,
-        ], {
-          ...processOptions,
+        ], stageProcessOptions('local PowerShell execution', {
           cwd: worker.workspaceRoot,
           environment: windowsPowerShellEnvironment(processOptions.environment ?? process.env),
           input: '',
           completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
-        });
+        }));
+        if (deadlineNow() > stageDeadlineMs) {
+          throw new Error('remote command shared deadline expired during local PowerShell execution');
+        }
         return decodeRemotePowerShellFileOutput(localResult);
       } finally {
         fs.rmSync(localScriptPath, { force: true });
@@ -992,6 +1399,7 @@ export function createSshProductionTransport({
     // until the readiness timeout even after the command has produced JSON.
     fs.writeFileSync(localScriptPath, invocation.fileScript, 'utf8');
     let uploaded = false;
+    let primaryError = null;
     try {
       if (isCoordinatorLocalWorker(worker)) {
         fs.copyFileSync(localScriptPath, remoteScriptPath);
@@ -999,7 +1407,7 @@ export function createSshProductionTransport({
         const uploadResult = await runProcess(
           config.scpExecutable,
           [...scpBaseArgs(worker), localScriptPath, remoteSpec(worker, remoteScriptPath)],
-          processOptions,
+          stageProcessOptions('command upload'),
         );
         ensureSuccessful(uploadResult, `command upload to ${worker.workerId}`);
       }
@@ -1009,25 +1417,38 @@ export function createSshProductionTransport({
         `${worker.user}@${worker.host}`,
         'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
         '-File', remoteScriptPath,
-      ], {
-        ...processOptions,
+      ], stageProcessOptions('SSH execution', {
         input: '',
         completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
-      });
+      }));
+      if (deadlineNow() > stageDeadlineMs) {
+        throw new Error('remote command shared deadline expired during SSH execution');
+      }
       return decodeRemotePowerShellFileOutput(remoteResult);
+    } catch (error) {
+      primaryError = error;
+      throw error;
     } finally {
       fs.rmSync(localScriptPath, { force: true });
       if (uploaded) {
         if (isCoordinatorLocalWorker(worker)) {
           fs.rmSync(remoteScriptPath, { force: true });
         } else {
-          const cleanupResult = await runProcess(config.sshExecutable, [
-            ...sshBaseArgs(worker),
-            `${worker.user}@${worker.host}`,
-            'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
-            `Remove-Item -LiteralPath '${remoteScriptPath}' -Force -ErrorAction SilentlyContinue`,
-          ], { timeoutMs: 30_000 });
-          ensureSuccessful(cleanupResult, `command cleanup on ${worker.workerId}`);
+          const cleanupRemainingMs = Math.ceil(stageDeadlineMs - deadlineNow());
+          if (cleanupRemainingMs > 0) {
+            const cleanupResult = await runProcess(config.sshExecutable, [
+              ...sshBaseArgs(worker),
+              `${worker.user}@${worker.host}`,
+              'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+              `Remove-Item -LiteralPath '${remoteScriptPath}' -Force -ErrorAction SilentlyContinue`,
+            ], stageProcessOptions('remote script cleanup', {}, 30_000));
+            ensureSuccessful(cleanupResult, `command cleanup on ${worker.workerId}`);
+            if (deadlineNow() > stageDeadlineMs && !primaryError) {
+              throw new Error('remote command shared deadline expired during remote script cleanup');
+            }
+          } else if (!primaryError) {
+            throw new Error('remote command shared deadline expired before remote script cleanup');
+          }
         }
       }
     }
@@ -1081,7 +1502,9 @@ if ($LASTEXITCODE -ne 0) { throw 'git untracked query failed' }
 $dirtyEntryCount = @($untracked).Count + [int]($unstagedExit -eq 1) + [int]($stagedExit -eq 1)
 $uuid = [string](Get-CimInstance Win32_ComputerSystemProduct).UUID
 [pscustomobject]@{ headCommit = $head.ToLowerInvariant(); dirtyEntries = $dirtyEntryCount; uuidBios = $uuid.ToLowerInvariant() } | ConvertTo-Json -Compress
-`, { workspaceRoot: worker.workspaceRoot }, { timeoutMs: 45_000 });
+`, { workspaceRoot: worker.workspaceRoot }, {
+      timeoutMs: WATCH_PRODUCTION_WORKER_QUERY_TIMEOUT_MS,
+    });
     const state = parseRemoteJson(result, `worker ${worker.workerId} readiness`);
     if (
       state.headCommit !== String(plan.provenance.headCommit).toLowerCase()
@@ -1151,6 +1574,8 @@ foreach ($entry in @($payload.entries)) {
 [pscustomobject]@{ entries = $entries } | ConvertTo-Json -Depth 4 -Compress
 `, {
       entries: runtimeEntries.map(({ path: entryPath, remotePath }) => ({ path: entryPath, remotePath })),
+    }, {
+      timeoutMs: WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS,
     }), `worker ${worker.workerId} runtime pre-check`);
     if ((remoteWorkspaceState.entries ?? []).length !== runtimeEntries.length) {
       throw new Error(`worker ${worker.workerId} runtime pre-check returned an incomplete inventory`);
@@ -1179,6 +1604,8 @@ foreach ($directory in @($payload.runtimeDirectories)) {
         ...implementationEntries.map((entry) => path.win32.dirname(entry.remotePath)),
         ...runtimeEntries.map((entry) => path.win32.dirname(entry.remotePath)),
       ])],
+    }, {
+      timeoutMs: WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS,
     }), `worker ${worker.workerId} isolated-root initialization`);
     await upload(worker, planPath, remotePlanPath);
     if (!reusePreparedWorkers) {
@@ -1222,7 +1649,10 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
       planPath: remotePlanPath,
     }, {
       timeoutMs: PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS,
-    }), `worker ${worker.workerId} runtime verification`);
+    }), `worker ${worker.workerId} runtime verification`, {
+      attempts: WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_ATTEMPTS,
+      delayMs: WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_RETRY_DELAY_MS,
+    });
     if (verification.planSha256 !== fileAuthorityEntry(planPath, path.basename(planPath)).sha256) {
       throw new Error(`worker ${worker.workerId} copied plan hash mismatch`);
     }
@@ -1266,6 +1696,7 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
           worker,
           PRODUCTION_PRESERVED_WORKER_READINESS_BODY,
           readinessPayload,
+          { timeoutMs: WATCH_PRODUCTION_PRESERVED_READINESS_TIMEOUT_MS },
         ), `worker ${worker.workerId} preserved zero-provider readiness`)
       : await (async () => {
           parseRemoteJson(await runRemote(
@@ -1286,7 +1717,7 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
               worker,
               remoteRoot,
               mode: 'endpoint-readiness',
-              timeoutMs: 300_000,
+              timeoutMs: WATCH_PRODUCTION_ENDPOINT_READINESS_TASK_TIMEOUT_MS,
               requireSeparateControlPlane: !isCoordinatorLocalWorker(worker),
             }),
             readinessRequestDigest: readinessPayload.readinessRequestDigest,
@@ -1302,7 +1733,10 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
               controlScriptSha256: interactiveRequest.controlScriptSha256,
               interactiveRequest,
             },
-            { timeoutMs: 330_000, requireControlPlane: true },
+            {
+              timeoutMs: WATCH_PRODUCTION_ENDPOINT_READINESS_REMOTE_TIMEOUT_MS,
+              requireControlPlane: true,
+            },
           ), `worker ${worker.workerId} interactive endpoint readiness`);
           return parseRemoteJson(await runRemote(
             worker,
@@ -1338,15 +1772,20 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
     const leasePath = leasePathById.get(lease.leaseId);
     if (!worker || !remoteRoot || !leasePath) throw new Error(`transport lacks binding for ${cell.cellId}`);
     const remoteLeasePath = path.win32.join(remoteRoot, 'leases', `${String(cell.cellIndex + 1).padStart(2, '0')}-${lease.leaseId}.json`);
-    await upload(worker, leasePath, remoteLeasePath, { signal, timeoutMs: 60_000 });
+    await upload(worker, leasePath, remoteLeasePath, {
+      signal,
+      timeoutMs: PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS,
+    });
     remoteLeasePaths.set(lease.leaseId, remoteLeasePath);
+    const interactiveCellTimeoutMs = deriveWatchProductionInteractiveCellTimeoutMs(cell);
+    const remoteCellTimeoutMs = deriveWatchProductionRemoteCellTimeoutMs(cell);
     const interactiveRequest = {
       ...interactiveRequestBase({
         plan,
         worker,
         remoteRoot,
         mode: 'shard-cell',
-        timeoutMs: PRODUCTION_REMOTE_CELL_TIMEOUT_MS - 30_000,
+        timeoutMs: interactiveCellTimeoutMs,
         requireSeparateControlPlane: !isCoordinatorLocalWorker(worker),
       }),
       planPath: path.win32.join(remoteRoot, SHARD_EXECUTION_PLAN_FILE),
@@ -1363,7 +1802,7 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
       workspaceRoot: worker.workspaceRoot,
       controlScriptSha256: interactiveRequest.controlScriptSha256,
       interactiveRequest,
-    }, { signal, timeoutMs: PRODUCTION_REMOTE_CELL_TIMEOUT_MS, requireControlPlane: true });
+    }, { signal, timeoutMs: remoteCellTimeoutMs, requireControlPlane: true });
     ensureSuccessful(result, `remote paid cell ${cell.cellId}`);
     const interactive = JSON.parse(lastNonEmptyLine(result.stdout));
     const interactiveTerminal = interactive.terminal;
@@ -1569,6 +2008,8 @@ if ($manifestPath -cne [IO.Path]::GetFullPath([string]$payload.expectedManifestP
       workerId: planWorker.workerId,
       expectedHeadCommit: String(plan.provenance.headCommit).toLowerCase(),
       shardRunnerSha256: orchestrationHash(plan, ORCHESTRATION_SHARD_RUNNER),
+    }, {
+      timeoutMs: WATCH_PRODUCTION_GUEST_FINALIZER_TIMEOUT_MS,
     }), `worker ${planWorker.workerId} guest shard finalization`);
     if (String(finalized.manifestPath).toLowerCase() !== remoteManifestPath.toLowerCase()) {
       throw new Error(`worker ${planWorker.workerId} returned an unexpected manifest path`);
@@ -1582,7 +2023,9 @@ if ($manifestPath -cne [IO.Path]::GetFullPath([string]$payload.expectedManifestP
       `.incoming-${planWorker.workerId}-${process.pid}-${crypto.randomBytes(5).toString('hex')}`,
     );
     fs.mkdirSync(temporaryParent, { recursive: false });
-    await downloadTree(worker, remoteRoot, temporaryParent, { timeoutMs: 600_000 });
+    await downloadTree(worker, remoteRoot, temporaryParent, {
+      timeoutMs: WATCH_PRODUCTION_SHARD_COLLECTION_TIMEOUT_MS,
+    });
     const downloaded = fs.readdirSync(temporaryParent, { withFileTypes: true });
     if (downloaded.length !== 1 || !downloaded[0].isDirectory() || downloaded[0].isSymbolicLink()) {
       throw new Error(`worker ${planWorker.workerId} recovery did not contain exactly one shard directory`);
@@ -1710,6 +2153,8 @@ async function runProductionCoordinatorCore({
   executionId = `watch-shard-${crypto.randomUUID()}`,
   signal = null,
   now = () => new Date(),
+  coordinatorDeadlineMs,
+  deadlineNow = Date.now,
   operations = {},
 }) {
   const transitionCoordinatorState = operations.transitionCoordinatorState ?? (() => {});
@@ -1740,11 +2185,42 @@ async function runProductionCoordinatorCore({
     workerId, interactiveUser: user, vmIdentity, deviceProfileInstances,
   }));
   const productionAssignments = defaultSingleWorkerAssignments(config.workers);
-  const captureProvenance = operations.captureProvenance
+  const captureProvenanceImplementation = operations.captureProvenance
     ?? (async () => currentGitProvenance({ cwd: repoRoot }));
-  const verifyRuntimeAuthority = operations.verifyRuntimeAuthority
+  const captureProvenance = () => runBoundedCoordinatorStage(
+    captureProvenanceImplementation,
+    'production provenance capture',
+    WATCH_PRODUCTION_PROVENANCE_CAPTURE_TIMEOUT_MS,
+  );
+  const verifyRuntimeAuthorityImplementation = operations.verifyRuntimeAuthority
     ?? ((authorityPath) => verifyStrictRuntimeAuthority(authorityPath, { workspaceRoot: repoRoot }));
-  const frozenRuntime = await verifyRuntimeAuthority(runtimeAuthority);
+  const verifyRuntimeAuthority = (
+    authorityPath,
+    stage,
+    absoluteDeadlineMs = coordinatorDeadlineMs,
+  ) => (
+    operations.verifyRuntimeAuthority
+      ? runBoundedCoordinatorStageWithinDeadline({
+          operation: () => verifyRuntimeAuthorityImplementation(authorityPath),
+          label: stage,
+          deadlineMs: absoluteDeadlineMs,
+          deadlineNow,
+          maximumTimeoutMs: WATCH_PRODUCTION_RUNTIME_AUTHORITY_VERIFICATION_TIMEOUT_MS,
+        })
+      : runCoordinatorChildStage({
+          stage,
+          stageLabel: stage,
+          payload: { authorityPath, workspaceRoot: repoRoot },
+          coordinatorDeadlineMs: absoluteDeadlineMs,
+          maximumTimeoutMs: WATCH_PRODUCTION_RUNTIME_AUTHORITY_VERIFICATION_TIMEOUT_MS,
+          deadlineNow,
+          signal,
+        })
+  );
+  const frozenRuntime = await verifyRuntimeAuthority(
+    runtimeAuthority,
+    'runtime-authority-initial-verification',
+  );
   const runtimeAuthorityRoot = path.dirname(frozenRuntime.authorityPath);
   const coordinatorPublicKeyPem = fs.readFileSync(resolveAuthorityPath(
     runtimeAuthorityRoot,
@@ -1770,16 +2246,36 @@ async function runProductionCoordinatorCore({
     runtimeAuthorityDigest: frozenRuntime.authority.authorityDigest,
     releaseId: frozenRuntime.authority.releaseId,
   });
-  const buildRuntimeAuthority = operations.buildRuntimeAuthority
+  const buildRuntimeAuthorityImplementation = operations.buildRuntimeAuthority
     ?? (async () => {
-      const verified = await verifyRuntimeAuthority(frozenRuntime.authorityPath);
+      const verified = await verifyRuntimeAuthority(
+        frozenRuntime.authorityPath,
+        'runtime-authority-build-verification',
+      );
       return verified.authority.runtimeBinaryHashes;
     });
-  const captureAuthorityImplementationHashes = operations.captureAuthorityImplementationHashes
-    ?? (async () => currentAuthorityImplementationHashes({ workspaceRoot: repoRoot }));
-  const captureShardImplementationHashes = operations.captureShardImplementationHashes
-    ?? (async () => currentShardOrchestrationImplementationHashes({ workspaceRoot: repoRoot }));
-  const runProviderPreflight = operations.runProviderPreflight ?? (async ({
+  const buildRuntimeAuthority = (context) => runBoundedCoordinatorStage(
+    () => buildRuntimeAuthorityImplementation(context),
+    'production runtime build/verification seam',
+    WATCH_PRODUCTION_RUNTIME_AUTHORITY_VERIFICATION_TIMEOUT_MS,
+  );
+  const captureAuthorityImplementationHashesImplementation =
+    operations.captureAuthorityImplementationHashes
+      ?? (async () => currentAuthorityImplementationHashes({ workspaceRoot: repoRoot }));
+  const captureAuthorityImplementationHashes = () => runBoundedCoordinatorStage(
+    captureAuthorityImplementationHashesImplementation,
+    'production authority implementation inventory capture',
+    WATCH_PRODUCTION_AUTHORITY_INVENTORY_CAPTURE_TIMEOUT_MS,
+  );
+  const captureShardImplementationHashesImplementation =
+    operations.captureShardImplementationHashes
+      ?? (async () => currentShardOrchestrationImplementationHashes({ workspaceRoot: repoRoot }));
+  const captureShardImplementationHashes = () => runBoundedCoordinatorStage(
+    captureShardImplementationHashesImplementation,
+    'production shard implementation inventory capture',
+    WATCH_PRODUCTION_AUTHORITY_INVENTORY_CAPTURE_TIMEOUT_MS,
+  );
+  const runProviderPreflightImplementation = operations.runProviderPreflight ?? (async ({
     provenance,
     grant,
     grantPath,
@@ -1806,6 +2302,10 @@ async function runProductionCoordinatorCore({
       executionId,
       providerId,
       signal,
+      emitterTimeoutMs: PROVIDER_PREFLIGHT_EMITTER_TIMEOUT_MS,
+      exitGraceMs: PROVIDER_PREFLIGHT_EXIT_GRACE_MS,
+      closeGraceMs: PROVIDER_PREFLIGHT_CLOSE_GRACE_MS,
+      cleanupTimeoutMs: PROVIDER_PREFLIGHT_CLEANUP_TIMEOUT_MS,
       environment: {
         ...strictRuntimeEnvironment(process.env),
         OMNI_RELEASE_EVIDENCE_SCENARIO: 'E2E-PROVIDER-PROBE',
@@ -1827,14 +2327,27 @@ async function runProductionCoordinatorCore({
     });
     return {
       providerId,
-      operation: 'text-translation-preflight',
-      inputMode: 'text-only',
+      operation: PROVIDER_PREFLIGHT_OPERATION,
+      inputMode: PROVIDER_PREFLIGHT_INPUT_MODE,
+      providerInputMode: PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE,
+      responseMode: PROVIDER_PREFLIGHT_RESPONSE_MODE,
+      terminalEvent: PROVIDER_PREFLIGHT_TERMINAL_EVENT,
+      lifecycleBudget: structuredClone(PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET),
+      evidenceOutcome: preflight.fields.evidenceOutcome,
+      firstServerEvent: structuredClone(preflight.fields.firstServerEvent),
+      sessionAuthority: structuredClone(preflight.fields.sessionAuthority),
+      rawTrace: structuredClone(preflight.fields.rawTrace),
       providerInvocationCount: 1,
       status: 'completed',
       externalAudioSamples: 0,
       evidenceDirectory: preflight.outputDirectory,
     };
   });
+  const runProviderPreflight = (context) => runBoundedCoordinatorStage(
+    () => runProviderPreflightImplementation(context),
+    'production provider preflight',
+    deriveWatchProductionProviderPreflightBudgetMs(),
+  );
   let readinessPreparation = null;
   const runZeroProviderWorkerReadiness = async (context) => {
     const implementation = operations.runZeroProviderWorkerReadiness ?? (async ({
@@ -1843,6 +2356,7 @@ async function runProductionCoordinatorCore({
       generatedAt: readinessGeneratedAt,
       provenance,
       runtimeBinaryHashes,
+      authorityImplementationHashes,
       shardOrchestrationImplementationHashes,
       workers,
       assignments,
@@ -1857,18 +2371,13 @@ async function runProductionCoordinatorCore({
       });
       const requestPath = path.join(executionRoot, 'worker-readiness-request.json');
       atomicWriteJson(requestPath, workerReadinessRequest);
-      const readinessPlan = {
+      const readinessPlan = createProductionWorkerReadinessTransportPlan({
         executionId: readinessExecutionId,
         provenance,
-        authority: {
-          runtimeBinaryHashes: workerReadinessRequest.runtimeBinaryHashes,
-          runtimeBundleDigest: workerReadinessRequest.runtimeBundleDigest,
-          shardOrchestrationImplementationHashes,
-        },
-        workers: workerReadinessRequest.workers,
-        cells: workerReadinessRequest.assignments,
-        planDigest: workerReadinessRequest.requestDigest,
-      };
+        authorityImplementationHashes,
+        shardOrchestrationImplementationHashes,
+        workerReadinessRequest,
+      });
       const readinessTransport = createSshProductionTransport({
         config,
         plan: readinessPlan,
@@ -1899,70 +2408,89 @@ async function runProductionCoordinatorCore({
         }),
       };
     });
-    readinessPreparation = await implementation(context);
+    readinessPreparation = await runBoundedCoordinatorStage(
+      () => implementation(context),
+      'production initial worker readiness',
+      context.workers.length * deriveWatchProductionInitialWorkerReadinessBudgetMs(),
+    );
     transitionCoordinatorState('worker-ready', {
       workerCount: readinessPreparation?.workers?.length ?? 0,
       providerCalls: 0,
     });
     return readinessPreparation;
   };
-  const obtainLocalIsolationAuthority = operations.obtainLocalIsolationAuthority ?? (async ({
-    provenance,
-    runtimeBinaryHashes,
-  }) => {
-    const manifestPath = resolveLocalIsolationAuthorityPath(localIsolationAuthority, { workspaceRoot: repoRoot });
-    verifyLocalIsolationManifest({
-      manifestPath,
-      workspaceRoot: repoRoot,
+  const obtainLocalIsolationAuthorityImplementation =
+    operations.obtainLocalIsolationAuthority ?? (async ({
       provenance,
       runtimeBinaryHashes,
-      runtimeAuthorityPath: frozenRuntime.authorityPath,
-    });
-    const networkHealthPath = path.join(
-      coordinatorOutputRoot,
-      `${executionId}.provider-network-health.json`,
-    );
-    await (operations.runProviderNetworkHealth ?? runProviderNetworkHealth)({
-      executionId,
-      providerId: 'dashscope',
-      outputPath: networkHealthPath,
-    });
-    transitionCoordinatorState('worker-ready', {
-      providerCalls: 0,
-      networkHealthPath,
-      networkHealthVerified: true,
-    });
-    const relative = path.relative(repoRoot, manifestPath).split(path.sep).join('/');
-    return {
-      ...fileAuthorityEntry(manifestPath, relative),
-      manifestPath: relative,
-      providerCalls: 0,
-      runtimeAuthorityDigest: frozenRuntime.authority.authorityDigest,
-      networkHealth: fileAuthorityEntry(
+    }) => {
+      const manifestPath = resolveLocalIsolationAuthorityPath(localIsolationAuthority, { workspaceRoot: repoRoot });
+      verifyLocalIsolationManifest({
+        manifestPath,
+        workspaceRoot: repoRoot,
+        provenance,
+        runtimeBinaryHashes,
+        runtimeAuthorityPath: frozenRuntime.authorityPath,
+      });
+      const networkHealthPath = path.join(
+        coordinatorOutputRoot,
+        `${executionId}.provider-network-health.json`,
+      );
+      await (operations.runProviderNetworkHealth ?? runProviderNetworkHealth)({
+        executionId,
+        providerId: 'dashscope',
+        outputPath: networkHealthPath,
+      });
+      transitionCoordinatorState('worker-ready', {
+        providerCalls: 0,
         networkHealthPath,
-        path.relative(repoRoot, networkHealthPath).split(path.sep).join('/'),
-      ),
-    };
-  });
-  const preparation = await (operations.prepareCoordinatorExecution ?? prepareCoordinatorExecution)({
-    outputRoot: coordinatorOutputRoot,
-    executionId,
-    workers: productionWorkers,
-    assignments: productionAssignments,
-    generatedAt,
-    expiresAt: new Date(generatedAt.getTime() + 6 * 60 * 60 * 1_000),
-    captureProvenance,
-    buildRuntimeAuthority,
-    captureAuthorityImplementationHashes,
-    captureShardImplementationHashes,
-    runZeroProviderWorkerReadiness,
-    runProviderPreflight,
-    obtainLocalIsolationAuthority,
-    minimumRemainingExecutionMs: deriveWatchPostReadinessExecutionBudgetMs({
-      cellCount: productionAssignments.length,
-    }),
-    signingKeys,
-  });
+        networkHealthVerified: true,
+      });
+      const relative = path.relative(repoRoot, manifestPath).split(path.sep).join('/');
+      return {
+        ...fileAuthorityEntry(manifestPath, relative),
+        manifestPath: relative,
+        providerCalls: 0,
+        runtimeAuthorityDigest: frozenRuntime.authority.authorityDigest,
+        networkHealth: fileAuthorityEntry(
+          networkHealthPath,
+          path.relative(repoRoot, networkHealthPath).split(path.sep).join('/'),
+        ),
+      };
+    });
+  const obtainLocalIsolationAuthority = (context) => runBoundedCoordinatorStage(
+    () => obtainLocalIsolationAuthorityImplementation(context),
+    'production local isolation and network health',
+    WATCH_PRODUCTION_LOCAL_ISOLATION_VERIFICATION_TIMEOUT_MS
+      + deriveWatchProductionNetworkHealthBudgetMs(),
+  );
+  const prepareCoordinatorExecutionImplementation =
+    operations.prepareCoordinatorExecution ?? prepareCoordinatorExecution;
+  const preparation = await runBoundedCoordinatorStage(() => (
+    prepareCoordinatorExecutionImplementation({
+      outputRoot: coordinatorOutputRoot,
+      executionId,
+      workers: productionWorkers,
+      assignments: productionAssignments,
+      generatedAt,
+      expiresAt: new Date(generatedAt.getTime() + 6 * 60 * 60 * 1_000),
+      captureProvenance,
+      buildRuntimeAuthority,
+      captureAuthorityImplementationHashes,
+      captureShardImplementationHashes,
+      runZeroProviderWorkerReadiness,
+      runProviderPreflight,
+      obtainLocalIsolationAuthority,
+      minimumRemainingExecutionMs: deriveWatchPostReadinessExecutionBudgetMs({
+        cells: LIVE_LLM_CELLS,
+        workerCount: productionWorkers.length,
+      }),
+      signingKeys,
+    })
+  ), 'production pre-paid coordinator preparation',
+  deriveWatchProductionCoordinatorPreparationBudgetMs({
+    workerCount: productionWorkers.length,
+  }));
   transitionCoordinatorState('plan-published', {
     planDigest: preparation.plan.planDigest,
     providerCalls: 1,
@@ -1982,6 +2510,12 @@ async function runProductionCoordinatorCore({
         coordinatorExecutionRoot: preparation.executionRoot,
         reusePreparedWorkers: true,
       });
+  assertProductionCoordinatorWaveBudget({
+    coordinatorDeadlineMs,
+    currentTimeMs: deadlineNow(),
+    cells: preparation.plan.cells,
+    workerCount: preparation.plan.workers.length,
+  });
   transitionCoordinatorState('waves-running', { providerCalls: 1 });
   const waveOutcome = await (operations.runCoordinatorWaves ?? runCoordinatorWaves)({
     plan: preparation.plan,
@@ -2025,90 +2559,94 @@ async function runProductionCoordinatorCore({
     collectedFailureCount: failureFingerprints.length,
     failureFingerprintPath,
   });
-  const aggregation = (operations.writeCoordinatorAggregate ?? writeCoordinatorAggregate)({
-    outputRoot: preparation.executionRoot,
+  const finalStagingPayload = {
+    evidenceOutputRoot,
     executionRoot: preparation.executionRoot,
     plan: preparation.plan,
     leases: preparation.leases,
     shards,
-    generatedAt: now(),
-  });
-  const staged = (operations.stageShardMatrixIntegration ?? stageShardMatrixIntegration)({
-    evidenceRoot: evidenceOutputRoot,
-    executionRootName: `shards-${preparation.plan.executionId}`,
     planPath: preparation.planPath,
     leasePaths: preparation.leasePaths,
-    coordinatorAggregatePath: aggregation.aggregatePath,
-    shards,
-    collectedMatrixIntegration: aggregation.matrixIntegration,
-  });
-  const stagedFailureFingerprintPath = path.join(staged.finalExecutionRoot, 'failure-fingerprints.json');
-  fs.copyFileSync(failureFingerprintPath, stagedFailureFingerprintPath, fs.constants.COPYFILE_EXCL);
-  const failureFingerprintAuthority = fileAuthorityEntry(
-    stagedFailureFingerprintPath,
-    relativeChildPath(evidenceOutputRoot, stagedFailureFingerprintPath, 'staged failure fingerprints'),
-  );
-  const assertBudget = operations.assertCellExternalProviderBudget ?? assertCellExternalProviderBudget;
-  const rawBudgets = staged.runDirectories.map((runDirectory, index) => assertBudget(
-    runDirectory,
-    {
-      cellId: LIVE_LLM_CELLS[index].cellId,
-      modelId: LIVE_LLM_CELLS[index].modelId,
-      feedbackLoopPrevention: LIVE_LLM_CELLS[index].feedbackLoopPrevention,
-      inputCeilingSamples: LIVE_LLM_CELLS[index].maxExternalAudioSamples,
-    },
-  ));
-  const matrixBudget = (operations.writeMatrixExternalProviderBudget ?? writeMatrixExternalProviderBudget)(evidenceOutputRoot, rawBudgets, {
-    fileName: `watch-mode-external-provider-budget-${preparation.plan.executionId}.json`,
-  });
-  const budgetAuthority = fileAuthorityEntry(matrixBudget.filePath, path.basename(matrixBudget.filePath));
-  const externalProviderBudget = {
-    ...matrixBudget.ledger,
-    ledgerPath: budgetAuthority.path,
-    ledgerBytes: budgetAuthority.bytes,
-    ledgerSha256: budgetAuthority.sha256,
-  };
-  const deviceProfiles = productionDeviceProfiles(preparation.plan);
-  const manifestResult = (operations.writeMatrixRunManifest ?? writeMatrixRunManifest)({
-    outputRoot: evidenceOutputRoot,
-    modelList: DEFAULT_MODELS,
-    feedbackModeList: DEFAULT_FEEDBACK_MODES,
-    deviceProfiles,
-    runDirectories: staged.runDirectories,
-    strict: true,
-    now: now(),
-    provenance: preparation.plan.provenance,
-    authorityRuntimeBinaryHashes: preparation.plan.authority.runtimeBinaryHashes,
-    releaseCells: LIVE_LLM_CELLS,
-    localIsolationAuthority: preparation.plan.localIsolationAuthority,
-    externalProviderBudget,
+    failureFingerprintPath,
     failureSummary,
-    failureFingerprintAuthority,
-    shardExecution: staged.shardExecution,
-    matrixIntegration: staged.matrixIntegration,
-  });
-  const runtimeBeforeVerifier = await verifyRuntimeAuthority(frozenRuntime.authorityPath);
+    generatedAt: now().toISOString(),
+  };
+  // Staging, both runtime-authority checks, the strict verifier, and
+  // publication are one serial post-final phase. Their outer budget reserves
+  // 2 x authority verification plus one shared evidence envelope; no child is
+  // allowed to restart that allowance after an earlier stage consumed it.
+  const postFinalDeadlineMs = Math.min(
+    coordinatorDeadlineMs,
+    deadlineNow() + deriveWatchProductionFinalEvidenceBudgetMs(),
+  );
+  const finalStagingOverrides = [
+    operations.writeCoordinatorAggregate,
+    operations.stageShardMatrixIntegration,
+    operations.assertCellExternalProviderBudget,
+    operations.writeMatrixExternalProviderBudget,
+    operations.writeMatrixRunManifest,
+  ].some((candidate) => typeof candidate === 'function');
+  const {
+    staged,
+    externalProviderBudget,
+    manifestResult,
+  } = finalStagingOverrides
+    ? await runBoundedCoordinatorStageWithinDeadline({
+        operation: () => performFinalEvidenceStaging(finalStagingPayload, operations),
+        label: 'final-evidence-staging',
+        deadlineMs: postFinalDeadlineMs,
+        deadlineNow,
+        maximumTimeoutMs: WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
+      })
+    : await runCoordinatorChildStage({
+        stage: 'final-evidence-staging',
+        stageLabel: 'final-evidence-staging',
+        payload: finalStagingPayload,
+        coordinatorDeadlineMs: postFinalDeadlineMs,
+        maximumTimeoutMs: WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
+        deadlineNow,
+        signal,
+      });
+  const runtimeBeforeVerifier = await verifyRuntimeAuthority(
+    frozenRuntime.authorityPath,
+    'runtime-authority-before-verifier',
+    postFinalDeadlineMs,
+  );
   if (runtimeBeforeVerifier.authority.authorityDigest !== frozenRuntime.authority.authorityDigest) {
     throw new Error('runtime authority changed before strict evidence verification');
   }
+  const remainingVerifierDeadlineMs = Math.ceil(postFinalDeadlineMs - deadlineNow());
+  if (remainingVerifierDeadlineMs <= 0) {
+    throw new Error('strict-evidence-verifier shared post-final evidence deadline expired before child launch');
+  }
   const verifyResult = operations.runVerifier
-    ? await operations.runVerifier({ manifestPath: manifestResult.manifestPath, evidenceOutputRoot })
-    : spawnSync(
-        process.execPath,
-        buildVerifyArgv(
+    ? await runBoundedCoordinatorStageWithinDeadline({
+        operation: () => operations.runVerifier({
+          manifestPath: manifestResult.manifestPath,
           evidenceOutputRoot,
-          DEFAULT_MODELS,
-          DEFAULT_FEEDBACK_MODES,
-          SUPPORTED_DEVICE_CLASSES,
-          manifestResult.manifestPath,
-          { strict: true },
+        }),
+        label: 'strict-evidence-verifier',
+        deadlineMs: postFinalDeadlineMs,
+        deadlineNow,
+        maximumTimeoutMs: WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
+      })
+    : await runProductionEvidenceVerifier({
+        evidenceOutputRoot,
+        manifestPath: manifestResult.manifestPath,
+        timeoutMs: Math.min(
+          WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
+          remainingVerifierDeadlineMs,
         ),
-        { cwd: repoRoot, stdio: 'inherit', windowsHide: true },
-      );
+        signal,
+      });
   if (Number(verifyResult?.status ?? verifyResult?.exitCode ?? 1) !== 0) {
     throw new Error('production sharded strict evidence verification failed; canonical manifest was not published');
   }
-  const runtimeAfterVerifier = await verifyRuntimeAuthority(frozenRuntime.authorityPath);
+  const runtimeAfterVerifier = await verifyRuntimeAuthority(
+    frozenRuntime.authorityPath,
+    'runtime-authority-after-verifier',
+    postFinalDeadlineMs,
+  );
   if (runtimeAfterVerifier.authority.authorityDigest !== frozenRuntime.authority.authorityDigest) {
     throw new Error('runtime authority changed during strict evidence verification');
   }
@@ -2116,13 +2654,30 @@ async function runProductionCoordinatorCore({
     manifestPath: manifestResult.manifestPath,
     completedCellIds: waveOutcome.completedCellIds,
   });
-  const published = (operations.publishSuccessfulStrictMatrixManifest ?? publishSuccessfulStrictMatrixManifest)({
-    outputRoot: evidenceOutputRoot,
+  const publicationPayload = {
+    evidenceOutputRoot,
     manifestPath: manifestResult.manifestPath,
-    verifiedAt: now(),
+    verifiedAt: now().toISOString(),
     currentProvenance: preparation.plan.provenance,
     currentRuntimeBinaryHashes: preparation.plan.authority.runtimeBinaryHashes,
-  });
+  };
+  const published = operations.publishSuccessfulStrictMatrixManifest
+    ? await runBoundedCoordinatorStageWithinDeadline({
+        operation: () => performCanonicalManifestPublication(publicationPayload, operations),
+        label: 'canonical-manifest-publication',
+        deadlineMs: postFinalDeadlineMs,
+        deadlineNow,
+        maximumTimeoutMs: WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
+      })
+    : await runCoordinatorChildStage({
+        stage: 'canonical-manifest-publication',
+        stageLabel: 'canonical-manifest-publication',
+        payload: publicationPayload,
+        coordinatorDeadlineMs: postFinalDeadlineMs,
+        maximumTimeoutMs: WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
+        deadlineNow,
+        signal,
+      });
   transitionCoordinatorState('published', {
     manifestPath: published.canonicalPath,
     completedCellIds: waveOutcome.completedCellIds,
@@ -2142,6 +2697,8 @@ async function runProductionCoordinatorCore({
 }
 
 export async function runProductionCoordinator(options) {
+  const deadlineNow = options.deadlineNow ?? Date.now;
+  const coordinatorStartedAtMs = deadlineNow();
   const executionId = options.executionId ?? `watch-shard-${crypto.randomUUID()}`;
   const outputRoot = path.resolve(
     options.coordinatorOutputRoot ?? path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-live-coordinator'),
@@ -2173,12 +2730,15 @@ export async function runProductionCoordinator(options) {
   if (options.signal?.aborted) forwardAbort();
   else options.signal?.addEventListener('abort', forwardAbort, { once: true });
   const coordinatorTimeoutMs = options.coordinatorTimeoutMs ?? PRODUCTION_COORDINATOR_TIMEOUT_MS;
+  const coordinatorDeadlineMs = coordinatorStartedAtMs + coordinatorTimeoutMs;
   let timeoutId;
   try {
     const core = runProductionCoordinatorCore({
       ...options,
       executionId,
       signal: coordinatorController.signal,
+      coordinatorDeadlineMs,
+      deadlineNow,
       operations: { ...options.operations, transitionCoordinatorState: transition },
     });
     const timeout = new Promise((_, reject) => {
@@ -2186,7 +2746,7 @@ export async function runProductionCoordinator(options) {
         const error = new Error(`production coordinator timed out after ${coordinatorTimeoutMs}ms`);
         coordinatorController.abort(error);
         reject(error);
-      }, coordinatorTimeoutMs);
+      }, Math.max(0, coordinatorDeadlineMs - deadlineNow()));
       timeoutId.unref?.();
     });
     return await Promise.race([core, timeout]);
@@ -2238,34 +2798,67 @@ export function parseProductionCoordinatorCliArgs(argv) {
   });
 }
 
+async function readCoordinatorChildRequest() {
+  const chunks = [];
+  let bytes = 0;
+  for await (const chunk of process.stdin) {
+    const buffer = Buffer.from(chunk);
+    bytes += buffer.length;
+    if (bytes > 64 * 1024 * 1024) {
+      throw new Error('internal coordinator child request exceeds 64 MiB');
+    }
+    chunks.push(buffer);
+  }
+  const request = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  if (request?.schemaVersion !== 1 || !String(request?.stage ?? '').trim()) {
+    throw new Error('internal coordinator child request is malformed');
+  }
+  return request;
+}
+
 if (isMain(import.meta.url)) {
-  const controller = new AbortController();
-  const abort = (eventName) => controller.abort(new Error(`coordinator interrupted by ${eventName}`));
-  const onSigint = () => abort('SIGINT');
-  const onSigterm = () => abort('SIGTERM');
-  process.once('SIGINT', onSigint);
-  process.once('SIGTERM', onSigterm);
-  try {
-    const options = parseProductionCoordinatorCliArgs(process.argv.slice(2));
-    if (!options.workersConfig) throw new Error('--workers-config is required');
-    if (!options.runtimeAuthority) throw new Error('--runtime-authority is required');
-    if (!options.localIsolationAuthority) throw new Error('--local-isolation-authority is required');
-    if (options.executionId && !SAFE_ID.test(options.executionId)) throw new Error('--execution-id is not portable');
-    const result = await runProductionCoordinator({
-      workerConfig: path.resolve(repoRoot, options.workersConfig),
-      runtimeAuthority: path.resolve(repoRoot, options.runtimeAuthority),
-      localIsolationAuthority: options.localIsolationAuthority,
-      coordinatorOutputRoot: path.resolve(repoRoot, options.coordinatorOutputRoot),
-      evidenceOutputRoot: path.resolve(repoRoot, options.evidenceOutputRoot),
-      ...(options.executionId ? { executionId: options.executionId } : {}),
-      signal: controller.signal,
-    });
-    console.log(result.canonicalRunManifest);
-  } catch (error) {
-    console.error(error.message);
-    process.exitCode = 1;
-  } finally {
-    process.removeListener('SIGINT', onSigint);
-    process.removeListener('SIGTERM', onSigterm);
+  if (process.argv[2] === COORDINATOR_CHILD_STAGE_FLAG) {
+    const requestedStage = process.argv[3];
+    try {
+      const request = await readCoordinatorChildRequest();
+      if (request.stage !== requestedStage) {
+        throw new Error('internal coordinator child stage argument does not match its request');
+      }
+      const result = await executeCoordinatorChildStage(request.stage, request.payload ?? {});
+      process.stdout.write(`${COORDINATOR_CHILD_RESULT_PREFIX}${JSON.stringify(result)}\n`);
+    } catch (error) {
+      console.error(`${requestedStage ?? 'unknown-stage'}: ${error.message}`);
+      process.exitCode = 1;
+    }
+  } else {
+    const controller = new AbortController();
+    const abort = (eventName) => controller.abort(new Error(`coordinator interrupted by ${eventName}`));
+    const onSigint = () => abort('SIGINT');
+    const onSigterm = () => abort('SIGTERM');
+    process.once('SIGINT', onSigint);
+    process.once('SIGTERM', onSigterm);
+    try {
+      const options = parseProductionCoordinatorCliArgs(process.argv.slice(2));
+      if (!options.workersConfig) throw new Error('--workers-config is required');
+      if (!options.runtimeAuthority) throw new Error('--runtime-authority is required');
+      if (!options.localIsolationAuthority) throw new Error('--local-isolation-authority is required');
+      if (options.executionId && !SAFE_ID.test(options.executionId)) throw new Error('--execution-id is not portable');
+      const result = await runProductionCoordinator({
+        workerConfig: path.resolve(repoRoot, options.workersConfig),
+        runtimeAuthority: path.resolve(repoRoot, options.runtimeAuthority),
+        localIsolationAuthority: options.localIsolationAuthority,
+        coordinatorOutputRoot: path.resolve(repoRoot, options.coordinatorOutputRoot),
+        evidenceOutputRoot: path.resolve(repoRoot, options.evidenceOutputRoot),
+        ...(options.executionId ? { executionId: options.executionId } : {}),
+        signal: controller.signal,
+      });
+      console.log(result.canonicalRunManifest);
+    } catch (error) {
+      console.error(error.message);
+      process.exitCode = 1;
+    } finally {
+      process.removeListener('SIGINT', onSigint);
+      process.removeListener('SIGTERM', onSigterm);
+    }
   }
 }

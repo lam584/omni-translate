@@ -260,6 +260,7 @@ mod tests {
         store
             .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
             .expect("strict lifecycle begins");
+        store.record_strict_watch_test_session_updated().unwrap();
         store
             .record_strict_watch_renderer_cue_submitted("submitted-cue", "response-submitted")
             .expect("renderer cue submission records");
@@ -286,6 +287,7 @@ mod tests {
         store
             .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
             .expect("strict lifecycle begins");
+        store.record_strict_watch_test_session_updated().unwrap();
         store
             .record_strict_watch_provider_append(480)
             .expect("provider append records");

@@ -1,5 +1,70 @@
 use super::*;
 
+fn livetranslate_protocol_identity() -> ModelProtocolProfileIdentityRuntime {
+    ModelProtocolProfileIdentityRuntime {
+        registry_version: "bailian-model-protocol-registry/v1".to_string(),
+        profile_id: "bailian.livetranslate.realtime.ws".to_string(),
+        profile_version: 1,
+        operation: "native_translate".to_string(),
+        transport: "websocket".to_string(),
+        region: "cn-beijing".to_string(),
+        endpoint_family: "dashscope-realtime-v1".to_string(),
+        endpoint_path: "/api-ws/v1/realtime".to_string(),
+        wire_dialect: "bailian-livetranslate-session-ws-v1".to_string(),
+        wire_dialect_version: 1,
+        input_framing: "json-base64".to_string(),
+        output_framing: "json-base64".to_string(),
+        terminal_lifecycle: "session.finish->session.finished".to_string(),
+        adapter_id: "desktop-livetranslate-session-v1".to_string(),
+        exact_model_id: "qwen3.5-livetranslate-flash-realtime".to_string(),
+    }
+}
+
+#[test]
+fn raw_watch_report_seals_exact_desktop_protocol_identity() {
+    let store = WatchSessionReportStore::new();
+    store.begin_or_reuse(
+        "provider-dashscope",
+        "qwen3.5-livetranslate-flash-realtime",
+    );
+    let identity = livetranslate_protocol_identity();
+    store
+        .bind_model_protocol_profile_identity(identity.clone())
+        .expect("first Desktop authority binding must succeed");
+
+    let report = store.snapshot().expect("active report");
+    assert_eq!(report.model_protocol_profile_identity, Some(identity));
+    let serialized = serde_json::to_value(&report).expect("report serializes");
+    let serialized_identity = serialized["modelProtocolProfileIdentity"]
+        .as_object()
+        .expect("raw report identity object");
+    assert_eq!(serialized_identity.len(), 15);
+    assert_eq!(
+        serialized_identity["terminalLifecycle"],
+        "session.finish->session.finished"
+    );
+}
+
+#[test]
+fn watch_report_rejects_protocol_identity_change_within_session() {
+    let store = WatchSessionReportStore::new();
+    store.begin_or_reuse(
+        "provider-dashscope",
+        "qwen3.5-livetranslate-flash-realtime",
+    );
+    let identity = livetranslate_protocol_identity();
+    store
+        .bind_model_protocol_profile_identity(identity.clone())
+        .expect("first identity binds");
+    let mut tampered = identity;
+    tampered.wire_dialect = "bailian-omni-realtime-ws-v1".to_string();
+
+    let error = store
+        .bind_model_protocol_profile_identity(tampered)
+        .expect_err("one Watch session cannot change protocol identity");
+    assert!(error.contains("model_protocol.authorization_identity_mismatch"));
+}
+
 #[test]
 fn terminal_translation_error_is_reported_without_claiming_final_ownership() {
     let store = WatchSessionReportStore::new();

@@ -1,6 +1,8 @@
 use reqwest::blocking::Response;
 use serde_json::Value;
 
+use crate::provider::model_protocol_profile::lookup_model_protocol_profiles_for_inspection;
+
 use super::super::contracts::{
     ProviderDraftInput, ProviderModelCatalogRuntime, ProviderModelRuntime, ProviderRuntimeError,
 };
@@ -53,7 +55,7 @@ fn parse_response(
         });
     }
     let value: Value = response.json().map_err(transport::normalize_transport_error)?;
-    parse_model_catalog_response(&value)
+    parse_model_catalog_response(&provider.kind, &value)
 }
 
 fn failed_catalog(
@@ -118,6 +120,7 @@ pub(super) fn normalize_dashscope_compatible_base_url(base_url: &str) -> String 
 }
 
 pub(super) fn parse_model_catalog_response(
+    provider_kind: &str,
     value: &Value,
 ) -> Result<Vec<ProviderModelRuntime>, ProviderRuntimeError> {
     let entries = value
@@ -149,7 +152,7 @@ pub(super) fn parse_model_catalog_response(
                     .and_then(Value::as_str)
                     .map(ToString::to_string),
                 created_at: entry.get("created").and_then(Value::as_u64),
-                capabilities: derive_model_capabilities(id),
+                capabilities: derive_catalog_model_capabilities(provider_kind, id),
             })
         })
         .collect::<Vec<_>>();
@@ -162,6 +165,37 @@ pub(super) fn parse_model_catalog_response(
     }
 
     Ok(models)
+}
+
+fn derive_catalog_model_capabilities(provider_kind: &str, model_id: &str) -> Vec<String> {
+    if provider_kind == "dashscope" {
+        return derive_bailian_profile_capabilities(model_id);
+    }
+
+    derive_model_capabilities(model_id)
+}
+
+fn derive_bailian_profile_capabilities(model_id: &str) -> Vec<String> {
+    let Ok(profiles) = lookup_model_protocol_profiles_for_inspection(model_id) else {
+        return Vec::new();
+    };
+    let mut capabilities = Vec::new();
+
+    for operation in profiles
+        .iter()
+        .flat_map(|profile| profile.operations.iter())
+    {
+        match operation.as_str() {
+            "asr" => push_capability(&mut capabilities, "speech-to-text"),
+            "tts" => push_capability(&mut capabilities, "text-to-speech"),
+            "native_translate" | "dialogue" => {
+                push_capability(&mut capabilities, "speech-to-speech");
+            }
+            _ => {}
+        }
+    }
+
+    capabilities
 }
 
 pub(crate) fn derive_model_capabilities(model_id: &str) -> Vec<String> {
@@ -253,4 +287,71 @@ fn is_text_generation_model_name(normalized: &str) -> bool {
         || normalized.contains("local")
         || normalized.contains("ollama")
         || normalized.contains("lmstudio")
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::parse_model_catalog_response;
+
+    fn dashscope_capabilities(model_id: &str) -> Vec<String> {
+        let catalog = parse_model_catalog_response(
+            "dashscope",
+            &json!({ "data": [{ "id": model_id }] }),
+        )
+        .expect("catalog fixture should parse");
+        catalog[0].capabilities.clone()
+    }
+
+    #[test]
+    fn dashscope_asr_profile_does_not_inherit_tts_or_s2s_from_its_name() {
+        assert_eq!(
+            dashscope_capabilities("qwen3-asr-flash-realtime"),
+            vec!["speech-to-text"]
+        );
+        assert_eq!(
+            dashscope_capabilities("qwen-audio-3.0-asr-flash-streaming"),
+            vec!["speech-to-text"]
+        );
+    }
+
+    #[test]
+    fn dashscope_tts_profile_does_not_inherit_stt_or_s2s_from_realtime() {
+        assert_eq!(
+            dashscope_capabilities("qwen3-tts-flash-realtime"),
+            vec!["text-to-speech"]
+        );
+    }
+
+    #[test]
+    fn unknown_dashscope_audio_realtime_model_has_no_guessed_capabilities() {
+        assert!(dashscope_capabilities("unknown-audio-realtime-model").is_empty());
+    }
+
+    #[test]
+    fn dashscope_native_translate_and_dialogue_profiles_map_only_to_s2s() {
+        assert_eq!(
+            dashscope_capabilities("qwen3.5-livetranslate-flash-realtime"),
+            vec!["speech-to-speech"]
+        );
+        assert_eq!(
+            dashscope_capabilities("qwen-audio-3.0-realtime-plus"),
+            vec!["speech-to-speech"]
+        );
+    }
+
+    #[test]
+    fn non_dashscope_catalog_keeps_name_based_capability_inference() {
+        let catalog = parse_model_catalog_response(
+            "openai-compatible",
+            &json!({ "data": [{ "id": "openai/gpt-audio" }] }),
+        )
+        .expect("catalog fixture should parse");
+
+        assert_eq!(
+            catalog[0].capabilities,
+            vec!["text-to-speech", "speech-to-speech"]
+        );
+    }
 }

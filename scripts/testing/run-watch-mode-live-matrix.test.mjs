@@ -206,9 +206,17 @@ test('explicit non-strict diagnostic runner keeps its legacy duration options an
 });
 
 test('matrix emits one finite run request and PowerShell accepts only its path', () => {
-  const request = buildRunnerRequest({ model: SAMPLE_MODEL, feedbackMode: SAMPLE_FEEDBACK_MODE });
+  const request = buildRunnerRequest({
+    model: SAMPLE_MODEL,
+    feedbackMode: SAMPLE_FEEDBACK_MODE,
+    modelProtocolProfileIdentity: LIVE_LLM_CELLS[0].modelProtocolProfileIdentity,
+  });
   assert.equal(request.schemaVersion, 'watch-mode-run-request/v1');
   assert.equal(request.model.id, SAMPLE_MODEL);
+  assert.deepEqual(
+    request.model.protocolProfileIdentity,
+    LIVE_LLM_CELLS[0].modelProtocolProfileIdentity,
+  );
   assert.equal(request.feedbackMode, SAMPLE_FEEDBACK_MODE);
   assert.equal(request.desktop.launchMode, 'managed');
   const runnerSource = fs.readFileSync(
@@ -594,7 +602,7 @@ test('matrix manifest contains only the current invocation run directories', () 
   });
   assert.equal(fs.existsSync(manifestPath), true);
   assert.deepEqual(manifest.runDirectories, currentRuns.map((directory) => path.basename(directory)));
-  assert.equal(manifest.schemaVersion, 5);
+  assert.equal(manifest.schemaVersion, 6);
   assert.equal(manifest.cells.length, 1);
   assert.equal(manifest.strict, true);
   assert.equal(manifest.evidenceMode, 'live');
@@ -811,7 +819,7 @@ test('shard staging copies one local root and emits only evidence-root-relative 
   });
   const consumptionClaimPath = path.join(coordinatorRoot, 'provider-preflight-consumption-claim.json');
   const consumptionClaim = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     artifactKind: 'watch-mode-provider-preflight-consumption-claim',
     executionId: plan.executionId,
     grantDigest: grant.digest,
@@ -830,15 +838,28 @@ test('shard staging copies one local root and emits only evidence-root-relative 
     ...consumptionClaim,
     ...fileAuthorityEntry(consumptionClaimPath, 'provider-preflight-consumption-claim.json'),
   };
+  const lifecycleEvidence = {
+    evidenceOutcome: 'livetranslate-session-finished',
+    firstServerEvent: { type: 'session.created', monotonicMs: 606 },
+    sessionAuthority: {
+      sessionIdentitySha256: '8'.repeat(64),
+      serverModel: 'qwen3.5-livetranslate-flash-realtime',
+      echoedSessionConfigSha256: '9'.repeat(64),
+    },
+    rawTrace: {
+      path: 'raw/provider-websocket-trace.jsonl',
+      bytes: 256,
+      sha256: 'a'.repeat(64),
+      eventCount: 6,
+    },
+  };
   fs.writeFileSync(preflightReceiptPath, JSON.stringify({
     evidenceAuthority: fileAuthorityEntry(preflightInventoryPath, 'provider-preflight-evidence/inventory.json'),
     rawEvidenceRoot: 'provider-preflight-evidence/raw',
     generatedAt: '2026-08-10T00:00:03.000Z',
     ...authorization,
     consumptionClaim: consumptionClaimAuthority,
-    tokenBudget: authorization.tokenBudget,
-    inputTokens: 64,
-    outputTokens: 12,
+    ...lifecycleEvidence,
     audioSeconds: null,
     status: 'completed',
   }), 'utf8');
@@ -847,9 +868,7 @@ test('shard staging copies one local root and emits only evidence-root-relative 
     generatedAt: '2026-08-10T00:00:03.000Z',
     ...authorization,
     consumptionClaim: consumptionClaimAuthority,
-    tokenBudget: authorization.tokenBudget,
-    inputTokens: 64,
-    outputTokens: 12,
+    ...lifecycleEvidence,
     audioSeconds: null,
     status: 'completed',
   };
@@ -871,7 +890,14 @@ test('shard staging copies one local root and emits only evidence-root-relative 
     grantDigest: grant.digest,
     leaseReservationDigests: reservations.map((reservation) => reservation.digest),
     authorizationDigest: authorization.authorizationDigest,
-    tokenBudget: authorization.tokenBudget,
+    inputMode: authorization.inputMode,
+    providerInputMode: authorization.providerInputMode,
+    responseMode: authorization.responseMode,
+    terminalEvent: authorization.terminalEvent,
+    lifecycleBudget: authorization.lifecycleBudget,
+    modelProtocolProfileIdentity: structuredClone(
+      authorization.modelProtocolProfileIdentity,
+    ),
     consumptionClaim: consumptionClaimAuthority,
   };
   plan.providerPreflightCompletion = {
@@ -879,9 +905,15 @@ test('shard staging copies one local root and emits only evidence-root-relative 
     digest: completion.digest,
     grantDigest: grant.digest,
     authorizationDigest: authorization.authorizationDigest,
-    tokenBudget: authorization.tokenBudget,
-    inputTokens: 64,
-    outputTokens: 12,
+    inputMode: authorization.inputMode,
+    providerInputMode: authorization.providerInputMode,
+    responseMode: authorization.responseMode,
+    terminalEvent: authorization.terminalEvent,
+    lifecycleBudget: authorization.lifecycleBudget,
+    modelProtocolProfileIdentity: structuredClone(
+      authorization.modelProtocolProfileIdentity,
+    ),
+    ...lifecycleEvidence,
     audioSeconds: null,
     consumptionClaim: consumptionClaimAuthority,
   };
@@ -1096,8 +1128,16 @@ test('strict provider preflight accepts only a completed production emitter', ()
       summary: {
         providerId: 'provider-dashscope',
         model: SAMPLE_MODEL,
-        operation: 'text-translation-preflight',
-        inputMode: 'text-only',
+        operation: 'livetranslate-session-lifecycle-preflight',
+        inputMode: 'none',
+        providerInputMode: 'none',
+        responseMode: 'text-only',
+        terminalEvent: 'session.finished',
+        lifecycleBudget: {
+          firstServerEventLatencyMs: 1_200,
+          socketEventTimeoutMs: 12_000,
+        },
+        evidenceOutcome: 'livetranslate-session-finished',
         externalAudioSamples: 0,
         providerInvocationCount: 1,
       },

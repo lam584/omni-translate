@@ -426,6 +426,9 @@ export const buildRunnerRequest = (options) => {
     model: {
       id: options.model,
       protocol: options.watchRealtimeProtocol || '',
+      ...(options.modelProtocolProfileIdentity ? {
+        protocolProfileIdentity: structuredClone(options.modelProtocolProfileIdentity),
+      } : {}),
       subtitleTranslationMode: options.subtitleTranslationMode ?? 'native',
       subtitleModelId: options.subtitleTranslationModelId ?? null,
       secondaryAudioModelId: options.inboundSecondaryAudioModelId ?? null,
@@ -965,6 +968,9 @@ export function stageShardMatrixIntegration({
         cellId: entry.cellId,
         leaseId: entry.leaseId,
         digest: entry.digest,
+        modelProtocolProfileIdentity: structuredClone(
+          entry.modelProtocolProfileIdentity,
+        ),
         ...fileAuthorityEntry(
           reservationPath,
           relativeChildPath(resolvedEvidenceRoot, reservationPath, 'staged provider preflight reservation'),
@@ -979,9 +985,18 @@ export function stageShardMatrixIntegration({
       digest: plan.providerPreflightCompletion.digest,
       grantDigest: plan.providerPreflightCompletion.grantDigest,
       authorizationDigest: plan.providerPreflightCompletion.authorizationDigest,
-      tokenBudget: structuredClone(plan.providerPreflightCompletion.tokenBudget),
-      inputTokens: plan.providerPreflightCompletion.inputTokens,
-      outputTokens: plan.providerPreflightCompletion.outputTokens,
+      inputMode: plan.providerPreflightCompletion.inputMode,
+      providerInputMode: plan.providerPreflightCompletion.providerInputMode,
+      responseMode: plan.providerPreflightCompletion.responseMode,
+      terminalEvent: plan.providerPreflightCompletion.terminalEvent,
+      lifecycleBudget: structuredClone(plan.providerPreflightCompletion.lifecycleBudget),
+      modelProtocolProfileIdentity: structuredClone(
+        plan.providerPreflightCompletion.modelProtocolProfileIdentity,
+      ),
+      evidenceOutcome: plan.providerPreflightCompletion.evidenceOutcome,
+      firstServerEvent: structuredClone(plan.providerPreflightCompletion.firstServerEvent),
+      sessionAuthority: structuredClone(plan.providerPreflightCompletion.sessionAuthority),
+      rawTrace: structuredClone(plan.providerPreflightCompletion.rawTrace),
       audioSeconds: plan.providerPreflightCompletion.audioSeconds,
       consumptionClaim: {
         ...plan.providerPreflightAuthorization.consumptionClaim,
@@ -1181,6 +1196,9 @@ export const writeMatrixRunManifest = ({
               auxiliaryExternalAudioSeconds: plannedCell.auxiliaryExternalAudioSeconds,
               subtitleTranslationMode: plannedCell.subtitleTranslationMode,
               modelId: plannedCell.modelId,
+              modelProtocolProfileIdentity: structuredClone(
+                plannedCell.modelProtocolProfileIdentity,
+              ),
               feedbackLoopPrevention: plannedCell.feedbackLoopPrevention,
               deviceClass: deviceProfile.deviceClass,
               deviceProfileId: deviceProfile.profileId,
@@ -1636,6 +1654,7 @@ export const runMatrix = async (options) => {
           model,
           feedbackMode,
           watchRealtimeProtocol,
+          modelProtocolProfileIdentity: plannedCell.modelProtocolProfileIdentity,
           physicalPlaybackDeviceClass: deviceProfile.deviceClass,
           physicalPlaybackDeviceProfileId: deviceProfile.profileId,
           watchAutoStopAfterSeconds: plannedCell.inputCompletionWatchdogSeconds,
@@ -1657,6 +1676,9 @@ export const runMatrix = async (options) => {
             ? {
                 ...liveRunnerEnvironment,
                 OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID: crypto.randomUUID(),
+                OMNI_WATCH_MODE_MODEL_PROTOCOL_PROFILE_IDENTITY: JSON.stringify(
+                  plannedCell.modelProtocolProfileIdentity,
+                ),
               }
             : liveRunnerEnvironment,
         );
@@ -1678,6 +1700,7 @@ export const runMatrix = async (options) => {
             modelId: model,
             feedbackLoopPrevention: feedbackMode,
             inputCeilingSamples: plannedCell.maxExternalAudioSamples,
+            modelProtocolProfileIdentity: plannedCell.modelProtocolProfileIdentity,
           });
           cellExternalProviderBudgets.push(budget);
           assertStrictLiveReportPassed(resolvedRunDirectory);

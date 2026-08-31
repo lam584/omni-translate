@@ -31,9 +31,9 @@ export function buildDefaultSceneModelAssignments(template: ProviderTemplate): P
 
   if (template.id === 'template-dashscope-realtime') {
     return [
-      { scenario: 'watch', modelIds: ['qwen3.5-omni-plus-realtime'] },
-      { scenario: 'game', modelIds: ['qwen3.5-omni-plus-realtime'] },
-      { scenario: 'voice-room', modelIds: ['qwen3.5-omni-plus-realtime'] },
+      { scenario: 'watch', modelIds: ['qwen3.5-livetranslate-flash-realtime'] },
+      { scenario: 'game', modelIds: ['qwen3.5-livetranslate-flash-realtime'] },
+      { scenario: 'voice-room', modelIds: ['qwen3.5-livetranslate-flash-realtime'] },
       { scenario: 'subtitle-translate', modelIds: ['qwen3.6-flash'] },
     ];
   }
@@ -106,7 +106,6 @@ export function buildProviderDraftPatchFromTemplate(
     providerId: template.defaultDraft.providerId,
     displayName: template.defaultDraft.displayName,
     kind: template.defaultDraft.kind,
-    templateRealtimeProtocol: template.realtimeProtocol,
     model: template.defaultDraft.model,
     baseUrl: template.defaultDraft.baseUrl,
     transport: template.defaultDraft.transport,

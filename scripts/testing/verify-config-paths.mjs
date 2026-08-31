@@ -51,10 +51,12 @@ const WIRE_PARSER_FILES = [
 // match; a config-domain path never collides because config classification
 // (resolution in the default document) runs first.
 const WIRE_PREFIXES = [
-  '/choices', '/code', '/data', '/delta', '/error', '/event', '/goAway',
+  '/authorization', '/choices', '/code', '/data', '/delta', '/detail', '/error', '/event', '/goAway',
+  '/id', '/input_audio_format', '/input_audio_transcription',
   '/input_tokens', '/message', '/models', '/output', '/output_tokens',
-  '/response', '/serverContent', '/session', '/setup', '/text', '/transcript',
-  '/type', '/usage', '/artifactKind',
+  '/model', '/modalities', '/response', '/sample_rate', '/serverContent',
+  '/session', '/setup', '/text', '/transcript', '/translation', '/type',
+  '/usage', '/artifactKind',
 ];
 
 // Reads of config sections the schema does not have: they always fall through

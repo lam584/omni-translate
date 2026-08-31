@@ -336,6 +336,53 @@ pub(crate) struct WatchSessionReportSummaryRuntime {
     pub slowest_cue_id: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ModelProtocolProfileIdentityRuntime {
+    pub registry_version: String,
+    pub profile_id: String,
+    pub profile_version: u32,
+    pub operation: String,
+    pub transport: String,
+    pub region: String,
+    pub endpoint_family: String,
+    pub endpoint_path: String,
+    pub wire_dialect: String,
+    pub wire_dialect_version: u32,
+    pub input_framing: String,
+    pub output_framing: String,
+    pub terminal_lifecycle: String,
+    pub adapter_id: String,
+    pub exact_model_id: String,
+}
+
+impl From<&crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile>
+    for ModelProtocolProfileIdentityRuntime
+{
+    fn from(
+        authority: &crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile,
+    ) -> Self {
+        Self {
+            registry_version: authority.registry_version.clone(),
+            profile_id: authority.profile_id.clone(),
+            profile_version: authority.profile_version,
+            operation: authority.operation.clone(),
+            transport: authority.transport.clone(),
+            region: authority.region.clone(),
+            endpoint_family: authority.endpoint_family.clone(),
+            endpoint_path: authority.endpoint_path.clone(),
+            wire_dialect: authority.wire_dialect.clone(),
+            wire_dialect_version: authority.wire_dialect_version,
+            input_framing: authority.input_framing.clone(),
+            output_framing: authority.output_framing.clone(),
+            terminal_lifecycle: authority.terminal_lifecycle.clone(),
+            adapter_id: authority.adapter_id.clone(),
+            exact_model_id: authority.exact_model_id.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WatchSessionReportRuntime {
@@ -345,6 +392,9 @@ pub(crate) struct WatchSessionReportRuntime {
     pub route_mode: String,
     pub provider_id: String,
     pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model_protocol_profile_identity: Option<ModelProtocolProfileIdentityRuntime>,
     pub started_at: String,
     pub ended_at: Option<String>,
     pub elapsed_ms: u64,

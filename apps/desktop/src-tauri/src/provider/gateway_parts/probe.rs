@@ -16,9 +16,26 @@ impl ProviderProbeService {
     ) -> ProviderProbeProfileRuntime {
         let checked_at = time::now_unix_seconds_marker();
         let latency_ms = smoke.first_event_latency_ms.unwrap_or(smoke.duration_ms);
+        let livetranslate_session_stable = smoke
+            .wire_evidence
+            .as_ref()
+            .is_some_and(|evidence| {
+                evidence.evidence_outcome == "livetranslate-session-finished"
+                    && evidence.provider_error_frame.is_none()
+                    && evidence.websocket_close.is_none()
+                    && evidence.timeout_phase.is_none()
+            });
         let response_shape_stable = smoke.status == "completed"
-            && smoke.event_log.iter().any(|item| item.event_type == "translation.completed")
-            && smoke.event_log.iter().any(|item| item.event_type == "response.completed");
+            && (livetranslate_session_stable
+                || (smoke
+                    .event_log
+                    .iter()
+                    .any(|item| item.event_type == "translation.completed")
+                    && smoke
+                        .event_log
+                        .iter()
+                        .any(|item| item.event_type == "response.completed")));
+        let latency_budget_ms = routing::LATENCY_BUDGET_MS;
         let error_shape_stable = smoke.error.is_none()
             || smoke
                 .error
@@ -27,7 +44,7 @@ impl ProviderProbeService {
                 .unwrap_or(false);
         let verdict = if smoke.error.is_some() || !response_shape_stable {
             "unavailable"
-        } else if smoke.stream_observed && latency_ms <= routing::LATENCY_BUDGET_MS {
+        } else if smoke.stream_observed && latency_ms <= latency_budget_ms {
             "available"
         } else if smoke.stream_observed && error_shape_stable {
             "realtime-risk"
@@ -58,8 +75,8 @@ impl ProviderProbeService {
                 &provider.provider_id,
                 "latency",
                 "实时适用性",
-                if latency_ms <= routing::LATENCY_BUDGET_MS { "pass" } else { "warn" },
-                format!("首个有效事件耗时 {latency_ms} ms，预算 {} ms。", routing::LATENCY_BUDGET_MS),
+                if latency_ms <= latency_budget_ms { "pass" } else { "warn" },
+                format!("首个有效事件耗时 {latency_ms} ms，预算 {latency_budget_ms} ms。"),
             ),
             check(
                 &provider.provider_id,
@@ -77,7 +94,12 @@ impl ProviderProbeService {
                 "响应格式稳定性",
                 if response_shape_stable { "pass" } else { "fail" },
                 if response_shape_stable {
-                    "已完整得到 translation.completed 与 response.completed。".to_string()
+                    if livetranslate_session_stable {
+                        "已完整得到 session.created、session.updated 与 session.finished。"
+                            .to_string()
+                    } else {
+                        "已完整得到 translation.completed 与 response.completed。".to_string()
+                    }
                 } else {
                     "返回事件不完整，当前不建议接入实时主链路。".to_string()
                 },
@@ -91,7 +113,7 @@ impl ProviderProbeService {
             verdict: verdict.to_string(),
             checked_at,
             measured_latency_ms: latency_ms,
-            latency_budget_ms: routing::LATENCY_BUDGET_MS,
+            latency_budget_ms,
             stream_supported: smoke.stream_observed,
             error_shape_stable,
             response_shape_stable,
@@ -111,6 +133,7 @@ impl ProviderProbeService {
             guidance: routing::build_probe_guidance(verdict, &routing_decision, smoke.fallback_applied),
             routing_decision,
             error: smoke.error,
+            wire_evidence: smoke.wire_evidence,
         }
     }
 }

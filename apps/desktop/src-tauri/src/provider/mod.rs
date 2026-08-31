@@ -3,4 +3,5 @@ pub(crate) mod connection_lease;
 pub(crate) mod events;
 pub(crate) mod gateway;
 pub(crate) mod gateway_parts;
+pub(crate) mod model_protocol_profile;
 pub(crate) mod state;

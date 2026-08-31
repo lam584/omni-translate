@@ -3,12 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const PROVIDER_PREFLIGHT_SCENARIO_ID = 'E2E-PROVIDER-PROBE';
-export const PROVIDER_PREFLIGHT_OPERATION = 'text-translation-preflight';
-export const PROVIDER_PREFLIGHT_INPUT_MODE = 'text-only';
+export const PROVIDER_PREFLIGHT_OPERATION = 'livetranslate-session-lifecycle-preflight';
+export const PROVIDER_PREFLIGHT_INPUT_MODE = 'none';
 export const PROVIDER_PREFLIGHT_INVOCATION_COUNT = 1;
 export const PROVIDER_PREFLIGHT_EXTERNAL_AUDIO_SAMPLES = 0;
 
-const ROOT_ENTRIES = Object.freeze([
+const BASE_ROOT_ENTRIES = Object.freeze([
   'diagnostics-bundle',
   'emitter-result.json',
   'provider-probe-result.json',
@@ -58,13 +58,24 @@ function validateObservedAuthorization(value, expected, label, issues) {
     issues.push(`${label} is missing the signed preflight authorization consumption`);
     return null;
   }
+  const livetranslate = expected?.protocol === 'dashscope-livetranslate';
   const exactFields = [
     'schemaVersion', 'artifactKind', 'executionId', 'grantDigest',
     'leaseReservationDigests', 'authorizationDigest', 'providerId', 'model',
     'protocol', 'operation', 'inputMode', 'invocationCount',
     'externalAudioSamples', 'leaseReservations', 'grantGeneratedAt',
-    'reservationIssuedAts', 'consumptionClaim', 'tokenBudget',
+    'reservationIssuedAts', 'consumptionClaim',
   ];
+  if (livetranslate) {
+    exactFields.push(
+      'providerInputMode',
+      'responseMode',
+      'terminalEvent',
+      'lifecycleBudget',
+    );
+  } else {
+    exactFields.push('tokenBudget');
+  }
   if (Object.hasOwn(expected, 'incidentId')) exactFields.push('incidentId');
   for (const field of exactFields) {
     if (!sameCanonical(observed[field], expected[field])) {
@@ -75,6 +86,226 @@ function validateObservedAuthorization(value, expected, label, issues) {
     issues.push(`${label} authorizationObservedAt is missing or invalid`);
   }
   return observed;
+}
+
+function exactObjectKeys(value, expected) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length
+    && actual.every((key, index) => key === wanted[index]);
+}
+
+function verifiedTracePayload(entry) {
+  const payload = entry?.rawRedactedPayload;
+  if (
+    typeof payload !== 'string'
+    || payload.length < 2
+    || entry?.sha256 !== sha256Bytes(Buffer.from(payload, 'utf8'))
+    || /Bearer\s+[^\s"']+/iu.test(payload)
+  ) return null;
+  try { return JSON.parse(payload); } catch { return null; }
+}
+
+function strictSessionUpdate(entry) {
+  const payload = verifiedTracePayload(entry);
+  if (
+    entry?.direction !== 'client-to-server'
+    || entry?.type !== 'session.update'
+    || !exactObjectKeys(payload, ['event_id', 'session', 'type'])
+    || payload.type !== 'session.update'
+    || !/^evt_[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(String(payload.event_id ?? ''))
+    || !exactObjectKeys(payload.session, [
+      'input_audio_format',
+      'input_audio_transcription',
+      'modalities',
+      'sample_rate',
+      'translation',
+    ])
+    || !sameCanonical(payload.session.modalities, ['text'])
+    || payload.session.sample_rate !== 16_000
+    || payload.session.input_audio_format !== 'pcm'
+    || !sameCanonical(payload.session.input_audio_transcription, { language: 'zh' })
+    || !sameCanonical(payload.session.translation, { language: 'en' })
+  ) return null;
+  return payload;
+}
+
+function strictUpgrade(entry) {
+  const payload = verifiedTracePayload(entry);
+  if (
+    entry?.direction !== 'transport'
+    || entry?.type !== 'websocket.upgrade'
+    || entry?.status !== 101
+    || !exactObjectKeys(payload, ['host', 'path', 'query', 'requestHeaderNames', 'scheme'])
+    || payload.scheme !== 'wss'
+    || payload.host !== 'dashscope.aliyuncs.com'
+    || payload.path !== '/api-ws/v1/realtime'
+    || !exactObjectKeys(payload.query, ['model'])
+    || payload.query.model !== 'qwen3.5-livetranslate-flash-realtime'
+    || typeof payload.host !== 'string'
+    || !payload.host
+    || !Array.isArray(payload.requestHeaderNames)
+    || !sameCanonical(payload.requestHeaderNames, ['authorization'])
+  ) return false;
+  return true;
+}
+
+function strictSessionAuthority(raw, createdEntry, updatedEntry, update) {
+  const created = verifiedTracePayload(createdEntry);
+  const updated = verifiedTracePayload(updatedEntry);
+  const createdSession = created?.session;
+  const updatedSession = updated?.session;
+  const updatedConfig = updatedSession && {
+    input_audio_format: updatedSession.input_audio_format,
+    input_audio_transcription: updatedSession.input_audio_transcription,
+    modalities: updatedSession.modalities,
+    sample_rate: updatedSession.sample_rate,
+    translation: updatedSession.translation,
+  };
+  const configDigest = sha256Bytes(Buffer.from(JSON.stringify(update.session), 'utf8'));
+  const authority = raw?.sessionAuthority;
+  return created?.type === 'session.created'
+    && updated?.type === 'session.updated'
+    && SHA256.test(String(createdSession?.id ?? ''))
+    && createdSession.id === updatedSession?.id
+    && createdSession.model === 'qwen3.5-livetranslate-flash-realtime'
+    && updatedSession?.model === createdSession.model
+    && sameCanonical(updatedConfig, update.session)
+    && exactObjectKeys(authority, [
+      'echoedSessionConfigSha256',
+      'serverModel',
+      'sessionIdentitySha256',
+    ])
+    && authority.sessionIdentitySha256 === createdSession.id
+    && authority.serverModel === createdSession.model
+    && authority.echoedSessionConfigSha256 === configDigest;
+}
+
+function validateLiveTranslateWireEvidence(root, probe, raw, issues) {
+  const authority = raw?.rawTrace;
+  if (
+    authority?.path !== 'raw/provider-websocket-trace.jsonl'
+    || !Number.isSafeInteger(authority?.bytes)
+    || authority.bytes < 1
+    || !SHA256.test(String(authority?.sha256 ?? ''))
+    || !Number.isSafeInteger(authority?.eventCount)
+    || authority.eventCount < 1
+  ) {
+    issues.push('provider preflight raw WebSocket trace authority is invalid');
+    return null;
+  }
+  const rawDirectory = path.join(root, 'raw');
+  const tracePath = path.join(rawDirectory, 'provider-websocket-trace.jsonl');
+  for (const [candidate, label, directory] of [
+    [root, 'evidence root', true],
+    [rawDirectory, 'raw trace directory', true],
+    [tracePath, 'raw trace file', false],
+  ]) {
+    let stats;
+    try { stats = fs.lstatSync(candidate); } catch { stats = null; }
+    if (
+      !stats
+      || (directory ? !stats.isDirectory() : !stats.isFile())
+      || stats.isSymbolicLink()
+    ) {
+      issues.push(`provider preflight ${label} must be real and non-symlink`);
+      return null;
+    }
+    let real;
+    try { real = fs.realpathSync.native(candidate); } catch { real = null; }
+    const normalize = (value) => (
+      process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value)
+    );
+    if (!real || normalize(real) !== normalize(candidate)) {
+      issues.push(`provider preflight ${label} contains a reparse redirect`);
+      return null;
+    }
+  }
+  let bytes;
+  try { bytes = fs.readFileSync(tracePath); } catch { bytes = null; }
+  if (
+    !bytes
+    || bytes.byteLength !== authority.bytes
+    || sha256Bytes(bytes) !== authority.sha256
+  ) {
+    issues.push('provider preflight raw WebSocket trace bytes/digest mismatch');
+    return null;
+  }
+  let entries;
+  try {
+    entries = bytes.toString('utf8').split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line));
+  } catch {
+    entries = null;
+  }
+  if (!entries || entries.length !== authority.eventCount) {
+    issues.push('provider preflight raw WebSocket trace JSONL/eventCount is invalid');
+    return null;
+  }
+  const expected = [
+    ['transport', 'websocket.upgrade'],
+    ['server-to-client', 'session.created'],
+    ['client-to-server', 'session.update'],
+    ['server-to-client', 'session.updated'],
+    ['client-to-server', 'session.finish'],
+    ['server-to-client', 'session.finished'],
+  ];
+  if (
+    entries.length !== expected.length
+    || entries.some((entry, index) => (
+      entry?.direction !== expected[index][0]
+      || entry?.type !== expected[index][1]
+      || !Number.isSafeInteger(entry?.monotonicMs)
+      || entry.monotonicMs < 0
+      || (index > 0 && entry.monotonicMs <= entries[index - 1]?.monotonicMs)
+    ))
+    || !strictUpgrade(entries[0])
+  ) issues.push('provider preflight raw WebSocket trace is not the exact ordered LiveTranslate lifecycle');
+  const sessionUpdate = strictSessionUpdate(entries[2]);
+  const finishPayload = verifiedTracePayload(entries[4]);
+  if (
+    raw?.evidenceOutcome !== 'livetranslate-session-finished'
+    || raw?.firstServerEvent?.type !== 'session.created'
+    || !Number.isSafeInteger(raw?.firstServerEvent?.monotonicMs)
+    || raw.firstServerEvent.monotonicMs < 0
+    || raw.firstServerEvent.monotonicMs > 1_200
+    || raw.firstServerEvent.monotonicMs !== entries[1]?.monotonicMs
+    || raw?.providerInputMode !== 'none'
+    || raw?.responseMode !== 'text-only'
+    || raw?.productionMode !== true
+    || raw?.latencyBudgetMs !== 1_200
+    || raw?.measuredLatencyMs !== raw.firstServerEvent.monotonicMs
+    || raw?.firstServerEventLatencyMs !== raw.firstServerEvent.monotonicMs
+    || !sameCanonical(raw?.lifecycleBudget, {
+      firstServerEventLatencyMs: 1_200,
+      socketEventTimeoutMs: 12_000,
+    })
+    || raw?.providerInvocationCount !== 1
+    || raw?.connectionCount !== 1
+    || raw?.externalAudioSamples !== 0
+    || raw?.inputAudioBufferCommitCount !== 0
+    || raw?.conversationItemCreateInputTextCount !== 0
+    || raw?.responseCreateCount !== 0
+    || raw?.providerErrorFrame != null
+    || raw?.websocketClose != null
+    || raw?.timeoutPhase != null
+    || raw?.timeoutBudgetMs != null
+    || !sessionUpdate
+    || !strictSessionAuthority(raw, entries[1], entries[3], sessionUpdate)
+    || !exactObjectKeys(finishPayload, ['event_id', 'type'])
+    || finishPayload?.type !== 'session.finish'
+    || !/^evt_[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(String(finishPayload?.event_id ?? ''))
+    || finishPayload.event_id === sessionUpdate.event_id
+    || !sameCanonical(probe?.rawTrace, authority)
+    || probe?.evidenceOutcome !== raw.evidenceOutcome
+    || !sameCanonical(probe?.firstServerEvent, raw.firstServerEvent)
+  ) issues.push('provider preflight raw result is not a zero-audio session.finished terminal');
+  return {
+    evidenceOutcome: raw?.evidenceOutcome ?? null,
+    firstServerEvent: raw?.firstServerEvent ?? null,
+    sessionAuthority: raw?.sessionAuthority ?? null,
+    rawTrace: authority,
+  };
 }
 
 function validateTextOnlyTokenUsage(value, tokenBudget, label, issues) {
@@ -96,6 +327,18 @@ function validateTextOnlyTokenUsage(value, tokenBudget, label, issues) {
   ) {
     issues.push(`${label} token/audio usage exceeds or omits the signed text-only budget`);
   }
+  return { inputTokens, outputTokens, audioSeconds };
+}
+
+function validateZeroInputUsage(value, label, issues) {
+  const inputTokens = value?.inputTokens ?? null;
+  const outputTokens = value?.outputTokens ?? null;
+  const audioSeconds = value?.audioSeconds ?? null;
+  if (
+    inputTokens !== null
+    || outputTokens !== null
+    || (audioSeconds !== null && audioSeconds !== 0)
+  ) issues.push(`${label} must report zero audio and no synthetic token usage`);
   return { inputTokens, outputTokens, audioSeconds };
 }
 
@@ -196,13 +439,18 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
   if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) {
     return { issues: ['provider preflight raw authority must be a real directory'], summary: null };
   }
-  const rootEntries = fs.readdirSync(root).sort();
-  if (JSON.stringify(rootEntries) !== JSON.stringify([...ROOT_ENTRIES].sort())) {
-    issues.push(`provider preflight root entries must be exactly ${ROOT_ENTRIES.join(', ')}`);
-  }
   try { walkFiles(root); } catch (error) { issues.push(error.message); }
   const emitter = readJson(path.join(root, 'emitter-result.json'), issues, 'provider preflight emitter result');
   const probe = readJson(path.join(root, 'provider-probe-result.json'), issues, 'provider preflight probe result');
+  const strictLive = (expectedAuthorization?.protocol ?? probe?.protocol) === 'dashscope-livetranslate';
+  const expectedRootEntries = [
+    ...BASE_ROOT_ENTRIES,
+    ...(strictLive ? ['raw'] : []),
+  ].sort();
+  const rootEntries = fs.readdirSync(root).sort();
+  if (JSON.stringify(rootEntries) !== JSON.stringify(expectedRootEntries)) {
+    issues.push(`provider preflight root entries must be exactly ${expectedRootEntries.join(', ')}`);
+  }
   const bundleRoot = path.join(root, 'diagnostics-bundle');
   let bundleHash = null;
   try { bundleHash = hashProviderPreflightArtifact(bundleRoot); } catch (error) { issues.push(error.message); }
@@ -251,7 +499,11 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
       event?.invocationId !== emitter.invocationId || Number(event?.sequence) !== index + 1
     ))
   ) issues.push('provider preflight emitter timeline is not the fixed ordered lifecycle');
-  const expectedArtifacts = ['provider-probe-result.json', 'diagnostics-bundle'].map((relativePath) => ({
+  const expectedArtifacts = [
+    'provider-probe-result.json',
+    'diagnostics-bundle',
+    ...(strictLive ? ['raw'] : []),
+  ].map((relativePath) => ({
     path: relativePath,
     ...hashProviderPreflightArtifact(path.join(root, relativePath)),
   }));
@@ -272,11 +524,13 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
     || probe?.artifactKind !== 'provider-production-probe-result'
     || probe?.source !== 'desktop-api-v2'
     || probe?.productionMode !== true
-    || probe?.operation !== PROVIDER_PREFLIGHT_OPERATION
-    || probe?.inputMode !== PROVIDER_PREFLIGHT_INPUT_MODE
+    || probe?.operation !== (strictLive
+      ? PROVIDER_PREFLIGHT_OPERATION
+      : 'text-translation-preflight')
+    || probe?.inputMode !== (strictLive ? PROVIDER_PREFLIGHT_INPUT_MODE : 'text-only')
     || Number(probe?.externalAudioSamples) !== PROVIDER_PREFLIGHT_EXTERNAL_AUDIO_SAMPLES
     || Number(probe?.providerInvocationCount) !== PROVIDER_PREFLIGHT_INVOCATION_COUNT
-  ) issues.push('provider preflight probe is not one text-only zero-audio invocation');
+  ) issues.push('provider preflight probe operation/input authority is invalid');
   if (
     probe?.providerId !== STRICT_PROVIDER_ID
     || probe?.templateId !== STRICT_PROVIDER_TEMPLATE_ID
@@ -304,34 +558,50 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
         issues,
       )
     : null;
-  const signedTokenBudget = probeAuthorization?.tokenBudget
-    ?? expectedAuthorization?.tokenBudget
-    ?? {
-      maxInputTokens: STRICT_MAX_INPUT_TOKENS,
-      maxOutputTokens: STRICT_MAX_OUTPUT_TOKENS,
-    };
-  if (
+  const signedTokenBudget = strictLive
+    ? null
+    : probeAuthorization?.tokenBudget
+      ?? expectedAuthorization?.tokenBudget
+      ?? {
+        maxInputTokens: STRICT_MAX_INPUT_TOKENS,
+        maxOutputTokens: STRICT_MAX_OUTPUT_TOKENS,
+      };
+  if (!strictLive && (
     signedTokenBudget?.maxInputTokens !== STRICT_MAX_INPUT_TOKENS
     || signedTokenBudget?.maxOutputTokens !== STRICT_MAX_OUTPUT_TOKENS
-  ) issues.push('provider preflight signed token budget is not the fixed text-only budget');
-  const probeUsage = validateTextOnlyTokenUsage(
-    probe,
-    signedTokenBudget,
-    'provider preflight probe',
-    issues,
-  );
-  const emitterUsage = validateTextOnlyTokenUsage(
-    emitter,
-    signedTokenBudget,
-    'provider preflight emitter',
-    issues,
-  );
+  )) issues.push('provider preflight signed token budget is not the fixed text-only budget');
+  if (strictLive && (
+    !sameCanonical(
+      probeAuthorization?.lifecycleBudget ?? expectedAuthorization?.lifecycleBudget,
+      { firstServerEventLatencyMs: 1_200, socketEventTimeoutMs: 12_000 },
+    )
+    || probeAuthorization?.tokenBudget != null
+  )) issues.push('provider preflight signed lifecycle budget is invalid');
+  const probeUsage = strictLive
+    ? validateZeroInputUsage(probe, 'provider preflight probe', issues)
+    : validateTextOnlyTokenUsage(
+      probe,
+      signedTokenBudget,
+      'provider preflight probe',
+      issues,
+    );
+  const emitterUsage = strictLive
+    ? validateZeroInputUsage(emitter, 'provider preflight emitter', issues)
+    : validateTextOnlyTokenUsage(
+      emitter,
+      signedTokenBudget,
+      'provider preflight emitter',
+      issues,
+    );
   if (expectedAuthorization && (
     probe?.providerId !== expectedAuthorization.providerId
     || probe?.model !== expectedAuthorization.model
     || probe?.protocol !== expectedAuthorization.protocol
     || probe?.operation !== expectedAuthorization.operation
     || probe?.inputMode !== expectedAuthorization.inputMode
+    || (strictLive && probe?.providerInputMode !== expectedAuthorization.providerInputMode)
+    || (strictLive && probe?.responseMode !== expectedAuthorization.responseMode)
+    || (strictLive && probe?.terminalEvent !== expectedAuthorization.terminalEvent)
     || Number(probe?.providerInvocationCount) !== expectedAuthorization.invocationCount
     || Number(probe?.externalAudioSamples) !== expectedAuthorization.externalAudioSamples
   )) issues.push('provider preflight probe did not consume the exact signed authorization before connect');
@@ -375,6 +645,10 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
     || raw?.connectionOwner !== probe?.connectionOwner
     || Number(raw?.connectionGeneration) !== Number(probe?.connectionGeneration)
     || raw?.error != null
+    || (strictLive && raw?.providerInputMode !== 'none')
+    || (strictLive && raw?.responseMode !== 'text-only')
+    || (strictLive && probe?.evidenceOutcome !== raw?.evidenceOutcome)
+    || (strictLive && !sameCanonical(probe?.firstServerEvent, raw?.firstServerEvent))
   ) issues.push('provider preflight raw provider result does not match the top-level probe');
   const rawAuthorization = expectedAuthorization
     ? validateObservedAuthorization(
@@ -384,12 +658,17 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
         issues,
       )
     : null;
-  const rawUsage = validateTextOnlyTokenUsage(
-    raw,
-    signedTokenBudget,
-    'provider preflight raw result',
-    issues,
-  );
+  const wireEvidence = strictLive
+    ? validateLiveTranslateWireEvidence(root, probe, raw, issues)
+    : null;
+  const rawUsage = strictLive
+    ? validateZeroInputUsage(raw, 'provider preflight raw result', issues)
+    : validateTextOnlyTokenUsage(
+      raw,
+      signedTokenBudget,
+      'provider preflight raw result',
+      issues,
+    );
   const checks = Array.isArray(raw?.checks) ? raw.checks : [];
   const expectedCheckKeys = ['streaming', 'latency', 'error-shape', 'response-shape'];
   if (
@@ -461,12 +740,14 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
         issues,
       )
     : null;
-  const diagnosticsUsage = validateTextOnlyTokenUsage(
-    probeSummary,
-    signedTokenBudget,
-    'provider preflight diagnostics summary',
-    issues,
-  );
+  const diagnosticsUsage = strictLive
+    ? validateZeroInputUsage(probeSummary, 'provider preflight diagnostics summary', issues)
+    : validateTextOnlyTokenUsage(
+      probeSummary,
+      signedTokenBudget,
+      'provider preflight diagnostics summary',
+      issues,
+    );
   if (
     !String(probe?.configuredModel ?? '').trim()
     || probeSummary?.configuredModel !== probe?.configuredModel
@@ -536,6 +817,9 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
       configuredModel: probe?.configuredModel ?? null,
       operation: probe?.operation ?? null,
       inputMode: probe?.inputMode ?? null,
+      providerInputMode: strictLive ? probe?.providerInputMode ?? null : null,
+      responseMode: strictLive ? probe?.responseMode ?? null : null,
+      terminalEvent: strictLive ? probe?.terminalEvent ?? null : null,
       externalAudioSamples: Number(probe?.externalAudioSamples ?? -1),
       providerInvocationCount: Number(probe?.providerInvocationCount ?? 0),
       protocol: probe?.protocol ?? null,
@@ -544,7 +828,12 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
       leaseReservationDigests: probeAuthorization?.leaseReservationDigests ?? null,
       authorizationDigest: probeAuthorization?.authorizationDigest ?? null,
       consumptionClaim: probeAuthorization?.consumptionClaim ?? null,
-      tokenBudget: probeAuthorization?.tokenBudget ?? null,
+      tokenBudget: strictLive ? null : probeAuthorization?.tokenBudget ?? null,
+      lifecycleBudget: strictLive ? probeAuthorization?.lifecycleBudget ?? null : null,
+      evidenceOutcome: wireEvidence?.evidenceOutcome ?? null,
+      firstServerEvent: wireEvidence?.firstServerEvent ?? null,
+      sessionAuthority: wireEvidence?.sessionAuthority ?? null,
+      rawTrace: wireEvidence?.rawTrace ?? null,
       inputTokens: probeUsage.inputTokens,
       outputTokens: probeUsage.outputTokens,
       audioSeconds: probeUsage.audioSeconds,

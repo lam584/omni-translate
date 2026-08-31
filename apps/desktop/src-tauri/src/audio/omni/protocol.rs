@@ -1,4 +1,5 @@
 use super::*;
+use super::realtime_socket::ReconnectedRealtimeSocket;
 
 use crate::audio::glossary::GlossaryContext;
 use crate::audio::realtime_ws;
@@ -51,7 +52,7 @@ pub(super) fn try_reconnect<C: RealtimeSocketConnector, R: tauri::Runtime>(
     target_language: &str,
     buffer_size: u64,
     disconnect_reason: &str,
-) -> Result<C::Socket, String> {
+) -> Result<ReconnectedRealtimeSocket<C::Socket>, String> {
     pending_audio_buffer.clear();
     let mut last_error = None;
 
@@ -150,6 +151,7 @@ pub(super) fn check_vad_warning<R: tauri::Runtime>(
 
 pub(super) fn handle_session_ready_event<R: tauri::Runtime>(
     app: &AppHandle<R>,
+    session_created_is_ready: bool,
     event_type: &str,
     evt: &Value,
     session_ready_for_audio: &mut bool,
@@ -157,7 +159,7 @@ pub(super) fn handle_session_ready_event<R: tauri::Runtime>(
     pre_session_audio_queue_len: usize,
 ) {
     match event_type {
-        "session.created" => {
+        "session.created" if session_created_is_ready => {
             let became_ready = !*session_ready_for_audio;
             *session_ready_for_audio = true;
             let session_id = evt["session"]["id"].as_str().unwrap_or("?");
@@ -218,6 +220,8 @@ pub(super) fn is_session_ready_event(event_type: &str) -> bool {
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct OmniEventDiagnostics {
+    pub(super) livetranslate_server_state:
+        crate::audio::bailian_protocol::LiveTranslateServerState,
     pub(super) readiness_event: Option<String>,
     pub(super) current_cue_origin: Option<String>,
     /// Provider item announced by the current server-VAD speech segment. This
@@ -371,7 +375,7 @@ struct ResponseDoneMetadata {
     completed_output: bool,
 }
 
-pub(super) fn native_response_id_from_event(event: &Value) -> Option<&str> {
+pub(crate) fn native_response_id_from_event(event: &Value) -> Option<&str> {
     event
         .pointer("/response/id")
         .or_else(|| event.get("response_id"))
@@ -431,9 +435,16 @@ impl ResponseDoneMetadata {
     }
 
     fn allows_final_output(&self, require_completed_status: bool) -> bool {
+        if self.is_cancelled() || self.is_failed() {
+            return false;
+        }
+        if require_completed_status {
+            return self.status == "completed";
+        }
         self.status == "completed"
             || self.completed_output
-            || (!require_completed_status && (self.status == "unknown" || self.status.is_empty()))
+            || self.status == "unknown"
+            || self.status.is_empty()
     }
 }
 
@@ -1375,7 +1386,7 @@ mod response_text_tests {
     }
 
     #[test]
-    fn completed_output_item_can_finalize_when_response_status_is_missing() {
+    fn completed_output_item_cannot_bypass_a_required_top_level_status() {
         let metadata = ResponseDoneMetadata::from_event(&json!({
             "type": "response.done",
             "response": {
@@ -1386,7 +1397,26 @@ mod response_text_tests {
             }
         }));
 
-        assert!(metadata.allows_final_output(true));
+        assert!(!metadata.allows_final_output(true));
+        assert!(metadata.allows_final_output(false));
+    }
+
+    #[test]
+    fn failed_response_cannot_finalize_through_a_completed_nested_item() {
+        let metadata = ResponseDoneMetadata::from_event(&json!({
+            "type": "response.done",
+            "response": {
+                "status": "failed",
+                "output": [{
+                    "status": "completed",
+                    "content": [{ "text": "partial translation" }]
+                }]
+            }
+        }));
+
+        assert!(metadata.is_failed());
+        assert!(!metadata.allows_final_output(true));
+        assert!(!metadata.allows_final_output(false));
     }
 }
 
@@ -2274,12 +2304,14 @@ fn build_omni_session_update_with_dialect(
       "type": "session.update",
       "session": {
         "modalities": modalities,
-        "instructions": instructions,
         "input_audio_format": input_audio_format,
         "sample_rate": 16000,
         "turn_detection": turn_detection
       }
     });
+    if !is_livetranslate {
+        session_cfg["session"]["instructions"] = json!(instructions);
+    }
     if output_mode == OmniOutputMode::TextAndAudio {
         session_cfg["session"]["output_audio_format"] = json!("pcm");
         let trimmed_voice = voice.trim();
@@ -2398,6 +2430,25 @@ mod response_control_tests {
         assert_eq!(omni["type"], "response.create");
         assert_ne!(omni["type"], "response.cancel");
     }
+
+    #[test]
+    fn livetranslate_session_update_omits_omni_only_instructions() {
+        let event = build_omni_session_update_with_dialect(
+            true,
+            "",
+            "must never cross the LiveTranslate wire",
+            RealtimeAudioMode::ServerVad,
+            "en",
+            "zh",
+            OmniOutputMode::TextOnly,
+        );
+        assert!(event.pointer("/session/instructions").is_none());
+        crate::audio::bailian_protocol::admit_livetranslate_client_event(
+            &crate::audio::bailian_protocol::livetranslate_test_authority(),
+            &event,
+        )
+        .expect("production builder must produce an admitted LiveTranslate payload");
+    }
 }
 
 pub(crate) fn build_dashscope_text_item(text: &str) -> Value {
@@ -2421,7 +2472,14 @@ pub(crate) fn build_omni_session_update_for_provider_with_output_mode(
     output_mode: OmniOutputMode,
 ) -> Value {
     let protocol = crate::audio::events::resolve_realtime_profile(provider, &provider.model)
-        .protocol_dialect
+        .protocol_dialect;
+    #[cfg(test)]
+    let protocol = protocol.or_else(|| {
+        (provider.base_url == "wss://example.invalid"
+            && provider.realtime_protocol.as_deref() == Some("dashscope-omni"))
+        .then_some(crate::audio::events::RealtimeProtocol::DashscopeOmni)
+    });
+    let protocol = protocol
         .expect("Omni session builder requires an explicit or compatibility-resolved protocol");
     let mut session_update = build_dashscope_session_update_with_languages_and_output_mode(
         protocol,

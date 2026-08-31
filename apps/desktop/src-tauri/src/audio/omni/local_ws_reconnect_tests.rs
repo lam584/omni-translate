@@ -6,6 +6,7 @@
 use std::net::TcpListener;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use tauri::Manager;
@@ -15,14 +16,14 @@ use super::realtime_socket::{RealtimeSocket, RealtimeSocketConnector, Tungstenit
 use super::*;
 use crate::audio::state::AudioStateStore;
 
-fn local_provider(port: u16) -> ProviderDraftInput {
+fn authorized_livetranslate_provider() -> ProviderDraftInput {
     serde_json::from_value(json!({
-        "templateId": "t",
-        "providerId": "p-local",
+        "templateId": "template-dashscope-realtime",
+        "providerId": "provider-dashscope",
         "kind": "dashscope",
         "displayName": "local fake realtime",
-        "model": "qwen3.5-omni-plus-realtime",
-        "baseUrl": format!("ws://127.0.0.1:{port}"),
+        "model": "qwen3.5-livetranslate-flash-realtime",
+        "baseUrl": "https://dashscope.aliyuncs.com/api/v1",
         "transport": "websocket",
         "authRef": {
             "kind": "header",
@@ -32,7 +33,7 @@ fn local_provider(port: u16) -> ProviderDraftInput {
             // under test is the socket, not the vault.
             "scheme": "none"
         },
-        "region": null,
+        "region": "cn-beijing",
         "streamEnabled": true,
         "timeoutMs": 1000,
         "systemPromptTemplate": ""
@@ -77,6 +78,87 @@ fn spawn_scripted_server(
     })
 }
 
+fn spawn_session_echo_server(
+    listener: TcpListener,
+    mutate_nested_echo: bool,
+    received: Arc<Mutex<Vec<Value>>>,
+    ready_tx: mpsc::Sender<()>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let _ = ready_tx.send(());
+        let (stream, _) = listener.accept().expect("accept echo connection");
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .expect("set echo read timeout");
+        let mut ws = tungstenite::accept(stream).expect("websocket handshake");
+        let first = ws.read().expect("client session.update");
+        let Message::Text(text) = first else {
+            panic!("first client frame must be text");
+        };
+        let sent: Value = serde_json::from_str(&text).expect("session.update json");
+        received.lock().expect("received log").push(sent.clone());
+
+        let session_id = if mutate_nested_echo {
+            "session-mutated"
+        } else {
+            "session-exact"
+        };
+        ws.send(Message::Text(
+            json!({
+                "event_id": format!("event-created-{session_id}"),
+                "type": "session.created",
+                "session": {
+                    "id": session_id,
+                    "object": "realtime.session",
+                    "model": "qwen3.5-livetranslate-flash-realtime"
+                }
+            })
+            .to_string()
+            .into(),
+        ))
+        .expect("session.created reply");
+        let mut echoed_session = sent["session"].clone();
+        echoed_session["id"] = json!(session_id);
+        echoed_session["object"] = json!("realtime.session");
+        echoed_session["model"] = json!("qwen3.5-livetranslate-flash-realtime");
+        if mutate_nested_echo {
+            echoed_session["translation"]["language"] = json!("ja");
+        }
+        ws.send(Message::Text(
+            json!({
+                "event_id": format!("event-updated-{session_id}"),
+                "type": "session.updated",
+                "session": echoed_session
+            })
+            .to_string()
+            .into(),
+        ))
+        .expect("session.updated reply");
+        let _ = ws.flush();
+        loop {
+            match ws.read() {
+                Ok(Message::Text(text)) => {
+                    let event = serde_json::from_str::<Value>(&text)
+                        .expect("subsequent client frame json");
+                    received.lock().expect("received log").push(event);
+                }
+                Ok(Message::Close(_)) => break,
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(error))
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    break;
+                }
+                Err(tungstenite::Error::ConnectionClosed) => break,
+                Err(error) => panic!("unexpected echo server read failure: {error}"),
+            }
+        }
+    })
+}
+
 /// Reads the next Text frame, treating the client's 200ms read timeouts as
 /// normal poll ticks rather than failures.
 fn read_text_with_retries<S: RealtimeSocket>(socket: &mut S) -> String {
@@ -111,11 +193,12 @@ fn real_client_survives_a_scripted_disconnect_and_replays_session_config() {
     app.manage(AudioStateStore::new());
     let handle = app.handle().clone();
     let store = handle.state::<AudioStateStore>();
-    let provider = local_provider(port);
+    let provider = authorized_livetranslate_provider();
     let connector = TungsteniteConnector;
 
     // Session 1: the real client connects and replays its session config.
-    let mut socket = connector
+    set_test_omni_connect_uri_override(&format!("ws://127.0.0.1:{port}"));
+    let first_connection = connector
         .reconnect(
             &handle,
             &provider,
@@ -127,6 +210,7 @@ fn real_client_survives_a_scripted_disconnect_and_replays_session_config() {
             "zh-CN",
         )
         .expect("first session establishes");
+    let mut socket = first_connection.socket;
     let created = read_text_with_retries(&mut socket);
     assert!(created.contains("session.created"));
 
@@ -159,7 +243,8 @@ fn real_client_survives_a_scripted_disconnect_and_replays_session_config() {
     // Session 2 via the REAL retry path (backoff, store transitions, cue).
     let mut reconnect_count = 0usize;
     let mut pending_audio = vec![1_i16, -1];
-    let mut socket = try_reconnect(
+    set_test_omni_connect_uri_override(&format!("ws://127.0.0.1:{port}"));
+    let reconnected = try_reconnect(
         &connector,
         &mut reconnect_count,
         &mut pending_audio,
@@ -176,6 +261,7 @@ fn real_client_survives_a_scripted_disconnect_and_replays_session_config() {
         "scripted provider disconnect",
     )
     .expect("reconnect against the local server succeeds");
+    let mut socket = reconnected.socket;
     assert_eq!(reconnect_count, 0, "successful reconnect resets the retry counter");
     assert!(pending_audio.is_empty(), "stale response audio is dropped on reconnect");
     let created = read_text_with_retries(&mut socket);
@@ -190,7 +276,7 @@ fn real_client_survives_a_scripted_disconnect_and_replays_session_config() {
     for update in received.iter() {
         assert_eq!(update["type"], "session.update");
         assert_eq!(update["session"]["modalities"], json!(["text"]));
-        assert!(update["session"].get("voice").is_none());
+        assert!(update["session"].get("instructions").is_none());
         assert!(update["session"].get("output_audio_format").is_none());
         assert!(update["session"]["turn_detection"].is_null());
     }
@@ -208,4 +294,90 @@ fn real_client_survives_a_scripted_disconnect_and_replays_session_config() {
             .any(|cue| cue.source_text.contains("正在重新连接")),
         "the reconnect progress cue must reach the overlay"
     );
+}
+
+#[test]
+fn reconnect_returns_the_exact_sent_update_for_typed_echo_admission() {
+    for mutate_nested_echo in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local ws server");
+        let port = listener.local_addr().expect("local addr").port();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let server = spawn_session_echo_server(
+            listener,
+            mutate_nested_echo,
+            received.clone(),
+            ready_tx,
+        );
+        ready_rx.recv().expect("server ready");
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock tauri app");
+        app.manage(AudioStateStore::new());
+        let handle = app.handle().clone();
+        let store = handle.state::<AudioStateStore>();
+        let provider = authorized_livetranslate_provider();
+        let mut reconnect_count = 0usize;
+        let mut pending_audio = Vec::new();
+        set_test_omni_connect_uri_override(&format!("ws://127.0.0.1:{port}"));
+        let mut reconnected = try_reconnect(
+            &TungsteniteConnector,
+            &mut reconnect_count,
+            &mut pending_audio,
+            &store,
+            &handle,
+            &provider,
+            "",
+            "",
+            RealtimeAudioMode::ServerVad,
+            OmniOutputMode::TextOnly,
+            "en",
+            "zh",
+            0,
+            "typed provenance fixture",
+        )
+        .expect("reconnect against echo server succeeds");
+
+        let created: Value = serde_json::from_str(&read_text_with_retries(
+            &mut reconnected.socket,
+        ))
+        .expect("created json");
+        let updated: Value = serde_json::from_str(&read_text_with_retries(
+            &mut reconnected.socket,
+        ))
+        .expect("updated json");
+        let authority = crate::audio::events::authorize_bailian_native_translate(&provider)
+            .expect("fixture is the exact authorized LiveTranslate profile");
+        let mut reducer = crate::audio::bailian_protocol::LiveTranslateServerState::default();
+        reducer
+            .record_client_session_update(&authority, &reconnected.session_update)
+            .expect("the exact admitted and sent update initializes the reducer");
+        reducer
+            .admit(&authority, &created)
+            .expect("typed session.created");
+        let result = reducer.admit(&authority, &updated);
+        if mutate_nested_echo {
+            assert!(result.is_err(), "a nested echo mutation must fail closed");
+        } else {
+            assert!(
+                result.expect("exact echo reaches Ready").session_updated.is_some(),
+                "session.updated evidence is the typed Ready boundary"
+            );
+        }
+        let _ = reconnected.socket.close(None);
+        drop(reconnected.socket);
+        server.join().expect("echo server thread");
+
+        let received = received.lock().expect("received log");
+        assert_eq!(received.as_slice(), &[reconnected.session_update]);
+        assert_eq!(
+            received
+                .iter()
+                .filter(|event| event["type"] == "input_audio_buffer.append")
+                .count(),
+            0,
+            "failed readiness must not permit an audio append"
+        );
+    }
 }

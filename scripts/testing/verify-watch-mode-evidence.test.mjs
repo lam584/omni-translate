@@ -25,6 +25,7 @@ import {
   writeMatrixExternalProviderBudget,
 } from './watch-mode-external-provider-budget.mjs';
 import { LIVE_LLM_CELLS, RELEASE_MODELS } from './watch-mode-balanced-release-plan.mjs';
+import { deriveWatchModelProtocolIdentity } from './watch-mode-model-protocol-authority.mjs';
 import {
   SHARD_EXECUTION_PLAN_FILE,
   SHARD_INTERACTIVE_CELL_EXECUTION_FILE,
@@ -155,6 +156,9 @@ const verifyStrictMatrixAuthority = (options) => verifyProductionStrictMatrixAut
         auxiliaryExternalAudioSeconds: releaseAuthority?.auxiliaryExternalAudioSeconds,
         subtitleTranslationMode: releaseAuthority?.subtitleTranslationMode,
         modelId: cell.modelId,
+        modelProtocolProfileIdentity: structuredClone(
+          releaseAuthority?.modelProtocolProfileIdentity,
+        ),
         feedbackLoopPrevention: cell.feedbackLoopPrevention,
         deviceClass: cell.deviceClass,
       };
@@ -162,7 +166,7 @@ const verifyStrictMatrixAuthority = (options) => verifyProductionStrictMatrixAut
     : undefined,
 });
 
-test('evidence-driven terminal requires ten raw producer stages and rejects tampering', () => {
+test('evidence-driven terminal requires typed session readiness and ten terminal producer stages', () => {
   const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-drain-terminal-'));
   const identity = {
     runMarker: 'run-1',
@@ -199,26 +203,31 @@ test('evidence-driven terminal requires ten raw producer stages and rejects tamp
     maxExternalAudioSamples: 1_200,
   }));
   const events = [
+    ['sessionUpdatedReceived', 1_000, {
+      authority: 'desktop-livetranslate-typed-session-owner', sourceSequence: 1,
+      sessionIdentitySha256: 'd'.repeat(64), sentSessionConfigSha256: 'e'.repeat(64),
+      echoedSessionConfigSha256: 'e'.repeat(64),
+    }],
     ['mediaPlaybackCompleted', 1_000, { authority: 'runner-input-complete-marker' }],
     ['inputCompleteSignaled', 1_010, { authority: 'runner-immutable-input-complete-marker' }],
+    ['lastProviderAppend', 1_015, {
+      sourceSequence: 2, appendIndex: 7, acceptedSamplesTotal: 1_200, samples: 200,
+    }],
     ['inputCompleteObserved', 1_020, {
       authority: 'desktop-marker-watcher', markerSignaledAtUnixMs: 1_010, acceptedExactlyOnce: true,
-      sourceSequence: 2, captureProducerFenced: true, providerInputSenderReleased: true,
-    }],
-    ['lastProviderAppend', 1_030, {
-      sourceSequence: 1, appendIndex: 7, acceptedSamplesTotal: 1_200, samples: 200,
+      sourceSequence: 3, captureProducerFenced: true, providerInputSenderReleased: true,
     }],
     ['sessionFinishSent', 1_040, {
-      sourceSequence: 3, finishCount: 1, lastProviderAppendSourceSequence: 1,
-      providerInputClosedSourceSequence: 2,
+      sourceSequence: 4, finishCount: 1, lastProviderAppendSourceSequence: 2,
+      providerInputClosedSourceSequence: 3,
       providerWritesAfterFinish: 0,
     }],
-    ['lastResponseAudioDone', 1_050, { sourceSequence: 4, responseId: 'response-1' }],
+    ['lastResponseAudioDone', 1_050, { sourceSequence: 5, responseId: 'response-1' }],
     ['sessionFinishedReceived', 1_060, {
-      sourceSequence: 5, finishCount: 1, providerWritesAfterFinish: 0,
+      sourceSequence: 6, finishCount: 1, providerWritesAfterFinish: 0,
     }],
     ['finalRendererAck', 1_070, {
-      sourceSequence: 6, cueId: 'cue-3', responseId: 'response-1', cueSequence: 3, lastCueSequence: 3,
+      sourceSequence: 7, cueId: 'cue-3', responseId: 'response-1', cueSequence: 3, lastCueSequence: 3,
       receiptAuthority: 'bridge-translation-status-ack', receiptId: 'status-9',
       coversLastCue: true,
     }],
@@ -295,8 +304,8 @@ test('evidence-driven terminal requires ten raw producer stages and rejects tamp
     (event) => event.stage === 'sessionFinishedReceived',
   );
   earlyAckEvent.observedAtUnixMs = 1_055;
-  earlyAckEvent.detail.sourceSequence = 5;
-  finishedEvent.detail.sourceSequence = 6;
+  earlyAckEvent.detail.sourceSequence = 6;
+  finishedEvent.detail.sourceSequence = 7;
   earlyFinalAck.events.sort((left, right) => left.observedAtUnixMs - right.observedAtUnixMs);
   earlyFinalAck.events = earlyFinalAck.events.map((event, index) => ({
     ...event,
@@ -318,10 +327,10 @@ test('evidence-driven terminal requires ten raw producer stages and rejects tamp
     (event) => event.stage === 'sessionFinishSent',
   );
   streamingResponseEvent.observedAtUnixMs = 1_035;
-  streamingResponseEvent.detail.sourceSequence = 3;
-  streamingFinishEvent.detail.sourceSequence = 4;
-  streamingInputObservedEvent.detail.sourceSequence = 2;
-  streamingFinishEvent.detail.providerInputClosedSourceSequence = 2;
+  streamingResponseEvent.detail.sourceSequence = 4;
+  streamingFinishEvent.detail.sourceSequence = 5;
+  streamingInputObservedEvent.detail.sourceSequence = 3;
+  streamingFinishEvent.detail.providerInputClosedSourceSequence = 3;
   streamingResponseBeforeFinish.events.sort(
     (left, right) => left.observedAtUnixMs - right.observedAtUnixMs,
   );
@@ -345,10 +354,22 @@ test('evidence-driven terminal requires ten raw producer stages and rejects tamp
     );
   }
   for (const mutate of [
+    (copy) => { copy.events.find((event) => event.stage === 'sessionUpdatedReceived').detail.echoedSessionConfigSha256 = 'f'.repeat(64); },
     (copy) => { copy.events.find((event) => event.stage === 'sessionFinishSent').detail.finishCount = 2; },
     (copy) => { copy.events.find((event) => event.stage === 'sessionFinishSent').detail.lastProviderAppendSourceSequence = 3; },
     (copy) => { copy.events.find((event) => event.stage === 'sessionFinishedReceived').detail.providerWritesAfterFinish = 1; },
     (copy) => { copy.events.find((event) => event.stage === 'finalRendererAck').detail.lastCueSequence = 4; },
+    (copy) => {
+      const finish = copy.events.find((event) => event.stage === 'sessionFinishSent');
+      const finished = copy.events.find((event) => event.stage === 'sessionFinishedReceived');
+      finish.detail.sourceSequence = 5;
+      finished.detail.sourceSequence = 4;
+    },
+    (copy) => {
+      const response = copy.events.find((event) => event.stage === 'lastResponseAudioDone');
+      const ack = copy.events.find((event) => event.stage === 'finalRendererAck');
+      ack.detail.sourceSequence = response.detail.sourceSequence;
+    },
     (copy) => { [copy.events[3], copy.events[4]] = [copy.events[4], copy.events[3]]; },
     (copy) => { copy.completedAtUnixMs = 'garbage'; },
     (copy) => { copy.completedAtUnixMs = 1_080; },
@@ -382,11 +403,37 @@ const CLEAN_CURRENT_PROVENANCE = Object.freeze({
   worktreeClean: true,
   dirtyEntryCount: 0,
 });
+const fixturePreflightLifecycle = (model = PROVIDER_PREFLIGHT_MODEL) => ({
+  operation: 'livetranslate-session-lifecycle-preflight',
+  inputMode: 'none',
+  providerInputMode: 'none',
+  responseMode: 'text-only',
+  terminalEvent: 'session.finished',
+  lifecycleBudget: {
+    firstServerEventLatencyMs: 1_200,
+    socketEventTimeoutMs: 12_000,
+  },
+  evidenceOutcome: 'livetranslate-session-finished',
+  firstServerEvent: { type: 'session.created', monotonicMs: 606 },
+  sessionAuthority: {
+    sessionIdentitySha256: '8'.repeat(64),
+    serverModel: model,
+    echoedSessionConfigSha256: '9'.repeat(64),
+  },
+  rawTrace: {
+    path: 'raw/provider-websocket-trace.jsonl',
+    bytes: 256,
+    sha256: '7'.repeat(64),
+    eventCount: 6,
+  },
+});
 const TEST_RUNTIME_BINARY_HASHES = Object.freeze([]);
 const TEST_RUNTIME_BUNDLE_DIGEST = sha256Canonical(TEST_RUNTIME_BINARY_HASHES);
 const provenanceOk = { now: FIXTURE_NOW, currentProvenance: CLEAN_CURRENT_PROVENANCE };
+const WATCH_MODEL_PROTOCOL_PROFILE_IDENTITY = deriveWatchModelProtocolIdentity(RELEASE_MODELS[0]);
 const healthyWatchSessionReport = {
   sessionId: 'watch-fixture',
+  modelProtocolProfileIdentity: WATCH_MODEL_PROTOCOL_PROFILE_IDENTITY,
   status: 'completed',
   elapsedMs: AUTHORITY_FIXTURE_SESSION_DURATION_MS,
   summary: {
@@ -411,6 +458,7 @@ const healthyWatchSessionReport = {
     issues: [],
   }],
 };
+const healthyRealtimeSession = Object.freeze({ readinessEvent: 'session.updated' });
 
 const AEC_PLAYBACK_STARTED_AT_MS = Date.parse('2026-06-05T10:45:00.000Z');
 const healthyAecScenarioData = {
@@ -888,6 +936,7 @@ function writeReport(root, directoryName, overrides = {}) {
     verdict: 'passed',
     failureLayer: null,
     layers,
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: healthyWatchSessionReport,
     ...overrides,
   };
@@ -1054,11 +1103,12 @@ function writeAuthorityRawCell(root, directoryName, {
     'watch_mode.route_start subtitleTranslationMode=native translationAudioSource=omni-native',
     'watch_mode.omni_preconnect_started detail=direction=inbound sid=authority-fixture',
     'watch_mode.omni_preconnect_reused detail=direction=inbound sid=authority-fixture',
+    'watch_mode.omni_session_ready | event=session.updated queuedAudioChunks=0 droppedBeforeReady=0',
   ];
   if (feedbackLoopPrevention === 'echo-cancel') {
     const playbackStartedAtMs = metricsStartedAt.getTime() + 1_000;
     appLogLines.push(
-      `watch_mode.omni_session_config | model=${modelId} realtimeAudioMode=server_vad outputMode=text-and-audio inputAudioFormat=pcm16 isLivetranslate=false subtitleTranslateActive=false sid=authority-fixture`,
+      `watch_mode.omni_session_config | model=${modelId} realtimeAudioMode=server_vad outputMode=text-and-audio inputAudioFormat=pcm16 isLivetranslate=true subtitleTranslateActive=false sid=authority-fixture`,
       '[AUDIO] playback request received: cue_id=authority-aec samples=24000 sample_rate_hz=24000 duration_ms=1000 enabled=true local_playback=true virtual_mic=false sid=authority-fixture',
       '[AUDIO] speaker playback completed: cue_id=authority-aec frames=24000 sample_rate_hz=24000 sid=authority-fixture',
       'event=echo_cancel_backend | backend=webrtc-aec3 frameMs=10 renderSubmitFormat=48000-f32-stereo renderClock=wasapi-submit-position endpointRenderPadding=same-client-get-current-padding webRtcAec3Ready=true msvcBuildVerified=true linkedBackendPresent=true fixtureVerified=true sid=authority-fixture',
@@ -1305,13 +1355,16 @@ function writeStrictPaidBudgetFixture(runDirectory, cell, {
   assert.ok(releaseAuthority, `missing formal release authority for ${cell.modelId}/${cell.feedbackLoopPrevention}`);
   const maxSamples = Number(cell.maxExternalAudioSamples ?? releaseAuthority.maxExternalAudioSamples);
   const identity = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-provider-input-budget-ledger',
     cellId: cell.cellId,
     runMarker,
     direction: 'inbound',
     model: cell.modelId,
     protocol: STRICT_PAID_MODEL_PROTOCOLS[cell.modelId],
+    modelProtocolProfileIdentity: structuredClone(
+      releaseAuthority.modelProtocolProfileIdentity,
+    ),
     ...STRICT_PAID_PROVIDER_IDENTITY,
   };
   const sessionGeneration = 1;
@@ -1321,12 +1374,15 @@ function writeStrictPaidBudgetFixture(runDirectory, cell, {
     'utf8',
   );
   fs.writeFileSync(path.join(runDirectory, 'provider-input-budget-lease.json'), `${JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-provider-input-budget-lease',
     leaseId,
     cellId: cell.cellId,
     runMarker,
     maxSamples,
+    modelProtocolProfileIdentity: structuredClone(
+      releaseAuthority.modelProtocolProfileIdentity,
+    ),
   }, null, 2)}\n`, 'utf8');
   fs.writeFileSync(path.join(runDirectory, 'provider-input-budget-ledger.json'), `${JSON.stringify({
     ...identity,
@@ -1413,44 +1469,51 @@ function writeStrictPaidBudgetFixture(runDirectory, cell, {
   const terminalStages = [
     ['mediaPlaybackCompleted', { authority: 'runner-input-complete-marker' }],
     ['inputCompleteSignaled', { authority: 'runner-immutable-input-complete-marker' }],
-    ['inputCompleteObserved', {
-      authority: 'desktop-input-complete-watcher',
-      markerSignaledAtUnixMs: mediaPlaybackCompletedAtUnixMs + 10,
-      acceptedExactlyOnce: true,
-      sourceSequence: 2,
-      captureProducerFenced: true,
-      providerInputSenderReleased: true,
+    ['sessionUpdatedReceived', {
+      authority: 'desktop-livetranslate-typed-session-owner',
+      sourceSequence: 1,
+      sessionIdentitySha256: 'd'.repeat(64),
+      sentSessionConfigSha256: 'e'.repeat(64),
+      echoedSessionConfigSha256: 'e'.repeat(64),
     }],
     ['lastProviderAppend', {
       authority: 'desktop-provider-socket-send-owner',
-      sourceSequence: 1,
+      sourceSequence: 2,
       appendIndex: 1,
       samples: 320,
       acceptedSamplesTotal: 320,
     }],
+    ['inputCompleteObserved', {
+      authority: 'desktop-input-complete-watcher',
+      markerSignaledAtUnixMs: mediaPlaybackCompletedAtUnixMs + 10,
+      acceptedExactlyOnce: true,
+      sourceSequence: 3,
+      captureProducerFenced: true,
+      providerInputSenderReleased: true,
+    }],
     ['sessionFinishSent', {
       authority: 'desktop-livetranslate-socket-owner',
-      sourceSequence: 3,
+      sourceSequence: 4,
       finishCount: 1,
-      lastProviderAppendSourceSequence: 1,
-      providerInputClosedSourceSequence: 2,
+      lastProviderAppendSourceSequence: 2,
+      providerInputClosedSourceSequence: 3,
       providerWritesAfterFinish: 0,
     }],
     ['lastResponseAudioDone', {
       authority: 'desktop-provider-socket-event-owner',
-      sourceSequence: 4,
+      sourceSequence: 5,
       responseId: 'fixture-response-1',
       semantics: 'last-provider-audio-response-completed',
     }],
     ['sessionFinishedReceived', {
       authority: 'desktop-livetranslate-socket-owner',
-      sourceSequence: 5,
+      sourceSequence: 6,
       finishCount: 1,
       providerWritesAfterFinish: 0,
     }],
     ['finalRendererAck', {
       authority: 'desktop-renderer-receipt-owner',
-      sourceSequence: 6,
+      sourceSequence: 7,
       cueId: 'fixture-cue-1',
       responseId: 'fixture-response-1',
       cueSequence: 1,
@@ -1725,7 +1788,7 @@ function writeInteractiveSessionBundleFixture(runDirectory, {
     completedAt: new Date(baseMs + 900).toISOString(),
   });
   const summary = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     artifactKind: 'watch-mode-interactive-shard-session-authority',
     ...common,
     vmIdentityDigest: worker.vmIdentityDigest,
@@ -1868,6 +1931,9 @@ function writeAuthorityMatrixManifest(root, entries, {
         ?? releaseAuthority.boundedCaptureGraceFrames,
       maxExternalAudioSamples: cell.maxExternalAudioSamples
         ?? releaseAuthority.maxExternalAudioSamples,
+      modelProtocolProfileIdentity: structuredClone(
+        cell.modelProtocolProfileIdentity ?? releaseAuthority.modelProtocolProfileIdentity,
+      ),
     };
   });
   const budgetGeneratedAt = now instanceof Date
@@ -2047,15 +2113,38 @@ function deviceEvidence(deviceClass, overrides = {}) {
 }
 
 test('strict Watch report validation requires a complete visible three-stage cue', () => {
-  assert.equal(strictWatchSessionReportFailure({ watchSessionReport: healthyWatchSessionReport }), null);
+  assert.equal(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
+    watchSessionReport: healthyWatchSessionReport,
+  }), null);
+  assert.match(strictWatchSessionReportFailure({
+    watchSessionReport: healthyWatchSessionReport,
+  }), /readiness must be session\.updated.*missing/);
+  assert.match(strictWatchSessionReportFailure({
+    realtimeSession: { readinessEvent: 'session.created' },
+    watchSessionReport: healthyWatchSessionReport,
+  }), /readiness must be session\.updated.*session\.created/);
+  assert.match(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
+    runnerReportedModelProtocolProfileIdentity: WATCH_MODEL_PROTOCOL_PROFILE_IDENTITY,
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      modelProtocolProfileIdentity: {
+        ...WATCH_MODEL_PROTOCOL_PROFILE_IDENTITY,
+        endpointPath: '/runner-self-reported-path',
+      },
+    },
+  }), /watchSessionReport model protocol profile identity endpointPath mismatch/);
   assert.match(strictWatchSessionReportFailure({}), /requires a saved/);
   assert.match(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       summary: { ...healthyWatchSessionReport.summary, unrenderedCueCount: 1 },
     },
   }), /published cue\(s\) without visible rendering/);
   assert.match(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       summary: { ...healthyWatchSessionReport.summary, unrenderedCueCount: 0 },
@@ -2073,6 +2162,7 @@ test('strict Watch report validation requires a complete visible three-stage cue
     },
   }), /explicit issue.*not-published/);
   assert.equal(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       cues: [
@@ -2094,6 +2184,7 @@ test('strict Watch report validation requires a complete visible three-stage cue
     },
   }), null);
   assert.match(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       cues: [{
@@ -2114,6 +2205,7 @@ test('strict Watch report validation requires a complete visible three-stage cue
     },
   }), /no complete model/);
   assert.match(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       cues: [
@@ -2134,6 +2226,7 @@ test('strict Watch report validation requires a complete visible three-stage cue
     },
   }), /explicit issue/);
   assert.match(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       cues: [{
@@ -2144,6 +2237,7 @@ test('strict Watch report validation requires a complete visible three-stage cue
     },
   }), /explicit issue/);
   assert.equal(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       cues: [
@@ -2162,6 +2256,7 @@ test('strict Watch report validation requires a complete visible three-stage cue
     },
   }), null);
   assert.equal(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       cues: [{
@@ -2176,6 +2271,7 @@ test('strict Watch report validation requires a complete visible three-stage cue
     },
   }), null);
   assert.match(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       elapsedMs: 0,
@@ -2189,6 +2285,7 @@ test('strict Watch report validation requires a complete visible three-stage cue
 
 test('strict Watch completion is evidence-driven and has no uniform 180-second success floor', () => {
   const ordinaryEvidenceDrivenReport = {
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       elapsedMs: 129_000,
@@ -2465,7 +2562,7 @@ test('strict verifier refuses to scan outputRoot without an explicit current-run
   const result = findWatchModeEvidence({ root, strict: true, ...provenanceOk });
 
   assert.equal(result.ok, false);
-  assert.match(result.reason, /requires the schema-v5 budget-balanced authority manifest/);
+  assert.match(result.reason, /requires the schema-v6 budget-balanced authority manifest/);
   assert.equal(result.candidates.length, 0, 'historical reports must not be scanned in strict mode');
 });
 
@@ -2946,27 +3043,32 @@ test('strict shard preflight rejects a self-consistent model outside the paid re
     artifactKind: 'watch-mode-provider-preflight-authorization-consumption',
     executionId,
     grantDigest: '1'.repeat(64),
-    leaseReservationDigests: Array.from({ length: 8 }, (_, index) => (
+    leaseReservationDigests: Array.from({ length: LIVE_LLM_CELLS.length }, (_, index) => (
       (index + 2).toString(16).repeat(64).slice(0, 64)
     )),
     authorizationDigest: 'a'.repeat(64),
     providerId: PROVIDER_PREFLIGHT_PROVIDER_ID,
     model: unsupportedModel,
     protocol: PROVIDER_PREFLIGHT_PROTOCOL,
-    operation: 'text-translation-preflight',
-    inputMode: 'text-only',
+    operation: 'livetranslate-session-lifecycle-preflight',
+    inputMode: 'none',
+    providerInputMode: 'none',
+    responseMode: 'text-only',
+    terminalEvent: 'session.finished',
+    lifecycleBudget: {
+      firstServerEventLatencyMs: 1_200,
+      socketEventTimeoutMs: 12_000,
+    },
     invocationCount: 1,
     externalAudioSamples: 0,
-    tokenBudget: { maxInputTokens: 4_096, maxOutputTokens: 256 },
     consumptionClaim: unsupportedClaim,
     grantGeneratedAt,
-    reservationIssuedAts: Array.from({ length: 8 }, () => reservationIssuedAt),
+    reservationIssuedAts: Array.from({ length: LIVE_LLM_CELLS.length }, () => reservationIssuedAt),
   };
   fs.mkdirSync(executionRoot);
   fs.mkdirSync(sourceRoot);
   fs.writeFileSync(path.join(sourceRoot, 'provider-probe-result.json'), `${JSON.stringify({
-    operation: 'text-translation-preflight',
-    inputMode: 'text-only',
+    ...fixturePreflightLifecycle(unsupportedModel),
     externalAudioSamples: 0,
     providerInvocationCount: 1,
     executionId,
@@ -2989,61 +3091,31 @@ test('strict shard preflight rejects a self-consistent model outside the paid re
       leaseReservationDigests: expectedAuthorization.leaseReservationDigests,
       authorizationDigest: expectedAuthorization.authorizationDigest,
       consumptionClaim: unsupportedClaim,
-      operation: 'text-translation-preflight',
-      inputMode: 'text-only',
+      ...fixturePreflightLifecycle(unsupportedModel),
       externalAudioSamples: 0,
       providerInvocationCount: 1,
-      tokenBudget: expectedAuthorization.tokenBudget,
-      inputTokens: 12,
-      outputTokens: 3,
       audioSeconds: null,
     },
   });
-  const written = writeCoordinatorProviderPreflightReceipt({
-    executionRoot,
-    executionId,
-    preflight: {
-      providerId: PROVIDER_PREFLIGHT_PROVIDER_ID,
-      operation: 'text-translation-preflight',
-      inputMode: 'text-only',
-      status: 'completed',
-      externalAudioSamples: 0,
-      providerInvocationCount: 1,
-      model: unsupportedModel,
-      evidenceDirectory: sourceRoot,
-    },
-    provenance: CLEAN_CURRENT_PROVENANCE,
-    generatedAt: receiptGeneratedAt,
-    expectedAuthorization,
-    validateEvidence: validateFixture,
-  });
-
   assert.throws(
-    () => verifyStrictShardProviderPreflightAuthority({
-      plan: {
-        executionId,
-        providerPreflightAuthority: {
-          ...written.authority,
-          path: 'execution/provider-preflight-receipt.json',
-        },
-      },
+    () => writeCoordinatorProviderPreflightReceipt({
       executionRoot,
-      executionRootRelative: 'execution',
-      evidenceRoot: root,
-      currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
-      validationAt: new Date(),
-      authorization: {
-        consumption: expectedAuthorization,
-        claimProjection: unsupportedClaim,
-        leaseReservations: Array.from({ length: 8 }, () => ({
-          issuedAt: reservationIssuedAt,
-        })),
-        completion: { generatedAt: completionGeneratedAt },
+      executionId,
+      preflight: {
+        providerId: PROVIDER_PREFLIGHT_PROVIDER_ID,
+        ...fixturePreflightLifecycle(unsupportedModel),
+        status: 'completed',
+        externalAudioSamples: 0,
+        providerInvocationCount: 1,
+        model: unsupportedModel,
+        evidenceDirectory: sourceRoot,
       },
+      provenance: CLEAN_CURRENT_PROVENANCE,
+      generatedAt: receiptGeneratedAt,
+      expectedAuthorization,
       validateEvidence: validateFixture,
     }),
-    /preflight is not exactly one completed text-only invocation/,
+    /authorization failed.*adapter_unavailable/,
   );
 });
 
@@ -3147,7 +3219,7 @@ test('strict production verifier rebuilds the staged four-cell authority from on
         startedAt: new Date(baseMs - 9_750).toISOString(),
       };
       const receipt = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         artifactKind: SHARD_WORKER_READINESS_KIND,
         generatedAt: new Date(baseMs - 9_000).toISOString(),
         executionId,
@@ -3279,7 +3351,7 @@ test('strict production verifier rebuilds the staged four-cell authority from on
       (entry) => entry.path === PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE,
     );
     const consumptionClaim = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       artifactKind: PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_KIND,
       executionId,
       grantDigest: preflightGrant.digest,
@@ -3357,8 +3429,7 @@ test('strict production verifier rebuilds the staged four-cell authority from on
           expectedPreflightAuthorization.leaseReservationDigests,
         authorizationDigest: expectedPreflightAuthorization.authorizationDigest,
         consumptionClaim: consumptionClaimProjection,
-        operation: 'text-translation-preflight',
-        inputMode: 'text-only',
+        ...fixturePreflightLifecycle(),
         externalAudioSamples: 0,
         providerInvocationCount: 1,
         connectionAttempts: 1,
@@ -3367,9 +3438,6 @@ test('strict production verifier rebuilds the staged four-cell authority from on
         connectionClosed: true,
         connectionOwner: `preflight:${observedPreflightAuthorization.executionId}`,
         connectionGeneration: 1,
-        tokenBudget: expectedPreflightAuthorization.tokenBudget,
-        inputTokens: 42,
-        outputTokens: 7,
         audioSeconds: null,
       },
     });
@@ -3389,8 +3457,8 @@ test('strict production verifier rebuilds the staged four-cell authority from on
         desktopProcessId: consumptionClaim.desktopProcessId,
         desktopExecutable: consumptionClaim.desktopExecutablePath,
         desktopExecutableSha256: consumptionClaim.desktopExecutableSha256,
-        inputTokens: 42,
-        outputTokens: 7,
+        inputTokens: null,
+        outputTokens: null,
         audioSeconds: null,
         preflightAuthorization: observedPreflightAuthorization,
         providerConnectStartedAt,
@@ -3418,12 +3486,11 @@ test('strict production verifier rebuilds the staged four-cell authority from on
           exists: true,
           reference: 'credential://provider/dashscope/default',
         },
-        operation: 'text-translation-preflight',
-        inputMode: 'text-only',
+        ...fixturePreflightLifecycle(),
         externalAudioSamples: 0,
         providerInvocationCount: 1,
-        inputTokens: 42,
-        outputTokens: 7,
+        inputTokens: null,
+        outputTokens: null,
         audioSeconds: null,
         connectionAttempts: 1,
         connectionCount: 1,
@@ -3432,6 +3499,11 @@ test('strict production verifier rebuilds the staged four-cell authority from on
         connectionOwner: `preflight:${observedPreflightAuthorization.executionId}`,
         connectionGeneration: 1,
         rawProbeResult: {
+          ...fixturePreflightLifecycle(),
+          productionMode: true,
+          latencyBudgetMs: 1_200,
+          measuredLatencyMs: 606,
+          firstServerEventLatencyMs: 606,
           configuredModel,
           model: PROVIDER_PREFLIGHT_MODEL,
           protocol: PROVIDER_PREFLIGHT_PROTOCOL,
@@ -3441,9 +3513,14 @@ test('strict production verifier rebuilds the staged four-cell authority from on
           transportRequested: 'websocket',
           transportEffective: 'websocket',
           fallbackApplied: false,
-          inputTokens: 42,
-          outputTokens: 7,
+          inputTokens: null,
+          outputTokens: null,
           audioSeconds: null,
+          providerInvocationCount: 1,
+          externalAudioSamples: 0,
+          inputAudioBufferCommitCount: 0,
+          conversationItemCreateInputTextCount: 0,
+          responseCreateCount: 0,
           connectionAttempts: 1,
           connectionCount: 1,
           connectionOpened: true,
@@ -3491,8 +3568,8 @@ test('strict production verifier rebuilds the staged four-cell authority from on
         providerConnectStartedAt,
         providerConnectCompletedAt,
         transportEffective: 'websocket',
-        inputTokens: 42,
-        outputTokens: 7,
+        inputTokens: null,
+        outputTokens: null,
         audioSeconds: null,
         connectionAttempts: 1,
         connectionCount: 1,
@@ -3508,8 +3585,7 @@ test('strict production verifier rebuilds the staged four-cell authority from on
       executionId,
       preflight: {
         providerId: PROVIDER_PREFLIGHT_PROVIDER_ID,
-        operation: 'text-translation-preflight',
-        inputMode: 'text-only',
+        ...fixturePreflightLifecycle(),
         status: 'completed',
         externalAudioSamples: 0,
         providerInvocationCount: 1,
@@ -3558,7 +3634,14 @@ test('strict production verifier rebuilds the staged four-cell authority from on
         grantDigest: preflightGrant.digest,
         leaseReservationDigests: preflightReservations.map((entry) => entry.digest),
         authorizationDigest: authorizationPackage.authorizationDigest,
-        tokenBudget: structuredClone(expectedPreflightAuthorization.tokenBudget),
+        inputMode: expectedPreflightAuthorization.inputMode,
+        providerInputMode: expectedPreflightAuthorization.providerInputMode,
+        responseMode: expectedPreflightAuthorization.responseMode,
+        terminalEvent: expectedPreflightAuthorization.terminalEvent,
+        lifecycleBudget: structuredClone(expectedPreflightAuthorization.lifecycleBudget),
+        modelProtocolProfileIdentity: structuredClone(
+          expectedPreflightAuthorization.modelProtocolProfileIdentity,
+        ),
         consumptionClaim: consumptionClaimProjection,
       },
       providerPreflightCompletion: {
@@ -3566,9 +3649,18 @@ test('strict production verifier rebuilds the staged four-cell authority from on
         digest: preflightCompletion.digest,
         grantDigest: preflightCompletion.grantDigest,
         authorizationDigest: preflightCompletion.authorizationDigest,
-        tokenBudget: structuredClone(preflight.authority.tokenBudget),
-        inputTokens: preflight.authority.inputTokens,
-        outputTokens: preflight.authority.outputTokens,
+        inputMode: preflight.authority.inputMode,
+        providerInputMode: preflight.authority.providerInputMode,
+        responseMode: preflight.authority.responseMode,
+        terminalEvent: preflight.authority.terminalEvent,
+        lifecycleBudget: structuredClone(preflight.authority.lifecycleBudget),
+        modelProtocolProfileIdentity: structuredClone(
+          preflight.authority.modelProtocolProfileIdentity,
+        ),
+        evidenceOutcome: preflight.authority.evidenceOutcome,
+        firstServerEvent: structuredClone(preflight.authority.firstServerEvent),
+        sessionAuthority: structuredClone(preflight.authority.sessionAuthority),
+        rawTrace: structuredClone(preflight.authority.rawTrace),
         audioSeconds: preflight.authority.audioSeconds,
         consumptionClaim: consumptionClaimProjection,
       },
@@ -4420,7 +4512,7 @@ test('strict authority rejects a report-only schema-v1 matrix even when all 18 s
       workspaceRoot: path.resolve('.'),
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
-    /requires watch-mode-strict-matrix-authority schemaVersion=5/,
+    /requires watch-mode-strict-matrix-authority schemaVersion=6/,
   );
 });
 

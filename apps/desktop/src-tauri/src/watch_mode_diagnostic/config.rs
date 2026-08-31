@@ -1,5 +1,9 @@
 use serde_json::{json, Value};
 
+use crate::provider::model_protocol_profile::{
+    lookup_model_protocol_profiles_for_inspection, ModelProtocolProfileInspection,
+};
+
 const STRICT_PAID_AUTHORITY_ENV: &str = "OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY";
 const EXPECTED_PROVIDER_ID_ENV: &str = "OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID";
 const STRICT_PROVIDER_ID: &str = "provider-dashscope";
@@ -56,6 +60,68 @@ fn watch_protocol_matches_provider(provider: &Value, protocol: &str) -> bool {
         "gemini-live" => template_id.contains("gemini"),
         _ => false,
     }
+}
+
+fn legacy_protocol_for_wire_dialect(wire_dialect: &str) -> Option<&'static str> {
+    match wire_dialect {
+        "bailian-livetranslate-session-ws-v1" => Some("dashscope-livetranslate"),
+        "bailian-omni-realtime-ws-v1" => Some("dashscope-omni"),
+        "bailian-qwen-asr-session-ws-v1" => Some("dashscope-asr"),
+        _ => None,
+    }
+}
+
+fn authorized_watch_manifest_profile(
+    model: &str,
+    realtime_protocol: &str,
+) -> Result<Option<ModelProtocolProfileInspection>, String> {
+    if !realtime_protocol.starts_with("dashscope-") {
+        return Ok(None);
+    }
+    let mut profiles = lookup_model_protocol_profiles_for_inspection(model)
+        .map_err(|error| format!("{}: unable to inspect Watch model '{model}'", error.code()))?;
+    let profile = match profiles.len() {
+        0 => {
+            return Err(format!(
+                "model_protocol.model_not_registered: Watch model '{model}' has no exact protocol profile"
+            ))
+        }
+        1 => profiles.remove(0),
+        _ => {
+            return Err(format!(
+                "model_protocol.profile_ambiguous: Watch model '{model}' has multiple protocol profiles"
+            ))
+        }
+    };
+    if profile.adapter_status != "enabled" {
+        return Err(format!(
+            "model_protocol.adapter_unavailable: Watch model '{model}' profile '{}' is not enabled",
+            profile.profile_id
+        ));
+    }
+    if !profile
+        .operations
+        .iter()
+        .any(|operation| operation == "native_translate")
+    {
+        return Err(format!(
+            "model_protocol.operation_not_supported: Watch model '{model}' does not support native_translate"
+        ));
+    }
+    let expected_legacy_protocol = legacy_protocol_for_wire_dialect(&profile.wire_dialect)
+        .ok_or_else(|| {
+            format!(
+                "model_protocol.wire_dialect_mismatch: Watch has no route adapter for wire dialect '{}'",
+                profile.wire_dialect
+            )
+        })?;
+    if realtime_protocol != expected_legacy_protocol {
+        return Err(format!(
+            "model_protocol.wire_dialect_mismatch: Watch protocol '{realtime_protocol}' does not match profile '{}' wire dialect '{}'",
+            profile.profile_id, profile.wire_dialect
+        ));
+    }
+    Ok(Some(profile))
 }
 
 pub(super) fn configure_watch_realtime_provider(
@@ -145,6 +211,8 @@ pub(super) fn configure_watch_realtime_provider_with_environment(
             "strict paid Watch authority requires model={STRICT_MODEL_ID} protocol={STRICT_REALTIME_PROTOCOL}; observed model={resolved_model_id} protocol={realtime_protocol}"
         ));
     }
+    let manifest_profile =
+        authorized_watch_manifest_profile(resolved_model_id, realtime_protocol)?;
     let providers = config
         .get_mut("providers")
         .and_then(Value::as_array_mut)
@@ -252,17 +320,20 @@ pub(super) fn configure_watch_realtime_provider_with_environment(
     } else {
         vec!["streaming", "auto_vad"]
     };
-    registry.insert(
-        0,
-        json!({
+    let mut registry_entry = json!({
             "id": "watch-diagnostic-explicit-protocol",
             "modelId": resolved_model_id,
             "capabilities": capabilities,
             "realtimeProtocol": realtime_protocol,
             "realtimeAudioMode": realtime_audio_mode,
             "interactionCapabilities": interaction_capabilities
-        }),
-    );
+        });
+    if let Some(profile) = manifest_profile {
+        registry_entry["registryVersion"] = Value::String(profile.registry_version);
+        registry_entry["profileId"] = Value::String(profile.profile_id);
+        registry_entry["profileVersion"] = Value::Number(profile.profile_version.into());
+    }
+    registry.insert(0, registry_entry);
 
     let template_id = provider
         .get("templateId")

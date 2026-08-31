@@ -14,12 +14,42 @@ use tungstenite::client::{connect_with_config, IntoClientRequest};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::Message;
 
+#[cfg(test)]
+thread_local! {
+    static TEST_OMNI_CONNECT_URI_OVERRIDE: std::cell::RefCell<Option<tungstenite::http::Uri>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_test_omni_connect_uri_override(uri: &str) {
+    let uri = uri
+        .parse::<tungstenite::http::Uri>()
+        .expect("test Omni connect override must be a valid URI");
+    TEST_OMNI_CONNECT_URI_OVERRIDE.with(|slot| {
+        assert!(
+            slot.borrow().is_none(),
+            "test Omni connect override must be consumed before another is registered"
+        );
+        *slot.borrow_mut() = Some(uri);
+    });
+}
+
 fn connect_without_redirects(
     request: tungstenite::handshake::client::Request,
 ) -> tungstenite::Result<(
     tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
     tungstenite::handshake::client::Response,
 )> {
+    #[cfg(test)]
+    let request = {
+        let mut request = request;
+        TEST_OMNI_CONNECT_URI_OVERRIDE.with(|slot| {
+            if let Some(uri) = slot.borrow_mut().take() {
+                *request.uri_mut() = uri;
+            }
+        });
+        request
+    };
     // Authentication is already attached to this request. A redirect must not
     // replay that credential to another origin.
     connect_with_config(request, None, 0)
@@ -369,8 +399,17 @@ fn initial_connect_backoff(retry_count: usize) -> Duration {
 fn build_dashscope_ws_request(
     provider: &ProviderDraftInput,
 ) -> Result<tungstenite::handshake::client::Request, String> {
+    let authority = crate::audio::events::authorize_bailian_native_translate(provider)?;
     let ws_url = to_websocket_url(&provider.base_url, &provider.model)
         .map_err(|error| format!("无法构建 WebSocket URL: {}", error.message))?;
+    if ws_url.path() != authority.endpoint_path {
+        return Err(format!(
+            "model_protocol.endpoint_family_mismatch: profile '{}' requires endpoint path '{}' but request resolved '{}'",
+            authority.profile_id,
+            authority.endpoint_path,
+            ws_url.path()
+        ));
+    }
     let mut request = ws_url
         .as_str()
         .into_client_request()
@@ -843,6 +882,7 @@ pub(crate) use self::protocol::{
     build_dashscope_response_create_for_protocol, build_dashscope_session_update,
     build_dashscope_text_item,
     build_omni_session_update_for_provider_with_output_mode, OmniOutputMode, OmniSpeechConfig,
+    native_response_id_from_event,
     resolve_livetranslate_language, resolve_livetranslate_output_mode,
 };
 use self::translated_pcm_authority::TranslatedPcmAuthority;
@@ -850,7 +890,7 @@ use self::protocol::{
     check_vad_warning, elapsed_ms_since,
     ensure_transcription_cue_id, handle_response_done, handle_session_ready_event,
     manual_turn_response_stream_active,
-    native_response_id_from_event, next_omni_cue_id, record_native_playback_stale,
+    next_omni_cue_id, record_native_playback_stale,
     reset_manual_turn_input_state, reset_omni_turn_state,
     resolve_completed_transcription, resolve_native_response_source_text,
     response_stream_owns_current_cue,

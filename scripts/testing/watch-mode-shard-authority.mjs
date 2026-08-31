@@ -8,8 +8,12 @@ import {
   LIVE_LLM_CELLS,
 } from './watch-mode-balanced-release-plan.mjs';
 import { rebuildReportFromDirectory } from './watch-mode-report.mjs';
+import {
+  assertWatchModelProtocolIdentity,
+} from './watch-mode-model-protocol-authority.mjs';
 
-export const SHARD_AUTHORITY_SCHEMA_VERSION = 2;
+export const SHARD_AUTHORITY_SCHEMA_VERSION = 3;
+const SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION = 2;
 export const SHARD_EXECUTION_PLAN_KIND = 'watch-mode-paid-shard-execution-plan';
 export const SHARD_CELL_LEASE_KIND = 'watch-mode-paid-shard-cell-lease';
 export const SHARD_CELL_RESULT_KIND = 'watch-mode-paid-shard-cell-result';
@@ -33,7 +37,7 @@ export const SHARD_INTERACTIVE_CELL_EXECUTION_FILE = 'interactive-cell-execution
 export const SHARD_INTERACTIVE_CELL_EXECUTION_KIND =
   'watch-mode-interactive-shard-cell-execution';
 
-export const PROVIDER_INPUT_BUDGET_LEDGER_SCHEMA_VERSION = 1;
+export const PROVIDER_INPUT_BUDGET_LEDGER_SCHEMA_VERSION = 2;
 export const PROVIDER_INPUT_BUDGET_LEDGER_KIND = 'watch-mode-provider-input-budget-ledger';
 export const PROVIDER_INPUT_BUDGET_LEDGER_FILE = 'provider-input-budget-ledger.json';
 export const PROVIDER_INPUT_BUDGET_JOURNAL_FILE = `${PROVIDER_INPUT_BUDGET_LEDGER_FILE}.journal.jsonl`;
@@ -52,6 +56,10 @@ export const SHARD_STRICT_PAID_PROVIDER_IDENTITY = Object.freeze({
 });
 export const SHARD_STRICT_PAID_MODEL_PROTOCOLS = Object.freeze({
   'qwen3.5-livetranslate-flash-realtime': 'dashscope-livetranslate',
+});
+const SHARD_STRICT_PREFLIGHT_LIFECYCLE_BUDGET = Object.freeze({
+  firstServerEventLatencyMs: 1_200,
+  socketEventTimeoutMs: 12_000,
 });
 
 export const SHARD_INPUT_SAMPLE_RATE_HZ = 16_000;
@@ -354,6 +362,7 @@ function approvedCellProjection(cell) {
     auxiliaryExternalAudioSeconds: cell.auxiliaryExternalAudioSeconds ?? 0,
     subtitleTranslationMode: cell.subtitleTranslationMode ?? 'native',
     modelId: cell.modelId,
+    modelProtocolProfileIdentity: structuredClone(cell.modelProtocolProfileIdentity),
     feedbackLoopPrevention: cell.feedbackLoopPrevention,
     deviceClass: cell.deviceClass,
   };
@@ -448,26 +457,35 @@ function assertBoundPrerequisites(plan) {
   opaqueAuthority(plan.providerPreflightAuthority, 'provider preflight authority', (value) => {
     if (
       value.status !== 'completed'
-      || value.operation !== 'text-translation-preflight'
+      || value.operation !== 'livetranslate-session-lifecycle-preflight'
+      || value.inputMode !== 'none'
+      || value.providerInputMode !== 'none'
+      || value.responseMode !== 'text-only'
+      || value.terminalEvent !== 'session.finished'
       || Number(value.invocationCount) !== 1
       || Number(value.externalAudioSamples) !== 0
-      || canonicalJson(value.tokenBudget) !== canonicalJson({
-        maxInputTokens: 4_096,
-        maxOutputTokens: 256,
-      })
-      || typeof value.inputTokens !== 'number'
-      || !Number.isSafeInteger(value.inputTokens)
-      || value.inputTokens < 0
-      || value.inputTokens > 4_096
-      || typeof value.outputTokens !== 'number'
-      || !Number.isSafeInteger(value.outputTokens)
-      || value.outputTokens < 0
-      || value.outputTokens > 256
+      || canonicalJson(value.lifecycleBudget)
+        !== canonicalJson(SHARD_STRICT_PREFLIGHT_LIFECYCLE_BUDGET)
+      || value.evidenceOutcome !== 'livetranslate-session-finished'
+      || value.firstServerEvent?.type !== 'session.created'
+      || !Number.isSafeInteger(value.firstServerEvent?.monotonicMs)
+      || value.firstServerEvent.monotonicMs < 0
+      || value.firstServerEvent.monotonicMs > 1_200
+      || !value.sessionAuthority
+      || !value.rawTrace
+      || value.tokenBudget != null
+      || value.inputTokens != null
+      || value.outputTokens != null
       || (value.audioSeconds != null
         && (typeof value.audioSeconds !== 'number' || value.audioSeconds !== 0))
     ) {
-      throw new Error('provider preflight authority must bind exactly one completed text-only invocation');
+      throw new Error('provider preflight authority must bind exactly one completed zero-input LiveTranslate lifecycle');
     }
+    assertWatchModelProtocolIdentity(
+      value.modelProtocolProfileIdentity,
+      LIVE_LLM_CELLS[0].modelProtocolProfileIdentity,
+      'provider preflight authority model protocol profile identity',
+    );
   });
   const hasTwoStagePreflight = Boolean(
     plan.providerPreflightGrant
@@ -492,6 +510,11 @@ function assertBoundPrerequisites(plan) {
           || value.leaseId !== plan.cells[index].leaseId
           || !SHA256_PATTERN.test(String(value.digest ?? ''))
         ) throw new Error(`provider preflight lease reservation authority ${index} is invalid`);
+        assertWatchModelProtocolIdentity(
+          value.modelProtocolProfileIdentity,
+          LIVE_LLM_CELLS[index].modelProtocolProfileIdentity,
+          `provider preflight lease reservation authority ${index} model protocol profile identity`,
+        );
       });
     });
     if (
@@ -501,12 +524,14 @@ function assertBoundPrerequisites(plan) {
       || canonicalJson(plan.providerPreflightAuthorization.leaseReservationDigests)
         !== canonicalJson(plan.providerPreflightLeaseReservations.map((entry) => entry.digest))
       || !SHA256_PATTERN.test(String(plan.providerPreflightAuthorization.authorizationDigest ?? ''))
-      || canonicalJson(plan.providerPreflightAuthorization.tokenBudget) !== canonicalJson({
-        maxInputTokens: 4_096,
-        maxOutputTokens: 256,
-      })
-      || canonicalJson(plan.providerPreflightAuthorization.tokenBudget)
-        !== canonicalJson(plan.providerPreflightAuthority.tokenBudget)
+      || plan.providerPreflightAuthorization.inputMode !== 'none'
+      || plan.providerPreflightAuthorization.providerInputMode !== 'none'
+      || plan.providerPreflightAuthorization.responseMode !== 'text-only'
+      || plan.providerPreflightAuthorization.terminalEvent !== 'session.finished'
+      || canonicalJson(plan.providerPreflightAuthorization.lifecycleBudget)
+        !== canonicalJson(SHARD_STRICT_PREFLIGHT_LIFECYCLE_BUDGET)
+      || canonicalJson(plan.providerPreflightAuthorization.lifecycleBudget)
+        !== canonicalJson(plan.providerPreflightAuthority.lifecycleBudget)
       || plan.providerPreflightAuthorization.consumptionClaim?.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
       || plan.providerPreflightAuthorization.consumptionClaim?.artifactKind
         !== 'watch-mode-provider-preflight-consumption-claim'
@@ -522,18 +547,38 @@ function assertBoundPrerequisites(plan) {
       || !SHA256_PATTERN.test(String(plan.providerPreflightAuthorization.consumptionClaim?.sha256 ?? ''))
       || plan.providerPreflightAuthorization.consumptionClaim?.retryPolicy !== 'new-execution-required'
     ) throw new Error('execution plan provider preflight authorization set is invalid');
+    assertWatchModelProtocolIdentity(
+      plan.providerPreflightAuthorization.modelProtocolProfileIdentity,
+      LIVE_LLM_CELLS[0].modelProtocolProfileIdentity,
+      'execution plan provider preflight authorization model protocol profile identity',
+    );
     opaqueAuthority(plan.providerPreflightCompletion, 'provider preflight completion authority', (value) => {
       if (
         !SHA256_PATTERN.test(String(value.digest ?? ''))
         || value.grantDigest !== plan.providerPreflightGrant.digest
         || value.authorizationDigest !== plan.providerPreflightAuthorization.authorizationDigest
-        || canonicalJson(value.tokenBudget) !== canonicalJson(plan.providerPreflightAuthority.tokenBudget)
-        || value.inputTokens !== plan.providerPreflightAuthority.inputTokens
-        || value.outputTokens !== plan.providerPreflightAuthority.outputTokens
+        || value.inputMode !== plan.providerPreflightAuthority.inputMode
+        || value.providerInputMode !== plan.providerPreflightAuthority.providerInputMode
+        || value.responseMode !== plan.providerPreflightAuthority.responseMode
+        || value.terminalEvent !== plan.providerPreflightAuthority.terminalEvent
+        || canonicalJson(value.lifecycleBudget)
+          !== canonicalJson(plan.providerPreflightAuthority.lifecycleBudget)
+        || value.evidenceOutcome !== plan.providerPreflightAuthority.evidenceOutcome
+        || canonicalJson(value.firstServerEvent)
+          !== canonicalJson(plan.providerPreflightAuthority.firstServerEvent)
+        || canonicalJson(value.sessionAuthority)
+          !== canonicalJson(plan.providerPreflightAuthority.sessionAuthority)
+        || canonicalJson(value.rawTrace)
+          !== canonicalJson(plan.providerPreflightAuthority.rawTrace)
         || value.audioSeconds !== plan.providerPreflightAuthority.audioSeconds
         || canonicalJson(value.consumptionClaim)
           !== canonicalJson(plan.providerPreflightAuthorization.consumptionClaim)
       ) throw new Error('provider preflight completion authority is invalid');
+      assertWatchModelProtocolIdentity(
+        value.modelProtocolProfileIdentity,
+        LIVE_LLM_CELLS[0].modelProtocolProfileIdentity,
+        'provider preflight completion authority model protocol profile identity',
+      );
     });
   }
 }
@@ -992,6 +1037,7 @@ export function issueCellLeases(plan, privateKeyPem, { issuedAt = new Date() } =
       runtimeBundleDigest: plan.authority.runtimeBundleDigest,
       inputSampleRateHz: SHARD_INPUT_SAMPLE_RATE_HZ,
       maxExternalAudioSamples: cell.maxExternalAudioSamples,
+      modelProtocolProfileIdentity: structuredClone(cell.modelProtocolProfileIdentity),
       reclaimPolicy: 'never-within-execution',
       retryPolicy: 'new-execution-required',
     };
@@ -1027,11 +1073,20 @@ export function verifyCellLease(lease, plan, { now = new Date(), checkExpiry = t
     runtimeBundleDigest: plan.authority.runtimeBundleDigest,
     inputSampleRateHz: SHARD_INPUT_SAMPLE_RATE_HZ,
     maxExternalAudioSamples: cell.maxExternalAudioSamples,
+    modelProtocolProfileIdentity: cell.modelProtocolProfileIdentity,
     reclaimPolicy: 'never-within-execution',
     retryPolicy: 'new-execution-required',
   };
   for (const [key, expected] of Object.entries(exact)) {
-    if (lease[key] !== expected) throw new Error(`shard cell lease ${key} does not match the execution plan`);
+    if (key === 'modelProtocolProfileIdentity') {
+      assertWatchModelProtocolIdentity(
+        lease[key],
+        expected,
+        'shard cell lease model protocol profile identity',
+      );
+    } else if (lease[key] !== expected) {
+      throw new Error(`shard cell lease ${key} does not match the execution plan`);
+    }
   }
   if (lease.expiresAt !== plan.expiresAt) throw new Error('shard cell lease expiry does not match the execution plan');
   const issuedAtMs = assertIsoDate(lease.issuedAt, 'cell lease issuedAt');
@@ -1069,7 +1124,9 @@ function readJsonLines(filePath, label) {
 
 function assertProviderIdentity(value, expected, label) {
   for (const [key, expectedValue] of Object.entries(expected)) {
-    if (value?.[key] !== expectedValue) throw new Error(`${label} ${key} mismatch`);
+    if (key === 'modelProtocolProfileIdentity') {
+      assertWatchModelProtocolIdentity(value?.[key], expectedValue, `${label} ${key}`);
+    } else if (value?.[key] !== expectedValue) throw new Error(`${label} ${key} mismatch`);
   }
 }
 
@@ -1089,6 +1146,7 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
     direction: 'inbound',
     model: cell.modelId,
     protocol: SHARD_STRICT_PAID_MODEL_PROTOCOLS[cell.modelId],
+    modelProtocolProfileIdentity: cell.modelProtocolProfileIdentity,
     ...SHARD_STRICT_PAID_PROVIDER_IDENTITY,
   };
   assertProviderIdentity(ledger, expectedIdentity, 'provider input budget ledger');
@@ -1104,6 +1162,7 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
     leaseId: lease.leaseId,
     runMarker: ledger.runMarker,
     maxSamples: cell.maxExternalAudioSamples,
+    modelProtocolProfileIdentity: cell.modelProtocolProfileIdentity,
   }, 'provider input launch lease');
   if (Number(ledger.maxSamples) !== Number(cell.maxExternalAudioSamples) || Number(ledger.maxSamples) !== lease.maxExternalAudioSamples) {
     throw new Error('provider input budget ledger maxSamples does not match the signed cell lease');
@@ -1212,6 +1271,7 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
     direction: ledger.direction,
     model: ledger.model,
     protocol: ledger.protocol,
+    modelProtocolProfileIdentity: structuredClone(ledger.modelProtocolProfileIdentity),
     strictPaidAuthority: ledger.strictPaidAuthority,
     providerId: ledger.providerId,
     templateId: ledger.templateId,
@@ -1428,7 +1488,7 @@ export function validateInteractiveLaunchAuthority({
   const commandFile = fileAuthorityEntry(commandPath, path.basename(commandPath));
   const identity = { plan, lease, worker };
   if (
-    command.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
+    command.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
     || command.artifactKind !== 'watch-mode-interactive-task-command'
     || command.mode !== 'shard-cell'
     || interactiveIdentityFailure(command, identity, 'interactive command')
@@ -1447,7 +1507,7 @@ export function validateInteractiveLaunchAuthority({
     || !SHA256_PATTERN.test(String(command.nodeSha256 ?? '').toLowerCase())
   ) throw new Error('interactive task command does not match the signed lease/worker');
   if (
-    launch.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
+    launch.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
     || launch.artifactKind !== 'watch-mode-interactive-shard-launch-authority'
     || interactiveIdentityFailure(launch, identity, 'interactive launch')
     || launch.vmIdentityDigest !== worker.vmIdentityDigest
@@ -1470,7 +1530,7 @@ export function validateInteractiveLaunchAuthority({
     || Number(launch.explorerProcess.sessionId) !== Number(launch.sessionId)
   ) throw new Error('interactive launch process parent/session topology is invalid');
   if (
-    release.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
+    release.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
     || release.artifactKind !== 'watch-mode-interactive-shard-claim-release'
     || interactiveIdentityFailure(release, identity, 'interactive claim release')
     || release.vmIdentityDigest !== worker.vmIdentityDigest
@@ -1595,7 +1655,7 @@ export function validateInteractiveSessionAuthority({
     expectedRequiredRoles.push('desktop', 'bridge', 'recorder');
   }
   if (
-    processAuthority.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
+    processAuthority.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
     || processAuthority.artifactKind !== 'watch-mode-interactive-process-authority'
     || interactiveIdentityFailure(processAuthority, identity, 'interactive process authority')
     || processAuthority.vmIdentityDigest !== worker.vmIdentityDigest
@@ -1667,7 +1727,7 @@ export function validateInteractiveSessionAuthority({
     }
   }
   if (
-    terminal.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
+    terminal.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
     || terminal.artifactKind !== 'watch-mode-interactive-task-terminal'
     || interactiveIdentityFailure(terminal, identity, 'interactive terminal')
     || terminal.vmIdentityDigest !== worker.vmIdentityDigest
@@ -1683,7 +1743,7 @@ export function validateInteractiveSessionAuthority({
     || processCompletedAtMs > Date.parse(String(terminal.completedAt ?? ''))
   ) throw new Error('interactive task terminal does not match the completed shard process');
   if (
-    taskTerminal.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
+    taskTerminal.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
     || taskTerminal.artifactKind !== 'watch-mode-interactive-scheduled-task-terminal'
     || taskTerminal.executionId !== plan.executionId
     || taskTerminal.planDigest !== plan.planDigest
@@ -1706,7 +1766,7 @@ export function validateInteractiveSessionAuthority({
     || Date.parse(taskTerminal.completedAt) < Date.parse(terminal.completedAt)
   ) throw new Error('interactive scheduled task terminal is invalid');
   if (
-    execution.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
+    execution.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
     || execution.artifactKind !== SHARD_INTERACTIVE_CELL_EXECUTION_KIND
     || interactiveIdentityFailure(execution, identity, 'interactive cell execution')
     || execution.vmIdentityDigest !== worker.vmIdentityDigest

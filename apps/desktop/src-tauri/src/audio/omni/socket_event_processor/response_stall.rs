@@ -31,6 +31,7 @@ pub(super) struct ResponseStallContext<'a, R: tauri::Runtime> {
 pub(super) struct ResponseStallPoll<S> {
     pub(super) state: ResponseStallReconnectState<S>,
     pub(super) socket_reconnected: bool,
+    pub(super) reconnected_session_update: Option<Value>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -60,6 +61,7 @@ where
         ResponseStallAction::None => Ok(ResponseStallPoll {
             state,
             socket_reconnected: false,
+            reconnected_session_update: None,
         }),
         ResponseStallAction::Cancel { response_id } => {
             send_single_omni_cancel(
@@ -122,6 +124,7 @@ where
     Ok(ResponseStallPoll {
         state,
         socket_reconnected: false,
+        reconnected_session_update: None,
     })
 }
 
@@ -144,6 +147,7 @@ where
             active_voice: state.active_voice,
             voice_fallback_applied: state.voice_fallback_applied,
             socket_reconnected: false,
+            reconnected_session_update: None,
         },
         connector,
         context.app,
@@ -166,6 +170,7 @@ where
             voice_fallback_applied: reconnect.voice_fallback_applied,
         },
         socket_reconnected: true,
+        reconnected_session_update: reconnect.reconnected_session_update,
     })
 }
 

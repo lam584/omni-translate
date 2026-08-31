@@ -65,8 +65,21 @@ fn connect_stt_socket(
     provider: &ProviderDraftInput,
     connect_error_prefix: &str,
 ) -> Result<WsSocket, String> {
+    let authority = crate::audio::events::authorize_bailian_model_operation(
+        provider,
+        ASR_MODEL,
+        "asr",
+    )?;
     let ws_url = to_websocket_url(&provider.base_url, ASR_MODEL)
         .map_err(|error| format!("无法构建 WebSocket URL: {}", error.message))?;
+    if ws_url.path() != authority.endpoint_path {
+        return Err(format!(
+            "model_protocol.endpoint_family_mismatch: profile '{}' requires endpoint path '{}' but request resolved '{}'",
+            authority.profile_id,
+            authority.endpoint_path,
+            ws_url.path()
+        ));
+    }
 
     let mut request = ws_url
         .as_str()

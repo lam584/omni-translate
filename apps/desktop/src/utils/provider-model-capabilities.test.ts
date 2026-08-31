@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { MODEL_PROTOCOL_REGISTRY, lookupModelProtocolProfiles } from '../model-protocol/profile-registry';
 import {
   capabilityForScenario,
   createDefaultLocalModelCapabilityRegistry,
@@ -114,6 +115,18 @@ describe('provider model capabilities', () => {
     expect(inferProviderCapabilitiesFromModelName('custom-realtime')).toEqual([]);
     expect(inferProviderCapabilitiesFromModelName('custom', 'DeepSeek Chat')).toEqual(['text-generation']);
     expect(inferProviderCapabilitiesFromModelName('unclassified')).toEqual([]);
+  });
+
+  it('keeps ordinary Qwen text models separate from speech capabilities', () => {
+    for (const modelId of ['qwen-plus', 'qwen-max', 'qwen-turbo']) {
+      expect(inferProviderCapabilitiesFromModelName(modelId), modelId).toEqual(['text-generation']);
+    }
+    const seeded = createDefaultLocalModelCapabilityRegistry();
+    for (const modelId of ['qwen-plus', 'qwen-max', 'qwen-turbo']) {
+      expect(seeded.find((entry) => entry.modelId === modelId)?.capabilities, modelId).toEqual([
+        'text-generation',
+      ]);
+    }
   });
 
   it('infers interaction capabilities for realtime, HTTP audio, pipeline, and text-only backends', () => {
@@ -242,6 +255,9 @@ describe('provider model capabilities', () => {
     expect(entry.realtimeAudioMode).toBe('gemini_auto_activity');
     expect(entry.interactionCapabilities).toContain('client_activity');
     expect(entry.source).toBe('manual');
+    expect(entry.registryVersion).toBeUndefined();
+    expect(entry.profileId).toBeUndefined();
+    expect(entry.profileVersion).toBeUndefined();
 
     const seeded = createDefaultLocalModelCapabilityRegistry();
     expect(seeded.some((item) => item.modelId === 'gpt-realtime' && item.interactionCapabilities?.includes('manual_commit'))).toBe(true);
@@ -258,6 +274,70 @@ describe('provider model capabilities', () => {
     expect(seeded.find((item) => item.modelId === 'gemini-3.1-flash-live-preview')?.realtimeAudioMode).toBe('gemini_auto_activity');
     expect(seeded.find((item) => item.modelId === 'qwen3.5-livetranslate-flash-realtime')?.realtimeAudioMode).toBe('server_vad');
     expect(seeded.find((item) => item.modelId === 'qwen3.5-omni-flash-realtime')?.realtimeAudioMode).toBe('semantic_vad');
+    expect(seeded.find((item) => item.modelId === 'qwen3.5-livetranslate-flash-realtime')).toMatchObject({
+      registryVersion: MODEL_PROTOCOL_REGISTRY.registryVersion,
+      profileId: 'bailian.livetranslate.realtime.ws',
+      profileVersion: 1,
+    });
+    const qwenAudioChat = seeded.find((item) => item.modelId === 'qwen-audio-3.0-realtime-plus');
+    expect(qwenAudioChat?.capabilities).toEqual(['speech-to-speech']);
+    expect(qwenAudioChat?.realtimeProtocol).toBeUndefined();
+    expect(qwenAudioChat).toMatchObject({
+      modelProtocolProfile: {
+        registryVersion: MODEL_PROTOCOL_REGISTRY.registryVersion,
+        profileId: 'bailian.qwen-audio-chat.realtime.ws',
+        profileVersion: 1,
+        product: 'qwen-audio-realtime-dialogue',
+        operations: ['dialogue'],
+        transport: 'websocket',
+        wireDialect: 'bailian-qwen-audio-chat-realtime-ws-v1',
+        inputFraming: 'json-base64',
+        outputFraming: 'json-base64',
+        adapterStatus: 'manifest-only',
+      },
+    });
+    expect(seeded.find((item) => item.modelId === 'qwen3-asr-flash-realtime')).toMatchObject({
+      capabilities: ['speech-to-text'],
+      modelProtocolProfile: {
+        operations: ['asr'],
+        wireDialect: 'bailian-qwen-asr-session-ws-v1',
+        adapterStatus: 'manifest-only',
+      },
+    });
+    expect(seeded.find((item) => item.modelId === 'qwen3-tts-instruct-flash-realtime-2026-01-22')).toMatchObject({
+      capabilities: ['text-to-speech'],
+      modelProtocolProfile: {
+        operations: ['tts'],
+        wireDialect: 'bailian-qwen-tts-session-ws-v1',
+        adapterStatus: 'manifest-only',
+      },
+    });
+    for (const item of seeded.filter((candidate) => lookupModelProtocolProfiles(candidate.modelId).length === 1)) {
+      const [profile] = lookupModelProtocolProfiles(item.modelId);
+      const dialect = MODEL_PROTOCOL_REGISTRY.dialects.find((candidate) =>
+        candidate.dialectId === profile.dialectId);
+      expect(dialect?.dialectId, item.modelId).toBe(profile.dialectId);
+      expect(item, item.modelId).toMatchObject({
+        registryVersion: MODEL_PROTOCOL_REGISTRY.registryVersion,
+        profileId: profile.profileId,
+        profileVersion: profile.profileVersion,
+        modelProtocolProfile: {
+          registryVersion: MODEL_PROTOCOL_REGISTRY.registryVersion,
+          profileId: profile.profileId,
+          profileVersion: profile.profileVersion,
+          product: profile.product,
+          operations: profile.operations,
+          transport: dialect?.transport,
+          endpointFamily: dialect?.endpointFamily,
+          endpointPath: dialect?.endpointPath,
+          wireDialect: dialect?.dialectId,
+          inputFraming: dialect?.inputFraming,
+          outputFraming: dialect?.outputFraming,
+          terminalLifecycle: dialect?.terminalLifecycle,
+          adapterStatus: profile.adapter.status,
+        },
+      });
+    }
     expect(seeded.every((item) => item.capabilities.length > 0)).toBe(true);
   });
 });

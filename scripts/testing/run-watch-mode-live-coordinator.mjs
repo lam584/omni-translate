@@ -5,6 +5,10 @@ import path from 'node:path';
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
 import {
+  assertWatchModelProtocolIdentity,
+  deriveWatchModelProtocolIdentity,
+} from './watch-mode-model-protocol-authority.mjs';
+import {
   SHARD_AUTHORITY_SCHEMA_VERSION,
   SHARD_EXECUTION_PLAN_FILE,
   SHARD_MATRIX_CELL_COUNT,
@@ -32,6 +36,12 @@ import {
   PROVIDER_PREFLIGHT_LEASE_RESERVATION_DIRECTORY,
   PROVIDER_PREFLIGHT_LEASE_RESERVATION_KIND as COORDINATOR_PREFLIGHT_LEASE_RESERVATION_KIND,
   PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_FILE,
+  PROVIDER_PREFLIGHT_INPUT_MODE,
+  PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET,
+  PROVIDER_PREFLIGHT_OPERATION,
+  PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE,
+  PROVIDER_PREFLIGHT_RESPONSE_MODE,
+  PROVIDER_PREFLIGHT_TERMINAL_EVENT,
   createProviderPreflightCompletion,
   createProviderPreflightGrant,
   createProviderPreflightLeaseReservations,
@@ -135,11 +145,21 @@ function assertPreflightOutcome(outcome) {
     || outcome.status !== 'completed'
     || !String(outcome.providerId ?? '').trim()
     || !String(outcome.evidenceDirectory ?? '').trim()
-    || outcome.operation !== 'text-translation-preflight'
-    || outcome.inputMode !== 'text-only'
+    || outcome.operation !== PROVIDER_PREFLIGHT_OPERATION
+    || outcome.inputMode !== PROVIDER_PREFLIGHT_INPUT_MODE
+    || outcome.providerInputMode !== PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE
+    || outcome.responseMode !== PROVIDER_PREFLIGHT_RESPONSE_MODE
+    || outcome.terminalEvent !== PROVIDER_PREFLIGHT_TERMINAL_EVENT
+    || canonicalJson(outcome.lifecycleBudget) !== canonicalJson(PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET)
+    || outcome.evidenceOutcome !== 'livetranslate-session-finished'
+    || outcome.firstServerEvent?.type !== 'session.created'
+    || !Number.isSafeInteger(outcome.firstServerEvent?.monotonicMs)
+    || outcome.firstServerEvent.monotonicMs < 0
+    || outcome.firstServerEvent.monotonicMs
+      > PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET.firstServerEventLatencyMs
     || Number(outcome.providerInvocationCount) !== 1
     || Number(outcome.externalAudioSamples) !== 0
-  ) throw new Error('coordinator provider preflight must be one completed text-only invocation with bound evidence');
+  ) throw new Error('coordinator provider preflight must be one completed zero-input LiveTranslate lifecycle with bound evidence');
   return outcome;
 }
 
@@ -220,15 +240,32 @@ export function writeCoordinatorProviderPreflightReceipt({
     || Math.min(...evidenceTimes.map((value) => Date.parse(String(value)))) <= authorizationPublishedAt
   ) throw new Error('provider preflight raw evidence did not start after signed authorization publication');
   const summary = validation.summary;
-  const inputTokens = summary.inputTokens;
-  const outputTokens = summary.outputTokens;
+  const modelProtocolProfileIdentity = deriveWatchModelProtocolIdentity(summary.model);
+  assertWatchModelProtocolIdentity(
+    expectedAuthorization?.modelProtocolProfileIdentity,
+    modelProtocolProfileIdentity,
+    'coordinator signed preflight authorization model protocol profile identity',
+  );
   const audioSeconds = summary.audioSeconds == null ? null : summary.audioSeconds;
-  const tokenBudget = expectedAuthorization?.tokenBudget;
+  const lifecycleBudget = expectedAuthorization?.lifecycleBudget;
   if (
     summary.providerId !== checked.providerId
     || !String(summary.model ?? '').trim()
-    || summary.operation !== 'text-translation-preflight'
-    || summary.inputMode !== 'text-only'
+    || summary.operation !== PROVIDER_PREFLIGHT_OPERATION
+    || summary.inputMode !== PROVIDER_PREFLIGHT_INPUT_MODE
+    || summary.providerInputMode !== PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE
+    || summary.responseMode !== PROVIDER_PREFLIGHT_RESPONSE_MODE
+    || summary.terminalEvent !== PROVIDER_PREFLIGHT_TERMINAL_EVENT
+    || canonicalJson(summary.lifecycleBudget) !== canonicalJson(lifecycleBudget)
+    || canonicalJson(lifecycleBudget) !== canonicalJson(PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET)
+    || summary.evidenceOutcome !== 'livetranslate-session-finished'
+    || summary.firstServerEvent?.type !== 'session.created'
+    || !Number.isSafeInteger(summary.firstServerEvent?.monotonicMs)
+    || summary.firstServerEvent.monotonicMs < 0
+    || summary.firstServerEvent.monotonicMs
+      > PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET.firstServerEventLatencyMs
+    || !summary.sessionAuthority
+    || !summary.rawTrace
     || Number(summary.externalAudioSamples) !== 0
     || Number(summary.providerInvocationCount) !== 1
     || summary.protocol !== expectedAuthorization?.protocol
@@ -239,18 +276,10 @@ export function writeCoordinatorProviderPreflightReceipt({
       !== canonicalJson(expectedAuthorization?.consumptionClaim)
     || canonicalJson(summary.leaseReservationDigests)
       !== canonicalJson(expectedAuthorization?.leaseReservationDigests)
-    || Number(tokenBudget?.maxInputTokens) !== 4_096
-    || Number(tokenBudget?.maxOutputTokens) !== 256
-    || typeof inputTokens !== 'number'
-    || typeof outputTokens !== 'number'
-    || !Number.isSafeInteger(inputTokens)
-    || inputTokens < 0
-    || inputTokens > Number(tokenBudget.maxInputTokens)
-    || !Number.isSafeInteger(outputTokens)
-    || outputTokens < 0
-    || outputTokens > Number(tokenBudget.maxOutputTokens)
+    || summary.inputTokens != null
+    || summary.outputTokens != null
     || (audioSeconds !== null && (typeof audioSeconds !== 'number' || audioSeconds !== 0))
-  ) throw new Error('coordinator provider preflight summary is not one text-only zero-audio invocation');
+  ) throw new Error('coordinator provider preflight summary is not one zero-input LiveTranslate lifecycle');
   const evidenceRoot = path.join(
     path.resolve(executionRoot),
     ...COORDINATOR_PROVIDER_PREFLIGHT_EVIDENCE_ROOT.split('/'),
@@ -269,11 +298,17 @@ export function writeCoordinatorProviderPreflightReceipt({
     protocol: summary.protocol,
     invocationCount: summary.providerInvocationCount,
     operation: summary.operation,
+    modelProtocolProfileIdentity: structuredClone(modelProtocolProfileIdentity),
     inputMode: summary.inputMode,
+    providerInputMode: summary.providerInputMode,
+    responseMode: summary.responseMode,
+    terminalEvent: summary.terminalEvent,
     externalAudioSamples: summary.externalAudioSamples,
-    tokenBudget: structuredClone(tokenBudget),
-    inputTokens,
-    outputTokens,
+    lifecycleBudget: structuredClone(lifecycleBudget),
+    evidenceOutcome: summary.evidenceOutcome,
+    firstServerEvent: structuredClone(summary.firstServerEvent),
+    sessionAuthority: structuredClone(summary.sessionAuthority),
+    rawTrace: structuredClone(summary.rawTrace),
     audioSeconds,
     rawEvidenceRoot: COORDINATOR_PROVIDER_PREFLIGHT_EVIDENCE_ROOT,
     entryCount: entries.length,
@@ -303,12 +338,18 @@ export function writeCoordinatorProviderPreflightReceipt({
     model: summary.model,
     protocol: summary.protocol,
     operation: summary.operation,
+    modelProtocolProfileIdentity: structuredClone(modelProtocolProfileIdentity),
     inputMode: summary.inputMode,
+    providerInputMode: summary.providerInputMode,
+    responseMode: summary.responseMode,
+    terminalEvent: summary.terminalEvent,
     status: checked.status,
     externalAudioSamples: summary.externalAudioSamples,
-    tokenBudget: structuredClone(tokenBudget),
-    inputTokens,
-    outputTokens,
+    lifecycleBudget: structuredClone(lifecycleBudget),
+    evidenceOutcome: summary.evidenceOutcome,
+    firstServerEvent: structuredClone(summary.firstServerEvent),
+    sessionAuthority: structuredClone(summary.sessionAuthority),
+    rawTrace: structuredClone(summary.rawTrace),
     audioSeconds,
     evidenceAuthority,
     scenarioId: 'E2E-PROVIDER-PROBE',
@@ -332,12 +373,18 @@ export function writeCoordinatorProviderPreflightReceipt({
       model: summary.model,
       protocol: summary.protocol,
       operation: summary.operation,
+      modelProtocolProfileIdentity: structuredClone(modelProtocolProfileIdentity),
       inputMode: summary.inputMode,
+      providerInputMode: summary.providerInputMode,
+      responseMode: summary.responseMode,
+      terminalEvent: summary.terminalEvent,
       status: 'completed',
       externalAudioSamples: summary.externalAudioSamples,
-      tokenBudget: structuredClone(tokenBudget),
-      inputTokens,
-      outputTokens,
+      lifecycleBudget: structuredClone(lifecycleBudget),
+      evidenceOutcome: summary.evidenceOutcome,
+      firstServerEvent: structuredClone(summary.firstServerEvent),
+      sessionAuthority: structuredClone(summary.sessionAuthority),
+      rawTrace: structuredClone(summary.rawTrace),
       audioSeconds,
       invocationCount: summary.providerInvocationCount,
       scenarioId: receipt.scenarioId,
@@ -685,7 +732,14 @@ export async function prepareCoordinatorExecution({
         grantDigest: preflightGrant.digest,
         leaseReservationDigests: leaseReservations.map((reservation) => reservation.digest),
         authorizationDigest: authorizationPackage.authorizationDigest,
-        tokenBudget: structuredClone(expectedConsumedPreflightAuthorization.tokenBudget),
+        modelProtocolProfileIdentity: structuredClone(
+          expectedConsumedPreflightAuthorization.modelProtocolProfileIdentity,
+        ),
+        inputMode: expectedConsumedPreflightAuthorization.inputMode,
+        providerInputMode: expectedConsumedPreflightAuthorization.providerInputMode,
+        responseMode: expectedConsumedPreflightAuthorization.responseMode,
+        terminalEvent: expectedConsumedPreflightAuthorization.terminalEvent,
+        lifecycleBudget: structuredClone(expectedConsumedPreflightAuthorization.lifecycleBudget),
         consumptionClaim: consumptionClaim.projection,
       },
       providerPreflightCompletion: {
@@ -693,9 +747,18 @@ export async function prepareCoordinatorExecution({
         digest: preflightCompletion.digest,
         grantDigest: preflightGrant.digest,
         authorizationDigest: authorizationPackage.authorizationDigest,
-        tokenBudget: structuredClone(preflightReceipt.authority.tokenBudget),
-        inputTokens: preflightReceipt.authority.inputTokens,
-        outputTokens: preflightReceipt.authority.outputTokens,
+        modelProtocolProfileIdentity: structuredClone(
+          preflightReceipt.authority.modelProtocolProfileIdentity,
+        ),
+        inputMode: preflightReceipt.authority.inputMode,
+        providerInputMode: preflightReceipt.authority.providerInputMode,
+        responseMode: preflightReceipt.authority.responseMode,
+        terminalEvent: preflightReceipt.authority.terminalEvent,
+        lifecycleBudget: structuredClone(preflightReceipt.authority.lifecycleBudget),
+        evidenceOutcome: preflightReceipt.authority.evidenceOutcome,
+        firstServerEvent: structuredClone(preflightReceipt.authority.firstServerEvent),
+        sessionAuthority: structuredClone(preflightReceipt.authority.sessionAuthority),
+        rawTrace: structuredClone(preflightReceipt.authority.rawTrace),
         audioSeconds: preflightReceipt.authority.audioSeconds,
         consumptionClaim: consumptionClaim.projection,
       },
@@ -1164,6 +1227,7 @@ export function collectCoordinatorAggregation({
       auxiliaryExternalAudioSeconds: cell.auxiliaryExternalAudioSeconds,
       subtitleTranslationMode: cell.subtitleTranslationMode,
       modelId: cell.modelId,
+      modelProtocolProfileIdentity: structuredClone(cell.modelProtocolProfileIdentity),
       feedbackLoopPrevention: cell.feedbackLoopPrevention,
       deviceClass: cell.deviceClass,
       deviceProfileId: cell.deviceProfileInstance.profileId,

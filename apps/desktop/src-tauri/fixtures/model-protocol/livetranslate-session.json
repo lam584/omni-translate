@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "model-protocol-wire-fixture/v1",
+  "dialectId": "bailian-livetranslate-session-ws-v1",
+  "checkedAt": "2026-08-30",
+  "sanitized": true,
+  "sources": [
+    { "url": "https://help.aliyun.com/zh/model-studio/qwen3-5-livetranslate-flash-realtime", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/live-translator-client-events", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/live-translator-server-events", "checkedAt": "2026-08-30" }
+  ],
+  "sequence": [
+    { "direction": "server", "frameKind": "json", "eventType": "session.created" },
+    { "direction": "client", "frameKind": "json", "eventType": "session.update" },
+    { "direction": "server", "frameKind": "json", "eventType": "session.updated" },
+    { "direction": "client", "frameKind": "json-base64", "eventType": "input_audio_buffer.append" },
+    { "direction": "server", "frameKind": "json", "eventType": "response.created" },
+    { "direction": "server", "frameKind": "json", "eventType": "response.output_item.added" },
+    { "direction": "server", "frameKind": "json", "eventType": "response.content_part.added" },
+    { "direction": "server", "frameKind": "json", "eventType": "response.text.text", "payload": { "text": "你", "stash": "好" } },
+    { "direction": "server", "frameKind": "json", "eventType": "response.text.text", "payload": { "text": "你好", "stash": "啊" } },
+    { "direction": "server", "frameKind": "json", "eventType": "response.text.done", "payload": { "text": "你好啊" } },
+    { "direction": "server", "frameKind": "json", "eventType": "response.content_part.done" },
+    { "direction": "server", "frameKind": "json", "eventType": "response.output_item.done" },
+    { "direction": "server", "frameKind": "json", "eventType": "response.done" },
+    { "direction": "client", "frameKind": "json", "eventType": "session.finish" },
+    { "direction": "server", "frameKind": "json", "eventType": "session.finished" }
+  ],
+  "expect": {
+    "previewAfterSecondSnapshot": "你好啊",
+    "committedText": "你好啊",
+    "terminalOrder": ["session.finish", "session.finished"],
+    "forbiddenEvents": ["response.text.delta", "response.create"]
+  }
+}

@@ -92,21 +92,16 @@ fn replay_new_delta_then_unmapped_old_final_isolates_cues() {
     drop(old_final_socket);
     let _socket = harness.tick(current_final_socket, &mut slice);
 
-    assert!(slice.manual_response_pending);
-    assert!(slice.manual_response_requested);
+    assert!(!slice.manual_response_pending);
+    assert!(!slice.manual_response_requested);
     assert_eq!(
         harness
             .sent_types()
             .iter()
             .filter(|kind| kind.as_str() == "response.create")
             .count(),
-        1
-    );
-    assert!(
-        harness
-            .store()
-            .subtitle_cue_translation_allowed(&current_cue_id),
-        "the matching final releases only the current turn's deferred cue"
+        0,
+        "the matching final must still fail closed because the replay's Omni adapter is manifest-only"
     );
     let snapshot = harness.store().snapshot();
     let current_cue = snapshot
@@ -117,7 +112,6 @@ fn replay_new_delta_then_unmapped_old_final_isolates_cues() {
         .expect("current cue is finalized in place");
     assert_eq!(current_cue.source_text, "the current turn final");
     assert!(current_cue.committed, "the matching ASR completion is a source final");
-    assert!(harness.store().subtitle_source_is_final(&current_cue_id));
     assert!(!current_cue.translation_committed);
     assert!(current_cue.translated_text.is_empty());
     assert_eq!(

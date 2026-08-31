@@ -921,18 +921,24 @@ test('recorder cleanup retains terminal tail when a later runner step has failed
   assert.ok(result.elapsedMs >= 900, `terminal tail was dropped after later failure: ${result.elapsedMs}ms`);
 });
 
-test('watch report deadline includes readiness, 30-minute capture, and atomic-write grace', { skip: !isWindows }, () => {
+test('watch report deadline uses the slower launch-clock phase plus receipt grace', { skip: !isWindows }, () => {
   const probe = runPowerShell([
     '-Command',
     extractedReportWaitFunctions() +
       `$launched = [DateTime]::SpecifyKind([DateTime]::Parse('2026-08-10T00:00:00'), [DateTimeKind]::Utc); ` +
-      `$deadline = Get-WatchSessionReportDeadlineUtc ` +
-        `-LaunchedAtUtc $launched -ReadyTimeoutSeconds 90 -AutoStopAfterSeconds 1800; ` +
-      `[int]($deadline - $launched).TotalSeconds`,
+      `$process = Get-WatchSessionReportDeadlineUtc -LaunchedAtUtc $launched ` +
+        `-ReadyTimeoutSeconds 90 -AutoStopAfterSeconds 280 -CompletionGraceSeconds 30; ` +
+      `$ordinary = Get-WatchSessionReportDeadlineUtc -LaunchedAtUtc $launched ` +
+        `-ReadyTimeoutSeconds 90 -AutoStopAfterSeconds 235 -CompletionGraceSeconds 30; ` +
+      `$readinessBound = Get-WatchSessionReportDeadlineUtc -LaunchedAtUtc $launched ` +
+        `-ReadyTimeoutSeconds 120 -AutoStopAfterSeconds 40 -CompletionGraceSeconds 30; ` +
+      `@([int]($process - $launched).TotalSeconds, ` +
+        `[int]($ordinary - $launched).TotalSeconds, ` +
+        `[int]($readinessBound - $launched).TotalSeconds) | ConvertTo-Json -Compress`,
   ]);
 
   assert.equal(probe.status, 0, probe.stderr || probe.stdout);
-  assert.equal(Number(probe.stdout.trim()), 2_010);
+  assert.deepEqual(JSON.parse(probe.stdout.trim()), [310, 265, 150]);
 });
 
 test('every paid route records physical output unless content capture is explicitly disabled', { skip: !isWindows }, () => {
@@ -1265,24 +1271,25 @@ $terminal = @{ artifactKind = 'watch-mode-evidence-driven-terminal'; schemaVersi
     @{ sequence = 1; stage = 'mediaPlaybackCompleted'; observedAtUnixMs = ($terminalStartedAtUnixMs + 1); detail = @{} },
     @{ sequence = 2; stage = 'inputCompleteSignaled'; observedAtUnixMs = ($terminalStartedAtUnixMs + 2); detail = @{} },
     @{ sequence = 3; stage = 'inputCompleteObserved'; observedAtUnixMs = ($terminalStartedAtUnixMs + 3); detail = @{} },
-    @{ sequence = 4; stage = 'lastProviderAppend'; observedAtUnixMs = ($terminalStartedAtUnixMs + 4); detail = @{} },
-    @{ sequence = 5; stage = 'sessionFinishSent'; observedAtUnixMs = ($terminalStartedAtUnixMs + 5); detail = @{} },
-    @{ sequence = 6; stage = 'lastResponseAudioDone'; observedAtUnixMs = ($terminalStartedAtUnixMs + 6); detail = @{} },
-    @{ sequence = 7; stage = 'sessionFinishedReceived'; observedAtUnixMs = ($terminalStartedAtUnixMs + 7); detail = @{} },
-    @{ sequence = 8; stage = 'finalRendererAck'; observedAtUnixMs = ($terminalStartedAtUnixMs + 8); detail = @{} },
-    @{ sequence = 9; stage = 'localPlaybackQuiescent'; observedAtUnixMs = ($terminalStartedAtUnixMs + 9); detail = @{} },
-    @{ sequence = 10; stage = 'reportWritten'; observedAtUnixMs = ($terminalStartedAtUnixMs + 10)
+    @{ sequence = 4; stage = 'sessionUpdatedReceived'; observedAtUnixMs = ($terminalStartedAtUnixMs + 4); detail = @{} },
+    @{ sequence = 5; stage = 'lastProviderAppend'; observedAtUnixMs = ($terminalStartedAtUnixMs + 5); detail = @{} },
+    @{ sequence = 6; stage = 'sessionFinishSent'; observedAtUnixMs = ($terminalStartedAtUnixMs + 6); detail = @{} },
+    @{ sequence = 7; stage = 'lastResponseAudioDone'; observedAtUnixMs = ($terminalStartedAtUnixMs + 7); detail = @{} },
+    @{ sequence = 8; stage = 'sessionFinishedReceived'; observedAtUnixMs = ($terminalStartedAtUnixMs + 8); detail = @{} },
+    @{ sequence = 9; stage = 'finalRendererAck'; observedAtUnixMs = ($terminalStartedAtUnixMs + 9); detail = @{} },
+    @{ sequence = 10; stage = 'localPlaybackQuiescent'; observedAtUnixMs = ($terminalStartedAtUnixMs + 10); detail = @{} },
+    @{ sequence = 11; stage = 'reportWritten'; observedAtUnixMs = ($terminalStartedAtUnixMs + 11)
       detail = @{ reportPath = 'watch-session-report.json'
         byteLength = [int64]$reportItem.Length; sha256 = $reportHash } }
   ) }
-if ($TerminalIdentityMode -ceq 'gapped-sequence') { $terminal.events[9].sequence = 11 }
+if ($TerminalIdentityMode -ceq 'gapped-sequence') { $terminal.events[10].sequence = 12 }
 if ($TerminalIdentityMode -ceq 'completed-before-last') { $terminal.completedAtUnixMs = $terminalStartedAtUnixMs + 5 }
 if ($TerminalIdentityMode -ceq 'report-not-final') {
-  $reportEvent = $terminal.events[9]
-  $terminal.events[9] = $terminal.events[8]
-  $terminal.events[8] = $reportEvent
-  $terminal.events[8].sequence = 9
+  $reportEvent = $terminal.events[10]
+  $terminal.events[10] = $terminal.events[9]
+  $terminal.events[9] = $reportEvent
   $terminal.events[9].sequence = 10
+  $terminal.events[10].sequence = 11
 }
 if ($TerminalErrorCode -cne 'none') {
   $terminal['errorCode'] = $TerminalErrorCode

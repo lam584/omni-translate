@@ -5,9 +5,10 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use super::contracts::{
-    OverlayRenderReceiptRuntime, SubtitleDisplaySegmentRuntime, SubtitleTranslationStateRuntime,
-    WatchCueComparisonRuntime, WatchIssueRuntime, WatchSessionReportRuntime,
-    WatchSessionReportSummaryRuntime, WatchTimelineEventRuntime,
+    ModelProtocolProfileIdentityRuntime, OverlayRenderReceiptRuntime,
+    SubtitleDisplaySegmentRuntime, SubtitleTranslationStateRuntime, WatchCueComparisonRuntime,
+    WatchIssueRuntime, WatchSessionReportRuntime, WatchSessionReportSummaryRuntime,
+    WatchTimelineEventRuntime,
 };
 use super::time_utils::{ms_marker, unix_ms};
 
@@ -43,6 +44,7 @@ struct WatchSession {
     route_mode: String,
     provider_id: String,
     model: String,
+    model_protocol_profile_identity: Option<ModelProtocolProfileIdentityRuntime>,
     started_at: String,
     started_unix_ms: u64,
     started_instant: Instant,
@@ -291,6 +293,7 @@ impl WatchSessionReportStore {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn record_publish(
         &self,
         cue_id: &str,

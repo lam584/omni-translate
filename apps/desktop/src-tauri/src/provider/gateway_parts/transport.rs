@@ -1,6 +1,7 @@
 use std::io::ErrorKind;
-use std::net::TcpStream;
-use std::time::Duration;
+use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use reqwest::blocking::{Client, Response};
 use reqwest::redirect;
@@ -10,7 +11,11 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Error as WebSocketError, Message, WebSocket};
 use url::Url;
 
+#[cfg(test)]
+use std::cell::RefCell;
+
 use super::super::contracts::{ProviderDraftInput, ProviderRuntimeError};
+use super::super::model_protocol_profile::lookup_model_protocol_profiles_for_inspection;
 use super::auth::{apply_ws_auth, apply_ws_custom_headers, build_reqwest_headers};
 
 const MIN_WEBSOCKET_TIMEOUT_MS: u64 = 1000;
@@ -28,14 +33,45 @@ pub(crate) struct ProviderHttpClient {
 #[derive(Debug, Default)]
 pub(crate) struct WebSocketTransport;
 
+#[cfg(test)]
+thread_local! {
+    static TEST_WEBSOCKET_CONNECT_OVERRIDE: RefCell<Option<Url>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(in crate::provider) fn set_test_websocket_connect_override(url: &str) {
+    let url = Url::parse(url).expect("test websocket override must be a valid URL");
+    TEST_WEBSOCKET_CONNECT_OVERRIDE.with(|slot| {
+        assert!(
+            slot.borrow().is_none(),
+            "test websocket override must be consumed before another is registered"
+        );
+        *slot.borrow_mut() = Some(url);
+    });
+}
+
+#[cfg(test)]
+fn take_test_websocket_connect_override(authorized_url: &Url) -> Url {
+    TEST_WEBSOCKET_CONNECT_OVERRIDE
+        .with(|slot| slot.borrow_mut().take())
+        .unwrap_or_else(|| authorized_url.clone())
+}
+
+#[cfg(not(test))]
+fn take_test_websocket_connect_override(authorized_url: &Url) -> Url {
+    authorized_url.clone()
+}
+
 impl WebSocketTransport {
     pub(crate) fn connect_provider(
         &self,
         provider: &ProviderDraftInput,
+        operation: &str,
     ) -> Result<(WebSocket<MaybeTlsStream<TcpStream>>, Duration), ProviderRuntimeError> {
         let timeout = resolve_websocket_timeout(provider.timeout_ms);
-        let websocket_url = to_websocket_url(&provider.base_url, &provider.model)?;
-        let mut request = websocket_url
+        let websocket_url = authorized_websocket_url(provider, operation)?;
+        let connect_url = take_test_websocket_connect_override(&websocket_url);
+        let mut request = connect_url
             .as_str()
             .into_client_request()
             .map_err(|error| {
@@ -57,6 +93,210 @@ impl WebSocketTransport {
         apply_websocket_timeouts(&mut socket, timeout)?;
         Ok((socket, timeout))
     }
+
+    /// Connects one provider socket without allowing DNS, TCP, TLS, or the
+    /// WebSocket upgrade to silently consume the probe's first-event phase.
+    /// DNS runs without credentials in a bounded helper; all network I/O uses
+    /// the remaining absolute phase budget and the caller re-checks the same
+    /// deadline before accepting the upgraded socket.
+    pub(crate) fn connect_provider_before(
+        &self,
+        provider: &ProviderDraftInput,
+        operation: &str,
+        deadline: Instant,
+    ) -> Result<(WebSocket<MaybeTlsStream<TcpStream>>, Duration), ProviderRuntimeError> {
+        let timeout = resolve_websocket_timeout(provider.timeout_ms);
+        let websocket_url = authorized_websocket_url(provider, operation)?;
+        let connect_url = take_test_websocket_connect_override(&websocket_url);
+        let mut request = connect_url
+            .as_str()
+            .into_client_request()
+            .map_err(|error| {
+                ProviderRuntimeError::new(
+                    "transport.unavailable",
+                    format!("无法创建 WebSocket 请求: {error}"),
+                )
+            })?;
+        apply_ws_auth(provider, request.headers_mut())?;
+        apply_ws_custom_headers(provider, request.headers_mut())?;
+
+        let host = connect_url.host_str().ok_or_else(|| {
+            ProviderRuntimeError::new("transport.unavailable", "WebSocket URL 缺少主机名。")
+        })?;
+        let port = connect_url.port_or_known_default().ok_or_else(|| {
+            ProviderRuntimeError::new("transport.unavailable", "WebSocket URL 缺少端口。")
+        })?;
+        let addresses = resolve_addresses_before(host, port, deadline)?;
+        let mut last_connect_error = None;
+        let mut stream = None;
+        for address in addresses {
+            let remaining = connect_remaining_before(deadline, "WebSocket TCP 建链")?;
+            match TcpStream::connect_timeout(&address, remaining) {
+                Ok(connected) => {
+                    stream = Some(connected);
+                    break;
+                }
+                Err(error) => last_connect_error = Some(error),
+            }
+        }
+        let mut stream = stream.ok_or_else(|| {
+            if Instant::now() >= deadline {
+                connect_timeout_error("WebSocket TCP 建链")
+            } else {
+                ProviderRuntimeError::new(
+                    "transport.connect-failed",
+                    format!(
+                        "WebSocket TCP 建链失败: {}",
+                        last_connect_error
+                            .map(|error| error.to_string())
+                            .unwrap_or_else(|| "没有可用地址".to_string())
+                    ),
+                )
+            }
+        })?;
+        stream.set_nodelay(true).map_err(|error| {
+            ProviderRuntimeError::new(
+                "transport.unavailable",
+                format!("无法配置 WebSocket TCP_NODELAY: {error}"),
+            )
+        })?;
+        apply_tcp_stream_timeouts(
+            &mut stream,
+            upgrade_remaining_before(deadline, "WebSocket TLS/upgrade")?,
+        )?;
+        let (mut socket, _) = tungstenite::client_tls_with_config(request, stream, None, None)
+            .map_err(|error| {
+                if Instant::now() >= deadline {
+                    upgrade_timeout_error("WebSocket TLS/upgrade")
+                } else {
+                    ProviderRuntimeError::new(
+                        "transport.upgrade-failed",
+                        format!("WebSocket 建链失败: {error}"),
+                    )
+                }
+            })?;
+        let remaining = upgrade_remaining_before(deadline, "WebSocket TLS/upgrade")?;
+        apply_websocket_timeouts(&mut socket, remaining.min(timeout))?;
+        Ok((socket, timeout))
+    }
+}
+
+fn authorized_websocket_url(
+    provider: &ProviderDraftInput,
+    operation: &str,
+) -> Result<Url, ProviderRuntimeError> {
+    let authority = crate::audio::events::authorize_bailian_model_operation(
+        provider,
+        &provider.model,
+        operation,
+    )
+    .map_err(|message| {
+        let code = message
+            .split_once(':')
+            .map(|(code, _)| code)
+            .filter(|code| code.starts_with("model_protocol."))
+            .unwrap_or("model_protocol.authorization_failed")
+            .to_string();
+        ProviderRuntimeError::new(&code, message)
+    })?;
+    let url = to_websocket_url(&provider.base_url, &provider.model)?;
+    if url.path() != authority.endpoint_path {
+        return Err(ProviderRuntimeError::new(
+            "model_protocol.endpoint_family_mismatch",
+            format!(
+                "授权 profile '{}' 要求 endpoint path '{}'，实际构造为 '{}'。",
+                authority.profile_id,
+                authority.endpoint_path,
+                url.path()
+            ),
+        ));
+    }
+    Ok(url)
+}
+
+fn resolve_addresses_before(
+    host: &str,
+    port: u16,
+    deadline: Instant,
+) -> Result<Vec<std::net::SocketAddr>, ProviderRuntimeError> {
+    let host = host.to_string();
+    let (sender, receiver) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let result = (host.as_str(), port)
+            .to_socket_addrs()
+            .map(|addresses| addresses.collect::<Vec<_>>());
+        let _ = sender.send(result);
+    });
+    match receiver.recv_timeout(connect_remaining_before(deadline, "WebSocket DNS")?) {
+        Ok(Ok(addresses)) if !addresses.is_empty() => Ok(addresses),
+        Ok(Ok(_)) => Err(ProviderRuntimeError::new(
+            "transport.connect-failed",
+            "WebSocket DNS 未返回可用地址。",
+        )),
+        Ok(Err(error)) => Err(ProviderRuntimeError::new(
+            "transport.connect-failed",
+            format!("WebSocket DNS 解析失败: {error}"),
+        )),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(connect_timeout_error("WebSocket DNS")),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(ProviderRuntimeError::new(
+            "transport.connect-failed",
+            "WebSocket DNS 解析工作线程异常退出。",
+        )),
+    }
+}
+
+fn connect_remaining_before(
+    deadline: Instant,
+    phase: &str,
+) -> Result<Duration, ProviderRuntimeError> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| connect_timeout_error(phase))
+}
+
+fn upgrade_remaining_before(
+    deadline: Instant,
+    phase: &str,
+) -> Result<Duration, ProviderRuntimeError> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| upgrade_timeout_error(phase))
+}
+
+fn connect_timeout_error(phase: &str) -> ProviderRuntimeError {
+    ProviderRuntimeError::new(
+        "transport.connect-timeout",
+        format!("{phase} 超过绝对阶段截止时间。"),
+    )
+    .retriable(true)
+}
+
+fn upgrade_timeout_error(phase: &str) -> ProviderRuntimeError {
+    ProviderRuntimeError::new(
+        "transport.upgrade-timeout",
+        format!("{phase} 超过绝对阶段截止时间。"),
+    )
+    .retriable(true)
+}
+
+pub(super) fn remaining_before(
+    deadline: Instant,
+    phase: &str,
+) -> Result<Duration, ProviderRuntimeError> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| deadline_error(phase))
+}
+
+fn deadline_error(phase: &str) -> ProviderRuntimeError {
+    ProviderRuntimeError::new(
+        "timeout",
+        format!("{phase} 超过绝对阶段截止时间。"),
+    )
+    .retriable(true)
 }
 
 impl ProviderHttpClient {
@@ -86,9 +326,17 @@ pub(super) fn resolve_websocket_timeout(timeout_ms: u64) -> Duration {
 }
 
 /// Outcome of a single provider WebSocket frame read after JSON decoding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WebSocketCloseFrame {
+    pub code: u16,
+    pub reason: String,
+    pub normal: bool,
+}
+
 pub(crate) enum WebSocketFrame {
     Json(Value),
-    Closed,
+    Closed(WebSocketCloseFrame),
+    Binary,
     Ignored,
 }
 
@@ -112,7 +360,17 @@ pub(crate) fn read_json_frame(
             })?;
             Ok(WebSocketFrame::Json(value))
         }
-        Message::Close(_) => Ok(WebSocketFrame::Closed),
+        Message::Close(frame) => {
+            let (code, reason) = frame
+                .map(|frame| (u16::from(frame.code), frame.reason.to_string()))
+                .unwrap_or((1_005, String::new()));
+            Ok(WebSocketFrame::Closed(WebSocketCloseFrame {
+                code,
+                reason,
+                normal: matches!(code, 1_000 | 1_001),
+            }))
+        }
+        Message::Binary(_) => Ok(WebSocketFrame::Binary),
         _ => Ok(WebSocketFrame::Ignored),
     }
 }
@@ -290,6 +548,27 @@ pub(super) fn normalize_dashscope_compatible_base_url(base_url: &str) -> String 
 }
 
 pub(crate) fn to_websocket_url(base_url: &str, model: &str) -> Result<Url, ProviderRuntimeError> {
+    let mut profiles = lookup_model_protocol_profiles_for_inspection(model).map_err(|error| {
+        ProviderRuntimeError::new(
+            error.code(),
+            format!("无法解析模型 '{model}' 的 WebSocket 协议入口: {}", error.code()),
+        )
+    })?;
+    let profile = match profiles.len() {
+        0 => {
+            return Err(ProviderRuntimeError::new(
+                "model_protocol.model_not_registered",
+                format!("模型 '{model}' 未登记明确的 WebSocket 协议入口。"),
+            ))
+        }
+        1 => profiles.remove(0),
+        _ => {
+            return Err(ProviderRuntimeError::new(
+                "model_protocol.profile_ambiguous",
+                format!("模型 '{model}' 对应多个协议 profile，不能推断 WebSocket 入口。"),
+            ))
+        }
+    };
     let mut url = Url::parse(base_url).map_err(|error| {
         ProviderRuntimeError::new("request.invalid", format!("非法 Base URL: {error}"))
     })?;
@@ -309,12 +588,24 @@ pub(crate) fn to_websocket_url(base_url: &str, model: &str) -> Result<Url, Provi
         }
     }
 
-    // DashScope realtime translation follows the documented fixed websocket route.
-    url.set_path("/api-ws/v1/realtime");
+    url.set_path(&profile.endpoint_path);
     {
         let mut query = url.query_pairs_mut();
         query.clear();
-        query.append_pair("model", model);
+        match profile.model_placement.as_str() {
+            "query" => {
+                query.append_pair("model", model);
+            }
+            "payload" => {}
+            placement => {
+                return Err(ProviderRuntimeError::new(
+                    "model_protocol.registry_invalid",
+                    format!(
+                        "模型 '{model}' 的 modelPlacement '{placement}' 不是受支持的 WebSocket 入口声明。"
+                    ),
+                ))
+            }
+        }
     }
 
     Ok(url)

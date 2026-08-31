@@ -187,11 +187,11 @@ function planFixture({ runtimeBinaryHashes = inventory('runtime') } = {}) {
   return { plan, leases, readinessRequests, signingKeys };
 }
 
-test('current Plus preparation compiles the coordinator key before it signs preflight authority', () => {
+test('current Plus preparation rejects its manifest-only Omni adapter before build or dispatch', () => {
   const root = tempRoot();
   const signingKeys = generateCoordinatorSigningKeyPair();
   const calls = [];
-  const result = prepareCurrentIncidentPlusExecution({
+  assert.throws(() => prepareCurrentIncidentPlusExecution({
     workerConfig: workers,
     localIsolationAuthority,
     executionRoot: root,
@@ -207,18 +207,12 @@ test('current Plus preparation compiles the coordinator key before it signs pref
     captureProvenance: () => provenance,
     captureAuthorityImplementationHashes: () => inventory('current-implementation'),
     captureIncidentImplementationHashes: () => inventory('current-incident'),
-  });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].KEEP_ME, 'yes');
-  assert.equal(calls[0].CARGO_TARGET_DIR, path.join(repoRoot, 'target'));
-  assert.match(String(calls[0].OMNI_PROVIDER_PREFLIGHT_COORDINATOR_KEY_ID), /^[a-f0-9]{64}$/);
-  assert.deepEqual(result.plan.authority.runtimeBinaryHashes, inventory('rebuilt-runtime'));
-  assert.deepEqual(result.plan.authority.implementationHashes, inventory('current-implementation'));
-  assert.deepEqual(result.plan.authority.incidentImplementationHashes, inventory('current-incident'));
-  assert.equal(result.plan.coordinator.publicKeyPem, signingKeys.publicKeyPem);
+  }), /model_protocol\.adapter_unavailable/);
+  assert.equal(calls.length, 0, 'protocol rejection must precede runtime build');
 });
 
-test('current Plus preparation refuses to sign after a runtime build dirties the evidence worktree', () => {
+test('manifest-only Plus authority takes precedence over later provenance checks', () => {
+  let buildCalled = false;
   assert.throws(() => prepareCurrentIncidentPlusExecution({
     workerConfig: workers,
     localIsolationAuthority,
@@ -226,9 +220,13 @@ test('current Plus preparation refuses to sign after a runtime build dirties the
     executionId: 'incident-plus-dirty-runtime',
     generatedAt: fixedNow,
     expiresAt: fixedFuture,
-    buildRuntimeAuthority: () => inventory('rebuilt-runtime'),
+    buildRuntimeAuthority: () => {
+      buildCalled = true;
+      return inventory('rebuilt-runtime');
+    },
     captureProvenance: () => ({ ...provenance, worktreeClean: false, dirtyEntryCount: 1 }),
-  }), /runtime build changed the evidence worktree/);
+  }), /model_protocol\.adapter_unavailable/);
+  assert.equal(buildCalled, false);
 });
 
 test('Plus coordinator requires an explicit dispatch switch before it can reach a Provider', () => {
@@ -713,7 +711,7 @@ test.skip('legacy two-worker Plus coordinator is retired by the single-machine r
   }
 });
 
-test('incident Plus result and final manifest bind preflight, readiness, budget, and raw reports', () => {
+test('legacy incident Plus aggregate rejects missing enabled protocol identity', () => {
   const root = tempRoot();
   try {
     const workspaceRoot = path.join(root, 'workspace');
@@ -810,34 +808,16 @@ test('incident Plus result and final manifest bind preflight, readiness, budget,
         assertExternalProviderBudget: syntheticValidatedBudget,
       }).resultPath;
     });
-    const manifest = writeIncidentPlusManifest({
+    assert.throws(() => writeIncidentPlusManifest({
       plan, leases, preflight, executionRoot, resultPaths, readinessReceiptPaths: readinessPaths,
       readinessRequests, generatedAt: new Date('2035-08-14T03:40:00.000Z'), signingKeys,
       assertExternalProviderBudget: syntheticValidatedBudget,
-    });
-    assert.equal(path.basename(manifest.manifestPath), INCIDENT_PLUS_MANIFEST_FILE);
-    assert.equal(fs.existsSync(path.join(executionRoot, INCIDENT_PLUS_EXTERNAL_BUDGET_FILE)), true);
-    const receipt = writeIncidentPlusVerificationReceipt({
-      manifestPath: manifest.manifestPath, plan, leases, executionRoot, readinessReceiptPaths: readinessPaths,
-      readinessRequests, generatedAt: new Date('2035-08-14T03:45:00.000Z'), signingKeys,
-      assertExternalProviderBudget: syntheticValidatedBudget,
-    });
-    assert.equal(path.basename(receipt.receiptPath), INCIDENT_PLUS_VERIFICATION_RECEIPT_FILE);
-    assert.equal(fs.existsSync(resultPaths[0]), true);
-    assert.equal(path.basename(resultPaths[0]), INCIDENT_PLUS_CELL_RESULT_FILE);
-
-    writeJson(path.join(preflightEvidenceDirectory, 'emitter-result.json'), { status: 'tampered' });
-    assert.throws(() => writeIncidentPlusVerificationReceipt({
-      manifestPath: manifest.manifestPath,
-      plan,
-      leases,
-      executionRoot,
-      readinessReceiptPaths: readinessPaths,
-      readinessRequests,
-      generatedAt: new Date('2035-08-14T03:45:01.000Z'),
-      signingKeys,
-      assertExternalProviderBudget: syntheticValidatedBudget,
-    }), /raw evidence hash\/size no longer matches disk/);
+    }), /model protocol profile identity is missing/);
+    assert.equal(
+      fs.existsSync(path.join(executionRoot, INCIDENT_PLUS_EXTERNAL_BUDGET_FILE)),
+      false,
+      'a manifest-only adapter must not publish a passing aggregate budget',
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

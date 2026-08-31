@@ -178,7 +178,7 @@ IPC readiness, invoke the existing handlers in the same `AppHandle`, validate
 the emitted PID/executable/invocation/bundle authority, require the release
 binary's compile-time Git commit to equal the current exact clean `HEAD`, and then call the
 assembler through its private authority seam. The real-device runner re-verifies the complete
-canonical strict schema-v5 budget-balanced Watch authority and accepts only its fixed
+canonical strict schema-v6 budget-balanced Watch authority and accepts only its fixed
 `qwen3.5-livetranslate-flash-realtime/process-exclusion/default-speaker` cell; it does not accept a
 manifest path, report directory, dry-run, simulated, or skip override. Each available profile has a fixed
 emitter ID/version, evidence artifact kind, payload role set, raw schema,
@@ -204,7 +204,7 @@ The fixed manual collector inputs are:
 | --- | --- | --- |
 | `E2E-PROVIDER-CONFIG` | Ready; same-process production Desktop emitter | `emitter-result.json`, production config snapshot, Windows Credential Manager status-only check, and invocation-bound full diagnostics bundle |
 | `E2E-PROVIDER-PROBE` | Ready; same-process production Desktop emitter, live Provider credential required | `emitter-result.json`, raw production Provider probe result with `available` verdict, and invocation-bound full diagnostics bundle |
-| `E2E-REAL-DEVICE-AUDIO` | Ready; fixed canonical strict schema-v5 Watch cell from the current exact clean HEAD | Cell authority receipt and complete raw inventory, actual MMDevice identity, Desktop/media/recorder/Bridge PIDs, physical/reference/source PCM, physical recording, process-exclusion fingerprints, Watch cue lifecycle, and Bridge playback lifecycle |
+| `E2E-REAL-DEVICE-AUDIO` | Ready; fixed canonical strict schema-v6 Watch cell from the current exact clean HEAD | Cell authority receipt and complete raw inventory, actual MMDevice identity, Desktop/media/recorder/Bridge PIDs, physical/reference/source PCM, physical recording, process-exclusion fingerprints, Watch cue lifecycle, and Bridge playback lifecycle |
 | `E2E-OVERLAY-CLICK-THROUGH` | Ready; dedicated Windows OS/WebDriver authority runner | Current-clean-HEAD release Desktop and native target helper, raw WebDriver and Win32 timelines, distinct Desktop/overlay/target PID+HWND authority, real `WM_NCHITTEST=HTTRANSPARENT`, `SendInput` click receipt, foreground checks, screen PNG/hash, and named operator observation |
 | `E2E-DIAGNOSTICS-EXPORT` | Ready; same-process production Desktop emitter | `emitter-result.json`, production handler receipt, canonical full export metadata, copied diagnostics bundle, and invocation/PID/hash cross-checks |
 | `E2E-VIRTUAL-MIC-CAPTURE` | Ready; dedicated current-HEAD rebuild runner | `emitter-result.json` plus the native `omni-virtual-mic-target-capture/0.1.0` WAV/probe/runtime output; the receipt binds fixed collector/Bridge paths, `--build-commit`, hashes, PIDs, raw authority, and payload hashes |
@@ -250,24 +250,34 @@ capture evidence.
 Do not type performance measurements into the pending JSON template. First run
 the canonical strict Watch matrix on the required default-speaker endpoint.
 Additional endpoints remain optional diagnostics. Every live matrix cell now writes `system-metrics.json`
-with raw one-second samples for the Desktop process tree. The budget-balanced
-release plan reuses three zero-Provider local-isolation cells, then runs four
-LiveTranslate paid cells. Input-completion watchdogs are mode-specific: 180 seconds
-for virtual-driver/echo-cancel and 225 seconds for process-exclusion. They are failure
-bounds, not successful terminal conditions. Source
+with raw one-second samples for the Desktop process tree. The Watch v11
+budget-balanced release plan reuses three zero-Provider local-isolation cells,
+then runs exactly four paid cells for
+`qwen3.5-livetranslate-flash-realtime`. Two ordinary cells have 128.8153125
+seconds of normal media each, and two process-exclusion cells have 173.8153125
+seconds each, for 605.26125 seconds of normal paid media in total. The
+180/225-second input-completion values are inner failure sub-deadlines, not
+normal run durations or successful terminal conditions. Source
 transcription, physical-output STT, secondary translation, and secondary TTS
 are forbidden in strict paid cells. There is no uniform Provider session-seconds
 budget. Sample leases are derived from the canonical
 transformed reference plus bounded capture grace: 2,173,045 samples for
 virtual-driver/echo-cancel and 2,877,045 for process-exclusion, 10,100,180 total,
 or 631.26125 seconds only when expressed as 16 kHz sample-equivalent cost. Per-cell
-hard failure watchdogs are `180+15+30+10=235s` and `225+15+30+10=280s`; normal
-completion remains evidence-driven. The terminal authority contains ten distinct
+hard failure watchdogs are 235 seconds for ordinary cells and 280 seconds for
+process-exclusion. Their remote-execution hard uppers are 505/550 seconds; after
+the 60-second lease-upload and 300-second download/collection envelopes, the
+per-cell execution uppers are 865/910 seconds. The four-cell production
+coordinator has a 13,102-second global hard upper. All of these are fail-closed
+watchdogs or envelopes; normal completion remains evidence-driven. The terminal authority contains ten distinct
 production-owner stages from `mediaPlaybackCompleted` through `reportWritten` and
 proves exactly-once finish, zero writes after finish, required `session.finished`,
 last-cue renderer ACK coverage, and report-last ordering. The single
 text-only Provider preflight has an independent 4,096-input/256-output-token
-ceiling and reports zero audio. After all
+ceiling and reports zero audio. The supported Beijing control uses the generic
+`wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-livetranslate-flash-realtime`
+endpoint; a `WorkspaceId` or `x-dashscope-workspace` header is not required.
+After all
 authorities pass, assemble the baseline:
 
 ```powershell
@@ -277,7 +287,7 @@ node ./scripts/testing/assemble-performance-baseline.mjs --operator "<name>"
 The assembler accepts only
 `artifacts/testing/watch-mode-live/latest-successful-watch-mode-strict-matrix.json`
 from the same exact clean `HEAD`. Production assembly and validation rerun the
-complete schema-v5 balanced strict authority verifier; the verification receipt is only
+complete schema-v6 balanced strict authority verifier; the verification receipt is only
 an index, not authority by itself. The archive binds the canonical manifest,
 its strict source manifest and verification receipt, every per-cell authority
 receipt, the 3-cell zero-LLM local authority, and all 4 paid live
@@ -294,7 +304,7 @@ Evidence collection boundaries:
 | Artifact | Command or action | Prerequisites | Typical duration | Verifiable output |
 | --- | --- | --- | --- | --- |
 | Manual E2E | Run `collect:release-evidence:desktop` for the three Desktop-backed scenarios, `collect:release-evidence:real-device-audio` after the strict matrix, `collect:release-evidence:overlay` on an interactive Windows desktop, and `collect:release-evidence:virtual-mic` | Clean exact HEAD, release Desktop binary, configured live Provider credential for Provider scenarios, complete current-HEAD strict matrix, native virtual microphone ready, an installed Microsoft Edge WebView2 runtime, network access for the runner to install pinned `tauri-driver` 2.0.6 with `--locked` and fetch the exactly matching Microsoft-signed WebDriver into `artifacts/tooling/overlay-click-through`, and a named overlay operator on an unlocked interactive desktop | Desktop/diagnostics, vmic, and overlay take minutes; the real-device assembler takes seconds after the balanced matrix | Six independently validated scenario receipts; stable release requires all six |
-| Canonical performance source | `npm run test:watch-mode-live:production-coordinator` | Clean exact HEAD, production binaries, available DashScope credential, one verified default-speaker endpoint, a working virtual-driver route; elevation only when the installed driver/device requires it | One local worker executes four serial waves; successful cells terminate from ten raw input/provider/playback/report stages, with mode-derived 235/280-second hard failure watchdogs | Canonical strict manifest, 3 reusable zero-Provider local-isolation authorities, 4 passed live `report.json`, and 4 raw `system-metrics.json` files |
+| Canonical performance source | `npm run test:watch-mode-live:production-coordinator` | Clean exact HEAD, production binaries, available DashScope credential, one verified default-speaker endpoint, a working virtual-driver route; elevation only when the installed driver/device requires it | One local worker executes four serial waves totaling 605.26125 seconds of normal paid media; successful cells terminate from ten raw input/provider/playback/report stages. Ordinary/process-exclusion hard uppers are 235/280 seconds per cell, 505/550 seconds for remote execution, 865/910 seconds including upload/download envelopes, and 13,102 seconds globally for the coordinator | Canonical strict manifest, 3 reusable zero-Provider local-isolation authorities, 4 passed live `report.json`, and 4 raw `system-metrics.json` files |
 | Performance assembly | `node ./scripts/testing/assemble-performance-baseline.mjs --operator "<name>"` | The complete canonical matrix above, still on the same clean HEAD | Seconds to about one minute | Receipt-backed `desktop-perf-baseline-*.json`; CPU/memory/latency/dropout/duration are recomputed |
 | Install regression | `npm run test:install-regression`; then run each `collect:release-evidence:install:*` command and archive its returned package directory | Windows x64 UAC test machine, exact current-clean-HEAD canonical signed package, RFC3161 timestamps, and an older canonical signed package for upgrade | 20-40 minutes plus operator review | Five independently recomputed collector packages/receipts; schema-shaped files and prose cannot satisfy a scenario |
 
@@ -407,7 +417,7 @@ explicit `provenance` object, and strict verification requires its
 files cannot satisfy release provenance; clean the checkout and rerun the full
 matrix instead.
 
-The canonical file is a schema-v5 authority manifest, not a directory list.
+The canonical file is a schema-v6 authority manifest, not a directory list.
 Before collection the matrix rebuilds the Desktop/AEC3, Bridge probes/media
 injector, realtime diagnostic, and SYSVAD package from that exact checkout.
 Each cell then records a fixed raw-artifact inventory with byte counts and
@@ -473,7 +483,7 @@ below so the Node entrypoint receives the named options instead of only their
 values:
 
 ```powershell
-npm run test:watch-mode-live:production-coordinator -- -- --workers-config artifacts/testing/watch-mode-workers.json --runtime-authority artifacts/testing/watch-mode-strict-runtime/<release>/strict-runtime-authority.json --local-isolation-authority artifacts/testing/watch-mode-local-isolation/<run>/local-isolation-manifest.json
+npm run test:watch-mode-live:production-coordinator -- -- --workers-config artifacts/testing/watch-mode-local-worker.json --runtime-authority artifacts/testing/watch-mode-strict-runtime/<release>/strict-runtime-authority.json --local-isolation-authority artifacts/testing/watch-mode-local-isolation/<run>/local-isolation-manifest.json
 ```
 
 ### Non-authoritative 60-minute smoke matrix

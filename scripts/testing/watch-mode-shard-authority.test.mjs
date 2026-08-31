@@ -30,6 +30,7 @@ import {
   writeShardManifest,
 } from './watch-mode-shard-authority.mjs';
 import { defaultSingleWorkerAssignments } from './run-watch-mode-live-coordinator.mjs';
+import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
 import { rebuildReportFromDirectory } from './watch-mode-report.mjs';
 import {
   healthyApp,
@@ -55,6 +56,39 @@ import {
 
 const SHA_A = 'a'.repeat(64);
 const SHA_B = 'b'.repeat(64);
+const MODEL_PROTOCOL_PROFILE_IDENTITY = LIVE_LLM_CELLS[0].modelProtocolProfileIdentity;
+const PREFLIGHT_LIFECYCLE_AUTHORITY = Object.freeze({
+  providerId: 'provider-dashscope',
+  model: 'qwen3.5-livetranslate-flash-realtime',
+  protocol: 'dashscope-livetranslate',
+  operation: 'livetranslate-session-lifecycle-preflight',
+  modelProtocolProfileIdentity: MODEL_PROTOCOL_PROFILE_IDENTITY,
+  inputMode: 'none',
+  providerInputMode: 'none',
+  responseMode: 'text-only',
+  terminalEvent: 'session.finished',
+  status: 'completed',
+  externalAudioSamples: 0,
+  invocationCount: 1,
+  lifecycleBudget: {
+    firstServerEventLatencyMs: 1_200,
+    socketEventTimeoutMs: 12_000,
+  },
+  evidenceOutcome: 'livetranslate-session-finished',
+  firstServerEvent: { type: 'session.created', monotonicMs: 606 },
+  sessionAuthority: {
+    sessionIdentitySha256: SHA_A,
+    serverModel: 'qwen3.5-livetranslate-flash-realtime',
+    echoedSessionConfigSha256: SHA_B,
+  },
+  rawTrace: {
+    path: 'raw/provider-websocket-trace.jsonl',
+    bytes: 256,
+    sha256: SHA_A,
+    eventCount: 6,
+  },
+  audioSeconds: null,
+});
 const PROVENANCE = Object.freeze({
   schemaVersion: 1,
   source: 'git',
@@ -122,10 +156,7 @@ function createFixture({ providerPreflightOverrides = {} } = {}) {
     },
     providerPreflightAuthority: {
       path: 'provider-preflight-receipt.json', bytes: 88, sha256: SHA_B,
-       providerId: 'provider-dashscope', operation: 'text-translation-preflight',
-       status: 'completed', externalAudioSamples: 0, invocationCount: 1,
-       tokenBudget: { maxInputTokens: 4_096, maxOutputTokens: 256 },
-       inputTokens: 64, outputTokens: 12, audioSeconds: null,
+       ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
        ...providerPreflightOverrides,
      },
     workers,
@@ -166,7 +197,7 @@ function refreshForgedResultAuthority(resultPath, result, reportPath) {
 
 function providerIdentity(cell, lease, runMarker, protocol = 'dashscope-livetranslate') {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: PROVIDER_INPUT_BUDGET_LEDGER_KIND,
     cellId: cell.cellId,
     leaseId: lease.leaseId,
@@ -184,6 +215,7 @@ function providerIdentity(cell, lease, runMarker, protocol = 'dashscope-livetran
     customHeaderCount: 0,
     model: cell.modelId,
     protocol,
+    modelProtocolProfileIdentity: structuredClone(cell.modelProtocolProfileIdentity),
   };
 }
 
@@ -223,12 +255,13 @@ function writeSuccessfulRun(runDirectory, cell, lease, { samples = 32_000 } = {}
     });
   }
   writeJson(path.join(runDirectory, PROVIDER_INPUT_BUDGET_LEASE_FILE), {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: PROVIDER_INPUT_BUDGET_LEASE_KIND,
     cellId: cell.cellId,
     leaseId: lease.leaseId,
     runMarker,
     maxSamples: cell.maxExternalAudioSamples,
+    modelProtocolProfileIdentity: structuredClone(cell.modelProtocolProfileIdentity),
   });
   writeJson(path.join(runDirectory, PROVIDER_INPUT_BUDGET_LEDGER_FILE), {
     ...identity,
@@ -359,7 +392,7 @@ test('signed plan and leases bind exact four cells, serial waves, identities and
   const fixture = createFixture();
   assert.throws(
     () => createFixture({ providerPreflightOverrides: { inputTokens: '64' } }),
-    /exactly one completed text-only invocation/,
+    /exactly one completed zero-input LiveTranslate lifecycle/,
   );
   assert.equal(verifySignedExecutionPlan(fixture.plan, { now: fixture.now }), fixture.plan);
   assert.equal(fixture.plan.cells.length, 4);
@@ -421,10 +454,7 @@ test('signed plan accepts exactly one local worker and rejects additional worker
     },
     providerPreflightAuthority: {
       path: 'provider-preflight-receipt.json', bytes: 88, sha256: SHA_B,
-       providerId: 'provider-dashscope', operation: 'text-translation-preflight',
-       status: 'completed', externalAudioSamples: 0, invocationCount: 1,
-       tokenBudget: { maxInputTokens: 4_096, maxOutputTokens: 256 },
-       inputTokens: 64, outputTokens: 12, audioSeconds: null,
+       ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
      },
     workers,
     assignments: workers.length === 1

@@ -45,6 +45,15 @@ pub(crate) struct ProviderModelCapabilityRegistryEntryInput {
     pub id: String,
     pub model_id: String,
     pub capabilities: Vec<String>,
+    /// Local declaration of the immutable protocol manifest identity.  These
+    /// fields never define wire behavior; they must match the checked-in
+    /// manifest before a Bailian connection can be authorized.
+    #[serde(default, rename = "registryVersion")]
+    pub model_protocol_registry_version: Option<String>,
+    #[serde(default, rename = "profileId")]
+    pub model_protocol_profile_id: Option<String>,
+    #[serde(default, rename = "profileVersion")]
+    pub model_protocol_profile_version: Option<u32>,
     pub realtime_protocol: Option<String>,
     pub realtime_audio_mode: Option<String>,
     #[serde(default)]
@@ -237,6 +246,9 @@ pub(crate) struct ProviderProbeProfileRuntime {
     pub guidance: Vec<String>,
     pub routing_decision: ProviderRoutingDecision,
     pub error: Option<ProviderRuntimeError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "unknown | null")]
+    pub wire_evidence: Option<ProviderProbeWireEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
@@ -279,6 +291,97 @@ impl ProviderStreamEventRecord {
     }
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderFirstServerEventEvidence {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub monotonic_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderErrorFrameEvidence {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub provider_code: String,
+    pub raw_redacted_payload: String,
+    pub sha256: String,
+    pub monotonic_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderWebSocketCloseEvidence {
+    pub code: u16,
+    pub reason: String,
+    pub normal: bool,
+    pub monotonic_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderSessionAuthorityEvidence {
+    pub session_identity_sha256: String,
+    pub server_model: String,
+    pub echoed_session_config_sha256: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderWebSocketTraceEntry {
+    pub monotonic_ms: u64,
+    pub direction: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_redacted_payload: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub normal: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_phase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_monotonic_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deadline_monotonic_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderProbeWireEvidence {
+    pub evidence_outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_server_event: Option<ProviderFirstServerEventEvidence>,
+    pub provider_input_mode: String,
+    pub response_mode: String,
+    pub provider_invocation_count: u64,
+    pub connection_count: u64,
+    pub external_audio_samples: u64,
+    pub input_audio_buffer_commit_count: u64,
+    pub conversation_item_create_input_text_count: u64,
+    pub response_create_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_authority: Option<ProviderSessionAuthorityEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_error_frame: Option<ProviderErrorFrameEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub websocket_close: Option<ProviderWebSocketCloseEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_phase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_budget_ms: Option<u64>,
+    #[serde(skip)]
+    pub trace: Vec<ProviderWebSocketTraceEntry>,
+}
+
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProviderSmokeResult {
@@ -307,6 +410,9 @@ pub(crate) struct ProviderSmokeResult {
     pub connection_generation: Option<u64>,
     pub routing_decision: ProviderRoutingDecision,
     pub error: Option<ProviderRuntimeError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "unknown | null")]
+    pub wire_evidence: Option<ProviderProbeWireEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]

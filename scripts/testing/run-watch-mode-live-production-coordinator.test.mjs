@@ -1,18 +1,27 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import zlib from 'node:zlib';
 import test from 'node:test';
 
 import { repoRoot } from '../lib/testing-common.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
-import { AUTHORITY_RUNTIME_BINARY_FILES } from './watch-mode-evidence-authority.mjs';
 import {
-  WATCH_REMOTE_DISPATCH_AND_RECEIPT_ENVELOPE_MS,
-  WATCH_SHARD_WORKER_TIMEOUT_MS,
+  AUTHORITY_IMPLEMENTATION_FILES,
+  AUTHORITY_RUNTIME_BINARY_FILES,
+} from './watch-mode-evidence-authority.mjs';
+import {
+  deriveWatchPostReadinessExecutionBudgetMs,
+  deriveWatchProductionInitialWorkerReadinessBudgetMs,
+  deriveWatchProductionPrepaidCoordinatorBudgetMs,
+  deriveWatchProductionProviderPreflightBudgetMs,
+  deriveWatchProductionInteractiveCellTimeoutMs,
+  deriveWatchProductionRemoteCellTimeoutMs,
 } from './watch-mode-release-timeout-budget.mjs';
 import {
   coordinatorKeyIdForPublicKey,
@@ -21,13 +30,13 @@ import {
   generateCoordinatorSigningKeyPair,
 } from './watch-mode-shard-authority.mjs';
 import {
+  assertProductionCoordinatorWaveBudget,
   PRODUCTION_WORKER_CONFIG_KIND,
   PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
+  PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS,
   PRODUCTION_COORDINATOR_TIMEOUT_MS,
   PRODUCTION_INTERACTIVE_SESSION_LAUNCH_BODY,
-  PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS,
   PRODUCTION_PRESERVED_WORKER_READINESS_BODY,
-  PRODUCTION_REMOTE_CELL_TIMEOUT_MS,
   PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS,
   PRODUCTION_WORKER_READINESS_FINALIZE_BODY,
   PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY,
@@ -36,7 +45,13 @@ import {
   productionCellFailureDisposition,
   productionFailureFingerprint,
   remotePowerShellInvocation,
+  runBoundedCoordinatorStage,
+  runBoundedCoordinatorStageWithinDeadline,
+  runKillableCoordinatorProcessStage,
   decodeRemotePowerShellFileOutput,
+  runChildProcess,
+  runProductionEvidenceVerifier,
+  createProductionWorkerReadinessTransportPlan,
   runRemoteJsonWithRetries,
   PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS,
   PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS,
@@ -45,7 +60,74 @@ import {
   sshBaseArgs,
   validateProductionWorkerConfig,
   windowsPowerShellEnvironment,
+  createSshProductionTransport,
 } from './run-watch-mode-live-production-coordinator.mjs';
+
+test('a same-thread synchronous blocker cannot resolve after its bounded coordinator deadline', async () => {
+  await assert.rejects(
+    runBoundedCoordinatorStage(() => {
+      const blockedUntilMs = Date.now() + 80;
+      while (Date.now() < blockedUntilMs) {
+        // Reproduce a synchronous filesystem/hash stage that starves the timer.
+      }
+      return 'late-success';
+    }, 'synchronous coordinator blocker', 10),
+    /synchronous coordinator blocker timed out after 10ms/u,
+  );
+});
+
+test('a killable coordinator process stage terminates a synchronous blocker at the absolute deadline', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-killable-coordinator-stage-'));
+  const lateMarker = path.join(root, 'late-marker.txt');
+  try {
+    await assert.rejects(
+      runKillableCoordinatorProcessStage({
+        stageLabel: 'runtime-authority-before-verifier',
+        executable: process.execPath,
+        args: [
+          '-e',
+          'const fs=require("node:fs");const end=Date.now()+200;while(Date.now()<end){};fs.writeFileSync(process.argv[1],"late");',
+          lateMarker,
+        ],
+        deadlineMs: Date.now() + 30,
+      }),
+      /runtime-authority-before-verifier timed out after .* shared coordinator deadline/u,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(fs.existsSync(lateMarker), false, 'the killed blocker must not perform a late write');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('killable coordinator stages use the smaller of stage ceiling and shared absolute deadline', async () => {
+  const calls = [];
+  await runKillableCoordinatorProcessStage({
+    stageLabel: 'final-evidence-staging',
+    executable: process.execPath,
+    deadlineMs: 1_050,
+    maximumTimeoutMs: 500,
+    deadlineNow: () => 1_000,
+    runProcess: async (_executable, _args, options) => {
+      calls.push(options.timeoutMs);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    },
+  });
+  assert.deepEqual(calls, [50]);
+});
+
+test('killable coordinator child failures retain the exact finalization stage', async () => {
+  await assert.rejects(
+    runKillableCoordinatorProcessStage({
+      stageLabel: 'canonical-manifest-publication',
+      executable: process.execPath,
+      deadlineMs: 2_000,
+      deadlineNow: () => 1_000,
+      runProcess: async () => ({ exitCode: 7, stdout: '', stderr: 'fixture publication failed' }),
+    }),
+    /canonical-manifest-publication child failed with exit 7: fixture publication failed/u,
+  );
+});
 
 test('production cell failures stop only for safety boundaries and collect ordinary verdicts', () => {
   assert.equal(productionCellFailureDisposition({
@@ -206,13 +288,31 @@ test('remote runtime verification has a bounded slow-disk timeout', () => {
     source,
     /planPath:\s*remotePlanPath,\s*},\s*undefined,\s*{\s*timeoutMs:\s*PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS,/s,
   );
+  assert.match(source, /attempts:\s*WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_ATTEMPTS/u);
+  assert.match(source, /delayMs:\s*WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_RETRY_DELAY_MS/u);
 });
 
-test('a killed Windows child settles the transport timeout without waiting for an exit event', () => {
-  const source = fs.readFileSync(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url), 'utf8');
-  assert.match(source, /child process timed out after/);
-  assert.match(source, /exitCode: 124/);
-  assert.match(source, /timer = setTimeout\(\(\) => \{[\s\S]*finish\(\(\) => resolve\(/);
+test('a stuck guest finalizer settles the injected remote child timeout without an exit event', async () => {
+  const child = new EventEmitter();
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  let killedWith = null;
+  child.kill = (signal) => { killedWith = signal; };
+  const startedAt = performance.now();
+  const result = await runChildProcess('stuck-guest-finalizer', [], {
+    timeoutMs: 5,
+    spawnProcess: () => child,
+  });
+  assert.equal(result.exitCode, 124);
+  assert.match(result.stderr, /child process timed out after 5ms/u);
+  assert.equal(killedWith, 'SIGKILL');
+  assert.ok(performance.now() - startedAt < 500);
+  const source = fs.readFileSync(
+    new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /timeoutMs: WATCH_PRODUCTION_GUEST_FINALIZER_TIMEOUT_MS/);
 });
 
 test('worker preparation normalizes and verifies signed implementation bytes before readiness', () => {
@@ -230,6 +330,187 @@ test('worker preparation normalizes and verifies signed implementation bytes bef
       < source.lastIndexOf('PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY'),
     'signed implementation verification must precede zero-provider readiness and Provider preflight',
   );
+  const readinessPlan = source.slice(
+    source.indexOf('const readinessPlan = createProductionWorkerReadinessTransportPlan'),
+    source.indexOf('const readinessTransport = createSshProductionTransport'),
+  );
+  assert.match(readinessPlan, /authorityImplementationHashes/u);
+  assert.equal(AUTHORITY_IMPLEMENTATION_FILES.length, 54);
+});
+
+test('fresh readiness transports all 54 production implementation entries', () => {
+  const implementationHashes = AUTHORITY_IMPLEMENTATION_FILES.map((entryPath, index) => ({
+    path: entryPath,
+    bytes: index + 1,
+    sha256: String(index).padStart(64, '0'),
+  }));
+  const plan = createProductionWorkerReadinessTransportPlan({
+    executionId: 'readiness-upload-count',
+    provenance: { headCommit: 'a'.repeat(40) },
+    authorityImplementationHashes: implementationHashes,
+    shardOrchestrationImplementationHashes: [],
+    workerReadinessRequest: {
+      runtimeBinaryHashes: [],
+      runtimeBundleDigest: 'b'.repeat(64),
+      workers: [],
+      assignments: [],
+      requestDigest: 'c'.repeat(64),
+    },
+  });
+  assert.equal(plan.authority.implementationHashes.length, 54);
+  assert.deepEqual(plan.authority.implementationHashes, implementationHashes);
+});
+
+test('production evidence verifier is an asynchronously killable final-evidence stage', () => {
+  const source = fs.readFileSync(
+    new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url),
+    'utf8',
+  );
+  const verifierStage = source.slice(
+    source.indexOf('const verifyResult ='),
+    source.indexOf('const runtimeAfterVerifier ='),
+  );
+  assert.doesNotMatch(verifierStage, /spawnSync/u);
+  assert.match(verifierStage, /runProductionEvidenceVerifier/u);
+  assert.match(source, /remainingVerifierDeadlineMs = Math\.ceil\(postFinalDeadlineMs - deadlineNow\(\)\)/u);
+  assert.match(verifierStage, /timeoutMs:\s*Math\.min\([\s\S]*remainingVerifierDeadlineMs/u);
+  assert.match(verifierStage, /signal/u);
+  assert.match(source, /'runtime-authority-before-verifier'/u);
+  assert.match(source, /'runtime-authority-after-verifier'/u);
+  assert.match(source, /stage: 'final-evidence-staging'/u);
+  assert.match(source, /stage: 'canonical-manifest-publication'/u);
+});
+
+test('post-final staging, authority checks, verifier, and publication share one absolute deadline', () => {
+  const source = fs.readFileSync(
+    new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url),
+    'utf8',
+  );
+  const postFinalFlow = source.slice(
+    source.indexOf('const postFinalDeadlineMs ='),
+    source.indexOf('return {', source.indexOf('const postFinalDeadlineMs =')),
+  );
+  assert.ok(postFinalFlow.length > 0, 'the post-final flow must create an absolute shared deadline');
+  assert.match(
+    postFinalFlow,
+    /deriveWatchProductionFinalEvidenceBudgetMs\(\)/u,
+    'the shared deadline must derive from the same budget exported to the outer watchdog',
+  );
+  assert.ok(
+    [...postFinalFlow.matchAll(/postFinalDeadlineMs/gu)].length >= 6,
+    'every post-final stage must consume the same absolute deadline instead of restarting a local timer',
+  );
+  assert.doesNotMatch(
+    postFinalFlow,
+    /remainingVerifierDeadlineMs = Math\.ceil\(coordinatorDeadlineMs/u,
+    'the verifier may not escape back to the wider coordinator deadline',
+  );
+});
+
+test('shared post-final deadline rejects cumulative stage work before publication', async () => {
+  let fakeNowMs = 0;
+  let published = false;
+  const sharedDeadlineMs = 360_000;
+  await runBoundedCoordinatorStageWithinDeadline({
+    operation: () => { fakeNowMs += 200_000; },
+    label: 'final-evidence-staging',
+    deadlineMs: sharedDeadlineMs,
+    deadlineNow: () => fakeNowMs,
+    maximumTimeoutMs: 240_000,
+  });
+  await assert.rejects(async () => {
+    await runBoundedCoordinatorStageWithinDeadline({
+      operation: () => { fakeNowMs += 200_000; },
+      label: 'strict-evidence-verifier',
+      deadlineMs: sharedDeadlineMs,
+      deadlineNow: () => fakeNowMs,
+      maximumTimeoutMs: 240_000,
+    });
+    published = true;
+  },
+    /strict-evidence-verifier completed after the shared post-final evidence deadline/u,
+  );
+  assert.equal(published, false);
+});
+
+test('a hung production evidence verifier times out before publication', async () => {
+  const child = new EventEmitter();
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  let killedWith = null;
+  child.kill = (signal) => { killedWith = signal; };
+  let published = false;
+  await assert.rejects(async () => {
+    await runProductionEvidenceVerifier({
+      evidenceOutputRoot: 'unused-evidence-root',
+      manifestPath: 'unused-manifest.json',
+      timeoutMs: 5,
+      spawnProcess: () => child,
+    });
+    published = true;
+  }, /strict-evidence-verifier timed out after 5ms; canonical manifest was not published/u);
+  assert.equal(published, false);
+  assert.equal(killedWith, 'SIGKILL');
+});
+
+test('remote readiness shares one absolute deadline across command upload and SSH execution', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-remote-stage-deadline-'));
+  try {
+    const worker = {
+      workerId: 'worker-deadline',
+      host: '192.0.2.10',
+      port: 22,
+      user: 'omni',
+      identityFile: path.join(root, 'identity'),
+      knownHostsFile: path.join(root, 'known-hosts'),
+      hostKeyAlias: 'worker-deadline',
+      workspaceRoot: 'C:\\omni-worker',
+      guestExecutionRoot: 'C:\\omni-evidence',
+      vmIdentity: { uuidBios: '11111111-1111-1111-1111-111111111111' },
+    };
+    let fakeNowMs = 0;
+    const calls = [];
+    const desiredChildDurationMs = 44_999;
+    const runProcess = async (executable, _args, options = {}) => {
+      calls.push({ executable, timeoutMs: options.timeoutMs });
+      const allowedMs = Number(options.timeoutMs);
+      if (allowedMs < desiredChildDurationMs) {
+        fakeNowMs += allowedMs;
+        return { exitCode: 124, stdout: '', stderr: 'fake child timeout' };
+      }
+      fakeNowMs += desiredChildDurationMs;
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+    const transport = createSshProductionTransport({
+      config: {
+        scpExecutable: 'scp.exe',
+        sshExecutable: 'ssh.exe',
+        workers: [worker],
+      },
+      plan: {
+        executionId: 'deadline-fixture',
+        provenance: { headCommit: 'a'.repeat(40) },
+        authority: { implementationHashes: [], runtimeBinaryHashes: [] },
+      },
+      planPath: path.join(root, 'plan.json'),
+      leasePaths: [],
+      coordinatorExecutionRoot: root,
+      runProcess,
+      workspaceRoot: root,
+      deadlineNow: () => fakeNowMs,
+    });
+    await assert.rejects(
+      () => transport.prepareWorker({ worker }),
+      /fake child timeout|shared deadline/u,
+    );
+    assert.deepEqual(calls.slice(0, 2), [
+      { executable: 'scp.exe', timeoutMs: 45_000 },
+      { executable: 'ssh.exe', timeoutMs: 1 },
+    ]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('worker clean-state checks content and untracked files instead of racy porcelain metadata', () => {
@@ -265,18 +546,90 @@ const isWindows = process.platform === 'win32';
 test('zero-provider readiness reserves enough time for signed driver reinstall and verification', () => {
   assert.equal(PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS, 10 * 60_000);
   assert.ok(PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS < PRODUCTION_COORDINATOR_TIMEOUT_MS);
-  assert.equal(
-    PRODUCTION_REMOTE_CELL_TIMEOUT_MS,
-    WATCH_SHARD_WORKER_TIMEOUT_MS + WATCH_REMOTE_DISPATCH_AND_RECEIPT_ENVELOPE_MS,
-  );
+  assert.equal(PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS, 60_000);
   assert.equal(PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS, 300_000);
+  assert.deepEqual(
+    LIVE_LLM_CELLS.map((cell) => deriveWatchProductionRemoteCellTimeoutMs(cell)),
+    [550_000, 505_000, 505_000, 550_000],
+  );
   assert.equal(
     PRODUCTION_COORDINATOR_TIMEOUT_MS,
-    PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS
-      + LIVE_LLM_CELLS.length * (
-        PRODUCTION_REMOTE_CELL_TIMEOUT_MS + PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS
-      )
-      + PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS,
+    deriveWatchProductionPrepaidCoordinatorBudgetMs()
+      + deriveWatchPostReadinessExecutionBudgetMs({ cells: LIVE_LLM_CELLS }),
+  );
+  assert.equal(PRODUCTION_COORDINATOR_TIMEOUT_MS, 13_102_000);
+});
+
+test('production transport applies each formal cell timeout at its actual outer boundary', () => {
+  const source = fs.readFileSync(
+    new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    source,
+    /const interactiveCellTimeoutMs = deriveWatchProductionInteractiveCellTimeoutMs\(cell\)/,
+  );
+  assert.match(
+    source,
+    /const remoteCellTimeoutMs = deriveWatchProductionRemoteCellTimeoutMs\(cell\)/,
+  );
+  assert.match(
+    source,
+    /timeoutMs: PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS/,
+  );
+  assert.match(
+    source,
+    /timeoutMs: interactiveCellTimeoutMs,[\s\S]*timeoutMs: remoteCellTimeoutMs/,
+  );
+  assert.doesNotMatch(source, /PRODUCTION_REMOTE_CELL_TIMEOUT_MS/);
+  for (const cell of LIVE_LLM_CELLS) {
+    assert.ok(
+      deriveWatchProductionRemoteCellTimeoutMs(cell)
+        > deriveWatchProductionInteractiveCellTimeoutMs(cell),
+    );
+  }
+});
+
+test('production coordinator proves the full execution budget remains after delayed preparation', () => {
+  const source = fs.readFileSync(
+    new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /assertProductionCoordinatorWaveBudget\(\{/);
+  assert.match(source, /coordinatorDeadlineMs/);
+  const requiredExecutionMs = deriveWatchPostReadinessExecutionBudgetMs({
+    cells: LIVE_LLM_CELLS,
+  });
+  const fakeCoordinatorStartedAtMs = 10_000;
+  const fakeCoordinatorDeadlineMs = fakeCoordinatorStartedAtMs
+    + PRODUCTION_COORDINATOR_TIMEOUT_MS;
+  const legacyPreparationDeadlineMs = fakeCoordinatorStartedAtMs
+    + PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS;
+  const fakeReadinessCompletedAtMs = fakeCoordinatorStartedAtMs
+    + deriveWatchProductionInitialWorkerReadinessBudgetMs();
+  const fakePreflightCompletedAtMs = fakeReadinessCompletedAtMs
+    + deriveWatchProductionProviderPreflightBudgetMs();
+  assert.ok(fakeReadinessCompletedAtMs > legacyPreparationDeadlineMs);
+  assert.ok(fakePreflightCompletedAtMs > legacyPreparationDeadlineMs);
+  const fakePreparationBoundaryMs = fakeCoordinatorStartedAtMs
+    + deriveWatchProductionPrepaidCoordinatorBudgetMs();
+  assert.deepEqual(
+    assertProductionCoordinatorWaveBudget({
+      coordinatorDeadlineMs: fakeCoordinatorDeadlineMs,
+      currentTimeMs: fakePreparationBoundaryMs,
+    }),
+    { remainingMs: requiredExecutionMs, requiredExecutionMs },
+  );
+  assert.throws(
+    () => assertProductionCoordinatorWaveBudget({
+      coordinatorDeadlineMs: fakeCoordinatorDeadlineMs,
+      currentTimeMs: fakePreparationBoundaryMs + 1,
+    }),
+    new RegExp(
+      `refuses paid waves with ${requiredExecutionMs - 1}ms remaining; `
+      + `${requiredExecutionMs}ms is required`,
+      'u',
+    ),
   );
 });
 
@@ -456,7 +809,7 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
   assert.doesNotMatch(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /omni-physical-output-probe\.exe/);
   assert.match(PRODUCTION_INTERACTIVE_SESSION_LAUNCH_BODY, /invoke-watch-mode-interactive-task\.ps1/);
   assert.match(PRODUCTION_WORKER_READINESS_FINALIZE_BODY, /interactive-readiness\.json/);
-  assert.match(PRODUCTION_WORKER_READINESS_FINALIZE_BODY, /\$receipt = \[ordered\]@\{\s*schemaVersion = 2/);
+  assert.match(PRODUCTION_WORKER_READINESS_FINALIZE_BODY, /\$receipt = \[ordered\]@\{\s*schemaVersion = 3/);
   assert.match(PRODUCTION_WORKER_READINESS_FINALIZE_BODY, /profiles = @\(\$interactive\.profiles\)/);
   assert.match(PRODUCTION_WORKER_READINESS_FINALIZE_BODY, /credentialStatus = \$interactive\.credentialStatus/);
   assert.match(PRODUCTION_WORKER_READINESS_FINALIZE_BODY, /windows-credential-manager/);
@@ -1047,8 +1400,28 @@ test('production coordinator drives four signed serial waves through stage, veri
           calls.push('provider-preflight');
           return {
             providerId: 'provider-dashscope',
-            operation: 'text-translation-preflight',
-            inputMode: 'text-only',
+            operation: 'livetranslate-session-lifecycle-preflight',
+            inputMode: 'none',
+            providerInputMode: 'none',
+            responseMode: 'text-only',
+            terminalEvent: 'session.finished',
+            lifecycleBudget: {
+              firstServerEventLatencyMs: 1_200,
+              socketEventTimeoutMs: 12_000,
+            },
+            evidenceOutcome: 'livetranslate-session-finished',
+            firstServerEvent: { type: 'session.created', monotonicMs: 606 },
+            sessionAuthority: {
+              sessionIdentitySha256: 'a'.repeat(64),
+              serverModel: 'qwen3.5-livetranslate-flash-realtime',
+              echoedSessionConfigSha256: 'b'.repeat(64),
+            },
+            rawTrace: {
+              path: 'raw/provider-websocket-trace.jsonl',
+              bytes: 256,
+              sha256: 'c'.repeat(64),
+              eventCount: 6,
+            },
             providerInvocationCount: 1,
             externalAudioSamples: 0,
             status: 'completed',
@@ -1063,10 +1436,7 @@ test('production coordinator drives four signed serial waves through stage, veri
           assert.equal(typeof options.runZeroProviderWorkerReadiness, 'function');
           assert.equal(
             options.minimumRemainingExecutionMs,
-            LIVE_LLM_CELLS.length * (
-              PRODUCTION_REMOTE_CELL_TIMEOUT_MS + PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS
-            )
-              + PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS,
+            deriveWatchPostReadinessExecutionBudgetMs({ cells: LIVE_LLM_CELLS }),
           );
           const workerReadiness = await options.runZeroProviderWorkerReadiness({
             executionId: plan.executionId,

@@ -40,6 +40,10 @@ import {
   balancedReleasePlanFailure,
 } from './watch-mode-balanced-release-plan.mjs';
 import {
+  deriveWatchModelProtocolIdentity,
+  watchModelProtocolIdentityFailure,
+} from './watch-mode-model-protocol-authority.mjs';
+import {
   MATRIX_EXTERNAL_PROVIDER_BUDGET_FILE,
   STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
   STRICT_PAID_MODEL_PROTOCOLS,
@@ -87,10 +91,16 @@ import {
   PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_KIND,
   PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE,
   PROVIDER_PREFLIGHT_GRANT_FILE,
+  PROVIDER_PREFLIGHT_INPUT_MODE,
   PROVIDER_PREFLIGHT_LEASE_RESERVATION_DIRECTORY,
+  PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET,
   PROVIDER_PREFLIGHT_MODEL,
+  PROVIDER_PREFLIGHT_OPERATION,
   PROVIDER_PREFLIGHT_PROTOCOL,
+  PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE,
   PROVIDER_PREFLIGHT_PROVIDER_ID,
+  PROVIDER_PREFLIGHT_RESPONSE_MODE,
+  PROVIDER_PREFLIGHT_TERMINAL_EVENT,
   providerPreflightReservationFileName,
   validateProviderPreflightAuthorizationAuthorities,
   verifyProviderPreflightCompletion,
@@ -117,6 +127,7 @@ const EVIDENCE_DRIVEN_REQUIRED_TERMINAL_STAGES = Object.freeze([
   'mediaPlaybackCompleted',
   'inputCompleteSignaled',
   'inputCompleteObserved',
+  'sessionUpdatedReceived',
   'lastProviderAppend',
   'sessionFinishSent',
   'sessionFinishedReceived',
@@ -278,19 +289,32 @@ export function validateEvidenceDrivenTerminal(runDirectory, plannedCell, expect
     throw new Error('input-complete signal/desktop observation raw authorities do not bind the immutable marker');
   }
 
+  const updatedEvent = eventsByStage.get('sessionUpdatedReceived');
   const appendEvent = eventsByStage.get('lastProviderAppend');
   const finishEvent = eventsByStage.get('sessionFinishSent');
   const responseEvent = eventsByStage.get(responseStages[0]);
   const finishedEvent = eventsByStage.get('sessionFinishedReceived');
+  const updated = updatedEvent.detail ?? {};
   const append = appendEvent.detail ?? {};
   const finish = finishEvent.detail ?? {};
   const response = responseEvent.detail ?? {};
   const finished = finishedEvent.detail ?? {};
+  const updatedSourceSequence = Number(updated.sourceSequence);
   const appendSourceSequence = Number(append.sourceSequence);
   const finishSourceSequence = Number(finish.sourceSequence);
   const responseSourceSequence = Number(response.sourceSequence);
   const finishedSourceSequence = Number(finished.sourceSequence);
-  if (!Number.isSafeInteger(appendSourceSequence) || appendSourceSequence <= 0
+  const sha256Pattern = /^[0-9a-f]{64}$/u;
+  if (!Number.isSafeInteger(updatedSourceSequence) || updatedSourceSequence <= 0
+    || updated.authority !== 'desktop-livetranslate-typed-session-owner'
+    || !sha256Pattern.test(updated.sessionIdentitySha256 ?? '')
+    || !sha256Pattern.test(updated.sentSessionConfigSha256 ?? '')
+    || updated.echoedSessionConfigSha256 !== updated.sentSessionConfigSha256
+    || Number(updatedEvent.observedAtUnixMs) > Number(appendEvent.observedAtUnixMs)) {
+    throw new Error('session.updated typed authority does not bind the exact sent and echoed session configuration before Provider input');
+  }
+  if (!Number.isSafeInteger(appendSourceSequence)
+    || appendSourceSequence <= updatedSourceSequence
     || !Number.isSafeInteger(Number(append.appendIndex)) || Number(append.appendIndex) <= 0
     || !Number.isSafeInteger(Number(append.samples)) || Number(append.samples) <= 0
     || !Number.isSafeInteger(Number(append.acceptedSamplesTotal))
@@ -312,6 +336,7 @@ export function validateEvidenceDrivenTerminal(runDirectory, plannedCell, expect
     || !response.responseId.trim()
     || !Number.isSafeInteger(finishedSourceSequence)
     || finishedSourceSequence <= responseSourceSequence
+    || finishedSourceSequence <= finishSourceSequence
     || Number(finished.finishCount) !== 1
     || Number(finished.providerWritesAfterFinish) !== 0
     || Number(finishedEvent.observedAtUnixMs) < Number(finishEvent.observedAtUnixMs)
@@ -319,9 +344,23 @@ export function validateEvidenceDrivenTerminal(runDirectory, plannedCell, expect
     throw new Error('Provider terminal authority is missing a pre-session.finished response completion, session.finished, or exceeds the 15s finish phase');
   }
 
+  const providerSourceSequences = [
+    updatedSourceSequence,
+    appendSourceSequence,
+    inputClosedSourceSequence,
+    finishSourceSequence,
+    responseSourceSequence,
+    finishedSourceSequence,
+  ];
+  if (new Set(providerSourceSequences).size !== providerSourceSequences.length) {
+    throw new Error('Provider terminal authority reuses a raw source sequence across distinct lifecycle events');
+  }
+
   const ackEvent = eventsByStage.get('finalRendererAck');
   const ack = ackEvent.detail ?? {};
-  if (!Number.isSafeInteger(Number(ack.sourceSequence)) || Number(ack.sourceSequence) <= 0
+  const ackSourceSequence = Number(ack.sourceSequence);
+  if (!Number.isSafeInteger(ackSourceSequence) || ackSourceSequence <= 0
+    || providerSourceSequences.includes(ackSourceSequence)
     || typeof ack.cueId !== 'string' || !ack.cueId.trim()
     || typeof ack.responseId !== 'string' || ack.responseId !== response.responseId
     || !Number.isSafeInteger(Number(ack.cueSequence)) || Number(ack.cueSequence) <= 0
@@ -655,6 +694,7 @@ function assertCellIdentity(receiptCell, manifestCell, report, index) {
     providerMode: manifestCell.providerMode,
     ...strictPaidCellTimingProjection(manifestCell),
     modelId: manifestCell.modelId,
+    modelProtocolProfileIdentity: manifestCell.modelProtocolProfileIdentity,
     feedbackLoopPrevention: manifestCell.feedbackLoopPrevention,
     deviceClass: manifestCell.deviceClass,
     deviceProfileId: manifestCell.deviceProfileId,
@@ -1256,22 +1296,16 @@ function strictAuthorityTimestampInterval(value, label) {
   return { start: timestamp, end: timestamp };
 }
 
-function strictTextOnlyPreflightUsage(value, tokenBudget, label) {
-  const inputTokens = value?.inputTokens;
-  const outputTokens = value?.outputTokens;
-  const audioSeconds = value?.audioSeconds;
+function strictZeroInputPreflightUsage(value, label) {
+  const inputTokens = value?.inputTokens ?? null;
+  const outputTokens = value?.outputTokens ?? null;
+  const audioSeconds = value?.audioSeconds ?? null;
   if (
-    tokenBudget?.maxInputTokens !== 4_096
-    || tokenBudget?.maxOutputTokens !== 256
-    || !Number.isSafeInteger(inputTokens)
-    || inputTokens < 0
-    || inputTokens > 4_096
-    || !Number.isSafeInteger(outputTokens)
-    || outputTokens < 0
-    || outputTokens > 256
+    inputTokens != null
+    || outputTokens != null
     || (audioSeconds !== null && audioSeconds !== 0)
   ) {
-    throw new Error(`${label} does not bind present token counters within 4096/256 and null|0 audioSeconds`);
+    throw new Error(`${label} must bind no synthetic token counters and null|0 audioSeconds`);
   }
   return { inputTokens, outputTokens, audioSeconds };
 }
@@ -1451,7 +1485,14 @@ export function verifyStrictShardProviderPreflightAuthorization({
     grantDigest: grant.digest,
     leaseReservationDigests: leaseReservations.map((entry) => entry.digest),
     authorizationDigest: authorization.authorizationDigest,
-    tokenBudget: structuredClone(consumption.tokenBudget),
+    inputMode: consumption.inputMode,
+    providerInputMode: consumption.providerInputMode,
+    responseMode: consumption.responseMode,
+    terminalEvent: consumption.terminalEvent,
+    lifecycleBudget: structuredClone(consumption.lifecycleBudget),
+    modelProtocolProfileIdentity: structuredClone(
+      consumption.modelProtocolProfileIdentity,
+    ),
     consumptionClaim: claimProjection,
   };
   assertExactObject(
@@ -1485,6 +1526,7 @@ export function verifyStrictShardProviderPreflightAuthorization({
     providerId: PROVIDER_PREFLIGHT_PROVIDER_ID,
     modelId: cell.modelId,
     protocol: STRICT_PAID_MODEL_PROTOCOLS[cell.modelId],
+    modelProtocolProfileIdentity: structuredClone(cell.modelProtocolProfileIdentity),
     feedbackLoopPrevention: cell.feedbackLoopPrevention,
     deviceClass: cell.deviceClass,
     workerId: cell.workerId,
@@ -1622,9 +1664,18 @@ export function verifyStrictShardProviderPreflightAuthorization({
       digest: completion.digest,
       grantDigest: completion.grantDigest,
       authorizationDigest: completion.authorizationDigest,
-      tokenBudget: structuredClone(completion.preflightAuthority.tokenBudget),
-      inputTokens: completion.preflightAuthority.inputTokens,
-      outputTokens: completion.preflightAuthority.outputTokens,
+      inputMode: completion.preflightAuthority.inputMode,
+      providerInputMode: completion.preflightAuthority.providerInputMode,
+      responseMode: completion.preflightAuthority.responseMode,
+      terminalEvent: completion.preflightAuthority.terminalEvent,
+      lifecycleBudget: structuredClone(completion.preflightAuthority.lifecycleBudget),
+      modelProtocolProfileIdentity: structuredClone(
+        completion.modelProtocolProfileIdentity,
+      ),
+      evidenceOutcome: completion.preflightAuthority.evidenceOutcome,
+      firstServerEvent: structuredClone(completion.preflightAuthority.firstServerEvent),
+      sessionAuthority: structuredClone(completion.preflightAuthority.sessionAuthority),
+      rawTrace: structuredClone(completion.preflightAuthority.rawTrace),
       audioSeconds: completion.preflightAuthority.audioSeconds,
       consumptionClaim: claimProjection,
     },
@@ -1648,6 +1699,9 @@ export function verifyStrictShardProviderPreflightAuthorization({
       cellId: reservation.cellId,
       leaseId: reservation.leaseId,
       digest: reservation.digest,
+      modelProtocolProfileIdentity: structuredClone(
+        reservation.modelProtocolProfileIdentity,
+      ),
       ...fileAuthorityEntry(
         reservationPath,
         portableAuthorityPath(
@@ -1666,9 +1720,18 @@ export function verifyStrictShardProviderPreflightAuthorization({
     digest: completion.digest,
     grantDigest: completion.grantDigest,
     authorizationDigest: completion.authorizationDigest,
-    tokenBudget: structuredClone(completion.preflightAuthority.tokenBudget),
-    inputTokens: completion.preflightAuthority.inputTokens,
-    outputTokens: completion.preflightAuthority.outputTokens,
+    inputMode: completion.preflightAuthority.inputMode,
+    providerInputMode: completion.preflightAuthority.providerInputMode,
+    responseMode: completion.preflightAuthority.responseMode,
+    terminalEvent: completion.preflightAuthority.terminalEvent,
+    lifecycleBudget: structuredClone(completion.preflightAuthority.lifecycleBudget),
+    modelProtocolProfileIdentity: structuredClone(
+      completion.modelProtocolProfileIdentity,
+    ),
+    evidenceOutcome: completion.preflightAuthority.evidenceOutcome,
+    firstServerEvent: structuredClone(completion.preflightAuthority.firstServerEvent),
+    sessionAuthority: structuredClone(completion.preflightAuthority.sessionAuthority),
+    rawTrace: structuredClone(completion.preflightAuthority.rawTrace),
     audioSeconds: completion.preflightAuthority.audioSeconds,
     consumptionClaim: {
       ...claim,
@@ -1785,14 +1848,26 @@ export function verifyStrictShardProviderPreflightAuthority({
     || Number(inventory.invocationCount) !== expectedAuthorization.invocationCount
     || inventory.operation !== expectedAuthorization.operation
     || inventory.inputMode !== expectedAuthorization.inputMode
+    || inventory.providerInputMode !== expectedAuthorization.providerInputMode
+    || inventory.responseMode !== expectedAuthorization.responseMode
+    || inventory.terminalEvent !== expectedAuthorization.terminalEvent
+    || canonicalJson(inventory.lifecycleBudget)
+      !== canonicalJson(expectedAuthorization.lifecycleBudget)
+    || inventory.evidenceOutcome !== 'livetranslate-session-finished'
+    || inventory.firstServerEvent?.type !== 'session.created'
+    || canonicalJson(inventory.sessionAuthority)
+      !== canonicalJson(plan.providerPreflightAuthority.sessionAuthority)
+    || canonicalJson(inventory.rawTrace)
+      !== canonicalJson(plan.providerPreflightAuthority.rawTrace)
     || Number(inventory.externalAudioSamples) !== expectedAuthorization.externalAudioSamples
     || inventory.grantDigest !== expectedAuthorization.grantDigest
     || canonicalJson(inventory.leaseReservationDigests)
       !== canonicalJson(expectedAuthorization.leaseReservationDigests)
     || inventory.authorizationDigest !== expectedAuthorization.authorizationDigest
     || canonicalJson(inventory.consumptionClaim) !== canonicalJson(expectedClaim)
-    || canonicalJson(inventory.tokenBudget)
-      !== canonicalJson(expectedAuthorization.tokenBudget)
+    || inventory.tokenBudget != null
+    || inventory.inputTokens != null
+    || inventory.outputTokens != null
     || inventory.rawEvidenceRoot !== COORDINATOR_PROVIDER_PREFLIGHT_EVIDENCE_ROOT
     || Number(inventory.entryCount) !== rebuiltEntries.length
     || inventory.inventoryDigest !== rebuiltDigest
@@ -1812,8 +1887,19 @@ export function verifyStrictShardProviderPreflightAuthority({
     || receipt.executionId !== plan.executionId
     || receipt.scenarioId !== 'E2E-PROVIDER-PROBE'
     || Number(receipt.invocationCount) !== 1
-    || receipt.operation !== 'text-translation-preflight'
-    || receipt.inputMode !== 'text-only'
+    || receipt.operation !== PROVIDER_PREFLIGHT_OPERATION
+    || receipt.inputMode !== PROVIDER_PREFLIGHT_INPUT_MODE
+    || receipt.providerInputMode !== PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE
+    || receipt.responseMode !== PROVIDER_PREFLIGHT_RESPONSE_MODE
+    || receipt.terminalEvent !== PROVIDER_PREFLIGHT_TERMINAL_EVENT
+    || canonicalJson(receipt.lifecycleBudget)
+      !== canonicalJson(PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET)
+    || receipt.evidenceOutcome !== 'livetranslate-session-finished'
+    || receipt.firstServerEvent?.type !== 'session.created'
+    || canonicalJson(receipt.sessionAuthority)
+      !== canonicalJson(plan.providerPreflightAuthority.sessionAuthority)
+    || canonicalJson(receipt.rawTrace)
+      !== canonicalJson(plan.providerPreflightAuthority.rawTrace)
     || receipt.status !== 'completed'
     || Number(receipt.externalAudioSamples) !== 0
     || receipt.providerId !== PROVIDER_PREFLIGHT_PROVIDER_ID
@@ -1827,8 +1913,9 @@ export function verifyStrictShardProviderPreflightAuthority({
       !== canonicalJson(expectedAuthorization.leaseReservationDigests)
     || receipt.authorizationDigest !== expectedAuthorization.authorizationDigest
     || canonicalJson(receipt.consumptionClaim) !== canonicalJson(expectedClaim)
-    || canonicalJson(receipt.tokenBudget)
-      !== canonicalJson(expectedAuthorization.tokenBudget)
+    || receipt.tokenBudget != null
+    || receipt.inputTokens != null
+    || receipt.outputTokens != null
     || receipt.rawEvidenceRoot !== COORDINATOR_PROVIDER_PREFLIGHT_EVIDENCE_ROOT
     || Number(receipt.rawEvidenceCount) !== rebuiltEntries.length
     || receipt.rawEvidenceDigest !== rebuiltDigest
@@ -1837,12 +1924,15 @@ export function verifyStrictShardProviderPreflightAuthority({
     || providerProbeResult.protocol !== expectedAuthorization.protocol
     || providerProbeResult.operation !== expectedAuthorization.operation
     || providerProbeResult.inputMode !== expectedAuthorization.inputMode
+    || providerProbeResult.providerInputMode !== expectedAuthorization.providerInputMode
+    || providerProbeResult.responseMode !== expectedAuthorization.responseMode
+    || providerProbeResult.terminalEvent !== expectedAuthorization.terminalEvent
     || Number(providerProbeResult.externalAudioSamples)
       !== expectedAuthorization.externalAudioSamples
     || Number(providerProbeResult.providerInvocationCount)
       !== expectedAuthorization.invocationCount
   ) {
-    throw new Error('strict shard provider preflight is not exactly one completed text-only invocation');
+    throw new Error('strict shard provider preflight is not exactly one completed zero-input LiveTranslate lifecycle');
   }
 
   const emitterResult = readJson(path.join(rawRoot, 'emitter-result.json'));
@@ -1872,11 +1962,7 @@ export function verifyStrictShardProviderPreflightAuthority({
     [rawProbeResult, 'strict shard provider preflight raw provider result'],
     [diagnosticsProbeSummary, 'strict shard provider preflight diagnostics summary'],
     [emitterResult, 'strict shard provider preflight emitter'],
-  ].map(([value, label]) => strictTextOnlyPreflightUsage(
-    value,
-    expectedAuthorization.tokenBudget,
-    label,
-  ));
+  ].map(([value, label]) => strictZeroInputPreflightUsage(value, label));
   if (preflightUsages.some((usage) => (
     canonicalJson(usage) !== canonicalJson(preflightUsages[0])
   ))) {
@@ -1886,11 +1972,7 @@ export function verifyStrictShardProviderPreflightAuthority({
     [inventory, 'strict shard provider preflight inventory'],
     [receipt, 'strict shard provider preflight receipt'],
   ]) {
-    const usage = strictTextOnlyPreflightUsage(
-      candidate,
-      expectedAuthorization.tokenBudget,
-      label,
-    );
+    const usage = strictZeroInputPreflightUsage(candidate, label);
     if (canonicalJson(usage) !== canonicalJson(preflightUsages[0])) {
       throw new Error(`${label} token/audio usage does not match the independently rebuilt raw evidence`);
     }
@@ -2068,6 +2150,9 @@ export function verifyStrictShardProviderPreflightAuthority({
     'protocol',
     'operation',
     'inputMode',
+    'providerInputMode',
+    'responseMode',
+    'terminalEvent',
     'status',
     'externalAudioSamples',
     'invocationCount',
@@ -2080,9 +2165,11 @@ export function verifyStrictShardProviderPreflightAuthority({
     'leaseReservationDigests',
     'authorizationDigest',
     'consumptionClaim',
-    'tokenBudget',
-    'inputTokens',
-    'outputTokens',
+    'lifecycleBudget',
+    'evidenceOutcome',
+    'firstServerEvent',
+    'sessionAuthority',
+    'rawTrace',
     'audioSeconds',
     'generatedAt',
   ]) {
@@ -2113,10 +2200,17 @@ export function verifyStrictShardProviderPreflightAuthority({
     || canonicalJson(raw.summary.leaseReservationDigests)
       !== canonicalJson(receipt.leaseReservationDigests)
     || raw.summary.authorizationDigest !== receipt.authorizationDigest
-    || canonicalJson(raw.summary.tokenBudget)
-      !== canonicalJson(expectedAuthorization.tokenBudget)
-    || Number(raw.summary.inputTokens) !== preflightUsages[0].inputTokens
-    || Number(raw.summary.outputTokens) !== preflightUsages[0].outputTokens
+    || raw.summary.providerInputMode !== receipt.providerInputMode
+    || raw.summary.responseMode !== receipt.responseMode
+    || raw.summary.terminalEvent !== receipt.terminalEvent
+    || canonicalJson(raw.summary.lifecycleBudget)
+      !== canonicalJson(expectedAuthorization.lifecycleBudget)
+    || raw.summary.evidenceOutcome !== receipt.evidenceOutcome
+    || canonicalJson(raw.summary.firstServerEvent) !== canonicalJson(receipt.firstServerEvent)
+    || canonicalJson(raw.summary.sessionAuthority) !== canonicalJson(receipt.sessionAuthority)
+    || canonicalJson(raw.summary.rawTrace) !== canonicalJson(receipt.rawTrace)
+    || raw.summary.inputTokens != null
+    || raw.summary.outputTokens != null
     || raw.summary.audioSeconds !== preflightUsages[0].audioSeconds
     || raw.summary.operation !== receipt.operation
     || raw.summary.inputMode !== receipt.inputMode
@@ -2764,6 +2858,12 @@ export function verifyStrictMatrixAuthority({
         throw new Error(`strict matrix cell ${index} does not match balanced release plan field ${key}`);
       }
     }
+    const matrixIdentityFailure = watchModelProtocolIdentityFailure(
+      cell?.modelProtocolProfileIdentity,
+      plannedCell?.modelProtocolProfileIdentity,
+      `strict matrix cell ${index} model protocol profile identity`,
+    );
+    if (matrixIdentityFailure) throw new Error(matrixIdentityFailure);
     if (cell.runDirectory !== manifest.runDirectories[index]) {
       throw new Error(`strict matrix cell ${index} runDirectory does not match the manifest scope`);
     }
@@ -2845,6 +2945,7 @@ export function verifyStrictMatrixAuthority({
       cellExternalProviderBudget = assertCellExternalProviderBudget(runDirectory, {
         cellId: plannedCell.cellId,
         modelId: plannedCell.modelId,
+        modelProtocolProfileIdentity: plannedCell.modelProtocolProfileIdentity,
         feedbackLoopPrevention: plannedCell.feedbackLoopPrevention,
         inputCeilingSamples: plannedCell.maxExternalAudioSamples,
       });
@@ -2915,6 +3016,13 @@ export function verifyStrictMatrixAuthority({
       mode: 'live',
       provenance: receipt.provenance,
     });
+    const rawReportIdentityFailure = strictWatchSessionReportFailure(
+      rebuiltReport,
+      plannedCell.modelProtocolProfileIdentity,
+    );
+    if (rawReportIdentityFailure) {
+      throw new Error(`strict matrix cell ${index} raw Desktop report failed: ${rawReportIdentityFailure}`);
+    }
     assertSystemMetricsAuthority(runDirectory, index, evidenceDrivenTerminal);
     assertRawMediaAuthority(runDirectory, currentImplementationHashes, cell, index, workspaceRoot);
     if (cell.feedbackLoopPrevention === 'virtual-driver') {
@@ -3053,9 +3161,23 @@ function strictContentFailure(report) {
   return null;
 }
 
-export function strictWatchSessionReportFailure(report) {
+export function strictWatchSessionReportFailure(
+  report,
+  expectedModelProtocolProfileIdentity = deriveWatchModelProtocolIdentity(RELEASE_MODELS[0]),
+) {
   const watch = report?.watchSessionReport;
   if (!watch) return 'strict evidence requires a saved watchSessionReport';
+  if (report?.realtimeSession?.readinessEvent !== 'session.updated') {
+    return `strict LiveTranslate readiness must be session.updated, observed ${report?.realtimeSession?.readinessEvent ?? 'missing'}`;
+  }
+  if (expectedModelProtocolProfileIdentity) {
+    const modelProtocolFailure = watchModelProtocolIdentityFailure(
+      watch.modelProtocolProfileIdentity,
+      expectedModelProtocolProfileIdentity,
+      'watchSessionReport model protocol profile identity',
+    );
+    if (modelProtocolFailure) return modelProtocolFailure;
+  }
   if (watch.status !== 'completed') {
     return `watchSessionReport status is ${watch.status ?? 'unknown'}, expected completed`;
   }
@@ -3557,7 +3679,10 @@ function basicFailure(entry, options = {}) {
     }
   }
   if (options.strict) {
-    const watchReportReason = strictWatchSessionReportFailure(entry.report);
+    const watchReportReason = strictWatchSessionReportFailure(
+      entry.report,
+      options.expectedModelProtocolProfileIdentity,
+    );
     if (watchReportReason) {
       return {
         failedLayers: ['watchSessionReport'],
@@ -4045,6 +4170,7 @@ export function findWatchModeEvidence(options = {}) {
       const failure = basicFailure(latest, {
         strict,
         expectedDeviceClass: plannedCell.deviceClass,
+        expectedModelProtocolProfileIdentity: plannedCell.modelProtocolProfileIdentity,
         now: options.now,
         maxAgeDays: options.maxAgeDays,
         currentProvenance,
@@ -4103,6 +4229,9 @@ export function findWatchModeEvidence(options = {}) {
       const failure = basicFailure(latest, {
         strict,
         expectedDeviceClass: deviceClass,
+        expectedModelProtocolProfileIdentity: RELEASE_MODELS.includes(model)
+          ? deriveWatchModelProtocolIdentity(model)
+          : null,
         now: options.now,
         maxAgeDays: options.maxAgeDays,
         currentProvenance,

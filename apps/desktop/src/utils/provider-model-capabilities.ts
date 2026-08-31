@@ -1,6 +1,13 @@
-import type { ProviderScenario, ProviderModelCapabilityRegistryEntry, RealtimeAudioMode } from '../schema/config';
+import type {
+  ProviderModelCapabilityRegistryEntry,
+  ProviderModelProtocolProfileDeclaration,
+  ProviderModelWireDialect,
+  ProviderScenario,
+  RealtimeAudioMode,
+} from '../schema/config';
 import type { ProviderCapability, ProviderInteractionCapability } from '../schema/provider-contract';
 import type { ProviderModelRuntime } from '../schema/provider-runtime';
+import { MODEL_PROTOCOL_REGISTRY, lookupModelProtocolProfiles } from '../model-protocol/profile-registry';
 
 export const providerCapabilityOrder: ProviderCapability[] = ['speech-to-text', 'text-to-speech', 'speech-to-speech', 'text-generation'];
 
@@ -322,7 +329,7 @@ const seedRegistryEntries: SeedRegistryEntry[] = [
     source: 'official',
   },
   { id: 'seed-qwen3-livetranslate-flash-realtime-2025-09-22', modelId: 'qwen3-livetranslate-flash-realtime-2025-09-22', capabilities: ['speech-to-text', 'speech-to-speech'], realtimeProtocol: 'dashscope-livetranslate', realtimeAudioMode: 'server_vad', interactionCapabilities: ['auto_vad', 'streaming'], releasedAt: '2025-09-22', source: 'official' },
-  { id: 'seed-qwen-audio-3.0-realtime-plus', modelId: 'qwen-audio-3.0-realtime-plus', capabilities: ['speech-to-text', 'speech-to-speech'], realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'server_vad', interactionCapabilities: ['auto_vad', 'streaming'], source: 'official' },
+  { id: 'seed-qwen-audio-3.0-realtime-plus', modelId: 'qwen-audio-3.0-realtime-plus', capabilities: ['speech-to-speech'], realtimeAudioMode: 'server_vad', interactionCapabilities: ['auto_vad', 'streaming'], source: 'official' },
   { id: 'seed-qwen3-livetranslate-flash', modelId: 'qwen3-livetranslate-flash', capabilities: ['speech-to-text', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], source: 'official' },
   { id: 'seed-qwen3-livetranslate-flash-2025-12-01', modelId: 'qwen3-livetranslate-flash-2025-12-01', capabilities: ['speech-to-text', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], releasedAt: '2025-12-01', source: 'official' },
   { id: 'seed-qwen3.5-omni-plus-realtime', modelId: 'qwen3.5-omni-plus-realtime', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'semantic_vad', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2026-03-29', source: 'official' },
@@ -399,9 +406,45 @@ export function createProviderModelCapabilityRegistryEntry(
   };
 }
 
+function manifestDeclarationForSeed(
+  modelId: string,
+): Partial<Pick<
+  ProviderModelCapabilityRegistryEntry,
+  'registryVersion' | 'profileId' | 'profileVersion' | 'modelProtocolProfile'
+>> {
+  const profiles = lookupModelProtocolProfiles(modelId);
+  if (profiles.length !== 1) return {};
+  const profile = profiles[0];
+  const dialect = MODEL_PROTOCOL_REGISTRY.dialects.find((candidate) =>
+    candidate.dialectId === profile.dialectId);
+  if (!dialect) return {};
+  const modelProtocolProfile: ProviderModelProtocolProfileDeclaration = {
+    registryVersion: MODEL_PROTOCOL_REGISTRY.registryVersion,
+    profileId: profile.profileId,
+    profileVersion: profile.profileVersion,
+    product: profile.product,
+    operations: [...profile.operations],
+    transport: dialect.transport,
+    endpointFamily: dialect.endpointFamily,
+    endpointPath: dialect.endpointPath,
+    wireDialect: dialect.dialectId as ProviderModelWireDialect,
+    inputFraming: dialect.inputFraming,
+    outputFraming: dialect.outputFraming,
+    terminalLifecycle: dialect.terminalLifecycle,
+    adapterStatus: profile.adapter.status,
+  };
+  return {
+    registryVersion: MODEL_PROTOCOL_REGISTRY.registryVersion,
+    profileId: profile.profileId,
+    profileVersion: profile.profileVersion,
+    modelProtocolProfile,
+  };
+}
+
 export function createDefaultLocalModelCapabilityRegistry(): ProviderModelCapabilityRegistryEntry[] {
   return seedRegistryEntries.map((entry) => ({
     ...entry,
+    ...manifestDeclarationForSeed(entry.modelId),
     capabilities: normalizeProviderCapabilityList(entry.capabilities),
     realtimeAudioMode: entry.realtimeAudioMode ?? inferRealtimeAudioModeFromModelName(entry.modelId),
     interactionCapabilities: normalizeProviderInteractionCapabilityList(

@@ -32,9 +32,43 @@ import {
   PROVIDER_PREFLIGHT_MODEL,
   PROVIDER_PREFLIGHT_PROTOCOL,
 } from './watch-mode-provider-preflight-authorization.mjs';
+import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
 
 const SHA_A = 'a'.repeat(64);
 const SHA_B = 'b'.repeat(64);
+const MODEL_PROTOCOL_PROFILE_IDENTITY = LIVE_LLM_CELLS[0].modelProtocolProfileIdentity;
+const PREFLIGHT_LIFECYCLE_AUTHORITY = Object.freeze({
+  providerId: 'provider-dashscope',
+  model: 'qwen3.5-livetranslate-flash-realtime',
+  protocol: 'dashscope-livetranslate',
+  operation: 'livetranslate-session-lifecycle-preflight',
+  modelProtocolProfileIdentity: MODEL_PROTOCOL_PROFILE_IDENTITY,
+  inputMode: 'none',
+  providerInputMode: 'none',
+  responseMode: 'text-only',
+  terminalEvent: 'session.finished',
+  status: 'completed',
+  externalAudioSamples: 0,
+  invocationCount: 1,
+  lifecycleBudget: {
+    firstServerEventLatencyMs: 1_200,
+    socketEventTimeoutMs: 12_000,
+  },
+  evidenceOutcome: 'livetranslate-session-finished',
+  firstServerEvent: { type: 'session.created', monotonicMs: 606 },
+  sessionAuthority: {
+    sessionIdentitySha256: SHA_A,
+    serverModel: 'qwen3.5-livetranslate-flash-realtime',
+    echoedSessionConfigSha256: SHA_B,
+  },
+  rawTrace: {
+    path: 'raw/provider-websocket-trace.jsonl',
+    bytes: 256,
+    sha256: SHA_A,
+    eventCount: 6,
+  },
+  audioSeconds: null,
+});
 const PROVENANCE = Object.freeze({
   schemaVersion: 1,
   source: 'git',
@@ -86,7 +120,7 @@ function writeReadinessFixture(context, mutateReceipt = () => {}) {
       };
       const generatedAt = new Date(requestedAt + 100).toISOString();
       const receipt = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         artifactKind: 'watch-mode-production-worker-zero-provider-readiness',
         generatedAt,
         executionId: context.executionId,
@@ -171,9 +205,7 @@ function signedFixture() {
     localIsolationAuthority: { path: 'local.json', bytes: 10, sha256: SHA_A, providerCalls: 0 },
     providerPreflightAuthority: {
        path: 'preflight.json', bytes: 10, sha256: SHA_B, providerId: 'provider-dashscope',
-       operation: 'text-translation-preflight', status: 'completed', externalAudioSamples: 0, invocationCount: 1,
-       tokenBudget: { maxInputTokens: 4_096, maxOutputTokens: 256 },
-       inputTokens: 64, outputTokens: 12, audioSeconds: null,
+       ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
      },
     workers: workerList,
     assignments: defaultSingleWorkerAssignments(workerList),
@@ -257,9 +289,21 @@ test('coordinator prepares build/preflight/local once and atomically publishes t
         assert.equal(fs.existsSync(grantPath), true, 'signed grant must be published before provider connect');
         assert.equal(fs.readdirSync(leaseReservationDirectory).length, SHARD_MATRIX_CELL_COUNT);
         assert.equal(new Set(grant.cells.map((cell) => cell.leaseId)).size, SHARD_MATRIX_CELL_COUNT);
+        assert.deepEqual(
+          grant.authorization.modelProtocolProfileIdentity,
+          MODEL_PROTOCOL_PROFILE_IDENTITY,
+        );
+        assert.ok(grant.cells.every((cell) => (
+          JSON.stringify(cell.modelProtocolProfileIdentity)
+            === JSON.stringify(MODEL_PROTOCOL_PROFILE_IDENTITY)
+        )));
+        assert.ok(authorization.leaseReservations.every((reservation) => (
+          JSON.stringify(reservation.modelProtocolProfileIdentity)
+            === JSON.stringify(MODEL_PROTOCOL_PROFILE_IDENTITY)
+        )));
         const desktop = runtimeAuthority.find((entry) => entry.path === 'target/release/omni-desktop-shell.exe');
         fs.writeFileSync(path.join(path.dirname(grantPath), 'provider-preflight-consumption-claim.json'), `${JSON.stringify({
-          schemaVersion: 2,
+          schemaVersion: 3,
           artifactKind: 'watch-mode-provider-preflight-consumption-claim',
           executionId: grant.executionId,
           grantDigest: grant.digest,
@@ -274,12 +318,8 @@ test('coordinator prepares build/preflight/local once and atomically publishes t
           retryPolicy: 'new-execution-required',
         }, null, 2)}\n`, 'utf8');
         return {
-          providerId: 'provider-dashscope',
-          operation: 'text-translation-preflight',
-          inputMode: 'text-only',
-          providerInvocationCount: 1,
-          status: 'completed',
-          externalAudioSamples: 0,
+          ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
+          providerInvocationCount: PREFLIGHT_LIFECYCLE_AUTHORITY.invocationCount,
           evidenceDirectory: preflightEvidenceDirectory,
         };
       },
@@ -293,22 +333,14 @@ test('coordinator prepares build/preflight/local once and atomically publishes t
           Math.max(...expectedAuthorization.reservationIssuedAts.map(Date.parse)) + 1,
         ).toISOString()],
         summary: {
-          providerId: 'provider-dashscope',
-          model: PROVIDER_PREFLIGHT_MODEL,
-          protocol: PROVIDER_PREFLIGHT_PROTOCOL,
-          operation: 'text-translation-preflight',
-          inputMode: 'text-only',
-          externalAudioSamples: 0,
-          providerInvocationCount: 1,
+          ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
+          providerInvocationCount: PREFLIGHT_LIFECYCLE_AUTHORITY.invocationCount,
           executionId: expectedAuthorization.executionId,
           grantDigest: expectedAuthorization.grantDigest,
           leaseReservationDigests: expectedAuthorization.leaseReservationDigests,
           authorizationDigest: expectedAuthorization.authorizationDigest,
           consumptionClaim: expectedAuthorization.consumptionClaim,
-          tokenBudget: expectedAuthorization.tokenBudget,
-          inputTokens: 64,
-          outputTokens: 12,
-          audioSeconds: null,
+          lifecycleBudget: structuredClone(expectedAuthorization.lifecycleBudget),
         },
       }),
     });
@@ -340,9 +372,16 @@ test('coordinator prepares build/preflight/local once and atomically publishes t
       'utf8',
     ));
     assert.equal(preflight.invocationCount, 1);
-    assert.equal(preflight.operation, 'text-translation-preflight');
-    assert.equal(preflight.inputMode, 'text-only');
+    assert.equal(preflight.operation, 'livetranslate-session-lifecycle-preflight');
+    assert.equal(preflight.inputMode, 'none');
+    assert.equal(preflight.providerInputMode, 'none');
+    assert.equal(preflight.responseMode, 'text-only');
+    assert.equal(preflight.terminalEvent, 'session.finished');
     assert.equal(preflight.model, PROVIDER_PREFLIGHT_MODEL);
+    assert.deepEqual(
+      preflight.modelProtocolProfileIdentity,
+      MODEL_PROTOCOL_PROFILE_IDENTITY,
+    );
     assert.equal(preflight.externalAudioSamples, 0);
     const publishedText = fs.readdirSync(result.executionRoot, { recursive: true, encoding: 'utf8' })
       .filter((entry) => entry.endsWith('.json'))
@@ -765,7 +804,7 @@ test('coordinator aggregate canonicalizes arrival order and binds every cell to 
         const cell = value.plan.cells.find((entry) => entry.cellId === cellId);
         const lease = value.leases.find((entry) => entry.leaseId === cell.leaseId);
         const claim = {
-          schemaVersion: 2,
+          schemaVersion: 3,
           artifactKind: 'watch-mode-shard-dispatch-claim',
           claimedAt: new Date(timestamp).toISOString(),
           executionId: value.plan.executionId,
@@ -792,7 +831,7 @@ test('coordinator aggregate canonicalizes arrival order and binds every cell to 
         };
       });
       const core = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         artifactKind: 'watch-mode-shard-wave-completion',
         completedAt: new Date(timestamp).toISOString(),
         executionId: value.plan.executionId,

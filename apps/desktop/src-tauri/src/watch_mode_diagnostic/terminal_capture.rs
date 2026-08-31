@@ -1,6 +1,8 @@
 use super::*;
-use serde::Serialize;
-use sha2::{Digest, Sha256};
+
+mod immutable_json;
+
+pub(super) use immutable_json::write_json_immutable;
 pub(super) fn start_diagnostic_audio_route(
     app: &AppHandle,
     run_marker: &str,
@@ -632,6 +634,18 @@ fn append_terminal_lifecycle_events(
     recorder: &mut TerminalAuthorityRecorder,
     lifecycle: &StrictWatchTerminalLifecycleSnapshot,
 ) {
+    let updated = &lifecycle.session_updated_received;
+    recorder.push(
+        "sessionUpdatedReceived",
+        updated.observed_at_unix_ms,
+        json!({
+            "authority": "desktop-livetranslate-typed-session-owner",
+            "sourceSequence": updated.source_sequence,
+            "sessionIdentitySha256": updated.session_identity_sha256,
+            "sentSessionConfigSha256": updated.sent_session_config_sha256,
+            "echoedSessionConfigSha256": updated.echoed_session_config_sha256,
+        }),
+    );
     let append = &lifecycle.last_provider_append;
     recorder.push(
         "lastProviderAppend",
@@ -759,105 +773,6 @@ pub(super) fn write_terminal_authority_immutable(
     write_json_immutable(authority_path, "Terminal authority", authority)
         .map(|_| ())
         .map_err(|error| error.to_string())
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ImmutableJsonReceipt {
-    pub(super) relative_path: String,
-    pub(super) byte_length: u64,
-    pub(super) sha256: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ImmutableJsonWriteError {
-    code: &'static str,
-    detail: String,
-}
-
-impl std::fmt::Display for ImmutableJsonWriteError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}: {}", self.code, self.detail)
-    }
-}
-
-fn immutable_write_error(
-    code: &'static str,
-    label: &str,
-    output_path: &str,
-    error: impl std::fmt::Display,
-) -> ImmutableJsonWriteError {
-    ImmutableJsonWriteError {
-        code,
-        detail: format!("{label} {output_path}: {error}"),
-    }
-}
-
-pub(super) fn write_json_immutable<T: Serialize>(
-    output_path: &str,
-    label: &str,
-    value: &T,
-) -> Result<ImmutableJsonReceipt, ImmutableJsonWriteError> {
-    use std::io::Write;
-
-    let path = std::path::PathBuf::from(output_path);
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| immutable_write_error("invalid-path", label, output_path, "path has no file name"))?;
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| immutable_write_error("create-parent-failed", label, output_path, error))?;
-    }
-    if path.exists() {
-        return Err(immutable_write_error(
-            "immutable-exists",
-            label,
-            output_path,
-            "immutable target already exists",
-        ));
-    }
-    let temporary_path = path.with_file_name(format!(
-        ".{file_name}.{}.tmp",
-        Uuid::new_v4().simple()
-    ));
-    let result = (|| -> Result<ImmutableJsonReceipt, ImmutableJsonWriteError> {
-        let json = serde_json::to_vec_pretty(value)
-            .map_err(|error| immutable_write_error("serialize-failed", label, output_path, error))?;
-        let byte_length = u64::try_from(json.len()).map_err(|error| {
-            immutable_write_error("length-overflow", label, output_path, error)
-        })?;
-        let sha256 = format!("{:x}", Sha256::digest(&json));
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary_path)
-            .map_err(|error| immutable_write_error("create-temp-failed", label, output_path, error))?;
-        file.write_all(&json)
-            .map_err(|error| immutable_write_error("write-failed", label, output_path, error))?;
-        file.sync_all()
-            .map_err(|error| immutable_write_error("sync-failed", label, output_path, error))?;
-        drop(file);
-        std::fs::hard_link(&temporary_path, &path).map_err(|error| {
-            let code = if error.kind() == std::io::ErrorKind::AlreadyExists {
-                "immutable-exists"
-            } else {
-                "publish-failed"
-            };
-            immutable_write_error(code, label, output_path, error)
-        })?;
-        std::fs::remove_file(&temporary_path)
-            .map_err(|error| immutable_write_error("remove-temp-failed", label, output_path, error))?;
-        Ok(ImmutableJsonReceipt {
-            relative_path: file_name.to_string(),
-            byte_length,
-            sha256,
-        })
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary_path);
-    }
-    result
 }
 
 pub(super) fn write_report_atomic(

@@ -4,9 +4,9 @@ import path from 'node:path';
 
 import { repoRoot } from '../lib/testing-common.mjs';
 
-export const STRICT_MATRIX_SCHEMA_VERSION = 5;
+export const STRICT_MATRIX_SCHEMA_VERSION = 6;
 export const STRICT_MATRIX_ARTIFACT_KIND = 'watch-mode-strict-matrix-authority';
-export const CELL_AUTHORITY_SCHEMA_VERSION = 3;
+export const CELL_AUTHORITY_SCHEMA_VERSION = 4;
 export const CELL_AUTHORITY_ARTIFACT_KIND = 'watch-mode-live-cell-authority';
 export const CELL_AUTHORITY_FILE = 'matrix-cell-authority.json';
 export const MATRIX_RUNNER_ID = 'scripts/testing/run-watch-mode-live-production-coordinator.mjs';
@@ -75,6 +75,11 @@ export const AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
 // across a commit or runtime authority digest.
 export const PAID_AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/watch-mode-external-provider-budget.mjs',
+  'scripts/testing/watch-mode-model-protocol-authority.mjs',
+  'scripts/testing/model-protocol-profile-contract.mjs',
+  'scripts/testing/watch-mode-provider-preflight-authorization.mjs',
+  'contracts/model-protocol-profiles.v1.json',
+  'contracts/model-protocol-profiles.schema.json',
   'scripts/testing/watch-mode-canonical-source-authority.mjs',
   'scripts/testing/watch-mode-translated-pcm-loopback.mjs',
   'scripts/testing/release-manual-collector.mjs',
@@ -287,6 +292,9 @@ export function writeCellAuthorityReceipt({
       auxiliaryExternalAudioSeconds: matrixCell.auxiliaryExternalAudioSeconds,
       subtitleTranslationMode: matrixCell.subtitleTranslationMode,
       modelId: matrixCell.modelId,
+      ...(matrixCell.modelProtocolProfileIdentity ? {
+        modelProtocolProfileIdentity: structuredClone(matrixCell.modelProtocolProfileIdentity),
+      } : {}),
       feedbackLoopPrevention: matrixCell.feedbackLoopPrevention,
       deviceClass: matrixCell.deviceClass,
       deviceProfileId: matrixCell.deviceProfileId,

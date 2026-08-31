@@ -111,6 +111,19 @@ impl SpeechConfig {
             })?,
             None => provider,
         };
+        if selected_tts_model.is_some() && provider.kind == "dashscope" {
+            crate::audio::events::authorize_bailian_model_operation(
+                &provider,
+                &provider.model,
+                "tts",
+            )
+            .map_err(|error| {
+                format!(
+                    "Configured DashScope TTS model '{}' is not authorized for TTS: {error}",
+                    provider.model
+                )
+            })?;
+        }
         let secondary_segment_tts_enabled = secondary_translation_active
             && secondary_audio_enabled
             && resolve_translation_audio_source(config, true)
@@ -273,10 +286,17 @@ fn resolve_model_provider_from_config_value(
 
 fn is_livetranslate_model_reference(config: &Value, model_id: &str) -> bool {
     resolve_model_provider_from_config_value(config, model_id)
-        .map(|provider| {
-            crate::audio::events::resolve_realtime_profile(&provider, &provider.model)
-                .protocol_dialect
-                == Some(crate::audio::events::RealtimeProtocol::DashscopeLivetranslate)
+        .and_then(|provider| {
+            (provider.kind == "dashscope").then(|| {
+                crate::provider::model_protocol_profile::lookup_model_protocol_profiles_for_inspection(
+                    &provider.model,
+                )
+                .ok()
+                .is_some_and(|profiles| {
+                    profiles.len() == 1
+                        && profiles[0].wire_dialect == "dashscope-livetranslate-realtime-v1"
+                })
+            })
         })
         .unwrap_or(false)
 }

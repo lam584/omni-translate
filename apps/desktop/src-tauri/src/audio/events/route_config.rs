@@ -1,17 +1,41 @@
 use serde_json::Value;
 use tauri::AppHandle;
-
 use super::super::{glossary::{GlossaryCatalog, GlossaryContext}, omni, speech};
 use crate::diagnostics::events::append_diagnostics_log;
 use crate::provider::contracts::{ProviderDraftInput, ProviderModelCapabilityRegistryEntryInput};
+use crate::provider::model_protocol_profile::{
+    authorize_model_protocol_invocation, lookup_model_protocol_profiles_for_inspection,
+    AuthorizedModelProtocolProfile,
+    ModelProtocolAuthorizationRequest, ModelProtocolRequestedAudio,
+};
 
 #[path = "route_config/session_contract.rs"]
 mod session_contract;
+#[path = "route_config/model_protocol_authority.rs"]
+mod model_protocol_authority;
+#[path = "route_config/subtitle_policy.rs"]
+mod subtitle_policy;
 #[path = "route_config/watch_audio_policy.rs"]
 mod watch_audio_policy;
+#[path = "route_config/provider_resolution.rs"]
+mod provider_resolution;
+#[cfg(test)]
+#[path = "route_config/bailian_protocol_old_red.rs"]
+mod bailian_protocol_old_red;
 
 use self::watch_audio_policy::resolve_route_audio_mode;
-
+pub(super) use self::provider_resolution::resolve_model_provider_from_config;
+pub(crate) use self::provider_resolution::{
+    resolve_composite_template_provider, resolve_model_provider_from_config_value,
+};
+use self::subtitle_policy::{is_legacy_default_instructions, subtitle_translate_mode_and_model};
+use self::model_protocol_authority::{
+    bailian_protocol_from_authority, parse_realtime_protocol, registry_protocol,
+    resolve_bailian_model_protocol_authority,
+};
+pub(crate) use self::model_protocol_authority::{
+    authorize_bailian_model_operation, authorize_bailian_native_translate,
+};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolvedRouteKind {
     GeminiLive,
@@ -64,6 +88,7 @@ impl RealtimeProtocol {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RealtimeProfileSource {
+    Manifest,
     Registry,
     Template,
     Provider,
@@ -74,6 +99,7 @@ pub(crate) enum RealtimeProfileSource {
 impl RealtimeProfileSource {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
+            Self::Manifest => "manifest",
             Self::Registry => "registry",
             Self::Template => "template",
             Self::Provider => "provider",
@@ -102,6 +128,8 @@ pub(crate) struct ResolvedRealtimeProfile {
     pub(crate) preconnect_allowed: bool,
     pub(crate) timeout_budget_ms: u64,
     pub(crate) source: RealtimeProfileSource,
+    pub(crate) model_protocol_authority: Option<AuthorizedModelProtocolProfile>,
+    pub(crate) model_protocol_error: Option<String>,
     pub(crate) diagnostics: Vec<String>,
 }
 
@@ -157,6 +185,7 @@ pub(super) struct ResolvedRoutePlan {
     pub(super) speech_dispatch_policy: SpeechDispatchPolicy,
     pub(super) speech_output_enabled: bool,
     pub(super) translation_audio_source: speech::TranslationAudioSource,
+    pub(super) model_protocol_authority: Option<AuthorizedModelProtocolProfile>,
     pub(super) session_reuse_key: SessionReuseKey,
     pub(super) kind: ResolvedRouteKind,
 }
@@ -203,6 +232,14 @@ impl ResolvedRoutePlan {
                 super::super::omni::session_errors::SessionErrorCode::ModelReferenceInvalid,
             )
         });
+        if configuration_error.is_none() && is_dashscope_provider(&provider) {
+            configuration_error = realtime_profile.model_protocol_error.as_ref().map(|error| {
+                super::super::omni::session_errors::with_error_markers(
+                    error,
+                    super::super::omni::session_errors::SessionErrorCode::ModelReferenceInvalid,
+                )
+            });
+        }
         if configuration_error.is_none() {
             configuration_error = audio_mode_error.map(|error| {
                 super::super::omni::session_errors::with_error_markers(
@@ -233,6 +270,7 @@ impl ResolvedRoutePlan {
             _ => ResolvedVadPolicy::ServerVad,
         };
         let reuse_model = provider.model.clone();
+        let model_protocol_authority = realtime_profile.model_protocol_authority.clone();
         let omni_speech_config = omni::OmniSpeechConfig::from_config(config);
         let requested_output_mode = if translation_audio_source
             == speech::TranslationAudioSource::SubtitleTts
@@ -337,6 +375,7 @@ impl ResolvedRoutePlan {
             speech_dispatch_policy,
             speech_output_enabled,
             translation_audio_source,
+            model_protocol_authority,
             session_reuse_key: SessionReuseKey {
                 direction: direction.to_string(),
                 model: reuse_model,
@@ -406,30 +445,6 @@ pub(crate) fn subtitle_source_language_or_english(config: &Value) -> String {
 
 /// Instructions persisted by older versions were weak enough that models
 /// replied conversationally; treat them as "unset" so the new defaults apply.
-fn is_legacy_default_instructions(text: &str) -> bool {
-    matches!(
-        text,
-        "你是一个实时翻译助手，请将听到的外语内容翻译成中文输出。"
-            | "You are a realtime subtitle translator. Translate incoming audio into concise subtitles."
-    )
-}
-
-fn subtitle_translate_mode_and_model(config: &Value) -> (&str, &str) {
-    let mode = config
-        .pointer("/devices/subtitleTranslationMode")
-        .and_then(Value::as_str)
-        .unwrap_or("native");
-    let model_id = config
-        .pointer("/devices/subtitleTranslationModelId")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    (mode, model_id)
-}
-
-pub(super) fn infer_legacy_omni_model(model: &str) -> bool {
-    let lower = model.to_lowercase();
-    lower.contains("realtime") && (lower.contains("omni") || lower.contains("livetranslate"))
-}
 
 fn is_named_dashscope_realtime_model(model: &str) -> bool {
     let lower = model.trim().to_ascii_lowercase();
@@ -441,29 +456,6 @@ fn is_named_dashscope_realtime_model(model: &str) -> bool {
             || lower.contains("asr"))
 }
 
-fn parse_realtime_protocol(value: &str) -> Option<RealtimeProtocol> {
-    match value.trim() {
-        "dashscope-omni" => Some(RealtimeProtocol::DashscopeOmni),
-        "dashscope-livetranslate" => Some(RealtimeProtocol::DashscopeLivetranslate),
-        "dashscope-asr" => Some(RealtimeProtocol::DashscopeAsr),
-        "openai-conversation" => Some(RealtimeProtocol::OpenAiConversation),
-        "openai-translation" => Some(RealtimeProtocol::OpenAiTranslation),
-        "openai-transcription" => Some(RealtimeProtocol::OpenAiTranscription),
-        "openai-flat" => Some(RealtimeProtocol::OpenAiFlat),
-        "gemini-live" => Some(RealtimeProtocol::GeminiLive),
-        _ => None,
-    }
-}
-
-fn registry_protocol(
-    _provider: &ProviderDraftInput,
-    entry: &ProviderModelCapabilityRegistryEntryInput,
-) -> Option<RealtimeProtocol> {
-    entry
-        .realtime_protocol
-        .as_deref()
-        .and_then(parse_realtime_protocol)
-}
 
 fn is_official_registry_seed(entry: &ProviderModelCapabilityRegistryEntryInput) -> bool {
     entry.id.starts_with("seed-") && entry.source.as_deref() == Some("official")
@@ -531,6 +523,10 @@ pub(crate) fn resolve_realtime_profile(
     provider: &ProviderDraftInput,
     model: &str,
 ) -> ResolvedRealtimeProfile {
+    let exact_bailian_manifest_model = lookup_model_protocol_profiles_for_inspection(model)
+        .is_ok_and(|profiles| !profiles.is_empty());
+    let bailian_provider_family_mismatch =
+        exact_bailian_manifest_model && !is_dashscope_provider(provider);
     let registry_matches = provider
         .local_model_capability_registry
         .iter()
@@ -547,8 +543,32 @@ pub(crate) fn resolve_realtime_profile(
     } else {
         Vec::new()
     };
+    let bailian_authorization = is_dashscope_provider(provider)
+        .then(|| resolve_bailian_model_protocol_authority(provider, model, "native_translate"));
+    let (model_protocol_authority, model_protocol_error) = match bailian_authorization {
+        Some(Ok(authority)) => (Some(authority), None),
+        Some(Err(error)) => (None, Some(error)),
+        None if bailian_provider_family_mismatch => (
+            None,
+            Some(
+                "model_protocol.provider_family_mismatch: exact Bailian model requires provider kind 'dashscope'"
+                    .to_string(),
+            ),
+        ),
+        None => (None, None),
+    };
     let resolved_registry_protocol = registry_entry.and_then(|e| registry_protocol(provider, e));
-    let (protocol_dialect, source) = if let Some(protocol) = resolved_registry_protocol {
+    let (protocol_dialect, source) = if bailian_provider_family_mismatch {
+        (None, RealtimeProfileSource::None)
+    } else if is_dashscope_provider(provider) {
+        match model_protocol_authority
+            .as_ref()
+            .and_then(bailian_protocol_from_authority)
+        {
+            Some(protocol) => (Some(protocol), RealtimeProfileSource::Manifest),
+            None => (None, RealtimeProfileSource::None),
+        }
+    } else if let Some(protocol) = resolved_registry_protocol {
         (Some(protocol), RealtimeProfileSource::Registry)
     } else if let Some(protocol) = provider
         .template_realtime_protocol
@@ -601,20 +621,26 @@ pub(crate) fn resolve_realtime_profile(
                 | RealtimeProtocol::OpenAiTranslation
         )
     );
-    let native_audio_output = registry_entry
-        .map(|entry| {
-            entry.capabilities.iter().any(|capability| {
-                capability == "speech-to-speech" || capability == "text-to-speech"
+    let native_audio_output = if is_dashscope_provider(provider) {
+        model_protocol_authority
+            .as_ref()
+            .is_some_and(|authority| !authority.audio_output.codecs.is_empty())
+    } else {
+        registry_entry
+            .map(|entry| {
+                entry.capabilities.iter().any(|capability| {
+                    capability == "speech-to-speech" || capability == "text-to-speech"
+                })
             })
-        })
-        .unwrap_or(matches!(
-            protocol_dialect,
-            Some(
-                RealtimeProtocol::DashscopeOmni
-                    | RealtimeProtocol::OpenAiConversation
-                    | RealtimeProtocol::GeminiLive
-            )
-        ));
+            .unwrap_or(matches!(
+                protocol_dialect,
+                Some(
+                    RealtimeProtocol::DashscopeOmni
+                        | RealtimeProtocol::OpenAiConversation
+                        | RealtimeProtocol::GeminiLive
+                )
+            ))
+    };
     let server_segmentation = route_kind != ResolvedRouteKind::LocalVad;
     let preconnect_allowed = route_kind == ResolvedRouteKind::Omni;
     let secondary_translation_policy = if native_translation { "native" } else { "secondary" };
@@ -674,6 +700,8 @@ pub(crate) fn resolve_realtime_profile(
             30_000
         },
         source,
+        model_protocol_authority,
+        model_protocol_error,
         diagnostics,
     }
 }
@@ -770,8 +798,6 @@ fn is_tencent_speech_translate_provider(provider: &ProviderDraftInput) -> bool {
 
 fn is_dashscope_provider(provider: &ProviderDraftInput) -> bool {
     provider.kind == "dashscope"
-        || provider.template_id.to_lowercase().contains("dashscope")
-        || provider.model.to_lowercase().contains("dashscope")
 }
 
 #[cfg(test)]
@@ -785,148 +811,4 @@ pub(super) fn should_start_secondary_speech_dispatch(
         && speech_dispatch_state == "idle"
         && speech::resolve_translation_audio_source(config, true)
             == speech::TranslationAudioSource::SubtitleTts
-}
-
-pub(super) fn resolve_model_provider_from_config(
-    app: &AppHandle,
-    config: &Value,
-    composite_model_id: &str,
-    purpose: &str,
-) -> Option<ProviderDraftInput> {
-    let linked_count = config
-        .get("linkedProviders")
-        .and_then(Value::as_array)
-        .map(|items| items.len())
-        .unwrap_or(0);
-    let _ = append_diagnostics_log(
-        app,
-        "audio",
-        "debug",
-        format!(
-            "resolve_model_provider_from_config: purpose={purpose} composite_model_id={composite_model_id} linkedProviders={linked_count}"
-        ),
-        None,
-        None,
-        None,
-    );
-
-    let resolved = resolve_model_provider_from_config_value(config, composite_model_id);
-    match &resolved {
-        Some(provider) => {
-            let _ = append_diagnostics_log(
-                app,
-                "audio",
-                "info",
-                format!(
-                    "resolve_model_provider_from_config: purpose={purpose} provider_id={} kind={} model={} base_url={} template_id={}",
-                    provider.provider_id,
-                    provider.kind,
-                    provider.model,
-                    provider.base_url,
-                    provider.template_id
-                ),
-                None,
-                None,
-                None,
-            );
-        }
-        None => {
-            let target_template = composite_model_id
-                .split_once("::")
-                .map(|(template_id, _)| template_id)
-                .unwrap_or("(main-provider)");
-            let _ = append_diagnostics_log(
-                app,
-                "audio",
-                "warning",
-                format!(
-                    "resolve_model_provider_from_config: purpose={purpose} no provider matched target_template={target_template} composite_model_id={composite_model_id} linkedProviders={linked_count}"
-                ),
-                None,
-                None,
-                None,
-            );
-        }
-    }
-    resolved
-}
-
-/// Resolves a `templateId::modelId` composite against the provider array,
-/// overriding the matched provider's model. Shared by the route-config and
-/// speech-config resolvers so the composite lookup lives in one place.
-pub(crate) fn resolve_composite_template_provider(
-    providers: &[Value],
-    template_id: &str,
-    model_id: &str,
-) -> Option<ProviderDraftInput> {
-    for provider_value in providers {
-        let parsed: Option<ProviderDraftInput> =
-            serde_json::from_value(provider_value.clone()).ok();
-        if let Some(mut provider) = parsed {
-            if provider.template_id == template_id {
-                provider.model = model_id.to_string();
-                return Some(provider);
-            }
-        }
-    }
-    None
-}
-
-pub(crate) fn resolve_model_provider_from_config_value(
-    config: &Value,
-    composite_model_id: &str,
-) -> Option<ProviderDraftInput> {
-    let providers = config
-        .get("providers")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-
-    if let Some((template_id, model_id)) = composite_model_id.split_once("::") {
-        return resolve_composite_template_provider(&providers, template_id, model_id);
-    }
-
-    // Qwen realtime speech model names belong to the DashScope websocket
-    // family. Resolve that provider class before exact model equality so an
-    // earlier OpenAI-compatible text provider with a stale/copied model value
-    // cannot hijack the Watch route merely because of array order.
-    if is_named_dashscope_realtime_model(composite_model_id) {
-        for provider_value in &providers {
-            let parsed: Option<ProviderDraftInput> =
-                serde_json::from_value(provider_value.clone()).ok();
-            if let Some(mut provider) = parsed {
-                if is_dashscope_provider(&provider) {
-                    provider.model = composite_model_id.to_string();
-                    return Some(provider);
-                }
-            }
-        }
-    }
-
-    // Bare model name: search all providers equally.
-    for provider_value in &providers {
-        let parsed: Option<ProviderDraftInput> =
-            serde_json::from_value(provider_value.clone()).ok();
-        if let Some(provider) = parsed {
-            if provider.model == composite_model_id {
-                return Some(provider);
-            }
-            if provider
-                .scene_model_assignments
-                .iter()
-                .any(|a| a.model_ids.iter().any(|m| m == composite_model_id))
-            {
-                let mut p = provider;
-                p.model = composite_model_id.to_string();
-                return Some(p);
-            }
-            if is_omni_route_model(&provider, composite_model_id) && is_dashscope_provider(&provider) {
-                let mut p = provider;
-                p.model = composite_model_id.to_string();
-                return Some(p);
-            }
-        }
-    }
-
-    None
 }

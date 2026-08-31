@@ -511,7 +511,8 @@ impl LiveTranslateLifecycle {
                 "model_protocol.event_out_of_order: received '{event_type}' before session.finish"
             )),
             Phase::AwaitFinished if event_type == "conversation.item.created" => {
-                let item_id = validate_conversation_item(event)?;
+                let item_id =
+                    validate_conversation_item(event, self.conversation_items.is_empty())?;
                 if !self.conversation_items.insert(item_id.to_string()) {
                     return Err(
                         "model_protocol.event_order_invalid: duplicate conversation item identity"

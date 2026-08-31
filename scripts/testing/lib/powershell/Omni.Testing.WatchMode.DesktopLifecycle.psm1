@@ -14,6 +14,30 @@ function Resolve-OmniBuiltExecutable {
   )
   return (Join-Path $WorkspaceRoot "target/$BuildProfile/$ExecutableName")
 }
+function New-WatchModeProviderLeaseReceipt {
+  param(
+    [Parameter(Mandatory = $true)]$Request, [Parameter(Mandatory = $true)][string]$LeaseArtifactKind,
+    [Parameter(Mandatory = $true)][string]$CellId, [Parameter(Mandatory = $true)][string]$LeaseId,
+    [Parameter(Mandatory = $true)][string]$RunMarker, [Parameter(Mandatory = $true)][int]$MaxSamples
+  )
+  $strictPaidAuthority = [string]$Request.authorityMode -eq 'strict-paid'
+  $receipt = [ordered]@{
+    schemaVersion = if ($strictPaidAuthority) { 2 } else { 1 }
+    artifactKind = $LeaseArtifactKind
+    nonAuthoritative = [string]$Request.authorityMode -eq 'local-canonical-smoke'
+    cellId = $CellId
+    leaseId = $LeaseId
+    runMarker = $RunMarker
+    maxSamples = $MaxSamples
+  }
+  if ($strictPaidAuthority) {
+    if ($null -eq $Request.model.protocolProfileIdentity) {
+      throw 'strict paid Watch Mode provider input lease requires the request-bound model protocol profile identity'
+    }
+    $receipt.modelProtocolProfileIdentity = $Request.model.protocolProfileIdentity
+  }
+  return $receipt
+}
 
 function Start-WatchModeDesktopShell {
   param(
@@ -153,15 +177,13 @@ function Start-WatchModeDesktopShell {
       } else {
         "provider-input-budget-lease.json"
       }
-      $leaseReceipt = [ordered]@{
-        schemaVersion = 1
-        artifactKind = $leaseArtifactKind
-        nonAuthoritative = [bool]$LocalCanonicalContentAuthority
-        cellId = $MatrixCellId
-        leaseId = $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID
-        runMarker = $RunMarker
-        maxSamples = [int]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES
-      }
+      $leaseReceipt = New-WatchModeProviderLeaseReceipt `
+        -Request $request `
+        -LeaseArtifactKind $leaseArtifactKind `
+        -CellId $MatrixCellId `
+        -LeaseId $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID `
+        -RunMarker $RunMarker `
+        -MaxSamples ([int]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES)
       $leaseReceiptJson = $leaseReceipt | ConvertTo-Json -Depth 3
       [System.IO.File]::WriteAllText(
         (Join-Path $OutputDirectory $leaseFileName),

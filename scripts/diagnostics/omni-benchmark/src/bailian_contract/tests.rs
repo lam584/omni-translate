@@ -287,3 +287,93 @@ fn transcription_events_require_typed_item_content_language_and_emotion_ledger()
         "content_index":0,"transcript":"source","language":"en","emotion":"neutral"
     })).is_err());
 }
+
+#[test]
+fn conversation_item_roles_match_the_livetranslate_server_contract() {
+    for role in ["assistant", "user"] {
+        let authority = authorize_enabled_livetranslate(MODEL, URL).unwrap();
+        let request = update();
+        let mut lifecycle = LiveTranslateLifecycle::new(authority, MODEL, &request).unwrap();
+        lifecycle.admit_server_event(&created()).unwrap();
+        lifecycle.admit_server_event(&updated()).unwrap();
+        lifecycle.record_finish_sent().unwrap();
+        lifecycle
+            .admit_server_event(&json!({
+                "type":"conversation.item.created", "event_id":"evt-item",
+                "previous_item_id":"previous-1",
+                "item":{
+                    "id":"item-1", "object":"realtime.item", "type":"message",
+                    "status":"in_progress", "role":role, "content":[]
+                }
+            }))
+            .unwrap();
+    }
+}
+
+#[test]
+fn first_conversation_item_accepts_no_previous_identity_without_weakening_later_links() {
+    for previous_item_id in [None, Some(Value::Null)] {
+        let authority = authorize_enabled_livetranslate(MODEL, URL).unwrap();
+        let request = update();
+        let mut lifecycle = LiveTranslateLifecycle::new(authority, MODEL, &request).unwrap();
+        lifecycle.admit_server_event(&created()).unwrap();
+        lifecycle.admit_server_event(&updated()).unwrap();
+        lifecycle.record_finish_sent().unwrap();
+        let mut first = json!({
+            "type":"conversation.item.created", "event_id":"evt-first-item",
+            "item":{
+                "id":"item-1", "object":"realtime.item", "type":"message",
+                "status":"in_progress", "role":"assistant", "content":[]
+            }
+        });
+        if let Some(previous_item_id) = previous_item_id {
+            first["previous_item_id"] = previous_item_id;
+        }
+        lifecycle.admit_server_event(&first).unwrap();
+        lifecycle
+            .admit_server_event(&json!({
+                "type":"conversation.item.created", "event_id":"evt-linked-item",
+                "previous_item_id":"item-1",
+                "item":{
+                    "id":"item-2", "object":"realtime.item", "type":"message",
+                    "status":"in_progress", "role":"user", "content":[{"type":"input_audio"}]
+                }
+            }))
+            .unwrap();
+        assert!(lifecycle
+            .admit_server_event(&json!({
+                "type":"conversation.item.created", "event_id":"evt-unlinked-item",
+                "item":{
+                    "id":"item-3", "object":"realtime.item", "type":"message",
+                    "status":"in_progress", "role":"assistant", "content":[]
+                }
+            }))
+            .is_err());
+    }
+
+    for invalid_previous_item_id in [
+        json!(""),
+        json!(" "),
+        json!(0),
+        json!(true),
+        json!({}),
+        json!([]),
+    ] {
+        let authority = authorize_enabled_livetranslate(MODEL, URL).unwrap();
+        let request = update();
+        let mut lifecycle = LiveTranslateLifecycle::new(authority, MODEL, &request).unwrap();
+        lifecycle.admit_server_event(&created()).unwrap();
+        lifecycle.admit_server_event(&updated()).unwrap();
+        lifecycle.record_finish_sent().unwrap();
+        assert!(lifecycle
+            .admit_server_event(&json!({
+                "type":"conversation.item.created", "event_id":"evt-invalid-item",
+                "previous_item_id":invalid_previous_item_id,
+                "item":{
+                    "id":"item-1", "object":"realtime.item", "type":"message",
+                    "status":"in_progress", "role":"assistant", "content":[]
+                }
+            }))
+            .is_err());
+    }
+}

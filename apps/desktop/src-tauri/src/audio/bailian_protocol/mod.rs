@@ -482,11 +482,15 @@ impl LiveTranslateServerState {
             .response_creation_status
             .get(&response_id)
             .ok_or_else(|| "model_protocol.identity_mismatch: response.done has no response.created status".to_string())?;
-        if self
+        let created_conversation_id = self
             .response_conversation_ids
             .get(&response_id)
-            .map(String::as_str)
-            != Some(response_done.conversation_id.as_str())
+            .ok_or_else(|| {
+                "model_protocol.identity_mismatch: response.done has no response.created conversation identity"
+                    .to_string()
+            })?;
+        if !created_conversation_id.is_empty()
+            && created_conversation_id != &response_done.conversation_id
         {
             return Err("model_protocol.identity_mismatch: response.done changed conversation identity".to_string());
         }
@@ -669,7 +673,10 @@ fn validate_response_created(event: &Value) -> Result<ValidatedResponseCreated<'
         .get("response")
         .ok_or_else(|| "model_protocol.payload_invalid: response object is required".to_string())?;
     let response_id = required_nonempty_string(response, "id")?;
-    let conversation_id = required_nonempty_string(response, "conversation_id")?;
+    // LiveTranslate emits an empty placeholder at response.created and binds the
+    // conversation identity in response.done. The field remains typed and
+    // mandatory here; only the terminal event is authoritative for non-emptiness.
+    let conversation_id = required_string(response, "conversation_id")?;
     if required_nonempty_string(response, "object")? != "realtime.response" {
         return Err("model_protocol.payload_invalid: response.object must be realtime.response".to_string());
     }
@@ -988,6 +995,109 @@ mod tests {
                 "output":[]
             }
         }))
+    }
+
+    #[test]
+    fn response_conversation_identity_may_bind_at_done_when_created_is_empty() {
+        let authority = authority();
+        let mut state = LiveTranslateServerState::default();
+        activate(&mut state, &authority);
+
+        state
+            .admit(
+                &authority,
+                &event("event-response", json!({
+                    "type":"response.created", "response":{
+                        "id":"r1", "conversation_id":"", "object":"realtime.response",
+                        "status":"in_progress", "modalities":["text"], "output":[]
+                    }
+                })),
+            )
+            .expect("LiveTranslate may leave conversation_id unresolved at response.created");
+        state
+            .admit(
+                &authority,
+                &output_item_event(
+                    "event-output-added",
+                    "response.output_item.added",
+                    "r1",
+                    "item-1",
+                    "in_progress",
+                ),
+            )
+            .unwrap();
+        state
+            .admit(
+                &authority,
+                &output_item_event(
+                    "event-output-done",
+                    "response.output_item.done",
+                    "r1",
+                    "item-1",
+                    "completed",
+                ),
+            )
+            .unwrap();
+        let mutation = state
+            .admit(
+                &authority,
+                &event("event-response-done", json!({
+                    "type":"response.done", "response":{
+                        "id":"r1", "conversation_id":"conv-1", "object":"realtime.response",
+                        "status":"completed", "modalities":["text"], "output":[{
+                            "id":"item-1", "object":"realtime.item", "type":"message",
+                            "status":"completed", "role":"assistant", "content":[]
+                        }]
+                    }
+                })),
+            )
+            .expect("response.done must be allowed to bind the first non-empty conversation identity");
+
+        assert!(mutation.response_completed);
+    }
+
+    #[test]
+    fn response_conversation_identity_remains_typed_and_terminally_nonempty() {
+        let authority = authority();
+        for invalid in [None, Some(Value::Null), Some(json!(7)), Some(json!({}))] {
+            let mut state = LiveTranslateServerState::default();
+            activate(&mut state, &authority);
+            let mut created = event("event-response", json!({
+                "type":"response.created", "response":{
+                    "id":"r1", "object":"realtime.response",
+                    "status":"in_progress", "modalities":["text"], "output":[]
+                }
+            }));
+            if let Some(invalid) = invalid {
+                created["response"]["conversation_id"] = invalid;
+            }
+            assert!(state.admit(&authority, &created).is_err());
+        }
+
+        let mut state = LiveTranslateServerState::default();
+        activate(&mut state, &authority);
+        state
+            .admit(
+                &authority,
+                &event("event-response", json!({
+                    "type":"response.created", "response":{
+                        "id":"r1", "conversation_id":"", "object":"realtime.response",
+                        "status":"in_progress", "modalities":["text"], "output":[]
+                    }
+                })),
+            )
+            .unwrap();
+        assert!(state
+            .admit(
+                &authority,
+                &event("event-response-done", json!({
+                    "type":"response.done", "response":{
+                        "id":"r1", "conversation_id":"", "object":"realtime.response",
+                        "status":"failed", "modalities":["text"], "output":[]
+                    }
+                })),
+            )
+            .is_err());
     }
 
     fn output_item_event(

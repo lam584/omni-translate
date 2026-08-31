@@ -256,6 +256,20 @@ describe('SubtitleHistoryPage', () => {
     expect(view.container.textContent).toContain('refresh failed');
   });
 
+  it('surfaces unexpected action rejections through the shared error handler', async () => {
+    await view.render(<DesktopApiProvider api={api}><SubtitleHistoryPage /></DesktopApiProvider>);
+    await flushAsyncWork();
+    window.confirm = vi.fn(() => {
+      throw new Error('confirmation failed');
+    });
+
+    await click(buttonByText(view.container, 'Clear ended history'));
+    await flushAsyncWork();
+
+    expect(clear).not.toHaveBeenCalled();
+    expect(view.container.querySelector('[role="alert"]')?.textContent).toContain('confirmation failed');
+  });
+
   it('clears the selected session and reloads after clearing history', async () => {
     await view.render(<DesktopApiProvider api={api}><SubtitleHistoryPage /></DesktopApiProvider>);
     await flushAsyncWork();

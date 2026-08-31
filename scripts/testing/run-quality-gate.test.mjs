@@ -1072,8 +1072,16 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
           modalities: ['text'],
           sample_rate: 16_000,
           input_audio_format: 'pcm',
-          input_audio_transcription: { language: 'zh' },
+          input_audio_transcription: {
+            language: 'zh',
+            model: 'qwen3-asr-flash-realtime',
+          },
           translation: { language: 'en' },
+          turn_detection: {
+            silence_duration_ms: 400,
+            threshold: 0,
+            type: 'server_vad',
+          },
         },
       };
       const sessionFinish = { event_id: 'evt_fixture_finish', type: 'session.finish' };
@@ -1110,10 +1118,16 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
             id: sessionIdentitySha256,
             model: preflightAuthorization.model,
             ...sessionUpdate.session,
+            turn_detection: {
+              ...sessionUpdate.session.turn_detection,
+              create_response: true,
+              interrupt_response: true,
+            },
           },
         }),
         tracePayload('client-to-server', 'session.finish', 423, sessionFinish),
         tracePayload('server-to-client', 'session.finished', 424, {
+          event_id: 'evt_server_finished_fixture',
           type: 'session.finished',
         }),
       ];
@@ -1142,7 +1156,10 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
         sessionAuthority: {
           sessionIdentitySha256,
           serverModel: preflightAuthorization.model,
-          echoedSessionConfigSha256: sha256(JSON.stringify(sessionUpdate.session)),
+          echoedSessionConfigSha256: sha256('{"input_audio_format":"pcm",'
+            + '"input_audio_transcription":{"language":"zh","model":"qwen3-asr-flash-realtime"},'
+            + '"modalities":["text"],"sample_rate":16000,"translation":{"language":"en"},'
+            + '"turn_detection":{"silence_duration_ms":400,"threshold":0.0,"type":"server_vad"}}'),
         },
         rawTrace,
       };

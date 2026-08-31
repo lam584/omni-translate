@@ -121,12 +121,21 @@ function strictSessionUpdate(entry) {
       'modalities',
       'sample_rate',
       'translation',
+      'turn_detection',
     ])
     || !sameCanonical(payload.session.modalities, ['text'])
     || payload.session.sample_rate !== 16_000
     || payload.session.input_audio_format !== 'pcm'
-    || !sameCanonical(payload.session.input_audio_transcription, { language: 'zh' })
+    || !sameCanonical(payload.session.input_audio_transcription, {
+      language: 'zh',
+      model: 'qwen3-asr-flash-realtime',
+    })
     || !sameCanonical(payload.session.translation, { language: 'en' })
+    || !sameCanonical(payload.session.turn_detection, {
+      silence_duration_ms: 400,
+      threshold: 0,
+      type: 'server_vad',
+    })
   ) return null;
   return payload;
 }
@@ -156,14 +165,24 @@ function strictSessionAuthority(raw, createdEntry, updatedEntry, update) {
   const updated = verifiedTracePayload(updatedEntry);
   const createdSession = created?.session;
   const updatedSession = updated?.session;
+  const updatedTurnDetection = updatedSession?.turn_detection;
   const updatedConfig = updatedSession && {
     input_audio_format: updatedSession.input_audio_format,
     input_audio_transcription: updatedSession.input_audio_transcription,
     modalities: updatedSession.modalities,
     sample_rate: updatedSession.sample_rate,
     translation: updatedSession.translation,
+    turn_detection: updatedTurnDetection && {
+      silence_duration_ms: updatedTurnDetection.silence_duration_ms,
+      threshold: updatedTurnDetection.threshold,
+      type: updatedTurnDetection.type,
+    },
   };
-  const configDigest = sha256Bytes(Buffer.from(JSON.stringify(update.session), 'utf8'));
+  const canonicalConfig = '{"input_audio_format":"pcm",'
+    + '"input_audio_transcription":{"language":"zh","model":"qwen3-asr-flash-realtime"},'
+    + '"modalities":["text"],"sample_rate":16000,"translation":{"language":"en"},'
+    + '"turn_detection":{"silence_duration_ms":400,"threshold":0.0,"type":"server_vad"}}';
+  const configDigest = sha256Bytes(Buffer.from(canonicalConfig, 'utf8'));
   const authority = raw?.sessionAuthority;
   return created?.type === 'session.created'
     && updated?.type === 'session.updated'
@@ -171,6 +190,13 @@ function strictSessionAuthority(raw, createdEntry, updatedEntry, update) {
     && createdSession.id === updatedSession?.id
     && createdSession.model === 'qwen3.5-livetranslate-flash-realtime'
     && updatedSession?.model === createdSession.model
+    && sameCanonical(updatedTurnDetection, {
+      create_response: true,
+      interrupt_response: true,
+      silence_duration_ms: 400,
+      threshold: 0,
+      type: 'server_vad',
+    })
     && sameCanonical(updatedConfig, update.session)
     && exactObjectKeys(authority, [
       'echoedSessionConfigSha256',
@@ -263,6 +289,7 @@ function validateLiveTranslateWireEvidence(root, probe, raw, issues) {
   ) issues.push('provider preflight raw WebSocket trace is not the exact ordered LiveTranslate lifecycle');
   const sessionUpdate = strictSessionUpdate(entries[2]);
   const finishPayload = verifiedTracePayload(entries[4]);
+  const finishedPayload = verifiedTracePayload(entries[5]);
   if (
     raw?.evidenceOutcome !== 'livetranslate-session-finished'
     || raw?.firstServerEvent?.type !== 'session.created'
@@ -296,6 +323,10 @@ function validateLiveTranslateWireEvidence(root, probe, raw, issues) {
     || finishPayload?.type !== 'session.finish'
     || !/^evt_[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(String(finishPayload?.event_id ?? ''))
     || finishPayload.event_id === sessionUpdate.event_id
+    || !exactObjectKeys(finishedPayload, ['event_id', 'type'])
+    || finishedPayload?.type !== 'session.finished'
+    || typeof finishedPayload?.event_id !== 'string'
+    || finishedPayload.event_id.length === 0
     || !sameCanonical(probe?.rawTrace, authority)
     || probe?.evidenceOutcome !== raw.evidenceOutcome
     || !sameCanonical(probe?.firstServerEvent, raw.firstServerEvent)

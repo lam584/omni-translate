@@ -443,7 +443,7 @@ test('worker executes exactly one coordinator lease, verifies continuity, and wr
         executions += 1;
         executionTimeoutMs = timeoutMs;
         assert.equal(request.environment.OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID, lease.leaseId);
-        const runDirectory = path.join(request.cellOutputRoot, 'run-1');
+        const runDirectory = request.cellOutputRoot;
         writeSuccessfulRun(runDirectory, cell, lease);
         return { exitCode: 0, runDirectory };
       },

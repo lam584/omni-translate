@@ -638,6 +638,18 @@ test('run-watch-mode-live.ps1 parses without PowerShell syntax errors', { skip: 
   assert.equal(probe.status, 0, `runner has PowerShell syntax errors:\n${probe.stderr}`);
 });
 
+test('Desktop lifecycle resolves its hash dependency in an isolated module scope', { skip: !isWindows }, () => {
+  const modulePath = path.resolve(
+    'scripts/testing/lib/powershell/Omni.Testing.WatchMode.DesktopLifecycle.psm1',
+  );
+  const probe = runPowerShell([
+    '-Command',
+    `$module = Import-Module ${quotePowerShell(modulePath)} -Force -DisableNameChecking -PassThru; `
+      + `& $module { Get-Command Get-OmniSha256 -ErrorAction Stop | Out-Null }`,
+  ]);
+  assert.equal(probe.status, 0, `Desktop lifecycle hash dependency is unavailable:\n${probe.stderr}`);
+});
+
 test('physical endpoint evidence accepts USB and Bluetooth signals and rejects a mismatched class', { skip: !isWindows }, () => {
   const probe = runPowerShell([
     '-Command',

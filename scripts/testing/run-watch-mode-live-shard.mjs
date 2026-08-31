@@ -466,7 +466,7 @@ export async function runLeasedShardCell({
     }
     const runDirectory = path.resolve(execution.runDirectory);
     const relative = path.relative(path.resolve(request.cellOutputRoot), runDirectory);
-    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
       throw new Error(`paid shard cell ${cell.cellId} run directory is outside its isolated output root`);
     }
     if (fs.existsSync(path.join(runDirectory, SHARD_CELL_RESULT_FILE))) {

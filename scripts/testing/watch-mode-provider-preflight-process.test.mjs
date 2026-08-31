@@ -50,8 +50,16 @@ const OFFICIAL_SESSION_UPDATE = {
     modalities: ['text'],
     sample_rate: 16_000,
     input_audio_format: 'pcm',
-    input_audio_transcription: { language: 'zh' },
+    input_audio_transcription: {
+      language: 'zh',
+      model: 'qwen3-asr-flash-realtime',
+    },
     translation: { language: 'en' },
+    turn_detection: {
+      type: 'server_vad',
+      threshold: 0.0,
+      silence_duration_ms: 400,
+    },
   },
 };
 const OFFICIAL_SESSION_FINISH = {
@@ -68,7 +76,11 @@ const OFFICIAL_UPGRADE_REQUEST_AUTHORITY = {
 const OFFICIAL_SESSION_UPDATE_RAW = JSON.stringify(OFFICIAL_SESSION_UPDATE);
 const OFFICIAL_SESSION_FINISH_RAW = JSON.stringify(OFFICIAL_SESSION_FINISH);
 const OFFICIAL_UPGRADE_REQUEST_AUTHORITY_RAW = JSON.stringify(OFFICIAL_UPGRADE_REQUEST_AUTHORITY);
-const OFFICIAL_SESSION_ECHO_SHA256 = sha256(JSON.stringify(OFFICIAL_SESSION_UPDATE.session));
+const OFFICIAL_SESSION_ECHO_CANONICAL = '{"input_audio_format":"pcm",'
+  + '"input_audio_transcription":{"language":"zh","model":"qwen3-asr-flash-realtime"},'
+  + '"modalities":["text"],"sample_rate":16000,"translation":{"language":"en"},'
+  + '"turn_detection":{"silence_duration_ms":400,"threshold":0.0,"type":"server_vad"}}';
+const OFFICIAL_SESSION_ECHO_SHA256 = sha256(OFFICIAL_SESSION_ECHO_CANONICAL);
 const OFFICIAL_SESSION_CREATED = {
   event_id: 'evt_server_created_001',
   type: 'session.created',
@@ -84,10 +96,20 @@ const OFFICIAL_SESSION_UPDATED = {
     id: SESSION_IDENTITY_SHA256,
     model: DASH_SCOPE_MODEL,
     ...OFFICIAL_SESSION_UPDATE.session,
+    turn_detection: {
+      ...OFFICIAL_SESSION_UPDATE.session.turn_detection,
+      create_response: true,
+      interrupt_response: true,
+    },
   },
+};
+const OFFICIAL_SESSION_FINISHED = {
+  event_id: 'evt_server_finished_001',
+  type: 'session.finished',
 };
 const OFFICIAL_SESSION_CREATED_RAW = JSON.stringify(OFFICIAL_SESSION_CREATED);
 const OFFICIAL_SESSION_UPDATED_RAW = JSON.stringify(OFFICIAL_SESSION_UPDATED);
+const OFFICIAL_SESSION_FINISHED_RAW = JSON.stringify(OFFICIAL_SESSION_FINISHED);
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -283,8 +305,24 @@ function validateLivetranslateLifecycle(raw, trace) {
     || sessionAuthority?.serverModel !== DASH_SCOPE_MODEL) {
     return { valid: false, reason: 'server-model-mismatch' };
   }
-  const { id: _sessionId, model: _serverModel, ...echoedSessionConfig } = updatedPayload.session;
+  const {
+    id: _sessionId,
+    model: _serverModel,
+    turn_detection: echoedTurnDetection,
+    ...echoedSessionConfigWithoutTurnDetection
+  } = updatedPayload.session;
+  const {
+    create_response: createResponse,
+    interrupt_response: interruptResponse,
+    ...echoedRequestedTurnDetection
+  } = echoedTurnDetection ?? {};
+  const echoedSessionConfig = {
+    ...echoedSessionConfigWithoutTurnDetection,
+    turn_detection: echoedRequestedTurnDetection,
+  };
   if (!jsonValueEquals(echoedSessionConfig, OFFICIAL_SESSION_UPDATE.session)
+    || createResponse !== true
+    || interruptResponse !== true
     || sessionAuthority?.echoedSessionConfigSha256 !== OFFICIAL_SESSION_ECHO_SHA256) {
     return { valid: false, reason: 'session-update-echo-mismatch' };
   }
@@ -307,6 +345,16 @@ function validateLivetranslateLifecycle(raw, trace) {
     || !isControlledEventId(parsedFinish.event_id)
     || parsedFinish.event_id === parsedUpdate.event_id) {
     return { valid: false, reason: 'session-finish-payload-invalid' };
+  }
+  const finished = entries.find((entry) => entry.type === 'session.finished');
+  const parsedFinished = parseJsonObject(finished.rawRedactedPayload);
+  if (!parsedFinished
+    || finished.sha256 !== sha256(finished.rawRedactedPayload)
+    || !hasExactKeys(parsedFinished, ['event_id', 'type'])
+    || parsedFinished.type !== 'session.finished'
+    || typeof parsedFinished.event_id !== 'string'
+    || parsedFinished.event_id.length === 0) {
+    return { valid: false, reason: 'session-finished-payload-invalid' };
   }
   if (raw?.providerInputMode !== 'none'
     || raw?.responseMode !== 'text-only'
@@ -468,7 +516,13 @@ function successfulLivetranslateTrace() {
       rawRedactedPayload: OFFICIAL_SESSION_FINISH_RAW,
       sha256: sha256(OFFICIAL_SESSION_FINISH_RAW),
     },
-    { monotonicMs: 650, direction: 'server-to-client', type: 'session.finished' },
+    {
+      monotonicMs: 650,
+      direction: 'server-to-client',
+      type: 'session.finished',
+      rawRedactedPayload: OFFICIAL_SESSION_FINISHED_RAW,
+      sha256: sha256(OFFICIAL_SESSION_FINISHED_RAW),
+    },
   ].map((entry) => JSON.stringify(entry)).join('\n') + '\n';
 }
 
@@ -795,6 +849,26 @@ test('formal LiveTranslate success proves the complete ordered text-only lifecyc
   verifyRawTrace(scenario.outputDirectory, result.fields.rawTrace);
 });
 
+test('formal LiveTranslate rejects a session.finished envelope with a mismatched payload', async () => {
+  const trace = mutatePayloadTrace('session.finished', (payload) => {
+    payload.type = 'session.updated';
+  });
+  const rawProbeResult = {
+    ...successfulLivetranslateRaw(),
+    evidenceOutcome: 'session-finished-payload-invalid',
+  };
+  assert.deepEqual(classifyWireEvidence(rawProbeResult, trace), {
+    kind: 'session-finished-payload-invalid',
+    passed: false,
+  });
+  const scenario = managedScenario({ rawProbeResult, trace });
+  await assert.rejects(scenario.promise, (error) => {
+    assert.equal(error.failure.stableErrorCode, 'provider.preflight.server-authority-invalid');
+    assert.equal(error.failure.evidenceOutcome, 'session-finished-payload-invalid');
+    return true;
+  });
+});
+
 for (const invalidUpgrade of [
   {
     name: 'non-Beijing authority',
@@ -967,6 +1041,18 @@ for (const invalidUpdate of [
   {
     name: 'locale-shaped source language zh-CN',
     mutate(payload) { payload.session.input_audio_transcription.language = 'zh-CN'; },
+  },
+  {
+    name: 'wrong ASR model',
+    mutate(payload) { payload.session.input_audio_transcription.model = 'qwen3-asr-wrong'; },
+  },
+  {
+    name: 'missing ASR model',
+    mutate(payload) { delete payload.session.input_audio_transcription.model; },
+  },
+  {
+    name: 'missing turn detection',
+    mutate(payload) { delete payload.session.turn_detection; },
   },
   {
     name: 'locale-shaped target language en-US',

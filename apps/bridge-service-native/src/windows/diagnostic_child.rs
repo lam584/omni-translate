@@ -5,7 +5,11 @@ struct DiagnosticChildTone {
     executable: PathBuf,
     trigger_path: PathBuf,
     pid_path: PathBuf,
+    ready_receipt_path: PathBuf,
     result_path: PathBuf,
+    start_signal_path: PathBuf,
+    abort_signal_path: PathBuf,
+    receipt_id: String,
     endpoint_id: String,
     frequency_hz: f32,
     amplitude: f32,
@@ -36,10 +40,23 @@ impl DiagnosticChildTone {
                 "--diagnostic-child-tone-trigger-path",
             )?),
             pid_path: PathBuf::from(read_arg(args, "--diagnostic-child-tone-pid-path")?),
+            ready_receipt_path: PathBuf::from(read_arg(
+                args,
+                "--diagnostic-child-tone-ready-receipt-path",
+            )?),
             result_path: PathBuf::from(read_arg(
                 args,
                 "--diagnostic-child-tone-result-path",
             )?),
+            start_signal_path: PathBuf::from(read_arg(
+                args,
+                "--diagnostic-child-tone-start-signal-path",
+            )?),
+            abort_signal_path: PathBuf::from(read_arg(
+                args,
+                "--diagnostic-child-tone-abort-signal-path",
+            )?),
+            receipt_id: read_arg(args, "--diagnostic-child-tone-receipt-id")?,
             endpoint_id: read_arg(args, "--diagnostic-child-tone-endpoint-id")?,
             frequency_hz: read_arg(args, "--diagnostic-child-tone-frequency-hz")?
                 .parse()
@@ -51,6 +68,45 @@ impl DiagnosticChildTone {
                 .parse()
                 .ok()?,
         })
+    }
+}
+
+struct DiagnosticChildProcess(Option<std::process::Child>);
+
+impl DiagnosticChildProcess {
+    fn new(child: std::process::Child) -> Self {
+        Self(Some(child))
+    }
+
+    fn id(&self) -> u32 {
+        self.0.as_ref().expect("diagnostic child must exist").id()
+    }
+
+    fn wait_with_abort(&mut self, abort_path: &Path) -> Result<(std::process::Output, bool), String> {
+        loop {
+            let child = self.0.as_mut().expect("diagnostic child must exist");
+            if child.try_wait().map_err_str()?.is_some() {
+                let child = self.0.take().expect("diagnostic child must exist");
+                return child.wait_with_output().map(|output| (output, false)).map_err_str();
+            }
+            if abort_path.is_file() {
+                child.kill().map_err_str()?;
+                let child = self.0.take().expect("diagnostic child must exist");
+                return child.wait_with_output().map(|output| (output, true)).map_err_str();
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+}
+
+impl Drop for DiagnosticChildProcess {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+            }
+            let _ = child.wait();
+        }
     }
 }
 
@@ -103,6 +159,9 @@ fn run_diagnostic_child_tone(config: DiagnosticChildTone) -> Result<(), String> 
 
         let deadline = Instant::now() + Duration::from_secs(30);
         while !config.trigger_path.is_file() {
+            if config.abort_signal_path.is_file() {
+                return Err("diagnostic child-tone was aborted before spawn".to_string());
+            }
             if Instant::now() >= deadline {
                 return Err(format!(
                     "diagnostic child-tone trigger did not appear within 30 seconds: {}",
@@ -121,19 +180,29 @@ fn run_diagnostic_child_tone(config: DiagnosticChildTone) -> Result<(), String> 
             .arg(config.amplitude.to_string())
             .arg("--seconds")
             .arg(config.seconds.to_string())
+            .arg("--receipt-id")
+            .arg(&config.receipt_id)
+            .arg("--ready-receipt-path")
+            .arg(&config.ready_receipt_path)
+            .arg("--start-signal-path")
+            .arg(&config.start_signal_path)
+            .arg("--abort-signal-path")
+            .arg(&config.abort_signal_path)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err_str()?;
+        let mut child = DiagnosticChildProcess::new(child);
         let child_process_id = child.id();
         publish_diagnostic_file(&config.pid_path, child_process_id.to_string().as_bytes())?;
-        let output = child.wait_with_output().map_err_str()?;
+        let (output, aborted) = child.wait_with_abort(&config.abort_signal_path)?;
         let child_stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let child_stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let child_evidence = serde_json::from_str::<Value>(&child_stdout).ok();
         let exit_code = output.status.code();
-        let passed = output.status.success()
+        let passed = !aborted
+            && output.status.success()
             && child_evidence
                 .as_ref()
                 .and_then(|value| value["passed"].as_bool())
@@ -143,6 +212,7 @@ fn run_diagnostic_child_tone(config: DiagnosticChildTone) -> Result<(), String> 
             "processId": child_process_id,
             "parentProcessId": std::process::id(),
             "exitCode": exit_code,
+            "aborted": aborted,
             "childEvidence": child_evidence,
             "stdout": child_stdout,
             "stderr": child_stderr,

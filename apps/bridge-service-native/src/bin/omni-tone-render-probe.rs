@@ -29,8 +29,11 @@ fn main() {
 mod probe {
     use omni_bridge_service::probe_support::{error_text, open_render_stream};
     use serde::Serialize;
+    use serde_json::json;
     use std::collections::VecDeque;
     use std::f32::consts::TAU;
+    use std::fs;
+    use std::path::{Path, PathBuf};
     use std::thread;
     use std::time::{Duration, Instant};
     use wasapi::{
@@ -45,6 +48,9 @@ mod probe {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     pub(super) struct ToneRenderResult {
+        receipt_type: &'static str,
+        receipt_version: u32,
+        receipt_id: String,
         passed: bool,
         process_id: u32,
         endpoint_id: String,
@@ -52,6 +58,9 @@ mod probe {
         frequency_hz: f32,
         amplitude: f32,
         rendered_frames: usize,
+        total_frames: usize,
+        playback_drained: bool,
+        final_padding_frames: u32,
         rendered_seconds: f64,
         detail: Option<String>,
     }
@@ -59,6 +68,9 @@ mod probe {
     impl ToneRenderResult {
         pub(super) fn failed(detail: String) -> Self {
             Self {
+                receipt_type: "tone-render.terminal",
+                receipt_version: 1,
+                receipt_id: String::new(),
                 passed: false,
                 process_id: std::process::id(),
                 endpoint_id: String::new(),
@@ -66,6 +78,9 @@ mod probe {
                 frequency_hz: 0.0,
                 amplitude: 0.0,
                 rendered_frames: 0,
+                total_frames: 0,
+                playback_drained: false,
+                final_padding_frames: 0,
                 rendered_seconds: 0.0,
                 detail: Some(detail),
             }
@@ -77,6 +92,10 @@ mod probe {
         frequency_hz: f32,
         amplitude: f32,
         seconds: f32,
+        receipt_id: String,
+        ready_receipt_path: PathBuf,
+        start_signal_path: PathBuf,
+        abort_signal_path: PathBuf,
     }
 
     struct ToneRender {
@@ -122,6 +141,7 @@ mod probe {
 
     pub(super) fn run() -> Result<ToneRenderResult, String> {
         let args = parse_args()?;
+        ensure_not_aborted(&args.abort_signal_path, "initialization")?;
         initialize_mta().ok().map_err(error_text)?;
         let enumerator = DeviceEnumerator::new().map_err(error_text)?;
         let device = find_render_device(&enumerator, &args.endpoint_id)?;
@@ -146,10 +166,28 @@ mod probe {
             }
         }
 
+        publish_json_atomically(
+            &args.ready_receipt_path,
+            &json!({
+                "receiptType": "tone-render.ready",
+                "receiptVersion": 1,
+                "receiptId": args.receipt_id,
+                "processId": std::process::id(),
+                "endpointId": endpoint_id,
+                "endpointName": endpoint_name,
+                "frequencyHz": args.frequency_hz,
+                "amplitude": args.amplitude,
+                "totalFrames": total_frames,
+                "streamStarted": true,
+            }),
+        )?;
+        wait_for_start_signal(&args.start_signal_path, &args.abort_signal_path)?;
+
         let started = Instant::now();
         let timeout = Duration::from_secs_f32(args.seconds + 8.0);
         let mut rendered_frames = 0usize;
         while !pending.is_empty() {
+            ensure_not_aborted(&args.abort_signal_path, "render")?;
             rendered_frames += render.write_available(&mut pending)?;
             if started.elapsed() > timeout {
                 return Err(format!(
@@ -158,9 +196,27 @@ mod probe {
             }
             thread::sleep(Duration::from_millis(2));
         }
-        thread::sleep(Duration::from_millis(300));
+        let final_padding_frames = loop {
+            ensure_not_aborted(&args.abort_signal_path, "drain")?;
+            let padding_frames = render
+                .audio_client
+                .get_current_padding()
+                .map_err(error_text)?;
+            if padding_frames == 0 {
+                break padding_frames;
+            }
+            if started.elapsed() > timeout {
+                return Err(format!(
+                    "timed out draining tone playback: renderedFrames={rendered_frames} totalFrames={total_frames} finalPaddingFrames={padding_frames}"
+                ));
+            }
+            thread::sleep(Duration::from_millis(2));
+        };
 
         Ok(ToneRenderResult {
+            receipt_type: "tone-render.terminal",
+            receipt_version: 1,
+            receipt_id: args.receipt_id,
             passed: true,
             process_id: std::process::id(),
             endpoint_id,
@@ -168,6 +224,9 @@ mod probe {
             frequency_hz: args.frequency_hz,
             amplitude: args.amplitude,
             rendered_frames,
+            total_frames,
+            playback_drained: true,
+            final_padding_frames,
             rendered_seconds: rendered_frames as f64 / SAMPLE_RATE as f64,
             detail: None,
         })
@@ -178,6 +237,10 @@ mod probe {
         let mut frequency_hz = None;
         let mut amplitude = None;
         let mut seconds = None;
+        let mut receipt_id = None;
+        let mut ready_receipt_path = None;
+        let mut start_signal_path = None;
+        let mut abort_signal_path = None;
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -200,9 +263,28 @@ mod probe {
                         "--seconds",
                     )?)
                 }
+                "--receipt-id" => receipt_id = Some(next_arg(&mut args, "--receipt-id")?),
+                "--ready-receipt-path" => {
+                    ready_receipt_path = Some(PathBuf::from(next_arg(
+                        &mut args,
+                        "--ready-receipt-path",
+                    )?))
+                }
+                "--start-signal-path" => {
+                    start_signal_path = Some(PathBuf::from(next_arg(
+                        &mut args,
+                        "--start-signal-path",
+                    )?))
+                }
+                "--abort-signal-path" => {
+                    abort_signal_path = Some(PathBuf::from(next_arg(
+                        &mut args,
+                        "--abort-signal-path",
+                    )?))
+                }
                 "--quiet" => {}
                 "--help" | "-h" => {
-                    return Err("Usage: omni-tone-render-probe --endpoint-id <id> --frequency-hz <hz> --amplitude <0..1> --seconds <seconds>".to_string())
+                    return Err("Usage: omni-tone-render-probe --endpoint-id <id> --frequency-hz <hz> --amplitude <0..1> --seconds <seconds> --receipt-id <id> --ready-receipt-path <path> --start-signal-path <path> --abort-signal-path <path>".to_string())
                 }
                 other => return Err(format!("unknown argument: {other}")),
             }
@@ -224,7 +306,86 @@ mod probe {
             frequency_hz,
             amplitude,
             seconds,
+            receipt_id: receipt_id
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "--receipt-id is required".to_string())?,
+            ready_receipt_path: ready_receipt_path
+                .ok_or_else(|| "--ready-receipt-path is required".to_string())?,
+            start_signal_path: start_signal_path
+                .ok_or_else(|| "--start-signal-path is required".to_string())?,
+            abort_signal_path: abort_signal_path
+                .ok_or_else(|| "--abort-signal-path is required".to_string())?,
         })
+    }
+
+    fn publish_json_atomically(path: &Path, value: &serde_json::Value) -> Result<(), String> {
+        let mut temporary_name = path.as_os_str().to_os_string();
+        temporary_name.push(format!(".{}.tmp", std::process::id()));
+        let temporary_path = PathBuf::from(temporary_name);
+        let bytes = serde_json::to_vec(value).map_err(error_text)?;
+        fs::write(&temporary_path, bytes).map_err(error_text)?;
+        if let Err(error) = fs::rename(&temporary_path, path) {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(format!(
+                "failed to publish tone receipt '{}': {error}",
+                path.display()
+            ));
+        }
+        Ok(())
+    }
+
+    fn wait_for_start_signal(path: &Path, abort_path: &Path) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !path.is_file() {
+            ensure_not_aborted(abort_path, "start gate")?;
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "tone render start signal did not appear within 5 seconds: {}",
+                    path.display()
+                ));
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        Ok(())
+    }
+
+    fn ensure_not_aborted(path: &Path, phase: &str) -> Result<(), String> {
+        if path.is_file() {
+            return Err(format!(
+                "tone render aborted during {phase}: {}",
+                path.display()
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod lifecycle_tests {
+        use super::*;
+
+        #[test]
+        fn abort_signal_preempts_the_start_gate() {
+            let root = tempfile::tempdir().unwrap();
+            let start_path = root.path().join("start");
+            let abort_path = root.path().join("abort");
+            fs::write(&abort_path, b"abort").unwrap();
+
+            let error = wait_for_start_signal(&start_path, &abort_path).unwrap_err();
+
+            assert!(error.contains("start gate"), "unexpected error: {error}");
+        }
+
+        #[test]
+        fn abort_signal_is_terminal_in_render_and_drain_phases() {
+            let root = tempfile::tempdir().unwrap();
+            let abort_path = root.path().join("abort");
+            fs::write(&abort_path, b"abort").unwrap();
+
+            for phase in ["render", "drain"] {
+                let error = ensure_not_aborted(&abort_path, phase).unwrap_err();
+                assert!(error.contains(phase), "unexpected error: {error}");
+            }
+        }
     }
 
     fn next_arg(args: &mut impl Iterator<Item = String>, name: &str) -> Result<String, String> {

@@ -60,7 +60,11 @@ mod probe {
                 CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
                 TH32CS_SNAPPROCESS,
             },
-            Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject},
+            Threading::{
+                CreateMutexW, OpenProcess, QueryFullProcessImageNameW, ReleaseMutex,
+                TerminateProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+                PROCESS_TERMINATE,
+            },
         },
     };
 
@@ -612,8 +616,16 @@ mod probe {
                 .arg(&config.trigger_path)
                 .arg("--diagnostic-child-tone-pid-path")
                 .arg(&config.pid_path)
+                .arg("--diagnostic-child-tone-ready-receipt-path")
+                .arg(&config.ready_receipt_path)
                 .arg("--diagnostic-child-tone-result-path")
                 .arg(&config.result_path)
+                .arg("--diagnostic-child-tone-start-signal-path")
+                .arg(&config.start_signal_path)
+                .arg("--diagnostic-child-tone-abort-signal-path")
+                .arg(&config.abort_signal_path)
+                .arg("--diagnostic-child-tone-receipt-id")
+                .arg(&config.receipt_id)
                 .arg("--diagnostic-child-tone-endpoint-id")
                 .arg(&config.endpoint_id)
                 .arg("--diagnostic-child-tone-frequency-hz")
@@ -924,6 +936,14 @@ mod probe {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+
+    fn stop_child_confirmed(child: &mut Child) -> Result<(), String> {
+        if child.try_wait().map_err(error_text)?.is_none() {
+            child.kill().map_err(error_text)?;
+        }
+        child.wait().map_err(error_text)?;
+        Ok(())
     }
 
     fn first_channel_samples(samples: &[f32]) -> Vec<f32> {

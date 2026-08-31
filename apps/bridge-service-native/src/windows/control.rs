@@ -1,5 +1,7 @@
 // Control-plane command handling and capability/state serialization.
 
+include!("control/shutdown.rs");
+
 fn handle_control(
     command: Value,
     state: &Arc<Mutex<BridgeState>>,
@@ -371,34 +373,13 @@ fn handle_control(
         }
         "bridge.state.query" => state_snapshot(request_id, &state.lock().unwrap()),
         "bridge.source.flush" => flush_source_capture(request_id, state, playback_tx),
-        "bridge.shutdown" => {
-            if let Err(error) = stop_virtual_mic_session() {
-                service_log(
-                    LogLevel::Warning,
-                    request_id,
-                    &format!(
-                        "event=virtual_mic_session_stop status=failed reason=bridge-shutdown errorCode={} detail={}",
-                        error.code, error.detail,
-                    ),
-                );
-            }
-            let mut current = state.lock().unwrap();
-            current.virtual_mic_session_active = false;
-            current.reset_translation_cue_ledgers();
-            current.session_id = None;
-            current.bridge_state = "stopped".to_string();
-            current.lifecycle_state = "stopped".to_string();
-            current.physical_playback_status = "uninitialized".to_string();
-            current.resolved_physical_playback_device_id.clear();
-            request_playback_stop(
-                &mut current,
-                translation_queue,
-                playback_control_tx,
-                "bridge-shutdown",
-                None,
-            );
-            state_snapshot(request_id, &current)
-        }
+        "bridge.shutdown" => handle_bridge_shutdown(
+            request_id,
+            state,
+            playback_control_tx,
+            translation_queue,
+            PROCESS_LOOPBACK_SHUTDOWN_TIMEOUT,
+        ),
         _ => bridge_error(
             request_id,
             "bridge.timeout",
@@ -802,6 +783,11 @@ fn state_snapshot(request_id: &str, state: &BridgeState) -> Value {
         "processLoopbackMinimumWindowsBuild": PROCESS_LOOPBACK_MINIMUM_WINDOWS_BUILD,
         "excludedProcessId": state.excluded_process_id,
         "processLoopbackFailureDetail": state.process_loopback_failure_detail,
+        "processLoopbackShutdownRequestedGeneration": state.process_loopback_shutdown_requested_generation,
+        "processLoopbackTerminalGeneration": state.process_loopback_terminal_generation,
+        "processLoopbackTerminalStatus": state.process_loopback_terminal_status,
+        "processLoopbackTerminalTimestampMs": state.process_loopback_terminal_timestamp_ms,
+        "processLoopbackTerminalDetail": state.process_loopback_terminal_detail,
         "captureLifecycleState": state.source_worker_phase,
         "captureRestartCount": state.capture_restart_count,
         "capturePacketCount": state.capture_packet_count,

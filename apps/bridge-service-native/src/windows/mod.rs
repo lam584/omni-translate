@@ -6,7 +6,7 @@ use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::process::{Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -122,6 +122,7 @@ const PLAYBACK_WORKER_POLL_INTERVAL_MS: u64 = 10;
 const PHYSICAL_TRANSLATION_STREAM_STARTUP_BUFFER_MS: u64 = 4_000;
 const PHYSICAL_TRANSLATION_STREAM_STARTUP_MAX_WAIT_MS: u64 = 4_500;
 const VIRTUAL_MIC_TERMINAL_LEDGER_CAPACITY: usize = 128;
+const PROCESS_LOOPBACK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 // `wasapi::AudioClient::new_application_loopback_client` maps false to
 // PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE.
 const INCLUDE_BRIDGE_PROCESS_TREE_IN_LOOPBACK: bool = false;
@@ -225,6 +226,150 @@ impl VirtualMicCueLedger {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProcessLoopbackTerminalEvidence {
+    generation: u64,
+    status: String,
+    timestamp_ms: u64,
+    detail: Option<String>,
+}
+
+impl ProcessLoopbackTerminalEvidence {
+    fn new(generation: u64, status: &str, detail: Option<String>) -> Self {
+        Self {
+            generation,
+            status: status.to_string(),
+            timestamp_ms: unix_ms(),
+            detail,
+        }
+    }
+
+    fn authorizes_shutdown(&self, requested_generation: u64) -> bool {
+        self.generation == requested_generation
+            && matches!(self.status.as_str(), "stopped" | "not-active")
+    }
+}
+
+#[derive(Default)]
+struct ProcessLoopbackLifecycleState {
+    active_generation: Option<u64>,
+    shutdown_requested: bool,
+    blocked_generation: Option<u64>,
+    terminal: Option<ProcessLoopbackTerminalEvidence>,
+}
+
+#[derive(Default)]
+struct ProcessLoopbackLifecycle {
+    state: Mutex<ProcessLoopbackLifecycleState>,
+    changed: Condvar,
+}
+
+impl ProcessLoopbackLifecycle {
+    fn begin_generation(&self, generation: u64) -> bool {
+        let mut lifecycle = self.state.lock().unwrap();
+        if lifecycle.shutdown_requested {
+            return false;
+        }
+        lifecycle.active_generation = Some(generation);
+        true
+    }
+
+    fn publish_terminal(&self, evidence: ProcessLoopbackTerminalEvidence) {
+        let mut lifecycle = self.state.lock().unwrap();
+        if lifecycle.active_generation == Some(evidence.generation) {
+            lifecycle.active_generation = None;
+        }
+        lifecycle.terminal = Some(evidence);
+        self.changed.notify_all();
+    }
+
+    fn shutdown_is_requested(&self) -> bool {
+        self.state.lock().unwrap().shutdown_requested
+    }
+
+    fn request_shutdown(&self, fallback_generation: u64) -> u64 {
+        let mut lifecycle = self.state.lock().unwrap();
+        let blocked_generation = lifecycle
+            .blocked_generation
+            .filter(|_| lifecycle.shutdown_requested)
+            .unwrap_or_else(|| {
+                lifecycle
+                    .active_generation
+                    .unwrap_or(fallback_generation)
+            });
+        lifecycle.shutdown_requested = true;
+        lifecycle.blocked_generation = Some(blocked_generation);
+        blocked_generation
+    }
+
+    #[cfg(test)]
+    fn request_shutdown_and_wait(
+        &self,
+        fallback_generation: u64,
+        timeout: Duration,
+    ) -> Result<ProcessLoopbackTerminalEvidence, String> {
+        let blocked_generation = self.request_shutdown(fallback_generation);
+        self.wait_for_shutdown_terminal(blocked_generation, timeout)
+    }
+
+    fn wait_for_shutdown_terminal(
+        &self,
+        blocked_generation: u64,
+        timeout: Duration,
+    ) -> Result<ProcessLoopbackTerminalEvidence, String> {
+        let mut lifecycle = self.state.lock().unwrap();
+        if let Some(terminal) = lifecycle
+            .terminal
+            .as_ref()
+            .filter(|terminal| terminal.generation == blocked_generation)
+        {
+            return Ok(terminal.clone());
+        }
+        let Some(active_generation) = lifecycle.active_generation else {
+            let evidence = ProcessLoopbackTerminalEvidence::new(
+                blocked_generation,
+                "not-active",
+                None,
+            );
+            lifecycle.terminal = Some(evidence.clone());
+            self.changed.notify_all();
+            return Ok(evidence);
+        };
+        let (lifecycle, wait_result) = self
+            .changed
+            .wait_timeout_while(lifecycle, timeout, |current| {
+                current
+                    .terminal
+                    .as_ref()
+                    .is_none_or(|terminal| terminal.generation != active_generation)
+            })
+            .map_err(|_| {
+                "process loopback lifecycle lock was poisoned during shutdown".to_string()
+            })?;
+        if let Some(terminal) = lifecycle
+            .terminal
+            .as_ref()
+            .filter(|terminal| terminal.generation == active_generation)
+        {
+            return Ok(terminal.clone());
+        }
+        let active = lifecycle
+            .active_generation
+            .map(|generation| generation.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        Err(format!(
+            "process loopback generation {active_generation} did not publish terminal evidence within {} ms (activeGeneration={active}, timedOut={})",
+            timeout.as_millis(),
+            wait_result.timed_out(),
+        ))
+    }
+
+    #[cfg(test)]
+    fn active_generation(&self) -> Option<u64> {
+        self.state.lock().unwrap().active_generation
+    }
+}
+
 #[derive(Default)]
 struct BridgeState {
     bridge_process_id: u32,
@@ -242,6 +387,12 @@ struct BridgeState {
     windows_build_number: Option<u32>,
     excluded_process_id: Option<u32>,
     process_loopback_failure_detail: Option<String>,
+    process_loopback_shutdown_requested_generation: Option<u64>,
+    process_loopback_terminal_generation: Option<u64>,
+    process_loopback_terminal_status: Option<String>,
+    process_loopback_terminal_timestamp_ms: Option<u64>,
+    process_loopback_terminal_detail: Option<String>,
+    process_loopback_lifecycle: Arc<ProcessLoopbackLifecycle>,
     virtual_render_device_id: String,
     physical_playback_device_id: String,
     resolved_physical_playback_device_id: String,
@@ -462,6 +613,17 @@ impl BridgeState {
             .expect("translation arrival sequence exhausted");
         self.translation_arrival_sequence
     }
+}
+
+fn record_process_loopback_terminal_evidence(
+    state: &Arc<Mutex<BridgeState>>,
+    evidence: &ProcessLoopbackTerminalEvidence,
+) {
+    let mut current = state.lock().unwrap();
+    current.process_loopback_terminal_generation = Some(evidence.generation);
+    current.process_loopback_terminal_status = Some(evidence.status.clone());
+    current.process_loopback_terminal_timestamp_ms = Some(evidence.timestamp_ms);
+    current.process_loopback_terminal_detail = evidence.detail.clone();
 }
 
 fn translation_cue_authority_from_header(
@@ -829,11 +991,27 @@ fn handle_control_client(
         }),
     };
     let _ = write_all(handle, format!("{response}\n").as_bytes());
-    if should_exit {
+    if control_response_authorizes_exit(should_exit, &response) {
         flush_file_buffers(handle);
         let _ = fs::remove_file(pid_path);
         std::process::exit(0);
     }
+}
+
+fn control_response_authorizes_exit(exit_requested: bool, response: &Value) -> bool {
+    let requested_generation = response["processLoopbackShutdownRequestedGeneration"].as_u64();
+    let terminal_generation = response["processLoopbackTerminalGeneration"].as_u64();
+    exit_requested
+        && response["type"] == "bridge.state.snapshot"
+        && requested_generation.is_some()
+        && requested_generation == terminal_generation
+        && matches!(
+            response["processLoopbackTerminalStatus"].as_str(),
+            Some("stopped" | "not-active")
+        )
+        && response["processLoopbackTerminalTimestampMs"].is_number()
+        && response["bridgeState"] == "stopped"
+        && response["lifecycleState"] == "stopped"
 }
 
 include!("control.rs");
@@ -1091,7 +1269,8 @@ mod tests {
         dispatch_source_frame,
         end_source_subscription,
         capture_route_is_ready, classify_process_loopback_capability,
-        fail_process_loopback_route, finish_completed_physical_stream, handle_control,
+        control_response_authorizes_exit, fail_process_loopback_route,
+        finish_completed_physical_stream, handle_bridge_shutdown, handle_control,
         handle_physical_translation_frame,
         handle_virtual_mic_frame_with_writer,
         handle_process_loopback_probe,
@@ -1123,8 +1302,8 @@ mod tests {
         PHYSICAL_TRANSLATION_STREAM_STARTUP_BUFFER_MS,
         PHYSICAL_TRANSLATION_STREAM_STARTUP_MAX_WAIT_MS,
         PROCESS_LOOPBACK_MINIMUM_WINDOWS_BUILD,
-        BridgeState, DriverStatus, VirtualMicChunkAdmission, VirtualMicCueLedger,
-        VirtualMicWriteOutcome,
+        BridgeState, DriverStatus, ProcessLoopbackTerminalEvidence,
+        VirtualMicChunkAdmission, VirtualMicCueLedger, VirtualMicWriteOutcome,
     };
 
     fn translation_job(cue_id: &str, created_at_ms: u64, duration_ms: u64) -> PlaybackJob {
@@ -1144,6 +1323,222 @@ mod tests {
             translation_generation: 0,
             translation_arrival_sequence: 0,
         }
+    }
+
+    #[test]
+    fn shutdown_timeout_fails_closed_without_exit_authority() {
+        let state = Arc::new(Mutex::new(BridgeState {
+            source_capture_mode: SourceCaptureMode::ProcessExclusion,
+            capture_backend: CaptureBackend::WasapiProcessExclusion,
+            process_loopback_status: ProcessLoopbackStatus::Ready,
+            source_subscriber_active: true,
+            source_generation: 91,
+            ..BridgeState::default()
+        }));
+        let lifecycle = state
+            .lock()
+            .unwrap()
+            .process_loopback_lifecycle
+            .clone();
+        assert!(lifecycle.begin_generation(91));
+        let (playback_control_tx, _playback_control_rx) = mpsc::channel();
+        let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
+
+        let response = handle_bridge_shutdown(
+            "shutdown-timeout",
+            &state,
+            &playback_control_tx,
+            &translation_queue,
+            Duration::ZERO,
+        );
+
+        assert_eq!(response["type"], "bridge.error");
+        assert_eq!(response["code"], "bridge.timeout");
+        assert!(!control_response_authorizes_exit(true, &response));
+        let current = state.lock().unwrap();
+        assert!(!current.source_subscriber_active);
+        assert_eq!(current.source_capture_mode, SourceCaptureMode::None);
+        assert_eq!(current.lifecycle_state, "error");
+    }
+
+    #[test]
+    fn idle_shutdown_ack_carries_generation_bound_terminal_exit_authority() {
+        let state = Arc::new(Mutex::new(BridgeState {
+            source_generation: 117,
+            ..BridgeState::default()
+        }));
+        let (playback_control_tx, _playback_control_rx) = mpsc::channel();
+        let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
+
+        let response = handle_bridge_shutdown(
+            "shutdown-idle",
+            &state,
+            &playback_control_tx,
+            &translation_queue,
+            Duration::ZERO,
+        );
+
+        assert_eq!(response["type"], "bridge.state.snapshot");
+        assert_eq!(response["processLoopbackShutdownRequestedGeneration"], 117);
+        assert_eq!(response["processLoopbackTerminalGeneration"], 117);
+        assert_eq!(response["processLoopbackTerminalStatus"], "not-active");
+        assert!(response["processLoopbackTerminalTimestampMs"].is_number());
+        assert!(control_response_authorizes_exit(true, &response));
+    }
+
+    #[test]
+    fn shutdown_exit_authority_rejects_stale_or_failed_terminal_evidence() {
+        let valid = json!({
+            "type": "bridge.state.snapshot",
+            "bridgeState": "stopped",
+            "lifecycleState": "stopped",
+            "processLoopbackShutdownRequestedGeneration": 131,
+            "processLoopbackTerminalGeneration": 131,
+            "processLoopbackTerminalStatus": "stopped",
+            "processLoopbackTerminalTimestampMs": 9_001,
+        });
+        assert!(control_response_authorizes_exit(true, &valid));
+
+        let mut stale = valid.clone();
+        stale["processLoopbackTerminalGeneration"] = json!(130);
+        assert!(!control_response_authorizes_exit(true, &stale));
+
+        let mut failed = valid.clone();
+        failed["processLoopbackTerminalStatus"] = json!("stop-failed");
+        assert!(!control_response_authorizes_exit(true, &failed));
+
+        let mut degraded = valid;
+        degraded["bridgeState"] = json!("degraded");
+        degraded["lifecycleState"] = json!("error");
+        assert!(!control_response_authorizes_exit(true, &degraded));
+    }
+
+    fn assert_failed_terminal_remains_fail_closed_across_reentry(terminal_status: &str) {
+        let state = Arc::new(Mutex::new(BridgeState {
+            source_capture_mode: SourceCaptureMode::ProcessExclusion,
+            capture_backend: CaptureBackend::WasapiProcessExclusion,
+            process_loopback_status: ProcessLoopbackStatus::Ready,
+            source_subscriber_active: true,
+            source_generation: 149,
+            ..BridgeState::default()
+        }));
+        let lifecycle = state
+            .lock()
+            .unwrap()
+            .process_loopback_lifecycle
+            .clone();
+        assert!(lifecycle.begin_generation(149));
+        let (playback_control_tx, _playback_control_rx) = mpsc::channel();
+        let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
+        let first_state = state.clone();
+        let first_playback_control_tx = playback_control_tx.clone();
+        let first_translation_queue = translation_queue.clone();
+        let first_shutdown = std::thread::spawn(move || {
+            handle_bridge_shutdown(
+                "shutdown-stop-failed-first",
+                &first_state,
+                &first_playback_control_tx,
+                &first_translation_queue,
+                Duration::from_secs(1),
+            )
+        });
+        loop {
+            if lifecycle.state.lock().unwrap().shutdown_requested {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        lifecycle.publish_terminal(ProcessLoopbackTerminalEvidence::new(
+            149,
+            terminal_status,
+            Some(format!("{terminal_status} detail")),
+        ));
+
+        let first_response = first_shutdown.join().unwrap();
+        assert_eq!(first_response["type"], "bridge.error");
+        assert_eq!(
+            first_response["code"],
+            "bridge.process-loopback-capture-failed"
+        );
+        assert!(!control_response_authorizes_exit(true, &first_response));
+
+        let second_response = handle_bridge_shutdown(
+            "shutdown-stop-failed-second",
+            &state,
+            &playback_control_tx,
+            &translation_queue,
+            Duration::ZERO,
+        );
+        assert_eq!(second_response["type"], "bridge.error");
+        assert_eq!(
+            second_response["code"],
+            "bridge.process-loopback-capture-failed"
+        );
+        assert!(!control_response_authorizes_exit(true, &second_response));
+
+        let current = state.lock().unwrap();
+        assert_eq!(current.bridge_state, "degraded");
+        assert_eq!(current.lifecycle_state, "error");
+        assert_eq!(
+            current.process_loopback_shutdown_requested_generation,
+            Some(149)
+        );
+        assert_eq!(current.process_loopback_terminal_generation, Some(149));
+        assert_eq!(
+            current.process_loopback_terminal_status.as_deref(),
+            Some(terminal_status)
+        );
+    }
+
+    #[test]
+    fn shutdown_stop_failed_terminal_remains_fail_closed_across_reentry() {
+        assert_failed_terminal_remains_fail_closed_across_reentry("stop-failed");
+    }
+
+    #[test]
+    fn shutdown_capture_failed_terminal_remains_fail_closed_across_reentry() {
+        assert_failed_terminal_remains_fail_closed_across_reentry("capture-failed");
+    }
+
+    #[test]
+    fn shutdown_mismatched_terminal_generation_returns_error_without_exit_authority() {
+        let state = Arc::new(Mutex::new(BridgeState {
+            source_capture_mode: SourceCaptureMode::ProcessExclusion,
+            capture_backend: CaptureBackend::WasapiProcessExclusion,
+            process_loopback_status: ProcessLoopbackStatus::Ready,
+            source_subscriber_active: true,
+            source_generation: 163,
+            ..BridgeState::default()
+        }));
+        let lifecycle = state
+            .lock()
+            .unwrap()
+            .process_loopback_lifecycle
+            .clone();
+        {
+            let mut current = lifecycle.state.lock().unwrap();
+            current.active_generation = Some(163);
+            current.terminal = Some(ProcessLoopbackTerminalEvidence::new(
+                162, "stopped", None,
+            ));
+        }
+        let (playback_control_tx, _playback_control_rx) = mpsc::channel();
+        let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
+
+        let response = handle_bridge_shutdown(
+            "shutdown-stale-terminal",
+            &state,
+            &playback_control_tx,
+            &translation_queue,
+            Duration::ZERO,
+        );
+
+        assert_eq!(response["type"], "bridge.error");
+        assert_eq!(response["code"], "bridge.timeout");
+        assert!(!control_response_authorizes_exit(true, &response));
+        let current = state.lock().unwrap();
+        assert_eq!(current.bridge_state, "degraded");
+        assert_eq!(current.lifecycle_state, "error");
     }
 
     fn bind_test_cue_authority(state: &BridgeState, cue_id: &str) {

@@ -27,12 +27,51 @@ import { buildCellExternalProviderBudget } from './watch-mode-external-provider-
 // verify-watch-mode-evidence.mjs plus the dev-machine live matrix.
 
 const scriptPath = path.join('scripts', 'testing', 'run-watch-mode-live.ps1');
+const logParserCliPath = path.join('scripts', 'testing', 'watch-mode', 'log-parser-cli.mjs');
 const isWindows = process.platform === 'win32';
 
 // PowerShell's Set-Content -Encoding UTF8 writes a BOM; strip it before parsing.
 function readJsonArtifact(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, ''));
 }
+
+test('production log parser collects the complete marked run without duplicate cue observations', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-log-parser-'));
+  const appLogPath = path.join(directory, 'app.log');
+  const marker = 'watch_mode_diagnostic.run_id=current-run';
+  const lines = [
+    'watch_mode_diagnostic.run_id=previous-run',
+    '[EVENT] cue_id=old translated="旧运行"',
+    marker,
+  ];
+  const expected = [];
+  for (let index = 1; index <= 19; index += 1) {
+    const cueId = `omni-cue-inbound-${index}`;
+    const translated = `第${index}条完整译文`;
+    expected.push(translated);
+    lines.push(JSON.stringify({ cueId, translatedText: index === 1 ? '第一条草稿' : translated }));
+    lines.push(`[EVENT] cue_id=${cueId} translated="${translated}"`);
+    const finalWrite = `[TRANS_WRITE] cue_id=${cueId} rank=Final seq=${index} translated="${translated}"`;
+    lines.push(finalWrite, finalWrite);
+  }
+  lines.push('watch_mode_diagnostic.run_id=next-run');
+  lines.push('[EVENT] cue_id=new translated="下一运行"');
+  fs.writeFileSync(appLogPath, lines.join('\n'), 'utf8');
+  try {
+    const result = spawnSync(process.execPath, [
+      logParserCliPath, '--operation', 'recent-subtitle-text', '--input', appLogPath, '--marker', marker,
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout).value.split('\n'), expected);
+    const finalResult = spawnSync(process.execPath, [
+      logParserCliPath, '--operation', 'recent-final-segment-translation', '--input', appLogPath, '--marker', marker,
+    ], { encoding: 'utf8' });
+    assert.equal(finalResult.status, 0, finalResult.stderr || finalResult.stdout);
+    assert.deepEqual(JSON.parse(finalResult.stdout).value.split('\n'), expected);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 function runPowerShell(args, { env } = {}) {
   return spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', ...args], {

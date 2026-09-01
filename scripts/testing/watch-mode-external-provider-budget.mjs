@@ -642,7 +642,12 @@ export function buildCellExternalProviderBudget({
     } catch {}
     try {
       physicalAuthority = readJson(physicalAuthorityPath, 'physical output authority');
-      if (Number(physicalAuthority.remoteProviderCalls) !== 0 || Number(physicalAuthority.externalAudioSeconds) !== 0) {
+      const declaredRemoteProviderCalls = Number(physicalAuthority.remoteProviderCalls);
+      const declaredExternalAudioSeconds = Number(physicalAuthority.externalAudioSeconds);
+      if (
+        (Number.isFinite(declaredRemoteProviderCalls) && declaredRemoteProviderCalls !== 0)
+        || (Number.isFinite(declaredExternalAudioSeconds) && declaredExternalAudioSeconds !== 0)
+      ) {
         violations.push('physical output authority declares external Provider usage');
       }
     } catch {}

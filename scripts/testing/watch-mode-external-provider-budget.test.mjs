@@ -568,6 +568,15 @@ test('strict paid budget leaves canonical and physical verdicts to report and ve
     assert.equal(budget.passed, true);
     assert.equal(budget.physicalAuthority.translatedPcmLoopbackPassed, false);
 
+    // A fail-closed local recorder artifact may not have reached the stage
+    // that records an external-audio duration. Absence is not evidence of a
+    // paid call; the report/verifier owns the local content failure.
+    physical.passed = false;
+    delete physical.externalAudioSeconds;
+    fs.writeFileSync(physicalPath, JSON.stringify(physical), 'utf8');
+    budget = buildCellExternalProviderBudget(buildOptions(runDirectory, { feedbackLoopPrevention: 'process-exclusion' }));
+    assert.equal(budget.passed, true);
+
     physical.remoteProviderCalls = 1;
     fs.writeFileSync(physicalPath, JSON.stringify(physical), 'utf8');
     budget = buildCellExternalProviderBudget(buildOptions(runDirectory, { feedbackLoopPrevention: 'process-exclusion' }));

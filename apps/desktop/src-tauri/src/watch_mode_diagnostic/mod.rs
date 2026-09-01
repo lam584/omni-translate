@@ -82,7 +82,10 @@ const PROCESS_EXCLUSION_RESTART_PLAYBACK_IDLE_CONFIRMATION: Duration = Duration:
 const INPUT_COMPLETE_POLL: Duration = Duration::from_millis(50);
 const PROVIDER_FINISH_OBSERVATION_GRACE: Duration = Duration::from_millis(250);
 const LOCAL_PLAYBACK_IDLE_CONFIRMATION: Duration = Duration::from_millis(750);
-const LOCAL_PLAYBACK_DRAIN_MARGIN: Duration = Duration::from_secs(2);
+// The latest 24-cue physical stream drained 783,126 known frames in 35.273s:
+// 32.630s of PCM plus 2.643s of renderer/ACK handoff. Three seconds is the
+// smallest whole-second margin that covers that measured non-audio work.
+const LOCAL_PLAYBACK_DRAIN_MARGIN: Duration = Duration::from_secs(3);
 const LOCAL_PLAYBACK_DRAIN_MIN_CAP: Duration = Duration::from_secs(15);
 const LOCAL_PLAYBACK_DRAIN_MAX_CAP: Duration = Duration::from_secs(30);
 const STRICT_LIVETRANSLATE_MODEL: &str = "qwen3.5-livetranslate-flash-realtime";

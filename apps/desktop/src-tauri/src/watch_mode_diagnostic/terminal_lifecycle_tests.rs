@@ -128,7 +128,7 @@ fn playback_drain_budget_uses_pending_frames_and_falls_back_to_a_bounded_cap() {
             Some(24_000),
             Duration::from_secs(30),
         ),
-        Duration::from_millis(4_750),
+        Duration::from_millis(5_750),
     );
     assert_eq!(
         local_playback_drain_budget(None, None, Duration::from_secs(10)),
@@ -144,7 +144,15 @@ fn playback_drain_budget_uses_pending_frames_and_falls_back_to_a_bounded_cap() {
             Some(24_000),
             Duration::from_secs(30),
         ),
-        Duration::from_millis(42_750),
+        Duration::from_millis(43_750),
+    );
+    assert_eq!(
+        local_playback_drain_budget(
+            Some(783_126),
+            Some(24_000),
+            Duration::from_secs(30),
+        ),
+        Duration::from_millis(36_381),
     );
 }
 

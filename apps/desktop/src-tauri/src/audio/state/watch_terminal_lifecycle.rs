@@ -104,6 +104,7 @@ struct StrictWatchTerminalLifecycleState {
     session_finished_received: Option<StrictWatchProviderTerminalEvidence>,
     last_response_audio_done: Option<StrictWatchResponseTerminalEvidence>,
     last_response_done: Option<StrictWatchResponseTerminalEvidence>,
+    response_terminals: HashMap<String, StrictWatchResponseTerminalEvidence>,
     response_audio_done_ids: HashSet<String>,
     response_done_ids: HashSet<String>,
     failed_response_statuses: HashMap<String, String>,
@@ -201,6 +202,7 @@ impl StrictWatchTerminalLifecycle {
             session_finished_received: None,
             last_response_audio_done: None,
             last_response_done: None,
+            response_terminals: HashMap::new(),
             response_audio_done_ids: HashSet::new(),
             response_done_ids: HashSet::new(),
             failed_response_statuses: HashMap::new(),
@@ -389,6 +391,7 @@ impl StrictWatchTerminalLifecycle {
                     observed_at_unix_ms: unix_ms(),
                     response_id: response_id.to_string(),
                 };
+                state.response_terminals.insert(response_id.to_string(), evidence.clone());
                 match stage {
                     "lastResponseAudioDone" => state.last_response_audio_done = Some(evidence),
                     "responseDone" => state.last_response_done = Some(evidence),
@@ -427,6 +430,7 @@ impl StrictWatchTerminalLifecycle {
                 }
                 state.response_audio_done_ids.remove(response_id);
                 state.response_done_ids.remove(response_id);
+                state.response_terminals.remove(response_id);
                 if state
                     .last_response_audio_done
                     .as_ref()
@@ -577,30 +581,6 @@ impl StrictWatchTerminalLifecycle {
                 "strict Watch Provider terminal ordering/count authority is invalid".to_string(),
             );
         }
-        let last_response_terminal = [
-            state.last_response_audio_done.as_ref(),
-            state.last_response_done.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .max_by_key(|event| event.source_sequence)
-        .cloned()
-        .ok_or_else(|| {
-            "strict Watch terminal lifecycle is missing last response audio/done event"
-                .to_string()
-        })?;
-        // LiveTranslate streams responses while input is still arriving. The
-        // protocol guarantees that session.finished follows our session.finish,
-        // but it does not guarantee that the final response.done/audio.done is
-        // emitted only after session.finish. Preserve that real ordering while
-        // still rejecting a response terminal that arrives after the server's
-        // session terminal.
-        if last_response_terminal.source_sequence >= session_finished_received.source_sequence {
-            return Err(
-                "strict Watch response terminal is not ordered before session.finished"
-                    .to_string(),
-            );
-        }
         if state.last_cue_sequence == 0 {
             return Err("strict Watch renderer did not submit any cue".to_string());
         }
@@ -611,9 +591,23 @@ impl StrictWatchTerminalLifecycle {
                 "strict Watch final renderer ACK does not cover the last cue sequence"
                     .to_string()
             })?;
-        if renderer_ack.response_id != last_response_terminal.response_id {
+        let last_response_terminal = state
+            .response_terminals
+            .get(&renderer_ack.response_id)
+            .cloned()
+            .ok_or_else(|| {
+                "strict Watch final renderer ACK response has no completed Provider terminal"
+                    .to_string()
+            })?;
+        // LiveTranslate streams responses while input is still arriving. The
+        // protocol guarantees that session.finished follows our session.finish,
+        // but it does not guarantee that the final response.done/audio.done is
+        // emitted only after session.finish. Preserve that real ordering while
+        // still rejecting a response terminal that arrives after the server's
+        // session terminal.
+        if last_response_terminal.source_sequence >= session_finished_received.source_sequence {
             return Err(
-                "strict Watch final renderer ACK does not belong to the last Provider response"
+                "strict Watch response terminal is not ordered before session.finished"
                     .to_string(),
             );
         }
@@ -956,6 +950,34 @@ mod tests {
             snapshot.final_renderer_ack.response_id,
             snapshot.last_response_terminal.response_id
         );
+    }
+
+    #[test]
+    fn empty_terminal_response_does_not_replace_last_renderable_response_lineage() {
+        let store = AudioStateStore::new();
+        store.begin_strict_watch_terminal_lifecycle("run", "cell", "lease").unwrap();
+        store.record_strict_watch_test_session_updated().unwrap();
+        store.record_strict_watch_provider_append(480).unwrap();
+        store.record_strict_watch_provider_input_closed().unwrap();
+        store.record_strict_watch_session_finish_sent().unwrap();
+        store.record_strict_watch_response_done("response-rendered").unwrap();
+        store
+            .record_strict_watch_renderer_cue_submitted("cue-rendered", "response-rendered")
+            .unwrap();
+        store
+            .record_strict_watch_renderer_ack(
+                "cue-rendered",
+                "bridge-translation-status-ack",
+                "receipt-rendered",
+            )
+            .unwrap();
+        store.record_strict_watch_response_audio_done("response-empty").unwrap();
+        store.record_strict_watch_response_done("response-empty").unwrap();
+        store.record_strict_watch_session_finished_received().unwrap();
+
+        let snapshot = store.strict_watch_terminal_lifecycle_snapshot().unwrap();
+        assert_eq!(snapshot.last_response_terminal.response_id, "response-rendered");
+        assert_eq!(snapshot.final_renderer_ack.response_id, "response-rendered");
     }
 
     #[test]

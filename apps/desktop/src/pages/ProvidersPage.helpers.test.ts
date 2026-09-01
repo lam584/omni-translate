@@ -229,10 +229,6 @@ describe('ProvidersPage helpers', () => {
       const template = structuredClone(defaultProviderTemplate);
       template.manifestProviderId = 'fixture-provider';
       template.presetModels = [];
-      template.defaultDraft.sceneModelAssignments = [
-        { scenario: 'watch', modelIds: ['removed-model'] },
-        { scenario: 'subtitle-translate', modelIds: ['removed-model'] },
-      ];
 
       const patch = buildProviderDraftPatchFromTemplate(
         structuredClone(appConfigDraftMock.providers[0]),

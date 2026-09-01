@@ -161,7 +161,7 @@ describe('custom provider templates', () => {
     const current = createCustomProviderTemplate(draft());
     const unknownLegacy = structuredClone(current);
     unknownLegacy.id = 'template-custom-unknown-legacy';
-    unknownLegacy.realtimeProtocol = 'unknown-protocol';
+    (unknownLegacy as { realtimeProtocol?: string }).realtimeProtocol = 'unknown-protocol';
     delete unknownLegacy.defaultDraft.modelProtocolBindings;
 
     const wrongModel = structuredClone(current);

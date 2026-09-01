@@ -3271,16 +3271,27 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
     speaker_device_id: Option<&str>,
     cue_id: &str,
 ) -> Option<crate::audio::speech::SpeakerPlaybackReceipt> {
-    let result = crate::audio::speech::play_to_speaker(
-        output_samples,
-        sample_rate_hz,
-        1,
-        speaker_device_id,
-        100,
-        audio_state.desktop_playback_ownership(),
-        cue_id,
-        "native-omni",
-        |event| match event {
+    let mut attempt_index = 0_u8;
+    let result = loop {
+        attempt_index = attempt_index.saturating_add(1);
+        let mut physical_frame_submitted = false;
+        let result = crate::audio::speech::play_to_speaker(
+            output_samples,
+            sample_rate_hz,
+            1,
+            speaker_device_id,
+            100,
+            audio_state.desktop_playback_ownership(),
+            cue_id,
+            "native-omni",
+            |event| {
+                if matches!(
+                    &event,
+                    crate::audio::speech::SpeakerRenderEvent::Frame { .. }
+                ) {
+                    physical_frame_submitted = true;
+                }
+                match event {
             crate::audio::speech::SpeakerRenderEvent::Discontinuity {
                 reason,
                 observed_at,
@@ -3334,8 +3345,28 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
                 );
                 Ok(())
             }
-        },
-    );
+                }
+            },
+        );
+        let retryable_open_failure = result.as_ref().is_err_and(|error| {
+            !physical_frame_submitted
+                && attempt_index == 1
+                && speaker_endpoint_open_was_transiently_missing(error)
+        });
+        if !retryable_open_failure {
+            break result;
+        }
+        let _ = diag_log(
+            app,
+            "omni",
+            "warn",
+            format!(
+                "[AUDIO] transient speaker endpoint open failed before physical submission; retrying once: cue_id={cue_id} error={}",
+                result.as_ref().unwrap_err(),
+            ),
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
     match result {
         Ok(receipt) => {
             let _ = diag_log(
@@ -3380,6 +3411,28 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
             );
             None
         }
+    }
+}
+
+fn speaker_endpoint_open_was_transiently_missing(error: &str) -> bool {
+    error.contains("0x80070002")
+}
+
+#[cfg(test)]
+mod speaker_endpoint_retry_tests {
+    use super::speaker_endpoint_open_was_transiently_missing;
+
+    #[test]
+    fn retries_only_the_observed_missing_endpoint_hresult() {
+        assert!(speaker_endpoint_open_was_transiently_missing(
+            "Windows returned an error: 系统找不到指定的文件。 (0x80070002)"
+        ));
+        assert!(!speaker_endpoint_open_was_transiently_missing(
+            "Windows returned an error: device is in exclusive use (0x8889000A)"
+        ));
+        assert!(!speaker_endpoint_open_was_transiently_missing(
+            "desktop playback ownership cancelled"
+        ));
     }
 }
 

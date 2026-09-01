@@ -222,9 +222,6 @@ function Invoke-WatchModeRun {
           $reportWaitStep = Invoke-Step -State $state "wait for same-process Watch report and desktop exit" -Phase reportWait {
             Wait-WatchSessionReportAndDesktopExit @reportWaitArguments
           } -ContinueOnError
-          if ($reportWaitStep.status -ne 'passed') {
-            throw "same-process Watch report capture failed: $($reportWaitStep.error.message)"
-          }
           $scopedAppLogPath = Join-Path $outputDir 'app.log'
           $savedAppLogPath = Copy-WatchModeAppLog -SourcePath ([string]$runContext.paths.appLogPath) `
             -DestinationPath $scopedAppLogPath -RunMarker $runMarker
@@ -291,10 +288,10 @@ function Invoke-WatchModeRun {
     if ($systemMetricsStep.status -eq 'failed') {
       throw "desktop system metrics evidence failed: $($systemMetricsStep.error.message)"
     }
-    Assert-WatchSessionReportFile $requiredWatchReportPath | Out-Null
     if ($reportWaitStep -and $reportWaitStep.status -ne 'passed') {
       throw "same-process Watch report did not complete within the desktop launch deadline: $($reportWaitStep.error.message)"
     }
+    Assert-WatchSessionReportFile $requiredWatchReportPath | Out-Null
   
     if ($LocalCanonicalContentAuthority) {
       $localSessionAuthorityStep = Invoke-Step -State $state "validate local smoke Provider session authority" -Phase artifactSave {

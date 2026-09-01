@@ -682,10 +682,15 @@ mod probe {
         cell_id: &str,
         lease_id: &str,
     ) -> bool {
+        let status = value["status"].as_str();
         value["runMarker"].as_str() == Some(run_marker)
             && value["cellId"].as_str() == Some(cell_id)
             && value["leaseId"].as_str() == Some(lease_id)
-            && value["status"].as_str() == Some("completed")
+            // A marker-scoped failed terminal is also an immutable end of the
+            // owning run. It must stop capture only after the configured tail
+            // so failure evidence is flushed without treating the run as a
+            // success.
+            && matches!(status, Some("completed" | "failed"))
     }
 
     fn write_install_state(runtime_root: &PathBuf) -> Result<(), String> {
@@ -1217,7 +1222,7 @@ mod probe {
         }
 
         #[test]
-        fn terminal_marker_requires_the_exact_completed_run_identity() {
+        fn terminal_marker_requires_the_exact_terminal_run_identity() {
             let value = json!({
                 "runMarker": "run-a",
                 "cellId": "cell-a",
@@ -1236,14 +1241,26 @@ mod probe {
             assert!(!terminal_value_matches_identity(
                 &value, "run-a", "cell-a", "lease-b"
             ));
-            let incomplete = json!({
+            let failed = json!({
                 "runMarker": "run-a",
                 "cellId": "cell-a",
                 "leaseId": "lease-a",
                 "status": "failed",
             });
+            assert!(terminal_value_matches_identity(
+                &failed,
+                "run-a",
+                "cell-a",
+                "lease-a"
+            ));
+            let active = json!({
+                "runMarker": "run-a",
+                "cellId": "cell-a",
+                "leaseId": "lease-a",
+                "status": "active",
+            });
             assert!(!terminal_value_matches_identity(
-                &incomplete,
+                &active,
                 "run-a",
                 "cell-a",
                 "lease-a"

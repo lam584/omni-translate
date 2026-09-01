@@ -515,6 +515,10 @@ impl<T> AudioFrameQueue<T> {
         self.frames.len()
     }
 
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     pub fn is_empty(&self) -> bool {
         self.frames.is_empty()
     }
@@ -574,6 +578,10 @@ impl<T> AudioFramePacer<T> {
 
     pub fn queued_frames(&self) -> usize {
         self.queue.len()
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.queue.capacity()
     }
 
     pub fn dropped_frame_count(&self) -> u64 {

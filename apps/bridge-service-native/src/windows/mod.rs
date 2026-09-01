@@ -111,7 +111,13 @@ use omni_bridge_service::probe_support::{
 
 const OMNI_SOURCE_CHUNK_BYTES: usize = 960 * INTERNAL_CHANNEL_COUNT as usize * 2;
 const OMNI_SOURCE_FRAME_INTERVAL_MS: u64 = 20;
-const OMNI_SOURCE_QUEUE_CAPACITY: usize = 5;
+// Driver status normally supplies this budget. Keep the fallback tied to the
+// canonical one-second 48 kHz stereo PCM16 geometry instead of a frame-count
+// magic number so a transient status-query failure retains the same contract.
+const OMNI_SOURCE_DRIVER_MAX_BUFFERED_BYTES_FALLBACK: u32 =
+    INTERNAL_SAMPLE_RATE_HZ
+        * INTERNAL_CHANNEL_COUNT as u32
+        * std::mem::size_of::<i16>() as u32;
 const OMNI_MONITOR_SOURCE_QUEUE_CAPACITY: usize = 25;
 const OMNI_MONITOR_SOURCE_BATCH_FRAMES: usize = 4_800;
 const OMNI_SOURCE_STALE_AFTER_MS: u64 = 500;
@@ -123,6 +129,15 @@ const PHYSICAL_TRANSLATION_STREAM_STARTUP_BUFFER_MS: u64 = 4_000;
 const PHYSICAL_TRANSLATION_STREAM_STARTUP_MAX_WAIT_MS: u64 = 4_500;
 const VIRTUAL_MIC_TERMINAL_LEDGER_CAPACITY: usize = 128;
 const PROCESS_LOOPBACK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn source_pacer_ingress_capacity(driver_max_buffered_bytes: u32) -> usize {
+    let max_buffered_bytes = if driver_max_buffered_bytes == 0 {
+        OMNI_SOURCE_DRIVER_MAX_BUFFERED_BYTES_FALLBACK
+    } else {
+        driver_max_buffered_bytes
+    } as usize;
+    max_buffered_bytes.div_ceil(OMNI_SOURCE_CHUNK_BYTES).max(1)
+}
 // `wasapi::AudioClient::new_application_loopback_client` maps false to
 // PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE.
 const INCLUDE_BRIDGE_PROCESS_TREE_IN_LOOPBACK: bool = false;
@@ -1299,12 +1314,63 @@ mod tests {
         translation_non_playback_reason, translation_playback_enabled,
         translation_would_miss_realtime_budget,
         BRIDGE_PROTOCOL_VERSION, INTERNAL_CHANNEL_COUNT, INTERNAL_SAMPLE_RATE_HZ,
+        AudioFramePacer, OMNI_SOURCE_CHUNK_BYTES, OMNI_SOURCE_FRAME_INTERVAL_MS,
+        OMNI_SOURCE_DRIVER_MAX_BUFFERED_BYTES_FALLBACK,
         PHYSICAL_TRANSLATION_STREAM_STARTUP_BUFFER_MS,
         PHYSICAL_TRANSLATION_STREAM_STARTUP_MAX_WAIT_MS,
         PROCESS_LOOPBACK_MINIMUM_WINDOWS_BUILD,
+        source_pacer_ingress_capacity,
         BridgeState, DriverStatus, ProcessLoopbackTerminalEvidence,
         VirtualMicChunkAdmission, VirtualMicCueLedger, VirtualMicWriteOutcome,
     };
+
+    #[test]
+    fn driver_startup_burst_fits_derived_pacer_ingress_and_catches_up_on_media_clock() {
+        const LEGACY_PACER_CAPACITY: usize = 5;
+
+        let capacity = source_pacer_ingress_capacity(
+            OMNI_SOURCE_DRIVER_MAX_BUFFERED_BYTES_FALLBACK,
+        );
+        assert_eq!(capacity, 50);
+        assert_eq!(source_pacer_ingress_capacity(192_001), 51);
+        assert_eq!(source_pacer_ingress_capacity(0), capacity);
+        assert_eq!(
+            capacity * OMNI_SOURCE_CHUNK_BYTES,
+            OMNI_SOURCE_DRIVER_MAX_BUFFERED_BYTES_FALLBACK as usize,
+        );
+
+        let mut legacy = AudioFramePacer::new(
+            LEGACY_PACER_CAPACITY,
+            Duration::from_millis(OMNI_SOURCE_FRAME_INTERVAL_MS),
+        );
+        for frame in 0..capacity {
+            legacy.push(frame, Duration::ZERO);
+        }
+        assert_eq!(legacy.queued_frames(), LEGACY_PACER_CAPACITY);
+        assert_eq!(
+            legacy.dropped_frame_count(),
+            (capacity - LEGACY_PACER_CAPACITY) as u64,
+            "the former five-frame ingress cannot own a legal one-second driver burst",
+        );
+
+        let mut derived = AudioFramePacer::new(
+            capacity,
+            Duration::from_millis(OMNI_SOURCE_FRAME_INTERVAL_MS),
+        );
+        for frame in 0..capacity {
+            derived.push(frame, Duration::ZERO);
+        }
+        assert_eq!(derived.queued_frames(), capacity);
+        assert_eq!(derived.dropped_frame_count(), 0);
+
+        assert_eq!(derived.poll(Duration::ZERO), Some(0));
+        let resumed_at = Duration::from_secs(1);
+        for expected in 1..capacity {
+            assert_eq!(derived.poll(resumed_at), Some(expected));
+        }
+        assert_eq!(derived.queued_frames(), 0);
+        assert_eq!(derived.dropped_frame_count(), 0);
+    }
 
     fn translation_job(cue_id: &str, created_at_ms: u64, duration_ms: u64) -> PlaybackJob {
         PlaybackJob {

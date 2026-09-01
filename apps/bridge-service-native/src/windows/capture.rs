@@ -382,7 +382,7 @@ fn run_driver_source_worker(
             current.update_progress("driver-open");
         }
         append_bridge_service_log(&runtime_root, "event=driver_open_success");
-        match driver.query_status() {
+        let driver_max_buffered_bytes = match driver.query_status() {
             Ok(status) => {
                 update_driver_status(&state, &status);
                 append_bridge_service_log(
@@ -398,16 +398,22 @@ fn run_driver_source_worker(
                         status.dropped_bytes,
                     ),
                 );
+                status.max_buffered_bytes
             }
-            Err(error) => append_bridge_service_log(
-                &runtime_root,
-                &format!("event=driver_status_failed error={error}"),
-            ),
-        }
+            Err(error) => {
+                append_bridge_service_log(
+                    &runtime_root,
+                    &format!("event=driver_status_failed error={error}"),
+                );
+                OMNI_SOURCE_DRIVER_MAX_BUFFERED_BYTES_FALLBACK
+            }
+        };
+        let source_pacer_capacity =
+            source_pacer_ingress_capacity(driver_max_buffered_bytes);
         let started_at = Instant::now();
         let mut pending_bytes = VecDeque::new();
         let mut pacer = AudioFramePacer::new(
-            OMNI_SOURCE_QUEUE_CAPACITY,
+            source_pacer_capacity,
             Duration::from_millis(OMNI_SOURCE_FRAME_INTERVAL_MS),
         );
         let mut last_dropped_frames = 0_u64;
@@ -471,7 +477,11 @@ fn run_driver_source_worker(
             );
 
             let mut bytes_read = 0;
-            if pacer.queued_frames() < OMNI_SOURCE_QUEUE_CAPACITY {
+            // Drain the kernel ring as fast as IOCTL reads allow until the
+            // bounded user-space ingress owns the driver's complete startup
+            // budget. Delivery remains paced below at the original 20 ms
+            // media clock.
+            if pacer.queued_frames() < pacer.capacity() {
                 let mut payload = vec![0_u8; OMNI_SOURCE_CHUNK_BYTES];
                 {
                     let mut current = state.lock().unwrap();
@@ -634,7 +644,9 @@ fn try_release_source_frame(
             runtime_root,
             &format!(
                 "source pacer started: frameBytes={} intervalMs={} queueCapacity={}",
-                OMNI_SOURCE_CHUNK_BYTES, OMNI_SOURCE_FRAME_INTERVAL_MS, OMNI_SOURCE_QUEUE_CAPACITY
+                OMNI_SOURCE_CHUNK_BYTES,
+                OMNI_SOURCE_FRAME_INTERVAL_MS,
+                pacer.capacity(),
             ),
         );
     }

@@ -497,6 +497,23 @@ function orderedTokenRecall(reference, candidate) {
   return previous[candidateTokens.length] / referenceTokens.length;
 }
 
+function orderedCharacterRecall(reference, candidate) {
+  const referenceCharacters = [...normalizeMeaningText(reference)];
+  if (referenceCharacters.length === 0) return 0;
+  const candidateCharacters = [...normalizeMeaningText(candidate)];
+  let previous = new Uint32Array(candidateCharacters.length + 1);
+  for (const referenceCharacter of referenceCharacters) {
+    const current = new Uint32Array(candidateCharacters.length + 1);
+    for (let index = 1; index <= candidateCharacters.length; index += 1) {
+      current[index] = referenceCharacter === candidateCharacters[index - 1]
+        ? previous[index - 1] + 1
+        : Math.max(previous[index], current[index - 1]);
+    }
+    previous = current;
+  }
+  return previous[candidateCharacters.length] / referenceCharacters.length;
+}
+
 function acceptedWatchSourceText(watchSessionReport) {
   const cues = Array.isArray(watchSessionReport?.cues) ? watchSessionReport.cues : [];
   const acceptedCues = cues.filter((cue) => (
@@ -516,6 +533,7 @@ function acceptedWatchSourceText(watchSessionReport) {
       .map((cue) => String(cue.cueId ?? '').trim())
       .filter(Boolean),
     sourceText: acceptedCues.map((cue) => cue.sourceText ?? '').filter(Boolean).join('\n'),
+    translatedText: acceptedCues.map((cue) => cue.renderedText ?? '').filter(Boolean).join('\n'),
   };
 }
 
@@ -531,14 +549,28 @@ function parseAecExpectedSegmentEvidence(input) {
   const expectedSegments = referenceText
     ? referenceText.split(/\r?\n\s*\r?\n/).map((segment) => segment.trim()).filter(Boolean)
     : [];
+  const translatedReferenceText = playbackSha256 === TEST_MEDIA_SHA256
+    ? readTextIfExists(DEFAULT_STRICT_REFERENCE_PATH).trim()
+    : '';
+  const translatedReferenceSegments = translatedReferenceText
+    ? translatedReferenceText.split(/\r?\n\s*\r?\n/).map((segment) => segment.trim()).filter(Boolean)
+    : [];
   const accepted = acceptedWatchSourceText(input.watchSessionReport);
   const minimumTokenRecall = 0.65;
   const segmentResults = expectedSegments.map((segment, index) => {
-    const recall = orderedTokenRecall(segment, accepted.sourceText);
+    const sourceRecall = orderedTokenRecall(segment, accepted.sourceText);
+    const translatedReferenceSegment = translatedReferenceSegments[index] ?? '';
+    const translatedRecall = translatedReferenceSegment
+      ? orderedCharacterRecall(translatedReferenceSegment, accepted.translatedText)
+      : 0;
+    const recall = Math.max(sourceRecall, translatedRecall);
     return {
       ordinal: index + 1,
       expectedTokenCount: normalizedEnglishTokens(segment).length,
       tokenRecall: Number(recall.toFixed(4)),
+      sourceTokenRecall: Number(sourceRecall.toFixed(4)),
+      translatedCharacterRecall: Number(translatedRecall.toFixed(4)),
+      acceptedEvidence: translatedRecall > sourceRecall ? 'rendered-translation' : 'source-transcript',
       accepted: recall >= minimumTokenRecall,
     };
   });

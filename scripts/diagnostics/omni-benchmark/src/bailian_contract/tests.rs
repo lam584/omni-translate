@@ -14,7 +14,15 @@ fn update() -> Value {
             "input_audio_format": "pcm",
             "turn_detection": {"type":"server_vad","threshold":0.0,"silence_duration_ms":400},
             "input_audio_transcription": {"model":"qwen3-asr-flash-realtime","language":"en"},
-            "translation": {"language":"zh"}
+            "translation": {
+                "language":"zh",
+                "corpus": {"phrases": {
+                    "Mars": "火星",
+                    "artificial biosphere": "人工生物圈",
+                    "light bulb": "灯泡",
+                    "one billion": "十亿"
+                }}
+            }
         }
     })
 }
@@ -132,6 +140,17 @@ fn invalid_client_plan_keeps_connector_accept_count_zero() {
     let mut unknown = update();
     unknown["session"]["unknown"] = json!(true);
     invalid_plans.push(unknown);
+    for corpus in [
+        json!({"phrases": {}}),
+        json!({"phrases": {" ": "火星"}}),
+        json!({"phrases": {"Mars": " "}}),
+        json!({"phrases": {"Mars": 1}}),
+        json!({"phrases": {"Mars": "火星"}, "unknown": true}),
+    ] {
+        let mut invalid = update();
+        invalid["session"]["translation"]["corpus"] = corpus;
+        invalid_plans.push(invalid);
+    }
     for invalid in invalid_plans {
         let mut listener_accept_count = 0_u32;
         let preflight = preflight_from_registry(

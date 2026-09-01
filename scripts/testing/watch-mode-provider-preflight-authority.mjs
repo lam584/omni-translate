@@ -127,10 +127,20 @@ function strictSessionUpdate(entry) {
     || payload.session.sample_rate !== 16_000
     || payload.session.input_audio_format !== 'pcm'
     || !sameCanonical(payload.session.input_audio_transcription, {
-      language: 'zh',
+      language: 'en',
       model: 'qwen3-asr-flash-realtime',
     })
-    || !sameCanonical(payload.session.translation, { language: 'en' })
+    || !sameCanonical(payload.session.translation, {
+      corpus: {
+        phrases: {
+          Mars: '火星',
+          'artificial biosphere': '人工生物圈',
+          'light bulb': '灯泡',
+          'one billion': '十亿',
+        },
+      },
+      language: 'zh',
+    })
     || !sameCanonical(payload.session.turn_detection, {
       silence_duration_ms: 400,
       threshold: 0,
@@ -179,8 +189,10 @@ function strictSessionAuthority(raw, createdEntry, updatedEntry, update) {
     },
   };
   const canonicalConfig = '{"input_audio_format":"pcm",'
-    + '"input_audio_transcription":{"language":"zh","model":"qwen3-asr-flash-realtime"},'
-    + '"modalities":["text"],"sample_rate":16000,"translation":{"language":"en"},'
+    + '"input_audio_transcription":{"language":"en","model":"qwen3-asr-flash-realtime"},'
+    + '"modalities":["text"],"sample_rate":16000,"translation":{"corpus":{"phrases":'
+    + '{"Mars":"火星","artificial biosphere":"人工生物圈","light bulb":"灯泡","one billion":"十亿"}},'
+    + '"language":"zh"},'
     + '"turn_detection":{"silence_duration_ms":400,"threshold":0.0,"type":"server_vad"}}';
   const configDigest = sha256Bytes(Buffer.from(canonicalConfig, 'utf8'));
   const authority = raw?.sessionAuthority;

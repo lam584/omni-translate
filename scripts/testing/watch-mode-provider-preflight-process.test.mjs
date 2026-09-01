@@ -51,10 +51,20 @@ const OFFICIAL_SESSION_UPDATE = {
     sample_rate: 16_000,
     input_audio_format: 'pcm',
     input_audio_transcription: {
-      language: 'zh',
+      language: 'en',
       model: 'qwen3-asr-flash-realtime',
     },
-    translation: { language: 'en' },
+    translation: {
+      language: 'zh',
+      corpus: {
+        phrases: {
+          Mars: '火星',
+          'artificial biosphere': '人工生物圈',
+          'light bulb': '灯泡',
+          'one billion': '十亿',
+        },
+      },
+    },
     turn_detection: {
       type: 'server_vad',
       threshold: 0.0,
@@ -77,8 +87,10 @@ const OFFICIAL_SESSION_UPDATE_RAW = JSON.stringify(OFFICIAL_SESSION_UPDATE);
 const OFFICIAL_SESSION_FINISH_RAW = JSON.stringify(OFFICIAL_SESSION_FINISH);
 const OFFICIAL_UPGRADE_REQUEST_AUTHORITY_RAW = JSON.stringify(OFFICIAL_UPGRADE_REQUEST_AUTHORITY);
 const OFFICIAL_SESSION_ECHO_CANONICAL = '{"input_audio_format":"pcm",'
-  + '"input_audio_transcription":{"language":"zh","model":"qwen3-asr-flash-realtime"},'
-  + '"modalities":["text"],"sample_rate":16000,"translation":{"language":"en"},'
+  + '"input_audio_transcription":{"language":"en","model":"qwen3-asr-flash-realtime"},'
+  + '"modalities":["text"],"sample_rate":16000,"translation":{"corpus":{"phrases":'
+  + '{"Mars":"火星","artificial biosphere":"人工生物圈","light bulb":"灯泡","one billion":"十亿"}},'
+  + '"language":"zh"},'
   + '"turn_detection":{"silence_duration_ms":400,"threshold":0.0,"type":"server_vad"}}';
 const OFFICIAL_SESSION_ECHO_SHA256 = sha256(OFFICIAL_SESSION_ECHO_CANONICAL);
 const OFFICIAL_SESSION_CREATED = {
@@ -1039,8 +1051,8 @@ test('an out-of-order LiveTranslate lifecycle is rejected even when all six even
 
 for (const invalidUpdate of [
   {
-    name: 'locale-shaped source language zh-CN',
-    mutate(payload) { payload.session.input_audio_transcription.language = 'zh-CN'; },
+    name: 'locale-shaped source language en-US',
+    mutate(payload) { payload.session.input_audio_transcription.language = 'en-US'; },
   },
   {
     name: 'wrong ASR model',
@@ -1055,8 +1067,32 @@ for (const invalidUpdate of [
     mutate(payload) { delete payload.session.turn_detection; },
   },
   {
-    name: 'locale-shaped target language en-US',
-    mutate(payload) { payload.session.translation.language = 'en-US'; },
+    name: 'locale-shaped target language zh-CN',
+    mutate(payload) { payload.session.translation.language = 'zh-CN'; },
+  },
+  {
+    name: 'missing corpus',
+    mutate(payload) { delete payload.session.translation.corpus; },
+  },
+  {
+    name: 'unknown corpus field',
+    mutate(payload) { payload.session.translation.corpus.unknown = true; },
+  },
+  {
+    name: 'empty corpus phrases',
+    mutate(payload) { payload.session.translation.corpus.phrases = {}; },
+  },
+  {
+    name: 'blank corpus phrase key',
+    mutate(payload) { payload.session.translation.corpus.phrases[' '] = '火星'; },
+  },
+  {
+    name: 'blank corpus phrase value',
+    mutate(payload) { payload.session.translation.corpus.phrases.Mars = ' '; },
+  },
+  {
+    name: 'non-string corpus phrase value',
+    mutate(payload) { payload.session.translation.corpus.phrases.Mars = 1; },
   },
   {
     name: 'instructions field',

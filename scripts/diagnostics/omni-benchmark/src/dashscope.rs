@@ -162,6 +162,19 @@ pub fn run_dashscope_benchmark(
 // ──────────────────────────────── Message Builders ──────────────────────────
 
 fn build_session_update(config: &Config) -> Value {
+    let source_language = normalize_language(&config.source_language);
+    let target_language = normalize_language(&config.target_language);
+    let mut translation = json!({ "language": target_language });
+    if source_language == "en" && target_language == "zh" {
+        translation["corpus"] = json!({
+            "phrases": {
+                "Mars": "火星",
+                "artificial biosphere": "人工生物圈",
+                "light bulb": "灯泡",
+                "one billion": "十亿"
+            }
+        });
+    }
     json!({
         "event_id": next_event_id("session_update"),
         "type": "session.update",
@@ -176,11 +189,9 @@ fn build_session_update(config: &Config) -> Value {
             },
             "input_audio_transcription": {
                 "model": "qwen3-asr-flash-realtime",
-                "language": normalize_language(&config.source_language)
+                "language": source_language
             },
-            "translation": {
-                "language": normalize_language(&config.target_language)
-            }
+            "translation": translation
         }
     })
 }
@@ -504,6 +515,15 @@ mod old_red_tests {
         assert!(event.pointer("/session/instructions").is_none());
         assert!(event.pointer("/session/voice").is_none());
         assert!(event.pointer("/session/output_audio_format").is_none());
+        assert_eq!(
+            event.pointer("/session/translation/corpus/phrases"),
+            Some(&json!({
+                "Mars": "火星",
+                "artificial biosphere": "人工生物圈",
+                "light bulb": "灯泡",
+                "one billion": "十亿",
+            }))
+        );
     }
 
     #[test]

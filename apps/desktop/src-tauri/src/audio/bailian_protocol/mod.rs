@@ -1302,6 +1302,57 @@ mod tests {
     }
 
     #[test]
+    fn session_updated_echo_authority_covers_the_exact_official_corpus() {
+        let authority = authority();
+        let mut update = client_session_update();
+        update["session"]["translation"]["corpus"] = json!({
+            "phrases": {
+                "Mars": "火星",
+                "artificial biosphere": "人工生物圈",
+                "light bulb": "灯泡",
+                "one billion": "十亿"
+            }
+        });
+
+        let mut state = LiveTranslateServerState::default();
+        state.record_client_session_update(&authority, &update).unwrap();
+        state
+            .admit(
+                &authority,
+                &session_event("event-created-corpus", "session.created", "s1"),
+            )
+            .unwrap();
+        let mut echoed = session_event("event-updated-corpus", "session.updated", "s1");
+        echoed["session"]["translation"] = update["session"]["translation"].clone();
+        let mutation = state.admit(&authority, &echoed).unwrap();
+        let evidence = mutation.session_updated.expect("session.updated evidence");
+        assert_eq!(
+            evidence.sent_session_config_sha256,
+            evidence.echoed_session_config_sha256
+        );
+
+        let mut mismatch_state = LiveTranslateServerState::default();
+        mismatch_state
+            .record_client_session_update(&authority, &update)
+            .unwrap();
+        mismatch_state
+            .admit(
+                &authority,
+                &session_event("event-created-mismatch-corpus", "session.created", "s2"),
+            )
+            .unwrap();
+        let mut mismatched = session_event(
+            "event-updated-mismatch-corpus",
+            "session.updated",
+            "s2",
+        );
+        mismatched["session"]["translation"] = update["session"]["translation"].clone();
+        mismatched["session"]["translation"]["corpus"]["phrases"]["Mars"] =
+            json!("战神");
+        assert!(mismatch_state.admit(&authority, &mismatched).is_err());
+    }
+
+    #[test]
     fn response_output_content_and_audio_streams_require_exact_open_identity() {
         let authority = authority();
         let mut state = LiveTranslateServerState::default();

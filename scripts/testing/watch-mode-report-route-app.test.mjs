@@ -3,7 +3,10 @@
 // preconnect, fallback), app-layer subtitle evidence, subtitle queue ordering
 // gates, the echo-cancel feedback variant and runner-failure attribution.
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { renderMarkdownReport } from './watch-mode-report.mjs';
 import {
@@ -702,6 +705,59 @@ test('echo-cancel live report requires every expected source segment to survive 
   assert.equal(report.failureLayer, 'aec');
   assert.match(report.failureReason, /accept every expected reference-media subtitle segment/i);
   assert.equal(report.layers.aec.data.liveScenario.expectedSubtitles.acceptanceRate < 1, true);
+});
+
+test('echo-cancel accepts completed rendered translation when accepted source metadata is corrupt', () => {
+  const renderedReference = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'watch-mode-en-original.zh-CN.txt'),
+    'utf8',
+  ).trim();
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [{
+        ...healthyWatchSessionReport.cues[0],
+        sourceText: 'corrupt source metadata',
+        llmText: renderedReference,
+        publishedText: renderedReference,
+        renderedText: renderedReference,
+      }],
+    },
+  });
+
+  assert.equal(report.layers.aec.data.liveScenario.expectedSubtitles.acceptedSegmentCount, 6);
+  assert.equal(report.layers.aec.data.liveScenario.expectedSubtitles.acceptanceRate, 1);
+  assert.equal(
+    report.layers.aec.data.liveScenario.expectedSubtitles.segments[1].acceptedEvidence,
+    'rendered-translation',
+  );
+});
+
+test('echo-cancel does not borrow translation from an unrendered cue', () => {
+  const renderedReference = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'watch-mode-en-original.zh-CN.txt'),
+    'utf8',
+  ).trim();
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [{
+        ...healthyWatchSessionReport.cues[0],
+        sourceText: 'corrupt source metadata',
+        renderedText: renderedReference,
+        comparisonStatus: 'not-rendered',
+        renderedFirstAtMs: null,
+      }],
+    },
+  });
+
+  assert.equal(
+    report.layers.aec.data.liveScenario.expectedSubtitles.acceptedSegmentCount
+      < report.layers.aec.data.liveScenario.expectedSubtitles.expectedSegmentCount,
+    true,
+  );
 });
 
 test('echo-cancel segment recall cannot borrow a shuffled token bag from unrelated cues', () => {

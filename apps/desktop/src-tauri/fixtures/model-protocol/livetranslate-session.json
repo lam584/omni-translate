@@ -10,7 +10,26 @@
   ],
   "sequence": [
     { "direction": "server", "frameKind": "json", "eventType": "session.created" },
-    { "direction": "client", "frameKind": "json", "eventType": "session.update" },
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "session.update",
+      "payload": {
+        "session": {
+          "translation": {
+            "language": "zh",
+            "corpus": {
+              "phrases": {
+                "Mars": "火星",
+                "artificial biosphere": "人工生物圈",
+                "light bulb": "灯泡",
+                "one billion": "十亿"
+              }
+            }
+          }
+        }
+      }
+    },
     { "direction": "server", "frameKind": "json", "eventType": "session.updated" },
     { "direction": "client", "frameKind": "json-base64", "eventType": "input_audio_buffer.append" },
     { "direction": "server", "frameKind": "json", "eventType": "response.created" },

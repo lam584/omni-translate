@@ -133,8 +133,34 @@ fn validate_translation(session: &Map<String, Value>) -> Result<(), String> {
         .get("translation")
         .and_then(Value::as_object)
         .ok_or_else(|| format!("{PAYLOAD_INVALID}: session.translation must be an object"))?;
-    reject_unknown_fields(object, &["language"], "session.translation")?;
+    reject_unknown_fields(object, &["language", "corpus"], "session.translation")?;
     require_non_empty_string(object, "language", "session.translation")?;
+    if let Some(corpus) = object.get("corpus") {
+        let corpus = corpus.as_object().ok_or_else(|| {
+            format!("{PAYLOAD_INVALID}: session.translation.corpus must be an object")
+        })?;
+        reject_unknown_fields(corpus, &["phrases"], "session.translation.corpus")?;
+        let phrases = corpus
+            .get("phrases")
+            .and_then(Value::as_object)
+            .filter(|phrases| !phrases.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "{PAYLOAD_INVALID}: session.translation.corpus.phrases must be a non-empty object"
+                )
+            })?;
+        for (source, target) in phrases {
+            if source.trim().is_empty()
+                || target
+                    .as_str()
+                    .is_none_or(|target| target.trim().is_empty())
+            {
+                return Err(format!(
+                    "{PAYLOAD_INVALID}: session.translation.corpus.phrases keys and values must be non-empty strings"
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -284,6 +310,31 @@ mod tests {
     fn exact_production_session_update_is_admitted() {
         let authority = super::super::livetranslate_test_authority();
         admit_livetranslate_client_event(&authority, &valid_update()).unwrap();
+    }
+
+    #[test]
+    fn official_translation_corpus_is_strictly_typed() {
+        let authority = super::super::livetranslate_test_authority();
+        let mut update = valid_update();
+        update["session"]["translation"]["corpus"] = json!({
+            "phrases": {
+                "Mars": "火星",
+                "artificial biosphere": "人工生物圈"
+            }
+        });
+        admit_livetranslate_client_event(&authority, &update).unwrap();
+
+        for corpus in [
+            json!({"phrases": {}}),
+            json!({"phrases": {" ": "火星"}}),
+            json!({"phrases": {"Mars": " "}}),
+            json!({"phrases": {"Mars": 1}}),
+            json!({"phrases": {"Mars": "火星"}, "unknown": true}),
+        ] {
+            let mut invalid = valid_update();
+            invalid["session"]["translation"]["corpus"] = corpus;
+            rejects(invalid);
+        }
     }
 
     #[test]

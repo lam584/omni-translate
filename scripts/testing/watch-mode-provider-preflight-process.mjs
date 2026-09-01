@@ -262,9 +262,11 @@ function validateSessionUpdatePayload(entry) {
     || payload.session.input_audio_format !== 'pcm'
     || !exactObjectKeys(payload.session.input_audio_transcription, ['language', 'model'])
     || payload.session.input_audio_transcription.model !== 'qwen3-asr-flash-realtime'
-    || payload.session.input_audio_transcription.language !== 'zh'
-    || !exactObjectKeys(payload.session.translation, ['language'])
-    || payload.session.translation.language !== 'en'
+    || payload.session.input_audio_transcription.language !== 'en'
+    || !exactObjectKeys(payload.session.translation, ['corpus', 'language'])
+    || payload.session.translation.language !== 'zh'
+    || !exactObjectKeys(payload.session.translation.corpus, ['phrases'])
+    || !validLiveTranslatePhrases(payload.session.translation.corpus.phrases)
     || !exactObjectKeys(payload.session.turn_detection, [
       'silence_duration_ms',
       'threshold',
@@ -275,6 +277,18 @@ function validateSessionUpdatePayload(entry) {
     || payload.session.turn_detection.silence_duration_ms !== 400
   ) return null;
   return payload;
+}
+
+function validLiveTranslatePhrases(phrases) {
+  if (!phrases || typeof phrases !== 'object' || Array.isArray(phrases)) return false;
+  const entries = Object.entries(phrases);
+  if (entries.length === 0 || entries.some(([source, target]) => (
+    source.trim() === '' || typeof target !== 'string' || target.trim() === ''
+  ))) return false;
+  return phrases.Mars === '火星'
+    && phrases['artificial biosphere'] === '人工生物圈'
+    && phrases['one billion'] === '十亿'
+    && phrases['light bulb'] === '灯泡';
 }
 
 function validateSessionFinishPayload(entry, sessionUpdate) {
@@ -296,7 +310,8 @@ function canonicalLiveTranslateSessionConfig(session) {
     + `,"model":${JSON.stringify(session.input_audio_transcription.model)}}`
     + `,"modalities":${JSON.stringify(session.modalities)}`
     + `,"sample_rate":${JSON.stringify(session.sample_rate)}`
-    + `,"translation":{"language":${JSON.stringify(session.translation.language)}}`
+    + `,"translation":{"corpus":{"phrases":${JSON.stringify(canonicalValue(session.translation.corpus.phrases))}}`
+    + `,"language":${JSON.stringify(session.translation.language)}}`
     + `,"turn_detection":{"silence_duration_ms":${JSON.stringify(session.turn_detection.silence_duration_ms)}`
     + `,"threshold":${thresholdJson}`
     + `,"type":${JSON.stringify(session.turn_detection.type)}}}`;

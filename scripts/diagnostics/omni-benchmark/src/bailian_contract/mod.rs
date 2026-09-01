@@ -352,8 +352,37 @@ fn validate_session_update(
         .get("translation")
         .and_then(Value::as_object)
         .ok_or_else(|| "LiveTranslate session.update requires translation".to_string())?;
-    require_exact_keys(translation, &["language"], "translation")?;
+    if translation.contains_key("corpus") {
+        require_exact_keys(translation, &["language", "corpus"], "translation")?;
+    } else {
+        require_exact_keys(translation, &["language"], "translation")?;
+    }
     required_nonempty_string(translation, "language", "translation")?;
+    if let Some(corpus) = translation.get("corpus") {
+        let corpus = corpus
+            .as_object()
+            .ok_or_else(|| "LiveTranslate translation.corpus must be an object".to_string())?;
+        require_exact_keys(corpus, &["phrases"], "translation.corpus")?;
+        let phrases = corpus
+            .get("phrases")
+            .and_then(Value::as_object)
+            .filter(|phrases| !phrases.is_empty())
+            .ok_or_else(|| {
+                "LiveTranslate translation.corpus.phrases must be a non-empty object".to_string()
+            })?;
+        for (source, target) in phrases {
+            if source.trim().is_empty()
+                || target
+                    .as_str()
+                    .is_none_or(|target| target.trim().is_empty())
+            {
+                return Err(
+                    "LiveTranslate translation.corpus.phrases keys and values must be non-empty strings"
+                        .to_string(),
+                );
+            }
+        }
+    }
     Ok(())
 }
 fn require_exact_keys(

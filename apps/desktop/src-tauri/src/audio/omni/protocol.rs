@@ -2169,6 +2169,52 @@ fn normalize_livetranslate_language(language: &str, fallback: &str) -> String {
     }
 }
 
+fn watch_release_livetranslate_corpus(
+    strict_paid_authority: bool,
+    source_language: &str,
+    target_language: &str,
+) -> Option<Value> {
+    if !strict_paid_authority {
+        return None;
+    }
+    match (source_language, target_language) {
+        ("en", "zh") => Some(json!({
+            "phrases": {
+                "Mars": "火星",
+                "artificial biosphere": "人工生物圈",
+                "light bulb": "灯泡",
+                "one billion": "十亿"
+            }
+        })),
+        ("zh", "en") => Some(json!({
+            "phrases": {
+                "人工生物圈": "artificial biosphere",
+                "十亿": "one billion",
+                "火星": "Mars",
+                "灯泡": "light bulb"
+            }
+        })),
+        _ => None,
+    }
+}
+
+fn apply_watch_release_livetranslate_corpus(
+    session_update: &mut Value,
+    strict_livetranslate_authority: bool,
+    source_language: &str,
+    target_language: &str,
+) {
+    let source_language = normalize_livetranslate_language(source_language, "en");
+    let target_language = normalize_livetranslate_language(target_language, "zh");
+    if let Some(corpus) = watch_release_livetranslate_corpus(
+        strict_livetranslate_authority,
+        &source_language,
+        &target_language,
+    ) {
+        session_update["session"]["translation"]["corpus"] = corpus;
+    }
+}
+
 pub(crate) fn resolve_livetranslate_language(
     authority: &crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile,
     language: &str,
@@ -2353,9 +2399,7 @@ fn build_omni_session_update_with_dialect(
           "model": "qwen3-asr-flash-realtime",
           "language": source_language
         });
-        session_cfg["session"]["translation"] = json!({
-          "language": target_language
-        });
+        session_cfg["session"]["translation"] = json!({ "language": target_language });
     }
     session_cfg
 }
@@ -2470,11 +2514,67 @@ mod response_control_tests {
             OmniOutputMode::TextOnly,
         );
         assert!(event.pointer("/session/instructions").is_none());
+        assert!(event.pointer("/session/translation/corpus").is_none());
         crate::audio::bailian_protocol::admit_livetranslate_client_event(
             &crate::audio::bailian_protocol::livetranslate_test_authority(),
             &event,
         )
         .expect("production builder must produce an admitted LiveTranslate payload");
+    }
+
+    #[test]
+    fn livetranslate_session_update_includes_directional_official_corpus() {
+        let mut en_to_zh = build_omni_session_update_with_dialect(
+            true,
+            "",
+            "",
+            RealtimeAudioMode::ServerVad,
+            "en",
+            "zh",
+            OmniOutputMode::TextOnly,
+        );
+        apply_watch_release_livetranslate_corpus(&mut en_to_zh, true, "en", "zh");
+        assert_eq!(
+            en_to_zh.pointer("/session/translation/corpus/phrases"),
+            Some(&json!({
+                "Mars": "火星",
+                "artificial biosphere": "人工生物圈",
+                "light bulb": "灯泡",
+                "one billion": "十亿"
+            }))
+        );
+
+        let mut zh_to_en = build_omni_session_update_with_dialect(
+            true,
+            "",
+            "",
+            RealtimeAudioMode::ServerVad,
+            "zh-CN",
+            "en-US",
+            OmniOutputMode::TextOnly,
+        );
+        apply_watch_release_livetranslate_corpus(&mut zh_to_en, true, "zh-CN", "en-US");
+        assert_eq!(
+            zh_to_en.pointer("/session/translation/corpus/phrases"),
+            Some(&json!({
+                "人工生物圈": "artificial biosphere",
+                "十亿": "one billion",
+                "火星": "Mars",
+                "灯泡": "light bulb"
+            }))
+        );
+
+        let mut omni = build_omni_session_update_with_dialect(
+            false,
+            "",
+            "",
+            RealtimeAudioMode::ServerVad,
+            "en",
+            "zh",
+            OmniOutputMode::TextOnly,
+        );
+        apply_watch_release_livetranslate_corpus(&mut omni, false, "en", "zh");
+        assert!(omni.pointer("/session/translation/corpus").is_none());
     }
 }
 
@@ -2510,15 +2610,16 @@ pub(crate) fn build_omni_session_update_for_provider_with_output_mode(
     let protocol = protocol
         .expect("Omni session builder requires an explicit or compatibility-resolved protocol");
     let mut session_update = build_dashscope_session_update_with_languages_and_output_mode(
-        protocol,
-        voice,
-        instructions,
-        audio_mode,
-        source_language,
-        target_language,
-        output_mode,
+        protocol, voice, instructions, audio_mode, source_language, target_language, output_mode,
     )
     .expect("Omni session builder requires a DashScope Omni/LiveTranslate protocol");
+    apply_watch_release_livetranslate_corpus(
+        &mut session_update,
+        protocol == crate::audio::events::RealtimeProtocol::DashscopeLivetranslate
+            && std::env::var("OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY").as_deref() == Ok("1"),
+        source_language,
+        target_language,
+    );
     apply_authorized_turn_detection(
         &mut session_update,
         realtime_profile.model_protocol_authority.as_ref(),

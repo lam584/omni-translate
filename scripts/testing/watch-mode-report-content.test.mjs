@@ -5,13 +5,32 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { evaluateStrictContent } from './watch-mode-report.mjs';
+import { derivePhysicalOutputContent, evaluateStrictContent } from './watch-mode-report.mjs';
 import {
   classify,
   healthyPhysicalOutputContent,
   strictTestMediaContent,
   testMediaReferenceTranslation,
 } from './watch-mode-report-test-helpers.mjs';
+
+test('physical output derivation preserves an absent collector verdict across repeated projection', () => {
+  const raw = { ...healthyPhysicalOutputContent };
+  delete raw.passed;
+  delete raw.collectorPassed;
+
+  const once = derivePhysicalOutputContent(raw);
+  const twice = derivePhysicalOutputContent(once);
+
+  assert.equal(once.collectorPassed, null);
+  assert.equal(twice.collectorPassed, null);
+  assert.equal(twice.passed, once.passed);
+
+  const legacyCollectorVerdict = derivePhysicalOutputContent({
+    ...raw,
+    passed: false,
+  });
+  assert.equal(legacyCollectorVerdict.collectorPassed, false);
+});
 
 test('classifies physical output content that does not match subtitles', () => {
   const report = classify({

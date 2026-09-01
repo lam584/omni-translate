@@ -9,6 +9,7 @@ import { forbiddenCellArtifactPaths } from './watch-mode-evidence-authority.mjs'
 import { buildCanonicalReferencePcm } from './watch-mode-canonical-source-authority.mjs';
 import { deriveWatchModelProtocolIdentity } from './watch-mode-model-protocol-authority.mjs';
 import { validateWatchModeRunRequest } from './watch-mode-run-request.mjs';
+import { buildCellExternalProviderBudget } from './watch-mode-external-provider-budget.mjs';
 
 // This suite executes the runner instead of grepping its source. Earlier
 // versions asserted on string positions inside the .ps1, which validated
@@ -154,6 +155,161 @@ test('paid cell finalizes a zero-call budget before desktop launch', { skip: !is
     assert.match(fs.readFileSync(path.join(runDirectory, 'app.log'), 'utf8'), new RegExp(runMarker));
   } finally {
     fs.rmSync(runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('paid failure budget is rebuilt from the final marker-scoped app log saved with raw artifacts', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-paid-failure-final-budget-'));
+  const runDirectory = path.join(root, 'run');
+  const runtimeDirectory = path.join(root, 'runtime');
+  const staleLogPath = path.join(root, 'app-before-playback.log');
+  const finalDesktopLogPath = path.join(root, 'desktop-app.log');
+  const runMarker = 'watch_mode_diagnostic.run_id=paid_failure_final_budget';
+  const cellId = 'c01';
+  const modelId = 'qwen3.5-livetranslate-flash-realtime';
+  const maxSamples = 2_877_045;
+  const attemptedSamples = 32_000;
+  const modelProtocolProfileIdentity = deriveWatchModelProtocolIdentity(modelId);
+  fs.mkdirSync(runDirectory);
+  fs.mkdirSync(runtimeDirectory);
+  try {
+    fs.writeFileSync(staleLogPath, `${runMarker}\n`, 'utf8');
+    fs.writeFileSync(finalDesktopLogPath, [
+      'unrelated historical line',
+      runMarker,
+      `2026-09-02 10:00:00 [NORMAL] [omni] - - [CONNECT] connected Omni, model=${modelId}`,
+      `2026-09-02 10:00:01 [DEBUG] [model-trace] - - omni ws.send.input_audio_buffer.append.summary | {"event":"ws.send.input_audio_buffer.append.summary","model":"${modelId}","category":"omni","payload":{"resampledSamplesTotal":${attemptedSamples}}}`,
+    ].join('\n'), 'utf8');
+    fs.writeFileSync(
+      path.join(runDirectory, 'provider-input-16k-mono.pcm'),
+      Buffer.alloc(attemptedSamples * 2, 1),
+    );
+
+    const identity = {
+      schemaVersion: 2,
+      artifactKind: 'watch-mode-provider-input-budget-ledger',
+      cellId,
+      leaseId: 'paid-failure-fixture-lease',
+      runMarker,
+      sessionGeneration: 1,
+      direction: 'inbound',
+      strictPaidAuthority: true,
+      providerId: 'provider-dashscope',
+      templateId: 'template-dashscope-realtime',
+      providerKind: 'dashscope',
+      endpointHost: 'dashscope.aliyuncs.com',
+      credentialReference: 'credential://provider/dashscope/default',
+      authHeaderName: 'Authorization',
+      authScheme: 'bearer',
+      customHeaderCount: 0,
+      model: modelId,
+      protocol: 'dashscope-livetranslate',
+      modelProtocolProfileIdentity,
+    };
+    fs.writeFileSync(path.join(runDirectory, 'provider-input-budget-lease.json'), JSON.stringify({
+      schemaVersion: 2,
+      artifactKind: 'watch-mode-provider-input-budget-lease',
+      cellId,
+      leaseId: identity.leaseId,
+      runMarker,
+      maxSamples,
+      modelProtocolProfileIdentity,
+    }), 'utf8');
+    const initialized = {
+      ...identity,
+      event: 'initialized',
+      sequence: 1,
+      occurredAtMs: 1,
+      attemptedSamples: null,
+      totalAttemptedSamples: 0,
+      maxSamples,
+      appendAttempts: 0,
+      sendFailures: 0,
+      initialConnectAttempts: 0,
+      reconnects: 0,
+      budgetExceeded: false,
+      finalized: false,
+      terminalReason: null,
+    };
+    const connected = {
+      ...initialized,
+      event: 'initial_connect_attempt',
+      sequence: 2,
+      occurredAtMs: 2,
+      initialConnectAttempts: 1,
+    };
+    const reserved = {
+      ...connected,
+      event: 'reserved',
+      sequence: 3,
+      occurredAtMs: 3,
+      attemptedSamples,
+      totalAttemptedSamples: attemptedSamples,
+      appendAttempts: 1,
+    };
+    const finalized = {
+      ...reserved,
+      event: 'finalized',
+      sequence: 4,
+      occurredAtMs: 4,
+      attemptedSamples: null,
+      finalized: true,
+      terminalReason: 'worker-completed',
+    };
+    fs.writeFileSync(
+      path.join(runDirectory, 'provider-input-budget-ledger.json'),
+      `${JSON.stringify(finalized)}\n`,
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(runDirectory, 'provider-input-budget-ledger.json.journal.jsonl'),
+      `${[initialized, connected, reserved, finalized].map(JSON.stringify).join('\n')}\n`,
+      'utf8',
+    );
+
+    const context = {
+      audioRoute: 'echo-cancel',
+      model: { id: modelId },
+      paths: { workspaceRoot: path.resolve('.'), runtimeRoot: runtimeDirectory },
+      request: {
+        authorityMode: 'strict-paid',
+        feedbackMode: 'echo-cancel',
+        matrix: { cellId },
+        model: { id: modelId, subtitleTranslationMode: 'native' },
+      },
+    };
+    const command = extractedLocalSmokeProviderSessionAuthorityFunction() +
+      `$module = Get-Module Omni.Testing.WatchMode.EvidenceCollection; ` +
+      `& $module { param($appLog) $script:fixtureDesktopAppLog = $appLog; ` +
+        `function script:Get-WatchModeDesktopAppLogPath { return $script:fixtureDesktopAppLog }; ` +
+        `function script:Invoke-WatchModeReportGenerator { } } ${quotePowerShell(finalDesktopLogPath)}; ` +
+      `$env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES = '${maxSamples}'; ` +
+      `$context = ${quotePowerShell(JSON.stringify(context))} | ConvertFrom-Json; ` +
+      `try { Write-StrictPaidCellBudget ${quotePowerShell(runDirectory)} ${quotePowerShell(staleLogPath)} ${quotePowerShell(runMarker)} $context | Out-Null } catch { }; ` +
+      `$state = [pscustomobject]@{ steps = @(); ownedProcesses = @(); ` +
+        `primaryError = [pscustomobject]@{ message = 'synthetic post-provider failure' }; cleanupErrors = @() }; ` +
+      `Save-WatchModeRunArtifacts -OutputDirectory ${quotePowerShell(runDirectory)} -PlaybackStep $null ` +
+        `-RunMarker ${quotePowerShell(runMarker)} -StartedAtLocal '2026-09-02 10:00:00' ` +
+        `-Context $context -Request $context.request -State $state`;
+    const result = runPowerShell(['-Command', command]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+
+    const recorded = readJsonArtifact(path.join(runDirectory, 'external-provider-budget.json'));
+    const rebuilt = buildCellExternalProviderBudget({
+      runDirectory,
+      appLogPath: path.join(runDirectory, 'app.log'),
+      runMarker,
+      cellId,
+      modelId,
+      feedbackLoopPrevention: 'echo-cancel',
+      translationMode: 'native',
+      inputCeilingSamples: maxSamples,
+      generatedAt: recorded.generatedAt,
+    });
+    assert.equal(rebuilt.passed, true, rebuilt.violations.join('; '));
+    assert.deepEqual(recorded, rebuilt);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

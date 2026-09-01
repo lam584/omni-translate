@@ -140,10 +140,12 @@ function Write-StrictPaidCellBudget {
   $SubtitleTranslationMode = [string]$Context.request.model.subtitleTranslationMode
   $providerAuthorityMode = [string]$Context.request.authorityMode
   $budgetScript = Join-Path $workspaceRoot "scripts/testing/watch-mode-external-provider-budget.mjs"
-  if ([string]::IsNullOrWhiteSpace($AppLogPath) -or -not (Test-Path -LiteralPath $AppLogPath -PathType Leaf)) {
-    $AppLogPath = Join-Path $OutputDirectory 'app.log'
-    $scopedLog = Copy-WatchModeAppLog -SourcePath (Get-WatchModeDesktopAppLogPath) `
-      -DestinationPath $AppLogPath -RunMarker $RunMarker
+  $scopedAppLogPath = Join-Path $OutputDirectory 'app.log'
+  $scopedLog = Copy-WatchModeAppLog -SourcePath (Get-WatchModeDesktopAppLogPath) `
+    -DestinationPath $scopedAppLogPath -RunMarker $RunMarker
+  if ($scopedLog) { $AppLogPath = $scopedAppLogPath }
+  elseif ([string]::IsNullOrWhiteSpace($AppLogPath) -or -not (Test-Path -LiteralPath $AppLogPath -PathType Leaf)) {
+    $AppLogPath = $scopedAppLogPath
     if (-not $scopedLog) {
       [System.IO.File]::WriteAllText($AppLogPath, "$RunMarker`n", [System.Text.UTF8Encoding]::new($false))
     }

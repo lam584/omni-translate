@@ -8,6 +8,7 @@ import test from 'node:test';
 
 import {
   buildTranslatedPcmLoopbackAuthority,
+  translatedLoopbackAnchorsAreOrdered,
 } from './watch-mode-translated-pcm-loopback.mjs';
 
 const RUN_MARKER = 'watch_mode_diagnostic.run_id=translated-pcm-test';
@@ -309,6 +310,18 @@ function build(fixture) {
     feedbackLoopPrevention: fixture.feedbackLoopPrevention,
   });
 }
+
+test('treats one loopback sample of independently matched anchor boundary jitter as ordered', () => {
+  const latestC04ShortCueAnchors = [
+    { matchedStartSample: 36_971, matchedEndSample: 43_371 },
+    { matchedStartSample: 43_370, matchedEndSample: 49_770 },
+  ];
+  assert.equal(translatedLoopbackAnchorsAreOrdered(latestC04ShortCueAnchors), true);
+  assert.equal(translatedLoopbackAnchorsAreOrdered([
+    latestC04ShortCueAnchors[0],
+    { matchedStartSample: 43_369, matchedEndSample: 49_769 },
+  ]), false, 'two samples of overlap are not boundary jitter');
+});
 
 test('matches every schema-v2 Bridge-rendered translated cue in ordered physical loopback windows', () => {
   const fixture = createFixture();

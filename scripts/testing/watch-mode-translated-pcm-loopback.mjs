@@ -11,6 +11,18 @@ export const TRANSLATED_PCM_SUMMARY_FILE = 'translated-cue-pcm-summary.json';
 export const TRANSLATED_PCM_JOURNAL_FILE = 'translated-cue-pcm-authority.jsonl';
 export const LOOPBACK_SAMPLE_RATE_HZ = 16_000;
 export const MIN_COMPLETE_MATCHED_CUES = 2;
+const LOOPBACK_ANCHOR_BOUNDARY_JITTER_SAMPLES = 1;
+
+export function translatedLoopbackAnchorsAreOrdered(anchorMatches) {
+  return anchorMatches.every((entry, index) => (
+    index === 0
+    // matchedEndSample is end-exclusive. Independent resampling/correlation
+    // searches may quantize adjacent anchor lags one loopback sample apart;
+    // tolerate only that boundary jitter, never a substantive window overlap.
+    || entry.matchedStartSample + LOOPBACK_ANCHOR_BOUNDARY_JITTER_SAMPLES
+      >= anchorMatches[index - 1].matchedEndSample
+  ));
+}
 
 const BRIDGE_RENDERER_KIND = 'bridge-physical-playback';
 const DESKTOP_RENDERER_KIND = 'desktop-speaker';
@@ -615,9 +627,7 @@ export function buildTranslatedPcmLoopbackAuthority({
       ))[0];
     });
     const passingAnchors = anchorMatches.filter((entry) => entry.passed);
-    const anchorsOrdered = anchorMatches.every((entry, index) => (
-      index === 0 || entry.matchedStartSample >= anchorMatches[index - 1].matchedEndSample
-    ));
+    const anchorsOrdered = translatedLoopbackAnchorsAreOrdered(anchorMatches);
     const requiredAnchorMatches = referenceSet.anchors.length;
     const passed = passingAnchors.length === requiredAnchorMatches && anchorsOrdered;
     matches.push({

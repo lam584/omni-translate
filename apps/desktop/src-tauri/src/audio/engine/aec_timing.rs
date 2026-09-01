@@ -145,9 +145,12 @@ impl AecDelayEstimator {
             self.last_device_frame_index = Some(observation.device_frame_index);
             self.last_packet_qpc_100ns = Some(observation.packet_qpc_100ns);
         }
-        if let Some(submitted) = observation.render_submitted_frames {
-            self.last_render_submitted_frames = Some(submitted);
-        }
+        // The render producer clears its published position when it announces
+        // a session boundary. Mirror that absence here instead of retaining a
+        // position from the preceding WASAPI client: the first submitted frame
+        // of the new session must establish a baseline, not look like a second
+        // regression for the boundary we just consumed.
+        self.last_render_submitted_frames = observation.render_submitted_frames;
         self.last_render_discontinuity_count = Some(observation.render_discontinuity_count);
 
         let packet_age_ms = if observation.timestamp_error {
@@ -435,6 +438,35 @@ mod tests {
         let next = estimator.observe_capture(next_observation);
         assert!(!next.aec_reset_required);
         assert!(!next.published_render_discontinuity);
+    }
+
+    #[test]
+    fn published_render_session_boundary_clears_previous_submit_position() {
+        let mut estimator = AecDelayEstimator::new(48_000, 2);
+        let mut previous_session = observation(0, 1_000_000, 1_100_000, 0);
+        previous_session.render_submitted_frames = Some(48_000);
+        previous_session.render_discontinuity_count = 4;
+        let initial = estimator.observe_capture(previous_session);
+        assert!(!initial.aec_reset_required);
+
+        let mut published_boundary = observation(480, 1_100_000, 1_200_000, 0);
+        published_boundary.render_submitted_frames = None;
+        published_boundary.render_discontinuity_count = 5;
+        let boundary = estimator.observe_capture(published_boundary);
+        assert!(boundary.aec_reset_required);
+        assert!(boundary.published_render_discontinuity);
+        assert_eq!(estimator.reset_count(), 1);
+
+        let mut first_new_session_frame = observation(960, 1_200_000, 1_300_000, 0);
+        first_new_session_frame.render_submitted_frames = Some(480);
+        first_new_session_frame.render_endpoint_padding_frames = Some(480);
+        first_new_session_frame.render_discontinuity_count = 5;
+        let first_frame = estimator.observe_capture(first_new_session_frame);
+
+        assert!(!first_frame.delay_reset_required);
+        assert!(!first_frame.aec_reset_required);
+        assert!(!first_frame.published_render_discontinuity);
+        assert_eq!(estimator.reset_count(), 1);
     }
 
     #[test]

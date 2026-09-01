@@ -94,6 +94,8 @@ function createFixture({
   streamChunkGapSeconds = 0,
   renderUsingAcceptedChunkSchedule = false,
   interfereWithStrongestMiddleAnchor = false,
+  interfereWithDominantLateAnchor = false,
+  dropFinalLateAnchor = false,
   cueSeconds = [2.6, 2.6],
   playbackOwnerGenerations = [10, 20],
   feedbackLoopPrevention = 'process-exclusion',
@@ -121,6 +123,13 @@ function createFixture({
   for (let index = 0; index < cueIds.length; index += 1) {
     const cueSeed = 11 + index * 19;
     const samples = deterministicCue(cueSeed, { seconds: cueSeconds[index] });
+    if (interfereWithDominantLateAnchor && index === cueIds.length - 1) {
+      const regionStart = Math.floor(samples.length * 2 / 3);
+      const dominantEnd = Math.min(samples.length, regionStart + Math.ceil(24_000 * 0.4));
+      for (let offset = regionStart; offset < dominantEnd; offset += 1) {
+        samples[offset] = Math.max(-0.98, Math.min(0.98, samples[offset] * 1.65));
+      }
+    }
     const bytes = pcmBuffer(samples);
     const relativePath = `cue-pcm/${index + 1}.pcm`;
     fs.writeFileSync(path.join(authorityDirectory, relativePath), bytes);
@@ -144,7 +153,12 @@ function createFixture({
       );
       const start = Math.round(chunkStartSeconds * 16_000);
       for (let offset = 0; offset < loopback.length; offset += 1) {
-        const rendered = recordingMode === 'source-only' ? 0 : loopback[offset] * 0.55;
+        const globalRenderedFrame = Math.round(sampleOffset * 16_000 / 24_000) + offset;
+        const finalLateAnchorMissing = dropFinalLateAnchor
+          && index === cueIds.length - 1
+          && globalRenderedFrame >= Math.round(samples.length * 16_000 / 24_000 * 2 / 3);
+        const rendered = recordingMode === 'source-only' || finalLateAnchorMissing
+          ? 0 : loopback[offset] * 0.55;
         recording[start + offset] = Math.max(-0.99, Math.min(0.99, recording[start + offset] + rendered));
       }
       chunks.push({
@@ -214,6 +228,15 @@ function createFixture({
       for (let offset = 0; offset < Math.round(0.4 * 16_000); offset += 1) {
         const time = offset / 16_000;
         recording[interferenceStart + offset] = 0.75 * Math.sin(2 * Math.PI * 1_337 * time);
+      }
+    }
+    if (interfereWithDominantLateAnchor && index === cueIds.length - 1) {
+      const interferenceStart = Math.round(
+        (renderedPlaybackOffsetsSeconds[index] + samples.length * 2 / 3 / 24_000) * 16_000,
+      );
+      for (let offset = 0; offset < Math.round(0.4 * 16_000); offset += 1) {
+        const time = offset / 16_000;
+        recording[interferenceStart + offset] = 0.78 * Math.sin(2 * Math.PI * 1_337 * time);
       }
     }
   }
@@ -493,6 +516,45 @@ test('uses another independent high-energy window when the strongest window is m
     assert.equal(authority.passed, true, JSON.stringify(authority.matches));
     assert.ok(authority.matches[0].anchorMatches.some((anchor) => anchor.candidateCount > 1));
     assert.equal(authority.matches[0].matchedAnchorCount, 3);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('keeps three anchors when a dominant late window is masked by independent source audio', () => {
+  const fixture = createFixture({
+    interfereWithDominantLateAnchor: true,
+    cueSeconds: [8, 8],
+    playbackOffsetsSeconds: [2, 14],
+  });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, true, JSON.stringify(authority.matches));
+    const finalMatch = authority.matches.at(-1);
+    assert.equal(finalMatch.requiredAnchorMatches, 3);
+    assert.equal(finalMatch.matchedAnchorCount, 3);
+    assert.equal(finalMatch.anchorMatches.at(-1).passed, true);
+    assert.equal(authority.restartPlaybackEvidence?.passed, true);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('still rejects a final cue whose late third was not physically rendered', () => {
+  const fixture = createFixture({
+    dropFinalLateAnchor: true,
+    cueSeconds: [8, 8],
+    playbackOffsetsSeconds: [2, 14],
+  });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    const finalMatch = authority.matches.at(-1);
+    assert.equal(finalMatch.requiredAnchorMatches, 3);
+    assert.equal(finalMatch.matchedAnchorCount, 2);
+    assert.equal(finalMatch.anchorMatches.at(-1).passed, false);
+    assert.equal(authority.restartPlaybackEvidence?.passed, false);
+    assert.match(authority.violations.join('; '), /final complete rendered cue/);
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
   }

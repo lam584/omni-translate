@@ -87,8 +87,14 @@ function selectHighEnergyAnchors(cue) {
     candidates.sort((left, right) => right.rms - left.rms || left.frameOffset - right.frameOffset);
     const maximumRms = candidates[0]?.rms ?? 0;
     const highEnergyCandidates = [];
+    // Keep independent alternatives when the loudest window is masked in the
+    // physical mix by the original programme.  A half-peak reference is
+    // still a high-energy cue window (and must also clear the absolute
+    // silence floor below); the normal correlation, wrong-cue
+    // identity margin, timing, ordering, and three-anchor gates remain the
+    // authority for whether that alternative was actually rendered.
     for (const candidate of candidates) {
-      if (candidate.rms < maximumRms * 0.8) break;
+      if (candidate.rms < maximumRms * 0.5 || candidate.rms < 0.003) break;
       if (highEnergyCandidates.some((selected) => (
         candidate.frameOffset < selected.frameOffset + windowFrames
         && selected.frameOffset < candidate.frameOffset + windowFrames

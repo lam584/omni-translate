@@ -1,3 +1,5 @@
+const ECHO_CANCEL_RESET_DIAGNOSTIC_LEVEL: &str = "warning";
+
 fn run_route_worker(
     app: AppHandle,
     store: &AudioStateStore,
@@ -233,7 +235,7 @@ fn run_capture_loop(
                 diag_log_detail(
                     &app,
                     "audio",
-                    "warn",
+                    ECHO_CANCEL_RESET_DIAGNOSTIC_LEVEL,
                     "event=echo_cancel_reset",
                     format!(
                         "direction={} reason={} renderDiscontinuityId={} dataDiscontinuity={} timestampError={} capturePaddingInvalid={} delayResetRequired={} packetDeviceFrameIndex={} queueHeadDeviceFrameIndex={} packetTimestamp100ns={} queueHeadTimestamp100ns={} queuedCaptureFrames={} paddingFrames={:?} bufferFrames={} delayMs={:.1} delaySource={} estimatorResetCount={} timestampErrorCount={}",

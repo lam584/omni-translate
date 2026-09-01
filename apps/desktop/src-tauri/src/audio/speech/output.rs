@@ -364,7 +364,8 @@ where
         });
     }
     let playback_permit = playback_ownership.acquire(cue_id, playback_source)?;
-    run_wasapi_render_attempt(&mut on_render_event, |on_render_event| {
+    let mut live_scenario_reserved = false;
+    let render_result = run_wasapi_render_attempt(&mut on_render_event, |on_render_event| {
         playback_permit.ensure_active()?;
         if sample_rate_hz == 0 || channel_count == 0 {
             return Err("speaker PCM sample rate and channel count must be non-zero".to_string());
@@ -393,6 +394,7 @@ where
                 )
             })
             .collect::<Vec<_>>();
+        live_scenario_reserved = !live_scenarios.is_empty();
         let _com_apartment = WasapiComApartment::enter()?;
         let enumerator = DeviceEnumerator::new().map_err(|error| error.to_string())?;
         let device = resolve_wasapi_render_device(&enumerator, device_id)?;
@@ -501,8 +503,9 @@ where
             (total_audio_frames as u64).saturating_mul(live_scenarios.len() as u64),
             physical_playback_device_id,
         ))
-    })
-    .map(|(rendered_frames, physical_playback_device_id)| SpeakerPlaybackReceipt {
+    });
+    if live_scenario_reserved { finish_aec_live_scenario_assignments(cue_id, render_result.is_ok())?; }
+    render_result.map(|(rendered_frames, physical_playback_device_id)| SpeakerPlaybackReceipt {
         rendered_frames,
         output_sample_rate_hz: SPEAKER_SAMPLE_RATE_HZ,
         output_channel_count: SPEAKER_CHANNEL_COUNT,

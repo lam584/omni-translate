@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 const AEC_LIVE_SCENARIO_ENV: &str = "OMNI_WATCH_MODE_AEC_LIVE_SCENARIO";
@@ -62,29 +61,36 @@ pub(super) struct AecLiveScenarioAssignment {
 
 #[derive(Default)]
 struct AecLiveScenarioAssignments {
-    first_cue_id: Option<String>,
-    by_cue_id: HashMap<String, Vec<AecLiveScenarioAssignment>>,
+    reserved_cue_id: Option<String>,
+    completed: bool,
 }
 
 impl AecLiveScenarioAssignments {
     fn assignments_for_cue(&mut self, cue_id: &str) -> Vec<AecLiveScenarioAssignment> {
-        if let Some(assignments) = self.by_cue_id.get(cue_id) {
-            return assignments.clone();
+        if self.completed {
+            return Vec::new();
         }
-        let assignments = if self.first_cue_id.is_none() {
-            self.first_cue_id = Some(cue_id.to_string());
+        if self.reserved_cue_id.as_deref() == Some(cue_id) {
             (1..=3)
                 .map(|ordinal| AecLiveScenarioAssignment {
                     ordinal,
                     phase: AecLiveScenarioPhase::for_ordinal(ordinal),
                 })
                 .collect()
+        } else if self.reserved_cue_id.is_none() {
+            self.reserved_cue_id = Some(cue_id.to_string());
+            self.assignments_for_cue(cue_id)
         } else {
             Vec::new()
-        };
-        self.by_cue_id
-            .insert(cue_id.to_string(), assignments.clone());
-        assignments
+        }
+    }
+
+    fn finish_cue(&mut self, cue_id: &str, completed: bool) {
+        if self.reserved_cue_id.as_deref() != Some(cue_id) {
+            return;
+        }
+        self.completed = completed;
+        self.reserved_cue_id = None;
     }
 }
 
@@ -120,6 +126,19 @@ pub(super) fn active_aec_live_scenario_assignments(
     assignments
         .lock()
         .map(|mut assignments| assignments.assignments_for_cue(cue_id))
+        .map_err(|_| "AEC live scenario cue assignment lock is poisoned".to_string())
+}
+
+pub(super) fn finish_aec_live_scenario_assignments(
+    cue_id: &str,
+    completed: bool,
+) -> Result<(), String> {
+    let Some(assignments) = AEC_LIVE_SCENARIO_ASSIGNMENTS.get() else {
+        return Ok(());
+    };
+    assignments
+        .lock()
+        .map(|mut assignments| assignments.finish_cue(cue_id, completed))
         .map_err(|_| "AEC live scenario cue assignment lock is poisoned".to_string())
 }
 
@@ -205,12 +224,16 @@ mod tests {
     }
 
     #[test]
-    fn first_cue_owns_all_three_stages_and_retry_keeps_the_program() {
+    fn failed_first_cue_releases_all_three_stages_to_the_next_cue() {
         let mut assignments = AecLiveScenarioAssignments::default();
 
         let first = assignments.assignments_for_cue("cue-a");
-        let second = assignments.assignments_for_cue("cue-b");
         let retry = assignments.assignments_for_cue("cue-a");
+        let blocked = assignments.assignments_for_cue("cue-b");
+        assignments.finish_cue("cue-b", false);
+        let still_blocked = assignments.assignments_for_cue("cue-b");
+        assignments.finish_cue("cue-a", false);
+        let second = assignments.assignments_for_cue("cue-b");
 
         assert_eq!(
             first.iter().map(|entry| entry.ordinal).collect::<Vec<_>>(),
@@ -219,8 +242,21 @@ mod tests {
         assert_eq!(first[0].phase, AecLiveScenarioPhase::DoubleTalk);
         assert_eq!(first[1].phase, AecLiveScenarioPhase::DynamicDelay);
         assert_eq!(first[2].phase, AecLiveScenarioPhase::Nonlinear);
-        assert!(second.is_empty());
         assert_eq!(retry, first);
+        assert!(blocked.is_empty());
+        assert!(still_blocked.is_empty());
+        assert_eq!(second, first);
+    }
+
+    #[test]
+    fn completed_program_is_not_assigned_to_later_cues() {
+        let mut assignments = AecLiveScenarioAssignments::default();
+
+        assert_eq!(assignments.assignments_for_cue("cue-a").len(), 3);
+        assignments.finish_cue("cue-a", true);
+
+        assert!(assignments.assignments_for_cue("cue-a").is_empty());
+        assert!(assignments.assignments_for_cue("cue-b").is_empty());
     }
 
     #[test]

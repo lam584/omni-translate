@@ -369,6 +369,209 @@ use super::*;
     }
 
     #[test]
+    fn identical_final_revision_inherits_the_latest_committed_visible_receipt() {
+        let store = WatchSessionReportStore::new();
+        let session_id = store.begin_or_reuse("test", "model");
+        let started = {
+            let guard = store.inner.lock().expect("report");
+            guard.as_ref().expect("session").started_unix_ms
+        };
+
+        store.record_publish_runtime(
+            "cue-1",
+            "inbound",
+            "Net. ",
+            "下一个",
+            &[],
+            true,
+            1,
+            986,
+            Some(SubtitleTranslationStateRuntime::Final),
+        );
+        let mut rendered = receipt(&session_id, "cue-1", started.saturating_add(5));
+        rendered.source_text = "Net.".to_string();
+        rendered.translated_text = "下一个".to_string();
+        rendered.committed = true;
+        store.record_overlay_receipt(rendered);
+
+        store.record_publish_runtime(
+            "cue-1",
+            "inbound",
+            "Temporary replacement.",
+            "临时内容",
+            &[],
+            false,
+            2,
+            990,
+            Some(SubtitleTranslationStateRuntime::Streaming),
+        );
+        store.record_publish_runtime(
+            "cue-1",
+            "inbound",
+            "Net.",
+            "下一个",
+            &[],
+            true,
+            3,
+            996,
+            Some(SubtitleTranslationStateRuntime::Final),
+        );
+        store.record_model_final_for_cue(
+            "cue-1",
+            "native",
+            "下一个",
+            true,
+            None,
+            None,
+        );
+        store.complete();
+
+        let report = store.snapshot().expect("report");
+        assert_eq!(report.cues.len(), 3);
+        assert_eq!(report.cues[0].comparison_status, "superseded");
+        assert_eq!(report.cues[2].rendered_source_text, "Net.");
+        assert_eq!(report.cues[2].rendered_text, "下一个");
+        assert_eq!(report.cues[2].rendered_first_at_ms, Some(5));
+        assert_eq!(report.cues[2].rendered_final_at_ms, Some(5));
+        assert_eq!(report.cues[2].comparison_status, "exact");
+        assert_eq!(report.summary.visible_render_cue_count, 1);
+        assert_eq!(report.summary.unrendered_cue_count, 0);
+    }
+
+    #[test]
+    fn invalidated_or_uncommitted_receipts_are_not_inherited_by_a_later_revision() {
+        let invalidations = [
+            ("Different.", "不同内容", true, true),
+            ("Net.", "下一个", false, true),
+            ("Net.", "下一个", true, false),
+        ];
+
+        for (invalid_source, invalid_text, visible, committed) in invalidations {
+            let store = WatchSessionReportStore::new();
+            let session_id = store.begin_or_reuse("test", "model");
+            let started = {
+                let guard = store.inner.lock().expect("report");
+                guard.as_ref().expect("session").started_unix_ms
+            };
+            store.record_publish_runtime(
+                "cue-1",
+                "inbound",
+                "Net.",
+                "下一个",
+                &[],
+                true,
+                1,
+                986,
+                Some(SubtitleTranslationStateRuntime::Final),
+            );
+            let mut rendered = receipt(&session_id, "cue-1", started.saturating_add(5));
+            rendered.source_text = "Net.".to_string();
+            rendered.translated_text = "下一个".to_string();
+            store.record_overlay_receipt(rendered);
+
+            let mut invalidation = receipt(&session_id, "cue-1", started.saturating_add(6));
+            invalidation.source_text = invalid_source.to_string();
+            invalidation.translated_text = invalid_text.to_string();
+            invalidation.visible = visible;
+            invalidation.committed = committed;
+            store.record_overlay_receipt(invalidation);
+
+            store.record_publish_runtime(
+                "cue-1",
+                "inbound",
+                "Temporary replacement.",
+                "临时内容",
+                &[],
+                false,
+                2,
+                990,
+                Some(SubtitleTranslationStateRuntime::Streaming),
+            );
+            store.record_publish_runtime(
+                "cue-1",
+                "inbound",
+                "Net.",
+                "下一个",
+                &[],
+                true,
+                3,
+                996,
+                Some(SubtitleTranslationStateRuntime::Final),
+            );
+            store.record_model_final_for_cue(
+                "cue-1",
+                "native",
+                "下一个",
+                true,
+                None,
+                None,
+            );
+            store.complete();
+
+            let report = store.snapshot().expect("report");
+            assert!(report.cues[2].rendered_text.is_empty());
+            assert_eq!(report.cues[2].comparison_status, "not-rendered");
+            assert_eq!(report.summary.visible_render_cue_count, 0);
+            assert_eq!(report.summary.unrendered_cue_count, 1);
+        }
+    }
+
+    #[test]
+    fn another_cues_later_receipt_does_not_invalidate_equivalent_content() {
+        let store = WatchSessionReportStore::new();
+        let session_id = store.begin_or_reuse("test", "model");
+        let started = {
+            let guard = store.inner.lock().expect("report");
+            guard.as_ref().expect("session").started_unix_ms
+        };
+        store.record_publish("cue-1", "inbound", "Net.", "下一个", &[], true);
+        let mut first = receipt(&session_id, "cue-1", started.saturating_add(5));
+        first.source_text = "Net.".to_string();
+        first.translated_text = "下一个".to_string();
+        store.record_overlay_receipt(first);
+
+        store.record_publish("cue-2", "inbound", "Other.", "其他", &[], true);
+        let mut other = receipt(&session_id, "cue-2", started.saturating_add(6));
+        other.source_text = "Other.".to_string();
+        other.translated_text = "其他".to_string();
+        store.record_overlay_receipt(other);
+
+        store.record_publish_runtime(
+            "cue-1",
+            "inbound",
+            "Replacement.",
+            "替换",
+            &[],
+            false,
+            2,
+            10,
+            Some(SubtitleTranslationStateRuntime::Streaming),
+        );
+        store.record_publish_runtime(
+            "cue-1",
+            "inbound",
+            "Net.",
+            "下一个",
+            &[],
+            true,
+            3,
+            11,
+            Some(SubtitleTranslationStateRuntime::Final),
+        );
+
+        let report = store.snapshot().expect("report");
+        let latest = report
+            .cues
+            .iter()
+            .filter(|cue| cue.cue_id == "cue-1")
+            .max_by_key(|cue| (cue.revision, cue.sequence))
+            .expect("latest cue-1");
+        assert_eq!(latest.rendered_text, "下一个");
+        assert_eq!(latest.rendered_first_at_ms, Some(5));
+        assert_eq!(latest.rendered_final_at_ms, Some(5));
+    }
+
+    #[test]
     fn orphan_overlay_receipts_are_aggregated_by_category_and_code() {
         let store = WatchSessionReportStore::new();
         let session_id = store.begin_or_reuse("test", "model");

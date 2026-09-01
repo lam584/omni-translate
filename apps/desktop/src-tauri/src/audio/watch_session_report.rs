@@ -174,6 +174,69 @@ impl WatchSession {
         self.dropped_event_count = self.dropped_event_count.saturating_add(1);
     }
 
+    fn inherit_latest_equivalent_final_receipt(&mut self, cue_index: usize) {
+        let cue = &self.cues[cue_index];
+        if cue.translation_state != Some(SubtitleTranslationStateRuntime::Final)
+            || cue.published_text.is_empty()
+            || cue.source_text.is_empty()
+            || cue.rendered_first_at_ms.is_some()
+        {
+            return;
+        }
+
+        let source_signature = correlation_text(&cue.source_text);
+        let published_signature = correlation_text(&cue.published_text);
+        let cue_id = cue.cue_id.clone();
+        let latest_render = self
+            .cues
+            .iter()
+            .enumerate()
+            .flat_map(|(owner_index, owner)| {
+                owner
+                    .events
+                    .iter()
+                    .filter(|event| owner.cue_id == cue_id && event.stage == "render")
+                    .map(move |event| (owner_index, event))
+            })
+            .max_by_key(|(_, event)| {
+                event
+                    .event_id
+                    .strip_prefix("watch-event-")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0)
+            });
+        let Some((owner_index, render_event)) = latest_render else {
+            return;
+        };
+        // `record_overlay_receipt` preserves renderer `committed` authority as
+        // `final_event`; only a committed, currently-visible receipt can prove
+        // that the equivalent final revision was rendered.
+        if render_event.visible != Some(true)
+            || !render_event.final_event
+            || correlation_text(&render_event.text) != published_signature
+        {
+            return;
+        }
+
+        let donor = &self.cues[owner_index];
+        if correlation_text(&donor.rendered_source_text) != source_signature
+            || correlation_text(&donor.rendered_text) != published_signature
+        {
+            return;
+        }
+        let inherited = (
+            donor.rendered_source_text.clone(),
+            donor.rendered_text.clone(),
+            donor.rendered_first_at_ms,
+            donor.rendered_final_at_ms,
+        );
+        let cue = &mut self.cues[cue_index];
+        cue.rendered_source_text = inherited.0;
+        cue.rendered_text = inherited.1;
+        cue.rendered_first_at_ms = inherited.2;
+        cue.rendered_final_at_ms = inherited.3;
+    }
+
     fn push_session_event(&mut self, event: WatchTimelineEventRuntime) {
         if self.events.len() >= MAX_SESSION_EVENTS {
             let protected_incoming = event.final_event || event.stage == "error";
@@ -377,6 +440,9 @@ impl WatchSessionReportStore {
             None,
         );
         session.push_cue_event(index, event);
+        if final_event {
+            session.inherit_latest_equivalent_final_receipt(index);
+        }
     }
 
     pub(crate) fn record_overlay_receipt(&self, receipt: OverlayRenderReceiptRuntime) {

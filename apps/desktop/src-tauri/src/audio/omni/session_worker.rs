@@ -522,6 +522,7 @@ fn run_omni_worker(
                 }
             }
             livetranslate_shutdown.record_finish_sent(Instant::now());
+            playback_worker.begin_provider_finishing();
             let _ = diag_log(
                 &app,
                 "omni",

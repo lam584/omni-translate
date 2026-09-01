@@ -2761,6 +2761,10 @@ struct OmniPlaybackQueueState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OmniPlaybackShutdown {
     Running,
+    /// Provider input is closed and session.finish was sent. Final Provider
+    /// events may still enqueue audio, but already accepted complete cues can
+    /// no longer be discarded by the live realtime-age policy.
+    Finishing,
     Draining,
     Aborted,
 }
@@ -2844,7 +2848,7 @@ impl OmniPlaybackQueue {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.shutdown != OmniPlaybackShutdown::Running {
+        if matches!(state.shutdown, OmniPlaybackShutdown::Draining | OmniPlaybackShutdown::Aborted) {
             return OmniPlaybackEnqueueOutcome::Stopped;
         }
 
@@ -2872,7 +2876,14 @@ impl OmniPlaybackQueue {
             };
         }
         let realtime_start_age = match &command {
-            OmniPlaybackCommand::Play { .. } => Some(projected_start_delay),
+            // A complete cue is admitted to the bounded queue even when the
+            // currently playing sentence pushes its projected start beyond
+            // the realtime budget. While the session remains live, recv (or
+            // the next enqueue) can still expire it before playback. Normal
+            // graceful drain, however, must preserve the accepted terminal
+            // tail after session.finished instead of losing the last Provider
+            // response merely because an earlier sentence is still playing.
+            OmniPlaybackCommand::Play { .. } => None,
             OmniPlaybackCommand::Stream {
                 created_at_ms,
                 stream_state: omni_bridge_protocol::TranslationStreamState::Start,
@@ -2952,7 +2963,8 @@ impl OmniPlaybackQueue {
         let mut retained = VecDeque::with_capacity(state.pending.len());
         let mut dropped = Vec::new();
         for command in state.pending.drain(..) {
-            let can_expire_independently = matches!(command, OmniPlaybackCommand::Play { .. });
+            let can_expire_independently = state.shutdown == OmniPlaybackShutdown::Running
+                && matches!(command, OmniPlaybackCommand::Play { .. });
             let projected_start_delay = projected_start
                 .saturating_duration_since(command.queued_at());
             if can_expire_independently && omni_playback_queue_age_expired(projected_start_delay) {
@@ -3029,12 +3041,26 @@ impl OmniPlaybackQueue {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.shutdown == OmniPlaybackShutdown::Running {
+        if matches!(state.shutdown, OmniPlaybackShutdown::Running | OmniPlaybackShutdown::Finishing) {
             state.shutdown = OmniPlaybackShutdown::Draining;
         }
         self.publish_state(&state);
         drop(state);
         self.inner.available.notify_all();
+    }
+
+    /// Freeze live stale-cue eviction at the Provider finish boundary while
+    /// keeping admission open for response events preceding session.finished.
+    fn begin_provider_finishing(&self) {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.shutdown == OmniPlaybackShutdown::Running {
+            state.shutdown = OmniPlaybackShutdown::Finishing;
+        }
+        self.publish_state(&state);
     }
 
     fn abort(&self) {
@@ -4236,6 +4262,10 @@ type NativeSpeakerRenderer<R> = fn(
 ) -> Option<crate::audio::speech::SpeakerPlaybackReceipt>;
 
 impl OmniPlaybackWorker {
+    pub(super) fn begin_provider_finishing(&self) {
+        self.queue.begin_provider_finishing();
+    }
+
     /// Normal session teardown must wait for accepted translated PCM to reach
     /// its output sink so render-reference/AEC completion evidence is not lost.
     pub(super) fn shutdown_gracefully(&mut self) -> Result<(), String> {
@@ -5172,7 +5202,7 @@ mod omni_playback_tests {
     }
 
     #[test]
-    fn active_native_audio_can_fill_budget_without_being_interrupted() {
+    fn active_native_audio_keeps_terminal_tail_without_interrupting_or_relaxing_live_expiry() {
         let queue = OmniPlaybackQueue::new(2);
         assert_eq!(
             queue.enqueue(queued_play_with_duration("active", Duration::from_millis(6_100))),
@@ -5185,16 +5215,61 @@ mod omni_playback_tests {
         };
         assert_eq!(command.cue_id(), "active");
 
+        assert_eq!(
+            queue.enqueue(queued_play("superseded-tail")),
+            OmniPlaybackEnqueueOutcome::Queued
+        );
         assert!(matches!(
-            queue.enqueue(queued_play("new")),
-            OmniPlaybackEnqueueOutcome::Overflow {
-                reason: OmniPlaybackOverflowReason::RealtimeBudget,
-                dropped,
-                projected_start_delay_ms,
-            } if dropped.is_empty() && projected_start_delay_ms >= 6_000
+            queue.enqueue(queued_play("terminal-tail")),
+            OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale { dropped }
+                if dropped.len() == 1 && dropped[0].cue_id == "superseded-tail"
         ));
-        assert!(queue.pending_cue_ids().is_empty());
+        assert_eq!(queue.pending_cue_ids(), ["terminal-tail"]);
+
+        // session.finished closes producer admission and turns the same cue
+        // into an immutable playback tail. The active sentence is not
+        // interrupted, and the tail is no longer discarded by the live
+        // realtime-age policy when the consumer advances.
+        queue.begin_provider_finishing();
         queue.finish_active();
+        let OmniPlaybackReceiveOutcome::Command { command, dropped } =
+            queue.recv_timeout(Duration::ZERO)
+        else {
+            panic!("terminal tail must be drained after active playback")
+        };
+        assert!(dropped.is_empty());
+        assert_eq!(command.cue_id(), "terminal-tail");
+        queue.finish_active();
+        queue.drain_and_stop();
+        assert!(matches!(
+            queue.recv_timeout(Duration::ZERO),
+            OmniPlaybackReceiveOutcome::Stopped
+        ));
+    }
+
+    #[test]
+    fn delayed_complete_cue_still_expires_while_session_is_running() {
+        let queue = OmniPlaybackQueue::new(2);
+        assert_eq!(
+            queue.enqueue(queued_play("became-stale")),
+            OmniPlaybackEnqueueOutcome::Queued
+        );
+        {
+            let mut state = queue
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let OmniPlaybackCommand::Play { queued_at, .. } = &mut state.pending[0] else {
+                unreachable!()
+            };
+            *queued_at = Instant::now() - Duration::from_secs(6);
+        }
+        assert!(matches!(
+            queue.recv_timeout(Duration::ZERO),
+            OmniPlaybackReceiveOutcome::StaleDropped(dropped)
+                if dropped.len() == 1 && dropped[0].cue_id == "became-stale"
+        ));
     }
 
     #[test]

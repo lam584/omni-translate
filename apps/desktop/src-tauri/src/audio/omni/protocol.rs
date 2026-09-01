@@ -3806,36 +3806,6 @@ fn write_native_bridge_or_virtual_output<R: tauri::Runtime>(
     frames
 }
 
-fn reject_expired_omni_playback<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    audio_state: &AudioStateStore,
-    cue_id: &str,
-    queued_at: Instant,
-) -> bool {
-    let queued_for = queued_at.elapsed();
-    if !omni_playback_queue_age_expired(queued_for) {
-        return false;
-    }
-    let queued_ms = queued_for.as_millis().min(u64::MAX as u128) as u64;
-    audio_state.watch_session_report.record_session_issue(
-        "output",
-        "native-playback-queue-expired",
-        "warning",
-        &format!(
-            "原生翻译语音排队 {queued_ms} ms 后过期，已丢弃。cueId={cue_id} predictedStartMs={queued_ms} observedQueueAgeMs={queued_ms} reason=worker-start-expired"
-        ),
-    );
-    let _ = diag_log(
-        app,
-        "omni",
-        "warning",
-        format!(
-            "[AUDIO] stale native playback dropped: cue_id={cue_id} predicted_start_ms={queued_ms} observed_queue_age_ms={queued_ms} reason=worker-start-expired"
-        ),
-    );
-    true
-}
-
 struct SpeakerPlaybackOutcome {
     frames: u64,
     render_attempt_id: Option<String>,
@@ -4026,18 +3996,10 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
                         cue_id,
                         response_id,
                         sample_rate_hz,
-                        queued_at,
+                        queued_at: _,
                         created_at_ms,
                         estimated_duration_ms,
                     } => {
-                        if reject_expired_omni_playback(
-                            &app,
-                            &audio_state,
-                            &cue_id,
-                            queued_at,
-                        ) {
-                            continue;
-                        }
                         // Re-read the shared config for every Play command:
                         // config saves during the session (output device,
                         // playback toggles, gain) must apply to the next cue,

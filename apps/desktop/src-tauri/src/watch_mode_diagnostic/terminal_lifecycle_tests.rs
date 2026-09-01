@@ -144,7 +144,7 @@ fn playback_drain_budget_uses_pending_frames_and_falls_back_to_a_bounded_cap() {
             Some(24_000),
             Duration::from_secs(30),
         ),
-        Duration::from_secs(30),
+        Duration::from_millis(42_750),
     );
 }
 
@@ -165,9 +165,19 @@ fn direct_speaker_playback_keeps_known_pcm_drain_authority() {
         local_playback_drain_authority(true, known_local_pcm),
         (Some(48_000), Some(24_000)),
     );
+    let known_bridge_pcm = TranslationPlaybackQuiescenceSnapshot {
+        active_bridge_cues: 1,
+        ..known_local_pcm
+    };
+    assert_eq!(
+        local_playback_drain_authority(false, known_bridge_pcm),
+        (Some(48_000), Some(24_000)),
+    );
 
     let unknown_bridge_owner = TranslationPlaybackQuiescenceSnapshot {
         pending_bridge_acks: 1,
+        pending_audio_frames: None,
+        output_sample_rate_hz: None,
         ..known_local_pcm
     };
     assert_eq!(

@@ -548,7 +548,12 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
     if let Some(owner) = physical_owner.as_ref() {
         app.state::<crate::audio::state::AudioStateStore>()
             .translation_playback_quiescence()
-            .expect_bridge_playback_cue_for_owner(cue_id, owner.playback_authority());
+            .expect_bridge_playback_cue_for_owner(
+                cue_id,
+                owner.playback_authority(),
+                frame_count as u64,
+                sample_rate_hz,
+            );
     }
     let header_bytes = serde_json::to_vec(&header).map_err(|error| {
         close_failed_translation_cue(app, cue_id, physical_owner.as_ref(), error.to_string())

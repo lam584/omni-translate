@@ -45,7 +45,44 @@ impl TranslationPlaybackQuiescenceSnapshot {
 #[derive(Default)]
 struct TranslationPlaybackQuiescenceState {
     snapshot: TranslationPlaybackQuiescenceSnapshot,
-    active_bridge_cues: HashMap<String, Option<TranslationPlaybackAuthority>>,
+    queued_audio_frames: u64,
+    queued_audio_sample_rate_hz: u32,
+    active_bridge_cues: HashMap<String, BridgePlaybackCue>,
+}
+
+struct BridgePlaybackCue {
+    authority: Option<TranslationPlaybackAuthority>,
+    pending_audio_frames: Option<u64>,
+    output_sample_rate_hz: Option<u32>,
+}
+
+impl TranslationPlaybackQuiescenceState {
+    fn refresh_pending_audio(&mut self) {
+        let mut total = self.queued_audio_frames;
+        let mut rate = (self.queued_audio_sample_rate_hz > 0)
+            .then_some(self.queued_audio_sample_rate_hz);
+        for cue in self.active_bridge_cues.values() {
+            let (Some(frames), Some(cue_rate)) =
+                (cue.pending_audio_frames, cue.output_sample_rate_hz)
+            else {
+                self.snapshot.pending_audio_frames = None;
+                self.snapshot.output_sample_rate_hz = None;
+                return;
+            };
+            if let Some(existing) = rate {
+                if existing != cue_rate {
+                    self.snapshot.pending_audio_frames = None;
+                    self.snapshot.output_sample_rate_hz = None;
+                    return;
+                }
+            } else {
+                rate = Some(cue_rate);
+            }
+            total = total.saturating_add(frames);
+        }
+        self.snapshot.pending_audio_frames = Some(total);
+        self.snapshot.output_sample_rate_hz = rate;
+    }
 }
 
 #[derive(Default)]
@@ -88,8 +125,9 @@ impl TranslationPlaybackQuiescence {
             .expect("translation playback quiescence state poisoned");
         state.snapshot.queued_commands = queued_commands;
         state.snapshot.active_commands = active_commands;
-        state.snapshot.pending_audio_frames = Some(pending_audio_frames);
-        state.snapshot.output_sample_rate_hz = Some(output_sample_rate_hz);
+        state.queued_audio_frames = pending_audio_frames;
+        state.queued_audio_sample_rate_hz = output_sample_rate_hz;
+        state.refresh_pending_audio();
     }
 
     pub(crate) fn begin_bridge_ack(self: &Arc<Self>) -> TranslationPlaybackAckGuard {
@@ -114,16 +152,27 @@ impl TranslationPlaybackQuiescence {
             .expect("translation playback quiescence state poisoned");
         match status {
             "queued" | "started" => {
-                state.active_bridge_cues.entry(cue_id.to_string()).or_insert(None);
+                state.active_bridge_cues.entry(cue_id.to_string()).or_insert(
+                    BridgePlaybackCue {
+                        authority: None,
+                        pending_audio_frames: None,
+                        output_sample_rate_hz: None,
+                    },
+                );
             }
             "completed" | "route-failed" | "stale-dropped" => {
-                if state.active_bridge_cues.get(cue_id) == Some(&None) {
+                if state
+                    .active_bridge_cues
+                    .get(cue_id)
+                    .is_some_and(|cue| cue.authority.is_none())
+                {
                     state.active_bridge_cues.remove(cue_id);
                 }
             }
             _ => return,
         }
         state.snapshot.active_bridge_cues = state.active_bridge_cues.len();
+        state.refresh_pending_audio();
     }
 
     /// Register Bridge-owned playback before releasing the synchronous audio
@@ -144,14 +193,23 @@ impl TranslationPlaybackQuiescence {
                 .wait(state)
                 .expect("translation playback quiescence state poisoned");
         }
-        state.active_bridge_cues.entry(cue_id.to_string()).or_insert(None);
+        state.active_bridge_cues.entry(cue_id.to_string()).or_insert(
+            BridgePlaybackCue {
+                authority: None,
+                pending_audio_frames: None,
+                output_sample_rate_hz: None,
+            },
+        );
         state.snapshot.active_bridge_cues = state.active_bridge_cues.len();
+        state.refresh_pending_audio();
     }
 
     pub(crate) fn expect_bridge_playback_cue_for_owner(
         &self,
         cue_id: &str,
         authority: TranslationPlaybackAuthority,
+        audio_frames: u64,
+        output_sample_rate_hz: u32,
     ) {
         if cue_id.trim().is_empty() {
             return;
@@ -166,10 +224,32 @@ impl TranslationPlaybackQuiescence {
                 .wait(state)
                 .expect("translation playback quiescence state poisoned");
         }
-        state
+        let cue = state
             .active_bridge_cues
-            .insert(cue_id.to_string(), Some(authority));
+            .entry(cue_id.to_string())
+            .or_insert(BridgePlaybackCue {
+                authority: Some(authority.clone()),
+                pending_audio_frames: Some(0),
+                output_sample_rate_hz: Some(output_sample_rate_hz),
+            });
+        if cue.authority.as_ref() == Some(&authority) {
+            if cue.output_sample_rate_hz == Some(output_sample_rate_hz) {
+                cue.pending_audio_frames = cue
+                    .pending_audio_frames
+                    .map(|frames| frames.saturating_add(audio_frames));
+            } else {
+                cue.pending_audio_frames = None;
+                cue.output_sample_rate_hz = None;
+            }
+        } else {
+            *cue = BridgePlaybackCue {
+                authority: Some(authority),
+                pending_audio_frames: Some(audio_frames),
+                output_sample_rate_hz: Some(output_sample_rate_hz),
+            };
+        }
         state.snapshot.active_bridge_cues = state.active_bridge_cues.len();
+        state.refresh_pending_audio();
     }
 
     pub(crate) fn observe_bridge_playback_status_for_owner(
@@ -185,13 +265,14 @@ impl TranslationPlaybackQuiescence {
         let matches_expected = state
             .active_bridge_cues
             .get(cue_id)
-            .is_some_and(|expected| expected.as_ref() == Some(authority));
+            .is_some_and(|expected| expected.authority.as_ref() == Some(authority));
         if !matches_expected {
             return false;
         }
         if matches!(status, "completed" | "route-failed" | "stale-dropped") {
             state.active_bridge_cues.remove(cue_id);
             state.snapshot.active_bridge_cues = state.active_bridge_cues.len();
+            state.refresh_pending_audio();
         }
         true
     }
@@ -206,7 +287,7 @@ impl TranslationPlaybackQuiescence {
             .expect("translation playback quiescence state poisoned")
             .active_bridge_cues
             .get(cue_id)
-            .is_some_and(|expected| expected.as_ref() == Some(authority))
+            .is_some_and(|expected| expected.authority.as_ref() == Some(authority))
     }
 
     /// Reserve the gap between observing the current playback owner and
@@ -296,7 +377,80 @@ impl Drop for TranslationPlaybackRestartGuard {
 mod tests {
     use std::sync::{Arc, Barrier};
 
-    use super::TranslationPlaybackQuiescence;
+    use super::{TranslationPlaybackAuthority, TranslationPlaybackQuiescence};
+
+    fn bridge_authority() -> TranslationPlaybackAuthority {
+        TranslationPlaybackAuthority {
+            session_id: "session".to_string(),
+            bridge_instance_id: "instance".to_string(),
+            source_generation: 1,
+            source_generation_token: "token".to_string(),
+            playback_owner_generation: 1,
+            physical_playback_device_id: "device".to_string(),
+        }
+    }
+
+    #[test]
+    fn bridge_owned_pcm_contributes_exact_frames_until_terminal_ack() {
+        let quiescence = TranslationPlaybackQuiescence::default();
+        let authority = bridge_authority();
+        quiescence.expect_bridge_playback_cue_for_owner(
+            "cue",
+            authority.clone(),
+            24_000,
+            24_000,
+        );
+        quiescence.expect_bridge_playback_cue_for_owner(
+            "cue",
+            authority.clone(),
+            48_000,
+            24_000,
+        );
+
+        let pending = quiescence.snapshot();
+        assert_eq!(pending.pending_audio_frames, Some(72_000));
+        assert_eq!(pending.output_sample_rate_hz, Some(24_000));
+        assert!(quiescence.observe_bridge_playback_status_for_owner(
+            "cue",
+            "completed",
+            &authority,
+        ));
+        assert_eq!(quiescence.snapshot().pending_audio_frames, Some(0));
+    }
+
+    #[test]
+    fn bridge_owned_pcm_with_mixed_sample_rates_fails_closed_until_terminal_ack() {
+        let quiescence = TranslationPlaybackQuiescence::default();
+        let authority = bridge_authority();
+        quiescence.expect_bridge_playback_cue_for_owner(
+            "cue",
+            authority.clone(),
+            24_000,
+            24_000,
+        );
+        quiescence.expect_bridge_playback_cue_for_owner(
+            "cue",
+            authority.clone(),
+            48_000,
+            48_000,
+        );
+        quiescence.expect_bridge_playback_cue_for_owner(
+            "cue",
+            authority.clone(),
+            24_000,
+            24_000,
+        );
+
+        let pending = quiescence.snapshot();
+        assert_eq!(pending.pending_audio_frames, None);
+        assert_eq!(pending.output_sample_rate_hz, None);
+        assert!(quiescence.observe_bridge_playback_status_for_owner(
+            "cue",
+            "completed",
+            &authority,
+        ));
+        assert_eq!(quiescence.snapshot().pending_audio_frames, Some(0));
+    }
 
     #[test]
     fn playback_submission_reservation_closes_restart_check_then_act_window() {

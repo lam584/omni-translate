@@ -62,7 +62,10 @@ pub(super) fn local_playback_drain_authority(
     let unknown_bridge_owner = snapshot.pending_bridge_acks > 0
         || snapshot.active_bridge_cues > 0
         || snapshot.restart_barrier;
-    if unknown_bridge_owner {
+    if unknown_bridge_owner
+        && (snapshot.pending_audio_frames.is_none()
+            || snapshot.output_sample_rate_hz.is_none())
+    {
         return (None, None);
     }
     (snapshot.pending_audio_frames, snapshot.output_sample_rate_hz)
@@ -89,5 +92,4 @@ pub(super) fn local_playback_drain_budget(
     audio_duration
         .saturating_add(LOCAL_PLAYBACK_DRAIN_MARGIN)
         .saturating_add(LOCAL_PLAYBACK_IDLE_CONFIRMATION)
-        .min(bounded_cap)
 }

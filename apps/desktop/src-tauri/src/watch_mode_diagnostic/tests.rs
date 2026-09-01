@@ -14,7 +14,9 @@ use super::{
     wait_for_frontend_ipc_ready, write_report_atomic,
 };
 use crate::audio::state::AudioStateStore;
+use crate::audio::state::BridgeSourceFrameIdentity;
 use crate::audio::state::TranslationPlaybackQuiescenceSnapshot;
+use crate::bridge::state::BridgeStateStore;
 
 fn strict_watch_environment(name: &str) -> Option<String> {
     match name {
@@ -120,6 +122,71 @@ fn midpoint_restart_requires_every_translated_playback_owner_to_be_idle() {
     ] {
         assert!(!super::process_exclusion_restart_is_quiescent(false, busy));
     }
+}
+
+#[test]
+fn process_restart_freezes_old_frame_baseline_at_identity_revocation() {
+    fn old_frame(read_timestamp_ms: u64) -> BridgeSourceFrameIdentity {
+        BridgeSourceFrameIdentity {
+            bridge_process_id: 42,
+            bridge_instance_id: "instance-old".to_string(),
+            session_id: "session-old".to_string(),
+            source_generation: 7,
+            source_generation_token: "instance-old:session-old:7".to_string(),
+            frame_timestamp_ms: read_timestamp_ms.saturating_sub(1),
+            read_timestamp_ms,
+        }
+    }
+
+    // Deterministic counterexample for the former check-then-act order: two
+    // frames accepted after sampling but before token revocation were counted
+    // as post-restart leakage even though both preceded the restart trigger.
+    let legacy_audio = AudioStateStore::new();
+    legacy_audio.record_bridge_source_frame_accepted(old_frame(100));
+    let legacy_baseline = legacy_audio
+        .bridge_source_runtime_evidence()
+        .accepted_for_instance("instance-old");
+    legacy_audio.record_bridge_source_frame_accepted(old_frame(101));
+    legacy_audio.record_bridge_source_frame_accepted(old_frame(102));
+    let legacy_false_positive = legacy_audio
+        .bridge_source_runtime_evidence()
+        .accepted_for_instance("instance-old")
+        .saturating_sub(legacy_baseline);
+    assert_eq!(legacy_false_positive, 2);
+
+    let bridge = BridgeStateStore::new();
+    bridge.update_snapshot(|current| {
+        current.bridge_process_id = Some(42);
+        current.bridge_instance_id = Some("instance-old".to_string());
+        current.session_id = Some("session-old".to_string());
+        current.source_generation = 7;
+        current.source_generation_token =
+            Some("instance-old:session-old:7".to_string());
+    });
+    let audio = AudioStateStore::new();
+    for timestamp in [100, 101, 102] {
+        audio.record_bridge_source_frame_accepted(old_frame(timestamp));
+    }
+
+    let frozen = super::process_exclusion_restart::revoke_process_exclusion_source_and_freeze_baseline(
+        &bridge,
+        &audio,
+        42,
+        "instance-old",
+        "session-old",
+        7,
+    )
+    .expect("matching producer identity should be revoked");
+    assert_eq!(frozen, 3);
+    assert_eq!(bridge.snapshot().source_generation_token, None);
+
+    // Delayed pipe frames now cross the rejection side of the fence. They do
+    // not change the accepted baseline used by oldFramesAfterRestart.
+    audio.record_bridge_source_frame_rejected(old_frame(103));
+    audio.record_bridge_source_frame_rejected(old_frame(104));
+    let after = audio.bridge_source_runtime_evidence();
+    assert_eq!(after.accepted_for_instance("instance-old") - frozen, 0);
+    assert_eq!(after.rejected_for_instance_since("instance-old", 103), 2);
 }
 
 #[test]

@@ -78,6 +78,7 @@ mod probe {
     const STREAM_TONE_FREQUENCIES_HZ: [f32; 4] = [700.0, 900.0, 1_100.0, 1_300.0];
     const MIN_OUTPUT_RMS: f32 = 0.015;
     const MIN_OUTPUT_COMPONENT: f32 = 0.015;
+    const RECORDING_FREQUENCY_ANALYSIS_SECONDS: usize = 5;
     #[derive(Clone)]
     struct TranslationAuthority {
         bridge_instance_id: String,
@@ -635,9 +636,7 @@ mod probe {
             captured_frames: metrics.frames(),
             peak: metrics.peak,
             rms,
-            tone_frequency_hz: estimate_dominant_frequency(&first_channel_samples(
-                &metrics.samples,
-            )),
+            tone_frequency_hz: estimate_recording_dominant_frequency(&metrics.samples),
             tone_component: 0.0,
             silent_packets: metrics.silent_packets,
             invalid_samples: metrics.invalid_samples,
@@ -1073,6 +1072,19 @@ mod probe {
         coarse_dominant_frequency(samples)
     }
 
+    fn estimate_recording_dominant_frequency(samples: &[f32]) -> f32 {
+        estimate_dominant_frequency(&first_channel_samples(
+            recording_frequency_analysis_samples(samples),
+        ))
+    }
+
+    fn recording_frequency_analysis_samples(samples: &[f32]) -> &[f32] {
+        let max_samples = SAMPLE_RATE
+            .saturating_mul(CHANNELS)
+            .saturating_mul(RECORDING_FREQUENCY_ANALYSIS_SECONDS);
+        &samples[..samples.len().min(max_samples)]
+    }
+
     fn write_wav_pcm16(
         path: &PathBuf,
         samples: &[f32],
@@ -1165,7 +1177,11 @@ mod probe {
 
     #[cfg(test)]
     mod tests {
-        use super::{should_stop_after_terminal_tail, terminal_value_matches_identity};
+        use super::{
+            recording_frequency_analysis_samples, should_stop_after_terminal_tail,
+            terminal_value_matches_identity, CHANNELS, RECORDING_FREQUENCY_ANALYSIS_SECONDS,
+            SAMPLE_RATE,
+        };
         use serde_json::json;
         use std::time::Duration;
 
@@ -1232,6 +1248,22 @@ mod probe {
                 "cell-a",
                 "lease-a"
             ));
+        }
+
+        #[test]
+        fn recording_frequency_analysis_is_bounded_to_five_seconds() {
+            let bounded_sample_count =
+                SAMPLE_RATE * CHANNELS * RECORDING_FREQUENCY_ANALYSIS_SECONDS;
+            let samples = vec![0.0; bounded_sample_count + SAMPLE_RATE * CHANNELS * 20];
+
+            assert_eq!(
+                recording_frequency_analysis_samples(&samples).len(),
+                bounded_sample_count
+            );
+            assert_eq!(
+                recording_frequency_analysis_samples(&samples[..CHANNELS * 17]).len(),
+                CHANNELS * 17
+            );
         }
     }
 }

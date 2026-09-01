@@ -676,6 +676,27 @@ describe('ProvidersPage', () => {
     );
   });
 
+  it('keeps an active custom provider when deleting it cannot be persisted', async () => {
+    await renderPage();
+    await click(addPlatformButton(container));
+    await inputText(modalInput(container, 0), 'Undeletable Custom');
+    await inputText(modalInput(container, 1), 'custom-model');
+    await inputText(modalInput(container, 2), 'https://custom.example/v1');
+    await selectFirstCustomProviderProfile(container);
+    await click(buttonByText(container, '创建平台'));
+    const customTemplateId = useAppStore.getState().configDraft.activeProviderTemplateId;
+
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('storage denied');
+    });
+    await click(deleteActiveProviderButton(container));
+    expect(useAppStore.getState().configDraft.activeProviderTemplateId).toBe(customTemplateId);
+    expect(useAppStore.getState().configDraft.providers.some(
+      (provider) => provider.templateId === customTemplateId,
+    )).toBe(true);
+    setItem.mockRestore();
+  });
+
   it('keeps the only visible custom provider when every fallback template is hidden', async () => {
     await renderPage();
     await click(addPlatformButton(container));
@@ -1134,7 +1155,7 @@ describe('ProvidersPage', () => {
     expect(modelCatalogDialog(container)).toBeNull();
   });
 
-  it('validates missing custom provider name and base URL', async () => {
+  it('validates every required custom provider authority field before persistence', async () => {
     await renderPage();
     await click(addPlatformButton(container));
     await click(buttonByText(container, '创建平台'));
@@ -1144,6 +1165,39 @@ describe('ProvidersPage', () => {
     await inputText(modalInput(container, 2), '');
     await click(buttonByText(container, '创建平台'));
     expect(container.textContent).toContain('接口地址不能为空');
+
+    await inputText(modalInput(container, 2), 'https://custom.example/v1');
+    await click(buttonByText(container, '创建平台'));
+    expect(container.textContent).toContain('必须填写模型 ID');
+
+    await inputText(modalInput(container, 1), 'custom-model');
+    const profileSelect = container.querySelector<HTMLSelectElement>('.provider-modal select')!;
+    await selectValue(profileSelect, '');
+    await click(buttonByText(container, '创建平台'));
+    expect(container.textContent).toContain('必须显式选择版本化 Protocol Profile');
+  });
+
+  it('surfaces corrupt custom-provider storage without discarding the original bytes', async () => {
+    window.localStorage.setItem('omni.customProviderTemplates', '{broken-json');
+    await renderPage();
+    expect(container.textContent).toContain('自定义提供商数据无法读取');
+    expect(window.localStorage.getItem('omni.customProviderTemplates')).toBe('{broken-json');
+  });
+
+  it('keeps a complete custom provider draft open when local persistence fails', async () => {
+    await renderPage();
+    await click(addPlatformButton(container));
+    await inputText(modalInput(container, 0), 'Persistence Failure');
+    await inputText(modalInput(container, 1), 'custom-model');
+    await inputText(modalInput(container, 2), 'https://custom.example/v1');
+    await selectFirstCustomProviderProfile(container);
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('storage denied');
+    });
+    await click(buttonByText(container, '创建平台'));
+    expect(container.querySelector('.provider-modal')).not.toBeNull();
+    expect(container.textContent).toContain('自定义提供商保存失败');
+    setItem.mockRestore();
   });
 
   it('edits DashScope region, zero-value fallbacks and closes advanced settings through the backdrop', async () => {

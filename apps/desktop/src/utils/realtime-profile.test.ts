@@ -415,6 +415,97 @@ describe('resolveRealtimeProfile', () => {
     });
   });
 
+  it('resolves only exact enabled built-in manifest bindings and keeps disabled profiles closed', () => {
+    const cases = [
+      ['template-openai-compatible-realtime', 'gpt-realtime', 'openai-conversation', 'openai-realtime', 'server_vad'],
+      ['template-gemini', 'gemini-3.1-flash-live-preview', 'gemini-live', 'gemini-live', 'gemini_auto_activity'],
+      ['template-azure-openai', 'gpt-live-transcribe', 'openai-transcription', 'openai-realtime', 'server_vad'],
+      ['template-azure-openai', 'gpt-realtime-whisper', 'openai-transcription', 'openai-realtime', 'manual'],
+    ] as const;
+
+    for (const [templateId, modelId, protocolDialect, routeKind, realtimeAudioMode] of cases) {
+      const provider = providerFor(modelId, 'openai-compatible', templateId);
+      expect(resolveRealtimeProfile(configWith(provider), modelId)).toMatchObject({
+        protocolDialect,
+        routeKind,
+        realtimeAudioMode,
+        source: 'manifest',
+      });
+    }
+
+    for (const [templateId, modelId] of [
+      ['template-openai-compatible-realtime', 'gpt-realtime-translate'],
+      ['template-azure-openai', 'gpt-realtime'],
+      ['template-gemini', 'gemini-3.5-live-translate-preview'],
+      ['template-tencent-speech', '16k_zh_en'],
+      ['template-volcengine-doubao', 'doubao-ast-v2-s2s-pcm16'],
+      ['template-zhipu-glm', 'glm-realtime-flash'],
+    ] as const) {
+      const provider = providerFor(modelId, 'openai-compatible', templateId);
+      expect(resolveRealtimeProfile(configWith(provider), modelId)).toMatchObject({
+        protocolDialect: null,
+        routeKind: 'local-vad',
+        source: 'manifest',
+      });
+    }
+
+    const unknown = providerFor('unknown-model', 'openai-compatible', 'template-gemini');
+    expect(resolveRealtimeProfile(configWith(unknown), unknown.model)).toMatchObject({
+      protocolDialect: null,
+      source: 'manifest',
+    });
+  });
+
+  it('requires an exact custom-provider profile owner, manifest version, and profile version', () => {
+    const provider = providerFor('custom-realtime', 'openai-compatible', 'template-custom');
+    provider.templateSource = 'custom';
+    provider.modelProtocolBindings = [{
+      modelId: provider.model,
+      operation: 'realtime-conversation',
+      profileOwnerProviderId: 'openai',
+      manifestVersion: 3,
+      profileId: 'openai.realtime.conversation.websocket.ga',
+      profileVersion: 1,
+    }];
+    expect(resolveRealtimeProfile(configWith(provider), provider.model)).toMatchObject({
+      protocolDialect: 'openai-conversation',
+      routeKind: 'openai-realtime',
+      source: 'manifest',
+    });
+
+    for (const bindingPatch of [
+      { profileOwnerProviderId: 'missing-provider' },
+      { manifestVersion: 999 },
+      { profileVersion: 999 },
+      { profileId: 'openai.realtime.translation.websocket.current' },
+    ]) {
+      const invalid = structuredClone(provider);
+      invalid.modelProtocolBindings![0] = { ...invalid.modelProtocolBindings![0], ...bindingPatch };
+      expect(resolveRealtimeProfile(configWith(invalid), invalid.model)).toMatchObject({
+        protocolDialect: null,
+        routeKind: 'local-vad',
+        source: 'manifest',
+      });
+    }
+
+    const ambiguous = structuredClone(provider);
+    ambiguous.modelProtocolBindings!.push({
+      ...ambiguous.modelProtocolBindings![0],
+      operation: 'realtime-translation',
+    });
+    expect(resolveRealtimeProfile(configWith(ambiguous), ambiguous.model)).toMatchObject({
+      protocolDialect: null,
+      source: 'manifest',
+    });
+
+    const unbound = structuredClone(provider);
+    delete unbound.modelProtocolBindings;
+    expect(resolveRealtimeProfile(configWith(unbound), unbound.model)).toMatchObject({
+      protocolDialect: null,
+      source: 'manifest',
+    });
+  });
+
   it('binds a scene model to its provider without granting an inferred protocol', () => {
     const provider = providerFor('default-text-model', 'openai-compatible');
     provider.sceneModelAssignments = [{

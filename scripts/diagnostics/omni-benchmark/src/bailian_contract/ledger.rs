@@ -148,15 +148,20 @@ pub(super) fn validate_transcription_identity(event: &Value) -> Result<(String, 
 pub(super) fn validate_transcription_language_emotion(
     event: &Value,
     expected_language: &str,
+    allow_empty_language: bool,
 ) -> Result<(), String> {
     let language = event
         .get("language")
         .and_then(Value::as_str)
-        .filter(|language| !language.trim().is_empty())
         .ok_or_else(|| {
             "model_protocol.payload_invalid: transcription requires language".to_string()
         })?;
-    if !language.eq_ignore_ascii_case(expected_language) {
+    if language.trim().is_empty() && !allow_empty_language {
+        return Err(
+            "model_protocol.payload_invalid: transcription requires language".to_string(),
+        );
+    }
+    if !language.trim().is_empty() && !language.eq_ignore_ascii_case(expected_language) {
         return Err(
             "model_protocol.identity_mismatch: transcription language differs from session.update"
                 .to_string(),

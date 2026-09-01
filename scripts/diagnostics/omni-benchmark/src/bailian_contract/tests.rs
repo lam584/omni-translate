@@ -289,6 +289,68 @@ fn transcription_events_require_typed_item_content_language_and_emotion_ledger()
 }
 
 #[test]
+fn empty_terminal_transcription_metadata_is_unknown_but_still_typed() {
+    let authority = authorize_enabled_livetranslate(MODEL, URL).unwrap();
+    let request = update();
+    let mut lifecycle = LiveTranslateLifecycle::new(authority, MODEL, &request).unwrap();
+    lifecycle.admit_server_event(&created()).unwrap();
+    lifecycle.admit_server_event(&updated()).unwrap();
+    lifecycle.record_finish_sent().unwrap();
+    lifecycle
+        .admit_server_event(&json!({
+            "type":"conversation.item.created",
+            "event_id":"evt-empty-source-item",
+            "previous_item_id":"previous-1",
+            "item":{
+                "id":"source-empty",
+                "object":"realtime.item",
+                "type":"message",
+                "status":"in_progress",
+                "role":"user",
+                "content":[]
+            }
+        }))
+        .unwrap();
+    lifecycle
+        .admit_server_event(&json!({
+            "type":"conversation.item.input_audio_transcription.completed",
+            "event_id":"evt-empty-source-completed",
+            "item_id":"source-empty",
+            "content_index":0,
+            "transcript":"",
+            "language":"",
+            "emotion":""
+        }))
+        .unwrap();
+
+    lifecycle
+        .admit_server_event(&json!({
+            "type":"conversation.item.created",
+            "event_id":"evt-missing-source-item",
+            "previous_item_id":"source-empty",
+            "item":{
+                "id":"source-missing",
+                "object":"realtime.item",
+                "type":"message",
+                "status":"in_progress",
+                "role":"user",
+                "content":[]
+            }
+        }))
+        .unwrap();
+    assert!(lifecycle
+        .admit_server_event(&json!({
+            "type":"conversation.item.input_audio_transcription.completed",
+            "event_id":"evt-missing-source-completed",
+            "item_id":"source-missing",
+            "content_index":0,
+            "transcript":"",
+            "emotion":""
+        }))
+        .is_err());
+}
+
+#[test]
 fn conversation_item_roles_match_the_livetranslate_server_contract() {
     for role in ["assistant", "user"] {
         let authority = authorize_enabled_livetranslate(MODEL, URL).unwrap();

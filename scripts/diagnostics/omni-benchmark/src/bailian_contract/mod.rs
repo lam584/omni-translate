@@ -533,7 +533,7 @@ impl LiveTranslateLifecycle {
                             .to_string(),
                     );
                 }
-                validate_transcription_language_emotion(event, &self.source_language)?;
+                validate_transcription_language_emotion(event, &self.source_language, false)?;
                 snapshot_text(event)?;
                 self.active_transcriptions.insert(identity);
                 Ok(ServerAction::Continue)
@@ -550,15 +550,14 @@ impl LiveTranslateLifecycle {
                             .to_string(),
                     );
                 }
-                validate_transcription_language_emotion(event, &self.source_language)?;
-                required_nonempty_string(
-                    event.as_object().ok_or_else(|| {
-                        "model_protocol.payload_invalid: transcription completion must be an object"
+                validate_transcription_language_emotion(event, &self.source_language, true)?;
+                event
+                    .get("transcript")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        "model_protocol.payload_invalid: transcription completion requires transcript"
                             .to_string()
-                    })?,
-                    "transcript",
-                    event_type,
-                )?;
+                    })?;
                 self.active_transcriptions.remove(&identity);
                 self.terminal_transcriptions.insert(identity);
                 Ok(ServerAction::Continue)

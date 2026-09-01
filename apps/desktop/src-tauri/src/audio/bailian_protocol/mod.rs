@@ -370,7 +370,7 @@ impl LiveTranslateServerState {
                 if self.terminal_transcriptions.contains(&transcription) {
                     return Err("model_protocol.event_order_invalid: transcription text arrived after terminal event".to_string());
                 }
-                validate_language_emotion(event)?;
+                validate_language_emotion(event, false)?;
                 let text = snapshot_text(event)?;
                 self.active_transcriptions.insert(transcription);
                 self.snapshots.insert(identity, text.clone());
@@ -384,7 +384,7 @@ impl LiveTranslateServerState {
                 let transcription = transcription_identity(event)?;
                 self.require_conversation_item(&transcription.0)?;
                 required_string(event, "transcript")?;
-                validate_language_emotion(event)?;
+                validate_language_emotion(event, true)?;
                 if self.terminal_transcriptions.contains(&transcription) {
                     return Err("model_protocol.event_order_invalid: duplicate transcription terminal event".to_string());
                 }
@@ -877,8 +877,12 @@ fn transcription_identity(event: &Value) -> Result<(String, u64), String> {
     ))
 }
 
-fn validate_language_emotion(event: &Value) -> Result<(), String> {
-    required_nonempty_string(event, "language")?;
+fn validate_language_emotion(event: &Value, allow_empty_language: bool) -> Result<(), String> {
+    if allow_empty_language {
+        required_string(event, "language")?;
+    } else {
+        required_nonempty_string(event, "language")?;
+    }
     let emotion = required_string(event, "emotion")?;
     if emotion.is_empty()
         || matches!(
@@ -1528,6 +1532,85 @@ mod tests {
             "content_index":0, "transcript":"source", "language":"en", "emotion":"neutral"
         }))).is_err());
         assert!(state.admit(&authority, &text("event-text-after-completed")).is_err());
+    }
+
+    #[test]
+    fn empty_terminal_transcription_metadata_does_not_destroy_the_live_session() {
+        let authority = authority();
+        let mut state = LiveTranslateServerState::default();
+        activate(&mut state, &authority);
+        state
+            .admit(
+                &authority,
+                &event(
+                    "event-item",
+                    json!({
+                        "type":"conversation.item.created",
+                        "previous_item_id":"previous-1",
+                        "item":{
+                            "id":"source-1",
+                            "object":"realtime.item",
+                            "type":"message",
+                            "status":"in_progress",
+                            "role":"user",
+                            "content":[]
+                        }
+                    }),
+                ),
+            )
+            .unwrap();
+
+        state
+            .admit(
+                &authority,
+                &event(
+                    "event-completed",
+                    json!({
+                        "type":"conversation.item.input_audio_transcription.completed",
+                        "item_id":"source-1",
+                        "content_index":0,
+                        "transcript":"",
+                        "language":"",
+                        "emotion":""
+                    }),
+                ),
+            )
+            .unwrap();
+        state
+            .admit(
+                &authority,
+                &event(
+                    "event-item-2",
+                    json!({
+                        "type":"conversation.item.created",
+                        "previous_item_id":"source-1",
+                        "item":{
+                            "id":"source-2",
+                            "object":"realtime.item",
+                            "type":"message",
+                            "status":"in_progress",
+                            "role":"user",
+                            "content":[]
+                        }
+                    }),
+                ),
+            )
+            .unwrap();
+        assert!(state
+            .admit(
+                &authority,
+                &event(
+                    "event-missing-language",
+                    json!({
+                        "type":"conversation.item.input_audio_transcription.completed",
+                        "item_id":"source-2",
+                        "content_index":0,
+                        "transcript":"",
+                        "emotion":""
+                    }),
+                ),
+            )
+            .is_err());
     }
 
     #[test]

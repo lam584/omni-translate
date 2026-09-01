@@ -542,39 +542,14 @@ async fn run_evidence_driven_capture(
         }
     };
 
-    let input_completion = match input_completion {
-        Some(evidence) => evidence,
-        None => {
-            let join_started = Instant::now();
-            loop {
-                match provider_result_rx.try_recv() {
-                    Ok(Ok(evidence)) => break evidence,
-                    Ok(Err(error)) => {
-                        let code = strict_provider_terminal_error_code(&error);
-                        return Err(strict_capture_failure(recorder, code, error));
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        return Err(strict_capture_failure(
-                            recorder,
-                            "provider-owner-task-failed",
-                            "Provider owner task disconnected after playback drain",
-                        ));
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                }
-                if join_started.elapsed() >= PROVIDER_FINISH_OBSERVATION_GRACE {
-                    return Err(strict_capture_failure(
-                        recorder,
-                        "provider-owner-join-timeout",
-                        format!(
-                            "Provider owner did not join within {}ms after local playback became quiescent",
-                            PROVIDER_FINISH_OBSERVATION_GRACE.as_millis(),
-                        ),
-                    ));
-                }
-                tokio::time::sleep(INPUT_COMPLETE_POLL).await;
-            }
-        }
+    let input_completion = match await_provider_owner_after_playback_drain(
+        input_completion,
+        provider_result_rx,
+    )
+    .await
+    {
+        Ok(evidence) => evidence,
+        Err((code, error)) => return Err(strict_capture_failure(recorder, code, error)),
     };
     if let Err(error) = provider_task.await {
         return Err(strict_capture_failure(
@@ -727,6 +702,41 @@ async fn run_evidence_driven_capture(
         }),
     );
     Ok(recorder)
+}
+
+async fn await_provider_owner_after_playback_drain(
+    input_completion: Option<crate::audio::state::RouteInputCompletionEvidence>,
+    provider_result_rx: std::sync::mpsc::Receiver<
+        Result<crate::audio::state::RouteInputCompletionEvidence, String>,
+    >,
+) -> Result<crate::audio::state::RouteInputCompletionEvidence, (&'static str, String)> {
+    if let Some(evidence) = input_completion {
+        return Ok(evidence);
+    }
+    let join_started = Instant::now();
+    loop {
+        match provider_result_rx.try_recv() {
+            Ok(Ok(evidence)) => return Ok(evidence),
+            Ok(Err(error)) => return Err((strict_provider_terminal_error_code(&error), error)),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Err((
+                    "provider-owner-task-failed",
+                    "Provider owner task disconnected after playback drain".to_string(),
+                ));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+        if join_started.elapsed() >= PROVIDER_FINISH_OBSERVATION_GRACE {
+            return Err((
+                "provider-owner-join-timeout",
+                format!(
+                    "Provider owner did not join within {}ms after local playback became quiescent",
+                    PROVIDER_FINISH_OBSERVATION_GRACE.as_millis(),
+                ),
+            ));
+        }
+        tokio::time::sleep(INPUT_COMPLETE_POLL).await;
+    }
 }
 
 fn append_terminal_lifecycle_events(

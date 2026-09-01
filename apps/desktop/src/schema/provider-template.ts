@@ -1,4 +1,4 @@
-import type { RealtimeProtocol } from './config';
+import type { ProviderModelProtocolBinding, RealtimeProtocol } from './config';
 import type { ProviderAuthScheme, ProviderCapability, ProviderKind, ProviderTransport } from './provider-contract';
 
 export type ProviderTemplateSource = 'official' | 'community' | 'custom';
@@ -15,6 +15,7 @@ export type ProviderTemplateFieldTier = 'required' | 'recommended' | 'advanced';
 
 export type ProviderTemplateFieldKey =
   | 'model'
+  | 'deploymentId'
   | 'baseUrl'
   | 'authRef.reference'
   | 'authRef.headerName'
@@ -41,9 +42,11 @@ export type ProviderTemplateFieldGroup = {
 
 export type ProviderTemplateDraftDefaults = {
   providerId: string;
+  manifestProviderId?: string;
   kind: ProviderKind;
   displayName: string;
   model: string;
+  deploymentId?: string;
   baseUrl: string;
   transport: ProviderTransport;
   auth: {
@@ -55,6 +58,7 @@ export type ProviderTemplateDraftDefaults = {
   streamEnabled: boolean;
   timeoutMs: number;
   systemPromptTemplate: string;
+  modelProtocolBindings?: ProviderModelProtocolBinding[];
 };
 
 export type ProviderTemplateMapping = {
@@ -65,6 +69,7 @@ export type ProviderTemplateMapping = {
 
 export type ProviderTemplate = {
   id: string;
+  manifestProviderId?: string;
   source: ProviderTemplateSource;
   version: string;
   displayName: string;

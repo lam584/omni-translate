@@ -20,6 +20,7 @@ import type {
   SubtitleDraft,
 } from '../schema/config';
 import type { RuntimeNotification, RuntimeSnapshot } from '../schema/runtime-core';
+import { hydrateLegacyProviderManifestAuthority } from '../provider-manifest/legacy-migration';
 import {
   DEFAULT_SOURCE_TEXT_STYLE,
   DEFAULT_TRANSLATION_TEXT_STYLE,
@@ -185,7 +186,8 @@ function mergeConfigDraftWithDefaults(configDraft: AppConfigDraft): AppConfigDra
   return {
     ...appConfigDraftMock,
     ...configDraft,
-    providers: configDraft.providers ?? appConfigDraftMock.providers,
+    providers: (configDraft.providers ?? appConfigDraftMock.providers)
+      .map(hydrateLegacyProviderManifestAuthority),
     activeProviderTemplateId: configDraft.activeProviderTemplateId ?? appConfigDraftMock.activeProviderTemplateId,
     devices: {
       ...appConfigDraftMock.devices,

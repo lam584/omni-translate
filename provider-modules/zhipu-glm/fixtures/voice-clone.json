@@ -1,0 +1,64 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "zhipu-glm.voice-clone",
+  "providerId": "zhipu-glm",
+  "protocolProfileId": "zhipu-glm.voice-clone",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "zhipu-glm.voice-clone-guide",
+      "zhipu-glm.voice-clone-reference"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic file-id-based voice clone request and response."
+  },
+  "scenario": "GLM-TTS-Clone creates a reusable voice from an already uploaded sample",
+  "data": {
+    "request": {
+      "event": "voice.clone.create",
+      "method": "POST",
+      "url": "https://open.bigmodel.cn/api/paas/v4/voice/clone",
+      "headers": {
+        "Authorization": "Bearer <redacted-zhipu-api-key>",
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "model": "glm-tts-clone",
+        "voice_name": "sanitized_voice_name",
+        "input": "Generate a sanitized preview sentence.",
+        "file_id": "<sanitized-uploaded-sample-file-id>",
+        "text": "<sanitized-reference-transcript>",
+        "request_id": "sanitized-request-id"
+      }
+    },
+    "authContract": {
+      "profileId": "zhipu-glm.bearer-api-key",
+      "parameters": [
+        { "location": "header", "name": "Authorization", "value": "Bearer <redacted-zhipu-api-key>" }
+      ]
+    },
+    "response": {
+      "type": "voice.clone.response",
+      "terminal": true,
+      "voice": "<sanitized-cloned-voice-id>",
+      "file_id": "<sanitized-preview-file-id>",
+      "file_purpose": "voice-clone-output",
+      "request_id": "sanitized-request-id"
+    },
+    "audioContract": {
+      "input": "Provider file_id referencing a previously uploaded voice sample",
+      "maximumBytes": 10485760,
+      "recommendedDurationSeconds": "3-30"
+    },
+    "audio": { "fileId": "<sanitized-uploaded-sample-file-id>" },
+    "sampleConstraints": {
+      "maximumBytes": 10485760,
+      "recommendedDurationSeconds": "3-30",
+      "wireInput": "The clone request references a provider file_id; it does not upload raw audio to /voice/clone"
+    },
+    "implementationStatus": "disabled/not-implemented"
+  }
+}

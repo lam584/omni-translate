@@ -98,7 +98,7 @@
         "id": "seed-fun-asr-realtime",
         "modelId": "fun-asr-realtime",
         "registryVersion": "bailian-model-protocol-registry/v1",
-        "profileId": "bailian.task-asr.qwen-audio-fun.ws",
+        "profileId": "bailian.task-asr.fun-realtime.ws",
         "profileVersion": 1,
         "capabilities": [
           "speech-to-text"
@@ -483,7 +483,7 @@
         "id": "seed-qwen3-omni-flash-realtime",
         "modelId": "qwen3-omni-flash-realtime",
         "registryVersion": "bailian-model-protocol-registry/v1",
-        "profileId": "bailian.omni.realtime.ws",
+        "profileId": "bailian.omni.legacy-realtime.ws",
         "profileVersion": 1,
         "capabilities": [
           "speech-to-text",
@@ -505,7 +505,7 @@
         "id": "seed-qwen3-omni-flash-realtime-2025-12-01",
         "modelId": "qwen3-omni-flash-realtime-2025-12-01",
         "registryVersion": "bailian-model-protocol-registry/v1",
-        "profileId": "bailian.omni.realtime.ws",
+        "profileId": "bailian.omni.legacy-realtime.ws",
         "profileVersion": 1,
         "capabilities": [
           "speech-to-text",
@@ -527,7 +527,7 @@
         "id": "seed-qwen3-omni-flash-realtime-2025-09-15",
         "modelId": "qwen3-omni-flash-realtime-2025-09-15",
         "registryVersion": "bailian-model-protocol-registry/v1",
-        "profileId": "bailian.omni.realtime.ws",
+        "profileId": "bailian.omni.legacy-realtime.ws",
         "profileVersion": 1,
         "capabilities": [
           "speech-to-text",
@@ -603,7 +603,7 @@
         "id": "seed-qwen-omni-turbo-realtime",
         "modelId": "qwen-omni-turbo-realtime",
         "registryVersion": "bailian-model-protocol-registry/v1",
-        "profileId": "bailian.omni.realtime.ws",
+        "profileId": "bailian.omni.legacy-realtime.ws",
         "profileVersion": 1,
         "capabilities": [
           "speech-to-text",
@@ -625,7 +625,7 @@
         "id": "seed-qwen-omni-turbo-realtime-latest",
         "modelId": "qwen-omni-turbo-realtime-latest",
         "registryVersion": "bailian-model-protocol-registry/v1",
-        "profileId": "bailian.omni.realtime.ws",
+        "profileId": "bailian.omni.legacy-realtime.ws",
         "profileVersion": 1,
         "capabilities": [
           "speech-to-text",
@@ -647,7 +647,7 @@
         "id": "seed-qwen-omni-turbo-realtime-2025-05-08",
         "modelId": "qwen-omni-turbo-realtime-2025-05-08",
         "registryVersion": "bailian-model-protocol-registry/v1",
-        "profileId": "bailian.omni.realtime.ws",
+        "profileId": "bailian.omni.legacy-realtime.ws",
         "profileVersion": 1,
         "capabilities": [
           "speech-to-text",

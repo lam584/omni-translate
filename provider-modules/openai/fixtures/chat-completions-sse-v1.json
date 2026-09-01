@@ -1,0 +1,48 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "openai.fixture.chat-completions-sse.v1",
+  "providerId": "openai",
+  "protocolProfileId": "openai.chat-completions.sse.ga",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["openai.docs.chat", "openai.docs.models"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived streaming Chat Completions vector; no OpenAI request was made."
+  },
+  "scenario": "Stream a text translation through Chat Completions and terminate only at data: [DONE]",
+  "data": {
+    "endpointStatus": "verified",
+    "networkAuthorized": false,
+    "authorizationReason": "Fixture-only documentation replay; network access is not authorized.",
+    "connection": {
+      "method": "POST",
+      "url": "https://api.openai.com/v1/chat/completions",
+      "headers": {
+        "Authorization": "Bearer <openai-api-key>",
+        "Content-Type": "application/json"
+      }
+    },
+    "authContract": {
+      "profileId": "openai.auth.bearer-header",
+      "parameters": [
+        { "location": "header", "name": "Authorization", "value": "Bearer <openai-api-key>" }
+      ]
+    },
+    "request": {
+      "event": "chat.completion.request",
+      "model": "gpt-4o",
+      "stream": true,
+      "messages": [
+        { "role": "user", "content": "<sanitized-translation-input>" }
+      ]
+    },
+    "serverEvents": [
+      { "event": "chat.completion.chunk", "data": { "choices": [{ "delta": { "content": "translated " }, "finish_reason": null }] } },
+      { "event": "chat.completion.chunk", "data": { "choices": [{ "delta": {}, "finish_reason": "stop" }] } },
+      { "data": "[DONE]", "expectedOutcome": "stream-complete" }
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "tencent-sts-signature-v1",
+  "providerId": "tencent-cloud",
+  "protocolProfileId": "tencent-cloud.sts.ws-v1.simul",
+  "protocolProfileVersion": 1,
+  "kind": "probe",
+  "provenance": {
+    "sourceDocumentationIds": ["sts-websocket"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Canonical-request shape only. The synthetic signature is deliberately omitted instead of publishing a misleading live value."
+  },
+  "scenario": "STS CAM-style SHA256 query signature canonicalization",
+  "data": {
+    "connectionUrl": "wss://mps.cloud.tencent.com/sts/v1/1250000000",
+    "authContract": { "profileId": "sts-tc3-sha256-query", "parameters": [
+      { "location": "path", "name": "appid", "value": "1250000000" }, { "location": "query", "name": "secretId", "value": "AKIDEXAMPLE" },
+      { "location": "query", "name": "timeStamp", "value": "1700000000" }, { "location": "query", "name": "expired", "value": "1700003600" },
+      { "location": "query", "name": "nonce", "value": "42" }, { "location": "header", "name": "content-type", "value": "application/json; charset=utf-8" },
+      { "location": "header", "name": "host", "value": "mps.cloud.tencent.com" }, { "location": "query", "name": "signature", "value": "fixture-signature-redacted" }
+    ] },
+    "httpRequestMethodForSigning": "POST",
+    "canonicalUri": "/sts/v1/1250000000",
+    "canonicalQueryExcludes": ["signature"],
+    "canonicalHeaders": "content-type:application/json; charset=utf-8\nhost:mps.cloud.tencent.com\n",
+    "signedHeaders": "content-type;host",
+    "hashedPayloadInput": "",
+    "signatureEncoding": "hex",
+    "credentialValues": "synthetic-and-omitted"
+  }
+}

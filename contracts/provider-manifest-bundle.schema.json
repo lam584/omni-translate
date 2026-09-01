@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omni-translate.local/contracts/provider-manifest-bundle.schema.json",
+  "title": "Generated provider manifest registry bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "sources", "manifests"],
+  "properties": {
+    "$schema": {
+      "const": "./provider-manifest-bundle.schema.json"
+    },
+    "schemaVersion": {
+      "const": "provider-manifest-bundle/v1"
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["providerId", "path", "manifestVersion", "checkedAt", "sha256"],
+        "properties": {
+          "providerId": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "pattern": "^provider-modules/" },
+          "manifestVersion": { "type": "integer", "minimum": 1 },
+          "checkedAt": { "type": "string", "format": "date" },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        }
+      }
+    },
+    "manifests": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "./provider-manifest.schema.json"
+      }
+    }
+  }
+}

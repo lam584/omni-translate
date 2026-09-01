@@ -43,6 +43,20 @@ describe('default provider template', () => {
     );
   });
 
+  it('marks every actionable fixture-only manifest model in the UI', () => {
+    for (const templateId of [
+      'template-openai-compatible-realtime',
+      'template-gemini',
+      'template-zhipu-glm',
+      'template-tencent-speech',
+      'template-azure-openai',
+    ]) {
+      const template = providerTemplates.find((candidate) => candidate.id === templateId);
+      expect(template?.presetModels.length).toBeGreaterThan(0);
+      expect(template?.presetModels.every((model) => model.description.includes('fixture-only'))).toBe(true);
+    }
+  });
+
   it('enables only Aliyun Bailian and DeepSeek by default', () => {
     const entries = buildProviderTemplateCatalogEntries(providerTemplates, []);
     const enabledTemplateIds = entries.filter((entry) => entry.enabled).map((entry) => entry.template.id);

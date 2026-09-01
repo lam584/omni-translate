@@ -232,6 +232,7 @@ function ProvidersPage() {
       transport: defaultTransportForKind(kind),
       region: kind === 'dashscope' ? 'cn-beijing' : '',
       systemPromptTemplate: defaultPromptTemplateForKind(kind),
+      protocolProfileKey: '',
     }));
   };
 
@@ -274,6 +275,16 @@ function ProvidersPage() {
 
     if (!customProviderDraft.baseUrl.trim()) {
       setCustomProviderError(t('providers.messages.baseUrlRequired'));
+      return;
+    }
+
+    if (!customProviderDraft.model.trim()) {
+      setCustomProviderError(t('providers.messages.modelRequired', { defaultValue: '必须填写模型 ID。' }));
+      return;
+    }
+
+    if (!customProviderDraft.protocolProfileKey) {
+      setCustomProviderError(t('providers.messages.protocolProfileRequired', { defaultValue: '必须显式选择版本化 Protocol Profile。' }));
       return;
     }
 

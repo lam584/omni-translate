@@ -1,0 +1,34 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "tencent-tts-stream-wsv2-session-v1",
+  "providerId": "tencent-cloud",
+  "protocolProfileId": "tencent-cloud.tts.stream-wsv2-v1",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["tts-stream-wsv2"],
+    "capturedFromLive": false,
+    "sanitized": true
+  },
+  "scenario": "Streaming text waits for READY, sends synthesis chunks, then completes",
+  "data": {
+    "connectionUrl": "wss://tts.cloud.tencent.com/stream_wsv2",
+    "authContract": { "profileId": "tts-wsv2-hmac-sha1-query", "parameters": [
+      { "location": "query", "name": "Action", "value": "TextToStreamAudioWSv2" }, { "location": "query", "name": "AppId", "value": "1250000000" },
+      { "location": "query", "name": "SecretId", "value": "AKIDEXAMPLE" }, { "location": "query", "name": "Timestamp", "value": "1700000000" },
+      { "location": "query", "name": "Expired", "value": "1700003600" }, { "location": "query", "name": "SessionId", "value": "fixture-session" },
+      { "location": "query", "name": "Signature", "value": "fixture-signature-redacted" }
+    ] },
+    "audioContract": { "encoding": "pcm_s16le", "sampleRateHz": 16000, "bitDepth": 16, "channels": 1 },
+    "audio": { "payloadBase64": "AAECAw==", "illustrative": true },
+    "events": [
+      { "direction": "server", "frameType": "text", "json": { "code": 0, "message": "success", "session_id": "fixture-session", "ready": 1 } },
+      { "direction": "client", "type": "ACTION_SYNTHESIS", "frameType": "text", "json": { "action": "ACTION_SYNTHESIS", "data": "first fixture sentence. " } },
+      { "direction": "client", "frameType": "text", "json": { "action": "ACTION_SYNTHESIS", "data": "second fixture sentence." } },
+      { "direction": "client", "frameType": "text", "json": { "action": "ACTION_COMPLETE" } },
+      { "direction": "server", "frameType": "binary", "payloadBase64": "AAECAw==", "encoding": "pcm-s16le" },
+      { "direction": "server", "type": "final=1", "terminal": true, "frameType": "text", "json": { "code": 0, "message": "success", "session_id": "fixture-session", "final": 1 }, "semantics": "all synthesis complete; client closes" }
+    ]
+  }
+}

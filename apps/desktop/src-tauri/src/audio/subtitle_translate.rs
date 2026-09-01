@@ -899,11 +899,13 @@ mod tests {
             provider: ProviderDraftInput {
                 template_id: "test".to_string(),
                 provider_id: "provider-test".to_string(),
+                manifest_provider_id: None,
                 kind: "openai-compatible".to_string(),
                 template_realtime_protocol: None,
                 realtime_protocol: None,
                 display_name: "Test".to_string(),
                 model: "test-model".to_string(),
+                deployment_id: None,
                 base_url: "http://localhost".to_string(),
                 transport: "http".to_string(),
                 auth_ref: crate::provider::contracts::ProviderAuthRefInput {
@@ -921,6 +923,7 @@ mod tests {
                 response_modalities: vec!["text".to_string()],
                 custom_headers: Vec::new(),
                 scene_model_assignments: Vec::new(),
+                model_protocol_bindings: Vec::new(),
                 local_model_capability_registry: Vec::new(),
                 model_catalog_cache: Default::default(),
             },

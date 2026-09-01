@@ -207,6 +207,16 @@ export type ProviderSceneModelAssignment = {
   modelIds: string[];
 };
 
+export type ProviderModelProtocolBinding = {
+  modelId: string;
+  operation: string;
+  profileOwnerProviderId: string;
+  manifestVersion: number;
+  profileId: string;
+  profileVersion: number;
+  authProfileId?: string;
+};
+
 export type ProviderResponseModality = 'text' | 'audio';
 
 export type ProviderDraft = {
@@ -214,6 +224,8 @@ export type ProviderDraft = {
   templateVersion: string;
   templateSource: ProviderTemplateSource;
   providerId: string;
+  /** Canonical module owner; derived from the immutable template identity. */
+  manifestProviderId?: string;
   kind: ProviderKind;
   /** @deprecated Legacy template hint; never protocol authority for DashScope. */
   templateRealtimeProtocol?: RealtimeProtocol;
@@ -222,6 +234,8 @@ export type ProviderDraft = {
   displayName: string;
   mode: ProviderMode;
   model: string;
+  /** Azure-style opaque deployment alias, separate from the catalog model. */
+  deploymentId?: string;
   baseUrl: string;
   transport: ProviderTransport;
   authRef: ProviderAuthRef;
@@ -234,6 +248,7 @@ export type ProviderDraft = {
   responseModalities: ProviderResponseModality[];
   customHeaders: ProviderCustomHeaderDraft[];
   sceneModelAssignments: ProviderSceneModelAssignment[];
+  modelProtocolBindings?: ProviderModelProtocolBinding[];
   localModelCapabilityRegistry: ProviderModelCapabilityRegistryEntry[];
   modelCatalogCache: ProviderModelCatalogCache;
   probe: ProviderProbeSnapshot;

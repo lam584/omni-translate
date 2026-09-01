@@ -1,0 +1,1138 @@
+{
+  "$schema": "../../contracts/provider-manifest.schema.json",
+  "schemaVersion": "provider-manifest/v1",
+  "manifestVersion": 1,
+  "checkedAt": "2026-08-31",
+  "provider": {
+    "id": "azure-openai",
+    "displayName": "Azure OpenAI",
+    "templateId": "template-azure-openai",
+    "kind": "azure-openai",
+    "source": "official",
+    "description": "Azure OpenAI Realtime and Audio contracts with deployment-addressed models and explicit API-key or Microsoft Entra authentication.",
+    "defaultModelId": "gpt-realtime",
+    "defaultApiFamilyId": "azure-openai.api.realtime-conversation.websocket.ga",
+    "defaultCredentialId": "azure-openai.credential.api-key",
+    "defaultRegion": "East US 2",
+    "notes": "Manifest model ids are Azure catalog identities. User-defined deployment ids are runtime addressing values and never model aliases. Azure AI Speech is a separate service and is not represented by this module."
+  },
+  "documentation": [
+    {
+      "id": "azure-openai.docs.realtime",
+      "title": "Use the GPT Realtime API via Azure OpenAI",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/realtime-audio",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "azure-openai.docs.realtime-websocket",
+      "title": "Use the GPT Realtime API via WebSockets",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/realtime-audio-websockets",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "azure-openai.docs.realtime-webrtc",
+      "title": "Use the GPT Realtime API via WebRTC",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/realtime-audio-webrtc",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "azure-openai.docs.realtime-reference",
+      "title": "Azure OpenAI Realtime API reference",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/openai/realtime-audio-reference",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "azure-openai.docs.audio-concepts",
+      "title": "Azure OpenAI audio models and APIs",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/audio",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "azure-openai.docs.models-regions",
+      "title": "Models sold directly by Azure and regional availability",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure-region-availability",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "azure-openai.docs.region-support",
+      "title": "Microsoft Foundry region support",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/reference/region-support",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "azure-openai.docs.audio-v1-preview",
+      "title": "Azure OpenAI v1 preview REST API reference",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/openai/reference-preview-latest",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "azure-openai.docs.whisper-quickstart",
+      "title": "Azure OpenAI Whisper quickstart",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/openai/whisper-quickstart",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "azure-openai.docs.realtime-reference-classic-entry",
+      "title": "Realtime API reference classic entry (redirects to Foundry)",
+      "url": "https://learn.microsoft.com/en-us/azure/ai-foundry/openai/realtime-audio-reference?view=foundry-classic",
+      "checkedAt": "2026-09-01"
+    },
+    {
+      "id": "azure-openai.docs.audio-concepts-classic-entry",
+      "title": "Azure OpenAI audio concepts classic entry (redirects to Foundry classic)",
+      "url": "https://learn.microsoft.com/en-us/azure/ai-foundry/openai/concepts/audio?view=foundry-classic",
+      "checkedAt": "2026-09-01"
+    },
+    {
+      "id": "azure-openai.docs.speech-to-text",
+      "title": "Azure Speech-to-Text documentation",
+      "url": "https://learn.microsoft.com/en-us/azure/ai-services/speech-service/index-speech-to-text",
+      "checkedAt": "2026-09-01"
+    },
+    {
+      "id": "azure-openai.docs.transcribe-overview",
+      "title": "OpenAI transcription models in Azure Speech overview",
+      "url": "https://learn.microsoft.com/en-us/azure/ai-services/speech-service/transcribe-overview",
+      "checkedAt": "2026-09-01"
+    }
+  ],
+  "credentials": [
+    {
+      "id": "azure-openai.credential.api-key",
+      "reference": "credential://provider/azure-openai/default",
+      "fields": [
+        {
+          "id": "api-key",
+          "label": "Azure OpenAI API key",
+          "secret": true,
+          "required": true,
+          "format": "Azure resource API key"
+        }
+      ]
+    },
+    {
+      "id": "azure-openai.credential.entra",
+      "reference": "credential://provider/azure-openai/entra",
+      "fields": [
+        {
+          "id": "tenant-id",
+          "label": "Microsoft Entra tenant id",
+          "secret": false,
+          "required": false,
+          "format": "UUID"
+        },
+        {
+          "id": "client-id",
+          "label": "Microsoft Entra client id",
+          "secret": false,
+          "required": false,
+          "format": "UUID"
+        },
+        {
+          "id": "client-secret",
+          "label": "Microsoft Entra client secret",
+          "secret": true,
+          "required": false,
+          "format": "OAuth2 client secret or managed identity"
+        }
+      ]
+    }
+  ],
+  "authProfiles": [
+    {
+      "id": "azure-openai.auth.api-key-header",
+      "type": "api-key",
+      "credentialId": "azure-openai.credential.api-key",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "api-key",
+          "source": "credential",
+          "credentialFieldId": "api-key",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "azure-openai.auth.api-key-query",
+      "type": "query-key",
+      "credentialId": "azure-openai.credential.api-key",
+      "parameters": [
+        {
+          "location": "query",
+          "name": "api-key",
+          "source": "credential",
+          "credentialFieldId": "api-key",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "azure-openai.auth.entra-bearer",
+      "type": "azure-entra",
+      "credentialId": "azure-openai.credential.entra",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "source": "derived",
+          "derivation": "Acquire a Microsoft Entra OAuth2 access token for https://ai.azure.com/.default and refresh it before expiry.",
+          "scheme": "Bearer",
+          "required": true
+        }
+      ],
+      "credentialBootstrap": {
+        "kind": "oauth2",
+        "scope": "https://ai.azure.com/.default",
+        "description": "Use an Azure Identity credential chain or OAuth2 client credential flow to acquire and refresh the bearer token.",
+        "documentationIds": ["azure-openai.docs.realtime", "azure-openai.docs.realtime-websocket"]
+      }
+    }
+  ],
+  "transports": [
+    {
+      "id": "azure-openai.transport.websocket-json-base64",
+      "kind": "websocket",
+      "requestFraming": "json-base64",
+      "responseFraming": "json-base64",
+      "requestEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      },
+      "responseEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      }
+    },
+    {
+      "id": "azure-openai.transport.webrtc-sdp-datachannel",
+      "kind": "webrtc",
+      "requestFraming": "sdp",
+      "responseFraming": "sdp",
+      "requestEnvelope": {
+        "kind": "provider-defined",
+        "id": "azure-openai.webrtc.offer",
+        "byteOrder": "not-applicable",
+        "description": "SDP establishes a media track and JSON event data channel."
+      },
+      "responseEnvelope": {
+        "kind": "provider-defined",
+        "id": "azure-openai.webrtc.answer",
+        "byteOrder": "not-applicable",
+        "description": "SDP establishes a media track and JSON event data channel."
+      }
+    },
+    {
+      "id": "azure-openai.transport.http-multipart-json",
+      "kind": "http",
+      "requestFraming": "multipart",
+      "responseFraming": "json",
+      "requestEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      },
+      "responseEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      }
+    },
+    {
+      "id": "azure-openai.transport.http-multipart-sse",
+      "kind": "sse",
+      "requestFraming": "multipart",
+      "responseFraming": "sse",
+      "requestEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      },
+      "responseEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      }
+    },
+    {
+      "id": "azure-openai.transport.http-json-audio",
+      "kind": "http",
+      "requestFraming": "json",
+      "responseFraming": "audio",
+      "requestEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      },
+      "responseEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      }
+    }
+  ],
+  "audioProfiles": [
+    {
+      "id": "azure-openai.audio.realtime-pcm16-24k-mono",
+      "input": {
+        "required": true,
+        "formats": ["pcm16"],
+        "sampleRatesHz": [24000],
+        "channels": [1],
+        "bitDepths": [16],
+        "endianness": ["little-endian"]
+      },
+      "output": {
+        "required": false,
+        "formats": ["pcm16"],
+        "sampleRatesHz": [24000],
+        "channels": [1],
+        "bitDepths": [16],
+        "endianness": ["little-endian"]
+      }
+    },
+    {
+      "id": "azure-openai.audio.translation-pcm16-24k-mono",
+      "input": {
+        "required": true,
+        "formats": ["pcm16"],
+        "sampleRatesHz": [24000],
+        "channels": [1],
+        "bitDepths": [16],
+        "endianness": ["little-endian"],
+        "chunkDurationMs": {
+          "recommended": 200
+        }
+      },
+      "output": {
+        "required": true,
+        "formats": ["pcm16"],
+        "sampleRatesHz": [24000],
+        "channels": [1],
+        "bitDepths": [16],
+        "endianness": ["little-endian"]
+      }
+    },
+    {
+      "id": "azure-openai.audio.transcription-pcm16-24k-mono",
+      "input": {
+        "required": true,
+        "formats": ["pcm16"],
+        "sampleRatesHz": [24000],
+        "channels": [1],
+        "bitDepths": [16],
+        "endianness": ["little-endian"]
+      },
+      "output": {
+        "required": false,
+        "formats": [],
+        "sampleRatesHz": [],
+        "channels": []
+      }
+    },
+    {
+      "id": "azure-openai.audio.file-transcription-input",
+      "input": {
+        "required": true,
+        "formats": ["mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm"],
+        "sampleRatesHz": [],
+        "channels": []
+      },
+      "output": {
+        "required": false,
+        "formats": [],
+        "sampleRatesHz": [],
+        "channels": []
+      }
+    },
+    {
+      "id": "azure-openai.audio.tts-pcm16-24k-mono",
+      "input": {
+        "required": false,
+        "formats": [],
+        "sampleRatesHz": [],
+        "channels": []
+      },
+      "output": {
+        "required": true,
+        "formats": ["pcm16"],
+        "sampleRatesHz": [24000],
+        "channels": [1],
+        "bitDepths": [16],
+        "endianness": ["little-endian"]
+      }
+    }
+  ],
+  "lifecycleProfiles": [
+    {
+      "id": "azure-openai.lifecycle.realtime-conversation",
+      "handshake": ["session.created", "session.update", "session.updated"],
+      "clientEvents": [
+        "session.update",
+        "input_audio_buffer.append",
+        "input_audio_buffer.commit",
+        "input_audio_buffer.clear",
+        "response.create",
+        "response.cancel"
+      ],
+      "serverEvents": [
+        "session.created",
+        "session.updated",
+        "input_audio_buffer.speech_started",
+        "input_audio_buffer.speech_stopped",
+        "input_audio_buffer.committed",
+        "conversation.item.input_audio_transcription.delta",
+        "conversation.item.input_audio_transcription.completed",
+        "response.output_text.delta",
+        "response.output_text.done",
+        "response.output_audio.delta",
+        "response.output_audio.done",
+        "response.output_audio_transcript.delta",
+        "response.output_audio_transcript.done",
+        "response.done",
+        "error"
+      ],
+      "vadModes": ["manual", "server-vad", "semantic-vad"],
+      "terminal": "response.done ends one Response; only completed is success. cancelled, failed, and incomplete remain distinct outcomes and do not necessarily close the session.",
+      "reuse": "multi-turn",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "azure-openai.lifecycle.realtime-translation",
+      "handshake": ["session.created", "session.update", "session.updated"],
+      "clientEvents": ["session.update", "session.input_audio_buffer.append", "session.close"],
+      "serverEvents": [
+        "session.created",
+        "session.updated",
+        "session.input_transcript.delta",
+        "session.output_transcript.delta",
+        "session.output_audio.delta",
+        "error",
+        "session.closed"
+      ],
+      "vadModes": ["none"],
+      "terminal": "Send session.close, stop appending audio, drain until session.closed, then close the WebSocket. Recoverable error events leave the session open.",
+      "reuse": "single-session",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "azure-openai.lifecycle.realtime-transcription",
+      "handshake": ["session.created", "session.update", "session.updated"],
+      "clientEvents": ["session.update", "input_audio_buffer.append", "input_audio_buffer.commit", "input_audio_buffer.clear"],
+      "serverEvents": [
+        "session.created",
+        "session.updated",
+        "conversation.item.input_audio_transcription.delta",
+        "conversation.item.input_audio_transcription.completed",
+        "conversation.item.input_audio_transcription.failed",
+        "error"
+      ],
+      "vadModes": ["manual", "server-vad", "semantic-vad"],
+      "terminal": "Transcription completed or failed terminates one committed item; connection closure terminates the session.",
+      "reuse": "sequential-tasks",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "azure-openai.lifecycle.realtime-transcription-whisper-manual",
+      "handshake": ["session.created", "session.update", "session.updated"],
+      "clientEvents": ["session.update", "input_audio_buffer.append", "input_audio_buffer.commit", "input_audio_buffer.clear"],
+      "serverEvents": [
+        "session.created",
+        "session.updated",
+        "conversation.item.input_audio_transcription.delta",
+        "conversation.item.input_audio_transcription.completed",
+        "conversation.item.input_audio_transcription.failed",
+        "error"
+      ],
+      "vadModes": ["manual"],
+      "terminal": "The GPT-Realtime-Whisper deployment uses turn_detection null; each explicit commit ends with transcription completed or failed.",
+      "reuse": "sequential-tasks",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "azure-openai.lifecycle.http-single-request",
+      "handshake": ["http.request"],
+      "clientEvents": ["http.request"],
+      "serverEvents": ["http.response", "http.error"],
+      "vadModes": ["none"],
+      "terminal": "The HTTP response body or HTTP error terminates the request.",
+      "reuse": "single-request",
+      "textDeltaSemantics": "not-applicable"
+    },
+    {
+      "id": "azure-openai.lifecycle.transcription-sse",
+      "handshake": ["http.request", "http.response.open"],
+      "clientEvents": ["http.multipart.request"],
+      "serverEvents": ["transcript.text.delta", "transcript.text.done", "http.error"],
+      "vadModes": ["none"],
+      "terminal": "transcript.text.done or an HTTP/SSE error terminates the request.",
+      "reuse": "single-request",
+      "textDeltaSemantics": "append-delta"
+    }
+  ],
+  "apiFamilies": [
+    {
+      "id": "azure-openai.api.realtime-conversation.websocket.ga",
+      "displayName": "Azure OpenAI Realtime conversation WebSocket GA",
+      "baseUrlTemplate": "wss://{resource}.openai.azure.com",
+      "endpointTemplate": "/openai/v1/realtime?model={deploymentId}",
+      "endpointStatus": "verified",
+      "modelAddressing": "deployment-id",
+      "apiVersion": null,
+      "transportId": "azure-openai.transport.websocket-json-base64",
+      "authProfileIds": [
+        "azure-openai.auth.api-key-header",
+        "azure-openai.auth.api-key-query",
+        "azure-openai.auth.entra-bearer"
+      ],
+      "defaultAuthProfileId": "azure-openai.auth.api-key-header",
+      "maturity": "ga",
+      "documentationIds": ["azure-openai.docs.realtime", "azure-openai.docs.realtime-websocket", "azure-openai.docs.region-support"]
+    },
+    {
+      "id": "azure-openai.api.realtime-translation.websocket.ga",
+      "displayName": "Azure OpenAI Realtime translation WebSocket GA",
+      "baseUrlTemplate": "wss://{resource}.openai.azure.com",
+      "endpointTemplate": "/openai/v1/realtime/translations?model={deploymentId}",
+      "endpointStatus": "verified",
+      "modelAddressing": "deployment-id",
+      "apiVersion": null,
+      "transportId": "azure-openai.transport.websocket-json-base64",
+      "authProfileIds": [
+        "azure-openai.auth.api-key-header",
+        "azure-openai.auth.api-key-query",
+        "azure-openai.auth.entra-bearer"
+      ],
+      "defaultAuthProfileId": "azure-openai.auth.api-key-header",
+      "maturity": "ga",
+      "documentationIds": ["azure-openai.docs.realtime", "azure-openai.docs.realtime-reference", "azure-openai.docs.realtime-reference-classic-entry"]
+    },
+    {
+      "id": "azure-openai.api.realtime-transcription.websocket.ga",
+      "displayName": "Azure OpenAI Realtime transcription WebSocket GA",
+      "baseUrlTemplate": "wss://{resource}.openai.azure.com",
+      "endpointTemplate": "/openai/v1/realtime?intent=transcription",
+      "endpointStatus": "verified",
+      "modelAddressing": "deployment-id",
+      "apiVersion": null,
+      "transportId": "azure-openai.transport.websocket-json-base64",
+      "authProfileIds": [
+        "azure-openai.auth.api-key-header",
+        "azure-openai.auth.api-key-query",
+        "azure-openai.auth.entra-bearer"
+      ],
+      "defaultAuthProfileId": "azure-openai.auth.api-key-header",
+      "maturity": "ga",
+      "documentationIds": ["azure-openai.docs.realtime", "azure-openai.docs.realtime-reference", "azure-openai.docs.realtime-reference-classic-entry"]
+    },
+    {
+      "id": "azure-openai.api.realtime-conversation.webrtc.ga",
+      "displayName": "Azure OpenAI Realtime conversation WebRTC GA",
+      "baseUrlTemplate": "https://{resource}.openai.azure.com",
+      "endpointTemplate": "/openai/v1/realtime/calls",
+      "endpointStatus": "verified",
+      "modelAddressing": "deployment-id",
+      "apiVersion": null,
+      "transportId": "azure-openai.transport.webrtc-sdp-datachannel",
+      "authProfileIds": ["azure-openai.auth.api-key-header", "azure-openai.auth.entra-bearer"],
+      "defaultAuthProfileId": "azure-openai.auth.entra-bearer",
+      "maturity": "ga",
+      "documentationIds": ["azure-openai.docs.realtime-webrtc"]
+    },
+    {
+      "id": "azure-openai.api.realtime-conversation.websocket.2025-04-01-preview",
+      "displayName": "Azure OpenAI deprecated Realtime preview WebSocket",
+      "baseUrlTemplate": "wss://{resource}.openai.azure.com",
+      "endpointTemplate": "/openai/realtime?api-version=2025-04-01-preview&deployment={deploymentId}",
+      "endpointStatus": "deprecated",
+      "modelAddressing": "deployment-id",
+      "apiVersion": "2025-04-01-preview",
+      "transportId": "azure-openai.transport.websocket-json-base64",
+      "authProfileIds": [
+        "azure-openai.auth.api-key-header",
+        "azure-openai.auth.api-key-query",
+        "azure-openai.auth.entra-bearer"
+      ],
+      "defaultAuthProfileId": "azure-openai.auth.api-key-header",
+      "maturity": "deprecated",
+      "documentationIds": ["azure-openai.docs.realtime-websocket"]
+    },
+    {
+      "id": "azure-openai.api.audio-transcription.v1-preview",
+      "displayName": "Azure OpenAI Audio transcription v1 preview",
+      "baseUrlTemplate": "https://{resource}.openai.azure.com",
+      "endpointTemplate": "/openai/v1/audio/transcriptions?api-version=preview",
+      "endpointStatus": "verified",
+      "modelAddressing": "deployment-id",
+      "apiVersion": "preview",
+      "transportId": "azure-openai.transport.http-multipart-sse",
+      "authProfileIds": ["azure-openai.auth.api-key-header", "azure-openai.auth.entra-bearer"],
+      "defaultAuthProfileId": "azure-openai.auth.entra-bearer",
+      "maturity": "preview",
+      "documentationIds": ["azure-openai.docs.audio-v1-preview", "azure-openai.docs.audio-concepts-classic-entry", "azure-openai.docs.speech-to-text", "azure-openai.docs.transcribe-overview"]
+    },
+    {
+      "id": "azure-openai.api.audio-speech.v1-preview",
+      "displayName": "Azure OpenAI Audio speech v1 preview",
+      "baseUrlTemplate": "https://{resource}.openai.azure.com",
+      "endpointTemplate": "/openai/v1/audio/speech?api-version=preview",
+      "endpointStatus": "verified",
+      "modelAddressing": "deployment-id",
+      "apiVersion": "preview",
+      "transportId": "azure-openai.transport.http-json-audio",
+      "authProfileIds": ["azure-openai.auth.api-key-header", "azure-openai.auth.entra-bearer"],
+      "defaultAuthProfileId": "azure-openai.auth.entra-bearer",
+      "maturity": "preview",
+      "documentationIds": ["azure-openai.docs.audio-v1-preview"]
+    },
+    {
+      "id": "azure-openai.api.audio-transcription.deployment-2024-02-01",
+      "displayName": "Azure OpenAI deployment-path Whisper transcription",
+      "baseUrlTemplate": "https://{resource}.openai.azure.com",
+      "endpointTemplate": "/openai/deployments/{deploymentId}/audio/transcriptions?api-version=2024-02-01",
+      "endpointStatus": "verified",
+      "modelAddressing": "path-deployment",
+      "apiVersion": "2024-02-01",
+      "transportId": "azure-openai.transport.http-multipart-json",
+      "authProfileIds": ["azure-openai.auth.api-key-header", "azure-openai.auth.entra-bearer"],
+      "defaultAuthProfileId": "azure-openai.auth.api-key-header",
+      "maturity": "unspecified",
+      "documentationIds": ["azure-openai.docs.whisper-quickstart", "azure-openai.docs.speech-to-text", "azure-openai.docs.transcribe-overview"]
+    }
+  ],
+  "protocolProfiles": [
+    {
+      "id": "azure-openai.realtime.conversation.websocket.ga",
+      "version": 1,
+      "apiFamilyId": "azure-openai.api.realtime-conversation.websocket.ga",
+      "transportId": "azure-openai.transport.websocket-json-base64",
+      "authProfileIds": [
+        "azure-openai.auth.api-key-header",
+        "azure-openai.auth.api-key-query",
+        "azure-openai.auth.entra-bearer"
+      ],
+      "defaultAuthProfileId": "azure-openai.auth.api-key-header",
+      "audioProfileId": "azure-openai.audio.realtime-pcm16-24k-mono",
+      "lifecycleProfileId": "azure-openai.lifecycle.realtime-conversation",
+      "operations": ["realtime-conversation"],
+      "capabilities": ["speech-to-text", "speech-to-speech"],
+      "maturity": "ga",
+      "adapter": {
+        "id": "azure-openai-realtime-websocket",
+        "status": "disabled",
+        "verification": "fixture-only",
+        "reason": "The current shared adapter hard-codes an OpenAI transcription model id instead of a separate Azure input-transcription deployment id and does not implement query-key or Entra token refresh."
+      },
+      "documentationIds": ["azure-openai.docs.realtime", "azure-openai.docs.realtime-websocket"],
+      "fixtureIds": [
+        "azure-openai.fixture.realtime-auth-deployment.v1",
+        "azure-openai.fixture.realtime-conversation-terminal.v1"
+      ],
+      "legacyProtocolIds": ["openai-conversation"]
+    },
+    {
+      "id": "azure-openai.realtime.translation.websocket.ga",
+      "version": 1,
+      "apiFamilyId": "azure-openai.api.realtime-translation.websocket.ga",
+      "transportId": "azure-openai.transport.websocket-json-base64",
+      "authProfileIds": [
+        "azure-openai.auth.api-key-header",
+        "azure-openai.auth.api-key-query",
+        "azure-openai.auth.entra-bearer"
+      ],
+      "defaultAuthProfileId": "azure-openai.auth.api-key-header",
+      "audioProfileId": "azure-openai.audio.translation-pcm16-24k-mono",
+      "lifecycleProfileId": "azure-openai.lifecycle.realtime-translation",
+      "operations": ["realtime-translation"],
+      "capabilities": ["speech-to-text", "speech-to-speech", "speech-translation"],
+      "maturity": "ga",
+      "adapter": {
+        "id": "azure-openai-realtime-websocket",
+        "status": "disabled",
+        "verification": "fixture-only",
+        "reason": "The current runtime emits unsupported translation format fields, bypasses readiness, and has not resolved the Microsoft Learn response.text.* example versus the canonical session.* reference contract."
+      },
+      "documentationIds": ["azure-openai.docs.realtime", "azure-openai.docs.realtime-reference"],
+      "fixtureIds": ["azure-openai.fixture.realtime-translation-canonical.v1"],
+      "legacyProtocolIds": ["openai-translation"]
+    },
+    {
+      "id": "azure-openai.realtime.transcription.websocket.ga",
+      "version": 1,
+      "apiFamilyId": "azure-openai.api.realtime-transcription.websocket.ga",
+      "transportId": "azure-openai.transport.websocket-json-base64",
+      "authProfileIds": ["azure-openai.auth.api-key-header"],
+      "defaultAuthProfileId": "azure-openai.auth.api-key-header",
+      "audioProfileId": "azure-openai.audio.transcription-pcm16-24k-mono",
+      "lifecycleProfileId": "azure-openai.lifecycle.realtime-transcription",
+      "operations": ["realtime-transcription"],
+      "capabilities": ["speech-to-text", "realtime-transcription"],
+      "maturity": "ga",
+      "adapter": {
+        "id": "azure-openai-realtime-websocket",
+        "status": "enabled",
+        "verification": "fixture-only",
+        "reason": "The existing header-authenticated adapter constructs the documented intent=transcription endpoint and places the configured deployment id in the session transcription model field."
+      },
+      "documentationIds": ["azure-openai.docs.realtime", "azure-openai.docs.realtime-reference"],
+      "fixtureIds": ["azure-openai.fixture.realtime-transcription-intent.v1"],
+      "legacyProtocolIds": ["openai-transcription"]
+    },
+    {
+      "id": "azure-openai.realtime.transcription-whisper.websocket.ga",
+      "version": 1,
+      "apiFamilyId": "azure-openai.api.realtime-transcription.websocket.ga",
+      "transportId": "azure-openai.transport.websocket-json-base64",
+      "authProfileIds": ["azure-openai.auth.api-key-header"],
+      "defaultAuthProfileId": "azure-openai.auth.api-key-header",
+      "audioProfileId": "azure-openai.audio.transcription-pcm16-24k-mono",
+      "lifecycleProfileId": "azure-openai.lifecycle.realtime-transcription-whisper-manual",
+      "operations": ["realtime-transcription"],
+      "capabilities": ["speech-to-text", "realtime-transcription"],
+      "maturity": "ga",
+      "adapter": {
+        "id": "azure-openai-realtime-websocket",
+        "status": "enabled",
+        "verification": "fixture-only",
+        "reason": "The current adapter supports explicit manual commits and can pass an opaque Azure deployment id in the session body."
+      },
+      "documentationIds": ["azure-openai.docs.realtime", "azure-openai.docs.realtime-reference"],
+      "fixtureIds": ["azure-openai.fixture.realtime-transcription-whisper-manual.v1"],
+      "legacyProtocolIds": ["openai-transcription-whisper-manual"]
+    },
+    {
+      "id": "azure-openai.realtime.conversation.webrtc.ga",
+      "version": 1,
+      "apiFamilyId": "azure-openai.api.realtime-conversation.webrtc.ga",
+      "transportId": "azure-openai.transport.webrtc-sdp-datachannel",
+      "authProfileIds": ["azure-openai.auth.api-key-header", "azure-openai.auth.entra-bearer"],
+      "defaultAuthProfileId": "azure-openai.auth.entra-bearer",
+      "audioProfileId": "azure-openai.audio.realtime-pcm16-24k-mono",
+      "lifecycleProfileId": "azure-openai.lifecycle.realtime-conversation",
+      "operations": ["realtime-conversation"],
+      "capabilities": ["speech-to-text", "speech-to-speech"],
+      "maturity": "ga",
+      "adapter": {
+        "id": "azure-openai-realtime-webrtc",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "The desktop runtime has no Azure OpenAI WebRTC adapter."
+      },
+      "documentationIds": ["azure-openai.docs.realtime-webrtc"],
+      "fixtureIds": ["azure-openai.fixture.realtime-webrtc.v1"]
+    },
+    {
+      "id": "azure-openai.realtime.conversation.websocket.2025-04-01-preview",
+      "version": 1,
+      "apiFamilyId": "azure-openai.api.realtime-conversation.websocket.2025-04-01-preview",
+      "transportId": "azure-openai.transport.websocket-json-base64",
+      "authProfileIds": ["azure-openai.auth.api-key-header"],
+      "defaultAuthProfileId": "azure-openai.auth.api-key-header",
+      "audioProfileId": "azure-openai.audio.realtime-pcm16-24k-mono",
+      "lifecycleProfileId": "azure-openai.lifecycle.realtime-conversation",
+      "operations": ["realtime-conversation"],
+      "capabilities": ["speech-to-text", "speech-to-speech"],
+      "maturity": "deprecated",
+      "adapter": {
+        "id": "azure-openai-realtime-preview-websocket",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "The preview endpoint format is retained only for explicit migration and must never be combined with the GA /openai/v1 format."
+      },
+      "documentationIds": ["azure-openai.docs.realtime-websocket"],
+      "fixtureIds": ["azure-openai.fixture.realtime-preview-url-mix.v1"]
+    },
+    {
+      "id": "azure-openai.audio.transcription.v1-preview",
+      "version": 1,
+      "apiFamilyId": "azure-openai.api.audio-transcription.v1-preview",
+      "transportId": "azure-openai.transport.http-multipart-sse",
+      "authProfileIds": ["azure-openai.auth.api-key-header", "azure-openai.auth.entra-bearer"],
+      "defaultAuthProfileId": "azure-openai.auth.entra-bearer",
+      "audioProfileId": "azure-openai.audio.file-transcription-input",
+      "lifecycleProfileId": "azure-openai.lifecycle.transcription-sse",
+      "operations": ["asr"],
+      "capabilities": ["speech-to-text", "file-transcription"],
+      "maturity": "preview",
+      "adapter": {
+        "id": "azure-openai-audio-transcription-v1-preview",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "The current OpenAI-compatible HTTP gateway only implements chat/completions."
+      },
+      "documentationIds": ["azure-openai.docs.audio-v1-preview"],
+      "fixtureIds": ["azure-openai.fixture.audio-v1-preview.v1"]
+    },
+    {
+      "id": "azure-openai.audio.speech.v1-preview",
+      "version": 1,
+      "apiFamilyId": "azure-openai.api.audio-speech.v1-preview",
+      "transportId": "azure-openai.transport.http-json-audio",
+      "authProfileIds": ["azure-openai.auth.api-key-header", "azure-openai.auth.entra-bearer"],
+      "defaultAuthProfileId": "azure-openai.auth.entra-bearer",
+      "audioProfileId": "azure-openai.audio.tts-pcm16-24k-mono",
+      "lifecycleProfileId": "azure-openai.lifecycle.http-single-request",
+      "operations": ["tts"],
+      "capabilities": ["text-to-speech"],
+      "maturity": "preview",
+      "adapter": {
+        "id": "azure-openai-audio-speech-v1-preview",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "No Azure OpenAI Audio speech adapter exists in the current runtime."
+      },
+      "documentationIds": ["azure-openai.docs.audio-v1-preview"],
+      "fixtureIds": ["azure-openai.fixture.audio-speech-v1-preview.v1"]
+    },
+    {
+      "id": "azure-openai.audio.transcription.deployment-2024-02-01",
+      "version": 1,
+      "apiFamilyId": "azure-openai.api.audio-transcription.deployment-2024-02-01",
+      "transportId": "azure-openai.transport.http-multipart-json",
+      "authProfileIds": ["azure-openai.auth.api-key-header", "azure-openai.auth.entra-bearer"],
+      "defaultAuthProfileId": "azure-openai.auth.api-key-header",
+      "audioProfileId": "azure-openai.audio.file-transcription-input",
+      "lifecycleProfileId": "azure-openai.lifecycle.http-single-request",
+      "operations": ["asr"],
+      "capabilities": ["speech-to-text", "file-transcription"],
+      "maturity": "unspecified",
+      "adapter": {
+        "id": "azure-openai-audio-transcription-deployment",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "The deployment-path Whisper API is a distinct family and has no runtime adapter."
+      },
+      "documentationIds": ["azure-openai.docs.whisper-quickstart"],
+      "fixtureIds": ["azure-openai.fixture.audio-transcription-deployment-2024-02-01.v1"]
+    }
+  ],
+  "models": [
+    {
+      "id": "gpt-realtime",
+      "displayName": "GPT-Realtime",
+      "capabilities": ["speech-to-text", "speech-to-speech"],
+      "maturity": "ga",
+      "protocolBindings": [
+        {
+          "operation": "realtime-conversation",
+          "protocolProfileId": "azure-openai.realtime.conversation.websocket.ga",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["azure-openai.docs.models-regions", "azure-openai.docs.realtime"],
+      "availability": "Realtime model availability varies by deployment type and quota; check the current model-region table and Azure portal before deployment."
+    },
+    {
+      "id": "gpt-realtime-2",
+      "displayName": "GPT-Realtime-2",
+      "capabilities": ["speech-to-text", "speech-to-speech"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "realtime-conversation",
+          "protocolProfileId": "azure-openai.realtime.conversation.websocket.ga",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["azure-openai.docs.models-regions", "azure-openai.docs.realtime"],
+      "availability": "The checked Microsoft Learn pages disagree on the model date (2026-05-07 versus 2026-05-06); verify catalog and region in the Azure portal."
+    },
+    {
+      "id": "gpt-realtime-2.1",
+      "displayName": "GPT-Realtime-2.1",
+      "capabilities": ["speech-to-text", "speech-to-speech"],
+      "maturity": "preview",
+      "protocolBindings": [
+        {
+          "operation": "realtime-conversation",
+          "protocolProfileId": "azure-openai.realtime.conversation.websocket.ga",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["azure-openai.docs.models-regions"],
+      "availability": "Preview model dated 2026-07-07; verify region, deployment type, and quota in the Azure portal."
+    },
+    {
+      "id": "gpt-realtime-2.1-mini",
+      "displayName": "GPT-Realtime-2.1 Mini",
+      "capabilities": ["speech-to-text", "speech-to-speech"],
+      "maturity": "preview",
+      "protocolBindings": [
+        {
+          "operation": "realtime-conversation",
+          "protocolProfileId": "azure-openai.realtime.conversation.websocket.ga",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["azure-openai.docs.models-regions"],
+      "availability": "Preview model dated 2026-07-07; verify region, deployment type, and quota in the Azure portal."
+    },
+    {
+      "id": "gpt-realtime-translate",
+      "displayName": "GPT-Realtime-Translate",
+      "capabilities": ["speech-to-text", "speech-to-speech", "speech-translation"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "realtime-translation",
+          "protocolProfileId": "azure-openai.realtime.translation.websocket.ga",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["azure-openai.docs.models-regions", "azure-openai.docs.realtime"],
+      "availability": "Verify the current region matrix, deployment type, quota, and portal availability."
+    },
+    {
+      "id": "gpt-live-transcribe",
+      "displayName": "GPT-Live-Transcribe",
+      "capabilities": ["speech-to-text", "realtime-transcription"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "realtime-transcription",
+          "protocolProfileId": "azure-openai.realtime.transcription.websocket.ga",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["azure-openai.docs.models-regions", "azure-openai.docs.realtime"],
+      "availability": "The model is documented but was absent from the checked detailed region matrix; portal verification is required."
+    },
+    {
+      "id": "gpt-realtime-whisper",
+      "displayName": "GPT-Realtime-Whisper",
+      "capabilities": ["speech-to-text", "realtime-transcription"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "realtime-transcription",
+          "protocolProfileId": "azure-openai.realtime.transcription-whisper.websocket.ga",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["azure-openai.docs.models-regions", "azure-openai.docs.realtime-reference"],
+      "availability": "Verify the current region matrix, deployment type, quota, and portal availability."
+    },
+    {
+      "id": "gpt-transcribe",
+      "displayName": "GPT-Transcribe",
+      "capabilities": ["speech-to-text", "file-transcription"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "asr",
+          "protocolProfileId": "azure-openai.audio.transcription.v1-preview",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["azure-openai.docs.audio-concepts", "azure-openai.docs.audio-v1-preview"],
+      "availability": "The selected v1 Audio API family is preview even where the catalog model maturity is not explicitly labeled."
+    },
+    {
+      "id": "gpt-4o-mini-tts",
+      "displayName": "GPT-4o Mini TTS",
+      "capabilities": ["text-to-speech"],
+      "maturity": "preview",
+      "protocolBindings": [
+        {
+          "operation": "tts",
+          "protocolProfileId": "azure-openai.audio.speech.v1-preview",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["azure-openai.docs.audio-concepts", "azure-openai.docs.audio-v1-preview"],
+      "availability": "Azure OpenAI text-to-speech models and the v1 Audio API are documented as preview."
+    }
+  ],
+  "probes": [
+    {
+      "id": "azure-openai.probe.realtime-auth-deployment.v1",
+      "protocolProfileId": "azure-openai.realtime.conversation.websocket.ga",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "azure-openai.fixture.realtime-auth-deployment.v1",
+      "notes": "Validates all three documented auth profiles and proves that catalog model ids and deployment ids are independent."
+    },
+    {
+      "id": "azure-openai.probe.realtime-translation.v1",
+      "protocolProfileId": "azure-openai.realtime.translation.websocket.ga",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "azure-openai.fixture.realtime-translation-canonical.v1"
+    },
+    {
+      "id": "azure-openai.probe.realtime-transcription.v1",
+      "protocolProfileId": "azure-openai.realtime.transcription.websocket.ga",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "azure-openai.fixture.realtime-transcription-intent.v1"
+    },
+    {
+      "id": "azure-openai.probe.realtime-transcription-whisper.v1",
+      "protocolProfileId": "azure-openai.realtime.transcription-whisper.websocket.ga",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "azure-openai.fixture.realtime-transcription-whisper-manual.v1"
+    },
+    {
+      "id": "azure-openai.probe.realtime-preview-url-mix.v1",
+      "protocolProfileId": "azure-openai.realtime.conversation.websocket.2025-04-01-preview",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "azure-openai.fixture.realtime-preview-url-mix.v1"
+    },
+    {
+      "id": "azure-openai.probe.audio-v1-preview.v1",
+      "protocolProfileId": "azure-openai.audio.transcription.v1-preview",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "azure-openai.fixture.audio-v1-preview.v1"
+    },
+    {
+      "id": "azure-openai.probe.realtime-webrtc.v1",
+      "protocolProfileId": "azure-openai.realtime.conversation.webrtc.ga",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "azure-openai.fixture.realtime-webrtc.v1"
+    },
+    {
+      "id": "azure-openai.probe.audio-speech-v1-preview.v1",
+      "protocolProfileId": "azure-openai.audio.speech.v1-preview",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "azure-openai.fixture.audio-speech-v1-preview.v1"
+    },
+    {
+      "id": "azure-openai.probe.audio-transcription-deployment-2024-02-01.v1",
+      "protocolProfileId": "azure-openai.audio.transcription.deployment-2024-02-01",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "azure-openai.fixture.audio-transcription-deployment-2024-02-01.v1",
+      "notes": "Validates the deployment-path endpoint and fixed api-version without network I/O."
+    }
+  ],
+  "smokes": [
+    {
+      "id": "azure-openai.smoke.realtime-conversation.v1",
+      "protocolProfileId": "azure-openai.realtime.conversation.websocket.ga",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "azure-openai.fixture.realtime-conversation-terminal.v1"
+    },
+    {
+      "id": "azure-openai.smoke.realtime-translation.v1",
+      "protocolProfileId": "azure-openai.realtime.translation.websocket.ga",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "azure-openai.fixture.realtime-translation-canonical.v1"
+    },
+    {
+      "id": "azure-openai.smoke.realtime-transcription-fixture.v1",
+      "protocolProfileId": "azure-openai.realtime.transcription.websocket.ga",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "azure-openai.fixture.realtime-transcription-intent.v1",
+      "notes": "Fixture replay only; no Azure endpoint was called."
+    },
+    {
+      "id": "azure-openai.smoke.realtime-transcription-whisper-fixture.v1",
+      "protocolProfileId": "azure-openai.realtime.transcription-whisper.websocket.ga",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "azure-openai.fixture.realtime-transcription-whisper-manual.v1",
+      "notes": "Fixture replay only; no Azure endpoint was called."
+    },
+    {
+      "id": "azure-openai.smoke.realtime-webrtc.v1",
+      "protocolProfileId": "azure-openai.realtime.conversation.webrtc.ga",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "azure-openai.fixture.realtime-webrtc.v1"
+    },
+    {
+      "id": "azure-openai.smoke.audio-transcription.v1",
+      "protocolProfileId": "azure-openai.audio.transcription.v1-preview",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "azure-openai.fixture.audio-v1-preview.v1"
+    },
+    {
+      "id": "azure-openai.smoke.audio-speech.v1",
+      "protocolProfileId": "azure-openai.audio.speech.v1-preview",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "azure-openai.fixture.audio-speech-v1-preview.v1"
+    },
+    {
+      "id": "azure-openai.smoke.audio-transcription-deployment-2024-02-01.v1",
+      "protocolProfileId": "azure-openai.audio.transcription.deployment-2024-02-01",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "azure-openai.fixture.audio-transcription-deployment-2024-02-01.v1",
+      "notes": "Fixture replay only; no Azure endpoint was called."
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "azure-openai.fixture.realtime-auth-deployment.v1",
+      "path": "provider-modules/azure-openai/fixtures/realtime-auth-deployment-v1.json",
+      "kind": "probe",
+      "sourceDocumentationIds": [
+        "azure-openai.docs.realtime",
+        "azure-openai.docs.realtime-websocket",
+        "azure-openai.docs.models-regions"
+      ]
+    },
+    {
+      "id": "azure-openai.fixture.realtime-conversation-terminal.v1",
+      "path": "provider-modules/azure-openai/fixtures/realtime-conversation-terminal-v1.json",
+      "kind": "error",
+      "sourceDocumentationIds": ["azure-openai.docs.realtime-reference"]
+    },
+    {
+      "id": "azure-openai.fixture.realtime-translation-canonical.v1",
+      "path": "provider-modules/azure-openai/fixtures/realtime-translation-canonical-v1.json",
+      "kind": "wire",
+      "sourceDocumentationIds": ["azure-openai.docs.realtime", "azure-openai.docs.realtime-reference"]
+    },
+    {
+      "id": "azure-openai.fixture.realtime-transcription-intent.v1",
+      "path": "provider-modules/azure-openai/fixtures/realtime-transcription-intent-v1.json",
+      "kind": "wire",
+      "sourceDocumentationIds": ["azure-openai.docs.realtime", "azure-openai.docs.realtime-reference"]
+    },
+    {
+      "id": "azure-openai.fixture.realtime-transcription-whisper-manual.v1",
+      "path": "provider-modules/azure-openai/fixtures/realtime-transcription-whisper-manual-v1.json",
+      "kind": "wire",
+      "sourceDocumentationIds": ["azure-openai.docs.realtime", "azure-openai.docs.realtime-reference"]
+    },
+    {
+      "id": "azure-openai.fixture.realtime-preview-url-mix.v1",
+      "path": "provider-modules/azure-openai/fixtures/realtime-preview-url-mix-v1.json",
+      "kind": "error",
+      "sourceDocumentationIds": ["azure-openai.docs.realtime-websocket"]
+    },
+    {
+      "id": "azure-openai.fixture.realtime-webrtc.v1",
+      "path": "provider-modules/azure-openai/fixtures/realtime-webrtc-v1.json",
+      "kind": "probe",
+      "sourceDocumentationIds": ["azure-openai.docs.realtime-webrtc"]
+    },
+    {
+      "id": "azure-openai.fixture.audio-v1-preview.v1",
+      "path": "provider-modules/azure-openai/fixtures/audio-v1-preview-v1.json",
+      "kind": "wire",
+      "sourceDocumentationIds": ["azure-openai.docs.audio-v1-preview"]
+    },
+    {
+      "id": "azure-openai.fixture.audio-speech-v1-preview.v1",
+      "path": "provider-modules/azure-openai/fixtures/audio-speech-v1-preview-v1.json",
+      "kind": "wire",
+      "sourceDocumentationIds": ["azure-openai.docs.audio-v1-preview"]
+    },
+    {
+      "id": "azure-openai.fixture.audio-transcription-deployment-2024-02-01.v1",
+      "path": "provider-modules/azure-openai/fixtures/audio-transcription-deployment-2024-02-01-v1.json",
+      "kind": "wire",
+      "sourceDocumentationIds": ["azure-openai.docs.whisper-quickstart"]
+    }
+  ]
+}

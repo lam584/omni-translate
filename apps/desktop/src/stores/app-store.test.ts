@@ -108,6 +108,46 @@ describe('app store', () => {
     expect(merged.activeProviderTemplateId).toBe(initialState.configDraft.activeProviderTemplateId);
   });
 
+  it('hydrates manifest authority and exact versioned bindings for legacy built-in providers', () => {
+    const legacyDraft = structuredClone(useAppStore.getState().configDraft);
+    legacyDraft.providers[0].templateId = 'template-openai-compatible-realtime';
+    legacyDraft.providers[0].providerId = 'provider-openai-compatible';
+    delete legacyDraft.providers[0].manifestProviderId;
+    delete legacyDraft.providers[0].modelProtocolBindings;
+
+    const merged = appStoreTestHelpers.mergeConfigDraftWithDefaults(legacyDraft);
+    const provider = merged.providers[0];
+
+    expect(provider.manifestProviderId).toBe('openai');
+    expect(provider.modelProtocolBindings).not.toHaveLength(0);
+    expect(provider.modelProtocolBindings?.every((binding) => (
+      binding.profileOwnerProviderId === 'openai'
+      && binding.manifestVersion > 0
+      && binding.profileVersion > 0
+    ))).toBe(true);
+  });
+
+  it('does not guess manifest authority for an unbound legacy custom provider', () => {
+    const legacyDraft = structuredClone(useAppStore.getState().configDraft);
+    legacyDraft.providers[0] = {
+      ...legacyDraft.providers[0],
+      templateId: 'template-user-custom',
+      templateSource: 'custom',
+      providerId: 'provider-user-custom',
+      kind: 'openai-compatible',
+      mode: 'advanced',
+      model: 'realtime-looking-name',
+      realtimeProtocol: 'openai-conversation',
+    };
+    delete legacyDraft.providers[0].manifestProviderId;
+    delete legacyDraft.providers[0].modelProtocolBindings;
+
+    const provider = appStoreTestHelpers.mergeConfigDraftWithDefaults(legacyDraft).providers[0];
+
+    expect(provider.manifestProviderId).toBeUndefined();
+    expect(provider.modelProtocolBindings).toBeUndefined();
+  });
+
   it('hydrates legacy shared subtitle colors into both independent text styles', () => {
     const legacyDraft = structuredClone(useAppStore.getState().configDraft);
     const legacySubtitles = legacyDraft.subtitles as unknown as Record<string, unknown>;

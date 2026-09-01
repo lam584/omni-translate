@@ -1,0 +1,74 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "zhipu-glm.realtime-audio-vad",
+  "providerId": "zhipu-glm",
+  "protocolProfileId": "zhipu-glm.realtime-conversation",
+  "protocolProfileVersion": 1,
+  "kind": "smoke",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "zhipu-glm.realtime-guide"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived comparison of client_vad and server_vad. AAAAAA== is inert synthetic silence."
+  },
+  "scenario": "GLM-Realtime PCM upload and the two VAD control paths",
+  "data": {
+    "audioContract": {
+      "inputFormats": [
+        "wav",
+        "pcm16 at 16000 Hz",
+        "pcm24 at 24000 Hz"
+      ],
+      "inputChannels": 1,
+      "inputBitDepth": 16,
+      "defaultPcmSampleRateHz": 16000,
+      "output": "PCM signed 16-bit little-endian, mono, 24000 Hz",
+      "recommendedChunkDurationMs": 100,
+      "fixtureAudio": "AAAAAA=="
+    },
+    "clientVadSequence": [
+      {
+        "type": "input_audio_buffer.append",
+        "audio": "AAAAAA=="
+      },
+      {
+        "type": "input_audio_buffer.commit"
+      },
+      {
+        "type": "response.create"
+      }
+    ],
+    "serverVadSequence": [
+      {
+        "type": "input_audio_buffer.append",
+        "audio": "AAAAAA=="
+      },
+      {
+        "type": "input_audio_buffer.speech_started",
+        "audio_start_ms": 0,
+        "item_id": "<sanitized-item-id>"
+      },
+      {
+        "type": "input_audio_buffer.speech_stopped",
+        "audio_end_ms": 100,
+        "item_id": "<sanitized-item-id>"
+      },
+      {
+        "type": "response.created",
+        "response": {
+          "id": "<sanitized-response-id>",
+          "status": "in_progress"
+        }
+      }
+    ],
+    "assertions": [
+      "client_vad requires the client to commit buffered audio and create the response",
+      "server_vad detects speech boundaries and creates the response automatically",
+      "These are GLM input_audio_buffer events, not Gemini activityStart/activityEnd and not an assumed OpenAI Realtime contract"
+    ],
+    "implementationStatus": "disabled/not-implemented"
+  }
+}

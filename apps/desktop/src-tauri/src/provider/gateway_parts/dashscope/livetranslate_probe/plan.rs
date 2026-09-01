@@ -16,14 +16,16 @@ pub(super) fn prepare_livetranslate_probe_plan(
     context: &ProviderCallContext<'_>,
 ) -> Result<PreparedLiveTranslateProbePlan, ProviderRuntimeError> {
     let provider = context.provider;
+    let protocol_authority = crate::audio::events::authorize_bailian_native_translate(provider)
+        .map_err(|error| ProviderRuntimeError::new("protocol.profile-invalid", error))?;
     let source_language = crate::audio::omni::resolve_livetranslate_language(
-        &provider.model,
+        &protocol_authority,
         context.source_language,
         "en",
     )
     .map_err(|error| ProviderRuntimeError::new("request.invalid", error))?;
     let target_language = crate::audio::omni::resolve_livetranslate_language(
-        &provider.model,
+        &protocol_authority,
         context.target_language,
         "zh",
     )
@@ -48,8 +50,6 @@ pub(super) fn prepare_livetranslate_probe_plan(
     let (session_update, session_finish) =
         apply_test_client_plan_mutation(session_update, session_finish);
 
-    let protocol_authority = crate::audio::events::authorize_bailian_native_translate(provider)
-        .map_err(|error| ProviderRuntimeError::new("protocol.profile-invalid", error))?;
     let mut protocol_state = crate::audio::bailian_protocol::LiveTranslateServerState::default();
     protocol_state
         .record_client_session_update(&protocol_authority, &session_update)

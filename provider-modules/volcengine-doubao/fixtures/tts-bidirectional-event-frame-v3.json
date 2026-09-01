@@ -1,0 +1,40 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "volc-tts-bidirectional-event-frame-v3",
+  "providerId": "volcengine-doubao",
+  "protocolProfileId": "volcengine-doubao.tts-v3.bidirectional.seed-tts-2-0",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["tts-v3-bidirectional"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic decoded event sequence."
+  },
+  "scenario": "TTS V3 bidirectional connection runs one task and closes cleanly",
+  "data": {
+    "authContract": { "profileId": "volc-tts-v3-seed-tts-headers", "parameters": [
+      { "location": "header", "name": "X-Api-Key", "value": "fixture-key-redacted" }, { "location": "header", "name": "X-Api-Resource-Id", "value": "seed-tts-2.0" },
+      { "location": "header", "name": "X-Api-Request-Id", "value": "00000000-0000-4000-8000-000000000004" }
+    ] },
+    "audioContract": { "encoding": "pcm_s16le", "sampleRateHz": 16000, "bitDepth": 16, "channels": 1 },
+    "audio": { "payloadOmitted": true, "reason": "sanitized-event-envelope" },
+    "clientEvents": [{ "type": "TaskRequest" }, { "type": "FinishSession" }],
+    "serverEvents": [{ "type": "TTSResponse" }, { "type": "SessionFinished", "terminal": true }, { "type": "ConnectionFinished", "terminal": true }],
+    "connect": { "url": "wss://openspeech.bytedance.com/api/v3/tts/bidirection", "headers": { "X-Api-Key": "fixture-key-redacted", "X-Api-Resource-Id": "seed-tts-2.0", "X-Api-Request-Id": "00000000-0000-4000-8000-000000000004" } },
+    "envelope": { "id": "volc-tts-event-envelope-v3", "byteOrder": "big-endian", "identifierOrder": ["connect-id", "session-id"], "payloadLength": "uint32-big-endian" },
+    "events": [
+      { "direction": "client", "name": "StartConnection" },
+      { "direction": "server", "name": "ConnectionStarted", "connectId": "fixture-connect" },
+      { "direction": "client", "name": "StartSession", "sessionId": "fixture-session" },
+      { "direction": "server", "name": "SessionStarted", "sessionId": "fixture-session" },
+      { "direction": "client", "name": "TaskRequest", "decodedPayload": { "text": "fixture text" } },
+      { "direction": "server", "name": "TTSResponse", "audioPayloadOmitted": true },
+      { "direction": "client", "name": "FinishSession" },
+      { "direction": "server", "name": "SessionFinished", "semantics": "task terminal" },
+      { "direction": "client", "name": "FinishConnection" },
+      { "direction": "server", "name": "ConnectionFinished", "semantics": "connection terminal" }
+    ]
+  }
+}

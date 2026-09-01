@@ -55,7 +55,7 @@ fn parse_response(
         });
     }
     let value: Value = response.json().map_err(transport::normalize_transport_error)?;
-    parse_model_catalog_response(&provider.kind, &value)
+    parse_model_catalog_response(provider, &value)
 }
 
 fn failed_catalog(
@@ -120,7 +120,7 @@ pub(super) fn normalize_dashscope_compatible_base_url(base_url: &str) -> String 
 }
 
 pub(super) fn parse_model_catalog_response(
-    provider_kind: &str,
+    provider: &ProviderDraftInput,
     value: &Value,
 ) -> Result<Vec<ProviderModelRuntime>, ProviderRuntimeError> {
     let entries = value
@@ -152,7 +152,7 @@ pub(super) fn parse_model_catalog_response(
                     .and_then(Value::as_str)
                     .map(ToString::to_string),
                 created_at: entry.get("created").and_then(Value::as_u64),
-                capabilities: derive_catalog_model_capabilities(provider_kind, id),
+                capabilities: derive_catalog_model_capabilities(provider, id, entry),
             })
         })
         .collect::<Vec<_>>();
@@ -167,12 +167,30 @@ pub(super) fn parse_model_catalog_response(
     Ok(models)
 }
 
-fn derive_catalog_model_capabilities(provider_kind: &str, model_id: &str) -> Vec<String> {
-    if provider_kind == "dashscope" {
+fn derive_catalog_model_capabilities(
+    provider: &ProviderDraftInput,
+    model_id: &str,
+    entry: &Value,
+) -> Vec<String> {
+    if provider.kind == "dashscope" {
         return derive_bailian_profile_capabilities(model_id);
     }
-
-    derive_model_capabilities(model_id)
+    if let Ok(Some(capabilities)) =
+        crate::provider::provider_manifest::manifest_model_capabilities(provider, model_id)
+    {
+        return capabilities;
+    }
+    entry
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn derive_bailian_profile_capabilities(model_id: &str) -> Vec<String> {
@@ -198,29 +216,6 @@ fn derive_bailian_profile_capabilities(model_id: &str) -> Vec<String> {
     capabilities
 }
 
-pub(crate) fn derive_model_capabilities(model_id: &str) -> Vec<String> {
-    let normalized = model_id.to_ascii_lowercase();
-    let mut capabilities: Vec<String> = Vec::new();
-
-    if is_stt_model_name(&normalized) {
-        push_capability(&mut capabilities, "speech-to-text");
-    }
-
-    if is_tts_model_name(&normalized) {
-        push_capability(&mut capabilities, "text-to-speech");
-    }
-
-    if is_s2s_model_name(&normalized) {
-        push_capability(&mut capabilities, "speech-to-speech");
-    }
-
-    if is_text_generation_model_name(&normalized) && capabilities.is_empty() {
-        push_capability(&mut capabilities, "text-generation");
-    }
-
-    capabilities
-}
-
 fn is_openai_compatible_kind(kind: &str) -> bool {
     matches!(
         kind,
@@ -234,70 +229,38 @@ fn push_capability(capabilities: &mut Vec<String>, capability: &str) {
     }
 }
 
-fn is_stt_model_name(normalized: &str) -> bool {
-    normalized.contains("asr")
-        || normalized.contains("transcribe")
-        || normalized.contains("whisper")
-        || normalized.contains("parakeet")
-        || normalized.contains("chirp")
-        || normalized.contains("voxtral")
-        || normalized.contains("sensevoice")
-        || normalized.contains("paraformer")
-        || normalized.contains("gummy")
-        || normalized.contains("omni")
-        || normalized.contains("livetranslate")
-        || normalized.contains("realtime")
-        || (normalized.contains("gemini") && (normalized.contains("live") || normalized.contains("native-audio")))
-}
-
-fn is_tts_model_name(normalized: &str) -> bool {
-    normalized.contains("tts")
-        || normalized.contains("speech")
-        || normalized.contains("audio")
-        || normalized.contains("cosyvoice")
-        || normalized.contains("sambert")
-        || normalized.contains("magpie")
-        || normalized.contains("omni")
-        || normalized.contains("gpt-realtime")
-        || (normalized.contains("gemini") && (normalized.contains("live") || normalized.contains("native-audio")))
-}
-
-fn is_s2s_model_name(normalized: &str) -> bool {
-    normalized.contains("omni")
-        || normalized.contains("livetranslate")
-        || normalized.contains("gpt-realtime")
-        || normalized.contains("gpt-4o-realtime")
-        || normalized.contains("gpt-audio")
-        || (normalized.contains("gemini") && (normalized.contains("live") || normalized.contains("native-audio")))
-}
-
-fn is_text_generation_model_name(normalized: &str) -> bool {
-    normalized.contains("chat")
-        || normalized.contains("completion")
-        || normalized.contains("qwen")
-        || normalized.contains("gpt")
-        || normalized.contains("deepseek")
-        || normalized.contains("claude")
-        || normalized.contains("gemini")
-        || normalized.contains("glm")
-        || normalized.contains("llama")
-        || normalized.contains("mistral")
-        || normalized.contains("yi")
-        || normalized.contains("nemotron")
-        || normalized.contains("local")
-        || normalized.contains("ollama")
-        || normalized.contains("lmstudio")
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::parse_model_catalog_response;
+    use crate::provider::contracts::ProviderDraftInput;
+
+    fn provider(kind: &str) -> ProviderDraftInput {
+        serde_json::from_value(json!({
+            "templateId": "template-test-catalog",
+            "providerId": "provider-test-catalog",
+            "kind": kind,
+            "displayName": "Catalog fixture",
+            "model": "fixture-model",
+            "baseUrl": "https://example.test/v1",
+            "transport": "http",
+            "authRef": {
+                "kind": "none",
+                "reference": "none",
+                "headerName": "Authorization",
+                "scheme": "none"
+            },
+            "streamEnabled": false,
+            "timeoutMs": 1000,
+            "systemPromptTemplate": ""
+        }))
+        .expect("catalog provider fixture")
+    }
 
     fn dashscope_capabilities(model_id: &str) -> Vec<String> {
         let catalog = parse_model_catalog_response(
-            "dashscope",
+            &provider("dashscope"),
             &json!({ "data": [{ "id": model_id }] }),
         )
         .expect("catalog fixture should parse");
@@ -342,16 +305,23 @@ mod tests {
     }
 
     #[test]
-    fn non_dashscope_catalog_keeps_name_based_capability_inference() {
+    fn non_dashscope_catalog_uses_declared_capabilities_not_model_names() {
+        let provider = provider("openai-compatible");
         let catalog = parse_model_catalog_response(
-            "openai-compatible",
-            &json!({ "data": [{ "id": "openai/gpt-audio" }] }),
+            &provider,
+            &json!({ "data": [{
+                "id": "arbitrary-model-id",
+                "capabilities": ["speech-to-text"]
+            }] }),
         )
         .expect("catalog fixture should parse");
+        assert_eq!(catalog[0].capabilities, vec!["speech-to-text"]);
 
-        assert_eq!(
-            catalog[0].capabilities,
-            vec!["text-to-speech", "speech-to-speech"]
-        );
+        let untyped = parse_model_catalog_response(
+            &provider,
+            &json!({ "data": [{ "id": "openai/gpt-audio" }] }),
+        )
+        .expect("untyped catalog fixture should parse");
+        assert!(untyped[0].capabilities.is_empty());
     }
 }

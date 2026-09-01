@@ -1,0 +1,66 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "google-gemini.live-setup",
+  "providerId": "google-gemini",
+  "protocolProfileId": "google-gemini.live-agent",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "google-gemini.live-websocket",
+      "google-gemini.live-reference"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic setup exchange assembled from the native Live WebSocket documentation."
+  },
+  "scenario": "Native Gemini Live WebSocket setup followed by PCM audio input",
+  "data": {
+    "connection": {
+      "url": "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+      "headers": {
+        "x-goog-api-key": "<redacted-google-api-key>"
+      }
+    },
+    "authContract": {
+      "profileId": "google-gemini.api-key-header",
+      "parameters": [
+        { "location": "header", "name": "x-goog-api-key", "value": "<redacted-google-api-key>" }
+      ]
+    },
+    "clientMessages": [
+      {
+        "setup": {
+          "model": "models/gemini-3.1-flash-live-preview",
+          "generationConfig": {
+            "responseModalities": [
+              "AUDIO"
+            ]
+          },
+          "inputAudioTranscription": {},
+          "outputAudioTranscription": {}
+        }
+      },
+      {
+        "realtimeInput": {
+          "audio": {
+            "mimeType": "audio/pcm;rate=16000",
+            "data": "AAAAAA=="
+          }
+        }
+      }
+    ],
+    "serverMessages": [
+      {
+        "setupComplete": {}
+      }
+    ],
+    "audioContract": {
+      "input": "PCM signed 16-bit little-endian, mono, 16000 Hz",
+      "output": "PCM signed 16-bit little-endian, mono, 24000 Hz",
+      "fixtureAudio": "AAAAAA== is inert synthetic silence, not captured user audio"
+    },
+    "ordering": "Send setup first and wait for setupComplete before treating the session as ready."
+  }
+}

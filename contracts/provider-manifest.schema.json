@@ -1,0 +1,626 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omni-translate.local/contracts/provider-manifest.schema.json",
+  "title": "Omni Translate provider module manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "manifestVersion",
+    "checkedAt",
+    "provider",
+    "documentation",
+    "credentials",
+    "authProfiles",
+    "transports",
+    "audioProfiles",
+    "lifecycleProfiles",
+    "apiFamilies",
+    "protocolProfiles",
+    "models",
+    "probes",
+    "smokes",
+    "fixtures"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "const": "../../contracts/provider-manifest.schema.json"
+    },
+    "schemaVersion": {
+      "type": "string",
+      "const": "provider-manifest/v1"
+    },
+    "manifestVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "checkedAt": {
+      "type": "string",
+      "format": "date"
+    },
+    "provider": { "$ref": "#/$defs/provider" },
+    "documentation": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/documentation" }
+    },
+    "credentials": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/credential" }
+    },
+    "authProfiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/authProfile" }
+    },
+    "transports": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/transport" }
+    },
+    "audioProfiles": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/audioProfile" }
+    },
+    "lifecycleProfiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/lifecycleProfile" }
+    },
+    "apiFamilies": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/apiFamily" }
+    },
+    "protocolProfiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/protocolProfile" }
+    },
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/model" }
+    },
+    "probes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/check" }
+    },
+    "smokes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/check" }
+    },
+    "fixtures": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/fixture" }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9.-]*$"
+    },
+    "maturity": {
+      "enum": [
+        "ga",
+        "preview",
+        "experimental",
+        "enterprise-only",
+        "deprecated",
+        "unspecified"
+      ]
+    },
+    "verification": {
+      "enum": ["live-verified", "fixture-only", "not-implemented"]
+    },
+    "capability": {
+      "enum": [
+        "text-generation",
+        "text-translation",
+        "speech-to-text",
+        "text-to-speech",
+        "speech-to-speech",
+        "speech-translation",
+        "realtime-transcription",
+        "file-transcription",
+        "voice-clone"
+      ]
+    },
+    "operation": {
+      "enum": [
+        "text",
+        "text-translation",
+        "asr",
+        "tts",
+        "realtime-conversation",
+        "realtime-translation",
+        "realtime-transcription",
+        "voice-clone"
+      ]
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "displayName",
+        "templateId",
+        "kind",
+        "source",
+        "description",
+        "defaultModelId",
+        "defaultApiFamilyId",
+        "defaultCredentialId"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "displayName": { "type": "string", "minLength": 1 },
+        "templateId": { "type": "string", "pattern": "^template-[a-z0-9-]+$" },
+        "kind": { "type": "string", "minLength": 1 },
+        "source": { "enum": ["official", "community", "custom"] },
+        "description": { "type": "string", "minLength": 1 },
+        "defaultModelId": { "type": "string", "minLength": 1 },
+        "defaultApiFamilyId": { "$ref": "#/$defs/id" },
+        "defaultCredentialId": { "$ref": "#/$defs/id" },
+        "defaultRegion": { "type": "string", "minLength": 1 },
+        "notes": { "type": "string" }
+      }
+    },
+    "documentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "url", "checkedAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "title": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "checkedAt": { "type": "string", "format": "date" }
+      }
+    },
+    "credentialField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "secret", "required"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "label": { "type": "string", "minLength": 1 },
+        "secret": { "type": "boolean" },
+        "required": { "type": "boolean" },
+        "format": { "type": "string", "minLength": 1 }
+      }
+    },
+    "credential": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "reference", "fields"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "reference": { "type": "string", "pattern": "^credential://provider/" },
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/credentialField" }
+        }
+      }
+    },
+    "authProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "credentialId", "parameters"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "type": {
+          "enum": [
+            "bearer",
+            "token",
+            "api-key",
+            "multi-header-api-key",
+            "query-key",
+            "hmac-sha1-query",
+            "hmac-sha256-query",
+            "hmac-sha256-header",
+            "azure-entra",
+            "signed-binary"
+          ]
+        },
+        "credentialId": { "$ref": "#/$defs/id" },
+        "parameters": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/authParameter" }
+        },
+        "signing": { "$ref": "#/$defs/authSigning" },
+        "credentialBootstrap": { "$ref": "#/$defs/credentialBootstrap" }
+      }
+    },
+    "credentialBootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "description", "documentationIds"],
+      "properties": {
+        "kind": { "enum": ["jwt-derivation", "oauth2", "ephemeral-token-exchange"] },
+        "endpointTemplate": { "type": "string", "minLength": 1 },
+        "scope": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "documentationIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/id" }
+        }
+      }
+    },
+    "authParameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["location", "name", "source", "required"],
+      "properties": {
+        "location": { "enum": ["header", "query", "path", "binary-header"] },
+        "name": { "type": "string", "minLength": 1 },
+        "source": { "enum": ["credential", "static", "derived"] },
+        "credentialFieldId": { "$ref": "#/$defs/id" },
+        "staticValue": { "type": "string" },
+        "derivation": { "type": "string", "minLength": 1 },
+        "scheme": { "type": "string" },
+        "required": { "type": "boolean" }
+      }
+    },
+    "authSigning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "canonicalization", "signatureEncoding", "signatureParameterName"],
+      "properties": {
+        "algorithm": { "enum": ["hmac-sha1", "hmac-sha256", "provider-defined"] },
+        "canonicalization": { "type": "string", "minLength": 1 },
+        "signatureEncoding": { "enum": ["hex", "base64", "base64url", "binary"] },
+        "signatureParameterName": { "type": "string", "minLength": 1 },
+        "signedParameterNames": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "transport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "requestFraming",
+        "responseFraming",
+        "requestEnvelope",
+        "responseEnvelope"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "enum": ["http", "sse", "websocket", "webrtc"] },
+        "requestFraming": {
+          "enum": [
+            "json",
+            "none",
+            "multipart",
+            "json-base64",
+            "binary",
+            "protobuf",
+            "audio",
+            "json-and-binary",
+            "sdp"
+          ]
+        },
+        "responseFraming": {
+          "enum": [
+            "json",
+            "sse",
+            "audio",
+            "json-base64",
+            "binary",
+            "protobuf",
+            "json-and-binary",
+            "sdp"
+          ]
+        },
+        "requestEnvelope": { "$ref": "#/$defs/wireEnvelope" },
+        "responseEnvelope": { "$ref": "#/$defs/wireEnvelope" }
+      }
+    },
+    "wireEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["none", "length-prefixed", "typed-header", "provider-defined"] },
+        "id": { "$ref": "#/$defs/id" },
+        "byteOrder": { "enum": ["big-endian", "little-endian", "not-applicable"] },
+        "description": { "type": "string", "minLength": 1 }
+      }
+    },
+    "audioDirection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "formats", "sampleRatesHz", "channels"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "formats": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "sampleRatesHz": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1 }
+        },
+        "channels": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1, "maximum": 8 }
+        },
+        "bitDepths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1, "maximum": 64 }
+        },
+        "endianness": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["little-endian", "big-endian", "not-applicable"] }
+        },
+        "chunkDurationMs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "minimum": { "type": "number", "exclusiveMinimum": 0 },
+            "maximum": { "type": "number", "exclusiveMinimum": 0 },
+            "recommended": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        }
+      }
+    },
+    "audioProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "input", "output"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "input": { "$ref": "#/$defs/audioDirection" },
+        "output": { "$ref": "#/$defs/audioDirection" }
+      }
+    },
+    "eventSet": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "lifecycleProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "handshake",
+        "clientEvents",
+        "serverEvents",
+        "vadModes",
+        "terminal",
+        "reuse"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "handshake": { "$ref": "#/$defs/eventSet" },
+        "clientEvents": { "$ref": "#/$defs/eventSet" },
+        "serverEvents": { "$ref": "#/$defs/eventSet" },
+        "vadModes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": ["none", "manual", "server-vad", "semantic-vad", "client-activity"]
+          }
+        },
+        "terminal": { "type": "string", "minLength": 1 },
+        "reuse": { "enum": ["single-request", "single-session", "multi-turn", "sequential-tasks"] },
+        "idleTimeoutSeconds": { "type": ["integer", "null"], "minimum": 1 },
+        "textDeltaSemantics": {
+          "enum": ["append-delta", "replaceable-snapshot", "mixed", "not-applicable"]
+        }
+      }
+    },
+    "apiFamily": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "displayName",
+        "baseUrlTemplate",
+        "endpointTemplate",
+        "endpointStatus",
+        "modelAddressing",
+        "transportId",
+        "authProfileIds",
+        "defaultAuthProfileId",
+        "maturity",
+        "documentationIds"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "displayName": { "type": "string", "minLength": 1 },
+        "baseUrlTemplate": { "type": "string", "minLength": 1 },
+        "endpointTemplate": { "type": ["string", "null"], "minLength": 1 },
+        "endpointStatus": { "enum": ["verified", "unresolved", "deprecated"] },
+        "modelAddressing": { "enum": ["model-id", "deployment-id", "path-deployment", "none"] },
+        "apiVersion": { "type": ["string", "null"] },
+        "transportId": { "$ref": "#/$defs/id" },
+        "authProfileIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "defaultAuthProfileId": { "$ref": "#/$defs/id" },
+        "maturity": { "$ref": "#/$defs/maturity" },
+        "documentationIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/id" }
+        }
+      }
+    },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "verification"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "status": { "enum": ["enabled", "disabled"] },
+        "verification": { "$ref": "#/$defs/verification" },
+        "reason": { "type": "string" }
+      }
+    },
+    "protocolProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "apiFamilyId",
+        "transportId",
+        "authProfileIds",
+        "defaultAuthProfileId",
+        "lifecycleProfileId",
+        "operations",
+        "capabilities",
+        "maturity",
+        "adapter",
+        "documentationIds",
+        "fixtureIds"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "version": { "type": "integer", "minimum": 1 },
+        "apiFamilyId": { "$ref": "#/$defs/id" },
+        "transportId": { "$ref": "#/$defs/id" },
+        "authProfileIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "defaultAuthProfileId": { "$ref": "#/$defs/id" },
+        "audioProfileId": { "$ref": "#/$defs/id" },
+        "lifecycleProfileId": { "$ref": "#/$defs/id" },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/operation" }
+        },
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/capability" }
+        },
+        "maturity": { "$ref": "#/$defs/maturity" },
+        "adapter": { "$ref": "#/$defs/adapter" },
+        "documentationIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "fixtureIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "legacyProtocolIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "customProviderPolicy": { "enum": ["forbidden", "explicit-profile"] },
+        "customEndpointPolicy": { "enum": ["absolute-secure-url-no-userinfo"] },
+        "notes": { "type": "string" }
+      }
+    },
+    "protocolBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "protocolProfileId", "protocolProfileVersion"],
+      "properties": {
+        "operation": { "$ref": "#/$defs/operation" },
+        "protocolProfileId": { "$ref": "#/$defs/id" },
+        "protocolProfileVersion": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "displayName",
+        "capabilities",
+        "maturity",
+        "protocolBindings",
+        "documentationIds"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "displayName": { "type": "string", "minLength": 1 },
+        "aliases": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/capability" }
+        },
+        "maturity": { "$ref": "#/$defs/maturity" },
+        "protocolBindings": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/protocolBinding" }
+        },
+        "documentationIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "availability": { "type": "string" }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "protocolProfileId", "protocolProfileVersion", "verification"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "protocolProfileId": { "$ref": "#/$defs/id" },
+        "protocolProfileVersion": { "type": "integer", "minimum": 1 },
+        "verification": { "$ref": "#/$defs/verification" },
+        "fixtureId": { "$ref": "#/$defs/id" },
+        "notes": { "type": "string" }
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "kind", "sourceDocumentationIds"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "path": {
+          "type": "string",
+          "pattern": "^provider-modules/[a-z0-9-]+/fixtures/[a-z0-9._-]+\\.json$"
+        },
+        "kind": { "enum": ["wire", "probe", "smoke", "error"] },
+        "sourceDocumentationIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/id" }
+        }
+      }
+    }
+  }
+}

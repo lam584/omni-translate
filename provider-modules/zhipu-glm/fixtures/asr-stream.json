@@ -1,0 +1,73 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "zhipu-glm.asr-stream",
+  "providerId": "zhipu-glm",
+  "protocolProfileId": "zhipu-glm.asr",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "zhipu-glm.asr-guide",
+      "zhipu-glm.asr-reference"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived finite-file streaming transcription. No audio file was uploaded."
+  },
+  "scenario": "GLM-ASR-2512 streams a finite WAV or MP3 transcription over HTTP/SSE",
+  "data": {
+    "request": {
+      "event": "audio.transcriptions.create",
+      "method": "POST",
+      "url": "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions",
+      "headers": {
+        "Authorization": "Bearer <redacted-zhipu-api-key>",
+        "Content-Type": "multipart/form-data; boundary=<sanitized-boundary>"
+      },
+      "form": {
+        "model": "glm-asr-2512",
+        "stream": true,
+        "file": "<sanitized-wav-or-mp3-file>"
+      }
+    },
+    "authContract": {
+      "profileId": "zhipu-glm.bearer-api-key",
+      "parameters": [
+        { "location": "header", "name": "Authorization", "value": "Bearer <redacted-zhipu-api-key>" }
+      ]
+    },
+    "response": {
+      "contentType": "text/event-stream",
+      "frames": [
+        {
+          "type": "audio.transcription.chunk",
+          "data": {
+            "text": "<sanitized-transcription-delta>"
+          }
+        },
+        {
+          "data": "[DONE]"
+        }
+      ]
+    },
+    "terminalEvent": { "type": "data.done", "terminal": true },
+    "audioContract": {
+      "inputFormats": ["wav", "mp3"],
+      "maximumBytes": 26214400,
+      "fixtureAudio": "Synthetic file placeholder; no recording was uploaded"
+    },
+    "audio": { "file": "<sanitized-wav-or-mp3-file>" },
+    "limits": {
+      "formats": [
+        "wav",
+        "mp3"
+      ],
+      "maximumBytes": 26214400,
+      "maximumDurationSeconds": 30,
+      "fileOrBase64": "Supply file or file_base64; file wins if both are present"
+    },
+    "boundary": "This finite multipart/SSE ASR API is distinct from transcription_session.update on the native Realtime WebSocket.",
+    "implementationStatus": "disabled/not-implemented"
+  }
+}

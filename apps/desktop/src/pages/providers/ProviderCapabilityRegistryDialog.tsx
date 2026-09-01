@@ -5,7 +5,6 @@ import ModalDialog from '../../components/ModalDialog';
 import type { ProviderModelCapabilityRegistryEntry } from '../../schema/config';
 import type { ProviderCapability, ProviderInteractionCapability } from '../../schema/provider-contract';
 import {
-  inferRealtimeAudioModeFromModelName,
   isRealtimeAudioMode,
   providerCapabilityHintKey,
   providerCapabilityLabelKey,
@@ -64,7 +63,7 @@ export default function ProviderCapabilityRegistryDialog(props: Props) {
           {duplicateEntryIds.has(entry.id) ? <p className="provider-capability-registry-duplicate">{t('providers.capabilityRegistry.duplicateModelId')}</p> : null}
         </div>
         <div className="provider-scenario-switcher provider-capability-registry-pills">{providerCapabilityOrder.map((capability) => <button className={entry.capabilities.includes(capability) ? 'provider-scenario-pill provider-scenario-pill-active' : 'provider-scenario-pill'} key={capability} onClick={() => props.onCapabilityToggle(entry.id, capability)} title={t(providerCapabilityHintKey(capability))} type="button">{t(providerCapabilityLabelKey(capability))}</button>)}</div>
-        <select className="select-input provider-capability-mode-select" onChange={(event) => props.onChange(entry.id, { realtimeAudioMode: isRealtimeAudioMode(event.target.value) ? event.target.value : inferRealtimeAudioModeFromModelName(entry.modelId) })} title={t('providers.pendingModel.realtimeAudioMode')} value={entry.realtimeAudioMode ?? inferRealtimeAudioModeFromModelName(entry.modelId)}>{realtimeAudioModeOrder.map((mode) => <option key={mode} value={mode}>{t(`${realtimeAudioModeHelpKey(mode)}.name`)}</option>)}</select>
+        <select className="select-input provider-capability-mode-select" onChange={(event) => props.onChange(entry.id, { realtimeAudioMode: isRealtimeAudioMode(event.target.value) ? event.target.value : 'server_vad' })} title={t('providers.pendingModel.realtimeAudioMode')} value={entry.realtimeAudioMode ?? 'server_vad'}>{realtimeAudioModeOrder.map((mode) => <option key={mode} value={mode}>{t(`${realtimeAudioModeHelpKey(mode)}.name`)}</option>)}</select>
         <div className="provider-capability-registry-interactions">{providerInteractionCapabilityGroups.map((group) => <div className="provider-capability-group" key={group.id}>
           <span className="provider-capability-group-label">{t(providerInteractionCapabilityGroupLabelKey(group.id))}</span>
           <div className="provider-scenario-switcher provider-capability-registry-pills">{group.capabilities.map((capability) => <button className={(entry.interactionCapabilities ?? []).includes(capability) ? 'provider-scenario-pill provider-scenario-pill-active' : 'provider-scenario-pill'} key={capability} onClick={() => props.onInteractionToggle(entry.id, capability)} title={t(providerInteractionCapabilityHintKey(capability))} type="button">{t(providerInteractionCapabilityLabelKey(capability))}</button>)}</div>

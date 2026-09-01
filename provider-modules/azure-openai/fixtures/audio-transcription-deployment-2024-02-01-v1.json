@@ -1,0 +1,45 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "azure-openai.fixture.audio-transcription-deployment-2024-02-01.v1",
+  "providerId": "azure-openai",
+  "protocolProfileId": "azure-openai.audio.transcription.deployment-2024-02-01",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["azure-openai.docs.whisper-quickstart"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived deployment-path Whisper request; resource, deployment, credential, and audio values are placeholders."
+  },
+  "scenario": "Transcribe a completed audio file through the deployment-path API pinned to 2024-02-01",
+  "data": {
+    "endpointStatus": "verified",
+    "networkAuthorized": false,
+    "authorizationReason": "Fixture-only documentation replay; network access is not authorized.",
+    "authContract": {
+      "profileId": "azure-openai.auth.api-key-header",
+      "parameters": [{ "location": "header", "name": "api-key", "value": "<azure-openai-api-key>" }]
+    },
+    "audioContract": { "profileId": "azure-openai.audio.file-transcription-input", "container": "wav", "payloadKind": "multipart-file" },
+    "request": {
+      "type": "http.request",
+      "audio": "<sanitized-wav-file-bytes>",
+      "method": "POST",
+      "url": "https://sanitized-resource.openai.azure.com/openai/deployments/watch-whisper-file-prod/audio/transcriptions?api-version=2024-02-01",
+      "headers": {
+        "api-key": "<azure-openai-api-key>",
+        "Content-Type": "multipart/form-data; boundary=<sanitized-boundary>"
+      },
+      "fields": {
+        "file": "<sanitized-audio-file>"
+      }
+    },
+    "response": {
+      "type": "http.response",
+      "terminal": true,
+      "text": "sanitized transcript"
+    },
+    "invariant": "The deployment id is encoded in the path and no model field is sent."
+  }
+}

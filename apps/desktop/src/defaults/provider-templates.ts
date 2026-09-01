@@ -1,4 +1,5 @@
 import type { ModelPreset, ProviderTemplate } from '../schema/provider-template';
+import { projectTemplateFromProviderManifest } from '../provider-manifest/template-projection';
 
 type OpenAICompatibleTemplateInput = {
   id: string;
@@ -139,7 +140,7 @@ function makeOpenAICompatibleTemplate(input: OpenAICompatibleTemplateInput): Pro
   };
 }
 
-export const providerTemplates: ProviderTemplate[] = [
+const rawProviderTemplates: ProviderTemplate[] = [
   {
     id: 'template-openai-compatible-realtime',
     source: 'official',
@@ -784,6 +785,10 @@ export const providerTemplates: ProviderTemplate[] = [
     ],
   }),
 ];
+
+export const providerTemplates: ProviderTemplate[] = rawProviderTemplates.map(
+  projectTemplateFromProviderManifest,
+);
 
 export const defaultProviderTemplate =
   providerTemplates.find((item) => item.id === 'template-dashscope-realtime') ?? providerTemplates[0];

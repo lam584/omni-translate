@@ -29,16 +29,17 @@ use tungstenite::client::IntoClientRequest;
 use tungstenite::{connect, Message};
 use uuid::Uuid;
 
-use super::diagnostics::diag_log;
-use super::engine::emit_audio_snapshot;
-use super::glossary::GlossaryContext;
-use super::omni::OmniHandle;
-use super::pcm_resample::{pcm16_chunk_rms, resample_capture_to_mono_i16};
-use super::realtime_ws::{self, attempt_backoff_delay};
-use super::state::AudioStateStore;
-use super::time_utils::unix_ms;
+use crate::audio::diagnostics::diag_log;
+use crate::audio::engine::emit_audio_snapshot;
+use crate::audio::glossary::GlossaryContext;
+use crate::audio::omni::OmniHandle;
+use crate::audio::pcm_resample::{pcm16_chunk_rms, resample_capture_to_mono_i16};
+use crate::audio::realtime_ws::{self, attempt_backoff_delay};
+use crate::audio::state::AudioStateStore;
+use crate::audio::time_utils::unix_ms;
 use crate::diagnostics::model_trace::{ModelTraceCall, ModelTraceContext, ModelTraceRecorder};
 use crate::provider::contracts::ProviderDraftInput;
+use crate::provider::provider_manifest::authorize_provider_operation;
 use crate::provider::gateway_parts::auth::resolve_secret;
 
 const TENCENT_HOST: &str = "asr.cloud.tencent.com";
@@ -293,6 +294,14 @@ pub(crate) fn start_tencent_speech_translate(
     target_language: String,
     glossary: GlossaryContext,
 ) -> Result<(mpsc::Sender<Vec<u8>>, OmniHandle), String> {
+    let authority = authorize_provider_operation(&provider, "realtime-translation")?
+        .ok_or_else(|| format!("provider '{}' has no manifest-authorized speech translation profile", provider.provider_id))?;
+    if authority.adapter_id != "tencent-speech-translate-adapter" {
+        return Err(format!(
+            "provider_manifest.adapter_mismatch: Tencent worker cannot execute adapter '{}'",
+            authority.adapter_id
+        ));
+    }
     // Resolve + parse the combined credential up front so configuration
     // errors surface synchronously to the route layer.
     let secret = resolve_secret(&provider.auth_ref)

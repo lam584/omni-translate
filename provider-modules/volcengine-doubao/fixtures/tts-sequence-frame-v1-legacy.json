@@ -1,0 +1,30 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "volc-tts-sequence-frame-v1-legacy",
+  "providerId": "volcengine-doubao",
+  "protocolProfileId": "volcengine-doubao.tts-v1.ws-binary-legacy",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["tts-v1-legacy"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Historical and not recommended. Values are structural and synthetic."
+  },
+  "scenario": "Historical TTS V1 returns audio sequences and marks the final package with a negative sequence",
+  "data": {
+    "endpointStatus": "deprecated",
+    "networkAuthorized": false,
+    "authContract": { "profileId": "volc-tts-v1-legacy-bearer", "parameters": [{ "location": "header", "name": "Authorization", "value": "Bearer <redacted>" }] },
+    "connect": { "url": "wss://openspeech.bytedance.com/api/v1/tts/ws_binary", "headers": { "Authorization": "Bearer; fixture-token-redacted" } },
+    "requestBodyIncludes": { "app": { "appid": "fixture-app-id", "token": "fixture-token-redacted" }, "request": { "text": "fixture text" } },
+    "envelope": { "id": "volc-tts-sequence-envelope-v1", "layout": ["4-byte-header", "signed-sequence", "payload-size", "payload"], "byteOrder": "big-endian" },
+    "responseSequenceShape": [
+      { "sequence": 1, "audioPayloadOmitted": true, "terminal": false },
+      { "sequence": -2, "audioPayloadOmitted": true, "terminal": true }
+    ],
+    "maturity": "deprecated",
+    "serverEvidence": "intentionally absent; historical sequence shapes are documentation-only and network access is denied"
+  }
+}

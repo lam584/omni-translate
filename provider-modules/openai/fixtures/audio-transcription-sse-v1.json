@@ -1,0 +1,57 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "openai.fixture.audio-transcription-sse.v1",
+  "providerId": "openai",
+  "protocolProfileId": "openai.audio.transcription.sse.current",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["openai.docs.speech-to-text", "openai.docs.model-transcribe"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived multipart request and SSE event sequence."
+  },
+  "scenario": "Stream a completed audio file transcription as append-only SSE deltas",
+  "data": {
+  "endpointStatus": "verified",
+  "networkAuthorized": false,
+  "authorizationReason": "Fixture-only documentation replay; network access is not authorized.",
+  "authContract": {
+    "profileId": "openai.auth.bearer-header",
+    "parameters": [{ "location": "header", "name": "Authorization", "value": "Bearer <openai-api-key>" }]
+  },
+  "audioContract": { "profileId": "openai.audio.file-transcription-input", "container": "wav", "payloadKind": "multipart-file" },
+  "request": {
+    "type": "http.multipart.request",
+    "audio": "<sanitized-wav-file-bytes>",
+    "method": "POST",
+    "url": "https://api.openai.com/v1/audio/transcriptions",
+    "headers": {
+      "Authorization": "Bearer <openai-api-key>",
+      "Content-Type": "multipart/form-data; boundary=<sanitized-boundary>"
+    },
+    "fields": {
+      "model": "gpt-transcribe",
+      "file": "<sanitized-audio-file>",
+      "stream": true
+    }
+  },
+  "responseEvents": [
+    {
+      "event": "transcript.text.delta",
+      "data": {
+        "type": "transcript.text.delta",
+        "delta": "partial "
+      }
+    },
+    {
+      "event": "transcript.text.done",
+      "data": {
+        "type": "transcript.text.done",
+        "text": "completed transcript"
+      }
+    }
+  ]
+  }
+}

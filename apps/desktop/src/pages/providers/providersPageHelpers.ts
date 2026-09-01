@@ -23,6 +23,7 @@ import {
 } from '../../utils/provider-model-capabilities';
 import type { ProviderTemplateCatalogEntry } from '../../utils/provider-template-catalog';
 import { parseRuntimeTimestampMs } from '../../utils/runtime-timestamp';
+import { customProviderProfileKeyFromBinding } from '../../provider-manifest/custom-profile-options';
 
 export type ModelCatalogState = {
   signature: string;
@@ -224,6 +225,7 @@ function createDefaultCustomProviderDraft(kind: ProviderKind = 'openai-compatibl
     streamEnabled: true,
     timeoutMs: 15000,
     systemPromptTemplate: defaultPromptTemplateForKind(kind),
+    protocolProfileKey: '',
   };
 }
 
@@ -241,6 +243,7 @@ function providerDraftToCustomProviderTemplateDraft(provider: ProviderDraft): Cu
     streamEnabled: provider.streamEnabled,
     timeoutMs: provider.timeoutMs,
     systemPromptTemplate: provider.systemPromptTemplate,
+    protocolProfileKey: customProviderProfileKeyFromBinding(provider.modelProtocolBindings?.[0]),
   };
 }
 

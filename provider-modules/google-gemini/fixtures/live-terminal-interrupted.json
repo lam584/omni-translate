@@ -1,0 +1,37 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "google-gemini.live-terminal-interrupted",
+  "providerId": "google-gemini",
+  "protocolProfileId": "google-gemini.live-agent",
+  "protocolProfileVersion": 1,
+  "kind": "smoke",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "google-gemini.live-reference"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic interrupted-turn sequence."
+  },
+  "scenario": "Interrupted Gemini Live turn omits generationComplete but still reaches turnComplete",
+  "data": {
+    "serverMessages": [
+      {
+        "serverContent": {
+          "interrupted": true
+        }
+      },
+      {
+        "serverContent": {
+          "turnComplete": true
+        }
+      }
+    ],
+    "assertions": [
+      "interrupted replaces generationComplete for an interrupted generation",
+      "generationComplete must be absent from this sequence",
+      "turnComplete remains the per-turn terminal signal"
+    ]
+  }
+}

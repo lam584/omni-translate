@@ -340,7 +340,9 @@ impl RealtimeAudioMode {
             Some(other) => Err(format!(
                 "模型 {model} 配置了不支持的实时语音模式: {other}"
             )),
-            None => Ok(default_realtime_audio_mode(model)),
+            None => Err(format!(
+                "模型 {model} 缺少显式 realtimeAudioMode；运行时不会按模型名推断协议"
+            )),
         }
     }
 
@@ -372,15 +374,6 @@ impl RealtimeAudioMode {
         }
     }
 }
-
-pub(crate) fn default_realtime_audio_mode(model: &str) -> RealtimeAudioMode {
-    if crate::audio::events::model_name_is_livetranslate(model) {
-        RealtimeAudioMode::ServerVad
-    } else {
-        RealtimeAudioMode::Manual
-    }
-}
-
 
 /// 48 kHz stereo f32 capture -> 16 kHz mono i16, as the DashScope wire
 /// format expects. Thin fixed-rate front for the shared capture resampler.
@@ -662,16 +655,17 @@ mod unit_tests {
 
     #[test]
     fn livetranslate_language_contract_defaults_auto_source_and_rejects_unknown_codes() {
+        let authority = crate::audio::bailian_protocol::livetranslate_test_authority();
         assert_eq!(
             resolve_livetranslate_language(
-                "qwen3.5-livetranslate-flash-realtime",
+                &authority,
                 "auto",
                 "en",
             ),
             Ok("en".to_string())
         );
         assert!(resolve_livetranslate_language(
-            "qwen3.5-livetranslate-flash-realtime",
+            &authority,
             "xx-Unknown",
             "en",
         )
@@ -680,9 +674,10 @@ mod unit_tests {
 
     #[test]
     fn livetranslate_audio_output_falls_back_to_text_for_unsupported_target() {
+        let authority = crate::audio::bailian_protocol::livetranslate_test_authority();
         assert_eq!(
             resolve_livetranslate_output_mode(
-                "qwen3.5-livetranslate-flash-realtime",
+                &authority,
                 "sw",
                 OmniOutputMode::TextAndAudio,
             ),

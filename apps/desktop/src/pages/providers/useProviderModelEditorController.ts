@@ -15,8 +15,6 @@ import { useAppStore } from '../../stores/app-store';
 import {
   capabilityForScenario,
   createProviderModelCapabilityRegistryEntry,
-  inferInteractionCapabilitiesFromModelName,
-  inferRealtimeAudioModeFromModelName,
   normalizeProviderCapabilityList,
   normalizeProviderInteractionCapabilityList,
   normalizeProviderModels,
@@ -115,13 +113,13 @@ export function useProviderModelEditorController(params: Params) {
 
   const openPendingModelRegistration = (scenario: ProviderScenario, model: ProviderModelRuntime) => {
     const capabilities = resolveProviderModelCapabilities(model, params.localModelCapabilityRegistry);
-    const realtimeAudioMode = inferRealtimeAudioModeFromModelName(model.id, model.displayName);
+    const realtimeAudioMode = 'server_vad' as const;
     params.setPendingModelRegistration({
       scenario,
       model,
       capabilities: capabilities.length ? capabilities : [capabilityForScenario(scenario)],
       realtimeAudioMode,
-      interactionCapabilities: inferInteractionCapabilitiesFromModelName(model.id, model.displayName, realtimeAudioMode),
+      interactionCapabilities: ['auto_vad'],
     });
   };
 
@@ -130,9 +128,9 @@ export function useProviderModelEditorController(params: Params) {
       ...entry,
       modelId: entry.modelId.trim(),
       capabilities: normalizeProviderCapabilityList(entry.capabilities),
-      realtimeAudioMode: entry.realtimeAudioMode ?? inferRealtimeAudioModeFromModelName(entry.modelId),
+      realtimeAudioMode: entry.realtimeAudioMode ?? 'server_vad',
       interactionCapabilities: normalizeProviderInteractionCapabilityList(
-        entry.interactionCapabilities ?? inferInteractionCapabilitiesFromModelName(entry.modelId, undefined, entry.realtimeAudioMode),
+        entry.interactionCapabilities ?? [],
       ),
     }));
     updateActiveProviderDraft({ localModelCapabilityRegistry: normalized, status: 'draft' });

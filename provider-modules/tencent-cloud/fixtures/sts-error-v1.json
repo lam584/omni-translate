@@ -1,0 +1,20 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "tencent-sts-error-v1",
+  "providerId": "tencent-cloud",
+  "protocolProfileId": "tencent-cloud.sts.ws-v1.simul",
+  "protocolProfileVersion": 1,
+  "kind": "error",
+  "provenance": {
+    "sourceDocumentationIds": ["sts-websocket"],
+    "capturedFromLive": false,
+    "sanitized": true
+  },
+  "scenario": "Simultaneous mode omits the required target language",
+  "data": {
+    "serverTextFrame": { "NotificationType": "Handshake", "TaskId": "fixture-task", "HandshakeResult": { "Code": 4001, "Message": "dstLang is required for simul mode" } },
+    "audioMayBeSent": false,
+    "terminal": true
+  }
+}

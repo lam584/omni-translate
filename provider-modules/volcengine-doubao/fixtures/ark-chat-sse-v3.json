@@ -1,0 +1,32 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "volc-ark-chat-sse-v3",
+  "providerId": "volcengine-doubao",
+  "protocolProfileId": "volcengine-doubao.ark.chat-completions-v3",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["ark-chat"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic Chat Completions SSE shape."
+  },
+  "scenario": "Ark Chat Completions streams one assistant message",
+  "data": {
+    "authContract": { "profileId": "volc-ark-bearer", "parameters": [{ "location": "header", "name": "Authorization", "value": "Bearer <redacted>" }] },
+    "clientEvents": [{ "type": "https.json.request", "body": { "stream": true } }],
+    "responseEvents": [{ "type": "sse.chat.completion.chunk" }, { "type": "sse.choice.finish_reason" }, { "type": "sse.done", "terminal": true }],
+    "request": {
+      "method": "POST",
+      "url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+      "headers": { "Authorization": "Bearer <redacted>", "Content-Type": "application/json" },
+      "json": { "model": "doubao-seed-2-1-pro-260628", "messages": [{ "role": "user", "content": "fixture prompt" }], "stream": true }
+    },
+    "sse": [
+      { "data": { "id": "chatcmpl_fixture", "choices": [{ "index": 0, "delta": { "role": "assistant", "content": "fixture" }, "finish_reason": null }] } },
+      { "data": { "id": "chatcmpl_fixture", "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }] } },
+      { "dataLiteral": "[DONE]" }
+    ]
+  }
+}

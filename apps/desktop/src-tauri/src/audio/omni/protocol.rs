@@ -2170,35 +2170,49 @@ fn normalize_livetranslate_language(language: &str, fallback: &str) -> String {
 }
 
 pub(crate) fn resolve_livetranslate_language(
-    model: &str,
+    authority: &crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile,
     language: &str,
     fallback: &str,
 ) -> Result<String, String> {
     let normalized = normalize_livetranslate_language(language, fallback);
-    let supported = if model
-        .trim()
-        .to_ascii_lowercase()
-        .starts_with("qwen3.5-livetranslate")
-    {
-        LIVETRANSLATE_LANGUAGE_TABLE_V2026_07_08
-    } else {
-        LIVETRANSLATE_LEGACY_LANGUAGE_TABLE
+    let supported = match (
+        authority.profile_id.as_str(),
+        authority.profile_version,
+        authority.wire_dialect.as_str(),
+    ) {
+        (
+            "bailian.livetranslate.realtime.ws",
+            1,
+            "bailian-livetranslate-session-ws-v1",
+        ) => LIVETRANSLATE_LANGUAGE_TABLE_V2026_07_08,
+        (
+            "bailian.livetranslate.realtime.ws.snapshots",
+            1,
+            "bailian-livetranslate-session-ws-v1",
+        ) => LIVETRANSLATE_LEGACY_LANGUAGE_TABLE,
+        _ => {
+            return Err(format!(
+                "model_protocol.profile_invalid: profile '{}'/v{} with dialect '{}' does not authorize the LiveTranslate language contract",
+                authority.profile_id, authority.profile_version, authority.wire_dialect
+            ));
+        }
     };
     if supported.contains(&normalized.as_str()) {
         Ok(normalized)
     } else {
         Err(format!(
-            "LiveTranslate model {model} does not support language '{language}' (normalized '{normalized}')"
+            "LiveTranslate profile '{}'/v{} does not support language '{language}' (normalized '{normalized}')",
+            authority.profile_id, authority.profile_version
         ))
     }
 }
 
 pub(crate) fn resolve_livetranslate_output_mode(
-    model: &str,
+    authority: &crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile,
     target_language: &str,
     requested: OmniOutputMode,
 ) -> Result<OmniOutputMode, String> {
-    let target = resolve_livetranslate_language(model, target_language, "zh")?;
+    let target = resolve_livetranslate_language(authority, target_language, "zh")?;
     Ok(if requested == OmniOutputMode::TextAndAudio
         && !LIVETRANSLATE_AUDIO_OUTPUT_LANGUAGES.contains(&target.as_str())
     {
@@ -2225,29 +2239,31 @@ pub(crate) enum OmniOutputMode {
 mod livetranslate_language_contract_tests {
     use super::*;
 
-    const MODEL: &str = "qwen3.5-livetranslate-flash-realtime";
+    fn authority() -> crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile {
+        crate::audio::bailian_protocol::livetranslate_test_authority()
+    }
 
     #[test]
     fn normalizes_region_tags_and_rejects_unknown_explicit_languages() {
         assert_eq!(
-            resolve_livetranslate_language(MODEL, "zh-CN", "en").unwrap(),
+            resolve_livetranslate_language(&authority(), "zh-CN", "en").unwrap(),
             "zh"
         );
         assert_eq!(
-            resolve_livetranslate_language(MODEL, "ja-JP", "en").unwrap(),
+            resolve_livetranslate_language(&authority(), "ja-JP", "en").unwrap(),
             "ja"
         );
-        assert!(resolve_livetranslate_language(MODEL, "xx-ZZ", "en").is_err());
+        assert!(resolve_livetranslate_language(&authority(), "xx-ZZ", "en").is_err());
     }
 
     #[test]
     fn empty_or_auto_source_defaults_to_english() {
         assert_eq!(
-            resolve_livetranslate_language(MODEL, "", "en").unwrap(),
+            resolve_livetranslate_language(&authority(), "", "en").unwrap(),
             "en"
         );
         assert_eq!(
-            resolve_livetranslate_language(MODEL, "auto", "en").unwrap(),
+            resolve_livetranslate_language(&authority(), "auto", "en").unwrap(),
             "en"
         );
     }
@@ -2256,15 +2272,26 @@ mod livetranslate_language_contract_tests {
     fn text_and_audio_uses_the_versioned_target_capability_table() {
         assert_eq!(LIVETRANSLATE_AUDIO_OUTPUT_LANGUAGES.len(), 29);
         assert_eq!(
-            resolve_livetranslate_output_mode(MODEL, "yue", OmniOutputMode::TextAndAudio)
+            resolve_livetranslate_output_mode(&authority(), "yue", OmniOutputMode::TextAndAudio)
                 .unwrap(),
             OmniOutputMode::TextAndAudio
         );
         assert_eq!(
-            resolve_livetranslate_output_mode(MODEL, "uk", OmniOutputMode::TextAndAudio)
+            resolve_livetranslate_output_mode(&authority(), "uk", OmniOutputMode::TextAndAudio)
                 .unwrap(),
             OmniOutputMode::TextOnly
         );
+    }
+
+    #[test]
+    fn language_contract_rejects_unrelated_authorized_profile() {
+        let mut unrelated = authority();
+        unrelated.profile_id = "bailian.omni.realtime.ws".to_string();
+        unrelated.wire_dialect = "bailian-omni-realtime-ws-v1".to_string();
+
+        let error = resolve_livetranslate_language(&unrelated, "en", "en")
+            .expect_err("an unrelated exact profile must not select LiveTranslate semantics");
+        assert!(error.contains("model_protocol.profile_invalid"));
     }
 }
 
@@ -2471,8 +2498,9 @@ pub(crate) fn build_omni_session_update_for_provider_with_output_mode(
     target_language: &str,
     output_mode: OmniOutputMode,
 ) -> Value {
-    let protocol = crate::audio::events::resolve_realtime_profile(provider, &provider.model)
-        .protocol_dialect;
+    let realtime_profile =
+        crate::audio::events::resolve_realtime_profile(provider, &provider.model);
+    let protocol = realtime_profile.protocol_dialect;
     #[cfg(test)]
     let protocol = protocol.or_else(|| {
         (provider.base_url == "wss://example.invalid"
@@ -2491,7 +2519,11 @@ pub(crate) fn build_omni_session_update_for_provider_with_output_mode(
         output_mode,
     )
     .expect("Omni session builder requires a DashScope Omni/LiveTranslate protocol");
-    apply_model_specific_turn_detection(&mut session_update, &provider.model, audio_mode);
+    apply_authorized_turn_detection(
+        &mut session_update,
+        realtime_profile.model_protocol_authority.as_ref(),
+        audio_mode,
+    );
     session_update
 }
 
@@ -2515,14 +2547,29 @@ pub(crate) fn build_livetranslate_session_update_with_languages(
     )
 }
 
-fn apply_model_specific_turn_detection(
+fn apply_authorized_turn_detection(
     session_update: &mut Value,
-    model: &str,
+    authority: Option<
+        &crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile,
+    >,
     audio_mode: RealtimeAudioMode,
 ) {
-    let model = model.trim().to_ascii_lowercase();
-    let is_qwen35_release_family = model.starts_with("qwen3.5-omni-")
-        || model.starts_with("qwen3.5-livetranslate-");
+    let is_qwen35_release_family = authority.is_some_and(|authority| {
+        authority.profile_version == 1
+            && matches!(
+                (
+                    authority.profile_id.as_str(),
+                    authority.wire_dialect.as_str(),
+                ),
+                (
+                    "bailian.omni.realtime.ws",
+                    "bailian-omni-realtime-ws-v1"
+                ) | (
+                    "bailian.livetranslate.realtime.ws",
+                    "bailian-livetranslate-session-ws-v1"
+                )
+            )
+    });
     if is_qwen35_release_family
         && matches!(
             audio_mode,
@@ -2539,7 +2586,12 @@ fn apply_model_specific_turn_detection(
     if audio_mode != RealtimeAudioMode::ServerVad {
         return;
     }
-    if !model.starts_with("qwen-audio-3.0-realtime") {
+    let is_qwen_audio_chat = authority.is_some_and(|authority| {
+        authority.profile_id == "bailian.qwen-audio-chat.realtime.ws"
+            && authority.profile_version == 1
+            && authority.wire_dialect == "bailian-qwen-audio-chat-realtime-ws-v1"
+    });
+    if !is_qwen_audio_chat {
         return;
     }
     // The generic Omni defaults are intentionally sensitive for arbitrary
@@ -2588,8 +2640,31 @@ pub(super) fn build_omni_session_update_with_output_mode(
         target_language,
         output_mode,
     );
-    apply_model_specific_turn_detection(&mut session_update, model, audio_mode);
+    apply_test_model_specific_turn_detection(&mut session_update, model, audio_mode);
     session_update
+}
+
+#[cfg(test)]
+fn apply_test_model_specific_turn_detection(
+    session_update: &mut Value,
+    model: &str,
+    audio_mode: RealtimeAudioMode,
+) {
+    let model = model.trim().to_ascii_lowercase();
+    if (model.starts_with("qwen3.5-omni-")
+        || model.starts_with("qwen3.5-livetranslate-"))
+        && matches!(
+            audio_mode,
+            RealtimeAudioMode::ServerVad | RealtimeAudioMode::SemanticVad
+        )
+    {
+        session_update["session"]["turn_detection"]["silence_duration_ms"] = json!(400);
+    } else if model.starts_with("qwen-audio-3.0-realtime")
+        && audio_mode == RealtimeAudioMode::ServerVad
+    {
+        session_update["session"]["turn_detection"]["threshold"] = json!(0.5);
+        session_update["session"]["turn_detection"]["silence_duration_ms"] = json!(400);
+    }
 }
 
 #[derive(Debug)]

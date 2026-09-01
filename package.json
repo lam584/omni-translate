@@ -59,7 +59,8 @@
     "perf:desktop-baseline": "node ./scripts/testing/prepare-performance-baseline.mjs",
     "perf:startup-readiness": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/testing/measure-startup-readiness.ps1",
     "test:install-regression": "node ./scripts/testing/prepare-install-regression-report.mjs",
-    "test:contracts": "node ./scripts/testing/verify-contracts.mjs",
+    "test:contracts": "node ./scripts/testing/verify-contracts.mjs && npm run test:provider-manifests",
+    "test:provider-manifests": "node --test ./scripts/testing/verify-provider-manifests.test.mjs && node ./scripts/testing/verify-provider-manifests.mjs && node ./scripts/testing/validate-provider-json-schemas.mjs && node ./scripts/testing/build-provider-manifest-bundle.mjs --check",
     "test:config-paths": "node ./scripts/testing/verify-config-paths.mjs",
     "test:integration:bridge-contract": "npm run test:integration:bridge-contract --workspace @omni/desktop",
     "audit:architecture": "node ./scripts/testing/audit-architecture-boundaries.mjs",
@@ -112,5 +113,8 @@
     "quality:gate:release": "node ./scripts/testing/run-quality-gate.mjs",
     "dev:desktop:fast": "npm run dev:tauri:fast --workspace @omni/desktop",
     "perf:startup-readiness:fast": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/testing/measure-startup-readiness.ps1 -UseFastDev"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1"
   }
 }

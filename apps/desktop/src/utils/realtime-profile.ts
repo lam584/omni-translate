@@ -14,8 +14,10 @@ import {
   type ModelProtocolRegion,
   type ModelProtocolTransport,
 } from '../model-protocol/profile-registry';
+import { PROVIDER_MANIFEST_REGISTRY } from '../provider-manifest/bundle';
+import type { ProviderManifestProtocolProfile } from '../provider-manifest/types';
 
-export type RealtimeProfileSource = 'manifest' | 'registry' | 'template' | 'provider' | 'model-name' | 'none';
+export type RealtimeProfileSource = 'manifest' | 'registry' | 'template' | 'provider' | 'none';
 export type RealtimeRouteKind = 'omni' | 'openai-realtime' | 'gemini-live' | 'dashscope-asr' | 'local-vad';
 
 export type RealtimeProfileResolutionOptions = {
@@ -171,22 +173,74 @@ function protocolFromDashScopeAuthorization(
   }
 }
 
-function inferProtocol(provider: ProviderDraft | null, modelId: string): RealtimeProtocol | null {
-  const value = normalized(modelId);
-  const explicitGeminiProvider = provider?.templateId.toLowerCase().includes('gemini') === true;
-  if (explicitGeminiProvider && value.includes('gemini') && (value.includes('live') || value.includes('realtime') || value.includes('native-audio'))) return 'gemini-live';
-  if (provider?.kind === 'openai-compatible') {
-    if (value.includes('translate')) return 'openai-translation';
-    if (value.includes('transcribe') || value.includes('whisper')) return 'openai-transcription';
-    if (value.includes('realtime') || value.includes('live')) return 'openai-conversation';
+function defaultAudioMode(protocol: RealtimeProtocol | null): RealtimeAudioMode {
+  if (protocol === 'gemini-live') return 'gemini_auto_activity';
+  return 'server_vad';
+}
+
+function manifestProtocol(profile: ProviderManifestProtocolProfile): RealtimeProtocol | null {
+  if (profile.adapter.id === 'gemini-live' && profile.operations.includes('realtime-conversation')) {
+    return 'gemini-live';
+  }
+  if (
+    profile.adapter.id === 'openai-realtime-websocket'
+    || profile.adapter.id === 'azure-openai-realtime-websocket'
+  ) {
+    if (profile.operations.includes('realtime-conversation')) return 'openai-conversation';
+    if (profile.operations.includes('realtime-translation')) return 'openai-translation';
+    if (profile.operations.includes('realtime-transcription')) return 'openai-transcription';
   }
   return null;
 }
 
-function defaultAudioMode(protocol: RealtimeProtocol | null, modelId: string, allowNameInference: boolean): RealtimeAudioMode {
-  if (protocol === 'gemini-live') return 'gemini_auto_activity';
-  if (allowNameInference && protocol === 'openai-transcription' && normalized(modelId).includes('whisper')) return 'manual';
-  return 'server_vad';
+function exactManifestRealtimeProfile(
+  provider: ProviderDraft,
+  modelId: string,
+): { matchedProvider: boolean; profile: ProviderManifestProtocolProfile | null } {
+  const builtIn = PROVIDER_MANIFEST_REGISTRY.findByTemplateId(provider.templateId);
+  if (builtIn) {
+    const model = builtIn.models.find((candidate) => candidate.id === modelId);
+    if (!model) return { matchedProvider: true, profile: null };
+    const realtimeBindings = model.protocolBindings.filter((binding) => binding.operation.startsWith('realtime-'));
+    if (realtimeBindings.length !== 1) return { matchedProvider: true, profile: null };
+    const binding = realtimeBindings[0];
+    return {
+      matchedProvider: true,
+      profile: builtIn.protocolProfiles.find((candidate) => (
+        candidate.id === binding.protocolProfileId
+        && candidate.version === binding.protocolProfileVersion
+        && candidate.adapter.status === 'enabled'
+      )) ?? null,
+    };
+  }
+  if (provider.templateSource !== 'custom') return { matchedProvider: false, profile: null };
+  const bindings = provider.modelProtocolBindings?.filter((binding) => (
+    binding.modelId === modelId && binding.operation.startsWith('realtime-')
+  )) ?? [];
+  if (bindings.length !== 1) return { matchedProvider: true, profile: null };
+  const binding = bindings[0];
+  const owner = PROVIDER_MANIFEST_REGISTRY.findByProviderId(binding.profileOwnerProviderId);
+  if (!owner || owner.manifestVersion !== binding.manifestVersion) {
+    return { matchedProvider: true, profile: null };
+  }
+  return {
+    matchedProvider: true,
+    profile: owner.protocolProfiles.find((candidate) => (
+      candidate.id === binding.profileId
+      && candidate.version === binding.profileVersion
+      && candidate.customProviderPolicy === 'explicit-profile'
+      && candidate.adapter.status === 'enabled'
+    )) ?? null,
+  };
+}
+
+function manifestRealtimeAudioMode(profile: ProviderManifestProtocolProfile): RealtimeAudioMode {
+  if (profile.adapter.id === 'gemini-live') return 'gemini_auto_activity';
+  const lifecycle = PROVIDER_MANIFEST_REGISTRY.all().flatMap((manifest) => manifest.lifecycleProfiles)
+    .find((candidate) => candidate.id === profile.lifecycleProfileId);
+  if (lifecycle?.vadModes.includes('server-vad')) return 'server_vad';
+  if (lifecycle?.vadModes.includes('semantic-vad')) return 'semantic_vad';
+  return 'manual';
 }
 
 export function resolveRealtimeProfile(
@@ -207,6 +261,9 @@ export function resolveRealtimeProfile(
     : [];
 
   let dashscopeAuthorization: AuthorizedModelProtocolProfile | null = null;
+  const genericManifest = provider && !isDashScope(provider)
+    ? exactManifestRealtimeProfile(provider, modelId)
+    : { matchedProvider: false, profile: null };
   let protocolDialect: RealtimeProtocol | null;
   let source: RealtimeProfileSource;
   if (provider && isDashScope(provider)) {
@@ -218,6 +275,9 @@ export function resolveRealtimeProfile(
     );
     protocolDialect = protocolFromDashScopeAuthorization(dashscopeAuthorization);
     source = 'manifest';
+  } else if (genericManifest.matchedProvider) {
+    protocolDialect = genericManifest.profile ? manifestProtocol(genericManifest.profile) : null;
+    source = 'manifest';
   } else if (provider && registryEntry) {
     protocolDialect = protocolFromExactRegistry(provider, registryEntry);
     source = 'registry';
@@ -228,15 +288,16 @@ export function resolveRealtimeProfile(
     protocolDialect = provider.realtimeProtocol;
     source = 'provider';
   } else {
-    protocolDialect = inferProtocol(provider, modelId);
-    source = protocolDialect ? 'model-name' : 'none';
+    protocolDialect = null;
+    source = 'none';
   }
   if (!isDashScope(provider) && protocolDialect?.startsWith('dashscope-')) {
     return rejectModelProtocol('model_protocol.authorization_identity_mismatch', modelId);
   }
 
-  const realtimeAudioMode = registryEntry?.realtimeAudioMode
-    ?? defaultAudioMode(protocolDialect, modelId, source === 'model-name');
+  const realtimeAudioMode = genericManifest.profile
+    ? manifestRealtimeAudioMode(genericManifest.profile)
+    : registryEntry?.realtimeAudioMode ?? defaultAudioMode(protocolDialect);
   const routeKind: RealtimeRouteKind = protocolDialect === 'dashscope-omni' || protocolDialect === 'dashscope-livetranslate'
     ? 'omni'
     : protocolDialect === 'gemini-live'
@@ -252,6 +313,9 @@ export function resolveRealtimeProfile(
     // output is supported. A non-empty authoritative codec set is the support
     // signal consumed by the legacy resolved-profile shape.
     ? dashscopeAuthorization.audioOutput.codecs.length > 0
+    : genericManifest.profile
+      ? genericManifest.profile.capabilities.includes('speech-to-speech')
+        || genericManifest.profile.capabilities.includes('text-to-speech')
     : registryEntry
       ? registryEntry.capabilities.includes('speech-to-speech') || registryEntry.capabilities.includes('text-to-speech')
     : protocolDialect === 'openai-conversation' || protocolDialect === 'gemini-live';

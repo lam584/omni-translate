@@ -326,7 +326,7 @@ describe('resolveRealtimeProfile', () => {
     expect(profile.diagnostics[0]).toContain("first entry 'first'");
   });
 
-  it('preserves non-DashScope template, provider, and name fallback precedence', () => {
+  it('uses explicit template/provider hints but never falls back to a model name', () => {
     const provider = providerFor('gpt-realtime-v2', 'openai-compatible');
     provider.templateRealtimeProtocol = 'openai-transcription';
     provider.realtimeProtocol = 'openai-translation';
@@ -339,7 +339,7 @@ describe('resolveRealtimeProfile', () => {
     });
     delete provider.realtimeProtocol;
     expect(resolveRealtimeProfile(configWith(provider), provider.model)).toMatchObject({
-      protocolDialect: 'openai-conversation', source: 'model-name',
+      protocolDialect: null, source: 'none',
     });
   });
 
@@ -379,24 +379,24 @@ describe('resolveRealtimeProfile', () => {
     }
   });
 
-  it('preserves non-DashScope OpenAI, Gemini, and local-vad name behavior', () => {
+  it('does not infer OpenAI or Gemini protocols from realtime-looking names', () => {
     const inferredProfile = (modelId: string, templateId: string) =>
       resolveRealtimeProfile(configWith(providerFor(modelId, 'openai-compatible', templateId)), modelId);
 
     expect(inferredProfile('gpt-translate-v2', 'template-custom')).toMatchObject({
-      protocolDialect: 'openai-translation', nativeTranslation: true,
+      protocolDialect: null, nativeTranslation: false, source: 'none',
     });
     expect(inferredProfile('gpt-transcribe-v2', 'template-custom')).toMatchObject({
-      protocolDialect: 'openai-transcription', realtimeAudioMode: 'server_vad',
+      protocolDialect: null, realtimeAudioMode: 'server_vad', source: 'none',
     });
     expect(inferredProfile('gpt-whisper-v2', 'template-custom')).toMatchObject({
-      protocolDialect: 'openai-transcription', realtimeAudioMode: 'manual',
+      protocolDialect: null, realtimeAudioMode: 'server_vad', source: 'none',
     });
     expect(inferredProfile('gpt-realtime-v2', 'template-custom')).toMatchObject({
-      protocolDialect: 'openai-conversation', nativeAudioOutput: true,
+      protocolDialect: null, nativeAudioOutput: false, source: 'none',
     });
     expect(inferredProfile('gpt-live-v2', 'template-custom')).toMatchObject({
-      protocolDialect: 'openai-conversation', nativeAudioOutput: true,
+      protocolDialect: null, nativeAudioOutput: false, source: 'none',
     });
     for (const modelId of [
       'gemini-flash-live',
@@ -404,18 +404,18 @@ describe('resolveRealtimeProfile', () => {
       'gemini-flash-native-audio',
     ]) {
       expect(inferredProfile(modelId, 'template-gemini')).toMatchObject({
-        protocolDialect: 'gemini-live', routeKind: 'gemini-live', realtimeAudioMode: 'gemini_auto_activity',
+        protocolDialect: null, routeKind: 'local-vad', realtimeAudioMode: 'server_vad', source: 'manifest',
       });
     }
     expect(inferredProfile('gemini-flash-live', 'template-custom')).toMatchObject({
-      protocolDialect: 'openai-conversation', routeKind: 'openai-realtime',
+      protocolDialect: null, routeKind: 'local-vad', source: 'none',
     });
     expect(inferredProfile('plain-text-model', 'template-custom')).toMatchObject({
       protocolDialect: null, routeKind: 'local-vad', speechDispatchPolicy: 'subtitle-tts', source: 'none',
     });
   });
 
-  it('binds a scene-assigned non-Bailian model to its explicit provider', () => {
+  it('binds a scene model to its provider without granting an inferred protocol', () => {
     const provider = providerFor('default-text-model', 'openai-compatible');
     provider.sceneModelAssignments = [{
       scenario: 'watch',
@@ -423,8 +423,8 @@ describe('resolveRealtimeProfile', () => {
     }];
     expect(resolveRealtimeProfile(configWith(provider), 'gpt-live-scene')).toMatchObject({
       providerId: provider.providerId,
-      protocolDialect: 'openai-conversation',
-      routeKind: 'openai-realtime',
+      protocolDialect: null,
+      routeKind: 'local-vad',
     });
   });
 

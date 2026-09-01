@@ -1,0 +1,44 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "google-gemini.live-terminal-normal",
+  "providerId": "google-gemini",
+  "protocolProfileId": "google-gemini.live-agent",
+  "protocolProfileVersion": 1,
+  "kind": "smoke",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "google-gemini.live-reference"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic normal-turn terminal sequence; field ordering is the contract under test."
+  },
+  "scenario": "Normal Gemini Live turn reaches generationComplete and then turnComplete",
+  "data": {
+    "serverMessages": [
+      {
+        "serverContent": {
+          "outputTranscription": {
+            "text": "<sanitized-output-transcript>"
+          }
+        }
+      },
+      {
+        "serverContent": {
+          "generationComplete": true
+        }
+      },
+      {
+        "serverContent": {
+          "turnComplete": true
+        }
+      }
+    ],
+    "assertions": [
+      "generationComplete precedes turnComplete on a normal generation",
+      "turnComplete closes the turn",
+      "outputTranscription is content and is not itself terminal"
+    ]
+  }
+}

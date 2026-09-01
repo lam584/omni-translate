@@ -39,6 +39,27 @@ pub(crate) async fn run_model_benchmark(
                 auth_header_name.as_deref(),
                 auth_scheme.as_deref(),
             )?;
+        let provider_manifest_authority = match provider.as_ref() {
+            Some(provider) if provider.model != model => {
+                return Err(format!(
+                    "provider_manifest.model_identity_mismatch: benchmark model '{}' differs from provider model '{}'",
+                    model, provider.model
+                ));
+            }
+            Some(provider) => crate::provider::provider_manifest::authorize_realtime_provider(provider)?,
+            None => None,
+        };
+        if let Some(authority) = provider_manifest_authority.as_ref() {
+            if !matches!(
+                authority.adapter_id.as_str(),
+                "openai-realtime-websocket" | "azure-openai-realtime-websocket" | "gemini-live"
+            ) {
+                return Err(format!(
+                    "provider_manifest.adapter_mismatch: benchmark cannot execute adapter '{}'",
+                    authority.adapter_id
+                ));
+            }
+        }
         let resolved_profile = provider
             .as_ref()
             .map(|provider| crate::audio::events::resolve_realtime_profile(provider, &model));
@@ -61,7 +82,10 @@ pub(crate) async fn run_model_benchmark(
         let config = BenchmarkConfig {
             api_key,
             mp3_path: PathBuf::from(&mp3_path),
-            model: model.clone(),
+            model: provider_manifest_authority
+                .as_ref()
+                .map(|authority| authority.wire_model_id().to_string())
+                .unwrap_or_else(|| model.clone()),
             audio_mode,
             interaction_capabilities: interaction_capabilities.unwrap_or_default(),
             provider_kind: requested_provider_kind,
@@ -71,6 +95,8 @@ pub(crate) async fn run_model_benchmark(
                 .unwrap_or_else(|| DEFAULT_WS_BASE_URL.to_string()),
             auth_header_name: auth_header_name
                 .filter(|value| !value.trim().is_empty())
+                .or_else(|| provider_manifest_authority.as_ref()
+                    .and_then(|authority| authority.canonical_auth_header_name.clone()))
                 .or_else(|| {
                     provider
                         .as_ref()
@@ -79,6 +105,8 @@ pub(crate) async fn run_model_benchmark(
                 .unwrap_or_else(|| "Authorization".to_string()),
             auth_scheme: auth_scheme
                 .filter(|value| !value.trim().is_empty())
+                .or_else(|| provider_manifest_authority.as_ref()
+                    .and_then(|authority| authority.canonical_auth_scheme.clone()))
                 .or_else(|| {
                     provider
                         .as_ref()

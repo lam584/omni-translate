@@ -1,0 +1,48 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "azure-openai.fixture.audio-speech-v1-preview.v1",
+  "providerId": "azure-openai",
+  "protocolProfileId": "azure-openai.audio.speech.v1-preview",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["azure-openai.docs.audio-v1-preview"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived preview speech request; resource, deployment, and credential values are placeholders."
+  },
+  "scenario": "Synthesize PCM audio through the Azure OpenAI v1 preview Audio speech endpoint",
+  "data": {
+    "endpointStatus": "verified",
+    "networkAuthorized": false,
+    "authorizationReason": "Fixture-only documentation replay; network access is not authorized.",
+    "authContract": {
+      "profileId": "azure-openai.auth.entra-bearer",
+      "parameters": [{ "location": "header", "name": "Authorization", "value": "Bearer <entra-access-token>" }]
+    },
+    "audioContract": { "profileId": "azure-openai.audio.tts-pcm16-24k-mono", "encoding": "pcm16", "sampleRateHz": 24000, "channels": 1 },
+    "request": {
+      "type": "http.request",
+      "method": "POST",
+      "url": "https://sanitized-resource.openai.azure.com/openai/v1/audio/speech?api-version=preview",
+      "headers": {
+        "Authorization": "Bearer <entra-access-token>",
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "model": "watch-tts-prod",
+        "input": "sanitized speech input",
+        "voice": "alloy",
+        "response_format": "pcm"
+      }
+    },
+    "response": {
+      "type": "http.response",
+      "terminal": true,
+      "audio": "<base64-sanitized-pcm16-24khz-mono>",
+      "contentType": "audio/pcm",
+      "body": "<sanitized-pcm16-24khz-mono-bytes>"
+    }
+  }
+}

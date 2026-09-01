@@ -9,19 +9,20 @@ use tungstenite::client::IntoClientRequest;
 use tungstenite::{connect, Message};
 use url::Url;
 
-use super::diagnostics::diag_log;
-use super::engine::emit_audio_snapshot;
-use super::glossary::GlossaryContext;
-use super::omni::OmniHandle;
-use super::realtime_cue::commit_realtime_cue;
-use super::pcm_resample::{
+use crate::audio::diagnostics::diag_log;
+use crate::audio::engine::emit_audio_snapshot;
+use crate::audio::glossary::GlossaryContext;
+use crate::audio::omni::OmniHandle;
+use crate::audio::realtime_cue::commit_realtime_cue;
+use crate::audio::pcm_resample::{
     base64_encode_pcm16, pcm16_chunk_rms, resample_capture_to_mono_i16, SilenceGate,
 };
-use super::realtime_ws::{self, attempt_backoff_delay};
-use super::state::AudioStateStore;
-use super::time_utils::unix_ms;
+use crate::audio::realtime_ws::{self, attempt_backoff_delay};
+use crate::audio::state::AudioStateStore;
+use crate::audio::time_utils::unix_ms;
 use crate::diagnostics::model_trace::{ModelTraceCall, ModelTraceContext, ModelTraceRecorder};
 use crate::provider::contracts::ProviderDraftInput;
+use crate::provider::provider_manifest::authorize_realtime_provider;
 use crate::provider::gateway_parts::auth::{apply_ws_auth, apply_ws_custom_headers};
 
 const GEMINI_READ_TIMEOUT_MS: u64 = 200;
@@ -202,6 +203,15 @@ pub(crate) fn start_gemini_live(
     target_language: String,
     glossary: GlossaryContext,
 ) -> Result<(mpsc::Sender<Vec<u8>>, OmniHandle), String> {
+    let authority = authorize_realtime_provider(&provider)?
+        .ok_or_else(|| format!("provider '{}' has no manifest-authorized realtime profile", provider.provider_id))?;
+    if authority.adapter_id != "gemini-live" || authority.operation != "realtime-conversation" {
+        return Err(format!(
+            "provider_manifest.adapter_mismatch: Gemini worker cannot execute '{}'/{}",
+            authority.adapter_id, authority.operation
+        ));
+    }
+    let provider = authority.provider_for_connection(&provider);
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
 

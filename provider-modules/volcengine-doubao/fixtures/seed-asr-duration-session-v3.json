@@ -1,0 +1,43 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "volc-seed-asr-duration-session-v3",
+  "providerId": "volcengine-doubao",
+  "protocolProfileId": "volcengine-doubao.seed-asr-v3.async.asr2-duration",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["seed-asr-bidirectional", "seed-asr-binary-protocol"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Decoded structural fixture. Compressed payload bytes are omitted so no invented gzip vector is presented as an official capture."
+  },
+  "scenario": "Seed ASR 2.0 duration profile sends full request, audio, last audio, stable utterance, and last package",
+  "data": {
+    "connect": {
+      "url": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
+      "headers": { "X-Api-Key": "fixture-key-redacted", "X-Api-Resource-Id": "volc.seedasr.sauc.duration", "X-Api-Request-Id": "00000000-0000-4000-8000-000000000001", "X-Api-Sequence": "-1" }
+    },
+    "authContract": { "profileId": "volc-seed-asr-asr2-duration-headers", "parameters": [
+      { "location": "header", "name": "X-Api-Key", "value": "fixture-key-redacted" }, { "location": "header", "name": "X-Api-Resource-Id", "value": "volc.seedasr.sauc.duration" },
+      { "location": "header", "name": "X-Api-Request-Id", "value": "00000000-0000-4000-8000-000000000001" }, { "location": "header", "name": "X-Api-Sequence", "value": "-1" }
+    ] },
+    "audioContract": { "encoding": "pcm_s16le", "sampleRateHz": 16000, "bitDepth": 16, "channels": 1 },
+    "audio": { "payloadOmitted": true, "reason": "sanitized-binary-fixture" },
+    "clientEvents": [{ "type": "full-client-request" }, { "type": "audio-only" }, { "type": "last-audio" }],
+    "serverEvents": [{ "type": "full-server-response" }, { "type": "last-package", "terminal": true }],
+    "envelope": {
+      "byteOrder": "big-endian",
+      "layout": ["4-byte-nibble-header", "optional-signed-int32-sequence", "uint32-payload-size", "payload"],
+      "headerFields": { "byte0": "version|header-size-in-words", "byte1": "message-type|flags", "byte2": "serialization|compression", "byte3": "reserved" },
+      "messageTypes": { "1": "full-client-request", "2": "audio-only-client-request", "9": "full-server-response", "15": "error" }
+    },
+    "events": [
+      { "direction": "client", "messageType": 1, "flags": "no-sequence", "serialization": "json", "compression": "gzip", "decodedPayload": { "user": { "uid": "fixture-user" }, "audio": { "format": "pcm", "rate": 16000, "bits": 16, "channel": 1, "codec": "raw" }, "request": { "model_name": "bigmodel", "enable_nonstream": true, "show_utterances": true, "end_window_size": 800 } } },
+      { "direction": "client", "messageType": 2, "flags": "positive-sequence", "sequence": 1, "compression": "gzip", "audioPayloadOmitted": true },
+      { "direction": "client", "messageType": 2, "flags": "last-no-sequence", "compression": "gzip", "audioPayloadOmitted": true },
+      { "direction": "server", "messageType": 9, "flags": "positive-sequence", "sequence": 1, "serialization": "json", "compression": "gzip", "decodedPayload": { "code": 1000, "event": 0, "is_last_package": false, "result": { "text": "fixture", "utterances": [{ "text": "fixture", "definite": true, "start_time": 0, "end_time": 800 }] } }, "semantics": "definite utterance is stable but not transport terminal" },
+      { "direction": "server", "messageType": 9, "flags": "negative-last", "sequence": -2, "serialization": "json", "compression": "gzip", "decodedPayload": { "code": 1000, "is_last_package": true, "result": { "text": "fixture complete" } }, "semantics": "connection terminal" }
+    ]
+  }
+}

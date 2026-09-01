@@ -4,4 +4,7 @@ pub(crate) mod events;
 pub(crate) mod gateway;
 pub(crate) mod gateway_parts;
 pub(crate) mod model_protocol_profile;
+pub(crate) mod provider_manifest;
+pub(crate) mod adapter_registry;
+pub(crate) mod adapters;
 pub(crate) mod state;

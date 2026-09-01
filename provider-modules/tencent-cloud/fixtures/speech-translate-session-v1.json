@@ -1,0 +1,28 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "tencent-speech-translate-session-v1",
+  "providerId": "tencent-cloud",
+  "protocolProfileId": "tencent-cloud.speech-translate.ws-v1",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["speech-translate-api", "speech-translate-product"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic lifecycle assembled from official field definitions; audio payload bytes are intentionally omitted."
+  },
+  "scenario": "One translated sentence followed by an explicit end and text-stream terminal",
+  "data": {
+    "transport": { "websocketText": "json", "websocketBinary": "naked-pcm-s16le", "vendorEnvelope": "none" },
+    "audio": { "sampleRateHz": 16000, "bitDepth": 16, "channels": 1, "recommendedChunkMs": 200, "recommendedChunkBytes": 6400 },
+    "audioContract": { "encoding": "pcm_s16le", "sampleRateHz": 16000, "bitDepth": 16, "channels": 1 },
+    "events": [
+      { "direction": "client", "frameType": "binary", "payloadOmitted": true, "byteLength": 6400 },
+      { "direction": "server", "frameType": "text", "json": { "code": 0, "voice_id": "fixture-voice", "result": { "source_text": "hello", "target_text": "你", "start_time": 0, "end_time": 320, "sentence_end": 0 } }, "semantics": "replace current sentence snapshot" },
+      { "direction": "server", "frameType": "text", "json": { "code": 0, "voice_id": "fixture-voice", "result": { "source_text": "hello world", "target_text": "你好，世界", "start_time": 0, "end_time": 780, "sentence_end": 1 } }, "semantics": "replace and commit current sentence" },
+      { "direction": "client", "frameType": "text", "json": { "type": "end" } },
+      { "direction": "server", "frameType": "text", "json": { "code": 0, "voice_id": "fixture-voice", "final": 1 }, "semantics": "text translation session terminal" }
+    ]
+  }
+}

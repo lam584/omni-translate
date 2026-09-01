@@ -99,23 +99,6 @@ pub(crate) fn resolve_model_provider_from_config_value(
         return resolve_composite_template_provider(&providers, template_id, model_id);
     }
 
-    // Qwen realtime speech model names belong to the DashScope websocket
-    // family. Resolve that provider class before exact model equality so an
-    // earlier OpenAI-compatible text provider with a stale/copied model value
-    // cannot hijack the Watch route merely because of array order.
-    if is_named_dashscope_realtime_model(composite_model_id) {
-        for provider_value in &providers {
-            let parsed: Option<ProviderDraftInput> =
-                serde_json::from_value(provider_value.clone()).ok();
-            if let Some(mut provider) = parsed {
-                if is_dashscope_provider(&provider) {
-                    provider.model = composite_model_id.to_string();
-                    return Some(provider);
-                }
-            }
-        }
-    }
-
     // Bare model name: search all providers equally.
     for provider_value in &providers {
         let parsed: Option<ProviderDraftInput> =

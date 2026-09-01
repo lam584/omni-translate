@@ -1,0 +1,35 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "tencent-sts-llm-session-v1",
+  "providerId": "tencent-cloud",
+  "protocolProfileId": "tencent-cloud.sts.ws-v1.llm",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["sts-websocket"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic mode=llm lifecycle. It models the client STS WebSocket, not the optional server-side custom-LLM callback."
+  },
+  "scenario": "LLM response deltas followed by a round marker and ProcessEof",
+  "data": {
+    "connectionUrl": "wss://mps.cloud.tencent.com/sts/v1/1250000000",
+    "authContract": { "profileId": "sts-tc3-sha256-query", "parameters": [
+      { "location": "path", "name": "appid", "value": "1250000000" }, { "location": "query", "name": "secretId", "value": "AKIDEXAMPLE" }, { "location": "query", "name": "timeStamp", "value": "1700000000" },
+      { "location": "query", "name": "expired", "value": "1700003600" }, { "location": "query", "name": "nonce", "value": "42" }, { "location": "header", "name": "content-type", "value": "application/json; charset=utf-8" },
+      { "location": "header", "name": "host", "value": "mps.cloud.tencent.com" }, { "location": "query", "name": "signature", "value": "fixture-signature-redacted" }
+    ] },
+    "audioContract": { "encoding": "pcm_s16le", "sampleRateHz": 16000, "bitDepth": 16, "channels": 1 },
+    "connectParameters": { "mode": "llm", "lang": "zh", "voice": "fixture-voice-type", "inputFormat": "pcm", "inputSampleRate": 16000 },
+    "events": [
+      { "direction": "server", "frameType": "text", "json": { "NotificationType": "Handshake", "TaskId": "fixture-task", "HandshakeResult": { "Code": 0, "Message": "success", "Format": "pcm", "SampleRate": 16000, "Channels": 1, "BitDepth": 16, "InputFormat": "pcm", "InputSampleRate": 16000 } } },
+      { "direction": "server", "frameType": "text", "json": { "NotificationType": "LLMResult", "TaskId": "fixture-task", "LLMResult": { "Text": "现在是", "Finished": false, "SentenceId": 3 } }, "semantics": "append delta" },
+      { "direction": "server", "frameType": "text", "json": { "NotificationType": "LLMResult", "TaskId": "fixture-task", "LLMResult": { "Text": "晴天。", "Finished": false, "SentenceId": 3 } }, "semantics": "append delta" },
+      { "direction": "server", "frameType": "text", "json": { "NotificationType": "LLMResult", "TaskId": "fixture-task", "LLMResult": { "Text": "", "Finished": true, "SentenceId": 3 } }, "semantics": "round terminal, not session terminal" },
+      { "direction": "client", "frameType": "binary", "payloadOmitted": true, "byteLength": 640, "encoding": "pcm-s16le" },
+      { "direction": "client", "type": "Finish.text-json", "frameType": "text", "json": { "Command": "Finish" } },
+      { "direction": "server", "type": "ProcessEof", "terminal": true, "frameType": "text", "json": { "NotificationType": "ProcessEof", "TaskId": "fixture-task", "ProcessEofInfo": { "Code": 0, "Message": "finish" } }, "semantics": "session terminal" }
+    ]
+  }
+}

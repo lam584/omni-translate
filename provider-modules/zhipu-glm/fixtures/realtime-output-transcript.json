@@ -1,0 +1,46 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "zhipu-glm.realtime-output-transcript",
+  "providerId": "zhipu-glm",
+  "protocolProfileId": "zhipu-glm.realtime-conversation",
+  "protocolProfileVersion": 1,
+  "kind": "smoke",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "zhipu-glm.realtime-guide"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic response audio and advisory transcript events."
+  },
+  "scenario": "GLM-Realtime output audio transcript is advisory and may diverge",
+  "data": {
+    "serverMessages": [
+      {
+        "type": "response.audio.delta",
+        "response_id": "<sanitized-response-id>",
+        "item_id": "<sanitized-item-id>",
+        "delta": "AAAAAA=="
+      },
+      {
+        "type": "response.audio_transcript.delta",
+        "response_id": "<sanitized-response-id>",
+        "item_id": "<sanitized-item-id>",
+        "delta": "<sanitized-advisory-transcript-delta>"
+      },
+      {
+        "type": "response.audio_transcript.done",
+        "response_id": "<sanitized-response-id>",
+        "item_id": "<sanitized-item-id>",
+        "transcript": "<sanitized-advisory-transcript-that-may-differ>"
+      }
+    ],
+    "consumerRules": [
+      "The audio transcript is produced by an independent model and can differ from the model's reasoning output or be empty",
+      "Do not make subsequent state transitions depend on response.audio_transcript.delta or response.audio_transcript.done",
+      "Use response.done plus response.status for response lifecycle completion"
+    ],
+    "implementationStatus": "disabled/not-implemented"
+  }
+}

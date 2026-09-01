@@ -332,11 +332,13 @@ mod tests {
         ProviderDraftInput {
             template_id: "template".to_string(),
             provider_id: "provider".to_string(),
+            manifest_provider_id: None,
             kind: "openai-compatible".to_string(),
             template_realtime_protocol: None,
             realtime_protocol: None,
             display_name: "Provider".to_string(),
             model: "tts-model".to_string(),
+            deployment_id: None,
             base_url: "http://127.0.0.1:1".to_string(),
             transport: "http".to_string(),
             auth_ref: crate::provider::contracts::ProviderAuthRefInput {
@@ -354,6 +356,7 @@ mod tests {
             response_modalities: vec!["text".to_string()],
             custom_headers: vec![],
             scene_model_assignments: vec![],
+            model_protocol_bindings: vec![],
             local_model_capability_registry: vec![],
             model_catalog_cache: Default::default(),
         }

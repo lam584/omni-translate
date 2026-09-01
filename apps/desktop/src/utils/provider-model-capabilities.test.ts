@@ -10,9 +10,6 @@ import {
   formatProviderInteractionCapabilityShortLabel,
   formatRealtimeAudioModeLabel,
   formatRealtimeAudioModeShortLabel,
-  inferProviderCapabilitiesFromModelName,
-  inferInteractionCapabilitiesFromModelName,
-  inferRealtimeAudioModeFromModelName,
   isProviderInteractionCapability,
   isRealtimeAudioMode,
   mapUpstreamCapabilitiesToScenarios,
@@ -84,7 +81,7 @@ describe('provider model capabilities', () => {
     expect(providerInteractionCapabilityGroupLabelKey('segmentation')).toBe('providers.interactionGroups.segmentation');
   });
 
-  it('maps upstream aliases and infers common audio and text model families', () => {
+  it('maps explicit upstream capability aliases', () => {
     expect(mapUpstreamCapabilitiesToScenarios(['realtime-translation', 'translation', 'text-to-text', 'unknown'])).toEqual([
       'speech-to-speech',
       'text-generation',
@@ -94,33 +91,9 @@ describe('provider model capabilities', () => {
       'text-to-speech',
       'speech-to-speech',
     ]);
-    expect(inferProviderCapabilitiesFromModelName('fun-asr-realtime')).toEqual(['speech-to-text']);
-    expect(inferProviderCapabilitiesFromModelName('qwen-livetranslate-flash')).toEqual(['speech-to-text', 'speech-to-speech']);
-    expect(inferProviderCapabilitiesFromModelName('qwen-omni-realtime')).toEqual([
-      'speech-to-text',
-      'text-to-speech',
-      'speech-to-speech',
-    ]);
-    expect(inferProviderCapabilitiesFromModelName('gpt-realtime')).toEqual([
-      'speech-to-text',
-      'text-to-speech',
-      'speech-to-speech',
-    ]);
-    expect(inferProviderCapabilitiesFromModelName('gemini-native-audio')).toEqual([
-      'speech-to-text',
-      'text-to-speech',
-      'speech-to-speech',
-    ]);
-    expect(inferProviderCapabilitiesFromModelName('openai/gpt-audio-mini')).toEqual(['text-to-speech', 'speech-to-speech']);
-    expect(inferProviderCapabilitiesFromModelName('custom-realtime')).toEqual([]);
-    expect(inferProviderCapabilitiesFromModelName('custom', 'DeepSeek Chat')).toEqual(['text-generation']);
-    expect(inferProviderCapabilitiesFromModelName('unclassified')).toEqual([]);
   });
 
   it('keeps ordinary Qwen text models separate from speech capabilities', () => {
-    for (const modelId of ['qwen-plus', 'qwen-max', 'qwen-turbo']) {
-      expect(inferProviderCapabilitiesFromModelName(modelId), modelId).toEqual(['text-generation']);
-    }
     const seeded = createDefaultLocalModelCapabilityRegistry();
     for (const modelId of ['qwen-plus', 'qwen-max', 'qwen-turbo']) {
       expect(seeded.find((entry) => entry.modelId === modelId)?.capabilities, modelId).toEqual([
@@ -129,39 +102,7 @@ describe('provider model capabilities', () => {
     }
   });
 
-  it('infers interaction capabilities for realtime, HTTP audio, pipeline, and text-only backends', () => {
-    expect(inferInteractionCapabilitiesFromModelName('gpt-realtime')).toEqual([
-      'auto_vad',
-      'manual_commit',
-      'streaming',
-      'push_to_talk',
-    ]);
-    expect(inferInteractionCapabilitiesFromModelName('gemini-3.1-flash-live-preview')).toEqual([
-      'auto_vad',
-      'client_activity',
-      'streaming',
-      'push_to_talk',
-    ]);
-    expect(inferInteractionCapabilitiesFromModelName('qwen-tts-realtime-2025-07-15')).toEqual([
-      'streaming',
-      'server_commit_tts',
-      'commit_tts',
-    ]);
-    expect(inferInteractionCapabilitiesFromModelName('openai/gpt-audio')).toEqual(['streaming', 'chunked_http_audio']);
-    expect(inferInteractionCapabilitiesFromModelName('openrouter/openai/gpt-audio')).toEqual(['streaming', 'chunked_http_audio']);
-    expect(inferInteractionCapabilitiesFromModelName('qwen-livetranslate-flash')).toEqual(['auto_vad', 'streaming']);
-    expect(inferInteractionCapabilitiesFromModelName('custom-semantic_vad')).toEqual(['auto_vad']);
-    expect(inferInteractionCapabilitiesFromModelName('gemini-native-audio-preview')).toEqual(['auto_vad', 'client_activity', 'streaming', 'chunked_http_audio', 'push_to_talk']);
-    expect(inferInteractionCapabilitiesFromModelName('gemini-realtime')).toEqual(['auto_vad', 'client_activity', 'streaming', 'push_to_talk']);
-    expect(inferInteractionCapabilitiesFromModelName('custom', undefined, 'manual')).toEqual(['manual_commit', 'push_to_talk']);
-    expect(inferInteractionCapabilitiesFromModelName('custom', undefined, 'gemini_auto_activity')).toEqual(['auto_vad', 'client_activity']);
-    expect(inferInteractionCapabilitiesFromModelName('custom', undefined, 'gemini_manual_activity')).toEqual(['client_activity', 'push_to_talk']);
-    expect(inferInteractionCapabilitiesFromModelName('nvidia/parakeet-tdt-0.6b-v3')).toEqual(['pipeline_asr_mt_tts']);
-    expect(inferInteractionCapabilitiesFromModelName('ollama-local-text')).toEqual(['text_only_backend']);
-    expect(inferInteractionCapabilitiesFromModelName('lmstudio-local-text')).toEqual(['text_only_backend']);
-  });
-
-  it('prefers local registry entries, then name inference, then upstream capabilities', () => {
+  it('prefers explicit registry entries and then upstream-declared capabilities', () => {
     const registry = [{ id: 'registry-1', modelId: ' Custom ', capabilities: ['text-to-speech'] as const }];
     expect(
       resolveProviderModelCapabilities(
@@ -169,21 +110,13 @@ describe('provider model capabilities', () => {
         registry.map((entry) => ({ ...entry, capabilities: [...entry.capabilities] })),
       ),
     ).toEqual(['text-to-speech']);
-    expect(resolveProviderModelCapabilities({ id: 'sensevoice', displayName: 'SenseVoice', capabilities: [] }, [])).toEqual([
-      'speech-to-text',
-    ]);
+    expect(resolveProviderModelCapabilities({ id: 'sensevoice', displayName: 'SenseVoice', capabilities: [] }, [])).toEqual([]);
     expect(resolveProviderModelCapabilities({ id: 'unclassified', displayName: 'Unknown', capabilities: ['text-generation'] }, [])).toEqual([
       'text-generation',
     ]);
   });
 
   it('resolves realtime audio modes from registry and known provider families', () => {
-    expect(inferRealtimeAudioModeFromModelName('qwen3.5-livetranslate-flash-realtime')).toBe('server_vad');
-    expect(inferRealtimeAudioModeFromModelName('qwen3.5-omni-plus-realtime')).toBe('manual');
-    expect(inferRealtimeAudioModeFromModelName('gpt-4o-realtime-preview')).toBe('server_vad');
-    expect(inferRealtimeAudioModeFromModelName('gemini-2.5-flash-live')).toBe('gemini_auto_activity');
-    expect(inferRealtimeAudioModeFromModelName('qwen-asr-realtime')).toBe('server_vad');
-
     expect(
       resolveRealtimeAudioMode('custom-realtime', [
         {
@@ -215,7 +148,7 @@ describe('provider model capabilities', () => {
           realtimeAudioMode: 'manual',
         },
       ]),
-    ).toEqual(['manual_commit', 'streaming', 'push_to_talk']);
+    ).toEqual(['manual_commit', 'push_to_talk']);
 
     expect(
       resolveRealtimeAudioMode('custom-client', [
@@ -249,11 +182,11 @@ describe('provider model capabilities', () => {
     ).toBe('server_vad');
   });
 
-  it('creates default and manual registry entries with inferred fields', () => {
+  it('creates default and manual registry entries without model-name inference', () => {
     const entry = createProviderModelCapabilityRegistryEntry('gemini-native-audio-preview', ['speech-to-speech']);
     expect(entry.capabilities).toEqual(['speech-to-speech']);
-    expect(entry.realtimeAudioMode).toBe('gemini_auto_activity');
-    expect(entry.interactionCapabilities).toContain('client_activity');
+    expect(entry.realtimeAudioMode).toBe('server_vad');
+    expect(entry.interactionCapabilities).toEqual(['auto_vad']);
     expect(entry.source).toBe('manual');
     expect(entry.registryVersion).toBeUndefined();
     expect(entry.profileId).toBeUndefined();

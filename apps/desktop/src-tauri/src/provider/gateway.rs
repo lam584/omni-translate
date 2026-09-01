@@ -40,6 +40,16 @@ fn model_protocol_runtime_error(message: String) -> ProviderRuntimeError {
     ProviderRuntimeError::new(&code, message)
 }
 
+fn provider_manifest_runtime_error(message: String) -> ProviderRuntimeError {
+    let code = message
+        .split_once(':')
+        .map(|(code, _)| code)
+        .filter(|code| code.starts_with("provider_manifest."))
+        .unwrap_or("provider_manifest.authorization_failed")
+        .to_string();
+    ProviderRuntimeError::new(&code, message)
+}
+
 fn provider_declares_bailian_voice_protocol(
     provider: &ProviderDraftInput,
     exact_model_id: &str,
@@ -283,7 +293,7 @@ impl ProviderGateway {
 
     fn execute_smoke_with_delta(
         &self,
-        provider: ProviderDraftInput,
+        mut provider: ProviderDraftInput,
         source_text: String,
         source_language: String,
         target_language: String,
@@ -295,12 +305,32 @@ impl ProviderGateway {
         let transport_requested = provider.transport.clone();
         let (transport_effective, fallback_applied) = resolve_transport(&provider);
         let started_at = Instant::now();
-        let boundary_authorization = authorize_bailian_model_operation_before_provider_access(
+        let bailian_authorization = authorize_bailian_model_operation_before_provider_access(
             &provider,
             &provider.model,
             "native_translate",
         );
+        let manifest_authorization = crate::provider::provider_manifest::authorize_provider_operation(
+            &provider,
+            "text-translation",
+        )
+        .map_err(provider_manifest_runtime_error)
+        .and_then(|authority| match authority {
+            Some(authority) if authority.adapter_id == "openai-compatible-http" => Ok(Some(authority)),
+            Some(authority) => Err(ProviderRuntimeError::new(
+                "provider_manifest.adapter_mismatch",
+                format!(
+                    "provider_manifest.adapter_mismatch: text gateway cannot execute adapter '{}'",
+                    authority.adapter_id
+                ),
+            )),
+            None => Ok(None),
+        });
+        let boundary_authorization = bailian_authorization.and(manifest_authorization);
         let boundary_authorized = boundary_authorization.is_ok();
+        if let Ok(Some(authority)) = boundary_authorization.as_ref() {
+            provider = authority.provider_for_connection(&provider);
+        }
         let connection_attempts = if boundary_authorized { 1 } else { 0 };
         let connection_lease = boundary_authorized.then(|| connection_lease::acquire(&provider));
         let (connection_owner, connection_generation) = connection_lease
@@ -495,11 +525,13 @@ mod tests {
         ProviderDraftInput {
             template_id: template_id.to_string(),
             provider_id: provider_id.to_string(),
+            manifest_provider_id: None,
             kind: kind.to_string(),
             template_realtime_protocol: None,
             realtime_protocol: None,
             display_name: display_name.to_string(),
             model: model.to_string(),
+            deployment_id: None,
             base_url,
             transport: transport.to_string(),
             auth_ref: ProviderAuthRefInput {
@@ -517,6 +549,7 @@ mod tests {
             response_modalities: vec!["text".to_string()],
             custom_headers: vec![],
             scene_model_assignments: vec![],
+            model_protocol_bindings: vec![],
             local_model_capability_registry: vec![],
             model_catalog_cache: Default::default(),
         }
@@ -524,7 +557,7 @@ mod tests {
 
     fn openai_provider(base_url: String) -> ProviderDraftInput {
         provider_draft(
-            "template-openai-compatible-realtime",
+            "template-test-openai-compatible",
             "provider-openai-compatible",
             "openai-compatible",
             "OpenAI Compatible",
@@ -1852,7 +1885,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_model_catalog_reads_models_endpoint() {
+    fn openai_model_catalog_reads_models_endpoint_without_name_based_capabilities() {
         let (base_url, _server) = spawn_http_server(|stream| {
             write_http_response(
                 stream,
@@ -1867,14 +1900,7 @@ mod tests {
         assert!(catalog.error.is_none());
         assert_eq!(catalog.models.len(), 2);
         assert_eq!(catalog.models[1].id, "gpt-4o-realtime-preview");
-        assert!(catalog.models[1]
-            .capabilities
-            .iter()
-            .any(|item| item == "speech-to-speech"));
-        assert!(catalog.models[1]
-            .capabilities
-            .iter()
-            .any(|item| item == "speech-to-text"));
+        assert!(catalog.models[1].capabilities.is_empty());
     }
 
     #[test]
@@ -1887,14 +1913,6 @@ mod tests {
         .expect("models endpoint should resolve");
 
         assert_eq!(endpoint, "https://openrouter.ai/api/v1/models");
-        assert_eq!(
-            crate::provider::gateway_parts::models::derive_model_capabilities("nvidia/parakeet-tdt-0.6b-v3"),
-            vec!["speech-to-text".to_string()]
-        );
-        assert_eq!(
-            crate::provider::gateway_parts::models::derive_model_capabilities("openai/gpt-audio"),
-            vec!["text-to-speech".to_string(), "speech-to-speech".to_string()]
-        );
     }
 
     #[test]
@@ -2319,11 +2337,13 @@ mod tests {
         ProviderDraftInput {
             template_id: config.template_id.clone(),
             provider_id: config.provider_id.clone(),
+            manifest_provider_id: None,
             kind: config.kind.clone(),
             template_realtime_protocol: None,
             realtime_protocol: None,
             display_name: config.name.clone(),
             model: config.model.clone(),
+            deployment_id: None,
             base_url: config.base_url.clone(),
             transport: config.transport.clone(),
             auth_ref: ProviderAuthRefInput {
@@ -2347,6 +2367,7 @@ mod tests {
             response_modalities: vec!["text".to_string()],
             custom_headers: vec![],
             scene_model_assignments: vec![],
+            model_protocol_bindings: vec![],
             local_model_capability_registry: vec![],
             model_catalog_cache: Default::default(),
         }

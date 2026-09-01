@@ -1,0 +1,81 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "azure-openai.fixture.realtime-transcription-whisper-manual.v1",
+  "providerId": "azure-openai",
+  "protocolProfileId": "azure-openai.realtime.transcription-whisper.websocket.ga",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["azure-openai.docs.realtime", "azure-openai.docs.realtime-reference"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived manual commit variant for a GPT-Realtime-Whisper deployment."
+  },
+  "scenario": "Use GPT-Realtime-Whisper with turn_detection null and explicit commits",
+  "data": {
+    "endpointStatus": "verified",
+    "networkAuthorized": false,
+    "authorizationReason": "Fixture-only documentation replay; network access is not authorized.",
+    "catalogModelId": "gpt-realtime-whisper",
+    "deploymentId": "watch-whisper-prod",
+    "connectionUrl": "wss://sanitized-resource.openai.azure.com/openai/v1/realtime?intent=transcription",
+    "authContract": {
+      "profileId": "azure-openai.auth.api-key-header",
+      "parameters": [
+        { "location": "header", "name": "api-key", "value": "<azure-api-key>" }
+      ]
+    },
+    "audioContract": {
+      "encoding": "pcm_s16le",
+      "sampleRateHz": 24000,
+      "channels": 1
+    },
+    "clientEvents": [
+      {
+        "type": "session.update",
+        "session": {
+          "type": "transcription",
+          "audio": {
+            "input": {
+              "format": {
+                "type": "audio/pcm",
+                "rate": 24000
+              },
+              "transcription": {
+                "model": "watch-whisper-prod",
+                "delay": "low"
+              },
+              "turn_detection": null
+            }
+          }
+        }
+      },
+      {
+        "type": "input_audio_buffer.append",
+        "audio": "<base64-pcm16-24khz-mono>"
+      },
+      {
+        "type": "input_audio_buffer.commit"
+      }
+    ],
+    "forbiddenTurnDetectionTypes": ["server_vad", "semantic_vad"],
+    "terminalEvent": {
+      "type": "conversation.item.input_audio_transcription.completed",
+      "item_id": "item_manual_1",
+      "content_index": 0,
+      "transcript": "completed transcript"
+    },
+    "failureVariant": {
+      "type": "conversation.item.input_audio_transcription.failed",
+      "item_id": "item_manual_2",
+      "content_index": 0,
+      "error": {
+        "type": "transcription_error",
+        "code": "audio_unintelligible",
+        "message": "<sanitized-transcription-error>"
+      },
+      "expectedOutcome": "discard-item-and-reuse-session"
+    }
+  }
+}

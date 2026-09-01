@@ -615,11 +615,13 @@ mod tests {
         ProviderDraftInput {
             template_id: STRICT_TEMPLATE_ID.to_string(),
             provider_id: provider_id.to_string(),
+            manifest_provider_id: None,
             kind: STRICT_PROVIDER_KIND.to_string(),
             template_realtime_protocol: Some(STRICT_LIVETRANSLATE_PROTOCOL.to_string()),
             realtime_protocol: Some(STRICT_LIVETRANSLATE_PROTOCOL.to_string()),
             display_name: "DashScope".to_string(),
             model: STRICT_LIVETRANSLATE_MODEL.to_string(),
+            deployment_id: None,
             base_url: format!("https://{STRICT_ENDPOINT_HOST}/api/v1"),
             transport: "websocket".to_string(),
             auth_ref: ProviderAuthRefInput {
@@ -637,6 +639,7 @@ mod tests {
             response_modalities: vec!["text".to_string()],
             custom_headers: Vec::new(),
             scene_model_assignments: Vec::new(),
+            model_protocol_bindings: Vec::new(),
             local_model_capability_registry: Vec::new(),
             model_catalog_cache: Default::default(),
         }

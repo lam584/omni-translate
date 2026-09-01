@@ -39,7 +39,6 @@ pub(crate) use route_config::{
     authorize_bailian_model_operation, authorize_bailian_native_translate,
 };
 pub(crate) use route_config::is_livetranslate_route_model;
-pub(crate) use route_config::model_name_is_livetranslate;
 #[cfg(test)]
 use route_config::{
     is_openai_realtime_provider, resolve_realtime_audio_mode_for_route,
@@ -652,9 +651,9 @@ mod tests {
             "template-openai-compatible-realtime",
             "provider-openai",
             "openai-compatible",
-            "gpt-realtime",
+            "gpt-realtime-2.1",
             "https://api.openai.com/v1",
-            "streaming-http",
+            "websocket",
             "credential://provider/openai/default",
         ))
         .expect("provider should parse");
@@ -858,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_omni_voice_model_resolves_to_dashscope_without_scene_assignment() {
+    fn plain_omni_voice_model_does_not_infer_a_provider_without_assignment() {
         let config = config_with_providers(vec![
             provider_value(
                 "template-deepseek",
@@ -880,18 +879,15 @@ mod tests {
             ),
         ]);
 
-        let provider =
-            resolve_model_provider_from_config_value(&config, "qwen3.5-omni-plus-realtime")
-                .expect("plain Omni model should resolve to DashScope provider");
-
-        assert_eq!(provider.kind, "dashscope");
-        assert_eq!(provider.provider_id, "provider-dashscope");
-        assert_eq!(provider.base_url, "https://dashscope.aliyuncs.com/api/v1");
-        assert_eq!(provider.model, "qwen3.5-omni-plus-realtime");
+        assert!(resolve_model_provider_from_config_value(
+            &config,
+            "qwen3.5-omni-plus-realtime"
+        )
+        .is_none());
     }
 
     #[test]
-    fn named_dashscope_realtime_model_ignores_earlier_openai_exact_match() {
+    fn exact_provider_model_wins_without_vendor_name_inference() {
         let model = "qwen3.5-omni-plus-realtime";
         let config = config_with_providers(vec![
             provider_value(
@@ -917,8 +913,8 @@ mod tests {
         let provider = resolve_model_provider_from_config_value(&config, model)
             .expect("named DashScope realtime model should resolve");
 
-        assert_eq!(provider.kind, "dashscope");
-        assert_eq!(provider.provider_id, "provider-dashscope");
+        assert_eq!(provider.kind, "openai-compatible");
+        assert_eq!(provider.provider_id, "provider-openai-compatible");
         assert_eq!(provider.model, model);
     }
 
@@ -1183,7 +1179,10 @@ mod tests {
             "inbound", &config, plain.model.clone(), plain.clone(),
         );
         assert_eq!(plan.kind, ResolvedRouteKind::DashscopeStt);
-        assert_eq!(plan.voice, "longanqian");
+        assert_eq!(
+            plan.voice, "Ethan",
+            "an unauthorized model name must not select a provider-specific voice"
+        );
         assert!(plan.model_protocol_authority.is_none());
         assert!(plan
             .configuration_error
@@ -1206,7 +1205,10 @@ mod tests {
             "inbound", &config, registered.model.clone(), registered,
         );
         assert_eq!(plan.kind, ResolvedRouteKind::DashscopeStt);
-        assert_eq!(plan.voice, "longanqian");
+        assert_eq!(
+            plan.voice, "Ethan",
+            "a local registry hint must not select a provider-specific voice"
+        );
         assert!(plan.model_protocol_authority.is_none());
         assert!(plan
             .configuration_error

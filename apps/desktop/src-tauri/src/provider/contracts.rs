@@ -38,6 +38,18 @@ pub(crate) struct ProviderSceneModelAssignmentInput {
     pub model_ids: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderModelProtocolBindingInput {
+    pub model_id: String,
+    pub operation: String,
+    pub profile_owner_provider_id: String,
+    pub manifest_version: u32,
+    pub profile_id: String,
+    pub profile_version: u32,
+    pub auth_profile_id: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code, reason = "capability registry fields are deserialized for route planning and forward compatibility")]
@@ -91,11 +103,17 @@ pub(crate) struct ProviderModelCatalogCacheInput {
 pub(crate) struct ProviderDraftInput {
     pub template_id: String,
     pub provider_id: String,
+    #[serde(default)]
+    pub manifest_provider_id: Option<String>,
     pub kind: String,
     pub template_realtime_protocol: Option<String>,
     pub realtime_protocol: Option<String>,
     pub display_name: String,
+    /// Exact catalog model identity. Azure deployment aliases are carried by
+    /// `deployment_id` and must never replace this field for authorization.
     pub model: String,
+    #[serde(default)]
+    pub deployment_id: Option<String>,
     pub base_url: String,
     pub transport: String,
     pub auth_ref: ProviderAuthRefInput,
@@ -113,6 +131,8 @@ pub(crate) struct ProviderDraftInput {
     pub custom_headers: Vec<ProviderCustomHeaderInput>,
     #[serde(default)]
     pub scene_model_assignments: Vec<ProviderSceneModelAssignmentInput>,
+    #[serde(default)]
+    pub model_protocol_bindings: Vec<ProviderModelProtocolBindingInput>,
     #[allow(dead_code, reason = "registry payload is retained for route planning and contract round trips")]
     #[serde(default)]
     pub local_model_capability_registry: Vec<ProviderModelCapabilityRegistryEntryInput>,

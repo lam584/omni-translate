@@ -1,0 +1,70 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "google-gemini.live-ephemeral-auth",
+  "providerId": "google-gemini",
+  "protocolProfileId": "google-gemini.live-agent-ephemeral",
+  "protocolProfileVersion": 1,
+  "kind": "probe",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "google-gemini.ephemeral-tokens",
+      "google-gemini.live-reference"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-only bootstrap shape. No token was minted and no provider was contacted."
+  },
+  "scenario": "Trusted backend mints a constrained token before a client opens Gemini Live",
+  "data": {
+    "bootstrapRequest": {
+      "method": "POST",
+      "url": "https://generativelanguage.googleapis.com/v1beta/auth_tokens",
+      "headers": {
+        "x-goog-api-key": "<redacted-long-lived-api-key>",
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "uses": 1,
+        "liveConnectConstraints": {
+          "model": "models/gemini-3.1-flash-live-preview"
+        }
+      }
+    },
+    "bootstrapResponse": {
+      "name": "<redacted-ephemeral-token>"
+    },
+    "websocketOptions": [
+      {
+        "url": "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained?access_token=<redacted-ephemeral-token>"
+      },
+      {
+        "url": "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained",
+        "headers": {
+          "Authorization": "Token <redacted-ephemeral-token>"
+        }
+      }
+    ],
+    "authContract": {
+      "profileId": "google-gemini.ephemeral-query",
+      "parameters": [
+        { "location": "query", "name": "access_token", "value": "<redacted-ephemeral-token>" }
+      ]
+    },
+    "clientMessages": [
+      { "setup": { "model": "models/gemini-3.1-flash-live-preview" } },
+      { "realtimeInput": { "audio": { "mimeType": "audio/pcm;rate=16000", "data": "AAAAAA==" } } }
+    ],
+    "serverMessages": [
+      { "setupComplete": {} },
+      { "serverContent": { "turnComplete": true } }
+    ],
+    "audioContract": {
+      "input": "PCM signed 16-bit little-endian, mono, 16000 Hz",
+      "output": "PCM signed 16-bit little-endian, mono, 24000 Hz",
+      "fixtureAudio": "AAAAAA== is inert synthetic silence"
+    },
+    "securityBoundary": "Only the trusted backend receives the long-lived API key; the short-lived constrained token is not a Bearer token.",
+    "implementationStatus": "disabled/not-implemented"
+  }
+}

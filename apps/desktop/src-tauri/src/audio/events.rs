@@ -128,7 +128,7 @@ fn complete_inbound_capture_and_provider(
         );
     }
     input_completion.provider_input_closed_source_sequence =
-        state.record_strict_watch_provider_input_closed()?;
+        record_strict_watch_provider_input_closed_for_completion(state, require_omni_owner)?;
     if let Some(handle) = state.take_stt_handle("inbound") {
         let _ = handle.stop_tx.send(());
     }
@@ -145,6 +145,38 @@ fn complete_inbound_capture_and_provider(
         }
     }
     Ok(input_completion)
+}
+
+fn record_strict_watch_provider_input_closed_for_completion(
+    state: &AudioStateStore,
+    terminal_input_completion: bool,
+) -> Result<u64, String> {
+    if terminal_input_completion {
+        state.record_strict_watch_provider_input_closed()
+    } else {
+        Ok(0)
+    }
+}
+
+#[cfg(test)]
+mod strict_watch_input_completion_tests {
+    use super::*;
+
+    #[test]
+    fn route_start_cleanup_does_not_consume_current_strict_run_input_completion_fence() {
+        let state = AudioStateStore::new();
+        state
+            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
+            .unwrap();
+
+        assert_eq!(
+            record_strict_watch_provider_input_closed_for_completion(&state, false).unwrap(),
+            0
+        );
+        assert!(
+            record_strict_watch_provider_input_closed_for_completion(&state, true).unwrap() > 0
+        );
+    }
 }
 
 fn finalize_inbound_capture_consumers(

@@ -650,6 +650,20 @@ test('echo-cancel surfaces native stats read failures instead of treating them a
   assert.match(report.failureReason, /failed to read native AEC3 statistics 2 times/i);
 });
 
+test('echo-cancel rejects native reset counter growth without a matching explicit reset event', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replace(
+      'capture10msFrames=100 processedCapture10msFrames=100 resetCount=1',
+      'capture10msFrames=100 processedCapture10msFrames=100 resetCount=2',
+    ),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /reset counter.*explicit reset event/i);
+});
+
 test('echo-cancel requires numeric double-talk frame telemetry from the linked backend', () => {
   const report = classify({
     feedbackLoopPrevention: 'echo-cancel',
@@ -688,6 +702,58 @@ test('echo-cancel live report requires every expected source segment to survive 
   assert.equal(report.failureLayer, 'aec');
   assert.match(report.failureReason, /accept every expected reference-media subtitle segment/i);
   assert.equal(report.layers.aec.data.liveScenario.expectedSubtitles.acceptanceRate < 1, true);
+});
+
+test('echo-cancel segment recall cannot borrow a shuffled token bag from unrelated cues', () => {
+  const sourceTokens = healthyWatchSessionReport.cues[0].sourceText
+    .normalize('NFKC')
+    .toLowerCase()
+    .match(/[a-z0-9]+/g);
+  const splitCues = [0, 1].map((parity) => ({
+    ...healthyWatchSessionReport.cues[0],
+    cueId: `cue-shuffled-${parity + 1}`,
+    sourceText: sourceTokens.filter((_, index) => index % 2 === parity).join(' '),
+  }));
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      summary: {
+        ...healthyWatchSessionReport.summary,
+        cueCount: splitCues.length,
+        completeCueCount: splitCues.length,
+        visibleRenderCueCount: splitCues.length,
+      },
+      cues: splitCues,
+    },
+  });
+
+  assert.equal(
+    report.layers.aec.data.liveScenario.expectedSubtitles.acceptedSegmentCount
+      < report.layers.aec.data.liveScenario.expectedSubtitles.expectedSegmentCount,
+    true,
+  );
+});
+
+test('echo-cancel segment recall treats spoken numeric forms as equivalent source content', () => {
+  const spokenNumericSource = healthyWatchSessionReport.cues[0].sourceText
+    .replace('72.5 kilowatt-hours', 'seventy-two point five kilowatt-hours')
+    .replace('21 degrees Celsius', 'twenty-one degrees Celsius')
+    .replace('minus 4', 'minus four');
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [{
+        ...healthyWatchSessionReport.cues[0],
+        sourceText: spokenNumericSource,
+      }],
+    },
+  });
+
+  const engineeringSegment = report.layers.aec.data.liveScenario.expectedSubtitles.segments[2];
+  assert.equal(engineeringSegment.tokenRecall, 1);
+  assert.equal(engineeringSegment.accepted, true);
 });
 
 test('echo-cancel live report rejects a static delay metric despite staged render requests', () => {

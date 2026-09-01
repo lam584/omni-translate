@@ -53,6 +53,7 @@ pub(super) struct AecDelayEstimate {
     pub(super) delay_reset_required: bool,
     pub(super) aec_reset_required: bool,
     pub(super) aec_reset_reason: Option<&'static str>,
+    pub(super) published_render_discontinuity: bool,
     pub(super) source: &'static str,
 }
 
@@ -109,7 +110,11 @@ impl AecDelayEstimator {
         let clock_discontinuity = (!observation.timestamp_error)
             .then(|| self.clock_discontinuity(observation))
             .flatten();
-        let render_clock_discontinuity = self.render_clock_discontinuity(observation);
+        let published_render_discontinuity = self
+            .last_render_discontinuity_count
+            .is_some_and(|previous| previous != observation.render_discontinuity_count);
+        let render_clock_discontinuity =
+            published_render_discontinuity || self.render_position_discontinuity(observation);
         let capture_padding_invalid = observation
             .capture_padding_frames
             .is_some_and(|padding| padding > observation.capture_buffer_frames);
@@ -197,6 +202,7 @@ impl AecDelayEstimator {
             delay_reset_required,
             aec_reset_required,
             aec_reset_reason,
+            published_render_discontinuity,
             source: "wasapi-capture-qpc+capture-padding-validated+render-submit-position+same-client-reference-lead",
         }
     }
@@ -231,13 +237,7 @@ impl AecDelayEstimator {
             .then_some(CaptureClockDiscontinuity::Drift)
     }
 
-    fn render_clock_discontinuity(&self, observation: CaptureClockObservation) -> bool {
-        if self
-            .last_render_discontinuity_count
-            .is_some_and(|previous| previous != observation.render_discontinuity_count)
-        {
-            return true;
-        }
+    fn render_position_discontinuity(&self, observation: CaptureClockObservation) -> bool {
         let Some(current) = observation.render_submitted_frames else {
             return false;
         };
@@ -423,11 +423,18 @@ mod tests {
 
         assert!(estimate.delay_reset_required);
         assert!(estimate.aec_reset_required);
+        assert!(estimate.published_render_discontinuity);
         assert_eq!(
             estimate.aec_reset_reason,
             Some("wasapi-render-session-discontinuity")
         );
         assert_eq!(estimate.delay_ms, 30.0);
+
+        let mut next_observation = observation(960, 1_200_000, 1_500_000, 0);
+        next_observation.render_discontinuity_count = 5;
+        let next = estimator.observe_capture(next_observation);
+        assert!(!next.aec_reset_required);
+        assert!(!next.published_render_discontinuity);
     }
 
     #[test]

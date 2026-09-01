@@ -110,6 +110,7 @@ export function generateWatchModeLiveFixture({ root, fixture = 'pass' }) {
     '[AUDIO] playback request received: cue_id=synthetic-audio-1 samples=24000 sample_rate_hz=24000 duration_ms=1000 enabled=true local_playback=true virtual_mic=false sid=0198fixturesid',
     '[AUDIO] speaker playback completed: cue_id=synthetic-audio-1 frames=24000 sample_rate_hz=24000 sid=0198fixturesid',
     'event=echo_cancel_backend | backend=webrtc-aec3 frameMs=10 renderSubmitFormat=48000-f32-stereo renderClock=wasapi-submit-position endpointRenderPadding=same-client-get-current-padding webRtcAec3Ready=true msvcBuildVerified=true linkedBackendPresent=true fixtureVerified=true sid=0198fixturesid',
+    'event=echo_cancel_reset | direction=inbound reason=route-start renderDiscontinuityId=0 sid=0198fixturesid',
     'event=echo_cancel_summary | direction=inbound backend=webrtc-aec3 render10msFrames=100 capture10msFrames=100 processedCapture10msFrames=100 resetCount=1 rejectedFrames=0 statsReadFailures=0 renderUnderruns=0 captureUnderruns=0 erleDb=20.0 residualEchoLikelihood=0.02 reportedDelayMs=125 doubleTalkFrames=12 avgProcessingUs=120.0 maxProcessingUs=250 captureChunks=100 intervalCaptureChunks=100 playbackActiveChunks=90 asrForwardedChunks=100 asrDeletedChunks=0 avgPreDb=-40.0 avgPostDb=-60.0 avgRemovedDb=20.0 sid=0198fixturesid',
     'watch route ensured subtitle overlay visible detail=label=subtitle-overlay visible=true sid=0198fixturesid',
     'subtitle cue appended id=synthetic-cue-1 sid=0198fixturesid',

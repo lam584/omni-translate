@@ -374,6 +374,7 @@ export function parseAppLog(text) {
     nativePlaybackRequestLines: matchingLines(nonMarkerText, /\[AUDIO\] playback request received:/i),
     nativeSpeakerPlaybackCompletedLines: matchingLines(nonMarkerText, /\[AUDIO\] speaker playback completed:/i),
     echoCancelBackendLines: matchingLines(nonMarkerText, /event=echo_cancel_backend/i),
+    echoCancelResetLines: matchingLines(nonMarkerText, /event=echo_cancel_reset/i),
     echoCancelSummaryLines: matchingLines(nonMarkerText, /event=echo_cancel_summary/i),
     // These diagnostic-only events intentionally include the run marker in
     // some builds. Parse them from the already run-scoped source text rather
@@ -437,27 +438,63 @@ function parseOmniRealtimeDiagnostics(appLog) {
 }
 
 function normalizedEnglishTokens(value) {
-  return String(value ?? '')
+  const rawTokens = String(value ?? '')
     .normalize('NFKC')
     .toLowerCase()
-    .match(/[a-z0-9]+/g) ?? [];
+    .match(/\d[\d,]*(?:\.\d+)?|[a-z]+/g) ?? [];
+  return rawTokens.flatMap((token) => {
+    if (!/^\d/.test(token)) return [token];
+    const normalized = token.replaceAll(',', '');
+    const [integer, fraction] = normalized.split('.');
+    const words = integerToEnglishTokens(Number(integer));
+    if (fraction == null) return words;
+    return [...words, 'point', ...fraction.split('').flatMap((digit) => integerToEnglishTokens(Number(digit)))];
+  });
 }
 
-function tokenRecall(reference, candidate) {
+function integerToEnglishTokens(value) {
+  if (!Number.isSafeInteger(value) || value < 0) return [String(value)];
+  const units = [
+    'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+    'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
+    'seventeen', 'eighteen', 'nineteen',
+  ];
+  const tens = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+  if (value < units.length) return [units[value]];
+  if (value < 100) return [tens[Math.floor(value / 10)], ...(value % 10 ? [units[value % 10]] : [])];
+  for (const [scale, label] of [[1_000_000_000, 'billion'], [1_000_000, 'million'], [1_000, 'thousand'], [100, 'hundred']]) {
+    if (value >= scale) {
+      const quotient = Math.floor(value / scale);
+      const remainder = value % scale;
+      return [
+        ...integerToEnglishTokens(quotient),
+        label,
+        ...(remainder ? integerToEnglishTokens(remainder) : []),
+      ];
+    }
+  }
+  return [String(value)];
+}
+
+function orderedTokenRecall(reference, candidate) {
   const referenceTokens = normalizedEnglishTokens(reference);
   if (referenceTokens.length === 0) return 0;
-  const available = new Map();
-  for (const token of normalizedEnglishTokens(candidate)) {
-    available.set(token, (available.get(token) ?? 0) + 1);
+  const candidateTokens = normalizedEnglishTokens(candidate);
+  // The oracle is intentionally order-sensitive. A global token bag lets
+  // unrelated or shuffled cues fabricate coverage for a missing media
+  // segment. One rolling LCS row keeps the comparison independent of cue
+  // boundaries while preserving the reference-media event order.
+  let previous = new Uint32Array(candidateTokens.length + 1);
+  for (const referenceToken of referenceTokens) {
+    const current = new Uint32Array(candidateTokens.length + 1);
+    for (let index = 1; index <= candidateTokens.length; index += 1) {
+      current[index] = referenceToken === candidateTokens[index - 1]
+        ? previous[index - 1] + 1
+        : Math.max(previous[index], current[index - 1]);
+    }
+    previous = current;
   }
-  let matched = 0;
-  for (const token of referenceTokens) {
-    const count = available.get(token) ?? 0;
-    if (count <= 0) continue;
-    matched += 1;
-    available.set(token, count - 1);
-  }
-  return matched / referenceTokens.length;
+  return previous[candidateTokens.length] / referenceTokens.length;
 }
 
 function acceptedWatchSourceText(watchSessionReport) {
@@ -497,7 +534,7 @@ function parseAecExpectedSegmentEvidence(input) {
   const accepted = acceptedWatchSourceText(input.watchSessionReport);
   const minimumTokenRecall = 0.65;
   const segmentResults = expectedSegments.map((segment, index) => {
-    const recall = tokenRecall(segment, accepted.sourceText);
+    const recall = orderedTokenRecall(segment, accepted.sourceText);
     return {
       ordinal: index + 1,
       expectedTokenCount: normalizedEnglishTokens(segment).length,
@@ -716,6 +753,7 @@ function parseAecDiagnostics(appLog, input) {
     maxRejectedFrames: maxMetric('rejectedFrames'),
     maxStatsReadFailures: maxMetric('statsReadFailures'),
     maxResetCount: maxMetric('resetCount'),
+    explicitResetEventCount: appLog.echoCancelResetLines.length,
     maxRenderUnderruns: maxMetric('renderUnderruns'),
     maxCaptureUnderruns: maxMetric('captureUnderruns'),
     erleMetricCount: erle.count,
@@ -2197,6 +2235,9 @@ function aecLayerFailed(aec, { requireLiveScenario = false } = {}) {
   }
   if (aec.maxStatsReadFailures > 0) {
     return `echo-cancel failed to read native AEC3 statistics ${aec.maxStatsReadFailures} times`;
+  }
+  if (aec.maxResetCount !== aec.explicitResetEventCount) {
+    return `echo-cancel native reset counter does not match explicit reset event evidence; resetCount=${aec.maxResetCount} explicitResetEvents=${aec.explicitResetEventCount}`;
   }
   if (aec.asrDeletedChunkMetricCount <= 0) {
     return 'echo-cancel did not report the explicit ASR deletion invariant';

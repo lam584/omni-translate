@@ -201,6 +201,7 @@ export function strictTestMediaContent(overrides = {}) {
 // trailing ` sid=<value>` session token every line now carries.
 export const healthyBridgeLog = '2026-01-01 00:00:00.000 [NORMAL] [bridge] - - source pacer summary: releasedFrames=12 queuedFrames=0 pendingBytes=0 underruns=0 droppedFrames=0 driverBufferedBytes=0 driverDroppedBytes=0 monitorQueuedFrames=0 staleSourceFramesDropped=0 sid=bridge-0198testsid-1000';
 export const healthyAppLog = [
+  'event=echo_cancel_reset | direction=inbound reason=route-start',
   'watch_mode.omni_preconnect_started detail=direction=inbound sid=0198testsid',
   'watch_mode.omni_preconnect_reused detail=direction=inbound sid=0198testsid',
   'watch_mode.omni_session_config | model=test-model realtimeAudioMode=server_vad outputMode=text-and-audio inputAudioFormat=pcm16 isLivetranslate=false subtitleTranslateActive=false sid=0198testsid',

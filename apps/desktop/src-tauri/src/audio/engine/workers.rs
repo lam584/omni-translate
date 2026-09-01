@@ -216,16 +216,30 @@ fn run_capture_loop(
             });
             current_aec_delay_samples = estimate.delay_samples;
             if estimate.aec_reset_required {
+                // This capture worker is the sole reset owner. Render
+                // producers only publish a monotonic discontinuity identity;
+                // consume it here before any queued capture is processed.
                 store.reset_echo_canceller()?;
+                let reset_reason = if estimate.published_render_discontinuity
+                    && estimate.aec_reset_reason
+                        == Some("wasapi-render-session-discontinuity")
+                {
+                    render_clock
+                        .last_discontinuity_reason
+                        .unwrap_or("wasapi-render-session-discontinuity")
+                } else {
+                    estimate.aec_reset_reason.unwrap_or("unknown")
+                };
                 diag_log_detail(
                     &app,
                     "audio",
                     "warn",
                     "event=echo_cancel_reset",
                     format!(
-                        "direction={} reason={} dataDiscontinuity={} timestampError={} capturePaddingInvalid={} delayResetRequired={} packetDeviceFrameIndex={} queueHeadDeviceFrameIndex={} packetTimestamp100ns={} queueHeadTimestamp100ns={} queuedCaptureFrames={} paddingFrames={:?} bufferFrames={} delayMs={:.1} delaySource={} estimatorResetCount={} timestampErrorCount={}",
+                        "direction={} reason={} renderDiscontinuityId={} dataDiscontinuity={} timestampError={} capturePaddingInvalid={} delayResetRequired={} packetDeviceFrameIndex={} queueHeadDeviceFrameIndex={} packetTimestamp100ns={} queueHeadTimestamp100ns={} queuedCaptureFrames={} paddingFrames={:?} bufferFrames={} delayMs={:.1} delaySource={} estimatorResetCount={} timestampErrorCount={}",
                         direction,
-                        estimate.aec_reset_reason.unwrap_or("unknown"),
+                        reset_reason,
+                        render_clock.discontinuity_count,
                         buffer_info.flags.data_discontinuity,
                         buffer_info.flags.timestamp_error,
                         estimate.capture_padding_invalid,

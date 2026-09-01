@@ -523,9 +523,10 @@ where
     F: for<'a> FnMut(SpeakerRenderEvent<'a>) -> Result<(), String>,
     A: FnOnce(&mut F) -> Result<T, String>,
 {
-    // Reset before COM/device/client activation. Otherwise an open or format
-    // failure would leave the preceding render session's clock and AEC filter
-    // active even though this physical playback attempt never started.
+    // Publish the new render-session boundary before COM/device/client
+    // activation. Otherwise an open or format failure would leave the
+    // preceding render clock authoritative even though this physical playback
+    // attempt never started. The capture worker owns the corresponding reset.
     on_render_event(SpeakerRenderEvent::Discontinuity {
         reason: "wasapi-render-session-start",
         observed_at: Instant::now(),
@@ -538,14 +539,14 @@ where
             } else {
                 "wasapi-render-failed"
             };
-            let reset_result = on_render_event(SpeakerRenderEvent::Discontinuity {
+            let discontinuity_result = on_render_event(SpeakerRenderEvent::Discontinuity {
                 reason,
                 observed_at: Instant::now(),
             });
-            Err(match reset_result {
+            Err(match discontinuity_result {
                 Ok(()) => error,
-                Err(reset_error) => format!(
-                    "{error}; failed to reset AEC after render failure: {reset_error}"
+                Err(discontinuity_error) => format!(
+                    "{error}; failed to publish render discontinuity after render failure: {discontinuity_error}"
                 ),
             })
         }
@@ -965,7 +966,7 @@ mod render_reference_pacer_tests {
     }
 
     #[test]
-    fn device_open_failure_resets_before_and_after_the_attempt() {
+    fn device_open_failure_publishes_discontinuities_before_and_after_the_attempt() {
         use std::sync::Mutex;
 
         static DISCONTINUITIES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());

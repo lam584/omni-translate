@@ -255,14 +255,24 @@ function validateSessionUpdatePayload(entry) {
       'modalities',
       'sample_rate',
       'translation',
+      'turn_detection',
     ])
     || JSON.stringify(payload.session.modalities) !== '["text"]'
     || payload.session.sample_rate !== 16_000
     || payload.session.input_audio_format !== 'pcm'
-    || !exactObjectKeys(payload.session.input_audio_transcription, ['language'])
+    || !exactObjectKeys(payload.session.input_audio_transcription, ['language', 'model'])
+    || payload.session.input_audio_transcription.model !== 'qwen3-asr-flash-realtime'
     || payload.session.input_audio_transcription.language !== 'zh'
     || !exactObjectKeys(payload.session.translation, ['language'])
     || payload.session.translation.language !== 'en'
+    || !exactObjectKeys(payload.session.turn_detection, [
+      'silence_duration_ms',
+      'threshold',
+      'type',
+    ])
+    || payload.session.turn_detection.type !== 'server_vad'
+    || payload.session.turn_detection.threshold !== 0
+    || payload.session.turn_detection.silence_duration_ms !== 400
   ) return null;
   return payload;
 }
@@ -276,19 +286,54 @@ function validateSessionFinishPayload(entry, sessionUpdate) {
     && payload.event_id !== sessionUpdate?.event_id;
 }
 
+function canonicalLiveTranslateSessionConfig(session) {
+  const threshold = session.turn_detection.threshold;
+  const thresholdJson = Number.isInteger(threshold)
+    ? `${threshold.toFixed(1)}`
+    : JSON.stringify(threshold);
+  return `{"input_audio_format":${JSON.stringify(session.input_audio_format)}`
+    + `,"input_audio_transcription":{"language":${JSON.stringify(session.input_audio_transcription.language)}`
+    + `,"model":${JSON.stringify(session.input_audio_transcription.model)}}`
+    + `,"modalities":${JSON.stringify(session.modalities)}`
+    + `,"sample_rate":${JSON.stringify(session.sample_rate)}`
+    + `,"translation":{"language":${JSON.stringify(session.translation.language)}}`
+    + `,"turn_detection":{"silence_duration_ms":${JSON.stringify(session.turn_detection.silence_duration_ms)}`
+    + `,"threshold":${thresholdJson}`
+    + `,"type":${JSON.stringify(session.turn_detection.type)}}}`;
+}
+
 function validateSessionAuthority(raw, createdEntry, updatedEntry, sessionUpdate) {
   const created = verifiedTracePayload(createdEntry);
   const updated = verifiedTracePayload(updatedEntry);
   const authority = raw?.sessionAuthority;
-  const requestedConfigSha256 = sha256Value(JSON.stringify(sessionUpdate.session));
+  const requestedConfigSha256 = sha256Value(
+    canonicalLiveTranslateSessionConfig(sessionUpdate.session),
+  );
   const createdSession = created?.session;
   const updatedSession = updated?.session;
+  const updatedTurnDetection = updatedSession?.turn_detection;
+  if (
+    !exactObjectKeys(updatedTurnDetection, [
+      'create_response',
+      'interrupt_response',
+      'silence_duration_ms',
+      'threshold',
+      'type',
+    ])
+    || updatedTurnDetection.create_response !== true
+    || updatedTurnDetection.interrupt_response !== true
+  ) return 'session-update-echo-mismatch';
   const updatedConfig = updatedSession && {
     input_audio_format: updatedSession.input_audio_format,
     input_audio_transcription: updatedSession.input_audio_transcription,
     modalities: updatedSession.modalities,
     sample_rate: updatedSession.sample_rate,
     translation: updatedSession.translation,
+    turn_detection: {
+      silence_duration_ms: updatedTurnDetection.silence_duration_ms,
+      threshold: updatedTurnDetection.threshold,
+      type: updatedTurnDetection.type,
+    },
   };
   if (created?.type !== 'session.created' || updated?.type !== 'session.updated') {
     return 'server-event-payload-invalid';
@@ -495,6 +540,13 @@ function classifyProviderWireEvidence(raw, traceEntries) {
   if (!validateSessionFinishPayload(traceEntries[4], update)) {
     return { kind: 'session-finish-payload-invalid', passed: false };
   }
+  const finished = verifiedTracePayload(traceEntries[5]);
+  if (
+    !exactObjectKeys(finished, ['event_id', 'type'])
+    || finished.type !== 'session.finished'
+    || typeof finished.event_id !== 'string'
+    || finished.event_id.length === 0
+  ) return { kind: 'session-finished-payload-invalid', passed: false };
   const serverAuthorityFailure = validateSessionAuthority(
     raw,
     traceEntries[1],
@@ -631,6 +683,7 @@ function stableEvidenceErrorCode(kind) {
     case 'session-finish-payload-invalid':
       return 'provider.preflight.client-payload-invalid';
     case 'server-event-payload-invalid':
+    case 'session-finished-payload-invalid':
     case 'session-identity-mismatch':
     case 'server-model-mismatch':
     case 'session-update-echo-mismatch':

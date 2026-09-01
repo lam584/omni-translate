@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import { forbiddenCellArtifactPaths } from './watch-mode-evidence-authority.mjs';
 import { buildCanonicalReferencePcm } from './watch-mode-canonical-source-authority.mjs';
+import { deriveWatchModelProtocolIdentity } from './watch-mode-model-protocol-authority.mjs';
 import { validateWatchModeRunRequest } from './watch-mode-run-request.mjs';
 
 // This suite executes the runner instead of grepping its source. Earlier
@@ -636,6 +637,75 @@ test('run-watch-mode-live.ps1 parses without PowerShell syntax errors', { skip: 
     `exit $errors.Count`,
   ]);
   assert.equal(probe.status, 0, `runner has PowerShell syntax errors:\n${probe.stderr}`);
+});
+
+test('Desktop lifecycle resolves its hash dependency in an isolated module scope', { skip: !isWindows }, () => {
+  const modulePath = path.resolve(
+    'scripts/testing/lib/powershell/Omni.Testing.WatchMode.DesktopLifecycle.psm1',
+  );
+  const probe = runPowerShell([
+    '-Command',
+    `$module = Import-Module ${quotePowerShell(modulePath)} -Force -DisableNameChecking -PassThru; `
+      + `& $module { Get-Command Get-OmniSha256 -ErrorAction Stop | Out-Null }`,
+  ]);
+  assert.equal(probe.status, 0, `Desktop lifecycle hash dependency is unavailable:\n${probe.stderr}`);
+});
+
+test('Desktop lifecycle binds strict paid lease receipts to schema 2 model protocol identity', { skip: !isWindows }, () => {
+  const modulePath = path.resolve(
+    'scripts/testing/lib/powershell/Omni.Testing.WatchMode.DesktopLifecycle.psm1',
+  );
+  const identity = deriveWatchModelProtocolIdentity('qwen3.5-livetranslate-flash-realtime');
+  const probe = runPowerShell([
+    '-Command',
+    `$ErrorActionPreference = 'Stop'; `
+      + `$module = Import-Module ${quotePowerShell(modulePath)} -Force -DisableNameChecking -PassThru; `
+      + `$identity = ${quotePowerShell(JSON.stringify(identity))} | ConvertFrom-Json; `
+      + `& $module { `
+      + `param($identity); `
+      + `$strictRequest = [pscustomobject]@{ authorityMode = 'strict-paid'; model = [pscustomobject]@{ protocolProfileIdentity = $identity } }; `
+      + `$incidentRequest = [pscustomobject]@{ authorityMode = 'incident-replay-plus' }; `
+      + `$smokeRequest = [pscustomobject]@{ authorityMode = 'local-canonical-smoke' }; `
+      + `$strict = New-WatchModeProviderLeaseReceipt -Request $strictRequest `
+      + `-LeaseArtifactKind 'watch-mode-provider-input-budget-lease' -CellId 'strict-cell' -LeaseId 'strict-lease' `
+      + `-RunMarker 'strict-run' -MaxSamples 2877045; `
+      + `$incident = New-WatchModeProviderLeaseReceipt -Request $incidentRequest `
+      + `-LeaseArtifactKind 'watch-mode-provider-input-budget-lease' -CellId 'incident-cell' -LeaseId 'incident-lease' `
+      + `-RunMarker 'incident-run' -MaxSamples 16000; `
+      + `$smoke = New-WatchModeProviderLeaseReceipt -Request $smokeRequest `
+      + `-LeaseArtifactKind 'watch-mode-smoke-provider-session-lease' -CellId 'smoke-cell' -LeaseId 'smoke-lease' `
+      + `-RunMarker 'smoke-run' -MaxSamples 32000; `
+      + `$missingIdentityRejected = $false; `
+      + `try { New-WatchModeProviderLeaseReceipt -Request ([pscustomobject]@{ authorityMode = 'strict-paid'; model = [pscustomobject]@{} }) `
+      + `-LeaseArtifactKind 'watch-mode-provider-input-budget-lease' -CellId 'missing-cell' -LeaseId 'missing-lease' `
+      + `-RunMarker 'missing-run' -MaxSamples 1 | Out-Null } catch { $missingIdentityRejected = $true }; `
+      + `[pscustomobject]@{ strict = $strict; incident = $incident; smoke = $smoke; missingIdentityRejected = $missingIdentityRejected } `
+      + `| ConvertTo-Json -Depth 8 -Compress `
+      + `} $identity`,
+  ]);
+  assert.equal(probe.status, 0, `Desktop lifecycle lease receipt probe failed:\n${probe.stderr}`);
+  const result = JSON.parse(probe.stdout.trim());
+  assert.equal(result.strict.schemaVersion, 2);
+  assert.deepEqual(result.strict.modelProtocolProfileIdentity, identity);
+  assert.equal(result.missingIdentityRejected, true);
+  assert.deepEqual(result.incident, {
+    schemaVersion: 1,
+    artifactKind: 'watch-mode-provider-input-budget-lease',
+    nonAuthoritative: false,
+    cellId: 'incident-cell',
+    leaseId: 'incident-lease',
+    runMarker: 'incident-run',
+    maxSamples: 16000,
+  });
+  assert.deepEqual(result.smoke, {
+    schemaVersion: 1,
+    artifactKind: 'watch-mode-smoke-provider-session-lease',
+    nonAuthoritative: true,
+    cellId: 'smoke-cell',
+    leaseId: 'smoke-lease',
+    runMarker: 'smoke-run',
+    maxSamples: 32000,
+  });
 });
 
 test('physical endpoint evidence accepts USB and Bluetooth signals and rejects a mismatched class', { skip: !isWindows }, () => {

@@ -119,6 +119,32 @@ fn record_admitted_strict_response_terminal(
     }
 }
 
+fn track_response_lifecycle_for_server_event(
+    event_diagnostics: &mut OmniEventDiagnostics,
+    provider: &ProviderDraftInput,
+    event_type: &str,
+    event: &Value,
+) {
+    match event_type {
+        "response.created" => event_diagnostics
+            .begin_native_response_lifecycle(native_response_id_from_event(event)),
+        response_event
+            if response_event.starts_with("response.") && response_event != "response.done" =>
+        {
+            event_diagnostics.note_native_response_progress(native_response_id_from_event(event));
+        }
+        "input_audio_buffer.speech_stopped"
+            if !crate::audio::events::is_livetranslate_route_model(
+                provider,
+                &provider.model,
+            ) =>
+        {
+            event_diagnostics.begin_native_response_lifecycle(None);
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 fn is_explicit_legacy_omni_reducer_fixture(provider: &ProviderDraftInput) -> bool {
     provider.template_id == "t"
@@ -345,6 +371,84 @@ mod legacy_reducer_fixture_authority_tests {
             "response-completed"
         );
     }
+
+    fn action_after_completed_response_and_late_speech_stopped(
+        provider: &ProviderDraftInput,
+    ) -> ResponseStallAction {
+        let mut diagnostics = OmniEventDiagnostics::default();
+        track_response_lifecycle_for_server_event(
+            &mut diagnostics,
+            provider,
+            "response.created",
+            &json!({
+                "type": "response.created",
+                "response": { "id": "response-completed" }
+            }),
+        );
+        track_response_lifecycle_for_server_event(
+            &mut diagnostics,
+            provider,
+            "response.audio.delta",
+            &json!({
+                "type": "response.audio.delta",
+                "response_id": "response-completed"
+            }),
+        );
+        diagnostics.complete_native_response_owner();
+        track_response_lifecycle_for_server_event(
+            &mut diagnostics,
+            provider,
+            "input_audio_buffer.speech_stopped",
+            &json!({
+                "type": "input_audio_buffer.speech_stopped",
+                "item_id": "input-completed"
+            }),
+        );
+        diagnostics.native_response_stall_action(
+            std::time::Instant::now() + std::time::Duration::from_secs(45),
+            provider.timeout_ms,
+            false,
+        )
+    }
+
+    #[test]
+    fn livetranslate_late_speech_stopped_does_not_restart_completed_response_lifecycle() {
+        assert_eq!(
+            action_after_completed_response_and_late_speech_stopped(&livetranslate_provider()),
+            ResponseStallAction::None
+        );
+    }
+
+    #[test]
+    fn omni_speech_stopped_still_starts_first_response_deadline() {
+        assert_eq!(
+            action_after_completed_response_and_late_speech_stopped(&fixture()),
+            ResponseStallAction::Reconnect
+        );
+    }
+
+    #[test]
+    fn livetranslate_real_response_owner_still_enforces_first_output_deadline() {
+        let provider = livetranslate_provider();
+        let mut diagnostics = OmniEventDiagnostics::default();
+        track_response_lifecycle_for_server_event(
+            &mut diagnostics,
+            &provider,
+            "response.created",
+            &json!({
+                "type": "response.created",
+                "response": { "id": "response-stalled" }
+            }),
+        );
+        assert_eq!(
+            diagnostics.native_response_stall_action(
+                std::time::Instant::now() + std::time::Duration::from_secs(45),
+                provider.timeout_ms,
+                false,
+            ),
+            ResponseStallAction::Reconnect
+        );
+    }
 }
 
 #[cfg(test)]
@@ -518,20 +622,12 @@ impl OmniSocketEventProcessor {
                 }
                 let event_type = event_type.as_str();
                 trace_call.record_ws_recv(event_type, evt.clone());
-                match event_type {
-                    "response.created" => event_diagnostics.begin_native_response_lifecycle(
-                        native_response_id_from_event(&evt),
-                    ),
-                    response_event
-                        if response_event.starts_with("response.")
-                            && response_event != "response.done" =>
-                    {
-                        event_diagnostics.note_native_response_progress(
-                            native_response_id_from_event(&evt),
-                        );
-                    }
-                    _ => {}
-                }
+                track_response_lifecycle_for_server_event(
+                    &mut event_diagnostics,
+                    provider,
+                    event_type,
+                    &evt,
+                );
                 match event_type {
                     "session.created" | "session.updated" => {
                         let readiness = OmniEventProcessor::process_session_ready(
@@ -991,7 +1087,6 @@ impl OmniSocketEventProcessor {
                         )?;
                     }
                     "input_audio_buffer.speech_stopped" => {
-                        event_diagnostics.begin_native_response_lifecycle(None);
                         last_vad_event_time = SystemTime::now();
                         vad_event_count += 1;
                         if let Some(cue_id) = current_cue_id.clone() {

@@ -95,11 +95,13 @@ pub(super) fn validate_output_item(event: &Value, done: bool) -> Result<(&str, u
     }
     Ok((response_id, index, item_id))
 }
-pub(super) fn validate_conversation_item(event: &Value) -> Result<&str, String> {
+pub(super) fn validate_conversation_item(
+    event: &Value,
+    is_first_item: bool,
+) -> Result<&str, String> {
     let object = event.as_object().ok_or_else(|| {
         "model_protocol.payload_invalid: conversation.item.created must be an object".to_string()
     })?;
-    required_nonempty_string(object, "previous_item_id", "conversation.item.created")?;
     let item = event.get("item").and_then(Value::as_object).ok_or_else(|| {
         "model_protocol.payload_invalid: conversation.item.created requires item".to_string()
     })?;
@@ -107,13 +109,23 @@ pub(super) fn validate_conversation_item(event: &Value) -> Result<&str, String> 
     if item.get("object").and_then(Value::as_str) != Some("realtime.item")
         || item.get("type").and_then(Value::as_str) != Some("message")
         || item.get("status").and_then(Value::as_str) != Some("in_progress")
-        || item.get("role").and_then(Value::as_str) != Some("user")
+        || !matches!(
+            item.get("role").and_then(Value::as_str),
+            Some("assistant" | "user")
+        )
         || !item.get("content").is_some_and(Value::is_array)
     {
         return Err(
             "model_protocol.payload_invalid: conversation item identity/status/content mismatch"
                 .to_string(),
         );
+    }
+    match object.get("previous_item_id") {
+        Some(Value::String(previous_item_id)) if !previous_item_id.trim().is_empty() => {}
+        None | Some(Value::Null) if is_first_item => {}
+        _ => {
+            required_nonempty_string(object, "previous_item_id", "conversation.item.created")?;
+        }
     }
     Ok(item_id)
 }

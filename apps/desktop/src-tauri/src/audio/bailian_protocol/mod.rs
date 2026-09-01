@@ -288,8 +288,16 @@ impl LiveTranslateServerState {
                 self.require_active(event_type)?;
                 let (key, part_type) = validate_content_part(event)?;
                 self.require_output_identity(&key)?;
-                if self.active_content_parts.insert(key, part_type.to_string()).is_some() {
+                if part_type == "audio" && self.completed_audio_streams.contains(&key) {
+                    return Err("model_protocol.event_order_invalid: completed audio content cannot be reopened".to_string());
+                }
+                if self.active_content_parts.contains_key(&key) {
                     return Err("model_protocol.event_order_invalid: duplicate active response content index".to_string());
+                }
+                self.active_content_parts
+                    .insert(key.clone(), part_type.to_string());
+                if part_type == "audio" {
+                    self.active_audio_streams.insert(key);
                 }
             }
             "response.content_part.done" => {
@@ -393,7 +401,8 @@ impl LiveTranslateServerState {
             }
             "conversation.item.created" => {
                 self.require_active(event_type)?;
-                let item_id = validate_conversation_item(event)?;
+                let item_id =
+                    validate_conversation_item(event, self.conversation_items.is_empty())?;
                 if !self.conversation_items.insert(item_id.to_string()) {
                     return Err("model_protocol.event_order_invalid: duplicate conversation item identity".to_string());
                 }
@@ -414,7 +423,9 @@ impl LiveTranslateServerState {
                 if self.completed_audio_streams.contains(&key) {
                     return Err("model_protocol.event_order_invalid: audio delta arrived after audio.done".to_string());
                 }
-                self.active_audio_streams.insert(key);
+                if !self.active_audio_streams.contains(&key) {
+                    return Err("model_protocol.event_order_invalid: response.audio.delta has no matching active audio content".to_string());
+                }
             }
             "response.audio.done" => {
                 self.require_active(event_type)?;
@@ -481,11 +492,15 @@ impl LiveTranslateServerState {
             .response_creation_status
             .get(&response_id)
             .ok_or_else(|| "model_protocol.identity_mismatch: response.done has no response.created status".to_string())?;
-        if self
+        let created_conversation_id = self
             .response_conversation_ids
             .get(&response_id)
-            .map(String::as_str)
-            != Some(response_done.conversation_id.as_str())
+            .ok_or_else(|| {
+                "model_protocol.identity_mismatch: response.done has no response.created conversation identity"
+                    .to_string()
+            })?;
+        if !created_conversation_id.is_empty()
+            && created_conversation_id != &response_done.conversation_id
         {
             return Err("model_protocol.identity_mismatch: response.done changed conversation identity".to_string());
         }
@@ -668,7 +683,10 @@ fn validate_response_created(event: &Value) -> Result<ValidatedResponseCreated<'
         .get("response")
         .ok_or_else(|| "model_protocol.payload_invalid: response object is required".to_string())?;
     let response_id = required_nonempty_string(response, "id")?;
-    let conversation_id = required_nonempty_string(response, "conversation_id")?;
+    // LiveTranslate emits an empty placeholder at response.created and binds the
+    // conversation identity in response.done. The field remains typed and
+    // mandatory here; only the terminal event is authoritative for non-emptiness.
+    let conversation_id = required_string(response, "conversation_id")?;
     if required_nonempty_string(response, "object")? != "realtime.response" {
         return Err("model_protocol.payload_invalid: response.object must be realtime.response".to_string());
     }
@@ -834,12 +852,19 @@ fn validate_content_part(event: &Value) -> Result<((String, String, u64, u64), &
     Ok((key, part_type))
 }
 
-fn validate_conversation_item(event: &Value) -> Result<&str, String> {
-    required_nonempty_string(event, "previous_item_id")?;
+fn validate_conversation_item(event: &Value, is_first_item: bool) -> Result<&str, String> {
     let item = event
         .get("item")
         .ok_or_else(|| "model_protocol.payload_invalid: conversation item object is required".to_string())?;
-    validate_item_object(item, false)
+    let item_id = validate_item_object(item, false)?;
+    match event.get("previous_item_id") {
+        Some(Value::String(previous_item_id)) if !previous_item_id.trim().is_empty() => {}
+        None | Some(Value::Null) if is_first_item => {}
+        _ => {
+            required_nonempty_string(event, "previous_item_id")?;
+        }
+    }
+    Ok(item_id)
 }
 
 fn transcription_identity(event: &Value) -> Result<(String, u64), String> {
@@ -980,6 +1005,109 @@ mod tests {
                 "output":[]
             }
         }))
+    }
+
+    #[test]
+    fn response_conversation_identity_may_bind_at_done_when_created_is_empty() {
+        let authority = authority();
+        let mut state = LiveTranslateServerState::default();
+        activate(&mut state, &authority);
+
+        state
+            .admit(
+                &authority,
+                &event("event-response", json!({
+                    "type":"response.created", "response":{
+                        "id":"r1", "conversation_id":"", "object":"realtime.response",
+                        "status":"in_progress", "modalities":["text"], "output":[]
+                    }
+                })),
+            )
+            .expect("LiveTranslate may leave conversation_id unresolved at response.created");
+        state
+            .admit(
+                &authority,
+                &output_item_event(
+                    "event-output-added",
+                    "response.output_item.added",
+                    "r1",
+                    "item-1",
+                    "in_progress",
+                ),
+            )
+            .unwrap();
+        state
+            .admit(
+                &authority,
+                &output_item_event(
+                    "event-output-done",
+                    "response.output_item.done",
+                    "r1",
+                    "item-1",
+                    "completed",
+                ),
+            )
+            .unwrap();
+        let mutation = state
+            .admit(
+                &authority,
+                &event("event-response-done", json!({
+                    "type":"response.done", "response":{
+                        "id":"r1", "conversation_id":"conv-1", "object":"realtime.response",
+                        "status":"completed", "modalities":["text"], "output":[{
+                            "id":"item-1", "object":"realtime.item", "type":"message",
+                            "status":"completed", "role":"assistant", "content":[]
+                        }]
+                    }
+                })),
+            )
+            .expect("response.done must be allowed to bind the first non-empty conversation identity");
+
+        assert!(mutation.response_completed);
+    }
+
+    #[test]
+    fn response_conversation_identity_remains_typed_and_terminally_nonempty() {
+        let authority = authority();
+        for invalid in [None, Some(Value::Null), Some(json!(7)), Some(json!({}))] {
+            let mut state = LiveTranslateServerState::default();
+            activate(&mut state, &authority);
+            let mut created = event("event-response", json!({
+                "type":"response.created", "response":{
+                    "id":"r1", "object":"realtime.response",
+                    "status":"in_progress", "modalities":["text"], "output":[]
+                }
+            }));
+            if let Some(invalid) = invalid {
+                created["response"]["conversation_id"] = invalid;
+            }
+            assert!(state.admit(&authority, &created).is_err());
+        }
+
+        let mut state = LiveTranslateServerState::default();
+        activate(&mut state, &authority);
+        state
+            .admit(
+                &authority,
+                &event("event-response", json!({
+                    "type":"response.created", "response":{
+                        "id":"r1", "conversation_id":"", "object":"realtime.response",
+                        "status":"in_progress", "modalities":["text"], "output":[]
+                    }
+                })),
+            )
+            .unwrap();
+        assert!(state
+            .admit(
+                &authority,
+                &event("event-response-done", json!({
+                    "type":"response.done", "response":{
+                        "id":"r1", "conversation_id":"", "object":"realtime.response",
+                        "status":"failed", "modalities":["text"], "output":[]
+                    }
+                })),
+            )
+            .is_err());
     }
 
     fn output_item_event(
@@ -1234,13 +1362,13 @@ mod tests {
         assert!(state.admit(&authority, &content_part_event(
             "event-content-wrong-item", "response.content_part.added", "r1", "item-other", "audio",
         )).is_err());
-        state.admit(&authority, &content_part_event(
-            "event-content-added", "response.content_part.added", "r1", "item-1", "audio",
-        )).unwrap();
-        assert!(state.admit(&authority, &event("event-audio-done-early", json!({
+        assert!(state.admit(&authority, &event("event-audio-done-before-content", json!({
             "type":"response.audio.done", "response_id":"r1", "item_id":"item-1",
             "output_index":0, "content_index":0
         }))).is_err());
+        state.admit(&authority, &content_part_event(
+            "event-content-added", "response.content_part.added", "r1", "item-1", "audio",
+        )).unwrap();
         assert!(state.admit(&authority, &event("event-audio-empty", json!({
             "type":"response.audio.delta", "response_id":"r1", "item_id":"item-1",
             "output_index":0, "content_index":0, "delta":""
@@ -1262,6 +1390,154 @@ mod tests {
         state.admit(&authority, &output_item_event(
             "event-output-done", "response.output_item.done", "r1", "item-1", "completed",
         )).unwrap();
+    }
+
+    #[test]
+    fn audio_done_accepts_an_open_zero_delta_content_but_remains_terminal() {
+        let authority = authority();
+        let mut state = LiveTranslateServerState::default();
+        activate(&mut state, &authority);
+        state
+            .admit(&authority, &response_created("event-response", "r1"))
+            .unwrap();
+        state
+            .admit(
+                &authority,
+                &output_item_event(
+                    "event-output-added",
+                    "response.output_item.added",
+                    "r1",
+                    "item-1",
+                    "in_progress",
+                ),
+            )
+            .unwrap();
+        state
+            .admit(
+                &authority,
+                &content_part_event(
+                    "event-content-added",
+                    "response.content_part.added",
+                    "r1",
+                    "item-1",
+                    "audio",
+                ),
+            )
+            .unwrap();
+
+        state
+            .admit(
+                &authority,
+                &event(
+                    "event-audio-done",
+                    json!({
+                        "type":"response.audio.done", "response_id":"r1", "item_id":"item-1",
+                        "output_index":0, "content_index":0
+                    }),
+                ),
+            )
+            .expect("an opened audio content may finish without producing an audio delta");
+        assert!(state
+            .admit(
+                &authority,
+                &event(
+                    "event-audio-done-duplicate",
+                    json!({
+                        "type":"response.audio.done", "response_id":"r1", "item_id":"item-1",
+                        "output_index":0, "content_index":0
+                    }),
+                ),
+            )
+            .is_err());
+        assert!(state
+            .admit(
+                &authority,
+                &event(
+                    "event-audio-delta-late",
+                    json!({
+                        "type":"response.audio.delta", "response_id":"r1", "item_id":"item-1",
+                        "output_index":0, "content_index":0, "delta":"AA=="
+                    }),
+                ),
+            )
+            .is_err());
+        state
+            .admit(
+                &authority,
+                &content_part_event(
+                    "event-content-done",
+                    "response.content_part.done",
+                    "r1",
+                    "item-1",
+                    "audio",
+                ),
+            )
+            .expect("failed duplicate/late events must leave the terminal ledger intact");
+    }
+
+    #[test]
+    fn duplicate_content_type_mismatch_is_rejected_without_mutating_the_open_ledger() {
+        let authority = authority();
+
+        let mut text_state = LiveTranslateServerState::default();
+        activate(&mut text_state, &authority);
+        text_state
+            .admit(&authority, &response_created("text-response", "r-text"))
+            .unwrap();
+        text_state
+            .admit(&authority, &output_item_event(
+                "text-output", "response.output_item.added", "r-text", "item-text", "in_progress",
+            ))
+            .unwrap();
+        text_state
+            .admit(&authority, &content_part_event(
+                "text-content", "response.content_part.added", "r-text", "item-text", "text",
+            ))
+            .unwrap();
+        assert!(text_state.admit(&authority, &content_part_event(
+            "text-duplicate-as-audio", "response.content_part.added", "r-text", "item-text", "audio",
+        )).is_err());
+        text_state
+            .admit(&authority, &content_part_event(
+                "text-content-done", "response.content_part.done", "r-text", "item-text", "text",
+            ))
+            .expect("rejected duplicate must preserve the original text ledger");
+
+        let mut audio_state = LiveTranslateServerState::default();
+        activate(&mut audio_state, &authority);
+        audio_state
+            .admit(&authority, &response_created("audio-response", "r-audio"))
+            .unwrap();
+        audio_state
+            .admit(&authority, &output_item_event(
+                "audio-output", "response.output_item.added", "r-audio", "item-audio", "in_progress",
+            ))
+            .unwrap();
+        audio_state
+            .admit(&authority, &content_part_event(
+                "audio-content", "response.content_part.added", "r-audio", "item-audio", "audio",
+            ))
+            .unwrap();
+        assert!(audio_state.admit(&authority, &content_part_event(
+            "audio-duplicate-as-text", "response.content_part.added", "r-audio", "item-audio", "text",
+        )).is_err());
+        audio_state
+            .admit(&authority, &event("audio-delta", json!({
+                "type":"response.audio.delta", "response_id":"r-audio", "item_id":"item-audio",
+                "output_index":0, "content_index":0, "delta":"AA=="
+            })))
+            .expect("rejected duplicate must preserve the original audio ledger");
+        audio_state
+            .admit(&authority, &event("audio-done", json!({
+                "type":"response.audio.done", "response_id":"r-audio", "item_id":"item-audio",
+                "output_index":0, "content_index":0
+            })))
+            .unwrap();
+        audio_state
+            .admit(&authority, &content_part_event(
+                "audio-content-done", "response.content_part.done", "r-audio", "item-audio", "audio",
+            ))
+            .expect("rejected duplicate must leave the original audio content closable");
     }
 
     #[test]
@@ -1301,6 +1577,105 @@ mod tests {
             "content_index":0, "transcript":"source", "language":"en", "emotion":"neutral"
         }))).is_err());
         assert!(state.admit(&authority, &text("event-text-after-completed")).is_err());
+    }
+
+    #[test]
+    fn first_conversation_item_accepts_no_previous_identity_without_weakening_later_links() {
+        let authority = authority();
+        for (previous_item_id, role, content) in [
+            (None, "assistant", json!([{"type":"input_audio"}])),
+            (Some(Value::Null), "assistant", json!([])),
+            (None, "user", json!([{"type":"input_audio"}])),
+        ] {
+            let mut state = LiveTranslateServerState::default();
+            activate(&mut state, &authority);
+            state
+                .admit(
+                    &authority,
+                    &event(
+                        "event-speech-started",
+                        json!({
+                            "type":"input_audio_buffer.speech_started",
+                            "item_id":"source-1",
+                            "audio_start_ms":0
+                        }),
+                    ),
+                )
+                .unwrap();
+            let mut source = event(
+                "event-source-item",
+                json!({
+                    "type":"conversation.item.created",
+                    "item":{
+                        "id":"source-1", "object":"realtime.item", "type":"message",
+                        "status":"in_progress", "role":role, "content":content
+                    }
+                }),
+            );
+            if let Some(previous_item_id) = previous_item_id {
+                source["previous_item_id"] = previous_item_id;
+            }
+            state.admit(&authority, &source).unwrap();
+            state
+                .admit(
+                    &authority,
+                    &event(
+                        "event-translation-item",
+                        json!({
+                            "type":"conversation.item.created",
+                            "previous_item_id":"source-1",
+                            "item":{
+                                "id":"translation-1", "object":"realtime.item", "type":"message",
+                                "status":"in_progress", "role":"assistant", "content":[]
+                            }
+                        }),
+                    ),
+                )
+                .unwrap();
+            assert!(state
+                .admit(
+                    &authority,
+                    &event(
+                        "event-unlinked-translation-item",
+                        json!({
+                            "type":"conversation.item.created",
+                            "item":{
+                                "id":"translation-2", "object":"realtime.item", "type":"message",
+                                "status":"in_progress", "role":"assistant", "content":[]
+                            }
+                        }),
+                    ),
+                )
+                .is_err());
+        }
+
+        for invalid_previous_item_id in [
+            json!(""),
+            json!(" "),
+            json!(0),
+            json!(true),
+            json!({}),
+            json!([]),
+        ] {
+            let mut state = LiveTranslateServerState::default();
+            activate(&mut state, &authority);
+            assert!(state
+                .admit(
+                    &authority,
+                    &event(
+                        "event-invalid-previous-item",
+                        json!({
+                            "type":"conversation.item.created",
+                            "previous_item_id":invalid_previous_item_id,
+                            "item":{
+                                "id":"source-1", "object":"realtime.item", "type":"message",
+                                "status":"in_progress", "role":"assistant", "content":[]
+                            }
+                        }),
+                    ),
+                )
+                .is_err());
+        }
     }
 
     #[test]

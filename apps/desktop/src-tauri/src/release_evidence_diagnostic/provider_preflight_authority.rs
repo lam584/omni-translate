@@ -19,6 +19,9 @@ use crate::provider::model_protocol_profile::{
     authorize_model_protocol_invocation, ModelProtocolAuthorizationRequest,
 };
 
+#[cfg(test)]
+mod provider_preflight_protocol_tests;
+
 const GRANT_PATH_ENV: &str = "OMNI_RELEASE_EVIDENCE_PREFLIGHT_GRANT_PATH";
 const RESERVATION_DIRECTORY_ENV: &str =
     "OMNI_RELEASE_EVIDENCE_PREFLIGHT_RESERVATION_DIRECTORY";
@@ -602,6 +605,7 @@ impl ProviderPreflightAuthorization {
         provider.model.clone_from(&self.model);
         provider.template_realtime_protocol = Some(self.protocol.clone());
         provider.realtime_protocol = Some(self.protocol.clone());
+        self.bind_signed_official_registry_declaration(provider)?;
         let resolved_profile = resolve_realtime_profile(provider, &provider.model);
         let resolved = resolved_profile
             .protocol_dialect
@@ -628,6 +632,98 @@ impl ProviderPreflightAuthorization {
             }
         }
         Ok(configured_model)
+    }
+
+    fn bind_signed_official_registry_declaration(
+        &self,
+        provider: &mut ProviderDraftInput,
+    ) -> Result<(), String> {
+        let Some(expected) = self.model_protocol_profile_identity.as_ref() else {
+            return Ok(());
+        };
+        let matching_indices = provider
+            .local_model_capability_registry
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                entry
+                    .model_id
+                    .trim()
+                    .eq_ignore_ascii_case(self.model.trim())
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if matching_indices.is_empty() {
+            return Ok(());
+        }
+        if matching_indices.len() != 1 {
+            return Err(
+                "strict provider preflight requires exactly one signed registry-derived exact-model declaration"
+                    .to_string(),
+            );
+        }
+        let entry = &mut provider.local_model_capability_registry[matching_indices[0]];
+        if !entry.id.starts_with("seed-") || entry.source.as_deref() != Some("official") {
+            return Err(
+                "strict provider preflight cannot replace a non-official exact-model registry declaration with signed authority"
+                    .to_string(),
+            );
+        }
+        bind_signed_string(
+            &mut entry.model_protocol_registry_version,
+            &expected.registry_version,
+            "registryVersion",
+        )?;
+        bind_signed_string(
+            &mut entry.model_protocol_profile_id,
+            &expected.profile_id,
+            "profileId",
+        )?;
+        bind_signed_u32(
+            &mut entry.model_protocol_profile_version,
+            expected.profile_version,
+            "profileVersion",
+        )?;
+        bind_signed_string(
+            &mut entry.realtime_protocol,
+            &self.protocol,
+            "realtimeProtocol",
+        )?;
+        Ok(())
+    }
+}
+
+fn bind_signed_string(
+    configured: &mut Option<String>,
+    expected: &str,
+    field: &str,
+) -> Result<(), String> {
+    match configured.as_deref() {
+        Some(actual) if actual != expected => Err(format!(
+            "strict provider preflight {field} does not match the signed registry-derived authority: expected={expected} actual={actual}"
+        )),
+        Some(_) => Ok(()),
+        None => {
+            *configured = Some(expected.to_string());
+            Ok(())
+        }
+    }
+}
+
+fn bind_signed_u32(
+    configured: &mut Option<u32>,
+    expected: u32,
+    field: &str,
+) -> Result<(), String> {
+    match *configured {
+        Some(actual) if actual != expected => Err(format!(
+            "strict provider preflight {field} does not match the signed registry-derived authority: expected={expected} actual={actual}"
+        )),
+        Some(_) => Ok(()),
+        None => {
+            *configured = Some(expected);
+            Ok(())
+        }
     }
 }
 

@@ -288,8 +288,16 @@ impl LiveTranslateServerState {
                 self.require_active(event_type)?;
                 let (key, part_type) = validate_content_part(event)?;
                 self.require_output_identity(&key)?;
-                if self.active_content_parts.insert(key, part_type.to_string()).is_some() {
+                if part_type == "audio" && self.completed_audio_streams.contains(&key) {
+                    return Err("model_protocol.event_order_invalid: completed audio content cannot be reopened".to_string());
+                }
+                if self.active_content_parts.contains_key(&key) {
                     return Err("model_protocol.event_order_invalid: duplicate active response content index".to_string());
+                }
+                self.active_content_parts
+                    .insert(key.clone(), part_type.to_string());
+                if part_type == "audio" {
+                    self.active_audio_streams.insert(key);
                 }
             }
             "response.content_part.done" => {
@@ -415,7 +423,9 @@ impl LiveTranslateServerState {
                 if self.completed_audio_streams.contains(&key) {
                     return Err("model_protocol.event_order_invalid: audio delta arrived after audio.done".to_string());
                 }
-                self.active_audio_streams.insert(key);
+                if !self.active_audio_streams.contains(&key) {
+                    return Err("model_protocol.event_order_invalid: response.audio.delta has no matching active audio content".to_string());
+                }
             }
             "response.audio.done" => {
                 self.require_active(event_type)?;
@@ -1352,13 +1362,13 @@ mod tests {
         assert!(state.admit(&authority, &content_part_event(
             "event-content-wrong-item", "response.content_part.added", "r1", "item-other", "audio",
         )).is_err());
-        state.admit(&authority, &content_part_event(
-            "event-content-added", "response.content_part.added", "r1", "item-1", "audio",
-        )).unwrap();
-        assert!(state.admit(&authority, &event("event-audio-done-early", json!({
+        assert!(state.admit(&authority, &event("event-audio-done-before-content", json!({
             "type":"response.audio.done", "response_id":"r1", "item_id":"item-1",
             "output_index":0, "content_index":0
         }))).is_err());
+        state.admit(&authority, &content_part_event(
+            "event-content-added", "response.content_part.added", "r1", "item-1", "audio",
+        )).unwrap();
         assert!(state.admit(&authority, &event("event-audio-empty", json!({
             "type":"response.audio.delta", "response_id":"r1", "item_id":"item-1",
             "output_index":0, "content_index":0, "delta":""
@@ -1380,6 +1390,154 @@ mod tests {
         state.admit(&authority, &output_item_event(
             "event-output-done", "response.output_item.done", "r1", "item-1", "completed",
         )).unwrap();
+    }
+
+    #[test]
+    fn audio_done_accepts_an_open_zero_delta_content_but_remains_terminal() {
+        let authority = authority();
+        let mut state = LiveTranslateServerState::default();
+        activate(&mut state, &authority);
+        state
+            .admit(&authority, &response_created("event-response", "r1"))
+            .unwrap();
+        state
+            .admit(
+                &authority,
+                &output_item_event(
+                    "event-output-added",
+                    "response.output_item.added",
+                    "r1",
+                    "item-1",
+                    "in_progress",
+                ),
+            )
+            .unwrap();
+        state
+            .admit(
+                &authority,
+                &content_part_event(
+                    "event-content-added",
+                    "response.content_part.added",
+                    "r1",
+                    "item-1",
+                    "audio",
+                ),
+            )
+            .unwrap();
+
+        state
+            .admit(
+                &authority,
+                &event(
+                    "event-audio-done",
+                    json!({
+                        "type":"response.audio.done", "response_id":"r1", "item_id":"item-1",
+                        "output_index":0, "content_index":0
+                    }),
+                ),
+            )
+            .expect("an opened audio content may finish without producing an audio delta");
+        assert!(state
+            .admit(
+                &authority,
+                &event(
+                    "event-audio-done-duplicate",
+                    json!({
+                        "type":"response.audio.done", "response_id":"r1", "item_id":"item-1",
+                        "output_index":0, "content_index":0
+                    }),
+                ),
+            )
+            .is_err());
+        assert!(state
+            .admit(
+                &authority,
+                &event(
+                    "event-audio-delta-late",
+                    json!({
+                        "type":"response.audio.delta", "response_id":"r1", "item_id":"item-1",
+                        "output_index":0, "content_index":0, "delta":"AA=="
+                    }),
+                ),
+            )
+            .is_err());
+        state
+            .admit(
+                &authority,
+                &content_part_event(
+                    "event-content-done",
+                    "response.content_part.done",
+                    "r1",
+                    "item-1",
+                    "audio",
+                ),
+            )
+            .expect("failed duplicate/late events must leave the terminal ledger intact");
+    }
+
+    #[test]
+    fn duplicate_content_type_mismatch_is_rejected_without_mutating_the_open_ledger() {
+        let authority = authority();
+
+        let mut text_state = LiveTranslateServerState::default();
+        activate(&mut text_state, &authority);
+        text_state
+            .admit(&authority, &response_created("text-response", "r-text"))
+            .unwrap();
+        text_state
+            .admit(&authority, &output_item_event(
+                "text-output", "response.output_item.added", "r-text", "item-text", "in_progress",
+            ))
+            .unwrap();
+        text_state
+            .admit(&authority, &content_part_event(
+                "text-content", "response.content_part.added", "r-text", "item-text", "text",
+            ))
+            .unwrap();
+        assert!(text_state.admit(&authority, &content_part_event(
+            "text-duplicate-as-audio", "response.content_part.added", "r-text", "item-text", "audio",
+        )).is_err());
+        text_state
+            .admit(&authority, &content_part_event(
+                "text-content-done", "response.content_part.done", "r-text", "item-text", "text",
+            ))
+            .expect("rejected duplicate must preserve the original text ledger");
+
+        let mut audio_state = LiveTranslateServerState::default();
+        activate(&mut audio_state, &authority);
+        audio_state
+            .admit(&authority, &response_created("audio-response", "r-audio"))
+            .unwrap();
+        audio_state
+            .admit(&authority, &output_item_event(
+                "audio-output", "response.output_item.added", "r-audio", "item-audio", "in_progress",
+            ))
+            .unwrap();
+        audio_state
+            .admit(&authority, &content_part_event(
+                "audio-content", "response.content_part.added", "r-audio", "item-audio", "audio",
+            ))
+            .unwrap();
+        assert!(audio_state.admit(&authority, &content_part_event(
+            "audio-duplicate-as-text", "response.content_part.added", "r-audio", "item-audio", "text",
+        )).is_err());
+        audio_state
+            .admit(&authority, &event("audio-delta", json!({
+                "type":"response.audio.delta", "response_id":"r-audio", "item_id":"item-audio",
+                "output_index":0, "content_index":0, "delta":"AA=="
+            })))
+            .expect("rejected duplicate must preserve the original audio ledger");
+        audio_state
+            .admit(&authority, &event("audio-done", json!({
+                "type":"response.audio.done", "response_id":"r-audio", "item_id":"item-audio",
+                "output_index":0, "content_index":0
+            })))
+            .unwrap();
+        audio_state
+            .admit(&authority, &content_part_event(
+                "audio-content-done", "response.content_part.done", "r-audio", "item-audio", "audio",
+            ))
+            .expect("rejected duplicate must leave the original audio content closable");
     }
 
     #[test]

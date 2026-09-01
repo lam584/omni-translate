@@ -386,6 +386,42 @@ async fn wait_for_input_complete_marker(
     }
 }
 
+fn provider_terminal_phase_reached(state: &AudioStateStore) -> Result<bool, String> {
+    state.strict_watch_session_finished_received()
+}
+
+#[cfg(test)]
+mod provider_terminal_phase_tests {
+    use super::*;
+    use crate::audio::state::RouteInputCompletionEvidence;
+
+    #[test]
+    fn session_finished_completes_provider_phase_before_playback_owner_join() {
+        let state = AudioStateStore::new();
+        state
+            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
+            .unwrap();
+        state.record_strict_watch_test_session_updated().unwrap();
+        state.record_strict_watch_provider_append(320).unwrap();
+        state.record_strict_watch_provider_input_closed().unwrap();
+        state.record_strict_watch_session_finish_sent().unwrap();
+        state
+            .record_strict_watch_response_audio_done("response")
+            .unwrap();
+        state
+            .record_strict_watch_session_finished_received()
+            .unwrap();
+        let (_owner_result_tx, owner_result_rx) =
+            std::sync::mpsc::sync_channel::<Result<RouteInputCompletionEvidence, String>>(1);
+
+        assert!(provider_terminal_phase_reached(&state).unwrap());
+        assert!(matches!(
+            owner_result_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+    }
+}
+
 async fn run_evidence_driven_capture(
     app: AppHandle,
     config: &StrictPaidTerminalConfig,
@@ -436,53 +472,59 @@ async fn run_evidence_driven_capture(
         }),
     );
     let provider_app = app.clone();
+    let (provider_result_tx, provider_result_rx) = std::sync::mpsc::sync_channel(1);
     let provider_task = tauri::async_runtime::spawn_blocking(move || {
         let state = provider_app.state::<AudioStateStore>();
-        finish_strict_watch_provider_after_input_complete(&provider_app, &state)
+        let result = finish_strict_watch_provider_after_input_complete(&provider_app, &state);
+        let _ = provider_result_tx.send(result);
     });
     let provider_phase_cap = config
         .provider_shutdown_timeout
         .saturating_add(PROVIDER_FINISH_OBSERVATION_GRACE);
-    let input_completion = match tokio::time::timeout(provider_phase_cap, provider_task).await {
-        Ok(Ok(Ok(input_completion))) => input_completion,
-        Ok(Ok(Err(error))) => {
-            let code = strict_provider_terminal_error_code(&error);
-            return Err(strict_capture_failure(recorder, code, error));
+    let mut input_completion = None;
+    let provider_phase_started = Instant::now();
+    loop {
+        match provider_result_rx.try_recv() {
+            Ok(Ok(evidence)) => {
+                input_completion = Some(evidence);
+                break;
+            }
+            Ok(Err(error)) => {
+                let code = strict_provider_terminal_error_code(&error);
+                return Err(strict_capture_failure(recorder, code, error));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Err(strict_capture_failure(
+                    recorder,
+                    "provider-owner-task-failed",
+                    "Provider owner task disconnected before publishing its result",
+                ));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
-        Ok(Err(error)) => {
-            return Err(strict_capture_failure(
-                recorder,
-                "provider-owner-task-failed",
-                format!("Provider owner task failed: {error}"),
-            ));
+        match provider_terminal_phase_reached(&app.state::<AudioStateStore>()) {
+            Ok(true) => break,
+            Ok(false) => {}
+            Err(error) => {
+                return Err(strict_capture_failure(
+                    recorder,
+                    "provider-finish-authority-invalid",
+                    error,
+                ));
+            }
         }
-        Err(_) => {
+        if provider_phase_started.elapsed() >= provider_phase_cap {
             return Err(strict_capture_failure(
                 recorder,
                 "provider-finish-timeout",
                 format!(
-                    "Provider terminal owner did not complete within {}ms (+{}ms receipt grace)",
-                    config.provider_shutdown_timeout.as_millis(),
-                    PROVIDER_FINISH_OBSERVATION_GRACE.as_millis(),
+                    "Provider session.finished authority was not observed within {}ms",
+                    provider_phase_cap.as_millis()
                 ),
             ));
         }
-    };
-    recorder.push(
-        "inputCompleteObserved",
-        input_completion.observed_at_unix_ms,
-        json!({
-            "authority": "desktop-input-complete-watcher-and-capture-owner",
-            "markerSignaledAtUnixMs": marker.signaled_at_unix_ms,
-            "markerCompletedAtUnixMs": marker.completed_at_unix_ms,
-            "acceptedExactlyOnce": true,
-            "sourceSequence": input_completion.provider_input_closed_source_sequence,
-            "captureProducerFenced": true,
-            "providerInputSenderReleased": input_completion.provider_sender_released,
-            "statusConsumerRetained": input_completion.status_consumer_retained,
-            "paddedTailBytes": input_completion.padded_tail_bytes,
-        }),
-    );
+        tokio::time::sleep(INPUT_COMPLETE_POLL).await;
+    }
 
     let playback_drain = match wait_for_local_playback_quiescence(
         &app,
@@ -499,6 +541,63 @@ async fn run_evidence_driven_capture(
             ));
         }
     };
+
+    let input_completion = match input_completion {
+        Some(evidence) => evidence,
+        None => {
+            let join_started = Instant::now();
+            loop {
+                match provider_result_rx.try_recv() {
+                    Ok(Ok(evidence)) => break evidence,
+                    Ok(Err(error)) => {
+                        let code = strict_provider_terminal_error_code(&error);
+                        return Err(strict_capture_failure(recorder, code, error));
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        return Err(strict_capture_failure(
+                            recorder,
+                            "provider-owner-task-failed",
+                            "Provider owner task disconnected after playback drain",
+                        ));
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                }
+                if join_started.elapsed() >= PROVIDER_FINISH_OBSERVATION_GRACE {
+                    return Err(strict_capture_failure(
+                        recorder,
+                        "provider-owner-join-timeout",
+                        format!(
+                            "Provider owner did not join within {}ms after local playback became quiescent",
+                            PROVIDER_FINISH_OBSERVATION_GRACE.as_millis(),
+                        ),
+                    ));
+                }
+                tokio::time::sleep(INPUT_COMPLETE_POLL).await;
+            }
+        }
+    };
+    if let Err(error) = provider_task.await {
+        return Err(strict_capture_failure(
+            recorder,
+            "provider-owner-task-failed",
+            format!("Provider owner task failed after publishing its result: {error}"),
+        ));
+    }
+    recorder.push(
+        "inputCompleteObserved",
+        input_completion.observed_at_unix_ms,
+        json!({
+            "authority": "desktop-input-complete-watcher-and-capture-owner",
+            "markerSignaledAtUnixMs": marker.signaled_at_unix_ms,
+            "markerCompletedAtUnixMs": marker.completed_at_unix_ms,
+            "acceptedExactlyOnce": true,
+            "sourceSequence": input_completion.provider_input_closed_source_sequence,
+            "captureProducerFenced": true,
+            "providerInputSenderReleased": input_completion.provider_sender_released,
+            "statusConsumerRetained": input_completion.status_consumer_retained,
+            "paddedTailBytes": input_completion.padded_tail_bytes,
+        }),
+    );
 
     let finalize_app = app.clone();
     let finalize_result = tauri::async_runtime::spawn_blocking(move || {

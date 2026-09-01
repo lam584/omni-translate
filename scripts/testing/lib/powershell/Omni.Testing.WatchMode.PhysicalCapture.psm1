@@ -1,11 +1,5 @@
 #requires -Version 5.1
-
-Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.IO.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Process.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Windows.Audio.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Bridge.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.AudioAnalysis.psm1') -Force
-
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.IO.psm1') -Force; Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Process.psm1') -Force; Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Windows.Audio.psm1') -Force; Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Bridge.psm1') -Force; Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.AudioAnalysis.psm1') -Force
 function Test-RetryablePhysicalOutputProbeFailure {
   param($Result, [string]$FeedbackMode)
   $fingerprint = $Result.processExclusionFingerprint
@@ -26,7 +20,6 @@ function Test-RetryablePhysicalOutputProbeFailure {
     -not $detail.Contains('translation fingerprint was not physically detectable') -and
     -not $detail.Contains('leaked into source pipe')
 }
-
 function Invoke-PhysicalOutputProbe {
   param([string]$OutputDirectory, [string]$FeedbackMode, [Parameter(Mandatory = $true)][string]$WorkspaceRoot, [string]$PhysicalPlaybackDeviceId, [string]$ExpectedPhysicalPlaybackDeviceName)
   $probeExe = Join-Path $WorkspaceRoot 'target/release/omni-physical-output-probe.exe'
@@ -81,7 +74,6 @@ function Invoke-PhysicalOutputProbe {
       throw "physical output probe returned invalid JSON. ExitCode=$exitCode Output=$text"
     }
     if ($exitCode -eq 0 -and ($result.passed -or $result.skipped)) { break }
-
     $retryable = Test-RetryablePhysicalOutputProbeFailure -Result $result -FeedbackMode $FeedbackMode
     if (-not $retryable -or $attempt -eq 3) { break }
     Start-Sleep -Milliseconds 750
@@ -97,7 +89,6 @@ function Invoke-PhysicalOutputProbe {
   }
   return $result
 }
-
 function Start-PhysicalOutputContentRecorder {
   param(
     [string]$OutputDirectory, [string]$PhysicalDeviceId, [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
@@ -145,7 +136,6 @@ function Start-PhysicalOutputContentRecorder {
     terminalAuthorityPath = $TerminalAuthorityPath
   }
 }
-
 function Complete-PhysicalOutputContentRecorder {
   param($Recorder, [Parameter(Mandatory = $true)][string]$WorkspaceRoot, [switch]$TerminalSucceeded)
   if (-not $Recorder) { return $null }
@@ -196,7 +186,6 @@ function Complete-PhysicalOutputContentRecorder {
   $parsed | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path (Split-Path -Parent $Recorder.recordingPath) "physical-output-recording.json") -Encoding UTF8
   return $parsed
 }
-
 Export-ModuleMember -Function @(
   'Test-RetryablePhysicalOutputProbeFailure',
   'Invoke-PhysicalOutputProbe',

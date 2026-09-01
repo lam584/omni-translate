@@ -93,7 +93,6 @@ function Invoke-WatchModeRun {
   foreach ($property in $execution.PSObject.Properties) {
     Set-Variable -Name $property.Name -Value $property.Value -Scope Local
   }
-  
   if ($DryRun) {
     Invoke-WatchModeFixtureRun -Context $runContext -Request $request -OutputDirectory $outputDir
     return

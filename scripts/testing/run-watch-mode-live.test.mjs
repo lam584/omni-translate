@@ -1165,6 +1165,31 @@ test('physical recorder stops immediately on failure but lets terminal success f
   assert.equal(result.successPassed, true, 'recorder JSON was lost before graceful exit');
 });
 
+test('missing playback authority writes a nonempty translated PCM failure artifact', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-translated-pcm-failure-'));
+  const probe = runPowerShell([
+    '-Command',
+    extractedCuePlaybackAuthorityFunctions() +
+      `$context = [pscustomobject]@{ paths = [pscustomobject]@{ workspaceRoot = ${quotePowerShell(process.cwd())} }; ` +
+        `request = [pscustomobject]@{ authorityMode = 'strict-paid-release'; feedbackMode = 'echo-cancel'; ` +
+          `matrix = [pscustomobject]@{ cellId = 'cell-failed' }; ` +
+          `model = [pscustomobject]@{ id = 'qwen3.5-livetranslate-flash-realtime'; protocol = 'dashscope-livetranslate' } } }; ` +
+      `$result = Get-TranslatedPcmLoopbackAuthority ${quotePowerShell(root)} $null ` +
+        `([pscustomobject]@{ passed = $false; error = 'watch-session-report.json is missing' }) '' '' $context; ` +
+      `$artifact = Join-Path ${quotePowerShell(root)} 'translated-pcm-loopback.stdout.json'; ` +
+      `[pscustomobject]@{ resultPassed=$result.passed; artifactExists=(Test-Path -LiteralPath $artifact -PathType Leaf); ` +
+        `artifactLength=(Get-Item -LiteralPath $artifact).Length; artifact=(Get-Content -LiteralPath $artifact -Raw -Encoding UTF8 | ConvertFrom-Json) } | ConvertTo-Json -Depth 8 -Compress`,
+  ]);
+
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+  const result = JSON.parse(probe.stdout.trim().split(/\r?\n/).at(-1));
+  assert.equal(result.resultPassed, false);
+  assert.equal(result.artifactExists, true);
+  assert.ok(result.artifactLength > 0);
+  assert.equal(result.artifact.passed, false);
+  assert.match(result.artifact.error, /watch-session-report\.json is missing/i);
+});
+
 test('recorder cleanup retains terminal tail when a later runner step has failed', { skip: !isWindows }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-recorder-terminal-cleanup-'));
   const probe = runPowerShell([

@@ -935,7 +935,7 @@ test('strict execution context rejects signed terminal paths outside their canon
   }
 });
 
-test('physical recorder stops immediately on failure and reserves tail only for terminal success', { skip: !isWindows }, () => {
+test('physical recorder stops immediately on failure but lets terminal success flush naturally', { skip: !isWindows }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-recorder-stop-'));
   const probe = runPowerShell([
     '-Command',
@@ -943,7 +943,9 @@ test('physical recorder stops immediately on failure and reserves tail only for 
       `function New-FakeRecorder([string]$name, [bool]$terminal) { ` +
         `$dir = Join-Path ${quotePowerShell(root)} $name; [void](New-Item -ItemType Directory -Path $dir); ` +
         `$stdout = Join-Path $dir 'stdout.log'; $stderr = Join-Path $dir 'stderr.log'; ` +
-        `$process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-Command','Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru; ` +
+        `$command = if ($terminal) { 'Start-Sleep -Milliseconds 1200; Write-Output ''{"passed":true}''' } else { 'Start-Sleep -Seconds 30' }; ` +
+        `$process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-Command',$command) ` +
+          `-RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru; ` +
         `$terminalPath = Join-Path $dir 'evidence-driven-terminal.json'; if ($terminal) { Set-Content -LiteralPath $terminalPath -Value '{}' -Encoding utf8 }; ` +
         `return [pscustomobject]@{ pid=$process.Id; process=$process; recordSeconds=30; startedAtEpochMs=1; ` +
           `recordingPath=(Join-Path $dir 'recording.wav'); transcriptionPcmPath=(Join-Path $dir 'recording.pcm'); ` +
@@ -953,10 +955,10 @@ test('physical recorder stops immediately on failure and reserves tail only for 
       `try { Complete-PhysicalOutputContentRecorder $failed ${quotePowerShell(process.cwd())} | Out-Null } catch {}; ` +
       `$failedWatch.Stop(); $failed.process.Refresh(); ` +
       `$success = New-FakeRecorder 'success' $true; $successWatch = [Diagnostics.Stopwatch]::StartNew(); ` +
-      `try { Complete-PhysicalOutputContentRecorder $success ${quotePowerShell(process.cwd())} -TerminalSucceeded | Out-Null } catch {}; ` +
+      `$successResult = Complete-PhysicalOutputContentRecorder $success ${quotePowerShell(process.cwd())} -TerminalSucceeded; ` +
       `$successWatch.Stop(); $success.process.Refresh(); ` +
       `[pscustomobject]@{ failedExited=$failed.process.HasExited; failedMs=$failedWatch.ElapsedMilliseconds; ` +
-        `successExited=$success.process.HasExited; successMs=$successWatch.ElapsedMilliseconds } | ConvertTo-Json -Compress`,
+        `successExited=$success.process.HasExited; successMs=$successWatch.ElapsedMilliseconds; successPassed=$successResult.passed } | ConvertTo-Json -Compress`,
   ]);
 
   assert.equal(probe.status, 0, probe.stderr || probe.stdout);
@@ -964,7 +966,8 @@ test('physical recorder stops immediately on failure and reserves tail only for 
   assert.equal(result.failedExited, true);
   assert.ok(result.failedMs < 5_000, `failure cleanup took ${result.failedMs}ms`);
   assert.equal(result.successExited, true);
-  assert.ok(result.successMs >= 900, `terminal tail was not retained: ${result.successMs}ms`);
+  assert.ok(result.successMs >= 1_100, `recorder did not receive time to flush naturally: ${result.successMs}ms`);
+  assert.equal(result.successPassed, true, 'recorder JSON was lost before graceful exit');
 });
 
 test('recorder cleanup retains terminal tail when a later runner step has failed', { skip: !isWindows }, () => {
@@ -972,12 +975,14 @@ test('recorder cleanup retains terminal tail when a later runner step has failed
   const probe = runPowerShell([
     '-Command',
     extractedRunLifecycleFunctions() +
-      `$process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-Command','Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru; ` +
       `$terminalPath = Join-Path ${quotePowerShell(root)} 'evidence-driven-terminal.json'; ` +
       `Set-Content -LiteralPath $terminalPath -Value '{}' -Encoding utf8; ` +
+      `$stdout = Join-Path ${quotePowerShell(root)} 'stdout.log'; $stderr = Join-Path ${quotePowerShell(root)} 'stderr.log'; ` +
+      `$process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-Command','Start-Sleep -Milliseconds 1200; Write-Output ''{"passed":true}''') ` +
+        `-RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru; ` +
       `$recorder = [pscustomobject]@{ pid=$process.Id; process=$process; recordSeconds=30; startedAtEpochMs=1; ` +
         `recordingPath=(Join-Path ${quotePowerShell(root)} 'recording.wav'); transcriptionPcmPath=(Join-Path ${quotePowerShell(root)} 'recording.pcm'); ` +
-        `stdout=(Join-Path ${quotePowerShell(root)} 'stdout.log'); stderr=(Join-Path ${quotePowerShell(root)} 'stderr.log'); ` +
+        `stdout=$stdout; stderr=$stderr; ` +
         `terminalTailSeconds=1; terminalAuthorityPath=$terminalPath }; ` +
       `$laterStepFailed = $true; $watch = [Diagnostics.Stopwatch]::StartNew(); ` +
       `try { Complete-WatchModePhysicalRecorderAfterRun $recorder ${quotePowerShell(process.cwd())} $terminalPath | Out-Null } catch {}; ` +
@@ -988,7 +993,7 @@ test('recorder cleanup retains terminal tail when a later runner step has failed
   const result = JSON.parse(probe.stdout.trim().split(/\r?\n/).at(-1));
   assert.equal(result.laterStepFailed, true);
   assert.equal(result.exited, true);
-  assert.ok(result.elapsedMs >= 900, `terminal tail was dropped after later failure: ${result.elapsedMs}ms`);
+  assert.ok(result.elapsedMs >= 1_100, `recorder was killed before its terminal flush: ${result.elapsedMs}ms`);
 });
 
 test('watch report deadline uses the slower launch-clock phase plus receipt grace', { skip: !isWindows }, () => {

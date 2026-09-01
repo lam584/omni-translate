@@ -162,7 +162,8 @@ function Invoke-WatchModeRun {
       } else {
         Invoke-Step -State $state "start physical output content recording" -Phase recording {
           Start-PhysicalOutputContentRecorder $outputDir $resolvedPhysicalDeviceId $workspaceRoot `
-            $CellHardWatchdogSeconds $PhysicalRecorderTailSeconds $TerminalAuthorityPath
+            $CellHardWatchdogSeconds $PhysicalRecorderTailSeconds $TerminalAuthorityPath `
+            $runMarker $MatrixCellId ([string]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID)
         } -ContinueOnError
       }
       if ($physicalOutputRecorderStep.status -eq 'passed' -and -not $physicalOutputContentSkipReason) {

@@ -212,6 +212,11 @@ mod probe {
         record_path: Option<PathBuf>,
         transcription_pcm_path: Option<PathBuf>,
         record_seconds: f32,
+        terminal_marker_path: Option<PathBuf>,
+        terminal_tail_seconds: f32,
+        terminal_run_marker: Option<String>,
+        terminal_cell_id: Option<String>,
+        terminal_lease_id: Option<String>,
         process_exclusion_fingerprint: bool,
         streaming_tone: bool,
         tone_player_exe: Option<PathBuf>,
@@ -431,6 +436,11 @@ mod probe {
         let mut record_path: Option<PathBuf> = None;
         let mut transcription_pcm_path: Option<PathBuf> = None;
         let mut record_seconds = 30.0_f32;
+        let mut terminal_marker_path: Option<PathBuf> = None;
+        let mut terminal_tail_seconds = 2.0_f32;
+        let mut terminal_run_marker = None;
+        let mut terminal_cell_id = None;
+        let mut terminal_lease_id = None;
         let mut process_exclusion_fingerprint = false;
         let mut streaming_tone = false;
         let mut tone_player_exe = None;
@@ -467,6 +477,27 @@ mod probe {
                         .parse::<f32>()
                         .map_err(|error| format!("invalid --record-seconds '{raw}': {error}"))?;
                 }
+                "--terminal-marker-path" => {
+                    terminal_marker_path = Some(PathBuf::from(next_arg(
+                        &mut args,
+                        "--terminal-marker-path",
+                    )?))
+                }
+                "--terminal-tail-seconds" => {
+                    let raw = next_arg(&mut args, "--terminal-tail-seconds")?;
+                    terminal_tail_seconds = raw.parse::<f32>().map_err(|error| {
+                        format!("invalid --terminal-tail-seconds '{raw}': {error}")
+                    })?;
+                }
+                "--terminal-run-marker" => {
+                    terminal_run_marker = Some(next_arg(&mut args, "--terminal-run-marker")?)
+                }
+                "--terminal-cell-id" => {
+                    terminal_cell_id = Some(next_arg(&mut args, "--terminal-cell-id")?)
+                }
+                "--terminal-lease-id" => {
+                    terminal_lease_id = Some(next_arg(&mut args, "--terminal-lease-id")?)
+                }
                 "--process-exclusion-fingerprint" => process_exclusion_fingerprint = true,
                 "--streaming-tone" => streaming_tone = true,
                 "--tone-player-exe" => {
@@ -477,6 +508,20 @@ mod probe {
         }
         if record_only && record_seconds <= 0.0 {
             return Err("--record-seconds must be greater than 0".to_string());
+        }
+        if terminal_tail_seconds < 0.0 {
+            return Err("--terminal-tail-seconds must not be negative".to_string());
+        }
+        if terminal_marker_path.is_some() && !record_only {
+            return Err("--terminal-marker-path requires --record-only".to_string());
+        }
+        if terminal_marker_path.is_some()
+            && (terminal_run_marker.is_none()
+                || terminal_cell_id.is_none()
+                || terminal_lease_id.is_none())
+        {
+            return Err("--terminal-marker-path requires run marker, cell id, and lease id"
+                .to_string());
         }
         if record_only && process_exclusion_fingerprint {
             return Err(
@@ -493,6 +538,11 @@ mod probe {
             record_path,
             transcription_pcm_path,
             record_seconds,
+            terminal_marker_path,
+            terminal_tail_seconds,
+            terminal_run_marker,
+            terminal_cell_id,
+            terminal_lease_id,
             process_exclusion_fingerprint,
             streaming_tone,
             tone_player_exe,
@@ -505,12 +555,35 @@ mod probe {
         endpoint_id: String,
         endpoint_name: String,
     ) -> Result<ProbeResult, String> {
+        if args
+            .terminal_marker_path
+            .as_ref()
+            .is_some_and(|path| path.exists())
+        {
+            return Err(
+                "physical output recorder terminal marker existed before capture started"
+                    .to_string(),
+            );
+        }
         let capture = LoopbackCapture::start(capture_device)?;
         let mut metrics = CaptureMetrics::default();
         let started = Instant::now();
         let duration = Duration::from_millis((args.record_seconds * 1000.0).ceil() as u64);
+        let terminal_tail =
+            Duration::from_millis((args.terminal_tail_seconds * 1000.0).ceil() as u64);
+        let mut terminal_observed_at = None;
         while started.elapsed() < duration {
             capture.collect_available(&mut metrics)?;
+            let elapsed = started.elapsed();
+            let terminal_exists = terminal_marker_matches_identity(args);
+            if should_stop_after_terminal_tail(
+                terminal_exists,
+                &mut terminal_observed_at,
+                elapsed,
+                terminal_tail,
+            ) {
+                break;
+            }
             thread::sleep(Duration::from_millis(2));
         }
         capture.collect_available(&mut metrics)?;
@@ -571,6 +644,49 @@ mod probe {
             process_exclusion_fingerprint: None,
             detail,
         })
+    }
+
+    fn should_stop_after_terminal_tail(
+        terminal_exists: bool,
+        terminal_observed_at: &mut Option<Duration>,
+        elapsed: Duration,
+        terminal_tail: Duration,
+    ) -> bool {
+        if !terminal_exists {
+            return false;
+        }
+        let observed_at = terminal_observed_at.get_or_insert(elapsed);
+        elapsed.saturating_sub(*observed_at) >= terminal_tail
+    }
+
+    fn terminal_marker_matches_identity(args: &Args) -> bool {
+        let Some(path) = args.terminal_marker_path.as_ref() else {
+            return false;
+        };
+        let Ok(bytes) = fs::read(path) else {
+            return false;
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+            return false;
+        };
+        terminal_value_matches_identity(
+            &value,
+            args.terminal_run_marker.as_deref().unwrap_or_default(),
+            args.terminal_cell_id.as_deref().unwrap_or_default(),
+            args.terminal_lease_id.as_deref().unwrap_or_default(),
+        )
+    }
+
+    fn terminal_value_matches_identity(
+        value: &Value,
+        run_marker: &str,
+        cell_id: &str,
+        lease_id: &str,
+    ) -> bool {
+        value["runMarker"].as_str() == Some(run_marker)
+            && value["cellId"].as_str() == Some(cell_id)
+            && value["leaseId"].as_str() == Some(lease_id)
+            && value["status"].as_str() == Some("completed")
     }
 
     fn write_install_state(runtime_root: &PathBuf) -> Result<(), String> {
@@ -1045,5 +1161,77 @@ mod probe {
 
     fn error_text(error: impl std::fmt::Display) -> String {
         error.to_string()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{should_stop_after_terminal_tail, terminal_value_matches_identity};
+        use serde_json::json;
+        use std::time::Duration;
+
+        #[test]
+        fn terminal_marker_stops_only_after_its_tail_window() {
+            let mut observed_at = None;
+            assert!(!should_stop_after_terminal_tail(
+                false,
+                &mut observed_at,
+                Duration::from_secs(5),
+                Duration::from_secs(2),
+            ));
+            assert_eq!(observed_at, None);
+            assert!(!should_stop_after_terminal_tail(
+                true,
+                &mut observed_at,
+                Duration::from_secs(6),
+                Duration::from_secs(2),
+            ));
+            assert_eq!(observed_at, Some(Duration::from_secs(6)));
+            assert!(!should_stop_after_terminal_tail(
+                true,
+                &mut observed_at,
+                Duration::from_millis(7_999),
+                Duration::from_secs(2),
+            ));
+            assert!(should_stop_after_terminal_tail(
+                true,
+                &mut observed_at,
+                Duration::from_secs(8),
+                Duration::from_secs(2),
+            ));
+        }
+
+        #[test]
+        fn terminal_marker_requires_the_exact_completed_run_identity() {
+            let value = json!({
+                "runMarker": "run-a",
+                "cellId": "cell-a",
+                "leaseId": "lease-a",
+                "status": "completed",
+            });
+            assert!(terminal_value_matches_identity(
+                &value, "run-a", "cell-a", "lease-a"
+            ));
+            assert!(!terminal_value_matches_identity(
+                &value, "run-b", "cell-a", "lease-a"
+            ));
+            assert!(!terminal_value_matches_identity(
+                &value, "run-a", "cell-b", "lease-a"
+            ));
+            assert!(!terminal_value_matches_identity(
+                &value, "run-a", "cell-a", "lease-b"
+            ));
+            let incomplete = json!({
+                "runMarker": "run-a",
+                "cellId": "cell-a",
+                "leaseId": "lease-a",
+                "status": "failed",
+            });
+            assert!(!terminal_value_matches_identity(
+                &incomplete,
+                "run-a",
+                "cell-a",
+                "lease-a"
+            ));
+        }
     }
 }

@@ -86,6 +86,11 @@ export const PAID_AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/watch-mode-provider-preflight-authority.mjs',
   'scripts/testing/watch-mode-provider-preflight-process.mjs',
   'scripts/testing/watch-mode-provider-network-health.mjs',
+  'apps/desktop/src-tauri/src/audio/pcm_resample.rs',
+  'apps/desktop/src-tauri/src/audio/omni/mod.rs',
+  'apps/desktop/src-tauri/src/audio/omni/audio_pump.rs',
+  'apps/desktop/src-tauri/src/audio/omni/session_worker.rs',
+  'apps/desktop/src-tauri/src/audio/omni/provider_input_budget.rs',
   'scripts/testing/fixtures/watch-mode-audio-fixtures.json',
 ]);
 
@@ -119,6 +124,7 @@ const COMMON_CELL_ARTIFACTS = Object.freeze([
   'physical-playback-device.json',
   'playback.json',
   'provider-input-16k-mono.pcm',
+  'provider-input-prefilter-48k-stereo.f32le.frames',
   'provider-input-budget-lease.json',
   'provider-input-budget-ledger.json',
   'provider-input-budget-ledger.json.journal.jsonl',
@@ -298,6 +304,12 @@ export function writeCellAuthorityReceipt({
       feedbackLoopPrevention: matrixCell.feedbackLoopPrevention,
       deviceClass: matrixCell.deviceClass,
       deviceProfileId: matrixCell.deviceProfileId,
+      ...(matrixCell.deviceProfileInstanceId ? {
+        deviceProfileInstanceId: matrixCell.deviceProfileInstanceId,
+        physicalPlaybackDeviceId: matrixCell.physicalPlaybackDeviceId,
+        workerId: matrixCell.workerId,
+        vmIdentityDigest: matrixCell.vmIdentityDigest,
+      } : {}),
     },
     implementationHashes,
     paidImplementationHashes,

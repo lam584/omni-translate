@@ -189,6 +189,10 @@ fn run_omni_worker(
         provider_input_budget.max_samples(),
         provider_input_budget.strict_paid_authority_enabled(),
     )?;
+    let mut provider_input_prefilter_dump = ProviderInputPrefilterDump::from_provider_pcm_path(
+        provider_input_dump.as_ref().map(|dump| dump.path.as_str()),
+        provider_input_budget.strict_paid_authority_enabled(),
+    )?;
     // Create the translated-PCM evidence directory before connecting to the
     // paid provider. A missing, stale, or non-exclusive authority path must
     // fail without consuming any provider input.
@@ -393,6 +397,7 @@ fn run_omni_worker(
             total_silence_skipped_before_first_audible,
             first_audio_sent_ms,
             pending_audio_buffer,
+            provider_input_prefilter_dump,
             provider_input_dump,
             provider_input_budget,
             audio_input_disconnected,
@@ -458,6 +463,7 @@ fn run_omni_worker(
             pump_state.total_silence_skipped_before_first_audible;
         first_audio_sent_ms = pump_state.first_audio_sent_ms;
         pending_audio_buffer = pump_state.pending_audio_buffer;
+        provider_input_prefilter_dump = pump_state.provider_input_prefilter_dump;
         provider_input_dump = pump_state.provider_input_dump;
         provider_input_budget = pump_state.provider_input_budget;
         audio_input_disconnected = pump_state.audio_input_disconnected;

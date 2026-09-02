@@ -1909,6 +1909,10 @@ export function currentIncidentPlusImplementationHashes({ workspaceRoot = repoRo
     'scripts/testing/run-watch-mode-live.ps1',
     'scripts/testing/watch-mode-external-provider-budget.mjs',
     'scripts/testing/watch-mode-provider-preflight-authority.mjs',
+    'apps/desktop/src-tauri/src/audio/pcm_resample.rs',
+    'apps/desktop/src-tauri/src/audio/omni/mod.rs',
+    'apps/desktop/src-tauri/src/audio/omni/audio_pump.rs',
+    'apps/desktop/src-tauri/src/audio/omni/session_worker.rs',
     'apps/desktop/src-tauri/src/audio/omni/provider_input_budget.rs',
     'apps/desktop/src-tauri/src/release_evidence_diagnostic/provider_preflight_authority.rs',
   ];

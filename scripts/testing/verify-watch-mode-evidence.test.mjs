@@ -23,6 +23,9 @@ import {
   STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
   STRICT_PAID_MODEL_PROTOCOLS,
   STRICT_PAID_PROVIDER_IDENTITY,
+  PROVIDER_INPUT_PREFILTER_FILE,
+  PROVIDER_INPUT_PREFILTER_MAGIC,
+  replayProviderInputPrefilter,
   writeCellExternalProviderBudget,
   writeMatrixExternalProviderBudget,
 } from './watch-mode-external-provider-budget.mjs';
@@ -1332,9 +1335,24 @@ function writeAuthorityRawCell(root, directoryName, {
     path.join(directory, 'source-media-reference-16k-mono.pcm'),
     referencePcmBuffer,
   );
+  const providerRawChunk = Buffer.alloc(320 * 3 * 8);
+  for (let offset = 0; offset < providerRawChunk.length; offset += 8) {
+    providerRawChunk.writeFloatLE(0.25, offset);
+    providerRawChunk.writeFloatLE(0.25, offset + 4);
+  }
+  const providerRawLength = Buffer.alloc(4);
+  providerRawLength.writeUInt32LE(providerRawChunk.length);
+  const providerPrefilterPath = path.join(directory, PROVIDER_INPUT_PREFILTER_FILE);
+  fs.writeFileSync(
+    providerPrefilterPath,
+    Buffer.concat([PROVIDER_INPUT_PREFILTER_MAGIC, providerRawLength, providerRawChunk]),
+  );
   fs.writeFileSync(
     path.join(directory, 'provider-input-16k-mono.pcm'),
-    referencePcmBuffer,
+    replayProviderInputPrefilter({
+      filePath: providerPrefilterPath,
+      maxSamples: 2_877_045,
+    }).expectedProviderPcm,
   );
   for (const relativePath of requiredCellArtifactPaths(feedbackLoopPrevention)) {
     const filePath = path.join(directory, ...relativePath.split('/'));
@@ -2829,7 +2847,7 @@ test('strict authority rebuilds report evidence from the fixed raw inventory', (
   );
   assert.equal(
     verified.externalProviderBudget.actualProviderInputSamples,
-    loadCanonicalFixtureAuthority().referencePcm.samples,
+    320,
   );
   assert.equal(
     verified.externalProviderBudget.cells[0].leaseId,

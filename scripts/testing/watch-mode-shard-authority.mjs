@@ -66,9 +66,9 @@ export const SHARD_INPUT_SAMPLE_RATE_HZ = 16_000;
 export const SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES = 2_877_045;
 export const SHARD_MATRIX_CELL_COUNT = 4;
 export const SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES = 10_100_180;
-export const SHARD_ALLOWED_WORKER_COUNTS = Object.freeze([1]);
+export const SHARD_ALLOWED_WORKER_COUNTS = Object.freeze([1, 2, 3]);
 export const SHARD_MIN_WORKER_COUNT = 1;
-export const SHARD_MAX_WORKER_COUNT = 1;
+export const SHARD_MAX_WORKER_COUNT = 3;
 
 // This inventory is intentionally separate from AUTHORITY_IMPLEMENTATION_FILES.
 // Adding shard orchestration must not invalidate a previously captured three-cell
@@ -408,10 +408,11 @@ function assertDeviceProfileInstance(profile, label) {
 
 function assertWorkers(workers) {
   if (!Array.isArray(workers) || !SHARD_ALLOWED_WORKER_COUNTS.includes(workers.length)) {
-    throw new Error('strict paid execution requires exactly one local worker');
+    throw new Error('strict paid execution requires between one and three identity-bound workers');
   }
   const workerIds = new Set();
   const vmIds = new Set();
+  const sshHostKeys = new Set();
   for (const [index, worker] of workers.entries()) {
     assertObject(worker, `workers[${index}]`);
     const workerId = assertIdentifier(worker.workerId, `workers[${index}].workerId`);
@@ -422,6 +423,30 @@ function assertWorkers(workers) {
     if (vmIds.has(vmDigest)) throw new Error(`duplicate VM identity for worker ${workerId}`);
     vmIds.add(vmDigest);
     if (worker.vmIdentityDigest !== vmDigest) throw new Error(`worker ${workerId} VM identity digest mismatch`);
+    if (worker.transportAuthority == null) {
+      if (workers.length > 1) {
+        throw new Error(`worker ${workerId} is missing signed transport authority`);
+      }
+    } else if (worker.transportAuthority.kind === 'local') {
+      if (canonicalJson(worker.transportAuthority) !== canonicalJson({ kind: 'local' })) {
+        throw new Error(`worker ${workerId} local transport authority has unexpected fields`);
+      }
+    } else if (worker.transportAuthority.kind === 'ssh') {
+      const transport = worker.transportAuthority;
+      if (
+        canonicalJson(Object.keys(transport).sort())
+          !== canonicalJson(['hostKeyAlgorithm', 'hostKeyAlias', 'hostKeySha256', 'kind'].sort())
+        || !IDENTIFIER_PATTERN.test(String(transport.hostKeyAlias ?? ''))
+        || !/^ssh-(?:ed25519|rsa)$/u.test(String(transport.hostKeyAlgorithm ?? ''))
+        || !/^SHA256:[A-Za-z0-9+/]{43}$/u.test(String(transport.hostKeySha256 ?? ''))
+      ) throw new Error(`worker ${workerId} SSH transport authority is invalid`);
+      if (sshHostKeys.has(transport.hostKeySha256)) {
+        throw new Error(`worker ${workerId} reuses a signed SSH host key`);
+      }
+      sshHostKeys.add(transport.hostKeySha256);
+    } else {
+      throw new Error(`worker ${workerId} transport authority kind is invalid`);
+    }
     if (!Array.isArray(worker.deviceProfileInstances) || worker.deviceProfileInstances.length === 0) {
       throw new Error(`worker ${workerId} has no device profile instances`);
     }
@@ -588,6 +613,9 @@ function normalizeWorkers(workers) {
     const vmIdentity = structuredClone(worker.vmIdentity);
     return {
       workerId: String(worker.workerId),
+      ...(worker.transportAuthority
+        ? { transportAuthority: structuredClone(worker.transportAuthority) }
+        : {}),
       ...(String(worker.interactiveUser ?? '').trim()
         ? { interactiveUser: String(worker.interactiveUser).trim() }
         : {}),
@@ -1354,6 +1382,8 @@ export function validateWorkerZeroProviderReadinessAuthority({
     || receipt.readinessRequestDigest !== checkedRequest.requestDigest
     || receipt.workerId !== worker.workerId
     || receipt.vmIdentityDigest !== worker.vmIdentityDigest
+    || canonicalJson(receipt.transportAuthority ?? null)
+      !== canonicalJson(worker.transportAuthority ?? null)
     || receipt.runtimeBundleDigest !== checkedRequest.runtimeBundleDigest
     || Number(receipt.providerCalls) !== 0
   ) throw new Error('worker zero-provider readiness receipt identity/budget binding mismatch');

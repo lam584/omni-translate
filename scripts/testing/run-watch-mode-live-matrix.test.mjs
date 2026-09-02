@@ -39,6 +39,7 @@ import {
   splitRunnerArgs,
   stageShardMatrixIntegration,
   strictRuntimeEnvironment,
+  strictCellDeviceBinding,
   writeMatrixRunManifest,
 } from './run-watch-mode-live-matrix.mjs';
 import { fileAuthorityEntry, requiredCellArtifactPaths } from './watch-mode-evidence-authority.mjs';
@@ -63,6 +64,26 @@ import {
 } from './watch-mode-provider-preflight-authorization.mjs';
 
 const SAMPLE_MODEL = 'qwen3.5-livetranslate-flash-realtime';
+
+test('strict distributed cells retain their shard-specific profile instance and endpoint', () => {
+  const plannedCell = LIVE_LLM_CELLS[0];
+  const bind = (workerId, instanceId, endpointId) => strictCellDeviceBinding({
+    plannedCell,
+    classProfile: { profileId: 'shared-class-profile', deviceClass: plannedCell.deviceClass, physicalPlaybackDeviceId: 'wrong-shared-endpoint' },
+    shardAuthority: {
+      workerId,
+      deviceAuthority: {
+        instanceId, profileId: `${workerId}-profile`, deviceClass: plannedCell.deviceClass,
+        requestedDeviceId: endpointId, resolvedDeviceName: `${workerId} speaker`,
+      },
+    },
+  });
+  assert.deepEqual(bind('vm171', 'vm171-default', '{endpoint-171}'), {
+    instanceId: 'vm171-default', profileId: 'vm171-profile', deviceClass: plannedCell.deviceClass,
+    physicalPlaybackDeviceId: '{endpoint-171}', expectedPhysicalPlaybackDeviceName: 'vm171 speaker',
+  });
+  assert.equal(bind('vm167', 'vm167-default', '{endpoint-167}').physicalPlaybackDeviceId, '{endpoint-167}');
+});
 const SAMPLE_FEEDBACK_MODE = 'echo-cancel';
 const CLEAN_PROVENANCE = Object.freeze({
   schemaVersion: 1,
@@ -654,6 +675,12 @@ test('strict failure manifest preserves shard evidence without requiring complet
       sha256: 'a'.repeat(64),
       resultDigest: 'b'.repeat(64),
     },
+    workerId: 'vm171',
+    vmIdentityDigest: '1'.repeat(64),
+    deviceAuthority: {
+      instanceId: 'vm171-default', profileId: 'vm171-profile', deviceClass: 'default-speaker',
+      requestedDeviceId: '{endpoint-171}', resolvedDeviceName: 'VM171 speaker',
+    },
   };
   try {
     writeAuthorityPlaceholderArtifacts(runDirectory, releaseCell.feedbackLoopPrevention);
@@ -693,7 +720,7 @@ test('strict failure manifest preserves shard evidence without requiring complet
       outputRoot,
       modelList: [SAMPLE_MODEL],
       feedbackModeList: ['process-exclusion'],
-      deviceProfiles: [{ profileId: 'default', deviceClass: 'default-speaker' }],
+      deviceProfiles: [{ profileId: 'default', deviceClass: 'default-speaker', physicalPlaybackDeviceId: 'legacy-only' }],
       runDirectories: [runDirectory],
       strict: true,
       provenance: CLEAN_PROVENANCE,
@@ -808,7 +835,11 @@ test('strict shard writer projects guest authority into the manifest and every d
     runDirectory: path.basename(currentRuns[index]),
     runtimeBinaryHashes: [],
     usageAuthority: { leaseId: `lease-${index}` },
-    deviceAuthority: { deviceClass: cell.deviceClass },
+    deviceAuthority: {
+      instanceId: `worker-${index}-default`, profileId: `worker-${index}-profile`,
+      deviceClass: cell.deviceClass, requestedDeviceId: `{endpoint-${index}}`,
+      resolvedDeviceName: `worker ${index} speaker`,
+    },
   }));
   const shardExecution = { executionRoot: 'execution' };
   const matrixIntegration = { cells: integrationCells };
@@ -838,7 +869,7 @@ test('strict shard writer projects guest authority into the manifest and every d
       outputRoot,
       modelList: [SAMPLE_MODEL],
       feedbackModeList: ['echo-cancel'],
-      deviceProfiles: SUPPORTED_DEVICE_CLASSES.map((deviceClass) => ({ profileId: deviceClass, deviceClass })),
+      deviceProfiles: SUPPORTED_DEVICE_CLASSES.map((deviceClass) => ({ profileId: deviceClass, deviceClass, physicalPlaybackDeviceId: 'legacy-only' })),
       runDirectories: currentRuns,
       strict: true,
       provenance: CLEAN_PROVENANCE,
@@ -852,6 +883,12 @@ test('strict shard writer projects guest authority into the manifest and every d
     });
     assert.deepEqual(manifest.shardExecution, shardExecution);
     assert.deepEqual(manifest.matrixIntegration, matrixIntegration);
+    assert.deepEqual(
+      manifest.cells.map((cell) => [cell.workerId, cell.deviceProfileInstanceId, cell.physicalPlaybackDeviceId]),
+      integrationCells.map((cell) => [
+        cell.workerId, cell.deviceAuthority.instanceId, cell.deviceAuthority.requestedDeviceId,
+      ]),
+    );
     assert.deepEqual(manifest.cells.map((cell) => cell.shardAuthority), integrationCells);
     for (let index = 0; index < currentRuns.length; index += 1) {
       const receipt = JSON.parse(fs.readFileSync(path.join(currentRuns[index], 'matrix-cell-authority.json'), 'utf8'));

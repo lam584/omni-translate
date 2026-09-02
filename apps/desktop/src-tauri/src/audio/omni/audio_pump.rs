@@ -42,6 +42,7 @@ pub(super) struct OmniAudioPumpState {
     pub(super) total_silence_skipped_before_first_audible: u64,
     pub(super) first_audio_sent_ms: Option<u64>,
     pub(super) pending_audio_buffer: Vec<i16>,
+    pub(super) provider_input_prefilter_dump: Option<ProviderInputPrefilterDump>,
     pub(super) provider_input_dump: Option<ProviderInputPcmDump>,
     pub(super) provider_input_budget: ProviderInputBudget,
     /// True only after the sole capture producer has released every sender and
@@ -238,6 +239,7 @@ impl OmniAudioPump {
             mut total_silence_skipped_before_first_audible,
             mut first_audio_sent_ms,
             mut pending_audio_buffer,
+            mut provider_input_prefilter_dump,
             mut provider_input_dump,
             provider_input_budget,
             mut audio_input_disconnected,
@@ -294,6 +296,9 @@ impl OmniAudioPump {
                     None => break,
                 }
             };
+            if let Some(dump) = provider_input_prefilter_dump.as_mut() {
+                dump.append_chunk(app, &raw_chunk)?;
+            }
             let asr_chunk = resample_48k_stereo_to_16k_mono(&raw_chunk);
             if asr_chunk.is_empty() {
                 let _ = diag_log(
@@ -486,6 +491,7 @@ impl OmniAudioPump {
             total_silence_skipped_before_first_audible,
             first_audio_sent_ms,
             pending_audio_buffer,
+            provider_input_prefilter_dump,
             provider_input_dump,
             provider_input_budget,
             audio_input_disconnected,
@@ -679,6 +685,7 @@ mod tests {
             total_silence_skipped_before_first_audible: 0,
             first_audio_sent_ms: None,
             pending_audio_buffer: Vec::new(),
+            provider_input_prefilter_dump: None,
             provider_input_dump: None,
             provider_input_budget: budget,
             audio_input_disconnected: false,

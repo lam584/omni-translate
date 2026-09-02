@@ -7,6 +7,8 @@ import crypto from 'node:crypto';
 
 import {
   STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
+  PROVIDER_INPUT_PREFILTER_FILE,
+  PROVIDER_INPUT_PREFILTER_MAGIC,
   actualProviderInputSamplesFromLog,
   assertCellExternalProviderBudget,
   assertMatrixExternalProviderBudget,
@@ -14,6 +16,7 @@ import {
   buildMatrixExternalProviderBudget,
   isAbsoluteEvidencePathForFixedFile,
   reserveStrictPaidCellInputSamples,
+  replayProviderInputPrefilter,
   writePreProviderTerminalAuthority,
   writeCellExternalProviderBudget,
 } from './watch-mode-external-provider-budget.mjs';
@@ -32,19 +35,40 @@ const inputCeilingSamplesForMode = (feedbackLoopPrevention) => LIVE_LLM_CELLS.fi
   (cell) => cell.feedbackLoopPrevention === feedbackLoopPrevention,
 )?.maxExternalAudioSamples;
 
+function writePrefilterFixture(runDirectory, samples, amplitude = 0.25) {
+  const raw = Buffer.alloc(samples * 3 * 8);
+  for (let offset = 0; offset < raw.length; offset += 8) {
+    raw.writeFloatLE(amplitude, offset);
+    raw.writeFloatLE(amplitude, offset + 4);
+  }
+  const header = Buffer.alloc(4);
+  header.writeUInt32LE(raw.length);
+  fs.writeFileSync(
+    path.join(runDirectory, PROVIDER_INPUT_PREFILTER_FILE),
+    Buffer.concat([PROVIDER_INPUT_PREFILTER_MAGIC, header, raw]),
+  );
+  const replay = replayProviderInputPrefilter({
+    filePath: path.join(runDirectory, PROVIDER_INPUT_PREFILTER_FILE),
+    maxSamples: inputCeilingSamplesForMode('process-exclusion'),
+  });
+  fs.writeFileSync(
+    path.join(runDirectory, 'provider-input-16k-mono.pcm'),
+    replay.expectedProviderPcm,
+  );
+  return replay.expectedProviderPcm.length / 2;
+}
+
 function createRunDirectory({
   feedbackMode = 'echo-cancel',
-  samples = 16_000 * 126,
+  samples = 320,
+  prefilterSamples = samples,
   extraLog = '',
   remoteArtifact = null,
 } = {}) {
   const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-paid-budget-'));
   const diagnosticPcmSamples = samples;
   const inputCeilingSamples = inputCeilingSamplesForMode(feedbackMode);
-  fs.writeFileSync(
-    path.join(runDirectory, 'provider-input-16k-mono.pcm'),
-    Buffer.alloc(diagnosticPcmSamples * 2, 1),
-  );
+  writePrefilterFixture(runDirectory, prefilterSamples);
   fs.writeFileSync(path.join(runDirectory, 'app.log'), [
     'historical unrelated provider log',
     MARKER,
@@ -275,6 +299,39 @@ test('actual provider input uses sent-sample trace summaries instead of the 90-s
   });
 });
 
+test('prefilter replay reproduces f32 resampling, RMS gating, and exactly 40 silence-grace chunks', () => {
+  const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-prefilter-replay-'));
+  try {
+    const chunks = [0, 0.25, ...Array(41).fill(0)].map((amplitude) => {
+      const raw = Buffer.alloc(320 * 3 * 8);
+      for (let offset = 0; offset < raw.length; offset += 8) {
+        raw.writeFloatLE(amplitude, offset);
+        raw.writeFloatLE(amplitude, offset + 4);
+      }
+      const length = Buffer.alloc(4);
+      length.writeUInt32LE(raw.length);
+      return Buffer.concat([length, raw]);
+    });
+    const filePath = path.join(runDirectory, PROVIDER_INPUT_PREFILTER_FILE);
+    fs.writeFileSync(filePath, Buffer.concat([PROVIDER_INPUT_PREFILTER_MAGIC, ...chunks]));
+    const replay = replayProviderInputPrefilter({ filePath, maxSamples: 100_000 });
+    assert.equal(replay.authority.rawInput.chunkCount, 43);
+    assert.deepEqual(replay.authority.decisions, {
+      audibleChunks: 1,
+      silenceGraceChunks: 40,
+      skippedSilenceChunks: 2,
+      emptyResampleChunks: 0,
+      budgetRejectedChunks: 0,
+      acceptedChunks: 41,
+      acceptedSamples: 13_120,
+    });
+    assert.equal(replay.expectedProviderPcm.readInt16LE(0), 8191);
+    assert.equal(replay.expectedProviderPcm.length, 13_120 * 2);
+  } finally {
+    fs.rmSync(runDirectory, { recursive: true, force: true });
+  }
+});
+
 test('paid budget scopes from the standalone marker, not a later runMarker field', () => {
   const runDirectory = createRunDirectory({
     extraLog: `watch_mode.diagnostic_report_saved | runMarker=${MARKER}`,
@@ -282,7 +339,7 @@ test('paid budget scopes from the standalone marker, not a later runMarker field
   try {
     const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
     assert.equal(budget.passed, true, budget.violations.join('; '));
-    assert.equal(budget.actualProviderInputSamples, 2_016_000);
+    assert.equal(budget.actualProviderInputSamples, 320);
   } finally {
     fs.rmSync(runDirectory, { recursive: true, force: true });
   }
@@ -312,8 +369,8 @@ test('strict paid cell accepts only the main realtime session and reconstructs i
   try {
     const { ledger } = writeCellExternalProviderBudget(buildOptions(runDirectory));
     assert.equal(ledger.passed, true);
-    assert.equal(ledger.actualProviderInputSamples, 16_000 * 126);
-    assert.equal(ledger.actualProviderInputSeconds, 126);
+    assert.equal(ledger.actualProviderInputSamples, 320);
+    assert.equal(ledger.actualProviderInputSeconds, 0.02);
     assert.deepEqual(ledger.calls, {
       mainRealtime: 1,
       sourceTranscript: 0,
@@ -324,6 +381,26 @@ test('strict paid cell accepts only the main realtime session and reconstructs i
     assert.equal(assertCellExternalProviderBudget(runDirectory).passed, true);
   } finally {
     fs.rmSync(runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('strict paid cell rejects either provider PCM or prefilter raw tampering', () => {
+  for (const target of ['provider-input-16k-mono.pcm', PROVIDER_INPUT_PREFILTER_FILE]) {
+    const runDirectory = createRunDirectory();
+    try {
+      const filePath = path.join(runDirectory, target);
+      const bytes = fs.readFileSync(filePath);
+      bytes[bytes.length - 1] ^= 0x40;
+      fs.writeFileSync(filePath, bytes);
+      const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
+      assert.equal(budget.passed, false, target);
+      assert.match(
+        budget.violations.join('; '),
+        /not byte-for-byte equal|do not match send-boundary total/,
+      );
+    } finally {
+      fs.rmSync(runDirectory, { recursive: true, force: true });
+    }
   }
 });
 
@@ -387,6 +464,10 @@ test('strict paid budget accepts a lease-bound zero-input terminal for collect-a
       'utf8',
     );
     fs.writeFileSync(path.join(runDirectory, 'provider-input-16k-mono.pcm'), Buffer.alloc(0));
+    fs.writeFileSync(
+      path.join(runDirectory, PROVIDER_INPUT_PREFILTER_FILE),
+      PROVIDER_INPUT_PREFILTER_MAGIC,
+    );
     const appLogPath = path.join(runDirectory, 'app.log');
     const appLog = fs.readFileSync(appLogPath, 'utf8')
       .split(/\r?\n/u)
@@ -453,7 +534,7 @@ test('strict paid cell rejects remote STT artifacts, secondary calls, reconnects
       expected: /log reconnect count.*send-boundary authority/,
     },
     {
-      options: { samples: 16_000 * 181 },
+      options: { samples: 16_000 * 181, prefilterSamples: 320 },
       expected: /exceeded maxSamples|do not match send-boundary total/,
     },
   ];

@@ -30,7 +30,10 @@ import {
   writeShardCellResult,
   writeShardManifest,
 } from './watch-mode-shard-authority.mjs';
-import { defaultSingleWorkerAssignments } from './run-watch-mode-live-coordinator.mjs';
+import {
+  defaultSingleWorkerAssignments,
+  fixedThreeWorkerAssignments,
+} from './run-watch-mode-live-coordinator.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
 import { rebuildReportFromDirectory } from './watch-mode-report.mjs';
 import {
@@ -749,7 +752,7 @@ test('signed plan and leases bind exact four cells, serial waves, identities and
   );
 });
 
-test('signed plan accepts exactly one local worker and rejects additional workers', () => {
+test('signed plan accepts one or three workers and binds unique multi-worker transports', () => {
   const fixture = createFixture();
   const createWithWorkers = (workers) => createSignedExecutionPlan({
     executionId: `watch-worker-count-${workers.length}`,
@@ -769,18 +772,44 @@ test('signed plan accepts exactly one local worker and rejects additional worker
     workers,
     assignments: workers.length === 1
       ? defaultSingleWorkerAssignments(workers)
-      : [],
+      : workers.length === 3
+        ? fixedThreeWorkerAssignments(workers)
+        : [],
     ...fixture.signingKeys,
   });
   const oneWorkerPlan = createWithWorkers(testWorkers());
   assert.equal(oneWorkerPlan.workers.length, 1);
   assert.deepEqual(oneWorkerPlan.waves.map((wave) => wave.cellIds.length), [1, 1, 1, 1]);
-  const fourth = {
+  const worker = (workerId, uuidBios, transportAuthority) => ({
     ...structuredClone(testWorkers()[0]),
-    workerId: 'vm4',
-    vmIdentity: { provider: 'vmware', uuidBios: 'vm-uuid-4' },
-  };
-  assert.throws(() => createWithWorkers([...testWorkers(), fourth]), /assignments must contain|exactly one local worker/);
+    workerId,
+    transportAuthority,
+    vmIdentity: { provider: 'vmware', uuidBios },
+    deviceProfileInstances: [{
+      ...structuredClone(testWorkers()[0].deviceProfileInstances[0]),
+      instanceId: `${workerId}-default`,
+      physicalPlaybackDeviceId: `{${workerId}-endpoint}`,
+    }],
+  });
+  const threeWorkers = [
+    worker('vm171', 'vm-uuid-171', { kind: 'local' }),
+    worker('vm167', 'vm-uuid-167', {
+      kind: 'ssh', hostKeyAlias: 'vm167', hostKeyAlgorithm: 'ssh-ed25519', hostKeySha256: `SHA256:${'A'.repeat(43)}`,
+    }),
+    worker('vm169', 'vm-uuid-169', {
+      kind: 'ssh', hostKeyAlias: 'vm169', hostKeyAlgorithm: 'ssh-ed25519', hostKeySha256: `SHA256:${'B'.repeat(43)}`,
+    }),
+  ];
+  const threeWorkerPlan = createWithWorkers(threeWorkers);
+  assert.equal(threeWorkerPlan.workers.length, 3);
+  assert.deepEqual(threeWorkerPlan.waves.map((wave) => wave.cellIds.length), [3, 1]);
+
+  const duplicateHostKey = structuredClone(threeWorkers);
+  duplicateHostKey[2].transportAuthority.hostKeySha256 = duplicateHostKey[1].transportAuthority.hostKeySha256;
+  assert.throws(() => createWithWorkers(duplicateHostKey), /reuses a signed SSH host key/);
+
+  const fourth = worker('vm4', 'vm-uuid-4', { kind: 'local' });
+  assert.throws(() => createWithWorkers([...threeWorkers, fourth]), /between one and three/);
 });
 
 test('provider usage authority binds coordinator launch receipt and ordered send-boundary journal', () => {

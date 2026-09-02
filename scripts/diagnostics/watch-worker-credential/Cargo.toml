@@ -1,0 +1,13 @@
+[package]
+name = "watch-worker-credential"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+hmac = "0.12"
+sha2 = "0.10"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
+zeroize = "1.8"
+
+[workspace]

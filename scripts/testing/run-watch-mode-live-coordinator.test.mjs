@@ -23,6 +23,7 @@ import {
   CoordinatorWaveFailure,
   collectCoordinatorAggregation,
   defaultSingleWorkerAssignments,
+  fixedThreeWorkerAssignments,
   prepareCoordinatorExecution,
   runCoordinatorWaves,
   validateCoordinatorAggregate,
@@ -237,6 +238,83 @@ test('single-machine placement rejects additional workers', () => {
   assert.throws(() => defaultSingleWorkerAssignments([...workers(), {
     ...workers()[0], workerId: 'vm4', vmIdentity: { provider: 'vmware', uuidBios: 'vm-four' },
   }]), /exactly one local worker/);
+});
+
+test('fixed three-worker placement runs c01/c02/c04 in wave zero and c03 on vm169 in wave one', () => {
+  const profile = (workerId) => ({
+    instanceId: `${workerId}-default`, profileId: 'vmware-hda-default',
+    deviceClass: 'default-speaker', physicalPlaybackDeviceId: `{${workerId}}`,
+    expectedPhysicalPlaybackDeviceName: `speaker-${workerId}`,
+  });
+  const workerList = ['vm171', 'vm167', 'vm169'].map((workerId) => ({
+    workerId, deviceProfileInstances: [profile(workerId)],
+  }));
+  assert.deepEqual(fixedThreeWorkerAssignments(workerList).map((entry) => [
+    LIVE_LLM_CELLS.findIndex((cell) => cell.cellId === entry.cellId) + 1, entry.workerId, entry.waveIndex,
+  ]), [
+    [1, 'vm171', 0], [2, 'vm169', 0], [3, 'vm169', 1], [4, 'vm167', 0],
+  ]);
+});
+
+test('coordinator staggers only first-wave dispatches and keeps later waves dependency-bound', async () => {
+  const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-coordinator-stagger-'));
+  try {
+    const profile = (workerId) => ({
+      instanceId: `${workerId}-default`, profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
+      physicalPlaybackDeviceId: `{${workerId}}`, expectedPhysicalPlaybackDeviceName: `speaker-${workerId}`,
+    });
+    const workerList = ['vm171', 'vm167', 'vm169'].map((workerId) => ({
+      workerId, vmIdentity: { provider: 'vmware', uuidBios: `uuid-${workerId}` },
+      transportAuthority: { kind: 'local' },
+      deviceProfileInstances: [profile(workerId)],
+    }));
+    const keys = generateCoordinatorSigningKeyPair();
+    const now = new Date();
+    const plan = createSignedExecutionPlan({
+      executionId: 'watch-shard-stagger-test', generatedAt: now,
+      expiresAt: new Date(now.getTime() + 3_600_000), provenance: PROVENANCE,
+      authorityImplementationHashes: inventory('matrix', SHA_A), runtimeBinaryHashes: runtimeInventory(),
+      shardOrchestrationImplementationHashes: inventory('shard', SHA_A),
+      localIsolationAuthority: { path: 'local.json', bytes: 10, sha256: SHA_A, providerCalls: 0 },
+      providerPreflightAuthority: { path: 'preflight.json', bytes: 10, sha256: SHA_B, ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY) },
+      workers: workerList, assignments: fixedThreeWorkerAssignments(workerList), ...keys,
+    });
+    const leases = issueCellLeases(plan, keys.privateKeyPem, { issuedAt: now });
+    fs.mkdirSync(outputRoot, { recursive: true });
+    fs.writeFileSync(path.join(outputRoot, SHARD_EXECUTION_PLAN_FILE), `${JSON.stringify(plan)}\n`);
+    const delays = [];
+    const dispatched = [];
+    let releaseSlowPeers;
+    const slowPeers = new Promise((resolve) => { releaseSlowPeers = resolve; });
+    let resolveC03;
+    const c03Started = new Promise((resolve) => { resolveC03 = resolve; });
+    const execution = runCoordinatorWaves({
+      plan, leases, executionRoot: outputRoot, firstWaveStaggerMs: 7_000,
+      wait: async (delayMs) => { delays.push(delayMs); },
+      dispatchCell: async ({ cell }) => {
+        dispatched.push(cell.cellId);
+        if ([0, 3].includes(cell.cellIndex)) await slowPeers;
+        if (cell.cellIndex === 2) resolveC03();
+        return { result: { verdict: 'passed', resultDigest: sha256Canonical({ cellId: cell.cellId }), generatedAt: new Date(now.getTime() + 500).toISOString() } };
+      },
+      now: () => new Date(now.getTime() + 1_000),
+    });
+    await c03Started;
+    assert.equal(dispatched.includes(LIVE_LLM_CELLS[2].cellId), true, 'c03 starts after c02 without waiting for other workers');
+    releaseSlowPeers();
+    const outcome = await execution;
+    assert.doesNotThrow(() => validateCoordinatorExecutionAuthority({
+      executionRoot: outputRoot, plan, leases, resultByCell: outcome.results,
+    }));
+    const c02 = LIVE_LLM_CELLS[1].cellId;
+    outcome.results.get(c02).result.generatedAt = new Date(now.getTime() + 60_000).toISOString();
+    assert.throws(() => validateCoordinatorExecutionAuthority({
+      executionRoot: outputRoot, plan, leases, resultByCell: outcome.results,
+    }), /worker vm169 dispatched .* before .* completed/u);
+    assert.deepEqual(delays.sort((left, right) => left - right), [7_000, 14_000]);
+  } finally {
+    fs.rmSync(outputRoot, { recursive: true, force: true });
+  }
 });
 
 test('coordinator prepares build/preflight/local once and atomically publishes the exact signed leases', async () => {

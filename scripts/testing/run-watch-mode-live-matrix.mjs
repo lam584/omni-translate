@@ -714,8 +714,8 @@ export function stageShardMatrixIntegration({
   if (!Array.isArray(leasePaths) || leasePaths.length !== LIVE_LLM_CELLS.length) {
     throw new Error(`shard staging requires exactly ${LIVE_LLM_CELLS.length} signed lease files`);
   }
-  if (!Array.isArray(shards) || shards.length !== 1) {
-    throw new Error('strict staging requires exactly one local shard root');
+  if (!Array.isArray(shards) || ![1, 2, 3].includes(shards.length)) {
+    throw new Error('strict staging requires between one and three signed shard roots');
   }
   const temporaryRoot = `${finalExecutionRoot}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.staging`;
   fs.mkdirSync(temporaryRoot, { recursive: false });
@@ -1362,12 +1362,21 @@ export const writeMatrixRunManifest = ({
     )));
   for (let runIndex = 0; runIndex < manifestCells.length; runIndex += 1) {
     const plannedCell = manifestCells[runIndex];
-    const deviceProfile = deviceProfileByClass.get(plannedCell.deviceClass);
+    const shardAuthority = strict ? matrixIntegration?.cells?.[runIndex] ?? null : null;
+    const deviceProfile = strictCellDeviceBinding({
+      plannedCell,
+      shardAuthority,
+      classProfile: deviceProfileByClass.get(plannedCell.deviceClass),
+    });
     if (!deviceProfile) {
       throw new Error(`matrix cell ${plannedCell.cellId ?? runIndex} has no device profile for ${plannedCell.deviceClass}`);
     }
+    if (strict && shardAuthority && (
+      deviceProfile.deviceClass !== plannedCell.deviceClass
+      || !String(deviceProfile.instanceId ?? '').trim()
+      || !String(deviceProfile.physicalPlaybackDeviceId ?? '').trim()
+    )) throw new Error(`strict matrix cell ${plannedCell.cellId} has invalid shard-bound device authority`);
         if (strict) {
-          const shardAuthority = matrixIntegration?.cells?.[runIndex] ?? null;
           const failed = failedCellIds.has(plannedCell.cellId);
           if (failed && (!shardAuthority || shardAuthority.verdict !== 'failed')) {
             throw new Error(`strict failed matrix cell ${plannedCell.cellId} requires failed guest shard authority`);
@@ -1395,6 +1404,12 @@ export const writeMatrixRunManifest = ({
             feedbackLoopPrevention: plannedCell.feedbackLoopPrevention,
             deviceClass: deviceProfile.deviceClass,
             deviceProfileId: deviceProfile.profileId,
+            ...(shardAuthority ? {
+              deviceProfileInstanceId: deviceProfile.instanceId,
+              physicalPlaybackDeviceId: deviceProfile.physicalPlaybackDeviceId,
+              workerId: shardAuthority.workerId,
+              vmIdentityDigest: shardAuthority.vmIdentityDigest,
+            } : {}),
           };
           if (failed) {
             cells.push({
@@ -1469,6 +1484,22 @@ export const writeMatrixRunManifest = ({
   renameWithTransientRetrySync(temporaryPath, manifestPath);
   return { manifestPath, manifest };
 };
+
+export function strictCellDeviceBinding({ plannedCell, shardAuthority, classProfile }) {
+  if (!shardAuthority) return classProfile;
+  const device = shardAuthority.deviceAuthority;
+  if (!device) return null;
+  if (device.deviceClass !== plannedCell.deviceClass) {
+    throw new Error(`strict matrix cell ${plannedCell.cellId} shard device class mismatch`);
+  }
+  return {
+    instanceId: device.instanceId,
+    profileId: device.profileId,
+    deviceClass: device.deviceClass,
+    physicalPlaybackDeviceId: device.requestedDeviceId,
+    expectedPhysicalPlaybackDeviceName: device.resolvedDeviceName,
+  };
+}
 
 export const publishSuccessfulStrictMatrixManifest = ({
   outputRoot,

@@ -276,7 +276,7 @@ export function deriveWatchProductionCoordinatorPreparationBudgetMs({
     WATCH_PRODUCTION_RUNTIME_AUTHORITY_VERIFICATION_TIMEOUT_MS
     + 3 * WATCH_PRODUCTION_PROVENANCE_CAPTURE_TIMEOUT_MS
     + 2 * WATCH_PRODUCTION_AUTHORITY_INVENTORY_CAPTURE_TIMEOUT_MS
-    + workerCount * deriveWatchProductionInitialWorkerReadinessBudgetMs()
+    + deriveWatchProductionInitialWorkerReadinessBudgetMs()
     + WATCH_PRODUCTION_LOCAL_ISOLATION_VERIFICATION_TIMEOUT_MS
     + deriveWatchProductionNetworkHealthBudgetMs()
     + deriveWatchProductionProviderPreflightBudgetMs()
@@ -301,9 +301,19 @@ export function deriveWatchPostReadinessExecutionBudgetMs({
     throw new Error('post-readiness execution budget requires a positive workerCount');
   }
   return (
-    workerCount * deriveWatchProductionPreservedWorkerReadinessBudgetMs()
-    + formalCells(cells, 'post-readiness execution budget')
-      .reduce((total, cell) => total + deriveWatchProductionCellExecutionBudgetMs(cell), 0)
+    deriveWatchProductionPreservedWorkerReadinessBudgetMs()
+    + (() => {
+      const formal = formalCells(cells, 'post-readiness execution budget');
+      if (workerCount === 3 && formal.length === 4) {
+        return Math.max(
+          deriveWatchProductionCellExecutionBudgetMs(formal[0]),
+          deriveWatchProductionCellExecutionBudgetMs(formal[1]) + 7_000
+            + deriveWatchProductionCellExecutionBudgetMs(formal[2]),
+          deriveWatchProductionCellExecutionBudgetMs(formal[3]) + 14_000,
+        );
+      }
+      return formal.reduce((total, cell) => total + deriveWatchProductionCellExecutionBudgetMs(cell), 0);
+    })()
     + WATCH_PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS
   );
 }

@@ -79,6 +79,17 @@ export const COORDINATOR_WAVE_COMPLETION_KIND = 'watch-mode-shard-wave-completio
 export const COORDINATOR_AGGREGATE_KIND = 'watch-mode-paid-shard-coordinator-aggregate';
 export const COORDINATOR_AGGREGATE_FILE = 'coordinator-aggregate.json';
 export const COORDINATOR_PREFLIGHT_AUTHORIZATION_DIRECTORY_SUFFIX = '.preflight-authorization';
+export const COORDINATOR_FIRST_WAVE_STAGGER_MS = 7_000;
+
+function abortableDelay(delayMs, signal) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, delayMs);
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new Error('staggered dispatch aborted'));
+    }, { once: true });
+  });
+}
 
 const safeCellId = (cellId) => String(cellId).replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '');
 const EXECUTION_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{7,127}$/i;
@@ -138,6 +149,39 @@ export function defaultSingleWorkerAssignments(workers) {
 // Compatibility export for existing offline authority fixtures. Production
 // call sites use the single-worker name and accept no multi-worker placement.
 export const defaultThreeVmAssignments = defaultSingleWorkerAssignments;
+
+export function fixedThreeWorkerAssignments(workers) {
+  if (!Array.isArray(workers) || workers.length !== 3) {
+    throw new Error('fixed three-worker placement requires exactly three workers');
+  }
+  const byId = new Map(workers.map((worker) => [worker.workerId, worker]));
+  const placement = [
+    [0, 'vm171', 0], [1, 'vm169', 0], [2, 'vm169', 1], [3, 'vm167', 0],
+  ];
+  return placement.map(([cellIndex, workerId, waveIndex]) => {
+    const cell = LIVE_LLM_CELLS[cellIndex];
+    const worker = byId.get(workerId);
+    if (!cell || !worker) throw new Error(`fixed three-worker placement requires worker ${workerId} for c0${cellIndex + 1}`);
+    const profiles = worker.deviceProfileInstances?.filter((profile) => profile.deviceClass === cell.deviceClass) ?? [];
+    if (profiles.length !== 1) throw new Error(`worker ${workerId} must have exactly one ${cell.deviceClass} profile for ${cell.cellId}`);
+    return { cellId: cell.cellId, workerId, waveIndex, deviceProfileInstanceId: profiles[0].instanceId };
+  });
+}
+
+export function defaultTwoWorkerAssignments(workers) {
+  if (!Array.isArray(workers) || workers.length !== 2) {
+    throw new Error('two-worker placement requires exactly two workers');
+  }
+  const placement = [
+    [workers[0], 0], [workers[1], 0], [workers[1], 1], [workers[0], 1],
+  ];
+  return LIVE_LLM_CELLS.map((cell, index) => {
+    const [worker, waveIndex] = placement[index];
+    const profiles = worker.deviceProfileInstances?.filter((profile) => profile.deviceClass === cell.deviceClass) ?? [];
+    if (profiles.length !== 1) throw new Error(`worker ${worker.workerId} must have exactly one ${cell.deviceClass} profile for ${cell.cellId}`);
+    return { cellId: cell.cellId, workerId: worker.workerId, waveIndex, deviceProfileInstanceId: profiles[0].instanceId };
+  });
+}
 
 function assertPreflightOutcome(outcome) {
   if (
@@ -926,8 +970,13 @@ export async function runCoordinatorWaves({
   onWaveCompleted = async () => {},
   classifyFailure = () => 'stop',
   now = () => new Date(),
+  firstWaveStaggerMs = 0,
+  wait = abortableDelay,
 }) {
   if (typeof dispatchCell !== 'function') throw new Error('coordinator requires a dispatchCell adapter');
+  if (!Number.isSafeInteger(firstWaveStaggerMs) || firstWaveStaggerMs < 0 || typeof wait !== 'function') {
+    throw new Error('coordinator first-wave stagger requires a non-negative integer delay and wait adapter');
+  }
   if (!String(executionRoot ?? '').trim()) throw new Error('coordinator requires a durable executionRoot for dispatch claims');
   assertCoordinatorExecutionRoot({ executionRoot, plan });
   verifySignedExecutionPlan(plan, { now: now() });
@@ -936,6 +985,13 @@ export async function runCoordinatorWaves({
   const readiness = await Promise.allSettled(plan.workers.map((worker) => assertWorkerReady({ plan, worker })));
   const readinessFailure = readiness.find((entry) => entry.status === 'rejected');
   if (readinessFailure) throw new Error(`worker readiness failed before paid dispatch: ${readinessFailure.reason?.message ?? readinessFailure.reason}`);
+
+  if (plan.workers.length > 1) {
+    return runCoordinatorWorkerPipelines({
+      plan, leaseById, executionRoot, dispatchCell, cancelCell, validateCompletedCell,
+      onWaveCompleted, classifyFailure, now, firstWaveStaggerMs, wait,
+    });
+  }
 
   const started = new Set();
   const completed = new Set();
@@ -962,10 +1018,14 @@ export async function runCoordinatorWaves({
         })));
       }
     };
-    const tasks = waveCells.map(async (cell) => {
+    const tasks = waveCells.map(async (cell, waveCellIndex) => {
       if (started.has(cell.cellId)) throw new Error(`coordinator attempted to redispatch ${cell.cellId}`);
       const lease = leaseById.get(cell.leaseId).lease;
       try {
+        if (wave.waveIndex === 0 && waveCellIndex > 0 && firstWaveStaggerMs > 0) {
+          await wait(firstWaveStaggerMs * waveCellIndex, controllers.get(cell.cellId).signal);
+        }
+        if (controllers.get(cell.cellId).signal.aborted) throw controllers.get(cell.cellId).signal.reason;
         claimCoordinatorCellDispatch({ executionRoot, plan, lease, cell, claimedAt: now() });
         started.add(cell.cellId);
         const outcome = await dispatchCell({
@@ -1046,6 +1106,87 @@ export async function runCoordinatorWaves({
   };
 }
 
+async function runCoordinatorWorkerPipelines({
+  plan, leaseById, executionRoot, dispatchCell, cancelCell, validateCompletedCell,
+  onWaveCompleted, classifyFailure, now, firstWaveStaggerMs, wait,
+}) {
+  const started = new Set();
+  const completed = new Set();
+  const results = new Map();
+  const collectedFailures = [];
+  const controllers = new Map(plan.cells.map((cell) => [cell.cellId, new AbortController()]));
+  const active = new Map();
+  let safetyFailure = null;
+  const waveZeroOrder = plan.waves[0].cellIds;
+  const cellsByWorker = new Map(plan.workers.map((worker) => [worker.workerId, []]));
+  for (const cell of plan.cells) cellsByWorker.get(cell.workerId).push(cell);
+  for (const cells of cellsByWorker.values()) cells.sort((left, right) => left.waveIndex - right.waveIndex || left.cellIndex - right.cellIndex);
+
+  const stopAll = async (failedCell, error) => {
+    if (safetyFailure) return;
+    safetyFailure = { cell: failedCell, error };
+    await Promise.allSettled([...active.values()].map(({ cell, lease }) => {
+      if (cell.cellId === failedCell.cellId) return undefined;
+      controllers.get(cell.cellId).abort(error);
+      return cancelCell({ plan, waveIndex: cell.waveIndex, cell, lease, reason: error });
+    }));
+    for (const [cellId, controller] of controllers) {
+      if (!started.has(cellId)) controller.abort(error);
+    }
+  };
+
+  const pipelines = [...cellsByWorker.values()].map(async (cells) => {
+    const first = cells[0];
+    const staggerIndex = waveZeroOrder.indexOf(first.cellId);
+    if (staggerIndex > 0 && firstWaveStaggerMs > 0) {
+      await wait(firstWaveStaggerMs * staggerIndex, controllers.get(first.cellId).signal);
+    }
+    for (const cell of cells) {
+      const controller = controllers.get(cell.cellId);
+      if (controller.signal.aborted) throw controller.signal.reason;
+      const lease = leaseById.get(cell.leaseId).lease;
+      claimCoordinatorCellDispatch({ executionRoot, plan, lease, cell, claimedAt: now() });
+      started.add(cell.cellId);
+      active.set(cell.workerId, { cell, lease });
+      let outcome;
+      try {
+        outcome = await dispatchCell({ plan, waveIndex: cell.waveIndex, cell, lease, signal: controller.signal });
+        try {
+          results.set(cell.cellId, await validateCompletedCell({ plan, cell, lease, outcome }));
+        } catch (error) {
+          if (classifyFailure({ plan, cell, lease, outcome, error }) !== 'collect'
+            || !/^[a-f0-9]{64}$/iu.test(String(outcome?.result?.resultDigest ?? ''))) {
+            await stopAll(cell, error);
+            throw error;
+          }
+          results.set(cell.cellId, outcome);
+          collectedFailures.push({ cellId: cell.cellId, cellIndex: cell.cellIndex, waveIndex: cell.waveIndex, error: error.message, outcome });
+        }
+        completed.add(cell.cellId);
+      } catch (error) {
+        await stopAll(cell, error);
+        throw error;
+      } finally {
+        active.delete(cell.workerId);
+      }
+    }
+  });
+  const settled = await Promise.allSettled(pipelines);
+  if (safetyFailure || settled.some((entry) => entry.status === 'rejected')) {
+    const failure = safetyFailure ?? { cell: plan.cells.find((cell) => !completed.has(cell.cellId)), error: settled.find((entry) => entry.status === 'rejected').reason };
+    throw new CoordinatorWaveFailure({
+      waveIndex: failure.cell?.waveIndex ?? 0, cellId: failure.cell?.cellId ?? 'unknown', cause: failure.error,
+      startedCellIds: [...started], completedCellIds: [...completed], partialResults: new Map(results),
+    });
+  }
+  const waveCompletions = [];
+  for (const wave of plan.waves) {
+    waveCompletions.push(completeCoordinatorWave({ executionRoot, plan, wave, results, completedAt: now() }));
+    await onWaveCompleted({ plan, waveIndex: wave.waveIndex, cellIds: [...wave.cellIds], results: new Map(wave.cellIds.map((cellId) => [cellId, results.get(cellId)])) });
+  }
+  return { results, waveCompletions, collectedFailures, startedCellIds: [...started], completedCellIds: [...completed] };
+}
+
 export function validateCoordinatorExecutionAuthority({
   executionRoot,
   plan,
@@ -1085,6 +1226,21 @@ export function validateCoordinatorExecutionAuthority({
       cellId: cell.cellId,
       ...fileAuthorityEntry(claimPath, `dispatch-claims/${cell.leaseId}.json`),
     });
+  }
+  if (plan.workers.length > 1 && resultByCell) {
+    for (const worker of plan.workers) {
+      const workerCells = plan.cells.filter((cell) => cell.workerId === worker.workerId)
+        .sort((left, right) => left.waveIndex - right.waveIndex || left.cellIndex - right.cellIndex);
+      for (let index = 1; index < workerCells.length; index += 1) {
+        const prior = workerCells[index - 1];
+        const next = workerCells[index];
+        const priorCompletedAt = Date.parse(resultByCell.get(prior.cellId)?.result?.generatedAt);
+        const nextClaimedAt = Date.parse(claims.get(next.cellId)?.claimedAt);
+        if (!Number.isFinite(priorCompletedAt) || nextClaimedAt < priorCompletedAt) {
+          throw new Error(`coordinator worker ${worker.workerId} dispatched ${next.cellId} before ${prior.cellId} completed`);
+        }
+      }
+    }
   }
   const completionDirectory = path.join(root, 'wave-completions');
   const completionFiles = fs.readdirSync(completionDirectory).filter((entry) => entry.endsWith('.json')).sort();
@@ -1128,9 +1284,9 @@ export function validateCoordinatorExecutionAuthority({
         throw new Error(`coordinator wave ${wave.waveIndex} completed before cell ${cellId} was dispatched`);
       }
     }
-    const nextWave = plan.waves[wave.waveIndex + 1];
-    if (nextWave) {
-      for (const nextCellId of nextWave.cellIds) {
+    if (plan.workers.length === 1) {
+      const nextWave = plan.waves[wave.waveIndex + 1];
+      for (const nextCellId of nextWave?.cellIds ?? []) {
         if (Date.parse(claims.get(nextCellId).claimedAt) < completedAt) {
           throw new Error(`coordinator dispatched wave ${nextWave.waveIndex} before wave ${wave.waveIndex} completed`);
         }

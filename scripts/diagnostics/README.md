@@ -55,6 +55,15 @@ Optional arguments:
 cargo run --manifest-path scripts/diagnostics/credential-write/Cargo.toml -- --target OmniTranslate:diagnostic --user diagnostic-user --secret diagnostic-secret
 ```
 
+### `watch-worker-credential`
+
+Native helper for provisioning the fixed Watch release DashScope credential between
+workers. It accepts only `export`, `import`, or `prove`; credential bytes are carried
+through stdin/stdout pipes and are never accepted through arguments, environment
+variables, files, or diagnostic output. `prove` consumes a 32-byte random challenge
+on stdin and returns a transient HMAC used by the coordinator; persisted receipts
+must retain only `exists`, `blobBytes`, and `matches` metadata.
+
 ### `omni-realtime`
 
 Runs a manual DashScope Omni realtime WebSocket diagnostic against a caller

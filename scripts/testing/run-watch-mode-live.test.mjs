@@ -9,7 +9,12 @@ import { forbiddenCellArtifactPaths } from './watch-mode-evidence-authority.mjs'
 import { buildCanonicalReferencePcm } from './watch-mode-canonical-source-authority.mjs';
 import { deriveWatchModelProtocolIdentity } from './watch-mode-model-protocol-authority.mjs';
 import { validateWatchModeRunRequest } from './watch-mode-run-request.mjs';
-import { buildCellExternalProviderBudget } from './watch-mode-external-provider-budget.mjs';
+import {
+  PROVIDER_INPUT_PREFILTER_FILE,
+  PROVIDER_INPUT_PREFILTER_MAGIC,
+  buildCellExternalProviderBudget,
+  replayProviderInputPrefilter,
+} from './watch-mode-external-provider-budget.mjs';
 
 // This suite executes the runner instead of grepping its source. Earlier
 // versions asserted on string positions inside the .ps1, which validated
@@ -219,9 +224,21 @@ test('paid failure budget is rebuilt from the final marker-scoped app log saved 
       `2026-09-02 10:00:00 [NORMAL] [omni] - - [CONNECT] connected Omni, model=${modelId}`,
       `2026-09-02 10:00:01 [DEBUG] [model-trace] - - omni ws.send.input_audio_buffer.append.summary | {"event":"ws.send.input_audio_buffer.append.summary","model":"${modelId}","category":"omni","payload":{"resampledSamplesTotal":${attemptedSamples}}}`,
     ].join('\n'), 'utf8');
+    const rawChunk = Buffer.alloc(attemptedSamples * 3 * 8);
+    for (let offset = 0; offset < rawChunk.length; offset += 8) {
+      rawChunk.writeFloatLE(0.25, offset);
+      rawChunk.writeFloatLE(0.25, offset + 4);
+    }
+    const rawLength = Buffer.alloc(4);
+    rawLength.writeUInt32LE(rawChunk.length);
+    const prefilterPath = path.join(runDirectory, PROVIDER_INPUT_PREFILTER_FILE);
+    fs.writeFileSync(
+      prefilterPath,
+      Buffer.concat([PROVIDER_INPUT_PREFILTER_MAGIC, rawLength, rawChunk]),
+    );
     fs.writeFileSync(
       path.join(runDirectory, 'provider-input-16k-mono.pcm'),
-      Buffer.alloc(attemptedSamples * 2, 1),
+      replayProviderInputPrefilter({ filePath: prefilterPath, maxSamples }).expectedProviderPcm,
     );
 
     const identity = {

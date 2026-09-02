@@ -49,7 +49,12 @@ import {
   runLeasedIncidentPlusCell,
 } from './run-watch-mode-incident-plus-cell.mjs';
 import { generateCoordinatorSigningKeyPair } from './watch-mode-shard-authority.mjs';
-import { INCIDENT_REPLAY_PLUS_ID } from './watch-mode-external-provider-budget.mjs';
+import {
+  INCIDENT_REPLAY_PLUS_ID,
+  PROVIDER_INPUT_PREFILTER_FILE,
+  PROVIDER_INPUT_PREFILTER_MAGIC,
+  replayProviderInputPrefilter,
+} from './watch-mode-external-provider-budget.mjs';
 
 test('incident Plus prepares worker runtime bundles serially before paid dispatch', async () => {
   let active = 0;
@@ -343,7 +348,25 @@ function readinessReceipt(plan, request) {
 function writeBudgetArtifacts(runDirectory, cell, lease) {
   const runMarker = `run-${cell.cellIndex + 1}`;
   const attemptedSamples = 32_000;
-  writeText(path.join(runDirectory, 'provider-input-16k-mono.pcm'), Buffer.alloc(attemptedSamples * 2));
+  const rawChunk = Buffer.alloc(attemptedSamples * 3 * 8);
+  for (let offset = 0; offset < rawChunk.length; offset += 8) {
+    rawChunk.writeFloatLE(0.25, offset);
+    rawChunk.writeFloatLE(0.25, offset + 4);
+  }
+  const rawLength = Buffer.alloc(4);
+  rawLength.writeUInt32LE(rawChunk.length);
+  const prefilterPath = path.join(runDirectory, PROVIDER_INPUT_PREFILTER_FILE);
+  fs.writeFileSync(
+    prefilterPath,
+    Buffer.concat([PROVIDER_INPUT_PREFILTER_MAGIC, rawLength, rawChunk]),
+  );
+  fs.writeFileSync(
+    path.join(runDirectory, 'provider-input-16k-mono.pcm'),
+    replayProviderInputPrefilter({
+      filePath: prefilterPath,
+      maxSamples: INCIDENT_PLUS_MAX_EXTERNAL_AUDIO_SAMPLES,
+    }).expectedProviderPcm,
+  );
   writeText(path.join(runDirectory, 'app.log'), [
     runMarker,
     'input_audio_buffer.append.summary {"resampledSamplesTotal":32000}',

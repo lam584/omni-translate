@@ -826,8 +826,8 @@ function assertRawMediaAuthority(runDirectory, implementationHashes, cell, index
   if (referencePcmBytes !== expectedReferenceBytes || referencePcmBytes % 2 !== 0) {
     throw new Error(`strict matrix cell ${index} source reference PCM does not have the exact canonical quiet-window duration`);
   }
-  if (providerInputBytes < referencePcmBytes || providerInputBytes % 2 !== 0) {
-    throw new Error(`strict matrix cell ${index} provider input PCM does not contain the complete reference-media duration`);
+  if (providerInputBytes <= 0 || providerInputBytes % 2 !== 0) {
+    throw new Error(`strict matrix cell ${index} provider input PCM is empty or not aligned PCM16`);
   }
   const renderedSeconds = Number(playback.renderedSeconds);
   if (Number.isFinite(renderedSeconds)) {
@@ -2403,7 +2403,7 @@ export function verifyStrictShardMatrixAuthority({
   }
   const expectedWorkerCount = Array.isArray(plan.workers) ? plan.workers.length : 0;
   if (!SHARD_ALLOWED_WORKER_COUNTS.includes(expectedWorkerCount)) {
-    throw new Error('strict execution plan must bind exactly one local worker');
+    throw new Error('strict execution plan must bind between one and three identity-bound workers');
   }
   const preflightAuthorization = verifyStrictShardProviderPreflightAuthorization({
     plan,

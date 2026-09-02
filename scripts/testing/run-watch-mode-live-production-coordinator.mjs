@@ -45,7 +45,10 @@ import {
   validateShardManifest,
 } from './watch-mode-shard-authority.mjs';
 import {
+  COORDINATOR_FIRST_WAVE_STAGGER_MS,
   defaultSingleWorkerAssignments,
+  defaultTwoWorkerAssignments,
+  fixedThreeWorkerAssignments,
   prepareCoordinatorExecution,
   runCoordinatorWaves,
   writeCoordinatorAggregate,
@@ -103,7 +106,7 @@ import {
 
 export const PRODUCTION_COORDINATOR_RUNNER_ID =
   'scripts/testing/run-watch-mode-live-production-coordinator.mjs';
-export const PRODUCTION_WORKER_CONFIG_SCHEMA_VERSION = 1;
+export const PRODUCTION_WORKER_CONFIG_SCHEMA_VERSION = 2;
 export const PRODUCTION_WORKER_CONFIG_KIND = 'watch-mode-production-shard-workers';
 export const PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS =
   WATCH_PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS;
@@ -436,6 +439,7 @@ $control = [ordered]@{
   readinessRequestDigest = [string]$payload.readinessRequestDigest
   workerId = [string]$payload.workerId
   vmIdentityDigest = [string]$payload.vmIdentityDigest
+  transportAuthority = $payload.transportAuthority
   runtimeBundleDigest = [string]$payload.runtimeBundleDigest
   providerCalls = 0
   driverRequired = $driverRequired
@@ -487,6 +491,7 @@ $receipt = [ordered]@{
   readinessRequestDigest = [string]$payload.readinessRequestDigest
   workerId = [string]$payload.workerId
   vmIdentityDigest = [string]$payload.vmIdentityDigest
+  transportAuthority = $payload.transportAuthority
   runtimeBundleDigest = [string]$payload.runtimeBundleDigest
   providerCalls = 0
   driverRequired = [bool]$control.driverRequired
@@ -557,12 +562,27 @@ function executableValue(value, label) {
   return text;
 }
 
-function knownHostsContainsAlias(filePath, alias, port) {
+function knownHostsBinding(filePath, alias, port) {
   const accepted = new Set([alias, `[${alias}]:${port}`]);
-  return fs.readFileSync(filePath, 'utf8').split(/\r?\n/).some((line) => {
-    const hosts = line.trim().split(/\s+/, 1)[0]?.split(',') ?? [];
-    return hosts.some((host) => accepted.has(host));
+  const matches = fs.readFileSync(filePath, 'utf8').split(/\r?\n/).flatMap((line) => {
+    const fields = line.trim().split(/\s+/);
+    const hosts = fields[0]?.split(',') ?? [];
+    return hosts.some((host) => accepted.has(host)) && fields.length >= 3
+      ? [{ algorithm: fields[1], publicKey: fields[2] }]
+      : [];
   });
+  if (matches.length !== 1) return null;
+  let keyBytes;
+  try {
+    keyBytes = Buffer.from(matches[0].publicKey, 'base64');
+  } catch {
+    return null;
+  }
+  if (keyBytes.length === 0) return null;
+  return {
+    ...matches[0],
+    sha256: `SHA256:${crypto.createHash('sha256').update(keyBytes).digest('base64').replace(/=+$/u, '')}`,
+  };
 }
 
 function validateProfile(profile, workerId, index) {
@@ -597,28 +617,6 @@ function validateProfile(profile, workerId, index) {
   return structuredClone(profile);
 }
 
-function canonicalDeviceProfiles(profiles, authorityLabel) {
-  const byClass = new Map();
-  for (const profile of profiles) {
-    const projected = {
-      profileId: profile.profileId,
-      deviceClass: profile.deviceClass,
-      physicalPlaybackDeviceId: profile.physicalPlaybackDeviceId,
-      expectedPhysicalPlaybackDeviceName: profile.expectedPhysicalPlaybackDeviceName,
-    };
-    const prior = byClass.get(profile.deviceClass);
-    if (prior && JSON.stringify(prior) !== JSON.stringify(projected)) {
-      throw new Error(`${authorityLabel} disagree on ${profile.deviceClass} matrix profile identity`);
-    }
-    byClass.set(profile.deviceClass, projected);
-  }
-  return SUPPORTED_DEVICE_CLASSES.map((deviceClass) => {
-    const profile = byClass.get(deviceClass);
-    if (!profile) throw new Error(`${authorityLabel} have no ${deviceClass} profile`);
-    return profile;
-  });
-}
-
 export function validateProductionWorkerConfig(config, { configDirectory = repoRoot } = {}) {
   exactKeys(config, [
     'schemaVersion',
@@ -629,12 +627,16 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     config.schemaVersion !== PRODUCTION_WORKER_CONFIG_SCHEMA_VERSION
     || config.artifactKind !== PRODUCTION_WORKER_CONFIG_KIND
     || !Array.isArray(config.workers)
-    || config.workers.length !== 1
-  ) throw new Error('production worker config must be schema v1 with exactly one local worker');
+    || config.workers.length < 1
+    || config.workers.length > 3
+  ) throw new Error('production worker config must be schema v2 with one to three workers');
   const workerIds = new Set();
+  const vmUuids = new Set();
+  const sshHostKeys = new Set();
   const workers = config.workers.map((worker, workerIndex) => {
     exactKeys(worker, [
       'workerId',
+      'transport',
       'user',
       'workspaceRoot',
       'guestExecutionRoot',
@@ -643,6 +645,29 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     ], `production worker ${workerIndex}`);
     const workerId = String(worker.workerId ?? '');
     const user = String(worker.user ?? '');
+    exactKeys(worker.transport, worker.transport?.kind === 'local'
+      ? ['kind']
+      : ['kind', 'host', 'port', 'identityFile', 'knownHostsFile', 'hostKeyAlias'],
+    `worker ${workerId} transport`);
+    if (!['local', 'ssh'].includes(worker.transport.kind)) throw new Error(`worker ${workerId} has invalid transport kind`);
+    let transport;
+    if (worker.transport.kind === 'local') {
+      transport = { kind: 'local' };
+    } else {
+      const port = Number(worker.transport.port);
+      if (!SAFE_HOST.test(String(worker.transport.host ?? '')) || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
+        throw new Error(`worker ${workerId} has invalid SSH host or port`);
+      }
+      const identityFile = regularFile(path.resolve(configDirectory, worker.transport.identityFile), `worker ${workerId} SSH identity`);
+      const knownHostsFile = regularFile(path.resolve(configDirectory, worker.transport.knownHostsFile), `worker ${workerId} known-hosts`);
+      const hostKey = knownHostsBinding(knownHostsFile, worker.transport.hostKeyAlias, port);
+      if (!SAFE_ID.test(String(worker.transport.hostKeyAlias ?? '')) || !hostKey) {
+        throw new Error(`worker ${workerId} known-hosts does not bind its host key alias`);
+      }
+      if (sshHostKeys.has(hostKey.sha256)) throw new Error(`worker ${workerId} reuses an SSH host key`);
+      sshHostKeys.add(hostKey.sha256);
+      transport = { kind: 'ssh', host: worker.transport.host, port, identityFile, knownHostsFile, hostKeyAlias: worker.transport.hostKeyAlias, hostKeyAlgorithm: hostKey.algorithm, hostKeySha256: hostKey.sha256 };
+    }
     if (!SAFE_ID.test(workerId) || workerIds.has(workerId)) throw new Error(`worker ${workerIndex} has invalid or duplicate workerId`);
     if (!/^[a-z0-9._-]{1,64}$/i.test(user)) throw new Error(`worker ${workerId} has invalid interactive Windows user`);
     if (!SAFE_REMOTE_WINDOWS_ROOT.test(String(worker.workspaceRoot ?? ''))) throw new Error(`worker ${workerId} workspaceRoot must be a fixed safe Windows path without spaces`);
@@ -651,6 +676,9 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     if (worker.vmIdentity.provider !== 'vmware' || !SAFE_UUID.test(String(worker.vmIdentity.uuidBios ?? ''))) {
       throw new Error(`worker ${workerId} must bind a portable VMware BIOS UUID`);
     }
+    const normalizedUuid = String(worker.vmIdentity.uuidBios).toLowerCase();
+    if (vmUuids.has(normalizedUuid)) throw new Error(`worker ${workerId} reuses a VMware BIOS UUID`);
+    vmUuids.add(normalizedUuid);
     if (!Array.isArray(worker.deviceProfileInstances) || worker.deviceProfileInstances.length === 0) {
       throw new Error(`worker ${workerId} has no device profile instances`);
     }
@@ -663,6 +691,8 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     workerIds.add(workerId);
     return {
       workerId,
+      transport,
+      ...(transport.kind === 'ssh' ? transport : {}),
       user,
       workspaceRoot: worker.workspaceRoot,
       guestExecutionRoot: worker.guestExecutionRoot,
@@ -670,8 +700,11 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
       deviceProfileInstances,
     };
   });
-  // All paid cells run serially on the one local interactive Windows session.
-  const assignments = defaultSingleWorkerAssignments(workers);
+  const assignments = workers.length === 1
+    ? defaultSingleWorkerAssignments(workers)
+    : workers.length === 2
+      ? defaultTwoWorkerAssignments(workers)
+      : fixedThreeWorkerAssignments(workers);
   const workersById = new Map(workers.map((worker) => [worker.workerId, worker]));
   const assignedProfiles = assignments.map((assignment) => {
     const worker = workersById.get(assignment.workerId);
@@ -683,8 +716,10 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     }
     return profile;
   });
-  canonicalDeviceProfiles(assignedProfiles, 'production worker assignments');
-  return { workers };
+  if (assignedProfiles.length !== LIVE_LLM_CELLS.length) {
+    throw new Error('production worker assignments must bind every fixed cell to one profile');
+  }
+  return { workers, assignments, sshExecutable: 'ssh.exe', scpExecutable: 'scp.exe' };
 }
 
 export function readProductionWorkerConfig(configPath) {
@@ -1357,7 +1392,8 @@ export function createSshProductionTransport({
   const completedRemoteResults = new Map();
   const coordinatorWorkspace = path.win32.resolve(workspaceRoot).toLowerCase();
   const isCoordinatorLocalWorker = (worker) => (
-    path.win32.resolve(worker.workspaceRoot).toLowerCase() === coordinatorWorkspace
+    worker.transport?.kind === 'local'
+    && path.win32.resolve(worker.workspaceRoot).toLowerCase() === coordinatorWorkspace
   );
 
   const runRemote = async (worker, body, payload, options = {}) => {
@@ -1703,6 +1739,7 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
       readinessRequestDigest: plan.workerReadinessRequest?.requestDigest ?? plan.planDigest,
       workerId: worker.workerId,
       vmIdentityDigest: plan.workers.find((entry) => entry.workerId === worker.workerId)?.vmIdentityDigest,
+      transportAuthority: plan.workers.find((entry) => entry.workerId === worker.workerId)?.transportAuthority,
       runtimeBundleDigest: plan.authority.runtimeBundleDigest,
       driver,
       driverRequired: Boolean(plan.workers.find((entry) => (
@@ -2077,10 +2114,16 @@ if ($manifestPath -cne [IO.Path]::GetFullPath([string]$payload.expectedManifestP
 }
 
 function productionDeviceProfiles(plan) {
-  return canonicalDeviceProfiles(
-    plan.cells.map((cell) => cell.deviceProfileInstance),
-    'signed workers',
-  );
+  return SUPPORTED_DEVICE_CLASSES.map((deviceClass) => {
+    const profile = plan.cells.find(
+      (cell) => cell.deviceProfileInstance?.deviceClass === deviceClass,
+    )?.deviceProfileInstance;
+    if (!profile) throw new Error(`signed workers have no ${deviceClass} profile`);
+    // This legacy matrix summary is class-level only. Per-cell shard authority
+    // retains each worker's exact physical endpoint and is the strict source of
+    // truth for distributed execution.
+    return structuredClone(profile);
+  });
 }
 
 export function productionFailureFingerprint(failure, plan) {
@@ -2201,11 +2244,22 @@ async function runProductionCoordinatorCore({
   }
   const generatedAt = now();
   const productionWorkers = config.workers.map(({
-    workerId, user, vmIdentity, deviceProfileInstances,
+    workerId, user, vmIdentity, deviceProfileInstances, transport,
   }) => ({
-    workerId, interactiveUser: user, vmIdentity, deviceProfileInstances,
+    workerId,
+    interactiveUser: user,
+    vmIdentity,
+    deviceProfileInstances,
+    transportAuthority: transport.kind === 'local'
+      ? { kind: 'local' }
+      : {
+          kind: 'ssh',
+          hostKeyAlias: transport.hostKeyAlias,
+          hostKeyAlgorithm: transport.hostKeyAlgorithm,
+          hostKeySha256: transport.hostKeySha256,
+        },
   }));
-  const productionAssignments = defaultSingleWorkerAssignments(config.workers);
+  const productionAssignments = config.assignments;
   const captureProvenanceImplementation = operations.captureProvenance
     ?? (async () => currentGitProvenance({ cwd: repoRoot }));
   const captureProvenance = () => runBoundedCoordinatorStage(
@@ -2406,10 +2460,9 @@ async function runProductionCoordinatorCore({
         leasePaths: [],
         coordinatorExecutionRoot: executionRoot,
       });
-      const completed = [];
-      for (const worker of readinessPlan.workers) {
-        completed.push(await readinessTransport.prepareWorker({ worker }));
-      }
+      const completed = await Promise.all(
+        readinessPlan.workers.map((worker) => readinessTransport.prepareWorker({ worker })),
+      );
       const readinessAuthorityRoot = path.join(executionRoot, 'worker-readiness');
       return {
         workerReadinessRequest,
@@ -2432,7 +2485,7 @@ async function runProductionCoordinatorCore({
     readinessPreparation = await runBoundedCoordinatorStage(
       () => implementation(context),
       'production initial worker readiness',
-      context.workers.length * deriveWatchProductionInitialWorkerReadinessBudgetMs(),
+      deriveWatchProductionInitialWorkerReadinessBudgetMs(),
     );
     transitionCoordinatorState('worker-ready', {
       workerCount: readinessPreparation?.workers?.length ?? 0,
@@ -2556,6 +2609,7 @@ async function runProductionCoordinatorCore({
     },
     classifyFailure: productionCellFailureDisposition,
     now,
+    firstWaveStaggerMs: COORDINATOR_FIRST_WAVE_STAGGER_MS,
   });
   const failureSummary = aggregateProductionCellFailures({ plan: preparation.plan, waveOutcome });
   const failureFingerprints = failureSummary.failures;

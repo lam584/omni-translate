@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::TcpStream;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
@@ -157,6 +158,8 @@ const OMNI_ASR_MIN_CHUNK_RMS: f32 = 0.002;
 const OMNI_ASR_SILENCE_GRACE_CHUNKS: u32 = 40;
 const OMNI_INTER_CHUNK_THROTTLE_MS: u64 = 18;
 const PROVIDER_INPUT_PCM_DUMP_MAX_SAMPLES: usize = 16_000 * 90;
+const PROVIDER_INPUT_PREFILTER_FILE: &str = "provider-input-prefilter-48k-stereo.f32le.frames";
+const PROVIDER_INPUT_PREFILTER_MAGIC: &[u8; 8] = b"OMNIPR01";
 
 #[derive(Debug)]
 struct ProviderInputPcmDump {
@@ -321,6 +324,96 @@ impl ProviderInputPcmDump {
     }
 }
 
+/// Durable framing for the exact 48 kHz stereo f32 chunks consumed by the
+/// production Omni pump before resampling, RMS gating, silence grace, and the
+/// provider-input budget decision. Keeping chunk boundaries is essential:
+/// the trailing-silence allowance is expressed in chunks rather than time.
+#[derive(Debug)]
+struct ProviderInputPrefilterDump {
+    file: std::fs::File,
+    path: String,
+    strict_paid_authority: bool,
+}
+
+impl ProviderInputPrefilterDump {
+    fn from_provider_pcm_path(
+        provider_pcm_path: Option<&str>,
+        strict_paid_authority: bool,
+    ) -> Result<Option<Self>, String> {
+        if !strict_paid_authority {
+            return Ok(None);
+        }
+        let provider_pcm_path = provider_pcm_path.ok_or_else(|| {
+            "strict paid provider authority requires a provider PCM path before creating prefilter authority".to_string()
+        })?;
+        let parent = Path::new(provider_pcm_path).parent().ok_or_else(|| {
+            format!("strict paid provider PCM path has no parent: {provider_pcm_path}")
+        })?;
+        let path = parent.join(PROVIDER_INPUT_PREFILTER_FILE);
+        let path_text = path.to_string_lossy().into_owned();
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| {
+                format!(
+                    "strict paid provider prefilter authority must be a new exclusive file: path={path_text} error={error}"
+                )
+            })?;
+        file.write_all(PROVIDER_INPUT_PREFILTER_MAGIC)
+            .and_then(|_| file.flush())
+            .map_err(|error| {
+                format!(
+                    "strict paid provider prefilter authority header write failed: path={path_text} error={error}"
+                )
+            })?;
+        Ok(Some(Self {
+            file,
+            path: path_text,
+            strict_paid_authority,
+        }))
+    }
+
+    fn append_chunk<R: tauri::Runtime>(
+        &mut self,
+        app: &AppHandle<R>,
+        raw_chunk: &[u8],
+    ) -> Result<(), String> {
+        let result = self.append_chunk_bytes(raw_chunk);
+        if let Err(error) = &result {
+            let _ = diag_log(
+                app,
+                "omni",
+                "warning",
+                format!(
+                    "[WATCH] provider prefilter authority write failed: path={} error={error}",
+                    self.path
+                ),
+            );
+        }
+        if self.strict_paid_authority {
+            result
+        } else {
+            Ok(())
+        }
+    }
+
+    fn append_chunk_bytes(&mut self, raw_chunk: &[u8]) -> Result<(), String> {
+        let byte_length = u32::try_from(raw_chunk.len()).map_err(|_| {
+            format!(
+                "provider prefilter authority chunk exceeds u32 framing: path={} bytes={}",
+                self.path,
+                raw_chunk.len()
+            )
+        })?;
+        self.file
+            .write_all(&byte_length.to_le_bytes())
+            .and_then(|_| self.file.write_all(raw_chunk))
+            .and_then(|_| self.file.flush())
+            .map_err(|error| error.to_string())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RealtimeAudioMode {
     Manual,
@@ -422,6 +515,56 @@ mod unit_tests {
         should_use_native_output_fallback,
     };
     use base64::Engine;
+    use tempfile::tempdir;
+
+    #[test]
+    fn strict_prefilter_dump_preserves_exact_chunk_boundaries() {
+        let directory = tempdir().expect("tempdir");
+        let provider_pcm_path = directory.path().join("provider-input-16k-mono.pcm");
+        let provider_pcm_path = provider_pcm_path.to_string_lossy().into_owned();
+        let mut dump = ProviderInputPrefilterDump::from_provider_pcm_path(
+            Some(&provider_pcm_path),
+            true,
+        )
+        .expect("strict prefilter authority")
+        .expect("strict mode enables the dump");
+        dump.append_chunk_bytes(&[1, 2, 3]).expect("first chunk");
+        dump.append_chunk_bytes(&[4, 5]).expect("second chunk");
+        drop(dump);
+
+        let bytes = std::fs::read(directory.path().join(PROVIDER_INPUT_PREFILTER_FILE))
+            .expect("prefilter authority bytes");
+        assert_eq!(&bytes[..8], PROVIDER_INPUT_PREFILTER_MAGIC);
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 3);
+        assert_eq!(&bytes[12..15], &[1, 2, 3]);
+        assert_eq!(u32::from_le_bytes(bytes[15..19].try_into().unwrap()), 2);
+        assert_eq!(&bytes[19..], &[4, 5]);
+    }
+
+    #[test]
+    fn strict_prefilter_dump_is_exclusive_and_non_strict_is_disabled() {
+        let directory = tempdir().expect("tempdir");
+        let provider_pcm_path = directory.path().join("provider-input-16k-mono.pcm");
+        let provider_pcm_path = provider_pcm_path.to_string_lossy().into_owned();
+        let first = ProviderInputPrefilterDump::from_provider_pcm_path(
+            Some(&provider_pcm_path),
+            true,
+        )
+        .expect("first strict authority")
+        .expect("strict authority enabled");
+        assert!(ProviderInputPrefilterDump::from_provider_pcm_path(
+            Some(&provider_pcm_path),
+            true,
+        )
+        .is_err());
+        drop(first);
+        assert!(ProviderInputPrefilterDump::from_provider_pcm_path(
+            Some(&provider_pcm_path),
+            false,
+        )
+        .expect("non-strict mode")
+        .is_none());
+    }
 
     #[test]
     fn session_update_omits_empty_voice() {

@@ -17,6 +17,8 @@ export const MATRIX_EXTERNAL_PROVIDER_BUDGET_FILE = 'external-provider-budget-ma
 export const PROVIDER_SEND_BOUNDARY_LEDGER_FILE = 'provider-input-budget-ledger.json';
 export const PROVIDER_SEND_BOUNDARY_JOURNAL_FILE = `${PROVIDER_SEND_BOUNDARY_LEDGER_FILE}.journal.jsonl`;
 export const PROVIDER_BUDGET_LEASE_FILE = 'provider-input-budget-lease.json';
+export const PROVIDER_INPUT_PREFILTER_FILE = 'provider-input-prefilter-48k-stereo.f32le.frames';
+export const PROVIDER_INPUT_PREFILTER_MAGIC = Buffer.from('OMNIPR01', 'ascii');
 export const PHYSICAL_OUTPUT_RECORDING_PCM_FILE = 'physical-output-recording-16k-mono.pcm';
 export const PHYSICAL_OUTPUT_SOURCE_WINDOW_PCM_FILE =
   'physical-output-recording-source-window-16k-mono.pcm';
@@ -69,6 +71,156 @@ const canonicalJson = (value) => {
   }
   return JSON.stringify(value);
 };
+
+function rustF32(value) {
+  return Math.fround(value);
+}
+
+function rustF32ToI16(value) {
+  if (Number.isNaN(value)) return 0;
+  if (value >= 32_767) return 32_767;
+  if (value <= -32_768) return -32_768;
+  return Math.trunc(value);
+}
+
+function resample48kStereoF32leChunkTo16kMonoI16(rawChunk) {
+  const frameCount = Math.floor(rawChunk.length / 8);
+  const outputSamples = Math.floor(frameCount / 3);
+  const output = Buffer.allocUnsafe(outputSamples * 2);
+  for (let outputIndex = 0; outputIndex < outputSamples; outputIndex += 1) {
+    let sum = rustF32(0);
+    for (let offset = 0; offset < 3; offset += 1) {
+      const frameOffset = (outputIndex * 3 + offset) * 8;
+      const left = rawChunk.readFloatLE(frameOffset);
+      const right = rawChunk.readFloatLE(frameOffset + 4);
+      const mono = rustF32(rustF32(left + right) * rustF32(0.5));
+      sum = rustF32(sum + mono);
+    }
+    const averaged = rustF32(sum / rustF32(3));
+    const clamped = Math.min(1, Math.max(-1, averaged));
+    const sample = rustF32ToI16(rustF32(clamped * rustF32(32_767)));
+    output.writeInt16LE(sample, outputIndex * 2);
+  }
+  return output;
+}
+
+function pcm16ChunkRmsLikeRust(pcm) {
+  const samples = pcm.length / 2;
+  if (samples === 0) return rustF32(0);
+  let sumSquares = 0;
+  for (let offset = 0; offset < pcm.length; offset += 2) {
+    const normalized = pcm.readInt16LE(offset) / 32_768;
+    sumSquares += normalized * normalized;
+  }
+  return rustF32(Math.sqrt(sumSquares / samples));
+}
+
+export function readProviderInputPrefilterFrames(filePath) {
+  const stats = fs.lstatSync(filePath);
+  if (!stats.isFile() || stats.isSymbolicLink() || stats.size < PROVIDER_INPUT_PREFILTER_MAGIC.length) {
+    throw new Error(`provider prefilter authority must be a regular framed file: ${filePath}`);
+  }
+  const bytes = fs.readFileSync(filePath);
+  if (!bytes.subarray(0, PROVIDER_INPUT_PREFILTER_MAGIC.length).equals(PROVIDER_INPUT_PREFILTER_MAGIC)) {
+    throw new Error(`provider prefilter authority has an invalid magic/version: ${filePath}`);
+  }
+  const frames = [];
+  let offset = PROVIDER_INPUT_PREFILTER_MAGIC.length;
+  while (offset < bytes.length) {
+    if (offset + 4 > bytes.length) {
+      throw new Error(`provider prefilter authority has a truncated frame header at byte ${offset}`);
+    }
+    const byteLength = bytes.readUInt32LE(offset);
+    offset += 4;
+    if (offset + byteLength > bytes.length) {
+      throw new Error(`provider prefilter authority frame ${frames.length + 1} exceeds the file boundary`);
+    }
+    frames.push(bytes.subarray(offset, offset + byteLength));
+    offset += byteLength;
+  }
+  return { bytes, frames };
+}
+
+export function replayProviderInputPrefilter({ filePath, maxSamples }) {
+  const ceiling = Number(maxSamples);
+  if (!Number.isSafeInteger(ceiling) || ceiling <= 0) {
+    throw new Error('provider prefilter replay requires a positive safe-integer sample ceiling');
+  }
+  const { bytes, frames } = readProviderInputPrefilterFrames(filePath);
+  const accepted = [];
+  let totalAttemptedSamples = 0;
+  let audibleChunks = 0;
+  let silenceGraceChunks = 0;
+  let skippedSilenceChunks = 0;
+  let emptyResampleChunks = 0;
+  let budgetRejectedChunks = 0;
+  let hasSentAudibleAudio = false;
+  let silenceGraceChunksSent = 0;
+  for (const rawChunk of frames) {
+    const pcm = resample48kStereoF32leChunkTo16kMonoI16(rawChunk);
+    if (pcm.length === 0) {
+      emptyResampleChunks += 1;
+      continue;
+    }
+    const rms = pcm16ChunkRmsLikeRust(pcm);
+    if (rms < 0.002) {
+      if (hasSentAudibleAudio && silenceGraceChunksSent < 40) {
+        silenceGraceChunksSent += 1;
+        silenceGraceChunks += 1;
+      } else {
+        skippedSilenceChunks += 1;
+        continue;
+      }
+    } else {
+      hasSentAudibleAudio = true;
+      silenceGraceChunksSent = 0;
+      audibleChunks += 1;
+    }
+    const samples = pcm.length / 2;
+    if (totalAttemptedSamples + samples > ceiling) {
+      budgetRejectedChunks += 1;
+      continue;
+    }
+    totalAttemptedSamples += samples;
+    accepted.push(pcm);
+  }
+  const expectedProviderPcm = Buffer.concat(accepted);
+  return {
+    expectedProviderPcm,
+    authority: {
+      schemaVersion: 1,
+      artifactKind: 'watch-mode-provider-input-prefilter-replay',
+      rawInput: {
+        path: PROVIDER_INPUT_PREFILTER_FILE,
+        bytes: bytes.length,
+        sha256: sha256Buffer(bytes),
+        chunkCount: frames.length,
+      },
+      policy: {
+        sourceFormat: 'f32le-48000-stereo',
+        providerFormat: 'pcm-s16le-16000-mono',
+        resample: 'three-frame-f32-average-v1',
+        minimumChunkRms: 0.002,
+        silenceGraceChunks: 40,
+        maxSamples: ceiling,
+      },
+      decisions: {
+        audibleChunks,
+        silenceGraceChunks,
+        skippedSilenceChunks,
+        emptyResampleChunks,
+        budgetRejectedChunks,
+        acceptedChunks: accepted.length,
+        acceptedSamples: totalAttemptedSamples,
+      },
+      expectedProviderPcm: {
+        bytes: expectedProviderPcm.length,
+        samples: expectedProviderPcm.length / 2,
+        sha256: sha256Buffer(expectedProviderPcm),
+      },
+    },
+  };
+}
 
 // Raw guest receipts retain their original VM absolute paths after the guest
 // shard tree is byte-for-byte staged under the coordinator execution root.
@@ -426,6 +578,11 @@ export function writePreProviderTerminalAuthority({
   fs.writeFileSync(ledgerPath, `${JSON.stringify(finalized, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
   fs.writeFileSync(journalPath, `${JSON.stringify(initialized)}\n${JSON.stringify(finalized)}\n`, { encoding: 'utf8', flag: 'wx' });
   fs.writeFileSync(path.join(resolvedRunDirectory, 'provider-input-16k-mono.pcm'), Buffer.alloc(0), { flag: 'wx' });
+  fs.writeFileSync(
+    path.join(resolvedRunDirectory, PROVIDER_INPUT_PREFILTER_FILE),
+    PROVIDER_INPUT_PREFILTER_MAGIC,
+    { flag: 'wx' },
+  );
 }
 
 function scopedRunLog(appLogText, runMarker) {
@@ -548,6 +705,8 @@ export function buildCellExternalProviderBudget({
 
   const providerPcmPath = path.join(resolvedRunDirectory, 'provider-input-16k-mono.pcm');
   let providerPcm = null;
+  let providerInputReplay = null;
+  let providerPcmBytes = null;
   if (!fs.existsSync(providerPcmPath)) {
     violations.push('provider-input-16k-mono.pcm is missing');
   } else {
@@ -564,7 +723,21 @@ export function buildCellExternalProviderBudget({
         sha256: sha256File(providerPcmPath),
         note: 'local PCM cross-check; provider sends are authoritative only at the Rust send-boundary ledger',
       };
+      providerPcmBytes = fs.readFileSync(providerPcmPath);
     }
+  }
+
+  try {
+    const replay = replayProviderInputPrefilter({
+      filePath: path.join(resolvedRunDirectory, PROVIDER_INPUT_PREFILTER_FILE),
+      maxSamples: resolvedInputCeilingSamples,
+    });
+    providerInputReplay = replay.authority;
+    if (!providerPcmBytes?.equals(replay.expectedProviderPcm)) {
+      violations.push('provider input PCM is not byte-for-byte equal to the production prefilter replay');
+    }
+  } catch (error) {
+    violations.push(error.message);
   }
 
   let scopedLog = '';
@@ -599,6 +772,22 @@ export function buildCellExternalProviderBudget({
   }
   if (providerPcm && providerPcm.samples !== authoritativeInputSamples) {
     violations.push(`provider input PCM samples ${providerPcm.samples} do not match send-boundary total ${authoritativeInputSamples}`);
+  }
+  if (
+    providerInputReplay
+    && providerInputReplay.decisions.acceptedSamples !== authoritativeInputSamples
+  ) {
+    violations.push(
+      `provider prefilter replay samples ${providerInputReplay.decisions.acceptedSamples} do not match send-boundary total ${authoritativeInputSamples}`,
+    );
+  }
+  if (
+    providerInputReplay
+    && providerInputReplay.decisions.acceptedChunks !== Number(sendBoundaryAuthority?.appendAttempts ?? 0)
+  ) {
+    violations.push(
+      `provider prefilter replay append count ${providerInputReplay.decisions.acceptedChunks} does not match send-boundary attempts ${sendBoundaryAuthority?.appendAttempts ?? 0}`,
+    );
   }
 
   const logConnectionCount = countMatches(scopedLog, /\[CONNECT\][^\r\n]*(?:已连接|connected)[^\r\n]*Omni/giu);
@@ -679,6 +868,7 @@ export function buildCellExternalProviderBudget({
     actualProviderInputSamples: authoritativeInputSamples,
     actualProviderInputSeconds: actualInputSeconds,
     providerInputPcm: providerPcm,
+    providerInputReplay,
     providerTrace: {
       audioAppendSummaryCount: tracedInput.summaryCount,
       evidenceLineCount: evidenceLines.length,

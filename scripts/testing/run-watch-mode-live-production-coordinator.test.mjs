@@ -739,11 +739,12 @@ function rawWorkerConfig(root) {
     expectedPhysicalPlaybackDeviceName: '扬声器 (High Definition Audio Device)',
   });
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: PRODUCTION_WORKER_CONFIG_KIND,
     workers: [
       {
         workerId: 'vm1', user: 'VMUser',
+        transport: { kind: 'local' },
         workspaceRoot: 'E:\\watch-worker', guestExecutionRoot: 'E:\\omni-shards',
         vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-1' },
         deviceProfileInstances: [defaultProfile('vm1')],
@@ -752,22 +753,58 @@ function rawWorkerConfig(root) {
   };
 }
 
-test('production worker config is exact, single-machine, UUID-bound, and has no SSH credentials', () => {
+test('production worker config v2 accepts one local worker and rejects unbound fields', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-production-config-'));
   try {
     const raw = rawWorkerConfig(root);
     const parsed = validateProductionWorkerConfig(raw, { configDirectory: root });
     assert.equal(parsed.workers.length, 1);
     assert.deepEqual(parsed.workers.map((worker) => worker.workerId), ['vm1']);
-    const additionalWorker = structuredClone(raw);
-    additionalWorker.workers.push({ ...structuredClone(raw.workers[0]), workerId: 'vm2' });
-    assert.throws(() => validateProductionWorkerConfig(additionalWorker, { configDirectory: root }), /exactly one local worker/);
     const sshField = structuredClone(raw);
     sshField.sshExecutable = 'ssh.exe';
     assert.throws(() => validateProductionWorkerConfig(sshField, { configDirectory: root }), /keys must be exactly/);
     const extraKey = structuredClone(raw);
     extraKey.workers[0].remoteCommand = 'anything';
     assert.throws(() => validateProductionWorkerConfig(extraKey, { configDirectory: root }), /keys must be exactly/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('production worker config v2 binds three distinct transports, BIOS UUIDs, host keys, and fixed placement', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-production-three-worker-'));
+  try {
+    const identity = path.join(root, 'id_rsa');
+    fs.writeFileSync(identity, 'test-private-key');
+    const profile = (workerId) => ({
+      instanceId: `${workerId}-default`, profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
+      physicalPlaybackDeviceId: `{${workerId}-endpoint}`,
+      expectedPhysicalPlaybackDeviceName: `speaker-${workerId}`,
+    });
+    const worker = (workerId, host, key) => {
+      const knownHostsFile = path.join(root, `${workerId}.known-hosts`);
+      fs.writeFileSync(knownHostsFile, `${workerId} ssh-ed25519 ${key}\n`);
+      return {
+        workerId, transport: { kind: 'ssh', host, port: 22, identityFile: 'id_rsa', knownHostsFile: path.basename(knownHostsFile), hostKeyAlias: workerId },
+        user: 'VMUser', workspaceRoot: 'E:\\watch-worker', guestExecutionRoot: 'E:\\omni-shards',
+        vmIdentity: { provider: 'vmware', uuidBios: `56-4d-${workerId}` },
+        deviceProfileInstances: [profile(workerId)],
+      };
+    };
+    const config = {
+      schemaVersion: 2, artifactKind: PRODUCTION_WORKER_CONFIG_KIND,
+      workers: [worker('vm171', '192.168.40.171', 'AAAA'), worker('vm167', '192.168.40.167', 'BBBB'), worker('vm169', '192.168.40.169', 'CCCC')],
+    };
+    const normalized = validateProductionWorkerConfig(config, { configDirectory: root });
+    assert.deepEqual(normalized.assignments.map(({ cellId, workerId, waveIndex }) => [LIVE_LLM_CELLS.findIndex((cell) => cell.cellId === cellId) + 1, workerId, waveIndex]), [
+      [1, 'vm171', 0], [2, 'vm169', 0], [3, 'vm169', 1], [4, 'vm167', 0],
+    ]);
+    const duplicateUuid = structuredClone(config);
+    duplicateUuid.workers[2].vmIdentity.uuidBios = duplicateUuid.workers[1].vmIdentity.uuidBios;
+    assert.throws(() => validateProductionWorkerConfig(duplicateUuid, { configDirectory: root }), /reuses a VMware BIOS UUID/u);
+    const duplicateKey = structuredClone(config);
+    fs.writeFileSync(path.join(root, 'vm169.known-hosts'), 'vm169 ssh-ed25519 BBBB\n');
+    assert.throws(() => validateProductionWorkerConfig(duplicateKey, { configDirectory: root }), /reuses an SSH host key/u);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

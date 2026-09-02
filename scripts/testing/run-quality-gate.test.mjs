@@ -1073,10 +1073,20 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
           sample_rate: 16_000,
           input_audio_format: 'pcm',
           input_audio_transcription: {
-            language: 'zh',
+            language: 'en',
             model: 'qwen3-asr-flash-realtime',
           },
-          translation: { language: 'en' },
+          translation: {
+            corpus: {
+              phrases: {
+                Mars: '火星',
+                'artificial biosphere': '人工生物圈',
+                'light bulb': '灯泡',
+                'one billion': '十亿',
+              },
+            },
+            language: 'zh',
+          },
           turn_detection: {
             silence_duration_ms: 400,
             threshold: 0,
@@ -1157,8 +1167,10 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
           sessionIdentitySha256,
           serverModel: preflightAuthorization.model,
           echoedSessionConfigSha256: sha256('{"input_audio_format":"pcm",'
-            + '"input_audio_transcription":{"language":"zh","model":"qwen3-asr-flash-realtime"},'
-            + '"modalities":["text"],"sample_rate":16000,"translation":{"language":"en"},'
+            + '"input_audio_transcription":{"language":"en","model":"qwen3-asr-flash-realtime"},'
+            + '"modalities":["text"],"sample_rate":16000,"translation":{"corpus":{"phrases":'
+            + '{"Mars":"火星","artificial biosphere":"人工生物圈","light bulb":"灯泡","one billion":"十亿"}},'
+            + '"language":"zh"},'
             + '"turn_detection":{"silence_duration_ms":400,"threshold":0.0,"type":"server_vad"}}'),
         },
         rawTrace,

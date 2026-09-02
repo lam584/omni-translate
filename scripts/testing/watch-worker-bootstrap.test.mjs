@@ -113,5 +113,6 @@ test('PowerShell host-key rotation applies owner and ACL operations separately',
   const source = fs.readFileSync(new URL('./bootstrap-watch-worker.ps1', import.meta.url), 'utf8');
   assert.match(source, /icacls\.exe \$key '\/setowner' '\*S-1-5-32-544' \| Out-Null/);
   assert.match(source, /icacls\.exe \$key '\/inheritance:r'/);
+  assert.match(source, /'\/remove:g' "\$env:USERDOMAIN\\\$env:USERNAME"/);
   assert.doesNotMatch(source, /'\/setowner' '\*S-1-5-32-544' '\/inheritance:r'/);
 });

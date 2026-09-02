@@ -52,6 +52,28 @@ impl EchoCancelDiagnostics {
         if self.last_summary_at.elapsed() < Duration::from_secs(5) {
             return;
         }
+        self.log(app, store, direction, false);
+    }
+
+    /// Emit the terminal counter snapshot after the capture stream has been
+    /// stopped. Reset events are owned by the capture worker, so this is the
+    /// point at which the native counter covers every explicit reset event.
+    pub(super) fn log_final(
+        &mut self,
+        app: &AppHandle,
+        store: &AudioStateStore,
+        direction: &str,
+    ) {
+        self.log(app, store, direction, true);
+    }
+
+    fn log(
+        &mut self,
+        app: &AppHandle,
+        store: &AudioStateStore,
+        direction: &str,
+        final_summary: bool,
+    ) {
         let Some(stats) = store.echo_canceller_stats() else {
             return;
         };
@@ -85,8 +107,9 @@ impl EchoCancelDiagnostics {
             "info",
             "event=echo_cancel_summary",
             format!(
-                "direction={} backend={} render10msFrames={} capture10msFrames={} processedCapture10msFrames={} resetCount={} rejectedFrames={} statsReadFailures={} renderUnderruns={} captureUnderruns={} erleDb={} residualEchoLikelihood={} reportedDelayMs={} doubleTalkFrames={} avgProcessingUs={:.1} maxProcessingUs={} captureChunks={} intervalCaptureChunks={} playbackActiveChunks={} asrForwardedChunks={} asrDeletedChunks=0 avgPreDb={:.1} avgPostDb={:.1} avgRemovedDb={:.1}",
+                "direction={} final={} backend={} render10msFrames={} capture10msFrames={} processedCapture10msFrames={} resetCount={} rejectedFrames={} statsReadFailures={} renderUnderruns={} captureUnderruns={} erleDb={} residualEchoLikelihood={} reportedDelayMs={} doubleTalkFrames={} avgProcessingUs={:.1} maxProcessingUs={} captureChunks={} intervalCaptureChunks={} playbackActiveChunks={} asrForwardedChunks={} asrDeletedChunks=0 avgPreDb={:.1} avgPostDb={:.1} avgRemovedDb={:.1}",
                 direction,
+                final_summary,
                 stats.backend,
                 stats.render_10ms_frames,
                 stats.capture_10ms_frames,

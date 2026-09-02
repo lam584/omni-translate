@@ -331,6 +331,23 @@ fn normalize_final_pipeline_timestamps(cue: &mut WatchCueComparisonRuntime) {
         }
     }
     if !published.is_empty() && published == rendered {
+        // An equivalent final revision can inherit a committed visible receipt
+        // from a superseded revision. The donor keeps the real render event and
+        // its original timestamp; the selected final revision has no local
+        // render event of its own. Anchor that revision's first-stage pipeline
+        // at publication confirmation so its derived stage order remains
+        // monotonic without rewriting the authoritative donor evidence.
+        let inherited_render_receipt = cue.rendered_first_at_ms.is_some()
+            && !cue.events.iter().any(|event| event.stage == "render");
+        if inherited_render_receipt {
+            if let Some(published_first) = cue.published_first_at_ms {
+                cue.rendered_first_at_ms = Some(
+                    cue.rendered_first_at_ms
+                        .unwrap_or(published_first)
+                        .max(published_first),
+                );
+            }
+        }
         if let Some(published_final) = cue.published_final_at_ms {
             cue.rendered_final_at_ms = Some(cue.rendered_final_at_ms.unwrap_or(published_final).max(published_final));
         }

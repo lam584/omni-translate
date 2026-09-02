@@ -700,6 +700,8 @@ function parseAecDiagnostics(appLog, input) {
   const echoSummaries = appLog.echoCancelSummaryLines
     .map(parseKeyValueLine)
     .filter((summary) => Object.keys(summary).length > 0);
+  const terminalEchoSummaries = echoSummaries.filter((summary) => summary.final === 'true');
+  const terminalEchoSummary = terminalEchoSummaries.at(-1) ?? null;
   const maxMetric = (key, fallback = 0) => echoSummaries.reduce(
     (maximum, summary) => Math.max(maximum, asNumber(summary[key], fallback)),
     fallback,
@@ -785,6 +787,10 @@ function parseAecDiagnostics(appLog, input) {
     maxRejectedFrames: maxMetric('rejectedFrames'),
     maxStatsReadFailures: maxMetric('statsReadFailures'),
     maxResetCount: maxMetric('resetCount'),
+    terminalSummaryCount: terminalEchoSummaries.length,
+    terminalResetCount: terminalEchoSummary == null
+      ? null
+      : asNumber(terminalEchoSummary.resetCount, null),
     explicitResetEventCount: appLog.echoCancelResetLines.length,
     maxRenderUnderruns: maxMetric('renderUnderruns'),
     maxCaptureUnderruns: maxMetric('captureUnderruns'),
@@ -2301,8 +2307,14 @@ function aecLayerFailed(aec, { requireLiveScenario = false } = {}) {
   if (aec.maxStatsReadFailures > 0) {
     return `echo-cancel failed to read native AEC3 statistics ${aec.maxStatsReadFailures} times`;
   }
-  if (aec.maxResetCount !== aec.explicitResetEventCount) {
-    return `echo-cancel native reset counter does not match explicit reset event evidence; resetCount=${aec.maxResetCount} explicitResetEvents=${aec.explicitResetEventCount}`;
+  if (aec.terminalSummaryCount !== 1 || aec.terminalResetCount == null) {
+    return `echo-cancel did not emit exactly one terminal native AEC3 summary; terminalSummaries=${aec.terminalSummaryCount}`;
+  }
+  if (
+    aec.terminalResetCount !== aec.maxResetCount
+    || aec.maxResetCount !== aec.explicitResetEventCount
+  ) {
+    return `echo-cancel native reset counters do not match terminal summary and explicit reset event evidence; terminalResetCount=${aec.terminalResetCount} maxResetCount=${aec.maxResetCount} explicitResetEvents=${aec.explicitResetEventCount}`;
   }
   if (aec.asrDeletedChunkMetricCount <= 0) {
     return 'echo-cancel did not report the explicit ASR deletion invariant';
@@ -2527,6 +2539,16 @@ export function classifyWatchModeRun(input) {
   const watchReportReason = watchSessionReportFailure(input.watchSessionReport, {
     required: (input.mode ?? 'live') === 'live',
   });
+  const appReason = appLayerFailed(app, appLog, {
+    translationRoute,
+    watchSessionReport: input.watchSessionReport,
+    requireWatchReport: (input.mode ?? 'live') === 'live',
+  });
+  const deferMissingTerminalAecReason = Boolean(
+    aecReason
+    && /did not emit exactly one terminal native AEC3 summary/i.test(aecReason)
+    && (subtitleConfigReason || secondaryPreconnectReason || appReason || watchReportReason),
+  );
   const checks = runnerFailureReason
     ? [
         ...(runtimeFailure ? [[runtimeFailure.layer, runtimeFailure.reason]] : []),
@@ -2534,8 +2556,8 @@ export function classifyWatchModeRun(input) {
         ['wasapi', wasapiLayerFailed(input.wasapi) ?? wasapiInjectedPlaybackFailed(input.wasapi, input.playback, appLog)],
         ['bridge', bridgeLayerFailed(input.bridge, bridgeLog, feedbackLoopPrevention) ?? processExclusionRestartReason],
         ['environment', environmentReason],
-        ...(aecReason ? [['aec', aecReason]] : []),
         ['app', environmentReason ? null : runnerFailureReason],
+        ...(!deferMissingTerminalAecReason && aecReason ? [['aec', aecReason]] : []),
         ['physicalOutput', physicalOutputLayerFailed(input.physicalOutput, {
           requireProcessFingerprint: processExclusionVariant,
         })],
@@ -2548,6 +2570,7 @@ export function classifyWatchModeRun(input) {
         ['provider', providerReason],
         ['speechSegmentation', speechSegmentationLayerFailed(speechSegmentation, translationRoute)],
         ['app', watchReportReason],
+        ...(deferMissingTerminalAecReason ? [['aec', aecReason]] : []),
         ['strictContent', physicalOutputContentSkipped ? null : layers.strictContent.reason],
       ]
     : [
@@ -2558,22 +2581,19 @@ export function classifyWatchModeRun(input) {
         ['physicalOutput', physicalOutputLayerFailed(input.physicalOutput, {
           requireProcessFingerprint: processExclusionVariant,
         })],
-        ...(aecReason ? [['aec', aecReason]] : []),
+        ...(!deferMissingTerminalAecReason && aecReason ? [['aec', aecReason]] : []),
         ...(subtitleConfigReason ? [['app', subtitleConfigReason]] : []),
         ...(hardProviderReason ? [['provider', hardProviderReason]] : []),
         ...(providerBeforeAppReason ? [['provider', providerReason]] : []),
         ...(secondaryPreconnectReason ? [['app', secondaryPreconnectReason]] : []),
-        ['app', appLayerFailed(app, appLog, {
-          translationRoute,
-          watchSessionReport: input.watchSessionReport,
-          requireWatchReport: (input.mode ?? 'live') === 'live',
-        })],
+        ['app', appReason],
         ['physicalOutputContent', physicalOutputContentSkipped
           ? null
           : physicalOutputContentLayerFailed(input.physicalOutputContent)],
         ...(providerBeforeAppReason ? [] : [['provider', providerReason]]),
         ['speechSegmentation', speechSegmentationLayerFailed(speechSegmentation, translationRoute)],
         ['app', watchReportReason],
+        ...(deferMissingTerminalAecReason ? [['aec', aecReason]] : []),
         ['strictContent', physicalOutputContentSkipped ? null : layers.strictContent.reason],
       ];
 

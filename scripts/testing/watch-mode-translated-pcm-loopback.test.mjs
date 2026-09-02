@@ -334,6 +334,50 @@ function build(fixture) {
   });
 }
 
+function writeCaptureTimelineAuthority(fixture, gaps = []) {
+  const recordingSamples = fs.statSync(
+    path.join(fixture.runDirectory, 'physical-output-recording-16k-mono.pcm'),
+  ).size / 2;
+  const capturedFrames = recordingSamples * 3;
+  const firstDevicePositionFrames = 10_000;
+  const endDevicePositionFramesExclusive = firstDevicePositionFrames + capturedFrames;
+  const lastDevicePositionFrames = endDevicePositionFramesExclusive - 480;
+  const firstQpcPosition100ns = 1_000_000;
+  const lastQpcPosition100ns = firstQpcPosition100ns + Math.round(
+    (lastDevicePositionFrames - firstDevicePositionFrames) * 10_000_000 / 48_000,
+  );
+  fs.writeFileSync(
+    path.join(fixture.runDirectory, 'physical-output-recording.json'),
+    JSON.stringify({
+      passed: true,
+      capturedFrames,
+      captureTimeline: {
+        schemaVersion: 1,
+        authorityMode: 'wasapi-device-position-qpc-v1',
+        sampleRateHz: 48_000,
+        channelCount: 2,
+        passed: true,
+        packetCount: 100,
+        outputFrameCount: capturedFrames,
+        maxOutputFrameCount: capturedFrames + 48_000,
+        firstDevicePositionFrames,
+        lastDevicePositionFrames,
+        endDevicePositionFramesExclusive,
+        firstQpcPosition100ns,
+        lastQpcPosition100ns,
+        dataDiscontinuityPacketCount: gaps.length,
+        timestampErrorPacketCount: 0,
+        qpcRegressionPacketCount: 0,
+        overlapPacketCount: 0,
+        totalGapFrames: gaps.reduce((sum, gap) => sum + gap.frameCount, 0),
+        gaps,
+        violations: [],
+      },
+    }),
+    'utf8',
+  );
+}
+
 test('treats one loopback sample of independently matched anchor boundary jitter as ordered', () => {
   const latestC04ShortCueAnchors = [
     { matchedStartSample: 36_971, matchedEndSample: 43_371 },
@@ -355,6 +399,70 @@ test('matches every schema-v2 Bridge-rendered translated cue in ordered physical
     assert.equal(authority.matchedCueCount, 2);
     assert.ok(authority.matches.every((match) => match.identityMargin >= 0.08));
     assert.deepEqual(authority.matches.map((match) => match.cueId), fixture.summary.acceptedCues.map((cue) => cue.cueId));
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fails capture authority when a repaired WASAPI gap intersects a required cue anchor', () => {
+  const fixture = createFixture();
+  try {
+    writeCaptureTimelineAuthority(fixture, [{
+      outputStartFrame: Math.round(3.2 * 48_000),
+      frameCount: 48_000,
+      expectedDevicePositionFrames: 10_000 + Math.round(3.2 * 48_000),
+      observedDevicePositionFrames: 10_000 + Math.round(3.2 * 48_000) + 48_000,
+      qpcPosition100ns: 43_000_000,
+      dataDiscontinuity: true,
+    }]);
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    assert.ok(authority.violations.some((violation) => (
+      violation.includes('capture-authority gap 0 intersects required translated cue omni-cue-test-1 early anchor')
+    )), authority.violations.join('; '));
+    const firstMatch = authority.matches.find((match) => match.cueId === 'omni-cue-test-1');
+    assert.equal(firstMatch.anchorMatches[0].captureAuthorityPassed, false);
+    assert.equal(firstMatch.anchorMatches[0].captureGapIntersections.length, 1);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fails closed when a physical recording authority omits its capture timeline', () => {
+  const fixture = createFixture();
+  try {
+    fs.writeFileSync(
+      path.join(fixture.runDirectory, 'physical-output-recording.json'),
+      JSON.stringify({ passed: true }),
+      'utf8',
+    );
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    assert.ok(authority.violations.includes(
+      'physical loopback recording capture timeline authority is missing or invalid',
+    ));
+    assert.equal(authority.captureTimelineAuthority, null);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fails closed when WASAPI device and QPC spans disagree by orders of magnitude', () => {
+  const fixture = createFixture();
+  try {
+    writeCaptureTimelineAuthority(fixture);
+    const authorityPath = path.join(fixture.runDirectory, 'physical-output-recording.json');
+    const recordingAuthority = JSON.parse(fs.readFileSync(authorityPath, 'utf8'));
+    recordingAuthority.captureTimeline.lastQpcPosition100ns =
+      recordingAuthority.captureTimeline.firstQpcPosition100ns + 10_000;
+    fs.writeFileSync(authorityPath, JSON.stringify(recordingAuthority), 'utf8');
+
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    assert.ok(authority.violations.some((violation) => (
+      violation.includes('capture device/QPC spans disagree')
+    )), authority.violations.join('; '));
+    assert.equal(authority.captureTimelineAuthority.passed, false);
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
   }

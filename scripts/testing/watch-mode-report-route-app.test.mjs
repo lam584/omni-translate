@@ -667,6 +667,81 @@ test('echo-cancel rejects native reset counter growth without a matching explici
   assert.match(report.failureReason, /reset counter.*explicit reset event/i);
 });
 
+test('echo-cancel rejects a terminal reset counter that regresses below a periodic native counter', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replace(
+      'direction=inbound final=false backend=webrtc-aec3 render10msFrames=50 capture10msFrames=50 processedCapture10msFrames=50 resetCount=1',
+      'direction=inbound final=false backend=webrtc-aec3 render10msFrames=50 capture10msFrames=50 processedCapture10msFrames=50 resetCount=2',
+    ),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /terminalResetCount=1 maxResetCount=2 explicitResetEvents=1/);
+});
+
+test('echo-cancel accepts resets after the last periodic summary when the terminal native summary covers them', () => {
+  const lines = healthyAppLog.split('\n');
+  const terminalIndex = lines.findIndex((line) => (
+    line.includes('event=echo_cancel_summary') && line.includes('final=true')
+  ));
+  const [terminalSummary] = lines.splice(terminalIndex, 1);
+  lines.push(
+    'event=echo_cancel_reset | direction=inbound reason=wasapi-render-session-start estimatorResetCount=1 sid=0198testsid',
+    'event=echo_cancel_reset | direction=inbound reason=wasapi-render-underrun estimatorResetCount=2 sid=0198testsid',
+    terminalSummary.replace('resetCount=1', 'resetCount=3'),
+  );
+
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: lines.join('\n'),
+  });
+
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.layers.aec.data.maxResetCount, 3);
+  assert.equal(report.layers.aec.data.terminalResetCount, 3);
+  assert.equal(report.layers.aec.data.explicitResetEventCount, 3);
+});
+
+test('echo-cancel rejects a stale periodic summary when no terminal native summary was emitted', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replace('direction=inbound final=true', 'direction=inbound final=false'),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /exactly one terminal native AEC3 summary/i);
+});
+
+test('echo-cancel keeps an earlier runner failure primary when terminal AEC evidence is absent', () => {
+  const runnerFailure = 'desktop shell exited before evidence finalization';
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    failure: { message: runnerFailure },
+    appLogText: healthyAppLog.replace('direction=inbound final=true', 'direction=inbound final=false'),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'app');
+  assert.equal(report.failureReason, runnerFailure);
+  assert.match(report.layers.aec.reason, /exactly one terminal native AEC3 summary/i);
+});
+
+test('echo-cancel keeps an earlier app failure primary when terminal AEC evidence is absent', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    app: { ...healthyApp, routeState: 'failed' },
+    appLogText: healthyAppLog.replace('direction=inbound final=true', 'direction=inbound final=false'),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'app');
+  assert.equal(report.failureReason, 'routeState is failed');
+  assert.match(report.layers.aec.reason, /exactly one terminal native AEC3 summary/i);
+});
+
 test('echo-cancel requires numeric double-talk frame telemetry from the linked backend', () => {
   const report = classify({
     feedbackLoopPrevention: 'echo-cancel',

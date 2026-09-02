@@ -240,30 +240,107 @@ pub mod probe_support {
         Ok((audio_client, render_client))
     }
 
+    /// Timeline metadata attached by WASAPI to one capture packet.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct CapturePacketInfo {
+        pub frames: u32,
+        pub device_position_frames: u64,
+        pub qpc_position_100ns: u64,
+        pub data_discontinuity: bool,
+        pub silent: bool,
+        pub timestamp_error: bool,
+    }
+
+    const MAX_CAPTURE_PACKET_FRAMES: usize = SAMPLE_RATE;
+    const MAX_CAPTURE_PACKET_BYTES: usize = 16 * 1024 * 1024;
+
+    fn capture_packet_buffer_len(
+        packet_frames: u32,
+        bytes_per_frame: usize,
+    ) -> Result<usize, String> {
+        let frames = usize::try_from(packet_frames)
+            .map_err(|_| format!("capture packet frame count {packet_frames} is not representable"))?;
+        if frames > MAX_CAPTURE_PACKET_FRAMES {
+            return Err(format!(
+                "capture packet frame count {frames} exceeds the limit {MAX_CAPTURE_PACKET_FRAMES}"
+            ));
+        }
+        if bytes_per_frame == 0 {
+            return Err("capture packet bytes-per-frame must be greater than zero".to_string());
+        }
+        let bytes = frames.checked_mul(bytes_per_frame).ok_or_else(|| {
+            format!(
+                "capture packet byte length overflowed: frames={frames} bytesPerFrame={bytes_per_frame}"
+            )
+        })?;
+        if bytes > MAX_CAPTURE_PACKET_BYTES {
+            return Err(format!(
+                "capture packet byte length {bytes} exceeds the limit {MAX_CAPTURE_PACKET_BYTES}"
+            ));
+        }
+        Ok(bytes)
+    }
+
     /// Drain every capture packet currently available on `capture_client`,
-    /// invoking `on_packet` with the (silence-zeroed) PCM bytes and the hardware
-    /// silent flag. `bytes_per_frame` sizes each packet buffer.
-    pub fn for_each_capture_packet(
+    /// invoking `on_packet` with the (silence-zeroed) PCM bytes and the complete
+    /// WASAPI packet timeline authority. `bytes_per_frame` sizes each packet
+    /// buffer.
+    pub fn for_each_capture_packet_with_info(
         capture_client: &AudioCaptureClient,
         bytes_per_frame: usize,
-        mut on_packet: impl FnMut(&[u8], bool),
+        mut on_packet: impl FnMut(&[u8], CapturePacketInfo),
     ) -> Result<(), String> {
         while let Some(packet_frames) = capture_client
             .get_next_packet_size()
             .map_err(error_text)?
             .filter(|frames| *frames > 0)
         {
-            let mut packet = vec![0_u8; packet_frames as usize * bytes_per_frame];
+            let packet_bytes = capture_packet_buffer_len(packet_frames, bytes_per_frame)?;
+            let mut packet = Vec::new();
+            packet.try_reserve_exact(packet_bytes).map_err(|error| {
+                format!("reserve capture packet buffer ({packet_bytes} bytes): {error}")
+            })?;
+            packet.resize(packet_bytes, 0_u8);
             let (frames_read, buffer_info) = capture_client
                 .read_from_device(&mut packet)
                 .map_err(error_text)?;
-            packet.truncate(frames_read as usize * bytes_per_frame);
+            if frames_read > packet_frames {
+                return Err(format!(
+                    "WASAPI capture returned {frames_read} frame(s) for a {packet_frames}-frame packet"
+                ));
+            }
+            packet.truncate(capture_packet_buffer_len(frames_read, bytes_per_frame)?);
             if buffer_info.flags.silent {
                 packet.fill(0);
             }
-            on_packet(&packet, buffer_info.flags.silent);
+            on_packet(
+                &packet,
+                CapturePacketInfo {
+                    frames: frames_read,
+                    device_position_frames: buffer_info.index,
+                    qpc_position_100ns: buffer_info.timestamp,
+                    data_discontinuity: buffer_info.flags.data_discontinuity,
+                    silent: buffer_info.flags.silent,
+                    timestamp_error: buffer_info.flags.timestamp_error,
+                },
+            );
         }
         Ok(())
+    }
+
+    /// Compatibility wrapper for probes that only need the PCM payload and
+    /// silent flag. Timeline-sensitive recorders must use
+    /// [`for_each_capture_packet_with_info`].
+    pub fn for_each_capture_packet(
+        capture_client: &AudioCaptureClient,
+        bytes_per_frame: usize,
+        mut on_packet: impl FnMut(&[u8], bool),
+    ) -> Result<(), String> {
+        for_each_capture_packet_with_info(
+            capture_client,
+            bytes_per_frame,
+            |packet, info| on_packet(packet, info.silent),
+        )
     }
 
     /// Goertzel-style magnitude of the `frequency_hz` component in `samples`
@@ -281,6 +358,25 @@ pub mod probe_support {
             imaginary -= *sample as f64 * angle.sin();
         }
         (2.0 * (real * real + imaginary * imaginary).sqrt() / samples.len() as f64) as f32
+    }
+
+    #[cfg(test)]
+    mod capture_packet_tests {
+        use super::*;
+
+        #[test]
+        fn capture_packet_buffer_length_is_checked_and_bounded() {
+            assert_eq!(capture_packet_buffer_len(480, 8).unwrap(), 3_840);
+            assert!(capture_packet_buffer_len(SAMPLE_RATE as u32 + 1, 8)
+                .unwrap_err()
+                .contains("frame count"));
+            assert!(capture_packet_buffer_len(1, usize::MAX)
+                .unwrap_err()
+                .contains("byte length"));
+            assert!(capture_packet_buffer_len(1, 0)
+                .unwrap_err()
+                .contains("bytes-per-frame"));
+        }
     }
 
     /// Narrow-band fingerprint evidence with the local spectral background

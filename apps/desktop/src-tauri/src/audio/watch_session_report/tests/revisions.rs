@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Duration;
 
     #[test]
     fn secondary_results_are_aggregated_in_display_order_and_rejected_results_stay_detail_only() {
@@ -436,6 +437,84 @@ use super::*;
         assert_eq!(report.cues[2].comparison_status, "exact");
         assert_eq!(report.summary.visible_render_cue_count, 1);
         assert_eq!(report.summary.unrendered_cue_count, 0);
+    }
+
+    #[test]
+    fn inherited_receipt_before_active_publish_keeps_final_stage_order_monotonic() {
+        let store = WatchSessionReportStore::new();
+        let session_id = store.begin_or_reuse("test", "model");
+        let started = {
+            let guard = store.inner.lock().expect("report");
+            guard.as_ref().expect("session").started_unix_ms
+        };
+
+        store.record_publish_runtime(
+            "cue-1",
+            "inbound",
+            "Good",
+            "早上好。",
+            &[],
+            false,
+            1,
+            6,
+            Some(SubtitleTranslationStateRuntime::Streaming),
+        );
+        let mut rendered = receipt(&session_id, "cue-1", started.saturating_add(5));
+        rendered.source_text = "Good morning.".to_string();
+        rendered.translated_text = "早上好。".to_string();
+        rendered.committed = true;
+        store.record_overlay_receipt(rendered);
+
+        {
+            let mut guard = store.inner.lock().expect("report");
+            guard.as_mut().expect("session").started_instant =
+                Instant::now() - Duration::from_millis(20);
+        }
+        store.record_source("cue-1", "inbound", "Good morning.", true);
+        store.record_model_final_for_cue(
+            "cue-1",
+            "dashscope-native-realtime",
+            "早上好。",
+            true,
+            None,
+            None,
+        );
+        store.record_publish_runtime(
+            "cue-1",
+            "inbound",
+            "Good morning.",
+            "早上好。",
+            &[],
+            true,
+            1,
+            17,
+            Some(SubtitleTranslationStateRuntime::Final),
+        );
+        store.complete();
+
+        let report = store.snapshot().expect("report");
+        let donor = &report.cues[0];
+        let selected = report
+            .cues
+            .iter()
+            .find(|cue| cue.comparison_status == "exact")
+            .expect("selected final cue");
+
+        assert_eq!(donor.comparison_status, "superseded");
+        assert!(donor.events.iter().any(|event| {
+            event.stage == "render"
+                && event.elapsed_ms == 5
+                && event.visible == Some(true)
+                && event.final_event
+        }));
+        assert!(!selected.events.iter().any(|event| event.stage == "render"));
+        assert!(selected.published_first_at_ms.is_some_and(|published| published >= 20));
+        assert_eq!(selected.rendered_first_at_ms, selected.published_first_at_ms);
+        assert_eq!(selected.publish_to_render_ms, Some(0));
+        assert!(!selected
+            .issues
+            .iter()
+            .any(|issue| issue.code == "invalid-stage-order"));
     }
 
     #[test]

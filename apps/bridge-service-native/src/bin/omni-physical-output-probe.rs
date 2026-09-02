@@ -26,8 +26,9 @@ fn main() {
 #[cfg(windows)]
 mod probe {
     use omni_bridge_service::probe_support::{
-        coarse_dominant_frequency, component_amplitude, for_each_capture_packet,
-        isolated_component_amplitude, open_capture_stream, IsolatedComponentAmplitude,
+        coarse_dominant_frequency, component_amplitude, for_each_capture_packet_with_info,
+        isolated_component_amplitude, open_capture_stream, CapturePacketInfo,
+        IsolatedComponentAmplitude,
     };
     use omni_bridge_service::{
         AudioFrameHeader, AudioRouteDirection, AudioSampleFormat, TranslationAudioSink,
@@ -79,6 +80,8 @@ mod probe {
     const MIN_OUTPUT_RMS: f32 = 0.015;
     const MIN_OUTPUT_COMPONENT: f32 = 0.015;
     const RECORDING_FREQUENCY_ANALYSIS_SECONDS: usize = 5;
+    const MAX_RECORD_SECONDS: f32 = 600.0;
+    const CAPTURE_PACKET_TOLERANCE_FRAMES: usize = SAMPLE_RATE;
     #[derive(Clone)]
     struct TranslationAuthority {
         bridge_instance_id: String,
@@ -139,6 +142,7 @@ mod probe {
         pub tone_component: f32,
         pub silent_packets: usize,
         pub invalid_samples: usize,
+        pub capture_timeline: Option<CaptureTimelineAuthority>,
         pub process_exclusion_fingerprint: Option<ProcessExclusionFingerprintEvidence>,
         pub detail: Option<String>,
     }
@@ -165,6 +169,7 @@ mod probe {
                 tone_component: 0.0,
                 silent_packets: 0,
                 invalid_samples: 0,
+                capture_timeline: None,
                 process_exclusion_fingerprint: None,
                 detail: Some(detail),
             }
@@ -191,6 +196,7 @@ mod probe {
                 tone_component: 0.0,
                 silent_packets: 0,
                 invalid_samples: 0,
+                capture_timeline: None,
                 process_exclusion_fingerprint: None,
                 detail: Some(detail),
             }
@@ -423,6 +429,7 @@ mod probe {
             tone_component,
             silent_packets: metrics.silent_packets,
             invalid_samples: metrics.invalid_samples,
+            capture_timeline: None,
             process_exclusion_fingerprint: None,
             detail,
         })
@@ -507,8 +514,14 @@ mod probe {
                 _ => return Err(format!("unknown argument: {arg}")),
             }
         }
-        if record_only && record_seconds <= 0.0 {
-            return Err("--record-seconds must be greater than 0".to_string());
+        if record_only
+            && (!record_seconds.is_finite()
+                || record_seconds <= 0.0
+                || record_seconds > MAX_RECORD_SECONDS)
+        {
+            return Err(format!(
+                "--record-seconds must be finite, greater than 0, and at most {MAX_RECORD_SECONDS}"
+            ));
         }
         if terminal_tail_seconds < 0.0 {
             return Err("--terminal-tail-seconds must not be negative".to_string());
@@ -567,7 +580,11 @@ mod probe {
             );
         }
         let capture = LoopbackCapture::start(capture_device)?;
-        let mut metrics = CaptureMetrics::default();
+        let max_output_frames = ((args.record_seconds as f64 * SAMPLE_RATE as f64).ceil()
+            as usize)
+            .checked_add(CAPTURE_PACKET_TOLERANCE_FRAMES)
+            .ok_or_else(|| "physical output recorder frame budget overflowed".to_string())?;
+        let mut metrics = CaptureMetrics::with_max_output_frames(max_output_frames);
         let started = Instant::now();
         let duration = Duration::from_millis((args.record_seconds * 1000.0).ceil() as u64);
         let terminal_tail =
@@ -619,6 +636,7 @@ mod probe {
                 metrics.invalid_samples
             ));
         }
+        failures.extend(metrics.capture_timeline_violations.iter().cloned());
         let detail = (!failures.is_empty()).then(|| failures.join("; "));
         Ok(ProbeResult {
             passed: detail.is_none(),
@@ -640,6 +658,7 @@ mod probe {
             tone_component: 0.0,
             silent_packets: metrics.silent_packets,
             invalid_samples: metrics.invalid_samples,
+            capture_timeline: Some(metrics.capture_timeline_authority()),
             process_exclusion_fingerprint: None,
             detail,
         })

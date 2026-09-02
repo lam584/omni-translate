@@ -124,20 +124,28 @@ fn run_capture_loop(
         );
     }
 
-    audio_client.start_stream().map_err_str()?;
+    let mut echo_diagnostics = EchoCancelDiagnostics::new();
+    if let Err(error) = audio_client.start_stream().map_err_str() {
+        if spec.echo_cancel_enabled() {
+            // The route-start reset already happened before WASAPI start. Even
+            // when start fails, close that reset event stream with one native
+            // terminal snapshot so diagnostics cannot report a stale window.
+            echo_diagnostics.log_final(&app, store, direction);
+        }
+        return Err(error);
+    }
     // The stream is bound and the route now reports ready. Microphone capture is
     // expected to deliver packets promptly, but system loopback legitimately has
     // no frames while every media source is paused. Keep Watch alive in that
     // state so users can start it before pressing play.
     let capture_started_at = Instant::now();
     let mut inbound_wait_logged = false;
-    let mut echo_diagnostics = EchoCancelDiagnostics::new();
     let mut aec_delay_estimator = AecDelayEstimator::new(SAMPLE_RATE_HZ as u32, CHANNEL_COUNT);
     let mut current_aec_delay_samples = 0_usize;
     let mut last_delay_diagnostic_at: Option<Instant> = None;
-    loop {
+    let capture_result = (|| -> Result<(), String> {
+      loop {
         if stop_rx.try_recv().is_ok() {
-            let _ = audio_client.stop_stream();
             break;
         }
 
@@ -145,7 +153,6 @@ fn run_capture_loop(
             && capture_started_at.elapsed() >= Duration::from_secs(AUDIO_FLOW_HEALTH_WINDOW_SECS)
         {
             if should_fail_on_initial_frame_stall(direction) {
-                let _ = audio_client.stop_stream();
                 return Err(audio_flow_stall_error(direction, capture_started_at.elapsed()));
             }
             if !inbound_wait_logged {
@@ -331,9 +338,20 @@ fn run_capture_loop(
         }
 
         let _ = event_handle.wait_for_event(500);
+      }
+      Ok(())
+    })();
+
+    // Every path after a successful WASAPI start converges here. The capture
+    // worker remains the sole reset owner, attempts exactly one stream stop,
+    // then snapshots the real native counters after no further reset can occur.
+    let stop_result = audio_client.stop_stream().map_err_str();
+    if spec.echo_cancel_enabled() {
+        echo_diagnostics.log_final(&app, store, direction);
     }
 
-    Ok(())
+    capture_result?;
+    stop_result
 }
 
 pub(crate) fn process_loopback_route_start_error(

@@ -961,8 +961,17 @@ function assertPhysicalRecordingAuthority(runDirectory, index) {
     throw new Error(`strict matrix cell ${index} physical-output recording/content raw evidence did not pass`);
   }
   const capturedFrames = Number(recording.capturedFrames);
-  if (Number.isFinite(capturedFrames) && Math.abs(capturedFrames - wav.frames) > wav.sampleRate) {
-    throw new Error(`strict matrix cell ${index} physical-output recording frame count disagrees with its WAV`);
+  const timelineOutputFrames = Number(recording.captureTimeline?.outputFrameCount);
+  if (
+    !Number.isSafeInteger(wav.frames)
+    || !Number.isSafeInteger(capturedFrames)
+    || !Number.isSafeInteger(timelineOutputFrames)
+    || wav.frames !== capturedFrames
+    || capturedFrames !== timelineOutputFrames
+  ) {
+    throw new Error(
+      `strict matrix cell ${index} physical-output WAV, recording, and capture timeline frame counts must match exactly`,
+    );
   }
 }
 

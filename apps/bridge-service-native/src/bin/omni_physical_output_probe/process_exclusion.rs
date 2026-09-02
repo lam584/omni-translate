@@ -571,6 +571,7 @@
             tone_component: physical_translation_component,
             silent_packets: physical_metrics.silent_packets,
             invalid_samples: physical_metrics.invalid_samples,
+            capture_timeline: None,
             process_exclusion_fingerprint: Some(evidence),
             detail,
         })

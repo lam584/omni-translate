@@ -42,6 +42,183 @@ function nonEmptyString(value) {
 const sha256File = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 const rounded = (value, digits = 6) => Number(Number(value).toFixed(digits));
 
+function loadCaptureTimelineAuthority(runDirectory, recordingSamples, violations) {
+  const authorityPath = path.join(runDirectory, 'physical-output-recording.json');
+  if (!fs.existsSync(authorityPath)) return null;
+  let recordingAuthority;
+  try {
+    recordingAuthority = readJson(authorityPath, 'physical output recording authority');
+  } catch (error) {
+    violations.push(error.message);
+    return null;
+  }
+  const timeline = recordingAuthority?.captureTimeline;
+  if (
+    !Number.isSafeInteger(recordingAuthority?.capturedFrames)
+    || recordingAuthority.capturedFrames <= 0
+    || timeline?.schemaVersion !== 1
+    || timeline?.authorityMode !== 'wasapi-device-position-qpc-v1'
+    || timeline?.sampleRateHz !== 48_000
+    || timeline?.channelCount !== 2
+    || !Number.isInteger(timeline?.packetCount)
+    || timeline.packetCount <= 0
+    || !Number.isSafeInteger(timeline?.outputFrameCount)
+    || timeline.outputFrameCount <= 0
+    || timeline.outputFrameCount !== recordingAuthority.capturedFrames
+    || !Number.isSafeInteger(timeline?.maxOutputFrameCount)
+    || timeline.maxOutputFrameCount < timeline.outputFrameCount
+    || !Number.isSafeInteger(timeline?.firstDevicePositionFrames)
+    || timeline.firstDevicePositionFrames < 0
+    || !Number.isSafeInteger(timeline?.lastDevicePositionFrames)
+    || timeline.lastDevicePositionFrames < 0
+    || !Number.isSafeInteger(timeline?.endDevicePositionFramesExclusive)
+    || timeline.endDevicePositionFramesExclusive <= timeline.lastDevicePositionFrames
+    || !Number.isSafeInteger(timeline?.firstQpcPosition100ns)
+    || timeline.firstQpcPosition100ns < 0
+    || !Number.isSafeInteger(timeline?.lastQpcPosition100ns)
+    || timeline.lastQpcPosition100ns < 0
+    || timeline.firstDevicePositionFrames > timeline.lastDevicePositionFrames
+    || timeline.endDevicePositionFramesExclusive - timeline.firstDevicePositionFrames
+      !== timeline.outputFrameCount
+    || timeline.firstQpcPosition100ns > timeline.lastQpcPosition100ns
+    || typeof timeline?.passed !== 'boolean'
+    || !['dataDiscontinuityPacketCount', 'timestampErrorPacketCount', 'qpcRegressionPacketCount', 'overlapPacketCount']
+      .every((key) => Number.isSafeInteger(timeline?.[key]) && timeline[key] >= 0)
+    || !['dataDiscontinuityPacketCount', 'timestampErrorPacketCount', 'qpcRegressionPacketCount', 'overlapPacketCount']
+      .every((key) => timeline[key] <= timeline.packetCount)
+    || timeline.timestampErrorPacketCount !== 0
+    || timeline.qpcRegressionPacketCount !== 0
+    || timeline.overlapPacketCount !== 0
+    || !Number.isSafeInteger(timeline?.totalGapFrames)
+    || timeline.totalGapFrames < 0
+    || !Array.isArray(timeline?.gaps)
+    || !Array.isArray(timeline?.violations)
+    || !timeline.violations.every(nonEmptyString)
+  ) {
+    violations.push('physical loopback recording capture timeline authority is missing or invalid');
+    return null;
+  }
+  let derivedTimelinePassed = true;
+  const expectedRecordingSamples = Math.max(1, Math.floor(
+    timeline.outputFrameCount * LOOPBACK_SAMPLE_RATE_HZ / timeline.sampleRateHz,
+  ));
+  if (recordingSamples !== expectedRecordingSamples) {
+    derivedTimelinePassed = false;
+    violations.push(
+      `physical loopback capture timeline output frames do not match the 16 kHz recording: expected ${expectedRecordingSamples} sample(s), observed ${recordingSamples}`,
+    );
+  }
+  const deviceSpanFrames = timeline.lastDevicePositionFrames
+    - timeline.firstDevicePositionFrames;
+  const qpcSpanFrames = (timeline.lastQpcPosition100ns - timeline.firstQpcPosition100ns)
+    * timeline.sampleRateHz / 10_000_000;
+  const qpcSpanToleranceFrames = Math.max(
+    timeline.sampleRateHz / 2,
+    deviceSpanFrames * 0.01,
+  );
+  if (Math.abs(qpcSpanFrames - deviceSpanFrames) > qpcSpanToleranceFrames) {
+    derivedTimelinePassed = false;
+    violations.push(
+      `physical loopback capture device/QPC spans disagree: device ${deviceSpanFrames} frame(s), QPC ${Math.round(qpcSpanFrames)} frame(s), tolerance ${Math.ceil(qpcSpanToleranceFrames)} frame(s)`,
+    );
+  }
+  if (timeline.passed !== true || timeline.violations.length > 0) {
+    violations.push(
+      `physical loopback capture timeline authority failed: ${timeline.violations.join('; ') || 'authority marked failed'}`,
+    );
+  }
+  const gaps = [];
+  let priorEndFrame = 0;
+  const maximumNativeFrames = timeline.outputFrameCount;
+  for (const [index, gap] of timeline.gaps.entries()) {
+    const outputStartFrame = Number(gap?.outputStartFrame);
+    const frameCount = Number(gap?.frameCount);
+    const gapEndFrame = outputStartFrame + frameCount;
+    if (
+      !Number.isSafeInteger(outputStartFrame)
+      || outputStartFrame < 0
+      || !Number.isSafeInteger(frameCount)
+      || frameCount <= 0
+      || outputStartFrame < priorEndFrame
+      || gapEndFrame > maximumNativeFrames
+      || !Number.isSafeInteger(Number(gap?.expectedDevicePositionFrames))
+      || !Number.isSafeInteger(Number(gap?.observedDevicePositionFrames))
+      || Number(gap.expectedDevicePositionFrames)
+        !== timeline.firstDevicePositionFrames + outputStartFrame
+      || Number(gap.observedDevicePositionFrames) - Number(gap.expectedDevicePositionFrames) !== frameCount
+      || !Number.isSafeInteger(Number(gap?.qpcPosition100ns))
+      || Number(gap.qpcPosition100ns) < timeline.firstQpcPosition100ns
+      || Number(gap.qpcPosition100ns) > timeline.lastQpcPosition100ns
+      || gap?.dataDiscontinuity !== true
+    ) {
+      derivedTimelinePassed = false;
+      violations.push(`physical loopback capture timeline gap ${index} is invalid`);
+      continue;
+    }
+    const loopbackStartSample = Math.floor(
+      outputStartFrame * LOOPBACK_SAMPLE_RATE_HZ / timeline.sampleRateHz,
+    );
+    const loopbackEndSample = Math.ceil(
+      gapEndFrame * LOOPBACK_SAMPLE_RATE_HZ / timeline.sampleRateHz,
+    );
+    gaps.push({
+      index,
+      outputStartFrame,
+      frameCount,
+      qpcPosition100ns: Number(gap.qpcPosition100ns),
+      dataDiscontinuity: gap.dataDiscontinuity,
+      loopbackStartSample,
+      loopbackEndSample,
+    });
+    priorEndFrame = gapEndFrame;
+  }
+  const summedGapFrames = gaps.reduce((sum, gap) => sum + gap.frameCount, 0);
+  if (summedGapFrames !== timeline.totalGapFrames) {
+    derivedTimelinePassed = false;
+    violations.push('physical loopback capture timeline total gap frames do not match its gap ledger');
+  }
+  if (
+    timeline.dataDiscontinuityPacketCount < gaps.length
+    || timeline.dataDiscontinuityPacketCount > gaps.length + 1
+  ) {
+    derivedTimelinePassed = false;
+    violations.push('physical loopback capture timeline discontinuity count does not match its gap ledger');
+  }
+  return {
+    schemaVersion: timeline.schemaVersion,
+    authorityMode: timeline.authorityMode,
+    passed: (
+      timeline.passed === true
+      && timeline.violations.length === 0
+      && derivedTimelinePassed
+    ),
+    sampleRateHz: timeline.sampleRateHz,
+    channelCount: timeline.channelCount,
+    packetCount: timeline.packetCount,
+    outputFrameCount: timeline.outputFrameCount,
+    maxOutputFrameCount: timeline.maxOutputFrameCount,
+    firstDevicePositionFrames: timeline.firstDevicePositionFrames,
+    lastDevicePositionFrames: timeline.lastDevicePositionFrames,
+    endDevicePositionFramesExclusive: timeline.endDevicePositionFramesExclusive,
+    firstQpcPosition100ns: timeline.firstQpcPosition100ns,
+    lastQpcPosition100ns: timeline.lastQpcPosition100ns,
+    dataDiscontinuityPacketCount: timeline.dataDiscontinuityPacketCount,
+    timestampErrorPacketCount: timeline.timestampErrorPacketCount,
+    qpcRegressionPacketCount: timeline.qpcRegressionPacketCount,
+    overlapPacketCount: timeline.overlapPacketCount,
+    totalGapFrames: timeline.totalGapFrames,
+    gaps,
+    violations: timeline.violations,
+  };
+}
+
+function captureGapsIntersectingWindow(captureTimeline, startSample, endSample) {
+  if (!captureTimeline || !Number.isFinite(startSample) || !Number.isFinite(endSample)) return [];
+  return captureTimeline.gaps.filter((gap) => (
+    gap.loopbackStartSample < endSample && startSample < gap.loopbackEndSample
+  ));
+}
+
 function pcmWindowRms(bytes, offsetSamples, sampleCount) {
   let squareSum = 0;
   for (let index = offsetSamples; index < offsetSamples + sampleCount; index += 1) {
@@ -501,6 +678,11 @@ export function buildTranslatedPcmLoopbackAuthority({
   }
   const recordingStart = Number(recordingStartedAtEpochMs);
   if (!Number.isFinite(recordingStart) || recordingStart <= 0) violations.push('physical loopback recording start epoch is invalid');
+  const captureTimelineAuthority = loadCaptureTimelineAuthority(
+    resolvedRunDirectory,
+    recordingSamples,
+    violations,
+  );
 
   const cueById = new Map(translated.cues.map((cue) => [cue.cueId, cue]));
   const references = new Map();
@@ -613,6 +795,11 @@ export function buildTranslatedPcmLoopbackAuthority({
           ...task.wrongRequestIds.map((requestId) => wrongMetrics.get(requestId)?.score ?? 0),
         );
         const identityMargin = diagonal.score - strongestWrongAnchorScore;
+        const captureGapIntersections = captureGapsIntersectingWindow(
+          captureTimelineAuthority,
+          diagonal.matchedStartSample,
+          diagonal.matchedEndSample,
+        );
         return {
           anchor: task.anchor.name,
           candidateCount: task.anchor.candidates.length,
@@ -622,7 +809,13 @@ export function buildTranslatedPcmLoopbackAuthority({
           strongestWrongAnchorScore: rounded(strongestWrongAnchorScore),
           identityMargin: rounded(identityMargin),
           ...diagonal,
-          passed: diagonal.passed && identityMargin >= 0.08,
+          captureAuthorityPassed: captureGapIntersections.length === 0,
+          captureGapIntersections,
+          passed: (
+            diagonal.passed
+            && identityMargin >= 0.08
+            && captureGapIntersections.length === 0
+          ),
         };
       });
       return candidateMatches.sort((left, right) => (
@@ -636,6 +829,13 @@ export function buildTranslatedPcmLoopbackAuthority({
     const anchorsOrdered = translatedLoopbackAnchorsAreOrdered(anchorMatches);
     const requiredAnchorMatches = referenceSet.anchors.length;
     const passed = passingAnchors.length === requiredAnchorMatches && anchorsOrdered;
+    for (const anchorMatch of anchorMatches) {
+      for (const gap of anchorMatch.captureGapIntersections ?? []) {
+        violations.push(
+          `physical loopback capture-authority gap ${gap.index} intersects required translated cue ${cueId} ${anchorMatch.anchor} anchor`,
+        );
+      }
+    }
     matches.push({
       cueId,
       responseId: cue.responseId ?? null,
@@ -759,6 +959,7 @@ export function buildTranslatedPcmLoopbackAuthority({
       bytes: recordingSamples * 2,
       sha256: recordingSamples > 0 ? sha256File(recordingPath) : null,
     },
+    captureTimelineAuthority,
     translatedPcmAuthority: translated.artifacts,
     acceptedCueCount: translated.cues.length,
     requiredCompleteCueIds: requiredCueIds,

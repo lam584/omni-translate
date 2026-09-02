@@ -651,6 +651,33 @@ function pcmBuffer(samples) {
   return bytes;
 }
 
+function writeStereo48kWavFromMono16k(filePath, samples) {
+  const nativeFrames = samples.length * 3;
+  const dataBytes = nativeFrames * 2 * 2;
+  const wav = Buffer.alloc(44 + dataBytes);
+  wav.write('RIFF', 0, 'ascii');
+  wav.writeUInt32LE(36 + dataBytes, 4);
+  wav.write('WAVEfmt ', 8, 'ascii');
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(2, 22);
+  wav.writeUInt32LE(48_000, 24);
+  wav.writeUInt32LE(48_000 * 2 * 2, 28);
+  wav.writeUInt16LE(4, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write('data', 36, 'ascii');
+  wav.writeUInt32LE(dataBytes, 40);
+  for (let frame = 0; frame < nativeFrames; frame += 1) {
+    const sample = Math.max(
+      -32_768,
+      Math.min(32_767, Math.round(samples[Math.floor(frame / 3)] * 32_767)),
+    );
+    wav.writeInt16LE(sample, 44 + frame * 4);
+    wav.writeInt16LE(sample, 44 + frame * 4 + 2);
+  }
+  fs.writeFileSync(filePath, wav);
+}
+
 function deterministicTranslatedCue(seed, sampleRateHz = 24_000, seconds = 1.4) {
   const output = new Float32Array(Math.round(sampleRateHz * seconds));
   let state = seed >>> 0;
@@ -790,13 +817,42 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
   const physicalPcm = pcmBuffer(recording);
   fs.writeFileSync(physicalPcmPath, physicalPcm);
   fs.writeFileSync(sourceWindowPath, physicalPcm);
+  writeStereo48kWavFromMono16k(
+    path.join(runDirectory, 'physical-output-recording.wav'),
+    recording,
+  );
   const recordingAuthorityPath = path.join(runDirectory, 'physical-output-recording.json');
   const recordingAuthority = JSON.parse(fs.readFileSync(recordingAuthorityPath, 'utf8'));
   fs.writeFileSync(recordingAuthorityPath, `${JSON.stringify({
     ...recordingAuthority,
     passed: true,
+    capturedFrames: recording.length * 3,
     recordingStartedAtEpochMs,
     transcriptionPcmPath: physicalPcmPath,
+    captureTimeline: {
+      schemaVersion: 1,
+      authorityMode: 'wasapi-device-position-qpc-v1',
+      sampleRateHz: 48_000,
+      channelCount: 2,
+      passed: true,
+      packetCount: 100,
+      outputFrameCount: recording.length * 3,
+      maxOutputFrameCount: recording.length * 3 + 48_000,
+      firstDevicePositionFrames: 10_000,
+      lastDevicePositionFrames: 10_000 + recording.length * 3 - 480,
+      endDevicePositionFramesExclusive: 10_000 + recording.length * 3,
+      firstQpcPosition100ns: 1_000_000,
+      lastQpcPosition100ns: 1_000_000 + Math.round(
+        (recording.length * 3 - 480) * 10_000_000 / 48_000,
+      ),
+      dataDiscontinuityPacketCount: 0,
+      timestampErrorPacketCount: 0,
+      qpcRegressionPacketCount: 0,
+      overlapPacketCount: 0,
+      totalGapFrames: 0,
+      gaps: [],
+      violations: [],
+    },
   }, null, 2)}\n`, 'utf8');
   const watchReportPath = path.join(runDirectory, 'watch-session-report.json');
   const watchReport = JSON.parse(fs.readFileSync(watchReportPath, 'utf8'));
@@ -1112,8 +1168,8 @@ function writeAuthorityRawCell(root, directoryName, {
       '[AUDIO] playback request received: cue_id=authority-aec samples=24000 sample_rate_hz=24000 duration_ms=1000 enabled=true local_playback=true virtual_mic=false sid=authority-fixture',
       '[AUDIO] speaker playback completed: cue_id=authority-aec frames=24000 sample_rate_hz=24000 sid=authority-fixture',
       'event=echo_cancel_backend | backend=webrtc-aec3 frameMs=10 renderSubmitFormat=48000-f32-stereo renderClock=wasapi-submit-position endpointRenderPadding=same-client-get-current-padding webRtcAec3Ready=true msvcBuildVerified=true linkedBackendPresent=true fixtureVerified=true sid=authority-fixture',
-      'event=echo_cancel_summary | direction=inbound backend=webrtc-aec3 render10msFrames=50 capture10msFrames=50 processedCapture10msFrames=50 resetCount=1 rejectedFrames=0 statsReadFailures=0 renderUnderruns=0 captureUnderruns=0 erleDb=10.0 residualEchoLikelihood=0.08 reportedDelayMs=0 doubleTalkFrames=0 avgProcessingUs=110.0 maxProcessingUs=230 captureChunks=50 intervalCaptureChunks=50 playbackActiveChunks=40 asrForwardedChunks=50 asrDeletedChunks=0 avgPreDb=-40.0 avgPostDb=-50.0 avgRemovedDb=10.0 sid=authority-fixture',
-      'event=echo_cancel_summary | direction=inbound backend=webrtc-aec3 render10msFrames=100 capture10msFrames=100 processedCapture10msFrames=100 resetCount=1 rejectedFrames=0 statsReadFailures=0 renderUnderruns=0 captureUnderruns=0 erleDb=20.0 residualEchoLikelihood=0.02 reportedDelayMs=125 doubleTalkFrames=12 avgProcessingUs=120.0 maxProcessingUs=250 captureChunks=100 intervalCaptureChunks=100 playbackActiveChunks=90 asrForwardedChunks=100 asrDeletedChunks=0 avgPreDb=-40.0 avgPostDb=-60.0 avgRemovedDb=20.0 sid=authority-fixture',
+      'event=echo_cancel_summary | direction=inbound final=false backend=webrtc-aec3 render10msFrames=50 capture10msFrames=50 processedCapture10msFrames=50 resetCount=1 rejectedFrames=0 statsReadFailures=0 renderUnderruns=0 captureUnderruns=0 erleDb=10.0 residualEchoLikelihood=0.08 reportedDelayMs=0 doubleTalkFrames=0 avgProcessingUs=110.0 maxProcessingUs=230 captureChunks=50 intervalCaptureChunks=50 playbackActiveChunks=40 asrForwardedChunks=50 asrDeletedChunks=0 avgPreDb=-40.0 avgPostDb=-50.0 avgRemovedDb=10.0 sid=authority-fixture',
+      'event=echo_cancel_summary | direction=inbound final=true backend=webrtc-aec3 render10msFrames=100 capture10msFrames=100 processedCapture10msFrames=100 resetCount=1 rejectedFrames=0 statsReadFailures=0 renderUnderruns=0 captureUnderruns=0 erleDb=20.0 residualEchoLikelihood=0.02 reportedDelayMs=125 doubleTalkFrames=12 avgProcessingUs=120.0 maxProcessingUs=250 captureChunks=100 intervalCaptureChunks=100 playbackActiveChunks=90 asrForwardedChunks=100 asrDeletedChunks=0 avgPreDb=-40.0 avgPostDb=-60.0 avgRemovedDb=20.0 sid=authority-fixture',
       `event=aec_live_scenario_stage status=completed cueId=authority-aec-1 stage=double-talk ordinal=1 delayMs=0 nonlinearity=none referenceFrames=4800 physicalFrames=4800 changedSamples=0 changedRatio=0.000000 started=true completed=true startedAtMs=${playbackStartedAtMs + 1_000} completedAtMs=${playbackStartedAtMs + 1_100} source=runtime-physical-render playbackSource=native-omni`,
       `event=aec_live_scenario_stage status=completed cueId=authority-aec-2 stage=dynamic-delay ordinal=2 delayMs=80 nonlinearity=none referenceFrames=4800 physicalFrames=8640 changedSamples=0 changedRatio=0.000000 started=true completed=true startedAtMs=${playbackStartedAtMs + 2_000} completedAtMs=${playbackStartedAtMs + 2_100} source=runtime-physical-render playbackSource=native-omni`,
       `event=aec_live_scenario_stage status=completed cueId=authority-aec-3 stage=nonlinear ordinal=3 delayMs=160 nonlinearity=soft-clip referenceFrames=4800 physicalFrames=12480 changedSamples=9600 changedRatio=1.000000 started=true completed=true startedAtMs=${playbackStartedAtMs + 3_000} completedAtMs=${playbackStartedAtMs + 3_100} source=runtime-physical-render playbackSource=native-omni`,
@@ -2638,6 +2694,39 @@ test('strict authority rebuilds report evidence from the fixed raw inventory', (
   assert.equal(
     verified.externalProviderBudget.cells[0].leaseId,
     manifest.externalProviderBudget.cells[0].leaseId,
+  );
+});
+
+test('strict authority rejects a rehashed WAV truncated by half a second despite self-consistent RIFF metadata', () => {
+  const root = makeTempRoot();
+  const runDirectory = writeAuthorityRawCell(root, 'authority-truncated-physical-wav');
+  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  const wavPath = path.join(runDirectory, 'physical-output-recording.wav');
+  const wav = fs.readFileSync(wavPath);
+  const blockAlign = wav.readUInt16LE(32);
+  const removedFrames = 24_000;
+  const removedBytes = removedFrames * blockAlign;
+  const originalDataBytes = wav.readUInt32LE(40);
+  assert.ok(originalDataBytes > removedBytes);
+  const truncatedDataBytes = originalDataBytes - removedBytes;
+  const truncatedWav = Buffer.from(wav.subarray(0, 44 + truncatedDataBytes));
+  truncatedWav.writeUInt32LE(36 + truncatedDataBytes, 4);
+  truncatedWav.writeUInt32LE(truncatedDataBytes, 40);
+  fs.writeFileSync(wavPath, truncatedWav);
+
+  refreshCellReceiptArtifacts(root, manifest, 0, ['physical-output-recording.wav']);
+
+  assert.throws(
+    () => verifyStrictMatrixAuthority({
+      manifestPath,
+      manifest,
+      evidenceRoot: root,
+      currentProvenance: CLEAN_CURRENT_PROVENANCE,
+      workspaceRoot: path.resolve('.'),
+      now: Date.now() + 2_000,
+      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    }),
+    /physical-output WAV, recording, and capture timeline frame counts must match exactly/,
   );
 });
 

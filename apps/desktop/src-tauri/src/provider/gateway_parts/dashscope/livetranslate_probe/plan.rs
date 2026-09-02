@@ -41,6 +41,12 @@ pub(super) fn prepare_livetranslate_probe_plan(
             &target_language,
             crate::audio::omni::OmniOutputMode::TextOnly,
         );
+    crate::audio::omni::apply_watch_release_livetranslate_corpus(
+        &mut session_update,
+        context.strict_livetranslate_authority,
+        &source_language,
+        &target_language,
+    );
     session_update["event_id"] = Value::String(format!("evt_{}_session", safe_id));
     let session_finish = json!({
         "event_id": format!("evt_{}_finish", safe_id),

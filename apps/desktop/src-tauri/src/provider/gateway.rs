@@ -205,6 +205,7 @@ impl ProviderGateway {
                 target_language,
                 glossary_prompt,
                 false,
+                false,
                 &mut forward_delta,
             )
         };
@@ -259,14 +260,36 @@ impl ProviderGateway {
     }
 
     pub(crate) fn probe(&self, provider: ProviderDraftInput) -> ProviderProbeProfileRuntime {
+        self.probe_with_livetranslate_authority(provider, false)
+    }
+
+    pub(crate) fn probe_strict_livetranslate(
+        &self,
+        provider: ProviderDraftInput,
+    ) -> ProviderProbeProfileRuntime {
+        self.probe_with_livetranslate_authority(provider, true)
+    }
+
+    fn probe_with_livetranslate_authority(
+        &self,
+        provider: ProviderDraftInput,
+        strict_livetranslate_authority: bool,
+    ) -> ProviderProbeProfileRuntime {
         let mut discard_delta = discard_provider_delta;
+        let (source_text, source_language, target_language) =
+            if strict_livetranslate_authority {
+                ("", "en", "zh")
+            } else {
+                ("请把这句中文翻译成英文，并保留语气自然。", "zh-CN", "en-US")
+            };
         let smoke = self.execute_smoke_with_delta(
             provider.clone(),
-            "请把这句中文翻译成英文，并保留语气自然。".to_string(),
-            "zh-CN".to_string(),
-            "en-US".to_string(),
+            source_text.to_string(),
+            source_language.to_string(),
+            target_language.to_string(),
             None,
             true,
+            strict_livetranslate_authority,
             &mut discard_delta,
         );
         self.probe_service.evaluate(provider, smoke)
@@ -287,6 +310,7 @@ impl ProviderGateway {
             target_language,
             None,
             false,
+            false,
             &mut discard_delta,
         )
     }
@@ -299,6 +323,7 @@ impl ProviderGateway {
         target_language: String,
         glossary_prompt: Option<&str>,
         livetranslate_session_probe: bool,
+        strict_livetranslate_authority: bool,
         on_delta: &mut dyn FnMut(&str) -> Result<(), ProviderRuntimeError>,
     ) -> ProviderSmokeResult {
         let request_id = next_translation_request_id();
@@ -354,6 +379,7 @@ impl ProviderGateway {
                 &target_language,
                 glossary_prompt,
                 livetranslate_session_probe,
+                strict_livetranslate_authority,
                 on_delta,
             ),
             "dashscope" => self.dashscope_adapter.execute(
@@ -365,6 +391,7 @@ impl ProviderGateway {
                 &target_language,
                 glossary_prompt,
                 livetranslate_session_probe,
+                strict_livetranslate_authority,
                 on_delta,
             ),
             other => Err(ProviderRuntimeError::new(
@@ -1473,6 +1500,75 @@ mod tests {
                 sha2::Sha256::digest(error.raw_redacted_payload.as_bytes())
             )
         );
+    }
+
+    #[test]
+    fn strict_livetranslate_probe_binds_release_direction_corpus_and_echo_digest() {
+        let (ws_url, server) = spawn_ws_server(|websocket| {
+            websocket
+                .send(Message::Text(
+                    r#"{"event_id":"evt_server_created","type":"session.created","session":{"id":"session-strict","object":"realtime.session","model":"qwen3.5-livetranslate-flash-realtime"}}"#
+                        .to_string()
+                        .into(),
+                ))
+                .expect("session.created should send");
+            let session_update = websocket.read().expect("session.update should arrive");
+            let session_update: Value = serde_json::from_str(session_update.to_text().unwrap())
+                .expect("session.update should be JSON");
+            assert_eq!(
+                session_update.pointer("/session/input_audio_transcription/language"),
+                Some(&json!("en")),
+            );
+            assert_eq!(
+                session_update.pointer("/session/translation/language"),
+                Some(&json!("zh")),
+            );
+            assert_eq!(
+                session_update.pointer("/session/translation/corpus/phrases"),
+                Some(&json!({
+                    "Mars": "火星",
+                    "artificial biosphere": "人工生物圈",
+                    "light bulb": "灯泡",
+                    "one billion": "十亿"
+                })),
+            );
+
+            let mut echoed_session = session_update["session"].clone();
+            echoed_session["id"] = json!("session-strict");
+            echoed_session["object"] = json!("realtime.session");
+            echoed_session["model"] = json!("qwen3.5-livetranslate-flash-realtime");
+            websocket
+                .send(Message::Text(
+                    json!({
+                        "event_id": "evt_server_updated",
+                        "type": "session.updated",
+                        "session": echoed_session,
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("session.updated should send");
+            let finish = websocket.read().expect("session.finish should arrive");
+            let finish: Value = serde_json::from_str(finish.to_text().unwrap())
+                .expect("session.finish should be JSON");
+            assert_eq!(finish["type"], "session.finish");
+            websocket
+                .send(Message::Text(
+                    r#"{"event_id":"evt_server_finished","type":"session.finished"}"#
+                        .to_string()
+                        .into(),
+                ))
+                .expect("session.finished should send");
+        });
+
+        let profile = ProviderGateway::new()
+            .probe_strict_livetranslate(livetranslate_provider(ws_url));
+        server.join().expect("server should complete");
+
+        assert_eq!(profile.verdict, "available");
+        let evidence = profile.wire_evidence.expect("wire evidence should be retained");
+        assert_eq!(evidence.evidence_outcome, "livetranslate-session-finished");
+        assert!(evidence.session_authority.is_some());
     }
 
     #[test]

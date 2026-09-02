@@ -2198,7 +2198,7 @@ fn watch_release_livetranslate_corpus(
     }
 }
 
-fn apply_watch_release_livetranslate_corpus(
+pub(crate) fn apply_watch_release_livetranslate_corpus(
     session_update: &mut Value,
     strict_livetranslate_authority: bool,
     source_language: &str,

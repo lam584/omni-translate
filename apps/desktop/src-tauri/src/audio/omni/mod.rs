@@ -876,6 +876,7 @@ pub(crate) use self::protocol::{
     build_dashscope_audio_append, build_dashscope_input_audio_commit,
     build_dashscope_response_create_for_protocol, build_dashscope_session_update,
     build_dashscope_text_item,
+    apply_watch_release_livetranslate_corpus,
     build_omni_session_update_for_provider_with_output_mode, OmniOutputMode, OmniSpeechConfig,
     native_response_id_from_event,
     resolve_livetranslate_language, resolve_livetranslate_output_mode,

@@ -19,6 +19,7 @@ fn zero_input_probe_plan_is_admitted_and_bound_by_the_production_client_adapter(
         target_language: "zh",
         glossary_prompt: None,
         livetranslate_session_probe: true,
+        strict_livetranslate_authority: true,
     };
     let mut plan = prepare_livetranslate_probe_plan(&context)
         .expect("production must prepare the complete admitted preflight plan");
@@ -32,6 +33,23 @@ fn zero_input_probe_plan_is_admitted_and_bound_by_the_production_client_adapter(
         &plan.session_finish,
     )
     .expect("session.finish must use the paid Watch typed protocol");
+    assert_eq!(
+        plan.session_update.pointer("/session/input_audio_transcription/language"),
+        Some(&json!("en")),
+    );
+    assert_eq!(
+        plan.session_update.pointer("/session/translation/language"),
+        Some(&json!("zh")),
+    );
+    assert_eq!(
+        plan.session_update.pointer("/session/translation/corpus/phrases"),
+        Some(&json!({
+            "Mars": "火星",
+            "artificial biosphere": "人工生物圈",
+            "light bulb": "灯泡",
+            "one billion": "十亿"
+        })),
+    );
     let duplicate_update = plan
         .protocol_state
         .record_client_session_update(&plan.protocol_authority, &plan.session_update)

@@ -79,6 +79,7 @@ fn run_mutated_plan(
             target_language: "zh",
             glossary_prompt: None,
             livetranslate_session_probe: true,
+            strict_livetranslate_authority: false,
         };
         execute_livetranslate_session_probe(&context)
     });

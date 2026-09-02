@@ -35,7 +35,7 @@ use provider_selection::{select_provider, select_provider_by_id};
 
 use crate::diagnostics::events::{append_diagnostics_log, export_diagnostics_bundle};
 use crate::diagnostics::state::DiagnosticsStateStore;
-use crate::provider::events::probe_provider;
+use crate::provider::events::{probe_provider, probe_provider_strict_livetranslate};
 use crate::storage::events::{
     get_secret_ref_status, load_config_draft, save_config_draft,
 };

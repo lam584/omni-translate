@@ -20,6 +20,7 @@ pub(super) struct ProviderCallContext<'a> {
     pub(super) target_language: &'a str,
     pub(super) glossary_prompt: Option<&'a str>,
     pub(super) livetranslate_session_probe: bool,
+    pub(super) strict_livetranslate_authority: bool,
 }
 
 /// Streaming delta sink shared by the provider protocol adapters.
@@ -40,6 +41,7 @@ macro_rules! impl_provider_adapter_execute {
                 target_language: &str,
                 glossary_prompt: Option<&str>,
                 livetranslate_session_probe: bool,
+                strict_livetranslate_authority: bool,
                 on_delta: &mut dyn FnMut(&str) -> Result<(), ProviderRuntimeError>,
             ) -> Result<ProviderSmokeResult, ProviderRuntimeError> {
                 let context = ProviderCallContext {
@@ -50,6 +52,7 @@ macro_rules! impl_provider_adapter_execute {
                     target_language,
                     glossary_prompt,
                     livetranslate_session_probe,
+                    strict_livetranslate_authority,
                 };
                 execute(&context, transport_effective, on_delta)
             }

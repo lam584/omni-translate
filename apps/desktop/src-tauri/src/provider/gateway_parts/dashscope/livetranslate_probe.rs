@@ -631,6 +631,15 @@ fn validate_livetranslate_session_updated(
 
 fn normalized_livetranslate_probe_config(session: &Value) -> Value {
     let turn_detection = session.get("turn_detection").unwrap_or(&Value::Null);
+    let mut translation = json!({
+        "language": session
+            .pointer("/translation/language")
+            .cloned()
+            .unwrap_or(Value::Null),
+    });
+    if let Some(corpus) = session.pointer("/translation/corpus") {
+        translation["corpus"] = corpus.clone();
+    }
     json!({
         "modalities": session.pointer("/modalities").cloned().unwrap_or(Value::Null),
         "sample_rate": session.pointer("/sample_rate").cloned().unwrap_or(Value::Null),
@@ -653,12 +662,7 @@ fn normalized_livetranslate_probe_config(session: &Value) -> Value {
                 .cloned()
                 .unwrap_or(Value::Null),
         },
-        "translation": {
-            "language": session
-                .pointer("/translation/language")
-                .cloned()
-                .unwrap_or(Value::Null),
-        },
+        "translation": translation,
     })
 }
 

@@ -141,7 +141,11 @@ pub(super) async fn collect_provider_probe(
         Some("provider_events::probe_provider"),
     );
     let provider_connect_started_at = now();
-    let probe = probe_provider(app.clone(), provider.clone()).await;
+    let probe = if strict_livetranslate {
+        probe_provider_strict_livetranslate(app.clone(), provider.clone()).await
+    } else {
+        probe_provider(app.clone(), provider.clone()).await
+    };
     let provider_connect_completed_at = now();
     let probe_checked_at = provider_connect_completed_at.clone();
     if !strict_livetranslate && probe.verdict != "available" {

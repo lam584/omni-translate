@@ -41,7 +41,23 @@ pub(crate) async fn fetch_provider_models(
 
 // `async fn`: blocking network probe, kept off the main thread.
 pub(crate) async fn probe_provider(app: AppHandle, provider: ProviderDraftInput) -> ProviderProbeProfileRuntime {
-    let result = ProviderGateway::new().probe(provider);
+    record_provider_probe(app, ProviderGateway::new().probe(provider))
+}
+
+pub(crate) async fn probe_provider_strict_livetranslate(
+    app: AppHandle,
+    provider: ProviderDraftInput,
+) -> ProviderProbeProfileRuntime {
+    record_provider_probe(
+        app,
+        ProviderGateway::new().probe_strict_livetranslate(provider),
+    )
+}
+
+fn record_provider_probe(
+    app: AppHandle,
+    result: ProviderProbeProfileRuntime,
+) -> ProviderProbeProfileRuntime {
     if let Some(store) = app.try_state::<crate::provider::state::ProviderStateStore>() {
         store.record_probe(crate::provider::state::ProviderProbeSummary {
             verdict: result.verdict.clone(),

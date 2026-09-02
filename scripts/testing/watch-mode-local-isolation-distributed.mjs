@@ -212,6 +212,13 @@ const remotePowerShellArgs = (script) => [
   'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand',
   Buffer.from(script, 'utf16le').toString('base64'),
 ];
+const powerShellLiteral = (value) => `'${String(value).replaceAll("'", "''")}'`;
+const remoteNodePowerShellArgs = ({ cwd, script, args }) => remotePowerShellArgs([
+  `$ErrorActionPreference = 'Stop'`,
+  `Set-Location -LiteralPath ${powerShellLiteral(cwd)}`,
+  `& node.exe ${[script, ...args].map(powerShellLiteral).join(' ')}`,
+  'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
+].join(';'));
 
 export async function distributeLocalIsolationRuntime({
   workers,
@@ -255,9 +262,12 @@ export async function distributeLocalIsolationRuntime({
       }
       const remoteManifest = path.win32.join(destinationRoot, 'runtime-distribution.json');
       await run(scpExecutable, [...scpArgs(worker), manifestPath, remoteSpec(worker, remoteManifest)]);
-      await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`, 'node.exe',
-        path.win32.join(destinationRoot, 'scripts/testing/watch-mode-local-isolation.mjs'),
-        '--verify-distribution', remoteManifest]);
+      await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`,
+        ...remoteNodePowerShellArgs({
+          cwd: worker.workspaceRoot,
+          script: path.win32.join(destinationRoot, 'scripts/testing/watch-mode-local-isolation.mjs'),
+          args: ['--verify-distribution', remoteManifest],
+        })]);
     }
     const workerManifestPath = path.join(destinationRoot, 'runtime-distribution.json');
     if (worker.transport.kind === 'local') {
@@ -296,7 +306,7 @@ export async function executeDistributedLocalIsolationCell({
   fs.writeFileSync(localRequestPath, `${JSON.stringify(checked, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
   const script = path.win32.join(workerWorkspaceRoot, 'scripts/testing/watch-mode-local-isolation.mjs');
   if (worker.transport.kind === 'local') {
-    await run(process.execPath, [script, '--worker-cell-request', localRequestPath, '--worker-cell-result', localResultPath], { cwd: workerWorkspaceRoot });
+    await run(process.execPath, [script, '--worker-cell-request', localRequestPath, '--worker-cell-result', localResultPath], { cwd: worker.workspaceRoot });
   } else {
     const remoteRequest = path.win32.join(workerWorkspaceRoot, 'worker-requests', path.basename(localRequestPath));
     const remoteResult = path.win32.join(workerWorkspaceRoot, 'worker-requests', path.basename(localResultPath));
@@ -304,8 +314,12 @@ export async function executeDistributedLocalIsolationCell({
       `New-Item -ItemType Directory -Force -Path '${path.win32.dirname(remoteRequest)}' | Out-Null`,
     )]);
     await run(scpExecutable, [...scpArgs(worker), localRequestPath, remoteSpec(worker, remoteRequest)]);
-    await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`, 'node.exe', script,
-      '--worker-cell-request', remoteRequest, '--worker-cell-result', remoteResult]);
+    await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`,
+      ...remoteNodePowerShellArgs({
+        cwd: worker.workspaceRoot,
+        script,
+        args: ['--worker-cell-request', remoteRequest, '--worker-cell-result', remoteResult],
+      })]);
     await run(scpExecutable, [...scpArgs(worker), remoteSpec(worker, remoteResult), localResultPath]);
     fs.mkdirSync(localOutputRoot, { recursive: true });
     const remoteCellDirectory = path.win32.join(remoteOutputRoot, checked.cell.cellId.replaceAll('::', '--'));

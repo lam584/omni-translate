@@ -550,14 +550,14 @@ test('zero-provider readiness reserves enough time for signed driver reinstall a
   assert.equal(PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS, 300_000);
   assert.deepEqual(
     LIVE_LLM_CELLS.map((cell) => deriveWatchProductionRemoteCellTimeoutMs(cell)),
-    [550_000, 505_000, 505_000, 550_000],
+    [640_000, 595_000, 595_000, 640_000],
   );
   assert.equal(
     PRODUCTION_COORDINATOR_TIMEOUT_MS,
     deriveWatchProductionPrepaidCoordinatorBudgetMs()
       + deriveWatchPostReadinessExecutionBudgetMs({ cells: LIVE_LLM_CELLS }),
   );
-  assert.equal(PRODUCTION_COORDINATOR_TIMEOUT_MS, 13_102_000);
+  assert.equal(PRODUCTION_COORDINATOR_TIMEOUT_MS, 13_462_000);
 });
 
 test('production transport applies each formal cell timeout at its actual outer boundary', () => {
@@ -996,12 +996,22 @@ test('interactive shard PowerShell emitters use shard authority schema v2', () =
   assert.match(collector, /\(Get-ProcessGenerationKey \$currentRoot\) -cne \$rootGenerationKey/);
   assert.match(collector, /\(Get-ProcessGenerationKey \$confirmedIdentityProcess\) -cne \$key/);
   assert.match(collector, /parentStartedAt = \$parentStartedAt/);
-  const confirmedGenerationIndex = collector.indexOf('(Get-ProcessGenerationKey $confirmedIdentityProcess) -cne $key');
-  const capturedAtIndex = collector.indexOf("$capturedAt = [DateTime]::UtcNow.ToString('o')", confirmedGenerationIndex);
+  const descendantSnapshotIndex = collector.indexOf('$descendantSnapshot = @(Get-DescendantProcesses $RootProcessId $rootGenerationKey)');
+  const capturedAtIndex = collector.indexOf("$capturedAt = [DateTime]::UtcNow.ToString('o')", descendantSnapshotIndex);
+  const snapshotLoopIndex = collector.indexOf('foreach ($process in $descendantSnapshot)', capturedAtIndex);
+  const firstGenerationCheckIndex = collector.indexOf('(Get-ProcessGenerationKey $identityProcess) -cne $key', snapshotLoopIndex);
+  const existingGenerationIndex = collector.indexOf('if ($observed.ContainsKey($key))', firstGenerationCheckIndex);
+  const lastSeenAtIndex = collector.indexOf('lastSeenAt = $capturedAt', existingGenerationIndex);
+  const confirmedGenerationIndex = collector.indexOf('(Get-ProcessGenerationKey $confirmedIdentityProcess) -cne $key', lastSeenAtIndex);
   const firstSeenAtIndex = collector.indexOf('firstSeenAt = $capturedAt', capturedAtIndex);
-  assert.ok(confirmedGenerationIndex >= 0);
-  assert.ok(capturedAtIndex > confirmedGenerationIndex);
-  assert.ok(firstSeenAtIndex > capturedAtIndex);
+  assert.ok(descendantSnapshotIndex >= 0);
+  assert.ok(capturedAtIndex > descendantSnapshotIndex);
+  assert.ok(snapshotLoopIndex > capturedAtIndex);
+  assert.ok(firstGenerationCheckIndex > snapshotLoopIndex);
+  assert.ok(existingGenerationIndex > firstGenerationCheckIndex);
+  assert.ok(lastSeenAtIndex > existingGenerationIndex);
+  assert.ok(confirmedGenerationIndex > lastSeenAtIndex);
+  assert.ok(firstSeenAtIndex > confirmedGenerationIndex);
   assert.match(collector, /\$executionExitCode -eq 0/);
   assert.match(collector, /interactive cell execution receipt identity mismatch/);
   assert.match(launcher, /'-ExecutionReceiptPath'/);

@@ -3,13 +3,14 @@ import {
   watchModelProtocolIdentityFailure,
 } from './watch-mode-model-protocol-authority.mjs';
 
-// v11 binds every paid cell to the exact registry-authorized model protocol
-// profile identity while preserving the v10 sample and timeout budgets.
-// matrix. A strict receipt may cover only the exact LiveTranslate release
+// v12 keeps terminal completion event-driven: the exact local playback
+// quiescence event wins, while the 120-second drain timeout is an abnormal
+// watchdog rather than a PCM-duration prediction.
+// A strict receipt may cover only the exact LiveTranslate release
 // model and the explicitly validated default-speaker endpoint. Process
 // exclusion restart timing is explicit and independent of watchdog duration.
-export const BALANCED_RELEASE_PLAN_ID = 'watch-mode-balanced-v11-livetranslate-profile-authority';
-export const BALANCED_RELEASE_PLAN_SCHEMA_VERSION = 11;
+export const BALANCED_RELEASE_PLAN_ID = 'watch-mode-balanced-v12-event-driven-playback-drain';
+export const BALANCED_RELEASE_PLAN_SCHEMA_VERSION = 12;
 export const CANONICAL_PROVIDER_REFERENCE_FRAMES = 2_013_045;
 export const PROCESS_EXCLUSION_RESTART_AFTER_SECONDS = 90;
 export const PROCESS_EXCLUSION_RESTART_QUIET_SECONDS = 45;
@@ -37,7 +38,7 @@ export const RELEASE_INPUT_COMPLETION_WATCHDOG_SECONDS = Object.freeze({
   'echo-cancel': 180,
 });
 export const RELEASE_PROVIDER_FINISH_TIMEOUT_SECONDS = 15;
-export const RELEASE_LOCAL_PLAYBACK_DRAIN_TIMEOUT_SECONDS = 30;
+export const RELEASE_LOCAL_PLAYBACK_DRAIN_TIMEOUT_SECONDS = 120;
 export const RELEASE_REPORT_WRITE_TIMEOUT_SECONDS = 10;
 export const RELEASE_CELL_HARD_WATCHDOG_SECONDS = Object.freeze(
   Object.fromEntries(RELEASE_FEEDBACK_MODES.map((feedbackMode) => [

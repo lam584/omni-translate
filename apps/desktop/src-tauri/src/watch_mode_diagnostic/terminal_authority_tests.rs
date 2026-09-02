@@ -8,7 +8,7 @@ use sha2::Digest;
 use uuid::Uuid;
 
 #[test]
-fn terminal_authority_records_ten_monotonic_raw_owner_stages() {
+fn terminal_authority_records_eleven_monotonic_raw_owner_stages() {
     let identity = ExpectedInputCompleteIdentity {
         run_marker: "release-run-1".to_string(),
         cell_id: "paid-cell-1".to_string(),
@@ -38,7 +38,7 @@ fn terminal_authority_records_ten_monotonic_raw_owner_stages() {
     let authority = recorder.complete(1_802);
 
     assert_eq!(authority.artifact_kind, "watch-mode-evidence-driven-terminal");
-    assert_eq!(authority.schema_version, 2);
+    assert_eq!(authority.schema_version, 3);
     assert_eq!(authority.producer_process_id, 4_321);
     assert_eq!(authority.producer_start_time_utc_ticks, "638900000000000000");
     assert_eq!(

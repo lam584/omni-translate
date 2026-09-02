@@ -631,10 +631,24 @@ async fn run_evidence_driven_capture(
         json!({
             "stableForMs": LOCAL_PLAYBACK_IDLE_CONFIRMATION.as_millis(),
             "speakerPlaybackActive": false,
-            "drainBudgetMs": playback_drain.budget.as_millis(),
+            "completionAuthority": "all-local-playback-owners-quiescent",
+            "playbackWatchdogMs": playback_drain.watchdog.as_millis(),
+            "waitedMs": playback_drain.waited.as_millis(),
             "initialPendingAudioFrames": playback_drain.initial_pending_audio_frames,
             "outputSampleRateHz": playback_drain.output_sample_rate_hz,
-            "usedFallbackCap": playback_drain.used_fallback_cap,
+            "estimatedPendingAudioMs": playback_drain
+                .estimated_pending_audio_duration
+                .map(|duration| duration.as_millis()),
+            "finalPendingNativeAudio": playback_drain.final_snapshot.pending_native_audio,
+            "finalQueuedCommands": playback_drain.final_snapshot.queued_commands,
+            "finalActiveCommands": playback_drain.final_snapshot.active_commands,
+            "finalPendingAudioFrames": playback_drain.final_snapshot.pending_audio_frames,
+            "finalPendingPlaybackSubmissions": playback_drain
+                .final_snapshot
+                .pending_playback_submissions,
+            "finalPendingBridgeAcks": playback_drain.final_snapshot.pending_bridge_acks,
+            "finalActiveBridgeCues": playback_drain.final_snapshot.active_bridge_cues,
+            "finalRestartBarrier": playback_drain.final_snapshot.restart_barrier,
         }),
     );
 

@@ -104,10 +104,10 @@ test('pairwise live cells cover every model/route pair on the default speaker', 
   );
   assert.ok(PAIRWISE_LIVE_CELLS.every((entry) => (
     entry.providerFinishTimeoutSeconds === 15
-    && entry.localPlaybackDrainTimeoutSeconds === 30
+    && entry.localPlaybackDrainTimeoutSeconds === 120
     && entry.reportWriteTimeoutSeconds === 10
     && entry.cellHardWatchdogSeconds === (
-      entry.inputCompletionWatchdogSeconds + 15 + 30 + 10
+      entry.inputCompletionWatchdogSeconds + 15 + 120 + 10
     )
     && entry.auxiliaryExternalAudioSeconds === 0
     && entry.subtitleTranslationMode === 'native'

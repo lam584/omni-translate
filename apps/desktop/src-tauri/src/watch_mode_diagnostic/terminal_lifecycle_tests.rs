@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use super::{
-    local_playback_drain_authority, local_playback_drain_budget, parse_input_complete_marker,
+    local_playback_drain_authority, local_playback_drain_estimate, parse_input_complete_marker,
     strict_paid_terminal_config_with_environment, ExpectedInputCompleteIdentity,
     PlaybackDrainConfirmation,
 };
@@ -33,7 +33,7 @@ fn strict_paid_terminal_config_requires_marker_and_exact_livetranslate_identity(
         "OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS" => Some("180000".to_string()),
         "OMNI_WATCH_MODE_INPUT_COMPLETION_WATCHDOG_MS" => Some("180000".to_string()),
         "OMNI_WATCH_MODE_PROVIDER_FINISH_TIMEOUT_MS" => Some("15000".to_string()),
-        "OMNI_WATCH_MODE_LOCAL_PLAYBACK_DRAIN_TIMEOUT_MS" => Some("30000".to_string()),
+        "OMNI_WATCH_MODE_LOCAL_PLAYBACK_DRAIN_TIMEOUT_MS" => Some("120000".to_string()),
         "OMNI_WATCH_MODE_REPORT_WRITE_TIMEOUT_MS" => Some("10000".to_string()),
         _ => None,
     };
@@ -55,7 +55,7 @@ fn strict_paid_terminal_config_requires_marker_and_exact_livetranslate_identity(
     );
     assert_eq!(config.input_completion_watchdog, Duration::from_secs(180));
     assert_eq!(config.provider_shutdown_timeout, Duration::from_secs(15));
-    assert_eq!(config.local_playback_drain_timeout, Duration::from_secs(30));
+    assert_eq!(config.local_playback_drain_timeout, Duration::from_secs(120));
     assert_eq!(config.report_write_timeout, Duration::from_secs(10));
 
     let error = strict_paid_terminal_config_with_environment(|name| {
@@ -121,38 +121,26 @@ fn playback_drain_requires_continuous_known_quiescence_for_750ms() {
 }
 
 #[test]
-fn playback_drain_budget_uses_pending_frames_and_falls_back_to_a_bounded_cap() {
+fn playback_drain_frame_rate_is_diagnostic_only_and_does_not_define_the_watchdog() {
     assert_eq!(
-        local_playback_drain_budget(
-            Some(48_000),
-            Some(24_000),
-            Duration::from_secs(30),
-        ),
-        Duration::from_millis(5_750),
+        local_playback_drain_estimate(Some(48_000), Some(24_000)),
+        Some(Duration::from_secs(2)),
     );
     assert_eq!(
-        local_playback_drain_budget(None, None, Duration::from_secs(10)),
-        Duration::from_secs(15),
+        local_playback_drain_estimate(None, None),
+        None,
     );
     assert_eq!(
-        local_playback_drain_budget(None, None, Duration::from_secs(60)),
-        Duration::from_secs(30),
+        local_playback_drain_estimate(Some(24_000), Some(0)),
+        None,
     );
     assert_eq!(
-        local_playback_drain_budget(
-            Some(24_000 * 40),
-            Some(24_000),
-            Duration::from_secs(30),
-        ),
-        Duration::from_millis(43_750),
+        local_playback_drain_estimate(Some(24_000 * 40), Some(24_000)),
+        Some(Duration::from_secs(40)),
     );
     assert_eq!(
-        local_playback_drain_budget(
-            Some(783_126),
-            Some(24_000),
-            Duration::from_secs(30),
-        ),
-        Duration::from_millis(36_381),
+        local_playback_drain_estimate(Some(1_004_707), Some(24_000)),
+        Some(Duration::from_millis(41_863)),
     );
 }
 

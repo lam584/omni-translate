@@ -170,7 +170,7 @@ export function validateEvidenceDrivenTerminal(runDirectory, plannedCell, expect
   if (marker.schemaVersion !== 1 || marker.artifactKind !== 'watch-mode-input-complete') {
     throw new Error('input-complete authority schema/kind mismatch');
   }
-  if (terminal.schemaVersion !== 2
+  if (terminal.schemaVersion !== 3
     || terminal.artifactKind !== 'watch-mode-evidence-driven-terminal'
     || terminal.status !== 'completed') {
     throw new Error('evidence-driven terminal schema/kind/status mismatch');
@@ -374,32 +374,46 @@ export function validateEvidenceDrivenTerminal(runDirectory, plannedCell, expect
   const drainEvent = eventsByStage.get('localPlaybackQuiescent');
   const drainDetail = drainEvent?.detail;
   const stableForMs = Number(drainDetail?.stableForMs);
-  const drainBudgetMs = Number(drainDetail?.drainBudgetMs);
-  if (!Number.isSafeInteger(stableForMs) || stableForMs < 500 || stableForMs > 1_000
-    || !Number.isSafeInteger(drainBudgetMs) || drainBudgetMs <= 0 || drainBudgetMs > 30_000
-    || drainDetail?.speakerPlaybackActive !== false
-    || typeof drainDetail?.usedFallbackCap !== 'boolean') {
-    throw new Error('local playback drain is missing its bounded frame/rate authority');
+  const playbackWatchdogMs = Number(drainDetail?.playbackWatchdogMs);
+  const waitedMs = Number(drainDetail?.waitedMs);
+  const expectedPlaybackWatchdogMs = Number(plannedCell.localPlaybackDrainTimeoutSeconds) * 1_000;
+  if (Object.hasOwn(drainDetail ?? {}, 'drainBudgetMs')
+    || Object.hasOwn(drainDetail ?? {}, 'usedFallbackCap')) {
+    throw new Error('local playback drain v3 may not treat a frame estimate as a success budget');
   }
-  if (drainDetail.usedFallbackCap) {
-    if (drainBudgetMs < 15_000
-      || drainDetail.initialPendingAudioFrames != null
-      || drainDetail.outputSampleRateHz != null) {
-      throw new Error('local playback drain fallback authority is not fail-closed within 15-30 seconds');
-    }
-  } else {
+  if (!Number.isSafeInteger(stableForMs) || stableForMs < 500 || stableForMs > 1_000
+    || drainDetail?.completionAuthority !== 'all-local-playback-owners-quiescent'
+    || !Number.isSafeInteger(expectedPlaybackWatchdogMs) || expectedPlaybackWatchdogMs !== 120_000
+    || !Number.isSafeInteger(playbackWatchdogMs)
+    || playbackWatchdogMs !== expectedPlaybackWatchdogMs
+    || !Number.isSafeInteger(waitedMs) || waitedMs < stableForMs || waitedMs > playbackWatchdogMs
+    || drainDetail?.speakerPlaybackActive !== false
+    || drainDetail?.finalPendingNativeAudio !== false
+    || Number(drainDetail?.finalQueuedCommands) !== 0
+    || Number(drainDetail?.finalActiveCommands) !== 0
+    || ![null, 0].includes(drainDetail?.finalPendingAudioFrames)
+    || Number(drainDetail?.finalPendingPlaybackSubmissions) !== 0
+    || Number(drainDetail?.finalPendingBridgeAcks) !== 0
+    || Number(drainDetail?.finalActiveBridgeCues) !== 0
+    || drainDetail?.finalRestartBarrier !== false
+  ) {
+    throw new Error('local playback drain is missing its event-driven completion/watchdog authority');
+  }
+  const hasCompleteFrameRateEstimate = drainDetail.initialPendingAudioFrames != null
+    && drainDetail.outputSampleRateHz != null
+    && drainDetail.estimatedPendingAudioMs != null;
+  if (hasCompleteFrameRateEstimate) {
     const pendingFrames = Number(drainDetail.initialPendingAudioFrames);
     const outputRateHz = Number(drainDetail.outputSampleRateHz);
+    const estimatedPendingAudioMs = Number(drainDetail.estimatedPendingAudioMs);
     if (!Number.isSafeInteger(pendingFrames) || pendingFrames < 0
-      || !Number.isSafeInteger(outputRateHz) || outputRateHz <= 0) {
-      throw new Error('local playback drain frame/rate authority is invalid');
+      || !Number.isSafeInteger(outputRateHz) || outputRateHz <= 0
+      || !Number.isSafeInteger(estimatedPendingAudioMs) || estimatedPendingAudioMs < 0) {
+      throw new Error('local playback drain diagnostic frame/rate estimate is invalid');
     }
-    const derivedBudgetMs = Math.min(
-      Math.ceil((pendingFrames * 1_000) / outputRateHz) + 2_000 + stableForMs,
-      30_000,
-    );
-    if (drainBudgetMs !== derivedBudgetMs) {
-      throw new Error('local playback drain budget does not match pending frames/output rate');
+    const derivedEstimateMs = Math.ceil((pendingFrames * 1_000) / outputRateHz);
+    if (estimatedPendingAudioMs !== derivedEstimateMs) {
+      throw new Error('local playback drain diagnostic estimate does not match pending frames/output rate');
     }
   }
   if (Number(drainEvent.observedAtUnixMs) < Number(finishedEvent.observedAtUnixMs)

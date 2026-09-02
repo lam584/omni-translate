@@ -325,7 +325,7 @@ test('worker request carries only its signed paid cell and never contains build/
   assert.equal(request.runnerOptions.processExclusionRestartAfterSeconds, 90);
   assert.equal(request.runnerOptions.processExclusionRestartQuietSeconds, 45);
   assert.equal(request.runnerOptions.providerFinishTimeoutSeconds, 15);
-  assert.equal(request.runnerOptions.localPlaybackDrainTimeoutSeconds, 30);
+  assert.equal(request.runnerOptions.localPlaybackDrainTimeoutSeconds, 120);
   assert.equal(request.runnerOptions.physicalRecorderTailSeconds, 2);
   assert.equal(
     deriveWatchShardWorkerTimeoutMs(cell),
@@ -334,7 +334,7 @@ test('worker request carries only its signed paid cell and never contains build/
       + WATCH_SHARD_POST_REPORT_ENVELOPE_MS
       + WATCH_SHARD_PROCESS_TERMINATION_GRACE_MS,
   );
-  assert.equal(deriveWatchShardWorkerTimeoutMs(cell), 458_000);
+  assert.equal(deriveWatchShardWorkerTimeoutMs(cell), 548_000);
   assert.equal(request.runnerOptions.inputCompletePath, path.join(request.cellOutputRoot, 'input-complete.json'));
   assert.equal(request.runnerOptions.terminalAuthorityPath, path.join(request.cellOutputRoot, 'evidence-driven-terminal.json'));
   assert.equal(path.basename(request.cellOutputRoot), 'c01');

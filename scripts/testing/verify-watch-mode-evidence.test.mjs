@@ -166,7 +166,7 @@ const verifyStrictMatrixAuthority = (options) => verifyProductionStrictMatrixAut
     : undefined,
 });
 
-test('evidence-driven terminal requires typed session readiness and ten terminal producer stages', () => {
+test('evidence-driven terminal requires typed session readiness and eleven terminal producer stages', () => {
   const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-drain-terminal-'));
   const identity = {
     runMarker: 'run-1',
@@ -185,6 +185,7 @@ test('evidence-driven terminal requires typed session readiness and ten terminal
   const reportSha256 = crypto.createHash('sha256').update(reportBytes).digest('hex');
   const plannedCell = {
     cellId: identity.cellId,
+    localPlaybackDrainTimeoutSeconds: 120,
     authoritativeTransformedReferenceFrames: 1_000,
     boundedCaptureGraceFrames: 200,
     maxExternalAudioSamples: 1_200,
@@ -234,10 +235,20 @@ test('evidence-driven terminal requires typed session readiness and ten terminal
     ['localPlaybackQuiescent', 1_080, {
       stableForMs: 750,
       speakerPlaybackActive: false,
-      drainBudgetMs: 30_000,
+      completionAuthority: 'all-local-playback-owners-quiescent',
+      playbackWatchdogMs: 120_000,
+      waitedMs: 750,
       initialPendingAudioFrames: null,
       outputSampleRateHz: null,
-      usedFallbackCap: true,
+      estimatedPendingAudioMs: null,
+      finalPendingNativeAudio: false,
+      finalQueuedCommands: 0,
+      finalActiveCommands: 0,
+      finalPendingAudioFrames: 0,
+      finalPendingPlaybackSubmissions: 0,
+      finalPendingBridgeAcks: 0,
+      finalActiveBridgeCues: 0,
+      finalRestartBarrier: false,
     }],
     ['reportWritten', 1_090, {
       reportPath: 'watch-session-report.json',
@@ -247,7 +258,7 @@ test('evidence-driven terminal requires typed session readiness and ten terminal
   ];
   const terminalPath = path.join(runDirectory, 'evidence-driven-terminal.json');
   const terminal = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     artifactKind: 'watch-mode-evidence-driven-terminal',
     runMarker: identity.runMarker,
     cellId: identity.cellId,
@@ -272,6 +283,79 @@ test('evidence-driven terminal requires typed session readiness and ten terminal
   fs.writeFileSync(terminalPath, JSON.stringify(terminal));
 
   assert.doesNotThrow(() => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity));
+  const knownFrameEstimate = structuredClone(terminal);
+  Object.assign(
+    knownFrameEstimate.events.find((event) => event.stage === 'localPlaybackQuiescent').detail,
+    {
+      initialPendingAudioFrames: 1_004_707,
+      outputSampleRateHz: 24_000,
+      estimatedPendingAudioMs: 41_863,
+    },
+  );
+  fs.writeFileSync(terminalPath, JSON.stringify(knownFrameEstimate));
+  assert.doesNotThrow(
+    () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+    'known pending PCM duration is diagnostic evidence and not the success deadline',
+  );
+  const inconsistentEstimate = structuredClone(knownFrameEstimate);
+  inconsistentEstimate.events.find(
+    (event) => event.stage === 'localPlaybackQuiescent',
+  ).detail.estimatedPendingAudioMs = 41_862;
+  fs.writeFileSync(terminalPath, JSON.stringify(inconsistentEstimate));
+  assert.throws(
+    () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+    /diagnostic estimate does not match/i,
+    'a complete diagnostic triple must remain internally consistent',
+  );
+  const predictedDeadline = structuredClone(knownFrameEstimate);
+  predictedDeadline.events.find(
+    (event) => event.stage === 'localPlaybackQuiescent',
+  ).detail.drainBudgetMs = 45_613;
+  fs.writeFileSync(terminalPath, JSON.stringify(predictedDeadline));
+  assert.throws(
+    () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+    /may not treat a frame estimate as a success budget/i,
+  );
+  const wrongWatchdog = structuredClone(knownFrameEstimate);
+  wrongWatchdog.events.find(
+    (event) => event.stage === 'localPlaybackQuiescent',
+  ).detail.playbackWatchdogMs = 45_613;
+  fs.writeFileSync(terminalPath, JSON.stringify(wrongWatchdog));
+  assert.throws(
+    () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+    /event-driven completion\/watchdog authority/i,
+  );
+  const unknownFinalPendingFrames = structuredClone(terminal);
+  unknownFinalPendingFrames.events.find(
+    (event) => event.stage === 'localPlaybackQuiescent',
+  ).detail.finalPendingAudioFrames = null;
+  fs.writeFileSync(terminalPath, JSON.stringify(unknownFinalPendingFrames));
+  assert.doesNotThrow(
+    () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+    'an unknown diagnostic frame count does not override event-driven owner quiescence',
+  );
+  for (const partialEstimate of [
+    { initialPendingAudioFrames: 1_004_707 },
+    { outputSampleRateHz: 24_000 },
+    { estimatedPendingAudioMs: 41_863 },
+    { initialPendingAudioFrames: 1_004_707, outputSampleRateHz: 24_000 },
+    { initialPendingAudioFrames: 1_004_707, estimatedPendingAudioMs: 41_863 },
+    { outputSampleRateHz: 24_000, estimatedPendingAudioMs: 41_863 },
+  ]) {
+    const partialDiagnostic = structuredClone(terminal);
+    Object.assign(
+      partialDiagnostic.events.find(
+        (event) => event.stage === 'localPlaybackQuiescent',
+      ).detail,
+      partialEstimate,
+    );
+    fs.writeFileSync(terminalPath, JSON.stringify(partialDiagnostic));
+    assert.doesNotThrow(
+      () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+      'partial frame/rate estimates are diagnostic-only and may not decide completion',
+    );
+  }
+  fs.writeFileSync(terminalPath, JSON.stringify(terminal));
   fs.writeFileSync(reportPath, JSON.stringify({ sessionId: 'watch-tampered', status: 'completed' }));
   assert.throws(
     () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
@@ -1583,10 +1667,20 @@ function writeStrictPaidBudgetFixture(runDirectory, cell, {
     ['localPlaybackQuiescent', {
       stableForMs: 750,
       speakerPlaybackActive: false,
-      drainBudgetMs: 30_000,
+      completionAuthority: 'all-local-playback-owners-quiescent',
+      playbackWatchdogMs: 120_000,
+      waitedMs: 750,
       initialPendingAudioFrames: null,
       outputSampleRateHz: null,
-      usedFallbackCap: true,
+      estimatedPendingAudioMs: null,
+      finalPendingNativeAudio: false,
+      finalQueuedCommands: 0,
+      finalActiveCommands: 0,
+      finalPendingAudioFrames: 0,
+      finalPendingPlaybackSubmissions: 0,
+      finalPendingBridgeAcks: 0,
+      finalActiveBridgeCues: 0,
+      finalRestartBarrier: false,
     }],
     ['reportWritten', {
       reportPath: reportAuthority.path,
@@ -1595,7 +1689,7 @@ function writeStrictPaidBudgetFixture(runDirectory, cell, {
     }],
   ];
   fs.writeFileSync(path.join(runDirectory, 'evidence-driven-terminal.json'), `${JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 3,
     artifactKind: 'watch-mode-evidence-driven-terminal',
     runMarker,
     cellId: cell.cellId,

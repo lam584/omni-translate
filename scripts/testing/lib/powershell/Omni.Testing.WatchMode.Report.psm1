@@ -69,8 +69,8 @@ function Assert-WatchTerminalAuthorityFile {
   }
   $terminal = (Read-WatchJsonSnapshot -Path $Path -Label 'required evidence-driven terminal authority').json
   if ($terminal.artifactKind -cne 'watch-mode-evidence-driven-terminal' -or
-      [int]$terminal.schemaVersion -ne 2 -or $terminal.status -cne 'completed') {
-    throw "evidence-driven terminal authority is not a completed v2 authority: $Path"
+      [int]$terminal.schemaVersion -ne 3 -or $terminal.status -cne 'completed') {
+    throw "evidence-driven terminal authority is not a completed v3 authority: $Path"
   }
   foreach ($binding in @(
     @('runMarker', [string]$terminal.runMarker, $RunMarker),
@@ -165,7 +165,7 @@ function Get-WatchFailedTerminalAuthority {
     return $null
   }
   if ($terminal.artifactKind -cne 'watch-mode-evidence-driven-terminal' -or
-      [int]$terminal.schemaVersion -ne 2 -or $terminal.status -cne 'failed' -or
+      [int]$terminal.schemaVersion -ne 3 -or $terminal.status -cne 'failed' -or
       [string]$terminal.runMarker -cne $RunMarker -or
       [string]$terminal.cellId -cne $CellId -or
       [string]$terminal.leaseId -cne $LeaseId -or

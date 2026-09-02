@@ -20,7 +20,8 @@ pub(crate) struct TranslationPlaybackQuiescenceSnapshot {
     pub(crate) active_commands: usize,
     /// Native playback frames still projected ahead of the speaker cursor.
     /// `None` means that the active playback owner cannot expose an exact PCM
-    /// duration, so terminal drain must use its bounded fail-closed cap.
+    /// duration. Terminal completion still follows owner quiescence; the
+    /// configured playback-drain watchdog remains the fail-closed upper bound.
     pub(crate) pending_audio_frames: Option<u64>,
     pub(crate) output_sample_rate_hz: Option<u32>,
     pub(crate) pending_playback_submissions: usize,

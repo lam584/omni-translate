@@ -250,7 +250,7 @@ capture evidence.
 Do not type performance measurements into the pending JSON template. First run
 the canonical strict Watch matrix on the required default-speaker endpoint.
 Additional endpoints remain optional diagnostics. Every live matrix cell now writes `system-metrics.json`
-with raw one-second samples for the Desktop process tree. The Watch v11
+with raw one-second samples for the Desktop process tree. The Watch v12
 budget-balanced release plan reuses three zero-Provider local-isolation cells,
 then runs exactly four paid cells for
 `qwen3.5-livetranslate-flash-realtime`. Two ordinary cells have 128.8153125
@@ -264,12 +264,12 @@ budget. Sample leases are derived from the canonical
 transformed reference plus bounded capture grace: 2,173,045 samples for
 virtual-driver/echo-cancel and 2,877,045 for process-exclusion, 10,100,180 total,
 or 631.26125 seconds only when expressed as 16 kHz sample-equivalent cost. Per-cell
-hard failure watchdogs are 235 seconds for ordinary cells and 280 seconds for
-process-exclusion. Their remote-execution hard uppers are 505/550 seconds; after
+hard failure watchdogs are 325 seconds for ordinary cells and 370 seconds for
+process-exclusion. Their remote-execution hard uppers are 595/640 seconds; after
 the 60-second lease-upload and 300-second download/collection envelopes, the
-per-cell execution uppers are 865/910 seconds. The four-cell production
-coordinator has a 13,102-second global hard upper. All of these are fail-closed
-watchdogs or envelopes; normal completion remains evidence-driven. The terminal authority contains ten distinct
+per-cell execution uppers are 955/1,000 seconds. The four-cell production
+coordinator has a 13,462-second global hard upper. All of these are fail-closed
+watchdogs or envelopes; normal completion remains evidence-driven. The terminal authority contains eleven distinct
 production-owner stages from `mediaPlaybackCompleted` through `reportWritten` and
 proves exactly-once finish, zero writes after finish, required `session.finished`,
 last-cue renderer ACK coverage, and report-last ordering. The single
@@ -304,7 +304,7 @@ Evidence collection boundaries:
 | Artifact | Command or action | Prerequisites | Typical duration | Verifiable output |
 | --- | --- | --- | --- | --- |
 | Manual E2E | Run `collect:release-evidence:desktop` for the three Desktop-backed scenarios, `collect:release-evidence:real-device-audio` after the strict matrix, `collect:release-evidence:overlay` on an interactive Windows desktop, and `collect:release-evidence:virtual-mic` | Clean exact HEAD, release Desktop binary, configured live Provider credential for Provider scenarios, complete current-HEAD strict matrix, native virtual microphone ready, an installed Microsoft Edge WebView2 runtime, network access for the runner to install pinned `tauri-driver` 2.0.6 with `--locked` and fetch the exactly matching Microsoft-signed WebDriver into `artifacts/tooling/overlay-click-through`, and a named overlay operator on an unlocked interactive desktop | Desktop/diagnostics, vmic, and overlay take minutes; the real-device assembler takes seconds after the balanced matrix | Six independently validated scenario receipts; stable release requires all six |
-| Canonical performance source | `npm run test:watch-mode-live:production-coordinator` | Clean exact HEAD, production binaries, available DashScope credential, one verified default-speaker endpoint, a working virtual-driver route; elevation only when the installed driver/device requires it | One local worker executes four serial waves totaling 605.26125 seconds of normal paid media; successful cells terminate from ten raw input/provider/playback/report stages. Ordinary/process-exclusion hard uppers are 235/280 seconds per cell, 505/550 seconds for remote execution, 865/910 seconds including upload/download envelopes, and 13,102 seconds globally for the coordinator | Canonical strict manifest, 3 reusable zero-Provider local-isolation authorities, 4 passed live `report.json`, and 4 raw `system-metrics.json` files |
+| Canonical performance source | `npm run test:watch-mode-live:production-coordinator` | Clean exact HEAD, production binaries, available DashScope credential, one verified default-speaker endpoint, a working virtual-driver route; elevation only when the installed driver/device requires it | One local worker executes four serial waves totaling 605.26125 seconds of normal paid media; successful cells terminate from eleven raw input/provider/playback/report stages. Local playback success is event-driven; its 120-second timeout is an abnormal watchdog. Ordinary/process-exclusion hard uppers are 325/370 seconds per cell, 595/640 seconds for remote execution, 955/1,000 seconds including upload/download envelopes, and 13,462 seconds globally for the coordinator | Canonical strict manifest, 3 reusable zero-Provider local-isolation authorities, 4 passed live `report.json`, and 4 raw `system-metrics.json` files |
 | Performance assembly | `node ./scripts/testing/assemble-performance-baseline.mjs --operator "<name>"` | The complete canonical matrix above, still on the same clean HEAD | Seconds to about one minute | Receipt-backed `desktop-perf-baseline-*.json`; CPU/memory/latency/dropout/duration are recomputed |
 | Install regression | `npm run test:install-regression`; then run each `collect:release-evidence:install:*` command and archive its returned package directory | Windows x64 UAC test machine, exact current-clean-HEAD canonical signed package, RFC3161 timestamps, and an older canonical signed package for upgrade | 20-40 minutes plus operator review | Five independently recomputed collector packages/receipts; schema-shaped files and prose cannot satisfy a scenario |
 

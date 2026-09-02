@@ -2,46 +2,54 @@ use super::*;
 
 pub(super) async fn wait_for_local_playback_quiescence(
     app: &AppHandle,
-    configured_cap: Duration,
+    configured_watchdog: Duration,
 ) -> Result<LocalPlaybackDrainEvidence, String> {
     let state = app.state::<AudioStateStore>();
     let speaker_playback_active = state.inbound_speaker_playback_active();
     let initial = state.translation_playback_quiescence().snapshot();
     let (initial_pending_audio_frames, output_sample_rate_hz) =
         local_playback_drain_authority(speaker_playback_active, initial);
-    let budget = local_playback_drain_budget(
+    let estimated_pending_audio_duration = local_playback_drain_estimate(
         initial_pending_audio_frames,
         output_sample_rate_hz,
-        configured_cap,
     );
-    let used_fallback_cap = initial_pending_audio_frames.is_none()
-        || output_sample_rate_hz.is_none()
-        || output_sample_rate_hz == Some(0);
     let started = Instant::now();
     let mut confirmation = PlaybackDrainConfirmation::new(LOCAL_PLAYBACK_IDLE_CONFIRMATION);
     loop {
         let state = app.state::<AudioStateStore>();
-        let quiescent = process_exclusion_restart_is_quiescent(
-            state.inbound_speaker_playback_active(),
-            state.translation_playback_quiescence().snapshot(),
-        );
-        if confirmation.observe(Instant::now(), quiescent) {
-            return Ok(LocalPlaybackDrainEvidence {
-                budget,
-                initial_pending_audio_frames,
-                output_sample_rate_hz,
-                used_fallback_cap,
-            });
-        }
-        if started.elapsed() >= budget {
+        let speaker_playback_active = state.inbound_speaker_playback_active();
+        let snapshot = state.translation_playback_quiescence().snapshot();
+        let now = Instant::now();
+        let waited = now.saturating_duration_since(started);
+        if waited >= configured_watchdog {
             return Err(format!(
-                "translated playback did not remain quiescent for {}ms within the {}ms dynamic drain budget (pendingFrames={:?}, outputRateHz={:?}, fallbackCap={})",
+                "translated playback did not remain quiescent for {}ms within the {}ms playback-drain watchdog (initialPendingFrames={:?}, outputRateHz={:?}, estimatedPendingAudioMs={:?}, finalPendingNativeAudio={}, finalQueuedCommands={}, finalActiveCommands={}, finalPendingFrames={:?}, finalPendingSubmissions={}, finalPendingBridgeAcks={}, finalActiveBridgeCues={}, finalRestartBarrier={}, finalSpeakerPlaybackActive={})",
                 LOCAL_PLAYBACK_IDLE_CONFIRMATION.as_millis(),
-                budget.as_millis(),
+                configured_watchdog.as_millis(),
                 initial_pending_audio_frames,
                 output_sample_rate_hz,
-                used_fallback_cap,
+                estimated_pending_audio_duration.map(|duration| duration.as_millis()),
+                snapshot.pending_native_audio,
+                snapshot.queued_commands,
+                snapshot.active_commands,
+                snapshot.pending_audio_frames,
+                snapshot.pending_playback_submissions,
+                snapshot.pending_bridge_acks,
+                snapshot.active_bridge_cues,
+                snapshot.restart_barrier,
+                speaker_playback_active,
             ));
+        }
+        let quiescent = process_exclusion_restart_is_quiescent(speaker_playback_active, snapshot);
+        if confirmation.observe(now, quiescent) {
+            return Ok(LocalPlaybackDrainEvidence {
+                watchdog: configured_watchdog,
+                waited,
+                initial_pending_audio_frames,
+                output_sample_rate_hz,
+                estimated_pending_audio_duration,
+                final_snapshot: snapshot,
+            });
         }
         tokio::time::sleep(INPUT_COMPLETE_POLL).await;
     }
@@ -49,10 +57,12 @@ pub(super) async fn wait_for_local_playback_quiescence(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct LocalPlaybackDrainEvidence {
-    pub(super) budget: Duration,
+    pub(super) watchdog: Duration,
+    pub(super) waited: Duration,
     pub(super) initial_pending_audio_frames: Option<u64>,
     pub(super) output_sample_rate_hz: Option<u32>,
-    pub(super) used_fallback_cap: bool,
+    pub(super) estimated_pending_audio_duration: Option<Duration>,
+    pub(super) final_snapshot: TranslationPlaybackQuiescenceSnapshot,
 }
 
 pub(super) fn local_playback_drain_authority(
@@ -71,25 +81,20 @@ pub(super) fn local_playback_drain_authority(
     (snapshot.pending_audio_frames, snapshot.output_sample_rate_hz)
 }
 
-pub(super) fn local_playback_drain_budget(
+pub(super) fn local_playback_drain_estimate(
     pending_audio_frames: Option<u64>,
     output_sample_rate_hz: Option<u32>,
-    configured_cap: Duration,
-) -> Duration {
-    let bounded_cap = configured_cap
-        .max(LOCAL_PLAYBACK_DRAIN_MIN_CAP)
-        .min(LOCAL_PLAYBACK_DRAIN_MAX_CAP);
+) -> Option<Duration> {
     let (Some(frames), Some(sample_rate_hz)) =
         (pending_audio_frames, output_sample_rate_hz.filter(|rate| *rate > 0))
     else {
-        return bounded_cap;
+        return None;
     };
     let audio_millis = u128::from(frames)
         .saturating_mul(1_000)
         .saturating_add(u128::from(sample_rate_hz) - 1)
         / u128::from(sample_rate_hz);
-    let audio_duration = Duration::from_millis(audio_millis.min(u128::from(u64::MAX)) as u64);
-    audio_duration
-        .saturating_add(LOCAL_PLAYBACK_DRAIN_MARGIN)
-        .saturating_add(LOCAL_PLAYBACK_IDLE_CONFIRMATION)
+    Some(Duration::from_millis(
+        audio_millis.min(u128::from(u64::MAX)) as u64,
+    ))
 }

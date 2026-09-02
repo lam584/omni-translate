@@ -27,9 +27,9 @@
     "postPlaybackSeconds": 0,
     "inputCompletionWatchdogSeconds": 180,
     "providerFinishTimeoutSeconds": 15,
-    "localPlaybackDrainTimeoutSeconds": 30,
+    "localPlaybackDrainTimeoutSeconds": 120,
     "reportWriteTimeoutSeconds": 10,
-    "cellHardWatchdogSeconds": 235,
+    "cellHardWatchdogSeconds": 325,
     "physicalRecorderTailSeconds": 2
   },
   "paths": {

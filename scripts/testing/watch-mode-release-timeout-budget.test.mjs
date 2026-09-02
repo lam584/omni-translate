@@ -49,10 +49,10 @@ test('formal LiveTranslate watchdogs derive from each cell hard watchdog instead
       mode, runnerMs, shardMs, interactiveMs, remoteMs,
     })),
     [
-      { mode: 'process-exclusion', runnerMs: 330_000, shardMs: 458_000, interactiveMs: 520_000, remoteMs: 550_000 },
-      { mode: 'virtual-driver', runnerMs: 285_000, shardMs: 413_000, interactiveMs: 475_000, remoteMs: 505_000 },
-      { mode: 'echo-cancel', runnerMs: 285_000, shardMs: 413_000, interactiveMs: 475_000, remoteMs: 505_000 },
-      { mode: 'process-exclusion', runnerMs: 330_000, shardMs: 458_000, interactiveMs: 520_000, remoteMs: 550_000 },
+      { mode: 'process-exclusion', runnerMs: 420_000, shardMs: 548_000, interactiveMs: 610_000, remoteMs: 640_000 },
+      { mode: 'virtual-driver', runnerMs: 375_000, shardMs: 503_000, interactiveMs: 565_000, remoteMs: 595_000 },
+      { mode: 'echo-cancel', runnerMs: 375_000, shardMs: 503_000, interactiveMs: 565_000, remoteMs: 595_000 },
+      { mode: 'process-exclusion', runnerMs: 420_000, shardMs: 548_000, interactiveMs: 610_000, remoteMs: 640_000 },
     ],
   );
 
@@ -78,7 +78,7 @@ test('formal LiveTranslate watchdogs derive from each cell hard watchdog instead
   assert.ok(process.remoteMs > ordinary.remoteMs);
   assert.ok(process.shardMs < LEGACY_UNIFIED_SHARD_TIMEOUT_MS);
   assert.ok(ordinary.remoteMs < LEGACY_UNIFIED_REMOTE_TIMEOUT_MS);
-  assert.ok(process.remoteMs < LEGACY_UNIFIED_REMOTE_TIMEOUT_MS);
+  assert.ok(process.remoteMs > LEGACY_UNIFIED_REMOTE_TIMEOUT_MS);
   assert.equal(budget.WATCH_SHARD_WORKER_TIMEOUT_MS, undefined);
   assert.equal(budget.WATCH_PRODUCTION_REMOTE_CELL_TIMEOUT_MS, undefined);
 });
@@ -99,7 +99,7 @@ test('formal envelopes cover measured stage tails and coordinator sums four conc
   const expectedCoordinatorMs = budget.deriveWatchProductionPrepaidCoordinatorBudgetMs()
     + expectedPostReadinessMs;
 
-  assert.deepEqual(perCellExecutionMs, [910_000, 865_000, 865_000, 910_000]);
+  assert.deepEqual(perCellExecutionMs, [1_000_000, 955_000, 955_000, 1_000_000]);
   assert.equal(
     budget.deriveWatchPostReadinessExecutionBudgetMs({ cells: LIVE_LLM_CELLS }),
     expectedPostReadinessMs,
@@ -114,8 +114,8 @@ test('formal envelopes cover measured stage tails and coordinator sums four conc
       + budget.WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
     'final evidence must reserve pre-verifier authority, verifier, and post-verifier authority',
   );
-  assert.equal(expectedPostReadinessMs, 5_792_000);
-  assert.equal(expectedCoordinatorMs, 13_102_000);
+  assert.equal(expectedPostReadinessMs, 6_152_000);
+  assert.equal(expectedCoordinatorMs, 13_462_000);
 
   const uniformMaximumCounterfactualMs = budget.deriveWatchProductionPrepaidCoordinatorBudgetMs()
     + budget.deriveWatchProductionPreservedWorkerReadinessBudgetMs()

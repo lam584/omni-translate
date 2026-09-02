@@ -968,9 +968,9 @@ test('run context keeps the paid input ceiling separate from local playback drai
     processExclusionRestartAfterSeconds: 0,
     processExclusionRestartQuietSeconds: 0,
     providerFinishTimeoutSeconds: 15,
-    localPlaybackDrainTimeoutSeconds: 30,
+    localPlaybackDrainTimeoutSeconds: 120,
     reportWriteTimeoutSeconds: 10,
-    cellHardWatchdogSeconds: 235,
+    cellHardWatchdogSeconds: 325,
     physicalRecorderTailSeconds: 2,
   });
 });
@@ -1556,7 +1556,7 @@ $producerExecutableSha256 = [string]$custody.executableSha256
 if ($TerminalIdentityMode -ceq 'old-start') { $producerStartedAtUnixMs = 1 }
 if ($TerminalIdentityMode -ceq 'wrong-hash') { $producerExecutableSha256 = ('f' * 64) }
 $terminalStartedAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-$terminal = @{ artifactKind = 'watch-mode-evidence-driven-terminal'; schemaVersion = 2
+$terminal = @{ artifactKind = 'watch-mode-evidence-driven-terminal'; schemaVersion = 3
   runMarker = $RunMarker; cellId = $CellId; leaseId = $TerminalLeaseId; status = $TerminalStatus
   startedAtUnixMs = $terminalStartedAtUnixMs; completedAtUnixMs = ($terminalStartedAtUnixMs + 20); launchId = $LaunchId
   producerProcessId = $PID; producerStartTimeUtcTicks = $producerStartTimeUtcTicks
@@ -1639,7 +1639,7 @@ if ($TerminalErrorCode -cne 'none') {
     const forgedTerminalPath = path.join(directory, 'forged-terminal.json');
     fs.writeFileSync(forgedReportPath, JSON.stringify({ sessionId: 'watch-forged', status: 'completed' }));
     fs.writeFileSync(forgedTerminalPath, JSON.stringify({
-      artifactKind: 'watch-mode-evidence-driven-terminal', schemaVersion: 2,
+      artifactKind: 'watch-mode-evidence-driven-terminal', schemaVersion: 3,
       runMarker, cellId, leaseId, status: 'completed',
     }));
     const forged = runPowerShell([

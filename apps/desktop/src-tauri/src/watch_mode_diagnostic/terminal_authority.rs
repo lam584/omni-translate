@@ -149,7 +149,7 @@ impl TerminalAuthorityRecorder {
         }
         TerminalAuthority {
             artifact_kind: "watch-mode-evidence-driven-terminal".to_string(),
-            schema_version: 2,
+            schema_version: 3,
             run_marker: self.identity.run_marker,
             cell_id: self.identity.cell_id,
             lease_id: self.identity.lease_id,

@@ -50,7 +50,9 @@ if ($Action -eq 'RotateSshHostKey') {
     try {
       Remove-Item -LiteralPath $key -Force
       if (Test-Path -LiteralPath $publicKey) { Remove-Item -LiteralPath $publicKey -Force }
-      & ssh-keygen.exe -q -t ed25519 -N '' -f $key
+      # Windows PowerShell 5 drops a native empty-string argument. Preserve the
+      # explicit empty passphrase as a quoted native argument for ssh-keygen.
+      & ssh-keygen.exe -q -t ed25519 -N '""' -f $key
       if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $key -PathType Leaf)) { throw 'ssh-keygen failed' }
       & icacls.exe $key '/setowner' '*S-1-5-32-544' '/inheritance:r' '/remove:g' '*S-1-1-0' '*S-1-5-11' '*S-1-5-32-545' '/grant:r' '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' | Out-Null
       if ($LASTEXITCODE -ne 0) { throw 'failed to secure the new OpenSSH private host key ACL' }

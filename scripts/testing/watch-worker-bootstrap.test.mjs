@@ -102,3 +102,9 @@ test('PowerShell bootstrap is recoverable and never enables autologon', () => {
   assert.match(elevation, /-Verb RunAs/);
   assert.match(elevation, /-WindowStyle Hidden/);
 });
+
+test('PowerShell host-key rotation preserves ssh-keygen empty passphrase on Windows PowerShell 5', () => {
+  const source = fs.readFileSync(new URL('./bootstrap-watch-worker.ps1', import.meta.url), 'utf8');
+  assert.match(source, /ssh-keygen\.exe -q -t ed25519 -N '\"\"' -f \$key/);
+  assert.doesNotMatch(source, /ssh-keygen\.exe -q -t ed25519 -N '' -f \$key/);
+});

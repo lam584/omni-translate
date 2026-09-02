@@ -108,17 +108,16 @@ try {
     $currentRoot = Get-CimInstance Win32_Process -Filter "ProcessId=$RootProcessId" -ErrorAction SilentlyContinue
     if (-not $currentRoot -or (Get-ProcessGenerationKey $currentRoot) -cne $rootGenerationKey) { break }
     try {
-      $capturedAt = [DateTime]::UtcNow.ToString('o')
       foreach ($process in @(Get-DescendantProcesses $RootProcessId $rootGenerationKey)) {
         $processId = [int]$process.ProcessId
         $key = Get-ProcessGenerationKey $process
-        if ($observed.ContainsKey($key)) {
-          $observed[$key].lastSeenAt = $capturedAt
-          continue
-        }
         try {
           $identityProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$processId" -ErrorAction SilentlyContinue
           if (-not $identityProcess -or (Get-ProcessGenerationKey $identityProcess) -cne $key) { continue }
+          if ($observed.ContainsKey($key)) {
+            $observed[$key].lastSeenAt = [DateTime]::UtcNow.ToString('o')
+            continue
+          }
           $imagePath = [string]$identityProcess.ExecutablePath
           for ($identityAttempt = 0; $identityAttempt -lt 4 -and -not $imagePath; $identityAttempt++) {
             Start-Sleep -Milliseconds 25
@@ -139,6 +138,7 @@ try {
             -not $confirmedIdentityProcess -or
             (Get-ProcessGenerationKey $confirmedIdentityProcess) -cne $key
           ) { continue }
+          $capturedAt = [DateTime]::UtcNow.ToString('o')
           $parentStartedAt = $null
           if ($processId -ne $RootProcessId) {
             $parentIdentityProcess = Get-CimInstance Win32_Process `

@@ -321,7 +321,7 @@ test('interactive process authority binds children to the exact reused parent PI
   );
 });
 
-test('interactive process authority selects the launch-bound root generation when its PID is reused', () => {
+test('interactive process authority rejects a second generation of the launched root PID', () => {
   const valid = interactiveProcessGenerationFixture();
   const root = valid.processAuthority.processes.find((entry) => entry.role === 'shard-node');
   valid.processAuthority.processes.push({
@@ -337,10 +337,16 @@ test('interactive process authority selects the launch-bound root generation whe
   });
   valid.processAuthority.processCount = valid.processAuthority.processes.length;
 
-  assert.doesNotThrow(() => validateInteractiveProcessFixture(valid));
+  assert.throws(
+    () => validateInteractiveProcessFixture(valid),
+    /interactive traced shard root does not match the launched Node process/,
+  );
   const decoyFirst = structuredClone(valid.processAuthority);
   decoyFirst.processes.unshift(decoyFirst.processes.pop());
-  assert.doesNotThrow(() => validateInteractiveProcessFixture(valid, decoyFirst));
+  assert.throws(
+    () => validateInteractiveProcessFixture(valid, decoyFirst),
+    /interactive traced shard root does not match the launched Node process/,
+  );
 });
 
 test('interactive process authority keeps passed errors and required roles as hard gates', () => {

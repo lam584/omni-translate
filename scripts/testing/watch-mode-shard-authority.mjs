@@ -1642,10 +1642,11 @@ export function validateInteractiveProcessAuthority({
     generations.push(processEntry);
     processesByPid.set(pid, generations);
   }
-  const tracedRoot = (processesByPid.get(Number(processAuthority.rootProcessId)) ?? [])
-    .find((entry) => entry.startedAt === launch.nodeProcess.startedAt);
+  const rootGenerations = processesByPid.get(Number(processAuthority.rootProcessId)) ?? [];
+  const tracedRoot = rootGenerations.find((entry) => entry.startedAt === launch.nodeProcess.startedAt);
   if (
-    !tracedRoot
+    rootGenerations.length !== 1
+    || !tracedRoot
     || tracedRoot.role !== 'shard-node'
     || Number(tracedRoot.pid) !== Number(launch.nodeProcess.pid)
     || Number(tracedRoot.parentPid) !== Number(launch.taskProcess.pid)

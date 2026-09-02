@@ -996,6 +996,12 @@ test('interactive shard PowerShell emitters use shard authority schema v2', () =
   assert.match(collector, /\(Get-ProcessGenerationKey \$currentRoot\) -cne \$rootGenerationKey/);
   assert.match(collector, /\(Get-ProcessGenerationKey \$confirmedIdentityProcess\) -cne \$key/);
   assert.match(collector, /parentStartedAt = \$parentStartedAt/);
+  const confirmedGenerationIndex = collector.indexOf('(Get-ProcessGenerationKey $confirmedIdentityProcess) -cne $key');
+  const capturedAtIndex = collector.indexOf("$capturedAt = [DateTime]::UtcNow.ToString('o')", confirmedGenerationIndex);
+  const firstSeenAtIndex = collector.indexOf('firstSeenAt = $capturedAt', capturedAtIndex);
+  assert.ok(confirmedGenerationIndex >= 0);
+  assert.ok(capturedAtIndex > confirmedGenerationIndex);
+  assert.ok(firstSeenAtIndex > capturedAtIndex);
   assert.match(collector, /\$executionExitCode -eq 0/);
   assert.match(collector, /interactive cell execution receipt identity mismatch/);
   assert.match(launcher, /'-ExecutionReceiptPath'/);

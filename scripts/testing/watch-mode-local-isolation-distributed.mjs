@@ -246,7 +246,7 @@ export async function distributeLocalIsolationRuntime({
         path.win32.dirname(path.win32.join(destinationRoot, ...entry.path.split('/')))
       )))];
       const mkdirScript = directories.map((directory) => (
-        `New-Item -ItemType Directory -Force -LiteralPath '${directory}' | Out-Null`
+        `New-Item -ItemType Directory -Force -Path '${directory}' | Out-Null`
       )).join(';');
       await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`, ...remotePowerShellArgs(mkdirScript)]);
       for (const entry of files) {
@@ -301,7 +301,7 @@ export async function executeDistributedLocalIsolationCell({
     const remoteRequest = path.win32.join(workerWorkspaceRoot, 'worker-requests', path.basename(localRequestPath));
     const remoteResult = path.win32.join(workerWorkspaceRoot, 'worker-requests', path.basename(localResultPath));
     await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`, ...remotePowerShellArgs(
-      `New-Item -ItemType Directory -Force -LiteralPath '${path.win32.dirname(remoteRequest)}' | Out-Null`,
+      `New-Item -ItemType Directory -Force -Path '${path.win32.dirname(remoteRequest)}' | Out-Null`,
     )]);
     await run(scpExecutable, [...scpArgs(worker), localRequestPath, remoteSpec(worker, remoteRequest)]);
     await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`, 'node.exe', script,

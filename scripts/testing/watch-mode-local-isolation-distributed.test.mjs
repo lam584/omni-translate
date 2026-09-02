@@ -16,6 +16,13 @@ import {
   validateLocalIsolationWorkerRequest,
 } from './watch-mode-local-isolation-distributed.mjs';
 
+test('remote directory creation uses encoded Windows PowerShell compatible syntax', () => {
+  const source = fs.readFileSync(new URL('./watch-mode-local-isolation-distributed.mjs', import.meta.url), 'utf8');
+  assert.match(source, /'-EncodedCommand'/);
+  assert.match(source, /New-Item -ItemType Directory -Force -Path/);
+  assert.doesNotMatch(source, /New-Item -ItemType Directory -Force -LiteralPath/);
+});
+
 const hashes = [{ path: 'target/release/omni-bridge-service.exe', bytes: 10, sha256: 'a'.repeat(64) }];
 const canonicalize = (value) => value && typeof value === 'object' && !Array.isArray(value)
   ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])]))

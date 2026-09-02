@@ -108,3 +108,10 @@ test('PowerShell host-key rotation preserves ssh-keygen empty passphrase on Wind
   assert.match(source, /ssh-keygen\.exe -q -t ed25519 -N '\"\"' -f \$key/);
   assert.doesNotMatch(source, /ssh-keygen\.exe -q -t ed25519 -N '' -f \$key/);
 });
+
+test('PowerShell host-key rotation applies owner and ACL operations separately', () => {
+  const source = fs.readFileSync(new URL('./bootstrap-watch-worker.ps1', import.meta.url), 'utf8');
+  assert.match(source, /icacls\.exe \$key '\/setowner' '\*S-1-5-32-544' \| Out-Null/);
+  assert.match(source, /icacls\.exe \$key '\/inheritance:r'/);
+  assert.doesNotMatch(source, /'\/setowner' '\*S-1-5-32-544' '\/inheritance:r'/);
+});

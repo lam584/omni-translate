@@ -2281,6 +2281,14 @@ export function buildStrictShardCellAuthorityProjection({
 }) {
   return {
     origin: 'guest-shard-result',
+    ...(Object.hasOwn(result, 'verdict') ? { verdict: result.verdict } : {}),
+    ...(Object.hasOwn(result, 'reportVerdict') ? { reportVerdict: result.reportVerdict } : {}),
+    ...(result.verdict === 'failed' ? {
+      failureLayer: result.failureLayer,
+      stableErrorCode: result.stableErrorCode,
+      lifecyclePhase: result.lifecyclePhase,
+      failureContext: structuredClone(result.failureContext),
+    } : {}),
     executionId: result.executionId,
     planDigest: result.planDigest,
     cellIndex: planCell.cellIndex,

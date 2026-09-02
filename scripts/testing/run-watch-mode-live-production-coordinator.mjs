@@ -962,6 +962,7 @@ function performFinalEvidenceStaging(payload, operations = {}) {
     coordinatorAggregatePath: aggregation.aggregatePath,
     shards: payload.shards,
     collectedMatrixIntegration: aggregation.matrixIntegration,
+    validationAt: generatedAt,
   });
   const stagedFailureFingerprintPath = path.join(
     staged.finalExecutionRoot,
@@ -1040,6 +1041,26 @@ function performCanonicalManifestPublication(payload, operations = {}) {
     currentProvenance: payload.currentProvenance,
     currentRuntimeBinaryHashes: payload.currentRuntimeBinaryHashes,
   });
+}
+
+export function assertProductionCellsPassedForCanonicalVerification({
+  failureSummary,
+  manifestPath,
+  startedCellIds = [],
+  completedCellIds = [],
+}) {
+  if (!failureSummary || !Array.isArray(failureSummary.failed)) {
+    throw new Error('production final evidence staging requires a valid collect-all failure summary');
+  }
+  if (failureSummary.failed.length === 0) return;
+  const error = new Error(
+    `production cells failed after final evidence staging: ${failureSummary.failed.join(', ')}`,
+  );
+  error.code = 'watch.production.cells-failed';
+  error.failurePath = manifestPath;
+  error.startedCellIds = [...startedCellIds];
+  error.completedCellIds = [...completedCellIds];
+  throw error;
 }
 
 async function executeCoordinatorChildStage(stage, payload) {
@@ -2607,6 +2628,16 @@ async function runProductionCoordinatorCore({
         deadlineNow,
         signal,
       });
+  transitionCoordinatorState('evidence-staged', {
+    manifestPath: manifestResult.manifestPath,
+    completedCellIds: waveOutcome.completedCellIds,
+  });
+  assertProductionCellsPassedForCanonicalVerification({
+    failureSummary,
+    manifestPath: manifestResult.manifestPath,
+    startedCellIds: waveOutcome.startedCellIds,
+    completedCellIds: waveOutcome.completedCellIds,
+  });
   const runtimeBeforeVerifier = await verifyRuntimeAuthority(
     frozenRuntime.authorityPath,
     'runtime-authority-before-verifier',

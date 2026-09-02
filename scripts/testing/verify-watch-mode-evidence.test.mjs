@@ -16,6 +16,8 @@ import {
   fileAuthorityEntry,
   requiredCellArtifactPaths,
   sha256File,
+  STRICT_MATRIX_ARTIFACT_KIND,
+  STRICT_MATRIX_SCHEMA_VERSION,
 } from './watch-mode-evidence-authority.mjs';
 import {
   STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
@@ -24,7 +26,11 @@ import {
   writeCellExternalProviderBudget,
   writeMatrixExternalProviderBudget,
 } from './watch-mode-external-provider-budget.mjs';
-import { LIVE_LLM_CELLS, RELEASE_MODELS } from './watch-mode-balanced-release-plan.mjs';
+import {
+  BALANCED_RELEASE_PLAN,
+  LIVE_LLM_CELLS,
+  RELEASE_MODELS,
+} from './watch-mode-balanced-release-plan.mjs';
 import { deriveWatchModelProtocolIdentity } from './watch-mode-model-protocol-authority.mjs';
 import {
   SHARD_EXECUTION_PLAN_FILE,
@@ -105,6 +111,38 @@ import {
 } from './verify-watch-mode-evidence.mjs';
 
 const AUTHORITY_FIXTURE_SESSION_DURATION_MS = 180_000;
+
+test('strict canonical verifier rejects a staged failed cell before reading completed-only receipts', () => {
+  const evidenceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-failed-canonical-verifier-'));
+  const manifestPath = path.join(evidenceRoot, 'failed-matrix.json');
+  const cellIds = LIVE_LLM_CELLS.map((cell) => cell.cellId);
+  try {
+    assert.throws(() => verifyProductionStrictMatrixAuthority({
+      manifestPath,
+      manifest: {
+        schemaVersion: STRICT_MATRIX_SCHEMA_VERSION,
+        artifactKind: STRICT_MATRIX_ARTIFACT_KIND,
+        validationPlan: BALANCED_RELEASE_PLAN,
+        collectAll: {
+          verdict: 'failed',
+          attempted: cellIds,
+          completed: cellIds,
+          passed: cellIds.slice(1),
+          failed: [cellIds[0]],
+        },
+      },
+      evidenceRoot,
+      currentProvenance: {},
+      workspaceRoot: process.cwd(),
+      currentRuntimeBinaryHashes: [],
+      releaseCells: LIVE_LLM_CELLS,
+      requireLocalIsolation: false,
+    }), /strict collect-all matrix contains failed or incomplete cells/u);
+  } finally {
+    fs.rmSync(evidenceRoot, { recursive: true, force: true });
+  }
+});
+
 const formalTimingForMode = (feedbackLoopPrevention) => {
   const cell = LIVE_LLM_CELLS.find(
     (entry) => entry.feedbackLoopPrevention === feedbackLoopPrevention,
@@ -4021,8 +4059,63 @@ test('strict production verifier rebuilds the staged four-cell authority from on
       ledgerBytes: matrixBudgetAuthority.bytes,
       ledgerSha256: matrixBudgetAuthority.sha256,
     };
+    const failedShardAuthorities = staged.matrixIntegration.cells.filter((cell) => cell.verdict === 'failed');
+    const failedCellIds = failedShardAuthorities.map((cell) => cell.cellId);
+    const failures = failedShardAuthorities.map((cell) => ({
+      cellId: cell.cellId,
+      error: 'fixture strict report failed',
+      fingerprint: {
+        authoritySource: 'validated-shard-result',
+        failureLayer: cell.failureLayer,
+        stableErrorCode: cell.stableErrorCode,
+        feedbackMode: LIVE_LLM_CELLS.find((planned) => planned.cellId === cell.cellId).feedbackLoopPrevention,
+        lifecyclePhase: cell.lifecyclePhase,
+        endpointId: cell.failureContext.endpointId,
+        ownerGenerationTransition: structuredClone(cell.failureContext.ownerGenerationTransition),
+        bridgeInstanceId: cell.failureContext.bridgeInstanceId,
+      },
+    }));
+    const groupedFailures = new Map();
+    for (const failure of failures) {
+      const fingerprint = failure.fingerprint;
+      const key = JSON.stringify([
+        fingerprint.failureLayer,
+        fingerprint.stableErrorCode,
+        fingerprint.feedbackMode,
+        fingerprint.lifecyclePhase,
+        fingerprint.endpointId,
+        fingerprint.bridgeInstanceId,
+        fingerprint.ownerGenerationTransition?.before,
+        fingerprint.ownerGenerationTransition?.after,
+      ]);
+      const group = groupedFailures.get(key) ?? { fingerprint, cellIds: [], errors: [] };
+      group.cellIds.push(failure.cellId);
+      group.errors.push(failure.error);
+      groupedFailures.set(key, group);
+    }
+    const failureGroups = [...groupedFailures.values()].map((group) => ({
+      ...group,
+      cellIds: group.cellIds.sort(),
+      errors: [...new Set(group.errors)].sort(),
+    }));
+    const failureSummary = {
+      attempted: LIVE_LLM_CELLS.map((cell) => cell.cellId),
+      completed: LIVE_LLM_CELLS.map((cell) => cell.cellId),
+      passed: LIVE_LLM_CELLS.map((cell) => cell.cellId).filter((cellId) => !failedCellIds.includes(cellId)),
+      failed: failedCellIds,
+      failures,
+      sharedRootCauses: failureGroups.filter((group) => group.cellIds.length > 1),
+      cellSpecificFailures: failureGroups.filter((group) => group.cellIds.length === 1),
+    };
     const failureFingerprintPath = path.join(staged.finalExecutionRoot, 'failure-fingerprints.json');
-    fs.writeFileSync(failureFingerprintPath, '{"failures":[]}\n', 'utf8');
+    fs.writeFileSync(failureFingerprintPath, `${JSON.stringify({
+      schemaVersion: 2,
+      artifactKind: 'watch-mode-production-failure-fingerprints',
+      generatedAt: new Date(baseMs + 31_750).toISOString(),
+      executionId,
+      collectAllCompleted: true,
+      ...failureSummary,
+    })}\n`, 'utf8');
     const failureFingerprintAuthority = fileAuthorityEntry(
       failureFingerprintPath,
       path.relative(evidenceRoot, failureFingerprintPath).split(path.sep).join('/'),
@@ -4042,19 +4135,35 @@ test('strict production verifier rebuilds the staged four-cell authority from on
       authorityRuntimeBinaryHashes: runtimeBinaryHashes,
       releaseCells: LIVE_LLM_CELLS,
       externalProviderBudget,
-      failureSummary: {
-        attempted: LIVE_LLM_CELLS.map((cell) => cell.cellId),
-        completed: LIVE_LLM_CELLS.map((cell) => cell.cellId),
-        passed: LIVE_LLM_CELLS.map((cell) => cell.cellId),
-        failed: [],
-        failures: [],
-        sharedRootCauses: [],
-        cellSpecificFailures: [],
-      },
+      failureSummary,
       failureFingerprintAuthority,
       shardExecution: staged.shardExecution,
       matrixIntegration: staged.matrixIntegration,
     });
+
+    if (failedCellIds.length > 0) {
+      assert.deepEqual(
+        manifest.cells.filter((cell) => cell.verdict === 'failed').map((cell) => cell.cellId),
+        failedCellIds,
+      );
+      assert.ok(manifest.cells.filter((cell) => cell.verdict === 'failed').every((cell) => (
+        !Object.hasOwn(cell, 'receiptPath')
+        && cell.shardAuthority.result.resultDigest
+      )));
+      assert.throws(() => verifyProductionStrictMatrixAuthority({
+        manifestPath,
+        manifest,
+        evidenceRoot,
+        currentProvenance: shardProvenance,
+        workspaceRoot,
+        currentRuntimeBinaryHashes: runtimeBinaryHashes,
+        releaseCells: LIVE_LLM_CELLS,
+        requireLocalIsolation: false,
+        now: baseMs + 33_000,
+        validatePreflightEvidence: validateFixturePreflight,
+      }), /strict collect-all matrix contains failed or incomplete cells/u);
+      return;
+    }
 
     const verified = verifyProductionStrictMatrixAuthority({
       manifestPath,

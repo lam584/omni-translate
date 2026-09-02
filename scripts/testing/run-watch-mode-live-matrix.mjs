@@ -50,6 +50,8 @@ import {
   SHARD_CELL_RESULT_FILE,
   SHARD_EXECUTION_PLAN_FILE,
   SHARD_MANIFEST_FILE,
+  strictFailureIdentityProjection,
+  validateShardManifest,
 } from './watch-mode-shard-authority.mjs';
 import {
   COORDINATOR_AGGREGATE_FILE,
@@ -693,8 +695,16 @@ export function stageShardMatrixIntegration({
   coordinatorAggregatePath,
   shards,
   collectedMatrixIntegration,
+  validateStagedShard = validateShardManifest,
+  validationAt = new Date(),
 }) {
   const resolvedEvidenceRoot = path.resolve(evidenceRoot);
+  const trustedValidationAt = validationAt instanceof Date
+    ? new Date(validationAt.getTime())
+    : new Date(validationAt);
+  if (!Number.isFinite(trustedValidationAt.getTime())) {
+    throw new Error('shard staging requires a valid trusted validation timestamp');
+  }
   fs.mkdirSync(resolvedEvidenceRoot, { recursive: true });
   const stageName = assertSafeStageName(executionRootName, 'shard execution root name');
   const finalExecutionRoot = path.join(resolvedEvidenceRoot, stageName);
@@ -884,6 +894,20 @@ export function stageShardMatrixIntegration({
     const plan = JSON.parse(fs.readFileSync(stagedPlanPath, 'utf8').replace(/^\uFEFF/, ''));
     const stagedAggregatePath = path.join(finalExecutionRoot, COORDINATOR_AGGREGATE_FILE);
     const aggregate = JSON.parse(fs.readFileSync(stagedAggregatePath, 'utf8').replace(/^\uFEFF/, ''));
+    const stagedLeases = stagedLeasePaths.map((temporaryLeasePath) => JSON.parse(
+      fs.readFileSync(temporaryLeasePath.replace(temporaryRoot, finalExecutionRoot), 'utf8').replace(/^\uFEFF/, ''),
+    ));
+    const validatedShards = new Map([...stagedByWorker.entries()].map(([workerId, staged]) => {
+      const shardRoot = staged.destinationRoot.replace(temporaryRoot, finalExecutionRoot);
+      const manifestPath = staged.manifestPath.replace(temporaryRoot, finalExecutionRoot);
+      return [workerId, validateStagedShard({
+        manifestPath,
+        shardRoot,
+        plan,
+        leases: stagedLeases,
+        now: trustedValidationAt,
+      })];
+    }));
     const integrationByCell = new Map(
       (collectedMatrixIntegration?.cells ?? []).map((cell) => [cell.cellId, cell]),
     );
@@ -903,7 +927,27 @@ export function stageShardMatrixIntegration({
       }
       const finalRunDirectory = path.join(finalExecutionRoot, 'shards', planCell.workerId, guestRunDirectory);
       const resultPath = path.join(finalRunDirectory, SHARD_CELL_RESULT_FILE);
-      const result = JSON.parse(fs.readFileSync(resultPath, 'utf8').replace(/^\uFEFF/, ''));
+      const validatedResult = validatedShards.get(planCell.workerId)?.validatedResults
+        .find((entry) => entry.result.cell.cellId === planCell.cellId);
+      if (!validatedResult || path.resolve(validatedResult.runDirectory) !== path.resolve(finalRunDirectory)) {
+        throw new Error(`validated staged shard result is missing ${planCell.cellId}`);
+      }
+      const { result } = validatedResult;
+      const resultFailureIdentity = result.verdict === 'failed'
+        ? strictFailureIdentityProjection(result, `staged failed cell ${planCell.cellId}`)
+        : null;
+      const collectedFailureIdentity = collected.verdict === 'failed'
+        ? strictFailureIdentityProjection(collected, `collected failed cell ${planCell.cellId}`)
+        : null;
+      const validatedShardManifestDigest = validatedShards.get(planCell.workerId)?.manifest?.manifestDigest;
+      if (
+        result.resultDigest !== collected.resultDigest
+        || result.verdict !== collected.verdict
+        || result.runDirectory !== collected.runDirectory
+        || typeof validatedShardManifestDigest !== 'string'
+        || validatedShardManifestDigest !== collected.shardManifestDigest
+        || JSON.stringify(resultFailureIdentity) !== JSON.stringify(collectedFailureIdentity)
+      ) throw new Error(`staged shard result does not match coordinator authority for ${planCell.cellId}`);
       const shardManifest = JSON.parse(fs.readFileSync(stagedShard.manifestPath.replace(temporaryRoot, finalExecutionRoot), 'utf8').replace(/^\uFEFF/, ''));
       const finalShardRoot = path.join(finalExecutionRoot, 'shards', planCell.workerId);
       const finalShardManifestPath = path.resolve(
@@ -913,6 +957,14 @@ export function stageShardMatrixIntegration({
       const shardRootRelative = relativeChildPath(resolvedEvidenceRoot, finalShardRoot, 'staged guest shard root');
       const projection = {
         origin: 'guest-shard-result',
+        verdict: result.verdict,
+        reportVerdict: result.reportVerdict,
+        ...(result.verdict === 'failed' ? {
+          failureLayer: result.failureLayer,
+          stableErrorCode: result.stableErrorCode,
+          lifecyclePhase: result.lifecyclePhase,
+          failureContext: structuredClone(result.failureContext),
+        } : {}),
         executionId: plan.executionId,
         planDigest: plan.planDigest,
         cellIndex: planCell.cellIndex,
@@ -1093,6 +1145,7 @@ export function stageShardMatrixIntegration({
     return { runDirectories, shardExecution, matrixIntegration, finalExecutionRoot };
   } catch (error) {
     if (fs.existsSync(temporaryRoot)) fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    if (fs.existsSync(finalExecutionRoot)) fs.rmSync(finalExecutionRoot, { recursive: true, force: true });
     throw error;
   }
 }
@@ -1102,6 +1155,135 @@ function assertRuntimeBinaryContinuity(recorded, stage) {
   if (!sameAuthorityInventory(recorded, current)) {
     throw new Error(`strict Watch Mode runtime binaries changed ${stage}; discard the partial matrix and rebuild from the exact clean HEAD`);
   }
+}
+
+function assertStrictFailureCollectionAuthority({
+  outputRoot,
+  plannedCells,
+  failureSummary,
+  failureFingerprintAuthority,
+  matrixIntegration,
+}) {
+  const keys = [
+    'attempted',
+    'completed',
+    'passed',
+    'failed',
+    'failures',
+    'sharedRootCauses',
+    'cellSpecificFailures',
+  ];
+  if (!failureSummary || keys.some((key) => !Array.isArray(failureSummary[key]))) {
+    throw new Error('strict shard matrix requires a complete collect-all failure summary');
+  }
+  const expectedIds = plannedCells.map((cell) => cell.cellId);
+  const failedIds = new Set(failureSummary.failed);
+  const failureIdentityFields = [
+    'failureLayer',
+    'stableErrorCode',
+    'lifecyclePhase',
+    'failureContext',
+  ];
+  const authorityFailedIds = [];
+  for (const [index, authority] of matrixIntegration.cells.entries()) {
+    if (!['passed', 'failed'].includes(authority?.verdict)) {
+      throw new Error(`strict shard matrix cell ${expectedIds[index]} has no canonical verdict`);
+    }
+    if (authority.verdict === 'failed') {
+      strictFailureIdentityProjection(
+        authority,
+        `strict failed matrix cell ${expectedIds[index]} guest shard authority`,
+      );
+      authorityFailedIds.push(expectedIds[index]);
+    } else if (failureIdentityFields.some((key) => Object.hasOwn(authority, key))) {
+      throw new Error(`strict passing matrix cell ${expectedIds[index]} carries failure identity fields`);
+    }
+  }
+  const expectedPassed = expectedIds.filter((cellId) => !failedIds.has(cellId));
+  if (
+    failedIds.size !== failureSummary.failed.length
+    || JSON.stringify(failureSummary.attempted) !== JSON.stringify(expectedIds)
+    || JSON.stringify(failureSummary.completed) !== JSON.stringify(expectedIds)
+    || JSON.stringify(failureSummary.passed) !== JSON.stringify(expectedPassed)
+    || JSON.stringify(failureSummary.failed) !== JSON.stringify(
+      expectedIds.filter((cellId) => failedIds.has(cellId)),
+    )
+    || JSON.stringify(failureSummary.failures.map((entry) => entry?.cellId))
+      !== JSON.stringify(failureSummary.failed)
+    || JSON.stringify(authorityFailedIds) !== JSON.stringify(failureSummary.failed)
+  ) throw new Error('strict shard collect-all failure summary does not exactly partition the release cells');
+
+  const fingerprintPath = validateFileAuthorityEntry(
+    outputRoot,
+    failureFingerprintAuthority,
+    failureFingerprintAuthority?.path,
+    'strict shard failure fingerprints',
+  );
+  const fingerprints = JSON.parse(fs.readFileSync(fingerprintPath, 'utf8').replace(/^\uFEFF/, ''));
+  if (
+    fingerprints.schemaVersion !== 2
+    || fingerprints.artifactKind !== 'watch-mode-production-failure-fingerprints'
+    || fingerprints.collectAllCompleted !== true
+    || fingerprints.executionId !== matrixIntegration.cells[0]?.executionId
+    || keys.some((key) => JSON.stringify(fingerprints[key]) !== JSON.stringify(failureSummary[key]))
+  ) throw new Error('strict shard failure fingerprints do not exactly bind the collect-all summary');
+
+  for (const failure of failureSummary.failures) {
+    const cellIndex = expectedIds.indexOf(failure.cellId);
+    const plannedCell = plannedCells[cellIndex];
+    const shardAuthority = matrixIntegration.cells[cellIndex];
+    if (shardAuthority?.verdict !== 'failed') {
+      throw new Error(`strict failed matrix cell ${failure.cellId} requires failed guest shard authority`);
+    }
+    const identity = strictFailureIdentityProjection(
+      shardAuthority,
+      `strict failed matrix cell ${failure.cellId} guest shard authority`,
+    );
+    const context = identity.failureContext;
+    const expectedFingerprint = {
+      authoritySource: 'validated-shard-result',
+      failureLayer: identity.failureLayer,
+      stableErrorCode: identity.stableErrorCode,
+      feedbackMode: plannedCell.feedbackLoopPrevention,
+      lifecyclePhase: identity.lifecyclePhase,
+      endpointId: context.endpointId,
+      ownerGenerationTransition: structuredClone(context.ownerGenerationTransition),
+      bridgeInstanceId: context.bridgeInstanceId,
+    };
+    if (JSON.stringify(failure.fingerprint) !== JSON.stringify(expectedFingerprint)) {
+      throw new Error(`strict failed matrix cell ${failure.cellId} fingerprint does not match guest shard authority`);
+    }
+  }
+  const grouped = new Map();
+  for (const failure of failureSummary.failures) {
+    const fingerprint = failure.fingerprint;
+    const key = JSON.stringify([
+      fingerprint.failureLayer,
+      fingerprint.stableErrorCode,
+      fingerprint.feedbackMode,
+      fingerprint.lifecyclePhase,
+      fingerprint.endpointId,
+      fingerprint.bridgeInstanceId,
+      fingerprint.ownerGenerationTransition?.before,
+      fingerprint.ownerGenerationTransition?.after,
+    ]);
+    const group = grouped.get(key) ?? { fingerprint, cellIds: [], errors: [] };
+    group.cellIds.push(failure.cellId);
+    group.errors.push(failure.error);
+    grouped.set(key, group);
+  }
+  const groups = [...grouped.values()].map((group) => ({
+    ...group,
+    cellIds: group.cellIds.sort(),
+    errors: [...new Set(group.errors)].sort(),
+  }));
+  if (
+    JSON.stringify(failureSummary.sharedRootCauses)
+      !== JSON.stringify(groups.filter((group) => group.cellIds.length > 1))
+    || JSON.stringify(failureSummary.cellSpecificFailures)
+      !== JSON.stringify(groups.filter((group) => group.cellIds.length === 1))
+  ) throw new Error('strict shard failure grouping does not match the validated failure fingerprints');
+  return failedIds;
 }
 
 export const writeMatrixRunManifest = ({
@@ -1159,6 +1341,15 @@ export const writeMatrixRunManifest = ({
     ? (authorityRuntimeBinaryHashes ?? currentAuthorityRuntimeBinaryHashes())
     : null;
   const cells = [];
+  const failedCellIds = strict && matrixIntegration
+    ? assertStrictFailureCollectionAuthority({
+        outputRoot: resolvedOutputRoot,
+        plannedCells: plannedLiveCells,
+        failureSummary,
+        failureFingerprintAuthority,
+        matrixIntegration,
+      })
+    : new Set();
   const deviceProfileByClass = new Map(deviceProfiles.map((profile) => [profile.deviceClass, profile]));
   const manifestCells = strict
     ? plannedLiveCells
@@ -1176,37 +1367,60 @@ export const writeMatrixRunManifest = ({
       throw new Error(`matrix cell ${plannedCell.cellId ?? runIndex} has no device profile for ${plannedCell.deviceClass}`);
     }
         if (strict) {
+          const shardAuthority = matrixIntegration?.cells?.[runIndex] ?? null;
+          const failed = failedCellIds.has(plannedCell.cellId);
+          if (failed && (!shardAuthority || shardAuthority.verdict !== 'failed')) {
+            throw new Error(`strict failed matrix cell ${plannedCell.cellId} requires failed guest shard authority`);
+          }
+          const matrixCell = {
+            cellId: plannedCell.cellId,
+            tier: plannedCell.tier,
+            providerMode: plannedCell.providerMode,
+            inputCompletionWatchdogSeconds: plannedCell.inputCompletionWatchdogSeconds,
+            processExclusionRestartAfterSeconds: plannedCell.processExclusionRestartAfterSeconds,
+            processExclusionRestartQuietSeconds: plannedCell.processExclusionRestartQuietSeconds,
+            providerFinishTimeoutSeconds: plannedCell.providerFinishTimeoutSeconds,
+            localPlaybackDrainTimeoutSeconds: plannedCell.localPlaybackDrainTimeoutSeconds,
+            reportWriteTimeoutSeconds: plannedCell.reportWriteTimeoutSeconds,
+            cellHardWatchdogSeconds: plannedCell.cellHardWatchdogSeconds,
+            authoritativeTransformedReferenceFrames: plannedCell.authoritativeTransformedReferenceFrames,
+            boundedCaptureGraceFrames: plannedCell.boundedCaptureGraceFrames,
+            maxExternalAudioSamples: plannedCell.maxExternalAudioSamples,
+            auxiliaryExternalAudioSeconds: plannedCell.auxiliaryExternalAudioSeconds,
+            subtitleTranslationMode: plannedCell.subtitleTranslationMode,
+            modelId: plannedCell.modelId,
+            modelProtocolProfileIdentity: structuredClone(
+              plannedCell.modelProtocolProfileIdentity,
+            ),
+            feedbackLoopPrevention: plannedCell.feedbackLoopPrevention,
+            deviceClass: deviceProfile.deviceClass,
+            deviceProfileId: deviceProfile.profileId,
+          };
+          if (failed) {
+            cells.push({
+              ...matrixCell,
+              verdict: 'failed',
+              failureLayer: shardAuthority.failureLayer,
+              stableErrorCode: shardAuthority.stableErrorCode,
+              lifecyclePhase: shardAuthority.lifecyclePhase,
+              failureContext: structuredClone(shardAuthority.failureContext),
+              runDirectory: relativeChildPath(
+                resolvedOutputRoot,
+                path.resolve(runDirectories[runIndex]),
+                `failed matrix cell ${plannedCell.cellId} run directory`,
+              ),
+              shardAuthority,
+            });
+            continue;
+          }
           cells.push(writeCellAuthorityReceipt({
             outputRoot: resolvedOutputRoot,
             runDirectory: runDirectories[runIndex],
-            matrixCell: {
-              cellId: plannedCell.cellId,
-              tier: plannedCell.tier,
-              providerMode: plannedCell.providerMode,
-              inputCompletionWatchdogSeconds: plannedCell.inputCompletionWatchdogSeconds,
-              processExclusionRestartAfterSeconds: plannedCell.processExclusionRestartAfterSeconds,
-              processExclusionRestartQuietSeconds: plannedCell.processExclusionRestartQuietSeconds,
-              providerFinishTimeoutSeconds: plannedCell.providerFinishTimeoutSeconds,
-              localPlaybackDrainTimeoutSeconds: plannedCell.localPlaybackDrainTimeoutSeconds,
-              reportWriteTimeoutSeconds: plannedCell.reportWriteTimeoutSeconds,
-              cellHardWatchdogSeconds: plannedCell.cellHardWatchdogSeconds,
-              authoritativeTransformedReferenceFrames: plannedCell.authoritativeTransformedReferenceFrames,
-              boundedCaptureGraceFrames: plannedCell.boundedCaptureGraceFrames,
-              maxExternalAudioSamples: plannedCell.maxExternalAudioSamples,
-              auxiliaryExternalAudioSeconds: plannedCell.auxiliaryExternalAudioSeconds,
-              subtitleTranslationMode: plannedCell.subtitleTranslationMode,
-              modelId: plannedCell.modelId,
-              modelProtocolProfileIdentity: structuredClone(
-                plannedCell.modelProtocolProfileIdentity,
-              ),
-              feedbackLoopPrevention: plannedCell.feedbackLoopPrevention,
-              deviceClass: deviceProfile.deviceClass,
-              deviceProfileId: deviceProfile.profileId,
-            },
+            matrixCell,
             provenance,
             implementationHashes,
             paidImplementationHashes,
-            shardAuthority: matrixIntegration?.cells?.[runIndex] ?? null,
+            shardAuthority,
             runtimeBinaryHashes,
             now,
           }));

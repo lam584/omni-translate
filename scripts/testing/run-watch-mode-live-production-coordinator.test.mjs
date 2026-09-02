@@ -42,6 +42,7 @@ import {
   PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY,
   parseProductionCoordinatorCliArgs,
   aggregateProductionCellFailures,
+  assertProductionCellsPassedForCanonicalVerification,
   productionCellFailureDisposition,
   productionFailureFingerprint,
   remotePowerShellInvocation,
@@ -193,6 +194,36 @@ test('production failure aggregation reports progress and shared root causes', (
   assert.equal(summary.sharedRootCauses.length, 1);
   assert.deepEqual(summary.sharedRootCauses[0].cellIds, ['a', 'b']);
   assert.equal(summary.cellSpecificFailures.length, 0);
+});
+
+test('failed production cells stop after final staging and retain the staged failure authority', () => {
+  const manifestPath = 'E:\\evidence\\failed-matrix.json';
+  assert.doesNotThrow(() => assertProductionCellsPassedForCanonicalVerification({
+    failureSummary: { failed: [] },
+    manifestPath,
+  }));
+  for (const failureSummary of [null, {}, { failed: 'c03' }]) {
+    assert.throws(() => assertProductionCellsPassedForCanonicalVerification({
+      failureSummary,
+      manifestPath,
+    }), /requires a valid collect-all failure summary/u);
+  }
+  assert.throws(
+    () => assertProductionCellsPassedForCanonicalVerification({
+      failureSummary: { failed: ['c03'] },
+      manifestPath,
+      startedCellIds: ['c01', 'c02', 'c03', 'c04'],
+      completedCellIds: ['c01', 'c02', 'c03', 'c04'],
+    }),
+    (error) => {
+      assert.equal(error.code, 'watch.production.cells-failed');
+      assert.equal(error.failurePath, manifestPath);
+      assert.deepEqual(error.startedCellIds, ['c01', 'c02', 'c03', 'c04']);
+      assert.deepEqual(error.completedCellIds, ['c01', 'c02', 'c03', 'c04']);
+      assert.match(error.message, /c03/u);
+      return true;
+    },
+  );
 });
 
 test('production fingerprint rejects nested report fallbacks when validated direct fields are absent', () => {
@@ -1377,8 +1408,10 @@ test('production coordinator drives four signed serial waves through stage, veri
   const privateKeyPath = path.join(root, 'coordinator-signing-private.pem');
   fs.writeFileSync(publicKeyPath, signingKeys.publicKeyPem);
   fs.writeFileSync(privateKeyPath, signingKeys.privateKeyPem);
+  let preparationRun = 0;
+  let failCells = false;
   try {
-    const result = await runProductionCoordinator({
+    const coordinatorOptions = {
       workerConfig: config,
       runtimeAuthority: 'runtime.json',
       localIsolationAuthority: 'local.json',
@@ -1449,6 +1482,8 @@ test('production coordinator drives four signed serial waves through stage, veri
           };
         },
         prepareCoordinatorExecution: async (options) => {
+          preparationRun += 1;
+          const executionRoot = path.join(root, `execution-${preparationRun}`);
           calls.push('prepare');
           assert.deepEqual(options.signingKeys, signingKeys);
           assert.equal(typeof options.buildRuntimeAuthority, 'function');
@@ -1460,7 +1495,7 @@ test('production coordinator drives four signed serial waves through stage, veri
           );
           const workerReadiness = await options.runZeroProviderWorkerReadiness({
             executionId: plan.executionId,
-            executionRoot: path.join(root, 'execution'),
+            executionRoot,
             generatedAt: new Date(),
             provenance: CLEAN_PROVENANCE,
             runtimeBinaryHashes: [{ path: 'runtime/a.exe', bytes: 1, sha256: 'a'.repeat(64) }],
@@ -1479,7 +1514,7 @@ test('production coordinator drives four signed serial waves through stage, veri
             leases,
             leasePaths: cells.map((_, index) => path.join(root, `lease-${index}.json`)),
             planPath: path.join(root, 'plan.json'),
-            executionRoot: path.join(root, 'execution'),
+            executionRoot,
           };
         },
         createTransport: async () => ({
@@ -1502,11 +1537,33 @@ test('production coordinator drives four signed serial waves through stage, veri
               results.set(cellId, outcome);
             }));
           }
+          const collectedFailures = [];
+          if (failCells) {
+            const failedCell = signedPlan.cells[2];
+            const failedResult = {
+              verdict: 'failed',
+              failureLayer: 'provider',
+              stableErrorCode: 'watch.provider.session-failed',
+              lifecyclePhase: 'provider-session',
+              failureContext: {
+                endpointId: null,
+                bridgeInstanceId: null,
+                ownerGenerationTransition: { before: null, after: null },
+              },
+            };
+            const outcome = { result: failedResult };
+            results.set(failedCell.cellId, outcome);
+            collectedFailures.push({
+              cellId: failedCell.cellId,
+              error: 'fixture provider session failed',
+              outcome,
+            });
+          }
           return {
             results,
             startedCellIds: signedPlan.cells.map((cell) => cell.cellId),
             completedCellIds: signedPlan.cells.map((cell) => cell.cellId),
-            collectedFailures: [],
+            collectedFailures,
           };
         },
         writeCoordinatorAggregate: () => ({
@@ -1514,7 +1571,11 @@ test('production coordinator drives four signed serial waves through stage, veri
           matrixIntegration: { cells: [] },
         }),
         stageShardMatrixIntegration: () => {
-          const finalExecutionRoot = path.join(root, 'evidence', 'staged');
+          const finalExecutionRoot = path.join(
+            root,
+            'evidence',
+            failCells ? 'staged-failed' : 'staged',
+          );
           fs.mkdirSync(finalExecutionRoot, { recursive: true });
           return {
             runDirectories,
@@ -1548,7 +1609,8 @@ test('production coordinator drives four signed serial waves through stage, veri
           return { canonicalPath: path.join(root, 'canonical.json') };
         },
       },
-    });
+    };
+    const result = await runProductionCoordinator(coordinatorOptions);
     assert.deepEqual(
       calls.filter((entry) => entry.startsWith('wave:')),
       LIVE_LLM_CELLS.map((_, index) => `wave:${index}`),
@@ -1558,6 +1620,19 @@ test('production coordinator drives four signed serial waves through stage, veri
     assert.ok(calls.indexOf('verify') < calls.indexOf('publish'));
     assert.equal(result.workerCount, 1);
     assert.equal(result.waveCount, LIVE_LLM_CELLS.length);
+
+    failCells = true;
+    calls.length = 0;
+    await assert.rejects(
+      runProductionCoordinator({
+        ...coordinatorOptions,
+        executionId: 'production-test-failed-execution',
+      }),
+      /production cells failed after final evidence staging/u,
+    );
+    assert.equal(calls.filter((entry) => entry === 'write-manifest').length, 1);
+    assert.equal(calls.filter((entry) => entry === 'verify').length, 0);
+    assert.equal(calls.filter((entry) => entry === 'publish').length, 0);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

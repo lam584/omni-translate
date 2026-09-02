@@ -1243,6 +1243,7 @@ export function collectCoordinatorAggregation({
         failureLayer: binding.result.failureLayer,
         stableErrorCode: binding.result.stableErrorCode,
         lifecyclePhase: binding.result.lifecyclePhase,
+        failureContext: structuredClone(binding.result.failureContext),
       } : {}),
       runDirectory: binding.result.runDirectory,
       actualExternalAudioSamples: binding.result.usageAuthority.actualExternalAudioSamples,

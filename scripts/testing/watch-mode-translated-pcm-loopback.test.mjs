@@ -334,7 +334,7 @@ function build(fixture) {
   });
 }
 
-function writeCaptureTimelineAuthority(fixture, gaps = []) {
+function writeCaptureTimelineAuthority(fixture, gaps = [], unreliableWindows = []) {
   const recordingSamples = fs.statSync(
     path.join(fixture.runDirectory, 'physical-output-recording-16k-mono.pcm'),
   ).size / 2;
@@ -352,8 +352,8 @@ function writeCaptureTimelineAuthority(fixture, gaps = []) {
       passed: true,
       capturedFrames,
       captureTimeline: {
-        schemaVersion: 1,
-        authorityMode: 'wasapi-device-position-qpc-v1',
+        schemaVersion: 2,
+        authorityMode: 'wasapi-device-position-qpc-v2',
         sampleRateHz: 48_000,
         channelCount: 2,
         passed: true,
@@ -365,12 +365,17 @@ function writeCaptureTimelineAuthority(fixture, gaps = []) {
         endDevicePositionFramesExclusive,
         firstQpcPosition100ns,
         lastQpcPosition100ns,
-        dataDiscontinuityPacketCount: gaps.length,
+        dataDiscontinuityPacketCount: unreliableWindows.length,
         timestampErrorPacketCount: 0,
         qpcRegressionPacketCount: 0,
         overlapPacketCount: 0,
         totalGapFrames: gaps.reduce((sum, gap) => sum + gap.frameCount, 0),
+        totalUnreliableFrames: unreliableWindows.reduce(
+          (sum, window) => sum + window.frameCount,
+          0,
+        ),
         gaps,
+        unreliableWindows,
         violations: [],
       },
     }),
@@ -413,16 +418,62 @@ test('fails capture authority when a repaired WASAPI gap intersects a required c
       expectedDevicePositionFrames: 10_000 + Math.round(3.2 * 48_000),
       observedDevicePositionFrames: 10_000 + Math.round(3.2 * 48_000) + 48_000,
       qpcPosition100ns: 43_000_000,
-      dataDiscontinuity: true,
     }]);
     const authority = build(fixture);
     assert.equal(authority.passed, false);
     assert.ok(authority.violations.some((violation) => (
-      violation.includes('capture-authority gap 0 intersects required translated cue omni-cue-test-1 early anchor')
+      violation.includes('capture-authority device-position-gap 0 intersects required translated cue omni-cue-test-1 early anchor')
     )), authority.violations.join('; '));
     const firstMatch = authority.matches.find((match) => match.cueId === 'omni-cue-test-1');
     assert.equal(firstMatch.anchorMatches[0].captureAuthorityPassed, false);
-    assert.equal(firstMatch.anchorMatches[0].captureGapIntersections.length, 1);
+    assert.equal(firstMatch.anchorMatches[0].captureAuthorityIntersections.length, 1);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('accepts a discontinuity window away from every required cue anchor', () => {
+  const fixture = createFixture();
+  try {
+    writeCaptureTimelineAuthority(fixture, [], [{
+      outputStartFrame: 0,
+      frameCount: 480,
+      packetIndex: 1,
+      devicePositionFrames: 10_000,
+      qpcPosition100ns: 1_000_000,
+      reason: 'data-discontinuity',
+    }]);
+    const authority = build(fixture);
+    assert.equal(authority.passed, true, authority.violations.join('; '));
+    assert.equal(authority.captureTimelineAuthority.unreliableWindows.length, 1);
+    assert.ok(authority.matches.every((match) => (
+      match.anchorMatches.every((anchor) => anchor.captureAuthorityIntersections.length === 0)
+    )));
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fails capture authority when a discontinuity window intersects a required cue anchor', () => {
+  const fixture = createFixture();
+  try {
+    const outputStartFrame = Math.round(3.2 * 48_000);
+    writeCaptureTimelineAuthority(fixture, [], [{
+      outputStartFrame,
+      frameCount: 48_000,
+      packetIndex: 40,
+      devicePositionFrames: 10_000 + outputStartFrame,
+      qpcPosition100ns: 43_000_000,
+      reason: 'data-discontinuity',
+    }]);
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    assert.ok(authority.violations.some((violation) => (
+      violation.includes('capture-authority data-discontinuity-window 0 intersects required translated cue omni-cue-test-1 early anchor')
+    )), authority.violations.join('; '));
+    const firstMatch = authority.matches.find((match) => match.cueId === 'omni-cue-test-1');
+    assert.equal(firstMatch.anchorMatches[0].captureAuthorityPassed, false);
+    assert.equal(firstMatch.anchorMatches[0].captureAuthorityIntersections[0].kind, 'data-discontinuity-window');
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
   }
@@ -462,6 +513,26 @@ test('fails closed when WASAPI device and QPC spans disagree by orders of magnit
     assert.ok(authority.violations.some((violation) => (
       violation.includes('capture device/QPC spans disagree')
     )), authority.violations.join('; '));
+    assert.equal(authority.captureTimelineAuthority.passed, false);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fails closed when the discontinuity count does not match the unreliable-window ledger', () => {
+  const fixture = createFixture();
+  try {
+    writeCaptureTimelineAuthority(fixture);
+    const authorityPath = path.join(fixture.runDirectory, 'physical-output-recording.json');
+    const recordingAuthority = JSON.parse(fs.readFileSync(authorityPath, 'utf8'));
+    recordingAuthority.captureTimeline.dataDiscontinuityPacketCount = 1;
+    fs.writeFileSync(authorityPath, JSON.stringify(recordingAuthority), 'utf8');
+
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    assert.ok(authority.violations.includes(
+      'physical loopback capture timeline discontinuity count does not match its unreliable-window ledger',
+    ));
     assert.equal(authority.captureTimelineAuthority.passed, false);
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });

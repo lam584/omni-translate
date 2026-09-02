@@ -56,8 +56,8 @@ function loadCaptureTimelineAuthority(runDirectory, recordingSamples, violations
   if (
     !Number.isSafeInteger(recordingAuthority?.capturedFrames)
     || recordingAuthority.capturedFrames <= 0
-    || timeline?.schemaVersion !== 1
-    || timeline?.authorityMode !== 'wasapi-device-position-qpc-v1'
+    || timeline?.schemaVersion !== 2
+    || timeline?.authorityMode !== 'wasapi-device-position-qpc-v2'
     || timeline?.sampleRateHz !== 48_000
     || timeline?.channelCount !== 2
     || !Number.isInteger(timeline?.packetCount)
@@ -91,7 +91,10 @@ function loadCaptureTimelineAuthority(runDirectory, recordingSamples, violations
     || timeline.overlapPacketCount !== 0
     || !Number.isSafeInteger(timeline?.totalGapFrames)
     || timeline.totalGapFrames < 0
+    || !Number.isSafeInteger(timeline?.totalUnreliableFrames)
+    || timeline.totalUnreliableFrames < 0
     || !Array.isArray(timeline?.gaps)
+    || !Array.isArray(timeline?.unreliableWindows)
     || !Array.isArray(timeline?.violations)
     || !timeline.violations.every(nonEmptyString)
   ) {
@@ -149,7 +152,6 @@ function loadCaptureTimelineAuthority(runDirectory, recordingSamples, violations
       || !Number.isSafeInteger(Number(gap?.qpcPosition100ns))
       || Number(gap.qpcPosition100ns) < timeline.firstQpcPosition100ns
       || Number(gap.qpcPosition100ns) > timeline.lastQpcPosition100ns
-      || gap?.dataDiscontinuity !== true
     ) {
       derivedTimelinePassed = false;
       violations.push(`physical loopback capture timeline gap ${index} is invalid`);
@@ -162,11 +164,11 @@ function loadCaptureTimelineAuthority(runDirectory, recordingSamples, violations
       gapEndFrame * LOOPBACK_SAMPLE_RATE_HZ / timeline.sampleRateHz,
     );
     gaps.push({
+      kind: 'device-position-gap',
       index,
       outputStartFrame,
       frameCount,
       qpcPosition100ns: Number(gap.qpcPosition100ns),
-      dataDiscontinuity: gap.dataDiscontinuity,
       loopbackStartSample,
       loopbackEndSample,
     });
@@ -177,12 +179,77 @@ function loadCaptureTimelineAuthority(runDirectory, recordingSamples, violations
     derivedTimelinePassed = false;
     violations.push('physical loopback capture timeline total gap frames do not match its gap ledger');
   }
-  if (
-    timeline.dataDiscontinuityPacketCount < gaps.length
-    || timeline.dataDiscontinuityPacketCount > gaps.length + 1
-  ) {
+
+  const unreliableWindows = [];
+  let priorUnreliableEndFrame = 0;
+  let priorPacketIndex = 0;
+  for (const [index, window] of timeline.unreliableWindows.entries()) {
+    const outputStartFrame = Number(window?.outputStartFrame);
+    const frameCount = Number(window?.frameCount);
+    const windowEndFrame = outputStartFrame + frameCount;
+    const packetIndex = Number(window?.packetIndex);
+    if (
+      !Number.isSafeInteger(outputStartFrame)
+      || outputStartFrame < 0
+      || !Number.isSafeInteger(frameCount)
+      || frameCount <= 0
+      || outputStartFrame < priorUnreliableEndFrame
+      || windowEndFrame > maximumNativeFrames
+      || !Number.isSafeInteger(packetIndex)
+      || packetIndex <= priorPacketIndex
+      || packetIndex > timeline.packetCount
+      || !Number.isSafeInteger(Number(window?.devicePositionFrames))
+      || Number(window.devicePositionFrames)
+        !== timeline.firstDevicePositionFrames + outputStartFrame
+      || !Number.isSafeInteger(Number(window?.qpcPosition100ns))
+      || Number(window.qpcPosition100ns) < timeline.firstQpcPosition100ns
+      || Number(window.qpcPosition100ns) > timeline.lastQpcPosition100ns
+      || window?.reason !== 'data-discontinuity'
+    ) {
+      derivedTimelinePassed = false;
+      violations.push(`physical loopback capture timeline unreliable window ${index} is invalid`);
+      continue;
+    }
+    unreliableWindows.push({
+      kind: 'data-discontinuity-window',
+      index,
+      outputStartFrame,
+      frameCount,
+      packetIndex,
+      devicePositionFrames: Number(window.devicePositionFrames),
+      qpcPosition100ns: Number(window.qpcPosition100ns),
+      reason: window.reason,
+      loopbackStartSample: Math.floor(
+        outputStartFrame * LOOPBACK_SAMPLE_RATE_HZ / timeline.sampleRateHz,
+      ),
+      loopbackEndSample: Math.ceil(
+        windowEndFrame * LOOPBACK_SAMPLE_RATE_HZ / timeline.sampleRateHz,
+      ),
+    });
+    priorUnreliableEndFrame = windowEndFrame;
+    priorPacketIndex = packetIndex;
+  }
+  const summedUnreliableFrames = unreliableWindows.reduce(
+    (sum, window) => sum + window.frameCount,
+    0,
+  );
+  if (summedUnreliableFrames !== timeline.totalUnreliableFrames) {
     derivedTimelinePassed = false;
-    violations.push('physical loopback capture timeline discontinuity count does not match its gap ledger');
+    violations.push('physical loopback capture timeline total unreliable frames do not match its window ledger');
+  }
+  if (timeline.dataDiscontinuityPacketCount !== unreliableWindows.length) {
+    derivedTimelinePassed = false;
+    violations.push('physical loopback capture timeline discontinuity count does not match its unreliable-window ledger');
+  }
+  const repairedIntervals = [...gaps, ...unreliableWindows]
+    .sort((left, right) => left.outputStartFrame - right.outputStartFrame);
+  if (repairedIntervals.some((entry, index) => (
+    index > 0
+    && entry.outputStartFrame
+      < repairedIntervals[index - 1].outputStartFrame + repairedIntervals[index - 1].frameCount
+  ))) {
+    derivedTimelinePassed = false;
+    violations.push('physical loopback capture timeline repaired intervals overlap');
   }
   return {
     schemaVersion: timeline.schemaVersion,
@@ -207,15 +274,17 @@ function loadCaptureTimelineAuthority(runDirectory, recordingSamples, violations
     qpcRegressionPacketCount: timeline.qpcRegressionPacketCount,
     overlapPacketCount: timeline.overlapPacketCount,
     totalGapFrames: timeline.totalGapFrames,
+    totalUnreliableFrames: timeline.totalUnreliableFrames,
     gaps,
+    unreliableWindows,
     violations: timeline.violations,
   };
 }
 
-function captureGapsIntersectingWindow(captureTimeline, startSample, endSample) {
+function captureAuthorityIntervalsIntersectingWindow(captureTimeline, startSample, endSample) {
   if (!captureTimeline || !Number.isFinite(startSample) || !Number.isFinite(endSample)) return [];
-  return captureTimeline.gaps.filter((gap) => (
-    gap.loopbackStartSample < endSample && startSample < gap.loopbackEndSample
+  return [...captureTimeline.gaps, ...captureTimeline.unreliableWindows].filter((entry) => (
+    entry.loopbackStartSample < endSample && startSample < entry.loopbackEndSample
   ));
 }
 
@@ -795,7 +864,7 @@ export function buildTranslatedPcmLoopbackAuthority({
           ...task.wrongRequestIds.map((requestId) => wrongMetrics.get(requestId)?.score ?? 0),
         );
         const identityMargin = diagonal.score - strongestWrongAnchorScore;
-        const captureGapIntersections = captureGapsIntersectingWindow(
+        const captureAuthorityIntersections = captureAuthorityIntervalsIntersectingWindow(
           captureTimelineAuthority,
           diagonal.matchedStartSample,
           diagonal.matchedEndSample,
@@ -809,12 +878,12 @@ export function buildTranslatedPcmLoopbackAuthority({
           strongestWrongAnchorScore: rounded(strongestWrongAnchorScore),
           identityMargin: rounded(identityMargin),
           ...diagonal,
-          captureAuthorityPassed: captureGapIntersections.length === 0,
-          captureGapIntersections,
+          captureAuthorityPassed: captureAuthorityIntersections.length === 0,
+          captureAuthorityIntersections,
           passed: (
             diagonal.passed
             && identityMargin >= 0.08
-            && captureGapIntersections.length === 0
+            && captureAuthorityIntersections.length === 0
           ),
         };
       });
@@ -830,9 +899,9 @@ export function buildTranslatedPcmLoopbackAuthority({
     const requiredAnchorMatches = referenceSet.anchors.length;
     const passed = passingAnchors.length === requiredAnchorMatches && anchorsOrdered;
     for (const anchorMatch of anchorMatches) {
-      for (const gap of anchorMatch.captureGapIntersections ?? []) {
+      for (const interval of anchorMatch.captureAuthorityIntersections ?? []) {
         violations.push(
-          `physical loopback capture-authority gap ${gap.index} intersects required translated cue ${cueId} ${anchorMatch.anchor} anchor`,
+          `physical loopback capture-authority ${interval.kind} ${interval.index} intersects required translated cue ${cueId} ${anchorMatch.anchor} anchor`,
         );
       }
     }

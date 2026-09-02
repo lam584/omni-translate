@@ -38,7 +38,17 @@
         expected_device_position_frames: u64,
         observed_device_position_frames: u64,
         qpc_position_100ns: u64,
-        data_discontinuity: bool,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CaptureUnreliableWindowAuthority {
+        output_start_frame: usize,
+        frame_count: u64,
+        packet_index: usize,
+        device_position_frames: u64,
+        qpc_position_100ns: u64,
+        reason: &'static str,
     }
 
     #[derive(Clone, Debug, Serialize)]
@@ -62,7 +72,9 @@
         qpc_regression_packet_count: usize,
         overlap_packet_count: usize,
         total_gap_frames: u64,
+        total_unreliable_frames: u64,
         gaps: Vec<CaptureGapAuthority>,
+        unreliable_windows: Vec<CaptureUnreliableWindowAuthority>,
         violations: Vec<String>,
     }
 
@@ -87,7 +99,9 @@
         qpc_regression_packet_count: usize,
         overlap_packet_count: usize,
         total_gap_frames: u64,
+        total_unreliable_frames: u64,
         capture_gaps: Vec<CaptureGapAuthority>,
+        capture_unreliable_windows: Vec<CaptureUnreliableWindowAuthority>,
         capture_timeline_violations: Vec<String>,
         max_output_frames: usize,
     }
@@ -110,7 +124,6 @@
 
         fn append_capture_packet(&mut self, payload: &[u8], info: CapturePacketInfo) {
             self.capture_packet_count += 1;
-            let first_packet = self.first_device_position_frames.is_none();
             let prior_qpc_position_100ns = self.last_qpc_position_100ns;
             self.first_device_position_frames
                 .get_or_insert(info.device_position_frames);
@@ -218,6 +231,34 @@
                 ));
                 return;
             };
+            let unreliable_frame_count = if info.data_discontinuity {
+                let Ok(append_frames) = u64::try_from(append_frames) else {
+                    self.capture_timeline_violations.push(format!(
+                        "WASAPI capture packet {} unreliable frame count cannot be represented safely",
+                        self.capture_packet_count
+                    ));
+                    return;
+                };
+                Some(append_frames)
+            } else {
+                None
+            };
+            let projected_unreliable_frames =
+                if let Some(unreliable_frame_count) = unreliable_frame_count {
+                    let Some(projected) = self
+                        .total_unreliable_frames
+                        .checked_add(unreliable_frame_count)
+                    else {
+                        self.capture_timeline_violations.push(format!(
+                            "WASAPI capture total unreliable frame count overflowed at packet {}",
+                            self.capture_packet_count
+                        ));
+                        return;
+                    };
+                    Some(projected)
+                } else {
+                    None
+                };
             if self.samples.len().checked_add(samples_to_reserve).is_none()
                 || self.samples.try_reserve_exact(samples_to_reserve).is_err()
             {
@@ -245,29 +286,35 @@
                     expected_device_position_frames: expected,
                     observed_device_position_frames: info.device_position_frames,
                     qpc_position_100ns: info.qpc_position_100ns,
-                    data_discontinuity: info.data_discontinuity,
                 });
-                if !info.data_discontinuity {
-                    self.capture_timeline_violations.push(format!(
-                        "WASAPI capture packet {} has a device-position gap without the data-discontinuity flag",
-                        self.capture_packet_count
-                    ));
-                }
             } else if info.device_position_frames < expected {
                 self.overlap_packet_count += 1;
                 self.capture_timeline_violations.push(format!(
                     "WASAPI capture device position moved backward or overlapped at packet {}: expected {}, observed {}",
                     self.capture_packet_count, expected, info.device_position_frames
                 ));
-            } else if info.data_discontinuity && !first_packet {
-                self.capture_timeline_violations.push(format!(
-                    "WASAPI capture packet {} reported a discontinuity without a device-position gap",
-                    self.capture_packet_count
-                ));
             }
 
             let bytes_to_skip = frames_to_skip * BYTES_PER_FRAME;
-            self.append_float32le(&payload[bytes_to_skip..]);
+            if let (Some(projected_unreliable_frames), Some(unreliable_frame_count)) =
+                (projected_unreliable_frames, unreliable_frame_count)
+            {
+                let output_start_frame = self.frames();
+                self.samples
+                    .extend(std::iter::repeat(0.0).take(append_frames * CHANNELS));
+                self.total_unreliable_frames = projected_unreliable_frames;
+                self.capture_unreliable_windows
+                    .push(CaptureUnreliableWindowAuthority {
+                        output_start_frame,
+                        frame_count: unreliable_frame_count,
+                        packet_index: self.capture_packet_count,
+                        device_position_frames: info.device_position_frames + frames_to_skip as u64,
+                        qpc_position_100ns: info.qpc_position_100ns,
+                        reason: "data-discontinuity",
+                    });
+            } else {
+                self.append_float32le(&payload[bytes_to_skip..]);
+            }
             self.next_device_position_frames =
                 Some(expected.max(packet_end_device_position));
             if info.silent {
@@ -320,8 +367,8 @@
 
         fn capture_timeline_authority(&self) -> CaptureTimelineAuthority {
             CaptureTimelineAuthority {
-                schema_version: 1,
-                authority_mode: "wasapi-device-position-qpc-v1",
+                schema_version: 2,
+                authority_mode: "wasapi-device-position-qpc-v2",
                 sample_rate_hz: SAMPLE_RATE as u32,
                 channel_count: CHANNELS,
                 passed: self.capture_timeline_violations.is_empty(),
@@ -338,7 +385,9 @@
                 qpc_regression_packet_count: self.qpc_regression_packet_count,
                 overlap_packet_count: self.overlap_packet_count,
                 total_gap_frames: self.total_gap_frames,
+                total_unreliable_frames: self.total_unreliable_frames,
                 gaps: self.capture_gaps.clone(),
+                unreliable_windows: self.capture_unreliable_windows.clone(),
                 violations: self.capture_timeline_violations.clone(),
             }
         }
@@ -384,6 +433,12 @@
             assert_eq!(authority.gaps[0].output_start_frame, 2);
             assert_eq!(authority.gaps[0].expected_device_position_frames, 102);
             assert_eq!(authority.gaps[0].observed_device_position_frames, 104);
+            assert_eq!(authority.total_unreliable_frames, 2);
+            assert_eq!(authority.unreliable_windows.len(), 1);
+            assert_eq!(authority.unreliable_windows[0].output_start_frame, 4);
+            assert_eq!(authority.unreliable_windows[0].frame_count, 2);
+            assert_eq!(authority.unreliable_windows[0].packet_index, 2);
+            assert_eq!(&metrics.samples[8..12], &[0.0; 4]);
         }
 
         #[test]
@@ -400,7 +455,7 @@
         }
 
         #[test]
-        fn capture_timeline_rejects_unexplained_flags_and_bad_qpc() {
+        fn capture_timeline_keeps_discontinuity_window_but_rejects_bad_qpc() {
             let mut metrics = CaptureMetrics::default();
             metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
             let mut second = packet(2, 102);
@@ -414,7 +469,10 @@
             assert_eq!(authority.data_discontinuity_packet_count, 1);
             assert_eq!(authority.timestamp_error_packet_count, 1);
             assert_eq!(authority.qpc_regression_packet_count, 1);
-            assert_eq!(authority.violations.len(), 3);
+            assert_eq!(authority.violations.len(), 2);
+            assert_eq!(authority.unreliable_windows.len(), 1);
+            assert_eq!(authority.unreliable_windows[0].packet_index, 2);
+            assert_eq!(&metrics.samples[4..8], &[0.0; 4]);
         }
 
         #[test]
@@ -463,15 +521,36 @@
         }
 
         #[test]
-        fn capture_timeline_fails_closed_for_unflagged_device_position_gap() {
+        fn capture_timeline_preserves_unflagged_device_position_gap_as_independent_authority() {
             let mut metrics = CaptureMetrics::default();
             metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
             metrics.append_capture_packet(&float_payload(2, 0.5), packet(2, 104));
 
             assert_eq!(metrics.frames(), 6, "known device positions still preserve time");
             let authority = metrics.capture_timeline_authority();
-            assert!(!authority.passed);
+            assert!(authority.passed);
             assert_eq!(authority.total_gap_frames, 2);
-            assert!(authority.violations[0].contains("without the data-discontinuity flag"));
+            assert_eq!(authority.gaps.len(), 1);
+            assert!(authority.unreliable_windows.is_empty());
+            assert!(authority.violations.is_empty());
+        }
+
+        #[test]
+        fn capture_timeline_zero_fills_discontinuity_without_a_numeric_gap() {
+            let mut metrics = CaptureMetrics::default();
+            metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
+            let mut second = packet(2, 102);
+            second.data_discontinuity = true;
+            metrics.append_capture_packet(&float_payload(2, 0.5), second);
+
+            let authority = metrics.capture_timeline_authority();
+            assert!(authority.passed);
+            assert!(authority.gaps.is_empty());
+            assert_eq!(authority.data_discontinuity_packet_count, 1);
+            assert_eq!(authority.total_unreliable_frames, 2);
+            assert_eq!(authority.unreliable_windows.len(), 1);
+            assert_eq!(authority.unreliable_windows[0].output_start_frame, 2);
+            assert_eq!(authority.unreliable_windows[0].device_position_frames, 102);
+            assert_eq!(&metrics.samples[4..8], &[0.0; 4]);
         }
     }

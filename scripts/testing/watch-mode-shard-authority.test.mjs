@@ -21,6 +21,7 @@ import {
   issueCellLeases,
   interactiveExecutionExitMatchesReport,
   sha256Canonical,
+  validateInteractiveProcessAuthority,
   validateProviderUsageAuthority,
   validateShardCellResult,
   validateShardManifest,
@@ -106,6 +107,309 @@ test('interactive execution exit validates collection success independently from
   assert.equal(interactiveExecutionExitMatchesReport(0, 'failed'), true);
   assert.equal(interactiveExecutionExitMatchesReport(1, 'failed'), true);
   assert.equal(interactiveExecutionExitMatchesReport(2, 'failed'), false);
+});
+
+function interactiveProcessGenerationFixture() {
+  const fixture = createFixture();
+  const lease = fixture.leases[0];
+  const worker = fixture.plan.workers.find((entry) => entry.workerId === lease.workerId);
+  const baseMs = fixture.now.getTime() - 10_000;
+  const ownerSid = 'S-1-5-21-1-2-3-1000';
+  const observedProcess = ({ role, pid, parentPid, startedOffset, firstOffset, lastOffset, imageName }) => ({
+    role,
+    pid,
+    parentPid,
+    sessionId: 1,
+    imagePath: `C:\\fixture\\${imageName}`,
+    imageSha256: SHA_A,
+    commandLine: `${imageName} ${role === 'recorder' ? '--record-only' : '--fixture'}`,
+    startedAt: new Date(baseMs + startedOffset).toISOString(),
+    ownerUser: worker.interactiveUser ?? 'VMUser',
+    ownerDomain: 'FIXTURE',
+    ownerSid,
+    firstSeenAt: new Date(baseMs + firstOffset).toISOString(),
+    lastSeenAt: new Date(baseMs + lastOffset).toISOString(),
+  });
+  const root = observedProcess({
+    role: 'shard-node', pid: 100, parentPid: 99, startedOffset: 0,
+    firstOffset: 100, lastOffset: 900, imageName: 'node.exe',
+  });
+  const processes = [
+    root,
+    observedProcess({
+      role: 'cell-powershell', pid: 101, parentPid: 100, startedOffset: 50,
+      firstOffset: 100, lastOffset: 900, imageName: 'powershell.exe',
+    }),
+    observedProcess({
+      role: 'supporting', pid: 2240, parentPid: 101, startedOffset: 120,
+      firstOffset: 150, lastOffset: 250, imageName: 'omni-physical-output-probe.exe',
+    }),
+    observedProcess({
+      role: 'desktop', pid: 102, parentPid: 101, startedOffset: 200,
+      firstOffset: 220, lastOffset: 800, imageName: 'omni-desktop-shell.exe',
+    }),
+    observedProcess({
+      role: 'bridge', pid: 103, parentPid: 102, startedOffset: 230,
+      firstOffset: 250, lastOffset: 750, imageName: 'omni-bridge-service.exe',
+    }),
+    observedProcess({
+      role: 'recorder', pid: 2240, parentPid: 101, startedOffset: 300,
+      firstOffset: 350, lastOffset: 850, imageName: 'omni-physical-output-probe.exe',
+    }),
+  ];
+  const uniqueParentByPid = new Map(processes.map((entry) => [entry.pid, entry]));
+  for (const processEntry of processes) {
+    processEntry.parentStartedAt = processEntry === root
+      ? null
+      : uniqueParentByPid.get(processEntry.parentPid).startedAt;
+  }
+  return {
+    fixture,
+    lease,
+    worker,
+    launch: {
+      ownerSid,
+      nodeProcess: root,
+      taskProcess: { pid: 99 },
+    },
+    execution: { exitCode: 0 },
+    processAuthority: {
+      schemaVersion: 2,
+      artifactKind: 'watch-mode-interactive-process-authority',
+      executionId: fixture.plan.executionId,
+      planDigest: fixture.plan.planDigest,
+      leaseId: lease.leaseId,
+      leaseDigest: lease.leaseDigest,
+      cellId: lease.cellId,
+      workerId: worker.workerId,
+      vmIdentityDigest: worker.vmIdentityDigest,
+      rootProcessId: root.pid,
+      expectedSessionId: 1,
+      expectedOwnerSid: ownerSid,
+      startedAt: new Date(baseMs + 75).toISOString(),
+      completedAt: new Date(baseMs + 950).toISOString(),
+      sampleIntervalMs: 250,
+      executionExitCode: 0,
+      requiredRoles: ['shard-node', 'cell-powershell', 'desktop', 'bridge', 'recorder'],
+      processCount: processes.length,
+      processes,
+      errors: [],
+      passed: true,
+    },
+  };
+}
+
+function validateInteractiveProcessFixture(fixture, processAuthority = fixture.processAuthority) {
+  return validateInteractiveProcessAuthority({
+    processAuthority,
+    execution: fixture.execution,
+    launch: fixture.launch,
+    plan: fixture.fixture.plan,
+    lease: fixture.lease,
+    worker: fixture.worker,
+  });
+}
+
+test('interactive process authority preserves valid PID reuse generations and rejects forged topology', () => {
+  const valid = interactiveProcessGenerationFixture();
+  assert.doesNotThrow(() => validateInteractiveProcessAuthority({
+    processAuthority: valid.processAuthority,
+    execution: valid.execution,
+    launch: valid.launch,
+    plan: valid.fixture.plan,
+    lease: valid.lease,
+    worker: valid.worker,
+  }));
+
+  const duplicate = structuredClone(valid.processAuthority);
+  duplicate.processes.push(structuredClone(duplicate.processes.at(-1)));
+  duplicate.processCount = duplicate.processes.length;
+  assert.throws(() => validateInteractiveProcessAuthority({
+    processAuthority: duplicate,
+    execution: valid.execution,
+    launch: valid.launch,
+    plan: valid.fixture.plan,
+    lease: valid.lease,
+    worker: valid.worker,
+  }), /observation identity is invalid/);
+
+  const invalidParent = structuredClone(valid.processAuthority);
+  const recorder = invalidParent.processes.find((entry) => entry.role === 'recorder');
+  recorder.parentPid = 777;
+  const forgedParent = {
+    ...structuredClone(invalidParent.processes.find((entry) => entry.role === 'supporting')),
+    pid: 777,
+    parentPid: 101,
+    startedAt: new Date(Date.parse(recorder.startedAt) + 50).toISOString(),
+    firstSeenAt: recorder.firstSeenAt,
+    lastSeenAt: recorder.lastSeenAt,
+  };
+  recorder.parentStartedAt = forgedParent.startedAt;
+  invalidParent.processes.push(forgedParent);
+  invalidParent.processCount = invalidParent.processes.length;
+  assert.throws(() => validateInteractiveProcessAuthority({
+    processAuthority: invalidParent,
+    execution: valid.execution,
+    launch: valid.launch,
+    plan: valid.fixture.plan,
+    lease: valid.lease,
+    worker: valid.worker,
+  }), /no valid parent generation/);
+
+  const disconnectedCycle = structuredClone(valid.processAuthority);
+  const cycleStartedAt = new Date(Date.parse(disconnectedCycle.startedAt) + 400).toISOString();
+  const cycleFirstSeenAt = new Date(Date.parse(disconnectedCycle.startedAt) + 450).toISOString();
+  const cycleLastSeenAt = new Date(Date.parse(disconnectedCycle.startedAt) + 700).toISOString();
+  disconnectedCycle.processes.push(
+    {
+      ...structuredClone(disconnectedCycle.processes.find((entry) => entry.role === 'supporting')),
+      pid: 800,
+      parentPid: 801,
+      parentStartedAt: cycleStartedAt,
+      startedAt: cycleStartedAt,
+      firstSeenAt: cycleFirstSeenAt,
+      lastSeenAt: cycleLastSeenAt,
+    },
+    {
+      ...structuredClone(disconnectedCycle.processes.find((entry) => entry.role === 'supporting')),
+      pid: 801,
+      parentPid: 800,
+      parentStartedAt: cycleStartedAt,
+      startedAt: cycleStartedAt,
+      firstSeenAt: cycleFirstSeenAt,
+      lastSeenAt: cycleLastSeenAt,
+    },
+  );
+  disconnectedCycle.processCount = disconnectedCycle.processes.length;
+  assert.throws(() => validateInteractiveProcessAuthority({
+    processAuthority: disconnectedCycle,
+    execution: valid.execution,
+    launch: valid.launch,
+    plan: valid.fixture.plan,
+    lease: valid.lease,
+    worker: valid.worker,
+  }), /outside the captured root process generation tree/);
+});
+
+test('interactive process authority binds children to the exact reused parent PID generation', () => {
+  const valid = interactiveProcessGenerationFixture();
+  const oldParent = valid.processAuthority.processes.find((entry) => (
+    entry.pid === 2240 && entry.role === 'supporting'
+  ));
+  const newParent = valid.processAuthority.processes.find((entry) => (
+    entry.pid === 2240 && entry.role === 'recorder'
+  ));
+  const child = {
+    ...structuredClone(valid.processAuthority.processes.find((entry) => entry.role === 'bridge')),
+    role: 'supporting',
+    pid: 104,
+    parentPid: 2240,
+    parentStartedAt: oldParent.startedAt,
+    startedAt: new Date(Date.parse(oldParent.startedAt) + 60).toISOString(),
+    firstSeenAt: new Date(Date.parse(oldParent.firstSeenAt) + 40).toISOString(),
+    lastSeenAt: new Date(Date.parse(oldParent.lastSeenAt) + 200).toISOString(),
+  };
+  valid.processAuthority.processes.push(child);
+  valid.processAuthority.processCount = valid.processAuthority.processes.length;
+  assert.doesNotThrow(() => validateInteractiveProcessFixture(valid));
+
+  const wrongGeneration = structuredClone(valid.processAuthority);
+  wrongGeneration.processes.find((entry) => entry.pid === child.pid).parentStartedAt = newParent.startedAt;
+  assert.throws(
+    () => validateInteractiveProcessFixture(valid, wrongGeneration),
+    /no valid parent generation/,
+  );
+});
+
+test('interactive process authority selects the launch-bound root generation when its PID is reused', () => {
+  const valid = interactiveProcessGenerationFixture();
+  const root = valid.processAuthority.processes.find((entry) => entry.role === 'shard-node');
+  valid.processAuthority.processes.push({
+    ...structuredClone(root),
+    role: 'supporting',
+    parentPid: root.pid,
+    parentStartedAt: root.startedAt,
+    imagePath: 'C:\\fixture\\decoy-node.exe',
+    commandLine: 'decoy-node.exe --fixture',
+    startedAt: new Date(Date.parse(root.startedAt) + 300).toISOString(),
+    firstSeenAt: new Date(Date.parse(root.firstSeenAt) + 300).toISOString(),
+    lastSeenAt: new Date(Date.parse(root.lastSeenAt) - 100).toISOString(),
+  });
+  valid.processAuthority.processCount = valid.processAuthority.processes.length;
+
+  assert.doesNotThrow(() => validateInteractiveProcessFixture(valid));
+  const decoyFirst = structuredClone(valid.processAuthority);
+  decoyFirst.processes.unshift(decoyFirst.processes.pop());
+  assert.doesNotThrow(() => validateInteractiveProcessFixture(valid, decoyFirst));
+});
+
+test('interactive process authority keeps passed errors and required roles as hard gates', () => {
+  const valid = interactiveProcessGenerationFixture();
+  const cases = [
+    {
+      name: 'passed=false',
+      mutate: (authority) => { authority.passed = false; },
+    },
+    {
+      name: 'errors non-empty',
+      mutate: (authority) => { authority.errors.push('collector failed'); },
+    },
+    {
+      name: 'requiredRoles missing recorder',
+      mutate: (authority) => {
+        authority.requiredRoles = authority.requiredRoles.filter((role) => role !== 'recorder');
+      },
+    },
+  ];
+  for (const testCase of cases) {
+    const invalid = structuredClone(valid.processAuthority);
+    testCase.mutate(invalid);
+    assert.throws(
+      () => validateInteractiveProcessFixture(valid, invalid),
+      /interactive process authority is invalid/,
+      testCase.name,
+    );
+  }
+});
+
+test('interactive process authority rejects parent observation lifetimes beyond sample tolerance', () => {
+  const valid = interactiveProcessGenerationFixture();
+  const sampleIntervalMs = valid.processAuthority.sampleIntervalMs;
+
+  const lateParentObservation = structuredClone(valid.processAuthority);
+  const lateParent = lateParentObservation.processes.find((entry) => entry.role === 'cell-powershell');
+  const earlyChild = lateParentObservation.processes.find((entry) => entry.role === 'supporting');
+  lateParent.firstSeenAt = new Date(
+    Date.parse(earlyChild.firstSeenAt) + sampleIntervalMs + 1,
+  ).toISOString();
+  assert.throws(
+    () => validateInteractiveProcessFixture(valid, lateParentObservation),
+    /no valid parent generation/,
+  );
+
+  const expiredParentObservation = structuredClone(valid.processAuthority);
+  const expiredParent = expiredParentObservation.processes.find((entry) => entry.role === 'cell-powershell');
+  const lateChild = expiredParentObservation.processes.find((entry) => entry.role === 'recorder');
+  lateChild.firstSeenAt = new Date(Date.parse(lateChild.firstSeenAt) + 350).toISOString();
+  expiredParent.lastSeenAt = new Date(
+    Date.parse(lateChild.firstSeenAt) - sampleIntervalMs - 1,
+  ).toISOString();
+  assert.throws(
+    () => validateInteractiveProcessFixture(valid, expiredParentObservation),
+    /no valid parent generation/,
+  );
+});
+
+test('interactive process authority rejects a pure missing parent generation', () => {
+  const valid = interactiveProcessGenerationFixture();
+  const disconnected = structuredClone(valid.processAuthority);
+  const recorder = disconnected.processes.find((entry) => entry.role === 'recorder');
+  recorder.parentStartedAt = new Date(Date.parse(recorder.parentStartedAt) - 1).toISOString();
+
+  assert.throws(
+    () => validateInteractiveProcessFixture(valid, disconnected),
+    /no valid parent generation/,
+  );
 });
 
 const inventory = (prefix, sha = SHA_A) => [{ path: `${prefix}/authority.bin`, bytes: 17, sha256: sha }];

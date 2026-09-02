@@ -39,8 +39,14 @@ function Format-CollectionError {
   $errorId = [string]$ErrorRecord.FullyQualifiedErrorId
   return "$($ErrorRecord.Exception.Message) | errorId=$errorId | $position"
 }
+function Get-ProcessGenerationKey {
+  param([Parameter(Mandatory = $true)]$Process)
+  $processId = [int]$Process.ProcessId
+  $createdAtUtc = ([DateTime]$Process.CreationDate).ToUniversalTime()
+  return "$processId|$($createdAtUtc.Ticks)"
+}
 function Get-DescendantProcesses {
-  param([int]$RootId)
+  param([int]$RootId, [Parameter(Mandatory = $true)][string]$RootGenerationKey)
   $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)
   $byParent = @{}
   foreach ($process in $all) {
@@ -53,7 +59,9 @@ function Get-DescendantProcesses {
   $queue = New-Object Collections.Generic.Queue[object]
   $seen = New-Object Collections.Generic.HashSet[int]
   $result = New-Object Collections.Generic.List[object]
-  $rootProcess = @($all | Where-Object { [int]$_.ProcessId -eq $RootId } | Select-Object -First 1)
+  $rootProcess = @($all | Where-Object {
+    [int]$_.ProcessId -eq $RootId -and (Get-ProcessGenerationKey $_) -ceq $RootGenerationKey
+  } | Select-Object -First 1)
   if ($rootProcess.Count -ne 1) { return [object[]]@() }
   $queue.Enqueue($rootProcess[0])
   while ($queue.Count -gt 0) {
@@ -91,22 +99,26 @@ $startedAt = [DateTime]::UtcNow
 $observed = @{}
 $errors = New-Object Collections.Generic.List[string]
 try {
-  if (-not (Get-Process -Id $RootProcessId -ErrorAction SilentlyContinue)) {
+  $rootProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$RootProcessId" -ErrorAction SilentlyContinue
+  if (-not $rootProcess) {
     throw "root process $RootProcessId does not exist"
   }
-  while (Get-Process -Id $RootProcessId -ErrorAction SilentlyContinue) {
+  $rootGenerationKey = Get-ProcessGenerationKey $rootProcess
+  while ($true) {
+    $currentRoot = Get-CimInstance Win32_Process -Filter "ProcessId=$RootProcessId" -ErrorAction SilentlyContinue
+    if (-not $currentRoot -or (Get-ProcessGenerationKey $currentRoot) -cne $rootGenerationKey) { break }
     try {
-      foreach ($process in @(Get-DescendantProcesses $RootProcessId)) {
+      $capturedAt = [DateTime]::UtcNow.ToString('o')
+      foreach ($process in @(Get-DescendantProcesses $RootProcessId $rootGenerationKey)) {
         $processId = [int]$process.ProcessId
-        $key = "$processId"
-        $capturedAt = [DateTime]::UtcNow.ToString('o')
+        $key = Get-ProcessGenerationKey $process
         if ($observed.ContainsKey($key)) {
           $observed[$key].lastSeenAt = $capturedAt
           continue
         }
         try {
-          if (-not (Get-Process -Id $processId -ErrorAction SilentlyContinue)) { continue }
-          $identityProcess = $process
+          $identityProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$processId" -ErrorAction SilentlyContinue
+          if (-not $identityProcess -or (Get-ProcessGenerationKey $identityProcess) -cne $key) { continue }
           $imagePath = [string]$identityProcess.ExecutablePath
           for ($identityAttempt = 0; $identityAttempt -lt 4 -and -not $imagePath; $identityAttempt++) {
             Start-Sleep -Milliseconds 25
@@ -114,21 +126,39 @@ try {
             if (-not $identityProcess) { break }
             $imagePath = [string]$identityProcess.ExecutablePath
           }
-          if (-not $identityProcess -or -not (Get-Process -Id $processId -ErrorAction SilentlyContinue)) { continue }
+          if (-not $identityProcess -or (Get-ProcessGenerationKey $identityProcess) -cne $key) { continue }
           if (-not $imagePath -or -not (Test-Path -LiteralPath $imagePath -PathType Leaf)) {
             throw "process $processId has no regular executable path"
           }
           $ownerSid = Invoke-CimMethod -InputObject $identityProcess -MethodName GetOwnerSid -ErrorAction Stop
           $owner = Invoke-CimMethod -InputObject $identityProcess -MethodName GetOwner -ErrorAction Stop
+          $runtimeProcess = Get-Process -Id $processId -ErrorAction SilentlyContinue
+          $confirmedIdentityProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$processId" -ErrorAction SilentlyContinue
+          if (
+            -not $runtimeProcess -or
+            -not $confirmedIdentityProcess -or
+            (Get-ProcessGenerationKey $confirmedIdentityProcess) -cne $key
+          ) { continue }
+          $parentStartedAt = $null
+          if ($processId -ne $RootProcessId) {
+            $parentIdentityProcess = Get-CimInstance Win32_Process `
+              -Filter "ProcessId=$([int]$identityProcess.ParentProcessId)" `
+              -ErrorAction SilentlyContinue
+            if (-not $parentIdentityProcess) { continue }
+            $parentGenerationKey = Get-ProcessGenerationKey $parentIdentityProcess
+            if (-not $observed.ContainsKey($parentGenerationKey)) { continue }
+            $parentStartedAt = [string]$observed[$parentGenerationKey].startedAt
+          }
           $entry = [ordered]@{
             role = Get-Role $identityProcess $RootProcessId
             pid = $processId
             parentPid = [int]$identityProcess.ParentProcessId
+            parentStartedAt = $parentStartedAt
             sessionId = [int]$identityProcess.SessionId
             imagePath = [IO.Path]::GetFullPath($imagePath)
             imageSha256 = Get-OmniSha256 -LiteralPath $imagePath
             commandLine = [string]$identityProcess.CommandLine
-            startedAt = (Get-Process -Id $processId -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')
+            startedAt = $runtimeProcess.StartTime.ToUniversalTime().ToString('o')
             ownerUser = [string]$owner.User
             ownerDomain = [string]$owner.Domain
             ownerSid = [string]$ownerSid.Sid
@@ -140,7 +170,8 @@ try {
           }
           $observed[$key] = $entry
         } catch {
-          if (Get-Process -Id $processId -ErrorAction SilentlyContinue) { throw }
+          $failedProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$processId" -ErrorAction SilentlyContinue
+          if ($failedProcess -and (Get-ProcessGenerationKey $failedProcess) -ceq $key) { throw }
         }
       }
     } catch {
@@ -151,7 +182,8 @@ try {
 } catch {
   [void]$errors.Add((Format-CollectionError $_))
 }
-$processes = @($observed.Values | Sort-Object @{ Expression = { $_.firstSeenAt } }, @{ Expression = { $_.pid } })
+$processes = @($observed.Values | Sort-Object `
+  @{ Expression = { $_.firstSeenAt } }, @{ Expression = { $_.pid } }, @{ Expression = { $_.startedAt } })
 $executionExitCode = $null
 try {
   $resolvedExecutionReceiptPath = [IO.Path]::GetFullPath($ExecutionReceiptPath)

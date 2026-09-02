@@ -830,8 +830,8 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
     recordingStartedAtEpochMs,
     transcriptionPcmPath: physicalPcmPath,
     captureTimeline: {
-      schemaVersion: 1,
-      authorityMode: 'wasapi-device-position-qpc-v1',
+      schemaVersion: 2,
+      authorityMode: 'wasapi-device-position-qpc-v2',
       sampleRateHz: 48_000,
       channelCount: 2,
       passed: true,
@@ -850,7 +850,9 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
       qpcRegressionPacketCount: 0,
       overlapPacketCount: 0,
       totalGapFrames: 0,
+      totalUnreliableFrames: 0,
       gaps: [],
+      unreliableWindows: [],
       violations: [],
     },
   }, null, 2)}\n`, 'utf8');
@@ -1778,6 +1780,12 @@ function writeInteractiveSessionBundleFixture(runDirectory, {
     firstSeenAt,
     lastSeenAt,
   }));
+  const processByPid = new Map(processes.map((entry) => [entry.pid, entry]));
+  for (const processEntry of processes) {
+    processEntry.parentStartedAt = processEntry.role === 'shard-node'
+      ? null
+      : processByPid.get(processEntry.parentPid).startedAt;
+  }
   const processAuthority = writeComponent(SHARD_INTERACTIVE_PROCESS_AUTHORITY_FILE, {
     schemaVersion: 2,
     artifactKind: 'watch-mode-interactive-process-authority',

@@ -1561,6 +1561,139 @@ export function validateInteractiveLaunchAuthority({
   };
 }
 
+function interactiveProcessGenerationKey(processEntry) {
+  return `${Number(processEntry.pid)}:${String(processEntry.startedAt ?? '')}`;
+}
+
+function interactiveParentGenerationKey(processEntry) {
+  return `${Number(processEntry.parentPid)}:${String(processEntry.parentStartedAt ?? '')}`;
+}
+
+export function validateInteractiveProcessAuthority({
+  processAuthority,
+  execution,
+  launch,
+  plan,
+  lease,
+  worker,
+}) {
+  const identity = { plan, lease, worker };
+  const processStartedAtMs = Date.parse(String(processAuthority.startedAt ?? ''));
+  const processCompletedAtMs = Date.parse(String(processAuthority.completedAt ?? ''));
+  const expectedRequiredRoles = ['shard-node', 'cell-powershell'];
+  if (Number(execution.exitCode) === 0) {
+    expectedRequiredRoles.push('desktop', 'bridge', 'recorder');
+  }
+  if (
+    processAuthority.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
+    || processAuthority.artifactKind !== 'watch-mode-interactive-process-authority'
+    || interactiveIdentityFailure(processAuthority, identity, 'interactive process authority')
+    || processAuthority.vmIdentityDigest !== worker.vmIdentityDigest
+    || processAuthority.passed !== true
+    || Number(processAuthority.expectedSessionId) !== 1
+    || processAuthority.expectedOwnerSid !== launch.ownerSid
+    || Number(processAuthority.rootProcessId) !== Number(launch.nodeProcess.pid)
+    || !Array.isArray(processAuthority.processes)
+    || Number(processAuthority.processCount) !== processAuthority.processes.length
+    || processAuthority.processes.length < 1
+    || processAuthority.processes.some((entry) => (
+      Number(entry.sessionId) !== 1 || entry.ownerSid !== launch.ownerSid
+    ))
+    || !Number.isFinite(processStartedAtMs)
+    || !Number.isFinite(processCompletedAtMs)
+    || processStartedAtMs > processCompletedAtMs
+    || !Number.isInteger(Number(processAuthority.sampleIntervalMs))
+    || Number(processAuthority.sampleIntervalMs) < 100
+    || Number(processAuthority.sampleIntervalMs) > 5_000
+    || !Array.isArray(processAuthority.errors)
+    || processAuthority.errors.length !== 0
+    || Number(processAuthority.executionExitCode) !== Number(execution.exitCode)
+    || !Array.isArray(processAuthority.requiredRoles)
+    || canonicalJson([...processAuthority.requiredRoles].sort()) !== canonicalJson([...expectedRequiredRoles].sort())
+  ) throw new Error('interactive process authority is invalid');
+  const processByGeneration = new Map();
+  const processesByPid = new Map();
+  for (const [index, processEntry] of processAuthority.processes.entries()) {
+    assertInteractiveProcessIdentity(
+      processEntry,
+      { sessionId: 1, ownerSid: launch.ownerSid },
+      `interactive traced process ${index}`,
+    );
+    const startedAtMs = Date.parse(String(processEntry.startedAt ?? ''));
+    const firstSeenAtMs = Date.parse(String(processEntry.firstSeenAt ?? ''));
+    const lastSeenAtMs = Date.parse(String(processEntry.lastSeenAt ?? ''));
+    const generationKey = interactiveProcessGenerationKey(processEntry);
+    if (
+      processByGeneration.has(generationKey)
+      || !String(processEntry.role ?? '').trim()
+      || !String(processEntry.ownerUser ?? '').trim()
+      || !String(processEntry.ownerDomain ?? '').trim()
+      || typeof processEntry.commandLine !== 'string'
+      || !Number.isFinite(firstSeenAtMs)
+      || !Number.isFinite(lastSeenAtMs)
+      || startedAtMs > firstSeenAtMs
+      || firstSeenAtMs < processStartedAtMs - Number(processAuthority.sampleIntervalMs)
+      || firstSeenAtMs > lastSeenAtMs
+      || lastSeenAtMs > processCompletedAtMs + Number(processAuthority.sampleIntervalMs)
+    ) throw new Error(`interactive traced process ${index} observation identity is invalid`);
+    processByGeneration.set(generationKey, processEntry);
+    const pid = Number(processEntry.pid);
+    const generations = processesByPid.get(pid) ?? [];
+    generations.push(processEntry);
+    processesByPid.set(pid, generations);
+  }
+  const tracedRoot = (processesByPid.get(Number(processAuthority.rootProcessId)) ?? [])
+    .find((entry) => entry.startedAt === launch.nodeProcess.startedAt);
+  if (
+    !tracedRoot
+    || tracedRoot.role !== 'shard-node'
+    || Number(tracedRoot.pid) !== Number(launch.nodeProcess.pid)
+    || Number(tracedRoot.parentPid) !== Number(launch.taskProcess.pid)
+    || String(tracedRoot.imagePath).toLowerCase()
+      !== String(launch.nodeProcess.imagePath).toLowerCase()
+    || String(tracedRoot.imageSha256).toLowerCase()
+      !== String(launch.nodeProcess.imageSha256).toLowerCase()
+  ) throw new Error('interactive traced shard root does not match the launched Node process');
+  const parentByGeneration = new Map();
+  for (const processEntry of processAuthority.processes) {
+    if (processEntry === tracedRoot) continue;
+    const childStartedAtMs = Date.parse(processEntry.startedAt);
+    const childFirstSeenAtMs = Date.parse(processEntry.firstSeenAt);
+    const childGenerationKey = interactiveProcessGenerationKey(processEntry);
+    const parentGenerationKey = interactiveParentGenerationKey(processEntry);
+    const parent = processByGeneration.get(parentGenerationKey);
+    if (
+      !parent
+      || parentGenerationKey === childGenerationKey
+      || Date.parse(parent.startedAt) > childStartedAtMs
+      || Date.parse(parent.firstSeenAt) > childFirstSeenAtMs + Number(processAuthority.sampleIntervalMs)
+      || Date.parse(parent.lastSeenAt) + Number(processAuthority.sampleIntervalMs) < childFirstSeenAtMs
+    ) {
+      throw new Error(`interactive traced process ${processEntry.pid} has no valid parent generation in the captured root process tree`);
+    }
+    parentByGeneration.set(childGenerationKey, parentGenerationKey);
+  }
+  const rootGenerationKey = interactiveProcessGenerationKey(tracedRoot);
+  for (const processEntry of processAuthority.processes) {
+    let generationKey = interactiveProcessGenerationKey(processEntry);
+    const visited = new Set();
+    while (generationKey !== rootGenerationKey && !visited.has(generationKey)) {
+      visited.add(generationKey);
+      generationKey = parentByGeneration.get(generationKey);
+      if (!generationKey) break;
+    }
+    if (generationKey !== rootGenerationKey) {
+      throw new Error(`interactive traced process ${processEntry.pid} is outside the captured root process generation tree`);
+    }
+  }
+  for (const role of expectedRequiredRoles) {
+    if (!processAuthority.processes.some((entry) => entry.role === role)) {
+      throw new Error(`interactive process authority is missing required role ${role}`);
+    }
+  }
+  return { processCompletedAtMs };
+}
+
 export function validateInteractiveSessionAuthority({
   authorityPath,
   commandPath = null,
@@ -1648,84 +1781,14 @@ export function validateInteractiveSessionAuthority({
   const expectedTaskActionArguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass '
     + `-File "${launch.command.launcherPath}" -RequestPath "${launch.command.scheduledCommandPath}" `
     + `-ExpectedRequestSha256 ${launch.files.command.sha256}`;
-  const processStartedAtMs = Date.parse(String(processAuthority.startedAt ?? ''));
-  const processCompletedAtMs = Date.parse(String(processAuthority.completedAt ?? ''));
-  const expectedRequiredRoles = ['shard-node', 'cell-powershell'];
-  if (Number(execution.exitCode) === 0) {
-    expectedRequiredRoles.push('desktop', 'bridge', 'recorder');
-  }
-  if (
-    processAuthority.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
-    || processAuthority.artifactKind !== 'watch-mode-interactive-process-authority'
-    || interactiveIdentityFailure(processAuthority, identity, 'interactive process authority')
-    || processAuthority.vmIdentityDigest !== worker.vmIdentityDigest
-    || processAuthority.passed !== true
-    || Number(processAuthority.expectedSessionId) !== 1
-    || processAuthority.expectedOwnerSid !== launch.launch.ownerSid
-    || Number(processAuthority.rootProcessId) !== Number(launch.launch.nodeProcess.pid)
-    || !Array.isArray(processAuthority.processes)
-    || Number(processAuthority.processCount) !== processAuthority.processes.length
-    || processAuthority.processes.length < 1
-    || processAuthority.processes.some((entry) => (
-      Number(entry.sessionId) !== 1 || entry.ownerSid !== launch.launch.ownerSid
-    ))
-    || !Number.isFinite(processStartedAtMs)
-    || !Number.isFinite(processCompletedAtMs)
-    || processStartedAtMs > processCompletedAtMs
-    || !Number.isInteger(Number(processAuthority.sampleIntervalMs))
-    || Number(processAuthority.sampleIntervalMs) < 100
-    || Number(processAuthority.sampleIntervalMs) > 5_000
-    || !Array.isArray(processAuthority.errors)
-    || processAuthority.errors.length !== 0
-    || Number(processAuthority.executionExitCode) !== Number(execution.exitCode)
-    || !Array.isArray(processAuthority.requiredRoles)
-    || canonicalJson([...processAuthority.requiredRoles].sort()) !== canonicalJson([...expectedRequiredRoles].sort())
-  ) throw new Error('interactive process authority is invalid');
-  const processByPid = new Map();
-  for (const [index, processEntry] of processAuthority.processes.entries()) {
-    assertInteractiveProcessIdentity(
-      processEntry,
-      { sessionId: 1, ownerSid: launch.launch.ownerSid },
-      `interactive traced process ${index}`,
-    );
-    const firstSeenAtMs = Date.parse(String(processEntry.firstSeenAt ?? ''));
-    const lastSeenAtMs = Date.parse(String(processEntry.lastSeenAt ?? ''));
-    if (
-      processByPid.has(Number(processEntry.pid))
-      || !String(processEntry.role ?? '').trim()
-      || !String(processEntry.ownerUser ?? '').trim()
-      || !String(processEntry.ownerDomain ?? '').trim()
-      || typeof processEntry.commandLine !== 'string'
-      || !Number.isFinite(firstSeenAtMs)
-      || !Number.isFinite(lastSeenAtMs)
-      || firstSeenAtMs < processStartedAtMs - Number(processAuthority.sampleIntervalMs)
-      || firstSeenAtMs > lastSeenAtMs
-      || lastSeenAtMs > processCompletedAtMs + Number(processAuthority.sampleIntervalMs)
-    ) throw new Error(`interactive traced process ${index} observation identity is invalid`);
-    processByPid.set(Number(processEntry.pid), processEntry);
-  }
-  const tracedRoot = processByPid.get(Number(processAuthority.rootProcessId));
-  if (
-    !tracedRoot
-    || tracedRoot.role !== 'shard-node'
-    || Number(tracedRoot.pid) !== Number(launch.launch.nodeProcess.pid)
-    || Number(tracedRoot.parentPid) !== Number(launch.launch.taskProcess.pid)
-    || tracedRoot.startedAt !== launch.launch.nodeProcess.startedAt
-    || String(tracedRoot.imagePath).toLowerCase()
-      !== String(launch.launch.nodeProcess.imagePath).toLowerCase()
-    || String(tracedRoot.imageSha256).toLowerCase()
-      !== String(launch.launch.nodeProcess.imageSha256).toLowerCase()
-  ) throw new Error('interactive traced shard root does not match the launched Node process');
-  for (const processEntry of processAuthority.processes) {
-    if (processEntry.role !== 'shard-node' && !processByPid.has(Number(processEntry.parentPid))) {
-      throw new Error(`interactive traced process ${processEntry.pid} is outside the captured root process tree`);
-    }
-  }
-  for (const role of expectedRequiredRoles) {
-    if (!processAuthority.processes.some((entry) => entry.role === role)) {
-      throw new Error(`interactive process authority is missing required role ${role}`);
-    }
-  }
+  const { processCompletedAtMs } = validateInteractiveProcessAuthority({
+    processAuthority,
+    execution,
+    launch: launch.launch,
+    plan,
+    lease,
+    worker,
+  });
   if (
     terminal.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
     || terminal.artifactKind !== 'watch-mode-interactive-task-terminal'

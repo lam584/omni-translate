@@ -725,6 +725,7 @@ if (isMain(import.meta.url)) {
         throw new Error('local isolation worker BIOS UUID does not match the immutable request');
       }
       const preLaunchRevalidation = revalidateDistributionForWorkerRequest({ request, workspaceRoot: repoRoot });
+      fs.mkdirSync(request.outputRoot, { recursive: true });
       const result = await runLocalIsolationCell({
         cell: request.cell,
         profile: request.profile,

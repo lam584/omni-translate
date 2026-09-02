@@ -89,10 +89,10 @@ test('PowerShell bootstrap is recoverable and never enables autologon', () => {
   assert.match(source, /Copy-Item -LiteralPath \$key -Destination \$backup/);
   assert.match(source, /backup was restored/);
   assert.match(source, /backup was restored, but sshd restart also failed/);
-  assert.match(source, /failed to secure the new OpenSSH private host key ACL/);
+  assert.match(source, /unexpected allow identities/);
   assert.match(source, /ServiceControllerStatus\]::Running/);
-  assert.match(source, /S-1-5-18:\(F\)/);
-  assert.match(source, /S-1-5-32-544:\(F\)/);
+  assert.match(source, /S-1-5-18/);
+  assert.match(source, /S-1-5-32-544/);
   assert.match(source, /S-1-5-11/);
   assert.match(source, /Unregister-ScheduledTask/);
   assert.doesNotMatch(source, /AutoAdminLogon|DefaultPassword|Winlogon/);
@@ -109,12 +109,12 @@ test('PowerShell host-key rotation preserves ssh-keygen empty passphrase on Wind
   assert.doesNotMatch(source, /ssh-keygen\.exe -q -t ed25519 -N '' -f \$key/);
 });
 
-test('PowerShell host-key rotation applies owner and ACL operations separately', () => {
+test('PowerShell host-key rotation replaces the ACL with system and administrators', () => {
   const source = fs.readFileSync(new URL('./bootstrap-watch-worker.ps1', import.meta.url), 'utf8');
-  assert.match(source, /icacls\.exe \$key '\/setowner' '\*S-1-5-32-544' \| Out-Null/);
-  assert.match(source, /icacls\.exe \$key '\/inheritance:r'/);
-  assert.match(source, /foreach \(\$identity in @\("\$env:USERDOMAIN\\\$env:USERNAME"/);
-  assert.match(source, /icacls\.exe \$key '\/remove:g' \$identity/);
+  assert.match(source, /SetAccessRuleProtection\(\$true, \$false\)/);
+  assert.match(source, /RemoveAccessRuleSpecific/);
+  assert.match(source, /S-1-5-18/);
+  assert.match(source, /S-1-5-32-544/);
+  assert.match(source, /SetOwner\(\$administratorsSid\)/);
   assert.match(source, /unexpectedHostKeyAcl/);
-  assert.doesNotMatch(source, /'\/setowner' '\*S-1-5-32-544' '\/inheritance:r'/);
 });

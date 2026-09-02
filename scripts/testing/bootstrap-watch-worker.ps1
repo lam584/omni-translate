@@ -54,19 +54,22 @@ if ($Action -eq 'RotateSshHostKey') {
       # explicit empty passphrase as a quoted native argument for ssh-keygen.
       & ssh-keygen.exe -q -t ed25519 -N '""' -f $key
       if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $key -PathType Leaf)) { throw 'ssh-keygen failed' }
-      & icacls.exe $key '/setowner' '*S-1-5-32-544' | Out-Null
-      if ($LASTEXITCODE -ne 0) { throw 'failed to set the new OpenSSH private host key owner' }
-      & icacls.exe $key '/inheritance:r' | Out-Null
-      if ($LASTEXITCODE -ne 0) { throw 'failed to disable inheritance on the new OpenSSH private host key' }
-      foreach ($identity in @("$env:USERDOMAIN\$env:USERNAME", '*S-1-1-0', '*S-1-5-11', '*S-1-5-32-545')) {
-        & icacls.exe $key '/remove:g' $identity | Out-Null
-      }
-      & icacls.exe $key '/grant:r' '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' | Out-Null
-      if ($LASTEXITCODE -ne 0) { throw 'failed to secure the new OpenSSH private host key ACL' }
+      $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+      $administratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+      $hostKeyAcl = Get-Acl -LiteralPath $key
+      $hostKeyAcl.SetAccessRuleProtection($true, $false)
+      foreach ($rule in @($hostKeyAcl.Access)) { [void]$hostKeyAcl.RemoveAccessRuleSpecific($rule) }
+      [void]$hostKeyAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($systemSid, 'FullControl', 'Allow'))
+      [void]$hostKeyAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($administratorsSid, 'FullControl', 'Allow'))
+      $hostKeyAcl.SetOwner($administratorsSid)
+      Set-Acl -LiteralPath $key -AclObject $hostKeyAcl
       $unexpectedHostKeyAcl = (Get-Acl -LiteralPath $key).Access | Where-Object {
         $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators')
       }
-      if ($unexpectedHostKeyAcl) { throw 'new OpenSSH private host key ACL contains an unexpected allow entry' }
+      if ($unexpectedHostKeyAcl) {
+        $unexpectedIdentities = @($unexpectedHostKeyAcl | ForEach-Object { $_.IdentityReference.Value }) -join ','
+        throw "new OpenSSH private host key ACL contains unexpected allow identities: $unexpectedIdentities"
+      }
       Restart-Service -Name sshd -ErrorAction Stop
       (Get-Service -Name sshd).WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(15))
       if ((Get-Service -Name sshd).Status -ne 'Running') { throw 'sshd did not reach Running after host-key rotation' }

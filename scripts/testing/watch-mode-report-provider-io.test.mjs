@@ -57,7 +57,13 @@ import {
 } from './watch-mode-report-test-helpers.mjs';
 import { WATCH_MODE_RUN_COLLECTION_SCHEMA, writeWatchModeRunCollection } from './watch-mode-run-collection.mjs';
 
-function writeCollection(directory, evidence, { failure = null, steps = [], marker = null, startedAtLocal = null } = {}) {
+function writeCollection(directory, evidence, {
+  failure = null,
+  steps = [],
+  marker = null,
+  startedAtLocal = null,
+  runtimeStatus = null,
+} = {}) {
   fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(path.join(directory, 'fixture-evidence.raw.json'), JSON.stringify(evidence), 'utf8');
   fs.writeFileSync(path.join(directory, 'run-metadata.json'), JSON.stringify({
@@ -65,6 +71,9 @@ function writeCollection(directory, evidence, { failure = null, steps = [], mark
     modelId: evidence.modelId ?? null,
     feedbackMode: evidence.feedbackLoopPrevention ?? null,
   }), 'utf8');
+  if (runtimeStatus) {
+    fs.writeFileSync(path.join(directory, 'watch-runtime-status.json'), JSON.stringify(runtimeStatus), 'utf8');
+  }
   writeWatchModeRunCollection(directory, {
     schemaVersion: WATCH_MODE_RUN_COLLECTION_SCHEMA,
     artifactKind: 'watch-mode-run-collection',
@@ -75,11 +84,107 @@ function writeCollection(directory, evidence, { failure = null, steps = [], mark
     artifacts: {
       appLog: 'app.log', bridgeLog: 'bridge-service.log',
       runMetadata: 'run-metadata.json', fixtureEvidence: 'fixture-evidence.raw.json',
+      ...(runtimeStatus ? { runtimeStatus: 'watch-runtime-status.json' } : {}),
     },
     primaryError: failure,
     cleanupErrors: [],
   });
 }
+
+test('structured runtime Provider failure precedes downstream capture and Bridge failures', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-report-runtime-provider-'));
+  const marker = 'watch_mode_diagnostic.run_id=runtime-provider-first';
+  const providerFailure = {
+    code: 'watch.provider.session-failed',
+    message: 'model_protocol.payload_invalid: previous_item_id string is required',
+  };
+  writeCollection(tempDir, {
+    feedbackLoopPrevention: 'process-exclusion',
+    driver: healthyDriver,
+    wasapi: healthyWasapi,
+    bridge: healthyBridge,
+    physicalOutput: healthyPhysicalOutput,
+    physicalOutputContentRaw: healthyPhysicalOutputContent,
+    app: healthyApp,
+    watchSessionReport: null,
+    provider: null,
+  }, {
+    marker,
+    failure: {
+      message: 'custodied Watch desktop terminal failed: terminalErrorCode=capture-input-fence-failed',
+    },
+    runtimeStatus: {
+      schemaVersion: 'watch-mode-readiness/v2',
+      runMarker: marker,
+      processId: 3136,
+      state: 'failed',
+      updatedAtMs: 1_000,
+      frontendIpc: { status: 'ready', atMs: 100, error: null },
+      provider: { status: 'failed', atMs: 1_000, error: providerFailure },
+      bridge: { status: 'ready', atMs: 200, error: null },
+      route: { status: 'ready', atMs: 300, error: null },
+      failure: providerFailure,
+    },
+  });
+  fs.writeFileSync(path.join(tempDir, 'app.log'), marker);
+  fs.writeFileSync(path.join(tempDir, 'bridge-service.log'), healthyBridgeLog);
+
+  const { report } = writeReport({ inputDir: tempDir, outputDir: tempDir, mode: 'live' });
+
+  assert.equal(report.failureLayer, 'provider');
+  assert.equal(report.stableErrorCode, 'watch.provider.session-failed');
+  assert.equal(report.lifecyclePhase, 'provider-session');
+  assert.equal(report.runtimeStatus.provider.atMs, 1_000);
+  assert.equal(report.layers.provider.status, 'failed');
+  assert.equal(report.layers.bridge.status, 'failed');
+  assert.equal(report.layers.app.status, 'failed');
+  assert.equal(report.diagnostics.evidence.runtimeFailure.atMs, 1_000);
+  assert.match(report.failureReason, /previous_item_id string is required/);
+  assert.equal(report.artifacts.runtimeStatus, path.join(tempDir, 'watch-runtime-status.json'));
+});
+
+test('healthy structured runtime status does not create a Provider failure', () => {
+  const report = classify({
+    runtimeStatus: {
+      state: 'ready',
+      failure: null,
+      provider: { status: 'ready', atMs: 1_000, error: null },
+    },
+  });
+
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.layers.provider.status, 'passed');
+  assert.equal(report.diagnostics.evidence.runtimeFailure, null);
+});
+
+test('runtime status artifact must match the indexed run marker', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-report-runtime-marker-'));
+  const marker = 'watch_mode_diagnostic.run_id=expected';
+  writeCollection(tempDir, {
+    provider: healthyProvider,
+  }, {
+    marker,
+    runtimeStatus: {
+      schemaVersion: 'watch-mode-readiness/v2',
+      runMarker: 'watch_mode_diagnostic.run_id=wrong',
+      processId: 3136,
+      state: 'ready',
+      updatedAtMs: 1_000,
+      frontendIpc: { status: 'ready', atMs: 100, error: null },
+      provider: { status: 'ready', atMs: 1_000, error: null },
+      bridge: { status: 'ready', atMs: 200, error: null },
+      route: { status: 'ready', atMs: 300, error: null },
+      failure: null,
+    },
+  });
+  fs.writeFileSync(path.join(tempDir, 'app.log'), marker);
+  fs.writeFileSync(path.join(tempDir, 'bridge-service.log'), healthyBridgeLog);
+
+  assert.throws(
+    () => writeReport({ inputDir: tempDir, outputDir: tempDir, mode: 'live' }),
+    /runtimeStatus runMarker does not match runMetadata/,
+  );
+});
 
 test('preserves physical output mixed-output detail in markdown', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-report-physical-detail-'));

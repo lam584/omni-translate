@@ -438,6 +438,9 @@ pub(crate) struct LiveTranslateLifecycle {
     completed_response_count: u32,
     source_language: String,
     conversation_items: HashSet<String>,
+    vad_root_item_ids: HashSet<String>,
+    active_speech_items: HashMap<String, u64>,
+    assistant_predecessor_item_ids: HashSet<String>,
     active_transcriptions: HashSet<(String, u64)>,
     terminal_transcriptions: HashSet<(String, u64)>,
 }
@@ -485,6 +488,9 @@ impl LiveTranslateLifecycle {
             completed_response_count: 0,
             source_language,
             conversation_items: HashSet::new(),
+            vad_root_item_ids: HashSet::new(),
+            active_speech_items: HashMap::new(),
+            assistant_predecessor_item_ids: HashSet::new(),
             active_transcriptions: HashSet::new(),
             terminal_transcriptions: HashSet::new(),
         })
@@ -539,14 +545,42 @@ impl LiveTranslateLifecycle {
             Phase::Streaming => Err(format!(
                 "model_protocol.event_out_of_order: received '{event_type}' before session.finish"
             )),
+            Phase::AwaitFinished if event_type == "input_audio_buffer.speech_started" => {
+                self.admit_speech_started(event)
+            }
+            Phase::AwaitFinished if event_type == "input_audio_buffer.speech_stopped" => {
+                self.admit_speech_stopped(event)
+            }
             Phase::AwaitFinished if event_type == "conversation.item.created" => {
-                let item_id =
-                    validate_conversation_item(event, self.conversation_items.is_empty())?;
+                let candidate_item_id = event
+                    .pointer("/item/id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let root_identity_proven = event
+                    .pointer("/item/content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|content| {
+                        content.iter().any(|part| {
+                            part.get("type").and_then(Value::as_str) == Some("input_audio")
+                        })
+                    })
+                    && (self.vad_root_item_ids.contains(candidate_item_id)
+                        || self
+                            .assistant_predecessor_item_ids
+                            .contains(candidate_item_id));
+                let (item_id, previous_item_id) =
+                    validate_conversation_item(event, root_identity_proven)?;
                 if !self.conversation_items.insert(item_id.to_string()) {
                     return Err(
                         "model_protocol.event_order_invalid: duplicate conversation item identity"
                             .to_string(),
                     );
+                }
+                if event.pointer("/item/role").and_then(Value::as_str) == Some("assistant") {
+                    if let Some(previous_item_id) = previous_item_id {
+                        self.assistant_predecessor_item_ids
+                            .insert(previous_item_id.to_string());
+                    }
                 }
                 Ok(ServerAction::Continue)
             }
@@ -715,6 +749,58 @@ impl LiveTranslateLifecycle {
                 "model_protocol.event_out_of_order: received '{event_type}' after session.finished"
             )),
         }
+    }
+
+    fn admit_speech_started(&mut self, event: &Value) -> Result<ServerAction, String> {
+        let object = event.as_object().ok_or_else(|| {
+            "model_protocol.payload_invalid: speech_started must be an object".to_string()
+        })?;
+        let item_id = required_nonempty_string(
+            object,
+            "item_id",
+            "input_audio_buffer.speech_started",
+        )?;
+        let audio_start_ms = event
+            .get("audio_start_ms")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                "model_protocol.payload_invalid: speech_started requires audio_start_ms".to_string()
+            })?;
+        if self.active_speech_items.contains_key(item_id) {
+            return Err(
+                "model_protocol.event_order_invalid: duplicate speech_started item".to_string(),
+            );
+        }
+        self.active_speech_items
+            .insert(item_id.to_string(), audio_start_ms);
+        self.vad_root_item_ids.insert(item_id.to_string());
+        Ok(ServerAction::Continue)
+    }
+
+    fn admit_speech_stopped(&mut self, event: &Value) -> Result<ServerAction, String> {
+        let object = event.as_object().ok_or_else(|| {
+            "model_protocol.payload_invalid: speech_stopped must be an object".to_string()
+        })?;
+        let item_id = required_nonempty_string(
+            object,
+            "item_id",
+            "input_audio_buffer.speech_stopped",
+        )?;
+        let audio_end_ms = event
+            .get("audio_end_ms")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                "model_protocol.payload_invalid: speech_stopped requires audio_end_ms".to_string()
+            })?;
+        let audio_start_ms = self.active_speech_items.get(item_id).copied().ok_or_else(|| {
+            "model_protocol.event_order_invalid: speech_stopped has no matching speech_started item"
+                .to_string()
+        })?;
+        if audio_end_ms < audio_start_ms {
+            return Err("model_protocol.payload_invalid: speech stop precedes start".to_string());
+        }
+        self.active_speech_items.remove(item_id);
+        Ok(ServerAction::Continue)
     }
 
     pub(crate) fn record_finish_sent(&mut self) -> Result<(), String> {

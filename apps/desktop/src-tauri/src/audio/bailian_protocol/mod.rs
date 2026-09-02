@@ -128,9 +128,11 @@ pub(crate) struct LiveTranslateServerState {
     active_audio_streams: BTreeSet<(String, String, u64, u64)>,
     completed_audio_streams: BTreeSet<(String, String, u64, u64)>,
     conversation_items: BTreeSet<String>,
+    assistant_referenced_conversation_items: BTreeSet<String>,
     active_transcriptions: BTreeSet<(String, u64)>,
     terminal_transcriptions: BTreeSet<(String, u64)>,
     active_speech_items: BTreeMap<String, u64>,
+    declared_speech_items: BTreeSet<String>,
     snapshots: BTreeMap<String, String>,
     committed_by_response: BTreeMap<String, String>,
 }
@@ -404,10 +406,38 @@ impl LiveTranslateServerState {
             }
             "conversation.item.created" => {
                 self.require_active(event_type)?;
-                let item_id =
-                    validate_conversation_item(event, self.conversation_items.is_empty())?;
+                let item = event.get("item").ok_or_else(|| {
+                    "model_protocol.payload_invalid: conversation item object is required"
+                        .to_string()
+                })?;
+                let item_id = validate_item_object(item, false)?;
+                let role = required_nonempty_string(item, "role")?;
+                let has_input_audio_source_part = item
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|content| {
+                        content.iter().any(|part| {
+                            part.get("type").and_then(Value::as_str) == Some("input_audio")
+                        })
+                    });
+                let allow_unlinked_root = has_input_audio_source_part
+                    && (self.declared_speech_items.contains(item_id)
+                        || self
+                            .assistant_referenced_conversation_items
+                            .contains(item_id));
+                validate_conversation_item_previous_identity(event, allow_unlinked_root)?;
                 if !self.conversation_items.insert(item_id.to_string()) {
                     return Err("model_protocol.event_order_invalid: duplicate conversation item identity".to_string());
+                }
+                if role == "assistant" {
+                    if let Some(previous_item_id) = event
+                        .get("previous_item_id")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                    {
+                        self.assistant_referenced_conversation_items
+                            .insert(previous_item_id.to_string());
+                    }
                 }
             }
             "response.audio.delta" => {
@@ -447,6 +477,7 @@ impl LiveTranslateServerState {
                 if self.active_speech_items.insert(item_id.to_string(), start).is_some() {
                     return Err("model_protocol.event_order_invalid: duplicate speech_started item".to_string());
                 }
+                self.declared_speech_items.insert(item_id.to_string());
             }
             "input_audio_buffer.speech_stopped" => {
                 self.require_active(event_type)?;
@@ -855,19 +886,18 @@ fn validate_content_part(event: &Value) -> Result<((String, String, u64, u64), &
     Ok((key, part_type))
 }
 
-fn validate_conversation_item(event: &Value, is_first_item: bool) -> Result<&str, String> {
-    let item = event
-        .get("item")
-        .ok_or_else(|| "model_protocol.payload_invalid: conversation item object is required".to_string())?;
-    let item_id = validate_item_object(item, false)?;
+fn validate_conversation_item_previous_identity(
+    event: &Value,
+    allow_unlinked_root: bool,
+) -> Result<(), String> {
     match event.get("previous_item_id") {
         Some(Value::String(previous_item_id)) if !previous_item_id.trim().is_empty() => {}
-        None | Some(Value::Null) if is_first_item => {}
+        None | Some(Value::Null) if allow_unlinked_root => {}
         _ => {
             required_nonempty_string(event, "previous_item_id")?;
         }
     }
-    Ok(item_id)
+    Ok(())
 }
 
 fn transcription_identity(event: &Value) -> Result<(String, u64), String> {
@@ -1665,12 +1695,21 @@ mod tests {
     }
 
     #[test]
-    fn first_conversation_item_accepts_no_previous_identity_without_weakening_later_links() {
+    fn vad_declared_first_conversation_item_accepts_no_previous_identity_without_weakening_later_links() {
         let authority = authority();
         for (previous_item_id, role, content) in [
             (None, "assistant", json!([{"type":"input_audio"}])),
-            (Some(Value::Null), "assistant", json!([])),
+            (
+                Some(Value::Null),
+                "assistant",
+                json!([{"type":"input_audio"}]),
+            ),
             (None, "user", json!([{"type":"input_audio"}])),
+            (
+                Some(Value::Null),
+                "user",
+                json!([{"type":"input_audio"}]),
+            ),
         ] {
             let mut state = LiveTranslateServerState::default();
             activate(&mut state, &authority);
@@ -1755,6 +1794,246 @@ mod tests {
                             "item":{
                                 "id":"source-1", "object":"realtime.item", "type":"message",
                                 "status":"in_progress", "role":"assistant", "content":[]
+                            }
+                        }),
+                    ),
+                )
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn late_source_item_accepts_an_absent_or_null_previous_identity_when_root_is_proven() {
+        let authority = authority();
+        for (case, declare_with_vad, previous_item_id) in [
+            ("vad-absent", true, None),
+            ("vad-null", true, Some(Value::Null)),
+            ("assistant-reference-absent", false, None),
+            ("assistant-reference-null", false, Some(Value::Null)),
+        ] {
+            let mut state = LiveTranslateServerState::default();
+            activate(&mut state, &authority);
+            if declare_with_vad {
+                state
+                    .admit(
+                        &authority,
+                        &event(
+                            &format!("event-speech-started-{case}"),
+                            json!({
+                                "type":"input_audio_buffer.speech_started",
+                                "item_id":"source-1",
+                                "audio_start_ms":0
+                            }),
+                        ),
+                    )
+                    .unwrap();
+            }
+            state
+                .admit(
+                    &authority,
+                    &event(
+                        &format!("event-translation-item-{case}"),
+                        json!({
+                            "type":"conversation.item.created",
+                            "previous_item_id":"source-1",
+                            "item":{
+                                "id":"translation-1", "object":"realtime.item", "type":"message",
+                                "status":"in_progress", "role":"assistant", "content":[]
+                            }
+                        }),
+                    ),
+                )
+                .unwrap();
+            let mut source = event(
+                &format!("event-source-item-{case}"),
+                json!({
+                    "type":"conversation.item.created",
+                    "item":{
+                        "id":"source-1", "object":"realtime.item", "type":"message",
+                        "status":"in_progress", "role":"assistant", "content":[{"type":"input_audio"}]
+                    }
+                }),
+            );
+            if let Some(previous_item_id) = previous_item_id {
+                source["previous_item_id"] = previous_item_id;
+            }
+            state
+                .admit(&authority, &source)
+                .unwrap_or_else(|error| panic!("{case} rejected: {error}"));
+        }
+    }
+
+    #[test]
+    fn speech_started_declaration_survives_speech_stopped_until_the_source_item_arrives() {
+        let authority = authority();
+        let mut state = LiveTranslateServerState::default();
+        activate(&mut state, &authority);
+        state
+            .admit(
+                &authority,
+                &event(
+                    "event-speech-started",
+                    json!({
+                        "type":"input_audio_buffer.speech_started",
+                        "item_id":"source-1",
+                        "audio_start_ms":0
+                    }),
+                ),
+            )
+            .unwrap();
+        state
+            .admit(
+                &authority,
+                &event(
+                    "event-speech-stopped",
+                    json!({
+                        "type":"input_audio_buffer.speech_stopped",
+                        "item_id":"source-1",
+                        "audio_end_ms":10
+                    }),
+                ),
+            )
+            .unwrap();
+        state
+            .admit(
+                &authority,
+                &event(
+                    "event-existing-item",
+                    json!({
+                        "type":"conversation.item.created",
+                        "previous_item_id":"previous-1",
+                        "item":{
+                            "id":"existing-1", "object":"realtime.item", "type":"message",
+                            "status":"in_progress", "role":"user", "content":[]
+                        }
+                    }),
+                ),
+            )
+            .unwrap();
+        state
+            .admit(
+                &authority,
+                &event(
+                    "event-source-item",
+                    json!({
+                        "type":"conversation.item.created",
+                        "item":{
+                            "id":"source-1", "object":"realtime.item", "type":"message",
+                            "status":"in_progress", "role":"user", "content":[{"type":"input_audio"}]
+                        }
+                    }),
+                ),
+            )
+            .expect("speech_started permanently declares the source identity for this session");
+    }
+
+    #[test]
+    fn unproven_or_mismatched_late_items_still_require_a_nonempty_previous_identity() {
+        let authority = authority();
+        for (case, item_id, role, previous_item_id) in [
+            ("unrelated-user-absent", "source-2", "user", None),
+            (
+                "proven-source-assistant-absent",
+                "source-1",
+                "assistant",
+                None,
+            ),
+            (
+                "proven-source-assistant-null",
+                "source-1",
+                "assistant",
+                Some(Value::Null),
+            ),
+            (
+                "translation-absent",
+                "translation-2",
+                "assistant",
+                None,
+            ),
+            (
+                "translation-null",
+                "translation-2",
+                "assistant",
+                Some(Value::Null),
+            ),
+        ] {
+            let mut state = LiveTranslateServerState::default();
+            activate(&mut state, &authority);
+            state
+                .admit(
+                    &authority,
+                    &event(
+                        &format!("event-speech-started-{case}"),
+                        json!({
+                            "type":"input_audio_buffer.speech_started",
+                            "item_id":"source-1",
+                            "audio_start_ms":0
+                        }),
+                    ),
+                )
+                .unwrap();
+            state
+                .admit(
+                    &authority,
+                    &event(
+                        &format!("event-translation-item-{case}"),
+                        json!({
+                            "type":"conversation.item.created",
+                            "previous_item_id":"source-1",
+                            "item":{
+                                "id":"translation-1", "object":"realtime.item", "type":"message",
+                                "status":"in_progress", "role":"assistant", "content":[]
+                            }
+                        }),
+                    ),
+                )
+                .unwrap();
+            let mut late_item = event(
+                &format!("event-late-item-{case}"),
+                json!({
+                    "type":"conversation.item.created",
+                    "item":{
+                        "id":item_id, "object":"realtime.item", "type":"message",
+                        "status":"in_progress", "role":role, "content":[]
+                    }
+                }),
+            );
+            if let Some(previous_item_id) = previous_item_id {
+                late_item["previous_item_id"] = previous_item_id;
+            }
+            assert!(
+                state.admit(&authority, &late_item).is_err(),
+                "{case} unexpectedly bypassed previous_item_id validation"
+            );
+        }
+
+        for invalid_previous_item_id in [json!(""), json!(" "), json!(0), json!(true)] {
+            let mut state = LiveTranslateServerState::default();
+            activate(&mut state, &authority);
+            state
+                .admit(
+                    &authority,
+                    &event(
+                        "event-speech-started-invalid-shape",
+                        json!({
+                            "type":"input_audio_buffer.speech_started",
+                            "item_id":"source-1",
+                            "audio_start_ms":0
+                        }),
+                    ),
+                )
+                .unwrap();
+            assert!(state
+                .admit(
+                    &authority,
+                    &event(
+                        "event-source-invalid-shape",
+                        json!({
+                            "type":"conversation.item.created",
+                            "previous_item_id":invalid_previous_item_id,
+                            "item":{
+                                "id":"source-1", "object":"realtime.item", "type":"message",
+                                "status":"in_progress", "role":"user", "content":[]
                             }
                         }),
                     ),

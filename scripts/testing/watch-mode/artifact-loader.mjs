@@ -46,6 +46,74 @@ function normalizeBridgeProbe(probe) {
   return { probePassed: false, ...probe };
 }
 
+function validateRuntimeStatus(status, metadata) {
+  if (status === null) return null;
+  if (!status || typeof status !== 'object' || Array.isArray(status)) {
+    throw new Error('runtimeStatus artifact must be an object');
+  }
+  if (status.schemaVersion !== 'watch-mode-readiness/v2') {
+    throw new Error('runtimeStatus schemaVersion must be watch-mode-readiness/v2');
+  }
+  if (
+    typeof metadata.runMarker === 'string'
+    && metadata.runMarker !== ''
+    && status.runMarker !== metadata.runMarker
+  ) {
+    throw new Error('runtimeStatus runMarker does not match runMetadata');
+  }
+  if (!Number.isSafeInteger(Number(status.processId)) || Number(status.processId) <= 0) {
+    throw new Error('runtimeStatus processId must be a positive integer');
+  }
+  if (typeof status.state !== 'string' || status.state === '') {
+    throw new Error('runtimeStatus state must be a non-empty string');
+  }
+  for (const component of ['frontendIpc', 'provider', 'bridge', 'route']) {
+    const value = status[component];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`runtimeStatus ${component} must be an object`);
+    }
+    if (!['pending', 'ready', 'failed'].includes(value.status)) {
+      throw new Error(`runtimeStatus ${component}.status is invalid`);
+    }
+    if (value.status === 'failed') {
+      if (
+        !value.error
+        || typeof value.error.code !== 'string'
+        || value.error.code === ''
+        || typeof value.error.message !== 'string'
+        || value.error.message === ''
+      ) {
+        throw new Error(`runtimeStatus ${component} failure is incomplete`);
+      }
+      if (!Number.isSafeInteger(Number(value.atMs)) || Number(value.atMs) <= 0) {
+        throw new Error(`runtimeStatus ${component}.atMs must identify the failure time`);
+      }
+    }
+  }
+  if (status.state === 'failed') {
+    if (
+      !status.failure
+      || typeof status.failure.code !== 'string'
+      || status.failure.code === ''
+      || typeof status.failure.message !== 'string'
+      || status.failure.message === ''
+    ) {
+      throw new Error('failed runtimeStatus must contain a failure identity');
+    }
+    const matchingComponent = ['frontendIpc', 'provider', 'bridge', 'route'].find((component) => (
+      status[component].status === 'failed'
+      && status[component].error?.code === status.failure.code
+      && status[component].error?.message === status.failure.message
+    ));
+    if (!matchingComponent) {
+      throw new Error('runtimeStatus failure does not match a failed component');
+    }
+  } else if (status.failure !== null && status.failure !== undefined) {
+    throw new Error('non-failed runtimeStatus must not contain a failure');
+  }
+  return status;
+}
+
 export function loadWatchModeArtifacts(runDirectory) {
   const { collection, collectionPath } = readWatchModeRunCollection(runDirectory);
   const paths = resolveArtifacts(runDirectory, collection.artifacts);
@@ -56,6 +124,10 @@ export function loadWatchModeArtifacts(runDirectory) {
     || textAfterLocalTimestamp(rawAppLogText, metadata.startedAtLocal);
   const bridgeLogText = textAfterMarker(rawBridgeLogText, metadata.runMarker)
     || textAfterLocalTimestamp(rawBridgeLogText, metadata.startedAtLocal);
+  const runtimeStatus = validateRuntimeStatus(
+    readJson(paths.runtimeStatus, 'runtimeStatus'),
+    metadata,
+  );
   const fixtureEvidence = readJson(paths.fixtureEvidence, 'fixtureEvidence');
   const snapshots = fixtureEvidence ?? {
     runMarker: metadata.runMarker ?? null,
@@ -76,6 +148,7 @@ export function loadWatchModeArtifacts(runDirectory) {
     systemMetrics: readJson(paths.systemMetrics, 'systemMetrics'),
     diagnosticsBundle: null,
   };
+  snapshots.runtimeStatus = runtimeStatus;
   snapshots.wasapi ??= snapshots.driver;
   return { collection, collectionPath, paths, metadata, snapshots, appLogText, bridgeLogText };
 }

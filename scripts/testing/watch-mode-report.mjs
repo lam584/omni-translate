@@ -1964,6 +1964,31 @@ function createLayer(name, data, extra = {}) {
   };
 }
 
+function structuredRuntimeFailure(runtimeStatus) {
+  if (runtimeStatus?.state !== 'failed' || !runtimeStatus.failure) return null;
+  const componentLayers = [
+    ['frontendIpc', 'app'],
+    ['provider', 'provider'],
+    ['bridge', 'bridge'],
+    ['route', 'app'],
+  ];
+  const match = componentLayers.find(([component]) => (
+    runtimeStatus[component]?.status === 'failed'
+    && runtimeStatus[component]?.error?.code === runtimeStatus.failure.code
+    && runtimeStatus[component]?.error?.message === runtimeStatus.failure.message
+  ));
+  if (!match) return null;
+  const [component, layer] = match;
+  return {
+    component,
+    layer,
+    code: runtimeStatus.failure.code,
+    message: runtimeStatus.failure.message,
+    atMs: asNumber(runtimeStatus[component].atMs, null),
+    reason: `structured Watch runtime reported ${runtimeStatus.failure.code}: ${runtimeStatus.failure.message}`,
+  };
+}
+
 function addLayerFailure(layers, layer, reason, mode) {
   if (!reason) return;
   const entry = layers[layer];
@@ -1980,7 +2005,7 @@ function addLayerFailure(layers, layer, reason, mode) {
   }
 }
 
-function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
+function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog, runtimeFailure) {
   const steps = normalizeSteps(input.steps);
   const feedbackLoopPrevention = normalizeFeedbackLoopPrevention(
     input.feedbackLoopPrevention ?? input.snapshots?.feedbackLoopPrevention,
@@ -2031,6 +2056,7 @@ function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
       ], 12),
       appReadiness: uniqueTail(matchingLines(input.appLogText ?? '', /readiness|session\.(?:created|updated)|ws\.recv\.session|watch_mode\.omni_session_ready|diagnostic_autostart_(?:ipc_ready|infrastructure_failed)/i), 12),
       realtimeSession: parseOmniRealtimeDiagnostics(appLog),
+      runtimeFailure,
       aec: layers.aec?.data ?? null,
       bridgeErrors: echoCancelVariant ? [] : uniqueTail(bridgeLog.errorLines, 12),
       bridgeSourceSummary: echoCancelVariant ? [] : uniqueTail(bridgeLog.sourceSummaryLines, 5),
@@ -2081,7 +2107,7 @@ function evidenceDrivenTerminalFailureIdentity(evidence) {
     : { stableErrorCode: 'watch.terminal-error-code-unregistered', lifecyclePhase: 'terminal-evidence' };
 }
 
-function stableFailureIdentity({ failureLayer, failureReason, diagnostics, layers, watchSessionReport }) {
+function stableFailureIdentity({ failureLayer, failureReason, diagnostics, layers, watchSessionReport, runtimeFailure }) {
   if (!failureLayer) return null;
   const sessionIssues = Array.isArray(watchSessionReport?.issues)
     ? watchSessionReport.issues : [];
@@ -2120,7 +2146,14 @@ function stableFailureIdentity({ failureLayer, failureReason, diagnostics, layer
   const terminalFailureIdentity = evidenceDrivenTerminalFailureIdentity(evidence);
   let stableErrorCode;
   let lifecyclePhase;
-  if (terminalFailureIdentity) {
+  if (runtimeFailure?.layer === failureLayer) {
+    stableErrorCode = runtimeFailure.code;
+    lifecyclePhase = {
+      provider: 'provider-session',
+      bridge: 'bridge-runtime',
+      app: 'application-runtime',
+    }[runtimeFailure.layer] ?? 'cell-runtime';
+  } else if (terminalFailureIdentity) {
     ({ stableErrorCode, lifecyclePhase } = terminalFailureIdentity);
   } else if (/workspace access denied/i.test(evidence)) {
     stableErrorCode = 'provider.workspace-access-denied';
@@ -2395,6 +2428,18 @@ export function classifyWatchModeRun(input) {
     translationRoute,
     speechSegmentation,
   });
+  const runtimeFailure = structuredRuntimeFailure(input.runtimeStatus);
+  const providerData = runtimeFailure?.layer === 'provider'
+    ? {
+        ...(input.provider ?? {}),
+        error: runtimeFailure.reason,
+        runtimeStatus: {
+          status: input.runtimeStatus.provider.status,
+          atMs: runtimeFailure.atMs,
+          error: input.runtimeStatus.provider.error,
+        },
+      }
+    : input.provider;
   const physicalOutputContentSkipped = input.physicalOutputContent?.skipped === true;
   const layers = {
     environment: createLayer('environment', input.steps),
@@ -2422,7 +2467,7 @@ export function classifyWatchModeRun(input) {
     }, {
       parsedLog: appLog,
     }),
-    provider: createLayer('provider', input.provider),
+    provider: createLayer('provider', providerData),
   };
   if (physicalOutputContentSkipped) {
     layers.physicalOutputContent.status = 'skipped';
@@ -2464,8 +2509,8 @@ export function classifyWatchModeRun(input) {
     ? null
     : rawRunnerFailureReason;
   const environmentReason = environmentPrecheckFailed(input, feedbackLoopPrevention);
-  const hardProviderReason = providerLayerFailed(input.provider, appLog, input.physicalOutputContent, { hardOnly: true });
-  const providerReason = providerLayerFailed(input.provider, appLog, input.physicalOutputContent, {
+  const hardProviderReason = providerLayerFailed(providerData, appLog, input.physicalOutputContent, { hardOnly: true });
+  const providerReason = providerLayerFailed(providerData, appLog, input.physicalOutputContent, {
     requireFailedCallLogEvidence: echoCancelVariant,
   });
   const providerBeforeAppReason = omniAudibleNoVadReason(appLog);
@@ -2484,6 +2529,7 @@ export function classifyWatchModeRun(input) {
   });
   const checks = runnerFailureReason
     ? [
+        ...(runtimeFailure ? [[runtimeFailure.layer, runtimeFailure.reason]] : []),
         ['driver', driverLayerFailed(input.driver)],
         ['wasapi', wasapiLayerFailed(input.wasapi) ?? wasapiInjectedPlaybackFailed(input.wasapi, input.playback, appLog)],
         ['bridge', bridgeLayerFailed(input.bridge, bridgeLog, feedbackLoopPrevention) ?? processExclusionRestartReason],
@@ -2505,6 +2551,7 @@ export function classifyWatchModeRun(input) {
         ['strictContent', physicalOutputContentSkipped ? null : layers.strictContent.reason],
       ]
     : [
+        ...(runtimeFailure ? [[runtimeFailure.layer, runtimeFailure.reason]] : []),
         ['driver', driverLayerFailed(input.driver)],
         ['wasapi', wasapiLayerFailed(input.wasapi) ?? wasapiInjectedPlaybackFailed(input.wasapi, input.playback, appLog)],
         ['bridge', bridgeLayerFailed(input.bridge, bridgeLog, feedbackLoopPrevention) ?? processExclusionRestartReason],
@@ -2548,7 +2595,14 @@ export function classifyWatchModeRun(input) {
   }
 
   const { failureLayer, verdict } = resolveLayerVerdict({ activeChecks, layers, environmentReason });
-  const diagnostics = buildReportDiagnostics(input, layers, activeChecks, appLog, bridgeLog);
+  const diagnostics = buildReportDiagnostics(
+    input,
+    layers,
+    activeChecks,
+    appLog,
+    bridgeLog,
+    runtimeFailure,
+  );
   const failureReason = failureLayer ? layers[failureLayer].reason : null;
   const failureIdentity = stableFailureIdentity({
     failureLayer,
@@ -2556,6 +2610,7 @@ export function classifyWatchModeRun(input) {
     diagnostics,
     layers,
     watchSessionReport: input.watchSessionReport,
+    runtimeFailure,
   });
   const provenance = input.provenance ?? currentGitProvenance();
   return {
@@ -2570,6 +2625,7 @@ export function classifyWatchModeRun(input) {
     modelId: input.modelId ?? input.snapshots?.modelId ?? null,
     feedbackLoopPrevention,
     deviceEvidence: input.deviceEvidence ?? input.snapshots?.deviceEvidence ?? null,
+    runtimeStatus: input.runtimeStatus ?? null,
     realtimeSession,
     translationRoute,
     watchSessionReport: input.watchSessionReport ?? null,

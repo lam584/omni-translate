@@ -95,10 +95,10 @@ pub(super) fn validate_output_item(event: &Value, done: bool) -> Result<(&str, u
     }
     Ok((response_id, index, item_id))
 }
-pub(super) fn validate_conversation_item(
-    event: &Value,
-    is_first_item: bool,
-) -> Result<&str, String> {
+pub(super) fn validate_conversation_item<'a>(
+    event: &'a Value,
+    root_identity_proven: bool,
+) -> Result<(&'a str, Option<&'a str>), String> {
     let object = event.as_object().ok_or_else(|| {
         "model_protocol.payload_invalid: conversation.item.created must be an object".to_string()
     })?;
@@ -120,14 +120,17 @@ pub(super) fn validate_conversation_item(
                 .to_string(),
         );
     }
-    match object.get("previous_item_id") {
-        Some(Value::String(previous_item_id)) if !previous_item_id.trim().is_empty() => {}
-        None | Some(Value::Null) if is_first_item => {}
+    let previous_item_id = match object.get("previous_item_id") {
+        Some(Value::String(previous_item_id)) if !previous_item_id.trim().is_empty() => {
+            Some(previous_item_id.as_str())
+        }
+        None | Some(Value::Null) if root_identity_proven => None,
         _ => {
             required_nonempty_string(object, "previous_item_id", "conversation.item.created")?;
+            unreachable!("required_nonempty_string accepted an invalid previous_item_id shape")
         }
-    }
-    Ok(item_id)
+    };
+    Ok((item_id, previous_item_id))
 }
 pub(super) fn validate_transcription_identity(event: &Value) -> Result<(String, u64), String> {
     let object = event.as_object().ok_or_else(|| {

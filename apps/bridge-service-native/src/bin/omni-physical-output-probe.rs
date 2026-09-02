@@ -52,7 +52,7 @@ mod probe {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use wasapi::{
         initialize_mta, AudioCaptureClient, AudioClient, Device, DeviceEnumerator, Direction,
-        SampleType, WaveFormat,
+        Handle, SampleType, StreamMode, WasapiError, WaveFormat,
     };
     use windows_sys::Win32::{
         Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
@@ -579,19 +579,19 @@ mod probe {
                     .to_string(),
             );
         }
-        let capture = LoopbackCapture::start(capture_device)?;
+        let capture = RecorderLoopbackCapture::start(capture_device)?;
         let max_output_frames = ((args.record_seconds as f64 * SAMPLE_RATE as f64).ceil()
             as usize)
             .checked_add(CAPTURE_PACKET_TOLERANCE_FRAMES)
             .ok_or_else(|| "physical output recorder frame budget overflowed".to_string())?;
-        let mut metrics = CaptureMetrics::with_max_output_frames(max_output_frames);
+        let mut metrics = CaptureMetrics::try_with_max_output_frames(max_output_frames)?;
         let started = Instant::now();
         let duration = Duration::from_millis((args.record_seconds * 1000.0).ceil() as u64);
         let terminal_tail =
             Duration::from_millis((args.terminal_tail_seconds * 1000.0).ceil() as u64);
         let mut terminal_observed_at = None;
         while started.elapsed() < duration {
-            capture.collect_available(&mut metrics)?;
+            capture.wait_and_collect_available(&mut metrics)?;
             let elapsed = started.elapsed();
             let terminal_exists = terminal_marker_matches_identity(args);
             if should_stop_after_terminal_tail(
@@ -602,7 +602,6 @@ mod probe {
             ) {
                 break;
             }
-            thread::sleep(Duration::from_millis(2));
         }
         capture.collect_available(&mut metrics)?;
         let rms = metrics.rms();

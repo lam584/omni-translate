@@ -30,6 +30,93 @@
         }
     }
 
+    const RECORDER_CAPTURE_BUFFER_HEADROOM_HNS: i64 = 10_000_000;
+    const RECORDER_CAPTURE_EVENT_WAIT_MS: u32 = 50;
+
+    fn recorder_capture_buffer_duration_hns(
+        default_period_hns: i64,
+        minimum_period_hns: i64,
+    ) -> i64 {
+        RECORDER_CAPTURE_BUFFER_HEADROOM_HNS
+            .max(default_period_hns)
+            .max(minimum_period_hns)
+    }
+
+    struct RecorderLoopbackCapture {
+        audio_client: AudioClient,
+        capture_client: AudioCaptureClient,
+        event_handle: Handle,
+    }
+
+    impl RecorderLoopbackCapture {
+        fn start(device: &Device) -> Result<Self, String> {
+            let format = WaveFormat::new(32, 32, &SampleType::Float, SAMPLE_RATE, CHANNELS, None);
+            let mut audio_client = device
+                .get_iaudioclient()
+                .map_err(|error| format!("activate-recorder-audio-client: {error}"))?;
+            let (default_period_hns, minimum_period_hns) = audio_client
+                .get_device_period()
+                .map_err(|error| format!("query-recorder-device-period: {error}"))?;
+            let buffer_duration_hns = recorder_capture_buffer_duration_hns(
+                default_period_hns,
+                minimum_period_hns,
+            );
+            audio_client
+                .initialize_client(
+                    &format,
+                    &Direction::Capture,
+                    &StreamMode::EventsShared {
+                        autoconvert: true,
+                        buffer_duration_hns,
+                    },
+                )
+                .map_err(|error| format!("initialize-recorder-event-capture: {error}"))?;
+            let event_handle = audio_client
+                .set_get_eventhandle()
+                .map_err(|error| format!("register-recorder-capture-event: {error}"))?;
+            let capture_client = audio_client
+                .get_audiocaptureclient()
+                .map_err(|error| format!("get-recorder-capture-client: {error}"))?;
+            audio_client
+                .start_stream()
+                .map_err(|error| format!("start-recorder-capture-stream: {error}"))?;
+            Ok(Self {
+                audio_client,
+                capture_client,
+                event_handle,
+            })
+        }
+
+        fn wait_and_collect_available(&self, metrics: &mut CaptureMetrics) -> Result<(), String> {
+            match self
+                .event_handle
+                .wait_for_event(RECORDER_CAPTURE_EVENT_WAIT_MS)
+            {
+                Ok(()) | Err(WasapiError::EventTimeout) => {}
+                Err(error) => return Err(format!("wait-for-recorder-capture-event: {error}")),
+            }
+            for_each_capture_packet_with_info(
+                &self.capture_client,
+                BYTES_PER_FRAME,
+                |packet, info| metrics.append_capture_packet(packet, info),
+            )
+        }
+
+        fn collect_available(&self, metrics: &mut CaptureMetrics) -> Result<(), String> {
+            for_each_capture_packet_with_info(
+                &self.capture_client,
+                BYTES_PER_FRAME,
+                |packet, info| metrics.append_capture_packet(packet, info),
+            )
+        }
+    }
+
+    impl Drop for RecorderLoopbackCapture {
+        fn drop(&mut self) {
+            let _ = self.audio_client.stop_stream();
+        }
+    }
+
     #[derive(Clone, Debug, Serialize)]
     #[serde(rename_all = "camelCase")]
     struct CaptureGapAuthority {
@@ -107,11 +194,23 @@
     }
 
     impl CaptureMetrics {
-        fn with_max_output_frames(max_output_frames: usize) -> Self {
-            Self {
+        fn try_with_max_output_frames(max_output_frames: usize) -> Result<Self, String> {
+            let sample_capacity = max_output_frames.checked_mul(CHANNELS).ok_or_else(|| {
+                format!(
+                    "physical output recorder sample capacity overflowed: frames={max_output_frames} channels={CHANNELS}"
+                )
+            })?;
+            let mut samples = Vec::new();
+            samples.try_reserve_exact(sample_capacity).map_err(|error| {
+                format!(
+                    "reserve physical output recorder sample capacity ({sample_capacity} samples): {error}"
+                )
+            })?;
+            Ok(Self {
+                samples,
                 max_output_frames,
                 ..Self::default()
-            }
+            })
         }
 
         fn output_frame_budget(&self) -> usize {
@@ -397,6 +496,39 @@
     mod capture_timeline_tests {
         use super::*;
 
+        #[test]
+        fn recorder_capture_buffer_keeps_one_second_of_scheduler_headroom() {
+            assert_eq!(
+                recorder_capture_buffer_duration_hns(100_000, 30_000),
+                RECORDER_CAPTURE_BUFFER_HEADROOM_HNS
+            );
+            assert_eq!(
+                recorder_capture_buffer_duration_hns(20_000_000, 30_000),
+                20_000_000
+            );
+            assert_eq!(
+                recorder_capture_buffer_duration_hns(100_000, 20_000_000),
+                20_000_000
+            );
+        }
+
+        #[test]
+        fn recorder_capture_preallocates_its_bounded_output_without_growth() {
+            let frame_budget = 48_000;
+            let metrics = CaptureMetrics::try_with_max_output_frames(frame_budget).unwrap();
+            assert_eq!(metrics.output_frame_budget(), frame_budget);
+            assert!(metrics.samples.capacity() >= frame_budget * CHANNELS);
+        }
+
+        #[test]
+        fn recorder_capture_rejects_an_unrepresentable_sample_capacity() {
+            let error = match CaptureMetrics::try_with_max_output_frames(usize::MAX) {
+                Ok(_) => panic!("unrepresentable recorder capacity must fail"),
+                Err(error) => error,
+            };
+            assert!(error.contains("sample capacity overflowed"));
+        }
+
         fn float_payload(frames: u32, value: f32) -> Vec<u8> {
             (0..frames as usize * CHANNELS)
                 .flat_map(|_| value.to_le_bytes())
@@ -496,7 +628,7 @@
         #[test]
         fn capture_timeline_rejects_repeated_bounded_gaps_at_total_output_budget() {
             let budget = MAX_CAPTURE_GAP_FRAMES as usize + 4;
-            let mut metrics = CaptureMetrics::with_max_output_frames(budget);
+            let mut metrics = CaptureMetrics::try_with_max_output_frames(budget).unwrap();
             metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
             let mut second = packet(2, 102 + MAX_CAPTURE_GAP_FRAMES);
             second.data_discontinuity = true;

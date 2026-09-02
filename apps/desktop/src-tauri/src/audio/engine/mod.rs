@@ -576,6 +576,7 @@ include!("input_completion.rs");
 include!("provider_input_fence.rs");
 include!("route_worker.rs");
 include!("workers.rs");
+include!("capture_timing.rs");
 include!("warm_route.rs");
 #[derive(Clone)]
 pub(crate) struct RouteSpec {

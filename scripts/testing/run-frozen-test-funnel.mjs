@@ -31,7 +31,7 @@ const SERIAL_STEPS = Object.freeze([
   { name: 'diagnostics-benchmark-tests', command: 'npm run test:diagnostics-benchmark' },
 ]);
 
-function runCommand(step, logPath) {
+export function runFrozenTestCommand(step, logPath, { spawnCommand = spawn } = {}) {
   return new Promise((resolve, reject) => {
     const startedAt = new Date();
     const output = fs.createWriteStream(logPath, { flags: 'wx' });
@@ -39,14 +39,14 @@ function runCommand(step, logPath) {
     const args = process.platform === 'win32'
       ? ['/d', '/s', '/c', step.command]
       : ['-lc', step.command];
-    const child = spawn(shell, args, { cwd: repoRoot, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawnCommand(shell, args, { cwd: repoRoot, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout.pipe(output, { end: false });
     child.stderr.pipe(output, { end: false });
     child.once('error', (error) => { output.end(); reject(error); });
-    child.once('exit', (code) => {
+    child.once('close', (code, signal) => {
       output.end(() => {
-        if (Number(code) !== 0) reject(new Error(`${step.name} failed with exit ${code}`));
-        else resolve({ step, logPath, startedAt, completedAt: new Date() });
+        if (code !== 0) reject(new Error(`${step.name} failed with exit ${code}${signal ? ` (signal ${signal})` : ''}`));
+        else resolve({ name: step.name, command: step.command, logPath, startedAt, completedAt: new Date() });
       });
     });
   });
@@ -63,10 +63,10 @@ export async function runFrozenTestFunnel({ workspaceRoot = repoRoot, runtimeAut
   fs.mkdirSync(path.dirname(root), { recursive: true });
   fs.mkdirSync(root, { recursive: false });
   const results = await Promise.all(PARALLEL_SAFE_STEPS.map((step) => (
-    runCommand(step, path.join(root, `${step.name}.log`))
+    runFrozenTestCommand(step, path.join(root, `${step.name}.log`))
   )));
   for (const step of SERIAL_STEPS) {
-    results.push(await runCommand(step, path.join(root, `${step.name}.log`)));
+    results.push(await runFrozenTestCommand(step, path.join(root, `${step.name}.log`)));
   }
   const finalRuntime = verifyStrictRuntimeAuthority(frozenRuntime.authorityPath, { workspaceRoot, provenance });
   if (finalRuntime.authority.authorityDigest !== frozenRuntime.authority.authorityDigest) {
@@ -74,9 +74,9 @@ export async function runFrozenTestFunnel({ workspaceRoot = repoRoot, runtimeAut
   }
   const receipts = results.map((result) => {
     const receipt = createTestReceipt({ ...result, provenance, runtimeAuthority: frozenRuntime.authority });
-    const receiptPath = path.join(root, `${result.step.name}.receipt.json`);
+    const receiptPath = path.join(root, `${result.name}.receipt.json`);
     fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
-    return { name: result.step.name, command: result.step.command, receiptPath };
+    return { name: result.name, command: result.command, receiptPath };
   });
   const canonicalPath = path.resolve(workspaceRoot, TEST_RECEIPT_CANONICAL_INDEX);
   const index = {

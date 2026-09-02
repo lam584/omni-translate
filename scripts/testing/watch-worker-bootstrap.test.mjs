@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { acceptRediscoveredWorker, buildStrictSshArgs, provisionCredential, validateWorkerPins, verifyPinnedKnownHost } from './watch-worker-bootstrap.mjs';
+import { acceptRediscoveredWorker, buildStrictSshArgs, provisionCredential, validateWorkerPins, verifyCredentialMatch, verifyPinnedKnownHost } from './watch-worker-bootstrap.mjs';
 
 const worker = (id, suffix) => ({ workerId: id, user: 'VMUser', vmIdentity: { uuidBios: `uuid-${suffix}` }, transport: { kind: 'ssh', host: `192.168.40.${suffix}`, port: 22, identityFile: 'E:\\id_rsa', knownHostsFile: 'C:\\run\\known_hosts', hostKeyAlias: `omni-${id}`, hostKeyAlgorithm: 'ssh-ed25519', hostKeySha256: `SHA256:${(id === 'vm1' ? 'A' : 'B').repeat(43)}` } });
 
@@ -62,7 +62,7 @@ test('credential provision uses pipes and persists metadata only', async () => {
     child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
     process.nextTick(() => {
       if (args.at(-1) === 'export') child.stdout.end(Buffer.from('test-only-secret'));
-      else if (args.at(-1) === 'import') child.stdout.end(Buffer.from('{"schemaVersion":"watch-worker-credential-import/v1","exists":true,"blobBytes":16}'));
+      else if (args.at(-1) === 'import-interactive') child.stdout.end(Buffer.from('{"schemaVersion":"watch-worker-credential-import/v1","exists":true,"blobBytes":16}'));
       else child.stdout.end(Buffer.alloc(32, 7));
       child.emit('close', 0);
     });
@@ -76,6 +76,8 @@ test('credential provision uses pipes and persists metadata only', async () => {
   assert.deepEqual(receipt, { schemaVersion: 'watch-worker-credential-provision/v1', exists: true, blobBytes: 16, matches: true });
   assert.equal(JSON.stringify(calls).includes('test-only-secret'), false);
   assert.deepEqual(calls[0].args, ['export']);
+  assert.equal(calls[1].args.at(-1), 'import-interactive');
+  assert.equal(calls[3].args.at(-1), 'prove-interactive');
   assert.ok(calls.every((call) => call.args.every((arg) => !/secret|api.?key/i.test(arg))));
   assert.deepEqual(challenge, Buffer.alloc(32), 'challenge must be wiped after proof comparison');
   const source = fs.readFileSync(new URL('./watch-worker-bootstrap.mjs', import.meta.url), 'utf8');
@@ -101,6 +103,25 @@ test('PowerShell bootstrap is recoverable and never enables autologon', () => {
   const elevation = fs.readFileSync(new URL('./request-watch-worker-bootstrap-elevated.ps1', import.meta.url), 'utf8');
   assert.match(elevation, /-Verb RunAs/);
   assert.match(elevation, /-WindowStyle Hidden/);
+});
+
+test('proof rejection waits for both bounded helpers and wipes challenge', async () => {
+  const challenge = Buffer.alloc(32, 11);
+  let localCompleted = false;
+  const spawnImpl = (file, args, options) => {
+    assert.equal(options.timeout, 30000);
+    const child = new EventEmitter();
+    child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    if (args.at(-1) === 'prove-interactive') {
+      process.nextTick(() => { child.stdout.end(); child.emit('close', 1); });
+    } else {
+      setTimeout(() => { localCompleted = true; child.stdout.end(Buffer.alloc(32, 7)); child.emit('close', 0); }, 10);
+    }
+    return child;
+  };
+  await assert.rejects(verifyCredentialMatch({ localHelper: 'local.exe', remoteHelper: 'remote.exe', sshArgs: [], spawnImpl, randomBytesImpl: () => challenge }), /helper exited 1/);
+  assert.equal(localCompleted, true);
+  assert.deepEqual(challenge, Buffer.alloc(32));
 });
 
 test('PowerShell host-key rotation preserves ssh-keygen empty passphrase on Windows PowerShell 5', () => {

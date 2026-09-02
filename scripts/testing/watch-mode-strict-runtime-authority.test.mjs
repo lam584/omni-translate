@@ -1,8 +1,22 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
+import { strictRuntimeBuildResources } from './watch-mode-strict-runtime-authority.mjs';
 
 const source = fs.readFileSync(new URL('./watch-mode-strict-runtime-authority.mjs', import.meta.url), 'utf8');
+
+test('strict runtime Cargo jobs follow the fixed CPU and available-memory cap', () => {
+  const jobs = (logicalProcessors, memoryGiB) => strictRuntimeBuildResources({
+    logicalProcessors, availableMemoryBytes: memoryGiB * 1024 ** 3,
+  }).cargoBuildJobs;
+  assert.equal(jobs(32, 64), 12);
+  assert.equal(jobs(8, 64), 8);
+  assert.equal(jobs(32, 7), 4);
+  assert.equal(jobs(1, 1), 2);
+  assert.throws(() => jobs(0, 16), /resources/);
+  assert.throws(() => jobs(4, 0), /resources/);
+  assert.match(source, /environment\.CARGO_BUILD_JOBS = String\(buildResources\.cargoBuildJobs\)/);
+});
 
 test('strict runtime preparation creates one certificate before gates and builds', () => {
   const certificate = source.indexOf("new-local-release-certificate.ps1");

@@ -30,6 +30,7 @@ const digest = (value) => crypto.createHash('sha256')
 
 const portable = (value) => value.split(path.sep).join('/');
 const fileHash = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+const safePathId = (value) => `${String(value).replace(/[^a-z0-9_-]/giu, '-').slice(0, 24)}-${digest(String(value)).slice(0, 16)}`;
 
 const runProcess = (command, args, options = {}) => new Promise((resolve, reject) => {
   const child = spawn(command, args, { ...options, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -54,6 +55,7 @@ export function createLocalIsolationWorkerRequest(request) {
       vmIdentityDigest: request.worker.vmIdentityDigest,
     },
     phase: request.phase,
+    invocationId: request.invocationId,
     cell: request.cell,
     profile: request.profile,
     provenance: request.provenance,
@@ -81,6 +83,7 @@ export function validateLocalIsolationWorkerRequest(request) {
       || request.workerAuthority?.workerId !== request.worker?.workerId
       || request.workerAuthority?.deviceProfileInstanceId !== request.profile?.instanceId
       || request.cell?.providerMode !== 'disabled'
+      || !/^[a-z0-9_-]{1,64}$/iu.test(String(request.invocationId ?? ''))
       || !request.distributionAuthority?.manifestPath
       || !SHA256.test(String(request.distributionAuthority?.distributionDigest ?? ''))) {
     throw new Error('local isolation worker request identity is invalid');
@@ -178,6 +181,11 @@ export function collectLocalIsolationDistributionFiles({ workspaceRoot, runtimeB
     }
   };
   visit(entry);
+  // The release plan evaluates model identities during module bootstrap. Its
+  // registry is a filesystem dependency, not an ESM import; freeze it too.
+  if (scripts.has(path.resolve(workspaceRoot, 'scripts/testing/model-protocol-profile-contract.mjs'))) {
+    scripts.add(path.resolve(workspaceRoot, 'contracts/model-protocol-profiles.v1.json'));
+  }
   const files = new Map();
   for (const script of scripts) {
     const bytes = fs.readFileSync(script);
@@ -264,14 +272,20 @@ export async function distributeLocalIsolationRuntime({
       await run(scpExecutable, [...scpArgs(worker), manifestPath, remoteSpec(worker, remoteManifest)]);
       await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`,
         ...remoteNodePowerShellArgs({
-          cwd: worker.workspaceRoot,
+          cwd: destinationRoot,
           script: path.win32.join(destinationRoot, 'scripts/testing/watch-mode-local-isolation.mjs'),
           args: ['--verify-distribution', remoteManifest],
         })]);
     }
     const workerManifestPath = path.join(destinationRoot, 'runtime-distribution.json');
     if (worker.transport.kind === 'local') {
-      fs.copyFileSync(manifestPath, workerManifestPath, fs.constants.COPYFILE_EXCL);
+      if (fs.existsSync(workerManifestPath)) {
+        if (!fs.readFileSync(workerManifestPath).equals(fs.readFileSync(manifestPath))) {
+          throw new Error(`local isolation existing distribution manifest changed: ${workerManifestPath}`);
+        }
+      } else {
+        fs.copyFileSync(manifestPath, workerManifestPath, fs.constants.COPYFILE_EXCL);
+      }
     }
     return {
       workerId: worker.workerId, workspaceRoot: destinationRoot, manifest, manifestPath,
@@ -289,9 +303,12 @@ export async function executeDistributedLocalIsolationCell({
   scpExecutable = 'scp.exe',
   run = runProcess,
 }) {
-  const remoteOutputRoot = path.win32.join(workerWorkspaceRoot, 'artifacts', 'local-isolation', request.phase);
+  const invocationRoot = path.dirname(path.resolve(requestRoot));
+  const invocationId = safePathId(invocationRoot);
+  const remoteOutputRoot = path.win32.join(workerWorkspaceRoot, 'artifacts', 'local-isolation', invocationId, request.phase);
   const checked = createLocalIsolationWorkerRequest({
     ...request,
+    invocationId,
     outputRoot: request.worker.transport.kind === 'local' ? localOutputRoot : remoteOutputRoot,
     distributionAuthority: {
       manifestPath: request.distribution.workerManifestPath,
@@ -301,22 +318,23 @@ export async function executeDistributedLocalIsolationCell({
   const workerId = checked.worker.workerId;
   const worker = request.worker;
   fs.mkdirSync(requestRoot, { recursive: true });
-  const localRequestPath = path.join(requestRoot, `${workerId}-${request.phase}-request.json`);
-  const localResultPath = path.join(requestRoot, `${workerId}-${request.phase}-result.json`);
+  const requestId = `${workerId}-${request.phase}-${safePathId(checked.cell.cellId)}`;
+  const localRequestPath = path.join(requestRoot, `${requestId}-request.json`);
+  const localResultPath = path.join(requestRoot, `${requestId}-result.json`);
   fs.writeFileSync(localRequestPath, `${JSON.stringify(checked, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
   const script = path.win32.join(workerWorkspaceRoot, 'scripts/testing/watch-mode-local-isolation.mjs');
   if (worker.transport.kind === 'local') {
-    await run(process.execPath, [script, '--worker-cell-request', localRequestPath, '--worker-cell-result', localResultPath], { cwd: worker.workspaceRoot });
+    await run(process.execPath, [script, '--worker-cell-request', localRequestPath, '--worker-cell-result', localResultPath], { cwd: workerWorkspaceRoot });
   } else {
-    const remoteRequest = path.win32.join(workerWorkspaceRoot, 'worker-requests', path.basename(localRequestPath));
-    const remoteResult = path.win32.join(workerWorkspaceRoot, 'worker-requests', path.basename(localResultPath));
+    const remoteRequest = path.win32.join(workerWorkspaceRoot, 'worker-requests', invocationId, path.basename(localRequestPath));
+    const remoteResult = path.win32.join(workerWorkspaceRoot, 'worker-requests', invocationId, path.basename(localResultPath));
     await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`, ...remotePowerShellArgs(
       `New-Item -ItemType Directory -Force -Path '${path.win32.dirname(remoteRequest)}' | Out-Null`,
     )]);
     await run(scpExecutable, [...scpArgs(worker), localRequestPath, remoteSpec(worker, remoteRequest)]);
     await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`,
       ...remoteNodePowerShellArgs({
-        cwd: worker.workspaceRoot,
+        cwd: workerWorkspaceRoot,
         script,
         args: ['--worker-cell-request', remoteRequest, '--worker-cell-result', remoteResult],
       })]);
@@ -446,20 +464,27 @@ export async function runDistributedLocalIsolationCells({
       runtimeBinaryHashes,
       workerAuthority: authority,
     };
-      const smoke = validateResult(await executeCell({
+      const executePhase = async (request) => {
+        try {
+          return validateResult(await executeCell(request), assignment, runtimeBinaryHashes, request.phase);
+        } catch (error) {
+          throw new Error(`worker ${assignment.worker.workerId} ${request.phase} ${request.cell.cellId}: ${error.message}`, { cause: error });
+        }
+      };
+      const smoke = await executePhase({
       ...common,
       phase: 'smoke',
       cell: { ...assignment.cell, cellId: `${assignment.cell.cellId}::smoke` },
       targetDurationSeconds: smokeDurationSeconds,
       artifactKind: 'watch-mode-local-isolation-smoke-cell',
-    }), assignment, runtimeBinaryHashes, 'smoke');
-      const formal = validateResult(await executeCell({
+    });
+      const formal = await executePhase({
       ...common,
       phase: 'formal',
       cell: assignment.cell,
       targetDurationSeconds: assignment.cell.durationSeconds,
       artifactKind: 'watch-mode-local-isolation-cell',
-    }), assignment, runtimeBinaryHashes, 'formal');
+    });
       completed.push({ smoke, formal });
     }
     return completed;
@@ -474,5 +499,14 @@ export async function runDistributedLocalIsolationCells({
   return {
     preflightSmoke: LOCAL_ISOLATION_CELLS.map((cell) => byMode.get(cell.feedbackLoopPrevention)?.smoke),
     cells: LOCAL_ISOLATION_CELLS.map((cell) => byMode.get(cell.feedbackLoopPrevention)?.formal),
+  };
+}
+
+export function localIsolationFailureDetails(error) {
+  return {
+    name: error?.name ?? 'Error',
+    message: error?.message ?? String(error),
+    ...(error?.cause ? { cause: localIsolationFailureDetails(error.cause) } : {}),
+    ...(Array.isArray(error?.errors) ? { errors: error.errors.map(localIsolationFailureDetails) } : {}),
   };
 }

@@ -21,6 +21,7 @@ import {
   createLocalIsolationWorkerResultEnvelope,
   distributeLocalIsolationRuntime,
   executeDistributedLocalIsolationCell,
+  localIsolationFailureDetails,
   revalidateDistributionForWorkerRequest,
   runDistributedLocalIsolationCells,
   validateLocalIsolationWorkerRequest,
@@ -596,6 +597,10 @@ export async function runLocalIsolationMatrix({
     `${compactTimestamp(new Date(generatedAtMs))}-${provenance.headCommit.slice(0, 12)}`,
   );
   createLocalIsolationMatrixDirectory(matrixDirectory);
+  const recordFailure = (error) => {
+    writeLocalIsolationFailureManifest({ matrixDirectory, provenance, error });
+    throw error;
+  };
   const aecGateLogPath = path.join(matrixDirectory, 'aec3-msvc-gate.log');
   const frozenAecLog = path.resolve(
     path.dirname(frozenRuntime.authorityPath),
@@ -611,7 +616,7 @@ export async function runLocalIsolationMatrix({
   const deployments = await distributeRuntime({
     workers, workspaceRoot, runtimeBinaryHashes, stagingRoot: distributionRoot,
     sshExecutable, scpExecutable,
-  });
+  }).catch(recordFailure);
   const deploymentByWorker = new Map(deployments.map((entry) => [entry.workerId, entry]));
   const requestRoot = path.join(matrixDirectory, 'worker-requests');
   fs.mkdirSync(requestRoot, { recursive: false });
@@ -630,7 +635,7 @@ export async function runLocalIsolationMatrix({
     runtimeBinaryHashes,
     smokeDurationSeconds,
     executeCell: localTransport,
-  });
+  }).catch(recordFailure);
   const { preflightSmoke, cells } = distributed;
   const manifest = {
     schemaVersion: LOCAL_ISOLATION_SCHEMA_VERSION,
@@ -696,6 +701,19 @@ export async function runLocalIsolationMatrix({
 export function createLocalIsolationMatrixDirectory(matrixDirectory) {
   fs.mkdirSync(path.dirname(matrixDirectory), { recursive: true });
   fs.mkdirSync(matrixDirectory, { recursive: false });
+}
+
+export function writeLocalIsolationFailureManifest({ matrixDirectory, provenance, error }) {
+  const manifestPath = path.join(matrixDirectory, 'local-isolation-failure.json');
+  atomicWriteJson(manifestPath, {
+    schemaVersion: 1,
+    artifactKind: 'watch-mode-local-isolation-failure',
+    verdict: 'failed',
+    providerCalls: 0,
+    provenance,
+    error: localIsolationFailureDetails(error),
+  });
+  return manifestPath;
 }
 
 if (isMain(import.meta.url)) {
@@ -780,7 +798,7 @@ if (isMain(import.meta.url)) {
     });
     console.log(JSON.stringify(result, null, 2));
   } catch (error) {
-    console.error(error.message);
+    console.error(JSON.stringify(localIsolationFailureDetails(error), null, 2));
     process.exitCode = 1;
   }
 }

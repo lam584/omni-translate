@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
@@ -22,6 +23,22 @@ export const STRICT_RUNTIME_AUTHORITY_FILE = 'strict-runtime-authority.json';
 export const STRICT_RUNTIME_ROOT = 'artifacts/testing/watch-mode-strict-runtime';
 
 const SAFE_RELEASE_ID = /^[a-z0-9][a-z0-9._-]{7,79}$/iu;
+
+export function strictRuntimeBuildResources({
+  logicalProcessors = os.cpus().length,
+  availableMemoryBytes = os.freemem(),
+} = {}) {
+  if (!Number.isSafeInteger(logicalProcessors) || logicalProcessors < 1
+      || !Number.isFinite(availableMemoryBytes) || availableMemoryBytes <= 0) {
+    throw new Error('strict runtime build resources are unavailable');
+  }
+  const availableMemoryGiB = availableMemoryBytes / (1024 ** 3);
+  return {
+    logicalProcessors,
+    availableMemoryBytes,
+    cargoBuildJobs: Math.max(2, Math.min(12, logicalProcessors, Math.floor(availableMemoryGiB / 1.5))),
+  };
+}
 
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -160,6 +177,9 @@ export function prepareStrictRuntimeAuthority({
   fs.mkdirSync(path.dirname(root), { recursive: true });
   fs.mkdirSync(root, { recursive: false });
   const environment = { ...process.env, CARGO_TARGET_DIR: path.join(workspaceRoot, 'target') };
+  const buildResources = strictRuntimeBuildResources();
+  environment.CARGO_BUILD_JOBS = String(buildResources.cargoBuildJobs);
+  console.log(`strict runtime build resources: ${JSON.stringify(buildResources)}`);
   environment.OMNI_BUILD_COMMIT = provenance.headCommit;
   const coordinatorSigningKeys = generateCoordinatorSigningKeyPair();
   const coordinatorKeyId = coordinatorKeyIdForPublicKey(coordinatorSigningKeys.publicKeyPem);
@@ -214,6 +234,7 @@ export function prepareStrictRuntimeAuthority({
     generatedAt: new Date().toISOString(),
     releaseId,
     provenance,
+    buildResources,
     implementationHashes: currentAuthorityImplementationHashes({ workspaceRoot }),
     runtimeBinaryHashes: currentAuthorityRuntimeBinaryHashes({ workspaceRoot }),
     certificate: {

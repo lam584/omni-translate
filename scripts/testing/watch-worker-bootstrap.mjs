@@ -92,8 +92,8 @@ export async function transferCredential({ localHelper, sshPath = 'ssh.exe', ssh
   if (!Array.isArray(sshArgs) || sshArgs.some((value) => /credential|dashscope|secret|api.?key/i.test(value))) {
     throw new Error('SSH arguments must contain identity/transport data only');
   }
-  const source = spawnImpl(localHelper, ['export'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-  const remote = spawnImpl(sshPath, [...sshArgs, remoteHelper, 'import'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  const source = spawnImpl(localHelper, ['export'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 30000 });
+  const remote = spawnImpl(sshPath, [...sshArgs, remoteHelper, 'import-interactive'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, timeout: 30000 });
   const transfer = pipeline(source.stdout, remote.stdin);
   const [, , imported] = await Promise.all([waitForExit(source, 'local credential export'), transfer, collect(remote)]);
   const receipt = JSON.parse(imported.toString('utf8'));
@@ -105,8 +105,8 @@ export async function transferCredential({ localHelper, sshPath = 'ssh.exe', ssh
 
 async function proof({ helper, sshPath, sshArgs, remoteHelper, remote, challenge, spawnImpl }) {
   const child = remote
-    ? spawnImpl(sshPath, [...sshArgs, remoteHelper, 'prove'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
-    : spawnImpl(helper, ['prove'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    ? spawnImpl(sshPath, [...sshArgs, remoteHelper, 'prove-interactive'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, timeout: 30000 })
+    : spawnImpl(helper, ['prove'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, timeout: 30000 });
   child.stdin.end(challenge);
   return collect(child, 32);
 }
@@ -116,10 +116,14 @@ export async function verifyCredentialMatch({ localHelper, sshPath = 'ssh.exe', 
   let local;
   let remote;
   try {
-    [local, remote] = await Promise.all([
+    const results = await Promise.allSettled([
       proof({ helper: localHelper, challenge, spawnImpl }),
       proof({ sshPath, sshArgs, remoteHelper, remote: true, challenge, spawnImpl }),
     ]);
+    local = results[0].status === 'fulfilled' ? results[0].value : undefined;
+    remote = results[1].status === 'fulfilled' ? results[1].value : undefined;
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure) throw failure.reason;
     if (local.length !== 32 || remote.length !== 32 || !timingSafeEqual(local, remote)) throw new Error('remote credential does not match local Credential Manager value');
     return { exists: true, blobBytes: null, matches: true };
   } finally {

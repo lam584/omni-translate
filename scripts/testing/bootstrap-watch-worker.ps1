@@ -56,8 +56,17 @@ if ($Action -eq 'RotateSshHostKey') {
       if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $key -PathType Leaf)) { throw 'ssh-keygen failed' }
       & icacls.exe $key '/setowner' '*S-1-5-32-544' | Out-Null
       if ($LASTEXITCODE -ne 0) { throw 'failed to set the new OpenSSH private host key owner' }
-      & icacls.exe $key '/inheritance:r' '/remove:g' "$env:USERDOMAIN\$env:USERNAME" '*S-1-1-0' '*S-1-5-11' '*S-1-5-32-545' '/grant:r' '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' | Out-Null
+      & icacls.exe $key '/inheritance:r' | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw 'failed to disable inheritance on the new OpenSSH private host key' }
+      foreach ($identity in @("$env:USERDOMAIN\$env:USERNAME", '*S-1-1-0', '*S-1-5-11', '*S-1-5-32-545')) {
+        & icacls.exe $key '/remove:g' $identity | Out-Null
+      }
+      & icacls.exe $key '/grant:r' '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' | Out-Null
       if ($LASTEXITCODE -ne 0) { throw 'failed to secure the new OpenSSH private host key ACL' }
+      $unexpectedHostKeyAcl = (Get-Acl -LiteralPath $key).Access | Where-Object {
+        $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators')
+      }
+      if ($unexpectedHostKeyAcl) { throw 'new OpenSSH private host key ACL contains an unexpected allow entry' }
       Restart-Service -Name sshd -ErrorAction Stop
       (Get-Service -Name sshd).WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(15))
       if ((Get-Service -Name sshd).Status -ne 'Running') { throw 'sshd did not reach Running after host-key rotation' }

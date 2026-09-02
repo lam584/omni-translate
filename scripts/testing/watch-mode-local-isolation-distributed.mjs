@@ -208,6 +208,10 @@ const scpArgs = (worker) => [
   '-o', `HostKeyAlias=${worker.hostKeyAlias}`, '-i', worker.identityFile, '-P', String(worker.port),
 ];
 const remoteSpec = (worker, filePath) => `${worker.user}@${worker.host}:${filePath.replaceAll('\\', '/')}`;
+const remotePowerShellArgs = (script) => [
+  'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand',
+  Buffer.from(script, 'utf16le').toString('base64'),
+];
 
 export async function distributeLocalIsolationRuntime({
   workers,
@@ -244,7 +248,7 @@ export async function distributeLocalIsolationRuntime({
       const mkdirScript = directories.map((directory) => (
         `New-Item -ItemType Directory -Force -LiteralPath '${directory}' | Out-Null`
       )).join(';');
-      await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`, 'powershell.exe', '-NoProfile', '-NonInteractive', '-Command', mkdirScript]);
+      await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`, ...remotePowerShellArgs(mkdirScript)]);
       for (const entry of files) {
         const destination = path.win32.join(destinationRoot, ...entry.path.split('/'));
         await run(scpExecutable, [...scpArgs(worker), entry.sourcePath, remoteSpec(worker, destination)]);
@@ -296,8 +300,9 @@ export async function executeDistributedLocalIsolationCell({
   } else {
     const remoteRequest = path.win32.join(workerWorkspaceRoot, 'worker-requests', path.basename(localRequestPath));
     const remoteResult = path.win32.join(workerWorkspaceRoot, 'worker-requests', path.basename(localResultPath));
-    await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`, 'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
-      `New-Item -ItemType Directory -Force -LiteralPath '${path.win32.dirname(remoteRequest)}' | Out-Null`]);
+    await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`, ...remotePowerShellArgs(
+      `New-Item -ItemType Directory -Force -LiteralPath '${path.win32.dirname(remoteRequest)}' | Out-Null`,
+    )]);
     await run(scpExecutable, [...scpArgs(worker), localRequestPath, remoteSpec(worker, remoteRequest)]);
     await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`, 'node.exe', script,
       '--worker-cell-request', remoteRequest, '--worker-cell-result', remoteResult]);

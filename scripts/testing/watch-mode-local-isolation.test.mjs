@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,7 +10,13 @@ import {
   createLocalIsolationMatrixDirectory,
   runLocalIsolationProbeIteration,
   runLocalIsolationCell,
+  runLocalIsolationMatrix,
+  publishLocalIsolationManifest,
+  verifyLocalIsolationManifest,
 } from './watch-mode-local-isolation.mjs';
+import { AUTHORITY_IMPLEMENTATION_FILES, AUTHORITY_RUNTIME_BINARY_FILES, currentAuthorityImplementationHashes, currentAuthorityRuntimeBinaryHashes, fileAuthorityEntry } from './watch-mode-evidence-authority.mjs';
+import { generateCoordinatorSigningKeyPair, coordinatorKeyIdForPublicKey } from './watch-mode-shard-authority.mjs';
+import { createDistributionRevalidationReceipt, LOCAL_ISOLATION_DISTRIBUTION_KIND } from './watch-mode-local-isolation-distributed.mjs';
 import { buildDevelopmentSmokeRuntime } from './watch-mode-development-smoke-runtime.mjs';
 
 const hashes = [];
@@ -21,6 +28,104 @@ const provenance = {
   worktreeClean: true,
   dirtyEntryCount: 0,
 };
+
+test('worker-relative receipts assemble into a strict source and canonical publication without rewriting receipts', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-local-assembly-'));
+  const canonicalize = (value) => Array.isArray(value) ? value.map(canonicalize) : value && typeof value === 'object'
+    ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])])) : value;
+  const digest = (value) => crypto.createHash('sha256').update(JSON.stringify(canonicalize(value))).digest('hex');
+  const write = (relative, bytes) => {
+    const target = path.join(root, relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, bytes);
+    return target;
+  };
+  for (const name of [...AUTHORITY_IMPLEMENTATION_FILES, ...AUTHORITY_RUNTIME_BINARY_FILES, 'scripts/testing/watch-mode-local-isolation-distributed.mjs']) write(name, `fixture:${name}`);
+  const authorityDir = 'artifacts/testing/watch-mode-strict-runtime/test-release';
+  const keys = generateCoordinatorSigningKeyPair();
+  const publicPath = write(`${authorityDir}/public.pem`, keys.publicKeyPem);
+  const privatePath = write(`${authorityDir}/private.pem`, keys.privateKeyPem);
+  const certPath = write(`${authorityDir}/certificate.cer`, fs.readFileSync(path.join(root, 'drivers/windows-virtual-mic/package/omni-translate-development-driver.cer')));
+  const aecPath = write(`${authorityDir}/aec.log`, 'fixture AEC passed');
+  const runtimeBinaryHashes = currentAuthorityRuntimeBinaryHashes({ workspaceRoot: root });
+  const authority = {
+    schemaVersion: 1, artifactKind: 'watch-mode-strict-runtime-authority', releaseId: 'test-release', provenance,
+    implementationHashes: currentAuthorityImplementationHashes({ workspaceRoot: root }), runtimeBinaryHashes,
+    certificate: {
+      keyAlgorithm: 'RSA', keyLength: 3072, hashAlgorithm: 'SHA256', enhancedKeyUsage: 'Code Signing',
+      signingMode: 'local-self-signed', trustScope: 'vmware-testsigning-only', publicProductionTrust: false,
+      certificateAuthority: fileAuthorityEntry(certPath, 'certificate.cer'),
+    },
+    coordinatorSigning: {
+      algorithm: 'Ed25519', keyId: coordinatorKeyIdForPublicKey(keys.publicKeyPem),
+      publicKeyAuthority: fileAuthorityEntry(publicPath, 'public.pem'), privateKeyAuthority: fileAuthorityEntry(privatePath, 'private.pem'),
+    },
+    aec3Gate: { verdict: 'passed', authority: fileAuthorityEntry(aecPath, 'aec.log') },
+  };
+  authority.authorityDigest = digest(authority);
+  const runtimeAuthorityPath = write(`${authorityDir}/strict-runtime-authority.json`, JSON.stringify(authority));
+  const vmIdentity = { provider: 'fixture', uuidBios: 'fixture-only' };
+  const worker = {
+    workerId: 'fixture-worker', vmIdentity, vmIdentityDigest: digest(vmIdentity),
+    deviceProfileInstances: [{ instanceId: 'fixture-instance', profileId: 'fixture-profile', deviceClass: 'default-speaker', physicalPlaybackDeviceId: 'fixture-endpoint', expectedPhysicalPlaybackDeviceName: 'Fixture Speaker' }],
+  };
+  let matrixDirectory;
+  let distribution;
+  const originalReceipts = new Map();
+  const output = await runLocalIsolationMatrix({
+    workers: [worker], deviceProfiles: worker.deviceProfileInstances, workspaceRoot: root, provenance, runtimeAuthorityPath,
+    now: () => 1_700_000_000_000,
+    distributeRuntime: async ({ stagingRoot }) => {
+      matrixDirectory = path.dirname(stagingRoot);
+      fs.mkdirSync(stagingRoot);
+      distribution = { schemaVersion: 1, artifactKind: LOCAL_ISOLATION_DISTRIBUTION_KIND, files: runtimeBinaryHashes };
+      distribution.distributionDigest = digest(distribution);
+      const manifestPath = path.join(stagingRoot, 'runtime-distribution.json');
+      fs.writeFileSync(manifestPath, JSON.stringify(distribution));
+      return [{ workerId: worker.workerId, workspaceRoot: root, manifest: distribution, manifestPath }];
+    },
+    executeWorkerCell: async (request) => {
+      const outputRoot = request.phase === 'smoke' ? path.join(matrixDirectory, 'preflight-smoke') : matrixDirectory;
+      let clock = 0;
+      const result = await runLocalIsolationCell({
+        ...request, outputRoot, workspaceRoot: root,
+        now: () => { clock += request.targetDurationSeconds * 1000; return clock; },
+        runIteration: ({ cellDirectory }) => fs.writeFileSync(path.join(cellDirectory, 'probe.json'), '{"passed":true}'),
+      });
+      const receiptPath = path.join(outputRoot, result.receipt.path);
+      originalReceipts.set(receiptPath, fs.readFileSync(receiptPath));
+      assert.ok(!result.receipt.path.startsWith('preflight-smoke/'));
+      return { ...result, preLaunchRevalidation: createDistributionRevalidationReceipt({ manifest: distribution, expectedRuntimeBinaryHashes: runtimeBinaryHashes }) };
+    },
+  });
+  const options = { workspaceRoot: root, provenance, runtimeAuthorityPath };
+  assert.equal(verifyLocalIsolationManifest({ ...options, manifestPath: output.manifestPath }).cells.length, 3);
+  assert.equal(verifyLocalIsolationManifest({ ...options, manifestPath: output.canonicalPath }).preflightSmoke.length, 3);
+  for (const entry of output.manifest.preflightSmoke) {
+    assert.ok(entry.runDirectory.startsWith('preflight-smoke/'));
+    assert.ok(entry.receipt.path.startsWith('preflight-smoke/'));
+  }
+  for (const [file, bytes] of originalReceipts) assert.deepEqual(fs.readFileSync(file), bytes);
+  const publicationBytes = fs.readFileSync(output.canonicalPath);
+  assert.throws(() => publishLocalIsolationManifest({ manifest: output.manifest, matrixDirectory, canonicalPath: output.canonicalPath, ...options }), /source manifest already exists/);
+  const failedRoot = path.join(path.dirname(matrixDirectory), 'failed-invocation');
+  fs.mkdirSync(failedRoot);
+  for (const entry of fs.readdirSync(matrixDirectory)) {
+    if (entry !== 'local-isolation-manifest.json') fs.cpSync(path.join(matrixDirectory, entry), path.join(failedRoot, entry), { recursive: true });
+  }
+  const invalid = structuredClone(output.manifest);
+  invalid.preflightSmoke[0].receipt.sha256 = '0'.repeat(64);
+  assert.throws(() => publishLocalIsolationManifest({ manifest: invalid, matrixDirectory: failedRoot, canonicalPath: output.canonicalPath, ...options }), /receipt hash mismatch/);
+  assert.equal(fs.existsSync(path.join(failedRoot, 'local-isolation-manifest.json')), false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(failedRoot, 'local-isolation-failure.json'), 'utf8')).verdict, 'failed');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(failedRoot, 'local-isolation-candidate.json'), 'utf8')).verdict, 'failed');
+  assert.deepEqual(fs.readFileSync(output.canonicalPath), publicationBytes);
+  const tampered = JSON.parse(publicationBytes);
+  tampered.preflightSmoke[0].runDirectory = 'forged';
+  const tamperedPath = path.join(path.dirname(output.canonicalPath), 'tampered.json');
+  fs.writeFileSync(tamperedPath, JSON.stringify(tampered));
+  assert.throws(() => verifyLocalIsolationManifest({ ...options, manifestPath: tamperedPath }), /does not match its source/);
+});
 
 test('local isolation creates its output root on a first clean-machine run', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-local-isolation-root-'));

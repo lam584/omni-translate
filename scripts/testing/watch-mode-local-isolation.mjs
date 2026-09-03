@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import { compactTimestamp, isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { currentGitProvenance, exactGitProvenanceFailure } from './git-provenance.mjs';
@@ -10,6 +11,7 @@ import {
   currentAuthorityRuntimeBinaryHashes,
   fileAuthorityEntry,
   sameAuthorityInventory,
+  resolveAuthorityPath,
 } from './watch-mode-evidence-authority.mjs';
 import {
   BALANCED_RELEASE_PLAN_ID,
@@ -382,7 +384,20 @@ export function verifyLocalIsolationManifest({
   runtimeBinaryHashes = currentAuthorityRuntimeBinaryHashes({ workspaceRoot }),
   runtimeAuthorityPath = null,
 }) {
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
+  let manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
+  if (manifest.sourceManifest) {
+    const { sourceManifest, ...published } = manifest;
+    const sourcePath = resolveAuthorityPath(path.dirname(path.resolve(manifestPath)), sourceManifest.path, 'local isolation source manifest');
+    const observed = fileAuthorityEntry(sourcePath, sourceManifest.path);
+    if (observed.bytes !== sourceManifest.bytes || observed.sha256 !== sourceManifest.sha256) {
+      throw new Error('local isolation canonical source manifest hash mismatch');
+    }
+    manifest = JSON.parse(fs.readFileSync(sourcePath, 'utf8').replace(/^\uFEFF/, ''));
+    if (!isDeepStrictEqual(published, manifest) || manifest.sourceManifest) {
+      throw new Error('local isolation canonical publication does not match its source manifest');
+    }
+    manifestPath = sourcePath;
+  }
   const planIdAccepted = manifest.planId === BALANCED_RELEASE_PLAN_ID;
   if (
     manifest.schemaVersion !== LOCAL_ISOLATION_SCHEMA_VERSION
@@ -636,7 +651,7 @@ export async function runLocalIsolationMatrix({
     smokeDurationSeconds,
     executeCell: localTransport,
   }).catch(recordFailure);
-  const { preflightSmoke, cells } = distributed;
+  const { preflightSmoke, cells } = rebaseLocalIsolationResults(distributed, { matrixDirectory, smokeRoot });
   const manifest = {
     schemaVersion: LOCAL_ISOLATION_SCHEMA_VERSION,
     artifactKind: LOCAL_ISOLATION_ARTIFACT_KIND,
@@ -677,17 +692,44 @@ export async function runLocalIsolationMatrix({
     providerCalls: 0,
     verdict: 'passed',
   };
-  const manifestPath = path.join(matrixDirectory, 'local-isolation-manifest.json');
-  atomicWriteJson(manifestPath, manifest);
-  verifyLocalIsolationManifest({
-    manifestPath,
+  return publishLocalIsolationManifest({
+    manifest, matrixDirectory,
+    canonicalPath: path.resolve(workspaceRoot, outputRoot, LOCAL_ISOLATION_CANONICAL_MANIFEST),
     workspaceRoot,
     provenance,
     implementationHashes,
     runtimeBinaryHashes,
     runtimeAuthorityPath: frozenRuntime.authorityPath,
   });
-  const canonicalPath = path.resolve(workspaceRoot, outputRoot, LOCAL_ISOLATION_CANONICAL_MANIFEST);
+}
+
+export function rebaseLocalIsolationResults(distributed, { matrixDirectory, smokeRoot }) {
+  return {
+    ...distributed,
+    preflightSmoke: distributed.preflightSmoke.map((entry) => ({
+      ...entry,
+      runDirectory: portable(path.relative(matrixDirectory, resolveAuthorityPath(smokeRoot, entry.runDirectory))),
+      receipt: {
+        ...entry.receipt,
+        path: portable(path.relative(matrixDirectory, resolveAuthorityPath(smokeRoot, entry.receipt.path))),
+      },
+    })),
+  };
+}
+
+export function publishLocalIsolationManifest({ manifest, matrixDirectory, canonicalPath, ...verification }) {
+  const manifestPath = path.join(matrixDirectory, 'local-isolation-manifest.json');
+  if (fs.existsSync(manifestPath)) throw new Error(`local isolation source manifest already exists: ${manifestPath}`);
+  const candidatePath = path.join(matrixDirectory, 'local-isolation-candidate.json');
+  atomicWriteJson(candidatePath, manifest);
+  try {
+    verifyLocalIsolationManifest({ ...verification, manifestPath: candidatePath });
+  } catch (error) {
+    atomicWriteJson(candidatePath, { ...manifest, verdict: 'failed' }, { overwrite: true });
+    writeLocalIsolationFailureManifest({ matrixDirectory, provenance: manifest.provenance, error });
+    throw error;
+  }
+  fs.renameSync(candidatePath, manifestPath);
   atomicWriteJson(canonicalPath, {
     ...manifest,
     sourceManifest: fileAuthorityEntry(

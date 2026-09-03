@@ -1,9 +1,9 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
-import { sameAuthorityInventory } from './watch-mode-evidence-authority.mjs';
+import { sameAuthorityInventory, resolveAuthorityPath } from './watch-mode-evidence-authority.mjs';
 import { LOCAL_ISOLATION_CELLS } from './watch-mode-balanced-release-plan.mjs';
 
 export const DISTRIBUTED_LOCAL_ISOLATION_WORKER_MODES = Object.freeze({
@@ -32,16 +32,61 @@ const portable = (value) => value.split(path.sep).join('/');
 const fileHash = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 const safePathId = (value) => `${String(value).replace(/[^a-z0-9_-]/giu, '-').slice(0, 24)}-${digest(String(value)).slice(0, 16)}`;
 
-const runProcess = (command, args, options = {}) => new Promise((resolve, reject) => {
-  const child = spawn(command, args, { ...options, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+export const LOCAL_ISOLATION_SCP_TIMEOUT_MS = 120_000;
+const LEGACY_SCP_PATH_LIMIT = 240;
+// Includes iterations/0001/runtime and the longest probe artifact leaf, with
+// room for future suffixes. Fail before launching rather than hanging SCP.
+const CELL_ARTIFACT_PATH_RESERVE = 96;
+const requireLegacyScpPath = (candidate, reserve = 0, limit = LEGACY_SCP_PATH_LIMIT) => {
+  if (!path.win32.isAbsolute(candidate) || candidate.length + reserve > limit) {
+    throw new Error(`local isolation legacy SCP path budget exceeded (${candidate.length}+${reserve}>${limit}): ${candidate}`);
+  }
+};
+
+export const runLocalIsolationProcess = (command, args, { timeoutMs = LOCAL_ISOLATION_SCP_TIMEOUT_MS, ...options } = {}) => new Promise((resolve, reject) => {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    reject(new Error('local isolation process timeout must be a positive integer'));
+    return;
+  }
+  const child = spawn(command, args, { ...options, detached: process.platform !== 'win32', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
+  let settled = false;
+  const finish = (error, result) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    if (error) reject(error);
+    else resolve(result);
+  };
+  const timer = setTimeout(() => {
+    let cleanupDiagnostic = '';
+    if (child.pid && child.exitCode === null && child.signalCode === null) {
+      if (process.platform === 'win32') {
+        // Only the PID returned by our own spawn is eligible; never kill by
+        // executable name or touch other workers' trees.
+        const cleanup = spawnSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+          windowsHide: true, encoding: 'utf8', timeout: 10_000,
+        });
+        if (cleanup.status !== 0) cleanupDiagnostic = ` cleanup=${cleanup.error?.message ?? cleanup.stderr ?? cleanup.stdout}`;
+      } else {
+        try { process.kill(-child.pid, 'SIGKILL'); }
+        catch (error) { cleanupDiagnostic = ` cleanup=${error.message}`; }
+      }
+    } else {
+      cleanupDiagnostic = ' cleanup=parent already exited; inherited streams closed, descendant termination unverified';
+    }
+    child.stdout.destroy();
+    child.stderr.destroy();
+    child.unref();
+    finish(new Error(`${command} timed out after ${timeoutMs}ms (pid=${child.pid ?? 'unavailable'}): ${stderr || stdout}${cleanupDiagnostic}`));
+  }, timeoutMs);
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   child.stderr.on('data', (chunk) => { stderr += chunk; });
-  child.on('error', reject);
-  child.on('close', (exitCode) => {
-    if (exitCode !== 0) reject(new Error(`${command} failed (${exitCode}): ${stderr || stdout}`));
-    else resolve({ exitCode, stdout, stderr });
+  child.on('error', (error) => finish(error));
+  child.on('close', (exitCode, signal) => {
+    if (exitCode !== 0) finish(new Error(`${command} failed (${exitCode}${signal ? `, ${signal}` : ''}): ${stderr || stdout}`));
+    else finish(null, { exitCode, stdout, stderr });
   });
 });
 
@@ -235,7 +280,7 @@ export async function distributeLocalIsolationRuntime({
   stagingRoot,
   sshExecutable = 'ssh.exe',
   scpExecutable = 'scp.exe',
-  run = runProcess,
+  run = runLocalIsolationProcess,
 }) {
   const files = collectLocalIsolationDistributionFiles({ workspaceRoot, runtimeBinaryHashes });
   const manifestCore = {
@@ -257,6 +302,7 @@ export async function distributeLocalIsolationRuntime({
       }
       verifyDistributedRuntimeDistribution({ workspaceRoot: destinationRoot, manifest });
     } else {
+      for (const entry of files) requireLegacyScpPath(path.win32.join(destinationRoot, ...entry.path.split('/')));
       const directories = [...new Set(files.map((entry) => (
         path.win32.dirname(path.win32.join(destinationRoot, ...entry.path.split('/')))
       )))];
@@ -301,11 +347,22 @@ export async function executeDistributedLocalIsolationCell({
   localOutputRoot,
   sshExecutable = 'ssh.exe',
   scpExecutable = 'scp.exe',
-  run = runProcess,
+  run = runLocalIsolationProcess,
 }) {
   const invocationRoot = path.dirname(path.resolve(requestRoot));
-  const invocationId = safePathId(invocationRoot);
-  const remoteOutputRoot = path.win32.join(workerWorkspaceRoot, 'artifacts', 'local-isolation', invocationId, request.phase);
+  const invocationId = digest(invocationRoot).slice(0, 24);
+  if (!['smoke', 'formal'].includes(request.phase)) throw new Error('local isolation worker phase is invalid');
+  if (!Number.isFinite(request.targetDurationSeconds) || request.targetDurationSeconds < 0) {
+    throw new Error('local isolation worker duration is invalid');
+  }
+  const workerTimeoutMs = Math.ceil(request.targetDurationSeconds * 1_000) + 180_000;
+  const remoteInvocationRoot = request.worker.transport.kind === 'local' ? null : path.win32.join(
+    request.worker.guestExecutionRoot, 'li', invocationId, digest(request.worker.workerId).slice(0, 8),
+  );
+  const remoteOutputRoot = remoteInvocationRoot && path.win32.join(remoteInvocationRoot, request.phase === 'smoke' ? 's' : 'f');
+  if (remoteOutputRoot) {
+    requireLegacyScpPath(path.win32.join(remoteOutputRoot, request.cell.cellId.replaceAll('::', '--')), CELL_ARTIFACT_PATH_RESERVE);
+  }
   const checked = createLocalIsolationWorkerRequest({
     ...request,
     invocationId,
@@ -323,30 +380,53 @@ export async function executeDistributedLocalIsolationCell({
   const localResultPath = path.join(requestRoot, `${requestId}-result.json`);
   fs.writeFileSync(localRequestPath, `${JSON.stringify(checked, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
   const script = path.win32.join(workerWorkspaceRoot, 'scripts/testing/watch-mode-local-isolation.mjs');
+  const readEnvelope = () => {
+    const envelope = JSON.parse(fs.readFileSync(localResultPath, 'utf8').replace(/^\uFEFF/u, ''));
+    if (envelope.requestDigest !== checked.requestDigest || envelope.resultDigest !== digest(envelope.result)) {
+      throw new Error(`local isolation worker ${workerId} result envelope was tampered`);
+    }
+    return envelope;
+  };
   if (worker.transport.kind === 'local') {
-    await run(process.execPath, [script, '--worker-cell-request', localRequestPath, '--worker-cell-result', localResultPath], { cwd: workerWorkspaceRoot });
+    await run(process.execPath, [script, '--worker-cell-request', localRequestPath, '--worker-cell-result', localResultPath], { cwd: workerWorkspaceRoot, timeoutMs: workerTimeoutMs });
   } else {
-    const remoteRequest = path.win32.join(workerWorkspaceRoot, 'worker-requests', invocationId, path.basename(localRequestPath));
-    const remoteResult = path.win32.join(workerWorkspaceRoot, 'worker-requests', invocationId, path.basename(localResultPath));
+    const remoteRequest = path.win32.join(remoteInvocationRoot, path.basename(localRequestPath));
+    const remoteResult = path.win32.join(remoteInvocationRoot, path.basename(localResultPath));
+    requireLegacyScpPath(remoteRequest);
+    requireLegacyScpPath(remoteResult);
     await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`, ...remotePowerShellArgs(
       `New-Item -ItemType Directory -Force -Path '${path.win32.dirname(remoteRequest)}' | Out-Null`,
     )]);
-    await run(scpExecutable, [...scpArgs(worker), localRequestPath, remoteSpec(worker, remoteRequest)]);
+    await run(scpExecutable, [...scpArgs(worker), localRequestPath, remoteSpec(worker, remoteRequest)], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
     await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`,
       ...remoteNodePowerShellArgs({
         cwd: workerWorkspaceRoot,
         script,
         args: ['--worker-cell-request', remoteRequest, '--worker-cell-result', remoteResult],
-      })]);
-    await run(scpExecutable, [...scpArgs(worker), remoteSpec(worker, remoteResult), localResultPath]);
+      })], { timeoutMs: workerTimeoutMs });
+    await run(scpExecutable, [...scpArgs(worker), remoteSpec(worker, remoteResult), localResultPath], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
+    const envelope = readEnvelope();
     fs.mkdirSync(localOutputRoot, { recursive: true });
     const remoteCellDirectory = path.win32.join(remoteOutputRoot, checked.cell.cellId.replaceAll('::', '--'));
-    await run(scpExecutable, [...scpArgs(worker), '-r', remoteSpec(worker, remoteCellDirectory), localOutputRoot]);
+    const localCellDirectory = path.join(localOutputRoot, checked.cell.cellId.replaceAll('::', '--'));
+    const localReceiptPath = path.join(requestRoot, `${requestId}-cell-authority.json`);
+    requireLegacyScpPath(localReceiptPath, 0, 259);
+    const remoteReceiptPath = path.win32.join(remoteCellDirectory, 'cell-authority.json');
+    requireLegacyScpPath(remoteReceiptPath, 0, 259);
+    await run(scpExecutable, [...scpArgs(worker), remoteSpec(worker, remoteReceiptPath), localReceiptPath], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
+    const receiptBytes = fs.readFileSync(localReceiptPath);
+    if (receiptBytes.length !== envelope.result.receipt?.bytes || fileHash(localReceiptPath) !== envelope.result.receipt?.sha256) {
+      throw new Error(`local isolation worker ${workerId} cell receipt was tampered`);
+    }
+    const receipt = JSON.parse(receiptBytes.toString('utf8'));
+    if (!Array.isArray(receipt.artifacts)) throw new Error(`local isolation worker ${workerId} has no artifact inventory`);
+    for (const entry of [{ path: 'cell-authority.json' }, ...receipt.artifacts]) {
+      requireLegacyScpPath(resolveAuthorityPath(localCellDirectory, entry.path), 0, 259);
+      requireLegacyScpPath(resolveAuthorityPath(remoteCellDirectory, entry.path), 0, 259);
+    }
+    await run(scpExecutable, [...scpArgs(worker), '-r', remoteSpec(worker, remoteCellDirectory), localOutputRoot], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
   }
-  const envelope = JSON.parse(fs.readFileSync(localResultPath, 'utf8').replace(/^\uFEFF/u, ''));
-  if (envelope.requestDigest !== checked.requestDigest || envelope.resultDigest !== digest(envelope.result)) {
-    throw new Error(`local isolation worker ${workerId} result envelope was tampered`);
-  }
+  const envelope = readEnvelope();
   return envelope.result;
 }
 

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import fs from 'node:fs';
 
 import {
   auditPowerShellSources,
@@ -9,8 +10,32 @@ import {
 } from './audit-powershell-boundaries.mjs';
 
 test('current PowerShell inventory satisfies its ratcheted boundary policy', () => {
-  const result = runPowerShellBoundaryAudit();
+  const result = runPowerShellBoundaryAudit({ strict: true });
   assert.ok(result.files >= 23);
+});
+
+test('worker bootstrap and generation collector registrations retain exact budgets and least capabilities', () => {
+  const policy = JSON.parse(fs.readFileSync(new URL('./powershell-boundaries.json', import.meta.url), 'utf8'));
+  const records = collectPowerShellSources();
+  const expected = [
+    ['scripts/testing/bootstrap-watch-worker.ps1', 101, ['elevation', 'fileDeletion']],
+    ['scripts/testing/request-watch-worker-bootstrap-elevated.ps1', 17, ['elevation']],
+    ['scripts/testing/collect-watch-mode-interactive-process-authority.ps1', 235, []],
+  ];
+  for (const [file, maxLines, capabilities] of expected) {
+    assert.equal(policy.scripts[file].maxLines, maxLines);
+    assert.deepEqual(policy.scripts[file].capabilities, capabilities);
+    const changedRecords = records.map((record) => record.path === file
+      ? { ...record, lines: maxLines + 1 }
+      : record);
+    assert.ok(auditPowerShellSources(changedRecords, policy, { strict: true })
+      .some((issue) => issue === `${file}: ${maxLines + 1} lines exceeds registered maximum ${maxLines}`));
+  }
+  const bootstrap = records.find((record) => record.path === expected[0][0]);
+  const noDeletion = structuredClone(policy);
+  noDeletion.scripts[bootstrap.path].capabilities = ['elevation'];
+  assert.ok(auditPowerShellSources(records, noDeletion, { strict: true })
+    .some((issue) => issue === `${bootstrap.path}: undeclared fileDeletion capability`));
 });
 
 test('Watch report and verifier layers contain no PCM/DSP implementation', () => {

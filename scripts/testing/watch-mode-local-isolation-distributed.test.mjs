@@ -15,6 +15,7 @@ import {
   distributeLocalIsolationRuntime,
   executeDistributedLocalIsolationCell,
   revalidateDistributionForWorkerRequest,
+  runLocalIsolationProcess,
   runDistributedLocalIsolationCells,
   validateLocalIsolationWorkerRequest,
 } from './watch-mode-local-isolation-distributed.mjs';
@@ -357,6 +358,7 @@ test('one/two worker transports isolate every cell and invocation while rejectin
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-transport-schedule-'));
       const configured = workers().slice(0, count).map((entry) => ({
         ...entry, transport: { kind }, host: entry.workerId, user: 'worker', port: 22,
+        guestExecutionRoot: 'E:\\li-test',
         identityFile: 'test-key', knownHostsFile: 'test-hosts', hostKeyAlias: entry.workerId,
       }));
       const remoteFiles = new Map();
@@ -370,13 +372,20 @@ test('one/two worker transports isolate every cell and invocation while rejectin
         outputCells.add(outputCell);
         invocations.add(immutable.invocationId);
         requests.push(immutable);
-        return JSON.stringify(createLocalIsolationWorkerResultEnvelope(immutable, resultFor(immutable)));
+        const result = resultFor(immutable);
+        if (kind === 'ssh') {
+          const receipt = JSON.stringify({ artifacts: [{ path: 'iterations/0001/runtime/process-exclusion-physical-output.wav' }] });
+          result.receipt = { path: 'cell-authority.json', bytes: Buffer.byteLength(receipt), sha256: crypto.createHash('sha256').update(receipt).digest('hex') };
+          remoteFiles.set(`worker@${immutable.worker.workerId}:${path.win32.join(immutable.outputRoot, immutable.cell.cellId.replaceAll('::', '--'), 'cell-authority.json').replaceAll('\\', '/')}`, receipt);
+        }
+        return JSON.stringify(createLocalIsolationWorkerResultEnvelope(immutable, result));
       };
-      const run = async (command, args) => {
+      const run = async (command, args, options = {}) => {
         if (kind === 'local') {
           const immutable = JSON.parse(fs.readFileSync(args[2], 'utf8'));
           fs.writeFileSync(args[4], finish(immutable), { flag: 'wx' });
         } else if (command === 'scp.exe') {
+          assert.equal(options.timeoutMs, 120_000);
           const [from, to] = args.slice(-2);
           if (args.includes('-r')) return { exitCode: 0 };
           if (remoteFiles.has(from)) {
@@ -389,12 +398,17 @@ test('one/two worker transports isolate every cell and invocation while rejectin
           const script = Buffer.from(args.at(-1), 'base64').toString('utf16le');
           const requestPath = script.match(/'--worker-cell-request' '([^']+)'/u)?.[1];
           if (requestPath) {
+            assert.ok(options.timeoutMs >= 180_000);
             const resultPath = script.match(/'--worker-cell-result' '([^']+)'/u)[1];
             const host = args.find((arg) => arg.startsWith('worker@'));
             const spec = (value) => `${host}:${value.replaceAll('\\', '/')}`;
             const immutable = JSON.parse(remoteFiles.get(spec(requestPath)));
             assert.ok(requestPath.includes(immutable.invocationId));
             assert.ok(immutable.outputRoot.includes(immutable.invocationId));
+            assert.match(immutable.invocationId, /^[a-f0-9]{24}$/u);
+            assert.ok(immutable.outputRoot.startsWith('E:\\li-test\\li\\'));
+            const deepest = path.win32.join(immutable.outputRoot, immutable.cell.cellId.replaceAll('::', '--'), 'iterations/0001/runtime/process-exclusion-physical-output.wav');
+            assert.ok(deepest.length <= 240, deepest);
             remoteFiles.set(spec(resultPath), finish(immutable));
           }
         }
@@ -423,5 +437,88 @@ test('one/two worker transports isolate every cell and invocation while rejectin
       assert.equal(invocations.size, 2);
       assert.throws(() => validateLocalIsolationWorkerRequest({ ...requests[0], invocationId: 'tampered' }), /digest mismatch/);
     }
+  }
+});
+
+test('remote output keeps deep artifacts outside the long runtime root and rejects oversized roots before transport', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-short-output-'));
+  const assignment = createDistributedLocalIsolationAssignments({ workers: workers() })[0];
+  const runtimeRoot = `E:\\omni-shards-run3\\local-isolation-${'a'.repeat(64)}`;
+  const request = {
+    worker: { ...assignment.worker, transport: { kind: 'ssh' }, guestExecutionRoot: 'E:\\omni-shards-run3' },
+    phase: 'formal', cell: assignment.cell, profile: assignment.profile,
+    runtimeBinaryHashes: hashes, targetDurationSeconds: 500,
+    workerAuthority: { workerId: assignment.worker.workerId, vmIdentityDigest: assignment.worker.vmIdentityDigest, deviceProfileInstanceId: assignment.profile.instanceId },
+    distribution: { workerManifestPath: path.win32.join(runtimeRoot, 'runtime-distribution.json'), manifest: { distributionDigest: 'd'.repeat(64) } },
+  };
+  const requestRoot = path.join(root, 'invocation', 'worker-requests');
+  const stop = new Error('transport inspection complete');
+  await assert.rejects(executeDistributedLocalIsolationCell({
+    request, requestRoot, workerWorkspaceRoot: runtimeRoot, localOutputRoot: path.join(root, 'output'),
+    run: async () => { throw stop; },
+  }), (error) => error === stop);
+  const immutable = JSON.parse(fs.readFileSync(path.join(requestRoot, fs.readdirSync(requestRoot)[0]), 'utf8'));
+  const deepSuffix = path.win32.join(assignment.cell.cellId.replaceAll('::', '--'), 'iterations/0001/runtime/process-exclusion-physical-output.wav');
+  const oldRoot = path.win32.join(runtimeRoot, 'artifacts/local-isolation', 'x'.repeat(41), 'formal');
+  assert.ok(path.win32.join(oldRoot, deepSuffix).length > 260);
+  assert.ok(path.win32.join(immutable.outputRoot, deepSuffix).length < 240);
+  assert.equal(immutable.distributionAuthority.manifestPath, request.distribution.workerManifestPath);
+  assert.equal(immutable.targetDurationSeconds, 500);
+  let calls = 0;
+  await assert.rejects(executeDistributedLocalIsolationCell({
+    request: { ...request, worker: { ...request.worker, guestExecutionRoot: `E:\\${'long-root'.repeat(20)}` } },
+    requestRoot: path.join(root, 'too-long', 'worker-requests'), workerWorkspaceRoot: runtimeRoot, localOutputRoot: path.join(root, 'output'),
+    run: async () => { calls += 1; },
+  }), /legacy SCP path budget exceeded/);
+  assert.equal(calls, 0);
+});
+
+test('real hung process timeout terminates its owned Windows child tree and preserves diagnostics', { skip: process.platform !== 'win32' }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-process-timeout-'));
+  const pidsPath = path.join(root, 'pids.json');
+  const script = `const fs = require('node:fs'); const { spawn } = require('node:child_process'); const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { windowsHide: true, stdio: 'ignore' }); fs.writeFileSync(process.argv[1], JSON.stringify([process.pid, child.pid])); console.error('hung-worker-diagnostic'); setInterval(() => {}, 1000);`;
+  const started = Date.now();
+  await assert.rejects(runLocalIsolationProcess(process.execPath, ['-e', script, pidsPath], { timeoutMs: 3000 }), /timed out after 3000ms.*hung-worker-diagnostic/su);
+  assert.ok(Date.now() - started < 15_000);
+  const pids = JSON.parse(fs.readFileSync(pidsPath, 'utf8'));
+  for (const pid of pids) assert.throws(() => process.kill(pid, 0), /ESRCH/);
+});
+
+test('directory SCP waits for envelope/receipt integrity and actual source/destination path budgets', async () => {
+  for (const scenario of ['envelope', 'receipt', 'destination-path', 'source-path']) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-scp-inventory-'));
+    const assignment = createDistributedLocalIsolationAssignments({ workers: workers() })[0];
+    const request = {
+      worker: { ...assignment.worker, transport: { kind: 'ssh' }, guestExecutionRoot: 'E:\\li' },
+      phase: 'formal', cell: assignment.cell, profile: assignment.profile, runtimeBinaryHashes: hashes,
+      targetDurationSeconds: 500, distribution: { workerManifestPath: 'E:\\runtime\\runtime-distribution.json', manifest: { distributionDigest: 'd'.repeat(64) } },
+    };
+    let checked;
+    let directoryCopies = 0;
+    let workerTimeout;
+    const artifact = scenario === 'source-path' ? `${'deep/'.repeat(40)}leaf.wav` : 'iterations/0001/runtime/probe.wav';
+    const receipt = JSON.stringify({ artifacts: [{ path: artifact }] });
+    await assert.rejects(executeDistributedLocalIsolationCell({
+      request, requestRoot: path.join(root, 'invocation', 'requests'), workerWorkspaceRoot: 'E:\\runtime',
+      localOutputRoot: scenario === 'destination-path' ? path.join(root, 'long-output'.repeat(11)) : path.join(root, 'out'),
+      run: async (command, args, options = {}) => {
+        if (command === 'scp.exe') {
+          if (args.includes('-r')) { directoryCopies += 1; return; }
+          const [from, to] = args.slice(-2);
+          if (from.endsWith('-request.json')) checked = JSON.parse(fs.readFileSync(from, 'utf8'));
+          else if (from.endsWith('-result.json')) {
+            const envelope = createLocalIsolationWorkerResultEnvelope(checked, {
+              receipt: { bytes: Buffer.byteLength(receipt), sha256: crypto.createHash('sha256').update(receipt).digest('hex') },
+            });
+            if (scenario === 'envelope') envelope.resultDigest = 'f'.repeat(64);
+            fs.writeFileSync(to, JSON.stringify(envelope));
+          } else fs.writeFileSync(to, scenario === 'receipt' ? `${receipt} ` : receipt);
+        } else if (Buffer.from(args.at(-1), 'base64').toString('utf16le').includes('--worker-cell-request')) {
+          workerTimeout = options.timeoutMs;
+        }
+      },
+    }), /tampered|legacy SCP path budget exceeded/);
+    assert.equal(workerTimeout, 680_000, '500-second formal run must not receive the 120-second SCP deadline');
+    assert.equal(directoryCopies, 0, scenario);
   }
 });

@@ -9,6 +9,68 @@ import { PassThrough } from 'node:stream';
 import zlib from 'node:zlib';
 import test from 'node:test';
 
+test('interactive finalizer binds workspace cwd and preserves complete native failures', { skip: process.platform !== 'win32' }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-finalizer-cwd-'));
+  const workspace = path.join(root, 'workspace');
+  const wrongCwd = path.join(root, 'ssh-home');
+  fs.mkdirSync(path.join(workspace, 'contracts'), { recursive: true });
+  fs.mkdirSync(wrongCwd);
+  fs.writeFileSync(path.join(workspace, 'contracts', 'fixture.json'), '{"marker":"workspace-contract"}');
+  const runner = path.join(workspace, 'runner.mjs');
+  fs.writeFileSync(runner, [
+    "import fs from 'node:fs';",
+    "const contract = JSON.parse(fs.readFileSync('contracts/fixture.json', 'utf8'));",
+    "if (process.argv.at(-1) === 'fail') { console.error('first-native-error'); console.error('last-native-error'); process.exitCode = 7; }",
+    "else { console.error('nonfatal-warning'); console.log(contract.marker); console.log(process.argv[1]); }",
+  ].join('\n'));
+  const quote = (value) => `'${value.replaceAll("'", "''")}'`;
+  const harness = path.join(root, 'harness.ps1');
+  fs.writeFileSync(harness, [
+    'param([string]$Workspace,[string]$Node,[string]$Runner,[string]$Request)',
+    "$ErrorActionPreference = 'Stop'",
+    '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)',
+    `Import-Module ${quote(path.join(repoRoot, 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1'))} -Force`,
+    "$module = Get-Module Omni.Testing.WatchMode.InteractiveScheduler",
+    '$before = (Get-Location).Path',
+    '$message = $null; $output = $null; $resultExists = $false',
+    'try { $result = & $module { param($w,$n,$r,$q) Invoke-OmniInteractiveFinalizer -WorkspaceRoot $w -NodeExecutable $n -RunnerPath $r -RequestPath $q } $Workspace $Node $Runner $Request; $output = $result.output }',
+    'catch { $message = $_.Exception.Message }',
+    'if ($output) { $resultPath = [string](@($output | Where-Object { $_ } | Select-Object -Last 1)[0]); $resultExists = Test-Path -LiteralPath $resultPath -PathType Leaf }',
+    '[ordered]@{before=$before;after=(Get-Location).Path;preference=[string]$ErrorActionPreference;message=$message;output=$output;resultExists=$resultExists}|ConvertTo-Json -Compress',
+  ].join('\n'), 'utf8');
+  const invoke = (workspacePath, request, node = process.execPath) => {
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', harness, workspacePath, node, runner, request], {
+      cwd: wrongCwd, encoding: 'utf8', timeout: 30_000, windowsHide: true,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const receipt = JSON.parse(result.stdout.trim());
+    assert.equal(receipt.before, receipt.after);
+    assert.equal(receipt.preference, 'Stop');
+    return receipt;
+  };
+  try {
+    const old = spawnSync(process.execPath, [runner, 'ok'], { cwd: wrongCwd, encoding: 'utf8', timeout: 30_000 });
+    assert.notEqual(old.status, 0);
+    assert.match(old.stderr, /ENOENT.*contracts[\\/]fixture.json/);
+    const good = invoke(workspace, 'ok');
+    assert.equal(good.message, null);
+    assert.deepEqual(good.output, ['workspace-contract', runner]);
+    assert.equal(good.resultExists, true);
+    const failed = invoke(workspace, 'fail');
+    assert.match(failed.message, /exitCode=7.*first-native-error.*last-native-error/s);
+    assert.match(invoke('relative-workspace', 'ok').message, /workspace must be absolute/);
+    assert.ok(invoke(workspace, 'ok', path.join(root, 'missing.exe')).message);
+    const noExitStatus = path.join(root, 'no-exit-status.ps1');
+    fs.writeFileSync(noExitStatus, "Write-Output 'no-native-status'", 'utf8');
+    assert.ok(invoke(workspace, 'ok', noExitStatus).message);
+    const junction = path.join(root, 'alias');
+    fs.symlinkSync(workspace, junction, 'junction');
+    assert.match(invoke(junction, 'ok').message, /non-reparse directory/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 import { repoRoot } from '../lib/testing-common.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
 import {

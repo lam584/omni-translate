@@ -35,6 +35,50 @@ function Stop-GuardedNode {
   }
 }
 
+function Invoke-OmniInteractiveFinalizer {
+  param(
+    [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
+    [Parameter(Mandatory = $true)][string]$NodeExecutable,
+    [Parameter(Mandatory = $true)][string]$RunnerPath,
+    [Parameter(Mandatory = $true)][string]$RequestPath
+  )
+  if ($WorkspaceRoot -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+\\)') {
+    throw 'interactive finalizer workspace must be absolute'
+  }
+  $workspace = Get-Item -LiteralPath ([IO.Path]::GetFullPath($WorkspaceRoot)) -Force -ErrorAction Stop
+  if (-not $workspace.PSIsContainer -or ($workspace.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    throw 'interactive finalizer workspace must be a real non-reparse directory'
+  }
+  foreach ($argument in @($RunnerPath, $RequestPath)) {
+    if ($argument.Contains('"') -or $argument.Contains([string][char]0) -or $argument.EndsWith('\')) {
+      throw 'interactive finalizer argument is not a safe Windows file argument'
+    }
+  }
+  $process = New-Object System.Diagnostics.Process
+  try {
+    $process.StartInfo.FileName = $NodeExecutable
+    $process.StartInfo.Arguments = '"' + $RunnerPath + '" --finalize-interactive-request "' + $RequestPath + '"'
+    $process.StartInfo.WorkingDirectory = $workspace.FullName
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.CreateNoWindow = $true
+    $process.StartInfo.RedirectStandardOutput = $true
+    $process.StartInfo.RedirectStandardError = $true
+    if (-not $process.Start()) { throw 'interactive finalizer process did not start' }
+    # Drain both streams concurrently; native stderr never enters PowerShell's error stream.
+    $stdout = $process.StandardOutput.ReadToEndAsync()
+    $stderr = $process.StandardError.ReadToEndAsync()
+    $process.WaitForExit()
+    $nativeExitCode = $process.ExitCode
+    $nativeOutput = @($stdout.GetAwaiter().GetResult(), $stderr.GetAwaiter().GetResult())
+    if ($null -eq $nativeExitCode -or [int]$nativeExitCode -ne 0) {
+      throw "interactive cell guest finalizer failed: exitCode=$nativeExitCode $($nativeOutput -join ' | ')"
+    }
+    return [pscustomobject]@{ output = @($nativeOutput[0] -split '\r?\n' | Where-Object { $_ }); stderr = $nativeOutput[1]; exitCode = [int]$nativeExitCode }
+  } finally {
+    $process.Dispose()
+  }
+}
+
 function Invoke-OmniInteractiveScheduledTask {
   param([Parameter(Mandatory = $true)]$Context)
   foreach ($property in $Context.PSObject.Properties) {
@@ -169,8 +213,9 @@ function Invoke-OmniInteractiveScheduledTask {
         }
       }
       Write-OmniImmutableJson -LiteralPath $finalizationRequestPath -Value $finalizationRequest
-      $finalizerOutput = @(& $nodeExecutable $runnerPath '--finalize-interactive-request' $finalizationRequestPath 2>&1)
-      if ($LASTEXITCODE -ne 0) { throw "interactive cell guest finalizer failed: $($finalizerOutput -join ' | ')" }
+      $finalized = Invoke-OmniInteractiveFinalizer -WorkspaceRoot ([string]$command.workspaceRoot) `
+        -NodeExecutable $nodeExecutable -RunnerPath $runnerPath -RequestPath $finalizationRequestPath
+      $finalizerOutput = @($finalized.output)
       $finalResultPath = [string](@($finalizerOutput | Where-Object { $_ } | Select-Object -Last 1)[0])
       if (-not (Test-Path -LiteralPath $finalResultPath -PathType Leaf)) {
         throw 'interactive cell guest finalizer returned no immutable result'

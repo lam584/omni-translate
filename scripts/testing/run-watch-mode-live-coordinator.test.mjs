@@ -17,7 +17,10 @@ import {
   sha256Canonical,
   verifyCellLease,
   verifySignedExecutionPlan,
+  signCoordinatorAuthority,
 } from './watch-mode-shard-authority.mjs';
+import { validateProductionWorkerConfig, PRODUCTION_WORKER_CONFIG_KIND } from './run-watch-mode-live-production-coordinator.mjs';
+import { verifyStrictShardProviderPreflightAuthorization } from './verify-watch-mode-evidence.mjs';
 import {
   COORDINATOR_PROVIDER_PREFLIGHT_FILE,
   CoordinatorWaveFailure,
@@ -32,6 +35,7 @@ import {
 import {
   PROVIDER_PREFLIGHT_MODEL,
   PROVIDER_PREFLIGHT_PROTOCOL,
+  verifyProviderPreflightGrant,
 } from './watch-mode-provider-preflight-authorization.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
 
@@ -128,6 +132,7 @@ function writeReadinessFixture(context, mutateReceipt = () => {}) {
         readinessRequestDigest: workerReadinessRequest.requestDigest,
         workerId: worker.workerId,
         vmIdentityDigest: worker.vmIdentityDigest,
+        ...(worker.transportAuthority ? { transportAuthority: structuredClone(worker.transportAuthority) } : {}),
         runtimeBundleDigest: workerReadinessRequest.runtimeBundleDigest,
         providerCalls: 0,
         driverRequired: worker.driverRequired,
@@ -172,6 +177,7 @@ function writeReadinessFixture(context, mutateReceipt = () => {}) {
       return {
         workerId: worker.workerId,
         providerCalls: 0,
+        driverRequired: worker.driverRequired,
         ...fileAuthorityEntry(receiptPath, `worker-readiness/${worker.workerId}.json`),
       };
     }),
@@ -317,7 +323,7 @@ test('coordinator staggers only first-wave dispatches and keeps later waves depe
   }
 });
 
-test('coordinator prepares build/preflight/local once and atomically publishes the exact signed leases', async () => {
+test('production three-worker local/SSH pins survive readiness, grant, signed plan, and final authorization verification', async () => {
   const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-coordinator-prepare-'));
   try {
     const preflightEvidenceDirectory = path.join(outputRoot, 'preflight-raw');
@@ -333,13 +339,35 @@ test('coordinator prepares build/preflight/local once and atomically publishes t
       preflight: 0,
       local: 0,
     };
-    const generatedAt = new Date();
+    const config = validateProductionWorkerConfig({
+      schemaVersion: 2, artifactKind: PRODUCTION_WORKER_CONFIG_KIND,
+      workers: ['vm171', 'vm167', 'vm169'].map((workerId, index) => {
+        fs.writeFileSync(path.join(outputRoot, `${workerId}-key`), 'fixture-only-private-key');
+        fs.writeFileSync(path.join(outputRoot, `${workerId}-hosts`), `${workerId} ssh-ed25519 ${Buffer.from(`fixture-host-key-${index}`).toString('base64')}\n`);
+        return {
+          workerId, user: 'VMUser', workspaceRoot: 'E:\\worker', guestExecutionRoot: 'E:\\shards',
+          transport: index === 0 ? { kind: 'local' } : { kind: 'ssh', host: `192.0.2.${index}`, port: 22, identityFile: `${workerId}-key`, knownHostsFile: `${workerId}-hosts`, hostKeyAlias: workerId },
+          vmIdentity: { provider: 'vmware', uuidBios: `564d0000-0000-0000-0000-00000000000${index}` },
+          deviceProfileInstances: [{ instanceId: `${workerId}-default`, profileId: `${workerId}-speaker`, deviceClass: 'default-speaker', physicalPlaybackDeviceId: `{${workerId}}`, expectedPhysicalPlaybackDeviceName: `Speaker ${workerId}` }],
+        };
+      }),
+    }, { configDirectory: outputRoot });
+    const productionWorkers = config.workers.map(({ workerId, user, vmIdentity, deviceProfileInstances, transport }) => ({
+      workerId, interactiveUser: user, vmIdentity, deviceProfileInstances,
+      transportAuthority: transport.kind === 'local' ? { kind: 'local' } : {
+        kind: 'ssh', hostKeyAlias: transport.hostKeyAlias, hostKeyAlgorithm: transport.hostKeyAlgorithm, hostKeySha256: transport.hostKeySha256,
+      },
+    }));
+    const generatedAt = new Date(Date.now() - 1000);
     const runtimeAuthority = runtimeInventoryWithDesktop(outputRoot);
+    const resultSigningKeys = generateCoordinatorSigningKeyPair();
     const result = await prepareCoordinatorExecution({
       outputRoot,
       workspaceRoot: outputRoot,
       executionId: 'watch-shard-atomic-test',
-      workers: workers(),
+      workers: productionWorkers,
+      assignments: config.assignments,
+      signingKeys: resultSigningKeys,
       generatedAt,
       expiresAt: new Date(generatedAt.getTime() + 3_600_000),
       captureProvenance: async () => { calls.provenance += 1; return PROVENANCE; },
@@ -363,6 +391,15 @@ test('coordinator prepares build/preflight/local once and atomically publishes t
         authorizationDigest,
       }) => {
         calls.preflight += 1;
+        assert.deepEqual(grant.workers.map((worker) => worker.transportAuthority), productionWorkers.map((worker) => worker.transportAuthority));
+        assert.equal(JSON.stringify(grant.workers).includes('identityFile'), false);
+        for (const mutation of ['drop', 'change-pin']) {
+          const { digest: _digest, signature: _signature, ...core } = structuredClone(grant);
+          if (mutation === 'drop') delete core.workers[1].transportAuthority;
+          else core.workers[1].transportAuthority.hostKeySha256 = `SHA256:${'a'.repeat(43)}`;
+          const tampered = signCoordinatorAuthority(core, resultSigningKeys.privateKeyPem, resultSigningKeys.publicKeyPem);
+          assert.throws(() => verifyProviderPreflightGrant(tampered), /worker\/profile inventory mismatch|transport authority/);
+        }
         assert.equal(calls.local, 1, 'local authority must precede provider authorization');
         assert.equal(fs.existsSync(grantPath), true, 'signed grant must be published before provider connect');
         assert.equal(fs.readdirSync(leaseReservationDirectory).length, SHARD_MATRIX_CELL_COUNT);
@@ -444,6 +481,28 @@ test('coordinator prepares build/preflight/local once and atomically publishes t
       SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
     );
     assert.equal(verifySignedExecutionPlan(result.plan).planDigest, result.plan.planDigest);
+    const grant = JSON.parse(fs.readFileSync(path.join(result.executionRoot, 'provider-preflight-grant.json'), 'utf8'));
+    const projection = {
+      providerPreflightGrant: result.plan.providerPreflightGrant,
+      providerPreflightLeaseReservations: result.plan.providerPreflightLeaseReservations.map(({ cellIndex: _cellIndex, ...entry }) => entry),
+      providerPreflightAuthorization: result.plan.providerPreflightAuthorization,
+      providerPreflightCompletion: result.plan.providerPreflightCompletion,
+      workerReadinessRequest: fileAuthorityEntry(path.join(result.executionRoot, 'worker-readiness-request.json'), 'worker-readiness-request.json'),
+      workerReadiness: grant.workerReadinessAuthorities,
+    };
+    const finalOptions = {
+      plan: result.plan, executionRoot: result.executionRoot, executionRootRelative: '', evidenceRoot: outputRoot, workspaceRoot: outputRoot,
+      shardExecution: projection, matrixIntegration: projection, currentImplementationHashes: inventory('matrix', SHA_A),
+      currentRuntimeBinaryHashes: runtimeAuthority, currentShardImplementationHashes: inventory('shard', SHA_A), validationAt: new Date(),
+    };
+    const verifiedAuthorization = verifyStrictShardProviderPreflightAuthorization(finalOptions);
+    assert.deepEqual(verifiedAuthorization.grant.workers.map((worker) => worker.transportAuthority), productionWorkers.map((worker) => worker.transportAuthority));
+    for (const mutation of ['drop', 'change-pin']) {
+      const tamperedPlan = structuredClone(result.plan);
+      if (mutation === 'drop') delete tamperedPlan.workers[1].transportAuthority;
+      else tamperedPlan.workers[1].transportAuthority.hostKeySha256 = `SHA256:${'b'.repeat(43)}`;
+      assert.throws(() => verifyStrictShardProviderPreflightAuthorization({ ...finalOptions, plan: tamperedPlan }), /grant workers/);
+    }
     for (const lease of result.leases) verifyCellLease(lease, result.plan);
     const preflight = JSON.parse(fs.readFileSync(
       path.join(result.executionRoot, COORDINATOR_PROVIDER_PREFLIGHT_FILE),

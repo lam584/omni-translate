@@ -21,6 +21,8 @@ use crate::provider::model_protocol_profile::{
 
 #[cfg(test)]
 mod provider_preflight_protocol_tests;
+#[cfg(test)]
+mod provider_preflight_worker_tests;
 
 const GRANT_PATH_ENV: &str = "OMNI_RELEASE_EVIDENCE_PREFLIGHT_GRANT_PATH";
 const RESERVATION_DIRECTORY_ENV: &str =
@@ -1034,11 +1036,11 @@ fn validate_grant(
         return Err("provider preflight grant provenance does not match the exact clean Desktop build".to_string());
     }
     let workers = required_array(grant, "/workers", "grant workers")?;
-    let expected_worker_count = match profile {
-        PreflightAuthorityProfile::StrictReleaseMatrix => 1,
-        PreflightAuthorityProfile::IncidentPlusReplay => 2,
+    let valid_worker_count = match profile {
+        PreflightAuthorityProfile::StrictReleaseMatrix => (1..=3).contains(&workers.len()),
+        PreflightAuthorityProfile::IncidentPlusReplay => workers.len() == 2,
     };
-    if workers.len() != expected_worker_count
+    if !valid_worker_count
         || required_u64(grant, "/localIsolationAuthority/providerCalls", "local provider calls")? != 0
         || required_u64(grant, "/budget/inputSampleRateHz", "budget sample rate")? != 16_000
         || required_u64(grant, "/budget/cellMaxExternalAudioSamples", "cell budget")?
@@ -1145,6 +1147,9 @@ fn validate_grant(
         .iter()
         .map(|worker| required_str(worker, "/workerId", "grant workerId").map(str::to_string))
         .collect::<Result<HashSet<_>, _>>()?;
+    if worker_ids.len() != workers.len() {
+        return Err("provider preflight grant worker identities must be unique".to_string());
+    }
     let cells = required_array(grant, "/cells", "grant cells")?;
     let mut lease_ids = HashSet::new();
     let mut worker_wave_slots = HashSet::new();
@@ -1503,7 +1508,7 @@ mod tests {
     use serde_json::Map;
     use std::sync::{Arc, Barrier};
 
-    fn sign_test_authority(mut core: Map<String, Value>) -> Value {
+    pub(super) fn sign_test_authority(mut core: Map<String, Value>) -> Value {
         let seed = [7_u8; 32];
         let key_pair = Ed25519KeyPair::from_seed_unchecked(&seed).unwrap();
         let mut der = vec![0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];

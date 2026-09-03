@@ -1531,6 +1531,9 @@ export function verifyStrictShardProviderPreflightAuthorization({
   }
   const expectedGrantWorkers = plan.workers.map((worker) => ({
     workerId: worker.workerId,
+    ...(worker.transportAuthority
+      ? { transportAuthority: structuredClone(worker.transportAuthority) }
+      : {}),
     ...(String(worker.interactiveUser ?? '').trim()
       ? { interactiveUser: String(worker.interactiveUser).trim() }
       : {}),

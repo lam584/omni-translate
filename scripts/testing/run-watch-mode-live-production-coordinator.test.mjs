@@ -1306,6 +1306,90 @@ test('remote PowerShell file output reconstructs framed payloads larger than 256
   assert.equal(decoded.stdout, `${payload}\n__OMNI_REMOTE_COMPLETE_V1__\n`);
 });
 
+test('remote PowerShell file-only mode bypasses only the encoded argument budget', () => {
+  const body = '$payload | ConvertTo-Json -Compress';
+  const payload = { marker: 'file-only', inventory: crypto.randomBytes(32_768).toString('base64') };
+  assert.throws(() => remotePowerShellInvocation(body, payload), /encoded-command budget/);
+  assert.throws(() => remotePowerShellInvocation(body, payload, { mode: 'encoded' }), /encoded-command budget/);
+  const invocation = remotePowerShellInvocation(body, payload, { mode: 'file-only' });
+  assert.ok(invocation.fileScript.length > 32_000);
+  assert.deepEqual(Object.keys(invocation).sort(), ['fileScript', 'input']);
+  assert.equal(invocation.input, '');
+  const small = { marker: 'same-source-扬声器' };
+  assert.equal(
+    remotePowerShellInvocation(body, small, { mode: 'file-only' }).fileScript,
+    remotePowerShellInvocation(body, small, { mode: 'encoded' }).fileScript,
+  );
+  assert.throws(() => remotePowerShellInvocation(body, small, { mode: 'invalid' }), /invocation mode/);
+});
+
+test('Windows PowerShell file-only executes oversized incompressible payload with identical output framing', { skip: !isWindows }, () => {
+  const payload = { marker: 'file-only-扬声器', inventory: crypto.randomBytes(32_768).toString('base64') };
+  const body = '$payload | ConvertTo-Json -Compress';
+  assert.throws(() => remotePowerShellInvocation(body, payload, { mode: 'encoded' }), /encoded-command budget/);
+  const invocation = remotePowerShellInvocation(body, payload, { mode: 'file-only' });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-large-file-command-'));
+  const scriptPath = path.join(root, 'command.ps1');
+  try {
+    fs.writeFileSync(scriptPath, invocation.fileScript, 'utf8');
+    const result = spawnSync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
+    ], { encoding: 'utf8', timeout: 30_000, windowsHide: true, env: windowsPowerShellEnvironment(process.env) });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    assert.match(result.stdout, /__OMNI_REMOTE_COMPLETE_V1__/);
+    const decoded = decodeRemotePowerShellFileOutput({ exitCode: result.status, stdout: result.stdout, stderr: result.stderr });
+    assert.deepEqual(JSON.parse(decoded.stdout.split(/\r?\n/)[0]), payload);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('production runRemote selects file-only for both local and SSH large payloads', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-large-run-remote-'));
+  const payload = { inventory: crypto.randomBytes(32_768).toString('base64') };
+  const body = '$payload | ConvertTo-Json -Compress';
+  const fileScript = remotePowerShellInvocation(body, payload, { mode: 'file-only' }).fileScript;
+  try {
+    for (const kind of ['local', 'ssh']) {
+      const worker = {
+        workerId: `worker-${kind}`, transport: { kind }, workspaceRoot: root,
+        guestExecutionRoot: root, user: 'VMUser', host: '192.0.2.10', port: 22,
+        identityFile: path.join(root, 'identity'), knownHostsFile: path.join(root, 'known-hosts'),
+        hostKeyAlias: 'fixture-worker',
+      };
+      const calls = [];
+      const transport = createSshProductionTransport({
+        config: { workers: [worker], scpExecutable: 'scp.exe', sshExecutable: 'ssh.exe' },
+        plan: { executionId: 'large-file-only' }, planPath: path.join(root, 'unused-plan.json'),
+        leasePaths: [], coordinatorExecutionRoot: root, workspaceRoot: root,
+        runProcess: async (executable, args, options) => {
+          calls.push({ executable, args });
+          assert.equal(args.includes('-EncodedCommand'), false);
+          assert.ok(options.timeoutMs > 0 && options.timeoutMs <= 30_000);
+          if (executable === 'scp.exe') {
+            assert.equal(fs.readFileSync(args.at(-2), 'utf8'), fileScript);
+          }
+          if (executable === 'powershell.exe') {
+            assert.equal(fs.readFileSync(args[args.indexOf('-File') + 1], 'utf8'), fileScript);
+          }
+          if (args.includes('-File')) {
+            const encoded = Buffer.from(JSON.stringify(payload)).toString('base64');
+            const frames = encoded.match(/.{1,160}/gu).map((frame) => `__OMNI_REMOTE_OUTPUT_V1__${frame}`);
+            return { exitCode: 0, stdout: `${frames.join('\n')}\n__OMNI_REMOTE_COMPLETE_V1__\n`, stderr: '' };
+          }
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
+      });
+      const result = await transport.executeRemote(worker, body, payload, { timeoutMs: 30_000 });
+      assert.deepEqual(JSON.parse(result.stdout.split(/\r?\n/)[0]), payload);
+      assert.equal(calls.filter((call) => call.args.includes('-File')).length, 1);
+      assert.equal(calls.some((call) => call.executable === 'scp.exe'), kind === 'ssh');
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('local Windows PowerShell excludes PowerShell 7 module roots', () => {
   const environment = windowsPowerShellEnvironment({
     WINDIR: 'C:\\Windows',

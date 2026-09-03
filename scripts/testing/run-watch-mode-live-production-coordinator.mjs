@@ -1186,7 +1186,8 @@ export function decodeRemotePowerShellFileOutput(result) {
   }
 }
 
-export function remotePowerShellInvocation(body, payload) {
+export function remotePowerShellInvocation(body, payload, { mode = 'encoded' } = {}) {
+  if (!['encoded', 'file-only'].includes(mode)) throw new Error('unsupported remote PowerShell invocation mode');
   const payloadBase64 = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
   const source = [
     "$ErrorActionPreference = 'Stop'",
@@ -1210,6 +1211,27 @@ export function remotePowerShellInvocation(body, payload) {
     '$payload = $payloadJson | ConvertFrom-Json',
     body,
   ].join('\n');
+  const fileInvocation = {
+    fileScript: [
+      'Import-Module Microsoft.PowerShell.Security -ErrorAction Stop',
+      '$omniRemoteOutput = @(',
+      source,
+      ')',
+      '$omniRemoteBytes = [Text.Encoding]::UTF8.GetBytes((@($omniRemoteOutput) -join [Environment]::NewLine))',
+      '$omniRemoteEncoded = [Convert]::ToBase64String($omniRemoteBytes)',
+      'for ($offset = 0; $offset -lt $omniRemoteEncoded.Length; $offset += 160) {',
+      '  $length = [Math]::Min(160, $omniRemoteEncoded.Length - $offset)',
+      `  [Console]::Out.WriteLine('${REMOTE_POWERSHELL_OUTPUT_FRAME_PREFIX}' + $omniRemoteEncoded.Substring($offset, $length))`,
+      '  [Console]::Out.Flush()',
+      '}',
+      `[Console]::Out.WriteLine('${REMOTE_POWERSHELL_COMPLETION_MARKER}')`,
+      '[Console]::Out.Flush()',
+    ].join('\n'),
+    input: '',
+  };
+  // Uploaded/local -File invocations never put this source on a command line.
+  // Do not construct unused encoded arguments or apply their size limit here.
+  if (mode === 'file-only') return fileInvocation;
   // Windows OpenSSH on the evidence VMs does not forward stdin into a
   // non-interactive remote PowerShell session.  Passing source through stdin
   // therefore deadlocks before a worker can return its readiness receipt.
@@ -1237,26 +1259,11 @@ export function remotePowerShellInvocation(body, payload) {
   }
   return {
     script: bootstrap,
-    fileScript: [
-      'Import-Module Microsoft.PowerShell.Security -ErrorAction Stop',
-      '$omniRemoteOutput = @(',
-      source,
-      ')',
-      '$omniRemoteBytes = [Text.Encoding]::UTF8.GetBytes((@($omniRemoteOutput) -join [Environment]::NewLine))',
-      '$omniRemoteEncoded = [Convert]::ToBase64String($omniRemoteBytes)',
-      'for ($offset = 0; $offset -lt $omniRemoteEncoded.Length; $offset += 160) {',
-      '  $length = [Math]::Min(160, $omniRemoteEncoded.Length - $offset)',
-      `  [Console]::Out.WriteLine('${REMOTE_POWERSHELL_OUTPUT_FRAME_PREFIX}' + $omniRemoteEncoded.Substring($offset, $length))`,
-      '  [Console]::Out.Flush()',
-      '}',
-      `[Console]::Out.WriteLine('${REMOTE_POWERSHELL_COMPLETION_MARKER}')`,
-      '[Console]::Out.Flush()',
-    ].join('\n'),
+    ...fileInvocation,
     args: [
       'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
       '-EncodedCommand', encodedCommand,
     ],
-    input: '',
   };
 }
 
@@ -1432,7 +1439,7 @@ export function createSshProductionTransport({
       ...overrides,
       timeoutMs: remainingStageTimeoutMs(phase, maximumMs),
     });
-    const invocation = remotePowerShellInvocation(body, payload);
+    const invocation = remotePowerShellInvocation(body, payload, { mode: 'file-only' });
     if (isCoordinatorLocalWorker(worker)) {
       const transportRoot = path.join(coordinatorExecutionRoot, '.transport', worker.workerId);
       fs.mkdirSync(transportRoot, { recursive: true });

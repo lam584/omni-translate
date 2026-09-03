@@ -60,7 +60,7 @@
     "scripts/testing/run-overlay-driver-smoke.ps1": { "role": "entrypoint", "maxLines": 35, "allowedImports": [], "capabilities": [] },
     "scripts/testing/run-startup-ipc-stress.ps1": { "role": "entrypoint", "maxLines": 28, "allowedImports": [], "capabilities": [] },
     "scripts/testing/run-timeboxed-command.ps1": { "role": "entrypoint", "maxLines": 147, "allowedImports": ["lib/powershell/Omni.Testing.Process.psm1"], "capabilities": ["processTermination"] },
-    "scripts/testing/run-watch-mode-interactive-task.ps1": { "role": "entrypoint", "maxLines": 467, "allowedImports": ["lib/powershell/Omni.Testing.IO.psm1"], "capabilities": ["processTermination"] },
+    "scripts/testing/run-watch-mode-interactive-task.ps1": { "role": "entrypoint", "maxLines": 471, "allowedImports": ["lib/powershell/Omni.Testing.IO.psm1"], "capabilities": ["processTermination"], "lineBudgetReason": "Four lines for real PS5.1 redirected-process handle retention and fail-closed unknown exit status; success/failure and delayed-wait subprocess regression coverage. No new capability or policy exemption." },
     "scripts/testing/run-watch-mode-live.ps1": { "role": "entrypoint", "maxLines": 19, "allowedImports": ["lib/powershell/Omni.Testing.WatchMode.Config.psm1", "lib/powershell/Omni.Testing.WatchMode.Runner.psm1"], "capabilities": [] },
     "scripts/testing/virtual-mic-capture-authority.ps1": { "role": "authority", "maxLines": 296, "allowedImports": [], "capabilities": [] },
     "scripts/testing/windows-overlay-process-authority.ps1": { "role": "authority", "maxLines": 176, "allowedImports": [], "capabilities": [] }

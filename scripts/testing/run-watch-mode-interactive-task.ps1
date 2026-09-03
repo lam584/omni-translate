@@ -364,6 +364,8 @@ $node = Start-Process -FilePath ([string]$request.nodeExecutable) `
   -RedirectStandardError ([string]$request.stderrPath) `
   -WindowStyle Hidden `
   -PassThru
+# Retain the native handle before redirected PS5.1 Start-Process loses exit status.
+$nodeHandle = $node.Handle
 $nodeIdentity = Get-ProcessIdentity $node.Id
 if ($nodeIdentity.sessionId -ne $activeConsoleSessionId -or $nodeIdentity.ownerSid -cne $windowsIdentity.User.Value) {
   Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue
@@ -433,7 +435,9 @@ $trace = Start-Process -FilePath 'powershell.exe' `
   -ArgumentList $traceArguments `
   -WindowStyle Hidden `
   -PassThru
-$node.WaitForExit(); $node.Refresh(); $nodeExitCode = [int]$node.ExitCode
+$node.WaitForExit()
+if ($null -eq $node.ExitCode) { throw 'interactive shard Node exit code is unavailable' }
+$nodeExitCode = [int]$node.ExitCode
 $trace.WaitForExit(30000) | Out-Null
 if (-not $trace.HasExited) { Stop-Process -Id $trace.Id -Force -ErrorAction SilentlyContinue }
 $executionReceiptObserved = $false

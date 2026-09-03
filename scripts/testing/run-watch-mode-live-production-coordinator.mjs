@@ -1111,6 +1111,22 @@ async function executeCoordinatorChildStage(stage, payload) {
   throw new Error(`unknown internal coordinator child stage: ${stage}`);
 }
 
+export function productionImplementationDistributionEntries(authority) {
+  const entries = new Map();
+  for (const entry of [
+    ...(authority.implementationHashes ?? []),
+    ...(authority.shardOrchestrationImplementationHashes ?? []),
+    ...(authority.incidentImplementationHashes ?? []),
+  ]) {
+    const existing = entries.get(entry.path);
+    if (existing && (existing.bytes !== entry.bytes || existing.sha256 !== entry.sha256)) {
+      throw new Error(`signed implementation inventories disagree for ${entry.path}`);
+    }
+    entries.set(entry.path, entry);
+  }
+  return [...entries.values()];
+}
+
 export function createProductionWorkerReadinessTransportPlan({
   executionId,
   provenance,
@@ -1577,18 +1593,7 @@ $uuid = [string](Get-CimInstance Win32_ComputerSystemProduct).UUID
     await queryWorker(worker);
     const remoteRoot = remoteRoots.get(worker.workerId);
     const remotePlanPath = path.win32.join(remoteRoot, SHARD_EXECUTION_PLAN_FILE);
-    const implementationEntriesByPath = new Map();
-    for (const entry of [
-      ...(plan.authority.implementationHashes ?? []),
-      ...(plan.authority.incidentImplementationHashes ?? []),
-    ]) {
-      const existing = implementationEntriesByPath.get(entry.path);
-      if (existing && (existing.bytes !== entry.bytes || existing.sha256 !== entry.sha256)) {
-        throw new Error(`signed implementation inventories disagree for ${entry.path}`);
-      }
-      implementationEntriesByPath.set(entry.path, entry);
-    }
-    const implementationEntries = [...implementationEntriesByPath.values()].map((entry) => {
+    const implementationEntries = productionImplementationDistributionEntries(plan.authority).map((entry) => {
       const localPath = resolveAuthorityPath(workspaceRoot, entry.path, 'implementation authority entry');
       const current = fileAuthorityEntry(localPath, entry.path);
       if (current.bytes !== entry.bytes || current.sha256 !== entry.sha256) {
@@ -1641,7 +1646,7 @@ foreach ($entry in @($payload.entries)) {
       const signed = runtimeEntries.find((candidate) => candidate.path === entry.path);
       if (!signed) throw new Error(`worker ${worker.workerId} returned an unrequested runtime path`);
       // Existing bytes may differ only at the exact fixed plan runtime target;
-      // source files are never uploaded and remain protected by clean HEAD.
+      // implementation files are separately byte-verified and protected by clean HEAD.
       if (entry.exists === true && (!Number.isInteger(Number(entry.bytes)) || !/^[a-f0-9]{64}$/.test(String(entry.sha256 ?? '')))) {
         throw new Error(`worker ${worker.workerId} runtime pre-check is malformed for ${entry.path}`);
       }

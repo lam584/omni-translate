@@ -348,8 +348,10 @@ test('a stuck guest finalizer settles the injected remote child timeout without 
 
 test('worker preparation normalizes and verifies signed implementation bytes before readiness', () => {
   const source = fs.readFileSync(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url), 'utf8');
-  assert.match(source, /plan\.authority\.implementationHashes/);
-  assert.match(source, /plan\.authority\.incidentImplementationHashes/);
+  assert.match(source, /productionImplementationDistributionEntries\(plan\.authority\)/);
+  assert.match(source, /authority\.implementationHashes/);
+  assert.match(source, /authority\.shardOrchestrationImplementationHashes/);
+  assert.match(source, /authority\.incidentImplementationHashes/);
   assert.match(
     source,
     /for \(const entry of implementationEntries\) await upload\(worker, entry\.localPath, entry\.remotePath\)/,
@@ -1086,6 +1088,49 @@ test('interactive shard PowerShell emitters use shard authority schema v2', () =
   assert.match(collector, /\$requiredRoles = @\('shard-node', 'cell-powershell'\)/);
 });
 
+test('interactive shard retains redirected process exit status and rejects unknown status', { skip: !isWindows }, () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-shard-exit-'));
+  const launcher = fs.readFileSync(path.join(repoRoot, 'scripts/testing/run-watch-mode-interactive-task.ps1'), 'utf8');
+  const launch = launcher.slice(launcher.indexOf('$node = Start-Process'), launcher.indexOf('$nodeIdentity = Get-ProcessIdentity $node.Id'));
+  const wait = launcher.slice(launcher.indexOf('$node.WaitForExit()'), launcher.indexOf('$trace.WaitForExit(30000)'));
+  assert.match(launch, /\$nodeHandle = \$node.Handle/);
+  assert.doesNotMatch(wait, /\.Refresh\(/);
+  const emitterPath = path.join(tempRoot, 'exit.mjs');
+  fs.writeFileSync(emitterPath, 'setTimeout(() => { console.log("stdout"); console.error("stderr"); process.exit(Number(process.argv[2])); }, 200);\n', 'utf8');
+  const command = [
+    "$ErrorActionPreference = 'Stop'",
+    `$request = @{ nodeExecutable = ${quotePowerShell(process.execPath)}; workspaceRoot = ${quotePowerShell(tempRoot)}; stdoutPath = ''; stderrPath = '' }`,
+    '$results = @()',
+    'foreach ($delay in @(0, 1200)) { foreach ($expected in @(0, 23)) {',
+    `$request.stdoutPath = Join-Path ${quotePowerShell(tempRoot)} "$delay-$expected.out"`,
+    `$request.stderrPath = Join-Path ${quotePowerShell(tempRoot)} "$delay-$expected.err"`,
+    `$arguments = @(${quotePowerShell(`"${emitterPath}"`)}, [string]$expected)`,
+    launch,
+    'Start-Sleep -Milliseconds $delay',
+    wait,
+    '$results += @{ expected = $expected; actual = $nodeExitCode; delay = $delay }',
+    '}}',
+    '$node = [pscustomobject]@{ ExitCode = $null }',
+    '$node | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value {}',
+    '$rejectedUnknown = $false',
+    'try {', wait,
+    '} catch { $rejectedUnknown = $_.Exception.Message -eq "interactive shard Node exit code is unavailable" }',
+    '@{ results = $results; rejectedUnknown = $rejectedUnknown } | ConvertTo-Json -Depth 5 -Compress',
+  ].join('\n');
+  try {
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], {
+      encoding: 'utf8', timeout: 30_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const evidence = JSON.parse(result.stdout.trim());
+    assert.equal(evidence.results.length, 4);
+    for (const entry of evidence.results) assert.equal(entry.actual, entry.expected, `delay=${entry.delay}`);
+    assert.equal(evidence.rejectedUnknown, true);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('interactive readiness decodes native UTF-8 endpoint JSON and restores console encoding', { skip: !isWindows }, () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-readiness-utf8-'));
   const emitterPath = path.join(tempRoot, 'emit-endpoint-json.mjs');
@@ -1687,4 +1732,38 @@ test('coordinator CLI exposes only the production config, local receipt, and out
   assert.equal(parsed.localIsolationAuthority, 'local-isolation-manifest.json');
   assert.equal(parsed.executionId, 'fixed-execution');
   assert.throws(() => parseProductionCoordinatorCliArgs(['--remote-command', 'whoami']), /Unknown flag/);
+});
+
+test('prepaid distribution covers every signed shard implementation with exact bytes', async () => {
+  const { productionImplementationDistributionEntries } = await import('./run-watch-mode-live-production-coordinator.mjs');
+  const { currentShardOrchestrationImplementationHashes } = await import('./watch-mode-shard-authority.mjs');
+  const matrix = AUTHORITY_IMPLEMENTATION_FILES.map((entry) => fileAuthorityEntry(path.join(repoRoot, entry), entry));
+  const shards = currentShardOrchestrationImplementationHashes();
+  const combined = productionImplementationDistributionEntries({
+    implementationHashes: matrix,
+    shardOrchestrationImplementationHashes: shards,
+  });
+  assert.equal(new Set(combined.map((entry) => entry.path)).size, combined.length);
+  for (const entry of [...matrix, ...shards]) {
+    assert.deepEqual(combined.find((candidate) => candidate.path === entry.path), entry);
+  }
+  for (const name of ['watch-mode-provider-network-health.mjs', 'watch-mode-provider-preflight-process.mjs', 'watch-mode-release-timeout-budget.mjs']) {
+    const entry = shards.find((candidate) => candidate.path === `scripts/testing/${name}`);
+    assert.ok(entry);
+    assert.ok(!matrix.some((candidate) => candidate.path === entry.path), 'fixture must exercise a shard-only entry');
+    const crlf = fs.readFileSync(path.join(repoRoot, entry.path), 'utf8').replace(/\r?\n/g, '\r\n');
+    assert.notEqual(crypto.createHash('sha256').update(crlf).digest('hex'), entry.sha256);
+    assert.deepEqual(combined.find((candidate) => candidate.path === entry.path), entry, 'distribute signed LF bytes, not normalized remote hashes');
+  }
+  assert.throws(() => productionImplementationDistributionEntries({
+    implementationHashes: [shards[0]],
+    shardOrchestrationImplementationHashes: [{ ...shards[0], bytes: shards[0].bytes + 1 }],
+  }), /signed implementation inventories disagree/);
+  assert.throws(() => productionImplementationDistributionEntries({
+    shardOrchestrationImplementationHashes: [shards[0]],
+    incidentImplementationHashes: [{ ...shards[0], sha256: '0'.repeat(64) }],
+  }), /signed implementation inventories disagree/);
+  const source = fs.readFileSync(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url), 'utf8');
+  assert.match(source, /const implementationEntries = productionImplementationDistributionEntries\(plan\.authority\)/);
+  assert.match(source, /for \(const entry of implementationEntries\) await upload\(worker, entry\.localPath, entry\.remotePath\)/);
 });

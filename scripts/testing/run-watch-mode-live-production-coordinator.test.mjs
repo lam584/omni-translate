@@ -430,10 +430,10 @@ test('worker preparation normalizes and verifies signed implementation bytes bef
     source.indexOf('const readinessTransport = createSshProductionTransport'),
   );
   assert.match(readinessPlan, /authorityImplementationHashes/u);
-  assert.equal(AUTHORITY_IMPLEMENTATION_FILES.length, 54);
+  assert.equal(AUTHORITY_IMPLEMENTATION_FILES.length, 58);
 });
 
-test('fresh readiness transports all 54 production implementation entries', () => {
+test('fresh readiness transports all 58 production implementation entries', () => {
   const implementationHashes = AUTHORITY_IMPLEMENTATION_FILES.map((entryPath, index) => ({
     path: entryPath,
     bytes: index + 1,
@@ -452,7 +452,7 @@ test('fresh readiness transports all 54 production implementation entries', () =
       requestDigest: 'c'.repeat(64),
     },
   });
-  assert.equal(plan.authority.implementationHashes.length, 54);
+  assert.equal(plan.authority.implementationHashes.length, 58);
   assert.deepEqual(plan.authority.implementationHashes, implementationHashes);
 });
 
@@ -652,7 +652,7 @@ test('zero-provider readiness reserves enough time for signed driver reinstall a
     deriveWatchProductionPrepaidCoordinatorBudgetMs()
       + deriveWatchPostReadinessExecutionBudgetMs({ cells: LIVE_LLM_CELLS }),
   );
-  assert.equal(PRODUCTION_COORDINATOR_TIMEOUT_MS, 13_462_000);
+  assert.equal(PRODUCTION_COORDINATOR_TIMEOUT_MS, 13_702_000);
 });
 
 test('production transport applies each formal cell timeout at its actual outer boundary', () => {

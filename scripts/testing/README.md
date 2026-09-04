@@ -472,15 +472,33 @@ npm run test:watch-mode-live
 ```
 
 Run the strict `qwen3.5-livetranslate-flash-realtime` single-model, three-route
-matrix through the signed single-worker production coordinator on Windows. The legacy
+matrix through the signed one-to-three-worker production coordinator on Windows. The legacy
 single-process strict matrix command is intentionally fail-closed before any
 Provider call. The
-strict entry requires a worker configuration with one canonical
-`default-speaker` profile; it never falls back
+strict entry requires a schema-v2 worker configuration with one canonical
+`default-speaker` profile per worker; it never falls back
 to an undeclared endpoint. npm 11 consumes option-looking arguments after the
 usual `npm run ... --` delimiter on Windows. Use the second literal delimiter
 below so the Node entrypoint receives the named options instead of only their
 values:
+
+Freeze a clean HEAD and prepare its signed runtime once before distributing it.
+For zero-Provider compilation and contract gates, pass the same worker inventory
+to the frozen funnel (omit `--workers-config` only for the local fallback):
+
+```powershell
+node scripts/testing/run-frozen-test-funnel.mjs --runtime-authority artifacts/testing/watch-mode-strict-runtime/<release>/strict-runtime-authority.json --workers-config artifacts/testing/watch-worker-bootstrap/workers.json
+```
+
+The funnel pins all fourteen steps in a signed plan. Worker 1 runs tooling and
+frontend checks, worker 2 runs Bridge checks, and worker 3 runs Desktop Rust and
+benchmark checks. Each worker runs its assigned steps serially while workers
+run in parallel. Source workspaces must already have the exact clean HEAD and
+dependencies installed; the transport distributes and verifies the frozen
+runtime. Failed workers do not cause automatic retries or a successful receipt
+index. Remote receipts are reusable only through the verified signed aggregate,
+including worker identity and every collected log hash. Do not run audio
+isolation measurements concurrently with compilation on the same VM.
 
 ```powershell
 npm run test:watch-mode-live:production-coordinator -- -- --workers-config artifacts/testing/watch-mode-local-worker.json --runtime-authority artifacts/testing/watch-mode-strict-runtime/<release>/strict-runtime-authority.json --local-isolation-authority artifacts/testing/watch-mode-local-isolation/<run>/local-isolation-manifest.json
@@ -543,8 +561,8 @@ replace the repository, coordinator, VM state, or evidence files. A deployment
 that requires an administrator-adversarial guarantee must fail closed until a
 separately reviewed machine-key attestation service is available.
 
-The production worker JSON must contain exactly one canonical `default-speaker`
-profile. USB and any additional endpoint profiles are allowed only in explicitly
+Each worker in the production worker JSON must contain exactly one canonical `default-speaker`
+profile. Endpoint IDs may differ across workers. USB and any additional endpoint profiles are allowed only in explicitly
 non-authoritative smoke, incident, or one-device diagnostics. For a one-device live diagnostic, invoke
 `run-watch-mode-live.ps1` directly or pass `--diagnostic-single-device`; that
 mode is explicitly non-strict. The matrix rejects `-DryRun`; fixture-backed

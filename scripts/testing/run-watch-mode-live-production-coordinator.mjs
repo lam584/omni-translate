@@ -1918,66 +1918,43 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
   async function cancelCell({ cell, lease }) {
     const worker = workersById.get(cell.workerId);
     const remoteRoot = remoteRoots.get(cell.workerId);
-    if (!worker || !remoteRoot) return;
+    if (!worker || !remoteRoot) throw new Error('worker cleanup lacks its execution root');
+    const plannedWorker = plan.workers.find((entry) => entry.workerId === cell.workerId);
+    const cleanupModule = 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1';
+    const cleanupHash = orchestrationHash(plan, cleanupModule);
+    if (!cleanupHash) throw new Error('worker cleanup module lacks signed inventory authority');
     const taskName = interactiveTaskName({
-      executionId: plan.executionId,
-      workerId: worker.workerId,
-      leaseId: lease.leaseId,
+      executionId: plan.executionId, workerId: worker.workerId, leaseId: lease.leaseId,
     });
     await runRemote(worker, `
 $root = [IO.Path]::GetFullPath([string]$payload.remoteRoot)
+$authorityRoot = Join-Path $root ('interactive\\' + [string]$payload.binding.leaseId)
+$modulePath = Join-Path ([string]$payload.workspaceRoot) 'scripts\\testing\\lib\\powershell\\Omni.Testing.WatchMode.InteractiveCleanup.psm1'
+if ((Get-FileHash -LiteralPath $modulePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -cne [string]$payload.cleanupHash) {
+  throw 'worker cleanup module hash mismatch'
+}
+Import-Module $modulePath -Force
+Import-Module (Join-Path ([string]$payload.workspaceRoot) 'scripts\\testing\\lib\\powershell\\Omni.Testing.IO.psm1') -Force
+$account = New-Object Security.Principal.NTAccount($env:COMPUTERNAME, [string]$payload.user)
+$payload.binding | Add-Member -NotePropertyName expectedUserSid -NotePropertyValue ($account.Translate([Security.Principal.SecurityIdentifier]).Value)
+$receipt = Stop-OmniInteractiveOwnedProcesses -LaunchPath (Join-Path $authorityRoot 'launch.json') -ProcessAuthorityPath (Join-Path $authorityRoot 'process-authority.json') -ExpectedBinding $payload.binding -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(10))
+$receiptPath = Join-Path $authorityRoot ('cleanup.cancel-' + [guid]::NewGuid().ToString('N') + '.json')
+Write-OmniImmutableJson -LiteralPath $receiptPath -Value $receipt
 $taskPath = '\\OmniTranslate\\'
-$taskName = [string]$payload.taskName
-$launchPath = Join-Path $root ('interactive\\' + [string]$payload.leaseId + '\\launch.json')
-
-# The task name is derived from the signed execution/worker/lease tuple.  Stop
-# only that exact task before considering a child process.  A missing task is
-# normal when the one-shot control helper has already cleaned it up.
-if (Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue) {
-  Stop-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue
+if (Get-ScheduledTask -TaskPath $taskPath -TaskName ([string]$payload.taskName) -ErrorAction SilentlyContinue) {
+  Stop-ScheduledTask -TaskPath $taskPath -TaskName ([string]$payload.taskName) -ErrorAction Stop
+  Unregister-ScheduledTask -TaskPath $taskPath -TaskName ([string]$payload.taskName) -Confirm:$false -ErrorAction Stop
 }
-for ($attempt = 0; $attempt -lt 20 -and -not (Test-Path -LiteralPath $launchPath -PathType Leaf); $attempt++) {
-  Start-Sleep -Milliseconds 250
-}
-if (Test-Path -LiteralPath $launchPath -PathType Leaf) {
-  try {
-    $launch = Get-Content -LiteralPath $launchPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if (
-      $launch.schemaVersion -ne 2 -or
-      [string]$launch.artifactKind -ne 'watch-mode-interactive-shard-launch-authority' -or
-      [string]$launch.executionId -ne [string]$payload.executionId -or
-      [string]$launch.leaseId -ne [string]$payload.leaseId -or
-      [string]$launch.workerId -ne [string]$payload.workerId -or
-      [string]$launch.taskName -ne $taskName
-    ) { throw 'launch authority does not bind the cancelled lease' }
-    $processId = [int]$launch.nodeProcess.pid
-    $actual = Get-CimInstance Win32_Process -Filter "ProcessId=$processId" -ErrorAction SilentlyContinue
-    if ($actual) {
-      $process = Get-Process -Id $processId -ErrorAction Stop
-      $actualStartedAt = $process.StartTime.ToUniversalTime().ToString('o')
-      $actualImagePath = [IO.Path]::GetFullPath([string]$actual.ExecutablePath)
-      $actualImageSha256 = (Get-FileHash -LiteralPath $actualImagePath -Algorithm SHA256).Hash.ToLowerInvariant()
-      if (
-        [int]$actual.SessionId -eq [int]$launch.nodeProcess.sessionId -and
-        $actualStartedAt -ceq [string]$launch.nodeProcess.startedAt -and
-        $actualImagePath -ceq [IO.Path]::GetFullPath([string]$launch.nodeProcess.imagePath) -and
-        $actualImageSha256 -ceq [string]$launch.nodeProcess.imageSha256
-      ) { & taskkill.exe /PID $processId /F /T 2>$null | Out-Null }
-    }
-  } catch {
-    # A malformed or stale launch authority never permits an unguarded kill.
-  }
-}
-if (Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue) {
-  Unregister-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-}
+if (-not $receipt.passed) { throw 'worker cancellation could not confirm complete owned-process cleanup' }
 `, {
-      remoteRoot,
-      executionId: plan.executionId,
-      workerId: worker.workerId,
-      leaseId: lease.leaseId,
-      taskName,
-    }, { timeoutMs: 15_000 }).catch(() => {});
+      remoteRoot, workspaceRoot: worker.workspaceRoot, user: worker.user, cleanupHash, taskName,
+      binding: {
+        executionId: plan.executionId, planDigest: plan.planDigest,
+        workerId: worker.workerId, vmIdentityDigest: plannedWorker.vmIdentityDigest,
+        leaseId: lease.leaseId, leaseDigest: lease.leaseDigest, cellId: cell.cellId,
+        expectedVmUuidBios: worker.vmIdentity.uuidBios, expectedSessionId: 1,
+      },
+    }, { timeoutMs: 15_000 });
   }
 
   async function collectWorker({ worker: planWorker, leases, results, generatedAt = new Date() }) {
@@ -2136,6 +2113,47 @@ function productionDeviceProfiles(plan) {
     // truth for distributed execution.
     return structuredClone(profile);
   });
+}
+
+export async function collectProductionWorkers({ preparation, transport, waveOutcome, now = () => new Date() }) {
+  const settled = await Promise.allSettled(preparation.plan.workers.map((worker) => Promise.resolve().then(() => transport.collectWorker({
+    worker,
+    leases: preparation.leases,
+    results: waveOutcome.results,
+    generatedAt: now(),
+  }))));
+  // Remote error text may contain native stdout/stderr. Persist only a fixed
+  // classification, never arbitrary message/stack/output or supplied codes.
+  const workers = settled.map((entry, index) => {
+    const workerId = preparation.plan.workers[index].workerId;
+    if (entry.status === 'fulfilled') return { workerId, status: 'collected' };
+    const message = String(entry.reason?.message ?? '');
+    const code = /timed?\s*out|timeout|deadline/iu.test(message) ? 'watch.collection.timeout'
+      : /authority|digest|hash|signature|identity|outside/iu.test(message) ? 'watch.collection.authority-rejected'
+        : 'watch.collection.worker-failed';
+    return { workerId, status: 'failed', code };
+  });
+  const failurePath = path.join(preparation.executionRoot, 'worker-collection-results.json');
+  atomicWriteJson(failurePath, {
+    schemaVersion: 1,
+    artifactKind: 'watch-mode-worker-collection-results',
+    executionId: preparation.plan.executionId,
+    generatedAt: now().toISOString(),
+    allWorkersSettled: true,
+    workers,
+  });
+  const failures = workers.filter((worker) => worker.status === 'failed');
+  if (failures.length > 0) {
+    const error = new AggregateError(failures.map((worker) => Object.assign(
+      new Error(`${worker.workerId}: ${worker.code}`), { code: worker.code, workerId: worker.workerId },
+    )), 'production worker collection failed; final evidence was not staged');
+    error.code = 'watch.collection.failed';
+    error.failurePath = failurePath;
+    error.startedCellIds = [...waveOutcome.startedCellIds];
+    error.completedCellIds = [...waveOutcome.completedCellIds];
+    throw error;
+  }
+  return settled.map((entry) => entry.value);
 }
 
 export function productionFailureFingerprint(failure, plan) {
@@ -2634,12 +2652,7 @@ async function runProductionCoordinatorCore({
     collectAllCompleted: true,
     ...failureSummary,
   });
-  const shards = await Promise.all(preparation.plan.workers.map((worker) => transport.collectWorker({
-    worker,
-    leases: preparation.leases,
-    results: waveOutcome.results,
-    generatedAt: now(),
-  })));
+  const shards = await collectProductionWorkers({ preparation, transport, waveOutcome, now });
   transitionCoordinatorState('evidence-collected', {
     startedCellIds: waveOutcome.startedCellIds,
     completedCellIds: waveOutcome.completedCellIds,

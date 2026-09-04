@@ -692,6 +692,7 @@ test('shard orchestration inventory is independent from local/matrix implementat
     'scripts/testing/invoke-watch-mode-interactive-task.ps1',
     'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',
     'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
+    'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1',
     'scripts/testing/run-watch-mode-interactive-task.ps1',
     'scripts/testing/collect-watch-mode-interactive-process-authority.ps1',
     'scripts/testing/release-manual-collector.mjs',

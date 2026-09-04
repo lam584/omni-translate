@@ -862,7 +862,7 @@ export async function prepareCoordinatorExecution({
 }
 
 export class CoordinatorWaveFailure extends Error {
-  constructor({ waveIndex, cellId, cause, startedCellIds, completedCellIds, partialResults }) {
+  constructor({ waveIndex, cellId, cause, startedCellIds, completedCellIds, partialResults, cleanupErrors = [] }) {
     super(`strict paid shard wave ${waveIndex} failed at ${cellId}: ${cause?.message ?? cause}`);
     this.name = 'CoordinatorWaveFailure';
     this.waveIndex = waveIndex;
@@ -871,6 +871,7 @@ export class CoordinatorWaveFailure extends Error {
     this.startedCellIds = startedCellIds;
     this.completedCellIds = completedCellIds;
     this.partialResults = partialResults;
+    this.cleanupErrors = cleanupErrors;
   }
 }
 
@@ -1117,6 +1118,7 @@ async function runCoordinatorWorkerPipelines({
   const controllers = new Map(plan.cells.map((cell) => [cell.cellId, new AbortController()]));
   const active = new Map();
   let safetyFailure = null;
+  const cleanupErrors = [];
   const waveZeroOrder = plan.waves[0].cellIds;
   const cellsByWorker = new Map(plan.workers.map((worker) => [worker.workerId, []]));
   for (const cell of plan.cells) cellsByWorker.get(cell.workerId).push(cell);
@@ -1125,13 +1127,20 @@ async function runCoordinatorWorkerPipelines({
   const stopAll = async (failedCell, error) => {
     if (safetyFailure) return;
     safetyFailure = { cell: failedCell, error };
-    await Promise.allSettled([...active.values()].map(({ cell, lease }) => {
-      if (cell.cellId === failedCell.cellId) return undefined;
-      controllers.get(cell.cellId).abort(error);
-      return cancelCell({ plan, waveIndex: cell.waveIndex, cell, lease, reason: error });
-    }));
-    for (const [cellId, controller] of controllers) {
-      if (!started.has(cellId)) controller.abort(error);
+    const targets = [...active.values()];
+    // Fence every pipeline before awaiting remote cleanup: a staggered or next-wave
+    // cell must not start while another worker is being cancelled.
+    for (const controller of controllers.values()) controller.abort(error);
+    const cancellations = await Promise.allSettled(targets.map(({ cell, lease }) =>
+      Promise.resolve().then(() => cancelCell({ plan, waveIndex: cell.waveIndex, cell, lease, reason: error }))));
+    for (const [index, outcome] of cancellations.entries()) {
+      if (outcome.status !== 'rejected') continue;
+      cleanupErrors.push({
+        code: 'coordinator.cleanup.cell-failed',
+        workerId: targets[index].cell.workerId,
+        cellId: targets[index].cell.cellId,
+        message: 'Worker cancellation did not confirm owned-process cleanup.',
+      });
     }
   };
 
@@ -1177,6 +1186,7 @@ async function runCoordinatorWorkerPipelines({
     throw new CoordinatorWaveFailure({
       waveIndex: failure.cell?.waveIndex ?? 0, cellId: failure.cell?.cellId ?? 'unknown', cause: failure.error,
       startedCellIds: [...started], completedCellIds: [...completed], partialResults: new Map(results),
+      cleanupErrors,
     });
   }
   const waveCompletions = [];

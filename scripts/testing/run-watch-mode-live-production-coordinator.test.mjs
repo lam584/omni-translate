@@ -966,11 +966,13 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
     'invoke-watch-mode-interactive-task.ps1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
+    'lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1',
   ].map((relativePath) => fs.readFileSync(path.join(repoRoot, 'scripts/testing', relativePath), 'utf8')).join('\n');
   assert.match(control, /expectedCredentialReference = \[string\]\$payload\.expectedCredentialReference/);
   assert.match(control, /\[bool\]\$payload\.requireSeparateControlPlane/);
   assert.match(source, /requireSeparateControlPlane: !isCoordinatorLocalWorker\(worker\)/);
-  assert.match(source, /\$launch\.schemaVersion -ne 2/);
+  assert.match(control, /\$launch\.schemaVersion -ne 2/);
+  assert.match(source, /Stop-OmniInteractiveOwnedProcesses/);
   assert.match(control, /taskInfoBeforeStart/);
   assert.match(control, /taskObservedStarted/);
   assert.match(control, /\$taskStateBeforeInfo/);
@@ -1240,6 +1242,7 @@ test('interactive control projects readiness and paid-cell fields only inside th
     'invoke-watch-mode-interactive-task.ps1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
+    'lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1',
   ].map((relativePath) => fs.readFileSync(path.join(repoRoot, 'scripts/testing', relativePath), 'utf8')).join('\n');
   assert.match(control, /\$mode -notin @\('endpoint-readiness', 'shard-cell', 'incident-plus-cell'\)/);
   const commandStart = control.indexOf('$command = [ordered]@{');
@@ -1582,13 +1585,52 @@ test('SSH transport finalizes manifests in the guest and cancellation is task/la
   assert.match(source, /executeRemote: runRemote/);
   assert.match(source, /uploadFile: upload/);
   assert.doesNotMatch(source, /production three-VM strict evidence/);
-  assert.match(source, /Get-ScheduledTask -TaskPath \$taskPath -TaskName \$taskName/);
-  assert.match(source, /Stop-ScheduledTask -TaskPath \$taskPath -TaskName \$taskName/);
-  assert.match(source, /Unregister-ScheduledTask -TaskPath \$taskPath -TaskName \$taskName/);
-  assert.match(source, /launch\.nodeProcess\.startedAt/);
-  assert.match(source, /launch\.nodeProcess\.imageSha256/);
-  assert.match(source, /launch\.nodeProcess\.imagePath/);
+  const cancel = source.slice(source.indexOf('async function cancelCell('), source.indexOf('async function collectWorker('));
+  const cleanup = fs.readFileSync(path.join(repoRoot, 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1'), 'utf8');
+  assert.match(cancel, /orchestrationHash\(plan, cleanupModule\)/);
+  assert.match(cancel, /if \(!cleanupHash\) throw/);
+  assert.match(cancel, /Get-FileHash -LiteralPath \$modulePath -Algorithm SHA256 -ErrorAction Stop/);
+  assert.match(cancel, /-cne \[string\]\$payload\.cleanupHash/);
+  assert.ok(cancel.indexOf('worker cleanup module hash mismatch') < cancel.indexOf('Import-Module $modulePath'));
+  assert.match(cancel, /Stop-OmniInteractiveOwnedProcesses[\s\S]*?-ExpectedBinding \$payload\.binding/);
+  for (const field of ['executionId', 'planDigest', 'workerId', 'vmIdentityDigest', 'leaseId', 'leaseDigest', 'cellId', 'expectedVmUuidBios', 'expectedSessionId']) {
+    assert.match(cancel, new RegExp(`${field}:`));
+  }
+  assert.match(cancel, /expectedUserSid[\s\S]*?Translate\(\[Security\.Principal\.SecurityIdentifier\]\)/);
+  for (const verb of ['Get', 'Stop', 'Unregister']) {
+    assert.match(cancel, new RegExp(`${verb}-ScheduledTask -TaskPath \\$taskPath -TaskName \\(\\[string\\]\\$payload\\.taskName\\)`));
+  }
+  assert.match(cancel, /Write-OmniImmutableJson -LiteralPath \$receiptPath -Value \$receipt/);
+  assert.match(cancel, /if \(-not \$receipt\.passed\) \{ throw/);
+  assert.doesNotMatch(cancel, /taskkill|Stop-Process|Stop-OmniOwnedProcessTree|\.catch\s*\(/);
+  assert.match(cleanup, /\$launch\.schemaVersion -ne 2/);
+  assert.match(cleanup, /Get-OmniCleanupGeneration \$launch\.nodeProcess/);
+  assert.match(cleanup, /\$root\.imagePath -ine \[string\]\$launch\.nodeProcess\.imagePath/);
+  assert.match(cleanup, /\$root\.imageSha256 -cne \[string\]\$launch\.nodeProcess\.imageSha256/);
+  assert.match(cleanup, /\$process\.StartTime\.ToUniversalTime\(\)\.Ticks -ne/);
+  assert.match(cleanup, /\$nativeHandle = \$process\.Handle/);
   assert.doesNotMatch(source, /logs\\\\" \+ \[string\]\$payload\.leaseId \+ '\\.pid'/);
+});
+
+test('paid scheduler cleanup gates success output and preserves primary failures without a PID-tree fallback', () => {
+  const source = fs.readFileSync(path.join(repoRoot, 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1'), 'utf8');
+  const cleanup = fs.readFileSync(path.join(repoRoot, 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1'), 'utf8');
+  const finallyStart = source.search(/\} finally \{\r?\n    if \(\$registered\)/);
+  assert.ok(finallyStart > 0);
+  const finalization = source.slice(finallyStart);
+  const paid = finalization.slice(finalization.indexOf("if ($mode -in @('shard-cell', 'incident-plus-cell'))"), finalization.indexOf('} else {'));
+  assert.match(paid, /status = 'cleanup-incomplete'/);
+  assert.match(paid, /Stop-OmniInteractiveOwnedProcesses[\s\S]*?-ExpectedBinding \$command/);
+  assert.ok(paid.indexOf('Stop-OmniInteractiveOwnedProcesses') < paid.indexOf('Stop-ScheduledTask'));
+  assert.match(paid, /\$cleanupReceipt\.processCleanup\.passed -ne \$true\) \{ \$cleanupError =/);
+  assert.match(paid, /Write-OmniImmutableJson[\s\S]*?'cleanup\.scheduler\.json'/);
+  assert.doesNotMatch(paid, /Stop-GuardedNode|Stop-Process|Stop-OmniOwnedProcessTree|taskkill/);
+  assert.match(cleanup, /Read-OmniCleanupAuthority \$ProcessAuthorityPath/);
+  assert.match(cleanup, /\$authority\.passed -ne \$true/);
+  assert.match(source, /\} catch \{\s*\$primaryError = \$_\s*\} finally/);
+  assert.match(finalization, /if \(\$null -ne \$primaryError\) \{ throw \$primaryError \}\s*if \(\$null -ne \$cleanupError\) \{ throw \$cleanupError \}\s*\$resultJson/);
+  assert.match(source.slice(0, finallyStart), /\$resultJson = \[ordered\]@\{/);
+  assert.match(finalization, /\} else \{\s*Stop-ScheduledTask[\s\S]*?Stop-GuardedNode \$launchPath/);
 });
 
 test('production coordinator drives four signed serial waves through stage, verify, and publish', async () => {
@@ -1849,6 +1891,27 @@ test('production coordinator drives four signed serial waves through stage, veri
     assert.equal(result.workerCount, 1);
     assert.equal(result.waveCount, LIVE_LLM_CELLS.length);
 
+    calls.length = 0;
+    const originalTransport = coordinatorOptions.operations.createTransport;
+    await assert.rejects(runProductionCoordinator({
+      ...coordinatorOptions,
+      executionId: 'production-test-collection-failed',
+      operations: {
+        ...coordinatorOptions.operations,
+        createTransport: async (...args) => ({
+          ...await originalTransport(...args),
+          collectWorker: () => { throw new Error('fixture collection failure'); },
+        }),
+      },
+    }), error => {
+      assert.equal(error.code, 'watch.collection.failed');
+      assert.ok(fs.existsSync(error.failurePath));
+      return true;
+    });
+    assert.equal(calls.includes('write-manifest'), false);
+    assert.equal(calls.includes('verify'), false);
+    assert.equal(calls.includes('publish'), false);
+
     failCells = true;
     calls.length = 0;
     await assert.rejects(
@@ -1861,6 +1924,48 @@ test('production coordinator drives four signed serial waves through stage, veri
     assert.equal(calls.filter((entry) => entry === 'write-manifest').length, 1);
     assert.equal(calls.filter((entry) => entry === 'verify').length, 0);
     assert.equal(calls.filter((entry) => entry === 'publish').length, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('worker collection settles synchronous and asynchronous failures without losing slow workers', async () => {
+  const { collectProductionWorkers } = await import('./run-watch-mode-live-production-coordinator.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-collect-settled-'));
+  const preparation = { executionRoot: root, plan: { executionId: 'fixture', workers: ['a', 'b', 'c'].map(workerId => ({ workerId })) }, leases: [] };
+  const waveOutcome = { results: new Map(), startedCellIds: ['cell'], completedCellIds: ['cell'] };
+  let release;
+  const slow = new Promise(resolve => { release = resolve; });
+  const calls = [];
+  let finished = false;
+  try {
+    const pending = collectProductionWorkers({ preparation, waveOutcome, transport: { collectWorker({ worker }) {
+      calls.push(worker.workerId);
+      if (worker.workerId === 'a') throw new Error('native secret fixture must never be persisted');
+      if (worker.workerId === 'b') return Promise.reject(new Error('deadline exceeded with private stderr'));
+      return slow.then(() => ({ workerId: 'c' }));
+    } } }).then(() => { throw new Error('unexpected success'); }, error => { finished = true; return error; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(calls, ['a', 'b', 'c']);
+    assert.equal(finished, false);
+    release();
+    const error = await pending;
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.errors.length, 2);
+    assert.deepEqual(error.completedCellIds, ['cell']);
+    const raw = fs.readFileSync(error.failurePath, 'utf8');
+    assert.doesNotMatch(raw, /secret|private stderr|native/);
+    const receipt = JSON.parse(raw);
+    assert.equal(receipt.allWorkersSettled, true);
+    assert.deepEqual(receipt.workers.map(w => w.status), ['failed', 'failed', 'collected']);
+    assert.equal(receipt.workers[1].code, 'watch.collection.timeout');
+    const successRoot = path.join(root, 'success');
+    fs.mkdirSync(successRoot);
+    const result = await collectProductionWorkers({ preparation: { ...preparation, executionRoot: successRoot }, waveOutcome, transport: { async collectWorker({ worker }) {
+      if (worker.workerId === 'a') await new Promise(resolve => setImmediate(resolve));
+      return { workerId: worker.workerId };
+    } } });
+    assert.deepEqual(result.map(w => w.workerId), ['a', 'b', 'c']);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

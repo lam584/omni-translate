@@ -196,11 +196,10 @@ function workers() {
   ];
 }
 
-function signedFixture() {
+function signedFixture(workerList = workers()) {
   const now = new Date();
   const generatedAt = new Date(now.getTime() - 1_000);
   const keys = generateCoordinatorSigningKeyPair();
-  const workerList = workers();
   const plan = createSignedExecutionPlan({
     executionId: 'watch-shard-coordinator-test',
     generatedAt,
@@ -215,7 +214,7 @@ function signedFixture() {
        ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
      },
     workers: workerList,
-    assignments: defaultSingleWorkerAssignments(workerList),
+    assignments: workerList.length === 3 ? fixedThreeWorkerAssignments(workerList) : defaultSingleWorkerAssignments(workerList),
     ...keys,
   });
   return {
@@ -225,6 +224,52 @@ function signedFixture() {
     leases: issueCellLeases(plan, keys.privateKeyPem, { issuedAt: generatedAt }),
   };
 }
+
+test('multi-worker safety failure fences pending dispatch before cleanup and retains cleanup failures', { timeout: 10000 }, async () => {
+  const workerList = ['vm171', 'vm167', 'vm169'].map((workerId) => ({
+    ...workers()[0], workerId,
+    vmIdentity: { provider: 'vmware', uuidBios: `uuid-${workerId}` },
+    transportAuthority: { kind: 'local' },
+    deviceProfileInstances: [{
+      instanceId: `${workerId}-default`, profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
+      physicalPlaybackDeviceId: `{${workerId}}`, expectedPhysicalPlaybackDeviceName: `speaker-${workerId}`,
+    }],
+  }));
+  const { plan, leases, now } = signedFixture(workerList);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-cancel-fence-'));
+  let releaseWait;
+  const waitBarrier = new Promise((resolve) => { releaseWait = resolve; });
+  const pendingSignals = [];
+  const dispatched = [];
+  const cancelled = [];
+  try {
+    fs.writeFileSync(path.join(root, SHARD_EXECUTION_PLAN_FILE), JSON.stringify(plan));
+    await assert.rejects(runCoordinatorWaves({
+      plan, leases, executionRoot: root, now: () => now, firstWaveStaggerMs: 7000,
+      wait: async (_delay, signal) => { pendingSignals.push(signal); await waitBarrier; },
+      dispatchCell: async ({ cell }) => { dispatched.push(cell.cellId); throw new Error('fixture dispatch failed'); },
+      cancelCell: ({ cell }) => {
+        cancelled.push(cell.cellId);
+        assert.equal(pendingSignals.length, 2);
+        assert.ok(pendingSignals.every((signal) => signal.aborted), 'all pending pipelines are fenced before cancellation');
+        releaseWait();
+        throw new Error('fixture cleanup failed');
+      },
+    }), (error) => {
+      assert.ok(error instanceof CoordinatorWaveFailure);
+      assert.equal(error.cause.message, 'fixture dispatch failed');
+      assert.equal(error.cleanupErrors.length, 1);
+      assert.equal(error.cleanupErrors[0].code, 'coordinator.cleanup.cell-failed');
+      assert.equal(error.cleanupErrors[0].cellId, dispatched[0]);
+      return true;
+    });
+    assert.equal(dispatched.length, 1, 'neither staggered peers nor c03 may start');
+    assert.deepEqual(cancelled, dispatched, 'the failed worker also needs an owned-process cleanup attempt');
+  } finally {
+    releaseWait();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('single-machine placement assigns every paid cell to one distinct serial wave', () => {
   const workerList = workers();

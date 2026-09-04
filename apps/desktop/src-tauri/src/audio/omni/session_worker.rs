@@ -368,7 +368,7 @@ fn run_omni_worker(
                 &app,
                 "omni",
                 "error",
-                format!("event=livetranslate_shutdown action=fail_closed reason={reason}"),
+                format!("event=livetranslate_shutdown action=fail_closed reason={reason} error={error}"),
             );
             terminalize_livetranslate_shutdown!();
             let _ = socket.close();

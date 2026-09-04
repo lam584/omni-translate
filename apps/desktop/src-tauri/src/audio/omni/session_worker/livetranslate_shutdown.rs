@@ -32,6 +32,7 @@ pub(super) struct LivetranslateShutdown {
     shared: Arc<LivetranslateShutdownShared>,
     requested_at: Option<Instant>,
     pre_finish_drain_barrier: Option<u64>,
+    last_finish_observation: Option<(usize, bool, bool)>,
 }
 
 impl LivetranslateShutdown {
@@ -78,6 +79,7 @@ impl LivetranslateShutdown {
             }),
             requested_at: None,
             pre_finish_drain_barrier: None,
+            last_finish_observation: None,
         }
     }
 
@@ -120,6 +122,11 @@ impl LivetranslateShutdown {
         pre_session_audio_queue_is_empty: bool,
         audio_input_disconnected: bool,
     ) -> Result<bool, String> {
+        self.last_finish_observation = Some((
+            chunks_sent_this_tick,
+            pre_session_audio_queue_is_empty,
+            audio_input_disconnected,
+        ));
         if self
             .shared
             .pre_finish_session_finished_observed
@@ -189,10 +196,20 @@ impl LivetranslateShutdown {
         } else {
             "livetranslate-audio-drain-timeout"
         };
+        // These inputs describe the last predicate evaluation, not live queue state.
+        let observation = match self.last_finish_observation {
+            Some((chunks, empty, disconnected)) => format!(
+                "lastObservedChunksSent={chunks} lastObservedPrequeueEmpty={empty} lastObservedInputDisconnected={disconnected}"
+            ),
+            None => "lastObservedChunksSent=unknown lastObservedPrequeueEmpty=unknown lastObservedInputDisconnected=unknown".to_string(),
+        };
+        let idle_reads = self.shared.idle_read_observation_count.load(Ordering::SeqCst);
+        let barrier = self.pre_finish_drain_barrier
+            .map(|value| value.to_string()).unwrap_or_else(|| "none".to_string());
         Some((
             reason,
             format!(
-                "LiveTranslate fail-closed: shutdown did not complete within {} seconds of the stop request (session.finish sent={finish_sent})",
+                "LiveTranslate fail-closed: shutdown did not complete within {} seconds of the stop request (session.finish sent={finish_sent}) {observation} currentIdleReadCount={idle_reads} currentDrainBarrier={barrier}",
                 LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT.as_secs()
             ),
         ))
@@ -627,6 +644,84 @@ mod tests {
 
         assert_eq!(reason, "livetranslate-session-finished-timeout");
         assert!(error.contains("within 15 seconds of the stop request"));
+    }
+
+    #[test]
+    fn ordinary_recv_requires_eventual_idle_before_finish() {
+        let mut shutdown = LivetranslateShutdown::new(true);
+        shutdown.request(Instant::now());
+        let mut socket = shutdown.wrap_socket(FakeSocket {
+            inbound: VecDeque::from([text_event("response.audio.delta"), text_event("response.done")]),
+            state: Arc::new(Mutex::new(FakeSocketState::default())),
+        });
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        for _ in 0..2 {
+            socket.read_message().unwrap();
+            assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        }
+        assert!(socket.read_message().is_err());
+        assert!(shutdown.should_send_finish(0, true, true).unwrap());
+    }
+
+    #[test]
+    fn uninterrupted_recv_cannot_authorize_finish_before_total_deadline() {
+        let now = Instant::now();
+        let mut shutdown = LivetranslateShutdown::new(true);
+        shutdown.request(now);
+        let mut socket = shutdown.wrap_socket(FakeSocket {
+            inbound: VecDeque::from(vec![text_event("response.audio.delta"); 16]),
+            state: Arc::new(Mutex::new(FakeSocketState::default())),
+        });
+        for second in 0..15 {
+            assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+            socket.read_message().unwrap();
+            assert!(shutdown.deadline_error(now + Duration::from_secs(second)).is_none());
+        }
+        let (reason, error) = shutdown.deadline_error(now + Duration::from_secs(15)).unwrap();
+        assert_eq!(reason, "livetranslate-audio-drain-timeout");
+        assert!(error.contains("session.finish sent=false"));
+        assert!(error.contains("currentIdleReadCount=0 currentDrainBarrier=0"));
+    }
+
+    #[test]
+    fn input_predicates_block_finish_and_recover_after_a_fresh_idle() {
+        for (chunks, empty, disconnected) in [(1, true, true), (0, false, true), (0, true, false)] {
+            let now = Instant::now();
+            let mut shutdown = LivetranslateShutdown::new(true);
+            shutdown.request(now);
+            let mut socket = shutdown.wrap_socket(FakeSocket {
+                inbound: VecDeque::new(),
+                state: Arc::new(Mutex::new(FakeSocketState::default())),
+            });
+            assert!(!shutdown.should_send_finish(chunks, empty, disconnected).unwrap());
+            let (_, error) = shutdown.deadline_error(now + Duration::from_secs(15)).unwrap();
+            assert!(error.contains(&format!("lastObservedChunksSent={chunks} lastObservedPrequeueEmpty={empty} lastObservedInputDisconnected={disconnected}")));
+            assert!(error.contains("currentDrainBarrier=none"));
+            assert!(socket.read_message().is_err());
+            assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+            assert!(socket.read_message().is_err());
+            assert!(shutdown.should_send_finish(0, true, true).unwrap());
+        }
+    }
+
+    #[test]
+    fn invalidated_input_fence_does_not_reuse_an_older_idle_observation() {
+        let now = Instant::now();
+        let mut shutdown = LivetranslateShutdown::new(true);
+        shutdown.request(now);
+        let (_, error) = shutdown.deadline_error(now + Duration::from_secs(15)).unwrap();
+        assert!(error.contains("lastObservedChunksSent=unknown lastObservedPrequeueEmpty=unknown lastObservedInputDisconnected=unknown"));
+        let mut socket = shutdown.wrap_socket(FakeSocket {
+            inbound: VecDeque::new(),
+            state: Arc::new(Mutex::new(FakeSocketState::default())),
+        });
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        assert!(socket.read_message().is_err());
+        assert!(!shutdown.should_send_finish(1, true, true).unwrap());
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        assert!(socket.read_message().is_err());
+        assert!(shutdown.should_send_finish(0, true, true).unwrap());
     }
 
     #[test]

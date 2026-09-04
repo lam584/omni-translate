@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { spawnSync } from 'node:child_process';
 import { acceptRediscoveredWorker, buildStrictSshArgs, provisionCredential, validateWorkerPins, verifyCredentialMatch, verifyPinnedKnownHost } from './watch-worker-bootstrap.mjs';
 
 const worker = (id, suffix) => ({ workerId: id, user: 'VMUser', vmIdentity: { uuidBios: `uuid-${suffix}` }, transport: { kind: 'ssh', host: `192.168.40.${suffix}`, port: 22, identityFile: 'E:\\id_rsa', knownHostsFile: 'C:\\run\\known_hosts', hostKeyAlias: `omni-${id}`, hostKeyAlgorithm: 'ssh-ed25519', hostKeySha256: `SHA256:${(id === 'vm1' ? 'A' : 'B').repeat(43)}` } });
@@ -103,6 +104,51 @@ test('PowerShell bootstrap is recoverable and never enables autologon', () => {
   const elevation = fs.readFileSync(new URL('./request-watch-worker-bootstrap-elevated.ps1', import.meta.url), 'utf8');
   assert.match(elevation, /-Verb RunAs/);
   assert.match(elevation, /-WindowStyle Hidden/);
+});
+
+test('boot readiness ensures SSH is running before publishing and removing its one-shot task', () => {
+  const source = fs.readFileSync(new URL('./bootstrap-watch-worker.ps1', import.meta.url), 'utf8');
+  const boot = source.slice(source.indexOf("if ($Action -eq 'WriteBootReadiness')"), source.indexOf("if ($Action -eq 'LockPrivateKeyAcl')"));
+  assert.match(boot, /Start-Service -Name sshd -ErrorAction Stop/);
+  assert.match(boot, /WaitForStatus\(\[System\.ServiceProcess\.ServiceControllerStatus\]::Running, \[TimeSpan\]::FromSeconds\(15\)\)/);
+  const ready = boot.indexOf("sshd did not reach Running during boot readiness");
+  const publish = boot.indexOf('Set-Content -LiteralPath');
+  const unregister = boot.indexOf('Unregister-ScheduledTask');
+  assert.ok(ready >= 0 && publish > ready && unregister > publish);
+});
+
+test('boot readiness preserves its recovery task when SSH cannot start', { skip: process.platform !== 'win32' }, () => {
+  const source = fs.readFileSync(new URL('./bootstrap-watch-worker.ps1', import.meta.url), 'utf8');
+  const boot = source.slice(source.indexOf("if ($Action -eq 'WriteBootReadiness')"), source.indexOf("if ($Action -eq 'LockPrivateKeyAcl')"));
+  for (const failStart of [false, true]) {
+    const script = `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.ServiceProcess
+$Action = 'WriteBootReadiness'
+$ReadinessRoot = 'C:\\unused-mocked-readiness'
+$script:events = [System.Collections.Generic.List[string]]::new()
+$script:running = $false
+function Assert-Administrator {}
+function Get-Service {
+  $service = [pscustomobject]@{Status = $(if ($script:running) {'Running'} else {'Stopped'})}
+  $service | Add-Member ScriptMethod WaitForStatus {param($status,$timeout) [void]$script:events.Add('wait'); if (-not $script:running) {throw 'not running'}}
+  return $service
+}
+function Start-Service { [void]$script:events.Add('start'); ${failStart ? "throw 'start failed'" : '$script:running = $true'} }
+function New-Item {}
+function Get-CimInstance { [pscustomobject]@{UUID='fixture-bios';LastBootUpTime=[datetime]::UtcNow} }
+function Get-NetIPAddress { [pscustomobject]@{IPAddress='192.168.40.130'} }
+function Set-Content { [void]$script:events.Add('publish') }
+function Unregister-ScheduledTask { param($TaskName,$Confirm) [void]$script:events.Add('unregister') }
+try { & { ${boot} } } catch { [Console]::Error.WriteLine($_.Exception.Message); [void]$script:events.Add('failed') }
+ConvertTo-Json -InputObject @($script:events) -Compress
+`;
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+      encoding: 'utf8', windowsHide: true, timeout: 30_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout.trim()), failStart ? ['start', 'failed'] : ['start', 'wait', 'publish', 'unregister'], result.stderr);
+  }
 });
 
 test('proof rejection waits for both bounded helpers and wipes challenge', async () => {

@@ -3,7 +3,7 @@
   "defaultEntrypointMaxLines": 500,
   "defaultModuleMaxLines": 600,
   "scripts": {
-    "scripts/testing/bootstrap-watch-worker.ps1": { "role": "entrypoint", "maxLines": 101, "allowedImports": [], "capabilities": ["elevation", "fileDeletion"] },
+    "scripts/testing/bootstrap-watch-worker.ps1": { "role": "entrypoint", "maxLines": 105, "allowedImports": [], "capabilities": ["elevation", "fileDeletion"] },
     "scripts/testing/clean-vm3-test-storage.ps1": { "role": "entrypoint", "maxLines": 76, "allowedImports": [], "capabilities": ["fileDeletion"] },
     "scripts/testing/collect-install-release-state.ps1": { "role": "collector", "maxLines": 447, "allowedImports": ["lib/powershell/Omni.Testing.IO.psm1", "lib/powershell/Omni.Testing.Windows.psm1"], "capabilities": ["elevation"] },
     "scripts/testing/collect-watch-mode-interactive-process-authority.ps1": { "role": "authority", "maxLines": 235, "allowedImports": ["lib/powershell/Omni.Testing.IO.psm1"], "capabilities": [], "lineBudgetReason": "Reviewed generation-safe collection in 7afc06c, 90dd4ed and 72e04fe: PID creation-time identity, parent-generation binding and atomic descendant snapshots. Retain the single collector and ratchet at its exact 235 lines; no new capability or policy exemption." },

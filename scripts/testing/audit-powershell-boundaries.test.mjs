@@ -18,7 +18,7 @@ test('worker bootstrap and generation collector registrations retain exact budge
   const policy = JSON.parse(fs.readFileSync(new URL('./powershell-boundaries.json', import.meta.url), 'utf8'));
   const records = collectPowerShellSources();
   const expected = [
-    ['scripts/testing/bootstrap-watch-worker.ps1', 101, ['elevation', 'fileDeletion']],
+    ['scripts/testing/bootstrap-watch-worker.ps1', 105, ['elevation', 'fileDeletion']],
     ['scripts/testing/request-watch-worker-bootstrap-elevated.ps1', 17, ['elevation']],
     ['scripts/testing/collect-watch-mode-interactive-process-authority.ps1', 235, []],
   ];

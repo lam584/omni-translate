@@ -13,6 +13,10 @@ function Assert-Administrator {
 
 if ($Action -eq 'WriteBootReadiness') {
   Assert-Administrator
+  $sshService = Get-Service -Name sshd -ErrorAction Stop
+  if ($sshService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Running) { Start-Service -Name sshd -ErrorAction Stop }
+  $sshService.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(15))
+  if ((Get-Service -Name sshd).Status -ne 'Running') { throw 'sshd did not reach Running during boot readiness' }
   New-Item -ItemType Directory -Path $ReadinessRoot -Force | Out-Null
   $bios = (Get-CimInstance Win32_ComputerSystemProduct).UUID
   $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')

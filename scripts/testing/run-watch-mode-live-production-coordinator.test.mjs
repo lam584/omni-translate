@@ -1541,19 +1541,47 @@ test('interactive remote wrapper accepts a successful PowerShell control with no
     controlScriptSha256: crypto.createHash('sha256').update(fs.readFileSync(controlPath)).digest('hex'),
     interactiveRequest: { marker: 'script-success-with-null-last-exit-code' },
   });
+  let diagnostic;
+  let primaryFailure;
   try {
     const result = spawnSync(invocation.args[0], invocation.args.slice(1), {
       input: invocation.input,
       encoding: 'utf8',
       timeout: 30_000,
     });
-    assert.equal(result.status, 0, result.stderr);
+    diagnostic = {
+      status: result.status, signal: result.signal,
+      error: result.error && {
+        message: result.error.message, code: result.error.code,
+        errno: result.error.errno, syscall: result.error.syscall,
+      },
+      stdout: result.stdout, stderr: result.stderr,
+      nodeVersion: process.version, uvVersion: process.versions.uv,
+    };
+    assert.equal(result.status, 0, JSON.stringify(diagnostic));
     const evidence = JSON.parse(result.stdout.split(/\r?\n/)
       .filter((line) => line.trim() && line.trim() !== '__OMNI_REMOTE_COMPLETE_V1__').join('\n'));
     assert.equal(evidence.status, 'passed');
     assert.equal(evidence.marker, 'script-success-with-null-last-exit-code');
+  } catch (error) {
+    primaryFailure = error;
+    // Keep this outside os.tmpdir(): the outer VM harness removes temporary roots.
+    const failureRoot = path.join(repoRoot, 'artifacts/testing/interactive-control-failures', crypto.randomUUID());
+    try {
+      fs.mkdirSync(failureRoot, { recursive: true });
+      fs.writeFileSync(path.join(failureRoot, 'diagnostic.json'), `${JSON.stringify({ ...diagnostic, failure: error.message }, null, 2)}\n`, 'utf8');
+      fs.cpSync(root, path.join(failureRoot, 'fixture'), { recursive: true });
+    } catch (retentionError) {
+      console.error('interactive control failure retention failed:', retentionError.message);
+    }
+    throw error;
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+    } catch (cleanupError) {
+      if (!primaryFailure) throw cleanupError;
+      console.error('interactive control fixture cleanup failed:', cleanupError.message);
+    }
   }
 });
 

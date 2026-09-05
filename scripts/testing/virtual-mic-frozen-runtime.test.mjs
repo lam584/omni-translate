@@ -103,6 +103,16 @@ for (const stage of ['launch', 'probe', 'return', 'package']) test('drift at ' +
   assert.equal(f.counts().builds, 0);
   assert.equal(f.counts().captures, ['launch', 'probe'].includes(stage) ? 0 : 1);
   assert.equal(f.counts().packages, stage === 'package' ? 1 : 0);
+  assert.equal(fs.existsSync(p.runDirectory), true);
+  const failure = JSON.parse(fs.readFileSync(path.join(p.runDirectory, 'release-failure.json'), 'utf8'));
+  assert.equal(failure.verdict, 'failed');
+  assert.equal(failure.invocationId, p.invocationId);
+  const expectedRuntimeRoot = path.resolve(os.tmpdir(), 'omni-vmic-release-' + p.invocationId);
+  assert.equal(path.resolve(failure.runtimeRoot), expectedRuntimeRoot);
+  assert.ok(expectedRuntimeRoot.startsWith(path.resolve(os.tmpdir()) + path.sep));
+  if (['return', 'package'].includes(stage)) assert.equal(fs.existsSync(expectedRuntimeRoot), true);
+  t.after(() => fs.rmSync(expectedRuntimeRoot, { recursive: true, force: true }));
+  if (stage === 'package') assert.match(f.validate(p).issues.join(' '), /retained failure evidence/);
 });
 
 test('validator rejects forged mode, build timeline and either binary binding', async (t) => {

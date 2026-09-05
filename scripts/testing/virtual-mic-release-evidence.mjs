@@ -77,6 +77,9 @@ export function validateVirtualMicReleaseEmitter(
   const result = readJson(path.join(root, 'emitter-result.json'));
   const probe = readJson(path.join(root, 'virtual-mic-capture-probe.json'));
   const issues = [];
+  if (fs.existsSync(path.join(root, 'release-failure.json'))) {
+    issues.push('virtual microphone invocation has retained failure evidence');
+  }
   if (
     result?.schemaVersion !== 1
     || result?.artifactKind !== 'virtual-mic-release-evidence-emitter-result'

@@ -222,6 +222,7 @@ export async function runVirtualMicReleaseEvidence({
     detail,
   });
   const startedAt = clock().toISOString();
+  let failed = false;
   const revalidateFrozen = () => {
     if (plan.frozenVirtualMicRuntime !== undefined) {
       revalidateFrozenVirtualMicAuthority(plan.frozenVirtualMicRuntime, {
@@ -384,10 +385,18 @@ export async function runVirtualMicReleaseEvidence({
       manifestPath: collected.manifestPath,
     };
   } catch (error) {
-    fs.rmSync(plan.runDirectory, { recursive: true, force: true });
+    failed = true;
+    try {
+      writeJson(path.join(plan.runDirectory, 'release-failure.json'), {
+        verdict: 'failed', invocationId: plan.invocationId,
+        error: String(error?.message ?? error), runtimeRoot, timeline,
+      });
+    } catch {
+      // Preserve the original failure even if recording it fails.
+    }
     throw error;
   } finally {
-    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+    if (!failed) fs.rmSync(runtimeRoot, { recursive: true, force: true });
   }
 }
 

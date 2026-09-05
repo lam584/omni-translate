@@ -261,6 +261,9 @@ const scpArgs = (worker) => [
   '-o', `HostKeyAlias=${worker.hostKeyAlias}`, '-i', worker.identityFile, '-P', String(worker.port),
 ];
 const remoteSpec = (worker, filePath) => `${worker.user}@${worker.host}:${filePath.replaceAll('\\', '/')}`;
+// Git legacy SCP treats backslashes in local operands as filename characters.
+// Keep spaces in the single spawn argv operand; do not add shell quoting.
+const localScpPath = (filePath) => filePath.replaceAll('\\', '/');
 const remotePowerShellArgs = (script) => [
   'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand',
   Buffer.from(script, 'utf16le').toString('base64'),
@@ -312,10 +315,10 @@ export async function distributeLocalIsolationRuntime({
       await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`, ...remotePowerShellArgs(mkdirScript)]);
       for (const entry of files) {
         const destination = path.win32.join(destinationRoot, ...entry.path.split('/'));
-        await run(scpExecutable, [...scpArgs(worker), entry.sourcePath, remoteSpec(worker, destination)]);
+        await run(scpExecutable, [...scpArgs(worker), localScpPath(entry.sourcePath), remoteSpec(worker, destination)]);
       }
       const remoteManifest = path.win32.join(destinationRoot, 'runtime-distribution.json');
-      await run(scpExecutable, [...scpArgs(worker), manifestPath, remoteSpec(worker, remoteManifest)]);
+      await run(scpExecutable, [...scpArgs(worker), localScpPath(manifestPath), remoteSpec(worker, remoteManifest)]);
       await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`,
         ...remoteNodePowerShellArgs({
           cwd: destinationRoot,
@@ -397,14 +400,14 @@ export async function executeDistributedLocalIsolationCell({
     await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`, ...remotePowerShellArgs(
       `New-Item -ItemType Directory -Force -Path '${path.win32.dirname(remoteRequest)}' | Out-Null`,
     )]);
-    await run(scpExecutable, [...scpArgs(worker), localRequestPath, remoteSpec(worker, remoteRequest)], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
+    await run(scpExecutable, [...scpArgs(worker), localScpPath(localRequestPath), remoteSpec(worker, remoteRequest)], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
     await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`,
       ...remoteNodePowerShellArgs({
         cwd: workerWorkspaceRoot,
         script,
         args: ['--worker-cell-request', remoteRequest, '--worker-cell-result', remoteResult],
       })], { timeoutMs: workerTimeoutMs });
-    await run(scpExecutable, [...scpArgs(worker), remoteSpec(worker, remoteResult), localResultPath], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
+    await run(scpExecutable, [...scpArgs(worker), remoteSpec(worker, remoteResult), localScpPath(localResultPath)], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
     const envelope = readEnvelope();
     fs.mkdirSync(localOutputRoot, { recursive: true });
     const remoteCellDirectory = path.win32.join(remoteOutputRoot, checked.cell.cellId.replaceAll('::', '--'));
@@ -413,7 +416,7 @@ export async function executeDistributedLocalIsolationCell({
     requireLegacyScpPath(localReceiptPath, 0, 259);
     const remoteReceiptPath = path.win32.join(remoteCellDirectory, 'cell-authority.json');
     requireLegacyScpPath(remoteReceiptPath, 0, 259);
-    await run(scpExecutable, [...scpArgs(worker), remoteSpec(worker, remoteReceiptPath), localReceiptPath], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
+    await run(scpExecutable, [...scpArgs(worker), remoteSpec(worker, remoteReceiptPath), localScpPath(localReceiptPath)], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
     const receiptBytes = fs.readFileSync(localReceiptPath);
     if (receiptBytes.length !== envelope.result.receipt?.bytes || fileHash(localReceiptPath) !== envelope.result.receipt?.sha256) {
       throw new Error(`local isolation worker ${workerId} cell receipt was tampered`);
@@ -424,7 +427,7 @@ export async function executeDistributedLocalIsolationCell({
       requireLegacyScpPath(resolveAuthorityPath(localCellDirectory, entry.path), 0, 259);
       requireLegacyScpPath(resolveAuthorityPath(remoteCellDirectory, entry.path), 0, 259);
     }
-    await run(scpExecutable, [...scpArgs(worker), '-r', remoteSpec(worker, remoteCellDirectory), localOutputRoot], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
+    await run(scpExecutable, [...scpArgs(worker), '-r', remoteSpec(worker, remoteCellDirectory), localScpPath(localOutputRoot)], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
   }
   const envelope = readEnvelope();
   return envelope.result;

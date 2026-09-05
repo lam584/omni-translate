@@ -355,13 +355,14 @@ test('local cell transport binds request digest to returned result', async () =>
 test('one/two worker transports isolate every cell and invocation while rejecting a duplicate', async () => {
   for (const kind of ['local', 'ssh']) {
     for (const count of [1, 2]) {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-transport-schedule-'));
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni transport schedule '));
       const configured = workers().slice(0, count).map((entry) => ({
         ...entry, transport: { kind }, host: entry.workerId, user: 'worker', port: 22,
         guestExecutionRoot: 'E:\\li-test',
         identityFile: 'test-key', knownHostsFile: 'test-hosts', hostKeyAlias: entry.workerId,
       }));
       const remoteFiles = new Map();
+      const transfers = [];
       const outputCells = new Set();
       const invocations = new Set();
       const requests = [];
@@ -385,9 +386,25 @@ test('one/two worker transports isolate every cell and invocation while rejectin
           const immutable = JSON.parse(fs.readFileSync(args[2], 'utf8'));
           fs.writeFileSync(args[4], finish(immutable), { flag: 'wx' });
         } else if (command === 'scp.exe') {
-          assert.equal(options.timeoutMs, 120_000);
+          assert.equal(options.timeoutMs ?? 120_000, 120_000);
+          assert.ok(args.includes('-O'));
+          assert.ok(args.includes('StrictHostKeyChecking=yes'));
+          assert.ok(!args.includes('-T'));
           const [from, to] = args.slice(-2);
-          if (args.includes('-r')) return { exitCode: 0 };
+          const localOperand = from.startsWith('worker@') ? to : from;
+          if (localOperand.includes('\\')) throw new Error(`scp: error: unexpected filename: ${localOperand}`);
+          assert.ok(localOperand.includes(' '), 'space stays within one argv operand');
+          assert.ok(!localOperand.includes('"'), 'spawn arguments need no shell quotes');
+          transfers.push([from, to]);
+          if (args.includes('-r')) {
+            const receipt = `${from}/cell-authority.json`;
+            assert.ok(remoteFiles.has(receipt), 'recursive download requires remote receipt');
+            assert.ok(transfers.slice(0, -1).some(([source]) => source === receipt), 'receipt downloaded before directory');
+            const destination = path.join(to, path.posix.basename(from));
+            fs.mkdirSync(destination, { recursive: true });
+            fs.writeFileSync(path.join(destination, 'cell-authority.json'), remoteFiles.get(receipt), { flag: 'wx' });
+            return { exitCode: 0 };
+          }
           if (remoteFiles.has(from)) {
             fs.writeFileSync(to, remoteFiles.get(from), { flag: 'wx' });
           } else {
@@ -414,6 +431,23 @@ test('one/two worker transports isolate every cell and invocation while rejectin
         }
         return { exitCode: 0, stdout: '', stderr: '' };
       };
+      if (kind === 'ssh') {
+        const source = path.join(root, 'source space');
+        const entry = path.join(source, 'scripts/testing/watch-mode-local-isolation.mjs');
+        fs.mkdirSync(path.dirname(entry), { recursive: true });
+        fs.writeFileSync(entry, '// transport fixture');
+        fs.writeFileSync(path.join(source, 'runtime.exe'), 'runtime');
+        const runtime = [{ path: 'runtime.exe', bytes: 7, sha256: crypto.createHash('sha256').update('runtime').digest('hex') }];
+        const distributions = await distributeLocalIsolationRuntime({ workers: configured, workspaceRoot: source,
+          runtimeBinaryHashes: runtime, stagingRoot: path.join(root, 'stage space'), run });
+        for (const distribution of distributions) {
+          const prefix = `worker@${distribution.workerId}:`;
+          const copies = transfers.filter(([, to]) => to.startsWith(prefix));
+          assert.deepEqual(copies.map(([from]) => path.basename(from)), ['runtime.exe', 'watch-mode-local-isolation.mjs', 'runtime-distribution.json']);
+          const manifest = JSON.parse(remoteFiles.get(`${prefix}${distribution.workerManifestPath.replaceAll('\\', '/')}`));
+          assert.equal(manifest.distributionDigest, distribution.manifest.distributionDigest);
+        }
+      }
       for (const invocation of ['first', 'second']) {
         let firstRequest;
         const transport = (request) => {

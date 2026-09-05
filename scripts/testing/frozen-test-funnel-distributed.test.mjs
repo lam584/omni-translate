@@ -224,6 +224,9 @@ test('real worker loop runs remaining independent steps after a failed test but 
   });
   assert.equal(calls.length, 14); assert.equal(new Set(calls).size, 14);
   assert.equal(result.verdict, 'failed');
+  assert.equal(verifyFrozenFunnelWorkerResult(result, {
+    ...value, workerId: 'vm1', artifactRoot: value.outputRoot, allowFailed: true,
+  }), result);
   assert.throws(() => verifyFrozenFunnelWorkerResult(result, { ...value, workerId: 'vm1', artifactRoot: value.outputRoot }));
   await assert.rejects(runFrozenFunnelWorker({ ...value, ...value.keys, workerId: 'vm1', observe: () => value.observation,
     runStep: () => assert.fail('execution claim must prevent replay'),

@@ -248,7 +248,7 @@ export async function runFrozenFunnelWorker({ plan, workerId, publicKeyPem, work
   return result;
 }
 
-export function verifyFrozenFunnelWorkerResult(result, { plan, workerId, artifactRoot }) {
+export function verifyFrozenFunnelWorkerResult(result, { plan, workerId, artifactRoot, allowFailed = false }) {
   const worker = plan.workers.find((entry) => entry.workerId === workerId);
   if (!worker || result?.schemaVersion !== 1 || result?.artifactKind !== RESULT_KIND || result.executionId !== plan.executionId
       || result.planDigest !== plan.digest || result.workerId !== workerId || result.providerCalls !== 0 || !Array.isArray(result.results)) throw new Error('funnel worker result binding mismatch');
@@ -257,7 +257,12 @@ export function verifyFrozenFunnelWorkerResult(result, { plan, workerId, artifac
   if (!same(result.results.map(({ name, command, workerId: id }) => ({ name, command, workerId: id })), expected)) throw new Error('funnel worker result step coverage mismatch');
   let previousCompleted = -Infinity;
   for (const entry of result.results) {
-    if (entry.verdict !== 'passed' || entry.exitCode !== 0 || entry.signal !== null
+    const passed = entry.verdict === 'passed' && entry.exitCode === 0 && entry.signal === null;
+    const failed = entry.verdict === 'failed'
+      && (entry.exitCode === null || Number.isSafeInteger(entry.exitCode))
+      && (entry.signal === null || typeof entry.signal === 'string')
+      && (entry.errorCode === undefined || /^funnel\.[a-z.-]+$/u.test(entry.errorCode));
+    if ((!passed && !failed)
         || !Number.isFinite(Date.parse(entry.startedAt)) || !Number.isFinite(Date.parse(entry.completedAt))
         || Date.parse(entry.completedAt) < Date.parse(entry.startedAt)
         || Date.parse(entry.completedAt) - Date.parse(entry.startedAt) > plan.workerTimeoutMs
@@ -266,7 +271,9 @@ export function verifyFrozenFunnelWorkerResult(result, { plan, workerId, artifac
     if (!same(frozenFunnelFileEntry(artifactRoot, entry.log.path), entry.log)) throw new Error('funnel worker log changed');
     previousCompleted = Date.parse(entry.completedAt);
   }
-  if (result.verdict !== 'passed') throw new Error('funnel worker did not pass');
+  const expectedVerdict = result.results.every((entry) => entry.verdict === 'passed') ? 'passed' : 'failed';
+  if (result.verdict !== expectedVerdict) throw new Error('funnel worker verdict does not match its steps');
+  if (!allowFailed && result.verdict !== 'passed') throw new Error('funnel worker did not pass');
   return result;
 }
 
@@ -414,7 +421,9 @@ export function createFrozenFunnelTransport({ config, plan, planPath, publicKeyP
       catch (error) { if (launchError) throw launchError; throw error; }
       if (launchError) throw launchError;
     }
-    return verifyFrozenFunnelWorkerResult(json(path.join(localRoot, 'worker-result.json')), { plan, workerId: worker.workerId, artifactRoot: localRoot });
+    return verifyFrozenFunnelWorkerResult(json(path.join(localRoot, 'worker-result.json')), {
+      plan, workerId: worker.workerId, artifactRoot: localRoot, allowFailed: true,
+    });
   };
 }
 

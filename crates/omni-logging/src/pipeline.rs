@@ -10,8 +10,8 @@
 //! - lines are written unbuffered on the writer thread, so external readers
 //!   observe them immediately (well under the 100ms flush budget the
 //!   watch-mode marker parsing relies on);
-//! - rotation only happens on the writer thread, which removes the historical
-//!   race where two independent pipelines both ran the rename cycle;
+//! - rotation runs on the writer thread under the cross-process directory lock
+//!   shared with cooperating raw log exporters;
 //! - a full channel drops the line and increments `dropped_count` instead of
 //!   ever blocking the sender (audio threads must never wait on log I/O).
 
@@ -213,6 +213,18 @@ impl Writer {
     }
 
     fn rotate(&mut self) {
+        let directory = self.log_path.parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let _guard = match crate::lock_log_directory(directory) {
+            Ok(guard) => guard,
+            Err(_) => {
+                self.write_error_count.fetch_add(1, Ordering::Relaxed);
+                // Preserve the open handle and all generations. The pending
+                // line still appends; later lines can retry rotation.
+                return;
+            }
+        };
         // Close our handle first so the rename cannot leave us appending to a
         // file that now lives under the `.1.log` name.
         self.file = None;
@@ -247,6 +259,54 @@ mod tests {
 
     fn temp_dir(name: &str) -> PathBuf {
         crate::test_support::temp_dir("pipeline", name)
+    }
+
+    #[test]
+    fn snapshot_guard_blocks_rotation_then_writer_resumes() {
+        let root = temp_dir("snapshot-guard");
+        let path = root.join("app.log");
+        let pipeline = LogPipeline::with_limits(path.clone(), 8, 1);
+        pipeline.submit_line("invocation-marker\n".to_string());
+        assert!(pipeline.flush_blocking(Duration::from_secs(5)));
+        let guard = crate::lock_log_directory(&root).unwrap();
+        // Park first so submission order is deterministic, without sleeps.
+        let release = pipeline.stall_writer();
+        pipeline.submit_line("after-snapshot\n".to_string());
+        release.send(()).unwrap();
+        // The queued flush cannot pass the rotation while the guard is held.
+        assert!(!pipeline.flush_blocking(Duration::from_millis(100)));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "invocation-marker\n");
+        assert!(!path.with_extension("1.log").exists());
+        assert_eq!(pipeline.write_error_count(), 0);
+        drop(guard);
+        assert!(pipeline.flush_blocking(Duration::from_secs(5)));
+        assert_eq!(fs::read_to_string(path.with_extension("1.log")).unwrap(), "invocation-marker\n");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "after-snapshot\n");
+        assert_eq!(pipeline.dropped_count(), 0);
+        assert_eq!(pipeline.write_error_count(), 0);
+        drop(pipeline);
+        let _ = crate::test_support::remove_temp_dir(&root);
+    }
+
+    #[test]
+    fn failed_directory_lock_preserves_generations_and_counts_error() {
+        let root = temp_dir("lock-failure");
+        let path = root.join("app.log");
+        let pipeline = LogPipeline::with_limits(path.clone(), 8, 1);
+        pipeline.submit_line("before\n".to_string());
+        assert!(pipeline.flush_blocking(Duration::from_secs(5)));
+        fs::write(path.with_extension("1.log"), "older\n").unwrap();
+        // A directory in place of the coordination file makes open fail.
+        fs::create_dir(root.join(crate::LOG_DIRECTORY_LOCK_FILE)).unwrap();
+        pipeline.submit_line("after\n".to_string());
+        assert!(pipeline.flush_blocking(Duration::from_secs(5)));
+        assert_eq!(pipeline.write_error_count(), 1);
+        assert_eq!(pipeline.dropped_count(), 0);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "before\nafter\n");
+        assert_eq!(fs::read_to_string(path.with_extension("1.log")).unwrap(), "older\n");
+        assert!(!path.with_extension("2.log").exists());
+        drop(pipeline);
+        let _ = crate::test_support::remove_temp_dir(&root);
     }
 
     #[test]

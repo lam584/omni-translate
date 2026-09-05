@@ -377,7 +377,11 @@ test('remote transport repairs a clean-HEAD CRLF implementation before runtime d
     if (body.includes("git.exe status --porcelain")) events.push('clean-head-check');
     if (body.includes("& node.exe") && body.includes('--worker-plan')) { events.push('launch'); throw launchError; }
     if (body.includes("[Console]::Write('EXISTS')")) return 'MISSING';
-    if (body.includes('$stage=') && body.includes('funnel runtime transfer mismatch')) events.push('runtime-install');
+    if (body.includes('$stage=') && body.includes('funnel runtime transfer mismatch')) {
+      events.push('runtime-install');
+      assert.doesNotMatch(body, /Get-FileHash/u);
+      assert.match(body, /Security\.Cryptography\.SHA256/u);
+    }
     return '';
   };
   await assert.rejects(createFrozenFunnelTransport({ ...value, run })(value.plan.workers[0]), (error) => error === launchError);

@@ -178,6 +178,10 @@ function Stop-OmniOwnedProcessTree {
   $ids = @((Get-OmniDescendantProcessIds -RootProcessId ([int]$Lease.pid)))
   [array]::Reverse($ids)
   $targetIds = @($ids) + @([int]$Lease.pid)
+  # The root identity was validated immediately above. Ask Windows to terminate
+  # the live tree atomically as well, so a child created after the CIM snapshot
+  # cannot retain inherited stdout/stderr handles past this cleanup boundary.
+  & taskkill.exe /PID ([int]$Lease.pid) /T /F 2>&1 | Out-Null
   foreach ($id in $ids) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
   Stop-Process -Id ([int]$Lease.pid) -Force -ErrorAction SilentlyContinue
   $deadline = [DateTime]::UtcNow.AddMilliseconds($WaitMilliseconds)

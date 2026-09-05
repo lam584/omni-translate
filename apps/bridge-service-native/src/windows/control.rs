@@ -10,6 +10,26 @@ fn handle_control(
     translation_queue: &Arc<Mutex<TranslationPlaybackQueue>>,
     runtime_root: &Path,
 ) -> Value {
+    handle_control_with_driver_evidence(
+        command,
+        state,
+        playback_tx,
+        playback_control_tx,
+        translation_queue,
+        runtime_root,
+        |root| (read_install_state(root), driver_control_device_available()),
+    )
+}
+
+fn handle_control_with_driver_evidence(
+    command: Value,
+    state: &Arc<Mutex<BridgeState>>,
+    playback_tx: &mpsc::SyncSender<PlaybackCommand>,
+    playback_control_tx: &mpsc::Sender<PlaybackControlCommand>,
+    translation_queue: &Arc<Mutex<TranslationPlaybackQueue>>,
+    runtime_root: &Path,
+    driver_evidence: impl FnOnce(&Path) -> (Option<DriverInstallState>, bool),
+) -> Value {
     let request_id = command["requestId"].as_str().unwrap_or_default();
     match command["type"].as_str().unwrap_or_default() {
         "bridge.process-loopback.probe" => {
@@ -88,9 +108,7 @@ fn handle_control(
             );
             let (install_state, control_device_available) =
                 if requested_capture_mode == SourceCaptureMode::VirtualDriver {
-                    let install_state = read_install_state(runtime_root);
-                    let control_device_available = driver_control_device_available();
-                    (install_state, control_device_available)
+                    driver_evidence(runtime_root)
                 } else {
                     (None, false)
                 };

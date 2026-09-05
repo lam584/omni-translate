@@ -1286,6 +1286,7 @@ mod tests {
         capture_route_is_ready, classify_process_loopback_capability,
         control_response_authorizes_exit, fail_process_loopback_route,
         finish_completed_physical_stream, handle_bridge_shutdown, handle_control,
+        handle_control_with_driver_evidence,
         handle_physical_translation_frame,
         handle_virtual_mic_frame_with_writer,
         handle_process_loopback_probe,
@@ -2329,9 +2330,45 @@ mod tests {
 
     #[test]
     fn virtual_driver_translation_init_binds_an_explicit_physical_playback_owner() {
+        assert_virtual_driver_physical_playback_owner(true, "running", "running");
+    }
+
+    #[test]
+    fn non_virtual_control_commands_do_not_probe_driver_evidence() {
         let runtime_root = TempDir::new().unwrap();
         let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
-        state.lock().unwrap().driver_health = "ready".to_string();
+        let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
+        let (playback_tx, _playback_rx) = mpsc::sync_channel(2);
+        let (playback_control_tx, _playback_control_rx) = mpsc::channel();
+        for command in [
+            json!({"type": "bridge.state.query", "requestId": "query-without-driver"}),
+            json!({
+                "type": "bridge.init", "requestId": "init-without-driver",
+                "protocolVersion": BRIDGE_PROTOCOL_VERSION, "sourceCaptureMode": "none",
+                "translationPlaybackEnabled": false, "monitorPlaybackEnabled": false
+            }),
+        ] {
+            let response = handle_control_with_driver_evidence(
+                command, &state, &playback_tx, &playback_control_tx,
+                &translation_queue, runtime_root.path(),
+                |_| panic!("non-virtual control command probed the driver"),
+            );
+            assert_ne!(response["type"], "bridge.error");
+        }
+    }
+
+    #[test]
+    fn virtual_driver_translation_init_keeps_missing_capture_degraded_after_playback_rebind() {
+        assert_virtual_driver_physical_playback_owner(false, "not-installed", "degraded");
+    }
+
+    fn assert_virtual_driver_physical_playback_owner(
+        control_device_available: bool,
+        expected_driver_health: &str,
+        expected_bridge_state: &str,
+    ) {
+        let runtime_root = TempDir::new().unwrap();
+        let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
         let translation_queue = Arc::new(Mutex::new(TranslationPlaybackQueue::new(4)));
         let (playback_tx, _playback_rx) = mpsc::sync_channel(2);
         let (playback_control_tx, playback_control_rx) = mpsc::channel();
@@ -2347,7 +2384,7 @@ mod tests {
             response_tx.send(Ok(device_id)).unwrap();
         });
 
-        let response = handle_control(
+        let response = handle_control_with_driver_evidence(
             json!({
                 "type": "bridge.init",
                 "requestId": "virtual-driver-physical-owner",
@@ -2364,11 +2401,13 @@ mod tests {
             &playback_control_tx,
             &translation_queue,
             runtime_root.path(),
+            |_| (None, control_device_available),
         );
 
         rebind.join().unwrap();
         assert_eq!(response["type"], "bridge.init.ack");
-        assert_eq!(response["bridgeState"], "running");
+        assert_eq!(response["driverHealth"], expected_driver_health);
+        assert_eq!(response["bridgeState"], expected_bridge_state);
         assert_eq!(response["physicalPlaybackStatus"], "ready");
         assert_eq!(response["resolvedPhysicalPlaybackDeviceId"], "hda-speaker");
         assert!(response["playbackOwnerGeneration"].as_u64().unwrap() > 41);

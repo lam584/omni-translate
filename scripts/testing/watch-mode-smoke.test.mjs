@@ -889,6 +889,7 @@ test('smoke adapter classifies provider 50002 cue evidence as external even when
 
 test('Windows timebox terminates its owned child process tree', { skip: process.platform !== 'win32' }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-timebox-'));
+  let passed = false;
   try {
     const outcomePath = path.join(root, 'outcome.json');
     const payload = Buffer.from(JSON.stringify({
@@ -911,7 +912,13 @@ test('Windows timebox terminates its owned child process tree', { skip: process.
     // own 500 ms child deadline; this outer bound only prevents the harness
     // from killing the wrapper while it is closing redirected handles.
     ], { encoding: 'utf8', timeout: 30_000, windowsHide: true });
-    assert.equal(result.status, 124);
+    const diagnostics = {
+      status: result.status, signal: result.signal, error: result.error?.message ?? null,
+      stdout: result.stdout, stderr: result.stderr,
+      outcome: fs.existsSync(outcomePath) ? fs.readFileSync(outcomePath, 'utf8') : null,
+    };
+    fs.writeFileSync(path.join(root, 'wrapper-result.json'), JSON.stringify(diagnostics, null, 2), 'utf8');
+    assert.equal(result.status, 124, JSON.stringify(diagnostics));
     assert.equal(result.error, undefined);
     const outcome = JSON.parse(fs.readFileSync(outcomePath, 'utf8'));
     assert.equal(outcome.reason, 'timeout');
@@ -920,7 +927,16 @@ test('Windows timebox terminates its owned child process tree', { skip: process.
     assert.equal(outcome.trigger, null);
     assert.equal(outcome.minimumCFreeBytes, null);
     assert.deepEqual(outcome.samples, []);
+    passed = true;
   } finally {
+    if (!passed) {
+      // The VM3 harness removes its temporary root even on failure. Preserve
+      // diagnostic evidence outside that root before its cleanup runs.
+      const evidenceRoot = path.resolve('artifacts/testing/timebox-failures', path.basename(root));
+      fs.mkdirSync(path.dirname(evidenceRoot), { recursive: true });
+      fs.cpSync(root, evidenceRoot, { recursive: true, errorOnExist: true, force: false });
+      console.error('timebox failure evidence: ' + evidenceRoot);
+    }
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

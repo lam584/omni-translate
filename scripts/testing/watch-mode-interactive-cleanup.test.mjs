@@ -7,6 +7,10 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const modulePath = fileURLToPath(new URL('./lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1', import.meta.url));
+const utilityModulePath = path.join(
+  process.env.SystemRoot || 'C:\\Windows',
+  'System32/WindowsPowerShell/v1.0/Modules/Microsoft.PowerShell.Utility/Microsoft.PowerShell.Utility.psd1',
+);
 const psQuote = (value) => `'${value.replaceAll("'", "''")}'`;
 
 for (const scenario of ['orphan', 'hash', 'root-hash', 'image-path', 'sid', 'session', 'bios', 'binding', 'authority', 'parent-generation', 'pid-generation', 'deadline']) {
@@ -17,6 +21,7 @@ for (const scenario of ['orphan', 'hash', 'root-hash', 'image-path', 'sid', 'ses
     writeFileSync(parentScript, `const fs=require('node:fs');const cp=require('node:child_process');const child=cp.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true,detached:true});fs.writeFileSync(${JSON.stringify(childFile)},JSON.stringify({pid:child.pid}));setInterval(()=>{},1000);`, 'utf8');
     const script = `
 $ErrorActionPreference='Stop'
+Import-Module ${psQuote(utilityModulePath)} -Force
 Import-Module ${psQuote(modulePath)} -Force
 $root=$null; $child=$null; $unrelated=$null
 function Identity($p,$role,$parentPid,$parentStartedAt) {

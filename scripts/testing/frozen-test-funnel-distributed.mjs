@@ -351,9 +351,44 @@ export function createFrozenFunnelTransport({ config, plan, planPath, publicKeyP
       const remotePlan = path.win32.join(requestRoot, 'plan.json');
       const remoteKey = path.win32.join(requestRoot, 'public.pem');
       const assertSource = `$ErrorActionPreference='Stop'; Set-Location -LiteralPath ${psQuote(worker.workspaceRoot)}; if(([string](Get-CimInstance Win32_ComputerSystemProduct).UUID).ToLowerInvariant() -cne ${psQuote(signedWorker.uuidBios)}){throw 'funnel BIOS mismatch'}; $head=(& git.exe rev-parse HEAD); if($LASTEXITCODE -ne 0 -or $head -cne ${psQuote(plan.headCommit)}){throw 'funnel HEAD mismatch'}; $dirty=@(& git.exe status --porcelain=v1 --untracked-files=all); if($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0){throw 'funnel workspace is dirty'};`;
+      const implementationState = async (entries) => {
+        const states = [];
+        for (let offset = 0; offset < entries.length; offset += 8) {
+          const chunk = entries.slice(offset, offset + 8);
+          const rows = chunk.map((entry, index) => {
+            const destination = path.win32.join(worker.workspaceRoot, ...entry.path.split('/'));
+            return `@(${offset + index},${psQuote(destination)},${entry.bytes},${psQuote(entry.sha256)})`;
+          }).join(',');
+          const body = `$ErrorActionPreference='Stop'; $rows=@(${rows}); foreach($row in $rows){$p=[string]$row[1];$match=$false;if(Test-Path -LiteralPath $p -PathType Leaf){$item=Get-Item -LiteralPath $p -Force;if(-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $item.Length -eq [long]$row[2]){$stream=[IO.File]::OpenRead($p);try{$hash=[BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($stream)).Replace('-','').ToLowerInvariant()}finally{$stream.Dispose()};$match=$hash -ceq [string]$row[3]}};[Console]::WriteLine(([string]$row[0])+'|'+$(if($match){'MATCH'}else{'MISMATCH'}))}`;
+          const output = await ssh(body);
+          for (const line of output.split(/\r?\n/u).map((value) => value.trim()).filter(Boolean)) {
+            const match = /^(\d+)\|(MATCH|MISMATCH)$/u.exec(line);
+            if (!match) throw new Error('funnel implementation inventory probe returned invalid output');
+            states[Number(match[1])] = match[2];
+          }
+        }
+        if (states.length !== entries.length || entries.some((_, index) => states[index] !== 'MATCH' && states[index] !== 'MISMATCH')) {
+          throw new Error('funnel implementation inventory probe was incomplete');
+        }
+        return states;
+      };
       await ssh(`${assertSource} if(Test-Path -LiteralPath ${psQuote(requestRoot)}){throw 'funnel request already exists'}; New-Item -ItemType Directory -Path ${psQuote(requestRoot)} | Out-Null`);
       await run(config.scpExecutable, [...scpArgs, planPath, remote(remotePlan)]);
       await run(config.scpExecutable, [...scpArgs, publicKeyPath, remote(remoteKey)]);
+      const implementationStates = await implementationState(plan.implementationHashes);
+      for (const [index, entry] of plan.implementationHashes.entries()) {
+        if (implementationStates[index] === 'MATCH') continue;
+        const source = frozenFunnelFile(repoRoot, entry.path);
+        if (!same(frozenFunnelFileEntry(repoRoot, entry.path), entry)) throw new Error('funnel signed implementation source changed during distribution');
+        const stage = path.win32.join(requestRoot, `implementation-${index}.bin`);
+        const destination = path.win32.join(worker.workspaceRoot, ...entry.path.split('/'));
+        await run(config.scpExecutable, [...scpArgs, source, remote(stage)]);
+        await ssh(`$ErrorActionPreference='Stop'; $stage=${psQuote(stage)}; $destination=${psQuote(destination)}; if(-not (Test-Path -LiteralPath $stage -PathType Leaf)){throw 'funnel implementation stage missing'}; for($p=$stage; $p; $p=[IO.Path]::GetDirectoryName($p)){if((Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'funnel implementation stage reparse path'}}; $item=Get-Item -LiteralPath $stage -Force;if($item.Length -ne ${entry.bytes}){throw 'funnel implementation transfer mismatch'};$stream=[IO.File]::OpenRead($stage);try{$hash=[BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($stream)).Replace('-','').ToLowerInvariant()}finally{$stream.Dispose()};if($hash -cne ${psQuote(entry.sha256)}){throw 'funnel implementation transfer mismatch'};for($p=$destination; $p; $p=[IO.Path]::GetDirectoryName($p)){if((Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'funnel implementation reparse path'}};New-Item -ItemType Directory -Force -Path ([IO.Path]::GetDirectoryName($destination)) | Out-Null;Move-Item -LiteralPath $stage -Destination $destination -Force`);
+      }
+      await ssh(assertSource);
+      if ((await implementationState(plan.implementationHashes)).some((state) => state !== 'MATCH')) {
+        throw new Error('funnel implementation inventory remains mismatched after repair');
+      }
       // Only the signed runtime inventory may be replaced. Source synchronisation
       // remains a separate clean-HEAD operation, never an implicit checkout.
       for (const [index, entry] of plan.runtimeBinaryHashes.entries()) {
@@ -370,7 +405,13 @@ export function createFrozenFunnelTransport({ config, plan, planPath, publicKeyP
       try {
         await ssh(`${assertSource} if((Get-FileHash -LiteralPath ${psQuote(runnerPath)} -Algorithm SHA256).Hash.ToLowerInvariant() -cne ${psQuote(runnerHash)}){throw 'funnel runner hash mismatch'}; & node.exe ${psQuote(runnerPath)} '--worker-plan' ${psQuote(remotePlan)} '--worker-id' ${psQuote(worker.workerId)} '--public-key' ${psQuote(remoteKey)} '--output-root' ${psQuote(workerOutput)}; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}`, { timeoutMs: MAX_WORKER_MS + 120_000 });
       } catch (error) { launchError = error; }
-      await run(config.scpExecutable, [...scpArgs, '-r', remote(workerOutput), localRoot]);
+      const outputExists = (await ssh(`if(Test-Path -LiteralPath ${psQuote(workerOutput)} -PathType Container){[Console]::Write('EXISTS')}else{[Console]::Write('MISSING')}`)).trim();
+      if (outputExists !== 'EXISTS') {
+        if (launchError) throw launchError;
+        throw new Error('funnel worker output is missing after launch');
+      }
+      try { await run(config.scpExecutable, [...scpArgs, '-r', remote(workerOutput), localRoot]); }
+      catch (error) { if (launchError) throw launchError; throw error; }
       if (launchError) throw launchError;
     }
     return verifyFrozenFunnelWorkerResult(json(path.join(localRoot, 'worker-result.json')), { plan, workerId: worker.workerId, artifactRoot: localRoot });

@@ -3,16 +3,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import {
   FROZEN_FUNNEL_RUNNER, FROZEN_FUNNEL_STEPS, createFrozenFunnelPlan, verifyFrozenFunnelPlan,
   runFrozenFunnelPipelines, collectFrozenFunnelWorkers, createFrozenFunnelAuthority,
   verifyFrozenFunnelAuthority, verifyFrozenFunnelWorkerResult, frozenFunnelFileEntry,
-  runFrozenFunnelWorker, runFrozenFunnelStep,
+  runFrozenFunnelWorker, runFrozenFunnelStep, createFrozenFunnelTransport,
 } from './frozen-test-funnel-distributed.mjs';
 import { generateCoordinatorSigningKeyPair, signCoordinatorAuthority } from './watch-mode-shard-authority.mjs';
 import { createTestReceipt, verifyTestReceipt } from './watch-mode-test-receipts.mjs';
+import { repoRoot } from '../lib/testing-common.mjs';
 
 const EXPECTED_STEPS = Object.freeze({
   contracts: 'npm run test:contracts',
@@ -311,6 +313,92 @@ test('successful child close becomes a bounded failure when final log flush erro
   assert.equal(result.errorCode, 'funnel.step.log-failed');
   assert.equal(result.cleanupComplete, false);
   assert.equal(killed, 1);
+});
+
+function remoteTransportFixture(t) {
+  const value = fixture(t);
+  const keyBytes = Buffer.from('frozen-funnel-test-host-key');
+  const keyBase64 = keyBytes.toString('base64');
+  const hostKeySha256 = `SHA256:${createHash('sha256').update(keyBytes).digest('base64').replace(/=+$/u, '')}`;
+  const knownHostsFile = path.join(value.root, 'known_hosts');
+  fs.writeFileSync(knownHostsFile, `vm2 ssh-ed25519 ${keyBase64}\n`, 'utf8');
+  const worker = {
+    ...value.workers[1], workspaceRoot: 'E:\\remote-worker',
+    transport: {
+      kind: 'ssh', host: '192.0.2.2', port: 22, identityFile: path.join(value.root, 'id_rsa'),
+      knownHostsFile, hostKeyAlias: 'vm2', hostKeyAlgorithm: 'ssh-ed25519', hostKeySha256,
+    },
+  };
+  const implementationHashes = [
+    frozenFunnelFileEntry(repoRoot, FROZEN_FUNNEL_RUNNER),
+    frozenFunnelFileEntry(repoRoot, 'scripts/testing/run-with-vm3-test-environment.mjs'),
+  ];
+  const runtimeBinaryHashes = [frozenFunnelFileEntry(repoRoot, 'package.json')];
+  const runtimeAuthority = { ...value.runtimeAuthority, implementationHashes, runtimeBinaryHashes };
+  const plan = createFrozenFunnelPlan({ ...value, workers: [worker], runtimeAuthority, ...value.keys, executionId: 'transport-funnel' });
+  const planPath = path.join(value.root, 'plan.json');
+  const publicKeyPath = path.join(value.root, 'public.pem');
+  fs.writeFileSync(planPath, JSON.stringify(plan), 'utf8');
+  fs.writeFileSync(publicKeyPath, value.keys.publicKeyPem, 'utf8');
+  return {
+    ...value, worker, plan, planPath, publicKeyPath, outputRoot: path.join(value.root, 'receipts'),
+    config: { workers: [worker], sshExecutable: 'ssh-fixture', scpExecutable: 'scp-fixture' },
+  };
+}
+
+function decodedPowerShell(args) {
+  const encoded = args.at(-1);
+  return args.includes('-EncodedCommand') ? Buffer.from(encoded, 'base64').toString('utf16le') : '';
+}
+
+test('remote transport repairs a clean-HEAD CRLF implementation before runtime distribution and launch', async (t) => {
+  const value = remoteTransportFixture(t); const events = []; let probes = 0;
+  const launchError = new Error('original launch failure');
+  const run = async (command, args) => {
+    if (command === 'scp-fixture') {
+      if (args.some((arg) => arg.endsWith?.('run-with-vm3-test-environment.mjs'))) events.push('implementation-scp');
+      else if (args.some((arg) => arg.endsWith?.('package.json'))) events.push('runtime-scp');
+      else events.push('control-scp');
+      return '';
+    }
+    const body = decodedPowerShell(args);
+    if (body.includes("$rows=@(")) {
+      probes += 1; events.push(`implementation-probe-${probes}`);
+      return probes === 1 ? '0|MATCH\n1|MISMATCH\n' : '0|MATCH\n1|MATCH\n';
+    }
+    if (body.includes('$stage=') && body.includes('funnel implementation transfer mismatch')) {
+      events.push('implementation-install');
+      assert.match(body, /ReparsePoint/u); assert.match(body, /Move-Item/u);
+      return '';
+    }
+    if (body.includes("git.exe status --porcelain")) events.push('clean-head-check');
+    if (body.includes("& node.exe") && body.includes('--worker-plan')) { events.push('launch'); throw launchError; }
+    if (body.includes("[Console]::Write('EXISTS')")) return 'MISSING';
+    if (body.includes('$stage=') && body.includes('funnel runtime transfer mismatch')) events.push('runtime-install');
+    return '';
+  };
+  await assert.rejects(createFrozenFunnelTransport({ ...value, run })(value.plan.workers[0]), (error) => error === launchError);
+  assert.ok(events.indexOf('implementation-scp') < events.indexOf('runtime-scp'));
+  assert.ok(events.indexOf('implementation-probe-2') < events.indexOf('runtime-scp'));
+  assert.ok(events.indexOf('runtime-scp') < events.indexOf('launch'));
+  assert.ok(events.filter((event) => event === 'clean-head-check').length >= 2);
+});
+
+test('remote transport preserves the launch error when worker output does not exist', async (t) => {
+  const value = remoteTransportFixture(t); const launchError = new Error('fixed launch failure'); let recoveryScp = 0;
+  const run = async (command, args) => {
+    if (command === 'scp-fixture') {
+      if (args.includes('-r')) recoveryScp += 1;
+      return '';
+    }
+    const body = decodedPowerShell(args);
+    if (body.includes("$rows=@(")) return '0|MATCH\n1|MATCH\n';
+    if (body.includes("& node.exe") && body.includes('--worker-plan')) throw launchError;
+    if (body.includes("[Console]::Write('EXISTS')")) return 'MISSING';
+    return '';
+  };
+  await assert.rejects(createFrozenFunnelTransport({ ...value, run })(value.plan.workers[0]), (error) => error === launchError);
+  assert.equal(recoveryScp, 0);
 });
 
 test('receipt v2 verifies signed distributed authority and rejects re-digested worker or plan substitution', (t) => {

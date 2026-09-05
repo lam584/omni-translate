@@ -13,6 +13,11 @@ import {
 } from '../lib/testing-common.mjs';
 import { currentGitProvenance, exactGitProvenanceFailure } from './git-provenance.mjs';
 import {
+  FROZEN_DESKTOP_SCENARIOS,
+  resolveFrozenDesktopAuthority,
+  revalidateFrozenDesktopAuthority,
+} from './frozen-desktop-release-authority.mjs';
+import {
   hashCollectorArtifact,
   validateRawReleaseManualEvidence,
 } from './release-manual-collector.mjs';
@@ -50,6 +55,7 @@ export function parseDesktopReleaseEvidenceArgs(argv) {
       collectorOutputRoot: DEFAULT_COLLECTOR_OUTPUT_ROOT,
       providerId: '',
       timeoutMs: DEFAULT_TIMEOUT_MS,
+      runtimeAuthority: undefined,
     },
   });
 }
@@ -96,6 +102,24 @@ export function buildCurrentDesktopRelease({
   return executablePath;
 }
 
+export function prepareDesktopReleaseRuntime({
+  scenarioId,
+  runtimeAuthority,
+  workspaceRoot = repoRoot,
+  provenance = currentGitProvenance({ cwd: workspaceRoot }),
+  build = buildCurrentDesktopRelease,
+} = {}) {
+  if (runtimeAuthority !== undefined) {
+    if (!FROZEN_DESKTOP_SCENARIOS.includes(scenarioId)
+      || scenarioId === 'E2E-OVERLAY-CLICK-THROUGH') {
+      throw new Error('frozen Desktop collection supports CONFIG and DIAGNOSTICS only; Probe reuse is separate');
+    }
+    return resolveFrozenDesktopAuthority({ runtimeAuthority, workspaceRoot, provenance });
+  }
+  build({ workspaceRoot, provenance, timeoutMs: 600_000 });
+  return undefined;
+}
+
 export function buildDesktopReleaseEvidencePlan({
   scenarioId,
   workspaceRoot = repoRoot,
@@ -112,6 +136,7 @@ export function buildDesktopReleaseEvidencePlan({
   dryRun,
   skip,
   simulated,
+  frozenRuntime,
 } = {}) {
   if ([desktopExecutable, source, dryRun, skip, simulated].some((value) => value !== undefined)) {
     throw new Error(
@@ -124,6 +149,9 @@ export function buildDesktopReleaseEvidencePlan({
     );
   }
   assertExactCleanProvenance(provenance);
+  if (frozenRuntime !== undefined) {
+    revalidateFrozenDesktopAuthority(frozenRuntime, { workspaceRoot, provenance, scenarioId });
+  }
   const absoluteWorkspace = path.resolve(workspaceRoot);
   const absoluteExecutable = path.join(
     absoluteWorkspace,
@@ -153,6 +181,7 @@ export function buildDesktopReleaseEvidencePlan({
     provenance,
     executablePath: absoluteExecutable,
     executableSha256: sha256File(absoluteExecutable),
+    ...(frozenRuntime !== undefined ? { frozenRuntime } : {}),
     runDirectory,
     timeoutMs: parsedTimeout,
     environment: {
@@ -265,6 +294,11 @@ export async function runDesktopReleaseEvidence({
   if (typeof collectEvidence !== 'function') {
     throw new Error('Desktop raw packaging is private; invoke the production release collector entrypoint');
   }
+  if (plan.frozenRuntime !== undefined) {
+    revalidateFrozenDesktopAuthority(plan.frozenRuntime, {
+      workspaceRoot: plan.workspaceRoot, scenarioId: plan.scenarioId,
+    });
+  }
   ensureDir(path.dirname(plan.runDirectory));
   const child = launch(plan.executablePath, plan.environment);
   if (!Number.isInteger(child?.pid) || child.pid <= 0) {
@@ -279,6 +313,11 @@ export async function runDesktopReleaseEvidence({
     throw new Error(`Desktop release evidence process failed with exit ${terminal.code}: ${detail}`);
   }
   const checked = validateDesktopReleaseEmitterOutput(plan, terminal.processId, { now: now.getTime() });
+  if (plan.frozenRuntime !== undefined) {
+    revalidateFrozenDesktopAuthority(plan.frozenRuntime, {
+      workspaceRoot: plan.workspaceRoot, scenarioId: plan.scenarioId,
+    });
+  }
   const collected = await collectEvidence({
     source: plan.runDirectory,
     scenarioId: plan.scenarioId,
@@ -286,6 +325,7 @@ export async function runDesktopReleaseEvidence({
     workspaceRoot: plan.workspaceRoot,
     provenance: plan.provenance,
     now,
+    ...(plan.frozenRuntime !== undefined ? { frozenRuntime: plan.frozenRuntime } : {}),
   });
   return {
     scenarioId: plan.scenarioId,

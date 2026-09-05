@@ -696,6 +696,8 @@ test('shard orchestration inventory is independent from local/matrix implementat
     'scripts/testing/run-watch-mode-interactive-task.ps1',
     'scripts/testing/collect-watch-mode-interactive-process-authority.ps1',
     'scripts/testing/release-manual-collector.mjs',
+    'scripts/testing/frozen-desktop-release-authority.mjs',
+    'scripts/testing/watch-mode-provider-preflight-manual-source.mjs',
     'scripts/testing/watch-mode-provider-preflight-authority.mjs',
     'scripts/testing/watch-mode-provider-preflight-authorization.mjs',
   ]);

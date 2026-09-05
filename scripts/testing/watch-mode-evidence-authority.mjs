@@ -87,6 +87,8 @@ export const PAID_AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/watch-mode-canonical-source-authority.mjs',
   'scripts/testing/watch-mode-translated-pcm-loopback.mjs',
   'scripts/testing/release-manual-collector.mjs',
+  'scripts/testing/frozen-desktop-release-authority.mjs',
+  'scripts/testing/watch-mode-provider-preflight-manual-source.mjs',
   'scripts/testing/watch-mode-provider-preflight-authority.mjs',
   'scripts/testing/watch-mode-provider-preflight-process.mjs',
   'scripts/testing/watch-mode-provider-network-health.mjs',

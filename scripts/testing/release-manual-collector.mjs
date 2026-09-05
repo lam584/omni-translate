@@ -47,6 +47,10 @@ import {
 } from './virtual-mic-release-evidence.mjs';
 import { validateVirtualMicFingerprintAuthority } from './virtual-mic-fingerprint-authority.mjs';
 import { validateProviderPreflightRawAuthority } from './watch-mode-provider-preflight-authority.mjs';
+import { verifyProviderPreflightManualSource } from './watch-mode-provider-preflight-manual-source.mjs';
+import {
+  revalidateFrozenDesktopAuthority,
+} from './frozen-desktop-release-authority.mjs';
 
 export const RELEASE_MANUAL_COLLECTOR_SCHEMA_VERSION = 1;
 export const RELEASE_MANUAL_COLLECTOR_SCRIPT = 'scripts/testing/collect-release-manual-evidence.mjs';
@@ -1854,6 +1858,21 @@ const productionAuthority = (emitter, implementationRoot = repoRoot) => ({
   } : {}),
 });
 
+const publishedPreflightEmitter = (emitter) => ({
+  ...emitter, runner: 'scripts/testing/run-watch-mode-live-production-coordinator.mjs',
+});
+
+const revalidatePublishedPreflightSource = (binding, scenarioId) => {
+  if (scenarioId !== 'E2E-PROVIDER-PROBE') throw new Error('published preflight source is Probe-only');
+  const verified = verifyProviderPreflightManualSource({
+    runtimeAuthorityPath: binding?.runtimeAuthorityPath, executionRoot: binding?.executionRoot,
+  });
+  if (!isDeepStrictEqual(binding, verified.sourceBinding)) {
+    throw new Error('published preflight source binding changed');
+  }
+  return verified;
+};
+
 const cleanProvenanceIssue = (provenance) => {
   const shapeIssue = gitProvenanceShapeFailure(provenance, 'collector provenance');
   if (shapeIssue) return shapeIssue;
@@ -2119,6 +2138,8 @@ function collectRawReleaseManualEvidence({
   overlayEmitterAuthority = null,
   virtualMicEmitterAuthority = null,
   runnerProcessAuthority = null,
+  frozenRuntime,
+  preflightSource,
   testOnlyRealDeviceAuthorityResolver,
 } = {}) {
   const baseProfileValue = RELEASE_MANUAL_COLLECTOR_PROFILES[scenarioId];
@@ -2148,7 +2169,15 @@ function collectRawReleaseManualEvidence({
   }
   const provenanceIssue = cleanProvenanceIssue(provenance);
   if (provenanceIssue) throw new Error(provenanceIssue);
+  if (frozenRuntime !== undefined) {
+    revalidateFrozenDesktopAuthority(frozenRuntime, { workspaceRoot, scenarioId });
+  }
+  const publishedPreflight = preflightSource === undefined ? null
+    : revalidatePublishedPreflightSource(preflightSource, scenarioId);
   const sourceRoot = path.resolve(workspaceRoot, String(source ?? ''));
+  if (publishedPreflight && sourceRoot !== publishedPreflight.sourceRoot) {
+    throw new Error('collector source is not the verified published preflight root');
+  }
   const profileValue = effectiveCollectorProfile(sourceRoot, scenarioId, baseProfileValue);
   if (
     DESKTOP_RELEASE_EMITTER_SCENARIOS[scenarioId]
@@ -2170,6 +2199,7 @@ function collectRawReleaseManualEvidence({
     implementationRoot,
     currentProvenance: provenance,
     testOnlyRealDeviceAuthorityResolver,
+    ...(publishedPreflight ? { expectedAuthorization: publishedPreflight.expectedAuthorization } : {}),
   });
   if (raw.issues.length > 0 || !raw.summary) {
     throw new Error(`official ${scenarioId} collector rejected the raw evidence:\n- ${raw.issues.join('\n- ')}`);
@@ -2206,7 +2236,9 @@ function collectRawReleaseManualEvidence({
       kind: 'test-fixture',
       emitterId: 'scripts/testing/run-quality-gate.test.mjs',
       emitterVersion: 1,
-    } : productionAuthority(productionEmitter, implementationRoot),
+    } : productionAuthority(publishedPreflight ? publishedPreflightEmitter(productionEmitter) : productionEmitter, implementationRoot),
+    ...(frozenRuntime !== undefined ? { frozenRuntime } : {}),
+    ...(preflightSource !== undefined ? { preflightSource } : {}),
     collector: {
       collectorId: profileValue.collectorId,
       collectorVersion: profileValue.collectorVersion,
@@ -2268,25 +2300,69 @@ export function testOnlyCollectReleaseManualEvidence(options = {}) {
 
 export async function collectDesktopReleaseManualEvidence(options = {}) {
   rejectProductionCollectorOverrides(options, [
-    'scenarioId', 'outputRoot', 'collectorOutputRoot', 'providerId', 'timeoutMs',
+    'scenarioId', 'outputRoot', 'collectorOutputRoot', 'providerId', 'timeoutMs', 'runtimeAuthority',
   ], 'Desktop production release collector');
   if (!DESKTOP_RELEASE_EMITTER_SCENARIOS[options.scenarioId]) {
     throw new Error('Desktop production release collector requires a provider-config, provider-probe, or diagnostics scenario');
   }
   const {
-    buildCurrentDesktopRelease,
+    prepareDesktopReleaseRuntime,
     buildDesktopReleaseEvidencePlan,
     runDesktopReleaseEvidence,
   } = await import('./run-desktop-release-evidence.mjs');
   const provenance = currentGitProvenance({ cwd: repoRoot });
-  buildCurrentDesktopRelease({ workspaceRoot: repoRoot, provenance, timeoutMs: 600_000 });
-  const plan = buildDesktopReleaseEvidencePlan({ ...options, workspaceRoot: repoRoot, provenance });
+  const frozenRuntime = prepareDesktopReleaseRuntime({
+    scenarioId: options.scenarioId, runtimeAuthority: options.runtimeAuthority,
+    workspaceRoot: repoRoot, provenance,
+  });
+  const plan = buildDesktopReleaseEvidencePlan({ ...options, workspaceRoot: repoRoot, provenance, frozenRuntime });
   return runDesktopReleaseEvidence({
     plan,
     collectEvidence: (rawOptions) => collectRawReleaseManualEvidence({
       ...rawOptions,
       desktopEmitterAuthority: DESKTOP_EMITTER_AUTHORITY,
     }),
+  });
+}
+
+export function assertPublishedPreflightOutputRoot(outputRoot, immutableRoots) {
+  const resolved = path.resolve(outputRoot);
+  const comparable = (candidate) => process.platform === 'win32' ? candidate.toLowerCase() : candidate;
+  let cursor = path.parse(resolved).root;
+  for (const component of resolved.slice(cursor.length).split(path.sep).filter(Boolean)) {
+    cursor = path.join(cursor, component);
+    let stat;
+    try { stat = fs.lstatSync(cursor); }
+    catch (error) { if (error.code === 'ENOENT') break; throw error; }
+    if (stat.isSymbolicLink() || !stat.isDirectory()
+      || comparable(fs.realpathSync.native(cursor)) !== comparable(cursor)) {
+      throw new Error('collector output ancestry must be canonical and free of reparse points');
+    }
+  }
+  for (const immutableRoot of immutableRoots) {
+    const relative = path.relative(comparable(path.resolve(immutableRoot)), comparable(resolved));
+    if (relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep))) {
+      throw new Error('collector output must be outside frozen source authorities');
+    }
+  }
+  return resolved;
+}
+
+export async function collectPublishedProviderPreflightManualEvidence(options = {}) {
+  rejectProductionCollectorOverrides(options, [
+    'runtimeAuthorityPath', 'executionRoot', 'outputRoot',
+  ], 'published provider preflight collector');
+  const verified = verifyProviderPreflightManualSource({
+    runtimeAuthorityPath: options.runtimeAuthorityPath, executionRoot: options.executionRoot,
+  });
+  const outputRoot = assertPublishedPreflightOutputRoot(
+    path.resolve(repoRoot, options.outputRoot ?? 'artifacts/testing/release-manual-collector'),
+    [verified.sourceBinding.executionRoot, path.dirname(verified.sourceBinding.runtimeAuthorityPath)],
+  );
+  return collectRawReleaseManualEvidence({
+    source: verified.sourceRoot, scenarioId: 'E2E-PROVIDER-PROBE', outputRoot,
+    workspaceRoot: repoRoot, provenance: currentGitProvenance({ cwd: repoRoot }),
+    desktopEmitterAuthority: DESKTOP_EMITTER_AUTHORITY, preflightSource: verified.sourceBinding,
   });
 }
 
@@ -2324,6 +2400,7 @@ export async function collectOverlayReleaseManualEvidence(options = {}) {
   rejectProductionCollectorOverrides(options, [
     'scenarioId', 'outputRoot', 'collectorOutputRoot', 'operator', 'operatorNotes',
     'driverHost', 'driverPort', 'nativeDriverPort', 'timeoutMs',
+    'runtimeAuthority',
   ], 'overlay production release collector');
   if (options.scenarioId !== 'E2E-OVERLAY-CLICK-THROUGH') {
     throw new Error('overlay release collector requires E2E-OVERLAY-CLICK-THROUGH');
@@ -2331,6 +2408,7 @@ export async function collectOverlayReleaseManualEvidence(options = {}) {
   const {
     buildOverlayClickThroughReleasePlan,
     buildOverlayReleaseBinaries,
+    prepareFrozenOverlayReleaseBinaries,
     runOverlayClickThroughReleaseEvidenceFromProductionCollector,
     runningDesktopProcesses,
   } = await import('./run-overlay-click-through-release-evidence.mjs');
@@ -2340,12 +2418,17 @@ export async function collectOverlayReleaseManualEvidence(options = {}) {
   if (runningDesktopProcesses().length > 0) {
     throw new Error('close every existing omni-desktop-shell.exe before building overlay evidence');
   }
-  const built = buildOverlayReleaseBinaries({ workspaceRoot: repoRoot, provenance: before });
+  const built = options.runtimeAuthority !== undefined
+    ? prepareFrozenOverlayReleaseBinaries({
+      workspaceRoot: repoRoot, provenance: before, runtimeAuthority: options.runtimeAuthority,
+    })
+    : buildOverlayReleaseBinaries({ workspaceRoot: repoRoot, provenance: before });
   const plan = buildOverlayClickThroughReleasePlan({
     ...options,
     workspaceRoot: repoRoot,
     provenance: built.provenance,
     preparedTooling: built.preparedTooling,
+    frozenRuntime: built.frozenRuntime,
   });
   return runOverlayClickThroughReleaseEvidenceFromProductionCollector({
     plan,
@@ -2462,6 +2545,35 @@ export function validateReleaseManualCollectorPackage(
   } catch (error) {
     return { issues: [...issues, error.message], manifest: null };
   }
+  if (Object.hasOwn(manifest ?? {}, 'frozenRuntime')) {
+    try {
+      revalidateFrozenDesktopAuthority(manifest.frozenRuntime, {
+        workspaceRoot, provenance: currentProvenance, scenarioId,
+      });
+      const emitter = readJson(path.join(artifactRoot, 'emitter-result.json'));
+      if (emitter.desktopExecutableSha256 !== manifest.frozenRuntime.desktop.sha256
+        || comparableResolvedPath(emitter.desktopExecutable) !== comparableResolvedPath(
+          path.join(workspaceRoot, manifest.frozenRuntime.desktop.path),
+        )
+        || emitter.sourceHeadCommit !== manifest.frozenRuntime.headCommit) {
+        issues.push('frozen runtime does not bind the captured Desktop emitter');
+      }
+    } catch (error) {
+      issues.push(`frozen runtime authority: ${error.message}`);
+    }
+  }
+  let publishedPreflight = null;
+  if (Object.hasOwn(manifest ?? {}, 'preflightSource')) {
+    try {
+      publishedPreflight = revalidatePublishedPreflightSource(manifest.preflightSource, scenarioId);
+      if (!isDeepStrictEqual(manifestArtifacts(artifactRoot, profileValue),
+        manifestArtifacts(publishedPreflight.sourceRoot, profileValue))) {
+        issues.push('collector artifacts do not match the published preflight source');
+      }
+    } catch (error) {
+      issues.push('published preflight source: ' + error.message);
+    }
+  }
   if (manifest?.schemaVersion !== RELEASE_MANUAL_COLLECTOR_SCHEMA_VERSION) {
     issues.push(`collector manifest schemaVersion must be ${RELEASE_MANUAL_COLLECTOR_SCHEMA_VERSION}`);
   }
@@ -2476,7 +2588,7 @@ export function validateReleaseManualCollectorPackage(
     kind: 'test-fixture',
     emitterId: 'scripts/testing/run-quality-gate.test.mjs',
     emitterVersion: 1,
-  } : productionEmitter ? productionAuthority(productionEmitter, implementationRoot) : null;
+  } : productionEmitter ? productionAuthority(publishedPreflight ? publishedPreflightEmitter(productionEmitter) : productionEmitter, implementationRoot) : null;
   if (!expectedAuthority) {
     issues.push(`${scenarioId} has no registered production authority emitter; release evidence must remain pending`);
   } else if (JSON.stringify(manifest?.authority) !== JSON.stringify(expectedAuthority)) {
@@ -2567,6 +2679,7 @@ export function validateReleaseManualCollectorPackage(
       implementationRoot,
       currentProvenance,
       ...(testOnlyAllowSyntheticAuthority ? { testOnlyRealDeviceAuthorityResolver } : {}),
+      ...(publishedPreflight ? { expectedAuthorization: publishedPreflight.expectedAuthorization } : {}),
     });
     for (const issue of raw.issues) issues.push(issue);
     if (!testOnlyAllowSyntheticAuthority) {

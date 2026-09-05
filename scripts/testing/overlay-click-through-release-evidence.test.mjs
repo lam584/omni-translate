@@ -33,6 +33,8 @@ import {
 import {
   materializeOverlayClickThroughRawFixture,
 } from './overlay-click-through-release-evidence-test-helpers.mjs';
+import { createFrozenDesktopFixture } from './frozen-desktop-release-authority-test-helpers.mjs';
+import { currentAuthorityRuntimeBinaryHashes } from './watch-mode-evidence-authority.mjs';
 
 const TEST_HEAD = 'a'.repeat(40);
 const TEST_INVOCATION = 'df3e2979-94c8-4a13-9fc3-f4862cfed7a1';
@@ -141,7 +143,7 @@ const prepareWorkspace = (name) => {
   };
 };
 
-const buildPlan = (workspace, suffix = 'fixture') => buildOverlayClickThroughReleasePlan({
+const buildPlan = (workspace, suffix = 'fixture', options = {}) => buildOverlayClickThroughReleasePlan({
   workspaceRoot: workspace.workspaceRoot,
   outputRoot: 'artifacts/testing/overlay-output',
   operator: 'Release Operator',
@@ -154,6 +156,7 @@ const buildPlan = (workspace, suffix = 'fixture') => buildOverlayClickThroughRel
   now: new Date('2026-08-10T10:00:00.000Z'),
   invocationId: TEST_INVOCATION,
   suffix,
+  ...options,
 });
 
 const increasingClock = (start = Date.parse('2026-08-10T10:00:00.000Z')) => {
@@ -193,7 +196,7 @@ const buildAuthorityAdapters = (plan) => {
     terminated,
     adapters: {
       now,
-      currentProvenance: () => TEST_PROVENANCE,
+      currentProvenance: () => plan.provenance,
       listRunning: () => [],
       portInUse: async () => false,
       launchTarget: () => ({ pid: targetPid, exitCode: null }),
@@ -204,8 +207,8 @@ const buildAuthorityAdapters = (plan) => {
           collectorId: OVERLAY_CLICK_TARGET_COLLECTOR_ID,
           collectorVersion: OVERLAY_CLICK_TARGET_COLLECTOR_VERSION,
           invocationId: TEST_INVOCATION,
-           sourceHeadCommit: TEST_HEAD,
-          buildCommit: TEST_HEAD,
+           sourceHeadCommit: plan.provenance.headCommit,
+          buildCommit: plan.provenance.headCommit,
           capturedAt: now().toISOString(),
           processId: targetPid,
           hwnd: targetHwnd,
@@ -315,8 +318,8 @@ const buildAuthorityAdapters = (plan) => {
           collectorId: OVERLAY_CLICK_TARGET_COLLECTOR_ID,
           collectorVersion: OVERLAY_CLICK_TARGET_COLLECTOR_VERSION,
           invocationId: TEST_INVOCATION,
-           sourceHeadCommit: TEST_HEAD,
-          buildCommit: TEST_HEAD,
+           sourceHeadCommit: plan.provenance.headCommit,
+          buildCommit: plan.provenance.headCommit,
           receivedAt: clickReceivedAt,
           processId: targetPid,
           hwnd: targetHwnd,
@@ -365,8 +368,8 @@ const buildAuthorityAdapters = (plan) => {
           passed: true,
           capturedAt: now().toISOString(),
           invocationId: TEST_INVOCATION,
-          sourceHeadCommit: TEST_HEAD,
-          desktopBuildCommit: TEST_HEAD,
+          sourceHeadCommit: plan.provenance.headCommit,
+          desktopBuildCommit: plan.provenance.headCommit,
           desktopProcessId: desktopPid,
           desktopExecutable: plan.desktopExecutable,
           desktopExecutableSha256: plan.desktopExecutableSha256,
@@ -406,6 +409,79 @@ const buildAuthorityAdapters = (plan) => {
     },
   };
 };
+
+test('frozen overlay captures with no runtime changes and forwards the frozen binding', async (t) => {
+  const workspace = prepareWorkspace('frozen-valid');
+  t.after(() => fs.rmSync(workspace.workspaceRoot, { recursive: true, force: true }));
+  const f = createFrozenDesktopFixture(workspace.workspaceRoot);
+  const plan = buildPlan(workspace, 'frozen-valid', {
+    provenance: f.provenance, frozenRuntime: f.frozenRuntime,
+  });
+  const authority = buildAuthorityAdapters(plan);
+  let captures = 0;
+  await runOverlayClickThroughReleaseEvidence({
+    plan, adapters: authority.adapters,
+    collectEvidence: async (options) => {
+      captures += 1;
+      assert.deepEqual(options.frozenRuntime, f.frozenRuntime);
+      assert.deepEqual(currentAuthorityRuntimeBinaryHashes(f), f.authority.runtimeBinaryHashes);
+      return { packageDirectory: 'fixture-package', manifestPath: 'fixture-manifest' };
+    },
+  });
+  assert.equal(captures, 1);
+  assert.deepEqual(currentAuthorityRuntimeBinaryHashes(f), f.authority.runtimeBinaryHashes);
+});
+
+test('frozen overlay rejects target old HEAD before starting WebDriver or Desktop', async (t) => {
+  const workspace = prepareWorkspace('frozen-old-target');
+  t.after(() => fs.rmSync(workspace.workspaceRoot, { recursive: true, force: true }));
+  const f = createFrozenDesktopFixture(workspace.workspaceRoot);
+  const plan = buildPlan(workspace, 'frozen-old-target', {
+    provenance: f.provenance, frozenRuntime: f.frozenRuntime,
+  });
+  const authority = buildAuthorityAdapters(plan);
+  const wait = authority.adapters.waitForTargetReady;
+  authority.adapters.waitForTargetReady = async (...args) => ({
+    ...await wait(...args), buildCommit: '0'.repeat(40),
+  });
+  authority.adapters.launchDriver = () => assert.fail('old target must not start driver/Desktop');
+  await assert.rejects(runOverlayClickThroughReleaseEvidence({
+    plan, adapters: authority.adapters,
+    collectEvidence: () => assert.fail('old target must not package'),
+  }), /target compiled buildCommit/);
+  assert.ok(authority.terminated.includes(authority.identities.targetPid));
+});
+
+test('frozen overlay rechecks runtime before target, before Desktop, and after capture', async (t) => {
+  for (const phase of ['before-target', 'before-desktop', 'after-capture', 'already-running']) {
+    const workspace = prepareWorkspace(`frozen-${phase}`);
+    t.after(() => fs.rmSync(workspace.workspaceRoot, { recursive: true, force: true }));
+    const f = createFrozenDesktopFixture(workspace.workspaceRoot);
+    const plan = buildPlan(workspace, `frozen-${phase}`, {
+      provenance: f.provenance, frozenRuntime: f.frozenRuntime,
+    });
+    const authority = buildAuthorityAdapters(plan);
+    const drift = () => fs.appendFileSync(path.join(workspace.workspaceRoot,
+      'drivers/windows-virtual-mic/package/omni-virtual-speaker.sys'), 'runtime drift');
+    if (phase === 'before-target') {
+      drift();
+      authority.adapters.launchTarget = () => assert.fail('must reject before target launch');
+    } else if (phase === 'before-desktop') {
+      authority.adapters.waitForDriver = async () => drift();
+      authority.adapters.request = () => assert.fail('must reject before Desktop session');
+    } else if (phase === 'after-capture') {
+      authority.adapters.currentProvenance = () => { drift(); return f.provenance; };
+    } else {
+      authority.adapters.listRunning = () => [9911];
+      authority.adapters.launchTarget = () => assert.fail('existing Desktop must remain alone');
+    }
+    await assert.rejects(runOverlayClickThroughReleaseEvidence({
+      plan, adapters: authority.adapters,
+      collectEvidence: () => assert.fail('drift must not package'),
+    }), phase === 'already-running' ? /close every existing/ : /binary inventory/);
+    assert.ok(!authority.terminated.includes(9911));
+  }
+});
 
 const collectValidFixture = async (name = 'valid') => {
   const workspace = prepareWorkspace(name);

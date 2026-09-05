@@ -4,6 +4,10 @@ import net from 'node:net';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
+import {
+  resolveFrozenDesktopAuthority,
+  revalidateFrozenDesktopAuthority,
+} from './frozen-desktop-release-authority.mjs';
 
 import {
   compactTimestamp,
@@ -509,6 +513,7 @@ export function parseOverlayClickThroughReleaseArgs(argv) {
       driverPort: DEFAULT_DRIVER_PORT,
       nativeDriverPort: DEFAULT_NATIVE_DRIVER_PORT,
       timeoutMs: DEFAULT_TIMEOUT_MS,
+      runtimeAuthority: undefined,
     },
   });
 }
@@ -536,6 +541,7 @@ export function buildOverlayClickThroughReleasePlan({
   dryRun,
   skip,
   simulated,
+  frozenRuntime,
 } = {}) {
   if ([source, dryRun, skip, simulated, tauriDriverPath, nativeDriverPath]
     .some((value) => value !== undefined)) {
@@ -544,6 +550,11 @@ export function buildOverlayClickThroughReleasePlan({
     );
   }
   assertCleanProvenance(provenance);
+  if (frozenRuntime !== undefined) {
+    revalidateFrozenDesktopAuthority(frozenRuntime, {
+      workspaceRoot, provenance, scenarioId: OVERLAY_CLICK_THROUGH_SCENARIO_ID,
+    });
+  }
   const observation = meaningfulOperator(operator, operatorNotes);
   if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(String(invocationId))) {
     throw new Error('overlay invocationId must be a UUID');
@@ -557,7 +568,14 @@ export function buildOverlayClickThroughReleasePlan({
   if (path.basename(desktopExecutable).toLowerCase() !== DESKTOP_EXECUTABLE_NAME) {
     throw new Error('overlay authority requires the canonical release Desktop executable');
   }
-  const targetExecutable = resolveTargetExecutable(absoluteWorkspace, exists);
+  const targetExecutable = frozenRuntime !== undefined
+    ? path.join(absoluteWorkspace, 'target', 'release', TARGET_EXECUTABLE_NAME)
+    : resolveTargetExecutable(absoluteWorkspace, exists);
+  if (frozenRuntime !== undefined
+    && (desktopExecutable !== path.join(absoluteWorkspace, 'target', 'release', DESKTOP_EXECUTABLE_NAME)
+      || !fs.existsSync(targetExecutable))) {
+    throw new Error('frozen overlay requires canonical Desktop and prebuilt canonical target');
+  }
   const testOnly = testOnlySeam?.[TEST_ONLY_SEAM] === true;
   const tooling = testOnly ? testOnlySeam.tooling : preparedTooling;
   if (!testOnly && !preparedToolingAuthorities.has(tooling)) {
@@ -654,6 +672,7 @@ export function buildOverlayClickThroughReleasePlan({
     testOnly,
     desktopExecutable,
     desktopExecutableSha256: sha256File(desktopExecutable),
+    ...(frozenRuntime !== undefined ? { frozenRuntime } : {}),
     targetExecutable,
     targetExecutableSha256: sha256File(targetExecutable),
     runner: { path: runnerPath, sha256: sha256File(runnerPath) },
@@ -759,6 +778,25 @@ export function buildOverlayReleaseBinaries({
   });
   if (toolingFailure) throw new Error(toolingFailure);
   return { provenance: toolingAfter, preparedTooling };
+}
+
+// No Desktop or click-target build here; pinned WebDriver tooling is separate.
+// The target must be prepared before freezing.
+// Its compiled HEAD is attested by target-ready before creating a Desktop session.
+export function prepareFrozenOverlayReleaseBinaries({
+  workspaceRoot = repoRoot,
+  provenance = currentGitProvenance({ cwd: workspaceRoot }),
+  runtimeAuthority,
+} = {}) {
+  const frozenRuntime = resolveFrozenDesktopAuthority({ runtimeAuthority, workspaceRoot, provenance });
+  const target = path.join(workspaceRoot, 'target', 'release', TARGET_EXECUTABLE_NAME);
+  if (!fs.existsSync(target)) throw new Error('frozen overlay requires a prebuilt canonical overlay target');
+  assertPortableExecutable(target, 'prebuilt canonical overlay target');
+  const preparedTooling = prepareCanonicalOverlayTooling({ workspaceRoot });
+  revalidateFrozenDesktopAuthority(frozenRuntime, {
+    workspaceRoot, scenarioId: OVERLAY_CLICK_THROUGH_SCENARIO_ID,
+  });
+  return { provenance, preparedTooling, frozenRuntime };
 }
 
 const tcpConnects = (host, port, timeoutMs = 250) => new Promise((resolve) => {
@@ -1203,6 +1241,11 @@ export async function runOverlayClickThroughReleaseEvidence({
     }
     ensureDir(plan.runDirectory);
     revalidatePlanFiles(plan, adapters.inspectFile);
+    if (plan.frozenRuntime !== undefined) {
+      revalidateFrozenDesktopAuthority(plan.frozenRuntime, {
+        workspaceRoot: plan.workspaceRoot, scenarioId: OVERLAY_CLICK_THROUGH_SCENARIO_ID,
+      });
+    }
     pushTimeline(timeline, 'release-binaries-verified', plan.invocationId, adapters.now);
 
     target = adapters.launchTarget(plan);
@@ -1217,6 +1260,9 @@ export async function runOverlayClickThroughReleaseEvidence({
       || !samePath(ready?.executablePath, plan.targetExecutable)) {
       throw new Error('target-ready.json does not match the launched target process/binary');
     }
+    if (ready.buildCommit !== plan.provenance.headCommit) {
+      throw new Error('overlay target compiled buildCommit does not match the current clean HEAD');
+    }
     pushTimeline(timeline, 'target-ready', plan.invocationId, adapters.now);
 
     driver = adapters.launchDriver(plan);
@@ -1225,6 +1271,12 @@ export async function runOverlayClickThroughReleaseEvidence({
     }
     await adapters.waitForDriver(plan, driver);
     pushTimeline(timeline, 'driver-started', plan.invocationId, adapters.now);
+
+    if (plan.frozenRuntime !== undefined) {
+      revalidateFrozenDesktopAuthority(plan.frozenRuntime, {
+        workspaceRoot: plan.workspaceRoot, scenarioId: OVERLAY_CLICK_THROUGH_SCENARIO_ID,
+      });
+    }
 
     const sessionResponse = await adapters.request(
       buildWebDriverSessionRequest({
@@ -1413,6 +1465,11 @@ export async function runOverlayClickThroughReleaseEvidence({
       now: adapters.now(),
       allowTestOnly: plan.testOnly === true,
     });
+    if (plan.frozenRuntime !== undefined) {
+      revalidateFrozenDesktopAuthority(plan.frozenRuntime, {
+        workspaceRoot: plan.workspaceRoot, scenarioId: OVERLAY_CLICK_THROUGH_SCENARIO_ID,
+      });
+    }
     const collected = await collectEvidence({
       source: plan.runDirectory,
       scenarioId: OVERLAY_CLICK_THROUGH_SCENARIO_ID,
@@ -1420,6 +1477,7 @@ export async function runOverlayClickThroughReleaseEvidence({
       workspaceRoot: plan.workspaceRoot,
       provenance: plan.provenance,
       now: adapters.now(),
+      ...(plan.frozenRuntime !== undefined ? { frozenRuntime: plan.frozenRuntime } : {}),
     });
     completed = true;
     return {

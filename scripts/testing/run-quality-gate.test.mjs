@@ -11,6 +11,8 @@ import { archiveReleaseManualEvidence } from './archive-release-manual-evidence.
 import { assemblePerformanceBaseline } from './assemble-performance-baseline.mjs';
 import {
   RELEASE_MANUAL_PRODUCTION_EMITTERS,
+  assertPublishedPreflightOutputRoot,
+  collectPublishedProviderPreflightManualEvidence,
   collectDesktopReleaseManualEvidence,
   collectInstallReleaseManualEvidence,
   collectOverlayReleaseManualEvidence,
@@ -20,7 +22,9 @@ import {
   testOnlyValidateCanonicalExecutableAuthority,
   testOnlyValidateReleaseRunnerProcessAuthority,
   validateRawReleaseManualEvidence,
+  validateReleaseManualCollectorPackage,
 } from './release-manual-collector.mjs';
+import { createFrozenDesktopFixture } from './frozen-desktop-release-authority-test-helpers.mjs';
 import { materializeRealDeviceAudioRawFixture } from './real-device-audio-release-evidence-test-helpers.mjs';
 import { materializeOverlayClickThroughRawFixture } from './overlay-click-through-release-evidence-test-helpers.mjs';
 import { prepareInstallRegressionReport } from './prepare-install-regression-report.mjs';
@@ -68,6 +72,33 @@ import {
 } from './run-quality-gate.mjs';
 
 const makeTempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'quality-gate-test-'));
+
+test('published preflight output rejects source containment and Windows aliases before writes', (t) => {
+  const root = fs.realpathSync.native(makeTempDir());
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const execution = path.join(root, 'execution');
+  const runtime = path.join(root, 'runtime');
+  fs.mkdirSync(execution); fs.mkdirSync(runtime);
+  for (const source of [execution, runtime]) {
+    assert.throws(() => assertPublishedPreflightOutputRoot(source, [execution, runtime]), /outside frozen/);
+    assert.throws(() => assertPublishedPreflightOutputRoot(path.join(source, 'new', 'output'), [execution, runtime]), /outside frozen/);
+    if (process.platform === 'win32') {
+      assert.throws(() => assertPublishedPreflightOutputRoot(path.join(source.toUpperCase(), 'new'), [execution, runtime]), /outside frozen/);
+    }
+  }
+  const alias = path.join(root, 'alias');
+  fs.symlinkSync(execution, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => assertPublishedPreflightOutputRoot(path.join(alias, 'missing', 'output'), [execution, runtime]), /reparse/);
+  assert.deepEqual(fs.readdirSync(execution), []);
+  assert.deepEqual(fs.readdirSync(runtime), []);
+  assert.equal(assertPublishedPreflightOutputRoot(path.join(root, 'independent'), [execution, runtime]), path.join(root, 'independent'));
+});
+
+test('published preflight collector rejects caller raw, authority and launch overrides', async () => {
+  for (const key of ['source', 'scenarioId', 'expectedAuthorization', 'launch', 'build', 'skip', 'now']) {
+    await assert.rejects(collectPublishedProviderPreflightManualEvidence({ [key]: true }), /does not accept/);
+  }
+});
 const TEST_NOW = new Date('2026-08-10T10:00:00.000Z');
 const TEST_PROVENANCE = Object.freeze({
   schemaVersion: 1,
@@ -1053,10 +1084,10 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
           coordinatorKeyId: 'c'.repeat(64),
           claimedAt: consumptionClaimedAt,
           desktopProcessId: 5101,
-          desktopExecutablePath: 'C:\\Program Files\\Omni Translate\\omni-desktop-shell.exe',
+          desktopExecutablePath: fixtureOptions.desktopExecutable ?? 'C:\\Program Files\\Omni Translate\\omni-desktop-shell.exe',
           desktopExecutableRelativePath: 'target/release/omni-desktop-shell.exe',
           desktopExecutableBytes: 123_456,
-          desktopExecutableSha256: 'd'.repeat(64),
+          desktopExecutableSha256: fixtureOptions.desktopExecutableSha256 ?? 'd'.repeat(64),
           retryPolicy: 'new-execution-required',
           path: 'provider-preflight-consumption-claim.json',
           bytes: 1_024,
@@ -1405,6 +1436,54 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
       throw new Error(`missing raw evidence fixture for ${scenarioId}`);
   }
 };
+
+test('published Probe collector packages real raw schemas and revalidates archives without new collection', () => {
+  // Only the upstream signed-source adapter and machine identity are doubled.
+  // The public collector, raw validators, copy/hash checks and archive are real.
+  const root = fs.realpathSync.native(makeTempDir());
+  try {
+    const raw = path.join(root, 'execution', 'provider-preflight-evidence', 'raw');
+    fs.mkdirSync(raw, { recursive: true });
+    const desktop = path.join(root, 'target/release/omni-desktop-shell.exe');
+    fs.mkdirSync(path.dirname(desktop), { recursive: true });
+    fs.writeFileSync(desktop, 'test-only-build-commit-fixture');
+    for (const relative of ['scripts/testing/collect-release-manual-evidence.mjs', 'scripts/testing/run-watch-mode-live-production-coordinator.mjs', 'scripts/testing/run-desktop-release-evidence.mjs']) {
+      fs.mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
+      fs.copyFileSync(path.resolve(relative), path.join(root, relative));
+    }
+    writeScenarioRawEvidence(raw, 'E2E-PROVIDER-PROBE', {
+      desktopExecutable: desktop, desktopExecutableSha256: sha256(fs.readFileSync(desktop)),
+    });
+    const moduleUrl = (relative) => new URL(relative, import.meta.url).href;
+    const source = [
+      "import assert from 'node:assert/strict'; import fs from 'node:fs'; import path from 'node:path';",
+      "import {mock} from 'node:test'; import * as cp from 'node:child_process';",
+      `import * as common from ${JSON.stringify(moduleUrl('../lib/testing-common.mjs'))};`,
+      `import * as git from ${JSON.stringify(moduleUrl('./git-provenance.mjs'))};`,
+      `const root=${JSON.stringify(root)},raw=${JSON.stringify(raw)},desktop=${JSON.stringify(desktop)},clean=${JSON.stringify(TEST_PROVENANCE)};`,
+      `const RealDate=Date;globalThis.Date=class extends RealDate{constructor(...a){super(...(a.length?a:[${JSON.stringify(TEST_NOW.toISOString())}]))}static now(){return new RealDate(${JSON.stringify(TEST_NOW.toISOString())}).getTime()}};`,
+      "let verified=0,queries=0;const forbidden=()=>{throw Error('new collection/build/Provider process forbidden')};",
+      "mock.module('node:child_process',{namedExports:{...cp,spawn:forbidden,spawnSync:(command,args)=>{assert.equal(command,desktop);assert.deepEqual(args,['--build-commit']);queries++;return {status:0,stdout:clean.headCommit,stderr:''}}}});",
+      `mock.module(${JSON.stringify(moduleUrl('../lib/testing-common.mjs'))},{namedExports:{...common,repoRoot:root}});`,
+      `mock.module(${JSON.stringify(moduleUrl('./git-provenance.mjs'))},{namedExports:{...git,currentGitProvenance:()=>clean}});`,
+      "const binding={runtimeAuthorityPath:path.join(root,'runtime','authority.json'),executionRoot:path.join(root,'execution'),schemaVersion:1};",
+      "const expected=JSON.parse(fs.readFileSync(path.join(raw,'provider-probe-result.json'))).preflightAuthorization;delete expected.authorizationObservedAt;",
+      `mock.module(${JSON.stringify(moduleUrl('./watch-mode-provider-preflight-manual-source.mjs'))},{namedExports:{verifyProviderPreflightManualSource:(options)=>{assert.deepEqual(options,{runtimeAuthorityPath:binding.runtimeAuthorityPath,executionRoot:binding.executionRoot});verified++;return {sourceRoot:raw,sourceBinding:binding,expectedAuthorization:expected}}}});`,
+      `const collector=await import(${JSON.stringify(moduleUrl('./release-manual-collector.mjs?published-collector-test'))});`,
+      "const collected=await collector.collectPublishedProviderPreflightManualEvidence({...binding, schemaVersion:undefined}).catch(e=>{assert.match(e.message,/does not accept/);return null});assert.equal(collected,null);",
+      "const result=await collector.collectPublishedProviderPreflightManualEvidence({runtimeAuthorityPath:binding.runtimeAuthorityPath,executionRoot:binding.executionRoot});",
+      "assert.equal(result.manifest.authority.runner,'scripts/testing/run-watch-mode-live-production-coordinator.mjs');assert.deepEqual(result.manifest.preflightSource,binding);",
+      `const {archiveReleaseManualEvidence}=await import(${JSON.stringify(moduleUrl('./archive-release-manual-evidence.mjs?published-collector-test'))});`,
+      "const archived=archiveReleaseManualEvidence({source:result.packageDirectory,scenarioId:'E2E-PROVIDER-PROBE',workspaceRoot:root,provenance:clean});assert.ok(archived);",
+      "const checked=collector.validateReleaseManualCollectorPackage(result.packageDirectory,'E2E-PROVIDER-PROBE',{workspaceRoot:root,currentProvenance:clean});assert.deepEqual(checked.issues,[]);assert.ok(verified>=4);assert.ok(queries>=1);",
+      "const manifest=JSON.parse(fs.readFileSync(result.manifestPath));manifest.preflightSource.extra='tampered';fs.writeFileSync(result.manifestPath,JSON.stringify(manifest));assert.ok(collector.validateReleaseManualCollectorPackage(result.packageDirectory,'E2E-PROVIDER-PROBE',{workspaceRoot:root,currentProvenance:clean}).issues.some(x=>x.includes('binding changed')));",
+    ].join('\n');
+    const checked = spawnSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', source], {
+      encoding: 'utf8', timeout: 30_000,
+    });
+    assert.equal(checked.status, 0, `${checked.error?.message ?? ''}\n${checked.stdout}\n${checked.stderr}`);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 
 const buildManualFixture = (artifactKind = 'manual-e2e') => {
   const workspaceRoot = makeTempDir();
@@ -2468,6 +2547,122 @@ test('dedicated Desktop runner launches one production process and binds its PID
   } finally {
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   }
+});
+
+for (const scenarioId of ['E2E-PROVIDER-CONFIG', 'E2E-DIAGNOSTICS-EXPORT']) {
+  test(`frozen ${scenarioId} captures once and archive revalidates the whole authority`, async (t) => {
+    const workspaceRoot = makeTempDir();
+    t.after(() => fs.rmSync(workspaceRoot, { recursive: true, force: true }));
+    const f = createFrozenDesktopFixture(workspaceRoot);
+    const plan = buildDesktopReleaseEvidencePlan({
+      ...f, scenarioId, outputRoot: 'raw', collectorOutputRoot: 'collector', now: TEST_NOW,
+    });
+    let launches = 0;
+    const result = await runDesktopReleaseEvidence({
+      plan, listRunning: () => [], now: TEST_NOW,
+      launch(executable) {
+        launches += 1;
+        assert.equal(executable, path.join(workspaceRoot, f.frozenRuntime.desktop.path));
+        fs.mkdirSync(plan.runDirectory, { recursive: true });
+        writeScenarioRawEvidence(plan.runDirectory, scenarioId, {
+          processId: 7501, desktopExecutable: executable,
+          desktopExecutableSha256: f.frozenRuntime.desktop.sha256,
+          sourceHeadCommit: f.provenance.headCommit,
+        });
+        return { pid: 7501 };
+      },
+      wait: async () => ({ code: 0, processId: 7501 }),
+      collectEvidence: (options) => testOnlyCollectReleaseManualEvidence({
+        ...options, testOnlyAllowSyntheticAuthority: true,
+      }),
+    });
+    assert.equal(launches, 1);
+    assert.deepEqual(readJson(result.manifestPath).frozenRuntime, f.frozenRuntime);
+    const archived = archiveReleaseManualEvidence({
+      source: result.packageDirectory, scenarioId, workspaceRoot, provenance: f.provenance,
+      now: TEST_NOW, testOnlyAllowSyntheticAuthority: true,
+    });
+    const validate = () => validateReleaseManualCollectorPackage(archived.archivedPath, scenarioId, {
+      workspaceRoot, currentProvenance: f.provenance, now: TEST_NOW.getTime(),
+      testOnlyAllowSyntheticAuthority: true,
+    });
+    assert.deepEqual(validate().issues, []);
+    const driver = path.join(workspaceRoot, 'drivers/windows-virtual-mic/package/omni-virtual-speaker.sys');
+    const before = fs.readFileSync(driver);
+    fs.appendFileSync(driver, 'drift after archive');
+    assert.match(validate().issues.join('\n'), /frozen runtime authority.*binary inventory/);
+    assert.throws(() => archiveReleaseManualEvidence({
+      source: result.packageDirectory, scenarioId, workspaceRoot, provenance: f.provenance,
+      now: TEST_NOW, testOnlyAllowSyntheticAuthority: true,
+    }), /frozen runtime authority/);
+    fs.writeFileSync(driver, before);
+    assert.deepEqual(validate().issues, []);
+  });
+}
+
+test('frozen overlay manual package and archive bind the runtime and verifier source', (t) => {
+  const workspaceRoot = makeTempDir();
+  t.after(() => fs.rmSync(workspaceRoot, { recursive: true, force: true }));
+  const source = path.join(workspaceRoot, 'raw-overlay');
+  // Materialize PE/tooling fixtures before freezing, then capture at the fixture HEAD.
+  materializeOverlayClickThroughRawFixture({
+    rawDirectory: source, workspaceRoot, provenance: TEST_PROVENANCE, now: TEST_NOW,
+  });
+  const f = createFrozenDesktopFixture(workspaceRoot);
+  materializeOverlayClickThroughRawFixture({
+    rawDirectory: source, workspaceRoot, provenance: f.provenance, now: TEST_NOW,
+  });
+  const scenarioId = 'E2E-OVERLAY-CLICK-THROUGH';
+  const collected = testOnlyCollectReleaseManualEvidence({
+    source, scenarioId, workspaceRoot, provenance: f.provenance, frozenRuntime: f.frozenRuntime,
+    now: TEST_NOW, testOnlyAllowSyntheticAuthority: true,
+  });
+  const archived = archiveReleaseManualEvidence({
+    source: collected.packageDirectory, scenarioId, workspaceRoot, provenance: f.provenance,
+    now: TEST_NOW, testOnlyAllowSyntheticAuthority: true,
+  });
+  const validate = () => validateReleaseManualCollectorPackage(archived.archivedPath, scenarioId, {
+    workspaceRoot, currentProvenance: f.provenance, now: TEST_NOW.getTime(),
+    testOnlyAllowSyntheticAuthority: true,
+  });
+  assert.deepEqual(validate().issues, []);
+  fs.appendFileSync(path.join(workspaceRoot, f.frozenRuntime.verifier.path), 'changed verifier');
+  assert.match(validate().issues.join('\n'), /frozen runtime authority.*binding changed/);
+});
+
+test('frozen Desktop rejects drift before launch, after capture, and an already owned Desktop', async (t) => {
+  const workspaceRoot = makeTempDir();
+  t.after(() => fs.rmSync(workspaceRoot, { recursive: true, force: true }));
+  const f = createFrozenDesktopFixture(workspaceRoot);
+  const plan = buildDesktopReleaseEvidencePlan({
+    ...f, scenarioId: 'E2E-DIAGNOSTICS-EXPORT', outputRoot: 'raw', now: TEST_NOW,
+  });
+  const driver = path.join(workspaceRoot, 'drivers/windows-virtual-mic/package/omni-virtual-speaker.sys');
+  const before = fs.readFileSync(driver);
+  const neverLaunch = () => assert.fail('must not launch');
+  const neverCollect = () => assert.fail('must not package');
+  await assert.rejects(runDesktopReleaseEvidence({
+    plan, listRunning: () => [8000], launch: neverLaunch, collectEvidence: neverCollect,
+  }), /close every existing/);
+  fs.appendFileSync(driver, 'before launch');
+  await assert.rejects(runDesktopReleaseEvidence({
+    plan, listRunning: () => [], launch: neverLaunch, collectEvidence: neverCollect,
+  }), /binary inventory/);
+  fs.writeFileSync(driver, before);
+  await assert.rejects(runDesktopReleaseEvidence({
+    plan, listRunning: () => [], now: TEST_NOW,
+    launch(executable) {
+      fs.mkdirSync(plan.runDirectory, { recursive: true });
+      writeScenarioRawEvidence(plan.runDirectory, plan.scenarioId, {
+        processId: 7501, desktopExecutable: executable,
+        desktopExecutableSha256: f.frozenRuntime.desktop.sha256,
+        sourceHeadCommit: f.provenance.headCommit,
+      });
+      fs.appendFileSync(driver, 'during capture');
+      return { pid: 7501 };
+    },
+    wait: async () => ({ code: 0, processId: 7501 }), collectEvidence: neverCollect,
+  }), /binary inventory/);
 });
 
 test('dedicated Desktop runner rejects arbitrary executable and caller-authored source overrides', () => {

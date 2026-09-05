@@ -355,7 +355,7 @@ function decodedPowerShell(args) {
 }
 
 test('remote transport repairs a clean-HEAD CRLF implementation before runtime distribution and launch', async (t) => {
-  const value = remoteTransportFixture(t); const events = []; let probes = 0;
+  const value = remoteTransportFixture(t); const events = []; let probes = 0; let gitDirty = false;
   const launchError = new Error('original launch failure');
   const run = async (command, args) => {
     if (command === 'scp-fixture') {
@@ -371,12 +371,17 @@ test('remote transport repairs a clean-HEAD CRLF implementation before runtime d
     }
     if (body.includes('$stage=') && body.includes('funnel implementation transfer mismatch')) {
       events.push('implementation-install');
+      gitDirty = true;
       assert.match(body, /ReparsePoint/u); assert.match(body, /Move-Item/u);
       return '';
     }
-    if (body.includes("git.exe status --porcelain")) events.push('clean-head-check');
+    if (body.includes("git.exe status --porcelain")) {
+      events.push('clean-head-check');
+      if (gitDirty) throw new Error('funnel workspace is dirty before index refresh');
+    }
     if (body.includes('git.exe add --')) {
       events.push('index-refresh');
+      gitDirty = false;
       assert.match(body, /git\.exe diff --cached --quiet --exit-code/u);
     }
     if (body.includes("& node.exe") && body.includes('--worker-plan')) { events.push('launch'); throw launchError; }
@@ -393,8 +398,47 @@ test('remote transport repairs a clean-HEAD CRLF implementation before runtime d
   assert.ok(events.indexOf('implementation-probe-2') < events.indexOf('runtime-scp'));
   assert.ok(events.indexOf('implementation-probe-2') < events.indexOf('index-refresh'));
   assert.ok(events.indexOf('index-refresh') < events.indexOf('runtime-scp'));
+  assert.equal(events[0], 'clean-head-check');
+  assert.ok(events.indexOf('clean-head-check', 1) > events.indexOf('index-refresh'));
   assert.ok(events.indexOf('runtime-scp') < events.indexOf('launch'));
   assert.ok(events.filter((event) => event === 'clean-head-check').length >= 2);
+});
+
+test('remote transport rejects invalid source states before runtime distribution', async (t) => {
+  for (const failure of ['initial-dirty', 'repair-hash', 'refresh', 'cached-diff', 'final-dirty', 'final-head']) {
+    await t.test(failure, async (t) => {
+      const value = remoteTransportFixture(t); const events = []; let probes = 0; let checks = 0;
+      const run = async (command, args) => {
+        if (command === 'scp-fixture') { events.push(args.some((arg) => arg.endsWith?.('package.json')) ? 'runtime-scp' : 'scp'); return ''; }
+        const body = decodedPowerShell(args);
+        if (body.includes('git.exe status --porcelain')) {
+          checks += 1;
+          assert.match(body, /funnel HEAD mismatch/u);
+          assert.match(body, /funnel BIOS mismatch/u);
+          if ((failure === 'initial-dirty' && checks === 1) || (failure.startsWith('final-') && checks === 2)) throw new Error(failure);
+        }
+        if (body.includes('$rows=@(')) {
+          probes += 1;
+          return probes === 1 || failure === 'repair-hash' ? '0|MATCH\n1|MISMATCH\n' : '0|MATCH\n1|MATCH\n';
+        }
+        if (body.includes('git.exe add --')) {
+          events.push('refresh');
+          assert.ok(body.includes(path.win32.join(value.worker.workspaceRoot, 'scripts/testing/run-with-vm3-test-environment.mjs')));
+          assert.ok(!body.includes(path.win32.join(value.worker.workspaceRoot, FROZEN_FUNNEL_RUNNER)));
+          assert.match(body, /git\.exe diff --cached --quiet --exit-code/u);
+          if (failure === 'refresh' || failure === 'cached-diff') throw new Error(failure);
+        }
+        if (body.includes('& node.exe')) events.push('launch');
+        return '';
+      };
+      await assert.rejects(createFrozenFunnelTransport({ ...value, run })(value.plan.workers[0]),
+        failure === 'repair-hash' ? /inventory remains mismatched after repair/u : new RegExp(failure, 'u'));
+      assert.ok(!events.includes('runtime-scp'));
+      assert.ok(!events.includes('launch'));
+      if (failure === 'initial-dirty') assert.deepEqual(events, []);
+      if (failure === 'repair-hash') assert.ok(!events.includes('refresh'));
+    });
+  }
 });
 
 test('remote transport preserves the launch error when worker output does not exist', async (t) => {
@@ -406,6 +450,7 @@ test('remote transport preserves the launch error when worker output does not ex
     }
     const body = decodedPowerShell(args);
     if (body.includes("$rows=@(")) return '0|MATCH\n1|MATCH\n';
+    assert.ok(!body.includes('git.exe add --'), 'matching source must not refresh the index');
     if (body.includes("& node.exe") && body.includes('--worker-plan')) throw launchError;
     if (body.includes("[Console]::Write('EXISTS')")) return 'MISSING';
     return '';

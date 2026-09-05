@@ -392,7 +392,6 @@ export function createFrozenFunnelTransport({ config, plan, planPath, publicKeyP
         await run(config.scpExecutable, [...scpArgs, source, remote(stage)]);
         await ssh(`$ErrorActionPreference='Stop'; $stage=${psQuote(stage)}; $destination=${psQuote(destination)}; if(-not (Test-Path -LiteralPath $stage -PathType Leaf)){throw 'funnel implementation stage missing'}; for($p=$stage; $p; $p=[IO.Path]::GetDirectoryName($p)){if((Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'funnel implementation stage reparse path'}}; $item=Get-Item -LiteralPath $stage -Force;if($item.Length -ne ${entry.bytes}){throw 'funnel implementation transfer mismatch'};$stream=[IO.File]::OpenRead($stage);try{$hash=[BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($stream)).Replace('-','').ToLowerInvariant()}finally{$stream.Dispose()};if($hash -cne ${psQuote(entry.sha256)}){throw 'funnel implementation transfer mismatch'};for($p=$destination; $p; $p=[IO.Path]::GetDirectoryName($p)){if((Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'funnel implementation reparse path'}};New-Item -ItemType Directory -Force -Path ([IO.Path]::GetDirectoryName($destination)) | Out-Null;Move-Item -LiteralPath $stage -Destination $destination -Force`);
       }
-      await ssh(assertSource);
       if ((await implementationState(plan.implementationHashes)).some((state) => state !== 'MATCH')) {
         throw new Error('funnel implementation inventory remains mismatched after repair');
       }
@@ -403,6 +402,9 @@ export function createFrozenFunnelTransport({ config, plan, planPath, publicKeyP
         const argumentsList = repairedPaths.map(psQuote).join(',');
         await ssh(`$ErrorActionPreference='Stop'; Set-Location -LiteralPath ${psQuote(worker.workspaceRoot)}; & git.exe add -- @(${argumentsList}); if($LASTEXITCODE -ne 0){throw 'funnel repaired implementation index refresh failed'}; & git.exe diff --cached --quiet --exit-code; if($LASTEXITCODE -ne 0){throw 'funnel repaired implementation differs from HEAD'}`);
       }
+      // Repair can invalidate Git's cached worktree stat; check cleanliness only
+      // after verifying the repaired bytes and refreshing those exact paths.
+      await ssh(assertSource);
       // Only the signed runtime inventory may be replaced. Source synchronisation
       // remains a separate clean-HEAD operation, never an implicit checkout.
       for (const [index, entry] of plan.runtimeBinaryHashes.entries()) {

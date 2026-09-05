@@ -375,6 +375,10 @@ test('remote transport repairs a clean-HEAD CRLF implementation before runtime d
       return '';
     }
     if (body.includes("git.exe status --porcelain")) events.push('clean-head-check');
+    if (body.includes('git.exe add --')) {
+      events.push('index-refresh');
+      assert.match(body, /git\.exe diff --cached --quiet --exit-code/u);
+    }
     if (body.includes("& node.exe") && body.includes('--worker-plan')) { events.push('launch'); throw launchError; }
     if (body.includes("[Console]::Write('EXISTS')")) return 'MISSING';
     if (body.includes('$stage=') && body.includes('funnel runtime transfer mismatch')) {
@@ -387,6 +391,8 @@ test('remote transport repairs a clean-HEAD CRLF implementation before runtime d
   await assert.rejects(createFrozenFunnelTransport({ ...value, run })(value.plan.workers[0]), (error) => error === launchError);
   assert.ok(events.indexOf('implementation-scp') < events.indexOf('runtime-scp'));
   assert.ok(events.indexOf('implementation-probe-2') < events.indexOf('runtime-scp'));
+  assert.ok(events.indexOf('implementation-probe-2') < events.indexOf('index-refresh'));
+  assert.ok(events.indexOf('index-refresh') < events.indexOf('runtime-scp'));
   assert.ok(events.indexOf('runtime-scp') < events.indexOf('launch'));
   assert.ok(events.filter((event) => event === 'clean-head-check').length >= 2);
 });

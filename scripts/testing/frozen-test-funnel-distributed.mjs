@@ -396,6 +396,13 @@ export function createFrozenFunnelTransport({ config, plan, planPath, publicKeyP
       if ((await implementationState(plan.implementationHashes)).some((state) => state !== 'MATCH')) {
         throw new Error('funnel implementation inventory remains mismatched after repair');
       }
+      const repairedPaths = plan.implementationHashes
+        .filter((_, index) => implementationStates[index] !== 'MATCH')
+        .map((entry) => path.win32.join(worker.workspaceRoot, ...entry.path.split('/')));
+      if (repairedPaths.length > 0) {
+        const argumentsList = repairedPaths.map(psQuote).join(',');
+        await ssh(`$ErrorActionPreference='Stop'; Set-Location -LiteralPath ${psQuote(worker.workspaceRoot)}; & git.exe add -- @(${argumentsList}); if($LASTEXITCODE -ne 0){throw 'funnel repaired implementation index refresh failed'}; & git.exe diff --cached --quiet --exit-code; if($LASTEXITCODE -ne 0){throw 'funnel repaired implementation differs from HEAD'}`);
+      }
       // Only the signed runtime inventory may be replaced. Source synchronisation
       // remains a separate clean-HEAD operation, never an implicit checkout.
       for (const [index, entry] of plan.runtimeBinaryHashes.entries()) {

@@ -76,6 +76,9 @@ test('paid authority hash inventory binds the profile registry and authorizers',
     'scripts/testing/model-protocol-profile-contract.mjs',
     'contracts/model-protocol-profiles.v1.json',
     'contracts/model-protocol-profiles.schema.json',
+    'scripts/testing/frozen-virtual-mic-release-authority.mjs',
+    'scripts/testing/run-virtual-mic-release-evidence.mjs',
+    'scripts/testing/virtual-mic-release-evidence.mjs',
   ]) {
     assert.equal(paths.has(requiredPath), true, `missing paid authority hash: ${requiredPath}`);
   }

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { revalidateFrozenVirtualMicAuthority } from './frozen-virtual-mic-release-authority.mjs';
 
 import { readJson, repoRoot } from '../lib/testing-common.mjs';
 import { exactGitProvenanceFailure, gitProvenanceShapeFailure } from './git-provenance.mjs';
@@ -23,6 +24,11 @@ export const VIRTUAL_MIC_RELEASE_TIMELINE = Object.freeze([
   'collector-completed',
   'raw-evidence-verified',
   'invocation-completed',
+]);
+export const VIRTUAL_MIC_FROZEN_RELEASE_TIMELINE = Object.freeze([
+  'frozen-runtime-verification-started',
+  'frozen-runtime-verified',
+  ...VIRTUAL_MIC_RELEASE_TIMELINE.slice(2),
 ]);
 
 export const sha256File = (candidate) => crypto
@@ -167,11 +173,36 @@ export function validateVirtualMicReleaseEmitter(
     || result?.collectorInvocation?.captureEndpointId !== probe?.captureEndpointId
   ) issues.push('virtual microphone native collector invocation is not bound to the raw result');
   const timeline = Array.isArray(result?.timeline) ? result.timeline : [];
+  const frozen = result?.runtimeMode === 'frozen';
+  if (result?.runtimeMode !== undefined && !frozen) {
+    issues.push('virtual microphone runtimeMode is unsupported');
+  }
+  if (frozen || result?.frozenVirtualMicRuntime !== undefined) {
+    if (!frozen || result?.frozenVirtualMicRuntime === undefined) {
+      issues.push('virtual microphone frozen mode and authority binding must occur together');
+    }
+    try {
+      const binding = revalidateFrozenVirtualMicAuthority(result?.frozenVirtualMicRuntime, {
+        workspaceRoot, provenance: currentProvenance,
+      });
+      if (binding.headCommit !== result?.sourceHeadCommit) {
+        issues.push('virtual microphone frozen authority HEAD does not match emitter');
+      }
+      for (const role of ['collector', 'bridge']) {
+        if (binding.binaries[role].sha256 !== result?.binaries?.[role]?.sha256) {
+          issues.push('virtual microphone frozen ' + role + ' hash does not match emitter');
+        }
+      }
+    } catch (error) {
+      issues.push('virtual microphone frozen authority invalid: ' + error.message);
+    }
+  }
+  const expectedTimeline = frozen ? VIRTUAL_MIC_FROZEN_RELEASE_TIMELINE : VIRTUAL_MIC_RELEASE_TIMELINE;
   let previous = -Infinity;
-  if (timeline.length !== VIRTUAL_MIC_RELEASE_TIMELINE.length) {
+  if (timeline.length !== expectedTimeline.length) {
     issues.push('virtual microphone emitter timeline length is invalid');
   } else {
-    for (const [index, expectedEvent] of VIRTUAL_MIC_RELEASE_TIMELINE.entries()) {
+    for (const [index, expectedEvent] of expectedTimeline.entries()) {
       const event = timeline[index];
       const observedAt = Date.parse(String(event?.observedAt ?? ''));
       if (

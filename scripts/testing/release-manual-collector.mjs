@@ -51,6 +51,7 @@ import { verifyProviderPreflightManualSource } from './watch-mode-provider-prefl
 import {
   revalidateFrozenDesktopAuthority,
 } from './frozen-desktop-release-authority.mjs';
+import { revalidateFrozenVirtualMicAuthority } from './frozen-virtual-mic-release-authority.mjs';
 
 export const RELEASE_MANUAL_COLLECTOR_SCHEMA_VERSION = 1;
 export const RELEASE_MANUAL_COLLECTOR_SCRIPT = 'scripts/testing/collect-release-manual-evidence.mjs';
@@ -2139,6 +2140,7 @@ function collectRawReleaseManualEvidence({
   virtualMicEmitterAuthority = null,
   runnerProcessAuthority = null,
   frozenRuntime,
+  frozenVirtualMicRuntime,
   preflightSource,
   testOnlyRealDeviceAuthorityResolver,
 } = {}) {
@@ -2171,6 +2173,10 @@ function collectRawReleaseManualEvidence({
   if (provenanceIssue) throw new Error(provenanceIssue);
   if (frozenRuntime !== undefined) {
     revalidateFrozenDesktopAuthority(frozenRuntime, { workspaceRoot, scenarioId });
+  }
+  if (frozenVirtualMicRuntime !== undefined) {
+    if (scenarioId !== 'E2E-VIRTUAL-MIC-CAPTURE') throw new Error('frozen virtual microphone scenario mismatch');
+    revalidateFrozenVirtualMicAuthority(frozenVirtualMicRuntime, { workspaceRoot, provenance });
   }
   const publishedPreflight = preflightSource === undefined ? null
     : revalidatePublishedPreflightSource(preflightSource, scenarioId);
@@ -2238,6 +2244,7 @@ function collectRawReleaseManualEvidence({
       emitterVersion: 1,
     } : productionAuthority(publishedPreflight ? publishedPreflightEmitter(productionEmitter) : productionEmitter, implementationRoot),
     ...(frozenRuntime !== undefined ? { frozenRuntime } : {}),
+    ...(frozenVirtualMicRuntime !== undefined ? { frozenVirtualMicRuntime } : {}),
     ...(preflightSource !== undefined ? { preflightSource } : {}),
     collector: {
       collectorId: profileValue.collectorId,
@@ -2441,7 +2448,7 @@ export async function collectOverlayReleaseManualEvidence(options = {}) {
 
 export async function collectVirtualMicReleaseManualEvidence(options = {}) {
   rejectProductionCollectorOverrides(options, [
-    'scenarioId', 'outputRoot', 'collectorOutputRoot', 'timeoutMs',
+    'scenarioId', 'outputRoot', 'collectorOutputRoot', 'timeoutMs', 'runtimeAuthority',
   ], 'virtual microphone production release collector');
   if (options.scenarioId !== 'E2E-VIRTUAL-MIC-CAPTURE') {
     throw new Error('virtual microphone release collector requires E2E-VIRTUAL-MIC-CAPTURE');
@@ -2560,6 +2567,23 @@ export function validateReleaseManualCollectorPackage(
       }
     } catch (error) {
       issues.push(`frozen runtime authority: ${error.message}`);
+    }
+  }
+  if (scenarioId === 'E2E-VIRTUAL-MIC-CAPTURE'
+    || Object.hasOwn(manifest ?? {}, 'frozenVirtualMicRuntime')) {
+    try {
+      if (scenarioId !== 'E2E-VIRTUAL-MIC-CAPTURE') throw new Error('frozen virtual microphone scenario mismatch');
+      const emitter = readJson(path.join(artifactRoot, 'emitter-result.json'));
+      if (!isDeepStrictEqual(emitter.frozenVirtualMicRuntime, manifest.frozenVirtualMicRuntime)) {
+        issues.push('frozen virtual microphone package/emitter binding mismatch');
+      }
+      if (Object.hasOwn(manifest ?? {}, 'frozenVirtualMicRuntime')) {
+        revalidateFrozenVirtualMicAuthority(manifest.frozenVirtualMicRuntime, {
+          workspaceRoot, provenance: currentProvenance,
+        });
+      }
+    } catch (error) {
+      issues.push(`frozen virtual microphone authority: ${error.message}`);
     }
   }
   let publishedPreflight = null;

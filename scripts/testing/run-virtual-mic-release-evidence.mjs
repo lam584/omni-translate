@@ -3,6 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import {
+  resolveFrozenVirtualMicAuthority,
+  revalidateFrozenVirtualMicAuthority,
+} from './frozen-virtual-mic-release-authority.mjs';
 
 import {
   compactTimestamp,
@@ -64,6 +68,7 @@ export function parseVirtualMicReleaseArgs(argv) {
       outputRoot: DEFAULT_OUTPUT_ROOT,
       collectorOutputRoot: DEFAULT_COLLECTOR_OUTPUT_ROOT,
       timeoutMs: DEFAULT_TIMEOUT_MS,
+      runtimeAuthority: undefined,
     },
   });
 }
@@ -84,6 +89,7 @@ export function buildVirtualMicReleasePlan({
   dryRun,
   skip,
   simulated,
+  runtimeAuthority,
 } = {}) {
   if ([
     source,
@@ -107,6 +113,9 @@ export function buildVirtualMicReleasePlan({
     throw new Error('--timeout-ms must be an integer between 30000 and 600000');
   }
   const absoluteWorkspace = path.resolve(workspaceRoot);
+  const frozenVirtualMicRuntime = runtimeAuthority !== undefined
+    ? resolveFrozenVirtualMicAuthority({ runtimeAuthority, workspaceRoot: absoluteWorkspace, provenance })
+    : undefined;
   const outputBase = allowedTestingRoot(absoluteWorkspace, outputRoot, 'virtual microphone output root');
   const collectorOutputBase = allowedTestingRoot(
     absoluteWorkspace,
@@ -117,6 +126,7 @@ export function buildVirtualMicReleasePlan({
   const releaseDirectory = path.join(targetDirectory, 'release');
   return {
     scenarioId: VIRTUAL_MIC_RELEASE_SCENARIO_ID,
+    ...(frozenVirtualMicRuntime !== undefined ? { frozenVirtualMicRuntime } : {}),
     workspaceRoot: absoluteWorkspace,
     collectorOutputRoot: collectorOutputBase,
     provenance,
@@ -212,17 +222,30 @@ export async function runVirtualMicReleaseEvidence({
     detail,
   });
   const startedAt = clock().toISOString();
-  try {
-    push('build-started', {
-      manifestPath: plan.manifestPath,
-      cargoTargetDirectory: plan.targetDirectory,
-      cargoBuildTargetCleared: true,
-    });
-    const built = await build(plan);
-    if (Number(built?.status) !== 0) {
-      throw new Error(`current-HEAD virtual microphone release build failed: ${built?.stderr ?? ''}`);
+  const revalidateFrozen = () => {
+    if (plan.frozenVirtualMicRuntime !== undefined) {
+      revalidateFrozenVirtualMicAuthority(plan.frozenVirtualMicRuntime, {
+        workspaceRoot: plan.workspaceRoot, provenance: provenanceReader(),
+      });
     }
-    push('build-completed');
+  };
+  try {
+    if (plan.frozenVirtualMicRuntime !== undefined) {
+      push('frozen-runtime-verification-started');
+      revalidateFrozen();
+      push('frozen-runtime-verified');
+    } else {
+      push('build-started', {
+        manifestPath: plan.manifestPath,
+        cargoTargetDirectory: plan.targetDirectory,
+        cargoBuildTargetCleared: true,
+      });
+      const built = await build(plan);
+      if (Number(built?.status) !== 0) {
+        throw new Error(`current-HEAD virtual microphone release build failed: ${built?.stderr ?? ''}`);
+      }
+      push('build-completed');
+    }
     assertSameCleanProvenance(plan.provenance, provenanceReader());
     const binaries = {};
     for (const [role, candidate] of [
@@ -250,8 +273,10 @@ export async function runVirtualMicReleaseEvidence({
       buildCommit: plan.provenance.headCommit,
     });
     ensureDir(runtimeRoot);
+    revalidateFrozen();
     push('collector-started');
     const executed = await runCollector(plan, runtimeRoot);
+    revalidateFrozen();
     if (!Number.isInteger(Number(executed?.pid)) || Number(executed.pid) <= 0) {
       throw new Error('native virtual microphone collector processId is unavailable');
     }
@@ -314,6 +339,9 @@ export async function runVirtualMicReleaseEvidence({
         sha256: sha256File(plan.runnerPath),
       },
       binaries,
+      ...(plan.frozenVirtualMicRuntime !== undefined ? {
+        runtimeMode: 'frozen', frozenVirtualMicRuntime: plan.frozenVirtualMicRuntime,
+      } : {}),
       collectorInvocation: {
         exitCode: Number(executed.status),
         passed: nativeResult.passed,
@@ -336,13 +364,18 @@ export async function runVirtualMicReleaseEvidence({
     if (typeof collect !== 'function') {
       throw new Error('virtual microphone raw packaging is private; invoke the production release collector entrypoint');
     }
+    revalidateFrozen();
     const collected = await collect({
       source: plan.runDirectory,
       scenarioId: VIRTUAL_MIC_RELEASE_SCENARIO_ID,
       outputRoot: plan.collectorOutputRoot,
       workspaceRoot: plan.workspaceRoot,
       provenance: plan.provenance,
+      ...(plan.frozenVirtualMicRuntime !== undefined ? {
+        frozenVirtualMicRuntime: plan.frozenVirtualMicRuntime,
+      } : {}),
     });
+    revalidateFrozen();
     return {
       scenarioId: VIRTUAL_MIC_RELEASE_SCENARIO_ID,
       invocationId: plan.invocationId,

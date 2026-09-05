@@ -25,6 +25,7 @@ import {
   validateReleaseManualCollectorPackage,
 } from './release-manual-collector.mjs';
 import { createFrozenDesktopFixture } from './frozen-desktop-release-authority-test-helpers.mjs';
+import { resolveFrozenVirtualMicAuthority } from './frozen-virtual-mic-release-authority.mjs';
 import { materializeRealDeviceAudioRawFixture } from './real-device-audio-release-evidence-test-helpers.mjs';
 import { materializeOverlayClickThroughRawFixture } from './overlay-click-through-release-evidence-test-helpers.mjs';
 import { prepareInstallRegressionReport } from './prepare-install-regression-report.mjs';
@@ -2352,6 +2353,7 @@ test('production authority allowlist contains Desktop, audio, overlay, virtual-m
 });
 
 test('virtual-mic runner rejects generic inputs and fixes the current-HEAD target/release binaries', () => {
+  assert.equal(parseVirtualMicReleaseArgs(['--runtime-authority', 'frozen.json']).runtimeAuthority, 'frozen.json');
   assert.throws(
     () => parseVirtualMicReleaseArgs(['--source', 'caller-authored']),
     /Unknown flag --source/,
@@ -2599,6 +2601,60 @@ for (const scenarioId of ['E2E-PROVIDER-CONFIG', 'E2E-DIAGNOSTICS-EXPORT']) {
     assert.deepEqual(validate().issues, []);
   });
 }
+
+test('frozen virtual mic fixture packages and archives matching bindings and rejects manifest-only drift', (t) => {
+  const workspaceRoot = makeTempDir();
+  t.after(() => fs.rmSync(workspaceRoot, { recursive: true, force: true }));
+  const source = path.join(workspaceRoot, 'raw-virtual-mic');
+  fs.mkdirSync(source, { recursive: true });
+  // Synthetic raw audio and executables only; freeze their bytes before packaging.
+  writeVirtualMicCaptureEvidence(source, { workspaceRoot });
+  const f = createFrozenDesktopFixture(workspaceRoot);
+  f.write('scripts/testing/frozen-virtual-mic-release-authority.mjs', 'fixture virtual mic verifier\n');
+  writeVirtualMicCaptureEvidence(source, { workspaceRoot, provenance: f.provenance });
+  const frozenVirtualMicRuntime = resolveFrozenVirtualMicAuthority({
+    runtimeAuthority: f.runtimeAuthority, workspaceRoot,
+  });
+  const emitterPath = path.join(source, 'emitter-result.json');
+  const emitter = readJson(emitterPath);
+  emitter.runtimeMode = 'frozen';
+  emitter.frozenVirtualMicRuntime = frozenVirtualMicRuntime;
+  emitter.timeline[0].event = 'frozen-runtime-verification-started';
+  emitter.timeline[1].event = 'frozen-runtime-verified';
+  writeJson(emitterPath, emitter);
+  const scenarioId = 'E2E-VIRTUAL-MIC-CAPTURE';
+  const collected = testOnlyCollectReleaseManualEvidence({
+    source, scenarioId, workspaceRoot, provenance: f.provenance, frozenVirtualMicRuntime,
+    now: TEST_NOW, testOnlyAllowSyntheticAuthority: true,
+  });
+  const options = {
+    workspaceRoot, currentProvenance: f.provenance, now: TEST_NOW.getTime(),
+    testOnlyAllowSyntheticAuthority: true,
+  };
+  assert.deepEqual(validateReleaseManualCollectorPackage(collected.packageDirectory, scenarioId, options).issues, []);
+  const archived = archiveReleaseManualEvidence({
+    source: collected.packageDirectory, scenarioId, workspaceRoot, provenance: f.provenance,
+    now: TEST_NOW, testOnlyAllowSyntheticAuthority: true,
+  });
+  const manifestPath = path.join(archived.archivedPath, 'collector-manifest.json');
+  const manifest = readJson(manifestPath);
+  const archivedEmitter = readJson(path.join(archived.archivedPath, 'artifacts', 'emitter-result.json'));
+  assert.deepEqual(manifest.frozenVirtualMicRuntime, frozenVirtualMicRuntime);
+  assert.deepEqual(archivedEmitter.frozenVirtualMicRuntime, manifest.frozenVirtualMicRuntime);
+  const validate = () => validateReleaseManualCollectorPackage(archived.archivedPath, scenarioId, options);
+  assert.deepEqual(validate().issues, []);
+  for (const mutate of [
+    (value) => { delete value.frozenVirtualMicRuntime; },
+    (value) => { value.frozenVirtualMicRuntime.authorityDigest = '0'.repeat(64); },
+  ]) {
+    const changed = structuredClone(manifest);
+    mutate(changed);
+    writeJson(manifestPath, changed);
+    assert.match(validate().issues.join('\n'), /frozen virtual microphone package\/emitter binding mismatch/);
+  }
+  writeJson(manifestPath, manifest);
+  assert.deepEqual(validate().issues, []);
+});
 
 test('frozen overlay manual package and archive bind the runtime and verifier source', (t) => {
   const workspaceRoot = makeTempDir();

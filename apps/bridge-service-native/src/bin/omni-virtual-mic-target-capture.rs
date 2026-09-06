@@ -64,7 +64,8 @@ mod app {
         TranslationAuthority,
     };
     use omni_bridge_service::BRIDGE_PROTOCOL_VERSION;
-    use cpal::traits::{DeviceTrait, HostTrait};
+    use rodio::cpal;
+    use rodio::cpal::traits::{DeviceTrait, HostTrait};
     use serde::Serialize;
     use serde_json::{json, Value};
     use std::fs::{self, OpenOptions};

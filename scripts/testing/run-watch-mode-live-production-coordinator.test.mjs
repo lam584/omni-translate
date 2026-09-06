@@ -1860,6 +1860,12 @@ test('SSH transport finalizes manifests in the guest and cancellation is task/la
     'utf8',
   );
   assert.match(source, /--finalize-worker-request/);
+  const collect = source.slice(source.indexOf('async function collectWorker('), source.indexOf('function productionDeviceProfiles('));
+  assert.match(
+    collect,
+    /Set-Location -LiteralPath \$workspace[\s\S]*?& node\.exe \$runnerPath '--finalize-worker-request'/,
+    'guest shard finalization must run from the signed workspace so repository-relative contracts resolve there',
+  );
   assert.match(source, /watch-mode-worker-shard-finalization-request/);
   assert.match(source, /validateShardManifest\(\{/);
   assert.doesNotMatch(source, /writeShardManifest\s*\(/);

@@ -2176,6 +2176,7 @@ $request = [ordered]@{
 $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes((($request | ConvertTo-Json -Depth 12 -Compress) + [Environment]::NewLine))
 $stream = New-Object IO.FileStream($requestPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read, 4096, [IO.FileOptions]::WriteThrough)
 try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+Set-Location -LiteralPath $workspace
 $output = @(& node.exe $runnerPath '--finalize-worker-request' $requestPath 2>&1)
 if ($LASTEXITCODE -ne 0) { throw "guest worker finalizer failed: $($output -join ' | ')" }
 $manifestPath = [IO.Path]::GetFullPath([string](@($output | Where-Object { $_ } | Select-Object -Last 1)[0]))

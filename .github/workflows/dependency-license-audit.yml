@@ -40,7 +40,7 @@ jobs:
         run: node scripts/testing/audit-dependency-licenses.mjs --output artifacts/reports/dependency-license-audit.md
       - name: Upload audit report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dependency-license-audit
           path: artifacts/reports/dependency-license-audit.md

@@ -6,7 +6,7 @@ license = "Apache-2.0"
 
 [dependencies]
 chrono = "0.4"
-cpal = "0.18.2"
+cpal = "0.17.3"
 omni-audio-dsp = { path = "../../crates/omni-audio-dsp" }
 omni-bridge-protocol = { path = "../../crates/omni-bridge-protocol" }
 omni-logging = { path = "../../crates/omni-logging" }

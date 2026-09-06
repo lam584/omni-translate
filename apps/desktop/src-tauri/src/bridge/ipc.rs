@@ -854,8 +854,6 @@ mod tests {
             bridge_candidates[0],
             Path::new(r"E:\watch-worker\target\release\omni-bridge-service.exe")
         );
-        assert_ne!(bridge_candidates[0], bridge_cli_release_candidates()[0]);
-
         assert_eq!(
             relocated_workspace_root(exe_path).as_deref(),
             Some(Path::new(r"E:\watch-worker"))

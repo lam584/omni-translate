@@ -96,7 +96,7 @@ test('worker-relative receipts assemble into a strict source and canonical publi
       return matrixWorkers.map((entry) => ({ workerId: entry.workerId, workspaceRoot: root, manifest: distribution, manifestPath }));
     },
     executeWorkerCell: async (request) => {
-      const outputRoot = path.join(request.phase === 'smoke' ? path.join(matrixDirectory, 'preflight-smoke') : matrixDirectory, request.worker.workerId);
+      const outputRoot = path.join(request.phase === 'smoke' ? path.join(matrixDirectory, 'smoke') : matrixDirectory, request.worker.workerId);
       fs.mkdirSync(outputRoot, { recursive: true });
       let clock = 0;
       const result = await runLocalIsolationCell({
@@ -106,7 +106,7 @@ test('worker-relative receipts assemble into a strict source and canonical publi
       });
       const receiptPath = path.join(outputRoot, result.receipt.path);
       originalReceipts.set(receiptPath, fs.readFileSync(receiptPath));
-      assert.ok(!result.receipt.path.startsWith('preflight-smoke/'));
+      assert.ok(!result.receipt.path.startsWith('smoke/'));
       return { ...result,
         runDirectory: request.worker.workerId + '/' + result.runDirectory,
         receipt: { ...result.receipt, path: request.worker.workerId + '/' + result.receipt.path },
@@ -167,8 +167,8 @@ test('worker-relative receipts assemble into a strict source and canonical publi
   assert.equal(verifyLocalIsolationManifest({ ...options, manifestPath: output.manifestPath }).cells.length, workerCount >= 3 ? 4 : 3);
   assert.equal(verifyLocalIsolationManifest({ ...options, manifestPath: output.canonicalPath }).preflightSmoke.length, workerCount >= 3 ? 4 : 3);
   for (const entry of output.manifest.preflightSmoke) {
-    assert.ok(entry.runDirectory.startsWith('preflight-smoke/'));
-    assert.ok(entry.receipt.path.startsWith('preflight-smoke/'));
+    assert.ok(entry.runDirectory.startsWith('smoke/'));
+    assert.ok(entry.receipt.path.startsWith('smoke/'));
   }
   for (const [file, bytes] of originalReceipts) assert.deepEqual(fs.readFileSync(file), bytes);
   const publicationBytes = fs.readFileSync(output.canonicalPath);

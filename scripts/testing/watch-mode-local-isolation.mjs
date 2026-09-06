@@ -685,7 +685,9 @@ export async function runLocalIsolationMatrix({
   if (!Number.isInteger(smokeDurationSeconds) || smokeDurationSeconds < 30 || smokeDurationSeconds > 60) {
     throw new Error('local isolation smoke duration must be between 30 and 60 seconds');
   }
-  const smokeRoot = path.join(matrixDirectory, 'preflight-smoke');
+  // Keep the physical smoke directory short: every nested artifact must stay
+  // below the legacy Windows SCP path ceiling on remote workers.
+  const smokeRoot = path.join(matrixDirectory, 'smoke');
   fs.mkdirSync(smokeRoot, { recursive: false });
   const distributionRoot = path.join(matrixDirectory, 'distribution');
   const deployments = await distributeRuntime({

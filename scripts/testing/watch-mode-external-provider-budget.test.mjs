@@ -4,11 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import crypto from 'node:crypto';
+import { Worker } from 'node:worker_threads';
 
 import {
   STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
   PROVIDER_INPUT_PREFILTER_FILE,
   PROVIDER_INPUT_PREFILTER_MAGIC,
+  PROVIDER_SEND_BOUNDARY_JOURNAL_FILE,
   actualProviderInputSamplesFromLog,
   assertCellExternalProviderBudget,
   assertMatrixExternalProviderBudget,
@@ -34,6 +36,127 @@ const fileSha256 = (filePath) => crypto.createHash('sha256').update(fs.readFileS
 const inputCeilingSamplesForMode = (feedbackLoopPrevention) => LIVE_LLM_CELLS.find(
   (cell) => cell.feedbackLoopPrevention === feedbackLoopPrevention,
 )?.maxExternalAudioSamples;
+
+function preProviderReceiptFixture(t, { existing = true } = {}) {
+  const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-terminal-receipt-'));
+  t.after(() => {
+    assert.ok(path.resolve(runDirectory).startsWith(`${path.resolve(os.tmpdir())}${path.sep}`));
+    fs.rmSync(runDirectory, { recursive: true, force: true });
+  });
+  const options = { runDirectory, runMarker: MARKER, cellId: CELL_ID, leaseId: 'coordinator-lease', modelId: MODEL,
+    inputCeilingSamples: inputCeilingSamplesForMode('echo-cancel'), occurredAtMs: 7 };
+  const receipt = { schemaVersion: 2, artifactKind: 'watch-mode-provider-input-budget-lease', nonAuthoritative: false,
+    cellId: CELL_ID, leaseId: options.leaseId, runMarker: MARKER, maxSamples: options.inputCeilingSamples,
+    modelProtocolProfileIdentity: structuredClone(MODEL_PROTOCOL_PROFILE_IDENTITY) };
+  const leasePath = path.join(runDirectory, 'provider-input-budget-lease.json');
+  fs.writeFileSync(path.join(runDirectory, 'app.log'), `${MARKER}\n`, 'utf8');
+  if (existing) fs.writeFileSync(leasePath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8');
+  return { runDirectory, options, receipt, leasePath };
+}
+
+test('pre-provider terminal accepts existing strict receipt with explicit nonAuthoritative false unchanged', (t) => {
+  const f = preProviderReceiptFixture(t);
+  const before = fs.readFileSync(f.leasePath);
+  writePreProviderTerminalAuthority(f.options);
+  assert.deepEqual(fs.readFileSync(f.leasePath), before);
+  const budget = buildCellExternalProviderBudget(buildOptions(f.runDirectory));
+  assert.equal(budget.passed, true, budget.violations.join('; '));
+  assert.equal(budget.calls.mainRealtime, 0);
+  assert.equal(budget.actualProviderInputSamples, 0);
+});
+
+test('pre-provider terminal creates the same explicit authoritative receipt when absent', (t) => {
+  const f = preProviderReceiptFixture(t, { existing: false });
+  writePreProviderTerminalAuthority(f.options);
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.leasePath)), f.receipt);
+});
+
+for (const [label, mutate] of [
+  ['non-authoritative', (r) => { r.nonAuthoritative = true; }],
+  ['missing authority flag', (r) => { delete r.nonAuthoritative; }],
+  ['string authority flag', (r) => { r.nonAuthoritative = 'false'; }],
+  ['unknown field', (r) => { r.unrecognized = false; }],
+  ['lease id', (r) => { r.leaseId = 'different'; }],
+  ['run marker', (r) => { r.runMarker = 'different'; }],
+  ['cell id', (r) => { r.cellId = 'different'; }],
+  ['ceiling', (r) => { r.maxSamples++; }],
+  ['schema', (r) => { r.schemaVersion++; }],
+  ['kind', (r) => { r.artifactKind = 'different'; }],
+  ['model identity', (r) => { r.modelProtocolProfileIdentity.exactModelId = 'different'; }],
+  ['unknown nested field', (r) => { r.modelProtocolProfileIdentity.unrecognized = false; }],
+]) test(`pre-provider terminal rejects ${label} without replacing evidence`, (t) => {
+  const f = preProviderReceiptFixture(t); mutate(f.receipt);
+  const bytes = JSON.stringify(f.receipt); fs.writeFileSync(f.leasePath, bytes, 'utf8');
+  assert.throws(() => writePreProviderTerminalAuthority(f.options), /receipt does not match/);
+  assert.equal(fs.readFileSync(f.leasePath, 'utf8'), bytes);
+  assert.equal(fs.existsSync(path.join(f.runDirectory, 'provider-input-budget-ledger.json')), false);
+  assert.equal(fs.existsSync(path.join(f.runDirectory, PROVIDER_SEND_BOUNDARY_JOURNAL_FILE)), false);
+});
+
+for (const file of ['provider-input-budget-ledger.json', PROVIDER_SEND_BOUNDARY_JOURNAL_FILE,
+  'provider-input-16k-mono.pcm', PROVIDER_INPUT_PREFILTER_FILE]) {
+  test(`pre-provider terminal preserves partial or existing ${file} and emits no replacement`, (t) => {
+    const f = preProviderReceiptFixture(t);
+    const artifact = path.join(f.runDirectory, file); const bytes = Buffer.from('partial-or-real-provider-evidence');
+    fs.writeFileSync(artifact, bytes);
+    const before = fs.readdirSync(f.runDirectory).sort();
+    assert.throws(() => writePreProviderTerminalAuthority(f.options), /refusing to replace/);
+    assert.deepEqual(fs.readdirSync(f.runDirectory).sort(), before);
+    assert.deepEqual(fs.readFileSync(artifact), bytes);
+  });
+}
+
+test('pre-provider terminal rejects malformed existing receipt without output', (t) => {
+  const f = preProviderReceiptFixture(t); fs.writeFileSync(f.leasePath, '{', 'utf8');
+  assert.throws(() => writePreProviderTerminalAuthority(f.options));
+  assert.equal(fs.readFileSync(f.leasePath, 'utf8'), '{');
+  assert.equal(fs.existsSync(path.join(f.runDirectory, 'provider-input-budget-ledger.json')), false);
+});
+
+test('interrupted terminal journal write remains failed evidence and cannot be resumed as zero-call success', (t) => {
+  const f = preProviderReceiptFixture(t);
+  const writeFileSync = fs.writeFileSync;
+  const journalPath = path.join(f.runDirectory, PROVIDER_SEND_BOUNDARY_JOURNAL_FILE);
+  const mock = t.mock.method(fs, 'writeFileSync', (file, ...args) => {
+    if (file === journalPath) throw new Error('injected journal write failure');
+    return writeFileSync(file, ...args);
+  });
+  try { assert.throws(() => writePreProviderTerminalAuthority(f.options), /injected journal write failure/); }
+  finally { mock.mock.restore(); }
+  const ledgerPath = path.join(f.runDirectory, 'provider-input-budget-ledger.json');
+  const before = fs.readFileSync(ledgerPath);
+  assert.equal(fs.existsSync(journalPath), false);
+  assert.equal(buildCellExternalProviderBudget(buildOptions(f.runDirectory)).passed, false);
+  assert.throws(() => writePreProviderTerminalAuthority(f.options), /refusing to replace/);
+  assert.deepEqual(fs.readFileSync(ledgerPath), before);
+  assert.equal(fs.existsSync(journalPath), false);
+});
+
+test('concurrent terminal writers elect one exclusive ledger owner and preserve receipt bytes', async (t) => {
+  const f = preProviderReceiptFixture(t); const before = fs.readFileSync(f.leasePath);
+  const moduleUrl = new URL('./watch-mode-external-provider-budget.mjs', import.meta.url).href;
+  const workers = [7, 8].map((occurredAtMs) => new Worker(`
+    const {parentPort,workerData}=require('node:worker_threads');
+    import(workerData.moduleUrl).then(({writePreProviderTerminalAuthority})=>{
+      parentPort.once('message',()=>{try{writePreProviderTerminalAuthority(workerData.options);parentPort.postMessage({ok:true});}
+        catch(error){parentPort.postMessage({ok:false,message:error.message});}});
+      parentPort.postMessage({ready:true});
+    }).catch(error=>{throw error;});`, { eval: true, workerData: { moduleUrl, options: { ...f.options, occurredAtMs } } }));
+  t.after(async () => { await Promise.all(workers.map((w) => w.terminate())); });
+  const finished = workers.map((worker) => new Promise((resolve, reject) => {
+    worker.on('error', reject); worker.on('message', (message) => { if (!message.ready) resolve(message); });
+  }));
+  await Promise.all(workers.map((worker) => new Promise((resolve) => worker.once('message', resolve))));
+  workers.forEach((worker) => worker.postMessage('go'));
+  const results = await Promise.all(finished);
+  assert.equal(results.filter((r) => r.ok).length, 1);
+  assert.deepEqual(fs.readFileSync(f.leasePath), before);
+  const ledger = JSON.parse(fs.readFileSync(path.join(f.runDirectory, 'provider-input-budget-ledger.json')));
+  const journal = fs.readFileSync(path.join(f.runDirectory, PROVIDER_SEND_BOUNDARY_JOURNAL_FILE), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(journal.length, 2);
+  assert.ok(journal.every((entry) => entry.occurredAtMs === ledger.occurredAtMs));
+  assert.equal(buildCellExternalProviderBudget(buildOptions(f.runDirectory)).passed, true);
+});
 
 function writePrefilterFixture(runDirectory, samples, amplitude = 0.25) {
   const raw = Buffer.alloc(samples * 3 * 8);

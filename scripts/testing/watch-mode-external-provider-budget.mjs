@@ -518,7 +518,9 @@ export function writePreProviderTerminalAuthority({
   fs.mkdirSync(resolvedRunDirectory, { recursive: true });
   const ledgerPath = path.join(resolvedRunDirectory, PROVIDER_SEND_BOUNDARY_LEDGER_FILE);
   const journalPath = path.join(resolvedRunDirectory, PROVIDER_SEND_BOUNDARY_JOURNAL_FILE);
-  if (fs.existsSync(ledgerPath) || fs.existsSync(journalPath)) {
+  // A partial send-boundary capture is still evidence, never permission to synthesize zeros.
+  if ([ledgerPath, journalPath, path.join(resolvedRunDirectory, 'provider-input-16k-mono.pcm'),
+    path.join(resolvedRunDirectory, PROVIDER_INPUT_PREFILTER_FILE)].some((file) => fs.existsSync(file))) {
     throw new Error('refusing to replace an existing Provider send-boundary authority with a runner terminal');
   }
   const identity = {
@@ -561,6 +563,8 @@ export function writePreProviderTerminalAuthority({
   const leaseReceipt = {
     schemaVersion: EXTERNAL_PROVIDER_BUDGET_SCHEMA_VERSION,
     artifactKind: 'watch-mode-provider-input-budget-lease',
+    // Match the strict Runner receipt exactly; unknown fields and smoke authority remain rejected.
+    nonAuthoritative: false,
     cellId,
     leaseId,
     runMarker,

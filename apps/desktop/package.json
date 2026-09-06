@@ -29,7 +29,7 @@
     "i18next-browser-languagedetector": "^8.2.1",
     "react": "19.2.7",
     "react-dom": "19.2.7",
-    "react-i18next": "^17.0.8",
+    "react-i18next": "^17.0.12",
     "react-router-dom": "^7.18.2",
     "zustand": "^5.0.14"
   },
@@ -38,9 +38,9 @@
     "@tauri-apps/cli": "^2.11.2",
     "@types/react": "19.2.16",
     "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "^6.0.2",
-    "@vitest/coverage-v8": "^4.1.8",
-    "eslint": "^10.4.1",
+    "@vitejs/plugin-react": "^6.1.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "eslint": "^10.9.1",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.6.0",
@@ -48,6 +48,6 @@
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.60.1",
     "vite": "^8.0.16",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.11"
   }
 }

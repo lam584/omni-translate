@@ -116,6 +116,28 @@ impl LivetranslateShutdown {
         self.requested_at.is_some()
     }
 
+    pub(super) fn tick_pause(&self) -> Duration {
+        // Once input is fenced, drain already queued inbound frames without
+        // adding a fixed delay per frame. The idle-read barrier and total
+        // shutdown deadline still decide whether finish may be sent.
+        if self.pre_finish_drain_barrier.is_some()
+            && !self.shared.session_finish_sent.load(Ordering::SeqCst)
+        {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(10)
+        }
+    }
+
+    pub(super) fn pace_tick(&self, wait: impl FnOnce(Duration), yield_tick: impl FnOnce()) {
+        let pause = self.tick_pause();
+        if pause.is_zero() {
+            yield_tick();
+        } else {
+            wait(pause);
+        }
+    }
+
     pub(super) fn should_send_finish(
         &mut self,
         chunks_sent_this_tick: usize,
@@ -661,6 +683,68 @@ mod tests {
         }
         assert!(socket.read_message().is_err());
         assert!(shutdown.should_send_finish(0, true, true).unwrap());
+    }
+
+    #[test]
+    fn fenced_finite_receive_backlog_drains_without_per_frame_pacing() {
+        let now = Instant::now();
+        let mut shutdown = LivetranslateShutdown::new(true);
+        shutdown.request(now);
+        let mut socket = shutdown.wrap_socket(FakeSocket {
+            inbound: VecDeque::from(vec![text_event("response.audio.delta"); 1500]),
+            state: Arc::new(Mutex::new(FakeSocketState::default())),
+        });
+        let mut elapsed = Duration::ZERO;
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        for _ in 0..1500 {
+            socket.read_message().unwrap();
+            assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+            elapsed += Duration::from_millis(1) + shutdown.tick_pause();
+        }
+        assert!(shutdown.deadline_error(now + elapsed).is_none(),
+            "finite receive backlog must not exhaust shutdown through fixed per-frame pacing: {elapsed:?}");
+        assert!(socket.read_message().is_err());
+        assert!(shutdown.should_send_finish(0, true, true).unwrap());
+        shutdown.record_finish_sent(now + elapsed);
+        assert_eq!(shutdown.tick_pause(), Duration::from_millis(10));
+    }
+
+    #[test]
+    fn accelerated_receive_pacing_requires_and_tracks_the_input_fence() {
+        for enabled in [false, true] {
+            let mut shutdown = LivetranslateShutdown::new(enabled);
+            assert_eq!(shutdown.tick_pause(), Duration::from_millis(10));
+            shutdown.request(Instant::now());
+            for (chunks, empty, disconnected) in
+                [(0, true, false), (1, true, true), (0, false, true)]
+            {
+                assert!(!shutdown.should_send_finish(chunks, empty, disconnected).unwrap());
+                assert_eq!(shutdown.tick_pause(), Duration::from_millis(10));
+            }
+            assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+            assert_eq!(shutdown.tick_pause(), if enabled { Duration::ZERO } else { Duration::from_millis(10) });
+            // A newly observed send invalidates the fence and restores pacing.
+            assert!(!shutdown.should_send_finish(1, true, true).unwrap());
+            assert_eq!(shutdown.tick_pause(), Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn production_pacing_seam_yields_fenced_backlog_and_waits_otherwise() {
+        let mut shutdown = LivetranslateShutdown::new(true);
+        shutdown.pace_tick(|pause| assert_eq!(pause, Duration::from_millis(10)),
+            || panic!("ordinary tick must wait"));
+        shutdown.request(Instant::now());
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        let mut yields = 0;
+        for _ in 0..1500 {
+            shutdown.pace_tick(|_| panic!("fenced drain must not sleep per frame"),
+                || yields += 1);
+        }
+        assert_eq!(yields, 1500);
+        assert!(!shutdown.should_send_finish(0, false, true).unwrap());
+        shutdown.pace_tick(|pause| assert_eq!(pause, Duration::from_millis(10)),
+            || panic!("invalidated fence must restore waiting"));
     }
 
     #[test]

@@ -921,7 +921,7 @@ fn run_omni_worker(
             last_vad_event_time = SystemTime::now();
         }
         emit_audio_snapshot(&app, store)?;
-        thread::sleep(Duration::from_millis(10));
+        livetranslate_shutdown.pace_tick(thread::sleep, thread::yield_now);
     }
 
     provider_input_budget.finalize("worker-completed")?;

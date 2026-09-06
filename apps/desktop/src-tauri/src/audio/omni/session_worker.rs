@@ -38,6 +38,14 @@ fn should_discard_uncommitted_after_worker(
     !matches!(result, Ok(OmniWorkerShutdown::LivetranslateSessionFinished))
 }
 
+fn should_defer_manual_audio_for_response(
+    uses_manual_commit: bool,
+    manual_response_pending: bool,
+    livetranslate_shutdown_requested: bool,
+) -> bool {
+    uses_manual_commit && manual_response_pending && !livetranslate_shutdown_requested
+}
+
 struct OmniSessionRuntime {
     current_cue_id: Option<String>,
     pending_source_text: String,
@@ -420,7 +428,11 @@ fn run_omni_worker(
             &source_language,
             &target_language,
             &session_started_at,
-            audio_mode.uses_manual_commit() && manual_response_pending,
+            should_defer_manual_audio_for_response(
+                audio_mode.uses_manual_commit(),
+                manual_response_pending,
+                livetranslate_shutdown.is_requested(),
+            ),
         );
         let pump_state = match pump_state {
             Ok(state) => state,

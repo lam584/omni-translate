@@ -1,6 +1,14 @@
 use super::*;
 
 #[test]
+fn shutdown_drain_releases_manual_response_audio_defer() {
+    assert!(should_defer_manual_audio_for_response(true, true, false));
+    assert!(!should_defer_manual_audio_for_response(true, true, true));
+    assert!(!should_defer_manual_audio_for_response(false, true, false));
+    assert!(!should_defer_manual_audio_for_response(true, false, false));
+}
+
+#[test]
 fn every_manual_turn_anchors_on_its_first_successful_audible_append() {
     assert!(should_anchor_manual_turn_to_first_audible_append(RealtimeAudioMode::Manual, false, true));
     assert!(!should_anchor_manual_turn_to_first_audible_append(RealtimeAudioMode::Manual, true, true));

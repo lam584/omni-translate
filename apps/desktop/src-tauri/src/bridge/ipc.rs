@@ -846,6 +846,28 @@ mod tests {
     }
 
     #[test]
+    fn relocated_release_checks_its_runtime_workspace_before_the_build_checkout() {
+        let exe_path = Path::new(r"E:\watch-worker\target\release\omni-desktop-shell.exe");
+        let exe_dir = exe_path.parent().unwrap();
+        let bridge_candidates = installed_bridge_cli_candidates(exe_dir);
+        assert_eq!(
+            bridge_candidates[0],
+            Path::new(r"E:\watch-worker\target\release\omni-bridge-service.exe")
+        );
+        assert_ne!(bridge_candidates[0], bridge_cli_release_candidates()[0]);
+
+        assert_eq!(
+            relocated_workspace_root(exe_path).as_deref(),
+            Some(Path::new(r"E:\watch-worker"))
+        );
+        assert_eq!(
+            relocated_workspace_root(Path::new(r"C:\Program Files\Omni\desktop\omni-desktop-shell.exe")),
+            None,
+            "an arbitrary installed ancestor must never become an executable asset root"
+        );
+    }
+
+    #[test]
     fn assets_root_prefers_the_dev_checkout() {
         assert_eq!(
             assets_root(),

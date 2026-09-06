@@ -127,6 +127,44 @@ use std::time::Duration;
     }
 
     #[test]
+    fn delayed_receipt_with_equal_translation_stays_with_its_source_revision() {
+        let store = WatchSessionReportStore::new();
+        let session_id = store.begin_or_reuse("test", "model");
+        let started = {
+            let guard = store.inner.lock().expect("report");
+            guard.as_ref().expect("session").started_unix_ms
+        };
+
+        store.record_source("cue-1", "inbound", "Does it preserve a.", true);
+        store.record_model_final("cue-1", "inbound", "native", "是否保留回答？", true, None, None);
+        store.record_publish("cue-1", "inbound", "Does it preserve a.", "是否保留回答？", &[], true);
+        store.record_source("cue-1", "inbound", "Does it preserve a quoted answer?", true);
+
+        let mut delayed = receipt(&session_id, "cue-1", started.saturating_add(5));
+        delayed.source_text = "Does it preserve a.".to_string();
+        delayed.translated_text = "是否保留回答？".to_string();
+        delayed.committed = false;
+        store.record_overlay_receipt(delayed);
+
+        store.record_model_final("cue-1", "inbound", "native", "是否保留回答？", true, None, None);
+        store.record_publish("cue-1", "inbound", "Does it preserve a quoted answer?", "是否保留回答？", &[], true);
+        let mut final_receipt = receipt(&session_id, "cue-1", started.saturating_add(20));
+        final_receipt.source_text = "Does it preserve a quoted answer?".to_string();
+        final_receipt.translated_text = "是否保留回答？".to_string();
+        store.record_overlay_receipt(final_receipt);
+        store.complete();
+
+        let report = store.snapshot().expect("report");
+        assert_eq!(report.cues.len(), 2);
+        assert_eq!(report.cues[0].rendered_first_at_ms, Some(5));
+        assert_eq!(report.cues[1].rendered_first_at_ms, Some(20));
+        assert!(!report.cues[1]
+            .issues
+            .iter()
+            .any(|issue| issue.code == "invalid-stage-order"));
+    }
+
+    #[test]
     fn livetranslate_cumulative_revisions_attach_final_render_to_latest_content() {
         let store = WatchSessionReportStore::new();
         let session_id =

@@ -486,9 +486,23 @@ impl WatchSessionReportStore {
         // current publish and retained publish events, then attach a genuine
         // content mismatch to the latest revision of the same logical cue so
         // the report preserves the rendered evidence instead of inventing an
-        // unmatched-receipt failure.
+        // unmatched-receipt failure. Source identity must win when present:
+        // adjacent source revisions can legitimately publish identical text,
+        // and a delayed receipt from the older revision must not move the
+        // newer revision's first-render timestamp backwards.
         let rendered_signature = correlation_text(&receipt.translated_text);
-        let content_match = session.cues.iter().rposition(|cue| {
+        let source_signature = correlation_text(&receipt.source_text);
+        let source_match = (!source_signature.is_empty()).then(|| {
+            session.cues.iter().rposition(|cue| {
+                cue.cue_id == receipt.cue_id
+                    && (correlation_text(&cue.source_text) == source_signature
+                        || cue.events.iter().any(|event| {
+                            event.stage == "source"
+                                && correlation_text(&event.text) == source_signature
+                        }))
+            })
+        }).flatten();
+        let content_match = source_signature.is_empty().then(|| session.cues.iter().rposition(|cue| {
             cue.cue_id == receipt.cue_id
                 && !rendered_signature.is_empty()
                 && (correlation_text(&cue.published_text) == rendered_signature
@@ -496,8 +510,8 @@ impl WatchSessionReportStore {
                         event.stage == "publish"
                             && correlation_text(&event.text) == rendered_signature
                     }))
-        });
-        let cue_match = content_match.or_else(|| {
+        })).flatten();
+        let cue_match = source_match.or(content_match).or_else(|| {
             session
                 .cues
                 .iter()

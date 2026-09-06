@@ -3884,7 +3884,6 @@ name = "omni-bridge-service"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "cpal",
  "omni-audio-dsp",
  "omni-bridge-protocol",
  "omni-logging",
@@ -3905,7 +3904,6 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "claxon",
- "cpal",
  "flacenc",
  "hmac 0.13.0",
  "hound",

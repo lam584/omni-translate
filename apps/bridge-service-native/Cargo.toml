@@ -6,10 +6,16 @@ license = "Apache-2.0"
 
 [dependencies]
 chrono = "0.4"
-cpal = "0.17.3"
 omni-audio-dsp = { path = "../../crates/omni-audio-dsp" }
 omni-bridge-protocol = { path = "../../crates/omni-bridge-protocol" }
 omni-logging = { path = "../../crates/omni-logging" }
+# rodio re-exports cpal as `rodio::cpal`; keep cpal transitive so its version is
+# pinned by rodio. Do NOT re-add a direct cpal dependency: dependabot would bump
+# it past the copy rodio links (rodio <= 0.22 links cpal 0.17 only) and split
+# the graph. When rodio 0.23 (cpal 0.18) ships, migrate the `id().1` device-id
+# accesses to the `.id()` accessor (windows/playback.rs x4,
+# tests/windows_sidecar.rs), keeping resolved IDs as bare WASAPI endpoint
+# strings — that form is the cross-process contract with the desktop shell.
 rodio = { version = "0.22.2", default-features = false, features = ["mp3", "playback"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

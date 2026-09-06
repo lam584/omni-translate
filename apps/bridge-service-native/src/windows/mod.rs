@@ -10,7 +10,11 @@ use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use cpal::traits::{DeviceTrait, HostTrait};
+// cpal is reached through rodio's re-export (`rodio::cpal`) so its version is
+// pinned by rodio; a direct cpal dependency lets dependabot bump it past the
+// copy rodio links and split the graph.
+use rodio::cpal;
+use rodio::cpal::traits::{DeviceTrait, HostTrait};
 use omni_bridge_protocol::{
     audio_pipe_path, control_pipe_path, source_pipe_path, TranslationPlaybackStatusAck,
     TranslationPlaybackStatusEvent, TranslationPlaybackStatusKind, TranslationStreamState,

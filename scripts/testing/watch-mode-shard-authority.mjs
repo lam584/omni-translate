@@ -2017,7 +2017,21 @@ function strictNullableOwnerGeneration(value, label) {
   return value;
 }
 
-function strictReportAuthorityProjection(report) {
+const CROSS_WORKSPACE_FIXTURE_PATH_PATTERN = /(?:^|[\\/])scripts[\\/]testing[\\/]fixtures[\\/](.+)$/i;
+
+function normalizeCrossWorkspaceReferencePaths(value) {
+  if (Array.isArray(value)) return value.map((entry) => normalizeCrossWorkspaceReferencePaths(entry));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => {
+    if (key === 'referencePath' && typeof entry === 'string') {
+      const match = entry.match(CROSS_WORKSPACE_FIXTURE_PATH_PATTERN);
+      if (match) return [key, `scripts/testing/fixtures/${match[1].replaceAll('\\', '/')}`];
+    }
+    return [key, normalizeCrossWorkspaceReferencePaths(entry)];
+  }));
+}
+
+export function strictReportAuthorityProjection(report) {
   if (!report || typeof report !== 'object' || Array.isArray(report)) return report;
   const {
     generatedAt: _generatedAt,
@@ -2026,7 +2040,7 @@ function strictReportAuthorityProjection(report) {
     artifacts: _artifacts,
     ...stable
   } = report;
-  return stable;
+  return normalizeCrossWorkspaceReferencePaths(stable);
 }
 
 function assertStoredReportMatchesRawEvidence(runDirectory, report, provenance) {

@@ -23,6 +23,7 @@ import {
   issueCellLeases,
   interactiveExecutionExitMatchesReport,
   sha256Canonical,
+  strictReportAuthorityProjection,
   validateInteractiveProcessAuthority,
   validateProviderUsageAuthority,
   validateShardCellResult,
@@ -32,6 +33,38 @@ import {
   writeShardCellResult,
   writeShardManifest,
 } from './watch-mode-shard-authority.mjs';
+
+test('strict report authority normalizes only cross-workspace fixture reference paths', () => {
+  const remote = {
+    diagnostics: { referencePath: 'E:\\watch-worker\\scripts\\testing\\fixtures\\watch-mode-en-original.txt' },
+    strictContent: { referencePath: 'E:\\watch-worker\\scripts\\testing\\fixtures\\watch-mode-en-original.zh-CN.txt' },
+    unrelated: { referencePath: 'E:\\watch-worker\\artifacts\\raw.wav' },
+  };
+  const coordinator = {
+    diagnostics: { referencePath: 'E:\\omni-translate\\scripts\\testing\\fixtures\\watch-mode-en-original.txt' },
+    strictContent: { referencePath: 'E:\\omni-translate\\scripts\\testing\\fixtures\\watch-mode-en-original.zh-CN.txt' },
+    unrelated: { referencePath: 'E:\\watch-worker\\artifacts\\raw.wav' },
+  };
+  assert.deepEqual(
+    strictReportAuthorityProjection(remote),
+    strictReportAuthorityProjection(coordinator),
+  );
+
+  coordinator.strictContent.referencePath = 'E:\\omni-translate\\scripts\\testing\\fixtures\\different.zh-CN.txt';
+  assert.notDeepEqual(
+    strictReportAuthorityProjection(remote),
+    strictReportAuthorityProjection(coordinator),
+    'a different fixture-relative path must remain authority-significant',
+  );
+
+  coordinator.strictContent.referencePath = remote.strictContent.referencePath;
+  coordinator.unrelated.referencePath = 'E:\\omni-translate\\artifacts\\raw.wav';
+  assert.notDeepEqual(
+    strictReportAuthorityProjection(remote),
+    strictReportAuthorityProjection(coordinator),
+    'non-fixture absolute paths must not be broadly ignored',
+  );
+});
 import {
   defaultSingleWorkerAssignments,
   fixedThreeWorkerAssignments,

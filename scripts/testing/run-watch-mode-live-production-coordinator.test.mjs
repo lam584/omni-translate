@@ -103,6 +103,8 @@ import {
   PRODUCTION_WORKER_READINESS_FINALIZE_BODY,
   PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY,
   parseProductionCoordinatorCliArgs,
+  resolveLocalIsolationAuthorityPath,
+  selectChangedRuntimeEntries,
   aggregateProductionCellFailures,
   assertProductionCellsPassedForCanonicalVerification,
   productionCellFailureDisposition,
@@ -125,6 +127,89 @@ import {
   windowsPowerShellEnvironment,
   createSshProductionTransport,
 } from './run-watch-mode-live-production-coordinator.mjs';
+
+test('pre-distributed runtime skips only exact hashes with complete unique inventory', () => {
+  const entries = [{path: 'a.exe', bytes: 10, sha256: 'a'.repeat(64)}, {path: 'b.exe', bytes: 20, sha256: 'b'.repeat(64)}];
+  const observed = entries.map((entry) => ({...entry, exists: true}));
+  assert.deepEqual(selectChangedRuntimeEntries(entries, observed), []);
+  assert.deepEqual(selectChangedRuntimeEntries(entries, [{...observed[0], sha256: 'c'.repeat(64)}, observed[1]]), [entries[0]]);
+  assert.deepEqual(selectChangedRuntimeEntries(entries, [observed[0], {...observed[1], exists: false}]), [entries[1]]);
+  assert.deepEqual(selectChangedRuntimeEntries(entries, [observed[0], {...observed[1], bytes: 21}]), [entries[1]]);
+  assert.throws(() => selectChangedRuntimeEntries(entries, [observed[0], observed[0]]), /exactly once/);
+  assert.throws(() => selectChangedRuntimeEntries(entries, [observed[0]]), /exactly once/);
+});
+
+test('isolation collector absolute path and CLI relative path resolve to the same authority', () => {
+  const workspaceRoot = path.resolve(os.tmpdir(), 'omni-isolation-path-fixture');
+  const relative = 'artifacts/testing/watch-mode-local-isolation/run/local-isolation-manifest.json';
+  const absolute = path.resolve(workspaceRoot, relative);
+  assert.equal(resolveLocalIsolationAuthorityPath(absolute, { workspaceRoot }), absolute);
+  assert.equal(resolveLocalIsolationAuthorityPath(relative, { workspaceRoot }), absolute);
+  assert.throws(() => resolveLocalIsolationAuthorityPath(path.resolve(workspaceRoot, '../outside/local-isolation-manifest.json'), { workspaceRoot }));
+  assert.throws(() => resolveLocalIsolationAuthorityPath('../outside/local-isolation-manifest.json', { workspaceRoot }));
+  assert.throws(() => resolveLocalIsolationAuthorityPath(path.resolve(workspaceRoot, 'artifacts/testing/watch-mode-local-isolation-evil/local-isolation-manifest.json'), { workspaceRoot }));
+  assert.throws(() => resolveLocalIsolationAuthorityPath(absolute.replace('local-isolation-manifest.json', 'wrong.json'), { workspaceRoot }));
+});
+
+test('isolation resolver rejects junction ancestry without touching the external target', () => {
+  for (const location of ['workspace', 'authority-root', 'run', 'dangling-run']) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-isolation-junction-'));
+    const workspaceRoot = path.join(root, 'workspace');
+    const authorityRoot = path.join(workspaceRoot, 'artifacts/testing/watch-mode-local-isolation');
+    const target = path.join(root, 'outside-authority');
+    const junction = location === 'workspace' ? workspaceRoot
+      : location === 'authority-root' ? authorityRoot : path.join(authorityRoot, 'run');
+    const relative = 'artifacts/testing/watch-mode-local-isolation/run/local-isolation-manifest.json';
+    const absolute = path.join(workspaceRoot, relative);
+    const dangling = location === 'dangling-run';
+    let linked = false;
+    try {
+      fs.mkdirSync(path.dirname(junction), { recursive: true });
+      if (!dangling) {
+        fs.mkdirSync(target);
+        fs.writeFileSync(path.join(target, 'sentinel.txt'), 'do not alter external evidence', 'utf8');
+      }
+      fs.symlinkSync(target, junction, process.platform === 'win32' ? 'junction' : 'dir');
+      linked = true;
+      assert.ok(fs.lstatSync(junction).isSymbolicLink());
+      assert.throws(() => resolveLocalIsolationAuthorityPath(absolute, { workspaceRoot }), /reparse|symlink/i, location);
+      assert.throws(() => resolveLocalIsolationAuthorityPath(relative, { workspaceRoot }), /reparse|symlink/i, location);
+    } finally {
+      // Unlink only the verified fixture link, never recursively remove its target.
+      if (linked) {
+        assert.ok(path.resolve(junction).startsWith(`${path.resolve(root)}${path.sep}`));
+        assert.ok(fs.lstatSync(junction).isSymbolicLink());
+        fs.unlinkSync(junction);
+      }
+      if (!dangling && fs.existsSync(target)) {
+        assert.equal(fs.readFileSync(path.join(target, 'sentinel.txt'), 'utf8'), 'do not alter external evidence');
+      }
+      assert.equal(fs.realpathSync(root), path.resolve(root));
+      assert.ok(path.resolve(root).startsWith(`${path.resolve(os.tmpdir())}${path.sep}`));
+      assert.ok(path.resolve(target).startsWith(`${path.resolve(root)}${path.sep}`));
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('isolation resolver accepts regular ancestors and missing manifest descendants', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-isolation-regular-'));
+  try {
+    const relative = 'artifacts/testing/watch-mode-local-isolation/new/run/local-isolation-manifest.json';
+    fs.mkdirSync(path.join(root, 'artifacts/testing/watch-mode-local-isolation'), { recursive: true });
+    const absolute = path.join(root, relative);
+    assert.equal(resolveLocalIsolationAuthorityPath(relative, { workspaceRoot: root }), absolute);
+    assert.equal(resolveLocalIsolationAuthorityPath(absolute, { workspaceRoot: root }), absolute);
+    fs.mkdirSync(path.dirname(absolute), { recursive: true });
+    fs.writeFileSync(absolute, '{}', 'utf8');
+    assert.equal(resolveLocalIsolationAuthorityPath(relative, { workspaceRoot: root }), absolute);
+    assert.equal(resolveLocalIsolationAuthorityPath(absolute, { workspaceRoot: root }), absolute);
+  } finally {
+    assert.equal(fs.realpathSync(root), path.resolve(root));
+    assert.ok(path.resolve(root).startsWith(`${path.resolve(os.tmpdir())}${path.sep}`));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('a same-thread synchronous blocker cannot resolve after its bounded coordinator deadline', async () => {
   await assert.rejects(
@@ -430,10 +515,12 @@ test('worker preparation normalizes and verifies signed implementation bytes bef
     source.indexOf('const readinessTransport = createSshProductionTransport'),
   );
   assert.match(readinessPlan, /authorityImplementationHashes/u);
-  assert.equal(AUTHORITY_IMPLEMENTATION_FILES.length, 58);
+  assert.equal(AUTHORITY_IMPLEMENTATION_FILES.length, 60);
+  assert.ok(AUTHORITY_IMPLEMENTATION_FILES.includes('scripts/testing/prepare-watch-release.mjs'));
+  assert.ok(AUTHORITY_IMPLEMENTATION_FILES.includes('scripts/testing/distribute-watch-runtime.mjs'));
 });
 
-test('fresh readiness transports all 58 production implementation entries', () => {
+test('fresh readiness transports all 60 production implementation entries', () => {
   const implementationHashes = AUTHORITY_IMPLEMENTATION_FILES.map((entryPath, index) => ({
     path: entryPath,
     bytes: index + 1,
@@ -452,7 +539,7 @@ test('fresh readiness transports all 58 production implementation entries', () =
       requestDigest: 'c'.repeat(64),
     },
   });
-  assert.equal(plan.authority.implementationHashes.length, 58);
+  assert.equal(plan.authority.implementationHashes.length, 60);
   assert.deepEqual(plan.authority.implementationHashes, implementationHashes);
 });
 
@@ -652,7 +739,7 @@ test('zero-provider readiness reserves enough time for signed driver reinstall a
     deriveWatchProductionPrepaidCoordinatorBudgetMs()
       + deriveWatchPostReadinessExecutionBudgetMs({ cells: LIVE_LLM_CELLS }),
   );
-  assert.equal(PRODUCTION_COORDINATOR_TIMEOUT_MS, 13_702_000);
+  assert.equal(PRODUCTION_COORDINATOR_TIMEOUT_MS, 13_822_000);
 });
 
 test('production transport applies each formal cell timeout at its actual outer boundary', () => {
@@ -1536,7 +1623,7 @@ test('remote PowerShell hashes files without module auto-loading', { skip: !isWi
       encoding: 'utf8',
       timeout: 30_000,
     });
-    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.status, 0, JSON.stringify({ error: result.error?.message, code: result.error?.code, signal: result.signal, stderr: result.stderr }));
     assert.equal(result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0], expected);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

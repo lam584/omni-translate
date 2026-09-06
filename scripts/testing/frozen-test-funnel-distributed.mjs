@@ -87,7 +87,12 @@ function workerProjection(worker) {
 }
 
 function assignments(workers) {
-  return FROZEN_FUNNEL_STEPS.map(({ name, command, group }) => ({ name, command, workerId: workers[group % workers.length].workerId }));
+  return FROZEN_FUNNEL_STEPS.map(({ name, command, group }) => ({
+    name, command,
+    // With three workers, run watch tooling after the bridge tests on vm167.
+    // Keep the original modulo assignment for one/two-worker fallbacks.
+    workerId: workers[workers.length === 3 && name === 'watch-mode-tooling' ? 1 : group % workers.length].workerId,
+  }));
 }
 
 export function createFrozenFunnelPlan({ workers, provenance, runtimeAuthority, privateKeyPem, publicKeyPem, executionId = `funnel-${crypto.randomUUID()}` }) {

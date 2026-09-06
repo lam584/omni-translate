@@ -115,10 +115,10 @@ test('formal envelopes cover measured stage tails and coordinator sums four conc
     'final evidence must reserve pre-verifier authority, verifier, and post-verifier authority',
   );
   assert.equal(expectedPostReadinessMs, 6_152_000);
-  // The frozen-funnel runner, entrypoint, receipt verifier and VM environment
-  // are now part of the signed implementation inventory. prepareWorker uploads
-  // those four additional files serially, at one 60s upload budget each.
-  assert.equal(expectedCoordinatorMs, 13_702_000);
+  // All 60 signed implementation files include the release preparation and
+  // distribution entrypoints. Reserve one 60s upload envelope per file, even
+  // when the runtime delta fast path avoids unchanged binary uploads.
+  assert.equal(expectedCoordinatorMs, 13_822_000);
 
   const uniformMaximumCounterfactualMs = budget.deriveWatchProductionPrepaidCoordinatorBudgetMs()
     + budget.deriveWatchProductionPreservedWorkerReadinessBudgetMs()
@@ -171,12 +171,12 @@ test('coordinator global watchdog reserves every legal pre-paid readiness and pr
       + (budget.WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_ATTEMPTS - 1)
         * budget.WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_RETRY_DELAY_MS,
   );
-  assert.equal(budget.WATCH_PRODUCTION_INITIAL_IMPLEMENTATION_UPLOAD_COUNT, 58);
+  assert.equal(budget.WATCH_PRODUCTION_INITIAL_IMPLEMENTATION_UPLOAD_COUNT, 60);
   assert.equal(budget.WATCH_PRODUCTION_INITIAL_RUNTIME_UPLOAD_COUNT, 14);
-  assert.equal(budget.deriveWatchProductionInitialWorkerReadinessBudgetMs(), 6_727_000);
+  assert.equal(budget.deriveWatchProductionInitialWorkerReadinessBudgetMs(), 6_847_000);
   assert.equal(budget.deriveWatchProductionPreservedWorkerReadinessBudgetMs(), 1_177_000);
   assert.equal(budget.deriveWatchProductionProviderPreflightBudgetMs(), 328_000);
-  assert.equal(budget.deriveWatchProductionPrepaidCoordinatorBudgetMs(), 7_550_000);
+  assert.equal(budget.deriveWatchProductionPrepaidCoordinatorBudgetMs(), 7_670_000);
   assert.equal(currentPrepaidReserveMs, budget.deriveWatchProductionPrepaidCoordinatorBudgetMs());
 });
 

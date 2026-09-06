@@ -54,6 +54,8 @@ export const AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/watch-mode-balanced-release-plan.mjs',
   'scripts/testing/watch-mode-local-isolation.mjs',
   'scripts/testing/watch-mode-strict-runtime-authority.mjs',
+  'scripts/testing/prepare-watch-release.mjs',
+  'scripts/testing/distribute-watch-runtime.mjs',
   'scripts/testing/run-frozen-test-funnel.mjs',
   'scripts/testing/frozen-test-funnel-distributed.mjs',
   'scripts/testing/watch-mode-test-receipts.mjs',

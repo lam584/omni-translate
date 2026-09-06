@@ -1149,6 +1149,19 @@ export function createProductionWorkerReadinessTransportPlan({
   };
 }
 
+export function selectChangedRuntimeEntries(entries, observed) {
+  if (!Array.isArray(observed) || observed.length !== entries.length
+      || new Set(observed.map((entry) => entry.path)).size !== entries.length
+      || observed.some((entry) => !entries.some((expected) => expected.path === entry.path))) {
+    throw new Error('runtime pre-check must cover each signed path exactly once');
+  }
+  const byPath = new Map(observed.map((entry) => [entry.path, entry]));
+  return entries.filter((entry) => {
+    const actual = byPath.get(entry.path);
+    return actual.exists !== true || Number(actual.bytes) !== entry.bytes || actual.sha256 !== entry.sha256;
+  });
+}
+
 const REMOTE_POWERSHELL_COMPLETION_MARKER = '__OMNI_REMOTE_COMPLETE_V1__';
 const REMOTE_POWERSHELL_OUTPUT_FRAME_PREFIX = '__OMNI_REMOTE_OUTPUT_V1__';
 
@@ -1687,7 +1700,11 @@ foreach ($directory in @($payload.runtimeDirectories)) {
       // or Provider preflight.  Re-checking git state below still rejects real
       // source divergence because these bytes are the exact signed Git content.
       for (const entry of implementationEntries) await upload(worker, entry.localPath, entry.remotePath);
-      for (const entry of runtimeEntries) await upload(worker, entry.localPath, entry.remotePath);
+      // A pre-distributed identical binary needs verification, not another copy.
+      // The complete implementation/runtime hash check below remains mandatory.
+      for (const entry of selectChangedRuntimeEntries(runtimeEntries, remoteWorkspaceState.entries)) {
+        await upload(worker, entry.localPath, entry.remotePath);
+      }
     }
     const verification = await runRemoteJsonWithRetries((attempt) => runRemote(worker, `
 $implementation = @()
@@ -2182,13 +2199,31 @@ export function productionFailureFingerprint(failure, plan) {
 }
 
 export function resolveLocalIsolationAuthorityPath(manifestPath, { workspaceRoot = repoRoot } = {}) {
-  const resolved = resolveAuthorityPath(workspaceRoot, manifestPath, '--local-isolation-authority');
+  // Collectors return an absolute manifest path; the CLI also accepts the
+  // repository-relative form. Both must resolve inside the same authority root.
+  const resolved = typeof manifestPath === 'string' && path.isAbsolute(manifestPath)
+    ? path.resolve(manifestPath)
+    : resolveAuthorityPath(workspaceRoot, manifestPath, '--local-isolation-authority');
   const authorityRoot = path.resolve(workspaceRoot, 'artifacts', 'testing', 'watch-mode-local-isolation');
-  if (!resolved.startsWith(`${authorityRoot}${path.sep}`)) {
+  const relative = path.relative(authorityRoot, resolved);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new Error('--local-isolation-authority must point inside artifacts/testing/watch-mode-local-isolation');
   }
   if (path.basename(resolved) !== 'local-isolation-manifest.json') {
     throw new Error('--local-isolation-authority must point to local-isolation-manifest.json');
+  }
+  // Lexical containment is insufficient for Windows junctions (including a
+  // redirected workspace itself). Missing descendants are valid at resolution
+  // time, but every existing ancestor must be checked without following links.
+  for (let ancestor = resolved; ; ancestor = path.dirname(ancestor)) {
+    try {
+      if (fs.lstatSync(ancestor).isSymbolicLink()) {
+        throw new Error(`--local-isolation-authority rejects reparse/symlink ancestry: ${ancestor}`);
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    if (ancestor === path.dirname(ancestor)) break;
   }
   return resolved;
 }

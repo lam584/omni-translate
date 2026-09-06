@@ -20,6 +20,13 @@ export const REUSABLE_QUALITY_GATE_STEPS = new Set([
   'watch-mode-tooling',
   'test-desktop-shell',
   'test-bridge-service-native',
+  'contracts',
+  'powershell-tooling',
+  'audit-architecture',
+  'watch-mode-coordinator-tooling',
+  'integration-bridge-contract',
+  'check-bridge-service-native',
+  'check-desktop-shell',
 ]);
 
 const canonical = (value) => {
@@ -104,42 +111,43 @@ export function verifyTestReceipt(receipt, { name, command, receiptDirectory, pr
 export function loadReusableTestReceipt(step, {
   workspaceRoot = repoRoot,
   indexPath = path.resolve(workspaceRoot, TEST_RECEIPT_CANONICAL_INDEX),
-  provenance = currentGitProvenance({ cwd: workspaceRoot }),
+  provenance,
+  operations = { verifyStrictRuntimeAuthority },
 } = {}) {
-  if (!REUSABLE_QUALITY_GATE_STEPS.has(step.name) || !fs.existsSync(indexPath)) return null;
-  let index;
-  try { index = JSON.parse(fs.readFileSync(indexPath, 'utf8')); } catch { return null; }
-  const entry = index.receipts?.find((candidate) => candidate.name === step.name);
-  if (!entry) return null;
-  let runtimeAuthority; let runtimePublicKeyPem;
+  // Reuse is optional: malformed/stale evidence must fall back to execution, never abort the gate.
   try {
-    const verified = verifyStrictRuntimeAuthority(
+    if (!REUSABLE_QUALITY_GATE_STEPS.has(step.name) || !fs.existsSync(indexPath)) return null;
+    provenance ??= currentGitProvenance({ cwd: workspaceRoot });
+    if (provenance?.captureStatus !== 'captured' || provenance.worktreeClean !== true
+        || Number(provenance.dirtyEntryCount) !== 0) return null;
+    const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+    // v1 create/verify remains compatible, but only a signed distributed v2 can skip a gate step.
+    if (index?.schemaVersion !== 2 || !Array.isArray(index.receipts) || !index.distributedAuthority) return null;
+    const expected = FROZEN_FUNNEL_STEPS.map(({ name, command }) => ({ name, command })).sort((a, b) => a.name.localeCompare(b.name));
+    const actual = index.receipts.map(({ name, command }) => ({ name, command })).sort((a, b) => a.name.localeCompare(b.name));
+    if (canonical(actual) !== canonical(expected)) return null;
+    const entry = index.receipts.find((candidate) => candidate.name === step.name && candidate.command === step.command);
+    if (!entry) return null;
+    const verified = operations.verifyStrictRuntimeAuthority(
       path.resolve(path.dirname(indexPath), index.runtimeAuthority.path),
       { workspaceRoot, provenance },
     );
-    runtimeAuthority = verified.authority;
-    runtimePublicKeyPem = fs.readFileSync(frozenFunnelFile(
+    const runtimeAuthority = verified.authority;
+    const runtimePublicKeyPem = fs.readFileSync(frozenFunnelFile(
       path.dirname(verified.authorityPath), runtimeAuthority.coordinatorSigning.publicKeyAuthority.path,
     ), 'utf8');
+    const receiptPath = frozenFunnelFile(path.dirname(indexPath), entry.path);
+    const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
+    if (receipt?.schemaVersion !== 2
+        || receipt.distributedAuthority?.sha256 !== index.distributedAuthority.sha256
+        || receipt.distributedAuthority?.planDigest !== index.distributedAuthority.planDigest) return null;
+    return verifyTestReceipt(receipt, {
+      name: step.name,
+      command: step.command,
+      receiptDirectory: path.dirname(receiptPath),
+      provenance,
+      runtimeAuthority,
+      runtimePublicKeyPem,
+    }) ? { receipt, receiptPath } : null;
   } catch { return null; }
-  if (index.schemaVersion === 2) {
-    const expected = FROZEN_FUNNEL_STEPS.map(({ name, command }) => ({ name, command })).sort((a, b) => a.name.localeCompare(b.name));
-    const actual = index.receipts?.map(({ name, command }) => ({ name, command })).sort((a, b) => a.name.localeCompare(b.name));
-    if (canonical(actual) !== canonical(expected) || !index.distributedAuthority) return null;
-  } else if (index.schemaVersion !== 1 || index.distributedAuthority) return null;
-  let receiptPath;
-  try { receiptPath = frozenFunnelFile(path.dirname(indexPath), entry.path); } catch { return null; }
-  let receipt;
-  try { receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8')); } catch { return null; }
-  if (index.schemaVersion === 2 && (receipt.schemaVersion !== 2
-      || receipt.distributedAuthority?.sha256 !== index.distributedAuthority.sha256
-      || receipt.distributedAuthority?.planDigest !== index.distributedAuthority.planDigest)) return null;
-  return verifyTestReceipt(receipt, {
-    name: step.name,
-    command: step.command,
-    receiptDirectory: path.dirname(receiptPath),
-    provenance,
-    runtimeAuthority,
-    runtimePublicKeyPem,
-  }) ? { receipt, receiptPath } : null;
 }

@@ -101,9 +101,30 @@ test('even validly signed plans reject missing, duplicated, changed and reassign
     (plan) => { plan.steps[1] = plan.steps[0]; },
     (plan) => { plan.steps[0].command = 'npm run arbitrary'; },
     (plan) => { plan.steps[0].workerId = 'vm2'; },
+    (plan) => { plan.steps.find((step) => step.name === 'watch-mode-tooling').workerId = 'vm1'; },
+    (plan) => { plan.steps.reverse(); },
   ]) {
     const plan = structuredClone(value.plan); mutate(plan);
     assert.throws(() => verifyFrozenFunnelPlan(resign(plan, value.keys), { ...value, ...value.keys }));
+  }
+});
+
+test('rebalance is deterministic and complete with unchanged one/two worker fallbacks', (t) => {
+  const value = fixture(t);
+  const ids = ['vm171', 'vm167', 'vm169'];
+  const legacyGroups = [0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 0, 0, 2, 2];
+  for (const count of [1, 2, 3]) {
+    const workers = value.workers.slice(0, count).map((worker, index) => ({ ...worker, workerId: ids[index] }));
+    const options = { ...value, ...value.keys, workers, executionId: 'fixed-rebalance' };
+    const plan = createFrozenFunnelPlan(options);
+    const expected = Object.entries(EXPECTED_STEPS).map(([name, command], index) => ({
+      name, command, workerId: ids[count === 3 && name === 'watch-mode-tooling' ? 1 : legacyGroups[index] % count],
+    }));
+    assert.deepEqual(plan.steps, expected);
+    assert.equal(new Set(plan.steps.map((step) => step.name)).size, 14);
+    assert.deepEqual(createFrozenFunnelPlan(options), plan);
+    assert.equal(verifyFrozenFunnelPlan(plan, options), plan);
+    assert.equal(plan.providerCalls, 0);
   }
 });
 
@@ -126,18 +147,29 @@ test('plan rejects signature, HEAD, runtime inventory and duplicate worker ident
 
 test('three worker pipelines overlap while each worker remains serial, collecting failures without retry', async (t) => {
   const { plan } = fixture(t);
-  const active = new Set(); const calls = []; let maximum = 0;
+  const active = new Set(); const calls = []; const completed = []; let maximum = 0;
   const results = await runFrozenFunnelPipelines({ plan, executeStep: async ({ worker, step }) => {
     assert.equal(active.has(worker.workerId), false);
     active.add(worker.workerId); maximum = Math.max(maximum, active.size); calls.push(step.name);
     await new Promise((resolve) => setImmediate(resolve));
     active.delete(worker.workerId);
+    completed.push(step.name);
     if (step.name === 'contracts') throw new Error('private diagnostic must not leak');
     return { ...step, verdict: 'passed' };
   } });
   assert.equal(maximum, 3);
   assert.equal(calls.length, 14); assert.equal(new Set(calls).size, 14);
   assert.equal(results.flatMap((worker) => worker.results).length, 14);
+  assert.deepEqual(results.map((worker) => worker.workerId), plan.workers.map((worker) => worker.workerId));
+  for (const worker of results) {
+    const expected = plan.steps.filter((step) => step.workerId === worker.workerId).map((step) => step.name);
+    assert.deepEqual(worker.results.map((step) => step.name), expected);
+    assert.deepEqual(calls.filter((name) => expected.includes(name)), expected);
+    assert.deepEqual(completed.filter((name) => expected.includes(name)), expected);
+  }
+  assert.deepEqual(results[1].results.map((step) => step.name), [
+    'integration-bridge-contract', 'check-bridge-service-native', 'test-bridge-service-native', 'watch-mode-tooling',
+  ]);
   assert.equal(results[0].results[0].errorCode, 'funnel.step.failed');
   assert.doesNotMatch(JSON.stringify(results), /private diagnostic/);
 });
@@ -240,6 +272,39 @@ test('worker refuses incorrect BIOS or mutated frozen bytes before any test exec
   fs.appendFileSync(path.join(value.workspaceRoot, FROZEN_FUNNEL_RUNNER), 'changed', 'utf8');
   await assert.rejects(runFrozenFunnelWorker({ ...options, observe: () => value.observation }), /hash mismatch/);
   assert.equal(fs.existsSync(value.outputRoot), false);
+});
+
+test('bridge worker executes rebalanced tooling last and rejects reordered or overlapping evidence', async (t) => {
+  const value = executableFixture(t);
+  const workers = value.workers.map((worker, index) => index === 1 ? { ...worker, workspaceRoot: value.workspaceRoot } : worker);
+  const plan = createFrozenFunnelPlan({ ...value, ...value.keys, workers });
+  const workerId = 'vm2';
+  const outputRoot = path.join(value.workspaceRoot, 'artifacts/testing/frozen-funnel-workers', plan.executionId, workerId);
+  const calls = []; let active = false;
+  const result = await runFrozenFunnelWorker({ ...value, ...value.keys, plan, workerId, outputRoot,
+    observe: () => ({ ...value.observation, uuidBios: plan.workers[1].uuidBios }),
+    runStep: async (step, logPath) => {
+      assert.equal(active, false); active = true;
+      const startedAt = new Date(Date.UTC(2026, 8, 6, 0, 0, calls.length)).toISOString();
+      calls.push(step.name);
+      await new Promise((resolve) => setImmediate(resolve));
+      fs.writeFileSync(logPath, 'mock test output', 'utf8'); active = false;
+      return { ...step, startedAt, completedAt: new Date(Date.UTC(2026, 8, 6, 0, 0, calls.length)).toISOString(),
+        verdict: 'passed', exitCode: 0, signal: null };
+    },
+  });
+  assert.deepEqual(calls, ['integration-bridge-contract', 'check-bridge-service-native', 'test-bridge-service-native', 'watch-mode-tooling']);
+  const options = { plan, workerId, artifactRoot: outputRoot };
+  assert.equal(verifyFrozenFunnelWorkerResult(result, options), result);
+  for (const mutate of [
+    (item) => { item.results.reverse(); },
+    (item) => { item.results.pop(); },
+    (item) => { item.results[3].workerId = 'vm1'; },
+    (item) => { item.results[3].startedAt = item.results[2].startedAt; },
+  ]) {
+    const invalid = structuredClone(result); mutate(invalid);
+    assert.throws(() => verifyFrozenFunnelWorkerResult(invalid, options));
+  }
 });
 
 test('worker stops starting more tests when timeout cleanup is unconfirmed', async (t) => {

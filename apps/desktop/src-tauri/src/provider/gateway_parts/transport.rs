@@ -166,7 +166,12 @@ impl WebSocketTransport {
         )?;
         let (mut socket, _) = tungstenite::client_tls_with_config(request, stream, None, None)
             .map_err(|error| {
-                if Instant::now() >= deadline {
+                let socket_timed_out = matches!(
+                    &error,
+                    tungstenite::handshake::HandshakeError::Failure(error)
+                        if websocket_upgrade_timed_out(error)
+                );
+                if socket_timed_out {
                     upgrade_timeout_error("WebSocket TLS/upgrade")
                 } else {
                     ProviderRuntimeError::new(
@@ -178,6 +183,41 @@ impl WebSocketTransport {
         let remaining = upgrade_remaining_before(deadline, "WebSocket TLS/upgrade")?;
         apply_websocket_timeouts(&mut socket, remaining.min(timeout))?;
         Ok((socket, timeout))
+    }
+}
+
+fn websocket_upgrade_timed_out(error: &WebSocketError) -> bool {
+    matches!(
+        error,
+        WebSocketError::Io(io_error)
+            if matches!(io_error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock)
+    )
+}
+
+#[cfg(test)]
+mod websocket_upgrade_timeout_tests {
+    use super::*;
+    use tungstenite::error::ProtocolError;
+
+    #[test]
+    fn socket_timeout_kinds_are_upgrade_timeouts() {
+        for kind in [ErrorKind::TimedOut, ErrorKind::WouldBlock] {
+            assert!(websocket_upgrade_timed_out(&WebSocketError::Io(
+                std::io::Error::new(kind, "synthetic socket timeout"),
+            )));
+        }
+    }
+
+    #[test]
+    fn protocol_and_non_timeout_io_errors_remain_upgrade_failures() {
+        assert!(!websocket_upgrade_timed_out(&WebSocketError::Protocol(
+            ProtocolError::HandshakeIncomplete,
+        )));
+        for kind in [ErrorKind::ConnectionReset, ErrorKind::UnexpectedEof] {
+            assert!(!websocket_upgrade_timed_out(&WebSocketError::Io(
+                std::io::Error::new(kind, "synthetic transport failure"),
+            )));
+        }
     }
 }
 

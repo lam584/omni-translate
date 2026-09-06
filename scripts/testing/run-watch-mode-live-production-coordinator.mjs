@@ -122,6 +122,23 @@ export const PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS =
   WATCH_PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS;
 export const PRODUCTION_COORDINATOR_TIMEOUT_MS = deriveWatchProductionCoordinatorTimeoutMs();
 
+export function assertSafeCollectionArchiveEntries(entries, expectedRootName) {
+  if (!Array.isArray(entries) || entries.length === 0 || !/^[^\\/]+$/u.test(expectedRootName)) {
+    throw new Error('collection archive has invalid inventory boundary');
+  }
+  const expectedRoot = `${expectedRootName}/`;
+  const observed = new Set();
+  for (const entry of entries) {
+    const normalized = String(entry).replaceAll('\\', '/');
+    if (normalized.startsWith('/') || /^[a-z]:/iu.test(normalized)
+        || normalized.includes(':') || normalized.split('/').includes('..')
+        || !normalized.startsWith(expectedRoot) || observed.has(normalized)) {
+      throw new Error('collection archive has unsafe inventory');
+    }
+    observed.add(normalized);
+  }
+}
+
 export function assertProductionCoordinatorWaveBudget({
   coordinatorDeadlineMs,
   currentTimeMs,
@@ -1659,6 +1676,19 @@ export function createSshProductionTransport({
     );
     ensureSuccessful(result, `download from ${worker.workerId}`);
   };
+  const downloadFile = async (worker, remotePath, localPath, options = {}) => {
+    fs.mkdirSync(path.dirname(localPath), { recursive: true });
+    if (isCoordinatorLocalWorker(worker)) {
+      fs.copyFileSync(remotePath, localPath, fs.constants.COPYFILE_EXCL);
+      return;
+    }
+    const result = await runProcess(
+      config.scpExecutable,
+      [...scpBaseArgs(worker), remoteSpec(worker, remotePath), pathForScp(localPath)],
+      options,
+    );
+    ensureSuccessful(result, `download from ${worker.workerId}`);
+  };
 
   async function queryWorker(worker) {
     const result = await runRemote(worker, `
@@ -2216,25 +2246,106 @@ if ($manifestPath -cne [IO.Path]::GetFullPath([string]$payload.expectedManifestP
       `.incoming-${planWorker.workerId}-${process.pid}-${crypto.randomBytes(5).toString('hex')}`,
     );
     fs.mkdirSync(temporaryParent, { recursive: false });
-    await downloadTree(worker, remoteRoot, temporaryParent, {
-      timeoutMs: WATCH_PRODUCTION_SHARD_COLLECTION_TIMEOUT_MS,
-    });
+    const remoteArchivePath = `${remoteRoot}.collection.tar`;
+    const localArchivePath = path.join(temporaryParent, `${planWorker.workerId}.collection.tar`);
+    const collectionDeadlineMs = deadlineNow() + WATCH_PRODUCTION_SHARD_COLLECTION_TIMEOUT_MS;
+    const collectionRemainingMs = (stage) => {
+      const remainingMs = Math.ceil(collectionDeadlineMs - deadlineNow());
+      if (remainingMs <= 0) throw new Error(`collection deadline expired before ${stage}`);
+      return remainingMs;
+    };
+    try {
+      const archive = parseRemoteJson(await runRemote(worker, `
+$remoteRoot = [string]$payload.remoteRoot
+$archivePath = [string]$payload.archivePath
+if (-not (Test-Path -LiteralPath $remoteRoot -PathType Container)) { throw 'collection root is missing' }
+if (Test-Path -LiteralPath $archivePath) { throw 'collection archive already exists' }
+$rootItem = Get-Item -LiteralPath $remoteRoot -Force
+if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'collection root is a reparse point' }
+$reparse = @(Get-ChildItem -LiteralPath $remoteRoot -Recurse -Force | Where-Object {
+  ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+})
+if ($reparse.Count -ne 0) { throw 'collection root contains a reparse point' }
+$systemTar = Join-Path $env:SystemRoot 'System32\\tar.exe'
+if (-not (Test-Path -LiteralPath $systemTar -PathType Leaf)) { throw 'native system tar is missing' }
+$parent = Split-Path -Parent $remoteRoot
+$leaf = Split-Path -Leaf $remoteRoot
+& $systemTar -cf $archivePath -C $parent $leaf
+if ($LASTEXITCODE -ne 0) { throw 'collection archive creation failed' }
+$item = Get-Item -LiteralPath $archivePath
+$hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+[ordered]@{ path = $archivePath; bytes = [int64]$item.Length; sha256 = $hash } | ConvertTo-Json -Compress
+`, { remoteRoot, archivePath: remoteArchivePath }, {
+        timeoutMs: collectionRemainingMs('remote archive creation'),
+      }), `worker ${planWorker.workerId} collection archive`);
+      if (String(archive.path).toLowerCase() !== remoteArchivePath.toLowerCase()
+          || !Number.isSafeInteger(Number(archive.bytes)) || Number(archive.bytes) <= 0
+          || !/^[a-f0-9]{64}$/u.test(String(archive.sha256))) {
+        throw new Error(`worker ${planWorker.workerId} returned invalid collection archive authority`);
+      }
+      await downloadFile(worker, remoteArchivePath, localArchivePath, {
+        timeoutMs: collectionRemainingMs('archive download'),
+      });
+      const localArchive = fileAuthorityEntry(localArchivePath, path.basename(localArchivePath));
+      if (localArchive.bytes !== Number(archive.bytes) || localArchive.sha256 !== archive.sha256) {
+        throw new Error(`worker ${planWorker.workerId} collection archive hash mismatch`);
+      }
+      const systemRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
+      const systemTar = path.join(systemRoot, 'System32', 'tar.exe');
+      const listing = await runProcess(systemTar, ['-tf', localArchivePath], {
+        timeoutMs: collectionRemainingMs('archive inventory listing'),
+      });
+      ensureSuccessful(listing, `collection archive listing for ${planWorker.workerId}`);
+      const entries = String(listing.stdout ?? '').split(/\r?\n/u).filter(Boolean);
+      assertSafeCollectionArchiveEntries(entries, path.win32.basename(remoteRoot));
+      const verboseListing = await runProcess(systemTar, ['-tvf', localArchivePath], {
+        timeoutMs: collectionRemainingMs('archive type listing'),
+      });
+      ensureSuccessful(verboseListing, `collection archive type listing for ${planWorker.workerId}`);
+      const unsafeTypes = String(verboseListing.stdout ?? '').split(/\r?\n/u).filter(Boolean)
+        .filter((entry) => !entry.startsWith('-') && !entry.startsWith('d'));
+      if (unsafeTypes.length > 0) {
+        throw new Error(`worker ${planWorker.workerId} collection archive contains non-file entries`);
+      }
+      const extracted = await runProcess(systemTar, ['-xf', localArchivePath, '-C', temporaryParent], {
+        timeoutMs: collectionRemainingMs('archive extraction'),
+      });
+      ensureSuccessful(extracted, `collection archive extraction for ${planWorker.workerId}`);
+      fs.rmSync(localArchivePath, { force: true });
+    } finally {
+      try {
+        await runRemote(worker, `
+$archivePath = [string]$payload.archivePath
+Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+[ordered]@{ removed = -not (Test-Path -LiteralPath $archivePath) } | ConvertTo-Json -Compress
+`, { archivePath: remoteArchivePath }, {
+          timeoutMs: Math.max(1, Math.min(30_000, Math.ceil(collectionDeadlineMs - deadlineNow()))),
+        });
+      } catch {
+        // Keep the immutable worker root and any local partial archive so a
+        // later zero-Provider recovery can distinguish packaging/download.
+      }
+    }
     const downloaded = fs.readdirSync(temporaryParent, { withFileTypes: true });
     if (downloaded.length !== 1 || !downloaded[0].isDirectory() || downloaded[0].isSymbolicLink()) {
       throw new Error(`worker ${planWorker.workerId} recovery did not contain exactly one shard directory`);
     }
     const downloadedRoot = path.join(temporaryParent, downloaded[0].name);
-    fs.renameSync(downloadedRoot, finalShardRoot);
-    fs.rmdirSync(temporaryParent);
-    const manifestPath = path.join(finalShardRoot, 'shard-manifest.json');
+    const manifestPath = path.join(downloadedRoot, 'shard-manifest.json');
     validateShardManifest({
       manifestPath,
-      shardRoot: finalShardRoot,
+      shardRoot: downloadedRoot,
       plan,
       leases,
       now: generatedAt,
     });
-    return { workerId: planWorker.workerId, shardRoot: finalShardRoot, manifestPath };
+    fs.renameSync(downloadedRoot, finalShardRoot);
+    fs.rmdirSync(temporaryParent);
+    return {
+      workerId: planWorker.workerId,
+      shardRoot: finalShardRoot,
+      manifestPath: path.join(finalShardRoot, 'shard-manifest.json'),
+    };
   }
 
   return {
@@ -2245,6 +2356,7 @@ if ($manifestPath -cne [IO.Path]::GetFullPath([string]$payload.expectedManifestP
     executeRemote: runRemote,
     uploadFile: upload,
     downloadTree,
+    downloadFile,
   };
 }
 

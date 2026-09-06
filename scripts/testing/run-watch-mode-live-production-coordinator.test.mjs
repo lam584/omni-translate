@@ -93,6 +93,7 @@ import {
 } from './watch-mode-shard-authority.mjs';
 import {
   assertProductionCoordinatorWaveBudget,
+  assertSafeCollectionArchiveEntries,
   PRODUCTION_WORKER_CONFIG_KIND,
   PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
   PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS,
@@ -130,6 +131,24 @@ import {
   windowsPowerShellEnvironment,
   createSshProductionTransport,
 } from './run-watch-mode-live-production-coordinator.mjs';
+
+test('collection archive inventory remains inside the immutable worker root', () => {
+  assert.doesNotThrow(() => assertSafeCollectionArchiveEntries([
+    'vm167/',
+    'vm167/shard-manifest.json',
+    'vm167/runs/c04/report.json',
+  ], 'vm167'));
+  for (const entries of [
+    [],
+    ['../escape'],
+    ['vm167/../../escape'],
+    ['/absolute'],
+    ['C:/absolute'],
+    ['vm167/file:stream'],
+    ['vm167/a', 'vm167/a'],
+    ['vm169/shard-manifest.json'],
+  ]) assert.throws(() => assertSafeCollectionArchiveEntries(entries, 'vm167'));
+});
 
 test('pre-distributed runtime skips only exact hashes with complete unique inventory', () => {
   const entries = [{path: 'a.exe', bytes: 10, sha256: 'a'.repeat(64)}, {path: 'b.exe', bytes: 20, sha256: 'b'.repeat(64)}];

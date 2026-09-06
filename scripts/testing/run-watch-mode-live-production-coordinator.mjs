@@ -1272,12 +1272,14 @@ function lastNonEmptyLine(text) {
     .filter((line) => line && line !== REMOTE_POWERSHELL_COMPLETION_MARKER).at(-1);
 }
 
-function remotePathForScp(remotePath) {
-  return String(remotePath).replaceAll('\\', '/');
+function pathForScp(filePath) {
+  // Git SCP's legacy protocol rejects backslashes in local upload filenames.
+  // Normalize only file operands, preserving SSH identities and pinned options.
+  return String(filePath).replaceAll('\\', '/');
 }
 
 function remoteSpec(worker, remotePath) {
-  return `${worker.user}@${worker.host}:${remotePathForScp(remotePath)}`;
+  return `${worker.user}@${worker.host}:${pathForScp(remotePath)}`;
 }
 
 function ensureSuccessful(result, label) {
@@ -1486,7 +1488,7 @@ export function createSshProductionTransport({
       } else {
         const uploadResult = await runProcess(
           config.scpExecutable,
-          [...scpBaseArgs(worker), localScriptPath, remoteSpec(worker, remoteScriptPath)],
+          [...scpBaseArgs(worker), pathForScp(localScriptPath), remoteSpec(worker, remoteScriptPath)],
           stageProcessOptions('command upload'),
         );
         ensureSuccessful(uploadResult, `command upload to ${worker.workerId}`);
@@ -1541,7 +1543,7 @@ export function createSshProductionTransport({
     }
     const result = await runProcess(
       config.scpExecutable,
-      [...scpBaseArgs(worker), localPath, remoteSpec(worker, remotePath)],
+      [...scpBaseArgs(worker), pathForScp(localPath), remoteSpec(worker, remotePath)],
       options,
     );
     ensureSuccessful(result, `upload to ${worker.workerId}`);
@@ -1559,7 +1561,7 @@ export function createSshProductionTransport({
     }
     const result = await runProcess(
       config.scpExecutable,
-      [...scpBaseArgs(worker), '-r', remoteSpec(worker, remotePath), localParent],
+      [...scpBaseArgs(worker), '-r', remoteSpec(worker, remotePath), pathForScp(localParent)],
       options,
     );
     ensureSuccessful(result, `download from ${worker.workerId}`);

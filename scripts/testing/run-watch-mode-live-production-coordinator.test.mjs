@@ -1432,6 +1432,9 @@ test('production runRemote selects file-only for both local and SSH large payloa
           assert.equal(args.includes('-EncodedCommand'), false);
           assert.ok(options.timeoutMs > 0 && options.timeoutMs <= 30_000);
           if (executable === 'scp.exe') {
+            assert.deepEqual(args.slice(0, -2), scpBaseArgs(worker));
+            assert.equal(args.at(-1), `VMUser@192.0.2.10:C:/Users/VMUser/AppData/Local/Temp/${path.basename(args.at(-2))}`);
+            assert.doesNotMatch(args.at(-2), /\\/u, 'Git SCP -O command upload local operand must use slashes (otherwise unexpected filename)');
             assert.equal(fs.readFileSync(args.at(-2), 'utf8'), fileScript);
           }
           if (executable === 'powershell.exe') {
@@ -1450,6 +1453,55 @@ test('production runRemote selects file-only for both local and SSH large payloa
       assert.equal(calls.filter((call) => call.args.includes('-File')).length, 1);
       assert.equal(calls.some((call) => call.executable === 'scp.exe'), kind === 'ssh');
     }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Git SCP -O normalizes local operands and preserves host pins and remoteSpec', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-scp-operands-'));
+  const worker = {
+    workerId: 'scp-worker', transport: { kind: 'ssh' }, user: 'VMUser', host: '192.0.2.10', port: 2222,
+    guestExecutionRoot: root, workspaceRoot: root,
+    identityFile: 'E:\\host pins\\identity', knownHostsFile: 'E:\\host pins\\known-hosts', hostKeyAlias: 'fixture-worker',
+  };
+  const calls = [];
+  const transport = createSshProductionTransport({
+    config: { workers: [worker], scpExecutable: 'scp.exe', sshExecutable: 'ssh.exe' },
+    plan: { executionId: 'scp-operands' }, planPath: path.join(root, 'plan.json'),
+    leasePaths: [], coordinatorExecutionRoot: root, workspaceRoot: root,
+    runProcess: async (executable, args) => {
+      calls.push({ executable, args });
+      return { exitCode: 0, stdout: '', stderr: '' };
+    },
+  });
+  try {
+    for (const [kind, relativePath] of [
+      ['runtime', 'runtime\\omni.exe'],
+      ['implementation', 'scripts\\testing\\worker.mjs'],
+      ['plan', 'signed plan.json'],
+    ]) {
+      await t.test(kind + ' upload', async () => {
+        const localPath = 'E:\\omni-translate\\' + relativePath;
+        const remotePath = 'C:\\worker root\\' + relativePath;
+        await transport.uploadFile(worker, localPath, remotePath);
+        const call = calls.at(-1);
+        assert.equal(call.executable, 'scp.exe');
+        assert.deepEqual(call.args.slice(0, -2), scpBaseArgs(worker));
+        assert.equal(call.args.at(-1), 'VMUser@192.0.2.10:' + remotePath.replaceAll('\\', '/'));
+        assert.equal(call.args.at(-2), localPath.replaceAll('\\', '/'), 'Git SCP -O upload must normalize local operand to avoid unexpected filename');
+      });
+    }
+    await t.test('downloadTree local destination boundary consistency', async () => {
+      // Real downloads succeed with either separator; this asserts boundary consistency, not a reproduced download failure.
+      const localParent = path.join(root, 'download tree');
+      await transport.downloadTree(worker, 'C:\\worker root\\shard', localParent);
+      const call = calls.at(-1);
+      assert.equal(call.executable, 'scp.exe');
+      assert.deepEqual(call.args.slice(0, -2), [...scpBaseArgs(worker), '-r']);
+      assert.equal(call.args.at(-2), 'VMUser@192.0.2.10:C:/worker root/shard');
+      assert.equal(call.args.at(-1), localParent.replaceAll('\\', '/'), 'normalize download destination for boundary consistency');
+    });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -1037,7 +1037,7 @@ fn validate_grant(
     }
     let workers = required_array(grant, "/workers", "grant workers")?;
     let valid_worker_count = match profile {
-        PreflightAuthorityProfile::StrictReleaseMatrix => (1..=3).contains(&workers.len()),
+        PreflightAuthorityProfile::StrictReleaseMatrix => (1..=4).contains(&workers.len()),
         PreflightAuthorityProfile::IncidentPlusReplay => workers.len() == 2,
     };
     if !valid_worker_count

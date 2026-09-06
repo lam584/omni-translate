@@ -23,7 +23,7 @@ function fixture(t, options = {}) {
     return { path: file, bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
   });
   const authority = { authorityDigest: 'a'.repeat(64), provenance: { headCommit: 'b'.repeat(40) }, runtimeBinaryHashes: entries };
-  const workers = ['one', 'two'].map((workerId) => ({ workerId, workspaceRoot: 'E:\\source', guestExecutionRoot: 'E:\\runs', vmIdentity: { uuidBios: workerId }, transport: { kind: 'ssh' } }));
+  const workers = (options.workerIds ?? ['one', 'two']).map((workerId) => ({ workerId, workspaceRoot: 'E:\\source', guestExecutionRoot: 'E:\\runs', vmIdentity: { uuidBios: workerId }, transport: { kind: 'ssh' } }));
   const calls = [], uploads = [], tarCalls = [];
   let verifies = 0;
   const operations = {
@@ -73,6 +73,13 @@ async function failure(f) {
   assert.equal(f.verifies(), 2);
   return error;
 }
+
+test('runtime distribution automatically visits all three remote workers', async (t) => {
+  const f = fixture(t, { workerIds: ['vm167', 'vm169', 'vm131'] });
+  const result = await f.run();
+  assert.deepEqual(result.workers.map((entry) => entry.workerId), ['vm167', 'vm169', 'vm131']);
+  assert.deepEqual(f.calls.filter((call) => call.phase === 'inspect').map((call) => call.workerId), ['vm167', 'vm169', 'vm131']);
+});
 
 test('unchanged: zero runtime uploads, full fourteen-entry reused proofs, parallel workers', async (t) => {
   const f = fixture(t);

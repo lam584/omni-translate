@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +15,7 @@ import {
   SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
   SHARD_ORCHESTRATION_IMPLEMENTATION_FILES,
   authorityInventoryDigest,
+  canonicalJson,
   buildShardCellResult,
   createSignedExecutionPlan,
   fileAuthorityEntry,
@@ -35,6 +37,7 @@ import {
   fixedThreeWorkerAssignments,
 } from './run-watch-mode-live-coordinator.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { fixedFourWorkerAssignments, FOUR_WORKER_DISPATCH_SCHEDULE } from './watch-mode-four-worker-plan.mjs';
 import { rebuildReportFromDirectory } from './watch-mode-report.mjs';
 import {
   healthyApp,
@@ -681,6 +684,7 @@ function writeRawBridgeFailureAuthority(runDirectory, cell) {
 
 test('shard orchestration inventory is independent from local/matrix implementation authority', () => {
   assert.deepEqual(SHARD_ORCHESTRATION_IMPLEMENTATION_FILES, [
+    'scripts/testing/watch-mode-four-worker-plan.mjs',
     'scripts/testing/watch-mode-shard-authority.mjs',
     'scripts/testing/run-watch-mode-live-shard.mjs',
     'scripts/testing/run-watch-mode-live-coordinator.mjs',
@@ -780,7 +784,7 @@ test('signed plan accepts one or three workers and binds unique multi-worker tra
       ? defaultSingleWorkerAssignments(workers)
       : workers.length === 3
         ? fixedThreeWorkerAssignments(workers)
-        : [],
+        : workers.length === 4 ? fixedFourWorkerAssignments(workers) : [],
     ...fixture.signingKeys,
   });
   const oneWorkerPlan = createWithWorkers(testWorkers());
@@ -814,8 +818,35 @@ test('signed plan accepts one or three workers and binds unique multi-worker tra
   duplicateHostKey[2].transportAuthority.hostKeySha256 = duplicateHostKey[1].transportAuthority.hostKeySha256;
   assert.throws(() => createWithWorkers(duplicateHostKey), /reuses a signed SSH host key/);
 
-  const fourth = worker('vm4', 'vm-uuid-4', { kind: 'local' });
-  assert.throws(() => createWithWorkers([...threeWorkers, fourth]), /between one and three/);
+  const fourth = worker('vm131', 'vm-uuid-131', {
+    kind: 'ssh', hostKeyAlias: 'vm131', hostKeyAlgorithm: 'ssh-ed25519', hostKeySha256: 'SHA256:' + 'C'.repeat(43),
+  });
+  const fourWorkerPlan = createWithWorkers([...threeWorkers, fourth].reverse());
+  verifySignedExecutionPlan(fourWorkerPlan, { now: fixture.now });
+  assert.deepEqual(fourWorkerPlan.cells.map((cell) => cell.workerId), ['vm171', 'vm169', 'vm131', 'vm167']);
+  assert.deepEqual(fourWorkerPlan.waves.map((wave) => wave.cellIds.length), [4]);
+  assert.deepEqual(fourWorkerPlan.dispatchSchedule, FOUR_WORKER_DISPATCH_SCHEDULE);
+  assert.deepEqual(fourWorkerPlan.budget, threeWorkerPlan.budget);
+  for (const mutate of [
+    (plan) => { plan.dispatchSchedule[3].startOffsetMs = 8_000; },
+    (plan) => { plan.dispatchSchedule.reverse(); },
+    (plan) => { delete plan.dispatchSchedule; },
+    (plan) => { plan.cells[2].waveIndex = 1; },
+  ]) {
+    const tampered = structuredClone(fourWorkerPlan);
+    mutate(tampered);
+    const { signature, planDigest, ...core } = tampered;
+    void planDigest;
+    const payload = { ...core, planDigest: sha256Canonical(core) };
+    const resigned = { ...payload, signature: { ...signature,
+      valueBase64: crypto.sign(null, Buffer.from(canonicalJson(payload)), fixture.signingKeys.privateKeyPem).toString('base64'),
+    } };
+    assert.throws(() => verifySignedExecutionPlan(resigned, { now: fixture.now }), /four-worker plan requires/);
+  }
+  const duplicateFourKey = [...threeWorkers, structuredClone(fourth)];
+  duplicateFourKey[3].transportAuthority.hostKeySha256 = threeWorkers[1].transportAuthority.hostKeySha256;
+  assert.throws(() => createWithWorkers(duplicateFourKey), /reuses a signed SSH host key/);
+  assert.throws(() => createWithWorkers([...threeWorkers, fourth, { ...fourth, workerId: 'fifth' }]), /between one and four/);
 });
 
 test('provider usage authority binds coordinator launch receipt and ordered send-boundary journal', () => {
@@ -1041,6 +1072,57 @@ test('cell results and a worker shard manifest rehash raw files and preserve can
       }),
       /raw artifact inventory mismatch|hash\/size binding mismatch/,
     );
+  } finally {
+    fs.rmSync(shardRoot, { recursive: true, force: true });
+  }
+});
+
+test('c02 finalized audio-drain failure produces a verified failed shard, never a successful or unknown-budget envelope', () => {
+  const fixture = createFixture();
+  const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-c02-final-envelope-'));
+  try {
+    const cell = fixture.plan.cells.find((entry) => entry.feedbackLoopPrevention === 'virtual-driver');
+    const lease = fixture.leases.find((entry) => entry.cellId === cell.cellId);
+    const worker = fixture.plan.workers.find((entry) => entry.workerId === cell.workerId);
+    const runDirectory = path.join(shardRoot, 'runs', 'c02');
+    writeSuccessfulRun(runDirectory, cell, lease);
+    const rawReport = writeRawBridgeFailureAuthority(runDirectory, cell);
+    const ledgerPath = path.join(runDirectory, PROVIDER_INPUT_BUDGET_LEDGER_FILE);
+    const journalPath = path.join(runDirectory, PROVIDER_INPUT_BUDGET_JOURNAL_FILE);
+    const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    const journal = fs.readFileSync(journalPath, 'utf8').trim().split(/\r?\n/u).map(JSON.parse);
+    ledger.terminalReason = 'livetranslate-audio-drain-timeout';
+    journal.at(-1).terminalReason = ledger.terminalReason;
+    writeJson(ledgerPath, ledger);
+    fs.writeFileSync(journalPath, journal.map(JSON.stringify).join('\n') + '\n', 'utf8');
+    const options = { plan: fixture.plan, lease, workerId: worker.workerId, vmIdentity: worker.vmIdentity,
+      shardRoot, runDirectory, ...fixture.snapshot };
+    const written = writeShardCellResult(options);
+    const validated = validateShardCellResult({ resultPath: written.resultPath, plan: fixture.plan,
+      lease, shardRoot, now: fixture.now });
+    assert.equal(validated.result.verdict, 'failed');
+    assert.equal(validated.result.stableErrorCode, rawReport.stableErrorCode);
+    assert.equal(validated.result.usageAuthority.terminalStatus, 'livetranslate-audio-drain-timeout');
+    for (const mutation of [
+      { finalized: false, terminalReason: null }, { budgetExceeded: true },
+      { reconnects: 1 }, { sendFailures: 1 }, { initialConnectAttempts: 2 },
+      { totalAttemptedSamples: cell.maxExternalAudioSamples + 1 }, { leaseId: 'wrong-lease' },
+    ]) {
+      writeJson(ledgerPath, { ...ledger, ...mutation });
+      assert.throws(() => buildShardCellResult(options), /provider input/);
+    }
+    writeJson(ledgerPath, ledger);
+    journal.at(-1).terminalReason = 'worker-completed';
+    fs.writeFileSync(journalPath, journal.map(JSON.stringify).join('\n') + '\n', 'utf8');
+    assert.throws(() => buildShardCellResult(options), /terminal reason/);
+    writeSuccessfulRun(runDirectory, cell, lease);
+    const passedLedger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    passedLedger.terminalReason = 'livetranslate-audio-drain-timeout';
+    writeJson(ledgerPath, passedLedger);
+    const passedJournal = fs.readFileSync(journalPath, 'utf8').trim().split(/\r?\n/u).map(JSON.parse);
+    passedJournal.at(-1).terminalReason = passedLedger.terminalReason;
+    fs.writeFileSync(journalPath, passedJournal.map(JSON.stringify).join('\n') + '\n', 'utf8');
+    assert.throws(() => buildShardCellResult(options), /failed.*report|report.*failed/);
   } finally {
     fs.rmSync(shardRoot, { recursive: true, force: true });
   }

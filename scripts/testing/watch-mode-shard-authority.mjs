@@ -66,14 +66,15 @@ export const SHARD_INPUT_SAMPLE_RATE_HZ = 16_000;
 export const SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES = 2_877_045;
 export const SHARD_MATRIX_CELL_COUNT = 4;
 export const SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES = 10_100_180;
-export const SHARD_ALLOWED_WORKER_COUNTS = Object.freeze([1, 2, 3]);
+export const SHARD_ALLOWED_WORKER_COUNTS = Object.freeze([1, 2, 3, 4]);
 export const SHARD_MIN_WORKER_COUNT = 1;
-export const SHARD_MAX_WORKER_COUNT = 3;
+export const SHARD_MAX_WORKER_COUNT = 4;
 
 // This inventory is intentionally separate from AUTHORITY_IMPLEMENTATION_FILES.
 // Adding shard orchestration must not invalidate a previously captured three-cell
 // zero-Provider local-isolation authority.
 export const SHARD_ORCHESTRATION_IMPLEMENTATION_FILES = Object.freeze([
+  'scripts/testing/watch-mode-four-worker-plan.mjs',
   'scripts/testing/watch-mode-shard-authority.mjs',
   'scripts/testing/run-watch-mode-live-shard.mjs',
   'scripts/testing/run-watch-mode-live-coordinator.mjs',
@@ -97,6 +98,21 @@ export const SHARD_ORCHESTRATION_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/watch-mode-provider-preflight-authority.mjs',
   'scripts/testing/watch-mode-provider-preflight-authorization.mjs',
 ]);
+
+import { fixedFourWorkerAssignments, FOUR_WORKER_DISPATCH_SCHEDULE } from './watch-mode-four-worker-plan.mjs';
+
+function assertFourWorkerPlan(plan) {
+  if (plan.workers.length !== 4) return;
+  const expected = fixedFourWorkerAssignments(plan.workers);
+  const actual = plan.cells.map((cell) => ({
+    cellId: cell.cellId, workerId: cell.workerId, waveIndex: cell.waveIndex,
+    deviceProfileInstanceId: cell.deviceProfileInstance.instanceId,
+  }));
+  if (canonicalJson(actual) !== canonicalJson(expected)
+      || canonicalJson(plan.dispatchSchedule) !== canonicalJson(FOUR_WORKER_DISPATCH_SCHEDULE)) {
+    throw new Error('four-worker plan requires fixed placement and signed 0/3/6/9 second dispatch schedule');
+  }
+}
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const EXECUTION_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{7,127}$/i;
@@ -414,7 +430,7 @@ function assertDeviceProfileInstance(profile, label) {
 
 function assertWorkers(workers) {
   if (!Array.isArray(workers) || !SHARD_ALLOWED_WORKER_COUNTS.includes(workers.length)) {
-    throw new Error('strict paid execution requires between one and three identity-bound workers');
+    throw new Error('strict paid execution requires between one and four identity-bound workers');
   }
   const workerIds = new Set();
   const vmIds = new Set();
@@ -909,10 +925,12 @@ export function createSignedExecutionPlan({
       reclaimPolicy: 'never-within-execution',
       retryPolicy: 'new-execution-required',
     },
+    ...(normalizedWorkers.length === 4 ? { dispatchSchedule: structuredClone(FOUR_WORKER_DISPATCH_SCHEDULE) } : {}),
     workers: normalizedWorkers,
     waves,
     cells: plannedCells,
   };
+  assertFourWorkerPlan(core);
   assertBoundPrerequisites(core);
   const planDigest = sha256Canonical(core);
   const signed = { ...core, planDigest };
@@ -954,6 +972,7 @@ export function verifySignedExecutionPlan(plan, {
   }
   assertWorkers(plan.workers);
   assertExactPaidCells(plan.cells);
+  assertFourWorkerPlan(plan);
   const workerById = new Map(plan.workers.map((worker) => [worker.workerId, worker]));
   const cellIds = new Set();
   const leases = new Set();
@@ -1214,7 +1233,8 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
   const preProviderTerminal = ledger.terminalReason === 'runner-failed-before-provider-session';
   const nonBudgetFailureTerminal = reconnectRejectedTerminal
     || preProviderTerminal
-    || ledger.terminalReason === 'livetranslate-session-finished-timeout';
+    || ledger.terminalReason === 'livetranslate-session-finished-timeout'
+    || ledger.terminalReason === 'livetranslate-audio-drain-timeout';
   const expectedInitialConnectAttempts = preProviderTerminal ? 0 : 1;
   if (preProviderTerminal && (
     Number(ledger.sessionGeneration) !== 0
@@ -1274,6 +1294,17 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
   }
   if (journal.at(-1)?.event !== 'finalized' || journal.at(-1)?.finalized !== true || counts.finalized !== 1) {
     throw new Error('provider input budget journal must end with exactly one finalized event');
+  }
+  if (ledger.terminalReason === 'livetranslate-audio-drain-timeout') {
+    if (journal.at(-1).terminalReason !== ledger.terminalReason) {
+      throw new Error('provider input budget journal terminal reason does not match the final ledger');
+    }
+    // This is a finalized product failure, not permission to manufacture a
+    // terminal from an unfinished ledger or publish a passing report.
+    const report = readJson(path.join(runDirectory, 'report.json'), 'failed terminal report');
+    if (!['failed', 'blocked'].includes(report.verdict)) {
+      throw new Error('provider input audio-drain failure requires a failed strict report');
+    }
   }
   if (counts.reserved !== appendAttempts || reservedSamples !== actualSamples) {
     throw new Error('provider input budget journal reserved events do not match the final ledger');

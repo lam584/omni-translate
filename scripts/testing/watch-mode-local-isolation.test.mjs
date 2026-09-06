@@ -5,7 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { LOCAL_ISOLATION_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { LOCAL_ISOLATION_CELLS, LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { verifyProductionLocalIsolationManifest } from './run-watch-mode-live-production-coordinator.mjs';
+import { defaultSingleWorkerAssignments, defaultTwoWorkerAssignments, fixedThreeWorkerAssignments } from './run-watch-mode-live-coordinator.mjs';
+import { fixedFourWorkerAssignments } from './watch-mode-four-worker-plan.mjs';
 import {
   createLocalIsolationMatrixDirectory,
   runLocalIsolationProbeIteration,
@@ -29,7 +32,8 @@ const provenance = {
   dirtyEntryCount: 0,
 };
 
-test('worker-relative receipts assemble into a strict source and canonical publication without rewriting receipts', async () => {
+for (const workerCount of [1, 2, 3, 4]) {
+test('worker-relative receipts assemble into a strict source and canonical publication without rewriting receipts: ' + workerCount, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-local-assembly-'));
   const canonicalize = (value) => Array.isArray(value) ? value.map(canonicalize) : value && typeof value === 'object'
     ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])])) : value;
@@ -65,15 +69,22 @@ test('worker-relative receipts assemble into a strict source and canonical publi
   authority.authorityDigest = digest(authority);
   const runtimeAuthorityPath = write(`${authorityDir}/strict-runtime-authority.json`, JSON.stringify(authority));
   const vmIdentity = { provider: 'fixture', uuidBios: 'fixture-only' };
+  write('scripts/testing/watch-mode-four-worker-plan.mjs', 'fixture:four-worker-plan');
   const worker = {
     workerId: 'fixture-worker', vmIdentity, vmIdentityDigest: digest(vmIdentity),
     deviceProfileInstances: [{ instanceId: 'fixture-instance', profileId: 'fixture-profile', deviceClass: 'default-speaker', physicalPlaybackDeviceId: 'fixture-endpoint', expectedPhysicalPlaybackDeviceName: 'Fixture Speaker' }],
   };
   let matrixDirectory;
+  const matrixWorkers = workerCount === 1 ? [worker] : ['vm171', 'vm167', 'vm169', 'vm131'].slice(0, workerCount).map((workerId) => {
+    const vmIdentity = { provider: 'fixture', uuidBios: workerId };
+    return { ...worker, workerId, vmIdentity, vmIdentityDigest: digest(vmIdentity), deviceProfileInstances: [{
+      ...worker.deviceProfileInstances[0], instanceId: workerId + '-instance', physicalPlaybackDeviceId: workerId + '-endpoint',
+    }] };
+  });
   let distribution;
   const originalReceipts = new Map();
   const output = await runLocalIsolationMatrix({
-    workers: [worker], deviceProfiles: worker.deviceProfileInstances, workspaceRoot: root, provenance, runtimeAuthorityPath,
+    workers: matrixWorkers, deviceProfiles: matrixWorkers.flatMap((entry) => entry.deviceProfileInstances), workspaceRoot: root, provenance, runtimeAuthorityPath,
     now: () => 1_700_000_000_000,
     distributeRuntime: async ({ stagingRoot }) => {
       matrixDirectory = path.dirname(stagingRoot);
@@ -82,10 +93,11 @@ test('worker-relative receipts assemble into a strict source and canonical publi
       distribution.distributionDigest = digest(distribution);
       const manifestPath = path.join(stagingRoot, 'runtime-distribution.json');
       fs.writeFileSync(manifestPath, JSON.stringify(distribution));
-      return [{ workerId: worker.workerId, workspaceRoot: root, manifest: distribution, manifestPath }];
+      return matrixWorkers.map((entry) => ({ workerId: entry.workerId, workspaceRoot: root, manifest: distribution, manifestPath }));
     },
     executeWorkerCell: async (request) => {
-      const outputRoot = request.phase === 'smoke' ? path.join(matrixDirectory, 'preflight-smoke') : matrixDirectory;
+      const outputRoot = path.join(request.phase === 'smoke' ? path.join(matrixDirectory, 'preflight-smoke') : matrixDirectory, request.worker.workerId);
+      fs.mkdirSync(outputRoot, { recursive: true });
       let clock = 0;
       const result = await runLocalIsolationCell({
         ...request, outputRoot, workspaceRoot: root,
@@ -95,12 +107,65 @@ test('worker-relative receipts assemble into a strict source and canonical publi
       const receiptPath = path.join(outputRoot, result.receipt.path);
       originalReceipts.set(receiptPath, fs.readFileSync(receiptPath));
       assert.ok(!result.receipt.path.startsWith('preflight-smoke/'));
-      return { ...result, preLaunchRevalidation: createDistributionRevalidationReceipt({ manifest: distribution, expectedRuntimeBinaryHashes: runtimeBinaryHashes }) };
+      return { ...result,
+        runDirectory: request.worker.workerId + '/' + result.runDirectory,
+        receipt: { ...result.receipt, path: request.worker.workerId + '/' + result.receipt.path },
+        preLaunchRevalidation: createDistributionRevalidationReceipt({ manifest: distribution, expectedRuntimeBinaryHashes: runtimeBinaryHashes }) };
     },
   });
   const options = { workspaceRoot: root, provenance, runtimeAuthorityPath };
-  assert.equal(verifyLocalIsolationManifest({ ...options, manifestPath: output.manifestPath }).cells.length, 3);
-  assert.equal(verifyLocalIsolationManifest({ ...options, manifestPath: output.canonicalPath }).preflightSmoke.length, 3);
+  const assignments = [defaultSingleWorkerAssignments, defaultTwoWorkerAssignments,
+    fixedThreeWorkerAssignments, fixedFourWorkerAssignments][workerCount - 1](matrixWorkers);
+  const boundOptions = { ...options, manifestPath: output.manifestPath, expectedWorkers: matrixWorkers, expectedAssignments: assignments };
+  const verifyProduction = ({ expectedWorkers, expectedAssignments, ...verification }) => verifyProductionLocalIsolationManifest({
+    ...verification, workers: expectedWorkers, assignments: expectedAssignments,
+  });
+  assert.doesNotThrow(() => verifyProduction(boundOptions));
+  if (workerCount === 3) {
+    const fourth = structuredClone(matrixWorkers[0]);
+    fourth.workerId = 'vm131';
+    fourth.vmIdentity = { provider: 'fixture', uuidBios: 'vm131' };
+    fourth.vmIdentityDigest = digest(fourth.vmIdentity);
+    const fourAssignments = structuredClone(assignments);
+    fourAssignments[2].workerId = fourth.workerId;
+    assert.throws(() => verifyProduction({ ...boundOptions,
+      expectedWorkers: [...matrixWorkers, fourth], expectedAssignments: fourAssignments,
+    }), /current paid assignment/);
+  }
+  if (workerCount === 4) {
+    const rejected = [];
+    for (const mutate of [
+      (workers) => { workers[3].vmIdentity.uuidBios = 'different-bios'; workers[3].vmIdentityDigest = digest(workers[3].vmIdentity); },
+      (workers) => { workers[3].deviceProfileInstances[0].physicalPlaybackDeviceId = 'different-endpoint'; },
+    ]) {
+      const changed = structuredClone(matrixWorkers);
+      mutate(changed);
+      try { verifyProduction({ ...boundOptions, expectedWorkers: changed }); rejected.push(false); }
+      catch (error) { assert.match(error.message, /current paid assignment/); rejected.push(true); }
+    }
+    assert.deepEqual(rejected, [true, true], 'both changed BIOS and changed endpoint must reject');
+  }
+  if (workerCount === 4) {
+    assert.deepEqual(output.manifest.cells.map((cell) => [cell.workerId, cell.feedbackLoopPrevention]), [
+      ['vm171', 'process-exclusion'], ['vm169', 'virtual-driver'], ['vm131', 'echo-cancel'], ['vm167', 'process-exclusion'],
+    ]);
+    for (const mutate of [
+      (manifest) => { [manifest.cells[0], manifest.cells[3]] = [manifest.cells[3], manifest.cells[0]]; },
+      (manifest) => { manifest.cells[2].vmIdentityDigest = manifest.cells[1].vmIdentityDigest; },
+      (manifest) => { manifest.preflightSmoke[2].workerId = 'vm167'; },
+      (manifest) => { manifest.cells.pop(); },
+      (manifest) => { manifest.cells[3].cellId = manifest.cells[0].cellId; },
+    ]) {
+      const invalid = structuredClone(output.manifest);
+      mutate(invalid);
+      const invalidPath = path.join(matrixDirectory, 'four-worker-negative.json');
+      fs.writeFileSync(invalidPath, JSON.stringify(invalid));
+      assert.throws(() => verifyLocalIsolationManifest({ ...options, manifestPath: invalidPath }),
+        /four-worker local isolation|must contain 4 cells|is incomplete or used a Provider/);
+    }
+  }
+  assert.equal(verifyLocalIsolationManifest({ ...options, manifestPath: output.manifestPath }).cells.length, workerCount >= 3 ? 4 : 3);
+  assert.equal(verifyLocalIsolationManifest({ ...options, manifestPath: output.canonicalPath }).preflightSmoke.length, workerCount >= 3 ? 4 : 3);
   for (const entry of output.manifest.preflightSmoke) {
     assert.ok(entry.runDirectory.startsWith('preflight-smoke/'));
     assert.ok(entry.receipt.path.startsWith('preflight-smoke/'));
@@ -126,6 +191,8 @@ test('worker-relative receipts assemble into a strict source and canonical publi
   fs.writeFileSync(tamperedPath, JSON.stringify(tampered));
   assert.throws(() => verifyLocalIsolationManifest({ ...options, manifestPath: tamperedPath }), /does not match its source/);
 });
+
+}
 
 test('local isolation creates its output root on a first clean-machine run', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-local-isolation-root-'));

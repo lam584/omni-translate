@@ -26,7 +26,7 @@
 | 跨进程契约变更（事件/命令/协议） | `npm run test:contracts` | Node 契约校验脚本（含配置路径守卫） |
 | Rust 侧新增/改动配置 `.pointer` 读写 | `npm run test:config-paths` | 配置路径守卫：路径必须在 `app-config.default.json` 可解析或有成文豁免；`--report-defaults` 产出默认值清点 |
 | `drivers/windows-virtual-mic`（虚拟麦克风驱动） | `npm run test:driver-boundaries`；`npm run driver:build-sysvad` | 前者为纯 Node 边界测试（无需 WDK/管理员，PR CI 同款快速信号）；后者需要 WDK/EWDK 构建环境，PR CI 会对触碰 `drivers/**` 的变更自动运行同款构建（`.github/workflows/driver-build.yml`，机械编译信号）；驱动自测用 `npm run driver:test`；进入该目录前必读 [drivers/windows-virtual-mic/AGENTS.md](drivers/windows-virtual-mic/AGENTS.md) |
-| 翻译链路性能改动（首字/首句延迟等） | `npm run test:watch-mode-evidence:strict` | strict 模式对 `firstVisibleTranslationLatencySeconds` 等已产出延迟字段做阈值断言（默认 8s/15s，可用 `--latency-thresholds 字段=秒` 覆盖或 `=off` 关闭）；发布证据必须由 `npm run test:watch-mode-live:production-coordinator` 的签名分片入口产出（schema v2 支持 1–3 个固定身份 worker，单机回退串行），旧 `test:watch-mode-live:matrix` strict 路径会在任何 Provider 调用前拒绝；脚本自测用 `npm run test:watch-mode-report` |
+| 翻译链路性能改动（首字/首句延迟等） | `npm run test:watch-mode-evidence:strict` | strict 模式对 `firstVisibleTranslationLatencySeconds` 等已产出延迟字段做阈值断言（默认 8s/15s，可用 `--latency-thresholds 字段=秒` 覆盖或 `=off` 关闭）；发布证据必须由 `npm run test:watch-mode-live:production-coordinator` 的签名分片入口产出（schema v2 支持 1–4 个固定身份 worker，单机回退串行），旧 `test:watch-mode-live:matrix` strict 路径会在任何 Provider 调用前拒绝；脚本自测用 `npm run test:watch-mode-report` |
 | 发布前 / 提交合并前全量门禁 | `npm run quality:gate:release` | 综合质量门禁（Node 脚本） |
 
 # 运行时诊断路由（最小索引）

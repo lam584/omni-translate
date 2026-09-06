@@ -88,11 +88,11 @@ fn verify_fixture(core: Value, profile: PreflightAuthorityProfile) -> Result<(),
 }
 
 #[test]
-fn signed_strict_grants_accept_one_two_three_workers_and_reject_zero_four() {
+fn signed_strict_grants_accept_one_to_four_workers_and_reject_zero_five() {
     let profile = PreflightAuthorityProfile::StrictReleaseMatrix;
-    for count in 0..=4 {
+    for count in 0..=5 {
         let result = verify_fixture(grant_fixture(profile, count), profile);
-        if (1..=3).contains(&count) {
+        if (1..=4).contains(&count) {
             result.unwrap_or_else(|error| panic!("{count} workers: {error}"));
         } else {
             assert!(result.unwrap_err().contains("worker/local/budget authority"));
@@ -103,7 +103,7 @@ fn signed_strict_grants_accept_one_two_three_workers_and_reject_zero_four() {
 #[test]
 fn signed_incident_grants_still_require_exactly_two_workers() {
     let profile = PreflightAuthorityProfile::IncidentPlusReplay;
-    for count in 1..=3 {
+    for count in 0..=5 {
         let result = verify_fixture(grant_fixture(profile, count), profile);
         if count == 2 { result.unwrap(); } else {
             assert!(result.unwrap_err().contains("worker/local/budget authority"));

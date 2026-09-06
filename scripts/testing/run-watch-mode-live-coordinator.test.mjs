@@ -19,7 +19,7 @@ import {
   verifySignedExecutionPlan,
   signCoordinatorAuthority,
 } from './watch-mode-shard-authority.mjs';
-import { validateProductionWorkerConfig, PRODUCTION_WORKER_CONFIG_KIND } from './run-watch-mode-live-production-coordinator.mjs';
+import { validateProductionWorkerConfig, PRODUCTION_WORKER_CONFIG_KIND, productionCellFailureDisposition, observeOwnedCellCompletion, runProductionWavesPreservingFailure } from './run-watch-mode-live-production-coordinator.mjs';
 import { verifyStrictShardProviderPreflightAuthorization } from './verify-watch-mode-evidence.mjs';
 import {
   COORDINATOR_PROVIDER_PREFLIGHT_FILE,
@@ -38,6 +38,7 @@ import {
   verifyProviderPreflightGrant,
 } from './watch-mode-provider-preflight-authorization.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { fixedFourWorkerAssignments } from './watch-mode-four-worker-plan.mjs';
 
 const SHA_A = 'a'.repeat(64);
 const SHA_B = 'b'.repeat(64);
@@ -214,7 +215,8 @@ function signedFixture(workerList = workers()) {
        ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
      },
     workers: workerList,
-    assignments: workerList.length === 3 ? fixedThreeWorkerAssignments(workerList) : defaultSingleWorkerAssignments(workerList),
+    assignments: workerList.length === 4 ? fixedFourWorkerAssignments(workerList)
+      : workerList.length === 3 ? fixedThreeWorkerAssignments(workerList) : defaultSingleWorkerAssignments(workerList),
     ...keys,
   });
   return {
@@ -270,6 +272,153 @@ test('multi-worker safety failure fences pending dispatch before cleanup and ret
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+for (const [failureLabel, failureMessage] of [
+  ['c02 finalizer rejection', 'interactive cell guest finalizer failed: exitCode=1 | provider input budget ledger is not a strict terminal success'],
+  ['actual budget violation', 'provider budget exceeded'],
+  ['connection safety violation', 'provider extra connection rejected'],
+]) {
+test(`${failureLabel} retains late c04 evidence and unconfirmed cleanup`, { timeout: 10000 }, async () => {
+  const workerList = ['vm171', 'vm167', 'vm169'].map((workerId) => ({
+    ...workers()[0], workerId,
+    vmIdentity: { provider: 'vmware', uuidBios: `uuid-${workerId}` },
+    transportAuthority: { kind: 'local' },
+    deviceProfileInstances: [{
+      instanceId: `${workerId}-default`, profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
+      physicalPlaybackDeviceId: `{${workerId}}`, expectedPhysicalPlaybackDeviceName: `speaker-${workerId}`,
+    }],
+  }));
+  const { plan, leases, now } = signedFixture(workerList);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-late-c04-'));
+  const c02 = LIVE_LLM_CELLS[1].cellId;
+  const c04 = LIVE_LLM_CELLS[3].cellId;
+  // This ambiguous finalizer error is not proof of an overrun, nor proof of safety.
+  const primary = new Error(failureMessage);
+  const signals = new Map();
+  let releaseDispatch;
+  const allDispatched = new Promise((resolve) => { releaseDispatch = resolve; });
+  let releaseLate;
+  const cleanupAttempted = new Promise((resolve) => { releaseLate = resolve; });
+  const cancelled = [];
+  primary.collectFailureEvidence = async () => {
+    assert.equal(cancelled.length, 3, 'safety stop must precede failed-finalizer collection');
+    primary.failureEvidence = { manifestPath: 'fixture-diagnostics-only.json' };
+  };
+  try {
+    fs.writeFileSync(path.join(root, SHARD_EXECUTION_PLAN_FILE), JSON.stringify(plan));
+    await assert.rejects(runProductionWavesPreservingFailure({ executionRoot: root, plan, run: () => runCoordinatorWaves({
+      plan, leases, executionRoot: root, now: () => now,
+      classifyFailure: productionCellFailureDisposition,
+      dispatchCell: async ({ cell, signal }) => {
+        signals.set(cell.cellId, signal);
+        if (signals.size === 3) releaseDispatch();
+        await allDispatched;
+        if (cell.cellId === c02) throw primary;
+        return observeOwnedCellCompletion({ signal, timeoutMs: 1_000, execute: async ({ signal: observerSignal }) => {
+          assert.equal(observerSignal, undefined);
+          await cleanupAttempted;
+          // A cancel request does not prove that an already-started worker stopped.
+          return { result: { verdict: 'passed', resultDigest: SHA_A } };
+        } });
+      },
+      cancelCell: async ({ cell }) => {
+        assert.ok([...signals.values()].every((signal) => signal.aborted));
+        cancelled.push(cell.cellId);
+        releaseLate();
+        return cell.cellId === c04
+          ? { passed: false, status: 'cleanup-incomplete', processCleanup: { passed: false, status: 'authority-invalid' } }
+          : { passed: true };
+      },
+    }) }), (error) => {
+      assert.ok(error instanceof CoordinatorWaveFailure);
+      assert.equal(error.cause, primary);
+      assert.equal(error.partialResults.get(c04)?.result.verdict, 'passed');
+      assert.ok(error.completedCellIds.includes(c04));
+      assert.ok(!error.completedCellIds.includes(c02));
+      assert.equal(error.cleanupErrors.length, 1);
+      assert.equal(error.cleanupErrors[0].cellId, c04);
+      const manifest = JSON.parse(fs.readFileSync(error.failureCollectionPath, 'utf8'));
+      assert.equal(manifest.validatedResults.find((entry) => entry.cellId === c04).verdict, 'passed');
+      assert.equal(manifest.failedCellEvidence.find((entry) => entry.cellId === c02).evidence.manifestPath,
+        'fixture-diagnostics-only.json');
+      return true;
+    });
+    assert.equal(signals.has(LIVE_LLM_CELLS[2].cellId), false, 'unproven safety must fence c03');
+    assert.deepEqual(new Set(cancelled), new Set(plan.waves[0].cellIds));
+  } finally {
+    releaseDispatch();
+    releaseLate();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+}
+
+test('verified ordinary failed outcomes remain collect-all rather than stopAll', async () => {
+  const { plan, leases, now } = signedFixture();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-collect-failed-'));
+  const c02 = LIVE_LLM_CELLS[1].cellId;
+  const dispatched = [];
+  try {
+    fs.writeFileSync(path.join(root, SHARD_EXECUTION_PLAN_FILE), JSON.stringify(plan));
+    const result = await runCoordinatorWaves({
+      plan, leases, executionRoot: root, now: () => now,
+      classifyFailure: productionCellFailureDisposition,
+      dispatchCell: async ({ cell }) => {
+        dispatched.push(cell.cellId);
+        return { result: {
+          verdict: cell.cellId === c02 ? 'failed' : 'passed',
+          resultDigest: SHA_A,
+          stableErrorCode: cell.cellId === c02 ? 'provider.session-finished-timeout' : null,
+        } };
+      },
+      cancelCell: () => assert.fail('ordinary completed outcome must not cancel peers'),
+    });
+    assert.deepEqual(dispatched, plan.cells.map((cell) => cell.cellId));
+    assert.equal(result.completedCellIds.length, 4);
+    assert.equal(result.collectedFailures.length, 1);
+    assert.equal(result.collectedFailures[0].cellId, c02);
+    assert.equal(result.results.get(c02).result.verdict, 'failed');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const [label, receipt] of [
+  ['missing receipt', undefined],
+  ['negative receipt', { passed: false, status: 'authority-invalid' }],
+  ['contradictory receipt', { passed: true, status: 'cleanup-incomplete' }],
+  ['failed process cleanup', { passed: true, processCleanup: { passed: false } }],
+  ['failed task cleanup', { passed: true, taskCleanupPassed: false }],
+  ['reported cleanup errors', { passed: true, cleanupErrors: [{ code: 'fixture-error' }] }],
+  ['synchronous cleanup exception', new Error('cleanup fixture exception')],
+  ['confirmed receipt', { passed: true, status: 'cleanup-completed' }],
+]) {
+  test(`serial safety failure cleans the failed dispatch and retains ${label}`, async () => {
+    const { plan, leases, now } = signedFixture();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-serial-cleanup-'));
+    const cancelled = [];
+    try {
+      fs.writeFileSync(path.join(root, SHARD_EXECUTION_PLAN_FILE), JSON.stringify(plan));
+      await assert.rejects(runCoordinatorWaves({
+        plan, leases, executionRoot: root, now: () => now,
+        dispatchCell: async () => { throw new Error('provider budget exceeded'); },
+        cancelCell: ({ cell }) => {
+          cancelled.push(cell.cellId);
+          if (receipt instanceof Error) throw receipt;
+          return receipt;
+        },
+      }), (error) => {
+        assert.equal(error.cause.message, 'provider budget exceeded');
+        assert.equal(error.cleanupErrors.length, label === 'confirmed receipt' ? 0 : 1);
+        assert.deepEqual(error.startedCellIds, [plan.cells[0].cellId]);
+        return true;
+      });
+      assert.deepEqual(cancelled, [plan.cells[0].cellId]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test('single-machine placement assigns every paid cell to one distinct serial wave', () => {
   const workerList = workers();
@@ -367,6 +516,74 @@ test('coordinator staggers only first-wave dispatches and keeps later waves depe
     fs.rmSync(outputRoot, { recursive: true, force: true });
   }
 });
+
+for (const [firstWaveStaggerMs, synchronousAdvanceMs] of [[0, 0], [7_000, 0], [7_000, 6_500]]) {
+  test(`four-worker signed offsets override legacy ${firstWaveStaggerMs}ms stagger with ${synchronousAdvanceMs}ms synchronous clock advance`, async () => {
+    // Deliberately different from both canonical cell order and dispatch order.
+    const workerList = (synchronousAdvanceMs ? ['vm171', 'vm169', 'vm131', 'vm167'] : ['vm131', 'vm169', 'vm167', 'vm171']).map((workerId) => ({
+      ...workers()[0], workerId,
+      vmIdentity: { provider: 'vmware', uuidBios: `uuid-${workerId}` },
+      transportAuthority: { kind: 'local' },
+      deviceProfileInstances: [{
+        instanceId: `${workerId}-default`, profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
+        physicalPlaybackDeviceId: `{${workerId}}`, expectedPhysicalPlaybackDeviceName: `speaker-${workerId}`,
+      }],
+    }));
+    const { plan, leases, now } = signedFixture(workerList);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-four-clock-'));
+    let clockMs = 0;
+    const timers = [];
+    const dispatches = [];
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    let execution;
+    try {
+      fs.writeFileSync(path.join(root, SHARD_EXECUTION_PLAN_FILE), JSON.stringify(plan));
+      execution = runCoordinatorWaves({
+        plan, leases, executionRoot: root, firstWaveStaggerMs,
+        now: () => new Date(now.getTime() + clockMs),
+        wait: (delayMs, signal) => new Promise((resolve, reject) => {
+          timers.push({ due: clockMs + delayMs, resolve });
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+        dispatchCell: async ({ cell }) => {
+          dispatches.push([cell.cellIndex + 1, cell.workerId, clockMs]);
+          if (cell.cellIndex === 0) clockMs += synchronousAdvanceMs;
+          return { result: { verdict: 'passed', resultDigest: SHA_A } };
+        },
+      });
+      await flush();
+      assert.deepEqual([...dispatches], synchronousAdvanceMs
+        ? [[1, 'vm171', 0], [4, 'vm167', 6_500], [2, 'vm169', 6_500]] : [[1, 'vm171', 0]]);
+      for (const deadline of (synchronousAdvanceMs ? [8_999, 9_000] : [2_999, 3_000, 5_999, 6_000, 8_999, 9_000])) {
+        clockMs = deadline;
+        for (const timer of timers.filter((entry) => entry.due <= clockMs)) timer.resolve();
+        await flush();
+        const expected = [[1, 'vm171', 0], [4, 'vm167', Math.max(3_000, synchronousAdvanceMs)],
+          [2, 'vm169', Math.max(6_000, synchronousAdvanceMs)], [3, 'vm131', 9_000]];
+        assert.deepEqual(dispatches, expected.filter((entry) => entry[2] <= clockMs));
+      }
+      assert.equal((await execution).completedCellIds.length, 4);
+      for (const mutation of ['offset', 'worker', 'missing']) {
+        const tampered = structuredClone(plan);
+        if (mutation === 'offset') tampered.dispatchSchedule[1].startOffsetMs = 7_000;
+        if (mutation === 'worker') tampered.dispatchSchedule[1].workerId = 'vm169';
+        if (mutation === 'missing') delete tampered.dispatchSchedule;
+        fs.writeFileSync(path.join(root, SHARD_EXECUTION_PLAN_FILE), JSON.stringify(tampered));
+        let readinessCalls = 0;
+        await assert.rejects(runCoordinatorWaves({
+          plan: tampered, leases, executionRoot: root, now: () => now,
+          assertWorkerReady: async () => { readinessCalls += 1; },
+          dispatchCell: async () => assert.fail('tampered signed schedule must never dispatch'),
+        }));
+        assert.equal(readinessCalls, 0, 'schedule authentication precedes readiness and paid dispatch');
+      }
+    } finally {
+      for (const timer of timers) timer.resolve();
+      await execution?.catch(() => {});
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test('production three-worker local/SSH pins survive readiness, grant, signed plan, and final authorization verification', async () => {
   const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-coordinator-prepare-'));
@@ -779,7 +996,7 @@ test('coordinator completes every bounded serial wave without redispatch or loca
   }
 });
 
-test('wave failure cancels active peers and never dispatches a later paid wave', async () => {
+test('serial wave failure cancels its own unfinished dispatch and never dispatches a later paid wave', async () => {
   const value = signedFixture();
   const executionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-coordinator-fail-'));
   fs.writeFileSync(path.join(executionRoot, SHARD_EXECUTION_PLAN_FILE), `${JSON.stringify(value.plan)}\n`, 'utf8');
@@ -815,7 +1032,7 @@ test('wave failure cancels active peers and never dispatches a later paid wave',
     assert.deepEqual(started.slice(0, 1), value.plan.waves[0].cellIds);
     assert.ok(value.plan.waves[1].cellIds.every((cellId) => started.includes(cellId)));
     assert.equal(value.plan.waves[2].cellIds.some((cellId) => started.includes(cellId)), false);
-    assert.equal(cancelled.length, 0);
+    assert.deepEqual(cancelled, [failingCellId], 'only the started, unfinished cell requires cleanup');
   } finally {
     fs.rmSync(executionRoot, { recursive: true, force: true });
   }

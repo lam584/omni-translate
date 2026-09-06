@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { FOUR_WORKER_CELL_IDS, FOUR_WORKER_ISOLATION_CELLS, DEFAULT_PAID_ISOLATION_POLICY, defaultPaidIsolationPlacements } from './watch-mode-four-worker-plan.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,6 +17,7 @@ import {
 import {
   BALANCED_RELEASE_PLAN_ID,
   LOCAL_ISOLATION_CELLS,
+  LIVE_LLM_CELLS,
   RELEASE_DEVICE_CLASSES,
 } from './watch-mode-balanced-release-plan.mjs';
 import { verifyStrictRuntimeAuthority } from './watch-mode-strict-runtime-authority.mjs';
@@ -65,6 +67,10 @@ const currentLocalIsolationImplementationHashes = ({ workspaceRoot }) => [
   fileAuthorityEntry(
     path.resolve(workspaceRoot, 'scripts/testing/watch-mode-local-isolation-distributed.mjs'),
     'scripts/testing/watch-mode-local-isolation-distributed.mjs',
+  ),
+  fileAuthorityEntry(
+    path.resolve(workspaceRoot, 'scripts/testing/watch-mode-four-worker-plan.mjs'),
+    'scripts/testing/watch-mode-four-worker-plan.mjs',
   ),
 ];
 
@@ -383,6 +389,8 @@ export function verifyLocalIsolationManifest({
   implementationHashes = currentLocalIsolationImplementationHashes({ workspaceRoot }),
   runtimeBinaryHashes = currentAuthorityRuntimeBinaryHashes({ workspaceRoot }),
   runtimeAuthorityPath = null,
+  expectedWorkers = null,
+  expectedAssignments = null,
 }) {
   let manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
   if (manifest.sourceManifest) {
@@ -432,18 +440,27 @@ export function verifyLocalIsolationManifest({
     || aecLogAuthority.bytes !== manifest.aec3Gate?.bytes
     || aecLogAuthority.sha256 !== manifest.aec3Gate?.sha256
   ) throw new Error('local isolation manifest does not bind a passed AEC3 MSVC gate');
-  if (!Array.isArray(manifest.cells) || manifest.cells.length !== LOCAL_ISOLATION_CELLS.length) {
-    throw new Error(`local isolation manifest must contain ${LOCAL_ISOLATION_CELLS.length} cells`);
+  const fourWorkers = manifest.workerRuntimeDistributions?.length === 4;
+  if (manifest.placementPolicy != null && manifest.placementPolicy !== DEFAULT_PAID_ISOLATION_POLICY) {
+    throw new Error('unknown local isolation placement policy');
   }
-  if (!Array.isArray(manifest.preflightSmoke) || manifest.preflightSmoke.length !== LOCAL_ISOLATION_CELLS.length) {
+  const placements = manifest.placementPolicy === DEFAULT_PAID_ISOLATION_POLICY
+    ? defaultPaidIsolationPlacements(manifest.workerRuntimeDistributions?.map((worker) => worker.workerId)) : null;
+  const expectedCells = placements ? placements.map((entry) => entry.cell)
+    : fourWorkers ? FOUR_WORKER_ISOLATION_CELLS : LOCAL_ISOLATION_CELLS;
+  const expectedWorkerIds = placements ? placements.map((entry) => entry.workerId) : fourWorkers ? FOUR_WORKER_CELL_IDS : null;
+  if (!Array.isArray(manifest.cells) || manifest.cells.length !== expectedCells.length) {
+    throw new Error(`local isolation manifest must contain ${expectedCells.length} cells`);
+  }
+  if (!Array.isArray(manifest.preflightSmoke) || manifest.preflightSmoke.length !== expectedCells.length) {
     throw new Error('local isolation manifest must bind one short preflight smoke per feedback route');
   }
   const workerIds = new Map();
   const vmIdentityDigests = new Set();
   if (!Array.isArray(manifest.workerRuntimeDistributions)
       || manifest.workerRuntimeDistributions.length < 1
-      || manifest.workerRuntimeDistributions.length > 3) {
-    throw new Error('local isolation manifest must bind one to three worker runtime distributions');
+      || manifest.workerRuntimeDistributions.length > 4) {
+    throw new Error('local isolation manifest must bind one to four worker runtime distributions');
   }
   const distributionWorkers = new Set();
   for (const distribution of manifest.workerRuntimeDistributions) {
@@ -465,9 +482,12 @@ export function verifyLocalIsolationManifest({
       throw new Error(`local isolation worker ${distribution.workerId} runtime distribution authority mismatch`);
     }
   }
-  for (let index = 0; index < LOCAL_ISOLATION_CELLS.length; index += 1) {
-    const expected = LOCAL_ISOLATION_CELLS[index];
+  for (let index = 0; index < expectedCells.length; index += 1) {
+    const expected = expectedCells[index];
     const smoke = manifest.preflightSmoke[index];
+    if (expectedWorkerIds && smoke?.workerId !== expectedWorkerIds[index]) {
+      throw new Error('four-worker local isolation smoke placement mismatch');
+    }
     if (
       smoke?.cellId !== `${expected.cellId}::smoke`
       || smoke?.feedbackLoopPrevention !== expected.feedbackLoopPrevention
@@ -511,9 +531,15 @@ export function verifyLocalIsolationManifest({
     }
   }
   const root = manifestRoot;
-  for (let index = 0; index < LOCAL_ISOLATION_CELLS.length; index += 1) {
-    const expected = LOCAL_ISOLATION_CELLS[index];
+  for (let index = 0; index < expectedCells.length; index += 1) {
+    const expected = expectedCells[index];
     const cell = manifest.cells[index];
+    if (expectedWorkerIds && (cell?.workerId !== expectedWorkerIds[index]
+        || cell?.vmIdentityDigest !== manifest.workerRuntimeDistributions.find(
+          (entry) => entry.workerId === expectedWorkerIds[index],
+        )?.vmIdentityDigest)) {
+      throw new Error('four-worker local isolation formal worker/VM placement mismatch');
+    }
     if (
       cell?.cellId !== expected.cellId
       || cell?.providerMode !== 'disabled'
@@ -582,7 +608,41 @@ export function verifyLocalIsolationManifest({
       ))) {
     throw new Error('local isolation cells do not match the signed worker runtime distributions');
   }
+  if (expectedWorkers !== null || expectedAssignments !== null) {
+    verifyLocalIsolationPaidBindings(manifest, expectedWorkers, expectedAssignments);
+  }
   return manifest;
+}
+
+function verifyLocalIsolationPaidBindings(manifest, workers, assignments) {
+  const fail = () => { throw new Error('local isolation does not cover the current paid assignment worker/VM/route/profile'); };
+  if (!Array.isArray(workers) || !workers.length || !Array.isArray(assignments)
+      || assignments.length !== LIVE_LLM_CELLS.length) fail();
+  const byId = new Map(workers.map((worker) => [worker.workerId, worker]));
+  if (byId.size !== workers.length || manifest.workerRuntimeDistributions.length !== workers.length) fail();
+  for (const worker of workers) {
+    const vmDigest = sha256(Buffer.from(JSON.stringify(Object.fromEntries(Object.entries(worker.vmIdentity ?? {}).sort()))));
+    const distribution = manifest.workerRuntimeDistributions.find((entry) => entry.workerId === worker.workerId);
+    if (!worker.vmIdentity || !distribution || distribution.vmIdentityDigest !== vmDigest
+        || (worker.vmIdentityDigest && worker.vmIdentityDigest !== vmDigest)) fail();
+  }
+  for (const [index, paid] of LIVE_LLM_CELLS.entries()) {
+    const assignment = assignments[index];
+    const worker = byId.get(assignment?.workerId);
+    const profiles = worker?.deviceProfileInstances?.filter((profile) => profile.instanceId === assignment.deviceProfileInstanceId) ?? [];
+    if (assignment?.cellId !== paid.cellId || profiles.length !== 1) fail();
+    const profile = profiles[0];
+    const distribution = manifest.workerRuntimeDistributions.find((entry) => entry.workerId === worker.workerId);
+    const matches = manifest.cells.filter((cell) => cell.workerId === worker.workerId
+      && cell.vmIdentityDigest === distribution.vmIdentityDigest
+      && cell.feedbackLoopPrevention === paid.feedbackLoopPrevention
+      && cell.deviceClass === paid.deviceClass && profile.deviceClass === paid.deviceClass
+      && cell.deviceProfileInstanceId === profile.instanceId
+      && cell.deviceProfileId === profile.profileId
+      && cell.requestedDeviceId === profile.physicalPlaybackDeviceId
+      && cell.expectedDeviceName === profile.expectedPhysicalPlaybackDeviceName);
+    if (matches.length !== 1) fail();
+  }
 }
 
 export async function runLocalIsolationMatrix({
@@ -687,6 +747,7 @@ export async function runLocalIsolationMatrix({
         portable(path.relative(matrixDirectory, entry.manifestPath)),
       ),
     })),
+    placementPolicy: DEFAULT_PAID_ISOLATION_POLICY,
     preflightSmoke,
     cells,
     providerCalls: 0,

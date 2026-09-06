@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { fixedFourWorkerAssignments } from './watch-mode-four-worker-plan.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -628,8 +629,8 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     || config.artifactKind !== PRODUCTION_WORKER_CONFIG_KIND
     || !Array.isArray(config.workers)
     || config.workers.length < 1
-    || config.workers.length > 3
-  ) throw new Error('production worker config must be schema v2 with one to three workers');
+    || config.workers.length > 4
+  ) throw new Error('production worker config must be schema v2 with one to four workers');
   const workerIds = new Set();
   const vmUuids = new Set();
   const sshHostKeys = new Set();
@@ -704,7 +705,7 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     ? defaultSingleWorkerAssignments(workers)
     : workers.length === 2
       ? defaultTwoWorkerAssignments(workers)
-      : fixedThreeWorkerAssignments(workers);
+      : workers.length === 4 ? fixedFourWorkerAssignments(workers) : fixedThreeWorkerAssignments(workers);
   const workersById = new Map(workers.map((worker) => [worker.workerId, worker]));
   const assignedProfiles = assignments.map((assignment) => {
     const worker = workersById.get(assignment.workerId);
@@ -720,6 +721,13 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     throw new Error('production worker assignments must bind every fixed cell to one profile');
   }
   return { workers, assignments, sshExecutable: 'ssh.exe', scpExecutable: 'scp.exe' };
+}
+
+export function verifyProductionLocalIsolationManifest({ workers, assignments, ...verification }) {
+  if (!Array.isArray(workers) || !Array.isArray(assignments)) {
+    throw new Error('production local isolation requires current workers and paid assignments');
+  }
+  return verifyLocalIsolationManifest({ ...verification, expectedWorkers: workers, expectedAssignments: assignments });
 }
 
 export function readProductionWorkerConfig(configPath) {
@@ -1314,6 +1322,78 @@ function parseRemoteJson(result, label) {
   }
 }
 
+// The injected operation is the existing bounded interactive-task observer.
+export async function observeOwnedCellCompletion({ signal, timeoutMs, execute, preserveFailure }) {
+  if (signal?.aborted) throw signal.reason ?? new Error('paid dispatch cancelled before launch');
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error('owned cell observer requires a bounded timeout');
+  try {
+    // stopAll still cancels the owned guest via cancelCell. Do not also kill
+    // its control-plane observer: it must wait for real task exit/finalization
+    // and collect late files under the existing remote-cell deadline.
+    return await runBoundedCoordinatorStage(
+      () => execute({ signal: undefined, timeoutMs }), 'owned cell terminal observation', timeoutMs,
+    );
+  } catch (error) {
+    if (preserveFailure) {
+      // Surface safety failures immediately. The coordinator fences/cancels
+      // paid peers before invoking this read-only bounded evidence collector.
+      error.collectFailureEvidence = async () => {
+        try { error.failureEvidence = await preserveFailure(); }
+        catch { error.failureEvidenceErrors = [{ code: 'watch.collection.failed-cell-unavailable' }]; }
+      };
+    }
+    throw error;
+  }
+}
+
+export function failedCellEvidencePaths(cell, lease) {
+  if (!Number.isInteger(cell.cellIndex) || cell.cellIndex < 0 || cell.cellIndex > 3
+    || !/^lease-[a-z0-9-]+$/iu.test(lease.leaseId)) throw new Error('failed evidence cell/lease identity invalid');
+  const run = `runs/c${String(cell.cellIndex + 1).padStart(2, '0')}`;
+  return [
+    ...['app.log', 'bridge-service.log', 'desktop-shell.stderr.log', 'desktop-shell.stdout.log',
+      'report.json', 'report.md', 'watch-session-report.json', 'evidence-driven-terminal.json',
+      'provider-input-budget-ledger.json', 'provider-input-budget-ledger.json.journal.jsonl',
+      'run-collection.json', 'run-metadata.json'].map((name) => `${run}/${name}`),
+    ...['execution.json', 'terminal.json', 'task-terminal.json', 'process-authority.json',
+      'cleanup.scheduler.json', 'stderr.log', 'stdout.log'].map((name) => `interactive/${lease.leaseId}/${name}`),
+  ];
+}
+
+export async function preserveFailedCellEvidence({ plan, cell, lease, directory, inventory, download }) {
+  const allowed = new Set(failedCellEvidencePaths(cell, lease));
+  const seen = new Set();
+  if (!Array.isArray(inventory)) throw new Error('failed evidence inventory missing');
+  for (const entry of inventory) {
+    if (!allowed.has(entry.path) || seen.has(entry.path)
+      || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0 || entry.bytes > 64 * 1024 * 1024
+      || !/^[a-f0-9]{64}$/iu.test(entry.sha256)) throw new Error('failed evidence inventory authority invalid');
+    seen.add(entry.path);
+  }
+  if (fs.existsSync(directory)) throw new Error('failed evidence destination already exists');
+  fs.mkdirSync(directory, { recursive: true });
+  const files = [];
+  for (const entry of inventory) {
+    const destination = path.join(directory, ...entry.path.split('/'));
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    await download(entry.path, destination);
+    const actual = fileAuthorityEntry(destination, entry.path, { allowEmpty: true });
+    if (actual.bytes !== entry.bytes || actual.sha256 !== entry.sha256.toLowerCase()) {
+      throw new Error('failed evidence hash/size changed during collection');
+    }
+    files.push(actual);
+  }
+  const manifestPath = path.join(directory, 'failed-cell-evidence.json');
+  atomicWriteJson(manifestPath, {
+    schemaVersion: 1, artifactKind: 'watch-mode-failed-cell-diagnostics',
+    executionId: plan.executionId, planDigest: plan.planDigest, cellId: cell.cellId,
+    workerId: cell.workerId, leaseId: lease.leaseId, leaseDigest: lease.leaseDigest,
+    // Raw diagnostics are not a shard result or a claim of Provider safety.
+    status: 'diagnostics-only', files, missing: [...allowed].filter((entry) => !seen.has(entry)),
+  });
+  return { manifestPath, ...fileAuthorityEntry(manifestPath, 'failed-cell-evidence.json') };
+}
+
 export async function runRemoteJsonWithRetries(operation, label, {
   attempts = 3,
   delayMs = 1_000,
@@ -1855,6 +1935,48 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
     return { workerId: worker.workerId, remoteRoot, readiness };
   }
 
+  async function preserveCellFailure({ cell, lease, worker, remoteRoot }) {
+    const relativePaths = failedCellEvidencePaths(cell, lease);
+    const inventory = parseRemoteJson(await runRemote(worker, `
+$root = [IO.Path]::GetFullPath([string]$payload.remoteRoot).TrimEnd('\\')
+if ((Get-CimInstance Win32_ComputerSystemProduct).UUID -ine [string]$payload.vmUuidBios) { throw 'failure evidence VM identity mismatch' }
+$entries = @()
+foreach ($relative in @($payload.relativePaths)) {
+  $full = [IO.Path]::GetFullPath((Join-Path $root ([string]$relative)))
+  if (-not $full.StartsWith($root + '\\', [StringComparison]::OrdinalIgnoreCase)) { throw 'failure evidence path outside root' }
+  if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+  $item = Get-Item -LiteralPath $full -Force -ErrorAction Stop
+  $ancestor = $item
+  while ($null -ne $ancestor) {
+    if ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'failure evidence reparse path' }
+    if ($ancestor.FullName -ieq $root) { break }
+    if ($ancestor -is [IO.FileInfo]) { $ancestor = $ancestor.Directory } else { $ancestor = $ancestor.Parent }
+  }
+  if ($item.Length -gt 67108864) { throw 'failure evidence file exceeds bounded collection size' }
+  $entries += [ordered]@{ path=[string]$relative; bytes=$item.Length; sha256=(Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash.ToLowerInvariant() }
+}
+ConvertTo-Json -InputObject @($entries) -Depth 4 -Compress
+`, { remoteRoot, relativePaths, vmUuidBios: worker.vmIdentity.uuidBios }, {
+      timeoutMs: PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
+    }), `failed-cell evidence inventory ${cell.cellId}`);
+    const directory = path.join(coordinatorExecutionRoot, 'failed-cell-evidence', lease.leaseId);
+    const deadline = deadlineNow() + PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS;
+    return preserveFailedCellEvidence({ plan, cell, lease, directory, inventory,
+      download: async (relative, destination) => {
+        const timeoutMs = Math.ceil(deadline - deadlineNow());
+        if (timeoutMs <= 0) throw new Error('failed-cell collection deadline expired');
+        const remotePath = path.win32.join(remoteRoot, ...relative.split('/'));
+        if (isCoordinatorLocalWorker(worker)) {
+          fs.copyFileSync(remotePath, destination, fs.constants.COPYFILE_EXCL);
+          return;
+        }
+        ensureSuccessful(await runProcess(config.scpExecutable,
+          [...scpBaseArgs(worker), remoteSpec(worker, remotePath), pathForScp(destination)],
+          { timeoutMs }), `failed-cell evidence download ${cell.cellId}`);
+      },
+    });
+  }
+
   async function dispatchCell({ cell, lease, signal }) {
     const worker = workersById.get(cell.workerId);
     const remoteRoot = remoteRoots.get(cell.workerId);
@@ -1887,11 +2009,12 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
       feedbackLoopPrevention: cell.feedbackLoopPrevention,
       readinessPath: path.win32.join(remoteRoot, 'readiness', 'zero-provider-readiness.json'),
     };
+    return observeOwnedCellCompletion({ signal, timeoutMs: remoteCellTimeoutMs, execute: async ({ signal: observationSignal, timeoutMs }) => {
     const result = await runRemote(worker, PRODUCTION_INTERACTIVE_SESSION_LAUNCH_BODY, {
       workspaceRoot: worker.workspaceRoot,
       controlScriptSha256: interactiveRequest.controlScriptSha256,
       interactiveRequest,
-    }, { signal, timeoutMs: remoteCellTimeoutMs, requireControlPlane: true });
+    }, { signal: observationSignal, timeoutMs, requireControlPlane: true });
     ensureSuccessful(result, `remote paid cell ${cell.cellId}`);
     const interactive = JSON.parse(lastNonEmptyLine(result.stdout));
     const interactiveTerminal = interactive.terminal;
@@ -1932,6 +2055,7 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
       processAuthorityPath: interactive.processAuthorityPath,
     });
     return { ...validated, resultPath: localResultPath };
+    }, preserveFailure: () => preserveCellFailure({ cell, lease, worker, remoteRoot }) });
   }
 
   async function cancelCell({ cell, lease }) {
@@ -1945,7 +2069,7 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
     const taskName = interactiveTaskName({
       executionId: plan.executionId, workerId: worker.workerId, leaseId: lease.leaseId,
     });
-    await runRemote(worker, `
+    const cancellation = await runRemote(worker, `
 $root = [IO.Path]::GetFullPath([string]$payload.remoteRoot)
 $authorityRoot = Join-Path $root ('interactive\\' + [string]$payload.binding.leaseId)
 $modulePath = Join-Path ([string]$payload.workspaceRoot) 'scripts\\testing\\lib\\powershell\\Omni.Testing.WatchMode.InteractiveCleanup.psm1'
@@ -1974,6 +2098,8 @@ if (-not $receipt.passed) { throw 'worker cancellation could not confirm complet
         expectedVmUuidBios: worker.vmIdentity.uuidBios, expectedSessionId: 1,
       },
     }, { timeoutMs: 15_000 });
+    ensureSuccessful(cancellation, `worker cancellation ${cell.cellId}`);
+    return { passed: true, status: 'cleanup-completed' };
   }
 
   async function collectWorker({ worker: planWorker, leases, results, generatedAt = new Date() }) {
@@ -2173,6 +2299,31 @@ export async function collectProductionWorkers({ preparation, transport, waveOut
     throw error;
   }
   return settled.map((entry) => entry.value);
+}
+
+export async function runProductionWavesPreservingFailure({ run, executionRoot, plan }) {
+  try { return await run(); }
+  catch (error) {
+    // All worker pipelines have settled. Successful late peers were already
+    // downloaded and validated by dispatchCell; failed finalizers carry only
+    // separately hashed diagnostics, never a fabricated shard result.
+    const results = error.partialResults instanceof Map ? [...error.partialResults.entries()] : [];
+    const manifestPath = path.join(executionRoot, 'failed-wave-collection.json');
+    atomicWriteJson(manifestPath, {
+      schemaVersion: 1, artifactKind: 'watch-mode-failed-wave-collection',
+      executionId: plan.executionId, planDigest: plan.planDigest,
+      status: 'failed', startedCellIds: error.startedCellIds ?? [],
+      completedCellIds: error.completedCellIds ?? [],
+      validatedResults: results.map(([cellId, outcome]) => ({ cellId,
+        verdict: outcome.result?.verdict, resultDigest: outcome.result?.resultDigest,
+        resultPath: outcome.resultPath ?? null,
+      })),
+      failedCellEvidence: error.failedCellEvidence ?? [],
+      cleanupErrors: error.cleanupErrors ?? [],
+    });
+    error.failureCollectionPath = manifestPath;
+    throw error;
+  }
 }
 
 export function productionFailureFingerprint(failure, plan) {
@@ -2566,8 +2717,10 @@ async function runProductionCoordinatorCore({
       runtimeBinaryHashes,
     }) => {
       const manifestPath = resolveLocalIsolationAuthorityPath(localIsolationAuthority, { workspaceRoot: repoRoot });
-      verifyLocalIsolationManifest({
+      verifyProductionLocalIsolationManifest({
         manifestPath,
+        workers: productionWorkers,
+        assignments: productionAssignments,
         workspaceRoot: repoRoot,
         provenance,
         runtimeBinaryHashes,
@@ -2658,7 +2811,8 @@ async function runProductionCoordinatorCore({
     workerCount: preparation.plan.workers.length,
   });
   transitionCoordinatorState('waves-running', { providerCalls: 1 });
-  const waveOutcome = await (operations.runCoordinatorWaves ?? runCoordinatorWaves)({
+  const waveOutcome = await runProductionWavesPreservingFailure({ executionRoot: preparation.executionRoot,
+    plan: preparation.plan, run: () => (operations.runCoordinatorWaves ?? runCoordinatorWaves)({
     plan: preparation.plan,
     leases: preparation.leases,
     executionRoot: preparation.executionRoot,
@@ -2677,7 +2831,7 @@ async function runProductionCoordinatorCore({
     classifyFailure: productionCellFailureDisposition,
     now,
     firstWaveStaggerMs: COORDINATOR_FIRST_WAVE_STAGGER_MS,
-  });
+  }) });
   const failureSummary = aggregateProductionCellFailures({ plan: preparation.plan, waveOutcome });
   const failureFingerprints = failureSummary.failures;
   const failureFingerprintPath = path.join(preparation.executionRoot, 'failure-fingerprints.json');
@@ -2907,12 +3061,19 @@ export async function runProductionCoordinator(options) {
       completedCellIds: error.completedCellIds ?? current.completedCellIds,
       providerCalls: Math.max(current.providerCalls, error.failurePath ? 1 : 0),
       failureAuthorityPath: error.failurePath ?? null,
+      failureCollectionPath: error.failureCollectionPath ?? null,
     });
     transition('cleanup-running', { primaryError, cleanupErrors });
     try {
       if (typeof options.operations?.cleanupOwnedResources === 'function') {
         const result = await options.operations.cleanupOwnedResources({ executionId, state: structuredClone(current) });
         if (Array.isArray(result?.cleanupErrors)) cleanupErrors.push(...result.cleanupErrors);
+        if (result?.passed !== true
+          || (result.status !== undefined && !['completed', 'cleanup-completed'].includes(result.status))
+          || result.taskCleanupPassed === false || result.processCleanup?.passed === false) {
+          cleanupErrors.push({ code: 'coordinator.cleanup.unconfirmed',
+            message: 'Owned resource cleanup did not return a positive completion receipt.' });
+        }
       }
     } catch (cleanupError) {
       cleanupErrors.push({

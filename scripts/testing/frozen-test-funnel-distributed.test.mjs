@@ -94,6 +94,34 @@ test('distributed funnel fixes all fourteen commands exactly once and distribute
   assert.equal(value.plan.steps.find((step) => step.name === 'test-desktop-shell').workerId, 'vm3');
 });
 
+test('four-worker funnel assigns all fourteen commands exactly once across all workers', (t) => {
+  const value = fixture(t);
+  value.workers = value.workers.map((worker, index) => ({ ...worker, workerId: ['vm171', 'vm167', 'vm169'][index] }));
+  const fourth = structuredClone(value.workers[2]);
+  fourth.workerId = 'vm131';
+  fourth.vmIdentity.uuidBios = '40000000-0000-0000-0000-000000000000';
+  fourth.transport.hostKeyAlias = 'vm4';
+  fourth.transport.hostKeySha256 = 'SHA256:' + '4'.repeat(43);
+  const plan = createFrozenFunnelPlan({ ...value, ...value.keys, workers: [...value.workers, fourth] });
+  assert.equal(plan.steps.length, 14);
+  assert.equal(new Set(plan.steps.map((step) => step.name)).size, 14);
+  assert.equal(new Set(plan.steps.map((step) => step.workerId)).size, 4);
+  assert.deepEqual(Object.fromEntries(plan.steps.map(({ name, command }) => [name, command])), EXPECTED_STEPS);
+  assert.equal(plan.steps.find((step) => step.name === 'watch-mode-tooling').workerId, 'vm131');
+  const canonical = [...value.workers, fourth].map((worker, index) => ({ ...worker,
+    workerId: ['vm171', 'vm167', 'vm169', 'vm131'][index],
+  }));
+  const expected = createFrozenFunnelPlan({ ...value, ...value.keys, workers: canonical }).steps;
+  const permutations = (items) => items.length === 0 ? [[]] : items.flatMap((item, index) =>
+    permutations(items.filter((_entry, i) => i !== index)).map((tail) => [item, ...tail]));
+  for (const workers of permutations(canonical)) {
+    assert.deepEqual(createFrozenFunnelPlan({ ...value, ...value.keys, workers }).steps, expected);
+  }
+  const tampered = structuredClone(plan);
+  tampered.steps[0].workerId = 'vm131';
+  assert.throws(() => verifyFrozenFunnelPlan(resign(tampered, value.keys), value.keys), /fixed complete allowlist/);
+});
+
 test('even validly signed plans reject missing, duplicated, changed and reassigned steps', (t) => {
   const value = fixture(t);
   for (const mutate of [

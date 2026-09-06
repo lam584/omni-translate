@@ -4,13 +4,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
 import { sameAuthorityInventory, resolveAuthorityPath } from './watch-mode-evidence-authority.mjs';
-import { LOCAL_ISOLATION_CELLS } from './watch-mode-balanced-release-plan.mjs';
-
-export const DISTRIBUTED_LOCAL_ISOLATION_WORKER_MODES = Object.freeze({
-  vm171: 'process-exclusion',
-  vm167: 'echo-cancel',
-  vm169: 'virtual-driver',
-});
+import { defaultPaidIsolationPlacements } from './watch-mode-four-worker-plan.mjs';
 
 const SHA256 = /^[a-f0-9]{64}$/u;
 export const LOCAL_ISOLATION_WORKER_REQUEST_KIND = 'watch-mode-local-isolation-worker-cell-request';
@@ -459,27 +453,16 @@ function validateWorker(worker, workerIds, vmDigests) {
 }
 
 export function createDistributedLocalIsolationAssignments({ workers }) {
-  if (!Array.isArray(workers) || workers.length < 1 || workers.length > 3) {
-    throw new Error('distributed local isolation requires one to three workers');
+  if (!Array.isArray(workers) || workers.length < 1 || workers.length > 4) {
+    throw new Error('distributed local isolation requires one to four workers');
   }
   const workerIds = new Set();
   const vmDigests = new Set();
   const normalized = workers.map((worker) => validateWorker(worker, workerIds, vmDigests));
-  let workersByCell;
-  if (normalized.length === 3) {
-    const byId = new Map(normalized.map((worker) => [worker.workerId, worker]));
-    for (const workerId of Object.keys(DISTRIBUTED_LOCAL_ISOLATION_WORKER_MODES)) {
-      if (!byId.has(workerId)) throw new Error(`distributed local isolation is missing worker ${workerId}`);
-    }
-    workersByCell = LOCAL_ISOLATION_CELLS.map((cell) => normalized.find((worker) => (
-      DISTRIBUTED_LOCAL_ISOLATION_WORKER_MODES[worker.workerId] === cell.feedbackLoopPrevention
-    )));
-  } else {
-    workersByCell = LOCAL_ISOLATION_CELLS.map((_cell, index) => normalized[index % normalized.length]);
-  }
-  return LOCAL_ISOLATION_CELLS.map((cell, index) => Object.freeze({
-    worker: workersByCell[index], cell, profile: workersByCell[index].profile,
-  }));
+  return defaultPaidIsolationPlacements(normalized.map((worker) => worker.workerId)).map(({ cell, workerId }) => {
+    const worker = normalized.find((entry) => entry.workerId === workerId);
+    return Object.freeze({ worker, cell, profile: worker.profile });
+  });
 }
 
 function validateResult(result, assignment, runtimeBinaryHashes, phase) {
@@ -578,10 +561,13 @@ export async function runDistributedLocalIsolationCells({
     throw new AggregateError(failures.map((entry) => entry.reason), 'distributed local isolation failed');
   }
   const completed = settled.flatMap((entry) => entry.value);
-  const byMode = new Map(completed.map((entry) => [entry.formal.feedbackLoopPrevention, entry]));
+  const ordered = assignments.map((assignment) => completed.find((entry) => (
+    entry.formal.workerId === assignment.worker.workerId
+    && entry.formal.cellId === assignment.cell.cellId
+  )));
   return {
-    preflightSmoke: LOCAL_ISOLATION_CELLS.map((cell) => byMode.get(cell.feedbackLoopPrevention)?.smoke),
-    cells: LOCAL_ISOLATION_CELLS.map((cell) => byMode.get(cell.feedbackLoopPrevention)?.formal),
+    preflightSmoke: ordered.map((entry) => entry.smoke),
+    cells: ordered.map((entry) => entry.formal),
   };
 }
 

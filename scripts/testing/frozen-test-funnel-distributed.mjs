@@ -87,11 +87,22 @@ function workerProjection(worker) {
 }
 
 function assignments(workers) {
+  if (workers.length === 4) {
+    const ids = ['vm171', 'vm167', 'vm169', 'vm131'];
+    if (new Set(workers.map((worker) => worker.workerId)).size !== 4
+        || ids.some((id) => !workers.some((worker) => worker.workerId === id))) {
+      throw new Error('four-worker funnel requires canonical vm171/vm167/vm169/vm131 identities');
+    }
+    return FROZEN_FUNNEL_STEPS.map(({ name, command, group }) => ({
+      name, command, workerId: name === 'watch-mode-tooling' ? 'vm131' : ids[group],
+    }));
+  }
   return FROZEN_FUNNEL_STEPS.map(({ name, command, group }) => ({
     name, command,
     // With three workers, run watch tooling after the bridge tests on vm167.
     // Keep the original modulo assignment for one/two-worker fallbacks.
-    workerId: workers[workers.length === 3 && name === 'watch-mode-tooling' ? 1 : group % workers.length].workerId,
+    workerId: workers[name === 'watch-mode-tooling' && workers.length >= 3
+      ? (workers.length === 4 ? 3 : 1) : group % workers.length].workerId,
   }));
 }
 
@@ -110,7 +121,7 @@ export function verifyFrozenFunnelPlan(plan, { publicKeyPem, provenance, runtime
   verifyCoordinatorAuthority(plan, publicKeyPem, 'frozen funnel plan');
   if (plan.schemaVersion !== 1 || plan.artifactKind !== PLAN_KIND || !SAFE_ID.test(plan.executionId)
       || plan.providerCalls !== 0 || !HEAD.test(plan.headCommit) || !SHA.test(plan.runtimeAuthorityDigest)
-      || plan.workerTimeoutMs !== MAX_WORKER_MS || !Array.isArray(plan.workers) || plan.workers.length < 1 || plan.workers.length > 3) throw new Error('funnel plan schema is invalid');
+      || plan.workerTimeoutMs !== MAX_WORKER_MS || !Array.isArray(plan.workers) || plan.workers.length < 1 || plan.workers.length > 4) throw new Error('funnel plan schema is invalid');
   const ids = new Set(); const bios = new Set(); const pins = new Set();
   for (const worker of plan.workers) {
     if (!SAFE_ID.test(worker.workerId) || !worker.user || !path.win32.isAbsolute(worker.workspaceRoot)

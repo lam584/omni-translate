@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { repoRoot } from '../lib/testing-common.mjs';
-import { writeLocalIsolationFailureManifest } from './watch-mode-local-isolation.mjs';
+import { writeLocalIsolationFailureManifest, runLocalIsolationCell, rebaseLocalIsolationResults } from './watch-mode-local-isolation.mjs';
 
 import {
   createDistributedLocalIsolationAssignments,
@@ -61,6 +61,24 @@ const workers = () => [
   worker('vm169', 'uuid-169'),
 ];
 
+test('four workers bind isolation to every paid worker route including c04 process', async () => {
+  const four = [...workers(), worker('vm131', 'uuid-131')];
+  const assignments = createDistributedLocalIsolationAssignments({ workers: four.reverse() });
+  assert.deepEqual(assignments.map(({ worker: entry, cell }) => [entry.workerId, cell.feedbackLoopPrevention]), [
+    ['vm171', 'process-exclusion'], ['vm169', 'virtual-driver'],
+    ['vm131', 'echo-cancel'], ['vm167', 'process-exclusion'],
+  ]);
+  const result = await runDistributedLocalIsolationCells({
+    workers: four, runtimeBinaryHashes: hashes,
+    executeCell: async (request) => resultFor(request),
+  });
+  assert.deepEqual(result.cells.map((cell) => cell.workerId), ['vm171', 'vm169', 'vm131', 'vm167']);
+  assert.equal(result.preflightSmoke.length, 4);
+  const missingEndpoint = structuredClone(four);
+  delete missingEndpoint.find((entry) => entry.workerId === 'vm131').deviceProfileInstances[0].physicalPlaybackDeviceId;
+  assert.throws(() => createDistributedLocalIsolationAssignments({ workers: missingEndpoint }), /incomplete/);
+});
+
 const resultFor = (request, overrides = {}) => {
   const revalidationCore = {
     schemaVersion: 1,
@@ -90,8 +108,8 @@ const resultFor = (request, overrides = {}) => {
 test('distributed local isolation supports deterministic one/two/three worker placement', () => {
   const assignments = createDistributedLocalIsolationAssignments({ workers: workers() });
   assert.deepEqual(
-    Object.fromEntries(assignments.map(({ worker: entry, cell }) => [entry.workerId, cell.feedbackLoopPrevention])),
-    { vm171: 'process-exclusion', vm167: 'echo-cancel', vm169: 'virtual-driver' },
+    assignments.map(({ worker: entry, cell }) => [entry.workerId, cell.feedbackLoopPrevention]),
+    [['vm171', 'process-exclusion'], ['vm169', 'virtual-driver'], ['vm169', 'echo-cancel'], ['vm167', 'process-exclusion']],
   );
   const duplicateVm = workers();
   duplicateVm[2].vmIdentity = duplicateVm[1].vmIdentity;
@@ -105,8 +123,8 @@ test('distributed local isolation supports deterministic one/two/three worker pl
   const dual = createDistributedLocalIsolationAssignments({
     workers: [worker('first', 'uuid-first'), worker('second', 'uuid-second')],
   });
-  assert.deepEqual(dual.map((entry) => entry.worker.workerId), ['first', 'second', 'first']);
-  assert.throws(() => createDistributedLocalIsolationAssignments({ workers: [] }), /one to three/);
+  assert.deepEqual(dual.map((entry) => entry.worker.workerId), ['first', 'second', 'second']);
+  assert.throws(() => createDistributedLocalIsolationAssignments({ workers: [] }), /one to four/);
 });
 
 test('three workers run concurrently while smoke precedes formal on every worker', async () => {
@@ -130,12 +148,12 @@ test('three workers run concurrently while smoke precedes formal on every worker
       return resultFor(request);
     },
   });
-  assert.equal(waiting.length, 3);
+  assert.equal(waiting.length, 4);
   for (const id of ['vm171', 'vm167', 'vm169']) {
     assert.ok(calls.indexOf(`${id}:smoke`) < calls.indexOf(`${id}:formal`));
   }
   assert.deepEqual(output.cells.map((cell) => cell.feedbackLoopPrevention), [
-    'process-exclusion', 'virtual-driver', 'echo-cancel',
+    'process-exclusion', 'virtual-driver', 'echo-cancel', 'process-exclusion',
   ]);
   assert.equal(new Set(output.cells.map((cell) => cell.vmIdentityDigest)).size, 3);
 });
@@ -319,6 +337,91 @@ test('one and two worker schedules never overlap cells on the same worker', asyn
         return resultFor(request);
       },
     });
+  }
+});
+
+test('four-worker mixed local and SCP transport preserves physical files under shared phase roots', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'li-files-'));
+  const matrixDirectory = path.join(root, 'matrix');
+  const smokeRoot = path.join(matrixDirectory, 'smoke');
+  const configured = [...workers(), worker('vm131', 'uuid-131')].map((entry) => ({
+    ...entry, transport: { kind: entry.workerId === 'vm171' ? 'local' : 'ssh' },
+    host: entry.workerId, user: 'worker', port: 22, guestExecutionRoot: 'E:/omni-shards-run3',
+    identityFile: 'fixture-key', knownHostsFile: 'fixture-hosts', hostKeyAlias: entry.workerId,
+  }));
+  const remotePath = (spec) => path.join(root, 'remote', spec.replaceAll(':', '').replaceAll('\\', '/'));
+  const outputs = new Map();
+  const materialize = async (requestPath, resultPath, remote) => {
+    const immutable = JSON.parse(fs.readFileSync(requestPath, 'utf8'));
+    const outputRoot = remote ? remotePath('worker@' + immutable.worker.workerId + ':' + immutable.outputRoot) : immutable.outputRoot;
+    fs.mkdirSync(outputRoot, { recursive: true });
+    let clock = 0;
+    const result = await runLocalIsolationCell({ ...immutable, outputRoot,
+      now: () => { clock += 300_000; return clock; },
+      runIteration: ({ cellDirectory }) => {
+        const marker = path.join(cellDirectory, 'iterations/0001/worker-marker.txt');
+        fs.mkdirSync(path.dirname(marker), { recursive: true });
+        fs.writeFileSync(marker, immutable.worker.workerId + ':' + immutable.phase, { flag: 'wx' });
+      },
+    });
+    const physical = path.join(outputRoot, result.receipt.path);
+    outputs.set(immutable.worker.workerId + ':' + immutable.phase, fs.readFileSync(physical));
+    const revalidation = resultFor(immutable).preLaunchRevalidation;
+    fs.mkdirSync(path.dirname(resultPath), { recursive: true });
+    fs.writeFileSync(resultPath, JSON.stringify(createLocalIsolationWorkerResultEnvelope(immutable, {
+      ...result, preLaunchRevalidation: revalidation,
+    })), { flag: 'wx' });
+  };
+  const run = async (command, args) => {
+    if (command === process.execPath) {
+      await materialize(args[2], args[4], false);
+    } else if (command === 'scp.exe') {
+      const [from, to] = args.slice(-2);
+      const source = from.startsWith('worker@') ? remotePath(from) : from;
+      const target = to.startsWith('worker@') ? remotePath(to) : to;
+      if (args.includes('-r')) {
+        const destination = path.join(target, path.basename(source));
+        assert.equal(fs.existsSync(destination), false, 'SCP must not merge into an existing worker cell directory');
+        fs.cpSync(source, destination, { recursive: true, force: false, errorOnExist: true });
+      } else {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
+      }
+    } else {
+      const script = Buffer.from(args.at(-1), 'base64').toString('utf16le');
+      const requestPath = script.match(/'--worker-cell-request' '([^']+)'/u)?.[1];
+      if (requestPath) {
+        const resultPath = script.match(/'--worker-cell-result' '([^']+)'/u)[1];
+        const host = args.find((arg) => arg.startsWith('worker@'));
+        await materialize(remotePath(host + ':' + requestPath), remotePath(host + ':' + resultPath), true);
+      }
+    }
+    return { exitCode: 0, stdout: '', stderr: '' };
+  };
+  const result = await runDistributedLocalIsolationCells({
+    workers: configured, provenance: {}, implementationHashes: hashes, runtimeBinaryHashes: hashes,
+    smokeDurationSeconds: 45,
+    executeCell: (request) => executeDistributedLocalIsolationCell({
+      request: { ...request, distribution: { workerManifestPath: 'E:/runtime.json', manifest: { distributionDigest: 'd'.repeat(64) } } },
+      requestRoot: path.join(matrixDirectory, 'requests'), workerWorkspaceRoot: root,
+      localOutputRoot: request.phase === 'smoke' ? smokeRoot : matrixDirectory, run,
+    }),
+  });
+  const rebased = rebaseLocalIsolationResults(result, { matrixDirectory, smokeRoot });
+  assert.equal(new Set([...rebased.preflightSmoke, ...rebased.cells].map((entry) => entry.receipt.path)).size, 8);
+  for (const [phase, entries] of [['smoke', rebased.preflightSmoke], ['formal', rebased.cells]]) {
+    for (const entry of entries) {
+      const receiptPath = path.join(matrixDirectory, entry.receipt.path);
+      const bytes = fs.readFileSync(receiptPath);
+      assert.deepEqual(bytes, outputs.get(entry.workerId + ':' + phase));
+      assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), entry.receipt.sha256);
+      const receipt = JSON.parse(bytes);
+      for (const artifact of receipt.artifacts) {
+        const content = fs.readFileSync(path.join(path.dirname(receiptPath), artifact.path));
+        assert.equal(crypto.createHash('sha256').update(content).digest('hex'), artifact.sha256);
+      }
+      assert.equal(fs.readFileSync(path.join(matrixDirectory, entry.runDirectory, 'iterations/0001/worker-marker.txt'), 'utf8'), entry.workerId + ':' + phase);
+    }
   }
 });
 

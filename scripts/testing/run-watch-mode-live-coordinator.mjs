@@ -862,7 +862,7 @@ export async function prepareCoordinatorExecution({
 }
 
 export class CoordinatorWaveFailure extends Error {
-  constructor({ waveIndex, cellId, cause, startedCellIds, completedCellIds, partialResults, cleanupErrors = [] }) {
+  constructor({ waveIndex, cellId, cause, startedCellIds, completedCellIds, partialResults, cleanupErrors = [], failedCellEvidence = [] }) {
     super(`strict paid shard wave ${waveIndex} failed at ${cellId}: ${cause?.message ?? cause}`);
     this.name = 'CoordinatorWaveFailure';
     this.waveIndex = waveIndex;
@@ -872,7 +872,37 @@ export class CoordinatorWaveFailure extends Error {
     this.completedCellIds = completedCellIds;
     this.partialResults = partialResults;
     this.cleanupErrors = cleanupErrors;
+    this.failedCellEvidence = failedCellEvidence;
   }
+}
+
+async function collectRejectedCellEvidence(cell, error, failedCellEvidence) {
+  if (typeof error.collectFailureEvidence === 'function') {
+    try { await error.collectFailureEvidence(); }
+    catch { error.failureEvidenceErrors = [{ code: 'watch.collection.failed-cell-unavailable' }]; }
+  }
+  failedCellEvidence.push({ cellId: cell.cellId, workerId: cell.workerId,
+    evidence: error.failureEvidence ?? null, errors: error.failureEvidenceErrors ?? [],
+  });
+}
+
+function coordinatorCleanupErrors(targets, settlements) {
+  return settlements.flatMap((settlement, index) => {
+    const receipt = settlement.status === 'fulfilled' ? settlement.value : null;
+    // A resolved transport call (including a void adapter) is not a cleanup
+    // receipt. Unknown or contradictory confirmation must remain incomplete.
+    if (receipt?.passed === true
+      && (receipt.status === undefined || ['completed', 'cleanup-completed'].includes(receipt.status))
+      && receipt.taskCleanupPassed !== false
+      && receipt.processCleanup?.passed !== false
+      && !(receipt.cleanupErrors?.length > 0)) return [];
+    return [{
+      code: 'coordinator.cleanup.cell-failed',
+      workerId: targets[index].cell.workerId,
+      cellId: targets[index].cell.cellId,
+      message: 'Worker cancellation did not confirm owned-process cleanup.',
+    }];
+  });
 }
 
 function assertExactLeaseSet(plan, leases, now) {
@@ -999,18 +1029,23 @@ export async function runCoordinatorWaves({
   const results = new Map();
   const waveCompletions = [];
   const collectedFailures = [];
+  const failedCellEvidence = [];
   for (const wave of plan.waves) {
     const waveCells = wave.cellIds.map((cellId) => plan.cells.find((cell) => cell.cellId === cellId));
     let firstFailure = null;
     const controllers = new Map(waveCells.map((cell) => [cell.cellId, new AbortController()]));
     const cancellationPromises = [];
+    const cancellationTargets = [];
     const failWave = (cell, error) => {
       if (firstFailure) return;
       firstFailure = { cell, error };
+      for (const controller of controllers.values()) controller.abort(error);
       for (const peer of waveCells) {
-        if (peer.cellId === cell.cellId || completed.has(peer.cellId)) continue;
-        controllers.get(peer.cellId).abort(error);
-        cancellationPromises.push(Promise.resolve(cancelCell({
+        // Rejection of dispatch/finalization does not prove that its own guest
+        // process exited. Never cancel an unstarted or completed cell instead.
+        if (!started.has(peer.cellId) || completed.has(peer.cellId)) continue;
+        cancellationTargets.push({ cell: peer });
+        cancellationPromises.push(Promise.resolve().then(() => cancelCell({
           plan,
           waveIndex: wave.waveIndex,
           cell: peer,
@@ -1063,11 +1098,13 @@ export async function runCoordinatorWaves({
         return validated;
       } catch (error) {
         failWave(cell, error);
+        await Promise.allSettled(cancellationPromises);
+        await collectRejectedCellEvidence(cell, error, failedCellEvidence);
         throw error;
       }
     });
     const settled = await Promise.allSettled(tasks);
-    await Promise.allSettled(cancellationPromises);
+    const cleanupErrors = coordinatorCleanupErrors(cancellationTargets, await Promise.allSettled(cancellationPromises));
     if (firstFailure || settled.some((entry) => entry.status === 'rejected')) {
       const failedIndex = settled.findIndex((entry) => entry.status === 'rejected');
       const failure = firstFailure ?? {
@@ -1081,6 +1118,8 @@ export async function runCoordinatorWaves({
         startedCellIds: [...started],
         completedCellIds: [...completed],
         partialResults: new Map(results),
+        cleanupErrors,
+        failedCellEvidence,
       });
     }
     waveCompletions.push(completeCoordinatorWave({
@@ -1119,7 +1158,13 @@ async function runCoordinatorWorkerPipelines({
   const active = new Map();
   let safetyFailure = null;
   const cleanupErrors = [];
+  const failedCellEvidence = [];
   const waveZeroOrder = plan.waves[0].cellIds;
+  // verifySignedExecutionPlan has already checked the four-worker placement,
+  // exact signed schedule and signature before readiness or any paid dispatch.
+  // Offsets share one origin; neither worker iteration order nor the legacy
+  // production 7-second stagger may change the signed 0/3/6/9-second schedule.
+  const fourWorkerDispatchOriginMs = plan.workers.length === 4 ? now().getTime() : null;
   const cellsByWorker = new Map(plan.workers.map((worker) => [worker.workerId, []]));
   for (const cell of plan.cells) cellsByWorker.get(cell.workerId).push(cell);
   for (const cells of cellsByWorker.values()) cells.sort((left, right) => left.waveIndex - right.waveIndex || left.cellIndex - right.cellIndex);
@@ -1133,22 +1178,24 @@ async function runCoordinatorWorkerPipelines({
     for (const controller of controllers.values()) controller.abort(error);
     const cancellations = await Promise.allSettled(targets.map(({ cell, lease }) =>
       Promise.resolve().then(() => cancelCell({ plan, waveIndex: cell.waveIndex, cell, lease, reason: error }))));
-    for (const [index, outcome] of cancellations.entries()) {
-      if (outcome.status !== 'rejected') continue;
-      cleanupErrors.push({
-        code: 'coordinator.cleanup.cell-failed',
-        workerId: targets[index].cell.workerId,
-        cellId: targets[index].cell.cellId,
-        message: 'Worker cancellation did not confirm owned-process cleanup.',
-      });
-    }
+    cleanupErrors.push(...coordinatorCleanupErrors(targets, cancellations));
   };
 
-  const pipelines = [...cellsByWorker.values()].map(async (cells) => {
+  const orderedPipelines = [...cellsByWorker.values()];
+  if (fourWorkerDispatchOriginMs !== null) {
+    const order = new Map(plan.dispatchSchedule.map((entry, index) => [entry.workerId, index]));
+    orderedPipelines.sort((left, right) => order.get(left[0].workerId) - order.get(right[0].workerId));
+  }
+  const pipelines = orderedPipelines.map(async (cells) => {
     const first = cells[0];
     const staggerIndex = waveZeroOrder.indexOf(first.cellId);
-    if (staggerIndex > 0 && firstWaveStaggerMs > 0) {
-      await wait(firstWaveStaggerMs * staggerIndex, controllers.get(first.cellId).signal);
+    const startDelayMs = fourWorkerDispatchOriginMs === null
+      ? firstWaveStaggerMs * staggerIndex
+      : Math.max(0, fourWorkerDispatchOriginMs + plan.dispatchSchedule.find((entry) => (
+        entry.cellId === first.cellId && entry.workerId === first.workerId
+      )).startOffsetMs - now().getTime());
+    if (startDelayMs > 0) {
+      await wait(startDelayMs, controllers.get(first.cellId).signal);
     }
     for (const cell of cells) {
       const controller = controllers.get(cell.cellId);
@@ -1174,6 +1221,7 @@ async function runCoordinatorWorkerPipelines({
         completed.add(cell.cellId);
       } catch (error) {
         await stopAll(cell, error);
+        await collectRejectedCellEvidence(cell, error, failedCellEvidence);
         throw error;
       } finally {
         active.delete(cell.workerId);
@@ -1186,7 +1234,7 @@ async function runCoordinatorWorkerPipelines({
     throw new CoordinatorWaveFailure({
       waveIndex: failure.cell?.waveIndex ?? 0, cellId: failure.cell?.cellId ?? 'unknown', cause: failure.error,
       startedCellIds: [...started], completedCellIds: [...completed], partialResults: new Map(results),
-      cleanupErrors,
+      cleanupErrors, failedCellEvidence,
     });
   }
   const waveCompletions = [];

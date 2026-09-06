@@ -108,6 +108,9 @@ import {
   aggregateProductionCellFailures,
   assertProductionCellsPassedForCanonicalVerification,
   productionCellFailureDisposition,
+  observeOwnedCellCompletion,
+  preserveFailedCellEvidence,
+  failedCellEvidencePaths,
   productionFailureFingerprint,
   remotePowerShellInvocation,
   runBoundedCoordinatorStage,
@@ -275,6 +278,100 @@ test('killable coordinator child failures retain the exact finalization stage', 
     }),
     /canonical-manifest-publication child failed with exit 7: fixture publication failed/u,
   );
+});
+
+test('owned c04 observer survives peer stop signal until its bounded task publishes final evidence', async () => {
+  const controller = new AbortController();
+  let publishTerminal;
+  let observedExit = false;
+  let completed = false;
+  const state = { phase: 'owned-task-running', launches: 0, providerCalls: 0 };
+  const observing = observeOwnedCellCompletion({
+    signal: controller.signal, timeoutMs: 1_000,
+    execute: ({ signal, timeoutMs }) => {
+      assert.equal(timeoutMs, 1_000);
+      state.launches += 1;
+      return new Promise((resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('SSH observer aborted before guest terminal')), { once: true });
+        publishTerminal = () => { observedExit = true; state.phase = 'terminal-and-files-collected'; resolve(state); };
+      });
+    },
+  });
+  observing.then(() => { completed = true; }, () => { completed = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort(new Error('c02 finalizer rejected'));
+  await new Promise((resolve) => setImmediate(resolve));
+  const prematurelyCompleted = completed;
+  publishTerminal();
+  const result = await observing;
+  assert.equal(prematurelyCompleted, false, 'peer cancellation must not sever terminal observation');
+  assert.equal(observedExit, true);
+  assert.equal(result.phase, 'terminal-and-files-collected');
+  assert.equal(result.launches, 1);
+  assert.equal(result.providerCalls, 0);
+});
+
+test('owned observer enforces a finite timebox and preserves raw failures without promoting them', async () => {
+  let captured = 0;
+  const pending = observeOwnedCellCompletion({ timeoutMs: 20,
+    execute: ({ timeoutMs }) => { assert.equal(timeoutMs, 20); return new Promise(() => {}); },
+    preserveFailure: async () => { captured += 1; return { manifestPath: 'diagnostics-only.json' }; },
+  });
+  let timeoutError;
+  await assert.rejects(pending, (error) => {
+    assert.match(error.message, /owned cell terminal observation.*timed out/);
+    timeoutError = error;
+    assert.equal(error.result, undefined);
+    return true;
+  });
+  assert.equal(captured, 0, 'failure must reach stopAll before diagnostic I/O');
+  await timeoutError.collectFailureEvidence();
+  assert.equal(timeoutError.failureEvidence.manifestPath, 'diagnostics-only.json');
+  assert.equal(captured, 1);
+  const primary = new Error('provider input budget ledger is not a strict terminal success');
+  await assert.rejects(observeOwnedCellCompletion({ timeoutMs: 1_000,
+    execute: async () => { throw primary; },
+    preserveFailure: async () => { throw new Error('copy failed'); },
+  }), (error) => {
+    assert.equal(error, primary);
+    return true;
+  });
+  await primary.collectFailureEvidence();
+  assert.equal(primary.failureEvidenceErrors[0].code, 'watch.collection.failed-cell-unavailable');
+  const controller = new AbortController();
+  controller.abort(primary);
+  await assert.rejects(observeOwnedCellCompletion({ signal: controller.signal, timeoutMs: 1_000,
+    execute: () => assert.fail('aborted cell must not launch'),
+  }), (error) => error === primary);
+});
+
+test('failed finalizer file preservation is allowlisted, byte/hash verified and diagnostics-only', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-failed-preserve-'));
+  const plan = { executionId: 'fixture-execution', planDigest: 'a'.repeat(64) };
+  const cell = { cellIndex: 1, cellId: 'c02', workerId: 'vm169' };
+  const lease = { leaseId: 'lease-fixture', leaseDigest: 'b'.repeat(64) };
+  const bytes = Buffer.from('{"finalized":false,"terminalReason":null}');
+  const entry = { path: 'runs/c02/provider-input-budget-ledger.json', bytes: bytes.length,
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+  try {
+    const evidence = await preserveFailedCellEvidence({ plan, cell, lease, directory: path.join(root, 'saved'),
+      inventory: [entry], download: async (_source, destination) => fs.writeFileSync(destination, bytes),
+    });
+    const manifest = JSON.parse(fs.readFileSync(evidence.manifestPath, 'utf8'));
+    assert.equal(manifest.status, 'diagnostics-only');
+    assert.equal(manifest.verdict, undefined);
+    assert.equal(manifest.files[0].sha256, entry.sha256);
+    assert.ok(manifest.missing.includes('runs/c02/watch-session-report.json'));
+    assert.equal(failedCellEvidencePaths(cell, lease).some((name) => /backup|credential|private|desktop-env/i.test(name)), false);
+    for (const name of ['../escape.log', 'runs/c02/desktop-env.local.backup', 'private/key', 'runs/c04/report.json']) {
+      await assert.rejects(preserveFailedCellEvidence({ plan, cell, lease, directory: path.join(root, 'bad'),
+        inventory: [{ ...entry, path: name }], download: () => assert.fail('must reject before read/download'),
+      }), /inventory authority invalid/);
+    }
+    await assert.rejects(preserveFailedCellEvidence({ plan, cell, lease, directory: path.join(root, 'changed'),
+      inventory: [entry], download: async (_source, destination) => fs.writeFileSync(destination, 'changed'),
+    }), /hash\/size changed/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('production cell failures stop only for safety boundaries and collect ordinary verdicts', () => {
@@ -881,6 +978,28 @@ test('coordinator failure state preserves the primary error through bounded clea
   fs.rmSync(statePath, { force: true });
 });
 
+for (const [label, receipt] of [['undefined', undefined], ['false', false], ['negative', { passed: false }],
+  ['positive', { passed: true, cleanupErrors: [] }]]) {
+  test(`outer coordinator cleanup requires positive receipt: ${label}`, async () => {
+    const executionId = `cleanup-receipt-${crypto.randomUUID()}`;
+    const outputRoot = path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-live-coordinator');
+    const statePath = path.join(outputRoot, `${executionId}.coordinator-state.json`);
+    let calls = 0;
+    try {
+      await assert.rejects(runProductionCoordinator({ workerConfig: null,
+        runtimeAuthority: 'missing-runtime.json', localIsolationAuthority: 'missing-local.json',
+        executionId, coordinatorOutputRoot: outputRoot,
+        operations: { cleanupOwnedResources: async () => { calls += 1; return receipt; } },
+      }));
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      assert.equal(calls, 1);
+      assert.equal(state.stage, label === 'positive' ? 'cleanup-completed' : 'cleanup-incomplete');
+      assert.equal(state.cleanupErrors.length, label === 'positive' ? 0 : 1);
+      assert.ok(state.primaryError.message);
+    } finally { fs.rmSync(statePath, { force: true }); }
+  });
+}
+
 function rawWorkerConfig(root) {
   const defaultProfile = (workerId) => ({
     instanceId: `${workerId}-default`,
@@ -951,6 +1070,17 @@ test('production worker config v2 binds three distinct transports, BIOS UUIDs, h
       [1, 'vm171', 0], [2, 'vm169', 0], [3, 'vm169', 1], [4, 'vm167', 0],
     ]);
     const duplicateUuid = structuredClone(config);
+    const fourConfig = structuredClone(config);
+    fourConfig.workers[0].transport = { kind: 'local' };
+    fourConfig.workers.push(worker('vm131', '192.168.40.131', 'DDDD'));
+    const four = validateProductionWorkerConfig(fourConfig, { configDirectory: root });
+    assert.deepEqual(four.assignments.map(({ workerId, waveIndex }) => [workerId, waveIndex]), [
+      ['vm171', 0], ['vm169', 0], ['vm131', 0], ['vm167', 0],
+    ]);
+    assert.equal(four.workers.filter((entry) => entry.transport.kind === 'ssh').length, 3);
+    const wrongFourth = structuredClone(fourConfig);
+    wrongFourth.workers[3].vmIdentity.uuidBios = wrongFourth.workers[2].vmIdentity.uuidBios;
+    assert.throws(() => validateProductionWorkerConfig(wrongFourth, { configDirectory: root }), /reuses a VMware BIOS UUID/);
     duplicateUuid.workers[2].vmIdentity.uuidBios = duplicateUuid.workers[1].vmIdentity.uuidBios;
     assert.throws(() => validateProductionWorkerConfig(duplicateUuid, { configDirectory: root }), /reuses a VMware BIOS UUID/u);
     const duplicateKey = structuredClone(config);

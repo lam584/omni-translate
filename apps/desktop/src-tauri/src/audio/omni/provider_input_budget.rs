@@ -238,17 +238,20 @@ impl ProviderInputBudget {
         budget.authorize_reconnect_before_connect(trigger)
     }
 
-    pub(super) fn mark_terminal(&self, reason: &str) {
-        if let Some(budget) = self.enabled.as_ref() {
-            budget.set_terminal_reason(reason);
-        }
-    }
-
     pub(super) fn finalize(&self, reason: &str) -> Result<(), String> {
         let Some(budget) = self.enabled.as_ref() else {
             return Ok(());
         };
         budget.finalize(reason)
+    }
+
+    pub(super) fn finalize_failure(&self, reason: &str, error: String) -> String {
+        match self.finalize(reason) {
+            Ok(()) => error,
+            Err(finalize_error) => format!(
+                "{error} | provider input budget ledger finalization failed: {finalize_error}"
+            ),
+        }
     }
 
     fn write_event(
@@ -451,7 +454,10 @@ impl EnabledProviderInputBudget {
         }
         self.set_terminal_reason(reason);
         if let Err(error) = self.write_event("finalized", None, true) {
-            self.finalized.store(false, Ordering::SeqCst);
+            // Finalization is an exactly-once attempt. A journal write can
+            // fail after partially reaching the file, so reopening the gate
+            // would let Drop append a second terminal record over ambiguous
+            // bytes. Keep the gate closed and surface the persistence error.
             return Err(error);
         }
         Ok(())
@@ -895,6 +901,80 @@ mod tests {
         assert_eq!(final_record["budgetExceeded"], false);
         assert_eq!(final_record["totalAttemptedSamples"], 10);
         assert_eq!(final_record["terminalReason"], "worker-completed");
+    }
+
+    #[test]
+    fn failure_finalization_preserves_the_product_error_and_closes_the_ledger_once() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("ledger.json");
+        let environment = enabled_environment(&path, "10");
+        let budget = budget_from_map(&environment).expect("budget");
+
+        let error = budget.finalize_failure(
+            "livetranslate-audio-drain-timeout",
+            "shutdown did not complete within 15 seconds".to_string(),
+        );
+
+        assert_eq!(error, "shutdown did not complete within 15 seconds");
+        let final_record = final_record(&path);
+        assert_eq!(final_record["finalized"], true);
+        assert_eq!(
+            final_record["terminalReason"],
+            "livetranslate-audio-drain-timeout"
+        );
+        let journal = journal_records(&path);
+        assert_eq!(journal.last().expect("terminal journal record")["event"], "finalized");
+        assert_eq!(
+            journal
+                .iter()
+                .filter(|entry| entry["event"] == "finalized")
+                .count(),
+            1
+        );
+
+        drop(budget);
+        assert_eq!(
+            journal_records(&path)
+                .iter()
+                .filter(|entry| entry["event"] == "finalized")
+                .count(),
+            1,
+            "Drop must not append a second terminal record"
+        );
+    }
+
+    #[test]
+    fn failed_finalization_attempt_cannot_be_retried_by_cleanup() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("ledger.json");
+        let environment = enabled_environment(&path, "10");
+        let budget = budget_from_map(&environment).expect("budget");
+        let enabled = budget.enabled.as_ref().expect("enabled budget");
+        let sequence_before_finalization = enabled.sequence.load(Ordering::SeqCst);
+
+        let _ = std::panic::catch_unwind(|| {
+            let _journal = enabled.journal.lock().expect("journal lock");
+            panic!("poison journal writer");
+        });
+
+        let error = budget.finalize_failure(
+            "livetranslate-audio-drain-timeout",
+            "product failure".to_string(),
+        );
+        assert!(error.contains("product failure"));
+        assert!(error.contains("journal lock was poisoned"));
+        assert!(enabled.finalized.load(Ordering::SeqCst));
+        assert_eq!(
+            enabled.sequence.load(Ordering::SeqCst),
+            sequence_before_finalization + 1,
+        );
+
+        budget.finalize("worker-drop").expect("cleanup observes the closed gate");
+        assert_eq!(
+            enabled.sequence.load(Ordering::SeqCst),
+            sequence_before_finalization + 1,
+            "cleanup must not attempt a second terminal journal append",
+        );
     }
 
     #[test]

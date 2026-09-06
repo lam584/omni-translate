@@ -363,7 +363,7 @@ fn run_omni_worker(
             }
         }
         if let Some((reason, error)) = livetranslate_shutdown.deadline_error(Instant::now()) {
-            provider_input_budget.mark_terminal(reason);
+            let error = provider_input_budget.finalize_failure(reason, error);
             let _ = diag_log(
                 &app,
                 "omni",
@@ -476,8 +476,9 @@ fn run_omni_worker(
         let should_send_livetranslate_finish = match should_send_livetranslate_finish {
             Ok(value) => value,
             Err(error) => {
-                provider_input_budget.mark_terminal(
+                let error = provider_input_budget.finalize_failure(
                     "livetranslate-session-finished-before-finish",
+                    error,
                 );
                 terminalize_livetranslate_shutdown!();
                 let _ = socket.close();
@@ -498,7 +499,12 @@ fn run_omni_worker(
             if let Err(error) = socket.send_message(Message::Text(
                 finish_event.to_string().into(),
             )) {
-                provider_input_budget.mark_terminal("livetranslate-session-finish-send-failed");
+                let error = provider_input_budget.finalize_failure(
+                    "livetranslate-session-finish-send-failed",
+                    format!(
+                        "LiveTranslate fail-closed: session.finish send failed on the existing socket: {error}"
+                    ),
+                );
                 let _ = diag_log(
                     &app,
                     "omni",
@@ -511,14 +517,13 @@ fn run_omni_worker(
                 let _ = socket.close();
                 let _ = playback_worker.shutdown_gracefully();
                 let _ = emit_audio_snapshot(&app, store);
-                return Err(format!(
-                    "LiveTranslate fail-closed: session.finish send failed on the existing socket: {error}"
-                ));
+                return Err(error);
             }
             if direction == "inbound" {
                 if let Err(error) = store.record_strict_watch_session_finish_sent() {
-                    provider_input_budget.mark_terminal(
+                    let error = provider_input_budget.finalize_failure(
                         "livetranslate-session-finish-authority-invalid",
+                        error,
                     );
                     terminalize_livetranslate_shutdown!();
                     let _ = socket.close();
@@ -774,7 +779,12 @@ fn run_omni_worker(
         let poll = match poll {
             Ok(poll) => poll,
             Err(error) if livetranslate_shutdown.is_requested() => {
-                provider_input_budget.mark_terminal("livetranslate-shutdown-poll-failed");
+                let error = provider_input_budget.finalize_failure(
+                    "livetranslate-shutdown-poll-failed",
+                    format!(
+                        "LiveTranslate fail-closed while awaiting session.finished on the existing socket: {error}"
+                    ),
+                );
                 let _ = diag_log(
                     &app,
                     "omni",
@@ -807,9 +817,7 @@ fn run_omni_worker(
                 }
                 let _ = playback_worker.shutdown_gracefully();
                 let _ = emit_audio_snapshot(&app, store);
-                return Err(format!(
-                    "LiveTranslate fail-closed while awaiting session.finished on the existing socket: {error}"
-                ));
+                return Err(error);
             }
             Err(error) => return Err(error),
         };
@@ -883,15 +891,16 @@ fn run_omni_worker(
         }
         if poll.stop_worker {
             if livetranslate_shutdown.is_requested() {
-                provider_input_budget.mark_terminal("livetranslate-session-ended-before-finished");
+                let error = provider_input_budget.finalize_failure(
+                    "livetranslate-session-ended-before-finished",
+                    "LiveTranslate fail-closed: provider ended the session before session.finished"
+                        .to_string(),
+                );
                 terminalize_livetranslate_shutdown!();
                 let _ = socket.close();
                 let _ = playback_worker.shutdown_gracefully();
                 let _ = emit_audio_snapshot(&app, store);
-                return Err(
-                    "LiveTranslate fail-closed: provider ended the session before session.finished"
-                        .to_string(),
-                );
+                return Err(error);
             }
             let _ = socket.close();
             store.set_stt_connected(false, buffer_size);

@@ -1488,7 +1488,6 @@ impl OmniConnectionCoordinator {
                     thread::sleep(initial_connect_backoff(initial_attempt));
                 }
                 Err(error) => {
-                    provider_input_budget.mark_terminal("initial-connect-failed");
                     let elapsed_ms = initial_connect_started
                         .elapsed()
                         .map(|elapsed| elapsed.as_millis())
@@ -1497,9 +1496,12 @@ impl OmniConnectionCoordinator {
                         "initial websocket connect failed attempts={initial_attempt} elapsedMs={elapsed_ms} error={error}"
                     ));
                     let connect_error = error.to_string();
-                    return Err(with_error_markers(
-                        &format!("无法连接 Omni 服务: {connect_error}"),
-                        classify_connect_error(&connect_error),
+                    return Err(provider_input_budget.finalize_failure(
+                        "initial-connect-failed",
+                        with_error_markers(
+                            &format!("无法连接 Omni 服务: {connect_error}"),
+                            classify_connect_error(&connect_error),
+                        ),
                     ));
                 }
             }

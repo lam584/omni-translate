@@ -87,6 +87,18 @@ fn try_receive_provider_input(
     }
 }
 
+fn observe_provider_input_fence_after_yield(
+    audio_rx: &mpsc::Receiver<Vec<u8>>,
+    pre_session_audio_queue: &mut VecDeque<Vec<u8>>,
+    audio_input_disconnected: &mut bool,
+) {
+    match audio_rx.try_recv() {
+        Ok(chunk) => pre_session_audio_queue.push_back(chunk),
+        Err(mpsc::TryRecvError::Empty) => {}
+        Err(mpsc::TryRecvError::Disconnected) => *audio_input_disconnected = true,
+    }
+}
+
 fn record_append_attempt_progress<R: tauri::Runtime>(
     app: &AppHandle<R>,
     store: &AudioStateStore,
@@ -166,9 +178,9 @@ fn reconnect_after_audio_send_failure<C: RealtimeSocketConnector, R: tauri::Runt
             Ok(socket)
         }
         Err(_) => {
-            provider_input_budget.mark_terminal("send-reconnect-exhausted");
-            Err(format!(
-                "Omni WebSocket 发送失败且重连次数已用尽: {send_error}"
+            Err(provider_input_budget.finalize_failure(
+                "send-reconnect-exhausted",
+                format!("Omni WebSocket 发送失败且重连次数已用尽: {send_error}"),
             ))
         }
     }
@@ -468,6 +480,17 @@ impl OmniAudioPump {
                 thread::sleep(Duration::from_millis(OMNI_INTER_CHUNK_THROTTLE_MS));
             }
             if audio_pump_should_yield(chunks_sent_this_tick) {
+                // A bridge-source completion can release the sole producer
+                // exactly after the eighth queued chunk. Observe that channel
+                // fence before yielding; otherwise shutdown waits for another
+                // pump tick even though no input remains. If a ninth chunk is
+                // already queued, retain it for the next tick rather than
+                // exceeding the per-tick send bound.
+                observe_provider_input_fence_after_yield(
+                    audio_rx,
+                    &mut pre_session_audio_queue,
+                    &mut audio_input_disconnected,
+                );
                 break;
             }
         }
@@ -610,6 +633,30 @@ mod tests {
         assert!(!audio_pump_should_yield(OMNI_AUDIO_PUMP_MAX_CHUNKS_PER_TICK - 1));
         assert!(audio_pump_should_yield(OMNI_AUDIO_PUMP_MAX_CHUNKS_PER_TICK));
         assert!(audio_pump_should_yield(OMNI_AUDIO_PUMP_MAX_CHUNKS_PER_TICK + 1));
+    }
+
+    #[test]
+    fn full_tick_observes_released_provider_input_sender_without_waiting_for_another_tick() {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        for index in 0..OMNI_AUDIO_PUMP_MAX_CHUNKS_PER_TICK {
+            tx.send(vec![index as u8]).expect("queued provider input");
+        }
+        drop(tx);
+        let mut disconnected = false;
+        for _ in 0..OMNI_AUDIO_PUMP_MAX_CHUNKS_PER_TICK {
+            assert!(try_receive_provider_input(&rx, &mut disconnected).is_some());
+        }
+        assert!(!disconnected, "the final queued chunk is not itself the fence");
+
+        let mut pre_session_audio_queue = VecDeque::new();
+        observe_provider_input_fence_after_yield(
+            &rx,
+            &mut pre_session_audio_queue,
+            &mut disconnected,
+        );
+
+        assert!(pre_session_audio_queue.is_empty());
+        assert!(disconnected, "the released producer must be observed at the tick boundary");
     }
 
     #[test]

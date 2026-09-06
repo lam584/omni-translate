@@ -521,44 +521,6 @@ where
     })
 }
 
-fn run_wasapi_render_attempt<F, A, T>(
-    on_render_event: &mut F,
-    attempt: A,
-) -> Result<T, String>
-where
-    F: for<'a> FnMut(SpeakerRenderEvent<'a>) -> Result<(), String>,
-    A: FnOnce(&mut F) -> Result<T, String>,
-{
-    // Publish the new render-session boundary before COM/device/client
-    // activation. Otherwise an open or format failure would leave the
-    // preceding render clock authoritative even though this physical playback
-    // attempt never started. The capture worker owns the corresponding reset.
-    on_render_event(SpeakerRenderEvent::Discontinuity {
-        reason: "wasapi-render-session-start",
-        observed_at: Instant::now(),
-    })?;
-    match attempt(on_render_event) {
-        Ok(value) => Ok(value),
-        Err(error) => {
-            let reason = if super::playback_ownership::desktop_playback_was_cancelled(&error) {
-                "wasapi-render-ownership-cancelled"
-            } else {
-                "wasapi-render-failed"
-            };
-            let discontinuity_result = on_render_event(SpeakerRenderEvent::Discontinuity {
-                reason,
-                observed_at: Instant::now(),
-            });
-            Err(match discontinuity_result {
-                Ok(()) => error,
-                Err(discontinuity_error) => format!(
-                    "{error}; failed to publish render discontinuity after render failure: {discontinuity_error}"
-                ),
-            })
-        }
-    }
-}
-
 fn speaker_pcm_48k_stereo(
     samples: &[i16],
     sample_rate_hz: u32,

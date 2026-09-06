@@ -153,6 +153,51 @@ test('process module refuses external and stale leases, then stops its managed p
   }
 });
 
+test('owned tree cleanup captures native stderr without bypassing final exit verification', { skip: process.platform !== 'win32' }, () => {
+  const output = runPowerShell(`
+    $ErrorActionPreference = 'Stop'
+    $module = Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force -PassThru
+    $process = Start-Process -FilePath $env:ComSpec -ArgumentList '/d /c ping.exe -n 30 127.0.0.1' -WindowStyle Hidden -PassThru
+    try {
+      $lease = Get-OmniProcessIdentity -ProcessId $process.Id -Ownership managed
+      & $module { function script:taskkill.exe { & $env:ComSpec /d /c 'echo fixture-taskkill-stderr 1>&2 & exit /b 128' } }
+      $result = Stop-OmniOwnedProcessTree -Lease $lease
+      [ordered]@{ stopped = $result.stopped; alive = [bool](Get-Process -Id $process.Id -ErrorAction SilentlyContinue); preference = [string]$ErrorActionPreference; nativeExit = $result.taskkillExitCode; nativeOutput = @($result.taskkillOutput) } | ConvertTo-Json -Compress
+    } finally { if (-not $process.HasExited) { $process.Kill(); $process.WaitForExit() } }
+  `);
+  const result = JSON.parse(output);
+  assert.equal(result.stopped, true);
+  assert.equal(result.alive, false);
+  assert.equal(result.preference, 'Stop');
+  assert.equal(result.nativeExit, 128);
+  assert.match(result.nativeOutput.join('\n'), /fixture-taskkill-stderr/u);
+});
+
+test('owned tree cleanup still rejects a live process after native and fallback failure', { skip: process.platform !== 'win32' }, () => {
+  const output = runPowerShell(`
+    $ErrorActionPreference = 'Stop'
+    $module = Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force -PassThru
+    $process = Start-Process powershell.exe -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -WindowStyle Hidden -PassThru
+    try {
+      $lease = Get-OmniProcessIdentity -ProcessId $process.Id -Ownership managed
+      & $module {
+        function script:taskkill.exe { & $env:ComSpec /d /c 'echo fixture-taskkill-denied 1>&2 & exit /b 128' }
+        function script:Stop-Process { param($Id, [switch]$Force, $ErrorAction) }
+      }
+      $failure = $null
+      try { Stop-OmniOwnedProcessTree -Lease $lease -WaitMilliseconds 100 | Out-Null } catch { $failure = $_.Exception.Message }
+      [ordered]@{ failure = $failure; alive = [bool](Get-Process -Id $process.Id -ErrorAction SilentlyContinue); custodyRetained = (Test-OmniProcessIdentity -Lease $lease); preference = [string]$ErrorActionPreference } | ConvertTo-Json -Compress
+    } finally { if (-not $process.HasExited) { $process.Kill(); $process.WaitForExit() } }
+  `);
+  const result = JSON.parse(output);
+  assert.match(result.failure, /owned process tree did not exit/u);
+  assert.match(result.failure, /taskkillExitCode=128.*fixture-taskkill-denied/u);
+  assert.match(result.failure, /remainingPids=\d+/u);
+  assert.equal(result.alive, true);
+  assert.equal(result.custodyRetained, true);
+  assert.equal(result.preference, 'Stop');
+});
+
 test('managed process cleanup accepts an owned process that already ended', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'omni-testing-process-ended-'));
   try {

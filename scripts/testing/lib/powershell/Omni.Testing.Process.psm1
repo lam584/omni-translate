@@ -179,9 +179,18 @@ function Stop-OmniOwnedProcessTree {
   [array]::Reverse($ids)
   $targetIds = @($ids) + @([int]$Lease.pid)
   # The root identity was validated immediately above. Ask Windows to terminate
-  # the live tree atomically as well, so a child created after the CIM snapshot
-  # cannot retain inherited stdout/stderr handles past this cleanup boundary.
-  & taskkill.exe /PID ([int]$Lease.pid) /T /F 2>&1 | Out-Null
+  # its live tree as well, including children taskkill sees after the snapshot.
+  # The final check below covers the captured PIDs, not an atomic tree snapshot.
+  # Windows PowerShell promotes redirected native stderr to an error record.
+  # Capture it without abandoning fallback cleanup or the final liveness check.
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $taskkillOutput = @(& taskkill.exe /PID ([int]$Lease.pid) /T /F 2>&1 | ForEach-Object { [string]$_ })
+    $taskkillExitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
   foreach ($id in $ids) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
   Stop-Process -Id ([int]$Lease.pid) -Force -ErrorAction SilentlyContinue
   $deadline = [DateTime]::UtcNow.AddMilliseconds($WaitMilliseconds)
@@ -191,10 +200,10 @@ function Stop-OmniOwnedProcessTree {
     Start-Sleep -Milliseconds 50
   } while ([DateTime]::UtcNow -lt $deadline)
   if ($remainingIds.Count -gt 0) {
-    throw "owned process tree did not exit within ${WaitMilliseconds}ms: rootPid=$($Lease.pid) remainingPids=$($remainingIds -join ',')"
+    throw "owned process tree did not exit within ${WaitMilliseconds}ms: rootPid=$($Lease.pid) remainingPids=$($remainingIds -join ',') taskkillExitCode=$taskkillExitCode taskkillOutput=$($taskkillOutput -join '; ')"
   }
   (Get-OmniProcessCustodyRegistry).Remove([string]$Lease.custodyId)
-  return [pscustomobject]@{ stopped = $true; pid = [int]$Lease.pid }
+  return [pscustomobject]@{ stopped = $true; pid = [int]$Lease.pid; taskkillExitCode = $taskkillExitCode; taskkillOutput = $taskkillOutput }
 }
 
 function Stop-OmniManagedProcessHandle {

@@ -7,12 +7,14 @@ pub(crate) struct OmniHandle {
         reason = "join handle is retained for supervised shutdown on supported runners"
     )]
     pub join_handle: JoinHandle<()>,
+    provider_input_relay: Option<JoinHandle<()>>,
     completion_rx: Option<mpsc::Receiver<Result<(), String>>>,
 }
 
 pub(crate) struct OmniStopSender {
     inner: mpsc::Sender<()>,
     stop_requested: Arc<AtomicBool>,
+    provider_input_wake: Option<mpsc::Sender<Vec<u8>>>,
 }
 
 impl OmniStopSender {
@@ -21,6 +23,12 @@ impl OmniStopSender {
         // do not join. Close the LiveTranslate reconnect gate before the
         // worker can observe the channel message.
         self.stop_requested.store(true, Ordering::SeqCst);
+        // Wake the provider-input relay without forwarding another chunk. The
+        // relay owns the sole downstream sender, so its exit establishes the
+        // real receiver disconnection required before LiveTranslate finish.
+        if let Some(wake) = self.provider_input_wake.as_ref() {
+            let _ = wake.send(Vec::new());
+        }
         self.inner.send(signal)
     }
 }
@@ -39,8 +47,10 @@ impl OmniHandle {
             stop_tx: OmniStopSender {
                 inner: stop_tx,
                 stop_requested,
+                provider_input_wake: None,
             },
             join_handle,
+            provider_input_relay: None,
             completion_rx: None,
         }
     }
@@ -56,13 +66,29 @@ impl OmniHandle {
         handle
     }
 
+    fn with_provider_input_relay(
+        mut self,
+        provider_input_wake: mpsc::Sender<Vec<u8>>,
+        provider_input_relay: JoinHandle<()>,
+    ) -> Self {
+        self.stop_tx.provider_input_wake = Some(provider_input_wake);
+        self.provider_input_relay = Some(provider_input_relay);
+        self
+    }
+
     pub(crate) fn stop_and_join(self, direction: &str) -> Result<(), String> {
         let Self {
             stop_tx,
             join_handle,
+            provider_input_relay,
             completion_rx,
         } = self;
         let _ = stop_tx.send(());
+        if let Some(relay) = provider_input_relay {
+            relay.join().map_err(|_| {
+                format!("Omni {direction} provider input relay panicked during route stop")
+            })?;
+        }
         join_handle
             .join()
             .map_err(|_| format!("Omni {direction} worker panicked during route stop"))?;
@@ -75,6 +101,27 @@ impl OmniHandle {
             None => Ok(()),
         }
     }
+}
+
+fn start_provider_input_relay(
+    stop_requested: Arc<AtomicBool>,
+) -> Result<(mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>, JoinHandle<()>), String> {
+    let (source_tx, source_rx) = mpsc::channel::<Vec<u8>>();
+    let (provider_tx, provider_rx) = mpsc::channel::<Vec<u8>>();
+    let relay = thread::Builder::new()
+        .name("omni-provider-input".to_string())
+        .spawn(move || {
+            while let Ok(chunk) = source_rx.recv() {
+                if stop_requested.load(Ordering::SeqCst) {
+                    break;
+                }
+                if provider_tx.send(chunk).is_err() {
+                    break;
+                }
+            }
+        })
+        .map_err(|error| format!("无法启动 Omni Provider 输入中继线程: {error}"))?;
+    Ok((source_tx, provider_rx, relay))
 }
 
 pub(crate) fn start_omni(
@@ -100,9 +147,10 @@ pub(crate) fn start_omni(
     ),
     String,
 > {
-    let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let stop_requested = Arc::new(AtomicBool::new(false));
+    let (audio_tx, audio_rx, provider_input_relay) =
+        start_provider_input_relay(stop_requested.clone())?;
     let (readiness_tx, readiness_rx) = mpsc::channel::<Result<u64, String>>();
     let (completion_tx, completion_rx) = mpsc::channel::<Result<(), String>>();
     let readiness_sent = Arc::new(AtomicBool::new(false));
@@ -175,6 +223,7 @@ pub(crate) fn start_omni(
         })
         .map_err(|error| format!("无法启动 Omni 线程: {error}"))?;
 
+    let provider_input_wake = audio_tx.clone();
     Ok((
         audio_tx,
         OmniHandle::with_completion_signal(
@@ -182,7 +231,8 @@ pub(crate) fn start_omni(
             join_handle,
             stop_requested,
             completion_rx,
-        ),
+        )
+        .with_provider_input_relay(provider_input_wake, provider_input_relay),
         readiness_rx,
     ))
 }
@@ -290,6 +340,61 @@ mod tests {
             .stop_and_join("inbound")
             .expect("joined stop");
         assert!(finalized.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn stop_releases_the_real_provider_input_sender_while_source_clones_remain() {
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let (source_tx, provider_rx, relay) =
+            start_provider_input_relay(stop_requested.clone()).expect("provider input relay");
+        let retained_source = source_tx.clone();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let stop = OmniStopSender {
+            inner: stop_tx,
+            stop_requested,
+            provider_input_wake: Some(source_tx),
+        };
+
+        retained_source
+            .send(vec![1, 2, 3])
+            .expect("pre-stop provider input");
+        assert_eq!(provider_rx.recv().expect("forwarded input"), vec![1, 2, 3]);
+
+        stop.send(()).expect("stop request");
+        stop_rx.recv().expect("worker stop signal");
+        relay.join().expect("relay exit");
+
+        retained_source
+            .send(vec![4, 5, 6])
+            .expect_err("source cannot retain provider input ownership after stop");
+        assert_eq!(
+            provider_rx.recv(),
+            Err(mpsc::RecvError),
+            "the downstream receiver must observe the relay-owned sender being dropped",
+        );
+    }
+
+    #[test]
+    fn stop_discards_queued_source_input_instead_of_forwarding_past_the_boundary() {
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let (source_tx, provider_rx, relay) =
+            start_provider_input_relay(stop_requested.clone()).expect("provider input relay");
+        let (stop_tx, _stop_rx) = mpsc::channel();
+        let stop = OmniStopSender {
+            inner: stop_tx,
+            stop_requested,
+            provider_input_wake: Some(source_tx.clone()),
+        };
+
+        stop.send(()).expect("stop request");
+        let _ = source_tx.send(vec![7, 8, 9]);
+        relay.join().expect("relay exit");
+
+        assert_eq!(
+            provider_rx.recv(),
+            Err(mpsc::RecvError),
+            "no queued or post-stop source chunk may cross the provider boundary",
+        );
     }
 
     #[test]

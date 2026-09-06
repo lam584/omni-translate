@@ -365,6 +365,7 @@ where
     }
     let playback_permit = playback_ownership.acquire(cue_id, playback_source)?;
     let mut live_scenario_reserved = false;
+    let mut stream_started = false;
     let render_result = run_wasapi_render_attempt(&mut on_render_event, |on_render_event| {
         playback_permit.ensure_active()?;
         if sample_rate_hz == 0 || channel_count == 0 {
@@ -443,6 +444,7 @@ where
                 0,
                 buffer_frames,
                 &playback_permit,
+                &mut stream_started,
                 on_render_event,
             )?;
             return Ok((total_audio_frames as u64, physical_playback_device_id));
@@ -474,6 +476,7 @@ where
                 submitted_frame_base,
                 buffer_frames,
                 &playback_permit,
+                &mut stream_started,
                 on_render_event,
             );
             let (status, completed_at_ms) = if render_result.is_ok() {
@@ -505,6 +508,9 @@ where
         ))
     });
     if live_scenario_reserved { finish_aec_live_scenario_assignments(cue_id, render_result.is_ok())?; }
+    let render_result = render_result.map_err(|error| {
+        format!("{error}; speaker-render-stream-started={stream_started}")
+    });
     render_result.map(|(rendered_frames, physical_playback_device_id)| SpeakerPlaybackReceipt {
         rendered_frames,
         output_sample_rate_hz: SPEAKER_SAMPLE_RATE_HZ,
@@ -696,6 +702,7 @@ fn render_wasapi_frames<F>(
     submitted_frame_base: u64,
     buffer_frames: u32,
     playback_permit: &super::playback_ownership::DesktopPlaybackPermit,
+    stream_started_authority: &mut bool,
     on_render_event: &mut F,
 ) -> Result<(), String>
 where
@@ -737,6 +744,7 @@ where
                     audio_client.start_stream().map_err(|error| error.to_string())
                 })?;
                 started = true;
+                *stream_started_authority = true;
             }
             wait_for_render_poll(audio_client, playback_permit, started)?;
             continue;
@@ -752,6 +760,7 @@ where
                     audio_client.start_stream().map_err(|error| error.to_string())
                 })?;
                 started = true;
+                *stream_started_authority = true;
             } else if !started && tracker.submitted_frames == 0 {
                 return Err(format!(
                     "WASAPI render buffer ({buffer_frames} frames) cannot hold one complete AEC reference frame ({reference_frames} frames)"

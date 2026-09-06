@@ -3375,7 +3375,6 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
     let mut attempt_index = 0_u8;
     let result = loop {
         attempt_index = attempt_index.saturating_add(1);
-        let mut physical_frame_submitted = false;
         let result = crate::audio::speech::play_to_speaker(
             output_samples,
             sample_rate_hz,
@@ -3386,12 +3385,6 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
             cue_id,
             "native-omni",
             |event| {
-                if matches!(
-                    &event,
-                    crate::audio::speech::SpeakerRenderEvent::Frame { .. }
-                ) {
-                    physical_frame_submitted = true;
-                }
                 match event {
             crate::audio::speech::SpeakerRenderEvent::Discontinuity {
                 reason,
@@ -3449,11 +3442,9 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
                 }
             },
         );
-        let retryable_open_failure = result.as_ref().is_err_and(|error| {
-            !physical_frame_submitted
-                && attempt_index == 1
-                && speaker_endpoint_open_was_transiently_missing(error)
-        });
+        let retryable_open_failure = result
+            .as_ref()
+            .is_err_and(|error| should_retry_speaker_endpoint(attempt_index, error));
         if !retryable_open_failure {
             break result;
         }
@@ -3462,7 +3453,7 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
             "omni",
             "warn",
             format!(
-                "[AUDIO] transient speaker endpoint open failed before physical submission; retrying once: cue_id={cue_id} error={}",
+                "[AUDIO] transient speaker endpoint failed before stream start; re-resolving the configured endpoint and retrying once: cue_id={cue_id} error={}",
                 result.as_ref().unwrap_err(),
             ),
         );
@@ -3519,9 +3510,20 @@ fn speaker_endpoint_open_was_transiently_missing(error: &str) -> bool {
     error.contains("0x80070002")
 }
 
+fn speaker_render_stream_never_started(error: &str) -> bool {
+    error.contains("speaker-render-stream-started=false")
+}
+
+fn should_retry_speaker_endpoint(attempt_index: u8, error: &str) -> bool {
+    attempt_index == 1
+        && speaker_endpoint_open_was_transiently_missing(error)
+        && speaker_render_stream_never_started(error)
+}
+
 #[cfg(test)]
 mod speaker_endpoint_retry_tests {
-    use super::speaker_endpoint_open_was_transiently_missing;
+    use super::{record_complete_playback_ack, should_retry_speaker_endpoint, speaker_endpoint_open_was_transiently_missing, speaker_render_stream_never_started, SpeakerPlaybackOutcome};
+    use crate::audio::{speech::SpeechOutputRoutePlan, state::AudioStateStore};
 
     #[test]
     fn retries_only_the_observed_missing_endpoint_hresult() {
@@ -3534,6 +3536,80 @@ mod speaker_endpoint_retry_tests {
         assert!(!speaker_endpoint_open_was_transiently_missing(
             "desktop playback ownership cancelled"
         ));
+        assert!(speaker_render_stream_never_started(
+            "Windows returned an error: 系统找不到指定的文件。 (0x80070002); speaker-render-stream-started=false"
+        ));
+        let before_start = "Windows returned an error: 系统找不到指定的文件。 (0x80070002); speaker-render-stream-started=false";
+        let after_start = "Windows returned an error: 系统找不到指定的文件。 (0x80070002); speaker-render-stream-started=true";
+        assert!(!speaker_render_stream_never_started(after_start));
+        assert!(should_retry_speaker_endpoint(1, before_start));
+        assert!(!should_retry_speaker_endpoint(2, before_start));
+        assert!(!should_retry_speaker_endpoint(1, after_start));
+    }
+
+    #[test]
+    fn speaker_authority_commit_failure_remains_fail_closed() {
+        let store = AudioStateStore::new();
+        store.begin_strict_watch_terminal_lifecycle("run", "cell", "lease").unwrap();
+        store.record_strict_watch_test_session_updated().unwrap();
+        store.record_strict_watch_provider_append(480).unwrap();
+        store.record_strict_watch_provider_input_closed().unwrap();
+        store.record_strict_watch_response_done("response-authority-failed").unwrap();
+        store.record_strict_watch_renderer_cue_submitted("cue-authority-failed", "response-authority-failed").unwrap();
+        record_complete_playback_ack(
+            &store,
+            &SpeechOutputRoutePlan::new(true, false),
+            "cue-authority-failed",
+            &SpeakerPlaybackOutcome { frames: 48_000, render_attempt_id: Some("attempt".to_string()), authority_committed: false },
+            0,
+            0,
+        );
+        store.record_strict_watch_session_finish_sent().unwrap();
+        store.record_strict_watch_session_finished_received().unwrap();
+        let error = store.strict_watch_terminal_lifecycle_snapshot().expect_err("uncommitted PCM authority must not become a renderer ACK");
+        assert!(error.contains("speaker-renderer-authority-commit-failed"));
+    }
+
+    #[test]
+    fn c03_final_speaker_failure_is_bound_to_the_original_cue_and_response() {
+        let store = AudioStateStore::new();
+        store
+            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
+            .unwrap();
+        store.record_strict_watch_test_session_updated().unwrap();
+        store.record_strict_watch_provider_append(480).unwrap();
+        store.record_strict_watch_provider_input_closed().unwrap();
+        store
+            .record_strict_watch_response_done("resp_WAOAjQCyKsCUZsq32h4Ph")
+            .unwrap();
+        store
+            .record_strict_watch_renderer_cue_submitted(
+                "omni-cue-inbound-1788721358299",
+                "resp_WAOAjQCyKsCUZsq32h4Ph",
+            )
+            .unwrap();
+
+        record_complete_playback_ack(
+            &store,
+            &SpeechOutputRoutePlan::new(true, false),
+            "omni-cue-inbound-1788721358299",
+            &SpeakerPlaybackOutcome {
+                frames: 0,
+                render_attempt_id: None,
+                authority_committed: false,
+            },
+            0,
+            0,
+        );
+        store.record_strict_watch_session_finish_sent().unwrap();
+        store.record_strict_watch_session_finished_received().unwrap();
+
+        let error = store
+            .strict_watch_terminal_lifecycle_snapshot()
+            .expect_err("a failed final speaker render must not synthesize an ACK");
+        assert!(error.contains("omni-cue-inbound-1788721358299"));
+        assert!(error.contains("resp_WAOAjQCyKsCUZsq32h4Ph"));
+        assert!(error.contains("speaker-renderer-produced-no-completion-receipt"));
     }
 }
 
@@ -4044,6 +4120,17 @@ fn play_and_commit_speaker_authority<R: tauri::Runtime>(
     }
 }
 
+fn record_renderer_failure(audio_state: &AudioStateStore, cue_id: &str, reason: &str) {
+    if let Err(error) = audio_state.record_strict_watch_renderer_failure(cue_id, reason) {
+        audio_state.watch_session_report.record_session_issue(
+            "output",
+            "strict-renderer-failure-authority-failed",
+            "error",
+            &error,
+        );
+    }
+}
+
 fn record_complete_playback_ack(
     audio_state: &AudioStateStore,
     output_route: &crate::audio::speech::SpeechOutputRoutePlan,
@@ -4056,6 +4143,7 @@ fn record_complete_playback_ack(
         audio_state
             .translation_playback_quiescence()
             .observe_bridge_playback_status(cue_id, "route-failed");
+        record_renderer_failure(audio_state, cue_id, "bridge-playback-route-produced-no-accepted-frames");
         return;
     }
     if output_route.write_to_bridge_playback {
@@ -4065,6 +4153,14 @@ fn record_complete_playback_ack(
         || (speaker.frames > 0 && speaker.authority_committed);
     let virtual_mic_acked = !output_route.write_to_virtual_mic || virtual_mic_frames > 0;
     if !speaker_acked || !virtual_mic_acked {
+        let reason = if output_route.play_to_speaker && speaker.frames == 0 {
+            "speaker-renderer-produced-no-completion-receipt"
+        } else if output_route.play_to_speaker && !speaker.authority_committed {
+            "speaker-renderer-authority-commit-failed"
+        } else {
+            "virtual-mic-renderer-produced-no-accepted-frames"
+        };
+        record_renderer_failure(audio_state, cue_id, reason);
         return;
     }
     let receipt_authority = match (
@@ -5315,6 +5411,66 @@ mod omni_playback_tests {
                     && dropped[0].observed_queue_age_ms >= 6_000
         ));
         assert_eq!(queue.pending_cue_ids(), ["fresh", "new"]);
+    }
+
+    #[test]
+    fn c03_queue_only_submits_the_active_and_surviving_final_cues() {
+        fn c03_play(cue_id: &str, response_id: &str, duration: Duration) -> OmniPlaybackCommand {
+            OmniPlaybackCommand::Play {
+                samples: vec![1, -1],
+                cue_id: cue_id.to_string(),
+                response_id: Some(response_id.to_string()),
+                sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
+                queued_at: Instant::now(),
+                created_at_ms: unix_ms(),
+                estimated_duration_ms: duration.as_millis() as u64,
+            }
+        }
+
+        let queue = OmniPlaybackQueue::new(16);
+        let active = (
+            "omni-cue-inbound-1788721218752",
+            "resp_LoeeIYG1QPFUYyjfkk6C3",
+        );
+        queue.enqueue(c03_play(active.0, active.1, Duration::from_millis(50_880)));
+        let OmniPlaybackReceiveOutcome::Command { command, .. } =
+            queue.recv_timeout(Duration::ZERO)
+        else { panic!("the long c03 cue must become the active renderer submission") };
+        assert!(matches!(command, OmniPlaybackCommand::Play { cue_id, response_id: Some(response_id), .. } if cue_id == active.0 && response_id == active.1));
+
+        let pending = [
+            ("omni-cue-inbound-1788721327144", "resp_KwAMpjJU47P9MEES7E6cC"),
+            ("omni-cue-inbound-1788721343055", "resp_PgrQznH7gyBObK1SCuuhq"),
+            ("omni-cue-inbound-1788721352928", "resp_Vz9y1VpwI9Vq6hjo7M8Ye"),
+            ("omni-cue-inbound-1788721353138", "resp_M432D1btnPQxAquKkHJca"),
+            ("omni-cue-inbound-1788721353747", "resp_LOZSDvXETf86bLyUjr2Jz"),
+            ("omni-cue-inbound-1788721354855", "resp_IIQ6mNWjQSNxyF5u3VILO"),
+            ("omni-cue-inbound-1788721356840", "resp_UalQGKnFwAqHLl5vaiS7V"),
+            ("omni-cue-inbound-1788721356993", "resp_RBPUATgfA3iwmXvmJY6l6"),
+            ("omni-cue-inbound-1788721357753", "resp_U9B7lIuktL7D2bNV2vNoD"),
+            ("omni-cue-inbound-1788721357870", "resp_AG7EMHYNhMxUyVkhhJxoB"),
+            ("omni-cue-inbound-1788721358299", "resp_WAOAjQCyKsCUZsq32h4Ph"),
+        ];
+        let mut dropped = Vec::new();
+        for (cue_id, response_id) in pending {
+            if let Some(previous) = queue.inner.state.lock().unwrap().pending.back_mut() {
+                if let OmniPlaybackCommand::Play { queued_at, .. } = previous {
+                    *queued_at = Instant::now() - Duration::from_secs(60);
+                }
+            }
+            if let OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale { dropped: stale } =
+                queue.enqueue(c03_play(cue_id, response_id, Duration::from_millis(2_800)))
+            {
+                dropped.extend(stale.into_iter().map(|entry| entry.cue_id));
+            }
+        }
+        assert_eq!(dropped, pending[..pending.len() - 1].iter().map(|entry| entry.0.to_string()).collect::<Vec<_>>());
+        queue.begin_provider_finishing();
+        queue.finish_active();
+        let OmniPlaybackReceiveOutcome::Command { command, dropped } = queue.recv_timeout(Duration::ZERO)
+        else { panic!("the final c03 cue must survive as an independent renderer submission") };
+        assert!(dropped.is_empty());
+        assert!(matches!(command, OmniPlaybackCommand::Play { cue_id, response_id: Some(response_id), .. } if cue_id == pending.last().unwrap().0 && response_id == pending.last().unwrap().1));
     }
 
     #[test]

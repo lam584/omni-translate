@@ -90,6 +90,14 @@ struct RendererAck {
 }
 
 #[derive(Clone, Debug)]
+struct RendererFailure {
+    cue_id: String,
+    response_id: String,
+    cue_sequence: u64,
+    reason: String,
+}
+
+#[derive(Clone, Debug)]
 struct StrictWatchTerminalLifecycleState {
     identity: StrictWatchTerminalIdentity,
     next_source_sequence: u64,
@@ -113,6 +121,7 @@ struct StrictWatchTerminalLifecycleState {
     cue_response_ids: HashMap<String, String>,
     last_cue_sequence: u64,
     renderer_acks: HashMap<u64, RendererAck>,
+    renderer_failures: HashMap<u64, RendererFailure>,
     renderer_receipt_ids: HashSet<String>,
 }
 
@@ -211,6 +220,7 @@ impl StrictWatchTerminalLifecycle {
             cue_response_ids: HashMap::new(),
             last_cue_sequence: 0,
             renderer_acks: HashMap::new(),
+            renderer_failures: HashMap::new(),
             renderer_receipt_ids: HashSet::new(),
         });
         Ok(())
@@ -511,6 +521,11 @@ impl StrictWatchTerminalLifecycle {
                 let response_id = state.cue_response_ids.get(cue_id).cloned().ok_or_else(|| {
                     format!("strict Watch renderer cue has no response lineage: {cue_id}")
                 })?;
+                if state.renderer_failures.contains_key(&cue_sequence) {
+                    return Err(format!(
+                        "strict Watch renderer ACK arrived after terminal failure for cue: {cue_id}"
+                    ));
+                }
                 if state.renderer_receipt_ids.contains(receipt_id) {
                     return Ok(());
                 }
@@ -525,6 +540,29 @@ impl StrictWatchTerminalLifecycle {
                 };
                 state.renderer_acks.insert(cue_sequence, ack);
                 state.renderer_receipt_ids.insert(receipt_id.to_string());
+                Ok(())
+            },
+            (),
+        )
+    }
+
+    fn record_renderer_failure(&self, cue_id: &str, reason: &str) -> Result<(), String> {
+        self.with_active_mut(
+            |state| {
+                if reason.trim().is_empty() { return Err("strict Watch renderer failure reason is empty".to_string()); }
+                let cue_sequence = state.cue_sequences.get(cue_id).copied().ok_or_else(|| format!("strict Watch renderer failure references unknown/unsubmitted cue: {cue_id}"))?;
+                let response_id = state.cue_response_ids.get(cue_id).cloned().ok_or_else(|| format!("strict Watch renderer cue has no response lineage: {cue_id}"))?;
+                if state.renderer_acks.contains_key(&cue_sequence) { return Err(format!("strict Watch renderer failure arrived after ACK for cue: {cue_id}")); }
+                if let Some(existing) = state.renderer_failures.get(&cue_sequence) {
+                    if existing.reason == reason {
+                        return Ok(());
+                    }
+                    return Err(format!(
+                        "strict Watch renderer failure reason changed for cue: {cue_id}; first={} later={reason}",
+                        existing.reason
+                    ));
+                }
+                state.renderer_failures.insert(cue_sequence, RendererFailure { cue_id: cue_id.to_string(), response_id, cue_sequence, reason: reason.to_string() });
                 Ok(())
             },
             (),
@@ -584,13 +622,19 @@ impl StrictWatchTerminalLifecycle {
         if state.last_cue_sequence == 0 {
             return Err("strict Watch renderer did not submit any cue".to_string());
         }
-        let renderer_ack = state
-            .renderer_acks
-            .get(&state.last_cue_sequence)
-            .ok_or_else(|| {
-                "strict Watch final renderer ACK does not cover the last cue sequence"
-                    .to_string()
-            })?;
+        if let Some(failure) = state
+            .renderer_failures
+            .values()
+            .min_by_key(|failure| failure.cue_sequence)
+        {
+            return Err(format!(
+                "strict Watch renderer failed: cue={} response={} sequence={} reason={}",
+                failure.cue_id, failure.response_id, failure.cue_sequence, failure.reason
+            ));
+        }
+        let renderer_ack = state.renderer_acks.get(&state.last_cue_sequence).ok_or_else(|| {
+            "strict Watch final renderer ACK does not cover the last cue sequence".to_string()
+        })?;
         let last_response_terminal = state
             .response_terminals
             .get(&renderer_ack.response_id)
@@ -736,6 +780,10 @@ impl AudioStateStore {
             receipt_authority,
             receipt_id,
         )
+    }
+
+    pub(crate) fn record_strict_watch_renderer_failure(&self, cue_id: &str, reason: &str) -> Result<(), String> {
+        self.strict_watch_terminal_lifecycle.record_renderer_failure(cue_id, reason)
     }
 
     pub(crate) fn strict_watch_terminal_lifecycle_snapshot(
@@ -1043,4 +1091,211 @@ mod tests {
                 .contains("response-1:failed")
         );
     }
+    #[test]
+    fn c03_stale_and_text_only_cues_do_not_replace_the_final_renderer_obligation() {
+        let store = AudioStateStore::new();
+        store
+            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
+            .unwrap();
+        store.record_strict_watch_test_session_updated().unwrap();
+        store.record_strict_watch_provider_append(480).unwrap();
+        store.record_strict_watch_provider_input_closed().unwrap();
+
+        // c03's first independently rendered response completed normally.
+        store
+            .record_strict_watch_response_done("resp_WDJIKTFe36RZNIzRWp9sW")
+            .unwrap();
+        store
+            .record_strict_watch_renderer_cue_submitted(
+                "omni-cue-inbound-1788721212106",
+                "resp_WDJIKTFe36RZNIzRWp9sW",
+            )
+            .unwrap();
+        store
+            .record_strict_watch_renderer_ack(
+                "omni-cue-inbound-1788721212106",
+                "speaker-render-completed",
+                "receipt-first",
+            )
+            .unwrap();
+
+        // A repeated submission for the same response/cue is a revision of the
+        // same renderer obligation, not a new sequence.
+        let revision_sequence = store
+            .record_strict_watch_renderer_cue_submitted(
+                "omni-cue-inbound-1788721218752",
+                "resp_LoeeIYG1QPFUYyjfkk6C3",
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .record_strict_watch_renderer_cue_submitted(
+                    "omni-cue-inbound-1788721218752",
+                    "resp_LoeeIYG1QPFUYyjfkk6C3",
+                )
+                .unwrap(),
+            revision_sequence
+        );
+        store
+            .record_strict_watch_response_done("resp_LoeeIYG1QPFUYyjfkk6C3")
+            .unwrap();
+        store
+            .record_strict_watch_renderer_ack(
+                "omni-cue-inbound-1788721218752",
+                "speaker-render-completed",
+                "receipt-long",
+            )
+            .unwrap();
+
+        // These original c03 responses were evicted while still pending.  The
+        // playback worker never submitted them, so they remain Provider/text
+        // terminals and cannot manufacture renderer ACK obligations.
+        for response_id in [
+            "resp_KwAMpjJU47P9MEES7E6cC",
+            "resp_PgrQznH7gyBObK1SCuuhq",
+            "resp_Vz9y1VpwI9Vq6hjo7M8Ye",
+            "resp_M432D1btnPQxAquKkHJca",
+            "resp_LOZSDvXETf86bLyUjr2Jz",
+            "resp_IIQ6mNWjQSNxyF5u3VILO",
+            "resp_UalQGKnFwAqHLl5vaiS7V",
+            "resp_RBPUATgfA3iwmXvmJY6l6",
+            "resp_U9B7lIuktL7D2bNV2vNoD",
+            "resp_AG7EMHYNhMxUyVkhhJxoB",
+        ] {
+            store.record_strict_watch_response_done(response_id).unwrap();
+        }
+
+        // The final c03 cue survived stale eviction, reached the playback
+        // worker, and therefore must retain an independent last-cue ACK
+        // obligation. Its physical renderer failed with 0x80070002.
+        store
+            .record_strict_watch_response_done("resp_WAOAjQCyKsCUZsq32h4Ph")
+            .unwrap();
+        store
+            .record_strict_watch_renderer_cue_submitted(
+                "omni-cue-inbound-1788721358299",
+                "resp_WAOAjQCyKsCUZsq32h4Ph",
+            )
+            .unwrap();
+        store
+            .record_strict_watch_renderer_failure(
+                "omni-cue-inbound-1788721358299",
+                "speaker-renderer-produced-no-completion-receipt",
+            )
+            .unwrap();
+        store.record_strict_watch_session_finish_sent().unwrap();
+        store.record_strict_watch_session_finished_received().unwrap();
+
+        let error = store
+            .strict_watch_terminal_lifecycle_snapshot()
+            .expect_err("the final independently submitted cue must still fail closed");
+        assert!(error.contains("omni-cue-inbound-1788721358299"));
+        assert!(error.contains("resp_WAOAjQCyKsCUZsq32h4Ph"));
+        assert!(error.contains("sequence=3"));
+        assert!(error.contains("speaker-renderer-produced-no-completion-receipt"));
+    }
+
+    #[test]
+    fn earlier_submitted_cue_failure_is_not_hidden_by_a_later_successful_cue() {
+        let store = AudioStateStore::new();
+        store
+            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
+            .unwrap();
+        store.record_strict_watch_test_session_updated().unwrap();
+        store.record_strict_watch_provider_append(480).unwrap();
+        store.record_strict_watch_provider_input_closed().unwrap();
+        store.record_strict_watch_response_done("response-1").unwrap();
+        store
+            .record_strict_watch_renderer_cue_submitted("cue-1", "response-1")
+            .unwrap();
+        store
+            .record_strict_watch_renderer_failure("cue-1", "speaker-renderer-failed")
+            .unwrap();
+        store.record_strict_watch_response_done("response-2").unwrap();
+        store
+            .record_strict_watch_renderer_cue_submitted("cue-2", "response-2")
+            .unwrap();
+        store
+            .record_strict_watch_renderer_ack(
+                "cue-2",
+                "speaker-render-completed",
+                "receipt-2",
+            )
+            .unwrap();
+        store.record_strict_watch_session_finish_sent().unwrap();
+        store.record_strict_watch_session_finished_received().unwrap();
+
+        let error = store
+            .strict_watch_terminal_lifecycle_snapshot()
+            .expect_err("a later successful cue must not hide an earlier submitted-cue failure");
+        assert!(error.contains("cue-1"));
+        assert!(error.contains("response-1"));
+        assert!(error.contains("sequence=1"));
+        assert!(error.contains("speaker-renderer-failed"));
+    }
+
+    #[test]
+    fn renderer_ack_without_attempt_authority_cannot_override_a_prior_failure() {
+        let store = AudioStateStore::new();
+        store
+            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
+            .unwrap();
+        store.record_strict_watch_test_session_updated().unwrap();
+        store.record_strict_watch_provider_append(480).unwrap();
+        store.record_strict_watch_provider_input_closed().unwrap();
+        store.record_strict_watch_response_done("response-1").unwrap();
+        store
+            .record_strict_watch_renderer_cue_submitted("cue-1", "response-1")
+            .unwrap();
+        store
+            .record_strict_watch_renderer_failure("cue-1", "speaker-renderer-failed")
+            .unwrap();
+
+        let error = store
+            .record_strict_watch_renderer_ack(
+                "cue-1",
+                "speaker-render-completed",
+                "receipt-after-failure",
+            )
+            .expect_err("an unscoped ACK must not recover a terminal renderer failure");
+        assert!(error.contains("ACK arrived after terminal failure"));
+        assert!(error.contains("cue-1"));
+    }
+
+    #[test]
+    fn renderer_failure_is_first_write_immutable_and_same_reason_is_idempotent() {
+        let store = AudioStateStore::new();
+        store
+            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
+            .unwrap();
+        store.record_strict_watch_test_session_updated().unwrap();
+        store.record_strict_watch_provider_append(480).unwrap();
+        store.record_strict_watch_provider_input_closed().unwrap();
+        store.record_strict_watch_response_done("response-1").unwrap();
+        store
+            .record_strict_watch_renderer_cue_submitted("cue-1", "response-1")
+            .unwrap();
+        store
+            .record_strict_watch_renderer_failure("cue-1", "first-renderer-failure")
+            .unwrap();
+        store
+            .record_strict_watch_renderer_failure("cue-1", "first-renderer-failure")
+            .expect("repeating the identical failure is idempotent");
+
+        let error = store
+            .record_strict_watch_renderer_failure("cue-1", "later-renderer-failure")
+            .expect_err("a different later reason must not replace the first failure");
+        assert!(error.contains("failure reason changed"));
+        assert!(error.contains("first=first-renderer-failure"));
+        assert!(error.contains("later=later-renderer-failure"));
+
+        store.record_strict_watch_session_finish_sent().unwrap();
+        store.record_strict_watch_session_finished_received().unwrap();
+        let snapshot_error = store
+            .strict_watch_terminal_lifecycle_snapshot()
+            .expect_err("the immutable first renderer failure must remain terminal");
+        assert!(snapshot_error.contains("first-renderer-failure"));
+        assert!(!snapshot_error.contains("later-renderer-failure"));
+    }
+
 }

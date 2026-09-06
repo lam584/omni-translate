@@ -147,6 +147,22 @@ impl TerminalAuthorityRecorder {
         for (index, event) in self.events.iter_mut().enumerate() {
             event.sequence = index as u64 + 1;
         }
+        // The recorder can be scheduled just after the typed session owner has
+        // already published its first lifecycle event. Preserve that owner's
+        // original timestamp while widening the authority window to include
+        // every event that could have been produced by this process. Events
+        // predating the producer remain outside the window and therefore fail
+        // closed in the evidence validators.
+        let earliest_trusted_event_at = self
+            .events
+            .iter()
+            .map(|event| event.observed_at_unix_ms)
+            .filter(|observed_at| *observed_at >= self.producer.started_at_unix_ms)
+            .min();
+        let started_at_unix_ms = earliest_trusted_event_at
+            .map(|observed_at| self.started_at_unix_ms.min(observed_at))
+            .unwrap_or(self.started_at_unix_ms)
+            .max(self.producer.started_at_unix_ms);
         TerminalAuthority {
             artifact_kind: "watch-mode-evidence-driven-terminal".to_string(),
             schema_version: 3,
@@ -161,7 +177,7 @@ impl TerminalAuthorityRecorder {
             runtime_bundle_digest: self.producer.runtime_bundle_digest,
             launch_id: self.producer.launch_id,
             status: status.to_string(),
-            started_at_unix_ms: self.started_at_unix_ms,
+            started_at_unix_ms,
             completed_at_unix_ms,
             error_code,
             error,

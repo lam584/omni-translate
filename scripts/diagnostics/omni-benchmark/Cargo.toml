@@ -15,4 +15,4 @@ serde = { version = "1", features = ["derive"] }
 tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Security_Credentials", "Win32_Foundation"] }
+windows-sys = { version = "0.61", features = ["Win32_Security_Credentials", "Win32_Foundation"] }

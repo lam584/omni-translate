@@ -1019,7 +1019,7 @@ for (const [label, receipt] of [['undefined', undefined], ['false', false], ['ne
   });
 }
 
-function rawWorkerConfig(root) {
+function rawWorkerConfig(root, workerIds = ['vm1']) {
   const defaultProfile = (workerId) => ({
     instanceId: `${workerId}-default`,
     profileId: 'vmware-hda-default',
@@ -1030,15 +1030,13 @@ function rawWorkerConfig(root) {
   return {
     schemaVersion: 2,
     artifactKind: PRODUCTION_WORKER_CONFIG_KIND,
-    workers: [
-      {
-        workerId: 'vm1', user: 'VMUser',
-        transport: { kind: 'local' },
-        workspaceRoot: 'E:\\watch-worker', guestExecutionRoot: 'E:\\omni-shards',
-        vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-1' },
-        deviceProfileInstances: [defaultProfile('vm1')],
-      },
-    ],
+    workers: workerIds.map((workerId) => ({
+      workerId, user: 'VMUser',
+      transport: { kind: 'local' },
+      workspaceRoot: 'E:\\watch-worker', guestExecutionRoot: 'E:\\omni-shards',
+      vmIdentity: { provider: 'vmware', uuidBios: `56-4d-${workerId}` },
+      deviceProfileInstances: [defaultProfile(workerId)],
+    })),
   };
 }
 
@@ -1955,15 +1953,15 @@ test('paid scheduler cleanup gates success output and preserves primary failures
   assert.match(finalization, /\} else \{\s*Stop-ScheduledTask[\s\S]*?Stop-GuardedNode \$launchPath/);
 });
 
-test('production coordinator drives four signed serial waves through stage, verify, and publish', async () => {
+test('production coordinator passes four collected signed shard roots through stage, verify, and publish', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-production-orchestrator-'));
-  const config = rawWorkerConfig(root);
+  const config = rawWorkerConfig(root, ['vm171', 'vm167', 'vm169', 'vm131']);
   const normalized = validateProductionWorkerConfig(config, { configDirectory: root });
   const profilesByWorker = new Map(normalized.workers.map((worker) => [
     worker.workerId,
     new Map(worker.deviceProfileInstances.map((profile) => [profile.deviceClass, profile])),
   ]));
-  const placements = LIVE_LLM_CELLS.map((_, index) => ['vm1', index]);
+  const placements = normalized.assignments.map(({ workerId, waveIndex }) => [workerId, waveIndex]);
   const cells = LIVE_LLM_CELLS.map((cell, index) => {
     const [workerId, waveIndex] = placements[index];
     return {
@@ -1981,9 +1979,19 @@ test('production coordinator drives four signed serial waves through stage, veri
     provenance: CLEAN_PROVENANCE,
     authority: { runtimeBinaryHashes: [] },
     localIsolationAuthority: { manifestPath: 'local.json', path: 'local.json', bytes: 1, sha256: 'b'.repeat(64), providerCalls: 0 },
-    workers: normalized.workers.map(({ workerId, vmIdentity, deviceProfileInstances }) => ({ workerId, vmIdentity, deviceProfileInstances })),
+    workers: normalized.workers.map(({ workerId, vmIdentity, deviceProfileInstances, transport }) => ({
+      workerId,
+      vmIdentity,
+      deviceProfileInstances,
+      transportAuthority: transport.kind === 'local' ? { kind: 'local' } : {
+        kind: 'ssh',
+        hostKeyAlias: transport.hostKeyAlias,
+        hostKeyAlgorithm: transport.hostKeyAlgorithm,
+        hostKeySha256: transport.hostKeySha256,
+      },
+    })),
     cells,
-    waves: cells.map((_, waveIndex) => ({
+    waves: [...new Set(cells.map((cell) => cell.waveIndex))].map((waveIndex) => ({
       waveIndex,
       cellIds: cells.filter((cell) => cell.waveIndex === waveIndex).map((cell) => cell.cellId),
     })),
@@ -2162,7 +2170,12 @@ test('production coordinator drives four signed serial waves through stage, veri
           aggregatePath: path.join(root, 'aggregate.json'),
           matrixIntegration: { cells: [] },
         }),
-        stageShardMatrixIntegration: () => {
+        stageShardMatrixIntegration: ({ shards: stagedShards }) => {
+          calls.push(`stage:${stagedShards.map((shard) => shard.workerId).join(',')}`);
+          assert.deepEqual(
+            stagedShards.map((shard) => shard.workerId),
+            plan.workers.map((worker) => worker.workerId),
+          );
           const finalExecutionRoot = path.join(
             root,
             'evidence',
@@ -2205,13 +2218,17 @@ test('production coordinator drives four signed serial waves through stage, veri
     const result = await runProductionCoordinator(coordinatorOptions);
     assert.deepEqual(
       calls.filter((entry) => entry.startsWith('wave:')),
-      LIVE_LLM_CELLS.map((_, index) => `wave:${index}`),
+      plan.waves.map((wave) => `wave:${wave.waveIndex}`),
+    );
+    assert.deepEqual(
+      calls.filter((entry) => entry.startsWith('stage:')),
+      ['stage:vm171,vm167,vm169,vm131'],
     );
     assert.ok(calls.indexOf('zero-provider-readiness') < calls.indexOf('provider-preflight'));
     assert.equal(calls.filter((entry) => entry.startsWith('paid:')).length, LIVE_LLM_CELLS.length);
     assert.ok(calls.indexOf('verify') < calls.indexOf('publish'));
-    assert.equal(result.workerCount, 1);
-    assert.equal(result.waveCount, LIVE_LLM_CELLS.length);
+    assert.equal(result.workerCount, 4);
+    assert.equal(result.waveCount, 1);
 
     calls.length = 0;
     const originalTransport = coordinatorOptions.operations.createTransport;

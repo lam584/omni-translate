@@ -1000,12 +1000,12 @@ test('strict shard writer projects guest authority into the manifest and every d
   }
 });
 
-test('shard staging copies one local root and emits only evidence-root-relative four-cell projections', () => {
+test('shard staging accepts four signed roots and emits only evidence-root-relative four-cell projections', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-shard-stage-'));
   const coordinatorRoot = path.join(root, 'coordinator');
   const evidenceRoot = path.join(root, 'evidence');
   fs.mkdirSync(coordinatorRoot, { recursive: true });
-  const workerIds = ['vm-1'];
+  const workerIds = ['vm-1', 'vm-2', 'vm-3', 'vm-4'];
   const fixtureProvenance = {
     schemaVersion: 1,
     source: 'git',
@@ -1018,6 +1018,7 @@ test('shard staging copies one local root and emits only evidence-root-relative 
   const fixtureWorkers = workerIds.map((workerId, index) => ({
     workerId,
     interactiveUser: 'VMUser',
+    transportAuthority: { kind: 'local' },
     vmIdentity: { provider: 'vmware', uuidBios: `fixture-vm-${index + 1}` },
     deviceProfileInstances: [
       {
@@ -1295,9 +1296,10 @@ test('shard staging copies one local root and emits only evidence-root-relative 
     };
     const validateStagedShard = ({ shardRoot }) => {
       validationCount += 1;
+      const workerId = path.basename(shardRoot);
       return {
         manifest: { manifestDigest: 'validated-shard-manifest-digest' },
-        validatedResults: plan.cells.map((cell) => {
+        validatedResults: plan.cells.filter((cell) => cell.workerId === workerId).map((cell) => {
           const runDirectory = path.join(shardRoot, 'runs', `cell-${cell.cellIndex}`);
           return {
             runDirectory,
@@ -1319,17 +1321,51 @@ test('shard staging copies one local root and emits only evidence-root-relative 
       collectedMatrixIntegration,
       validateStagedShard,
     });
-    assert.equal(validationCount, 1);
+    assert.equal(validationCount, 4);
     assert.equal(staged.runDirectories.length, LIVE_LLM_CELLS.length);
     assert.deepEqual(staged.matrixIntegration.cells.map((cell) => cell.cellId), LIVE_LLM_CELLS.map((cell) => cell.cellId));
     assert.equal(staged.shardExecution.leases.length, LIVE_LLM_CELLS.length);
-    assert.equal(staged.shardExecution.shards.length, 1);
+    assert.equal(staged.shardExecution.shards.length, 4);
     assert.ok(staged.runDirectories.every((directory) => path.relative(evidenceRoot, directory) && !path.relative(evidenceRoot, directory).startsWith('..')));
     assert.ok(staged.matrixIntegration.cells.every((cell) => (
       !Object.hasOwn(cell, 'sourceRunDirectory')
       && !path.isAbsolute(cell.runDirectory)
       && fs.existsSync(path.join(evidenceRoot, ...cell.runDirectory.split('/')))
     )));
+    assert.throws(() => stageShardMatrixIntegration({
+      evidenceRoot,
+      executionRootName: 'staged-execution-too-many-roots',
+      planPath,
+      leasePaths,
+      coordinatorAggregatePath: aggregatePath,
+      shards: [...shards, {
+        workerId: 'vm-5',
+        shardRoot: path.join(root, 'guests', 'vm-5'),
+        manifestPath: path.join(root, 'guests', 'vm-5', SHARD_MANIFEST_FILE),
+      }],
+      collectedMatrixIntegration,
+      validateStagedShard,
+    }), /between 1 and 4 signed shard roots/u);
+    assert.throws(() => stageShardMatrixIntegration({
+      evidenceRoot,
+      executionRootName: 'staged-execution-missing-root',
+      planPath,
+      leasePaths,
+      coordinatorAggregatePath: aggregatePath,
+      shards: shards.slice(0, -1),
+      collectedMatrixIntegration,
+      validateStagedShard,
+    }), /root count must exactly match the signed plan worker count/u);
+    assert.throws(() => stageShardMatrixIntegration({
+      evidenceRoot,
+      executionRootName: 'staged-execution-duplicate-root',
+      planPath,
+      leasePaths,
+      coordinatorAggregatePath: aggregatePath,
+      shards: [...shards.slice(0, -1), shards[0]],
+      collectedMatrixIntegration,
+      validateStagedShard,
+    }), /duplicate guest shard worker vm-1/u);
     assert.throws(() => stageShardMatrixIntegration({
       evidenceRoot,
       executionRootName: 'staged-execution-digest-mismatch',

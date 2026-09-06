@@ -9,6 +9,15 @@ fn shutdown_drain_releases_manual_response_audio_defer() {
 }
 
 #[test]
+fn livetranslate_shutdown_drain_disables_only_realtime_chunk_throttling() {
+    assert!(!audio_pump::should_throttle_audio_chunk(1, false));
+    assert!(audio_pump::should_throttle_audio_chunk(2, false));
+    assert!(audio_pump::should_throttle_audio_chunk(8, false));
+    assert!(!audio_pump::should_throttle_audio_chunk(2, true));
+    assert!(!audio_pump::should_throttle_audio_chunk(8, true));
+}
+
+#[test]
 fn every_manual_turn_anchors_on_its_first_successful_audible_append() {
     assert!(should_anchor_manual_turn_to_first_audible_append(RealtimeAudioMode::Manual, false, true));
     assert!(!should_anchor_manual_turn_to_first_audible_append(RealtimeAudioMode::Manual, true, true));

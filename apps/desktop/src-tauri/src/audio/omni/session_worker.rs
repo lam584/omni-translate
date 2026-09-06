@@ -433,6 +433,7 @@ fn run_omni_worker(
                 manual_response_pending,
                 livetranslate_shutdown.is_requested(),
             ),
+            livetranslate_shutdown.is_requested(),
         );
         let pump_state = match pump_state {
             Ok(state) => state,

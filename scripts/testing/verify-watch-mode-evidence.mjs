@@ -2406,7 +2406,9 @@ export function verifyStrictShardMatrixAuthority({
   }
   const expectedWorkerCount = Array.isArray(plan.workers) ? plan.workers.length : 0;
   if (!SHARD_ALLOWED_WORKER_COUNTS.includes(expectedWorkerCount)) {
-    throw new Error('strict execution plan must bind between one and three identity-bound workers');
+    throw new Error(
+      `strict execution plan must bind between ${SHARD_ALLOWED_WORKER_COUNTS[0]} and ${SHARD_ALLOWED_WORKER_COUNTS.at(-1)} identity-bound workers`,
+    );
   }
   const preflightAuthorization = verifyStrictShardProviderPreflightAuthorization({
     plan,

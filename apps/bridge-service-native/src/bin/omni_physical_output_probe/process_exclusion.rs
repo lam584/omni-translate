@@ -571,7 +571,7 @@
             tone_component: physical_translation_component,
             silent_packets: physical_metrics.silent_packets,
             invalid_samples: physical_metrics.invalid_samples,
-            capture_timeline: None,
+            capture_timeline: Some(physical_metrics.capture_timeline_authority()),
             process_exclusion_fingerprint: Some(evidence),
             detail,
         })
@@ -598,6 +598,43 @@
 
     #[cfg(test)]
     include!("process_exclusion_detectability_tests.rs");
+
+    #[cfg(test)]
+    mod process_exclusion_timeline_evidence_tests {
+        use super::*;
+
+        #[test]
+        fn process_exclusion_result_serializes_gap_and_unreliable_evidence() {
+            let mut metrics = CaptureMetrics::default();
+            let payload = (0..2 * CHANNELS)
+                .flat_map(|_| 0.25_f32.to_le_bytes()).collect::<Vec<_>>();
+            for (position, discontinuity) in [(100, false), (104, true)] {
+                metrics.append_capture_packet(&payload, CapturePacketInfo {
+                    frames: 2,
+                    device_position_frames: position,
+                    qpc_position_100ns: position * 100,
+                    data_discontinuity: discontinuity,
+                    silent: false,
+                    timestamp_error: false,
+                });
+            }
+            let result = ProbeResult {
+                capture_timeline: Some(metrics.capture_timeline_authority()),
+                ..ProbeResult::failed_process_exclusion("amplitude failure".to_string())
+            };
+            let serialized = serde_json::to_value(result).unwrap();
+            let timeline = &serialized["captureTimeline"];
+            assert_eq!(serialized["passed"], false);
+            // Timeline validity does not assert continuous playback: a valid
+            // device-position gap and an unreliable packet can both be present.
+            assert_eq!(timeline["passed"], true);
+            assert_eq!(timeline["totalGapFrames"], 2);
+            assert_eq!(timeline["totalUnreliableFrames"], 2);
+            assert_eq!(timeline["outputFrameCount"], 6);
+            assert_eq!(timeline["gaps"][0]["outputStartFrame"], 2);
+            assert_eq!(timeline["unreliableWindows"][0]["outputStartFrame"], 4);
+        }
+    }
 
     #[cfg(test)]
     mod tone_receipt_contract_tests {

@@ -457,13 +457,13 @@ mod empty_commit_tests;
 
 impl OmniSocketEventProcessor {
     pub(super) fn poll<C: RealtimeSocketConnector, R: tauri::Runtime>(
-        state: OmniSocketEventState<C::Socket, R>,
+        state: OmniSocketEventState<C::Socket>,
+        trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
         context: OmniSocketEventContext<'_, R>,
         connector: &C,
-    ) -> Result<OmniSocketPollResult<C::Socket, R>, String> {
+    ) -> Result<OmniSocketPollResult<C::Socket>, String> {
         let OmniSocketEventState {
             mut socket,
-            mut trace_call,
             mut reconnect_count,
             mut pending_audio_buffer,
             mut active_voice,
@@ -534,7 +534,6 @@ impl OmniSocketEventProcessor {
                 Ok(OmniSocketPollResult {
                     state: OmniSocketEventState {
                         socket,
-                        trace_call,
                         reconnect_count,
                         pending_audio_buffer,
                         active_voice,
@@ -803,7 +802,7 @@ impl OmniSocketEventProcessor {
                                     ManualResponseDecision::Create => {
                                         manual_response_requested = send_manual_response_create(
                                             &mut socket,
-                                            &mut trace_call,
+                                            trace_call,
                                             &mut event_diagnostics,
                                             ManualResponseCreateContext {
                                                 app,
@@ -1145,7 +1144,7 @@ impl OmniSocketEventProcessor {
                         handle_response_done(
                             &app,
                             store,
-                            &mut trace_call,
+                            trace_call,
                             &direction,
                             &mut current_cue_id,
                             &mut pending_source_text,
@@ -1314,7 +1313,7 @@ impl OmniSocketEventProcessor {
                                     &target_language,
                                     buffer_size,
                                     provider_input_budget,
-                                    &mut trace_call,
+                                    trace_call,
                                     &evt,
                                     &text,
                             )?;
@@ -1418,7 +1417,7 @@ impl OmniSocketEventProcessor {
                 active_voice,
                 voice_fallback_applied,
             },
-            &mut trace_call,
+            trace_call,
             &mut event_diagnostics,
             ResponseStallContext {
                 app,

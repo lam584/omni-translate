@@ -617,14 +617,49 @@ function countMatches(text, pattern) {
 export function actualProviderInputSamplesFromLog(scopedLog) {
   let samples = 0;
   let summaryCount = 0;
+  const seenEventIds = new Map();
+  const violations = [];
   for (const line of scopedLog.split(/\r?\n/)) {
     if (!/input_audio_buffer\.append\.summary/i.test(line)) continue;
-    const match = line.match(/"resampledSamplesTotal"\s*:\s*(\d+)/i);
-    if (!match) continue;
-    samples += Number(match[1]);
+    const jsonStart = line.indexOf('{');
+    const jsonEnd = line.lastIndexOf('}');
+    let parsed = null;
+    let canonical = null;
+    if (jsonStart >= 0 && jsonEnd > jsonStart) {
+      try {
+        parsed = JSON.parse(line.slice(jsonStart, jsonEnd + 1));
+        canonical = canonicalJson(parsed);
+      } catch {
+        parsed = null;
+      }
+    }
+    const eventIdMatch = line.match(/"eventId"\s*:\s*"([^"\\]+)"/);
+    const eventId = typeof parsed?.eventId === 'string'
+      ? parsed.eventId.trim() || null
+      : eventIdMatch?.[1]?.trim() || null;
+    if (eventId && canonical === null) {
+      violations.push(`malformed model-trace evidence for eventId ${eventId}`);
+      continue;
+    }
+    const parsedSamples = parsed?.payload?.resampledSamplesTotal;
+    const sampleMatch = line.match(/"resampledSamplesTotal"\s*:\s*(\d+)/i);
+    const sampleCount = eventId ? parsedSamples : Number(sampleMatch?.[1]);
+    const hasValidSamples = Number.isSafeInteger(sampleCount) && sampleCount >= 0;
+    if (eventId && !hasValidSamples) {
+      violations.push(`model-trace evidence for eventId ${eventId} is missing valid resampledSamplesTotal`);
+    }
+    if (eventId && seenEventIds.has(eventId)) {
+      if (seenEventIds.get(eventId) !== canonical) {
+        violations.push(`conflicting model-trace evidence for eventId ${eventId}`);
+      }
+      continue;
+    }
+    if (eventId) seenEventIds.set(eventId, canonical);
+    if (!hasValidSamples) continue;
+    samples += sampleCount;
     summaryCount += 1;
   }
-  return { samples, summaryCount };
+  return { samples, summaryCount, violations };
 }
 
 export function reserveStrictPaidCellInputSamples({
@@ -754,6 +789,7 @@ export function buildCellExternalProviderBudget({
     violations.push(error.message);
   }
   const tracedInput = actualProviderInputSamplesFromLog(scopedLog);
+  violations.push(...tracedInput.violations);
   let sendBoundaryAuthority = null;
   try {
     sendBoundaryAuthority = validateSendBoundaryAuthority({

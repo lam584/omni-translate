@@ -293,7 +293,6 @@ impl ReplayHarness {
         let poll = OmniSocketEventProcessor::poll(
             OmniSocketEventState {
                 socket,
-                trace_call,
                 reconnect_count: slice.reconnect_count,
                 pending_audio_buffer: std::mem::take(&mut slice.pending_audio_buffer),
                 active_voice: slice.active_voice.clone(),
@@ -323,6 +322,7 @@ impl ReplayHarness {
                 audio_samples_since_commit: slice.audio_samples_since_commit,
                 manual_turn_audio_after_response: slice.manual_turn_audio_after_response,
             },
+            &mut trace_call,
             OmniSocketEventContext {
                 app: &app,
                 store: &store,

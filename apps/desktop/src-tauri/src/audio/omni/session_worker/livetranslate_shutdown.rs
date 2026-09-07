@@ -16,6 +16,18 @@ use super::super::{
 };
 
 const LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
+const LIVETRANSLATE_EVIDENCE_QUEUE_RESERVE: Duration = Duration::from_millis(600);
+const LIVETRANSLATE_FAILURE_RESERVE: Duration = Duration::from_millis(400);
+const LIVETRANSLATE_TERMINAL_RESERVE: Duration = Duration::from_millis(100);
+const LIVETRANSLATE_EVIDENCE_WAIT_BUDGET: Duration = Duration::from_millis(300);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct LivetranslateShutdownDeadlines {
+    pub(super) queue_evidence_at: Instant,
+    pub(super) fail_at: Instant,
+    pub(super) evidence_deadline: Instant,
+    pub(super) hard_deadline: Instant,
+}
 
 struct LivetranslateShutdownShared {
     enabled: bool,
@@ -31,6 +43,7 @@ pub(super) struct LivetranslateShutdown {
     enabled: bool,
     shared: Arc<LivetranslateShutdownShared>,
     requested_at: Option<Instant>,
+    evidence_queued: bool,
     pre_finish_drain_barrier: Option<u64>,
     last_finish_observation: Option<(usize, bool, bool)>,
 }
@@ -56,7 +69,7 @@ impl LivetranslateShutdown {
     }
 
     #[cfg(test)]
-    fn with_stop_signal(enabled: bool, shutdown_requested: Arc<AtomicBool>) -> Self {
+    pub(super) fn with_stop_signal(enabled: bool, shutdown_requested: Arc<AtomicBool>) -> Self {
         let authority = enabled.then(crate::audio::bailian_protocol::livetranslate_test_authority);
         Self::with_authority(enabled, authority, shutdown_requested)
     }
@@ -78,6 +91,7 @@ impl LivetranslateShutdown {
                 idle_read_observation_count: AtomicU64::new(0),
             }),
             requested_at: None,
+            evidence_queued: false,
             pre_finish_drain_barrier: None,
             last_finish_observation: None,
         }
@@ -114,6 +128,34 @@ impl LivetranslateShutdown {
 
     pub(super) fn is_requested(&self) -> bool {
         self.requested_at.is_some()
+    }
+
+    pub(super) fn deadlines(&self) -> Option<LivetranslateShutdownDeadlines> {
+        let hard_deadline = self.requested_at? + LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT;
+        Some(LivetranslateShutdownDeadlines {
+            queue_evidence_at: hard_deadline - LIVETRANSLATE_EVIDENCE_QUEUE_RESERVE,
+            fail_at: hard_deadline - LIVETRANSLATE_FAILURE_RESERVE,
+            evidence_deadline: hard_deadline - LIVETRANSLATE_TERMINAL_RESERVE,
+            hard_deadline,
+        })
+    }
+
+    pub(super) fn take_evidence_queue_deadline(&mut self, now: Instant) -> bool {
+        let ready = self
+            .deadlines()
+            .is_some_and(|deadlines| now >= deadlines.queue_evidence_at);
+        if ready && !self.evidence_queued {
+            self.evidence_queued = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn failure_evidence_deadline(&self, now: Instant) -> Instant {
+        let short_deadline = now + LIVETRANSLATE_EVIDENCE_WAIT_BUDGET;
+        self.deadlines()
+            .map_or(short_deadline, |deadlines| short_deadline.min(deadlines.evidence_deadline))
     }
 
     pub(super) fn tick_pause(&self) -> Duration {
@@ -208,8 +250,8 @@ impl LivetranslateShutdown {
         if self.session_finished_received() {
             return None;
         }
-        let requested_at = self.requested_at?;
-        if now.saturating_duration_since(requested_at) < LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT {
+        let deadlines = self.deadlines()?;
+        if now < deadlines.fail_at {
             return None;
         }
         let finish_sent = self.shared.session_finish_sent.load(Ordering::SeqCst);
@@ -231,7 +273,7 @@ impl LivetranslateShutdown {
         Some((
             reason,
             format!(
-                "LiveTranslate fail-closed: shutdown did not complete within {} seconds of the stop request (session.finish sent={finish_sent}) {observation} currentIdleReadCount={idle_reads} currentDrainBarrier={barrier}",
+                "LiveTranslate fail-closed: shutdown did not complete within {} seconds of the stop request, including evidence finalization and terminal reserves (session.finish sent={finish_sent}) {observation} currentIdleReadCount={idle_reads} currentDrainBarrier={barrier}",
                 LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT.as_secs()
             ),
         ))
@@ -656,12 +698,11 @@ mod tests {
         shutdown.request(now);
         shutdown.record_finish_sent(now + Duration::from_secs(14));
 
-        assert!(shutdown
-            .deadline_error(now + LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT - Duration::from_millis(1))
-            .is_none());
+        let deadlines = shutdown.deadlines().unwrap();
+        assert!(shutdown.deadline_error(deadlines.fail_at - Duration::from_millis(1)).is_none());
 
         let (reason, error) = shutdown
-            .deadline_error(now + LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT)
+            .deadline_error(deadlines.fail_at)
             .expect("bounded terminal failure");
 
         assert_eq!(reason, "livetranslate-session-finished-timeout");
@@ -814,12 +855,30 @@ mod tests {
         let mut shutdown = LivetranslateShutdown::new(true);
         shutdown.request(now);
 
-        assert!(shutdown
-            .deadline_error(now + LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT - Duration::from_millis(1))
-            .is_none());
+        let deadlines = shutdown.deadlines().unwrap();
+        assert_eq!(deadlines.hard_deadline, now + Duration::from_secs(15));
+        assert_eq!(deadlines.evidence_deadline, deadlines.hard_deadline - Duration::from_millis(100));
+        assert!(shutdown.deadline_error(deadlines.fail_at - Duration::from_millis(1)).is_none());
         let (reason, _) = shutdown
-            .deadline_error(now + LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT)
+            .deadline_error(deadlines.fail_at)
             .expect("audio drain shares the total shutdown deadline");
         assert_eq!(reason, "livetranslate-audio-drain-timeout");
+    }
+
+    #[test]
+    fn evidence_queue_is_one_shot_and_poll_overrun_preserves_receipt_budget() {
+        let now = Instant::now();
+        let mut shutdown = LivetranslateShutdown::new(true);
+        shutdown.request(now);
+        let deadlines = shutdown.deadlines().unwrap();
+
+        assert!(!shutdown.take_evidence_queue_deadline(deadlines.queue_evidence_at - Duration::from_millis(1)));
+        assert!(shutdown.take_evidence_queue_deadline(deadlines.queue_evidence_at));
+        assert!(!shutdown.take_evidence_queue_deadline(deadlines.queue_evidence_at + Duration::from_millis(1)));
+
+        let after_slow_poll = deadlines.queue_evidence_at + Duration::from_millis(200);
+        assert!(shutdown.deadline_error(after_slow_poll).is_some());
+        assert!(deadlines.evidence_deadline > after_slow_poll);
+        assert!(deadlines.hard_deadline > deadlines.evidence_deadline);
     }
 }

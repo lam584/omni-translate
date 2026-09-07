@@ -92,14 +92,13 @@ fn poll_one_livetranslate_socket<C: RealtimeSocketConnector>(
             "bailian-c01-old-red",
         ),
     );
-    let trace_call = recorder.call("bailian.c01.poll");
+    let mut trace_call = recorder.call("bailian.c01.poll");
     let glossary = GlossaryContext::default();
     let provider_input_budget = ProviderInputBudget::disabled_for_test();
 
     OmniSocketEventProcessor::poll(
         OmniSocketEventState {
             socket,
-            trace_call,
             reconnect_count: slice.reconnect_count,
             pending_audio_buffer: slice.pending_audio_buffer,
             active_voice: slice.active_voice,
@@ -129,6 +128,7 @@ fn poll_one_livetranslate_socket<C: RealtimeSocketConnector>(
             audio_samples_since_commit: slice.audio_samples_since_commit,
             manual_turn_audio_after_response: slice.manual_turn_audio_after_response,
         },
+        &mut trace_call,
         OmniSocketEventContext {
             app: &app,
             store: &store,

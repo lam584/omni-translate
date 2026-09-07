@@ -419,6 +419,144 @@ test('actual provider input uses sent-sample trace summaries instead of the 90-s
   assert.deepEqual(actualProviderInputSamplesFromLog(log), {
     samples: 2_016_000,
     summaryCount: 2,
+    violations: [],
+  });
+});
+
+test('rewritten trace evidence is deduplicated by stable eventId without changing legacy lines', () => {
+  const unique = Array.from({ length: 67 }, (_, index) => ({
+    eventId: 'call:audio:' + (index + 1),
+    samples: 32_000,
+  }));
+  unique.push({ eventId: 'call:audio:68', samples: 28_800 });
+  const rewritten = unique.flatMap(({ eventId, samples }) => {
+    const line = JSON.stringify({
+      eventId,
+      event: 'ws.send.input_audio_buffer.append.summary',
+      payload: { resampledSamplesTotal: samples },
+    });
+    return [line, `2026-09-07 19:00:00.000 [DEBUG] [model-trace] source - summary | ${line}  (42ms) sid=test`];
+  });
+  assert.deepEqual(actualProviderInputSamplesFromLog(rewritten.join('\n')), {
+    samples: 2_172_800,
+    summaryCount: 68,
+    violations: [],
+  });
+
+  const legacy = '{"event":"ws.send.input_audio_buffer.append.summary","payload":{"resampledSamplesTotal":320}}';
+  assert.deepEqual(actualProviderInputSamplesFromLog([legacy, legacy].join('\n')), {
+    samples: 640,
+    summaryCount: 2,
+    violations: [],
+  });
+});
+
+test('conflicting rewritten trace evidence fails closed', () => {
+  const first = JSON.stringify({
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: { resampledSamplesTotal: 32_000 },
+  });
+  const conflicting = JSON.stringify({
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: { resampledSamplesTotal: 1 },
+  });
+  assert.deepEqual(actualProviderInputSamplesFromLog([first, conflicting].join('\n')), {
+    samples: 32_000,
+    summaryCount: 1,
+    violations: ['conflicting model-trace evidence for eventId call-1:audio:1'],
+  });
+});
+
+test('same-sample rewrites with conflicting batch content fail closed', () => {
+  const base = {
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: {
+      resampledSamplesTotal: 32_000,
+      rawBytesTotal: 64_000,
+      chunks: { count: 100, firstChunkCount: 1, lastChunkCount: 100 },
+    },
+  };
+  const conflicting = structuredClone(base);
+  conflicting.payload.rawBytesTotal = 1;
+  conflicting.payload.chunks = { count: 100, firstChunkCount: 900, lastChunkCount: 999 };
+  const result = actualProviderInputSamplesFromLog(
+    [JSON.stringify(base), JSON.stringify(conflicting)].join('\n'),
+  );
+  assert.deepEqual(result.violations, [
+    'conflicting model-trace evidence for eventId call-1:audio:1',
+  ]);
+});
+
+test('duplicate eventId evidence missing samples fails closed instead of being skipped', () => {
+  const first = {
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: { resampledSamplesTotal: 32_000 },
+  };
+  const missingSamples = {
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: { rawBytesTotal: 1 },
+  };
+  const result = actualProviderInputSamplesFromLog(
+    [JSON.stringify(first), JSON.stringify(missingSamples)].join('\n'),
+  );
+  assert.equal(result.samples, 32_000);
+  assert.equal(result.summaryCount, 1);
+  assert.deepEqual(result.violations, [
+    'model-trace evidence for eventId call-1:audio:1 is missing valid resampledSamplesTotal',
+    'conflicting model-trace evidence for eventId call-1:audio:1',
+  ]);
+});
+
+test('semantic duplicate evidence ignores JSON object field order', () => {
+  const first = {
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: {
+      resampledSamplesTotal: 32_000,
+      rawBytesTotal: 64_000,
+      chunks: { count: 100, firstChunkCount: 1, lastChunkCount: 100 },
+    },
+  };
+  const reordered = {
+    payload: {
+      chunks: { lastChunkCount: 100, firstChunkCount: 1, count: 100 },
+      rawBytesTotal: 64_000,
+      resampledSamplesTotal: 32_000,
+    },
+    event: 'ws.send.input_audio_buffer.append.summary',
+    callId: 'call-1',
+    eventId: 'call-1:audio:1',
+  };
+  assert.deepEqual(
+    actualProviderInputSamplesFromLog(
+      [JSON.stringify(first), JSON.stringify(reordered)].join('\n'),
+    ),
+    { samples: 32_000, summaryCount: 1, violations: [] },
+  );
+});
+
+test('stable evidence ids remain distinct across calls', () => {
+  const lines = ['call-1', 'call-2'].map((callId) => JSON.stringify({
+    eventId: callId + ':audio:1',
+    callId,
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: { resampledSamplesTotal: 32_000 },
+  }));
+  assert.deepEqual(actualProviderInputSamplesFromLog(lines.join('\n')), {
+    samples: 64_000,
+    summaryCount: 2,
+    violations: [],
   });
 });
 

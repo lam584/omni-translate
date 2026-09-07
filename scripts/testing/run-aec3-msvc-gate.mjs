@@ -225,7 +225,22 @@ runWithRetries(vcpkgExecutable, [
 
 function requireVcpkgTool(toolName, fileName) {
   const toolsRoot = join(downloadsRoot, 'tools');
-  let executable = findExecutable(toolsRoot, fileName);
+  const findOwnedTool = () => {
+    if (!existsSync(toolsRoot)) return null;
+    const ownedRoots = readdirSync(toolsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory()
+        && entry.name.toLowerCase().startsWith(`${toolName.toLowerCase()}-`))
+      .map((entry) => join(toolsRoot, entry.name));
+    for (const ownedRoot of ownedRoots) {
+      const executable = findExecutable(ownedRoot, fileName);
+      if (executable) return executable;
+    }
+    return null;
+  };
+  // Search only the directory acquired for this vcpkg tool. Other tool
+  // payloads (notably Strawberry Perl) can bundle an unrelated cmake.exe;
+  // selecting it by a global recursive scan produced 0xc0000135 at configure.
+  let executable = findOwnedTool();
   if (!executable) {
     // A restored installed-tree cache can make `vcpkg install` a no-op while
     // the downloads/tools cache is absent. Fetch build tools explicitly so a
@@ -233,7 +248,7 @@ function requireVcpkgTool(toolName, fileName) {
     run(vcpkgExecutable, ['fetch', toolName, '--x-stderr-status'], {
       env: { ...process.env, VCPKG_DOWNLOADS: downloadsRoot },
     });
-    executable = findExecutable(toolsRoot, fileName);
+    executable = findOwnedTool();
   }
   if (!executable) {
     throw new Error(`vcpkg did not acquire ${fileName} under ${downloadsRoot}`);

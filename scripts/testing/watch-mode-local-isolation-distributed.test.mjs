@@ -496,7 +496,7 @@ test('one/two worker transports isolate every cell and invocation while rejectin
           const [from, to] = args.slice(-2);
           const localOperand = from.startsWith('worker@') ? to : from;
           if (localOperand.includes('\\')) throw new Error(`scp: error: unexpected filename: ${localOperand}`);
-          assert.ok(localOperand.includes(' '), 'space stays within one argv operand');
+          if (!args.includes('-r')) assert.ok(localOperand.includes(' '), 'space stays within one argv operand');
           assert.ok(!localOperand.includes('"'), 'spawn arguments need no shell quotes');
           transfers.push([from, to]);
           if (args.includes('-r')) {
@@ -635,12 +635,19 @@ test('directory SCP waits for envelope/receipt integrity and actual source/desti
     let workerTimeout;
     const artifact = scenario === 'source-path' ? `${'deep/'.repeat(40)}leaf.wav` : 'iterations/0001/runtime/probe.wav';
     const receipt = JSON.stringify({ artifacts: [{ path: artifact }] });
-    await assert.rejects(executeDistributedLocalIsolationCell({
+    const execution = executeDistributedLocalIsolationCell({
       request, requestRoot: path.join(root, 'invocation', 'requests'), workerWorkspaceRoot: 'E:\\runtime',
       localOutputRoot: scenario === 'destination-path' ? path.join(root, 'long-output'.repeat(11)) : path.join(root, 'out'),
       run: async (command, args, options = {}) => {
         if (command === 'scp.exe') {
-          if (args.includes('-r')) { directoryCopies += 1; return; }
+          if (args.includes('-r')) {
+            directoryCopies += 1;
+            const [from, to] = args.slice(-2);
+            const destination = path.join(to, path.posix.basename(from));
+            fs.mkdirSync(destination, { recursive: true });
+            fs.writeFileSync(path.join(destination, 'cell-authority.json'), receipt);
+            return;
+          }
           const [from, to] = args.slice(-2);
           if (from.endsWith('-request.json')) checked = JSON.parse(fs.readFileSync(from, 'utf8'));
           else if (from.endsWith('-result.json')) {
@@ -654,8 +661,10 @@ test('directory SCP waits for envelope/receipt integrity and actual source/desti
           workerTimeout = options.timeoutMs;
         }
       },
-    }), /tampered|legacy SCP path budget exceeded/);
+    });
+    if (scenario === 'destination-path') await execution;
+    else await assert.rejects(execution, /tampered|legacy SCP path budget exceeded/);
     assert.equal(workerTimeout, 680_000, '500-second formal run must not receive the 120-second SCP deadline');
-    assert.equal(directoryCopies, 0, scenario);
+    assert.equal(directoryCopies, scenario === 'destination-path' ? 1 : 0, scenario);
   }
 });

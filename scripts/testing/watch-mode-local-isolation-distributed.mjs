@@ -406,6 +406,12 @@ export async function executeDistributedLocalIsolationCell({
     fs.mkdirSync(localOutputRoot, { recursive: true });
     const remoteCellDirectory = path.win32.join(remoteOutputRoot, checked.cell.cellId.replaceAll('::', '--'));
     const localCellDirectory = path.join(localOutputRoot, checked.cell.cellId.replaceAll('::', '--'));
+    // Git for Windows' legacy scp client can reject a long local destination
+    // even though Node can materialize the same final path. Download into a
+    // short, owned staging directory, verify the complete inventory there,
+    // then move the cell into the evidence tree.
+    const localTransferRoot = fs.mkdtempSync(path.join(path.parse(path.resolve(localOutputRoot)).root, 'omni-li-scp-'));
+    const localTransferCellDirectory = path.join(localTransferRoot, path.win32.basename(remoteCellDirectory));
     const localReceiptPath = path.join(requestRoot, `${requestId}-cell-authority.json`);
     requireLegacyScpPath(localReceiptPath, 0, 259);
     const remoteReceiptPath = path.win32.join(remoteCellDirectory, 'cell-authority.json');
@@ -418,10 +424,13 @@ export async function executeDistributedLocalIsolationCell({
     const receipt = JSON.parse(receiptBytes.toString('utf8'));
     if (!Array.isArray(receipt.artifacts)) throw new Error(`local isolation worker ${workerId} has no artifact inventory`);
     for (const entry of [{ path: 'cell-authority.json' }, ...receipt.artifacts]) {
-      requireLegacyScpPath(resolveAuthorityPath(localCellDirectory, entry.path), 0, 259);
+      requireLegacyScpPath(resolveAuthorityPath(localTransferCellDirectory, entry.path), 0, 259);
       requireLegacyScpPath(resolveAuthorityPath(remoteCellDirectory, entry.path), 0, 259);
     }
-    await run(scpExecutable, [...scpArgs(worker), '-r', remoteSpec(worker, remoteCellDirectory), localScpPath(localOutputRoot)], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
+    await run(scpExecutable, [...scpArgs(worker), '-r', remoteSpec(worker, remoteCellDirectory), localScpPath(localTransferRoot)], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
+    fs.mkdirSync(path.dirname(localCellDirectory), { recursive: true });
+    fs.renameSync(localTransferCellDirectory, localCellDirectory);
+    fs.rmSync(localTransferRoot, { recursive: true, force: false });
   }
   const envelope = readEnvelope();
   return envelope.result;

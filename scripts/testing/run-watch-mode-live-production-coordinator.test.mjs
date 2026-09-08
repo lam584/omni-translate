@@ -1253,6 +1253,8 @@ test('remote preflight transport runs executor-bound network health before crede
       } else {
         assert.doesNotMatch(args.at(-2), /watch-remote-preflight/u, 'authorization uploads must use a short local staging path');
         assert.equal(fs.readFileSync(windowsPathFromGitScpOperand(args.at(-2)), 'utf8'), '{}\n');
+        assert.match(args.at(-1), /:E:\/omni-shards\/\.provider-preflight\/[a-f0-9]{20}\//u);
+        assert.ok(args.at(-1).length < 240, 'remote authorization upload must remain below the legacy Windows path ceiling');
         events.push(`upload:${path.basename(args.at(-2))}`);
       }
       return { exitCode: 0, stdout: '', stderr: '' };

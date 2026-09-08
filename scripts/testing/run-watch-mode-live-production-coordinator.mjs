@@ -1496,7 +1496,13 @@ export function createSshProviderPreflightTransport({
   }
   let dispatched = false;
   const remoteRoot = path.win32.join(executor.guestExecutionRoot, executionId, executor.workerId);
-  const remoteAuthorizationRoot = path.win32.join(remoteRoot, path.basename(authorizationRoot));
+  const authorizationDirectoryId = crypto.createHash('sha256')
+    .update(`${executionId}\0${executor.workerId}`, 'utf8').digest('hex').slice(0, 20);
+  // Authorization filenames are contract identities and can be long. Keep their
+  // remote parent short enough for legacy Windows SCP without shortening names.
+  const remoteAuthorizationRoot = path.win32.join(
+    executor.guestExecutionRoot, '.provider-preflight', authorizationDirectoryId,
+  );
   const remoteEvidenceRoot = path.win32.join(remoteRoot, 'provider-preflight-evidence');
   const helperRelativePath = 'target/release/watch-worker-credential.exe';
   const helperAuthority = runtimeBinaryHashes?.find((entry) => entry?.path === helperRelativePath);

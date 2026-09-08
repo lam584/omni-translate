@@ -113,6 +113,7 @@ export const AUTHORITY_RUNTIME_BINARY_FILES = Object.freeze([
   'target/release/omni-tone-render-probe.exe',
   'target/release/omni-driver-audio-probe.exe',
   'target/release/omni-virtual-mic-target-capture.exe',
+  'target/release/watch-worker-credential.exe',
   'target/debug/omni-realtime-diagnostic.exe',
   'target/release/omni-benchmark.exe',
   'drivers/windows-virtual-mic/package/omni-virtual-speaker.sys',

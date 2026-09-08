@@ -1475,6 +1475,8 @@ export function createSshProviderPreflightTransport({
   runProcess = runChildProcess,
   provision = provisionCredential,
   signingKeys,
+  runtimeBinaryHashes,
+  workspaceRoot = repoRoot,
   verifyExecutor = async ({ grant }) => {
     if (grant.executor.workerId !== executor.workerId
       || grant.executor.interactiveUser !== executor.user
@@ -1491,7 +1493,19 @@ export function createSshProviderPreflightTransport({
   const remoteRoot = path.win32.join(executor.guestExecutionRoot, executionId, executor.workerId);
   const remoteAuthorizationRoot = path.win32.join(remoteRoot, path.basename(authorizationRoot));
   const remoteEvidenceRoot = path.win32.join(remoteRoot, 'provider-preflight-evidence');
-  const localHelper = path.join(repoRoot, 'target', 'release', 'watch-worker-credential.exe');
+  const helperRelativePath = 'target/release/watch-worker-credential.exe';
+  const helperAuthority = runtimeBinaryHashes?.find((entry) => entry?.path === helperRelativePath);
+  if (!helperAuthority
+    || !Number.isSafeInteger(helperAuthority.bytes)
+    || !/^[a-f0-9]{64}$/u.test(String(helperAuthority.sha256 ?? ''))) {
+    throw new Error('remote Provider preflight requires signed watch-worker-credential runtime authority');
+  }
+  const localHelper = resolveAuthorityPath(workspaceRoot, helperAuthority.path, 'signed credential helper');
+  const actualHelperAuthority = fileAuthorityEntry(localHelper, helperAuthority.path);
+  if (actualHelperAuthority.bytes !== helperAuthority.bytes
+    || actualHelperAuthority.sha256 !== helperAuthority.sha256) {
+    throw new Error('signed watch-worker-credential runtime authority does not match local helper bytes');
+  }
   const remoteHelper = path.win32.join(executor.workspaceRoot, 'target', 'release', 'watch-worker-credential.exe');
   const authorizationFiles = () => {
     const reservations = fs.readdirSync(path.join(authorizationRoot, 'provider-preflight-lease-reservations'))
@@ -3009,6 +3023,7 @@ async function runProductionCoordinatorCore({
           authorizationRoot: path.dirname(grantPath),
           localEvidenceDirectory: outputDirectory,
           signingKeys,
+          runtimeBinaryHashes: preparation.plan.authority.runtimeBinaryHashes,
         }));
     const preflight = await preflightTransport.dispatch({ grant, authorizationDigest, signal });
     transitionCoordinatorState('preflight-terminal', {

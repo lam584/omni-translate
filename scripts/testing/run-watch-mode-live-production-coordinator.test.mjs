@@ -9,6 +9,34 @@ import { PassThrough } from 'node:stream';
 import zlib from 'node:zlib';
 import test from 'node:test';
 
+const productionCoordinatorSource = fs.readFileSync(
+  new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url),
+  'utf8',
+);
+
+function signedCredentialHelperFixture(root) {
+  const relativePath = 'target/release/watch-worker-credential.exe';
+  const filePath = path.join(root, ...relativePath.split('/'));
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const bytes = Buffer.from('signed-credential-helper-fixture');
+  fs.writeFileSync(filePath, bytes);
+  return [{
+    path: relativePath,
+    bytes: bytes.length,
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+  }];
+}
+
+test('remote credential provision consumes the helper from signed runtime inventory', () => {
+  assert.doesNotMatch(
+    productionCoordinatorSource,
+    /path\.join\(repoRoot, 'target', 'release', 'watch-worker-credential\.exe'\)/u,
+  );
+  assert.match(productionCoordinatorSource, /target\/release\/watch-worker-credential\.exe/u);
+  assert.match(productionCoordinatorSource, /runtimeBinaryHashes/u);
+  assert.match(productionCoordinatorSource, /actualHelperAuthority.sha256 !== helperAuthority.sha256/u);
+});
+
 test('interactive finalizer binds workspace cwd and preserves complete native failures', { skip: process.platform !== 'win32' }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-finalizer-cwd-'));
   const workspace = path.join(root, 'workspace');
@@ -947,7 +975,7 @@ test('zero-provider readiness reserves enough time for signed driver reinstall a
     deriveWatchProductionPrepaidCoordinatorBudgetMs()
       + deriveWatchPostReadinessExecutionBudgetMs({ cells: LIVE_LLM_CELLS }),
   );
-  assert.equal(PRODUCTION_COORDINATOR_TIMEOUT_MS, 13_822_000);
+  assert.equal(PRODUCTION_COORDINATOR_TIMEOUT_MS, 13_882_000);
 });
 
 test('production transport applies each formal cell timeout at its actual outer boundary', () => {
@@ -1215,6 +1243,8 @@ test('remote preflight transport runs executor-bound network health before crede
     const transport = createSshProviderPreflightTransport({
       config: { sshExecutable: 'ssh.exe', scpExecutable: 'scp.exe' }, executor,
       executionId: 'remote-preflight-order', authorizationRoot, localEvidenceDirectory, runProcess,
+      workspaceRoot: root,
+      runtimeBinaryHashes: signedCredentialHelperFixture(root),
       verifyExecutor: async () => { events.push('verify'); },
       signingKeys: generateCoordinatorSigningKeyPair(),
       provision: async (options) => {
@@ -1252,6 +1282,8 @@ test('remote executor network health failure is terminal before credential provi
       config: { sshExecutable: 'ssh.exe', scpExecutable: 'scp.exe' }, executor,
       executionId: 'remote-health-failure', authorizationRoot,
       localEvidenceDirectory: path.join(root, 'evidence'),
+      workspaceRoot: root,
+      runtimeBinaryHashes: signedCredentialHelperFixture(root),
       verifyExecutor: async () => {},
       signingKeys: generateCoordinatorSigningKeyPair(),
       provision: async () => { credentialCalls += 1; },

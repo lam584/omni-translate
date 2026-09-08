@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
+import { AUTHORITY_RUNTIME_BINARY_FILES } from './watch-mode-evidence-authority.mjs';
 import { strictRuntimeBuildResources } from './watch-mode-strict-runtime-authority.mjs';
 
 const source = fs.readFileSync(new URL('./watch-mode-strict-runtime-authority.mjs', import.meta.url), 'utf8');
@@ -26,6 +27,15 @@ test('strict runtime preparation creates one certificate before gates and builds
   assert.ok(certificate > 0 && certificate < aec3);
   assert.ok(aec3 < desktop && desktop < driver);
   assert.equal(source.match(/new-local-release-certificate\.ps1/gu)?.length, 1);
+});
+
+test('strict runtime builds and signs the native worker credential helper', () => {
+  const helper = 'target/release/watch-worker-credential.exe';
+  assert.ok(AUTHORITY_RUNTIME_BINARY_FILES.includes(helper));
+  assert.match(
+    source,
+    /cargo\.exe'[\s\S]*?'build'[\s\S]*?'--locked'[\s\S]*?'--release'[\s\S]*?scripts\/diagnostics\/watch-worker-credential\/Cargo\.toml/u,
+  );
 });
 
 test('strict runtime authority is explicitly local TESTSIGNING evidence, not public trust', () => {

@@ -212,6 +212,9 @@ export function prepareStrictRuntimeAuthority({
   runChecked('cargo.exe', ['build', '--manifest-path', 'scripts/diagnostics/omni-realtime/Cargo.toml'], {
     workspaceRoot, environment, run,
   });
+  runChecked('cargo.exe', ['build', '--locked', '--release', '--manifest-path', 'scripts/diagnostics/watch-worker-credential/Cargo.toml'], {
+    workspaceRoot, environment, run,
+  });
   runChecked('cargo.exe', ['build', '--locked', '--release', '--manifest-path', 'scripts/diagnostics/omni-benchmark/Cargo.toml'], {
     workspaceRoot, environment, run,
   });

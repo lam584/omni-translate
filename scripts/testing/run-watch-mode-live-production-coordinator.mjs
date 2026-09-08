@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { fixedFourWorkerAssignments } from './watch-mode-four-worker-plan.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
@@ -1440,16 +1441,6 @@ function pathForScp(filePath) {
   return String(filePath).replaceAll('\\', '/');
 }
 
-function localPathForScp(filePath) {
-  // Git for Windows SCP interprets `E:/...` as a host-qualified operand. Local
-  // drive paths must use its POSIX mount form while remote Windows paths retain
-  // their drive prefix after the host separator.
-  const normalized = pathForScp(filePath);
-  return /^[A-Za-z]:\//u.test(normalized)
-    ? `/${normalized[0].toLowerCase()}${normalized.slice(2)}`
-    : normalized;
-}
-
 function remoteSpec(worker, remotePath) {
   return `${worker.user}@${worker.host}:${pathForScp(remotePath)}`;
 }
@@ -1593,13 +1584,26 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
         ...sshBaseArgs(executor), `${executor.user}@${executor.host}`, ...mkdir.args,
       ], { signal, input: mkdir.input });
       ensureSuccessful(mkdirResult, 'remote Provider preflight authorization root creation');
-      for (const relative of files) {
-        const source = path.join(authorizationRoot, ...relative.split('/'));
-        const destination = path.win32.join(remoteAuthorizationRoot, ...relative.split('/'));
-        const upload = await runProcess(config.scpExecutable, [
-          ...scpBaseArgs(executor), localPathForScp(source), remoteSpec(executor, destination),
-        ], { signal });
-        ensureSuccessful(upload, `remote Provider preflight authorization upload ${relative}`);
+      const uploadStagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-preflight-upload-'));
+      try {
+        for (const [index, relative] of files.entries()) {
+          const source = path.join(authorizationRoot, ...relative.split('/'));
+          const stagedSource = path.join(uploadStagingRoot, `${index}${path.extname(relative)}`);
+          fs.copyFileSync(source, stagedSource, fs.constants.COPYFILE_EXCL);
+          const sourceAuthority = fileAuthorityEntry(source, relative);
+          const stagedAuthority = fileAuthorityEntry(stagedSource, relative);
+          if (sourceAuthority.bytes !== stagedAuthority.bytes
+            || sourceAuthority.sha256 !== stagedAuthority.sha256) {
+            throw new Error(`remote Provider preflight authorization staging changed ${relative}`);
+          }
+          const destination = path.win32.join(remoteAuthorizationRoot, ...relative.split('/'));
+          const upload = await runProcess(config.scpExecutable, [
+            ...scpBaseArgs(executor), pathForScp(stagedSource), remoteSpec(executor, destination),
+          ], { signal });
+          ensureSuccessful(upload, `remote Provider preflight authorization upload ${relative}`);
+        }
+      } finally {
+        fs.rmSync(uploadStagingRoot, { recursive: true, force: true });
       }
       const request = {
         schemaVersion: REMOTE_PROVIDER_PREFLIGHT_REQUEST_SCHEMA_VERSION,
@@ -1623,14 +1627,14 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
       const claimSource = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-consumption-claim.json');
       const claimTarget = path.join(authorizationRoot, 'provider-preflight-consumption-claim.json');
       const claimDownload = await runProcess(config.scpExecutable, [
-        ...scpBaseArgs(executor), remoteSpec(executor, claimSource), localPathForScp(claimTarget),
+        ...scpBaseArgs(executor), remoteSpec(executor, claimSource), pathForScp(claimTarget),
       ], { signal });
       ensureSuccessful(claimDownload, 'remote Provider preflight claim collection');
       const resolvedLocalEvidenceDirectory = path.resolve(localEvidenceDirectory);
       const evidenceParent = path.dirname(resolvedLocalEvidenceDirectory);
       fs.mkdirSync(evidenceParent, { recursive: true });
       const evidenceDownload = await runProcess(config.scpExecutable, [
-        ...scpBaseArgs(executor), '-r', remoteSpec(executor, remoteEvidenceRoot), localPathForScp(evidenceParent),
+        ...scpBaseArgs(executor), '-r', remoteSpec(executor, remoteEvidenceRoot), pathForScp(evidenceParent),
       ], { signal });
       ensureSuccessful(evidenceDownload, 'remote Provider preflight evidence collection');
       const downloaded = path.join(evidenceParent, path.win32.basename(remoteEvidenceRoot));
@@ -1901,7 +1905,7 @@ export function createSshProductionTransport({
       } else {
         const uploadResult = await runProcess(
           config.scpExecutable,
-          [...scpBaseArgs(worker), localPathForScp(localScriptPath), remoteSpec(worker, remoteScriptPath)],
+          [...scpBaseArgs(worker), pathForScp(localScriptPath), remoteSpec(worker, remoteScriptPath)],
           stageProcessOptions('command upload'),
         );
         ensureSuccessful(uploadResult, `command upload to ${worker.workerId}`);
@@ -1956,7 +1960,7 @@ export function createSshProductionTransport({
     }
     const result = await runProcess(
       config.scpExecutable,
-      [...scpBaseArgs(worker), localPathForScp(localPath), remoteSpec(worker, remotePath)],
+      [...scpBaseArgs(worker), pathForScp(localPath), remoteSpec(worker, remotePath)],
       options,
     );
     ensureSuccessful(result, `upload to ${worker.workerId}`);
@@ -1974,7 +1978,7 @@ export function createSshProductionTransport({
     }
     const result = await runProcess(
       config.scpExecutable,
-      [...scpBaseArgs(worker), '-r', remoteSpec(worker, remotePath), localPathForScp(localParent)],
+      [...scpBaseArgs(worker), '-r', remoteSpec(worker, remotePath), pathForScp(localParent)],
       options,
     );
     ensureSuccessful(result, `download from ${worker.workerId}`);
@@ -1987,7 +1991,7 @@ export function createSshProductionTransport({
     }
     const result = await runProcess(
       config.scpExecutable,
-      [...scpBaseArgs(worker), remoteSpec(worker, remotePath), localPathForScp(localPath)],
+      [...scpBaseArgs(worker), remoteSpec(worker, remotePath), pathForScp(localPath)],
       options,
     );
     ensureSuccessful(result, `download from ${worker.workerId}`);
@@ -2330,7 +2334,7 @@ ConvertTo-Json -InputObject @($entries) -Depth 4 -Compress
           return;
         }
         ensureSuccessful(await runProcess(config.scpExecutable,
-          [...scpBaseArgs(worker), remoteSpec(worker, remotePath), localPathForScp(destination)],
+          [...scpBaseArgs(worker), remoteSpec(worker, remotePath), pathForScp(destination)],
           { timeoutMs }), `failed-cell evidence download ${cell.cellId}`);
       },
     });

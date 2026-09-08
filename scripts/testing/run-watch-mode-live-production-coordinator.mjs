@@ -3025,7 +3025,7 @@ async function runProductionCoordinatorCore({
           authorizationRoot: path.dirname(grantPath),
           localEvidenceDirectory: outputDirectory,
           signingKeys,
-          runtimeBinaryHashes: preparation.plan.authority.runtimeBinaryHashes,
+          runtimeBinaryHashes: frozenRuntime.authority.runtimeBinaryHashes,
         }));
     const preflight = await preflightTransport.dispatch({ grant, authorizationDigest, signal });
     transitionCoordinatorState('preflight-terminal', {

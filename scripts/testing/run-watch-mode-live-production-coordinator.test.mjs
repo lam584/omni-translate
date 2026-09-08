@@ -167,6 +167,9 @@ import {
   windowsPowerShellEnvironment,
   createSshProductionTransport,
   createSshProviderPreflightTransport,
+  validateProviderPreflightInteractiveTerminal,
+  validateProviderPreflightCleanupReceipt,
+  validateProviderPreflightProcessAuthority,
   createDeterministicReadinessTransferArchive,
   stageProductionReadinessBatch,
 } from './run-watch-mode-live-production-coordinator.mjs';
@@ -1205,7 +1208,14 @@ test('remote preflight transport runs executor-bound network health before crede
       'worker-readiness/vm131.json',
     ]) {
       const target = path.join(authorizationRoot, ...relative.split('/'));
-      fs.writeFileSync(target, '{}\n', 'utf8');
+      fs.writeFileSync(target, relative === 'worker-readiness/vm131.json' ? JSON.stringify({
+        workerId: 'vm131',
+        interactiveSession: {
+          sessionId: 1,
+          ownerSid: 'S-1-5-21-1000',
+          desktop: 'WinSta0\\Default',
+        },
+      }) : '{}\n', 'utf8');
     }
     const localEvidenceDirectory = path.join(root, 'collected', 'final-evidence');
     const events = [];
@@ -1220,6 +1230,11 @@ test('remote preflight transport runs executor-bound network health before crede
     };
     let providerRuns = 0;
     let controllerSource = '';
+    let launcherSource = '';
+    let parsedControlScripts = false;
+    let terminalFixture = null;
+    let processAuthorityText = '';
+    let controllerMode = 'success';
     const runProcess = async (executable, args, options = {}) => {
       const joined = args.join(' ');
       const encodedIndex = args.indexOf('-EncodedCommand');
@@ -1241,19 +1256,71 @@ test('remote preflight transport runs executor-bound network health before crede
       }
       if (executable === 'ssh.exe' && joined.includes('provider-preflight-controller.ps1')) {
         events.push('provider'); providerRuns += 1;
+        if (!parsedControlScripts) {
+          const parserPath = path.join(root, 'parse-control.ps1');
+          fs.writeFileSync(parserPath, '$tokens=$null;$errors=$null;[Management.Automation.Language.Parser]::ParseFile($args[0],[ref]$tokens,[ref]$errors)|Out-Null;if($errors.Count){$errors|ForEach-Object{$_.ToString()};exit 1}\n', 'utf8');
+          for (const [name, source] of [['controller.ps1', controllerSource], ['launcher.ps1', launcherSource]]) {
+            const scriptPath = path.join(root, name);
+            fs.writeFileSync(scriptPath, source, 'utf8');
+            const parser = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', parserPath, scriptPath],
+            { encoding: 'utf8' });
+            assert.equal(parser.status, 0, `${name}: ${parser.stdout}\n${parser.stderr}`);
+          }
+          parsedControlScripts = true;
+        }
         assert.match(controllerSource, /New-ScheduledTaskPrincipal[^\n]+-LogonType Interactive -RunLevel Limited/u);
-        assert.match(controllerSource, /interactive Provider preflight task ran outside the configured interactive identity/u);
+        assert.match(controllerSource, /interactive Provider preflight terminal authority mismatch/u);
         assert.match(controllerSource, /Principal\.UserId -cne \$expectedSid/u);
         assert.match(controllerSource, /provider-preflight-interactive-launcher\.ps1/u);
+        assert.match(controllerSource, /FileMode\]::CreateNew/u);
+        assert.match(controllerSource, /controller authority mismatch/u);
+        assert.match(controllerSource, /launcher authority mismatch/u);
+        assert.match(controllerSource, /sessionId -ne \$expectedSessionId/u);
+        assert.match(controllerSource, /provider-preflight-cleanup/u);
         assert.match(controllerSource, /Get-Command node\.exe -CommandType Application/u);
         assert.doesNotMatch(controllerSource, /api.?key|credential|secret/i);
         assert.equal(args.includes('-EncodedCommand'), false);
         assert.doesNotMatch(String(options.input), /api.?key|credential|secret/i);
-        return { exitCode: 0, stdout: `${JSON.stringify({ status: 'completed', outputDirectory: 'E:\\omni-shards\\provider-preflight-evidence', fields: {} })}\n`, stderr: '' };
+        const argument = (name) => args[args.indexOf(name) + 1];
+        processAuthorityText = JSON.stringify({
+          schemaVersion: 1, artifactKind: 'watch-mode-provider-preflight-process-authority',
+          executionId: 'remote-preflight-order', workerId: 'vm131', expectedSessionId: 1,
+          expectedOwnerSid: 'S-1-5-21-1000',
+          launcher: { pid: 100, parentPid: 50, imagePath: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', startedAt: new Date().toISOString(), sessionId: 1, ownerSid: 'S-1-5-21-1000' },
+          worker: { pid: 101, parentPid: 100, imagePath: 'C:\\Program Files\\nodejs\\node.exe', startedAt: new Date().toISOString(), sessionId: 1, ownerSid: 'S-1-5-21-1000' },
+          descendants: [{ pid: 102, parentPid: 101, imagePath: 'E:\\watch-worker\\target\\release\\omni-desktop-shell.exe', startedAt: new Date().toISOString(), sessionId: 1, ownerSid: 'S-1-5-21-1000' }],
+        });
+        const processAuthoritySha256 = crypto.createHash('sha256').update(processAuthorityText, 'utf8').digest('hex');
+        terminalFixture = {
+          schemaVersion: 1, artifactKind: 'watch-mode-provider-preflight-interactive-terminal',
+          executionId: 'remote-preflight-order', workerId: 'vm131',
+          authorizationDigest: 'a'.repeat(64), controllerSha256: argument('-ControllerSha256'),
+          launcherSha256: argument('-LauncherSha256'), processAuthoritySha256,
+          requestSha256: crypto.createHash('sha256').update(String(options.input), 'utf8').digest('hex'),
+          taskName: 'OmniPreflight-6bde723257b39bd495a3403f', taskPath: '\\OmniTranslate\\',
+          exitCode: 0, sessionId: 1, ownerSid: 'S-1-5-21-1000', desktop: 'WinSta0\\Default',
+          completedAt: new Date().toISOString(),
+        };
+        if (controllerMode === 'throw') throw new Error('simulated SSH transport termination');
+        return { exitCode: controllerMode === 'nonzero' ? 23 : 0, stdout: `${JSON.stringify({ status: 'completed', outputDirectory: 'E:\\omni-shards\\provider-preflight-evidence', fields: {} })}\n`, stderr: controllerMode === 'nonzero' ? 'simulated controller failure' : '' };
       }
       if (executable === 'ssh.exe') { events.push('mkdir'); return { exitCode: 0, stdout: '{}\n', stderr: '' }; }
       if (joined.includes('provider-preflight-consumption-claim.json')) {
         events.push('claim'); fs.writeFileSync(windowsPathFromGitScpOperand(args.at(-1)), '{}\n', 'utf8');
+      } else if (joined.includes('provider-preflight-worker.terminal.json')) {
+        events.push('terminal'); fs.writeFileSync(windowsPathFromGitScpOperand(args.at(-1)), JSON.stringify(terminalFixture), 'utf8');
+      } else if (joined.includes('provider-preflight-process-authority.json')) {
+        events.push('process-authority'); fs.writeFileSync(windowsPathFromGitScpOperand(args.at(-1)), processAuthorityText, 'utf8');
+      } else if (joined.includes('provider-preflight-cleanup.json')) {
+        events.push('cleanup');
+        fs.writeFileSync(windowsPathFromGitScpOperand(args.at(-1)), JSON.stringify({
+          schemaVersion: 1, artifactKind: 'watch-mode-provider-preflight-cleanup',
+          executionId: 'remote-preflight-order', workerId: 'vm131',
+          taskName: 'OmniPreflight-6bde723257b39bd495a3403f', taskPath: '\\OmniTranslate\\',
+          processAuthoritySha256: terminalFixture.processAuthoritySha256,
+          taskAbsent: true, identitiesEnded: true, temporaryFilesAbsent: true, attemptErrors: [], passed: true,
+          completedAt: new Date().toISOString(),
+        }), 'utf8');
       } else if (joined.includes('provider-preflight-evidence')) {
         events.push('evidence');
         fs.mkdirSync(path.join(path.dirname(localEvidenceDirectory), 'provider-preflight-evidence'), { recursive: true });
@@ -1261,14 +1328,16 @@ test('remote preflight transport runs executor-bound network health before crede
         assert.doesNotMatch(args.at(-2), /watch-remote-preflight/u, 'authorization uploads must use a short local staging path');
         const uploadedSource = fs.readFileSync(windowsPathFromGitScpOperand(args.at(-2)), 'utf8');
         if (joined.includes('provider-preflight-controller.ps1')) controllerSource = uploadedSource;
-        else if (!joined.includes('provider-preflight-interactive-launcher.ps1')) assert.equal(uploadedSource, '{}\n');
+        else if (joined.includes('provider-preflight-interactive-launcher.ps1')) launcherSource = uploadedSource;
+        else if (!joined.includes('provider-preflight-interactive-launcher.ps1')
+          && !uploadedSource.includes('"interactiveSession"')) assert.equal(uploadedSource, '{}\n');
         assert.match(args.at(-1), /:E:\/omni-shards\/\.provider-preflight\/[a-f0-9]{20}\//u);
         assert.ok(args.at(-1).length < 240, 'remote authorization upload must remain below the legacy Windows path ceiling');
         events.push(`upload:${path.basename(args.at(-2))}`);
       }
       return { exitCode: 0, stdout: '', stderr: '' };
     };
-    const transport = createSshProviderPreflightTransport({
+    const makeTransport = () => createSshProviderPreflightTransport({
       config: { sshExecutable: 'ssh.exe', scpExecutable: 'scp.exe' }, executor,
       executionId: 'remote-preflight-order', authorizationRoot, localEvidenceDirectory, runProcess,
       workspaceRoot: root,
@@ -1280,6 +1349,9 @@ test('remote preflight transport runs executor-bound network health before crede
         assert.doesNotMatch(JSON.stringify(options), /api.?key|secret/i);
       },
     });
+    const readinessAuthority = fileAuthorityEntry(
+      path.join(authorizationRoot, 'worker-readiness', 'vm131.json'), 'worker-readiness/vm131.json',
+    );
     const grant = { executor: {
       workerId: 'vm131', interactiveUser: 'VMUser', vmIdentity: executor.vmIdentity,
       transportAuthority: {
@@ -1289,21 +1361,99 @@ test('remote preflight transport runs executor-bound network health before crede
       vmIdentityDigest: sha256Canonical(executor.vmIdentity),
       runtimeBundleDigest: 'b'.repeat(64),
       readinessAuthority: {
-        path: 'worker-readiness/vm131.json', bytes: 10, sha256: 'c'.repeat(64),
-        providerCalls: 0, workerId: 'vm131',
+        ...readinessAuthority, providerCalls: 0, workerId: 'vm131',
       },
     } };
+    const transport = makeTransport();
     const result = await transport.dispatch({ grant, authorizationDigest: 'a'.repeat(64) });
     assert.deepEqual(events.slice(0, 4), ['verify', 'network-health', 'credential', 'mkdir']);
     assert.ok(events.slice(4, 8).every((entry) => entry.startsWith('upload:')), JSON.stringify(events));
     assert.equal(events[8], 'mkdir', 'canonical authorization publication must precede control upload');
-    assert.ok(events.slice(9, -3).every((entry) => entry.startsWith('upload:')), JSON.stringify(events));
-    assert.deepEqual(events.slice(-3), ['provider', 'claim', 'evidence']);
+    assert.deepEqual(events.slice(9, 12), [
+      'upload:provider-preflight-interactive-launcher.ps1',
+      'upload:provider-preflight-controller.ps1',
+      'mkdir',
+    ], JSON.stringify(events));
+    assert.deepEqual(events.slice(-6), ['provider', 'terminal', 'process-authority', 'cleanup', 'claim', 'evidence']);
     assert.equal(providerRuns, 1);
     assert.equal(result.outputDirectory, path.resolve(localEvidenceDirectory));
     await assert.rejects(transport.dispatch({ grant, authorizationDigest: 'a'.repeat(64) }), /single-use/);
     assert.equal(providerRuns, 1);
+    for (const mode of ['nonzero', 'throw']) {
+      controllerMode = mode;
+      events.length = 0;
+      await assert.rejects(
+        makeTransport().dispatch({ grant, authorizationDigest: 'a'.repeat(64) }),
+        (error) => error instanceof AggregateError
+          && /collect-all evidence recovery/u.test(error.message)
+          && error.errors.some((entry) => mode === 'nonzero'
+            ? /failed with exit 23/u.test(entry.message)
+            : /simulated SSH transport termination/u.test(entry.message)),
+      );
+      assert.deepEqual(events.slice(-6), ['provider', 'terminal', 'process-authority', 'cleanup', 'claim', 'evidence'], `${mode}: ${JSON.stringify(events)}`);
+    }
+    assert.equal(providerRuns, 3);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('provider preflight terminal replay/session substitution and cleanup failure are rejected by coordinator authority validators', () => {
+  const expected = {
+    executionId: 'execution-current', workerId: 'vm131', authorizationDigest: 'a'.repeat(64),
+    controllerSha256: 'b'.repeat(64), launcherSha256: 'c'.repeat(64),
+    processAuthoritySha256: 'e'.repeat(64), requestSha256: 'd'.repeat(64),
+    taskName: 'OmniPreflight-current', sessionId: 1, ownerSid: 'S-1-5-21-1000', desktop: 'WinSta0\\Default',
+  };
+  const terminal = {
+    schemaVersion: 1, artifactKind: 'watch-mode-provider-preflight-interactive-terminal',
+    ...expected, taskPath: '\\OmniTranslate\\', exitCode: 0, completedAt: new Date().toISOString(),
+  };
+  assert.doesNotThrow(() => validateProviderPreflightInteractiveTerminal(terminal, expected));
+  for (const changed of [
+    { executionId: 'execution-replayed' }, { sessionId: 2 }, { requestSha256: 'e'.repeat(64) },
+    { launcherSha256: 'f'.repeat(64) }, { ownerSid: 'S-1-5-21-2000' },
+  ]) assert.throws(() => validateProviderPreflightInteractiveTerminal({ ...terminal, ...changed }, expected), /exact bound authority/u);
+  const cleanupExpected = { executionId: expected.executionId, workerId: expected.workerId, taskName: expected.taskName, processAuthoritySha256: expected.processAuthoritySha256 };
+  const cleanup = {
+    schemaVersion: 1, artifactKind: 'watch-mode-provider-preflight-cleanup', ...cleanupExpected,
+    taskPath: '\\OmniTranslate\\', taskAbsent: true, identitiesEnded: true,
+    temporaryFilesAbsent: true, attemptErrors: [], passed: true, completedAt: new Date().toISOString(),
+  };
+  assert.doesNotThrow(() => validateProviderPreflightCleanupReceipt(cleanup, cleanupExpected));
+  for (const changed of [{ taskAbsent: false }, { identitiesEnded: false }, { temporaryFilesAbsent: false }, { attemptErrors: ['failed'] }, { passed: false }]) {
+    assert.throws(() => validateProviderPreflightCleanupReceipt({ ...cleanup, ...changed }, cleanupExpected), /positive bound authority/u);
+  }
+  const identity = { pid: 100, parentPid: 50, imagePath: 'C:\\Windows\\System32\\cmd.exe', startedAt: new Date().toISOString(), sessionId: 1, ownerSid: expected.ownerSid };
+  const processAuthority = {
+    schemaVersion: 1, artifactKind: 'watch-mode-provider-preflight-process-authority',
+    executionId: expected.executionId, workerId: expected.workerId,
+    expectedSessionId: 1, expectedOwnerSid: expected.ownerSid,
+    launcher: identity, worker: { ...identity, pid: 101, parentPid: 100 },
+    descendants: [{ ...identity, pid: 102, parentPid: 101 }],
+  };
+  assert.doesNotThrow(() => validateProviderPreflightProcessAuthority(processAuthority, expected));
+  assert.throws(() => validateProviderPreflightProcessAuthority({ ...processAuthority, descendants: [{ ...identity, pid: 101 }] }, expected), /duplicate identities/u);
+});
+
+test('provider preflight control authority verification precedes Provider invocation accounting', () => {
+  const source = fs.readFileSync(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url), 'utf8');
+  const verification = source.indexOf("ensureSuccessful(controlVerificationResult, 'remote Provider preflight control authority verification')");
+  const providerStart = source.indexOf('onProviderCallStarted();', verification);
+  assert.ok(verification >= 0 && providerStart > verification);
+  const boundary = source.slice(source.lastIndexOf('const controlVerification =', verification), providerStart);
+  assert.match(boundary, /FileAttributes\]::ReparsePoint/u);
+  assert.match(boundary, /Get-FileHash/u);
+  assert.match(boundary, /entry\.bytes/u);
+  assert.match(source, /launcher self authority mismatch/u);
+  assert.match(source, /sessionId -ne \$expectedSessionId/u);
+  assert.match(source, /FileMode\]::CreateNew/u);
+  assert.match(source, /cleanup receipt is not a positive bound authority/u);
+  assert.match(source, /attemptErrors=@\(\$cleanupErrors\); passed=\$false/u);
+  assert.match(source, /\[IO\.FileMode\]::Create,/u, 'cleanup receipt must be idempotently overwritten with positive or negative state');
+  assert.match(source, /sameStart -and \$sameImage/u, 'PID cleanup must compare captured creation identity before treating a PID as live');
+  const readinessBlock = source.slice(source.indexOf('const readinessPath ='), source.indexOf('const requestText ='));
+  assert.equal((readinessBlock.match(/fs\.readFileSync\(readinessPath\)/gu) ?? []).length, 1);
+  assert.match(readinessBlock, /createHash\('sha256'\)\.update\(readinessBytes\)/u);
+  assert.match(readinessBlock, /JSON\.parse\(readinessBytes\.toString/u);
 });
 
 test('remote executor network health failure is terminal before credential provision and Provider with no fallback', async () => {

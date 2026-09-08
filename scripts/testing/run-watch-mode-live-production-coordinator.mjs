@@ -1464,6 +1464,80 @@ function parseRemoteJson(result, label) {
   }
 }
 
+export function validateProviderPreflightInteractiveTerminal(terminal, expected) {
+  const keys = [
+    'artifactKind', 'authorizationDigest', 'completedAt', 'controllerSha256', 'desktop',
+    'executionId', 'exitCode', 'launcherSha256', 'ownerSid', 'processAuthoritySha256',
+    'requestSha256', 'schemaVersion', 'sessionId', 'taskName', 'taskPath', 'workerId',
+  ].sort();
+  if (canonicalJson(Object.keys(terminal ?? {}).sort()) !== canonicalJson(keys)
+    || terminal.schemaVersion !== 1
+    || terminal.artifactKind !== 'watch-mode-provider-preflight-interactive-terminal'
+    || terminal.executionId !== expected.executionId || terminal.workerId !== expected.workerId
+    || terminal.authorizationDigest !== expected.authorizationDigest
+    || terminal.controllerSha256 !== expected.controllerSha256
+    || terminal.launcherSha256 !== expected.launcherSha256
+    || terminal.processAuthoritySha256 !== expected.processAuthoritySha256
+    || terminal.requestSha256 !== expected.requestSha256
+    || terminal.taskName !== expected.taskName || terminal.taskPath !== '\\OmniTranslate\\'
+    || Number(terminal.sessionId) !== expected.sessionId || terminal.ownerSid !== expected.ownerSid
+    || terminal.desktop !== expected.desktop || !Number.isInteger(Number(terminal.exitCode))
+    || !Number.isFinite(Date.parse(terminal.completedAt))) {
+    throw new Error('remote Provider preflight terminal is not an exact bound authority');
+  }
+  return terminal;
+}
+
+export function validateProviderPreflightCleanupReceipt(cleanup, expected) {
+  const keys = [
+    'artifactKind', 'attemptErrors', 'completedAt', 'executionId', 'identitiesEnded', 'passed',
+    'processAuthoritySha256', 'schemaVersion', 'taskAbsent', 'taskName', 'taskPath',
+    'temporaryFilesAbsent', 'workerId',
+  ].sort();
+  if (canonicalJson(Object.keys(cleanup ?? {}).sort()) !== canonicalJson(keys)
+    || cleanup.schemaVersion !== 1 || cleanup.artifactKind !== 'watch-mode-provider-preflight-cleanup'
+    || cleanup.executionId !== expected.executionId || cleanup.workerId !== expected.workerId
+    || cleanup.taskName !== expected.taskName || cleanup.taskPath !== '\\OmniTranslate\\'
+    || cleanup.processAuthoritySha256 !== expected.processAuthoritySha256
+    || cleanup.taskAbsent !== true || cleanup.identitiesEnded !== true
+    || cleanup.temporaryFilesAbsent !== true || cleanup.passed !== true
+    || !Array.isArray(cleanup.attemptErrors) || cleanup.attemptErrors.length !== 0
+    || !Number.isFinite(Date.parse(cleanup.completedAt))) {
+    throw new Error('remote Provider preflight cleanup receipt is not a positive bound authority');
+  }
+  return cleanup;
+}
+
+export function validateProviderPreflightProcessAuthority(authority, expected) {
+  const identityKeys = ['imagePath', 'ownerSid', 'parentPid', 'pid', 'sessionId', 'startedAt'].sort();
+  const validIdentity = (identity) => canonicalJson(Object.keys(identity ?? {}).sort()) === canonicalJson(identityKeys)
+    && Number.isInteger(Number(identity.pid)) && Number(identity.pid) > 0
+    && Number.isInteger(Number(identity.parentPid)) && Number(identity.parentPid) >= 0
+    && Number(identity.sessionId) === expected.sessionId && identity.ownerSid === expected.ownerSid
+    && path.win32.isAbsolute(identity.imagePath) && Number.isFinite(Date.parse(identity.startedAt));
+  const keys = [
+    'artifactKind', 'descendants', 'executionId', 'expectedOwnerSid', 'expectedSessionId',
+    'launcher', 'schemaVersion', 'worker', 'workerId',
+  ].sort();
+  if (canonicalJson(Object.keys(authority ?? {}).sort()) !== canonicalJson(keys)
+    || authority.schemaVersion !== 1
+    || authority.artifactKind !== 'watch-mode-provider-preflight-process-authority'
+    || authority.executionId !== expected.executionId || authority.workerId !== expected.workerId
+    || Number(authority.expectedSessionId) !== expected.sessionId
+    || authority.expectedOwnerSid !== expected.ownerSid
+    || !validIdentity(authority.launcher) || !validIdentity(authority.worker)
+    || Number(authority.worker.parentPid) !== Number(authority.launcher.pid)
+    || !Array.isArray(authority.descendants)
+    || authority.descendants.some((identity) => !validIdentity(identity))) {
+    throw new Error('remote Provider preflight process authority is not exactly bound');
+  }
+  const identities = [authority.launcher, authority.worker, ...authority.descendants];
+  if (new Set(identities.map((identity) => Number(identity.pid))).size !== identities.length) {
+    throw new Error('remote Provider preflight process authority contains duplicate identities');
+  }
+  return authority;
+}
+
 export function createSshProviderPreflightTransport({
   config,
   executor,
@@ -1692,28 +1766,67 @@ foreach ($entry in @($payload.files)) {
       const stdoutPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-worker.stdout.log');
       const stderrPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-worker.stderr.log');
       const terminalPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-worker.terminal.json');
+      const processAuthorityPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-process-authority.json');
+      const cleanupPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-cleanup.json');
       const taskName = `OmniPreflight-${crypto.createHash('sha256').update(`${executionId}|${executor.workerId}`, 'utf8').digest('hex').slice(0, 24)}`;
       const psQuote = (value) => `'${String(value).replaceAll("'", "''")}'`;
+      const readinessPath = path.join(authorizationRoot, ...grant.executor.readinessAuthority.path.split('/'));
+      const readinessBytes = fs.readFileSync(readinessPath);
+      const readinessActual = {
+        bytes: readinessBytes.byteLength,
+        sha256: crypto.createHash('sha256').update(readinessBytes).digest('hex'),
+      };
+      const readiness = JSON.parse(readinessBytes.toString('utf8').replace(/^\uFEFF/u, ''));
+      const expectedSessionId = Number(readiness.interactiveSession?.sessionId);
+      const expectedOwnerSid = String(readiness.interactiveSession?.ownerSid ?? '');
+      const expectedDesktop = String(readiness.interactiveSession?.desktop ?? '');
+      if (readiness.workerId !== executor.workerId
+        || readinessActual.bytes !== grant.executor.readinessAuthority.bytes
+        || readinessActual.sha256 !== grant.executor.readinessAuthority.sha256
+        || !Number.isInteger(expectedSessionId) || expectedSessionId <= 0
+        || !/^S-1-/u.test(expectedOwnerSid)
+        || expectedDesktop !== 'WinSta0\\Default') {
+        throw new Error('remote Provider preflight signed readiness has no exact interactive identity');
+      }
+      const requestText = JSON.stringify(request);
+      const requestSha256 = crypto.createHash('sha256').update(requestText, 'utf8').digest('hex');
       const launcherSource = [
-        'param([Parameter(Mandatory=$true)][string]$NodePath)',
+        'param([Parameter(Mandatory=$true)][string]$NodePath,[Parameter(Mandatory=$true)][string]$ControllerSha256,[Parameter(Mandatory=$true)][string]$LauncherSha256)',
         "$ErrorActionPreference = 'Stop'",
+        `$launcherItem = Get-Item -LiteralPath $PSCommandPath -Force; if ($launcherItem.PSIsContainer -or ($launcherItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $LauncherSha256) { throw 'interactive Provider preflight launcher self authority mismatch' }`,
         '$exitCode = 1',
         'try {',
         `  [Environment]::CurrentDirectory = ${psQuote(executor.workspaceRoot)}`,
         `  Set-Location -LiteralPath ${psQuote(executor.workspaceRoot)}`,
-        `  $request = Get-Content -LiteralPath ${psQuote(requestPath)} -Raw -Encoding UTF8`,
-        `  $request | & $NodePath ${psQuote(workerEntrypoint)} 1> ${psQuote(stdoutPath)} 2> ${psQuote(stderrPath)}`,
-        '  $exitCode = $LASTEXITCODE',
+        `  function New-ProcessIdentity([Microsoft.Management.Infrastructure.CimInstance]$cim) { $managed=Get-Process -Id ([int]$cim.ProcessId) -ErrorAction Stop; $owner=Invoke-CimMethod -InputObject $cim -MethodName GetOwnerSid -ErrorAction Stop; [ordered]@{ pid=[int]$cim.ProcessId; parentPid=[int]$cim.ParentProcessId; imagePath=[IO.Path]::GetFullPath([string]$cim.ExecutablePath); startedAt=$managed.StartTime.ToUniversalTime().ToString('o'); sessionId=[int]$managed.SessionId; ownerSid=[string]$owner.Sid } }`,
+        `  $launcherProcess = Get-CimInstance Win32_Process -Filter ("ProcessId=$PID") -ErrorAction Stop`,
+        `  $launcherIdentity = New-ProcessIdentity $launcherProcess`,
+        `  $worker = Start-Process -FilePath $NodePath -ArgumentList @(${psQuote(workerEntrypoint)}) -WorkingDirectory ${psQuote(executor.workspaceRoot)} -RedirectStandardInput ${psQuote(requestPath)} -RedirectStandardOutput ${psQuote(stdoutPath)} -RedirectStandardError ${psQuote(stderrPath)} -PassThru -WindowStyle Normal`,
+        '  $workerCim = Get-CimInstance Win32_Process -Filter ("ProcessId=$($worker.Id)") -ErrorAction Stop',
+        '  $workerIdentity = New-ProcessIdentity $workerCim',
+        '  $known = @{}; $known[[int]$workerIdentity.pid] = $workerIdentity',
+        '  while (-not $worker.HasExited) { $snapshot=@(Get-CimInstance Win32_Process -ErrorAction Stop); $frontier=@([int]$worker.Id); do { $next=@(); foreach($parent in $frontier){ foreach($child in @($snapshot | Where-Object { [int]$_.ParentProcessId -eq $parent })){ $pidValue=[int]$child.ProcessId; if(-not $known.ContainsKey($pidValue)){ try{$known[$pidValue]=New-ProcessIdentity $child}catch{} }; $next += $pidValue } }; $frontier=@($next) } while($frontier.Count -gt 0); Start-Sleep -Milliseconds 50; $worker.Refresh() }',
+        '  $worker.WaitForExit()',
+        `  $authority = [ordered]@{ schemaVersion=1; artifactKind='watch-mode-provider-preflight-process-authority'; executionId=${psQuote(executionId)}; workerId=${psQuote(executor.workerId)}; expectedSessionId=${expectedSessionId}; expectedOwnerSid=${psQuote(expectedOwnerSid)}; launcher=$launcherIdentity; worker=$workerIdentity; descendants=@($known.Values | Where-Object { [int]$_.pid -ne [int]$worker.Id } | Sort-Object pid) } | ConvertTo-Json -Depth 8 -Compress`,
+        `  $authorityBytes=(New-Object Text.UTF8Encoding($false)).GetBytes($authority+[Environment]::NewLine); $authorityStream=New-Object IO.FileStream(${psQuote(processAuthorityPath)},[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read,4096,[IO.FileOptions]::WriteThrough); try{$authorityStream.Write($authorityBytes,0,$authorityBytes.Length);$authorityStream.Flush($true)}finally{$authorityStream.Dispose()}`,
+        `  $processAuthoritySha256=(Get-FileHash -LiteralPath ${psQuote(processAuthorityPath)} -Algorithm SHA256).Hash.ToLowerInvariant()`,
+        '  $exitCode = [int]$worker.ExitCode',
         '} catch {',
         `  [IO.File]::AppendAllText(${psQuote(stderrPath)}, ($_ | Out-String), (New-Object Text.UTF8Encoding($false)))`,
         '  $exitCode = 1',
         '} finally {',
-        `  $terminal = [ordered]@{ schemaVersion=1; artifactKind='watch-mode-provider-preflight-interactive-terminal'; exitCode=[int]$exitCode; sessionId=[int](Get-Process -Id $PID).SessionId; ownerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; completedAt=[DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress`,
-        `  [IO.File]::WriteAllText(${psQuote(terminalPath)}, $terminal, (New-Object Text.UTF8Encoding($false)))`,
+        `  if (-not $processAuthoritySha256 -and (Test-Path -LiteralPath ${psQuote(processAuthorityPath)} -PathType Leaf)) { $processAuthoritySha256=(Get-FileHash -LiteralPath ${psQuote(processAuthorityPath)} -Algorithm SHA256).Hash.ToLowerInvariant() }`,
+        `  $terminal = [ordered]@{ schemaVersion=1; artifactKind='watch-mode-provider-preflight-interactive-terminal'; executionId=${psQuote(executionId)}; workerId=${psQuote(executor.workerId)}; authorizationDigest=${psQuote(authorizationDigest)}; controllerSha256=$ControllerSha256; launcherSha256=$LauncherSha256; processAuthoritySha256=[string]$processAuthoritySha256; requestSha256=${psQuote(requestSha256)}; taskName=${psQuote(taskName)}; taskPath='\\OmniTranslate\\'; exitCode=[int]$exitCode; sessionId=[int](Get-Process -Id $PID).SessionId; ownerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; desktop=${psQuote(expectedDesktop)}; completedAt=[DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress`,
+        `  $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($terminal + [Environment]::NewLine)`,
+        `  $stream = New-Object IO.FileStream(${psQuote(terminalPath)}, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read, 4096, [IO.FileOptions]::WriteThrough)`,
+        '  try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }',
         '}',
         'exit $exitCode',
       ].join('\n');
+      const launcherBytes = Buffer.byteLength(launcherSource, 'utf8');
+      const launcherSha256 = crypto.createHash('sha256').update(launcherSource, 'utf8').digest('hex');
       const controllerSource = [
+        'param([Parameter(Mandatory=$true)][long]$ControllerBytes,[Parameter(Mandatory=$true)][string]$ControllerSha256,[Parameter(Mandatory=$true)][long]$LauncherBytes,[Parameter(Mandatory=$true)][string]$LauncherSha256)',
         "$ErrorActionPreference = 'Stop'",
         `$root = ${psQuote(remoteAuthorizationRoot)}`,
         `$requestPath = ${psQuote(requestPath)}`,
@@ -1721,19 +1834,32 @@ foreach ($entry in @($payload.files)) {
         `$stdoutPath = ${psQuote(stdoutPath)}`,
         `$stderrPath = ${psQuote(stderrPath)}`,
         `$terminalPath = ${psQuote(terminalPath)}`,
+        `$processAuthorityPath = ${psQuote(processAuthorityPath)}`,
         `$taskName = ${psQuote(taskName)}`,
         `$taskPath = '\\OmniTranslate\\'`,
-        `$expectedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value`,
+        `$expectedSid = ${psQuote(expectedOwnerSid)}`,
+        `$expectedSessionId = ${expectedSessionId}`,
+        `$expectedDesktop = ${psQuote(expectedDesktop)}`,
+        '$registered = $false',
+        '$controllerExitCode = 1',
+        '$controllerError = $null',
+        'try {',
         `$nodePath = (Get-Command node.exe -CommandType Application -ErrorAction Stop).Source`,
         `if (-not (Test-Path -LiteralPath $nodePath -PathType Leaf)) { throw 'remote Provider preflight Node executable is unavailable' }`,
         `$requestText = [Console]::In.ReadToEnd()`,
-        `[IO.File]::WriteAllText($requestPath, $requestText, (New-Object Text.UTF8Encoding($false)))`,
-        `$arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $launcherPath + '" -NodePath "' + $nodePath + '"'`,
+        `$requestDigest = [BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).ComputeHash([Text.Encoding]::UTF8.GetBytes($requestText))).Replace('-', '').ToLowerInvariant()`,
+        `if (([Text.Encoding]::UTF8.GetByteCount($requestText)) -le 0 -or $requestDigest -cne ${psQuote(requestSha256)}) { throw 'remote Provider preflight request digest mismatch' }`,
+        `$requestBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($requestText)`,
+        `$requestStream = New-Object IO.FileStream($requestPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read, 4096, [IO.FileOptions]::WriteThrough)`,
+        'try { $requestStream.Write($requestBytes, 0, $requestBytes.Length); $requestStream.Flush($true) } finally { $requestStream.Dispose() }',
+        `$launcherItem = Get-Item -LiteralPath $launcherPath -Force`,
+        `if ($launcherItem.PSIsContainer -or ($launcherItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $launcherItem.Length -ne $LauncherBytes -or (Get-FileHash -LiteralPath $launcherPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $LauncherSha256) { throw 'remote Provider preflight launcher authority mismatch' }`,
+        `$self = Get-Item -LiteralPath $PSCommandPath -Force`,
+        `if ($self.PSIsContainer -or ($self.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $self.Length -ne $ControllerBytes -or (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $ControllerSha256) { throw 'remote Provider preflight controller authority mismatch' }`,
+        `$arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $launcherPath + '" -NodePath "' + $nodePath + '" -ControllerSha256 "' + $ControllerSha256 + '" -LauncherSha256 "' + $LauncherSha256 + '"'`,
         `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments`,
         `$principal = New-ScheduledTaskPrincipal -UserId ${psQuote(executor.user)} -LogonType Interactive -RunLevel Limited`,
         `$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 4) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries`,
-        '$registered = $false',
-        'try {',
         `  if (Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue) { throw 'interactive Provider preflight task already exists' }`,
         '  Register-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null',
         '  $registered = $true',
@@ -1746,17 +1872,31 @@ foreach ($entry in @($payload.files)) {
         '    Start-Sleep -Milliseconds 100',
         '  }',
         '  $terminal = Get-Content -LiteralPath $terminalPath -Raw -Encoding UTF8 | ConvertFrom-Json',
-        `  if ([int]$terminal.sessionId -le 0 -or [string]$terminal.ownerSid -cne $expectedSid) { throw 'interactive Provider preflight task ran outside the configured interactive identity' }`,
+        `  $expectedTerminalKeys = @('artifactKind','authorizationDigest','completedAt','controllerSha256','desktop','executionId','exitCode','launcherSha256','ownerSid','processAuthoritySha256','requestSha256','schemaVersion','sessionId','taskName','taskPath','workerId') | Sort-Object`,
+        `  if ((@($terminal.PSObject.Properties.Name | Sort-Object) -join '|') -cne ($expectedTerminalKeys -join '|') -or [int]$terminal.schemaVersion -ne 1 -or [string]$terminal.artifactKind -cne 'watch-mode-provider-preflight-interactive-terminal' -or [string]$terminal.executionId -cne ${psQuote(executionId)} -or [string]$terminal.workerId -cne ${psQuote(executor.workerId)} -or [string]$terminal.authorizationDigest -cne ${psQuote(authorizationDigest)} -or [string]$terminal.controllerSha256 -cne $ControllerSha256 -or [string]$terminal.launcherSha256 -cne $LauncherSha256 -or [string]$terminal.requestSha256 -cne ${psQuote(requestSha256)} -or [string]$terminal.taskName -cne $taskName -or [string]$terminal.taskPath -cne $taskPath -or [int]$terminal.sessionId -ne $expectedSessionId -or [string]$terminal.ownerSid -cne $expectedSid -or [string]$terminal.desktop -cne $expectedDesktop) { throw 'interactive Provider preflight terminal authority mismatch' }`,
+        `  if (-not (Test-Path -LiteralPath $processAuthorityPath -PathType Leaf) -or (Get-FileHash -LiteralPath $processAuthorityPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$terminal.processAuthoritySha256) { throw 'interactive Provider preflight process authority digest mismatch' }`,
         '  if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) { [Console]::Out.Write((Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8)) }',
         '  if (Test-Path -LiteralPath $stderrPath -PathType Leaf) { [Console]::Error.Write((Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8)) }',
-        '  exit [int]$terminal.exitCode',
+        '  $controllerExitCode = [int]$terminal.exitCode',
+        '} catch {',
+        '  $controllerError = $_',
+        `  try { [IO.File]::AppendAllText($stderrPath, ($_ | Out-String), (New-Object Text.UTF8Encoding($false))) } catch { }`,
         '} finally {',
-        '  if ($registered) {',
-        '    Stop-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue',
-        '    Unregister-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue',
-        '  }',
+        `  $cleanupErrors = New-Object 'System.Collections.Generic.List[string]'`,
+        `  $processAuthoritySha256=''; $identities=@(); try { if(Test-Path -LiteralPath $processAuthorityPath -PathType Leaf){ $processAuthoritySha256=(Get-FileHash -LiteralPath $processAuthorityPath -Algorithm SHA256).Hash.ToLowerInvariant(); $processAuthority=Get-Content -LiteralPath $processAuthorityPath -Raw -Encoding UTF8 | ConvertFrom-Json; $identities=@($processAuthority.launcher,$processAuthority.worker)+@($processAuthority.descendants) } else { $cleanupErrors.Add('process-authority-read: missing') } } catch { $cleanupErrors.Add('process-authority-read: '+$_.Exception.Message) }`,
+        `  try { $existingTask=Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue; if($null -ne $existingTask){ Stop-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue; $stopDeadline=[DateTime]::UtcNow.AddSeconds(10); do { $existingTask=Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue; if($null -eq $existingTask -or [string]$existingTask.State -ne 'Running'){break}; Start-Sleep -Milliseconds 100 } while([DateTime]::UtcNow -lt $stopDeadline); if($null -ne $existingTask -and [string]$existingTask.State -eq 'Running'){ $cleanupErrors.Add('task-stop: task remained running') }; Unregister-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue } } catch { $cleanupErrors.Add('task-cleanup: '+$_.Exception.Message) }`,
+        `  $identityDeadline=[DateTime]::UtcNow.AddSeconds(10); $identitiesEnded=$false; do { $live=@(); foreach($identity in @($identities)){ if($null -eq $identity){continue}; try { $candidate=Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$identity.pid) -ErrorAction SilentlyContinue; if($null -eq $candidate){continue}; $managed=Get-Process -Id ([int]$identity.pid) -ErrorAction Stop; $sameStart=$managed.StartTime.ToUniversalTime().ToString('o') -ceq [string]$identity.startedAt; $sameImage=[IO.Path]::GetFullPath([string]$candidate.ExecutablePath) -ceq [string]$identity.imagePath; if($sameStart -and $sameImage){$live += [int]$identity.pid} } catch { } }; $identitiesEnded=($live.Count -eq 0); if(-not $identitiesEnded){Start-Sleep -Milliseconds 100} } while(-not $identitiesEnded -and [DateTime]::UtcNow -lt $identityDeadline); if(-not $identitiesEnded){$cleanupErrors.Add('process-cleanup: bound identities still running '+($live -join ','))}`,
+        `  foreach ($temporary in @($requestPath,$launcherPath,$PSCommandPath)) { try { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force -ErrorAction Stop } } catch { $cleanupErrors.Add('temporary-cleanup: '+$temporary+': '+$_.Exception.Message) } }`,
+        `  $taskAbsent=($null -eq (Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue)); $temporaryFilesAbsent=(-not (Test-Path -LiteralPath $requestPath) -and -not (Test-Path -LiteralPath $launcherPath) -and -not (Test-Path -LiteralPath $PSCommandPath))`,
+        `  $cleanup = [ordered]@{ schemaVersion=1; artifactKind='watch-mode-provider-preflight-cleanup'; executionId=${psQuote(executionId)}; workerId=${psQuote(executor.workerId)}; taskName=$taskName; taskPath=$taskPath; processAuthoritySha256=$processAuthoritySha256; taskAbsent=$taskAbsent; identitiesEnded=$identitiesEnded; temporaryFilesAbsent=$temporaryFilesAbsent; attemptErrors=@($cleanupErrors); passed=$false; completedAt=[DateTime]::UtcNow.ToString('o') }; $cleanup.passed=($cleanup.taskAbsent -and $cleanup.identitiesEnded -and $cleanup.temporaryFilesAbsent -and $cleanup.attemptErrors.Count -eq 0)`,
+        `  try { $cleanupBytes=(New-Object Text.UTF8Encoding($false)).GetBytes(($cleanup|ConvertTo-Json -Compress)+[Environment]::NewLine); $cleanupStream=New-Object IO.FileStream(${psQuote(cleanupPath)},[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::Read,4096,[IO.FileOptions]::WriteThrough); try{$cleanupStream.Write($cleanupBytes,0,$cleanupBytes.Length);$cleanupStream.Flush($true)}finally{$cleanupStream.Dispose()} } catch { [Console]::Error.WriteLine('cleanup-receipt-write: '+$_.Exception.Message) }`,
         '}',
+        `if ($null -ne $controllerError) { throw $controllerError }`,
+        `if (-not $cleanup.passed) { throw 'interactive Provider preflight cleanup did not complete' }`,
+        'exit $controllerExitCode',
       ].join('\n');
+      const controllerBytes = Buffer.byteLength(controllerSource, 'utf8');
+      const controllerSha256 = crypto.createHash('sha256').update(controllerSource, 'utf8').digest('hex');
       const controlStagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-preflight-control-'));
       try {
         for (const [name, source, destination] of [
@@ -1773,28 +1913,116 @@ foreach ($entry in @($payload.files)) {
       } finally {
         fs.rmSync(controlStagingRoot, { recursive: true, force: true });
       }
+      const controlVerification = remotePowerShellInvocation(`
+$items=@($payload.items)
+foreach($entry in $items){$item=Get-Item -LiteralPath ([string]$entry.path) -Force;if($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.Length -ne [long]$entry.bytes -or (Get-FileHash -LiteralPath ([string]$entry.path) -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$entry.sha256){throw 'remote Provider preflight control authority mismatch'}}
+[pscustomobject]@{verified=$true}|ConvertTo-Json -Compress
+`, { items: [
+        { path: launcherPath, bytes: launcherBytes, sha256: launcherSha256 },
+        { path: controllerPath, bytes: controllerBytes, sha256: controllerSha256 },
+      ] });
+      const controlVerificationResult = await runProcess(config.sshExecutable, [
+        ...sshBaseArgs(executor), `${executor.user}@${executor.host}`, ...controlVerification.args,
+      ], { signal, input: controlVerification.input });
+      ensureSuccessful(controlVerificationResult, 'remote Provider preflight control authority verification');
       onProviderCallStarted();
-      const result = await runProcess(config.sshExecutable, [
-        ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
-        'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', controllerPath,
-      ], { signal, input: JSON.stringify(request), timeoutMs: deriveWatchProductionProviderPreflightBudgetMs() + 30_000 });
-      const remote = parseRemoteJson(result, 'remote Provider preflight worker');
+      let result;
+      let controllerFailure;
+      try {
+        result = await runProcess(config.sshExecutable, [
+          ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
+          'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', controllerPath,
+          '-ControllerBytes', String(controllerBytes), '-ControllerSha256', controllerSha256,
+          '-LauncherBytes', String(launcherBytes), '-LauncherSha256', launcherSha256,
+        ], { signal, input: requestText, timeoutMs: deriveWatchProductionProviderPreflightBudgetMs() + 30_000 });
+      } catch (error) {
+        controllerFailure = error;
+      }
+      const collectionFailures = [];
+      const collect = async (label, operation) => {
+        try { return await operation(); }
+        catch (error) { collectionFailures.push(new Error(`${label}: ${error.message}`, { cause: error })); return undefined; }
+      };
+      const terminalTarget = path.join(authorizationRoot, 'provider-preflight-worker.terminal.json');
+      const terminal = await collect('remote Provider preflight terminal collection', async () => {
+        const download = await runProcess(config.scpExecutable, [
+          ...scpBaseArgs(executor), remoteSpec(executor, terminalPath), pathForScp(terminalTarget),
+        ], { signal });
+        ensureSuccessful(download, 'remote Provider preflight terminal collection');
+        return JSON.parse(fs.readFileSync(terminalTarget, 'utf8').replace(/^\uFEFF/u, ''));
+      });
+      const processAuthorityTarget = path.join(authorizationRoot, 'provider-preflight-process-authority.json');
+      const processAuthority = await collect('remote Provider preflight process authority collection', async () => {
+        const download = await runProcess(config.scpExecutable, [
+          ...scpBaseArgs(executor), remoteSpec(executor, processAuthorityPath), pathForScp(processAuthorityTarget),
+        ], { signal });
+        ensureSuccessful(download, 'remote Provider preflight process authority collection');
+        const bytes = fs.readFileSync(processAuthorityTarget);
+        const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+        const authority = validateProviderPreflightProcessAuthority(
+          JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/u, '')),
+          { executionId, workerId: executor.workerId, sessionId: expectedSessionId, ownerSid: expectedOwnerSid },
+        );
+        return { authority, sha256 };
+      });
+      if (terminal && processAuthority) {
+        await collect('remote Provider preflight terminal validation', async () => validateProviderPreflightInteractiveTerminal(
+          terminal,
+          {
+            executionId, workerId: executor.workerId, authorizationDigest,
+            controllerSha256, launcherSha256, processAuthoritySha256: processAuthority.sha256,
+            requestSha256, taskName, sessionId: expectedSessionId,
+            ownerSid: expectedOwnerSid, desktop: expectedDesktop,
+          },
+        ));
+      }
+      const cleanupTarget = path.join(authorizationRoot, 'provider-preflight-cleanup.json');
+      await collect('remote Provider preflight cleanup receipt collection', async () => {
+        const download = await runProcess(config.scpExecutable, [
+          ...scpBaseArgs(executor), remoteSpec(executor, cleanupPath), pathForScp(cleanupTarget),
+        ], { signal });
+        ensureSuccessful(download, 'remote Provider preflight cleanup receipt collection');
+        const cleanup = JSON.parse(fs.readFileSync(cleanupTarget, 'utf8').replace(/^\uFEFF/u, ''));
+        validateProviderPreflightCleanupReceipt(cleanup, {
+          executionId, workerId: executor.workerId, taskName,
+          processAuthoritySha256: processAuthority?.sha256 ?? terminal?.processAuthoritySha256,
+        });
+      });
       const claimSource = path.win32.join(remoteCanonicalAuthorizationRoot, 'provider-preflight-consumption-claim.json');
       const claimTarget = path.join(authorizationRoot, 'provider-preflight-consumption-claim.json');
-      const claimDownload = await runProcess(config.scpExecutable, [
-        ...scpBaseArgs(executor), remoteSpec(executor, claimSource), pathForScp(claimTarget),
-      ], { signal });
-      ensureSuccessful(claimDownload, 'remote Provider preflight claim collection');
+      await collect('remote Provider preflight claim collection', async () => {
+        const download = await runProcess(config.scpExecutable, [
+          ...scpBaseArgs(executor), remoteSpec(executor, claimSource), pathForScp(claimTarget),
+        ], { signal });
+        ensureSuccessful(download, 'remote Provider preflight claim collection');
+      });
       const resolvedLocalEvidenceDirectory = path.resolve(localEvidenceDirectory);
       const evidenceParent = path.dirname(resolvedLocalEvidenceDirectory);
       fs.mkdirSync(evidenceParent, { recursive: true });
-      const evidenceDownload = await runProcess(config.scpExecutable, [
-        ...scpBaseArgs(executor), '-r', remoteSpec(executor, remoteEvidenceRoot), pathForScp(evidenceParent),
-      ], { signal });
-      ensureSuccessful(evidenceDownload, 'remote Provider preflight evidence collection');
-      const downloaded = path.join(evidenceParent, path.win32.basename(remoteEvidenceRoot));
-      if (downloaded !== resolvedLocalEvidenceDirectory) {
-        fs.renameSync(downloaded, resolvedLocalEvidenceDirectory);
+      await collect('remote Provider preflight evidence collection', async () => {
+        const evidenceDownload = await runProcess(config.scpExecutable, [
+          ...scpBaseArgs(executor), '-r', remoteSpec(executor, remoteEvidenceRoot), pathForScp(evidenceParent),
+        ], { signal });
+        ensureSuccessful(evidenceDownload, 'remote Provider preflight evidence collection');
+        const downloaded = path.join(evidenceParent, path.win32.basename(remoteEvidenceRoot));
+        if (downloaded !== resolvedLocalEvidenceDirectory) fs.renameSync(downloaded, resolvedLocalEvidenceDirectory);
+      });
+      let remote;
+      if (result) {
+        try {
+          const line = lastNonEmptyLine(result.stdout);
+          remote = JSON.parse(line);
+        } catch (error) {
+          collectionFailures.push(new Error(`remote Provider preflight worker returned invalid JSON: ${error.message}`, { cause: error }));
+        }
+        if (Number(result.exitCode) !== 0) {
+          const diagnostics = String(result.stderr ?? '').trim() || String(result.stdout ?? '').trim();
+          controllerFailure = new Error(`remote Provider preflight worker failed with exit ${result.exitCode}: ${diagnostics || 'remote command produced no diagnostics'}`);
+        }
+      }
+      if (controllerFailure) collectionFailures.push(controllerFailure);
+      if (collectionFailures.length > 0) {
+        throw new AggregateError(collectionFailures, 'remote Provider preflight failed after collect-all evidence recovery');
       }
       return { ...remote, outputDirectory: resolvedLocalEvidenceDirectory, networkHealth };
     },

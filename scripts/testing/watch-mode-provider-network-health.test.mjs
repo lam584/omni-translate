@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 
 import { runProviderNetworkHealth, validateProviderNetworkHealthRequest } from './watch-mode-provider-network-health.mjs';
@@ -54,4 +55,10 @@ test('network health fails before authorization when an Omni connection already 
     probeWebSocket: async () => ({ reachable: true, statusCode: 401 }),
     inspectExistingConnections: async () => [{ pid: 100, processName: 'omni-desktop-shell' }],
   }), /network health failed/);
+});
+
+test('network health CLI failure preserves the zero-Provider receipt on stdout', () => {
+  const source = fs.readFileSync(new URL('./watch-mode-provider-network-health.mjs', import.meta.url), 'utf8');
+  assert.match(source, /error\.receipt && executor/u);
+  assert.match(source, /JSON\.stringify\(\{ \.\.\.error\.receipt, executor \}\)/u);
 });

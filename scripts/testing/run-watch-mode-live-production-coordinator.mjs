@@ -1472,6 +1472,7 @@ export function createSshProviderPreflightTransport({
   localEvidenceDirectory,
   runProcess = runChildProcess,
   provision = provisionCredential,
+  onProviderCallStarted = () => {},
   signingKeys,
   runtimeBinaryHashes,
   workspaceRoot = repoRoot,
@@ -1557,7 +1558,35 @@ export function createSshProviderPreflightTransport({
         ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
         'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', networkHealthCommand,
       ], { signal, input: JSON.stringify(networkHealthRequest), timeoutMs: deriveWatchProductionNetworkHealthBudgetMs() });
-      const networkHealthReceipt = parseRemoteJson(networkHealthResult, 'remote Provider network health');
+      let networkHealthReceipt;
+      if (Number(networkHealthResult?.exitCode) !== 0) {
+        const line = lastNonEmptyLine(networkHealthResult.stdout);
+        try {
+          networkHealthReceipt = JSON.parse(line);
+        } catch {
+          ensureSuccessful(networkHealthResult, 'remote Provider network health');
+        }
+        if (networkHealthReceipt.executionId !== executionId
+          || networkHealthReceipt.providerCalls !== 0
+          || networkHealthReceipt.verdict !== 'failed'
+          || canonicalJson(networkHealthReceipt.executor) !== canonicalJson(networkHealthRequest.executor)) {
+          throw new Error('failed remote Provider network health receipt is not bound to the signed configured executor');
+        }
+        const networkHealthFailure = signCoordinatorAuthority({
+          schemaVersion: 1,
+          artifactKind: 'watch-mode-provider-network-health-authority',
+          executionId,
+          executor: structuredClone(grant.executor),
+          receipt: networkHealthReceipt,
+        }, signingKeys.privateKeyPem, signingKeys.publicKeyPem);
+        const networkHealthFailurePath = path.join(authorizationRoot, 'provider-network-health-authority.json');
+        atomicWriteJson(networkHealthFailurePath, networkHealthFailure);
+        const error = new Error('remote Provider network health failed before credential provision and paid Provider preflight');
+        error.providerCalls = 0;
+        error.networkHealthPath = networkHealthFailurePath;
+        throw error;
+      }
+      networkHealthReceipt = parseRemoteJson(networkHealthResult, 'remote Provider network health');
       if (networkHealthReceipt.executionId !== executionId
         || networkHealthReceipt.providerCalls !== 0
         || networkHealthReceipt.verdict !== 'passed'
@@ -1625,6 +1654,7 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
       const workerEntrypoint = path.win32.join(
         executor.workspaceRoot, 'scripts', 'testing', 'run-watch-mode-provider-preflight-worker.mjs',
       );
+      onProviderCallStarted();
       const result = await runProcess(config.sshExecutable, [
         ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
         'node.exe', workerEntrypoint,
@@ -3037,7 +3067,7 @@ async function runProductionCoordinatorCore({
       `${new Date().toISOString().replace(/[-:.TZ]/gu, '')}-${executionId}`,
     );
     transitionCoordinatorState('preflight-authorized', {
-      providerCalls: 1,
+      providerCalls: 0,
       providerId,
       preflightOutputDirectory: outputDirectory,
     });
@@ -3051,6 +3081,10 @@ async function runProductionCoordinatorCore({
           localEvidenceDirectory: outputDirectory,
           signingKeys,
           runtimeBinaryHashes: frozenRuntime.authority.runtimeBinaryHashes,
+          onProviderCallStarted: () => transitionCoordinatorState('preflight-running', {
+            providerCalls: 1,
+            providerId,
+          }),
         }));
     const preflight = await preflightTransport.dispatch({ grant, authorizationDigest, signal });
     transitionCoordinatorState('preflight-terminal', {
@@ -3488,7 +3522,8 @@ export async function runProductionCoordinator(options) {
       cleanupErrors,
       startedCellIds: error.startedCellIds ?? current.startedCellIds,
       completedCellIds: error.completedCellIds ?? current.completedCellIds,
-      providerCalls: Math.max(current.providerCalls, error.failurePath ? 1 : 0),
+      providerCalls: Math.max(current.providerCalls, Number(error.providerCalls ?? 0)),
+      networkHealthPath: error.networkHealthPath ?? current.networkHealthPath ?? null,
       failureAuthorityPath: error.failurePath ?? null,
       failureCollectionPath: error.failureCollectionPath ?? null,
     });

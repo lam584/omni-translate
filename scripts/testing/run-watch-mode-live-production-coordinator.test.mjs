@@ -1309,6 +1309,7 @@ test('remote executor network health failure is terminal before credential provi
     };
     let credentialCalls = 0;
     let providerCalls = 0;
+    let providerCallStarts = 0;
     const transport = createSshProviderPreflightTransport({
       config: { sshExecutable: 'ssh.exe', scpExecutable: 'scp.exe' }, executor,
       executionId: 'remote-health-failure', authorizationRoot,
@@ -1318,6 +1319,7 @@ test('remote executor network health failure is terminal before credential provi
       verifyExecutor: async () => {},
       signingKeys: generateCoordinatorSigningKeyPair(),
       provision: async () => { credentialCalls += 1; },
+      onProviderCallStarted: () => { providerCallStarts += 1; },
       runProcess: async (executable, args) => {
         const joined = args.join(' ');
         const encodedIndex = args.indexOf('-EncodedCommand');
@@ -1325,7 +1327,14 @@ test('remote executor network health failure is terminal before credential provi
           ? Buffer.from(args[encodedIndex + 1], 'base64').toString('utf16le')
           : joined;
         if (remoteSource.includes('watch-mode-provider-network-health.mjs')) {
-          return { exitCode: 1, stdout: '', stderr: 'provider network health failed before paid preflight authorization' };
+          return { exitCode: 1, stdout: `${JSON.stringify({
+            schemaVersion: 1,
+            artifactKind: 'watch-mode-provider-network-health',
+            executionId: 'remote-health-failure',
+            providerCalls: 0,
+            verdict: 'failed',
+            executor: grant.executor,
+          })}\n`, stderr: 'provider network health failed before paid preflight authorization' };
         }
         if (joined.includes('run-watch-mode-provider-preflight-worker.mjs')) providerCalls += 1;
         return { exitCode: 0, stdout: '{}\n', stderr: '' };
@@ -1338,6 +1347,8 @@ test('remote executor network health failure is terminal before credential provi
     );
     assert.equal(credentialCalls, 0);
     assert.equal(providerCalls, 0);
+    assert.equal(providerCallStarts, 0);
+    assert.ok(fs.existsSync(path.join(authorizationRoot, 'provider-network-health-authority.json')));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

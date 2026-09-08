@@ -189,15 +189,19 @@ export function validateProviderNetworkHealthRequest(request) {
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  let executor;
   try {
     const request = validateProviderNetworkHealthRequest(await readStdinJson());
-    const executor = request.executor;
+    executor = request.executor;
     const receipt = await runProviderNetworkHealth({
       executionId: request.executionId,
       providerId: 'dashscope',
     });
     process.stdout.write(`${JSON.stringify({ ...receipt, executor })}\n`);
   } catch (error) {
+    if (error.receipt && executor) {
+      process.stdout.write(`${JSON.stringify({ ...error.receipt, executor })}\n`);
+    }
     console.error(`provider-network-health: ${error.message}`);
     process.exitCode = 1;
   }

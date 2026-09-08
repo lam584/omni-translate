@@ -1238,9 +1238,11 @@ test('remote preflight transport runs executor-bound network health before crede
           executor: request.executor,
         })}\n`, stderr: '' };
       }
-      if (executable === 'ssh.exe' && joined.includes('run-watch-mode-provider-preflight-worker.mjs')) {
+      if (executable === 'ssh.exe' && remoteSource.includes('run-watch-mode-provider-preflight-worker.mjs')) {
         events.push('provider'); providerRuns += 1;
-        assert.doesNotMatch(joined, /api.?key|credential|secret/i);
+        assert.match(remoteSource, /Set-Location -LiteralPath 'E:\\watch-worker'/u);
+        assert.match(remoteSource, /\[Environment\]::CurrentDirectory = 'E:\\watch-worker'/u);
+        assert.doesNotMatch(remoteSource, /api.?key|credential|secret/i);
         assert.doesNotMatch(String(options.input), /api.?key|credential|secret/i);
         return { exitCode: 0, stdout: `${JSON.stringify({ status: 'completed', outputDirectory: 'E:\\omni-shards\\provider-preflight-evidence', fields: {} })}\n`, stderr: '' };
       }

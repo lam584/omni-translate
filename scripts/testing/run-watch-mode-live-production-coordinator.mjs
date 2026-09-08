@@ -1654,10 +1654,17 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
       const workerEntrypoint = path.win32.join(
         executor.workspaceRoot, 'scripts', 'testing', 'run-watch-mode-provider-preflight-worker.mjs',
       );
+      const providerPreflightCommand = Buffer.from([
+        "$ErrorActionPreference = 'Stop'",
+        `[Environment]::CurrentDirectory = '${executor.workspaceRoot.replaceAll("'", "''")}'`,
+        `Set-Location -LiteralPath '${executor.workspaceRoot.replaceAll("'", "''")}'`,
+        `& node.exe '${workerEntrypoint.replaceAll("'", "''")}'`,
+        'exit $LASTEXITCODE',
+      ].join('\n'), 'utf16le').toString('base64');
       onProviderCallStarted();
       const result = await runProcess(config.sshExecutable, [
         ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
-        'node.exe', workerEntrypoint,
+        'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', providerPreflightCommand,
       ], { signal, input: JSON.stringify(request), timeoutMs: deriveWatchProductionProviderPreflightBudgetMs() });
       const remote = parseRemoteJson(result, 'remote Provider preflight worker');
       const claimSource = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-consumption-claim.json');

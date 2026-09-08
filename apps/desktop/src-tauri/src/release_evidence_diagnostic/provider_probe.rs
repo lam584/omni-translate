@@ -234,22 +234,7 @@ pub(super) async fn collect_provider_probe(
     } else {
         None
     };
-    if let Some(wire) = wire_evidence.as_mut().and_then(Value::as_object_mut) {
-        let first_latency = wire
-            .get("firstServerEvent")
-            .and_then(Value::as_object)
-            .and_then(|event| event.get("monotonicMs"))
-            .and_then(Value::as_u64);
-        if first_latency.is_some_and(|latency| latency > 1_200)
-            && wire.get("evidenceOutcome").and_then(Value::as_str)
-                == Some("livetranslate-session-finished")
-        {
-            wire.insert(
-                "evidenceOutcome".to_string(),
-                json!("latency-budget-exceeded"),
-            );
-        }
-    }
+    classify_preflight_latency(&mut wire_evidence);
     let mut raw_probe_result = serde_json::to_value(&probe).map_err(|error| error.to_string())?;
     if let Some(object) = raw_probe_result.as_object_mut() {
         if strict_livetranslate {
@@ -398,6 +383,66 @@ pub(super) async fn collect_provider_probe(
     }
     write_json(&staging.join("provider-probe-result.json"), &result)?;
     Ok(diagnostics)
+}
+
+fn classify_preflight_latency(wire_evidence: &mut Option<Value>) {
+    if let Some(wire) = wire_evidence.as_mut().and_then(Value::as_object_mut) {
+        let first_latency = wire
+            .get("firstServerEvent")
+            .and_then(Value::as_object)
+            .and_then(|event| event.get("monotonicMs"))
+            .and_then(Value::as_u64);
+        if first_latency.is_some_and(|latency| latency > 1_200)
+            && wire.get("evidenceOutcome").and_then(Value::as_str)
+                == Some("livetranslate-session-finished")
+        {
+            wire.insert(
+                "evidenceOutcome".to_string(),
+                json!(if first_latency.is_some_and(|latency| latency > 12_000) {
+                    "first-server-event-timeout"
+                } else {
+                    "latency-budget-exceeded"
+                }),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod preflight_latency_tests {
+    use super::*;
+
+    #[test]
+    fn classifies_completed_lifecycle_at_exact_latency_boundary() {
+        for (latency, outcome) in [(1200, "livetranslate-session-finished"), (1201, "latency-budget-exceeded"), (2054, "latency-budget-exceeded"), (12000, "latency-budget-exceeded"), (12001, "first-server-event-timeout")] {
+            let mut wire = Some(json!({"evidenceOutcome":"livetranslate-session-finished", "firstServerEvent":{"type":"session.created", "monotonicMs":latency}, "trace":[{"monotonicMs":latency}]}));
+            let original = wire.clone().unwrap();
+            classify_preflight_latency(&mut wire);
+            let value = wire.unwrap();
+            assert_eq!(value["evidenceOutcome"], outcome);
+            assert_eq!(value["firstServerEvent"], original["firstServerEvent"]);
+            assert_eq!(value["trace"], original["trace"]);
+        }
+    }
+
+    #[test]
+    fn preserves_non_success_terminal_evidence() {
+        for outcome in ["provider-error-frame", "timeout:read-first-event", "websocket-close-abnormal", "unknown"] {
+            let mut wire = Some(json!({"evidenceOutcome":outcome, "firstServerEvent":{"monotonicMs":2054}}));
+            let original = wire.clone();
+            classify_preflight_latency(&mut wire);
+            assert_eq!(wire, original);
+        }
+    }
+
+    #[test]
+    fn does_not_invent_latency_for_missing_or_malformed_evidence() {
+        for mut wire in [None, Some(Value::Null), Some(json!({"evidenceOutcome":"livetranslate-session-finished"})), Some(json!({"evidenceOutcome":"livetranslate-session-finished", "firstServerEvent":{"monotonicMs":"2054"}}))] {
+            let original = wire.clone();
+            classify_preflight_latency(&mut wire);
+            assert_eq!(wire, original);
+        }
+    }
 }
 
 fn write_provider_wire_trace(

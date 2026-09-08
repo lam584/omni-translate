@@ -171,6 +171,7 @@ import {
   validateProviderPreflightCleanupReceipt,
   validateProviderPreflightProcessAuthority,
   createDeterministicReadinessTransferArchive,
+  REMOTE_PROVIDER_PREFLIGHT_PUBLICATION_BODY,
   stageProductionReadinessBatch,
 } from './run-watch-mode-live-production-coordinator.mjs';
 
@@ -2102,6 +2103,43 @@ test('Windows PowerShell file-only executes oversized incompressible payload wit
     assert.match(result.stdout, /__OMNI_REMOTE_COMPLETE_V1__/);
     const decoded = decodeRemotePowerShellFileOutput({ exitCode: result.status, stdout: result.stdout, stderr: result.stderr });
     assert.deepEqual(JSON.parse(decoded.stdout.split(/\r?\n/)[0]), payload);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('canonical Provider preflight publication uses extended-length paths beyond MAX_PATH', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-preflight-long-path-'));
+  const sourceRoot = path.join(root, 'staging');
+  const targetRoot = path.join(root, 'canonical-' + 'x'.repeat(205));
+  const relative = 'provider-preflight-lease-reservations/lease-' + 'y'.repeat(48) + '.json';
+  const source = path.join(sourceRoot, ...relative.split('/'));
+  const target = path.join(targetRoot, ...relative.split('/'));
+  const bytes = Buffer.from('{"lease":"long-path-authority"}\\n', 'utf8');
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  fs.writeFileSync(source, bytes, { flag: 'wx' });
+  assert.ok(target.length > 260, 'fixture destination must exceed MAX_PATH, got ' + target.length);
+  const invocation = remotePowerShellInvocation(REMOTE_PROVIDER_PREFLIGHT_PUBLICATION_BODY, {
+    sourceRoot,
+    targetRoot,
+    files: [{
+      path: relative,
+      bytes: bytes.byteLength,
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    }],
+  }, { mode: 'file-only' });
+  const scriptPath = path.join(root, 'publish.ps1');
+  try {
+    fs.writeFileSync(scriptPath, invocation.fileScript, 'utf8');
+    const result = spawnSync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
+    ], { encoding: 'utf8', timeout: 30_000, windowsHide: true, env: windowsPowerShellEnvironment(process.env) });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    const decoded = decodeRemotePowerShellFileOutput({ exitCode: result.status, stdout: result.stdout, stderr: result.stderr });
+    const receipt = JSON.parse(decoded.stdout.split(/\r?\n/u)[0]);
+    assert.equal(receipt.published, true);
+    assert.equal(receipt.logicalTargetRoot, path.win32.resolve(targetRoot));
+    assert.equal(fs.readFileSync('\\\\?\\' + target).toString('utf8'), bytes.toString('utf8'));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

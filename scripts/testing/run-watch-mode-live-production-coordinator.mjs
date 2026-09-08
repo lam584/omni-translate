@@ -104,6 +104,42 @@ import {
 export const PRODUCTION_COORDINATOR_RUNNER_ID =
   'scripts/testing/run-watch-mode-live-production-coordinator.mjs';
 
+export const REMOTE_PROVIDER_PREFLIGHT_PUBLICATION_BODY = String.raw`
+function ConvertTo-ExtendedLengthPath([string]$logicalPath) {
+  $full = [IO.Path]::GetFullPath($logicalPath)
+  if ($full.StartsWith('\\?\')) { return $full }
+  if ($full.StartsWith('\\')) { return '\\?\UNC\' + $full.Substring(2) }
+  return '\\?\' + $full
+}
+function Get-ExtendedLengthFileSha256([string]$extendedPath) {
+  $stream = [IO.File]::Open($extendedPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  try {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return -join @($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) }
+    finally { $sha.Dispose() }
+  } finally { $stream.Dispose() }
+}
+$sourceRoot = [IO.Path]::GetFullPath([string]$payload.sourceRoot)
+$targetRoot = [IO.Path]::GetFullPath([string]$payload.targetRoot)
+$extendedTargetRoot = ConvertTo-ExtendedLengthPath $targetRoot
+if ([IO.Directory]::Exists($extendedTargetRoot) -or [IO.File]::Exists($extendedTargetRoot)) { throw 'canonical remote Provider preflight authorization root already exists' }
+[IO.Directory]::CreateDirectory($extendedTargetRoot) | Out-Null
+[IO.Directory]::CreateDirectory((ConvertTo-ExtendedLengthPath (Join-Path $targetRoot 'provider-preflight-lease-reservations'))) | Out-Null
+[IO.Directory]::CreateDirectory((ConvertTo-ExtendedLengthPath (Join-Path $targetRoot 'worker-readiness'))) | Out-Null
+foreach ($entry in @($payload.files)) {
+  $relative = [string]$entry.path
+  $source = ConvertTo-ExtendedLengthPath (Join-Path $sourceRoot ($relative -replace '/', '\'))
+  $target = ConvertTo-ExtendedLengthPath (Join-Path $targetRoot ($relative -replace '/', '\'))
+  if (-not [IO.File]::Exists($source)) { throw "staged authorization file is missing: $relative" }
+  $attributes = [IO.File]::GetAttributes($source)
+  $length = (New-Object IO.FileInfo($source)).Length
+  if (($attributes -band [IO.FileAttributes]::Directory) -ne 0 -or ($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $length -ne [long]$entry.bytes -or (Get-ExtendedLengthFileSha256 $source) -cne [string]$entry.sha256) { throw "staged authorization authority mismatch: $relative" }
+  [IO.File]::Copy($source, $target, $false)
+  if ((Get-ExtendedLengthFileSha256 $target) -cne [string]$entry.sha256) { throw "published authorization authority mismatch: $relative" }
+}
+[pscustomobject]@{ published = $true; logicalTargetRoot = $targetRoot } | ConvertTo-Json -Compress
+`;
+
 function writeTarOctal(header, offset, length, value) {
   const encoded = Math.trunc(value).toString(8).padStart(length - 1, '0');
   if (encoded.length > length - 1) throw new Error('deterministic transfer tar numeric field overflow');
@@ -1718,24 +1754,7 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
       } finally {
         fs.rmSync(uploadStagingRoot, { recursive: true, force: true });
       }
-      const publication = remotePowerShellInvocation(`
-$sourceRoot = [IO.Path]::GetFullPath([string]$payload.sourceRoot)
-$targetRoot = [IO.Path]::GetFullPath([string]$payload.targetRoot)
-if (Test-Path -LiteralPath $targetRoot) { throw 'canonical remote Provider preflight authorization root already exists' }
-[IO.Directory]::CreateDirectory($targetRoot) | Out-Null
-[IO.Directory]::CreateDirectory((Join-Path $targetRoot 'provider-preflight-lease-reservations')) | Out-Null
-[IO.Directory]::CreateDirectory((Join-Path $targetRoot 'worker-readiness')) | Out-Null
-foreach ($entry in @($payload.files)) {
-  $relative = [string]$entry.path
-  $source = Join-Path $sourceRoot ($relative -replace '/', '\\')
-  $target = Join-Path $targetRoot ($relative -replace '/', '\\')
-  $item = Get-Item -LiteralPath $source -Force
-  if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.Length -ne [long]$entry.bytes -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$entry.sha256) { throw "staged authorization authority mismatch: $relative" }
-  [IO.File]::Copy($source, $target, $false)
-  if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$entry.sha256) { throw "published authorization authority mismatch: $relative" }
-}
-[pscustomobject]@{ published = $true } | ConvertTo-Json -Compress
-`, {
+      const publication = remotePowerShellInvocation(REMOTE_PROVIDER_PREFLIGHT_PUBLICATION_BODY, {
         sourceRoot: remoteAuthorizationRoot,
         targetRoot: remoteCanonicalAuthorizationRoot,
         files: files.map((relative) => fileAuthorityEntry(

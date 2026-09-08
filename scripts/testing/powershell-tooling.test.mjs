@@ -153,6 +153,188 @@ test('process module refuses external and stale leases, then stops its managed p
   }
 });
 
+test('process tree snapshot rejects stale parent generations and terminates traversal cycles', { skip: process.platform !== 'win32' }, () => {
+  const output = runPowerShell(`
+    $module = Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force -PassThru
+    & $module {
+      function Get-LegacyDescendants($RootProcessId, $ProcessSnapshot) {
+        $children = @{}
+        foreach ($item in $ProcessSnapshot) {
+          $parent = [int]$item.ParentProcessId
+          if (-not $children.ContainsKey($parent)) { $children[$parent] = @() }
+          $children[$parent] += [int]$item.ProcessId
+        }
+        $result = @(); $pending = New-Object System.Collections.Generic.Stack[int]; $pending.Push($RootProcessId)
+        while ($pending.Count -gt 0) {
+          $parent = $pending.Pop()
+          if (-not $children.ContainsKey($parent)) { continue }
+          foreach ($child in @($children[$parent])) { $result += $child; $pending.Push($child) }
+        }
+        return $result
+      }
+      $snapshot = @(
+        [pscustomobject]@{ ProcessId = 101; ParentProcessId = 100; StartTimeUtcTicks = 1100 },
+        [pscustomobject]@{ ProcessId = 102; ParentProcessId = 101; StartTimeUtcTicks = 1200 },
+        [pscustomobject]@{ ProcessId = 200; ParentProcessId = 100; StartTimeUtcTicks = 900 },
+        [pscustomobject]@{ ProcessId = 302; ParentProcessId = 100; StartTimeUtcTicks = 1000 },
+        [pscustomobject]@{ ProcessId = 100; ParentProcessId = 302; StartTimeUtcTicks = 1000 }
+      )
+      $targets = @(Get-OmniDescendantProcessTargets -RootProcessId 100 -RootStartTimeUtcTicks 1000 -ProcessSnapshot $snapshot)
+      $legacy = @(Get-LegacyDescendants 100 @($snapshot[0..2]))
+      [ordered]@{
+        pids = @($targets | ForEach-Object { $_.pid } | Sort-Object)
+        generations = @($targets | ForEach-Object { $_.startTimeUtcTicks })
+        legacyPids = @($legacy | Sort-Object)
+      } | ConvertTo-Json -Compress
+    }
+  `);
+  const result = JSON.parse(output);
+  assert.deepEqual(result.pids, [101, 102, 302]);
+  assert.equal(result.generations.length, 3);
+  assert.deepEqual(result.legacyPids, [101, 102, 200], 'old PID-only traversal must reproduce the stale-parent false positive');
+});
+
+test('fallback stop reads actual process identity and kills only the bound current-generation handle', { skip: process.platform !== 'win32' }, () => {
+  const output = runPowerShell(`
+    $module = Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force -PassThru
+    & $module {
+      $script:killed = @()
+      function script:Get-Process {
+        param($Id, $ErrorAction)
+        $fake = [pscustomobject]@{ StartTime = [DateTime]::new($script:actualTicks, [DateTimeKind]::Utc); BoundPid = [int]$Id; Handle = [IntPtr]::new(1) }
+        $fake | Add-Member ScriptMethod Kill { $script:killed += [int]$this.BoundPid }
+        $fake | Add-Member ScriptMethod Dispose { }
+        return $fake
+      }
+      $script:actualTicks = 222
+      $staleStopped = Stop-OmniProcessGeneration -Target ([pscustomobject]@{ pid = 77; startTimeUtcTicks = 111 })
+      $script:actualTicks = 229
+      $currentStopped = Stop-OmniProcessGeneration -Target ([pscustomobject]@{ pid = 77; startTimeUtcTicks = 220 })
+      [ordered]@{ staleStopped = $staleStopped; currentStopped = $currentStopped; killed = @($script:killed) } | ConvertTo-Json -Compress
+    }
+  `);
+  const result = JSON.parse(output);
+  assert.equal(result.staleStopped, false);
+  assert.equal(result.currentStopped, true);
+  assert.deepEqual(result.killed, [77]);
+});
+
+test('PS5 generation lookup binds and releases a native process handle', { skip: process.platform !== 'win32' }, () => {
+  const output = runPowerShell(`
+    $module = Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force -PassThru
+    $fixture = Start-Process powershell.exe -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -WindowStyle Hidden -PassThru
+    try {
+      $target = [pscustomobject]@{ pid = $fixture.Id; startTimeUtcTicks = [long]$fixture.StartTime.ToUniversalTime().Ticks }
+      $result = & $module {
+        param($target)
+        $state = Get-OmniProcessGenerationState -Target $target
+        $field = $state.process.GetType().GetField('m_processHandle', [Reflection.BindingFlags]'Instance,NonPublic')
+        $handle = if ($null -eq $field) { $null } else { $field.GetValue($state.process) }
+        $before = $null -ne $handle -and -not $handle.IsInvalid -and -not $handle.IsClosed
+        $state.process.Dispose()
+        [ordered]@{ status = $state.status; boundBeforeDispose = $before; closedAfterDispose = ($null -ne $handle -and $handle.IsClosed) }
+      } $target
+      $result | ConvertTo-Json -Compress
+    } finally {
+      if (-not $fixture.HasExited) { $fixture.Kill(); $fixture.WaitForExit() }
+      $fixture.Dispose()
+    }
+  `);
+  const result = JSON.parse(output);
+  assert.equal(result.status, 'current');
+  assert.equal(result.boundBeforeDispose, true);
+  assert.equal(result.closedAfterDispose, true);
+});
+
+test('reachable descendant with unreadable creation time fails closed while unrelated unreadable rows do not', { skip: process.platform !== 'win32' }, () => {
+  const output = runPowerShell(`
+    $module = Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force -PassThru
+    & $module {
+      $snapshot = @(
+        [pscustomobject]@{ ProcessId = 101; ParentProcessId = 100; StartTimeUtcTicks = 1100 },
+        [pscustomobject]@{ ProcessId = 102; ParentProcessId = 101 },
+        [pscustomobject]@{ ProcessId = 900; ParentProcessId = 899 }
+      )
+      $failure = $null
+      try { Get-OmniDescendantProcessTargets -RootProcessId 100 -RootStartTimeUtcTicks 1000 -ProcessSnapshot $snapshot | Out-Null } catch { $failure = $_.Exception.Message }
+      $unrelatedOnly = @(Get-OmniDescendantProcessTargets -RootProcessId 100 -RootStartTimeUtcTicks 1000 -ProcessSnapshot @($snapshot[0], $snapshot[2]))
+      [ordered]@{ failure = $failure; unrelatedCount = $unrelatedOnly.Count } | ConvertTo-Json -Compress
+    }
+  `);
+  const result = JSON.parse(output);
+  assert.match(result.failure, /reachable descendant generation is unverifiable.*parentPid=101.*pid=102/u);
+  assert.equal(result.unrelatedCount, 1);
+});
+
+test('native tree termination keeps the verified root handle alive for the taskkill call', { skip: process.platform !== 'win32' }, () => {
+  const output = runPowerShell(`
+    $module = Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force -PassThru
+    & $module {
+      $script:guardDisposed = $false; $script:taskkillSawLiveGuard = $false; $script:stateCalls = 0
+      $guard = [pscustomobject]@{ Handle = [IntPtr]::new(1) }
+      $guard | Add-Member ScriptMethod Dispose { $script:guardDisposed = $true }
+      function script:Test-OmniProcessIdentity { param($Lease) return $true }
+      function script:Get-OmniDescendantProcessTargets { param($RootProcessId,$RootStartTimeUtcTicks) return @() }
+      function script:Get-OmniProcessGenerationState {
+        param($Target)
+        $script:stateCalls += 1
+        if ($script:stateCalls -eq 1) { return [pscustomobject]@{ status='current'; process=$guard; error=$null } }
+        return [pscustomobject]@{ status='absent'; process=$null; error=$null }
+      }
+      function script:Stop-OmniProcessGeneration { param($Target) return $false }
+      function script:taskkill.exe { $script:taskkillSawLiveGuard = -not $script:guardDisposed; $global:LASTEXITCODE=0 }
+      $lease = [pscustomobject]@{ ownership='managed'; pid=77; startTimeUtcTicks=220; custodyId='missing-test-record' }
+      $result = Stop-OmniOwnedProcessTree -Lease $lease
+      [ordered]@{ stopped=$result.stopped; liveDuringTaskkill=$script:taskkillSawLiveGuard; disposedAfter=$script:guardDisposed } | ConvertTo-Json -Compress
+    }
+  `);
+  const result = JSON.parse(output);
+  assert.equal(result.stopped, true);
+  assert.equal(result.liveDuringTaskkill, true);
+  assert.equal(result.disposedAfter, true);
+});
+
+test('managed handle cleanup preserves descendant cleanup failure after the root exits', { skip: process.platform !== 'win32' }, () => {
+  const output = runPowerShell(`
+    $module = Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force -PassThru
+    $fixture = Start-Process powershell.exe -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -WindowStyle Hidden -PassThru
+    try {
+      & $module {
+        function script:Get-OmniProcessIdentity { param($ProcessId,$Ownership) return [pscustomobject]@{ pid=$ProcessId } }
+        function script:Stop-OmniOwnedProcessTree { param($Lease,$WaitMilliseconds) throw 'descendant cleanup unverified' }
+      }
+      $failure = $null
+      try { Stop-OmniManagedProcessHandle -Process $fixture | Out-Null } catch { $failure = $_.Exception.Message }
+      $fixture.Kill(); $fixture.WaitForExit()
+      [ordered]@{ failure=$failure; rootExited=$fixture.HasExited } | ConvertTo-Json -Compress
+    } finally {
+      if (-not $fixture.HasExited) { $fixture.Kill(); $fixture.WaitForExit() }
+      $fixture.Dispose()
+    }
+  `);
+  const result = JSON.parse(output);
+  assert.match(result.failure, /descendant cleanup unverified/u);
+  assert.equal(result.rootExited, true);
+});
+
+test('process identity lookup errors fail closed instead of masquerading as process exit', { skip: process.platform !== 'win32' }, () => {
+  const output = runPowerShell(`
+    $module = Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force -PassThru
+    & $module {
+      function script:Get-Process { param($Id, $ErrorAction) throw [UnauthorizedAccessException]::new('identity denied') }
+      $target = [pscustomobject]@{ pid = 88; startTimeUtcTicks = 220 }
+      $state = Get-OmniProcessGenerationState -Target $target
+      $failure = $null
+      try { Stop-OmniProcessGeneration -Target $target | Out-Null } catch { $failure = $_.Exception.Message }
+      [ordered]@{ status = $state.status; error = $state.error; failure = $failure } | ConvertTo-Json -Compress
+    }
+  `);
+  const result = JSON.parse(output);
+  assert.equal(result.status, 'unverifiable');
+  assert.match(result.error, /identity denied/u);
+  assert.match(result.failure, /could not be verified before termination/u);
+});
+
 test('owned tree cleanup captures native stderr without bypassing final exit verification', { skip: process.platform !== 'win32' }, () => {
   const output = runPowerShell(`
     $ErrorActionPreference = 'Stop'
@@ -182,7 +364,7 @@ test('owned tree cleanup still rejects a live process after native and fallback 
       $lease = Get-OmniProcessIdentity -ProcessId $process.Id -Ownership managed
       & $module {
         function script:taskkill.exe { & $env:ComSpec /d /c 'echo fixture-taskkill-denied 1>&2 & exit /b 128' }
-        function script:Stop-Process { param($Id, [switch]$Force, $ErrorAction) }
+        function script:Stop-OmniProcessGeneration { param($Target) return $false }
       }
       $failure = $null
       try { Stop-OmniOwnedProcessTree -Lease $lease -WaitMilliseconds 100 | Out-Null } catch { $failure = $_.Exception.Message }

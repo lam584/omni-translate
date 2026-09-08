@@ -135,54 +135,131 @@ function Wait-OmniManagedProcessExit {
   }
 }
 
-function Get-OmniDescendantProcessIds {
+function Get-OmniProcessStartTimeUtcTicks {
   [CmdletBinding()]
-  param([Parameter(Mandatory = $true)][int]$RootProcessId)
+  param([Parameter(Mandatory = $true)]$Process)
 
-  $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+  if ($Process.PSObject.Properties.Name -contains 'StartTimeUtcTicks') { return [long]$Process.StartTimeUtcTicks }
+  if ($Process.PSObject.Properties.Name -contains 'CreationDate') {
+    $created = $Process.CreationDate
+    if ($created -is [DateTime]) { return [long]$created.ToUniversalTime().Ticks }
+    if (-not [string]::IsNullOrWhiteSpace([string]$created)) { return [long]([System.Management.ManagementDateTimeConverter]::ToDateTime([string]$created).ToUniversalTime().Ticks) }
+  }
+  if ($Process.PSObject.Properties.Name -contains 'StartTime') { return [long]$Process.StartTime.ToUniversalTime().Ticks }
+  throw 'process creation time is unavailable'
+}
+
+function ConvertTo-OmniProcessGenerationTicks {
+  param([Parameter(Mandatory = $true)][long]$Ticks)
+
+  # Win32_Process.CreationDate has microsecond precision, while Process.StartTime
+  # can expose 100-nanosecond ticks. Compare at the shared precision.
+  return $Ticks - ($Ticks % 10)
+}
+
+function Get-OmniDescendantProcessTargets {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)][int]$RootProcessId,
+    [Parameter(Mandatory = $true)][long]$RootStartTimeUtcTicks,
+    [object[]]$ProcessSnapshot
+  )
+
+  $rootGeneration = ConvertTo-OmniProcessGenerationTicks -Ticks $RootStartTimeUtcTicks
+  $all = if ($null -ne $ProcessSnapshot) { @($ProcessSnapshot) } else { @(Get-CimInstance Win32_Process -ErrorAction Stop) }
   $childrenByParent = @{}
   foreach ($item in $all) {
+    $processId = [int]$item.ProcessId
     $parentId = [int]$item.ParentProcessId
-    if (-not $childrenByParent.ContainsKey($parentId)) {
-      $childrenByParent[$parentId] = New-Object System.Collections.Generic.List[int]
-    }
-    $childrenByParent[$parentId].Add([int]$item.ProcessId) | Out-Null
+    if ($processId -le 0 -or $processId -eq $parentId) { continue }
+    $startTimeUtcTicks = $null
+    $generationError = $null
+    try { $startTimeUtcTicks = Get-OmniProcessStartTimeUtcTicks -Process $item } catch { $generationError = $_.Exception.Message }
+    if (-not $childrenByParent.ContainsKey($parentId)) { $childrenByParent[$parentId] = New-Object System.Collections.Generic.List[object] }
+    $childrenByParent[$parentId].Add([pscustomobject]@{
+      pid = $processId
+      parentPid = $parentId
+      startTimeUtcTicks = if ($null -eq $startTimeUtcTicks) { $null } else { ConvertTo-OmniProcessGenerationTicks -Ticks $startTimeUtcTicks }
+      generationError = $generationError
+    }) | Out-Null
   }
-  $result = New-Object System.Collections.Generic.List[int]
-  $pending = New-Object System.Collections.Generic.Stack[int]
-  $pending.Push($RootProcessId)
+  $result = New-Object System.Collections.Generic.List[object]
+  $pending = New-Object System.Collections.Generic.Stack[object]
+  $pending.Push([pscustomobject]@{ pid = $RootProcessId; startTimeUtcTicks = $rootGeneration })
+  $visited = @{ "$($RootProcessId):$rootGeneration" = $true }
   while ($pending.Count -gt 0) {
     $parent = $pending.Pop()
-    if (-not $childrenByParent.ContainsKey($parent)) { continue }
-    foreach ($child in $childrenByParent[$parent]) {
+    if (-not $childrenByParent.ContainsKey([int]$parent.pid)) { continue }
+    foreach ($child in $childrenByParent[[int]$parent.pid]) {
+      if ($null -ne $child.generationError) {
+        throw "reachable descendant generation is unverifiable: parentPid=$($parent.pid) pid=$($child.pid) error=$($child.generationError)"
+      }
+      # ParentProcessId has no generation; creation ordering rejects stale PID ancestry.
+      if ([long]$child.startTimeUtcTicks -lt $rootGeneration -or
+          [long]$child.startTimeUtcTicks -lt [long]$parent.startTimeUtcTicks) { continue }
+      $key = "$($child.pid):$($child.startTimeUtcTicks)"
+      if ($visited.ContainsKey($key)) { continue }
+      $visited[$key] = $true
       $result.Add($child) | Out-Null
       $pending.Push($child)
     }
   }
-  return @($result)
+  return $result.ToArray()
+}
+
+function Get-OmniProcessGenerationState {
+  [CmdletBinding()]
+  param([Parameter(Mandatory = $true)]$Target)
+
+  try {
+    $process = Get-Process -Id ([int]$Target.pid) -ErrorAction Stop
+  } catch {
+    if ($_.FullyQualifiedErrorId -like 'NoProcessFoundForGivenId*') {
+      return [pscustomobject]@{ status = 'absent'; process = $null; error = $null }
+    }
+    return [pscustomobject]@{ status = 'unverifiable'; process = $null; error = $_.Exception.Message }
+  }
+  try {
+    # Force PS5's lazy Process wrapper to bind a native SafeProcessHandle before
+    # reading identity. Keep this same object alive through any subsequent Kill.
+    $null = $process.Handle
+    $actual = ConvertTo-OmniProcessGenerationTicks -Ticks ([long]$process.StartTime.ToUniversalTime().Ticks)
+  } catch {
+    return [pscustomobject]@{ status = 'unverifiable'; process = $process; error = $_.Exception.Message }
+  }
+  $expected = ConvertTo-OmniProcessGenerationTicks -Ticks ([long]$Target.startTimeUtcTicks)
+  $status = if ($actual -eq $expected) { 'current' } else { 'reused' }
+  return [pscustomobject]@{ status = $status; process = $process; error = $null }
+}
+
+function Stop-OmniProcessGeneration {
+  [CmdletBinding()]
+  param([Parameter(Mandatory = $true)]$Target)
+
+  $generation = Get-OmniProcessGenerationState -Target $Target
+  try {
+    if ($generation.status -eq 'absent' -or $generation.status -eq 'reused') { return $false }
+    if ($generation.status -ne 'current') { throw "process generation could not be verified before termination: pid=$($Target.pid) error=$($generation.error)" }
+    # Kill through the already generation-checked, handle-bound Process object.
+    try { $generation.process.Kill() } catch { return $false }
+    return $true
+  } finally {
+    if ($null -ne $generation.process -and $generation.process.PSObject.Methods.Name -contains 'Dispose') { $generation.process.Dispose() }
+  }
 }
 
 function Stop-OmniOwnedProcessTree {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory = $true)]$Lease,
-    [ValidateRange(100, 30000)][int]$WaitMilliseconds = 3000
-  )
-
-  if ([string]$Lease.ownership -cne 'managed') {
-    throw "refusing to stop an externally owned process: pid=$($Lease.pid)"
-  }
-  if (-not (Test-OmniProcessIdentity -Lease $Lease)) {
-    throw "refusing to stop a process whose identity no longer matches its lease: pid=$($Lease.pid)"
-  }
-  $ids = @((Get-OmniDescendantProcessIds -RootProcessId ([int]$Lease.pid)))
-  [array]::Reverse($ids)
-  $targetIds = @($ids) + @([int]$Lease.pid)
-  # The root identity was validated immediately above. Ask Windows to terminate
-  # its live tree as well, including children taskkill sees after the snapshot.
-  # The final check below covers the captured PIDs, not an atomic tree snapshot.
-  # Windows PowerShell promotes redirected native stderr to an error record.
-  # Capture it without abandoning fallback cleanup or the final liveness check.
+  param([Parameter(Mandatory = $true)]$Lease, [ValidateRange(100, 30000)][int]$WaitMilliseconds = 3000)
+  if ([string]$Lease.ownership -cne 'managed') { throw "refusing to stop an externally owned process: pid=$($Lease.pid)" }
+  if (-not (Test-OmniProcessIdentity -Lease $Lease)) { throw "refusing to stop a process whose identity no longer matches its lease: pid=$($Lease.pid)" }
+  $targets = @((Get-OmniDescendantProcessTargets -RootProcessId ([int]$Lease.pid) -RootStartTimeUtcTicks ([long]$Lease.startTimeUtcTicks)))
+  [array]::Reverse($targets)
+  $rootTarget = [pscustomobject]@{ pid = [int]$Lease.pid; startTimeUtcTicks = [long]$Lease.startTimeUtcTicks }
+  $allTargets = @($targets) + @($rootTarget)
+  # Hold a verified native handle to the root throughout taskkill so its numeric
+  # PID cannot be rebound to a different process between validation and launch.
+  $rootGuard = Get-OmniProcessGenerationState -Target $rootTarget
+  if ($rootGuard.status -ne 'current') { if ($null -ne $rootGuard.process) { $rootGuard.process.Dispose() }; throw "root process generation changed before tree termination: pid=$($Lease.pid) status=$($rootGuard.status) error=$($rootGuard.error)" }
   $previousErrorActionPreference = $ErrorActionPreference
   try {
     $ErrorActionPreference = 'Continue'
@@ -190,28 +267,35 @@ function Stop-OmniOwnedProcessTree {
     $taskkillExitCode = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $previousErrorActionPreference
+    if ($rootGuard.process.PSObject.Methods.Name -contains 'Dispose') { $rootGuard.process.Dispose() }
   }
-  foreach ($id in $ids) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
-  Stop-Process -Id ([int]$Lease.pid) -Force -ErrorAction SilentlyContinue
+  foreach ($target in $allTargets) { Stop-OmniProcessGeneration -Target $target | Out-Null }
   $deadline = [DateTime]::UtcNow.AddMilliseconds($WaitMilliseconds)
   do {
-    $remainingIds = @($targetIds | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+    $remaining = @(foreach ($target in $allTargets) {
+      $generation = Get-OmniProcessGenerationState -Target $target
+      try {
+        if ($generation.status -eq 'current' -or $generation.status -eq 'unverifiable') {
+          [pscustomobject]@{ pid = [int]$target.pid; status = $generation.status; error = $generation.error }
+        }
+      } finally {
+        if ($null -ne $generation.process -and $generation.process.PSObject.Methods.Name -contains 'Dispose') { $generation.process.Dispose() }
+      }
+    })
+    $remainingIds = @($remaining | ForEach-Object { [int]$_.pid })
     if ($remainingIds.Count -eq 0) { break }
     Start-Sleep -Milliseconds 50
   } while ([DateTime]::UtcNow -lt $deadline)
   if ($remainingIds.Count -gt 0) {
-    throw "owned process tree did not exit within ${WaitMilliseconds}ms: rootPid=$($Lease.pid) remainingPids=$($remainingIds -join ',') taskkillExitCode=$taskkillExitCode taskkillOutput=$($taskkillOutput -join '; ')"
+    $unverifiable = @($remaining | Where-Object { $_.status -eq 'unverifiable' } | ForEach-Object { "pid=$($_.pid):$($_.error)" })
+    throw "owned process tree did not exit within ${WaitMilliseconds}ms: rootPid=$($Lease.pid) remainingPids=$($remainingIds -join ',') unverifiable=$($unverifiable -join ';') taskkillExitCode=$taskkillExitCode taskkillOutput=$($taskkillOutput -join '; ')"
   }
   (Get-OmniProcessCustodyRegistry).Remove([string]$Lease.custodyId)
   return [pscustomobject]@{ stopped = $true; pid = [int]$Lease.pid; taskkillExitCode = $taskkillExitCode; taskkillOutput = $taskkillOutput }
 }
 
 function Stop-OmniManagedProcessHandle {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
-    [ValidateRange(100, 30000)][int]$WaitMilliseconds = 3000
-  )
+  param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process, [ValidateRange(100, 30000)][int]$WaitMilliseconds = 3000)
   if ($Process.HasExited) { return [pscustomobject]@{ stopped = $false; pid = [int]$Process.Id; alreadyExited = $true } }
   try {
     $lease = Get-OmniProcessIdentity -ProcessId ([int]$Process.Id) -Ownership managed
@@ -219,19 +303,12 @@ function Stop-OmniManagedProcessHandle {
     if (Get-Process -Id ([int]$Process.Id) -ErrorAction SilentlyContinue) { throw }
     return [pscustomobject]@{ stopped = $false; pid = [int]$Process.Id; alreadyExited = $true }
   }
-  try {
-    return Stop-OmniOwnedProcessTree -Lease $lease -WaitMilliseconds $WaitMilliseconds
-  } catch {
-    $Process.Refresh()
-    if (-not $Process.HasExited) { throw }
-    return [pscustomobject]@{ stopped = $false; pid = [int]$Process.Id; alreadyExited = $true; identityEndedDuringCleanup = $true }
-  }
+  return Stop-OmniOwnedProcessTree -Lease $lease -WaitMilliseconds $WaitMilliseconds
 }
 Export-ModuleMember -Function @(
   'Get-OmniProcessIdentity',
   'Test-OmniProcessIdentity',
   'Wait-OmniManagedProcessExit',
-  'Get-OmniDescendantProcessIds',
   'Stop-OmniOwnedProcessTree',
   'Stop-OmniManagedProcessHandle'
 )

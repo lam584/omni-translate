@@ -41,8 +41,8 @@ test('strict report authority normalizes only cross-workspace fixture reference 
     unrelated: { referencePath: 'E:\\watch-worker\\artifacts\\raw.wav' },
   };
   const coordinator = {
-    diagnostics: { referencePath: 'E:\\omni-translate\\scripts\\testing\\fixtures\\watch-mode-en-original.txt' },
-    strictContent: { referencePath: 'E:\\omni-translate\\scripts\\testing\\fixtures\\watch-mode-en-original.zh-CN.txt' },
+    diagnostics: { referencePath: 'E:\\watch-coordinator\\scripts\\testing\\fixtures\\watch-mode-en-original.txt' },
+    strictContent: { referencePath: 'E:\\watch-coordinator\\scripts\\testing\\fixtures\\watch-mode-en-original.zh-CN.txt' },
     unrelated: { referencePath: 'E:\\watch-worker\\artifacts\\raw.wav' },
   };
   assert.deepEqual(
@@ -50,7 +50,7 @@ test('strict report authority normalizes only cross-workspace fixture reference 
     strictReportAuthorityProjection(coordinator),
   );
 
-  coordinator.strictContent.referencePath = 'E:\\omni-translate\\scripts\\testing\\fixtures\\different.zh-CN.txt';
+  coordinator.strictContent.referencePath = 'E:\\watch-coordinator\\scripts\\testing\\fixtures\\different.zh-CN.txt';
   assert.notDeepEqual(
     strictReportAuthorityProjection(remote),
     strictReportAuthorityProjection(coordinator),
@@ -58,7 +58,7 @@ test('strict report authority normalizes only cross-workspace fixture reference 
   );
 
   coordinator.strictContent.referencePath = remote.strictContent.referencePath;
-  coordinator.unrelated.referencePath = 'E:\\omni-translate\\artifacts\\raw.wav';
+  coordinator.unrelated.referencePath = 'E:\\watch-coordinator\\artifacts\\raw.wav';
   assert.notDeepEqual(
     strictReportAuthorityProjection(remote),
     strictReportAuthorityProjection(coordinator),

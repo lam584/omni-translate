@@ -1716,7 +1716,7 @@ test('Git SCP -O normalizes local operands and preserves host pins and remoteSpe
       ['plan', 'signed plan.json'],
     ]) {
       await t.test(kind + ' upload', async () => {
-        const localPath = 'E:\\omni-translate\\' + relativePath;
+        const localPath = 'E:\\watch-coordinator\\' + relativePath;
         const remotePath = 'C:\\worker root\\' + relativePath;
         await transport.uploadFile(worker, localPath, remotePath);
         const call = calls.at(-1);

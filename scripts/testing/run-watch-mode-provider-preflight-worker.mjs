@@ -107,10 +107,11 @@ export async function runRemoteProviderPreflightWorker(rawRequest, { runPrefligh
     reservationDirectory: request.leaseReservationDirectory,
     expectedAuthorizationDigest: request.authorizationDigest,
   });
-  const headCommit = claim.authorization?.provenance?.headCommit;
+  const provenance = claim.authorization?.grant?.provenance;
+  const headCommit = provenance?.headCommit;
   if (!/^[a-f0-9]{40}$/u.test(String(headCommit ?? ''))
-    || claim.authorization?.provenance?.worktreeClean !== true
-    || claim.authorization?.provenance?.dirtyEntryCount !== 0) {
+    || provenance?.worktreeClean !== true
+    || provenance?.dirtyEntryCount !== 0) {
     throw new Error('remote provider preflight authorization requires clean signed Git provenance');
   }
   const result = await runPreflight({

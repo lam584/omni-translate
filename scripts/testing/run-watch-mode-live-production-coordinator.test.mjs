@@ -131,6 +131,8 @@ import {
   windowsPowerShellEnvironment,
   createSshProductionTransport,
   createSshProviderPreflightTransport,
+  createDeterministicReadinessTransferArchive,
+  stageProductionReadinessBatch,
 } from './run-watch-mode-live-production-coordinator.mjs';
 
 test('collection archive inventory remains inside the immutable worker root', () => {
@@ -151,6 +153,95 @@ test('collection archive inventory remains inside the immutable worker root', ()
   ]) assert.throws(() => assertSafeCollectionArchiveEntries(entries, 'vm167'));
 });
 
+
+
+test('readiness batch transport uploads one deterministic archive with the exact signed inventory', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-readiness-batch-'));
+  try {
+    const files = [
+      { path: 'shard-execution-plan.json', targetKind: 'execution', content: 'plan-v1' },
+      { path: 'scripts/testing/worker.mjs', targetKind: 'workspace', content: 'worker-v1' },
+      { path: 'target/release/runtime.exe', targetKind: 'workspace', content: 'runtime-v1' },
+    ];
+    const transferEntries = files.map((entry, index) => {
+      const localPath = path.join(root, 'source-' + index);
+      fs.writeFileSync(localPath, entry.content, 'utf8');
+      const bytes = fs.readFileSync(localPath);
+      return {
+        ...entry, localPath, remotePath: 'C:\\fixture\\' + entry.path.replaceAll('/', '\\'),
+        bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+      };
+    });
+    const worker = { workerId: 'vm169', workspaceRoot: 'C:\\watch-worker' };
+    const uploads = [];
+    const executions = [];
+    const transfer = await stageProductionReadinessBatch({
+      worker, transferEntries, coordinatorExecutionRoot: root,
+      remoteRoot: 'C:\\omni-shards\\execution\\vm169',
+      uploadFile: async (_worker, localPath, remotePath) => { uploads.push({ localPath, remotePath }); },
+      executeRemote: async (_worker, body, payload) => { executions.push({ body, payload }); },
+    });
+    assert.equal(uploads.length, 1);
+    assert.equal(path.basename(uploads[0].localPath), 'readiness-transfer.tar');
+    assert.equal(executions.length, 1);
+    assert.deepEqual(transfer.entries.map((entry) => entry.path), files.map((entry) => entry.path));
+    assert.deepEqual(executions[0].payload.archive.entries.map((entry) => ({
+      memberPath: entry.memberPath, path: entry.path, targetKind: entry.targetKind,
+    })), files.map((entry, index) => ({
+      memberPath: 'payload/' + String(index).padStart(4, '0'), path: entry.path, targetKind: entry.targetKind,
+    })));
+    const tar = process.platform === 'win32' ? path.join(process.env.SystemRoot, 'System32', 'tar.exe') : 'tar';
+    const listed = spawnSync(tar, ['-tf', uploads[0].localPath], { encoding: 'utf8', windowsHide: true });
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.deepEqual(listed.stdout.trim().split(/\r?\n/u), files.map((_, index) => 'payload/' + String(index).padStart(4, '0')));
+    const second = createDeterministicReadinessTransferArchive({
+      archivePath: path.join(root, 'second.tar'), entries: transferEntries,
+    });
+    assert.equal(second.sha256, transfer.sha256);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('readiness batch extraction failure is terminal before any Provider invocation', { skip: process.platform !== 'win32' }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-readiness-batch-failure-'));
+  try {
+    const localPath = path.join(root, 'plan.json');
+    fs.writeFileSync(localPath, '{}\n', 'utf8');
+    const bytes = fs.readFileSync(localPath);
+    const workspaceRoot = path.join(root, 'workspace');
+    const remoteRoot = path.join(root, 'remote');
+    fs.mkdirSync(workspaceRoot);
+    fs.mkdirSync(remoteRoot);
+    let uploads = 0;
+    let providerCalls = 0;
+    await assert.rejects(async () => {
+      await stageProductionReadinessBatch({
+        worker: { workerId: 'vm131', workspaceRoot },
+        transferEntries: [{
+          path: 'shard-execution-plan.json', targetKind: 'execution', localPath,
+          remotePath: 'C:\\omni-shards\\execution\\vm131\\shard-execution-plan.json',
+          bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+        }],
+        coordinatorExecutionRoot: root, remoteRoot,
+        uploadFile: async (_worker, archivePath, remoteArchivePath) => {
+          uploads += 1;
+          fs.copyFileSync(archivePath, remoteArchivePath);
+          fs.appendFileSync(remoteArchivePath, 'corruption');
+        },
+        executeRemote: async (_worker, body, payload) => {
+          const script = path.join(root, 'extract.ps1');
+          fs.writeFileSync(script, remotePowerShellInvocation(body, payload, { mode: 'file-only' }).fileScript, 'utf8');
+          const result = spawnSync('powershell.exe', [
+            '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script,
+          ], { encoding: 'utf8', windowsHide: true, env: windowsPowerShellEnvironment(process.env) });
+          if (result.status !== 0) throw new Error(result.stderr + result.stdout);
+        },
+      });
+      providerCalls += 1;
+    }, /archive hash.*size mismatch/u);
+    assert.equal(uploads, 1);
+    assert.equal(providerCalls, 0);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 test('pre-distributed runtime skips only exact hashes with complete unique inventory', () => {
   const entries = [{path: 'a.exe', bytes: 10, sha256: 'a'.repeat(64)}, {path: 'b.exe', bytes: 20, sha256: 'b'.repeat(64)}];
   const observed = entries.map((entry) => ({...entry, exists: true}));

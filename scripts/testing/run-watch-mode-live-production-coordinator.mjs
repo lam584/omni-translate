@@ -101,6 +101,130 @@ import {
 
 export const PRODUCTION_COORDINATOR_RUNNER_ID =
   'scripts/testing/run-watch-mode-live-production-coordinator.mjs';
+
+function writeTarOctal(header, offset, length, value) {
+  const encoded = Math.trunc(value).toString(8).padStart(length - 1, '0');
+  if (encoded.length > length - 1) throw new Error('deterministic transfer tar numeric field overflow');
+  header.write(encoded, offset, length - 1, 'ascii');
+  header[offset + length - 1] = 0;
+}
+
+export function createDeterministicReadinessTransferArchive({ archivePath, entries }) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new Error('readiness transfer archive requires at least one entry');
+  }
+  const chunks = [];
+  for (const [index, entry] of entries.entries()) {
+    const memberPath = `payload/${String(index).padStart(4, '0')}`;
+    const bytes = fs.readFileSync(entry.localPath);
+    const actual = { bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+    if (actual.bytes !== entry.bytes || actual.sha256 !== entry.sha256) {
+      throw new Error(`readiness transfer source changed before archive creation: ${entry.path}`);
+    }
+    const header = Buffer.alloc(512);
+    header.write(memberPath, 0, 100, 'ascii');
+    writeTarOctal(header, 100, 8, 0o644);
+    writeTarOctal(header, 108, 8, 0);
+    writeTarOctal(header, 116, 8, 0);
+    writeTarOctal(header, 124, 12, bytes.length);
+    writeTarOctal(header, 136, 12, 0);
+    header.fill(0x20, 148, 156);
+    header[156] = '0'.charCodeAt(0);
+    header.write('ustar\0', 257, 6, 'ascii');
+    header.write('00', 263, 2, 'ascii');
+    writeTarOctal(header, 148, 8, header.reduce((sum, byte) => sum + byte, 0));
+    chunks.push(header, bytes);
+    const padding = (512 - (bytes.length % 512)) % 512;
+    if (padding > 0) chunks.push(Buffer.alloc(padding));
+  }
+  chunks.push(Buffer.alloc(1024));
+  fs.writeFileSync(archivePath, Buffer.concat(chunks), { flag: 'wx' });
+  const archiveBytes = fs.readFileSync(archivePath);
+  return {
+    bytes: archiveBytes.length,
+    sha256: crypto.createHash('sha256').update(archiveBytes).digest('hex'),
+    entries: entries.map((entry, index) => ({
+      memberPath: `payload/${String(index).padStart(4, '0')}`,
+      path: entry.path,
+      destinationPath: entry.remotePath,
+      bytes: entry.bytes,
+      sha256: entry.sha256,
+    })),
+  };
+}
+
+export const PRODUCTION_READINESS_BATCH_EXTRACTION_BODY = String.raw`
+$archive = [IO.Path]::GetFullPath([string]$payload.archivePath)
+$remoteRoot = [IO.Path]::GetFullPath([string]$payload.remoteRoot).TrimEnd('\')
+$workspaceRoot = [IO.Path]::GetFullPath([string]$payload.workspaceRoot).TrimEnd('\')
+if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) { throw 'readiness transfer archive is missing' }
+$archiveItem = Get-Item -LiteralPath $archive -Force
+$archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($archiveItem.Length -ne [int64]$payload.archive.bytes -or $archiveHash -cne [string]$payload.archive.sha256) { throw 'readiness transfer archive hash/size mismatch' }
+$expectedMembers = @($payload.archive.entries | ForEach-Object { [string]$_.memberPath })
+$systemTar = Join-Path $env:SystemRoot 'System32\tar.exe'
+if (-not (Test-Path -LiteralPath $systemTar -PathType Leaf)) { throw 'system tar is missing' }
+$actualMembers = @(& $systemTar -tf $archive 2>&1)
+if ($LASTEXITCODE -ne 0) { throw 'readiness transfer archive inventory failed' }
+if ($actualMembers.Count -ne $expectedMembers.Count) { throw 'readiness transfer archive inventory count mismatch' }
+for ($index = 0; $index -lt $expectedMembers.Count; $index++) {
+  if ([string]$actualMembers[$index] -cne [string]$expectedMembers[$index]) { throw 'readiness transfer archive inventory mismatch' }
+}
+$staging = Join-Path $remoteRoot 'readiness-transfer-staging'
+if (Test-Path -LiteralPath $staging) { throw 'readiness transfer staging already exists' }
+[void](New-Item -ItemType Directory -Path $staging)
+try {
+  & $systemTar -xf $archive -C $staging
+  if ($LASTEXITCODE -ne 0) { throw 'readiness transfer archive extraction failed' }
+  $verified = @()
+  foreach ($entry in @($payload.archive.entries)) {
+    $member = [string]$entry.memberPath
+    if ($member -notmatch '^payload/[0-9]{4}$') { throw 'readiness transfer member is malformed' }
+    $source = [IO.Path]::GetFullPath((Join-Path $staging $member))
+    if (-not $source.StartsWith($staging.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'readiness transfer member escaped staging' }
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw 'readiness transfer member is missing after extraction' }
+    $item = Get-Item -LiteralPath $source -Force
+    $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($item.Length -ne [int64]$entry.bytes -or $hash -cne [string]$entry.sha256) { throw 'readiness transfer member hash/size mismatch' }
+    $relative = ([string]$entry.path).Replace('/', '\')
+    $segments = $relative.Split([char]92)
+    if ([IO.Path]::IsPathRooted($relative) -or $segments -contains '.' -or $segments -contains '..') { throw 'readiness transfer destination is malformed' }
+    $targetRoot = if ([string]$entry.targetKind -ceq 'workspace') { $workspaceRoot } elseif ([string]$entry.targetKind -ceq 'execution') { $remoteRoot } else { throw 'readiness transfer target kind is invalid' }
+    $target = [IO.Path]::GetFullPath((Join-Path $targetRoot $relative))
+    if (-not $target.StartsWith($targetRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'readiness transfer destination escaped root' }
+    $verified += [pscustomobject]@{ source=$source; target=$target }
+  }
+  foreach ($entry in $verified) {
+    [void](New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName([string]$entry.target)) -Force)
+    Copy-Item -LiteralPath ([string]$entry.source) -Destination ([string]$entry.target) -Force
+  }
+} finally {
+  Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+}
+`;
+
+export async function stageProductionReadinessBatch({
+  worker, transferEntries, coordinatorExecutionRoot, remoteRoot, uploadFile, executeRemote,
+}) {
+  const transferRoot = path.join(coordinatorExecutionRoot, '.transport', worker.workerId);
+  fs.mkdirSync(transferRoot, { recursive: true });
+  const archivePath = path.join(transferRoot, 'readiness-transfer.tar');
+  const remoteArchivePath = path.win32.join(remoteRoot, 'readiness-transfer.tar');
+  const transfer = createDeterministicReadinessTransferArchive({ archivePath, entries: transferEntries });
+  await uploadFile(worker, archivePath, remoteArchivePath, { timeoutMs: WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS });
+  await executeRemote(worker, PRODUCTION_READINESS_BATCH_EXTRACTION_BODY, {
+    archivePath: remoteArchivePath,
+    remoteRoot,
+    workspaceRoot: worker.workspaceRoot,
+    archive: {
+      bytes: transfer.bytes,
+      sha256: transfer.sha256,
+      entries: transfer.entries.map((entry, index) => ({ ...entry, targetKind: transferEntries[index].targetKind })),
+    },
+  }, { timeoutMs: WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS });
+  return transfer;
+}
 export const PRODUCTION_WORKER_CONFIG_SCHEMA_VERSION = 3;
 export const PRODUCTION_WORKER_CONFIG_KIND = 'watch-mode-production-shard-workers';
 export const PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS =
@@ -1913,8 +2037,10 @@ foreach ($directory in @($payload.runtimeDirectories)) {
     }, {
       timeoutMs: WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS,
     }), `worker ${worker.workerId} isolated-root initialization`);
-    await upload(worker, planPath, remotePlanPath);
-    if (!reusePreparedWorkers) {
+    if (reusePreparedWorkers) {
+      await upload(worker, planPath, remotePlanPath);
+    } else if (isCoordinatorLocalWorker(worker)) {
+      await upload(worker, planPath, remotePlanPath);
       // Git may report a clean Windows checkout while core.autocrlf has changed
       // the working-tree bytes of signed PowerShell/text authority files.  The
       // shard validates the bytes it will actually execute, so normalize every
@@ -1927,6 +2053,30 @@ foreach ($directory in @($payload.runtimeDirectories)) {
       for (const entry of selectChangedRuntimeEntries(runtimeEntries, remoteWorkspaceState.entries)) {
         await upload(worker, entry.localPath, entry.remotePath);
       }
+    } else {
+      const changedRuntimeEntries = selectChangedRuntimeEntries(runtimeEntries, remoteWorkspaceState.entries);
+      const transferEntries = [
+        {
+          path: SHARD_EXECUTION_PLAN_FILE,
+          localPath: planPath,
+          remotePath: remotePlanPath,
+          targetKind: 'execution',
+          ...fileAuthorityEntry(planPath, SHARD_EXECUTION_PLAN_FILE),
+        },
+        ...implementationEntries.map((entry) => ({ ...entry, targetKind: 'workspace' })),
+        ...changedRuntimeEntries.map((entry) => ({ ...entry, targetKind: 'workspace' })),
+      ];
+      await stageProductionReadinessBatch({
+        worker,
+        transferEntries,
+        coordinatorExecutionRoot,
+        remoteRoot,
+        uploadFile: upload,
+        executeRemote: async (...args) => ensureSuccessful(
+          await runRemote(...args),
+          `worker ${worker.workerId} readiness batch extraction`,
+        ),
+      });
     }
     const verification = await runRemoteJsonWithRetries((attempt) => runRemote(worker, `
 $implementation = @()

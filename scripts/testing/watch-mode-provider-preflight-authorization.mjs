@@ -318,7 +318,7 @@ export function createProviderPreflightGrant({
   const selectedExecutorWorkerId = preflightExecutorWorkerId ?? normalizedWorkers[0]?.workerId;
   const executorWorker = normalizedWorkers.find((worker) => worker.workerId === selectedExecutorWorkerId);
   const executorReadiness = workerReadinessAuthorities.find((entry) => entry.workerId === selectedExecutorWorkerId);
-  if (!executorWorker || (normalizedWorkers.length === 4 && selectedExecutorWorkerId !== 'vm131') || !executorReadiness) {
+  if (!executorWorker || !executorReadiness) {
     throw new Error('provider preflight grant requires its fixed ready executor');
   }
   const core = {
@@ -339,6 +339,7 @@ export function createProviderPreflightGrant({
     workers: normalizedWorkers,
     executor: {
       workerId: executorWorker.workerId,
+      transportAuthority: structuredClone(executorWorker.transportAuthority),
       interactiveUser: executorWorker.interactiveUser,
       vmIdentity: structuredClone(executorWorker.vmIdentity),
       vmIdentityDigest: executorWorker.vmIdentityDigest,
@@ -441,13 +442,14 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
   const executorReadiness = grant.workerReadinessAuthorities.find(
     (entry) => entry.workerId === grant.executor?.workerId,
   );
-  if (!executorWorker || (grant.workers.length === 4 && grant.executor.workerId !== 'vm131')
+  if (!executorWorker
+    || canonicalJson(grant.executor.transportAuthority) !== canonicalJson(executorWorker.transportAuthority)
     || grant.executor.interactiveUser !== executorWorker.interactiveUser
     || canonicalJson(grant.executor.vmIdentity) !== canonicalJson(executorWorker.vmIdentity)
     || grant.executor.vmIdentityDigest !== executorWorker.vmIdentityDigest
     || grant.executor.runtimeBundleDigest !== grant.runtimeBundleDigest
     || canonicalJson(grant.executor.readinessAuthority) !== canonicalJson(executorReadiness)) {
-    throw new Error('provider preflight grant executor is not bound to signed vm131 identity/readiness/runtime');
+    throw new Error('provider preflight grant executor is not bound to its signed configured identity/readiness/runtime');
   }
   if (!Array.isArray(grant.cells) || grant.cells.length !== SHARD_MATRIX_CELL_COUNT) {
     throw new Error(`provider preflight grant requires the exact ${SHARD_MATRIX_CELL_COUNT} paid cells`);

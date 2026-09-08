@@ -860,9 +860,8 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
   }
   const preflightExecutor = workers.find((worker) => worker.workerId === config.providerPreflightExecutor.workerId);
   if (!preflightExecutor
-    || (workers.length === 4 && preflightExecutor.workerId !== 'vm131')
     || (workers.length === 4 && preflightExecutor.transport.kind !== 'ssh')) {
-    throw new Error('four-worker production provider preflight executor must be the configured SSH vm131 worker');
+    throw new Error('four-worker production provider preflight executor must be one explicitly configured SSH worker');
   }
   return { workers, assignments, preflightExecutor, sshExecutable: 'ssh.exe', scpExecutable: 'scp.exe' };
 }
@@ -1478,7 +1477,14 @@ export function createSshProviderPreflightTransport({
   runtimeBinaryHashes,
   workspaceRoot = repoRoot,
   verifyExecutor = async ({ grant }) => {
+    const configuredTransportAuthority = {
+      kind: 'ssh',
+      hostKeyAlias: executor.transport.hostKeyAlias,
+      hostKeyAlgorithm: executor.transport.hostKeyAlgorithm,
+      hostKeySha256: executor.transport.hostKeySha256,
+    };
     if (grant.executor.workerId !== executor.workerId
+      || canonicalJson(grant.executor.transportAuthority) !== canonicalJson(configuredTransportAuthority)
       || grant.executor.interactiveUser !== executor.user
       || JSON.stringify(grant.executor.vmIdentity) !== JSON.stringify(executor.vmIdentity)
       || grant.executor.readinessAuthority?.providerCalls !== 0) {
@@ -1486,8 +1492,8 @@ export function createSshProviderPreflightTransport({
     }
   },
 }) {
-  if (executor?.workerId !== 'vm131' || executor?.transport?.kind !== 'ssh') {
-    throw new Error('remote Provider preflight transport requires fixed SSH executor vm131');
+  if (!executor?.workerId || executor?.transport?.kind !== 'ssh') {
+    throw new Error('remote Provider preflight transport requires the explicitly configured SSH executor');
   }
   let dispatched = false;
   const remoteRoot = path.win32.join(executor.guestExecutionRoot, executionId, executor.workerId);
@@ -1530,11 +1536,7 @@ export function createSshProviderPreflightTransport({
         schemaVersion: 1,
         artifactKind: 'watch-mode-provider-network-health-request',
         executionId,
-        executor: {
-          workerId: grant.executor.workerId,
-          interactiveUser: grant.executor.interactiveUser,
-          vmIdentity: structuredClone(grant.executor.vmIdentity),
-        },
+        executor: structuredClone(grant.executor),
       };
       const networkHealthEntrypoint = path.win32.join(
         executor.workspaceRoot, 'scripts', 'testing', 'watch-mode-provider-network-health.mjs',
@@ -1548,7 +1550,7 @@ export function createSshProviderPreflightTransport({
         || networkHealthReceipt.providerCalls !== 0
         || networkHealthReceipt.verdict !== 'passed'
         || canonicalJson(networkHealthReceipt.executor) !== canonicalJson(networkHealthRequest.executor)) {
-        throw new Error('remote Provider network health receipt is not bound to signed executor vm131');
+        throw new Error('remote Provider network health receipt is not bound to the signed configured executor');
       }
       const networkHealth = signCoordinatorAuthority({
         schemaVersion: 1,

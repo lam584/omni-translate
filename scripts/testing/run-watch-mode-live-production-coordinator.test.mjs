@@ -9,6 +9,8 @@ import { PassThrough } from 'node:stream';
 import zlib from 'node:zlib';
 import test from 'node:test';
 
+import { sha256Canonical } from './watch-mode-shard-authority.mjs';
+
 const productionCoordinatorSource = fs.readFileSync(
   new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url),
   'utf8',
@@ -1204,7 +1206,10 @@ test('remote preflight transport runs executor-bound network health before crede
     const executor = {
       workerId: 'vm131', user: 'VMUser', workspaceRoot: 'E:\\watch-worker',
       guestExecutionRoot: 'E:\\omni-shards', vmIdentity: { provider: 'vmware', uuidBios: 'fixture' },
-      transport: { kind: 'ssh' }, host: '192.0.2.131', port: 22,
+      transport: {
+        kind: 'ssh', hostKeyAlias: 'vm131', hostKeyAlgorithm: 'ssh-ed25519',
+        hostKeySha256: `SHA256:${'A'.repeat(43)}`,
+      }, host: '192.0.2.131', port: 22,
       identityFile: 'E:\\id_rsa', knownHostsFile: 'E:\\known_hosts', hostKeyAlias: 'vm131',
     };
     let providerRuns = 0;
@@ -1212,17 +1217,14 @@ test('remote preflight transport runs executor-bound network health before crede
       const joined = args.join(' ');
       if (executable === 'ssh.exe' && joined.includes('watch-mode-provider-network-health.mjs')) {
         events.push('network-health');
+        const request = JSON.parse(String(options.input));
         return { exitCode: 0, stdout: `${JSON.stringify({
           schemaVersion: 1,
           artifactKind: 'watch-mode-provider-network-health',
           executionId: 'remote-preflight-order',
           providerCalls: 0,
           verdict: 'passed',
-          executor: {
-            workerId: 'vm131',
-            interactiveUser: 'VMUser',
-            vmIdentity: executor.vmIdentity,
-          },
+          executor: request.executor,
         })}\n`, stderr: '' };
       }
       if (executable === 'ssh.exe' && joined.includes('run-watch-mode-provider-preflight-worker.mjs')) {
@@ -1252,7 +1254,19 @@ test('remote preflight transport runs executor-bound network health before crede
         assert.doesNotMatch(JSON.stringify(options), /api.?key|secret/i);
       },
     });
-    const grant = { executor: { workerId: 'vm131', interactiveUser: 'VMUser', vmIdentity: executor.vmIdentity, readinessAuthority: { providerCalls: 0 } } };
+    const grant = { executor: {
+      workerId: 'vm131', interactiveUser: 'VMUser', vmIdentity: executor.vmIdentity,
+      transportAuthority: {
+        kind: 'ssh', hostKeyAlias: 'vm131', hostKeyAlgorithm: 'ssh-ed25519',
+        hostKeySha256: `SHA256:${'A'.repeat(43)}`,
+      },
+      vmIdentityDigest: sha256Canonical(executor.vmIdentity),
+      runtimeBundleDigest: 'b'.repeat(64),
+      readinessAuthority: {
+        path: 'worker-readiness/vm131.json', bytes: 10, sha256: 'c'.repeat(64),
+        providerCalls: 0, workerId: 'vm131',
+      },
+    } };
     const result = await transport.dispatch({ grant, authorizationDigest: 'a'.repeat(64) });
     assert.deepEqual(events.slice(0, 4), ['verify', 'network-health', 'credential', 'mkdir']);
     assert.ok(events.slice(4, -3).every((entry) => entry.startsWith('upload:')));
@@ -1339,12 +1353,13 @@ test('production worker config v3 binds three distinct transports, BIOS UUIDs, h
     const fourConfig = structuredClone(config);
     fourConfig.workers[0].transport = { kind: 'local' };
     fourConfig.workers.push(worker('vm131', '192.168.40.131', 'DDDD'));
-    fourConfig.providerPreflightExecutor = { workerId: 'vm131' };
+    fourConfig.providerPreflightExecutor = { workerId: 'vm167' };
     const four = validateProductionWorkerConfig(fourConfig, { configDirectory: root });
     assert.deepEqual(four.assignments.map(({ workerId, waveIndex }) => [workerId, waveIndex]), [
       ['vm171', 0], ['vm169', 0], ['vm131', 0], ['vm167', 0],
     ]);
     assert.equal(four.workers.filter((entry) => entry.transport.kind === 'ssh').length, 3);
+    assert.equal(four.preflightExecutor.workerId, 'vm167');
     const wrongFourth = structuredClone(fourConfig);
     wrongFourth.workers[3].vmIdentity.uuidBios = wrongFourth.workers[2].vmIdentity.uuidBios;
     assert.throws(() => validateProductionWorkerConfig(wrongFourth, { configDirectory: root }), /reuses a VMware BIOS UUID/);

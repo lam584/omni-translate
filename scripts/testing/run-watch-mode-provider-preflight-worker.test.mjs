@@ -5,15 +5,16 @@ import { createRemoteProviderPreflightDispatch, validateRemotePreflightRequest }
 import { sha256Canonical } from './watch-mode-shard-authority.mjs';
 
 const SHA = 'a'.repeat(64);
-const request = () => ({
+const request = (workerId = 'vm131') => ({
   schemaVersion: 1,
   artifactKind: 'watch-mode-remote-provider-preflight-request',
   executionId: 'remote-preflight-fixture',
   executor: {
-    workerId: 'vm131', interactiveUser: 'VMUser',
+    workerId, interactiveUser: 'VMUser',
+    transportAuthority: { kind: 'ssh', hostKeyAlias: workerId, hostKeyAlgorithm: 'ssh-ed25519', hostKeySha256: `SHA256:${'A'.repeat(43)}` },
     vmIdentity: { provider: 'vmware', uuidBios: '969f4d56-84f8-d592-ca8a-4536ae2cd4ec' },
     vmIdentityDigest: sha256Canonical({ provider: 'vmware', uuidBios: '969f4d56-84f8-d592-ca8a-4536ae2cd4ec' }), runtimeBundleDigest: SHA,
-    readinessAuthority: { path: 'worker-readiness/vm131.json', bytes: 10, sha256: SHA, providerCalls: 0, workerId: 'vm131' },
+    readinessAuthority: { path: `worker-readiness/${workerId}.json`, bytes: 10, sha256: SHA, providerCalls: 0, workerId },
   },
   grantPath: 'E:\\remote\\provider-preflight-grant.json',
   leaseReservationDirectory: 'E:\\remote\\provider-preflight-lease-reservations',
@@ -33,6 +34,19 @@ test('request binds one vm131 executor and fixed no-retry budget', () => {
   const value = validateRemotePreflightRequest(request(), observation());
   assert.equal(value.executor.workerId, 'vm131');
   assert.equal(value.lifecycleBudget.firstServerEventLatencyMs, 1_200);
+  assert.equal(value.retryPolicy, 'new-execution-required');
+});
+
+test('request accepts a different explicitly signed SSH executor instead of a fixed worker name', () => {
+  const signed = request('vm167');
+  const observed = {
+    ...observation(),
+    observedWorkerId: 'vm167',
+    observedVmIdentity: signed.executor.vmIdentity,
+    observedReadinessAuthority: signed.executor.readinessAuthority,
+  };
+  const value = validateRemotePreflightRequest(signed, observed);
+  assert.equal(value.executor.workerId, 'vm167');
   assert.equal(value.retryPolicy, 'new-execution-required');
 });
 

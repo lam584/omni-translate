@@ -29,13 +29,17 @@ const exactKeys = (value, expected, label) => {
 export function validateRemotePreflightRequest(value, observed) {
   exactKeys(value, EXACT_REQUEST_KEYS, 'remote provider preflight request');
   exactKeys(value.executor, [
-    'interactiveUser', 'readinessAuthority', 'runtimeBundleDigest', 'vmIdentity',
+    'interactiveUser', 'readinessAuthority', 'runtimeBundleDigest', 'transportAuthority', 'vmIdentity',
     'vmIdentityDigest', 'workerId',
   ], 'remote provider preflight executor');
   const executor = value.executor;
   if (value.schemaVersion !== REMOTE_PROVIDER_PREFLIGHT_REQUEST_SCHEMA_VERSION
     || value.artifactKind !== REMOTE_PROVIDER_PREFLIGHT_REQUEST_KIND
-    || executor.workerId !== 'vm131'
+    || !String(executor.workerId ?? '').trim()
+    || executor.transportAuthority?.kind !== 'ssh'
+    || !String(executor.transportAuthority?.hostKeyAlias ?? '').trim()
+    || !String(executor.transportAuthority?.hostKeyAlgorithm ?? '').trim()
+    || !/^SHA256:[A-Za-z0-9+/]{43}$/u.test(String(executor.transportAuthority?.hostKeySha256 ?? ''))
     || executor.interactiveUser !== 'VMUser'
     || executor.vmIdentity?.provider !== 'vmware'
     || executor.vmIdentityDigest !== sha256Canonical(executor.vmIdentity)
@@ -45,7 +49,7 @@ export function validateRemotePreflightRequest(value, observed) {
     || executor.readinessAuthority?.providerCalls !== 0
     || executor.readinessAuthority?.path !== `worker-readiness/${executor.workerId}.json`
     || !SHA256.test(String(executor.readinessAuthority?.sha256 ?? ''))) {
-    throw new Error('remote provider preflight request is not the fixed signed vm131 authority');
+    throw new Error('remote provider preflight request is not bound to its signed configured executor authority');
   }
   if (observed) {
     if (observed.observedWorkerId !== executor.workerId

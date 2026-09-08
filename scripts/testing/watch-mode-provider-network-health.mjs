@@ -6,6 +6,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import tls from 'node:tls';
 
+import { sha256Canonical } from './watch-mode-shard-authority.mjs';
+
 export const DEFAULT_PROVIDER_HEALTH_URL = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime';
 export const PROVIDER_NETWORK_HEALTH_TIMEOUT_MS = 5_000;
 export const PROVIDER_NETWORK_HEALTH_SAMPLE_COUNT = 3;
@@ -163,18 +165,33 @@ async function readStdinJson() {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
+export function validateProviderNetworkHealthRequest(request) {
+  const executor = request?.executor;
+  if (request?.schemaVersion !== 1
+    || request?.artifactKind !== 'watch-mode-provider-network-health-request'
+    || typeof request.executionId !== 'string'
+    || !String(executor?.workerId ?? '').trim()
+    || executor?.transportAuthority?.kind !== 'ssh'
+    || !String(executor?.transportAuthority?.hostKeyAlias ?? '').trim()
+    || !String(executor?.transportAuthority?.hostKeyAlgorithm ?? '').trim()
+    || !/^SHA256:[A-Za-z0-9+/]{43}$/u.test(String(executor?.transportAuthority?.hostKeySha256 ?? ''))
+    || executor?.interactiveUser !== 'VMUser'
+    || executor?.vmIdentity?.provider !== 'vmware'
+    || executor?.vmIdentityDigest !== sha256Canonical(executor.vmIdentity)
+    || !/^[a-f0-9]{64}$/u.test(String(executor?.runtimeBundleDigest ?? ''))
+    || executor?.readinessAuthority?.workerId !== executor.workerId
+    || executor?.readinessAuthority?.providerCalls !== 0
+    || executor?.readinessAuthority?.path !== `worker-readiness/${executor.workerId}.json`
+    || !/^[a-f0-9]{64}$/u.test(String(executor?.readinessAuthority?.sha256 ?? ''))) {
+    throw new Error('provider network health request is not bound to its signed configured executor');
+  }
+  return structuredClone(request);
+}
+
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
   try {
-    const request = await readStdinJson();
-    const executor = request?.executor;
-    if (request?.schemaVersion !== 1
-      || request?.artifactKind !== 'watch-mode-provider-network-health-request'
-      || typeof request.executionId !== 'string'
-      || executor?.workerId !== 'vm131'
-      || executor?.interactiveUser !== 'VMUser'
-      || executor?.vmIdentity?.provider !== 'vmware') {
-      throw new Error('provider network health request is not bound to fixed executor vm131');
-    }
+    const request = validateProviderNetworkHealthRequest(await readStdinJson());
+    const executor = request.executor;
     const receipt = await runProviderNetworkHealth({
       executionId: request.executionId,
       providerId: 'dashscope',

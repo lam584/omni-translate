@@ -1219,6 +1219,7 @@ test('remote preflight transport runs executor-bound network health before crede
       identityFile: 'E:\\id_rsa', knownHostsFile: 'E:\\known_hosts', hostKeyAlias: 'vm131',
     };
     let providerRuns = 0;
+    let controllerSource = '';
     const runProcess = async (executable, args, options = {}) => {
       const joined = args.join(' ');
       const encodedIndex = args.indexOf('-EncodedCommand');
@@ -1238,13 +1239,14 @@ test('remote preflight transport runs executor-bound network health before crede
           executor: request.executor,
         })}\n`, stderr: '' };
       }
-      if (executable === 'ssh.exe' && remoteSource.includes('run-watch-mode-provider-preflight-worker.mjs')) {
+      if (executable === 'ssh.exe' && joined.includes('provider-preflight-controller.ps1')) {
         events.push('provider'); providerRuns += 1;
-        assert.match(remoteSource, /New-ScheduledTaskPrincipal[^\n]+-LogonType Interactive -RunLevel Limited/u);
-        assert.match(remoteSource, /interactive Provider preflight task ran outside the configured interactive identity/u);
-        assert.match(remoteSource, /Principal\.UserId -cne \$expectedSid/u);
-        assert.match(remoteSource, /provider-preflight-interactive-launcher\.ps1/u);
-        assert.doesNotMatch(remoteSource, /api.?key|credential|secret/i);
+        assert.match(controllerSource, /New-ScheduledTaskPrincipal[^\n]+-LogonType Interactive -RunLevel Limited/u);
+        assert.match(controllerSource, /interactive Provider preflight task ran outside the configured interactive identity/u);
+        assert.match(controllerSource, /Principal\.UserId -cne \$expectedSid/u);
+        assert.match(controllerSource, /provider-preflight-interactive-launcher\.ps1/u);
+        assert.doesNotMatch(controllerSource, /api.?key|credential|secret/i);
+        assert.equal(args.includes('-EncodedCommand'), false);
         assert.doesNotMatch(String(options.input), /api.?key|credential|secret/i);
         return { exitCode: 0, stdout: `${JSON.stringify({ status: 'completed', outputDirectory: 'E:\\omni-shards\\provider-preflight-evidence', fields: {} })}\n`, stderr: '' };
       }
@@ -1256,7 +1258,9 @@ test('remote preflight transport runs executor-bound network health before crede
         fs.mkdirSync(path.join(path.dirname(localEvidenceDirectory), 'provider-preflight-evidence'), { recursive: true });
       } else {
         assert.doesNotMatch(args.at(-2), /watch-remote-preflight/u, 'authorization uploads must use a short local staging path');
-        assert.equal(fs.readFileSync(windowsPathFromGitScpOperand(args.at(-2)), 'utf8'), '{}\n');
+        const uploadedSource = fs.readFileSync(windowsPathFromGitScpOperand(args.at(-2)), 'utf8');
+        if (joined.includes('provider-preflight-controller.ps1')) controllerSource = uploadedSource;
+        else if (!joined.includes('provider-preflight-interactive-launcher.ps1')) assert.equal(uploadedSource, '{}\n');
         assert.match(args.at(-1), /:E:\/omni-shards\/\.provider-preflight\/[a-f0-9]{20}\//u);
         assert.ok(args.at(-1).length < 240, 'remote authorization upload must remain below the legacy Windows path ceiling');
         events.push(`upload:${path.basename(args.at(-2))}`);

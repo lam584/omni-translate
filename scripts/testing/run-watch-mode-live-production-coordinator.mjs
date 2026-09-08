@@ -1656,6 +1656,7 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
       );
       const requestPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-request.json');
       const launcherPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-interactive-launcher.ps1');
+      const controllerPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-controller.ps1');
       const stdoutPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-worker.stdout.log');
       const stderrPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-worker.stderr.log');
       const terminalPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-worker.terminal.json');
@@ -1672,7 +1673,7 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
         `[IO.File]::WriteAllText(${psQuote(terminalPath)}, $terminal, (New-Object Text.UTF8Encoding($false)))`,
         'exit $exitCode',
       ].join('\n');
-      const providerPreflightCommand = Buffer.from([
+      const controllerSource = [
         "$ErrorActionPreference = 'Stop'",
         `$root = ${psQuote(remoteAuthorizationRoot)}`,
         `$requestPath = ${psQuote(requestPath)}`,
@@ -1685,7 +1686,6 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
         `$expectedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value`,
         `$requestText = [Console]::In.ReadToEnd()`,
         `[IO.File]::WriteAllText($requestPath, $requestText, (New-Object Text.UTF8Encoding($false)))`,
-        `[IO.File]::WriteAllText($launcherPath, ${psQuote(launcherSource)}, (New-Object Text.UTF8Encoding($false)))`,
         `$arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $launcherPath + '"'`,
         `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments`,
         `$principal = New-ScheduledTaskPrincipal -UserId ${psQuote(executor.user)} -LogonType Interactive -RunLevel Limited`,
@@ -1714,11 +1714,27 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
         '    Unregister-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue',
         '  }',
         '}',
-      ].join('\n'), 'utf16le').toString('base64');
+      ].join('\n');
+      const controlStagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-preflight-control-'));
+      try {
+        for (const [name, source, destination] of [
+          ['provider-preflight-interactive-launcher.ps1', launcherSource, launcherPath],
+          ['provider-preflight-controller.ps1', controllerSource, controllerPath],
+        ]) {
+          const stagedSource = path.join(controlStagingRoot, name);
+          fs.writeFileSync(stagedSource, source, { encoding: 'utf8', flag: 'wx' });
+          const upload = await runProcess(config.scpExecutable, [
+            ...scpBaseArgs(executor), pathForScp(stagedSource), remoteSpec(executor, destination),
+          ], { signal });
+          ensureSuccessful(upload, `remote Provider preflight control upload ${name}`);
+        }
+      } finally {
+        fs.rmSync(controlStagingRoot, { recursive: true, force: true });
+      }
       onProviderCallStarted();
       const result = await runProcess(config.sshExecutable, [
         ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
-        'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', providerPreflightCommand,
+        'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', controllerPath,
       ], { signal, input: JSON.stringify(request), timeoutMs: deriveWatchProductionProviderPreflightBudgetMs() + 30_000 });
       const remote = parseRemoteJson(result, 'remote Provider preflight worker');
       const claimSource = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-consumption-claim.json');

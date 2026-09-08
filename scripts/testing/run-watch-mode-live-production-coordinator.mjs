@@ -37,9 +37,11 @@ import {
   SHARD_CELL_RESULT_FILE,
   SHARD_EXECUTION_PLAN_FILE,
   atomicWriteJson,
+  canonicalJson,
   createWorkerReadinessRequest,
   currentShardOrchestrationImplementationHashes,
   coordinatorKeyIdForPublicKey,
+  signCoordinatorAuthority,
   strictFailureIdentityProjection,
   validateShardCellResult,
   validateShardManifest,
@@ -61,7 +63,6 @@ import {
   PROVIDER_PREFLIGHT_RESPONSE_MODE,
   PROVIDER_PREFLIGHT_TERMINAL_EVENT,
 } from './watch-mode-provider-preflight-authorization.mjs';
-import { runProviderNetworkHealth } from './watch-mode-provider-network-health.mjs';
 import { provisionCredential } from './watch-worker-bootstrap.mjs';
 import {
   REMOTE_PROVIDER_PREFLIGHT_REQUEST_KIND,
@@ -1473,6 +1474,7 @@ export function createSshProviderPreflightTransport({
   localEvidenceDirectory,
   runProcess = runChildProcess,
   provision = provisionCredential,
+  signingKeys,
   verifyExecutor = async ({ grant }) => {
     if (grant.executor.workerId !== executor.workerId
       || grant.executor.interactiveUser !== executor.user
@@ -1507,6 +1509,40 @@ export function createSshProviderPreflightTransport({
       if (dispatched) throw new Error('remote Provider preflight transport is single-use');
       dispatched = true;
       await verifyExecutor({ grant, executor });
+      if (!signingKeys?.privateKeyPem || !signingKeys?.publicKeyPem) {
+        throw new Error('remote Provider preflight transport requires coordinator signing keys');
+      }
+      const networkHealthRequest = {
+        schemaVersion: 1,
+        artifactKind: 'watch-mode-provider-network-health-request',
+        executionId,
+        executor: {
+          workerId: grant.executor.workerId,
+          interactiveUser: grant.executor.interactiveUser,
+          vmIdentity: structuredClone(grant.executor.vmIdentity),
+        },
+      };
+      const networkHealthEntrypoint = path.win32.join(
+        executor.workspaceRoot, 'scripts', 'testing', 'watch-mode-provider-network-health.mjs',
+      );
+      const networkHealthResult = await runProcess(config.sshExecutable, [
+        ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
+        'node.exe', networkHealthEntrypoint,
+      ], { signal, input: JSON.stringify(networkHealthRequest), timeoutMs: deriveWatchProductionNetworkHealthBudgetMs() });
+      const networkHealthReceipt = parseRemoteJson(networkHealthResult, 'remote Provider network health');
+      if (networkHealthReceipt.executionId !== executionId
+        || networkHealthReceipt.providerCalls !== 0
+        || networkHealthReceipt.verdict !== 'passed'
+        || canonicalJson(networkHealthReceipt.executor) !== canonicalJson(networkHealthRequest.executor)) {
+        throw new Error('remote Provider network health receipt is not bound to signed executor vm131');
+      }
+      const networkHealth = signCoordinatorAuthority({
+        schemaVersion: 1,
+        artifactKind: 'watch-mode-provider-network-health-authority',
+        executionId,
+        executor: structuredClone(grant.executor),
+        receipt: networkHealthReceipt,
+      }, signingKeys.privateKeyPem, signingKeys.publicKeyPem);
       await provision({
         localHelper,
         sshPath: config.sshExecutable,
@@ -1570,7 +1606,7 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
       if (downloaded !== resolvedLocalEvidenceDirectory) {
         fs.renameSync(downloaded, resolvedLocalEvidenceDirectory);
       }
-      return { ...remote, outputDirectory: resolvedLocalEvidenceDirectory };
+      return { ...remote, outputDirectory: resolvedLocalEvidenceDirectory, networkHealth };
     },
   };
 }
@@ -2972,6 +3008,7 @@ async function runProductionCoordinatorCore({
           executionId,
           authorizationRoot: path.dirname(grantPath),
           localEvidenceDirectory: outputDirectory,
+          signingKeys,
         }));
     const preflight = await preflightTransport.dispatch({ grant, authorizationDigest, signal });
     transitionCoordinatorState('preflight-terminal', {
@@ -2994,6 +3031,7 @@ async function runProductionCoordinatorCore({
       rawTrace: structuredClone(preflight.fields.rawTrace),
       providerInvocationCount: 1,
       executor: structuredClone(grant.executor),
+      networkHealth: structuredClone(preflight.networkHealth),
       status: 'completed',
       externalAudioSamples: 0,
       evidenceDirectory: preflight.outputDirectory,
@@ -3089,19 +3127,8 @@ async function runProductionCoordinatorCore({
         runtimeBinaryHashes,
         runtimeAuthorityPath: frozenRuntime.authorityPath,
       });
-      const networkHealthPath = path.join(
-        coordinatorOutputRoot,
-        `${executionId}.provider-network-health.json`,
-      );
-      await (operations.runProviderNetworkHealth ?? runProviderNetworkHealth)({
-        executionId,
-        providerId: 'dashscope',
-        outputPath: networkHealthPath,
-      });
       transitionCoordinatorState('worker-ready', {
         providerCalls: 0,
-        networkHealthPath,
-        networkHealthVerified: true,
       });
       const relative = path.relative(repoRoot, manifestPath).split(path.sep).join('/');
       return {
@@ -3109,10 +3136,6 @@ async function runProductionCoordinatorCore({
         manifestPath: relative,
         providerCalls: 0,
         runtimeAuthorityDigest: frozenRuntime.authority.authorityDigest,
-        networkHealth: fileAuthorityEntry(
-          networkHealthPath,
-          path.relative(repoRoot, networkHealthPath).split(path.sep).join('/'),
-        ),
       };
     });
   const obtainLocalIsolationAuthority = (context) => runBoundedCoordinatorStage(

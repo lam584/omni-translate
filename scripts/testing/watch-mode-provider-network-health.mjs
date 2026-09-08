@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import tls from 'node:tls';
 
 export const DEFAULT_PROVIDER_HEALTH_URL = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime';
@@ -149,4 +150,38 @@ export async function runProviderNetworkHealth({
     throw error;
   }
   return receipt;
+}
+
+async function readStdinJson() {
+  const chunks = [];
+  let bytes = 0;
+  for await (const chunk of process.stdin) {
+    bytes += chunk.length;
+    if (bytes > 64 * 1024) throw new Error('provider network health request exceeds 64 KiB');
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  try {
+    const request = await readStdinJson();
+    const executor = request?.executor;
+    if (request?.schemaVersion !== 1
+      || request?.artifactKind !== 'watch-mode-provider-network-health-request'
+      || typeof request.executionId !== 'string'
+      || executor?.workerId !== 'vm131'
+      || executor?.interactiveUser !== 'VMUser'
+      || executor?.vmIdentity?.provider !== 'vmware') {
+      throw new Error('provider network health request is not bound to fixed executor vm131');
+    }
+    const receipt = await runProviderNetworkHealth({
+      executionId: request.executionId,
+      providerId: 'dashscope',
+    });
+    process.stdout.write(`${JSON.stringify({ ...receipt, executor })}\n`);
+  } catch (error) {
+    console.error(`provider-network-health: ${error.message}`);
+    process.exitCode = 1;
+  }
 }

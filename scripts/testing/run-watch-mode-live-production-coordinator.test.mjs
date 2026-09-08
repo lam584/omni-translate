@@ -1157,7 +1157,7 @@ test('production worker config v3 accepts one local worker and rejects unbound f
   }
 });
 
-test('remote preflight transport verifies before credential pipe, uploads only authorization files, and never retries', async () => {
+test('remote preflight transport runs executor-bound network health before credential pipe, uploads only authorization files, and never retries', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-remote-preflight-'));
   try {
     const authorizationRoot = path.join(root, 'authorization');
@@ -1182,6 +1182,21 @@ test('remote preflight transport verifies before credential pipe, uploads only a
     let providerRuns = 0;
     const runProcess = async (executable, args, options = {}) => {
       const joined = args.join(' ');
+      if (executable === 'ssh.exe' && joined.includes('watch-mode-provider-network-health.mjs')) {
+        events.push('network-health');
+        return { exitCode: 0, stdout: `${JSON.stringify({
+          schemaVersion: 1,
+          artifactKind: 'watch-mode-provider-network-health',
+          executionId: 'remote-preflight-order',
+          providerCalls: 0,
+          verdict: 'passed',
+          executor: {
+            workerId: 'vm131',
+            interactiveUser: 'VMUser',
+            vmIdentity: executor.vmIdentity,
+          },
+        })}\n`, stderr: '' };
+      }
       if (executable === 'ssh.exe' && joined.includes('run-watch-mode-provider-preflight-worker.mjs')) {
         events.push('provider'); providerRuns += 1;
         assert.doesNotMatch(joined, /api.?key|credential|secret/i);
@@ -1201,6 +1216,7 @@ test('remote preflight transport verifies before credential pipe, uploads only a
       config: { sshExecutable: 'ssh.exe', scpExecutable: 'scp.exe' }, executor,
       executionId: 'remote-preflight-order', authorizationRoot, localEvidenceDirectory, runProcess,
       verifyExecutor: async () => { events.push('verify'); },
+      signingKeys: generateCoordinatorSigningKeyPair(),
       provision: async (options) => {
         events.push('credential');
         assert.doesNotMatch(JSON.stringify(options), /api.?key|secret/i);
@@ -1208,13 +1224,53 @@ test('remote preflight transport verifies before credential pipe, uploads only a
     });
     const grant = { executor: { workerId: 'vm131', interactiveUser: 'VMUser', vmIdentity: executor.vmIdentity, readinessAuthority: { providerCalls: 0 } } };
     const result = await transport.dispatch({ grant, authorizationDigest: 'a'.repeat(64) });
-    assert.deepEqual(events.slice(0, 3), ['verify', 'credential', 'mkdir']);
-    assert.ok(events.slice(3, -3).every((entry) => entry.startsWith('upload:')));
+    assert.deepEqual(events.slice(0, 4), ['verify', 'network-health', 'credential', 'mkdir']);
+    assert.ok(events.slice(4, -3).every((entry) => entry.startsWith('upload:')));
     assert.deepEqual(events.slice(-3), ['provider', 'claim', 'evidence']);
     assert.equal(providerRuns, 1);
     assert.equal(result.outputDirectory, path.resolve(localEvidenceDirectory));
     await assert.rejects(transport.dispatch({ grant, authorizationDigest: 'a'.repeat(64) }), /single-use/);
     assert.equal(providerRuns, 1);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('remote executor network health failure is terminal before credential provision and Provider with no fallback', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-remote-network-health-failure-'));
+  try {
+    const authorizationRoot = path.join(root, 'authorization');
+    fs.mkdirSync(path.join(authorizationRoot, 'provider-preflight-lease-reservations'), { recursive: true });
+    fs.mkdirSync(path.join(authorizationRoot, 'worker-readiness'), { recursive: true });
+    const executor = {
+      workerId: 'vm131', user: 'VMUser', workspaceRoot: 'E:\\watch-worker',
+      guestExecutionRoot: 'E:\\omni-shards', vmIdentity: { provider: 'vmware', uuidBios: 'fixture' },
+      transport: { kind: 'ssh' }, host: '192.0.2.131', port: 22,
+      identityFile: 'E:\\id_rsa', knownHostsFile: 'E:\\known_hosts', hostKeyAlias: 'vm131',
+    };
+    let credentialCalls = 0;
+    let providerCalls = 0;
+    const transport = createSshProviderPreflightTransport({
+      config: { sshExecutable: 'ssh.exe', scpExecutable: 'scp.exe' }, executor,
+      executionId: 'remote-health-failure', authorizationRoot,
+      localEvidenceDirectory: path.join(root, 'evidence'),
+      verifyExecutor: async () => {},
+      signingKeys: generateCoordinatorSigningKeyPair(),
+      provision: async () => { credentialCalls += 1; },
+      runProcess: async (executable, args) => {
+        const joined = args.join(' ');
+        if (joined.includes('watch-mode-provider-network-health.mjs')) {
+          return { exitCode: 1, stdout: '', stderr: 'provider network health failed before paid preflight authorization' };
+        }
+        if (joined.includes('run-watch-mode-provider-preflight-worker.mjs')) providerCalls += 1;
+        return { exitCode: 0, stdout: '{}\n', stderr: '' };
+      },
+    });
+    const grant = { executor: { workerId: 'vm131', interactiveUser: 'VMUser', vmIdentity: executor.vmIdentity, readinessAuthority: { providerCalls: 0 } } };
+    await assert.rejects(
+      transport.dispatch({ grant, authorizationDigest: 'a'.repeat(64) }),
+      /remote Provider network health.*failed/u,
+    );
+    assert.equal(credentialCalls, 0);
+    assert.equal(providerCalls, 0);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

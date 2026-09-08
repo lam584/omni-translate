@@ -123,6 +123,8 @@ impl<R: tauri::Runtime> ModelTraceRecorder<R> {
             audio_evidence_overflowed: false,
             end_evidence: None,
             pending_audio_append_summary: AudioAppendTraceSummary::default(),
+            #[cfg(test)]
+            test_evidence_persister: None,
         };
         trace_call.event("start_call", json!({ "status": "running" }));
         trace_call.emit_snapshot();
@@ -164,7 +166,16 @@ pub(crate) struct ModelTraceCall<R: tauri::Runtime = tauri::Wry> {
     audio_evidence_overflowed: bool,
     end_evidence: Option<EvidenceRecord>,
     pending_audio_append_summary: AudioAppendTraceSummary,
+    #[cfg(test)]
+    test_evidence_persister: Option<TestEvidencePersister>,
 }
+
+// Instance-local receipt injection, not a replacement for writer integration
+// tests. It runs after finish() has produced the real stable evidence IDs.
+#[cfg(test)]
+type TestEvidencePersister = Box<
+    dyn FnMut(&[EvidenceRecord], Instant) -> std::collections::BTreeSet<String> + Send,
+>;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ModelTracePersistence {
@@ -193,6 +204,15 @@ impl ModelTracePersistence {
 }
 
 impl<R: tauri::Runtime> ModelTraceCall<R> {
+    #[cfg(test)]
+    pub(crate) fn set_test_evidence_persister(
+        &mut self,
+        persist: impl FnMut(&[EvidenceRecord], Instant) -> std::collections::BTreeSet<String>
+            + Send + 'static,
+    ) {
+        self.test_evidence_persister = Some(Box::new(persist));
+    }
+
     pub(crate) fn input(&self, label: &str, value: Value) {
         self.event(&format!("input.{label}"), value);
     }
@@ -269,32 +289,38 @@ impl<R: tauri::Runtime> ModelTraceCall<R> {
             .cloned()
             .chain(self.end_evidence.iter().cloned())
             .collect::<Vec<_>>();
-        let receipt = self.app.try_state::<DiagnosticsStateStore>().map(|store| {
+        #[cfg(test)]
+        let controlled_receipt = self.test_evidence_persister.as_mut()
+            .map(|persist| persist(&records, deadline));
+        let persist = || self.app.try_state::<DiagnosticsStateStore>().map(|store| {
             store.persist_evidence(
                 records,
                 deadline.saturating_duration_since(Instant::now()),
             )
         });
+        #[cfg(not(test))]
+        let receipt = persist();
+        #[cfg(test)]
+        let receipt = if controlled_receipt.is_none() { persist() } else { None };
+        let receipt_available = receipt.is_some();
+        #[cfg(test)]
+        let receipt_available = receipt_available || controlled_receipt.is_some();
+        let confirms = |id: &str| receipt.as_ref().is_some_and(|receipt| receipt.confirms(id));
+        #[cfg(test)]
+        let confirms = |id: &str| controlled_receipt.as_ref()
+            .map_or_else(|| confirms(id), |ids| ids.contains(id));
         let audio_confirmed = !self.audio_evidence_overflowed
-            && receipt.as_ref().is_some_and(|receipt| {
-                self.audio_evidence
+            && receipt_available
+            && self.audio_evidence
                 .iter()
-                .all(|record| receipt.confirms(&record.id))
-            });
-        let end_confirmed = receipt.as_ref().is_some_and(|receipt| {
-            self.end_evidence
-                .as_ref()
-                .is_some_and(|record| receipt.confirms(&record.id))
-        });
-        let pending_audio_evidence_count = receipt.as_ref().map_or(
-            self.audio_evidence.len(),
-            |receipt| {
-                self.audio_evidence
-                    .iter()
-                    .filter(|record| !receipt.confirms(&record.id))
-                    .count()
-            },
-        );
+                .all(|record| confirms(&record.id));
+        let end_confirmed = self.end_evidence
+            .as_ref()
+            .is_some_and(|record| confirms(&record.id));
+        let pending_audio_evidence_count = self.audio_evidence
+            .iter()
+            .filter(|record| !confirms(&record.id))
+            .count();
         let result = ModelTracePersistence {
             trace_selected: self.trace_selected,
             audio_confirmed,
@@ -701,6 +727,147 @@ mod tests {
             root.to_string_lossy().to_string(),
         ));
         (root, app)
+    }
+
+    #[test]
+    fn absent_receipt_never_confirms_an_empty_audio_batch() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let recorder = ModelTraceRecorder::new(
+            app.handle().clone(), ModelTraceContext::new("provider", "model", "omni"),
+        );
+        for selected in [false, true] {
+            let mut call = recorder.call("no-store");
+            // Also model a selected trace whose diagnostics store is unavailable.
+            call.trace_selected = selected;
+            assert!(call.audio_evidence.is_empty());
+            let result = call.error_and_flush("failed", Instant::now());
+            assert!(!result.audio_confirmed, "empty all() must not manufacture a receipt");
+            assert!(!result.end_confirmed);
+            assert_eq!(result.pending_audio_evidence_count, 0);
+            assert_eq!(result.confirmed(), !selected);
+        }
+    }
+
+    #[test]
+    fn controlled_receipts_preserve_audio_end_gates_and_first_result() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+        for (audio_ack, end_ack) in [(true, true), (false, true), (true, false), (false, false)] {
+            let (root, app) = test_app("controlled-receipt");
+            app.state::<DiagnosticsStateStore>().set_min_log_level("debug");
+            let recorder = ModelTraceRecorder::new(
+                app.handle().clone(), ModelTraceContext::new("provider", "model", "omni"),
+            );
+            let mut call = recorder.call("receipt.matrix");
+            call.record_ws_send("input_audio_buffer.append", json!({"resampledSamples":320}));
+            let invocations = Arc::new(AtomicUsize::new(0));
+            let observed = Arc::clone(&invocations);
+            let deadline = Instant::now();
+            call.set_test_evidence_persister(move |records, actual_deadline| {
+                assert_eq!(actual_deadline, deadline);
+                observed.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(records.len(), 2);
+                assert_eq!(records.iter().filter(|r| r.id.ends_with(":end")).count(), 1);
+                records.iter().filter(|record| {
+                    if record.id.ends_with(":end") { end_ack } else { audio_ack }
+                }).map(|record| record.id.clone()).collect()
+            });
+            let first = call.error_and_flush("original failure", deadline);
+            assert_eq!(first.audio_confirmed, audio_ack);
+            assert_eq!(first.end_confirmed, end_ack);
+            assert_eq!(first.pending_audio_evidence_count, usize::from(!audio_ack));
+            assert_eq!(first.confirmed(), audio_ack && end_ack);
+            assert!(call.finished);
+            assert!(call.end_evidence.is_some());
+            assert_eq!(call.audio_evidence.is_empty(), audio_ack);
+            assert_eq!(invocations.load(Ordering::SeqCst), 1);
+            call.set_test_evidence_persister(|_, _| panic!("first receipt must be cached"));
+            assert_eq!(call.end_and_flush(Instant::now()), first);
+            assert_eq!(call.error_and_flush("replacement error", Instant::now()), first);
+            drop(call);
+            let store = app.state::<DiagnosticsStateStore>();
+            let snapshot = store.snapshot_base();
+            assert_eq!(snapshot.model_trace_summary.failed_calls, 1);
+            assert_eq!(snapshot.model_trace_summary.succeeded_calls, 0);
+            assert!(store.flush_logs());
+            let content = fs::read_to_string(root.join("logs/app.log")).unwrap();
+            assert!(content.contains("original failure"));
+            assert!(!content.contains("replacement error"));
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn real_writer_stalled_past_deadline_keeps_first_receipt_after_late_ack() {
+        let root = tempfile::tempdir().unwrap();
+        let logs = root.path().join("logs");
+        fs::create_dir(&logs).unwrap();
+        // Force the real writer's next generation to rotate under the public
+        // OS directory lock. No private writer hook or synthetic ACK is used.
+        fs::File::create(logs.join("app.log")).unwrap()
+            .set_len(omni_logging::pipeline::DEFAULT_MAX_BYTES).unwrap();
+        let rotation_guard = omni_logging::lock_log_directory(&logs).unwrap();
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(DiagnosticsStateStore::new_with_root(root.path().to_string_lossy().to_string()));
+        let store = app.state::<DiagnosticsStateStore>();
+        store.set_min_log_level("debug");
+        let recorder = ModelTraceRecorder::new(
+            app.handle().clone(), ModelTraceContext::new("provider", "model", "omni"),
+        );
+        let mut failed = recorder.call("real.expired");
+        failed.record_ws_send("input_audio_buffer.append", json!({"resampledSamples":320}));
+        // The caller's deadline expires while rotation is held. The writer
+        // cannot confirm the terminal batch regardless of CPU scheduling.
+        let first = failed.error_and_flush("original failure", Instant::now() + Duration::from_millis(300));
+        assert!(!first.audio_confirmed);
+        assert!(!first.end_confirmed);
+        assert!(!first.confirmed());
+        assert_eq!(first.pending_audio_evidence_count, 1);
+        let records = failed.audio_evidence.iter().chain(failed.end_evidence.iter())
+            .cloned().collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        drop(rotation_guard);
+        assert!(store.flush_logs());
+        // Recovery really writes and syncs the SAME eventIds. It is not an ACK
+        // for the already expired finalization, nor may a second finish retry it.
+        let late = store.persist_evidence(records.clone(), Duration::from_secs(5));
+        assert!(records.iter().all(|record| late.confirms(&record.id)));
+        assert_eq!(failed.end_and_flush(Instant::now() + Duration::from_secs(5)), first);
+        assert_eq!(failed.error_and_flush("retry", Instant::now()), first);
+
+        let mut healthy = recorder.call("real.healthy");
+        healthy.record_ws_send("input_audio_buffer.append", json!({"resampledSamples":640}));
+        let confirmed = healthy.error_and_flush("healthy writer", Instant::now() + Duration::from_secs(5));
+        assert!(confirmed.audio_confirmed && confirmed.end_confirmed);
+        assert!(confirmed.confirmed());
+        assert_eq!(confirmed.pending_audio_evidence_count, 0);
+        let content = fs::read_to_string(logs.join("app.log")).unwrap();
+        assert!(content.contains("real.expired end_call"));
+        assert!(content.contains("real.healthy end_call"));
+        assert!(content.contains("input_audio_buffer.append.summary"));
+        assert!(!content.contains("retry"));
+        assert_eq!(store.snapshot_base().model_trace_summary.failed_calls, 2);
+        assert_eq!(store.snapshot_base().model_trace_summary.succeeded_calls, 0);
+    }
+
+    #[test]
+    fn controlled_receipt_is_local_to_one_call_not_the_real_writer() {
+        let (root, app) = test_app("receipt-isolation");
+        app.state::<DiagnosticsStateStore>().set_min_log_level("debug");
+        let recorder = ModelTraceRecorder::new(
+            app.handle().clone(), ModelTraceContext::new("provider", "model", "omni"),
+        );
+        let mut controlled = recorder.call("controlled");
+        controlled.set_test_evidence_persister(|_, _| Default::default());
+        let mut real = recorder.call("real");
+        assert!(!controlled.error_and_flush("unacknowledged", Instant::now()).confirmed());
+        assert!(real.error_and_flush("acknowledged", Instant::now() + Duration::from_secs(5)).confirmed());
+        assert!(app.state::<DiagnosticsStateStore>().flush_logs());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

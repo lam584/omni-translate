@@ -386,12 +386,12 @@ fn run_omni_worker(
     }
     macro_rules! fail_before_teardown {
         ($error:expr, $teardown:block) => {{
-            let error = finalize_trace_error_before_teardown(
+            let (error, teardown_result) = finalize_trace_error_before_teardown(
                 &mut trace_call,
                 livetranslate_shutdown.failure_evidence_deadline(Instant::now()),
                 $error,
+                || -> Result<(), String> { $teardown },
             );
-            let teardown_result = (|| -> Result<(), String> { $teardown })();
             let secondary = teardown_result.err();
             let mut combined = append_secondary_failure(error, secondary.clone());
             if let Some(secondary) = secondary {
@@ -1225,12 +1225,14 @@ fn finalize_trace_error<R: tauri::Runtime>(
     }
 }
 
-fn finalize_trace_error_before_teardown<R: tauri::Runtime>(
+fn finalize_trace_error_before_teardown<R: tauri::Runtime, T>(
     trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
     deadline: Instant,
     error: String,
-) -> String {
-    finalize_trace_error(trace_call, deadline, error)
+    teardown: impl FnOnce() -> T,
+) -> (String, T) {
+    let error = finalize_trace_error(trace_call, deadline, error);
+    (error, teardown())
 }
 
 fn combine_teardown_results(
@@ -1355,17 +1357,42 @@ mod trace_finalizer_tests {
         );
         let teardown_started = Arc::new(AtomicBool::new(false));
         let observed = Arc::clone(&teardown_started);
+        let receipt_returned = Arc::new(AtomicBool::new(false));
+        let receipt_observed = Arc::clone(&receipt_returned);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let deadline = Instant::now() + Duration::from_millis(300);
+        trace_call.set_test_evidence_persister(move |records, actual_deadline| {
+            assert_eq!(actual_deadline, deadline);
+            assert_eq!(records.len(), 2, "real audio and terminal evidence must be generated");
+            assert!(records.iter().any(|record| record.id.ends_with(":end")));
+            let ids = records.iter().map(|record| record.id.clone()).collect();
+            entered_tx.send(()).unwrap();
+            release_rx.recv().expect("controller must release the receipt");
+            receipt_returned.store(true, Ordering::SeqCst);
+            ids
+        });
+        let controller = std::thread::spawn(move || {
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(!observed.load(Ordering::SeqCst), "teardown ran before receipt completion");
+            release_tx.send(()).unwrap();
+        });
 
-        let error = finalize_trace_error_before_teardown(
+        let (error, ()) = finalize_trace_error_before_teardown(
             &mut trace_call,
-            Instant::now() + Duration::from_millis(300),
+            deadline,
             "poll failed".to_string(),
+            || {
+                assert!(receipt_observed.load(Ordering::SeqCst));
+                teardown_started.store(true, Ordering::SeqCst);
+            },
         );
+        controller.join().unwrap();
+        // File visibility is checked separately from the controlled receipt.
+        assert!(app.state::<DiagnosticsStateStore>().flush_logs());
         let content = fs::read_to_string(root.join("logs").join("app.log")).unwrap();
         assert!(content.contains("input_audio_buffer.append.summary"));
         assert!(content.contains("worker.failure.before-teardown end_call"));
-        observed.store(true, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(20));
         assert_eq!(error, "poll failed");
         assert!(teardown_started.load(Ordering::SeqCst));
         let _ = fs::remove_dir_all(root);
@@ -1387,6 +1414,12 @@ mod trace_finalizer_tests {
             ModelTraceContext::new("provider", "model", "omni"),
         );
         let mut trace_call = recorder.call("worker.initialization");
+        trace_call.set_test_evidence_persister(|records, _| {
+            assert_eq!(records.len(), 1);
+            assert!(records[0].id.ends_with(":end"));
+            assert!(records[0].line.contains("session.update initialization failed"));
+            records.iter().map(|record| record.id.clone()).collect()
+        });
         trace_call.fail_on_drop("initialization escaped without finalization");
 
         let result: Result<(), String> = connect_initial_with_trace(&mut trace_call, |_| {
@@ -1396,10 +1429,63 @@ mod trace_finalizer_tests {
         let snapshot = app.state::<DiagnosticsStateStore>().snapshot_base();
         assert_eq!(snapshot.model_trace_summary.failed_calls, 1);
         assert_eq!(snapshot.model_trace_summary.succeeded_calls, 0);
+        assert!(app.state::<DiagnosticsStateStore>().flush_logs());
         let content = fs::read_to_string(root.join("logs").join("app.log")).unwrap();
         assert!(content.contains("worker.initialization end_call"));
         assert!(content.contains("session.update initialization failed"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn partial_receipts_remain_failures_through_initialization_and_teardown() {
+        for (audio_ack, end_ack) in [(false, true), (true, false), (false, false)] {
+            let root = tempfile::tempdir().unwrap();
+            let app = tauri::test::mock_builder()
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .unwrap();
+            app.manage(DiagnosticsStateStore::new_with_root(root.path().to_string_lossy().to_string()));
+            app.state::<DiagnosticsStateStore>().set_min_log_level("debug");
+            let recorder = ModelTraceRecorder::new(
+                app.handle().clone(), ModelTraceContext::new("provider", "model", "omni"),
+            );
+            let mut call = recorder.call("worker.partial-receipt");
+            let receipt_returned = Arc::new(AtomicBool::new(false));
+            let observed = Arc::clone(&receipt_returned);
+            call.set_test_evidence_persister(move |records, _| {
+                assert_eq!(records.len(), 2);
+                observed.store(true, Ordering::SeqCst);
+                records.iter().filter(|record| {
+                    if record.id.ends_with(":end") { end_ack } else { audio_ack }
+                }).map(|record| record.id.clone()).collect()
+            });
+            let primary = "initialization failed | code: session.quota-exceeded | recommended: check-provider-quota";
+            let result: Result<(), String> = connect_initial_with_trace(&mut call, |call| {
+                call.record_ws_send("input_audio_buffer.append", json!({"resampledSamples":320}));
+                Err(primary.to_string())
+            });
+            let expected = format!(
+                "initialization failed | details: modelTraceEvidenceFinalization=unacknowledged traceSelected=true audioConfirmed={audio_ack} endConfirmed={end_ack} audioEvidenceOverflowed=false pendingAudioEvidenceCount={} | code: session.quota-exceeded | recommended: check-provider-quota",
+                usize::from(!audio_ack),
+            );
+            assert_eq!(result.unwrap_err(), expected);
+            call.set_test_evidence_persister(|_, _| panic!("late receipt must not replace first result"));
+            let (error, teardown) = finalize_trace_error_before_teardown(
+                &mut call, Instant::now(), primary.to_string(), || {
+                    assert!(receipt_returned.load(Ordering::SeqCst));
+                    Err::<(), _>("secondary teardown failure")
+                },
+            );
+            assert_eq!(error, expected);
+            assert_eq!(teardown.unwrap_err(), "secondary teardown failure");
+            drop(call);
+            let store = app.state::<DiagnosticsStateStore>();
+            assert_eq!(store.snapshot_base().model_trace_summary.failed_calls, 1);
+            assert_eq!(store.snapshot_base().model_trace_summary.succeeded_calls, 0);
+            assert!(store.flush_logs());
+            let content = fs::read_to_string(root.path().join("logs/app.log")).unwrap();
+            assert!(content.contains("input_audio_buffer.append.summary"));
+            assert!(content.contains("worker.partial-receipt end_call"));
+        }
     }
 
     #[test]

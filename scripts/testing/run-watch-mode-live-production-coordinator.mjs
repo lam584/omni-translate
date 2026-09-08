@@ -1760,11 +1760,79 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
         files: files.map((relative) => fileAuthorityEntry(
           path.join(authorizationRoot, ...relative.split('/')), relative,
         )),
-      });
-      const publicationResult = await runProcess(config.sshExecutable, [
-        ...sshBaseArgs(executor), `${executor.user}@${executor.host}`, ...publication.args,
-      ], { signal, input: publication.input });
-      ensureSuccessful(publicationResult, 'canonical remote Provider preflight authorization publication');
+      }, { mode: 'file-only' });
+      const publicationUploadRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-preflight-publication-'));
+      const publicationScriptName = `publish-${crypto.randomBytes(12).toString('hex')}.ps1`;
+      const localPublicationScript = path.join(publicationUploadRoot, publicationScriptName);
+      const remotePublicationScript = path.win32.join(remoteAuthorizationRoot, publicationScriptName);
+      fs.writeFileSync(localPublicationScript, publication.fileScript, { encoding: 'utf8', flag: 'wx' });
+      const publicationAuthority = fileAuthorityEntry(localPublicationScript, publicationScriptName);
+      let publicationUploaded = false;
+      let publicationError = null;
+      try {
+        const uploadResult = await runProcess(config.scpExecutable, [
+          ...scpBaseArgs(executor), pathForScp(localPublicationScript),
+          remoteSpec(executor, remotePublicationScript),
+        ], { signal });
+        ensureSuccessful(uploadResult, 'canonical remote Provider preflight publication script upload');
+        publicationUploaded = true;
+        const verifyScript = [
+          "$ErrorActionPreference='Stop'",
+          `$p='${remotePublicationScript.replaceAll("'", "''")}'`,
+          `$n=${publicationAuthority.bytes}`,
+          `$h='${publicationAuthority.sha256}'`,
+          '$i=Get-Item -LiteralPath $p -Force',
+          "if($i.PSIsContainer -or (($i.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)){throw 'publication script is not a regular file'}",
+          "if($i.Length -ne $n){throw 'publication script byte length mismatch'}",
+          '$s=[IO.File]::OpenRead($p);$a=[Security.Cryptography.SHA256]::Create()',
+          'try{$x=([BitConverter]::ToString($a.ComputeHash($s))).Replace("-","").ToLowerInvariant()}finally{$a.Dispose();$s.Dispose()}',
+          "if($x -cne $h){throw 'publication script SHA-256 mismatch'}",
+        ].join(';');
+        const verifyResult = await runProcess(config.sshExecutable, [
+          ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
+          'powershell.exe', '-NoProfile', '-NonInteractive', '-Command', verifyScript,
+        ], { signal });
+        ensureSuccessful(verifyResult, 'canonical remote Provider preflight publication script verification');
+        const publicationResult = await runProcess(config.sshExecutable, [
+          ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
+          'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+          '-File', remotePublicationScript,
+        ], { signal, input: publication.input });
+        const decodedPublicationResult = decodeRemotePowerShellFileOutput(publicationResult);
+        ensureSuccessful(decodedPublicationResult, 'canonical remote Provider preflight authorization publication');
+      } catch (error) {
+        publicationError = error;
+        throw error;
+      } finally {
+        fs.rmSync(publicationUploadRoot, { recursive: true, force: true });
+        if (publicationUploaded) {
+          const cleanupScript = [
+            "$ErrorActionPreference='Stop'",
+            `$p='${remotePublicationScript.replaceAll("'", "''")}'`,
+            'Remove-Item -LiteralPath $p -Force',
+            "if(Test-Path -LiteralPath $p){throw 'publication script cleanup did not remove the exact file'}",
+          ].join(';');
+          let cleanupError = null;
+          try {
+            const cleanupResult = await runProcess(config.sshExecutable, [
+              ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
+              'powershell.exe', '-NoProfile', '-NonInteractive', '-Command', cleanupScript,
+            ], {});
+            ensureSuccessful(cleanupResult, 'canonical remote Provider preflight publication script cleanup');
+          } catch (error) {
+            cleanupError = error;
+          }
+          if (cleanupError) {
+            if (publicationError) {
+              throw new AggregateError(
+                [publicationError, cleanupError],
+                'canonical remote Provider preflight publication and exact script cleanup both failed',
+              );
+            }
+            throw cleanupError;
+          }
+        }
+      }
       const request = {
         schemaVersion: REMOTE_PROVIDER_PREFLIGHT_REQUEST_SCHEMA_VERSION,
         artifactKind: REMOTE_PROVIDER_PREFLIGHT_REQUEST_KIND,

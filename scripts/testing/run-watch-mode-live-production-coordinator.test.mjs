@@ -1236,6 +1236,7 @@ test('remote preflight transport runs executor-bound network health before crede
     let terminalFixture = null;
     let processAuthorityText = '';
     let controllerMode = 'success';
+    let publicationSource = '';
     const runProcess = async (executable, args, options = {}) => {
       const joined = args.join(' ');
       const encodedIndex = args.indexOf('-EncodedCommand');
@@ -1305,6 +1306,24 @@ test('remote preflight transport runs executor-bound network health before crede
         if (controllerMode === 'throw') throw new Error('simulated SSH transport termination');
         return { exitCode: controllerMode === 'nonzero' ? 23 : 0, stdout: `${JSON.stringify({ status: 'completed', outputDirectory: 'E:\\omni-shards\\provider-preflight-evidence', fields: {} })}\n`, stderr: controllerMode === 'nonzero' ? 'simulated controller failure' : '' };
       }
+      if (executable === 'ssh.exe' && joined.includes('publication script SHA-256 mismatch')) {
+        events.push('publication-verify');
+        assert.equal(args.includes('-EncodedCommand'), false);
+        assert.ok(joined.length < 4_000, 'publication verification must remain a short remote command');
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      if (executable === 'ssh.exe' && args.includes('-File') && /publish-[a-f0-9]{24}\.ps1/u.test(joined)) {
+        events.push('publication-execute');
+        assert.equal(args.includes('-EncodedCommand'), false);
+        assert.equal(options.input, '');
+        const output = Buffer.from(JSON.stringify({ published: true }), 'utf8').toString('base64');
+        return { exitCode: 0, stdout: `__OMNI_REMOTE_OUTPUT_V1__${output}\n__OMNI_REMOTE_COMPLETE_V1__\n`, stderr: '' };
+      }
+      if (executable === 'ssh.exe' && joined.includes('publication script cleanup did not remove the exact file')) {
+        events.push('publication-cleanup');
+        assert.match(joined, /Remove-Item -LiteralPath \$p -Force/u);
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
       if (executable === 'ssh.exe') { events.push('mkdir'); return { exitCode: 0, stdout: '{}\n', stderr: '' }; }
       if (joined.includes('provider-preflight-consumption-claim.json')) {
         events.push('claim'); fs.writeFileSync(windowsPathFromGitScpOperand(args.at(-1)), '{}\n', 'utf8');
@@ -1328,7 +1347,11 @@ test('remote preflight transport runs executor-bound network health before crede
       } else {
         assert.doesNotMatch(args.at(-2), /watch-remote-preflight/u, 'authorization uploads must use a short local staging path');
         const uploadedSource = fs.readFileSync(windowsPathFromGitScpOperand(args.at(-2)), 'utf8');
-        if (joined.includes('provider-preflight-controller.ps1')) controllerSource = uploadedSource;
+        if (/publish-[a-f0-9]{24}\.ps1/u.test(joined)) {
+          publicationSource = uploadedSource;
+          assert.match(publicationSource, /ConvertTo-ExtendedLengthPath/u);
+          assert.match(publicationSource, /__OMNI_REMOTE_OUTPUT_V1__/u);
+        } else if (joined.includes('provider-preflight-controller.ps1')) controllerSource = uploadedSource;
         else if (joined.includes('provider-preflight-interactive-launcher.ps1')) launcherSource = uploadedSource;
         else if (!joined.includes('provider-preflight-interactive-launcher.ps1')
           && !uploadedSource.includes('"interactiveSession"')) assert.equal(uploadedSource, '{}\n');
@@ -1369,12 +1392,15 @@ test('remote preflight transport runs executor-bound network health before crede
     const result = await transport.dispatch({ grant, authorizationDigest: 'a'.repeat(64) });
     assert.deepEqual(events.slice(0, 4), ['verify', 'network-health', 'credential', 'mkdir']);
     assert.ok(events.slice(4, 8).every((entry) => entry.startsWith('upload:')), JSON.stringify(events));
-    assert.equal(events[8], 'mkdir', 'canonical authorization publication must precede control upload');
-    assert.deepEqual(events.slice(9, 12), [
+    assert.deepEqual(events.slice(8, 12), [
+      'upload:publish-' + events[8].slice('upload:publish-'.length),
+      'publication-verify', 'publication-execute', 'publication-cleanup',
+    ], 'canonical publication must use verified file-only execution and exact cleanup');
+    assert.deepEqual(events.slice(12, 15), [
       'upload:provider-preflight-interactive-launcher.ps1',
       'upload:provider-preflight-controller.ps1',
       'mkdir',
-    ], JSON.stringify(events));
+    ], 'canonical authorization publication must precede control upload: ' + JSON.stringify(events));
     assert.deepEqual(events.slice(-6), ['provider', 'terminal', 'process-authority', 'cleanup', 'claim', 'evidence']);
     assert.equal(providerRuns, 1);
     assert.equal(result.outputDirectory, path.resolve(localEvidenceDirectory));
@@ -2108,7 +2134,7 @@ test('Windows PowerShell file-only executes oversized incompressible payload wit
   }
 });
 
-test('canonical Provider preflight publication uses extended-length paths beyond MAX_PATH', { skip: !isWindows }, () => {
+test('canonical Provider preflight publication file body preserves extended-length path support', { skip: !isWindows }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-preflight-long-path-'));
   const sourceRoot = path.join(root, 'staging');
   const targetRoot = path.join(root, 'canonical-' + 'x'.repeat(205));

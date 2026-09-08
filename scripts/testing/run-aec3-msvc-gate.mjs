@@ -1,9 +1,10 @@
 import crypto from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import process from 'node:process';
 
+import { requireVcpkgTool } from './run-aec3-msvc-gate-tool-locator.mjs';
 import {
   assertPinnedVcpkgWebRtcPort,
   verifyAec3OfficialSourceProvenance,
@@ -93,22 +94,6 @@ function successful(command, args) {
     encoding: 'utf8',
   });
   return !result.error && result.status === 0;
-}
-
-function findExecutable(root, fileName) {
-  if (!existsSync(root)) return null;
-  const pending = [root];
-  while (pending.length > 0) {
-    const directory = pending.pop();
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const candidate = join(directory, entry.name);
-      if (entry.isDirectory()) pending.push(candidate);
-      if (entry.isFile() && entry.name.toLowerCase() === fileName.toLowerCase()) {
-        return candidate;
-      }
-    }
-  }
-  return null;
 }
 
 function loadMsvcEnvironment() {
@@ -223,41 +208,9 @@ runWithRetries(vcpkgExecutable, [
   `--x-install-root=${installedRoot}`,
 ], { env: vcpkgInstallEnvironment });
 
-function requireVcpkgTool(toolName, fileName) {
-  const toolsRoot = join(downloadsRoot, 'tools');
-  const findOwnedTool = () => {
-    if (!existsSync(toolsRoot)) return null;
-    const ownedRoots = readdirSync(toolsRoot, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory()
-        && entry.name.toLowerCase().startsWith(`${toolName.toLowerCase()}-`))
-      .map((entry) => join(toolsRoot, entry.name));
-    for (const ownedRoot of ownedRoots) {
-      const executable = findExecutable(ownedRoot, fileName);
-      if (executable) return executable;
-    }
-    return null;
-  };
-  // Search only the directory acquired for this vcpkg tool. Other tool
-  // payloads (notably Strawberry Perl) can bundle an unrelated cmake.exe;
-  // selecting it by a global recursive scan produced 0xc0000135 at configure.
-  let executable = findOwnedTool();
-  if (!executable) {
-    // A restored installed-tree cache can make `vcpkg install` a no-op while
-    // the downloads/tools cache is absent. Fetch build tools explicitly so a
-    // clean VM and a partially restored CI cache have identical behavior.
-    run(vcpkgExecutable, ['fetch', toolName, '--x-stderr-status'], {
-      env: { ...process.env, VCPKG_DOWNLOADS: downloadsRoot },
-    });
-    executable = findOwnedTool();
-  }
-  if (!executable) {
-    throw new Error(`vcpkg did not acquire ${fileName} under ${downloadsRoot}`);
-  }
-  return executable;
-}
-
-const cmake = requireVcpkgTool('cmake', 'cmake.exe');
-const ninja = requireVcpkgTool('ninja', 'ninja.exe');
+const toolOptions = { vcpkgExecutable, workspace, env: vcpkgInstallEnvironment };
+const cmake = requireVcpkgTool({ ...toolOptions, toolName: 'cmake', fileName: 'cmake.exe' });
+const ninja = requireVcpkgTool({ ...toolOptions, toolName: 'ninja', fileName: 'ninja.exe' });
 const msvcEnvironment = loadMsvcEnvironment();
 const buildEnvironment = {
   ...msvcEnvironment,

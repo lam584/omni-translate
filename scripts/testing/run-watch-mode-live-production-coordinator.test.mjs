@@ -1847,6 +1847,8 @@ test('production coordinator verifies a prebuilt runtime and never rebuilds it',
   );
   assert.match(remoteWorker, /OMNI_RELEASE_EVIDENCE_PREFLIGHT_AUTHORIZATION_DIGEST/);
   assert.match(remoteWorker, /OMNI_RELEASE_EVIDENCE_PREFLIGHT_GRANT_PATH/);
+  assert.match(remoteWorker, /OMNI_RELEASE_EVIDENCE_HEAD_COMMIT: headCommit/);
+  assert.match(remoteWorker, /clean signed Git provenance/);
 });
 
 test('remote PowerShell uses a compressed encoded command without SSH stdin', () => {

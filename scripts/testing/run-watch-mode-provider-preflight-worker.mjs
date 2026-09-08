@@ -102,11 +102,17 @@ async function readStdinJson() {
 
 export async function runRemoteProviderPreflightWorker(rawRequest, { runPreflight = runManagedProviderPreflight } = {}) {
   const request = validateRemotePreflightRequest(rawRequest);
-  claimProviderPreflightDispatchAuthorization({
+  const claim = claimProviderPreflightDispatchAuthorization({
     grantPath: request.grantPath,
     reservationDirectory: request.leaseReservationDirectory,
     expectedAuthorizationDigest: request.authorizationDigest,
   });
+  const headCommit = claim.authorization?.provenance?.headCommit;
+  if (!/^[a-f0-9]{40}$/u.test(String(headCommit ?? ''))
+    || claim.authorization?.provenance?.worktreeClean !== true
+    || claim.authorization?.provenance?.dirtyEntryCount !== 0) {
+    throw new Error('remote provider preflight authorization requires clean signed Git provenance');
+  }
   const result = await runPreflight({
     executablePath: request.executablePath,
     outputDirectory: request.outputDirectory,
@@ -115,6 +121,7 @@ export async function runRemoteProviderPreflightWorker(rawRequest, { runPrefligh
     environment: {
       OMNI_RELEASE_EVIDENCE_SCENARIO: 'E2E-PROVIDER-PROBE',
       OMNI_RELEASE_EVIDENCE_OUTPUT_DIRECTORY: request.outputDirectory,
+      OMNI_RELEASE_EVIDENCE_HEAD_COMMIT: headCommit,
       OMNI_RELEASE_EVIDENCE_PROVIDER_ID: 'provider-dashscope',
       OMNI_PROVIDER_PREFLIGHT_EXECUTION_ID: request.executionId,
       OMNI_RELEASE_EVIDENCE_PREFLIGHT_GRANT_PATH: request.grantPath,

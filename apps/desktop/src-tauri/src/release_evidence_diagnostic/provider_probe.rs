@@ -224,7 +224,7 @@ pub(super) async fn collect_provider_probe(
     let raw_trace = strict_livetranslate
         .then(|| write_provider_wire_trace(staging, probe.wire_evidence.as_ref()))
         .transpose()?;
-    let wire_evidence = if strict_livetranslate {
+    let mut wire_evidence = if strict_livetranslate {
         probe
             .wire_evidence
             .as_ref()
@@ -234,6 +234,22 @@ pub(super) async fn collect_provider_probe(
     } else {
         None
     };
+    if let Some(wire) = wire_evidence.as_mut().and_then(Value::as_object_mut) {
+        let first_latency = wire
+            .get("firstServerEvent")
+            .and_then(Value::as_object)
+            .and_then(|event| event.get("monotonicMs"))
+            .and_then(Value::as_u64);
+        if first_latency.is_some_and(|latency| latency > 1_200)
+            && wire.get("evidenceOutcome").and_then(Value::as_str)
+                == Some("livetranslate-session-finished")
+        {
+            wire.insert(
+                "evidenceOutcome".to_string(),
+                json!("latency-budget-exceeded"),
+            );
+        }
+    }
     let mut raw_probe_result = serde_json::to_value(&probe).map_err(|error| error.to_string())?;
     if let Some(object) = raw_probe_result.as_object_mut() {
         if strict_livetranslate {

@@ -1215,8 +1215,13 @@ test('remote preflight transport runs executor-bound network health before crede
     let providerRuns = 0;
     const runProcess = async (executable, args, options = {}) => {
       const joined = args.join(' ');
-      if (executable === 'ssh.exe' && joined.includes('watch-mode-provider-network-health.mjs')) {
+      const encodedIndex = args.indexOf('-EncodedCommand');
+      const remoteSource = encodedIndex >= 0
+        ? Buffer.from(args[encodedIndex + 1], 'base64').toString('utf16le')
+        : joined;
+      if (executable === 'ssh.exe' && remoteSource.includes('watch-mode-provider-network-health.mjs')) {
         events.push('network-health');
+        assert.match(remoteSource, /Set-Location -LiteralPath 'E:\\watch-worker'/u);
         const request = JSON.parse(String(options.input));
         return { exitCode: 0, stdout: `${JSON.stringify({
           schemaVersion: 1,
@@ -1303,7 +1308,11 @@ test('remote executor network health failure is terminal before credential provi
       provision: async () => { credentialCalls += 1; },
       runProcess: async (executable, args) => {
         const joined = args.join(' ');
-        if (joined.includes('watch-mode-provider-network-health.mjs')) {
+        const encodedIndex = args.indexOf('-EncodedCommand');
+        const remoteSource = encodedIndex >= 0
+          ? Buffer.from(args[encodedIndex + 1], 'base64').toString('utf16le')
+          : joined;
+        if (remoteSource.includes('watch-mode-provider-network-health.mjs')) {
           return { exitCode: 1, stdout: '', stderr: 'provider network health failed before paid preflight authorization' };
         }
         if (joined.includes('run-watch-mode-provider-preflight-worker.mjs')) providerCalls += 1;

@@ -1541,9 +1541,16 @@ export function createSshProviderPreflightTransport({
       const networkHealthEntrypoint = path.win32.join(
         executor.workspaceRoot, 'scripts', 'testing', 'watch-mode-provider-network-health.mjs',
       );
+      const networkHealthCommand = Buffer.from([
+        "$ErrorActionPreference = 'Stop'",
+        `[Environment]::CurrentDirectory = '${executor.workspaceRoot.replaceAll("'", "''")}'`,
+        `Set-Location -LiteralPath '${executor.workspaceRoot.replaceAll("'", "''")}'`,
+        `& node.exe '${networkHealthEntrypoint.replaceAll("'", "''")}'`,
+        'exit $LASTEXITCODE',
+      ].join('\n'), 'utf16le').toString('base64');
       const networkHealthResult = await runProcess(config.sshExecutable, [
         ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
-        'node.exe', networkHealthEntrypoint,
+        'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', networkHealthCommand,
       ], { signal, input: JSON.stringify(networkHealthRequest), timeoutMs: deriveWatchProductionNetworkHealthBudgetMs() });
       const networkHealthReceipt = parseRemoteJson(networkHealthResult, 'remote Provider network health');
       if (networkHealthReceipt.executionId !== executionId

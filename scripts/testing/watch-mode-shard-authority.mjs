@@ -82,6 +82,8 @@ export const SHARD_ORCHESTRATION_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/watch-mode-release-timeout-budget.mjs',
   'scripts/testing/watch-mode-strict-runtime-authority.mjs',
   'scripts/testing/watch-mode-provider-preflight-process.mjs',
+  'scripts/testing/run-watch-mode-provider-preflight-worker.mjs',
+  'scripts/testing/watch-worker-bootstrap.mjs',
   'scripts/testing/watch-mode-provider-network-health.mjs',
   'scripts/testing/invoke-watch-mode-interactive-task.ps1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',

@@ -320,6 +320,7 @@ export function writeCoordinatorProviderPreflightReceipt({
       !== canonicalJson(expectedAuthorization?.consumptionClaim)
     || canonicalJson(summary.leaseReservationDigests)
       !== canonicalJson(expectedAuthorization?.leaseReservationDigests)
+    || canonicalJson(summary.executor) !== canonicalJson(expectedAuthorization?.executor)
     || summary.inputTokens != null
     || summary.outputTokens != null
     || (audioSeconds !== null && (typeof audioSeconds !== 'number' || audioSeconds !== 0))
@@ -362,6 +363,7 @@ export function writeCoordinatorProviderPreflightReceipt({
     leaseReservationDigests: structuredClone(expectedAuthorization.leaseReservationDigests),
     authorizationDigest: expectedAuthorization.authorizationDigest,
     consumptionClaim: structuredClone(expectedAuthorization.consumptionClaim),
+    executor: structuredClone(expectedAuthorization.executor),
   };
   const inventoryPath = path.join(
     path.resolve(executionRoot),
@@ -404,6 +406,7 @@ export function writeCoordinatorProviderPreflightReceipt({
     leaseReservationDigests: structuredClone(expectedAuthorization.leaseReservationDigests),
     authorizationDigest: expectedAuthorization.authorizationDigest,
     consumptionClaim: structuredClone(expectedAuthorization.consumptionClaim),
+    executor: structuredClone(expectedAuthorization.executor),
   };
   const receiptPath = path.join(path.resolve(executionRoot), COORDINATOR_PROVIDER_PREFLIGHT_FILE);
   atomicWriteJson(receiptPath, receipt);
@@ -440,6 +443,7 @@ export function writeCoordinatorProviderPreflightReceipt({
       leaseReservationDigests: structuredClone(receipt.leaseReservationDigests),
       authorizationDigest: receipt.authorizationDigest,
       consumptionClaim: structuredClone(receipt.consumptionClaim),
+      executor: structuredClone(receipt.executor),
       generatedAt: receipt.generatedAt,
     },
   };
@@ -472,6 +476,7 @@ export async function prepareCoordinatorExecution({
   executionId = `watch-shard-${crypto.randomUUID()}`,
   workers,
   assignments = defaultSingleWorkerAssignments(workers),
+  preflightExecutorWorkerId,
   generatedAt = new Date(),
   expiresAt = new Date(generatedAt.getTime() + 86_400_000),
   now = () => new Date(),
@@ -605,6 +610,7 @@ export async function prepareCoordinatorExecution({
       workerReadinessAuthorities: workerReadiness.workers,
       workers,
       assignments: assignmentWithLeases,
+      preflightExecutorWorkerId,
       signingKeys,
     });
     verifyProviderPreflightGrant(preflightGrant);
@@ -694,7 +700,8 @@ export async function prepareCoordinatorExecution({
         fs.constants.COPYFILE_EXCL,
       );
     }
-    // Exactly one coordinator text preflight. It must never be delegated to a shard.
+    // Exactly one signed text preflight. Its executor is bound by the grant and
+    // is not a paid shard dispatch; failures require a new execution.
     const preflightOutcome = await runProviderPreflight({
       executionId,
       provenance: startProvenance,

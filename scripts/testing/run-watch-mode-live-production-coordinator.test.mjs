@@ -130,6 +130,7 @@ import {
   validateProductionWorkerConfig,
   windowsPowerShellEnvironment,
   createSshProductionTransport,
+  createSshProviderPreflightTransport,
 } from './run-watch-mode-live-production-coordinator.mjs';
 
 test('collection archive inventory remains inside the immutable worker root', () => {
@@ -1020,6 +1021,10 @@ for (const [label, receipt] of [['undefined', undefined], ['false', false], ['ne
 }
 
 function rawWorkerConfig(root, workerIds = ['vm1']) {
+  if (workerIds.length === 4) {
+    fs.writeFileSync(path.join(root, 'vm131-key'), 'fixture-private-key');
+    fs.writeFileSync(path.join(root, 'vm131-hosts'), `vm131 ssh-ed25519 ${Buffer.from('fixture-vm131-host-key').toString('base64')}\n`);
+  }
   const defaultProfile = (workerId) => ({
     instanceId: `${workerId}-default`,
     profileId: 'vmware-hda-default',
@@ -1028,11 +1033,14 @@ function rawWorkerConfig(root, workerIds = ['vm1']) {
     expectedPhysicalPlaybackDeviceName: '扬声器 (High Definition Audio Device)',
   });
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     artifactKind: PRODUCTION_WORKER_CONFIG_KIND,
+    providerPreflightExecutor: { workerId: workerIds.at(-1) },
     workers: workerIds.map((workerId) => ({
       workerId, user: 'VMUser',
-      transport: { kind: 'local' },
+      transport: workerIds.length === 4 && workerId === 'vm131'
+        ? { kind: 'ssh', host: '192.0.2.131', port: 22, identityFile: path.join(root, 'vm131-key'), knownHostsFile: path.join(root, 'vm131-hosts'), hostKeyAlias: 'vm131' }
+        : { kind: 'local' },
       workspaceRoot: 'E:\\watch-worker', guestExecutionRoot: 'E:\\omni-shards',
       vmIdentity: { provider: 'vmware', uuidBios: `56-4d-${workerId}` },
       deviceProfileInstances: [defaultProfile(workerId)],
@@ -1040,7 +1048,7 @@ function rawWorkerConfig(root, workerIds = ['vm1']) {
   };
 }
 
-test('production worker config v2 accepts one local worker and rejects unbound fields', () => {
+test('production worker config v3 accepts one local worker and rejects unbound fields', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-production-config-'));
   try {
     const raw = rawWorkerConfig(root);
@@ -1058,7 +1066,68 @@ test('production worker config v2 accepts one local worker and rejects unbound f
   }
 });
 
-test('production worker config v2 binds three distinct transports, BIOS UUIDs, host keys, and fixed placement', () => {
+test('remote preflight transport verifies before credential pipe, uploads only authorization files, and never retries', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-remote-preflight-'));
+  try {
+    const authorizationRoot = path.join(root, 'authorization');
+    fs.mkdirSync(path.join(authorizationRoot, 'provider-preflight-lease-reservations'), { recursive: true });
+    fs.mkdirSync(path.join(authorizationRoot, 'worker-readiness'), { recursive: true });
+    for (const relative of [
+      'provider-preflight-grant.json', 'worker-readiness-request.json',
+      'provider-preflight-lease-reservations/01-c01.json',
+      'worker-readiness/vm131.json',
+    ]) {
+      const target = path.join(authorizationRoot, ...relative.split('/'));
+      fs.writeFileSync(target, '{}\n', 'utf8');
+    }
+    const localEvidenceDirectory = path.join(root, 'collected', 'final-evidence');
+    const events = [];
+    const executor = {
+      workerId: 'vm131', user: 'VMUser', workspaceRoot: 'E:\\watch-worker',
+      guestExecutionRoot: 'E:\\omni-shards', vmIdentity: { provider: 'vmware', uuidBios: 'fixture' },
+      transport: { kind: 'ssh' }, host: '192.0.2.131', port: 22,
+      identityFile: 'E:\\id_rsa', knownHostsFile: 'E:\\known_hosts', hostKeyAlias: 'vm131',
+    };
+    let providerRuns = 0;
+    const runProcess = async (executable, args, options = {}) => {
+      const joined = args.join(' ');
+      if (executable === 'ssh.exe' && joined.includes('run-watch-mode-provider-preflight-worker.mjs')) {
+        events.push('provider'); providerRuns += 1;
+        assert.doesNotMatch(joined, /api.?key|credential|secret/i);
+        assert.doesNotMatch(String(options.input), /api.?key|credential|secret/i);
+        return { exitCode: 0, stdout: `${JSON.stringify({ status: 'completed', outputDirectory: 'E:\\omni-shards\\provider-preflight-evidence', fields: {} })}\n`, stderr: '' };
+      }
+      if (executable === 'ssh.exe') { events.push('mkdir'); return { exitCode: 0, stdout: '{}\n', stderr: '' }; }
+      if (joined.includes('provider-preflight-consumption-claim.json')) {
+        events.push('claim'); fs.writeFileSync(args.at(-1).replaceAll('/', '\\'), '{}\n', 'utf8');
+      } else if (joined.includes('provider-preflight-evidence')) {
+        events.push('evidence');
+        fs.mkdirSync(path.join(path.dirname(localEvidenceDirectory), 'provider-preflight-evidence'), { recursive: true });
+      } else events.push(`upload:${path.basename(args.at(-2))}`);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+    const transport = createSshProviderPreflightTransport({
+      config: { sshExecutable: 'ssh.exe', scpExecutable: 'scp.exe' }, executor,
+      executionId: 'remote-preflight-order', authorizationRoot, localEvidenceDirectory, runProcess,
+      verifyExecutor: async () => { events.push('verify'); },
+      provision: async (options) => {
+        events.push('credential');
+        assert.doesNotMatch(JSON.stringify(options), /api.?key|secret/i);
+      },
+    });
+    const grant = { executor: { workerId: 'vm131', interactiveUser: 'VMUser', vmIdentity: executor.vmIdentity, readinessAuthority: { providerCalls: 0 } } };
+    const result = await transport.dispatch({ grant, authorizationDigest: 'a'.repeat(64) });
+    assert.deepEqual(events.slice(0, 3), ['verify', 'credential', 'mkdir']);
+    assert.ok(events.slice(3, -3).every((entry) => entry.startsWith('upload:')));
+    assert.deepEqual(events.slice(-3), ['provider', 'claim', 'evidence']);
+    assert.equal(providerRuns, 1);
+    assert.equal(result.outputDirectory, path.resolve(localEvidenceDirectory));
+    await assert.rejects(transport.dispatch({ grant, authorizationDigest: 'a'.repeat(64) }), /single-use/);
+    assert.equal(providerRuns, 1);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('production worker config v3 binds three distinct transports, BIOS UUIDs, host keys, and fixed placement', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-production-three-worker-'));
   try {
     const identity = path.join(root, 'id_rsa');
@@ -1079,7 +1148,8 @@ test('production worker config v2 binds three distinct transports, BIOS UUIDs, h
       };
     };
     const config = {
-      schemaVersion: 2, artifactKind: PRODUCTION_WORKER_CONFIG_KIND,
+      schemaVersion: 3, artifactKind: PRODUCTION_WORKER_CONFIG_KIND,
+      providerPreflightExecutor: { workerId: 'vm169' },
       workers: [worker('vm171', '192.168.40.171', 'AAAA'), worker('vm167', '192.168.40.167', 'BBBB'), worker('vm169', '192.168.40.169', 'CCCC')],
     };
     const normalized = validateProductionWorkerConfig(config, { configDirectory: root });
@@ -1090,6 +1160,7 @@ test('production worker config v2 binds three distinct transports, BIOS UUIDs, h
     const fourConfig = structuredClone(config);
     fourConfig.workers[0].transport = { kind: 'local' };
     fourConfig.workers.push(worker('vm131', '192.168.40.131', 'DDDD'));
+    fourConfig.providerPreflightExecutor = { workerId: 'vm131' };
     const four = validateProductionWorkerConfig(fourConfig, { configDirectory: root });
     assert.deepEqual(four.assignments.map(({ workerId, waveIndex }) => [workerId, waveIndex]), [
       ['vm171', 0], ['vm169', 0], ['vm131', 0], ['vm167', 0],
@@ -1535,8 +1606,12 @@ test('production coordinator verifies a prebuilt runtime and never rebuilds it',
   );
   assert.match(source, /verifyStrictRuntimeAuthority/);
   assert.doesNotMatch(source, /buildStrictRuntimeAuthority/);
-  assert.match(source, /PROVIDER_PREFLIGHT_AUTHORIZATION_DIGEST_ENV/);
-  assert.match(source, /PROVIDER_PREFLIGHT_GRANT_PATH_ENV/);
+  const remoteWorker = fs.readFileSync(
+    path.join(repoRoot, 'scripts/testing/run-watch-mode-provider-preflight-worker.mjs'),
+    'utf8',
+  );
+  assert.match(remoteWorker, /OMNI_RELEASE_EVIDENCE_PREFLIGHT_AUTHORIZATION_DIGEST/);
+  assert.match(remoteWorker, /OMNI_RELEASE_EVIDENCE_PREFLIGHT_GRANT_PATH/);
 });
 
 test('remote PowerShell uses a compressed encoded command without SSH stdin', () => {

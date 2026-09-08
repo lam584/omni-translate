@@ -40,6 +40,8 @@ export const PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_KIND =
   'watch-mode-provider-preflight-consumption-claim';
 export const PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_FILE =
   'provider-preflight-consumption-claim.json';
+export const PROVIDER_PREFLIGHT_DISPATCH_CLAIM_FILE =
+  'provider-preflight-dispatch-claim.json';
 export const PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE =
   'target/release/omni-desktop-shell.exe';
 
@@ -180,6 +182,7 @@ export function providerPreflightAuthorizationConsumption({ grant, leaseReservat
     invocationCount: grant.authorization.invocationCount,
     externalAudioSamples: grant.authorization.externalAudioSamples,
     lifecycleBudget: structuredClone(grant.authorization.lifecycleBudget),
+    executor: structuredClone(grant.executor),
     leaseReservations: leaseReservations.map((reservation, index) => ({
       cellIndex: index,
       cellId: reservation.cellId,
@@ -295,6 +298,7 @@ export function createProviderPreflightGrant({
   workerReadinessAuthorities,
   workers,
   assignments,
+  preflightExecutorWorkerId,
   signingKeys,
 }) {
   if (!Array.isArray(assignments) || assignments.length !== SHARD_MATRIX_CELL_COUNT) {
@@ -307,6 +311,16 @@ export function createProviderPreflightGrant({
     || cells.reduce((sum, cell) => sum + cell.maxExternalAudioSamples, 0)
       !== SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES
   ) throw new Error(`provider preflight grant requires ${SHARD_MATRIX_CELL_COUNT} unique fixed-budget lease IDs`);
+  const normalizedWorkers = normalizedGrantWorkers(workers);
+  if (normalizedWorkers.length === 4 && !preflightExecutorWorkerId) {
+    throw new Error('four-worker provider preflight grant requires an explicit executor');
+  }
+  const selectedExecutorWorkerId = preflightExecutorWorkerId ?? normalizedWorkers[0]?.workerId;
+  const executorWorker = normalizedWorkers.find((worker) => worker.workerId === selectedExecutorWorkerId);
+  const executorReadiness = workerReadinessAuthorities.find((entry) => entry.workerId === selectedExecutorWorkerId);
+  if (!executorWorker || (normalizedWorkers.length === 4 && selectedExecutorWorkerId !== 'vm131') || !executorReadiness) {
+    throw new Error('provider preflight grant requires its fixed ready executor');
+  }
   const core = {
     schemaVersion: SHARD_AUTHORITY_SCHEMA_VERSION,
     artifactKind: PROVIDER_PREFLIGHT_GRANT_KIND,
@@ -322,7 +336,15 @@ export function createProviderPreflightGrant({
     workerReadinessRequest: structuredClone(workerReadinessRequest),
     workerReadinessRequestAuthority: structuredClone(workerReadinessRequestAuthority),
     workerReadinessAuthorities: structuredClone(workerReadinessAuthorities),
-    workers: normalizedGrantWorkers(workers),
+    workers: normalizedWorkers,
+    executor: {
+      workerId: executorWorker.workerId,
+      interactiveUser: executorWorker.interactiveUser,
+      vmIdentity: structuredClone(executorWorker.vmIdentity),
+      vmIdentityDigest: executorWorker.vmIdentityDigest,
+      runtimeBundleDigest: authorityInventoryDigest(runtimeBinaryHashes),
+      readinessAuthority: structuredClone(executorReadiness),
+    },
     cells,
     budget: {
       inputSampleRateHz: 16_000,
@@ -415,6 +437,18 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
       `provider preflight worker ${index} readiness authority`,
     );
   });
+  const executorWorker = grant.workers.find((worker) => worker.workerId === grant.executor?.workerId);
+  const executorReadiness = grant.workerReadinessAuthorities.find(
+    (entry) => entry.workerId === grant.executor?.workerId,
+  );
+  if (!executorWorker || (grant.workers.length === 4 && grant.executor.workerId !== 'vm131')
+    || grant.executor.interactiveUser !== executorWorker.interactiveUser
+    || canonicalJson(grant.executor.vmIdentity) !== canonicalJson(executorWorker.vmIdentity)
+    || grant.executor.vmIdentityDigest !== executorWorker.vmIdentityDigest
+    || grant.executor.runtimeBundleDigest !== grant.runtimeBundleDigest
+    || canonicalJson(grant.executor.readinessAuthority) !== canonicalJson(executorReadiness)) {
+    throw new Error('provider preflight grant executor is not bound to signed vm131 identity/readiness/runtime');
+  }
   if (!Array.isArray(grant.cells) || grant.cells.length !== SHARD_MATRIX_CELL_COUNT) {
     throw new Error(`provider preflight grant requires the exact ${SHARD_MATRIX_CELL_COUNT} paid cells`);
   }
@@ -640,6 +674,43 @@ export function loadProviderPreflightAuthorizationPackage({
   };
 }
 
+export function claimProviderPreflightDispatchAuthorization({
+  grantPath,
+  reservationDirectory,
+  expectedAuthorizationDigest,
+  claimedAt = new Date(),
+}) {
+  const authorization = loadProviderPreflightAuthorizationPackage({
+    grantPath,
+    reservationDirectory,
+    expectedAuthorizationDigest,
+  });
+  const authorizationRoot = path.dirname(path.resolve(grantPath));
+  const claimPath = path.join(path.dirname(authorizationRoot), `${path.basename(authorizationRoot)}.${PROVIDER_PREFLIGHT_DISPATCH_CLAIM_FILE}`);
+  const claim = {
+    schemaVersion: SHARD_AUTHORITY_SCHEMA_VERSION,
+    artifactKind: 'watch-mode-provider-preflight-dispatch-claim',
+    executionId: authorization.grant.executionId,
+    grantDigest: authorization.grant.digest,
+    authorizationDigest: authorization.authorizationDigest,
+    executor: structuredClone(authorization.grant.executor),
+    claimedAt: claimedAt instanceof Date ? claimedAt.toISOString() : String(claimedAt),
+    retryPolicy: 'new-execution-required',
+  };
+  let handle;
+  try {
+    handle = fs.openSync(claimPath, 'wx', 0o600);
+    fs.writeFileSync(handle, `${canonicalJson(claim)}\n`, 'utf8');
+    fs.fsyncSync(handle);
+  } catch (error) {
+    if (error?.code === 'EEXIST') throw new Error('provider preflight authorization was already consumed');
+    throw error;
+  } finally {
+    if (handle !== undefined) fs.closeSync(handle);
+  }
+  return { claimed: true, claimPath, authorization };
+}
+
 export function validateProviderPreflightAuthorizationAuthorities({
   root,
   grantAuthority,
@@ -713,6 +784,7 @@ export function createProviderPreflightCompletion({
     || preflightAuthority.executionId !== consumption.executionId
     || preflightAuthority.grantDigest !== consumption.grantDigest
     || preflightAuthority.authorizationDigest !== consumption.authorizationDigest
+    || canonicalJson(preflightAuthority.executor) !== canonicalJson(consumption.executor)
     || canonicalJson(preflightAuthority.leaseReservationDigests)
       !== canonicalJson(consumption.leaseReservationDigests)
     || preflightAuthority.consumptionClaim?.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
@@ -796,6 +868,7 @@ export function verifyProviderPreflightCompletion(completion, grant, leaseReserv
     || completion.preflightAuthority?.executionId !== consumption.executionId
     || completion.preflightAuthority?.grantDigest !== consumption.grantDigest
     || completion.preflightAuthority?.authorizationDigest !== consumption.authorizationDigest
+    || canonicalJson(completion.preflightAuthority?.executor) !== canonicalJson(consumption.executor)
     || canonicalJson(completion.preflightAuthority?.leaseReservationDigests)
       !== canonicalJson(consumption.leaseReservationDigests)
     || canonicalJson(completion.consumptionClaim)

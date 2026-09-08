@@ -6,8 +6,8 @@ import { pipeline } from 'node:stream/promises';
 export const FIXED_CREDENTIAL_TARGET = 'OmniTranslate:credential___provider_dashscope_default';
 
 export function validateWorkerPins(workers) {
-  if (!Array.isArray(workers) || workers.length < 1 || workers.length > 3) {
-    throw new Error('worker inventory must contain 1 to 3 workers');
+  if (!Array.isArray(workers) || workers.length < 1 || workers.length > 4) {
+    throw new Error('worker inventory must contain 1 to 4 workers');
   }
   const ids = new Set(); const bios = new Set(); const keys = new Set();
   for (const worker of workers) {

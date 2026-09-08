@@ -16,7 +16,6 @@ import {
   buildVerifyArgv,
   publishSuccessfulStrictMatrixManifest,
   stageShardMatrixIntegration,
-  strictRuntimeEnvironment,
   writeMatrixRunManifest,
 } from './run-watch-mode-live-matrix.mjs';
 import {
@@ -55,24 +54,19 @@ import {
   writeCoordinatorAggregate,
 } from './run-watch-mode-live-coordinator.mjs';
 import {
-  PROVIDER_PREFLIGHT_AUTHORIZATION_DIGEST_ENV,
-  PROVIDER_PREFLIGHT_GRANT_PATH_ENV,
   PROVIDER_PREFLIGHT_INPUT_MODE,
   PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET,
   PROVIDER_PREFLIGHT_OPERATION,
   PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE,
   PROVIDER_PREFLIGHT_RESPONSE_MODE,
-  PROVIDER_PREFLIGHT_RESERVATION_DIRECTORY_ENV,
   PROVIDER_PREFLIGHT_TERMINAL_EVENT,
 } from './watch-mode-provider-preflight-authorization.mjs';
-import {
-  PROVIDER_PREFLIGHT_CLEANUP_TIMEOUT_MS,
-  PROVIDER_PREFLIGHT_CLOSE_GRACE_MS,
-  PROVIDER_PREFLIGHT_EMITTER_TIMEOUT_MS,
-  PROVIDER_PREFLIGHT_EXIT_GRACE_MS,
-  runManagedProviderPreflight,
-} from './watch-mode-provider-preflight-process.mjs';
 import { runProviderNetworkHealth } from './watch-mode-provider-network-health.mjs';
+import { provisionCredential } from './watch-worker-bootstrap.mjs';
+import {
+  REMOTE_PROVIDER_PREFLIGHT_REQUEST_KIND,
+  REMOTE_PROVIDER_PREFLIGHT_REQUEST_SCHEMA_VERSION,
+} from './run-watch-mode-provider-preflight-worker.mjs';
 import {
   WATCH_PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
   WATCH_PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS,
@@ -107,7 +101,7 @@ import {
 
 export const PRODUCTION_COORDINATOR_RUNNER_ID =
   'scripts/testing/run-watch-mode-live-production-coordinator.mjs';
-export const PRODUCTION_WORKER_CONFIG_SCHEMA_VERSION = 2;
+export const PRODUCTION_WORKER_CONFIG_SCHEMA_VERSION = 3;
 export const PRODUCTION_WORKER_CONFIG_KIND = 'watch-mode-production-shard-workers';
 export const PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS =
   WATCH_PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS;
@@ -639,6 +633,7 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
   exactKeys(config, [
     'schemaVersion',
     'artifactKind',
+    'providerPreflightExecutor',
     'workers',
   ], 'production worker config');
   if (
@@ -647,7 +642,8 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     || !Array.isArray(config.workers)
     || config.workers.length < 1
     || config.workers.length > 4
-  ) throw new Error('production worker config must be schema v2 with one to four workers');
+  ) throw new Error('production worker config must be schema v3 with one to four workers');
+  exactKeys(config.providerPreflightExecutor, ['workerId'], 'production provider preflight executor');
   const workerIds = new Set();
   const vmUuids = new Set();
   const sshHostKeys = new Set();
@@ -737,7 +733,13 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
   if (assignedProfiles.length !== LIVE_LLM_CELLS.length) {
     throw new Error('production worker assignments must bind every fixed cell to one profile');
   }
-  return { workers, assignments, sshExecutable: 'ssh.exe', scpExecutable: 'scp.exe' };
+  const preflightExecutor = workers.find((worker) => worker.workerId === config.providerPreflightExecutor.workerId);
+  if (!preflightExecutor
+    || (workers.length === 4 && preflightExecutor.workerId !== 'vm131')
+    || (workers.length === 4 && preflightExecutor.transport.kind !== 'ssh')) {
+    throw new Error('four-worker production provider preflight executor must be the configured SSH vm131 worker');
+  }
+  return { workers, assignments, preflightExecutor, sshExecutable: 'ssh.exe', scpExecutable: 'scp.exe' };
 }
 
 export function verifyProductionLocalIsolationManifest({ workers, assignments, ...verification }) {
@@ -1337,6 +1339,116 @@ function parseRemoteJson(result, label) {
   } catch (error) {
     throw new Error(`${label} returned invalid JSON: ${error.message}`);
   }
+}
+
+export function createSshProviderPreflightTransport({
+  config,
+  executor,
+  executionId,
+  authorizationRoot,
+  localEvidenceDirectory,
+  runProcess = runChildProcess,
+  provision = provisionCredential,
+  verifyExecutor = async ({ grant }) => {
+    if (grant.executor.workerId !== executor.workerId
+      || grant.executor.interactiveUser !== executor.user
+      || JSON.stringify(grant.executor.vmIdentity) !== JSON.stringify(executor.vmIdentity)
+      || grant.executor.readinessAuthority?.providerCalls !== 0) {
+      throw new Error('remote Provider preflight executor failed signed identity/readiness verification');
+    }
+  },
+}) {
+  if (executor?.workerId !== 'vm131' || executor?.transport?.kind !== 'ssh') {
+    throw new Error('remote Provider preflight transport requires fixed SSH executor vm131');
+  }
+  let dispatched = false;
+  const remoteRoot = path.win32.join(executor.guestExecutionRoot, executionId, executor.workerId);
+  const remoteAuthorizationRoot = path.win32.join(remoteRoot, path.basename(authorizationRoot));
+  const remoteEvidenceRoot = path.win32.join(remoteRoot, 'provider-preflight-evidence');
+  const localHelper = path.join(repoRoot, 'target', 'release', 'watch-worker-credential.exe');
+  const remoteHelper = path.win32.join(executor.workspaceRoot, 'target', 'release', 'watch-worker-credential.exe');
+  const authorizationFiles = () => {
+    const reservations = fs.readdirSync(path.join(authorizationRoot, 'provider-preflight-lease-reservations'))
+      .sort().map((name) => `provider-preflight-lease-reservations/${name}`);
+    const readiness = fs.readdirSync(path.join(authorizationRoot, 'worker-readiness'))
+      .sort().map((name) => `worker-readiness/${name}`);
+    const files = ['provider-preflight-grant.json', 'worker-readiness-request.json', ...reservations, ...readiness];
+    if (files.some((relative) => !/^[a-z0-9._/-]+$/iu.test(relative))) {
+      throw new Error('remote Provider preflight authorization contains a nonportable path');
+    }
+    return files;
+  };
+  return {
+    async dispatch({ grant, authorizationDigest, signal }) {
+      if (dispatched) throw new Error('remote Provider preflight transport is single-use');
+      dispatched = true;
+      await verifyExecutor({ grant, executor });
+      await provision({
+        localHelper,
+        sshPath: config.sshExecutable,
+        sshArgs: [...sshBaseArgs(executor), `${executor.user}@${executor.host}`],
+        remoteHelper,
+      });
+      const files = authorizationFiles();
+      const mkdir = remotePowerShellInvocation(`
+$root = [IO.Path]::GetFullPath([string]$payload.authorizationRoot)
+if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorization root already exists' }
+[IO.Directory]::CreateDirectory($root) | Out-Null
+[IO.Directory]::CreateDirectory((Join-Path $root 'provider-preflight-lease-reservations')) | Out-Null
+[IO.Directory]::CreateDirectory((Join-Path $root 'worker-readiness')) | Out-Null
+[pscustomobject]@{ created = $true } | ConvertTo-Json -Compress
+`, { authorizationRoot: remoteAuthorizationRoot });
+      const mkdirResult = await runProcess(config.sshExecutable, [
+        ...sshBaseArgs(executor), `${executor.user}@${executor.host}`, ...mkdir.args,
+      ], { signal, input: mkdir.input });
+      ensureSuccessful(mkdirResult, 'remote Provider preflight authorization root creation');
+      for (const relative of files) {
+        const source = path.join(authorizationRoot, ...relative.split('/'));
+        const destination = path.win32.join(remoteAuthorizationRoot, ...relative.split('/'));
+        const upload = await runProcess(config.scpExecutable, [
+          ...scpBaseArgs(executor), pathForScp(source), remoteSpec(executor, destination),
+        ], { signal });
+        ensureSuccessful(upload, `remote Provider preflight authorization upload ${relative}`);
+      }
+      const request = {
+        schemaVersion: REMOTE_PROVIDER_PREFLIGHT_REQUEST_SCHEMA_VERSION,
+        artifactKind: REMOTE_PROVIDER_PREFLIGHT_REQUEST_KIND,
+        executionId,
+        executor: structuredClone(grant.executor),
+        grantPath: path.win32.join(remoteAuthorizationRoot, 'provider-preflight-grant.json'),
+        leaseReservationDirectory: path.win32.join(remoteAuthorizationRoot, 'provider-preflight-lease-reservations'),
+        authorizationDigest,
+        executablePath: path.win32.join(executor.workspaceRoot, 'target', 'release', 'omni-desktop-shell.exe'),
+        outputDirectory: remoteEvidenceRoot,
+      };
+      const workerEntrypoint = path.win32.join(
+        executor.workspaceRoot, 'scripts', 'testing', 'run-watch-mode-provider-preflight-worker.mjs',
+      );
+      const result = await runProcess(config.sshExecutable, [
+        ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
+        'node.exe', workerEntrypoint,
+      ], { signal, input: JSON.stringify(request), timeoutMs: deriveWatchProductionProviderPreflightBudgetMs() });
+      const remote = parseRemoteJson(result, 'remote Provider preflight worker');
+      const claimSource = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-consumption-claim.json');
+      const claimTarget = path.join(authorizationRoot, 'provider-preflight-consumption-claim.json');
+      const claimDownload = await runProcess(config.scpExecutable, [
+        ...scpBaseArgs(executor), remoteSpec(executor, claimSource), pathForScp(claimTarget),
+      ], { signal });
+      ensureSuccessful(claimDownload, 'remote Provider preflight claim collection');
+      const resolvedLocalEvidenceDirectory = path.resolve(localEvidenceDirectory);
+      const evidenceParent = path.dirname(resolvedLocalEvidenceDirectory);
+      fs.mkdirSync(evidenceParent, { recursive: true });
+      const evidenceDownload = await runProcess(config.scpExecutable, [
+        ...scpBaseArgs(executor), '-r', remoteSpec(executor, remoteEvidenceRoot), pathForScp(evidenceParent),
+      ], { signal });
+      ensureSuccessful(evidenceDownload, 'remote Provider preflight evidence collection');
+      const downloaded = path.join(evidenceParent, path.win32.basename(remoteEvidenceRoot));
+      if (downloaded !== resolvedLocalEvidenceDirectory) {
+        fs.renameSync(downloaded, resolvedLocalEvidenceDirectory);
+      }
+      return { ...remote, outputDirectory: resolvedLocalEvidenceDirectory };
+    },
+  };
 }
 
 // The injected operation is the existing bounded interactive-task observer.
@@ -2702,29 +2814,16 @@ async function runProductionCoordinatorCore({
       providerId,
       preflightOutputDirectory: outputDirectory,
     });
-    const preflight = await runManagedProviderPreflight({
-      executablePath: path.join(repoRoot, 'target', 'release', 'omni-desktop-shell.exe'),
-      outputDirectory,
-      executionId,
-      providerId,
-      signal,
-      emitterTimeoutMs: PROVIDER_PREFLIGHT_EMITTER_TIMEOUT_MS,
-      exitGraceMs: PROVIDER_PREFLIGHT_EXIT_GRACE_MS,
-      closeGraceMs: PROVIDER_PREFLIGHT_CLOSE_GRACE_MS,
-      cleanupTimeoutMs: PROVIDER_PREFLIGHT_CLEANUP_TIMEOUT_MS,
-      environment: {
-        ...strictRuntimeEnvironment(process.env),
-        OMNI_RELEASE_EVIDENCE_SCENARIO: 'E2E-PROVIDER-PROBE',
-        OMNI_RELEASE_EVIDENCE_OUTPUT_DIRECTORY: outputDirectory,
-        OMNI_RELEASE_EVIDENCE_HEAD_COMMIT: provenance.headCommit,
-        OMNI_RELEASE_EVIDENCE_PROVIDER_ID: providerId,
-        OMNI_PROVIDER_PREFLIGHT_EXECUTION_ID: executionId,
-        OMNI_LOG_LEVEL: 'debug',
-        [PROVIDER_PREFLIGHT_GRANT_PATH_ENV]: grantPath,
-        [PROVIDER_PREFLIGHT_RESERVATION_DIRECTORY_ENV]: leaseReservationDirectory,
-        [PROVIDER_PREFLIGHT_AUTHORIZATION_DIGEST_ENV]: authorizationDigest,
-      },
-    });
+    const preflightTransport = (operations.createProviderPreflightTransport
+      ? await operations.createProviderPreflightTransport({ config, executor: config.preflightExecutor, executionId, grant })
+      : createSshProviderPreflightTransport({
+          config,
+          executor: config.preflightExecutor,
+          executionId,
+          authorizationRoot: path.dirname(grantPath),
+          localEvidenceDirectory: outputDirectory,
+        }));
+    const preflight = await preflightTransport.dispatch({ grant, authorizationDigest, signal });
     transitionCoordinatorState('preflight-terminal', {
       providerCalls: 1,
       providerId,
@@ -2744,6 +2843,7 @@ async function runProductionCoordinatorCore({
       sessionAuthority: structuredClone(preflight.fields.sessionAuthority),
       rawTrace: structuredClone(preflight.fields.rawTrace),
       providerInvocationCount: 1,
+      executor: structuredClone(grant.executor),
       status: 'completed',
       externalAudioSamples: 0,
       evidenceDirectory: preflight.outputDirectory,
@@ -2879,6 +2979,7 @@ async function runProductionCoordinatorCore({
       executionId,
       workers: productionWorkers,
       assignments: productionAssignments,
+      preflightExecutorWorkerId: config.preflightExecutor.workerId,
       generatedAt,
       expiresAt: new Date(generatedAt.getTime() + 6 * 60 * 60 * 1_000),
       captureProvenance,

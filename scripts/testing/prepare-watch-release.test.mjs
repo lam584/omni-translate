@@ -106,9 +106,9 @@ test('CLI requires config and accepts only the three supported flags', () => {
     { workersConfig: 'a', runtimeAuthorityPath: 'b', releaseId: 'c' });
 });
 
-test('schema2 local native copy plus two parallel pinned SSH probes; failures retained per worker', async (t) => {
+test('schema3 local native copy plus two parallel pinned SSH probes; failures retained per worker', async (t) => {
   const f = fixture(t);
-  const config = { schemaVersion: 2, artifactKind: 'watch-mode-production-shard-workers', workers: ['vm171', 'vm167', 'vm169'].map((workerId, index) => {
+  const config = { schemaVersion: 3, artifactKind: 'watch-mode-production-shard-workers', providerPreflightExecutor: { workerId: 'vm169' }, workers: ['vm171', 'vm167', 'vm169'].map((workerId, index) => {
     fs.writeFileSync(path.join(f.root, `${workerId}.key`), 'fixture');
     fs.writeFileSync(path.join(f.root, `${workerId}.hosts`), `${workerId} ssh-ed25519 ${Buffer.from(`key-${index}`).toString('base64')}\n`);
     return { workerId, user: 'VMUser', workspaceRoot: f.root, guestExecutionRoot: path.join(f.root, workerId),
@@ -187,7 +187,7 @@ test('local runner discovers commands in native Windows PowerShell under inherit
     else process.env.PSModulePath = originalModules;
   });
   const workerId = 'vm171';
-  const config = { schemaVersion: 2, artifactKind: 'watch-mode-production-shard-workers', workers: [{
+  const config = { schemaVersion: 3, artifactKind: 'watch-mode-production-shard-workers', providerPreflightExecutor: { workerId: 'vm171' }, workers: [{
     workerId, user: 'VMUser', workspaceRoot: f.root, guestExecutionRoot: path.join(f.root, 'guest'),
     transport: { kind: 'local' }, vmIdentity: { provider: 'vmware', uuidBios: '564d0000-0000-0000-0000-000000000000' },
     deviceProfileInstances: [{ instanceId: `${workerId}-default`, profileId: `${workerId}-speaker`, deviceClass: 'default-speaker',

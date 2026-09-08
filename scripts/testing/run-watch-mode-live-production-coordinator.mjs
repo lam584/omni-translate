@@ -1504,6 +1504,10 @@ export function createSshProviderPreflightTransport({
   const remoteAuthorizationRoot = path.win32.join(
     executor.guestExecutionRoot, '.provider-preflight', authorizationDirectoryId,
   );
+  const remoteCanonicalAuthorizationRoot = path.win32.join(
+    executor.workspaceRoot, 'artifacts', 'testing', 'watch-mode-live-coordinator',
+    `${executionId}.preflight-authorization`,
+  );
   const remoteEvidenceRoot = path.win32.join(remoteRoot, 'provider-preflight-evidence');
   const helperRelativePath = 'target/release/watch-worker-credential.exe';
   const helperAuthority = runtimeBinaryHashes?.find((entry) => entry?.path === helperRelativePath);
@@ -1640,13 +1644,41 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
       } finally {
         fs.rmSync(uploadStagingRoot, { recursive: true, force: true });
       }
+      const publication = remotePowerShellInvocation(`
+$sourceRoot = [IO.Path]::GetFullPath([string]$payload.sourceRoot)
+$targetRoot = [IO.Path]::GetFullPath([string]$payload.targetRoot)
+if (Test-Path -LiteralPath $targetRoot) { throw 'canonical remote Provider preflight authorization root already exists' }
+[IO.Directory]::CreateDirectory($targetRoot) | Out-Null
+[IO.Directory]::CreateDirectory((Join-Path $targetRoot 'provider-preflight-lease-reservations')) | Out-Null
+[IO.Directory]::CreateDirectory((Join-Path $targetRoot 'worker-readiness')) | Out-Null
+foreach ($entry in @($payload.files)) {
+  $relative = [string]$entry.path
+  $source = Join-Path $sourceRoot ($relative -replace '/', '\\')
+  $target = Join-Path $targetRoot ($relative -replace '/', '\\')
+  $item = Get-Item -LiteralPath $source -Force
+  if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.Length -ne [long]$entry.bytes -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$entry.sha256) { throw "staged authorization authority mismatch: $relative" }
+  [IO.File]::Copy($source, $target, $false)
+  if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$entry.sha256) { throw "published authorization authority mismatch: $relative" }
+}
+[pscustomobject]@{ published = $true } | ConvertTo-Json -Compress
+`, {
+        sourceRoot: remoteAuthorizationRoot,
+        targetRoot: remoteCanonicalAuthorizationRoot,
+        files: files.map((relative) => fileAuthorityEntry(
+          path.join(authorizationRoot, ...relative.split('/')), relative,
+        )),
+      });
+      const publicationResult = await runProcess(config.sshExecutable, [
+        ...sshBaseArgs(executor), `${executor.user}@${executor.host}`, ...publication.args,
+      ], { signal, input: publication.input });
+      ensureSuccessful(publicationResult, 'canonical remote Provider preflight authorization publication');
       const request = {
         schemaVersion: REMOTE_PROVIDER_PREFLIGHT_REQUEST_SCHEMA_VERSION,
         artifactKind: REMOTE_PROVIDER_PREFLIGHT_REQUEST_KIND,
         executionId,
         executor: structuredClone(grant.executor),
-        grantPath: path.win32.join(remoteAuthorizationRoot, 'provider-preflight-grant.json'),
-        leaseReservationDirectory: path.win32.join(remoteAuthorizationRoot, 'provider-preflight-lease-reservations'),
+        grantPath: path.win32.join(remoteCanonicalAuthorizationRoot, 'provider-preflight-grant.json'),
+        leaseReservationDirectory: path.win32.join(remoteCanonicalAuthorizationRoot, 'provider-preflight-lease-reservations'),
         authorizationDigest,
         executablePath: path.win32.join(executor.workspaceRoot, 'target', 'release', 'omni-desktop-shell.exe'),
         outputDirectory: remoteEvidenceRoot,
@@ -1747,7 +1779,7 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
         'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', controllerPath,
       ], { signal, input: JSON.stringify(request), timeoutMs: deriveWatchProductionProviderPreflightBudgetMs() + 30_000 });
       const remote = parseRemoteJson(result, 'remote Provider preflight worker');
-      const claimSource = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-consumption-claim.json');
+      const claimSource = path.win32.join(remoteCanonicalAuthorizationRoot, 'provider-preflight-consumption-claim.json');
       const claimTarget = path.join(authorizationRoot, 'provider-preflight-consumption-claim.json');
       const claimDownload = await runProcess(config.scpExecutable, [
         ...scpBaseArgs(executor), remoteSpec(executor, claimSource), pathForScp(claimTarget),

@@ -1295,7 +1295,9 @@ test('remote preflight transport runs executor-bound network health before crede
     } };
     const result = await transport.dispatch({ grant, authorizationDigest: 'a'.repeat(64) });
     assert.deepEqual(events.slice(0, 4), ['verify', 'network-health', 'credential', 'mkdir']);
-    assert.ok(events.slice(4, -3).every((entry) => entry.startsWith('upload:')));
+    assert.ok(events.slice(4, 8).every((entry) => entry.startsWith('upload:')), JSON.stringify(events));
+    assert.equal(events[8], 'mkdir', 'canonical authorization publication must precede control upload');
+    assert.ok(events.slice(9, -3).every((entry) => entry.startsWith('upload:')), JSON.stringify(events));
     assert.deepEqual(events.slice(-3), ['provider', 'claim', 'evidence']);
     assert.equal(providerRuns, 1);
     assert.equal(result.outputDirectory, path.resolve(localEvidenceDirectory));

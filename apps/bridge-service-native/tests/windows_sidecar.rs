@@ -12,7 +12,8 @@ use std::{
 
 use serde_json::{json, Value};
 use tempfile::TempDir;
-use cpal::traits::{DeviceTrait, HostTrait};
+use rodio::cpal;
+use rodio::cpal::traits::{DeviceTrait, HostTrait};
 
 use omni_bridge_protocol::{
     TranslationPlaybackStatusAck, BRIDGE_PROTOCOL_VERSION, MAX_AUDIO_FRAME_HEADER_BYTES,

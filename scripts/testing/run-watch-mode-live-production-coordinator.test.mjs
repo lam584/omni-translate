@@ -1763,15 +1763,22 @@ test('remote PowerShell hashes files without module auto-loading', { skip: !isWi
   const invocation = remotePowerShellInvocation(
     '$PSModuleAutoLoadingPreference = "None"; (Get-FileHash -LiteralPath ([string]$payload.path) -Algorithm SHA256).Hash.ToLowerInvariant()',
     { path: target },
+    { mode: 'file-only' },
   );
+  // Exercise the same inspectable -File transport used by local and SSH workers.
+  const scriptPath = path.join(root, 'hash.ps1');
+  fs.writeFileSync(scriptPath, invocation.fileScript, 'utf8');
   try {
-    const result = spawnSync(invocation.args[0], invocation.args.slice(1), {
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
       input: invocation.input,
       encoding: 'utf8',
       timeout: 30_000,
+      windowsHide: true,
     });
     assert.equal(result.status, 0, JSON.stringify({ error: result.error?.message, code: result.error?.code, signal: result.signal, stderr: result.stderr }));
-    assert.equal(result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0], expected);
+    const decoded = decodeRemotePowerShellFileOutput({ exitCode: result.status, stdout: result.stdout, stderr: result.stderr });
+    assert.equal(decoded.exitCode, 0);
+    assert.equal(decoded.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0], expected);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

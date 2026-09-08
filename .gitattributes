@@ -1,6 +1,8 @@
 drivers/windows-virtual-mic/sysvad/** linguist-vendored
 drivers/windows-virtual-mic/src/driver_package_contract.json text eol=lf
 .gitattributes text eol=lf
+# Preserve hash-pinned official WebRTC source bytes on autocrlf checkouts.
+crates/omni-webrtc-aec3/ffi/upstream/webrtc/** text eol=lf
 scripts/testing/watch-mode-shard-authority.mjs text eol=lf
 scripts/testing/run-watch-mode-live-shard.mjs text eol=lf
 scripts/testing/run-watch-mode-live-coordinator.mjs text eol=lf

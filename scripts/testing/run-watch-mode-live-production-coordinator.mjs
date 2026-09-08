@@ -1654,18 +1654,72 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
       const workerEntrypoint = path.win32.join(
         executor.workspaceRoot, 'scripts', 'testing', 'run-watch-mode-provider-preflight-worker.mjs',
       );
+      const requestPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-request.json');
+      const launcherPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-interactive-launcher.ps1');
+      const stdoutPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-worker.stdout.log');
+      const stderrPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-worker.stderr.log');
+      const terminalPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-worker.terminal.json');
+      const taskName = `OmniPreflight-${crypto.createHash('sha256').update(`${executionId}|${executor.workerId}`, 'utf8').digest('hex').slice(0, 24)}`;
+      const psQuote = (value) => `'${String(value).replaceAll("'", "''")}'`;
+      const launcherSource = [
+        "$ErrorActionPreference = 'Stop'",
+        `[Environment]::CurrentDirectory = ${psQuote(executor.workspaceRoot)}`,
+        `Set-Location -LiteralPath ${psQuote(executor.workspaceRoot)}`,
+        `$request = Get-Content -LiteralPath ${psQuote(requestPath)} -Raw -Encoding UTF8`,
+        `$request | & node.exe ${psQuote(workerEntrypoint)} 1> ${psQuote(stdoutPath)} 2> ${psQuote(stderrPath)}`,
+        '$exitCode = $LASTEXITCODE',
+        `$terminal = [ordered]@{ schemaVersion=1; artifactKind='watch-mode-provider-preflight-interactive-terminal'; exitCode=[int]$exitCode; sessionId=[int](Get-Process -Id $PID).SessionId; ownerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; completedAt=[DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress`,
+        `[IO.File]::WriteAllText(${psQuote(terminalPath)}, $terminal, (New-Object Text.UTF8Encoding($false)))`,
+        'exit $exitCode',
+      ].join('\n');
       const providerPreflightCommand = Buffer.from([
         "$ErrorActionPreference = 'Stop'",
-        `[Environment]::CurrentDirectory = '${executor.workspaceRoot.replaceAll("'", "''")}'`,
-        `Set-Location -LiteralPath '${executor.workspaceRoot.replaceAll("'", "''")}'`,
-        `& node.exe '${workerEntrypoint.replaceAll("'", "''")}'`,
-        'exit $LASTEXITCODE',
+        `$root = ${psQuote(remoteAuthorizationRoot)}`,
+        `$requestPath = ${psQuote(requestPath)}`,
+        `$launcherPath = ${psQuote(launcherPath)}`,
+        `$stdoutPath = ${psQuote(stdoutPath)}`,
+        `$stderrPath = ${psQuote(stderrPath)}`,
+        `$terminalPath = ${psQuote(terminalPath)}`,
+        `$taskName = ${psQuote(taskName)}`,
+        `$taskPath = '\\OmniTranslate\\'`,
+        `$expectedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value`,
+        `$requestText = [Console]::In.ReadToEnd()`,
+        `[IO.File]::WriteAllText($requestPath, $requestText, (New-Object Text.UTF8Encoding($false)))`,
+        `[IO.File]::WriteAllText($launcherPath, ${psQuote(launcherSource)}, (New-Object Text.UTF8Encoding($false)))`,
+        `$arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $launcherPath + '"'`,
+        `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments`,
+        `$principal = New-ScheduledTaskPrincipal -UserId ${psQuote(executor.user)} -LogonType Interactive -RunLevel Limited`,
+        `$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 4) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries`,
+        '$registered = $false',
+        'try {',
+        `  if (Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue) { throw 'interactive Provider preflight task already exists' }`,
+        '  Register-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null',
+        '  $registered = $true',
+        '  $xml = [xml](Export-ScheduledTask -TaskPath $taskPath -TaskName $taskName)',
+        `  if ([string]$xml.Task.Principals.Principal.LogonType -cne 'InteractiveToken' -or [string]$xml.Task.Principals.Principal.UserId -cne $expectedSid) { throw 'interactive Provider preflight task principal mismatch' }`,
+        '  Start-ScheduledTask -TaskPath $taskPath -TaskName $taskName',
+        `  $deadline = [DateTime]::UtcNow.AddMilliseconds(${deriveWatchProductionProviderPreflightBudgetMs()})`,
+        '  while (-not (Test-Path -LiteralPath $terminalPath -PathType Leaf)) {',
+        `    if ([DateTime]::UtcNow -ge $deadline) { throw 'interactive Provider preflight task timed out before terminal receipt' }`,
+        '    Start-Sleep -Milliseconds 100',
+        '  }',
+        '  $terminal = Get-Content -LiteralPath $terminalPath -Raw -Encoding UTF8 | ConvertFrom-Json',
+        `  if ([int]$terminal.sessionId -le 0 -or [string]$terminal.ownerSid -cne $expectedSid) { throw 'interactive Provider preflight task ran outside the configured interactive identity' }`,
+        '  if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) { [Console]::Out.Write((Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8)) }',
+        '  if (Test-Path -LiteralPath $stderrPath -PathType Leaf) { [Console]::Error.Write((Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8)) }',
+        '  exit [int]$terminal.exitCode',
+        '} finally {',
+        '  if ($registered) {',
+        '    Stop-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue',
+        '    Unregister-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue',
+        '  }',
+        '}',
       ].join('\n'), 'utf16le').toString('base64');
       onProviderCallStarted();
       const result = await runProcess(config.sshExecutable, [
         ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
         'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', providerPreflightCommand,
-      ], { signal, input: JSON.stringify(request), timeoutMs: deriveWatchProductionProviderPreflightBudgetMs() });
+      ], { signal, input: JSON.stringify(request), timeoutMs: deriveWatchProductionProviderPreflightBudgetMs() + 30_000 });
       const remote = parseRemoteJson(result, 'remote Provider preflight worker');
       const claimSource = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-consumption-claim.json');
       const claimTarget = path.join(authorizationRoot, 'provider-preflight-consumption-claim.json');

@@ -1240,8 +1240,10 @@ test('remote preflight transport runs executor-bound network health before crede
       }
       if (executable === 'ssh.exe' && remoteSource.includes('run-watch-mode-provider-preflight-worker.mjs')) {
         events.push('provider'); providerRuns += 1;
-        assert.match(remoteSource, /Set-Location -LiteralPath 'E:\\watch-worker'/u);
-        assert.match(remoteSource, /\[Environment\]::CurrentDirectory = 'E:\\watch-worker'/u);
+        assert.match(remoteSource, /New-ScheduledTaskPrincipal[^\n]+-LogonType Interactive -RunLevel Limited/u);
+        assert.match(remoteSource, /interactive Provider preflight task ran outside the configured interactive identity/u);
+        assert.match(remoteSource, /Principal\.UserId -cne \$expectedSid/u);
+        assert.match(remoteSource, /provider-preflight-interactive-launcher\.ps1/u);
         assert.doesNotMatch(remoteSource, /api.?key|credential|secret/i);
         assert.doesNotMatch(String(options.input), /api.?key|credential|secret/i);
         return { exitCode: 0, stdout: `${JSON.stringify({ status: 'completed', outputDirectory: 'E:\\omni-shards\\provider-preflight-evidence', fields: {} })}\n`, stderr: '' };

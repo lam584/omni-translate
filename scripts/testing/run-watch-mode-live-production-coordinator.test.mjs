@@ -16,6 +16,12 @@ const productionCoordinatorSource = fs.readFileSync(
   'utf8',
 );
 
+function windowsPathFromGitScpOperand(operand) {
+  return String(operand)
+    .replace(/^\/([a-z])\//iu, (_, drive) => `${drive.toUpperCase()}:/`)
+    .replaceAll('/', '\\');
+}
+
 function signedCredentialHelperFixture(root) {
   const relativePath = 'target/release/watch-worker-credential.exe';
   const filePath = path.join(root, ...relativePath.split('/'));
@@ -1240,7 +1246,7 @@ test('remote preflight transport runs executor-bound network health before crede
       }
       if (executable === 'ssh.exe') { events.push('mkdir'); return { exitCode: 0, stdout: '{}\n', stderr: '' }; }
       if (joined.includes('provider-preflight-consumption-claim.json')) {
-        events.push('claim'); fs.writeFileSync(args.at(-1).replaceAll('/', '\\'), '{}\n', 'utf8');
+        events.push('claim'); fs.writeFileSync(windowsPathFromGitScpOperand(args.at(-1)), '{}\n', 'utf8');
       } else if (joined.includes('provider-preflight-evidence')) {
         events.push('evidence');
         fs.mkdirSync(path.join(path.dirname(localEvidenceDirectory), 'provider-preflight-evidence'), { recursive: true });
@@ -1947,7 +1953,7 @@ test('production runRemote selects file-only for both local and SSH large payloa
             assert.deepEqual(args.slice(0, -2), scpBaseArgs(worker));
             assert.equal(args.at(-1), `VMUser@192.0.2.10:C:/Users/VMUser/AppData/Local/Temp/${path.basename(args.at(-2))}`);
             assert.doesNotMatch(args.at(-2), /\\/u, 'Git SCP -O command upload local operand must use slashes (otherwise unexpected filename)');
-            assert.equal(fs.readFileSync(args.at(-2), 'utf8'), fileScript);
+            assert.equal(fs.readFileSync(windowsPathFromGitScpOperand(args.at(-2)), 'utf8'), fileScript);
           }
           if (executable === 'powershell.exe') {
             assert.equal(fs.readFileSync(args[args.indexOf('-File') + 1], 'utf8'), fileScript);
@@ -2001,7 +2007,7 @@ test('Git SCP -O normalizes local operands and preserves host pins and remoteSpe
         assert.equal(call.executable, 'scp.exe');
         assert.deepEqual(call.args.slice(0, -2), scpBaseArgs(worker));
         assert.equal(call.args.at(-1), 'VMUser@192.0.2.10:' + remotePath.replaceAll('\\', '/'));
-        assert.equal(call.args.at(-2), localPath.replaceAll('\\', '/'), 'Git SCP -O upload must normalize local operand to avoid unexpected filename');
+        assert.equal(call.args.at(-2), '/e/' + localPath.slice(3).replaceAll('\\', '/'), 'Git SCP -O upload must use the Git-for-Windows local drive mount');
       });
     }
     await t.test('downloadTree local destination boundary consistency', async () => {
@@ -2012,7 +2018,7 @@ test('Git SCP -O normalizes local operands and preserves host pins and remoteSpe
       assert.equal(call.executable, 'scp.exe');
       assert.deepEqual(call.args.slice(0, -2), [...scpBaseArgs(worker), '-r']);
       assert.equal(call.args.at(-2), 'VMUser@192.0.2.10:C:/worker root/shard');
-      assert.equal(call.args.at(-1), localParent.replaceAll('\\', '/'), 'normalize download destination for boundary consistency');
+      assert.equal(call.args.at(-1), '/e/' + localParent.slice(3).replaceAll('\\', '/'), 'normalize download destination to the Git-for-Windows local drive mount');
     });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

@@ -1005,7 +1005,7 @@ test('shard staging accepts four signed roots and emits only evidence-root-relat
   const coordinatorRoot = path.join(root, 'coordinator');
   const evidenceRoot = path.join(root, 'evidence');
   fs.mkdirSync(coordinatorRoot, { recursive: true });
-  const workerIds = ['vm-1', 'vm-2', 'vm-3', 'vm-4'];
+  const workerIds = ['vm-1', 'vm-2', 'vm-3', 'vm131'];
   const fixtureProvenance = {
     schemaVersion: 1,
     source: 'git',
@@ -1106,6 +1106,7 @@ test('shard staging accepts four signed roots and emits only evidence-root-relat
     workerReadinessAuthorities: readinessAuthorities,
     workers: fixtureWorkers,
     assignments: plan.cells,
+    preflightExecutorWorkerId: 'vm131',
     signingKeys,
   });
   const grantPath = path.join(coordinatorRoot, PROVIDER_PREFLIGHT_GRANT_FILE);

@@ -3676,6 +3676,7 @@ test('strict production verifier rebuilds the staged four-cell authority from on
           expectedPreflightAuthorization.leaseReservationDigests,
         authorizationDigest: expectedPreflightAuthorization.authorizationDigest,
         consumptionClaim: consumptionClaimProjection,
+        executor: structuredClone(expectedPreflightAuthorization.executor),
         ...fixturePreflightLifecycle(),
         externalAudioSamples: 0,
         providerInvocationCount: 1,

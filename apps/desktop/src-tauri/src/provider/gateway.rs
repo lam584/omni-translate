@@ -1420,29 +1420,34 @@ mod tests {
         let cases = [
             (
                 r#"{"type":"session.created","session":{"id":"session-event-id","model":"qwen3.5-livetranslate-flash-realtime"}}"#,
-                r#"{"event_id":"evt_server_updated","type":"session.updated","session":{"id":"session-event-id","model":"qwen3.5-livetranslate-flash-realtime","modalities":["text"],"sample_rate":16000,"input_audio_format":"pcm","input_audio_transcription":{"model":"qwen3-asr-flash-realtime","language":"zh"},"translation":{"language":"en"}}}"#,
-                r#"{"event_id":"evt_server_finished","type":"session.finished"}"#,
+                None,
             ),
             (
                 r#"{"event_id":"   ","type":"session.created","session":{"id":"session-event-id","model":"qwen3.5-livetranslate-flash-realtime"}}"#,
-                r#"{"event_id":"evt_server_updated","type":"session.updated","session":{"id":"session-event-id","model":"qwen3.5-livetranslate-flash-realtime","modalities":["text"],"sample_rate":16000,"input_audio_format":"pcm","input_audio_transcription":{"model":"qwen3-asr-flash-realtime","language":"zh"},"translation":{"language":"en"}}}"#,
-                r#"{"event_id":"evt_server_finished","type":"session.finished"}"#,
+                None,
             ),
             (
                 r#"{"event_id":"evt_server_duplicate","type":"session.created","session":{"id":"session-event-id","object":"realtime.session","model":"qwen3.5-livetranslate-flash-realtime"}}"#,
-                r#"{"event_id":"evt_server_duplicate","type":"session.updated","session":{"id":"session-event-id","model":"qwen3.5-livetranslate-flash-realtime","modalities":["text"],"sample_rate":16000,"input_audio_format":"pcm","input_audio_transcription":{"model":"qwen3-asr-flash-realtime","language":"zh"},"translation":{"language":"en"}}}"#,
-                r#"{"event_id":"evt_server_duplicate","type":"session.finished"}"#,
+                Some(r#"{"event_id":"evt_server_duplicate","type":"session.updated","session":{"id":"session-event-id","model":"qwen3.5-livetranslate-flash-realtime","modalities":["text"],"sample_rate":16000,"input_audio_format":"pcm","input_audio_transcription":{"model":"qwen3-asr-flash-realtime","language":"zh"},"translation":{"language":"en"}}}"#),
             ),
         ];
 
-        for (created, updated, finished) in cases {
+        for (created, updated) in cases {
             let created = created.to_string();
-            let updated = updated.to_string();
-            let finished = finished.to_string();
+            let updated = updated.map(str::to_string);
             let (ws_url, server) = spawn_ws_server(move |websocket| {
-                let _ = websocket.send(Message::Text(created.into()));
-                let _ = websocket.send(Message::Text(updated.into()));
-                let _ = websocket.send(Message::Text(finished.into()));
+                websocket
+                    .send(Message::Text(created.into()))
+                    .expect("invalid session.created should send");
+                if let Some(updated) = updated {
+                    let _ = websocket.read().expect("session.update should arrive");
+                    websocket
+                        .send(Message::Text(updated.into()))
+                        .expect("duplicate session.updated should send");
+                }
+                // Keep the peer alive until the client has consumed the invalid
+                // frame, so a transport close cannot race the protocol verdict.
+                let _ = websocket.read();
             });
 
             let profile = ProviderGateway::new().probe(livetranslate_provider(ws_url));

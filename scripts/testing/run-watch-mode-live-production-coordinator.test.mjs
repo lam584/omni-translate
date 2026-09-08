@@ -1245,6 +1245,7 @@ test('remote preflight transport runs executor-bound network health before crede
         assert.match(controllerSource, /interactive Provider preflight task ran outside the configured interactive identity/u);
         assert.match(controllerSource, /Principal\.UserId -cne \$expectedSid/u);
         assert.match(controllerSource, /provider-preflight-interactive-launcher\.ps1/u);
+        assert.match(controllerSource, /Get-Command node\.exe -CommandType Application/u);
         assert.doesNotMatch(controllerSource, /api.?key|credential|secret/i);
         assert.equal(args.includes('-EncodedCommand'), false);
         assert.doesNotMatch(String(options.input), /api.?key|credential|secret/i);

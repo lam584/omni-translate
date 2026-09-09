@@ -3412,6 +3412,7 @@ test('strict production verifier rebuilds the staged four-cell authority from on
   });
   const workers = [{
     workerId: 'vm1',
+    workspaceRoot,
     interactiveUser: 'VMUser',
     vmIdentity: { provider: 'vmware', uuidBios: 'verifier-vm-1' },
     deviceProfileInstances: [deviceProfile(

@@ -1143,7 +1143,7 @@ test('strict execution context rejects signed terminal paths outside their canon
         `New-WatchModeExecutionContext -Context $context -Request $request | Out-Null`,
     ]);
     assert.notEqual(probe.status, 0, 'forged signed authority path unexpectedly passed');
-    assert.match(`${probe.stderr}\n${probe.stdout}`, /canonical files directly under paths\.outputRoot/i);
+    assert.match(`${probe.stderr}\n${probe.stdout}`, /canonical files directly under paths\.\s*outputRoot/i);
   }
 });
 

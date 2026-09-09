@@ -1405,6 +1405,18 @@ test('remote preflight transport runs executor-bound network health before crede
     assert.deepEqual(events.slice(-6), ['provider', 'terminal', 'process-authority', 'cleanup', 'claim', 'evidence']);
     assert.equal(providerRuns, 1);
     assert.equal(result.outputDirectory, path.resolve(localEvidenceDirectory));
+    assert.deepEqual(fs.readdirSync(authorizationRoot).sort(), [
+      'provider-preflight-consumption-claim.json',
+      'provider-preflight-grant.json',
+      'provider-preflight-lease-reservations',
+      'worker-readiness',
+      'worker-readiness-request.json',
+    ], 'control receipts must not contaminate the exact signed authorization package');
+    assert.deepEqual(fs.readdirSync(`${authorizationRoot}.control-evidence`).sort(), [
+      'provider-preflight-cleanup.json',
+      'provider-preflight-process-authority.json',
+      'provider-preflight-worker.terminal.json',
+    ]);
     await assert.rejects(transport.dispatch({ grant, authorizationDigest: 'a'.repeat(64) }), /single-use/);
     assert.equal(providerRuns, 1);
     for (const mode of ['nonzero', 'throw']) {

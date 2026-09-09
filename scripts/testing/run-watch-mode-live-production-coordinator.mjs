@@ -2032,7 +2032,9 @@ foreach($entry in $items){$item=Get-Item -LiteralPath ([string]$entry.path) -For
         try { return await operation(); }
         catch (error) { collectionFailures.push(new Error(`${label}: ${error.message}`, { cause: error })); return undefined; }
       };
-      const terminalTarget = path.join(authorizationRoot, 'provider-preflight-worker.terminal.json');
+      const controlEvidenceRoot = `${authorizationRoot}.control-evidence`;
+      fs.mkdirSync(controlEvidenceRoot, { recursive: true });
+      const terminalTarget = path.join(controlEvidenceRoot, 'provider-preflight-worker.terminal.json');
       const terminal = await collect('remote Provider preflight terminal collection', async () => {
         const download = await runProcess(config.scpExecutable, [
           ...scpBaseArgs(executor), remoteSpec(executor, terminalPath), pathForScp(terminalTarget),
@@ -2040,7 +2042,7 @@ foreach($entry in $items){$item=Get-Item -LiteralPath ([string]$entry.path) -For
         ensureSuccessful(download, 'remote Provider preflight terminal collection');
         return JSON.parse(fs.readFileSync(terminalTarget, 'utf8').replace(/^\uFEFF/u, ''));
       });
-      const processAuthorityTarget = path.join(authorizationRoot, 'provider-preflight-process-authority.json');
+      const processAuthorityTarget = path.join(controlEvidenceRoot, 'provider-preflight-process-authority.json');
       const processAuthority = await collect('remote Provider preflight process authority collection', async () => {
         const download = await runProcess(config.scpExecutable, [
           ...scpBaseArgs(executor), remoteSpec(executor, processAuthorityPath), pathForScp(processAuthorityTarget),
@@ -2065,7 +2067,7 @@ foreach($entry in $items){$item=Get-Item -LiteralPath ([string]$entry.path) -For
           },
         ));
       }
-      const cleanupTarget = path.join(authorizationRoot, 'provider-preflight-cleanup.json');
+      const cleanupTarget = path.join(controlEvidenceRoot, 'provider-preflight-cleanup.json');
       await collect('remote Provider preflight cleanup receipt collection', async () => {
         const download = await runProcess(config.scpExecutable, [
           ...scpBaseArgs(executor), remoteSpec(executor, cleanupPath), pathForScp(cleanupTarget),

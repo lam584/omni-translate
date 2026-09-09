@@ -46,6 +46,9 @@ fn zero_input_probe_plan_is_admitted_and_bound_by_the_production_client_adapter(
         Some(&json!({
             "Mars": "火星",
             "artificial biosphere": "人工生物圈",
+            "endangered species": "濒危物种",
+            "five hundred million dollars": "五亿美元",
+            "flying cars": "飞行汽车",
             "light bulb": "灯泡",
             "one billion": "十亿"
         })),

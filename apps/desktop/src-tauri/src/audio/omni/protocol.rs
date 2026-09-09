@@ -2182,6 +2182,9 @@ fn watch_release_livetranslate_corpus(
             "phrases": {
                 "Mars": "火星",
                 "artificial biosphere": "人工生物圈",
+                "endangered species": "濒危物种",
+                "five hundred million dollars": "五亿美元",
+                "flying cars": "飞行汽车",
                 "light bulb": "灯泡",
                 "one billion": "十亿"
             }
@@ -2189,6 +2192,9 @@ fn watch_release_livetranslate_corpus(
         ("zh", "en") => Some(json!({
             "phrases": {
                 "人工生物圈": "artificial biosphere",
+                "濒危物种": "endangered species",
+                "飞行汽车": "flying cars",
+                "五亿美元": "five hundred million dollars",
                 "十亿": "one billion",
                 "火星": "Mars",
                 "灯泡": "light bulb"
@@ -2539,6 +2545,9 @@ mod response_control_tests {
             Some(&json!({
                 "Mars": "火星",
                 "artificial biosphere": "人工生物圈",
+                "endangered species": "濒危物种",
+                "five hundred million dollars": "五亿美元",
+                "flying cars": "飞行汽车",
                 "light bulb": "灯泡",
                 "one billion": "十亿"
             }))
@@ -2558,6 +2567,9 @@ mod response_control_tests {
             zh_to_en.pointer("/session/translation/corpus/phrases"),
             Some(&json!({
                 "人工生物圈": "artificial biosphere",
+                "濒危物种": "endangered species",
+                "飞行汽车": "flying cars",
+                "五亿美元": "five hundred million dollars",
                 "十亿": "one billion",
                 "火星": "Mars",
                 "灯泡": "light bulb"
@@ -3984,6 +3996,13 @@ fn write_native_bridge_or_virtual_output<R: tauri::Runtime>(
         crate::bridge::ipc::BridgeTranslationSinkOwner::from_snapshot(&snapshot)
     });
     let result = if output_route.write_to_bridge_playback {
+        // This complete cue has already crossed the bounded Desktop queue's
+        // admission boundary. Bridge is the second serial scheduler, so its
+        // five-second start budget begins when Desktop dispatches the retained
+        // cue, not at the earlier Provider creation timestamp. Stream starts
+        // do not use this path and retain their original-age admission guard.
+        let bridge_admission_created_at_ms =
+            complete_cue_bridge_admission_created_at_ms(created_at_ms, unix_ms());
         match bridge_owner.as_ref().and_then(Option::as_ref) {
             Some(owner) => writer.write_process_playback_cue_for_owner(
                 cue_id,
@@ -3992,7 +4011,7 @@ fn write_native_bridge_or_virtual_output<R: tauri::Runtime>(
                 output_samples,
                 sample_rate_hz,
                 1,
-                created_at_ms,
+                bridge_admission_created_at_ms,
                 estimated_duration_ms,
                 owner,
             ),
@@ -4075,6 +4094,13 @@ fn write_native_bridge_or_virtual_output<R: tauri::Runtime>(
         ),
     );
     frames
+}
+
+fn complete_cue_bridge_admission_created_at_ms(
+    _provider_created_at_ms: u64,
+    desktop_dispatch_at_ms: u64,
+) -> u64 {
+    desktop_dispatch_at_ms
 }
 
 struct SpeakerPlaybackOutcome {
@@ -4621,6 +4647,53 @@ mod omni_playback_tests {
             created_at_ms: unix_ms(),
             estimated_duration_ms: duration.as_millis() as u64,
         }
+    }
+
+    #[test]
+    fn accepted_complete_bridge_cue_rebases_only_bridge_admission_age() {
+        let provider_created_at_ms = 1_000;
+        let desktop_dispatch_at_ms = 16_120;
+
+        assert_eq!(
+            complete_cue_bridge_admission_created_at_ms(
+                provider_created_at_ms,
+                desktop_dispatch_at_ms,
+            ),
+            desktop_dispatch_at_ms,
+            "a complete cue that already crossed the Desktop admission boundary must not be rejected by Bridge for the Provider-era age",
+        );
+        assert_eq!(
+            provider_created_at_ms, 1_000,
+            "the Provider timestamp remains available for strict PCM/renderer authority",
+        );
+    }
+
+    #[test]
+    fn stale_new_stream_start_still_uses_provider_age_and_is_rejected() {
+        let tx = OmniPlaybackQueue::new(4);
+        let mut command = OmniPlaybackCommand::Stream {
+            samples: vec![1; 24_000],
+            cue_id: "stale-new-stream".to_string(),
+            response_id: Some("response-stale-new-stream".to_string()),
+            sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
+            queued_at: Instant::now(),
+            created_at_ms: unix_ms().saturating_sub(6_000),
+            estimated_duration_ms: 1_000,
+            chunk_index: 0,
+            stream_state: omni_bridge_protocol::TranslationStreamState::Start,
+            bridge_owner: None,
+        };
+        if let OmniPlaybackCommand::Stream { queued_at, .. } = &mut command {
+            *queued_at = Instant::now();
+        }
+
+        assert!(matches!(
+            tx.enqueue(command),
+            OmniPlaybackEnqueueOutcome::Overflow {
+                reason: OmniPlaybackOverflowReason::RealtimeBudget,
+                ..
+            }
+        ));
     }
 
     fn completed_test_speaker_render(

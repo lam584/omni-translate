@@ -81,6 +81,7 @@ pub(super) struct AecDelayEstimator {
     last_packet_qpc_100ns: Option<u64>,
     last_render_submitted_frames: Option<u64>,
     last_render_discontinuity_count: Option<u64>,
+    previous_data_discontinuity: bool,
     reset_count: u64,
     timestamp_error_count: u64,
 }
@@ -95,6 +96,7 @@ impl AecDelayEstimator {
             last_packet_qpc_100ns: None,
             last_render_submitted_frames: None,
             last_render_discontinuity_count: None,
+            previous_data_discontinuity: false,
             reset_count: 0,
             timestamp_error_count: 0,
         }
@@ -123,7 +125,13 @@ impl AecDelayEstimator {
             || capture_padding_invalid
             || clock_discontinuity.is_some()
             || render_clock_discontinuity;
-        let aec_reset_reason = if observation.data_discontinuity {
+        // Some WASAPI/virtualized endpoints report DATA_DISCONTINUITY on a
+        // burst of consecutive packets. Reset the delay authority for every
+        // flagged packet, but destroy AEC3's learned filter only when entering
+        // that burst. A clean packet rearms the next genuine discontinuity.
+        let capture_discontinuity_boundary =
+            observation.data_discontinuity && !self.previous_data_discontinuity;
+        let aec_reset_reason = if capture_discontinuity_boundary {
             Some("wasapi-capture-data-discontinuity")
         } else if render_clock_discontinuity {
             Some("wasapi-render-session-discontinuity")
@@ -152,6 +160,7 @@ impl AecDelayEstimator {
         // regression for the boundary we just consumed.
         self.last_render_submitted_frames = observation.render_submitted_frames;
         self.last_render_discontinuity_count = Some(observation.render_discontinuity_count);
+        self.previous_data_discontinuity = observation.data_discontinuity;
 
         let packet_age_ms = if observation.timestamp_error {
             None
@@ -506,6 +515,31 @@ mod tests {
         );
         assert_eq!(estimate.delay_ms, 10.0);
         assert_eq!(estimator.reset_count(), 1);
+    }
+
+    #[test]
+    fn consecutive_capture_discontinuity_flags_reset_aec_only_on_the_burst_edge() {
+        let mut estimator = AecDelayEstimator::new(48_000, 2);
+        let mut first = observation(0, 1_000_000, 1_100_000, 0);
+        first.data_discontinuity = true;
+        let first = estimator.observe_capture(first);
+
+        let mut consecutive = observation(480, 1_100_000, 1_200_000, 0);
+        consecutive.data_discontinuity = true;
+        let consecutive = estimator.observe_capture(consecutive);
+
+        let clean = estimator.observe_capture(observation(960, 1_200_000, 1_300_000, 0));
+
+        let mut next_burst = observation(1_440, 1_300_000, 1_400_000, 0);
+        next_burst.data_discontinuity = true;
+        let next_burst = estimator.observe_capture(next_burst);
+
+        assert!(first.aec_reset_required);
+        assert!(first.delay_reset_required);
+        assert!(!consecutive.aec_reset_required);
+        assert!(consecutive.delay_reset_required);
+        assert!(!clean.aec_reset_required);
+        assert!(next_burst.aec_reset_required);
     }
 
     #[test]

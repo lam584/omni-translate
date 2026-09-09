@@ -851,6 +851,8 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
     probeAuthorization?.consumptionClaim?.desktopProcessId !== emitter?.desktopProcessId
     || probeAuthorization?.consumptionClaim?.desktopExecutablePath !== emitter?.desktopExecutable
     || probeAuthorization?.consumptionClaim?.desktopExecutableSha256 !== emitter?.desktopExecutableSha256
+    || path.win32.normalize(String(probeAuthorization?.consumptionClaim?.desktopExecutablePath ?? ''))
+      !== path.win32.join(String(expectedAuthorization?.executor?.workspaceRoot ?? ''), 'target', 'release', 'omni-desktop-shell.exe')
   )) issues.push('provider preflight consumption claim does not match the executing Desktop emitter');
   return {
     issues,
@@ -871,6 +873,7 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
       leaseReservationDigests: probeAuthorization?.leaseReservationDigests ?? null,
       authorizationDigest: probeAuthorization?.authorizationDigest ?? null,
       consumptionClaim: probeAuthorization?.consumptionClaim ?? null,
+      executor: expectedAuthorization?.executor ?? null,
       tokenBudget: strictLive ? null : probeAuthorization?.tokenBudget ?? null,
       lifecycleBudget: strictLive ? probeAuthorization?.lifecycleBudget ?? null : null,
       evidenceOutcome: wireEvidence?.evidenceOutcome ?? null,

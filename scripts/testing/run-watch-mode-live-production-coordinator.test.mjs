@@ -799,6 +799,7 @@ test('worker preparation normalizes and verifies signed implementation bytes bef
   assert.match(source, /implementation mismatch: \$target/);
   assert.match(source, /update-index --refresh -- @refreshPaths/u);
   assert.match(source, /implementation index refresh failed after byte verification/u);
+  assert.match(source, /workspaceRoot: worker\.workspaceRoot,\s*implementationEntries:/u);
   assert.match(source, /implementation verification returned an incomplete inventory/);
   assert.ok(
     source.indexOf('implementation mismatch: $target')

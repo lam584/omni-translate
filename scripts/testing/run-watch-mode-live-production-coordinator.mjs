@@ -2650,6 +2650,7 @@ foreach ($entry in @($payload.entries)) {
 $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SHA256).Hash.ToLowerInvariant()
 [pscustomobject]@{ implementation = $implementation; runtime = $actual; planSha256 = $planHash } | ConvertTo-Json -Depth 5 -Compress
 `, {
+      workspaceRoot: worker.workspaceRoot,
       implementationEntries: implementationEntries.map(({ path: entryPath, bytes, sha256, remotePath }) => ({
         path: entryPath, bytes, sha256, remotePath,
       })),

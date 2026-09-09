@@ -797,7 +797,19 @@ test('worker preparation normalizes and verifies signed implementation bytes bef
     /for \(const entry of implementationEntries\) await upload\(worker, entry\.localPath, entry\.remotePath\)/,
   );
   assert.match(source, /implementation mismatch: \$target/);
+  assert.match(source, /update-index --refresh -- @refreshPaths/u);
+  assert.match(source, /implementation index refresh failed after byte verification/u);
   assert.match(source, /implementation verification returned an incomplete inventory/);
+  assert.ok(
+    source.indexOf('implementation mismatch: $target')
+      < source.indexOf('update-index --refresh -- @refreshPaths'),
+    'index refresh must happen only after exact implementation byte verification',
+  );
+  assert.ok(
+    source.indexOf('update-index --refresh -- @refreshPaths')
+      < source.lastIndexOf('await queryWorker(worker)'),
+    'index refresh must happen before the final clean-state guard',
+  );
   assert.ok(
     source.indexOf('implementation verification returned an incomplete inventory')
       < source.lastIndexOf('PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY'),

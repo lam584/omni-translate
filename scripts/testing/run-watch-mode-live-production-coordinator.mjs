@@ -2633,6 +2633,11 @@ foreach ($entry in @($payload.implementationEntries)) {
   if ($item.Length -ne [int64]$entry.bytes -or $hash -ne [string]$entry.sha256) { throw "implementation mismatch: $target" }
   $implementation += [pscustomobject]@{ path = [string]$entry.path; bytes = [int64]$item.Length; sha256 = $hash }
 }
+$refreshPaths = @($payload.implementationEntries | ForEach-Object { [string]$_.path })
+if ($refreshPaths.Count -gt 0) {
+  & git.exe -C ([string]$payload.workspaceRoot) update-index --refresh -- @refreshPaths
+  if ($LASTEXITCODE -ne 0) { throw 'implementation index refresh failed after byte verification' }
+}
 $actual = @()
 foreach ($entry in @($payload.entries)) {
   $target = [string]$entry.remotePath

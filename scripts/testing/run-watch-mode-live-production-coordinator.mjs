@@ -3382,10 +3382,11 @@ async function runProductionCoordinatorCore({
   }
   const generatedAt = now();
   const productionWorkers = config.workers.map(({
-    workerId, user, vmIdentity, deviceProfileInstances, transport,
+    workerId, user, workspaceRoot, vmIdentity, deviceProfileInstances, transport,
   }) => ({
     workerId,
     interactiveUser: user,
+    workspaceRoot,
     vmIdentity,
     deviceProfileInstances,
     transportAuthority: transport.kind === 'local'

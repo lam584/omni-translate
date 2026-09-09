@@ -1017,6 +1017,7 @@ test('shard staging accepts four signed roots and emits only evidence-root-relat
   const fixtureInventory = [{ path: 'fixture/artifact.bin', bytes: 1, sha256: '4'.repeat(64) }];
   const fixtureWorkers = workerIds.map((workerId, index) => ({
     workerId,
+    workspaceRoot: path.join(root, `worker-${workerId}`),
     interactiveUser: 'VMUser',
     transportAuthority: { kind: 'local' },
     vmIdentity: { provider: 'vmware', uuidBios: `fixture-vm-${index + 1}` },
@@ -1146,7 +1147,7 @@ test('shard staging accepts four signed roots and emits only evidence-root-relat
     coordinatorKeyId: grant.signature.keyId,
     claimedAt: '2026-08-10T00:00:02.500Z',
     desktopProcessId: 4242,
-    desktopExecutablePath: path.join(root, 'target', 'release', 'omni-desktop-shell.exe'),
+    desktopExecutablePath: path.join(grant.executor.workspaceRoot, 'target', 'release', 'omni-desktop-shell.exe'),
     desktopExecutableRelativePath: 'target/release/omni-desktop-shell.exe',
     desktopExecutableBytes: 1,
     desktopExecutableSha256: '7'.repeat(64),

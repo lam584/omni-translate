@@ -1460,7 +1460,7 @@ export function verifyStrictShardProviderPreflightAuthorization({
     throw new Error('strict shard provider preflight consumption claim has unexpected or missing fields');
   }
   const expectedDesktopPath = path.resolve(
-    workspaceRoot,
+    grant.executor.workspaceRoot,
     ...PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE.split('/'),
   );
   const recordedDesktop = currentRuntimeBinaryHashes.find(

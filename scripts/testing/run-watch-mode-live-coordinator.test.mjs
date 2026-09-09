@@ -190,6 +190,7 @@ function workers() {
   return [
     {
       workerId: 'vm1', vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-1' },
+      workspaceRoot: 'E:\\worker',
       deviceProfileInstances: [{
         instanceId: 'vm1-default', profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
         physicalPlaybackDeviceId: 'default', expectedPhysicalPlaybackDeviceName: '',
@@ -616,8 +617,8 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
         };
       }),
     }, { configDirectory: outputRoot });
-    const productionWorkers = config.workers.map(({ workerId, user, vmIdentity, deviceProfileInstances, transport }) => ({
-      workerId, interactiveUser: user, vmIdentity, deviceProfileInstances,
+    const productionWorkers = config.workers.map(({ workerId, user, workspaceRoot, vmIdentity, deviceProfileInstances, transport }) => ({
+      workerId, interactiveUser: user, workspaceRoot, vmIdentity, deviceProfileInstances,
       transportAuthority: transport.kind === 'local' ? { kind: 'local' } : {
         kind: 'ssh', hostKeyAlias: transport.hostKeyAlias, hostKeyAlgorithm: transport.hostKeyAlgorithm, hostKeySha256: transport.hostKeySha256,
       },
@@ -691,7 +692,7 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
           coordinatorKeyId: grant.signature.keyId,
           claimedAt: new Date(Math.max(...authorization.reservationIssuedAts.map(Date.parse)) + 1).toISOString(),
           desktopProcessId: 4242,
-          desktopExecutablePath: path.join(outputRoot, 'target', 'release', 'omni-desktop-shell.exe'),
+          desktopExecutablePath: path.join(grant.executor.workspaceRoot, 'target', 'release', 'omni-desktop-shell.exe'),
           desktopExecutableRelativePath: 'target/release/omni-desktop-shell.exe',
           desktopExecutableBytes: desktop.bytes,
           desktopExecutableSha256: desktop.sha256,

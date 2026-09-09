@@ -247,12 +247,20 @@ export function validateProviderPreflightConsumptionClaim({
   const executableAuthority = grant.runtimeBinaryHashes.find(
     (entry) => entry.path === PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE,
   );
-  const expectedExecutablePath = path.resolve(
+  const localExecutablePath = path.resolve(
     workspaceRoot,
     ...PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE.split('/'),
   );
+  const executorWorkspaceRoot = String(grant.executor?.workspaceRoot ?? '').trim();
+  if (!executorWorkspaceRoot) {
+    throw new Error('provider preflight grant executor workspace root is not signed');
+  }
+  const expectedExecutablePath = path.resolve(
+    executorWorkspaceRoot,
+    ...PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE.split('/'),
+  );
   const executableFile = fileAuthorityEntry(
-    expectedExecutablePath,
+    localExecutablePath,
     PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE,
   );
   if (
@@ -317,6 +325,9 @@ export function createProviderPreflightGrant({
   }
   const selectedExecutorWorkerId = preflightExecutorWorkerId ?? normalizedWorkers[0]?.workerId;
   const executorWorker = normalizedWorkers.find((worker) => worker.workerId === selectedExecutorWorkerId);
+  const executorWorkspaceRoot = String(
+    workers.find((worker) => worker.workerId === selectedExecutorWorkerId)?.workspaceRoot ?? '',
+  ).trim();
   const executorReadiness = workerReadinessAuthorities.find((entry) => entry.workerId === selectedExecutorWorkerId);
   if (!executorWorker || !executorReadiness) {
     throw new Error('provider preflight grant requires its fixed ready executor');
@@ -339,6 +350,7 @@ export function createProviderPreflightGrant({
     workers: normalizedWorkers,
     executor: {
       workerId: executorWorker.workerId,
+      workspaceRoot: executorWorkspaceRoot,
       transportAuthority: structuredClone(executorWorker.transportAuthority),
       interactiveUser: executorWorker.interactiveUser,
       vmIdentity: structuredClone(executorWorker.vmIdentity),
@@ -443,6 +455,7 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
     (entry) => entry.workerId === grant.executor?.workerId,
   );
   if (!executorWorker
+    || !String(grant.executor.workspaceRoot ?? '').trim()
     || canonicalJson(grant.executor.transportAuthority) !== canonicalJson(executorWorker.transportAuthority)
     || grant.executor.interactiveUser !== executorWorker.interactiveUser
     || canonicalJson(grant.executor.vmIdentity) !== canonicalJson(executorWorker.vmIdentity)

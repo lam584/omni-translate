@@ -4,7 +4,11 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { createRemoteProviderPreflightDispatch, validateRemotePreflightRequest } from './run-watch-mode-provider-preflight-worker.mjs';
+import {
+  createRemoteProviderPreflightDispatch,
+  validateRemotePreflightRequest,
+  writeAndExit,
+} from './run-watch-mode-provider-preflight-worker.mjs';
 import { sha256Canonical } from './watch-mode-shard-authority.mjs';
 
 const SHA = 'a'.repeat(64);
@@ -123,4 +127,15 @@ test('CLI exits after publishing a completed result even when a dependency leave
   assert.deepEqual(result, { code: 0, signal: null });
   assert.equal(stdout, '{"status":"completed"}\n');
   assert.equal(stderr, '');
+});
+
+test('CLI stream publication failures can never exit successfully', () => {
+  for (const stream of [
+    { write: (_text, callback) => callback(new Error('pipe failed')) },
+    { write: () => { throw new Error('synchronous pipe failure'); } },
+  ]) {
+    const exits = [];
+    writeAndExit(stream, 'completed\n', 0, (code) => exits.push(code));
+    assert.deepEqual(exits, [1]);
+  }
 });

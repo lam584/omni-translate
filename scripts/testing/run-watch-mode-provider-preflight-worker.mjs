@@ -101,8 +101,18 @@ async function readStdinJson() {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
-function writeAndExit(stream, text, exitCode, exit = process.exit) {
-  stream.write(text, () => exit(exitCode));
+export function writeAndExit(stream, text, exitCode, exit = process.exit) {
+  let exited = false;
+  const finish = (code) => {
+    if (exited) return;
+    exited = true;
+    exit(code);
+  };
+  try {
+    stream.write(text, (error) => finish(error ? 1 : exitCode));
+  } catch {
+    finish(1);
+  }
 }
 
 export async function runRemoteProviderPreflightCli({

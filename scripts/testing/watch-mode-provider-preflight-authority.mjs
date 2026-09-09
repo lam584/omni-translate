@@ -135,6 +135,9 @@ function strictSessionUpdate(entry) {
         phrases: {
           Mars: '火星',
           'artificial biosphere': '人工生物圈',
+          'endangered species': '濒危物种',
+          'five hundred million dollars': '五亿美元',
+          'flying cars': '飞行汽车',
           'light bulb': '灯泡',
           'one billion': '十亿',
         },
@@ -191,7 +194,7 @@ function strictSessionAuthority(raw, createdEntry, updatedEntry, update) {
   const canonicalConfig = '{"input_audio_format":"pcm",'
     + '"input_audio_transcription":{"language":"en","model":"qwen3-asr-flash-realtime"},'
     + '"modalities":["text"],"sample_rate":16000,"translation":{"corpus":{"phrases":'
-    + '{"Mars":"火星","artificial biosphere":"人工生物圈","light bulb":"灯泡","one billion":"十亿"}},'
+    + '{"Mars":"火星","artificial biosphere":"人工生物圈","endangered species":"濒危物种","five hundred million dollars":"五亿美元","flying cars":"飞行汽车","light bulb":"灯泡","one billion":"十亿"}},'
     + '"language":"zh"},'
     + '"turn_detection":{"silence_duration_ms":400,"threshold":0.0,"type":"server_vad"}}';
   const configDigest = sha256Bytes(Buffer.from(canonicalConfig, 'utf8'));

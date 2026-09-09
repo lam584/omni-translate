@@ -30,12 +30,13 @@ export function validateRemotePreflightRequest(value, observed) {
   exactKeys(value, EXACT_REQUEST_KEYS, 'remote provider preflight request');
   exactKeys(value.executor, [
     'interactiveUser', 'readinessAuthority', 'runtimeBundleDigest', 'transportAuthority', 'vmIdentity',
-    'vmIdentityDigest', 'workerId',
+    'vmIdentityDigest', 'workerId', 'workspaceRoot',
   ], 'remote provider preflight executor');
   const executor = value.executor;
   if (value.schemaVersion !== REMOTE_PROVIDER_PREFLIGHT_REQUEST_SCHEMA_VERSION
     || value.artifactKind !== REMOTE_PROVIDER_PREFLIGHT_REQUEST_KIND
     || !String(executor.workerId ?? '').trim()
+    || !String(executor.workspaceRoot ?? '').trim()
     || executor.transportAuthority?.kind !== 'ssh'
     || !String(executor.transportAuthority?.hostKeyAlias ?? '').trim()
     || !String(executor.transportAuthority?.hostKeyAlgorithm ?? '').trim()

@@ -11,6 +11,7 @@ const request = (workerId = 'vm131') => ({
   executionId: 'remote-preflight-fixture',
   executor: {
     workerId, interactiveUser: 'VMUser',
+    workspaceRoot: 'E:\\watch-worker',
     transportAuthority: { kind: 'ssh', hostKeyAlias: workerId, hostKeyAlgorithm: 'ssh-ed25519', hostKeySha256: `SHA256:${'A'.repeat(43)}` },
     vmIdentity: { provider: 'vmware', uuidBios: '969f4d56-84f8-d592-ca8a-4536ae2cd4ec' },
     vmIdentityDigest: sha256Canonical({ provider: 'vmware', uuidBios: '969f4d56-84f8-d592-ca8a-4536ae2cd4ec' }), runtimeBundleDigest: SHA,

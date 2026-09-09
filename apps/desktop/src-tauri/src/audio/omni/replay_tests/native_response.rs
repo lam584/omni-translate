@@ -2,6 +2,7 @@ use super::*;
 
 mod audio_playback;
 mod fifo_ownership;
+mod ignored_short_vad;
 
 /// Native server-VAD providers may begin the next speech window just before
 /// the prior turn's output and ASR final arrive. The response used to commit a
@@ -389,13 +390,20 @@ fn replay_native_empty_response_reaches_failure_terminal_and_keeps_late_asr_fina
     let source = "To bring extinct";
     let final_source = "To bring extinct species back to life.";
     let steps = vec![
-        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_started" })),
+        ScriptStep::Event(json!({
+            "type": "input_audio_buffer.speech_started",
+            "audio_start_ms": 21680
+        })),
         ScriptStep::Event(json!({
             "type": "conversation.item.input_audio_transcription.delta",
             "item_id": "item-empty-response",
             "delta": source
         })),
-        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_stopped" })),
+        ScriptStep::Event(json!({
+            "type": "input_audio_buffer.speech_stopped",
+            "item_id": "item-empty-response",
+            "audio_end_ms": 22680
+        })),
         ScriptStep::Event(json!({
             "type": "response.done",
             "response": { "status": "completed" }
@@ -448,6 +456,39 @@ fn replay_native_empty_response_reaches_failure_terminal_and_keeps_late_asr_fina
     assert!(snapshot.subtitle_overlay.recent_cues.iter().any(|cue| {
         !cue.committed && cue.source_text.trim().is_empty()
     }));
+}
+
+#[test]
+fn replay_normal_server_vad_delta_is_visible_before_speech_stopped() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    let mut slice = WorkerSlice::new();
+    let steps = vec![
+        ScriptStep::Event(json!({
+            "type": "input_audio_buffer.speech_started",
+            "item_id": "item-four-second-vad",
+            "audio_start_ms": 1000
+        })),
+        ScriptStep::Event(json!({
+            "type": "conversation.item.input_audio_transcription.delta",
+            "item_id": "item-four-second-vad",
+            "delta": "normal speech is already visible"
+        })),
+        ScriptStep::Event(json!({
+            "type": "input_audio_buffer.speech_stopped",
+            "item_id": "item-four-second-vad",
+            "audio_end_ms": 5000
+        })),
+    ];
+    let socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
+    let socket = harness.tick(socket, &mut slice);
+    let socket = harness.tick(socket, &mut slice);
+
+    let before_stop = harness.store().snapshot();
+    assert!(before_stop.subtitle_overlay.recent_cues.iter().any(|cue| {
+        cue.source_text == "normal speech is already visible" && !cue.committed
+    }));
+
+    let _socket = harness.tick(socket, &mut slice);
 }
 
 /// Qwen Audio reports a server-VAD barge-in as a cancelled response with

@@ -105,6 +105,21 @@ impl OmniAsrEventProcessor {
                 vad_event_count += 1;
                 let source = evt["transcript"].as_str().unwrap_or("");
                 let completed_item_id = evt["item_id"].as_str();
+                if let Some(ignored_cue_id) = completed_item_id.and_then(|item_id| {
+                    event_diagnostics.ignored_native_response_cue_for_input_item(item_id)
+                }) {
+                    let _ = diag_log(
+                        app,
+                        "omni",
+                        "info",
+                        format!(
+                            "[EVENT] transcription.completed -> IGNORED_SHORT_VAD_LATE_FINAL cue_id={ignored_cue_id} item_id={} source=\"{source}\"",
+                            completed_item_id.unwrap_or("(none)"),
+                        ),
+                    );
+                    completed_source_text = None;
+                    completed_cue_id = None;
+                } else {
                 let asr_cue_id = completed_item_id
                     .and_then(|item_id| event_diagnostics.asr_cue_for_input_item(item_id));
                 let isolate_unmapped_completion =
@@ -242,6 +257,7 @@ impl OmniAsrEventProcessor {
                     &mut transcription_completed_at,
                     &mut event_diagnostics,
                 );
+                }
             }
             _ => unreachable!("ASR processor called for unsupported event"),
         }
@@ -616,6 +632,8 @@ impl OmniAsrEventProcessor {
             .map(str::trim)
             .filter(|item_id| !item_id.is_empty())
             .map(str::to_string);
+        event_diagnostics.current_vad_audio_start_ms = evt["audio_start_ms"].as_u64();
+        event_diagnostics.current_vad_audio_end_ms = None;
         if let Some(item_id) = event_diagnostics.current_vad_item_id.clone() {
             // Server VAD assigns the provider input item at speech start. Keep
             // that authoritative lineage even if ASR deltas begin only after

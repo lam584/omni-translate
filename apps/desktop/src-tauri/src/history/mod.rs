@@ -3,6 +3,7 @@ mod archive_gap;
 mod crypto;
 mod cue_ingress;
 mod fs_safety;
+mod ignored_fragment;
 mod playback;
 mod repository;
 
@@ -141,6 +142,7 @@ enum ArchiveControl {
         acknowledged: mpsc::Sender<Result<(), String>>,
     },
     AudioGap { session_id: String },
+    DiscardCue { session_id: String, cue_id: String },
 }
 
 impl HistoryStateStore {
@@ -665,6 +667,11 @@ fn archive_worker(
                     ) {
                         log::warn!("[omni][history] archive gap boundary failed: {error}");
                     }
+                }
+                ArchiveControl::DiscardCue { session_id, cue_id } => {
+                    ignored_fragment::discard_queued_cue(
+                        &state, &cue_rx, &cue_overflow, &mut pending, session_id, cue_id,
+                    );
                 }
             }
         }

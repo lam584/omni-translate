@@ -228,6 +228,8 @@ pub(super) struct OmniEventDiagnostics {
     /// is authoritative when present and lets speech_stopped bind a response
     /// even when no ASR delta has arrived yet.
     pub(super) current_vad_item_id: Option<String>,
+    pub(super) current_vad_audio_start_ms: Option<u64>,
+    pub(super) current_vad_audio_end_ms: Option<u64>,
     /// Input cue owned by the native response that is currently streaming (or
     /// most recently completed). Server VAD may open the next input cue before
     /// the prior response.done arrives, so response output must not use the
@@ -241,6 +243,8 @@ pub(super) struct OmniEventDiagnostics {
     /// events carry this id even though they carry no cue id, allowing late
     /// audio.done events to resolve through the completed-owner history.
     pub(super) native_response_id: Option<String>,
+    native_response_audio_start_ms: Option<u64>,
+    native_response_audio_end_ms: Option<u64>,
     /// Server VAD can finish several input turns before the first native
     /// response reaches `response.done`. Keep those owners in FIFO order;
     /// otherwise a later `speech_stopped` overwrites the single active owner
@@ -249,6 +253,7 @@ pub(super) struct OmniEventDiagnostics {
     /// Recently completed owners remain addressable by input item id because
     /// `transcription.completed` is allowed to arrive after `response.done`.
     completed_native_response_owners: VecDeque<NativeResponseOwner>,
+    ignored_native_response_owners: VecDeque<IgnoredNativeResponseOwner>,
     response_ledger: ResponseLedger,
     response_lifecycle: ResponseLifecycle,
     pub(super) last_asr_delta_text: String,
@@ -470,6 +475,8 @@ struct NativeResponseOwner {
     cue_id: String,
     input_item_id: Option<String>,
     response_id: Option<String>,
+    audio_start_ms: Option<u64>,
+    audio_end_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -478,7 +485,46 @@ struct AsrCueOwner {
     cue_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IgnoredNativeResponseOwner {
+    cue_id: String,
+    input_item_id: String,
+}
+
 impl OmniEventDiagnostics {
+    pub(super) fn register_ignored_native_response_owner(&mut self) {
+        let (Some(cue_id), Some(input_item_id)) = (
+            self.native_response_cue_id.as_deref(),
+            self.native_response_item_id.as_deref(),
+        ) else {
+            return;
+        };
+        if cue_id.trim().is_empty() || input_item_id.trim().is_empty() {
+            return;
+        }
+        self.ignored_native_response_owners
+            .retain(|owner| owner.cue_id != cue_id && owner.input_item_id != input_item_id);
+        self.ignored_native_response_owners
+            .push_back(IgnoredNativeResponseOwner {
+                cue_id: cue_id.to_string(),
+                input_item_id: input_item_id.to_string(),
+            });
+        while self.ignored_native_response_owners.len() > MAX_NATIVE_RESPONSE_OWNERS {
+            self.ignored_native_response_owners.pop_front();
+        }
+    }
+
+    pub(super) fn ignored_native_response_cue_for_input_item(
+        &self,
+        input_item_id: &str,
+    ) -> Option<String> {
+        self.ignored_native_response_owners
+            .iter()
+            .rev()
+            .find(|owner| owner.input_item_id == input_item_id)
+            .map(|owner| owner.cue_id.clone())
+    }
+
     pub(super) fn record_asr_cue_owner(&mut self, input_item_id: &str, cue_id: String) {
         let input_item_id = input_item_id.trim();
         if input_item_id.is_empty() || cue_id.trim().is_empty() {
@@ -524,6 +570,8 @@ impl OmniEventDiagnostics {
             if self.native_response_item_id.is_none() {
                 self.native_response_item_id = input_item_id;
             }
+            self.native_response_audio_start_ms = self.current_vad_audio_start_ms;
+            self.native_response_audio_end_ms = self.current_vad_audio_end_ms;
             return;
         }
         if let Some(owner) = self
@@ -534,6 +582,8 @@ impl OmniEventDiagnostics {
             if owner.input_item_id.is_none() {
                 owner.input_item_id = input_item_id;
             }
+            owner.audio_start_ms = self.current_vad_audio_start_ms;
+            owner.audio_end_ms = self.current_vad_audio_end_ms;
             return;
         }
         self.pending_native_response_owners
@@ -541,6 +591,8 @@ impl OmniEventDiagnostics {
                 cue_id,
                 input_item_id,
                 response_id: None,
+                audio_start_ms: self.current_vad_audio_start_ms,
+                audio_end_ms: self.current_vad_audio_end_ms,
             });
         // Never evict an unfinished response owner. Provider output may lag
         // input for many turns, and dropping either end of this queue would
@@ -657,6 +709,8 @@ impl OmniEventDiagnostics {
                 cue_id: lineage.cue_id.clone(),
                 input_item_id: lineage.source_item_id.clone(),
                 response_id: lineage.response_id.clone(),
+                audio_start_ms: None,
+                audio_end_ms: None,
             })
         } else if has_provider_lineage {
             None
@@ -668,6 +722,8 @@ impl OmniEventDiagnostics {
                         cue_id: cue_id.to_string(),
                         input_item_id: None,
                         response_id: None,
+                        audio_start_ms: None,
+                        audio_end_ms: None,
                     })
                 })
         };
@@ -677,7 +733,14 @@ impl OmniEventDiagnostics {
             self.native_response_id = owner
                 .response_id
                 .or_else(|| response_id.map(str::to_string));
+            self.native_response_audio_start_ms = owner.audio_start_ms;
+            self.native_response_audio_end_ms = owner.audio_end_ms;
         }
+    }
+
+    fn native_response_vad_duration_ms(&self) -> Option<u64> {
+        self.native_response_audio_end_ms?
+            .checked_sub(self.native_response_audio_start_ms?)
     }
 
     pub(super) fn native_response_cue_for_response_id(
@@ -750,6 +813,8 @@ impl OmniEventDiagnostics {
                 cue_id,
                 input_item_id: self.native_response_item_id.take(),
                 response_id: self.native_response_id.take(),
+                audio_start_ms: self.native_response_audio_start_ms.take(),
+                audio_end_ms: self.native_response_audio_end_ms.take(),
             });
         while self.completed_native_response_owners.len() > MAX_NATIVE_RESPONSE_OWNERS {
             self.completed_native_response_owners.pop_front();
@@ -773,8 +838,11 @@ impl OmniEventDiagnostics {
         self.native_response_cue_id = None;
         self.native_response_item_id = None;
         self.native_response_id = None;
+        self.native_response_audio_start_ms = None;
+        self.native_response_audio_end_ms = None;
         self.pending_native_response_owners.clear();
         self.completed_native_response_owners.clear();
+        self.ignored_native_response_owners.clear();
         self.response_ledger.clear();
         self.response_lifecycle.clear();
     }
@@ -1039,6 +1107,12 @@ fn terminalize_native_response_without_output<R: tauri::Runtime>(
     );
 }
 
+const SHORT_SERVER_VAD_FRAGMENT_MAX_MS: u64 = 100;
+
+pub(super) fn is_ignored_short_server_vad(duration_ms: Option<u64>) -> bool {
+    duration_ms.is_some_and(|duration_ms| duration_ms <= SHORT_SERVER_VAD_FRAGMENT_MAX_MS)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_response_done<R: tauri::Runtime>(
     app: &AppHandle<R>,
@@ -1180,16 +1254,35 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
             ),
         );
     } else {
-        terminalize_native_response_without_output(
-            app,
-            store,
-            &cue_id,
-            &response_source_text,
-            &translated_text,
-            response_cue_exists,
-            &response_metadata,
-            st_flag,
-        );
+        let short_vad_duration_ms = final_output_allowed
+            .then(|| event_diagnostics.native_response_vad_duration_ms())
+            .flatten()
+            .filter(|duration_ms| is_ignored_short_server_vad(Some(*duration_ms)));
+        if let Some(duration_ms) = short_vad_duration_ms {
+            event_diagnostics.register_ignored_native_response_owner();
+            store.discard_ignored_short_vad_fragment_cue(&cue_id);
+            let _ = diag_log(
+                app,
+                "omni",
+                "info",
+                format!(
+                    "[EVENT] response.done → SHORT_VAD_EMPTY_DROPPED{st_flag} cue_id={cue_id} durationMs={duration_ms} responseId={} responseStatus={} diagnostic=native-empty-response-short-vad-dropped",
+                    response_metadata.response_id,
+                    response_metadata.status,
+                ),
+            );
+        } else {
+            terminalize_native_response_without_output(
+                app,
+                store,
+                &cue_id,
+                &response_source_text,
+                &translated_text,
+                response_cue_exists,
+                &response_metadata,
+                st_flag,
+            );
+        }
     }
     let _ = diag_log(
         app,
@@ -1248,6 +1341,8 @@ pub(super) fn reset_manual_turn_input_state(
     *current_cue_id = None;
     event_diagnostics.current_cue_origin = None;
     event_diagnostics.current_vad_item_id = None;
+    event_diagnostics.current_vad_audio_start_ms = None;
+    event_diagnostics.current_vad_audio_end_ms = None;
     event_diagnostics.last_asr_delta_item_id = None;
     event_diagnostics.source_started_during_playback = None;
     event_diagnostics.source_continuity_active = false;

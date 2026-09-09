@@ -14,6 +14,7 @@ fn receipt(session_id: &str, cue_id: &str, started_unix_ms: u64) -> OverlayRende
 }
 
 mod lifecycle_errors;
+mod ignored_fragments;
 mod recording;
 mod revisions;
 mod snapshot;

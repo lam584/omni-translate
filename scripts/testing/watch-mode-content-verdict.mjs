@@ -1,8 +1,35 @@
+function normalizeChineseTens(value) {
+  const digits = new Map([
+    ['', 0], ['一', 1], ['二', 2], ['三', 3], ['四', 4],
+    ['五', 5], ['六', 6], ['七', 7], ['八', 8], ['九', 9],
+  ]);
+  return value.replace(/([一二三四五六七八九]?)十([一二三四五六七八九]?)/gu, (_match, tens, ones) => (
+    String((tens ? digits.get(tens) : 1) * 10 + (ones ? digits.get(ones) : 0))
+  ));
+}
+
 export function normalizeWatchContentText(value) {
   return String(value ?? '')
     .normalize('NFKC')
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+function normalizeWatchContentPair(left, right) {
+  const normalizedLeft = normalizeWatchContentText(left);
+  const normalizedRight = normalizeWatchContentText(right);
+  return [
+    /\d/u.test(normalizedRight) ? normalizeChineseTens(normalizedLeft) : normalizedLeft,
+    /\d/u.test(normalizedLeft) ? normalizeChineseTens(normalizedRight) : normalizedRight,
+  ];
+}
+
+function watchContentNumericSequence(value) {
+  return String(value ?? '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .match(/\d+|[一二三四五六七八九]十[一二三四五六七八九]?|十[一二三四五六七八九]/gu)
+    ?.map((token) => normalizeChineseTens(token)) ?? [];
 }
 
 export function splitWatchContentClauses(value) {
@@ -14,9 +41,12 @@ export function splitWatchContentClauses(value) {
 }
 
 export function watchContentCharacterOverlap(left, right) {
-  const normalizedLeft = normalizeWatchContentText(left);
-  const normalizedRight = normalizeWatchContentText(right);
+  const [normalizedLeft, normalizedRight] = normalizeWatchContentPair(left, right);
   if (!normalizedLeft || !normalizedRight) return 0;
+  const leftNumbers = watchContentNumericSequence(left);
+  const rightNumbers = watchContentNumericSequence(right);
+  if (leftNumbers.length > 0 && rightNumbers.length > 0
+    && JSON.stringify(leftNumbers) !== JSON.stringify(rightNumbers)) return 0;
   const counts = new Map();
   for (const character of normalizedRight) counts.set(character, (counts.get(character) ?? 0) + 1);
   let overlap = 0;

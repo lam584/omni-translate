@@ -8,6 +8,8 @@ const MAX_DELAY_MS: f64 = 1_000.0;
 const SMOOTHING_ALPHA: f64 = 0.2;
 const MAX_UPDATE_STEP_MS: f64 = 25.0;
 const CLOCK_DISCONTINUITY_TOLERANCE_MS: f64 = 50.0;
+const CAPTURE_DISCONTINUITY_REARM_MS: u64 = 100;
+const MAX_STABLE_CLEAN_OBSERVATION_GAP_MS: u64 = 20;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CaptureClockObservation {
@@ -81,7 +83,8 @@ pub(super) struct AecDelayEstimator {
     last_packet_qpc_100ns: Option<u64>,
     last_render_submitted_frames: Option<u64>,
     last_render_discontinuity_count: Option<u64>,
-    previous_data_discontinuity: bool,
+    capture_discontinuity_episode_active: bool,
+    stable_clean_capture_frames: u64,
     reset_count: u64,
     timestamp_error_count: u64,
 }
@@ -96,7 +99,8 @@ impl AecDelayEstimator {
             last_packet_qpc_100ns: None,
             last_render_submitted_frames: None,
             last_render_discontinuity_count: None,
-            previous_data_discontinuity: false,
+            capture_discontinuity_episode_active: false,
+            stable_clean_capture_frames: 0,
             reset_count: 0,
             timestamp_error_count: 0,
         }
@@ -125,12 +129,12 @@ impl AecDelayEstimator {
             || capture_padding_invalid
             || clock_discontinuity.is_some()
             || render_clock_discontinuity;
-        // Some WASAPI/virtualized endpoints report DATA_DISCONTINUITY on a
-        // burst of consecutive packets. Reset the delay authority for every
-        // flagged packet, but destroy AEC3's learned filter only when entering
-        // that burst. A clean packet rearms the next genuine discontinuity.
+        // Some WASAPI/virtualized endpoints alternate DATA_DISCONTINUITY with
+        // short clean observations roughly every 30 ms. Keep resetting delay
+        // authority for every flagged packet, but preserve AEC3's learned
+        // filter until a continuous clean capture window ends the episode.
         let capture_discontinuity_boundary =
-            observation.data_discontinuity && !self.previous_data_discontinuity;
+            observation.data_discontinuity && !self.capture_discontinuity_episode_active;
         let aec_reset_reason = if capture_discontinuity_boundary {
             Some("wasapi-capture-data-discontinuity")
         } else if render_clock_discontinuity {
@@ -149,6 +153,48 @@ impl AecDelayEstimator {
             self.reset_count = self.reset_count.saturating_add(1);
         }
 
+        if observation.data_discontinuity {
+            self.capture_discontinuity_episode_active = true;
+            self.stable_clean_capture_frames = 0;
+        } else if delay_reset_required {
+            // Timestamp, padding, capture-clock, and render-clock faults are
+            // not stable capture and must not rearm a discontinuity episode.
+            self.stable_clean_capture_frames = 0;
+        } else if self.capture_discontinuity_episode_active {
+            let clean_frame_advance = self
+                .last_device_frame_index
+                .and_then(|previous| observation.device_frame_index.checked_sub(previous));
+            let clean_qpc_advance_100ns = self
+                .last_packet_qpc_100ns
+                .and_then(|previous| observation.packet_qpc_100ns.checked_sub(previous));
+            let max_clean_frame_advance = u64::from(self.sample_rate_hz)
+                .saturating_mul(MAX_STABLE_CLEAN_OBSERVATION_GAP_MS)
+                / 1_000;
+            let max_clean_qpc_advance_100ns =
+                MAX_STABLE_CLEAN_OBSERVATION_GAP_MS.saturating_mul(10_000);
+            let cadence_is_stable = clean_frame_advance.is_some_and(|frames| {
+                frames > 0 && frames <= max_clean_frame_advance
+            }) && clean_qpc_advance_100ns.is_some_and(|ticks| {
+                ticks > 0 && ticks <= max_clean_qpc_advance_100ns
+            });
+            if cadence_is_stable {
+                self.stable_clean_capture_frames = self
+                    .stable_clean_capture_frames
+                    .saturating_add(clean_frame_advance.unwrap_or(0));
+            } else {
+                // A device/QPC jump is an unobserved span, not proof that
+                // clean capture continued through the gap.
+                self.stable_clean_capture_frames = 0;
+            }
+            let required_clean_frames = u64::from(self.sample_rate_hz)
+                .saturating_mul(CAPTURE_DISCONTINUITY_REARM_MS)
+                / 1_000;
+            if self.stable_clean_capture_frames >= required_clean_frames {
+                self.capture_discontinuity_episode_active = false;
+                self.stable_clean_capture_frames = 0;
+            }
+        }
+
         if !observation.timestamp_error {
             self.last_device_frame_index = Some(observation.device_frame_index);
             self.last_packet_qpc_100ns = Some(observation.packet_qpc_100ns);
@@ -160,7 +206,6 @@ impl AecDelayEstimator {
         // regression for the boundary we just consumed.
         self.last_render_submitted_frames = observation.render_submitted_frames;
         self.last_render_discontinuity_count = Some(observation.render_discontinuity_count);
-        self.previous_data_discontinuity = observation.data_discontinuity;
 
         let packet_age_ms = if observation.timestamp_error {
             None
@@ -518,28 +563,55 @@ mod tests {
     }
 
     #[test]
-    fn consecutive_capture_discontinuity_flags_reset_aec_only_on_the_burst_edge() {
+    fn capture_discontinuity_episode_rearms_only_after_stable_clean_audio() {
         let mut estimator = AecDelayEstimator::new(48_000, 2);
         let mut first = observation(0, 1_000_000, 1_100_000, 0);
         first.data_discontinuity = true;
         let first = estimator.observe_capture(first);
 
-        let mut consecutive = observation(480, 1_100_000, 1_200_000, 0);
-        consecutive.data_discontinuity = true;
-        let consecutive = estimator.observe_capture(consecutive);
+        let short_clean =
+            estimator.observe_capture(observation(480, 1_100_000, 1_200_000, 0));
+        let mut same_episode = observation(1_440, 1_300_000, 1_400_000, 0);
+        same_episode.data_discontinuity = true;
+        let same_episode = estimator.observe_capture(same_episode);
 
-        let clean = estimator.observe_capture(observation(960, 1_200_000, 1_300_000, 0));
-
-        let mut next_burst = observation(1_440, 1_300_000, 1_400_000, 0);
-        next_burst.data_discontinuity = true;
-        let next_burst = estimator.observe_capture(next_burst);
+        for step in 1..=10 {
+            let frame_index = 1_440 + step * 480;
+            let packet_qpc = 1_300_000 + u64::from(step) * 100_000;
+            let _ = estimator.observe_capture(observation(
+                frame_index,
+                packet_qpc,
+                packet_qpc + 100_000,
+                0,
+            ));
+        }
+        let mut next_episode = observation(6_720, 2_400_000, 2_500_000, 0);
+        next_episode.data_discontinuity = true;
+        let next_episode = estimator.observe_capture(next_episode);
 
         assert!(first.aec_reset_required);
         assert!(first.delay_reset_required);
-        assert!(!consecutive.aec_reset_required);
-        assert!(consecutive.delay_reset_required);
-        assert!(!clean.aec_reset_required);
-        assert!(next_burst.aec_reset_required);
+        assert!(!short_clean.aec_reset_required);
+        assert!(!same_episode.aec_reset_required);
+        assert!(same_episode.delay_reset_required);
+        assert!(next_episode.aec_reset_required);
+    }
+
+    #[test]
+    fn one_clean_observation_cannot_count_an_unobserved_device_span_as_stable_audio() {
+        let mut estimator = AecDelayEstimator::new(48_000, 2);
+        let mut first = observation(0, 1_000_000, 1_100_000, 0);
+        first.data_discontinuity = true;
+        assert!(estimator.observe_capture(first).aec_reset_required);
+
+        let _ = estimator.observe_capture(observation(4_800, 2_000_000, 2_100_000, 0));
+
+        let mut same_episode = observation(5_280, 2_100_000, 2_200_000, 0);
+        same_episode.data_discontinuity = true;
+        let same_episode = estimator.observe_capture(same_episode);
+
+        assert!(same_episode.delay_reset_required);
+        assert!(!same_episode.aec_reset_required);
     }
 
     #[test]

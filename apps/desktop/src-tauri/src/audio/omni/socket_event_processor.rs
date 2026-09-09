@@ -1088,6 +1088,7 @@ impl OmniSocketEventProcessor {
                     "input_audio_buffer.speech_stopped" => {
                         last_vad_event_time = SystemTime::now();
                         vad_event_count += 1;
+                        event_diagnostics.current_vad_audio_end_ms = evt["audio_end_ms"].as_u64();
                         if let Some(cue_id) = current_cue_id.clone() {
                             // Subtitle translation still has a native response
                             // stream whose output must remain attached to the

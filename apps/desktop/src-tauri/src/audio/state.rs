@@ -25,6 +25,7 @@ mod cue_lifecycle;
 mod report_publish;
 mod deferred_translation;
 mod echo_backend;
+mod ignored_fragment;
 mod source_finality;
 mod source_publish;
 mod translation_lifecycle;

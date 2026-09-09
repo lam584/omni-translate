@@ -317,6 +317,27 @@ impl WatchSession {
 }
 
 impl WatchSessionReportStore {
+    pub(crate) fn discard_ignored_short_vad_fragment_cue(&self, cue_id: &str) {
+        let mut guard = self.inner.lock().expect("watch session report poisoned");
+        let Some(session) = guard.as_mut() else {
+            return;
+        };
+        let removed_revisions = session
+            .cues
+            .iter()
+            .filter(|cue| cue.cue_id == cue_id)
+            .map(|cue| cue.revision)
+            .collect::<Vec<_>>();
+        session.cues.retain(|cue| cue.cue_id != cue_id);
+        for revision in removed_revisions {
+            session
+                .adopted_segments
+                .remove(&WatchSession::cue_revision_key(cue_id, revision));
+        }
+    }
+}
+
+impl WatchSessionReportStore {
 
     pub(crate) fn stage_manual_audio_origin(&self, started_at_ms: u64) {
         let mut guard = self.inner.lock().expect("watch session report poisoned");

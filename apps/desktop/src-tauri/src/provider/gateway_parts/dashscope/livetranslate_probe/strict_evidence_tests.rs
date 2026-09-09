@@ -45,12 +45,18 @@ fn zero_input_probe_plan_is_admitted_and_bound_by_the_production_client_adapter(
         plan.session_update.pointer("/session/translation/corpus/phrases"),
         Some(&json!({
             "Mars": "火星",
+            "Please record each sentence clearly": "请清楚记录每个句子",
+            "Version 3.6.2": "3.6.2版本",
             "artificial biosphere": "人工生物圈",
+            "by October 3": "在10月3日前",
             "endangered species": "濒危物种",
             "five hundred million dollars": "五亿美元",
             "flying cars": "飞行汽车",
+            "forty-eight hours": "48小时",
             "light bulb": "灯泡",
-            "one billion": "十亿"
+            "one billion": "十亿",
+            "proper names": "专有名称",
+            "reduced average response time from 920 milliseconds to 315 milliseconds": "把平均响应时间从920毫秒降至315毫秒"
         })),
     );
     let duplicate_update = plan

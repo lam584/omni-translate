@@ -1,4 +1,5 @@
 use super::*;
+use super::protocol::resolve_deferred_empty_vad_on_speech_started;
 
 pub(super) struct OmniAsrEventState {
     pub(super) last_vad_event_time: SystemTime,
@@ -589,6 +590,12 @@ impl OmniAsrEventProcessor {
             store.inbound_speaker_playback_context(std::time::Duration::from_secs(4));
         let speech_ms = elapsed_ms_since(session_started_at);
         event_diagnostics.begin_source_segment(speech_ms, playback_active, playback_recent);
+        resolve_deferred_empty_vad_on_speech_started(
+            app,
+            store,
+            event_diagnostics,
+            evt["audio_start_ms"].as_u64(),
+        );
         if *vad_event_count == 1 {
             store.watch_session_report.record_milestone_with_detail(
                 "first_speech_started",

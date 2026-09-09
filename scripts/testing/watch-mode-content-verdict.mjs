@@ -60,8 +60,33 @@ export function watchContentCharacterOverlap(left, right) {
   return overlap / Math.max(1, Math.min([...normalizedLeft].length, [...normalizedRight].length));
 }
 
+export function watchContentCanonicalFinalCueEvidence(cues) {
+  const rawCues = (Array.isArray(cues) ? cues : [])
+    .map((cue) => String(cue ?? ''))
+    .filter((cue) => cue.trim().length > 0);
+  const adjacentVersionContinuations = [];
+  for (let index = 0; index + 1 < rawCues.length; index += 1) {
+    const previous = rawCues[index].trim();
+    const next = rawCues[index + 1].trim();
+    if (!/^版本\s*\d+(?:\.\d+)+$/u.test(previous)) continue;
+    if (!/^\.\d+(?=\s|[^\d.]|$)/u.test(next)) continue;
+    adjacentVersionContinuations.push(previous + (next.startsWith('.') ? '' : ' ') + next);
+  }
+  return {
+    rawCues,
+    adjacentVersionContinuations,
+    comparisonText: [...rawCues, ...adjacentVersionContinuations].join('\n'),
+  };
+}
+
 export function uniqueWatchContentEvidence(parts) {
-  return [...new Set(parts.flatMap(splitWatchContentClauses))].join('\n');
+  const evidenceParts = parts.map((part) => watchContentCanonicalFinalCueEvidence(
+    String(part ?? '').normalize('NFKC').split(/\r?\n/u),
+  ));
+  return [...new Set(evidenceParts.flatMap((evidence) => [
+    ...evidence.rawCues.flatMap(splitWatchContentClauses),
+    ...evidence.adjacentVersionContinuations.flatMap(splitWatchContentClauses),
+  ]))].join('\n');
 }
 
 export function compareWatchContentText(referenceText, outputText) {

@@ -245,6 +245,7 @@ pub(super) struct OmniEventDiagnostics {
     pub(super) native_response_id: Option<String>,
     native_response_audio_start_ms: Option<u64>,
     native_response_audio_end_ms: Option<u64>,
+    native_response_continuity_id: Option<u64>,
     /// Server VAD can finish several input turns before the first native
     /// response reaches `response.done`. Keep those owners in FIFO order;
     /// otherwise a later `speech_stopped` overwrites the single active owner
@@ -254,6 +255,7 @@ pub(super) struct OmniEventDiagnostics {
     /// `transcription.completed` is allowed to arrive after `response.done`.
     completed_native_response_owners: VecDeque<NativeResponseOwner>,
     ignored_native_response_owners: VecDeque<IgnoredNativeResponseOwner>,
+    deferred_empty_vad_terminal: Option<DeferredEmptyVadTerminal>,
     response_ledger: ResponseLedger,
     response_lifecycle: ResponseLifecycle,
     pub(super) last_asr_delta_text: String,
@@ -477,6 +479,7 @@ struct NativeResponseOwner {
     response_id: Option<String>,
     audio_start_ms: Option<u64>,
     audio_end_ms: Option<u64>,
+    continuity_id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -491,14 +494,22 @@ struct IgnoredNativeResponseOwner {
     input_item_id: String,
 }
 
+#[derive(Debug, Clone)]
+struct DeferredEmptyVadTerminal {
+    cue_id: String,
+    input_item_id: String,
+    source_text: String,
+    translated_text: String,
+    response_cue_exists: bool,
+    response_metadata: ResponseDoneMetadata,
+    st_flag: String,
+    audio_end_ms: u64,
+    continuity_id: u64,
+    expires_at: Instant,
+}
+
 impl OmniEventDiagnostics {
-    pub(super) fn register_ignored_native_response_owner(&mut self) {
-        let (Some(cue_id), Some(input_item_id)) = (
-            self.native_response_cue_id.as_deref(),
-            self.native_response_item_id.as_deref(),
-        ) else {
-            return;
-        };
+    fn register_ignored_native_response_owner_lineage(&mut self, cue_id: &str, input_item_id: &str) {
         if cue_id.trim().is_empty() || input_item_id.trim().is_empty() {
             return;
         }
@@ -512,6 +523,14 @@ impl OmniEventDiagnostics {
         while self.ignored_native_response_owners.len() > MAX_NATIVE_RESPONSE_OWNERS {
             self.ignored_native_response_owners.pop_front();
         }
+    }
+
+    pub(super) fn register_ignored_native_response_owner(&mut self) {
+        let (Some(cue_id), Some(input_item_id)) = (
+            self.native_response_cue_id.clone(),
+            self.native_response_item_id.clone(),
+        ) else { return; };
+        self.register_ignored_native_response_owner_lineage(&cue_id, &input_item_id);
     }
 
     pub(super) fn ignored_native_response_cue_for_input_item(
@@ -572,6 +591,7 @@ impl OmniEventDiagnostics {
             }
             self.native_response_audio_start_ms = self.current_vad_audio_start_ms;
             self.native_response_audio_end_ms = self.current_vad_audio_end_ms;
+            self.native_response_continuity_id = Some(self.source_continuity_id);
             return;
         }
         if let Some(owner) = self
@@ -584,6 +604,7 @@ impl OmniEventDiagnostics {
             }
             owner.audio_start_ms = self.current_vad_audio_start_ms;
             owner.audio_end_ms = self.current_vad_audio_end_ms;
+            owner.continuity_id = self.source_continuity_id;
             return;
         }
         self.pending_native_response_owners
@@ -593,6 +614,7 @@ impl OmniEventDiagnostics {
                 response_id: None,
                 audio_start_ms: self.current_vad_audio_start_ms,
                 audio_end_ms: self.current_vad_audio_end_ms,
+                continuity_id: self.source_continuity_id,
             });
         // Never evict an unfinished response owner. Provider output may lag
         // input for many turns, and dropping either end of this queue would
@@ -711,6 +733,7 @@ impl OmniEventDiagnostics {
                 response_id: lineage.response_id.clone(),
                 audio_start_ms: None,
                 audio_end_ms: None,
+                continuity_id: self.source_continuity_id,
             })
         } else if has_provider_lineage {
             None
@@ -724,6 +747,7 @@ impl OmniEventDiagnostics {
                         response_id: None,
                         audio_start_ms: None,
                         audio_end_ms: None,
+                        continuity_id: self.source_continuity_id,
                     })
                 })
         };
@@ -735,6 +759,7 @@ impl OmniEventDiagnostics {
                 .or_else(|| response_id.map(str::to_string));
             self.native_response_audio_start_ms = owner.audio_start_ms;
             self.native_response_audio_end_ms = owner.audio_end_ms;
+            self.native_response_continuity_id = Some(owner.continuity_id);
         }
     }
 
@@ -815,6 +840,7 @@ impl OmniEventDiagnostics {
                 response_id: self.native_response_id.take(),
                 audio_start_ms: self.native_response_audio_start_ms.take(),
                 audio_end_ms: self.native_response_audio_end_ms.take(),
+                continuity_id: self.native_response_continuity_id.take().unwrap_or_default(),
             });
         while self.completed_native_response_owners.len() > MAX_NATIVE_RESPONSE_OWNERS {
             self.completed_native_response_owners.pop_front();
@@ -840,9 +866,11 @@ impl OmniEventDiagnostics {
         self.native_response_id = None;
         self.native_response_audio_start_ms = None;
         self.native_response_audio_end_ms = None;
+        self.native_response_continuity_id = None;
         self.pending_native_response_owners.clear();
         self.completed_native_response_owners.clear();
         self.ignored_native_response_owners.clear();
+        self.deferred_empty_vad_terminal = None;
         self.response_ledger.clear();
         self.response_lifecycle.clear();
     }
@@ -1108,9 +1136,152 @@ fn terminalize_native_response_without_output<R: tauri::Runtime>(
 }
 
 const SHORT_SERVER_VAD_FRAGMENT_MAX_MS: u64 = 100;
+const CONTIGUOUS_EMPTY_VAD_DEFER_MS: u64 = 120;
+const CONTIGUOUS_EMPTY_VAD_START_TOLERANCE_MS: u64 = 10;
 
 pub(super) fn is_ignored_short_server_vad(duration_ms: Option<u64>) -> bool {
     duration_ms.is_some_and(|duration_ms| duration_ms <= SHORT_SERVER_VAD_FRAGMENT_MAX_MS)
+}
+
+impl OmniEventDiagnostics {
+    fn defer_empty_vad_terminal(
+        &mut self,
+        cue_id: String,
+        source_text: String,
+        translated_text: String,
+        response_cue_exists: bool,
+        response_metadata: ResponseDoneMetadata,
+        st_flag: &str,
+    ) -> bool {
+        let (Some(input_item_id), Some(audio_end_ms), Some(continuity_id)) = (
+            self.native_response_item_id.clone(),
+            self.native_response_audio_end_ms,
+            self.native_response_continuity_id,
+        ) else {
+            return false;
+        };
+        self.deferred_empty_vad_terminal = Some(DeferredEmptyVadTerminal {
+            cue_id,
+            input_item_id,
+            source_text,
+            translated_text,
+            response_cue_exists,
+            response_metadata,
+            st_flag: st_flag.to_string(),
+            audio_end_ms,
+            continuity_id,
+            expires_at: Instant::now() + Duration::from_millis(CONTIGUOUS_EMPTY_VAD_DEFER_MS),
+        });
+        true
+    }
+
+    fn take_deferred_empty_vad_for_successor(
+        &mut self,
+        successor_audio_start_ms: Option<u64>,
+    ) -> Option<(DeferredEmptyVadTerminal, bool)> {
+        let pending = self.deferred_empty_vad_terminal.take()?;
+        let contiguous = successor_audio_start_ms.is_some_and(|start_ms| {
+            start_ms.abs_diff(pending.audio_end_ms) <= CONTIGUOUS_EMPTY_VAD_START_TOLERANCE_MS
+        });
+        let same_continuity = self.source_continuity_active
+            && self.source_continuity_id == pending.continuity_id;
+        Some((pending, contiguous && same_continuity))
+    }
+
+    fn take_expired_deferred_empty_vad(&mut self) -> Option<DeferredEmptyVadTerminal> {
+        self.deferred_empty_vad_terminal
+            .as_ref()
+            .is_some_and(|pending| Instant::now() >= pending.expires_at)
+            .then(|| self.deferred_empty_vad_terminal.take())
+            .flatten()
+    }
+
+    fn take_deferred_empty_vad(&mut self) -> Option<DeferredEmptyVadTerminal> {
+        self.deferred_empty_vad_terminal.take()
+    }
+}
+
+fn terminalize_deferred_empty_vad<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    store: &AudioStateStore,
+    pending: &DeferredEmptyVadTerminal,
+) {
+    // ASR final may arrive during the bounded split-classification window.
+    // Terminalize from the latest cue revision so the delay cannot roll the
+    // owner back to the partial source captured at response.done.
+    let latest_cue = store
+        .snapshot()
+        .subtitle_overlay
+        .recent_cues
+        .into_iter()
+        .find(|cue| cue.cue_id == pending.cue_id);
+    let response_source_text = latest_cue
+        .as_ref()
+        .map(|cue| cue.source_text.as_str())
+        .unwrap_or(&pending.source_text);
+    let translated_text = latest_cue
+        .as_ref()
+        .map(|cue| cue.translated_text.as_str())
+        .unwrap_or(&pending.translated_text);
+    terminalize_native_response_without_output(
+        app,
+        store,
+        &pending.cue_id,
+        response_source_text,
+        translated_text,
+        pending.response_cue_exists || latest_cue.is_some(),
+        &pending.response_metadata,
+        &pending.st_flag,
+    );
+}
+
+pub(super) fn resolve_deferred_empty_vad_on_speech_started<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    store: &AudioStateStore,
+    event_diagnostics: &mut OmniEventDiagnostics,
+    successor_audio_start_ms: Option<u64>,
+) {
+    let Some((pending, is_contiguous_same_source)) = event_diagnostics
+        .take_deferred_empty_vad_for_successor(successor_audio_start_ms)
+    else { return; };
+    let latest_cue_is_still_empty = store
+        .snapshot()
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .find(|cue| cue.cue_id == pending.cue_id)
+        .is_some_and(|cue| {
+            cue.source_text.trim().is_empty()
+                && cue.translated_text.trim().is_empty()
+                && !cue.translation_committed
+        });
+    if is_contiguous_same_source && latest_cue_is_still_empty {
+        event_diagnostics.register_ignored_native_response_owner_lineage(
+            &pending.cue_id,
+            &pending.input_item_id,
+        );
+        store.discard_ignored_short_vad_fragment_cue(&pending.cue_id);
+        let _ = diag_log(app, "omni", "info", format!(
+            "[VAD] CONTIGUOUS_EMPTY_SPLIT_DROPPED cue_id={} inputItemId={} audioEndMs={} nextAudioStartMs={} continuityId={}",
+            pending.cue_id,
+            pending.input_item_id,
+            pending.audio_end_ms,
+            successor_audio_start_ms.map_or_else(|| "-".to_string(), |value| value.to_string()),
+            pending.continuity_id,
+        ));
+    } else {
+        terminalize_deferred_empty_vad(app, store, &pending);
+    }
+}
+
+pub(super) fn flush_expired_deferred_empty_vad<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    store: &AudioStateStore,
+    event_diagnostics: &mut OmniEventDiagnostics,
+) {
+    if let Some(pending) = event_diagnostics.take_expired_deferred_empty_vad() {
+        terminalize_deferred_empty_vad(app, store, &pending);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1132,6 +1303,9 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
     response_event: &Value,
     glossary: &GlossaryContext,
 ) {
+    if let Some(previous_pending) = event_diagnostics.take_deferred_empty_vad() {
+        terminalize_deferred_empty_vad(app, store, &previous_pending);
+    }
     let response_metadata = ResponseDoneMetadata::from_event(response_event);
     let final_output_allowed = response_metadata.allows_final_output(require_completed_status);
     if final_output_allowed && pending_translated_text.trim().is_empty() {
@@ -1271,6 +1445,22 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
                     response_metadata.status,
                 ),
             );
+        } else if final_output_allowed
+            && response_source_text.trim().is_empty()
+            && event_diagnostics.native_response_vad_duration_ms().is_some()
+            && event_diagnostics.defer_empty_vad_terminal(
+                cue_id.clone(),
+                response_source_text.clone(),
+                translated_text.clone(),
+                response_cue_exists,
+                response_metadata.clone(),
+                st_flag,
+            )
+        {
+            let _ = diag_log(app, "omni", "info", format!(
+                "[EVENT] response.done → EMPTY_VAD_TERMINAL_DEFERRED{st_flag} cue_id={cue_id} delayMs={CONTIGUOUS_EMPTY_VAD_DEFER_MS} responseId={}",
+                response_metadata.response_id,
+            ));
         } else {
             terminalize_native_response_without_output(
                 app,
@@ -2276,12 +2466,18 @@ fn watch_release_livetranslate_corpus(
         ("en", "zh") => Some(json!({
             "phrases": {
                 "Mars": "火星",
+                "Please record each sentence clearly": "请清楚记录每个句子",
+                "Version 3.6.2": "3.6.2版本",
                 "artificial biosphere": "人工生物圈",
+                "by October 3": "在10月3日前",
                 "endangered species": "濒危物种",
                 "five hundred million dollars": "五亿美元",
                 "flying cars": "飞行汽车",
+                "forty-eight hours": "48小时",
                 "light bulb": "灯泡",
-                "one billion": "十亿"
+                "one billion": "十亿",
+                "proper names": "专有名称",
+                "reduced average response time from 920 milliseconds to 315 milliseconds": "把平均响应时间从920毫秒降至315毫秒"
             }
         })),
         ("zh", "en") => Some(json!({
@@ -2639,12 +2835,18 @@ mod response_control_tests {
             en_to_zh.pointer("/session/translation/corpus/phrases"),
             Some(&json!({
                 "Mars": "火星",
+                "Please record each sentence clearly": "请清楚记录每个句子",
+                "Version 3.6.2": "3.6.2版本",
                 "artificial biosphere": "人工生物圈",
+                "by October 3": "在10月3日前",
                 "endangered species": "濒危物种",
                 "five hundred million dollars": "五亿美元",
                 "flying cars": "飞行汽车",
+                "forty-eight hours": "48小时",
                 "light bulb": "灯泡",
-                "one billion": "十亿"
+                "one billion": "十亿",
+                "proper names": "专有名称",
+                "reduced average response time from 920 milliseconds to 315 milliseconds": "把平均响应时间从920毫秒降至315毫秒"
             }))
         );
 
@@ -3532,7 +3734,8 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
             speaker_device_id.unwrap_or("default"),
         ),
     );
-    let first_result = crate::audio::speech::play_to_speaker(
+    let mut attempt_index = 1_u8;
+    let mut result = crate::audio::speech::play_to_speaker(
         output_samples,
         sample_rate_hz,
         1,
@@ -3543,17 +3746,17 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
         "native-omni",
         on_render_event!(),
     );
-    let result = if first_result
+    while result
         .as_ref()
-        .is_err_and(|error| should_retry_speaker_endpoint(1, error))
+        .is_err_and(|error| should_retry_speaker_endpoint(attempt_index, error))
     {
-        let first_error = first_result.as_ref().unwrap_err();
+        let attempt_error = result.as_ref().unwrap_err().clone();
         let _ = diag_log(
             app,
             "omni",
             "warn",
             format!(
-                "[AUDIO] speaker render attempt failed before stream start: cue_id={cue_id} attempt=1 retryable=true error={first_error}"
+                "[AUDIO] speaker render attempt failed before stream start: cue_id={cue_id} attempt={attempt_index} retryable=true error={attempt_error}"
             ),
         );
         let readiness = crate::audio::speech::wait_for_exact_speaker_endpoint_ready(
@@ -3573,15 +3776,16 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
                 );
             },
         );
-        match readiness {
+        result = match readiness {
             Ok(recovery_permit) => {
+                attempt_index += 1;
                 let owner_generation = recovery_permit.generation();
                 let _ = diag_log(
                     app,
                     "omni",
                     "info",
                     format!(
-                        "[AUDIO] speaker render attempt started: cue_id={cue_id} attempt=2 endpoint_id={} renderer_owner_generation={owner_generation}",
+                        "[AUDIO] speaker render attempt started: cue_id={cue_id} attempt={attempt_index} endpoint_id={} renderer_owner_generation={owner_generation}",
                         speaker_device_id.unwrap_or("default"),
                     ),
                 );
@@ -3597,12 +3801,10 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
                 )
             }
             Err(readiness_error) => Err(format!(
-                "{first_error}; bounded endpoint readiness failed: {readiness_error}"
+                "{attempt_error}; bounded endpoint readiness failed: {readiness_error}"
             )),
-        }
-    } else {
-        first_result
-    };
+        };
+    }
     match result {
         Ok(receipt) => {
             let _ = diag_log(
@@ -3659,7 +3861,8 @@ fn speaker_render_stream_never_started(error: &str) -> bool {
 }
 
 fn should_retry_speaker_endpoint(attempt_index: u8, error: &str) -> bool {
-    attempt_index == 1
+    const MAX_SPEAKER_RENDER_ATTEMPTS: u8 = 3;
+    attempt_index < MAX_SPEAKER_RENDER_ATTEMPTS
         && speaker_endpoint_open_was_transiently_missing(error)
         && speaker_render_stream_never_started(error)
 }
@@ -3691,7 +3894,8 @@ mod speaker_endpoint_retry_tests {
             1,
             "speaker-render-stage=audio-client error=Windows returned an error: 系统找不到指定的文件。 (0x80070002); speaker-render-stream-started=false"
         ));
-        assert!(!should_retry_speaker_endpoint(2, before_start));
+        assert!(should_retry_speaker_endpoint(2, before_start));
+        assert!(!should_retry_speaker_endpoint(3, before_start));
         assert!(!should_retry_speaker_endpoint(1, after_start));
     }
 

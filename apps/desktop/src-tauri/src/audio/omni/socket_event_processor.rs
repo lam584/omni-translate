@@ -2,6 +2,7 @@ use super::connection_coordinator::{
     is_idle_preconnect_session, is_released_empty_audio_commit_error, provider_error_code, provider_error_message,
 };
 use super::session_errors::is_provider_idle_timeout_error;
+use super::protocol::flush_expired_deferred_empty_vad;
 use super::*;
 use crate::audio::glossary::GlossaryContext;
 use crate::audio::bailian_protocol::LiveTranslateServerMutation;
@@ -570,6 +571,7 @@ impl OmniSocketEventProcessor {
                 })
             };
         }
+        flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
         match socket.read_message() {
             Ok(msg) => match msg {
         Message::Text(text) => {

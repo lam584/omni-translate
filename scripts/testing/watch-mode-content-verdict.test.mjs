@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   compareWatchContentText,
   evaluateWatchContentConsistency,
+  watchContentCanonicalFinalCueEvidence,
   watchContentCharacterOverlap,
 } from './watch-mode-content-verdict.mjs';
 
@@ -39,6 +40,42 @@ test('content overlap treats equivalent Chinese and Arabic numerals as equal wit
   );
   assert.ok(watchContentCharacterOverlap('这个结果十分稳定', '这个结果非常稳定') > 0.7);
   assert.ok(watchContentCharacterOverlap('第2版已经修复主要问题', '新版已经修复主要问题') > 0.7);
+});
+
+test('canonical final cue evidence narrowly rejoins an adjacent dotted version continuation', () => {
+  const reference = '3.6.2版本把平均响应时间从920毫秒降至315毫秒';
+  const joined = watchContentCanonicalFinalCueEvidence([
+    ' 版本 3.6  ',
+    ' .2 平均响应时间从920毫秒降至315毫秒 ',
+  ]);
+  assert.deepEqual(joined.rawCues, [
+    ' 版本 3.6  ',
+    ' .2 平均响应时间从920毫秒降至315毫秒 ',
+  ]);
+  assert.deepEqual(joined.adjacentVersionContinuations, [
+    '版本 3.6.2 平均响应时间从920毫秒降至315毫秒',
+  ]);
+  assert.deepEqual(compareWatchContentText(reference, joined.comparisonText).missingClauses, []);
+
+  const wrongPatch = watchContentCanonicalFinalCueEvidence([
+    '版本 3.6',
+    '.5 平均响应时间从920毫秒降至315毫秒',
+  ]);
+  const wrongPatchVerdict = compareWatchContentText(reference, wrongPatch.comparisonText);
+  assert.equal(wrongPatchVerdict.passed, false);
+  assert.ok(wrongPatchVerdict.missingClauses.includes('2版本把平均响应时间从920毫秒降至315毫秒'));
+
+  const nonAdjacent = watchContentCanonicalFinalCueEvidence([
+    '版本 3.6',
+    '这是独立文本',
+    '.2 平均响应时间从920毫秒降至315毫秒',
+  ]);
+  assert.deepEqual(nonAdjacent.adjacentVersionContinuations, []);
+  const arbitrary = watchContentCanonicalFinalCueEvidence([
+    '发布说明 3.6',
+    '.2 平均响应时间从920毫秒降至315毫秒',
+  ]);
+  assert.deepEqual(arbitrary.adjacentVersionContinuations, []);
 });
 
 test('text verdict reports missing and extra clauses from one policy', () => {

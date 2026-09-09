@@ -332,7 +332,10 @@ fn replay_fast_next_speech_turn_detected_cancel_keeps_item_lineage() {
         .event_diagnostics
         .native_response_cue_for_input_item("item-fast-one")
         .expect("first response owner");
-    std::thread::sleep(Duration::from_millis(2));
+    // A completed owner-bound empty VAD response is held for the bounded
+    // contiguous-split window. This isolated 1s segment must still reach the
+    // original failure terminal once that window expires.
+    std::thread::sleep(Duration::from_millis(140));
     socket = harness.tick(socket, &mut slice);
     let second_cue_id = slice.current_cue_id.clone().expect("second speech cue");
     assert_ne!(first_cue_id, second_cue_id);

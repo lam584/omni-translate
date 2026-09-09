@@ -3353,18 +3353,10 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
     speaker_device_id: Option<&str>,
     cue_id: &str,
 ) -> Option<crate::audio::speech::SpeakerPlaybackReceipt> {
-    let mut attempt_index = 0_u8;
-    let result = loop {
-        attempt_index = attempt_index.saturating_add(1);
-        let result = crate::audio::speech::play_to_speaker(
-            output_samples,
-            sample_rate_hz,
-            1,
-            speaker_device_id,
-            100,
-            audio_state.desktop_playback_ownership(),
-            cue_id,
-            "native-omni",
+    const ENDPOINT_READINESS_TIMEOUT: Duration = Duration::from_millis(750);
+    const ENDPOINT_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
+    macro_rules! on_render_event {
+        () => {
             |event| {
                 match event {
             crate::audio::speech::SpeakerRenderEvent::Discontinuity {
@@ -3421,24 +3413,88 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
                 Ok(())
             }
                 }
-            },
-        );
-        let retryable_open_failure = result
-            .as_ref()
-            .is_err_and(|error| should_retry_speaker_endpoint(attempt_index, error));
-        if !retryable_open_failure {
-            break result;
-        }
+            }
+        };
+    }
+    let _ = diag_log(
+        app,
+        "omni",
+        "info",
+        format!(
+            "[AUDIO] speaker render attempt started: cue_id={cue_id} attempt=1 endpoint_id={}",
+            speaker_device_id.unwrap_or("default"),
+        ),
+    );
+    let first_result = crate::audio::speech::play_to_speaker(
+        output_samples,
+        sample_rate_hz,
+        1,
+        speaker_device_id,
+        100,
+        audio_state.desktop_playback_ownership(),
+        cue_id,
+        "native-omni",
+        on_render_event!(),
+    );
+    let result = if first_result
+        .as_ref()
+        .is_err_and(|error| should_retry_speaker_endpoint(1, error))
+    {
+        let first_error = first_result.as_ref().unwrap_err();
         let _ = diag_log(
             app,
             "omni",
             "warn",
             format!(
-                "[AUDIO] transient speaker endpoint failed before stream start; re-resolving the configured endpoint and retrying once: cue_id={cue_id} error={}",
-                result.as_ref().unwrap_err(),
+                "[AUDIO] speaker render attempt failed before stream start: cue_id={cue_id} attempt=1 retryable=true error={first_error}"
             ),
         );
-        std::thread::sleep(Duration::from_millis(50));
+        let readiness = crate::audio::speech::wait_for_exact_speaker_endpoint_ready(
+            speaker_device_id,
+            audio_state.desktop_playback_ownership(),
+            cue_id,
+            ENDPOINT_READINESS_TIMEOUT,
+            ENDPOINT_READINESS_POLL_INTERVAL,
+            |poll_index, detail| {
+                let _ = diag_log(
+                    app,
+                    "omni",
+                    "info",
+                    format!(
+                        "[AUDIO] speaker endpoint readiness observation: cue_id={cue_id} poll={poll_index} detail={detail}"
+                    ),
+                );
+            },
+        );
+        match readiness {
+            Ok(recovery_permit) => {
+                let owner_generation = recovery_permit.generation();
+                let _ = diag_log(
+                    app,
+                    "omni",
+                    "info",
+                    format!(
+                        "[AUDIO] speaker render attempt started: cue_id={cue_id} attempt=2 endpoint_id={} renderer_owner_generation={owner_generation}",
+                        speaker_device_id.unwrap_or("default"),
+                    ),
+                );
+                crate::audio::speech::retry_play_to_speaker_after_endpoint_ready(
+                    output_samples,
+                    sample_rate_hz,
+                    1,
+                    speaker_device_id,
+                    100,
+                    recovery_permit,
+                    cue_id,
+                    on_render_event!(),
+                )
+            }
+            Err(readiness_error) => Err(format!(
+                "{first_error}; bounded endpoint readiness failed: {readiness_error}"
+            )),
+        }
+    } else {
+        first_result
     };
     match result {
         Ok(receipt) => {
@@ -3524,6 +3580,10 @@ mod speaker_endpoint_retry_tests {
         let after_start = "Windows returned an error: 系统找不到指定的文件。 (0x80070002); speaker-render-stream-started=true";
         assert!(!speaker_render_stream_never_started(after_start));
         assert!(should_retry_speaker_endpoint(1, before_start));
+        assert!(should_retry_speaker_endpoint(
+            1,
+            "speaker-render-stage=audio-client error=Windows returned an error: 系统找不到指定的文件。 (0x80070002); speaker-render-stream-started=false"
+        ));
         assert!(!should_retry_speaker_endpoint(2, before_start));
         assert!(!should_retry_speaker_endpoint(1, after_start));
     }

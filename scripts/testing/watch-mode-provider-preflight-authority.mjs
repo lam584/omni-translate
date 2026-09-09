@@ -35,6 +35,21 @@ const STRICT_TIMEOUT_MS = 12_000;
 const STRICT_TEMPERATURE = 0.2;
 const STRICT_MAX_INPUT_TOKENS = 4_096;
 const STRICT_MAX_OUTPUT_TOKENS = 256;
+const STRICT_EN_ZH_CORPUS = Object.freeze({
+  Mars: '火星',
+  'Please record each sentence clearly': '请清楚记录每个句子',
+  'Version 3.6.2': '3.6.2版本',
+  'artificial biosphere': '人工生物圈',
+  'by October 3': '在10月3日前',
+  'endangered species': '濒危物种',
+  'five hundred million dollars': '五亿美元',
+  'flying cars': '飞行汽车',
+  'forty-eight hours': '48小时',
+  'light bulb': '灯泡',
+  'one billion': '十亿',
+  'proper names': '专有名称',
+  'reduced average response time from 920 milliseconds to 315 milliseconds': '把平均响应时间从920毫秒降至315毫秒',
+});
 
 const canonical = (value) => {
   if (Array.isArray(value)) return value.map(canonical);
@@ -132,15 +147,7 @@ function strictSessionUpdate(entry) {
     })
     || !sameCanonical(payload.session.translation, {
       corpus: {
-        phrases: {
-          Mars: '火星',
-          'artificial biosphere': '人工生物圈',
-          'endangered species': '濒危物种',
-          'five hundred million dollars': '五亿美元',
-          'flying cars': '飞行汽车',
-          'light bulb': '灯泡',
-          'one billion': '十亿',
-        },
+        phrases: STRICT_EN_ZH_CORPUS,
       },
       language: 'zh',
     })
@@ -191,10 +198,14 @@ function strictSessionAuthority(raw, createdEntry, updatedEntry, update) {
       type: updatedTurnDetection.type,
     },
   };
+  // Rust's serde_json preserves the configured floating-point threshold as
+  // `0.0` in the session-authority digest, while parsed JS represents it as
+  // numeric zero. Keep the exact cross-runtime digest framing explicit and
+  // derive the evolving corpus body from the same strict map used above.
   const canonicalConfig = '{"input_audio_format":"pcm",'
     + '"input_audio_transcription":{"language":"en","model":"qwen3-asr-flash-realtime"},'
     + '"modalities":["text"],"sample_rate":16000,"translation":{"corpus":{"phrases":'
-    + '{"Mars":"火星","artificial biosphere":"人工生物圈","endangered species":"濒危物种","five hundred million dollars":"五亿美元","flying cars":"飞行汽车","light bulb":"灯泡","one billion":"十亿"}},'
+    + JSON.stringify(canonical(STRICT_EN_ZH_CORPUS)) + '},'
     + '"language":"zh"},'
     + '"turn_detection":{"silence_duration_ms":400,"threshold":0.0,"type":"server_vad"}}';
   const configDigest = sha256Bytes(Buffer.from(canonicalConfig, 'utf8'));

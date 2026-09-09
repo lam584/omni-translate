@@ -101,6 +101,25 @@ async function readStdinJson() {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
+function writeAndExit(stream, text, exitCode, exit = process.exit) {
+  stream.write(text, () => exit(exitCode));
+}
+
+export async function runRemoteProviderPreflightCli({
+  readRequest = readStdinJson,
+  runWorker = runRemoteProviderPreflightWorker,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  exit = process.exit,
+} = {}) {
+  try {
+    const result = await runWorker(await readRequest());
+    writeAndExit(stdout, `${JSON.stringify(result)}\n`, 0, exit);
+  } catch (error) {
+    writeAndExit(stderr, `remote-provider-preflight: ${error.message}\n`, 1, exit);
+  }
+}
+
 export async function runRemoteProviderPreflightWorker(rawRequest, { runPreflight = runManagedProviderPreflight } = {}) {
   const request = validateRemotePreflightRequest(rawRequest);
   const claim = claimProviderPreflightDispatchAuthorization({
@@ -136,11 +155,5 @@ export async function runRemoteProviderPreflightWorker(rawRequest, { runPrefligh
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
-  try {
-    const result = await runRemoteProviderPreflightWorker(await readStdinJson());
-    process.stdout.write(`${JSON.stringify(result)}\n`);
-  } catch (error) {
-    console.error(`remote-provider-preflight: ${error.message}`);
-    process.exitCode = 1;
-  }
+  await runRemoteProviderPreflightCli();
 }

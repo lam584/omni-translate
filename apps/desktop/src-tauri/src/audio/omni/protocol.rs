@@ -3060,32 +3060,13 @@ impl OmniPlaybackQueue {
         state: &mut OmniPlaybackQueueState,
         now: Instant,
     ) -> Vec<OmniPlaybackStaleDrop> {
-        let mut projected_start = state.active_expected_end.unwrap_or(now).max(now);
-        let mut retained = VecDeque::with_capacity(state.pending.len());
-        let mut dropped = Vec::new();
-        for command in state.pending.drain(..) {
-            let can_expire_independently = state.shutdown == OmniPlaybackShutdown::Running
-                && matches!(command, OmniPlaybackCommand::Play { .. });
-            let projected_start_delay = projected_start
-                .saturating_duration_since(command.queued_at());
-            if can_expire_independently && omni_playback_queue_age_expired(projected_start_delay) {
-                dropped.push(OmniPlaybackStaleDrop {
-                    cue_id: command.cue_id().to_string(),
-                    projected_start_delay_ms: projected_start_delay
-                        .as_millis()
-                        .min(u64::MAX as u128) as u64,
-                    observed_queue_age_ms: now
-                        .saturating_duration_since(command.queued_at())
-                        .as_millis()
-                        .min(u64::MAX as u128) as u64,
-                });
-            } else {
-                projected_start += command.estimated_duration();
-                retained.push_back(command);
-            }
-        }
-        state.pending = retained;
-        dropped
+        let _ = (state, now);
+        // A successful enqueue is the ownership hand-off for a complete native
+        // cue. Removing that command before the physical renderer emits its
+        // lifecycle leaves a fully published cue without terminal playback
+        // authority. Realtime age remains an admission check for a new stream
+        // start, but it must never revoke an already accepted command.
+        Vec::new()
     }
 
     fn recv_timeout(&self, timeout: Duration) -> OmniPlaybackReceiveOutcome {
@@ -5382,7 +5363,7 @@ mod omni_playback_tests {
     }
 
     #[test]
-    fn enqueue_drops_only_expired_pending_audio_and_keeps_fresh_cues() {
+    fn enqueue_never_revokes_an_accepted_complete_cue_before_physical_lifecycle() {
         let queue = OmniPlaybackQueue::new(3);
         assert_eq!(
             queue.enqueue(queued_play("expired")),
@@ -5402,19 +5383,24 @@ mod omni_playback_tests {
             *queued_at = Instant::now() - Duration::from_secs(6);
         }
 
-        assert!(matches!(
+        assert_eq!(
             queue.enqueue(queued_play("new")),
-            OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale { dropped }
-                if dropped.len() == 1
-                    && dropped[0].cue_id == "expired"
-                    && dropped[0].projected_start_delay_ms >= 6_000
-                    && dropped[0].observed_queue_age_ms >= 6_000
+            OmniPlaybackEnqueueOutcome::Queued
+        );
+        assert_eq!(queue.pending_cue_ids(), ["expired", "fresh", "new"]);
+        assert!(matches!(
+            queue.enqueue(queued_play("rejected")),
+            OmniPlaybackEnqueueOutcome::Overflow {
+                reason: OmniPlaybackOverflowReason::QueueFull,
+                dropped,
+                ..
+            } if dropped.is_empty()
         ));
-        assert_eq!(queue.pending_cue_ids(), ["fresh", "new"]);
+        assert_eq!(queue.pending_cue_ids(), ["expired", "fresh", "new"]);
     }
 
     #[test]
-    fn c03_queue_only_submits_the_active_and_surviving_final_cues() {
+    fn c03_queue_submits_every_accepted_final_cue_to_the_renderer() {
         fn c03_play(cue_id: &str, response_id: &str, duration: Duration) -> OmniPlaybackCommand {
             OmniPlaybackCommand::Play {
                 samples: vec![1, -1],
@@ -5451,30 +5437,33 @@ mod omni_playback_tests {
             ("omni-cue-inbound-1788721357870", "resp_AG7EMHYNhMxUyVkhhJxoB"),
             ("omni-cue-inbound-1788721358299", "resp_WAOAjQCyKsCUZsq32h4Ph"),
         ];
-        let mut dropped = Vec::new();
         for (cue_id, response_id) in pending {
             if let Some(previous) = queue.inner.state.lock().unwrap().pending.back_mut() {
                 if let OmniPlaybackCommand::Play { queued_at, .. } = previous {
                     *queued_at = Instant::now() - Duration::from_secs(60);
                 }
             }
-            if let OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale { dropped: stale } =
-                queue.enqueue(c03_play(cue_id, response_id, Duration::from_millis(2_800)))
-            {
-                dropped.extend(stale.into_iter().map(|entry| entry.cue_id));
-            }
+            assert_eq!(
+                queue.enqueue(c03_play(cue_id, response_id, Duration::from_millis(2_800))),
+                OmniPlaybackEnqueueOutcome::Queued,
+            );
         }
-        assert_eq!(dropped, pending[..pending.len() - 1].iter().map(|entry| entry.0.to_string()).collect::<Vec<_>>());
         queue.begin_provider_finishing();
         queue.finish_active();
-        let OmniPlaybackReceiveOutcome::Command { command, dropped } = queue.recv_timeout(Duration::ZERO)
-        else { panic!("the final c03 cue must survive as an independent renderer submission") };
-        assert!(dropped.is_empty());
-        assert!(matches!(command, OmniPlaybackCommand::Play { cue_id, response_id: Some(response_id), .. } if cue_id == pending.last().unwrap().0 && response_id == pending.last().unwrap().1));
+        for (expected_cue_id, expected_response_id) in pending {
+            let OmniPlaybackReceiveOutcome::Command { command, dropped } =
+                queue.recv_timeout(Duration::ZERO)
+            else {
+                panic!("every accepted c03 cue must reach an independent renderer submission")
+            };
+            assert!(dropped.is_empty());
+            assert!(matches!(command, OmniPlaybackCommand::Play { cue_id, response_id: Some(response_id), .. } if cue_id == expected_cue_id && response_id == expected_response_id));
+            queue.finish_active();
+        }
     }
 
     #[test]
-    fn active_native_audio_keeps_terminal_tail_without_interrupting_or_relaxing_live_expiry() {
+    fn active_native_audio_keeps_every_accepted_tail_without_silent_expiry() {
         let queue = OmniPlaybackQueue::new(2);
         assert_eq!(
             queue.enqueue(queued_play_with_duration("active", Duration::from_millis(6_100))),
@@ -5491,12 +5480,11 @@ mod omni_playback_tests {
             queue.enqueue(queued_play("superseded-tail")),
             OmniPlaybackEnqueueOutcome::Queued
         );
-        assert!(matches!(
+        assert_eq!(
             queue.enqueue(queued_play("terminal-tail")),
-            OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale { dropped }
-                if dropped.len() == 1 && dropped[0].cue_id == "superseded-tail"
-        ));
-        assert_eq!(queue.pending_cue_ids(), ["terminal-tail"]);
+            OmniPlaybackEnqueueOutcome::Queued
+        );
+        assert_eq!(queue.pending_cue_ids(), ["superseded-tail", "terminal-tail"]);
 
         // session.finished closes producer admission and turns the same cue
         // into an immutable playback tail. The active sentence is not
@@ -5504,14 +5492,16 @@ mod omni_playback_tests {
         // realtime-age policy when the consumer advances.
         queue.begin_provider_finishing();
         queue.finish_active();
-        let OmniPlaybackReceiveOutcome::Command { command, dropped } =
-            queue.recv_timeout(Duration::ZERO)
-        else {
-            panic!("terminal tail must be drained after active playback")
-        };
-        assert!(dropped.is_empty());
-        assert_eq!(command.cue_id(), "terminal-tail");
-        queue.finish_active();
+        for expected in ["superseded-tail", "terminal-tail"] {
+            let OmniPlaybackReceiveOutcome::Command { command, dropped } =
+                queue.recv_timeout(Duration::ZERO)
+            else {
+                panic!("every accepted tail must be drained after active playback")
+            };
+            assert!(dropped.is_empty());
+            assert_eq!(command.cue_id(), expected);
+            queue.finish_active();
+        }
         queue.drain_and_stop();
         assert!(matches!(
             queue.recv_timeout(Duration::ZERO),
@@ -5520,7 +5510,7 @@ mod omni_playback_tests {
     }
 
     #[test]
-    fn delayed_complete_cue_still_expires_while_session_is_running() {
+    fn delayed_complete_cue_still_reaches_playback_while_session_is_running() {
         let queue = OmniPlaybackQueue::new(2);
         assert_eq!(
             queue.enqueue(queued_play("became-stale")),
@@ -5537,15 +5527,17 @@ mod omni_playback_tests {
             };
             *queued_at = Instant::now() - Duration::from_secs(6);
         }
-        assert!(matches!(
-            queue.recv_timeout(Duration::ZERO),
-            OmniPlaybackReceiveOutcome::StaleDropped(dropped)
-                if dropped.len() == 1 && dropped[0].cue_id == "became-stale"
-        ));
+        let OmniPlaybackReceiveOutcome::Command { command, dropped } =
+            queue.recv_timeout(Duration::ZERO)
+        else {
+            panic!("accepted complete cue must reach physical playback");
+        };
+        assert!(dropped.is_empty());
+        assert_eq!(command.cue_id(), "became-stale");
     }
 
     #[test]
-    fn receive_rechecks_pending_expiry_immediately_before_playback() {
+    fn receive_does_not_silently_revoke_accepted_complete_cue() {
         let queue = OmniPlaybackQueue::new(1);
         assert_eq!(
             queue.enqueue(queued_play("became-stale")),
@@ -5561,14 +5553,13 @@ mod omni_playback_tests {
             *queued_at = Instant::now() - Duration::from_secs(6);
         }
 
-        assert!(matches!(
-            queue.recv_timeout(Duration::ZERO),
-            OmniPlaybackReceiveOutcome::StaleDropped(dropped)
-                if dropped.len() == 1
-                    && dropped[0].cue_id == "became-stale"
-                    && dropped[0].projected_start_delay_ms >= 6_000
-                    && dropped[0].observed_queue_age_ms >= 6_000
-        ));
+        let OmniPlaybackReceiveOutcome::Command { command, dropped } =
+            queue.recv_timeout(Duration::ZERO)
+        else {
+            panic!("accepted complete cue must not disappear before playback");
+        };
+        assert!(dropped.is_empty());
+        assert_eq!(command.cue_id(), "became-stale");
         assert!(queue.pending_cue_ids().is_empty());
     }
 

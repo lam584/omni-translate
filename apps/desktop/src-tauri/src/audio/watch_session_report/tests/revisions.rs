@@ -261,6 +261,93 @@ use std::time::Duration;
     }
 
     #[test]
+    fn empty_source_event_anchors_source_before_native_model_output() {
+        let store = WatchSessionReportStore::new();
+        store.begin_or_reuse("test", "qwen3.5-livetranslate-flash-realtime");
+
+        {
+            let mut guard = store.inner.lock().expect("report");
+            guard.as_mut().expect("session").started_instant =
+                Instant::now() - Duration::from_millis(10);
+        }
+        store.record_source_runtime(
+            "cue-live",
+            "inbound",
+            "",
+            false,
+            1,
+            1,
+            Some(SubtitleTranslationStateRuntime::Streaming),
+        );
+
+        {
+            let mut guard = store.inner.lock().expect("report");
+            guard.as_mut().expect("session").started_instant =
+                Instant::now() - Duration::from_millis(20);
+        }
+        store.record_model_snapshot_for_cue(
+            "cue-live",
+            "dashscope-native-realtime",
+            "嗯。",
+            true,
+            None,
+            None,
+        );
+
+        {
+            let mut guard = store.inner.lock().expect("report");
+            guard.as_mut().expect("session").started_instant =
+                Instant::now() - Duration::from_millis(30);
+        }
+        store.record_source_runtime(
+            "cue-live",
+            "inbound",
+            "嗯。",
+            true,
+            1,
+            2,
+            Some(SubtitleTranslationStateRuntime::Streaming),
+        );
+        store.record_model_final_for_cue(
+            "cue-live",
+            "dashscope-native-realtime",
+            "嗯。",
+            true,
+            None,
+            None,
+        );
+        store.record_publish_runtime(
+            "cue-live",
+            "inbound",
+            "嗯。",
+            "嗯。",
+            &[],
+            true,
+            1,
+            3,
+            Some(SubtitleTranslationStateRuntime::Final),
+        );
+        store.complete();
+
+        let report = store.snapshot().expect("report");
+        let cue = &report.cues[0];
+        let first_source_event = cue
+            .events
+            .iter()
+            .find(|event| event.stage == "source")
+            .expect("source event");
+        assert!(first_source_event.text.is_empty());
+        assert_eq!(cue.source_at_ms, Some(first_source_event.elapsed_ms));
+        assert!(cue.source_at_ms < cue.llm_first_at_ms);
+        assert_eq!(cue.source_text, "嗯。");
+        assert!(cue.source_stable_at_ms > cue.source_at_ms);
+        assert!(!cue
+            .issues
+            .iter()
+            .any(|issue| issue.code == "invalid-stage-order"));
+    }
+
+    #[test]
     fn livetranslate_cumulative_revisions_attach_final_render_to_latest_content() {
         let store = WatchSessionReportStore::new();
         let session_id =

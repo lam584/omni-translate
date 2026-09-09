@@ -260,9 +260,13 @@ impl WatchSessionReportStore {
         if translation_state.is_some() {
             cue.translation_state = translation_state;
         }
+        // The source stage begins when the accepted cue event arrives, even
+        // when server VAD has not produced non-empty ASR text yet. Native
+        // realtime model output can legitimately race the first transcript;
+        // retain the earlier source event as the causal stage anchor.
+        cue.source_at_ms.get_or_insert(elapsed);
         if !text.is_empty() {
             cue.source_text = text.to_string();
-            cue.source_at_ms.get_or_insert(elapsed);
             if final_event {
                 cue.source_stable_at_ms.get_or_insert(elapsed);
             }

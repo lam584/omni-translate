@@ -35,6 +35,7 @@ mod aec_live_scenario;
 mod speaker_render_event;
 mod output_device;
 mod output_attempt;
+mod endpoint_recovery;
 
 use self::aec_live_scenario::{
     active_aec_live_scenario_assignments, finish_aec_live_scenario_assignments,
@@ -44,6 +45,10 @@ use self::playback_engine::{SpeechPlaybackEngine, SpeechPlaybackResult, Synthesi
 pub(crate) use self::speaker_render_event::SpeakerRenderEvent;
 use self::output_device::resolve_wasapi_render_device;
 use self::output_attempt::run_wasapi_render_attempt;
+pub(crate) use self::endpoint_recovery::{
+    play_to_speaker, retry_play_to_speaker_after_endpoint_ready,
+    wait_for_exact_speaker_endpoint_ready,
+};
 #[cfg(test)]
 use self::output_device::normalized_device_name;
 

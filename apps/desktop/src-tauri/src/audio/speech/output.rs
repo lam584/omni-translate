@@ -1,3 +1,11 @@
+#[path = "output/support.rs"]
+mod support;
+
+use support::{
+    audio_frames_to_duration, f32_samples_to_le_bytes, next_render_session_id,
+    playback_volume, RenderUnderrunTracker,
+};
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct SpeechOutputRoutePlan {
     pub(crate) play_to_speaker: bool,
@@ -354,6 +362,9 @@ where
 {
     let mut live_scenario_reserved = false;
     let mut stream_started = false;
+    let renderer_instance_id = format!("desktop-process-{}", std::process::id());
+    let render_session_id = next_render_session_id();
+    let mut opened_endpoint_id = None;
     let render_result = run_wasapi_render_attempt(on_render_event, |on_render_event| {
         playback_permit.ensure_active()?;
         if sample_rate_hz == 0 || channel_count == 0 {
@@ -393,6 +404,16 @@ where
         let physical_playback_device_id = device
             .get_id()
             .map_err(|error| speaker_render_stage_error("endpoint-id", error))?;
+        on_render_event(SpeakerRenderEvent::Discontinuity {
+            reason: crate::audio::state::EchoRenderBoundary::SessionStarted {
+                session_id: render_session_id,
+                endpoint_id: &physical_playback_device_id,
+                renderer_instance_id: &renderer_instance_id,
+                owner_generation: playback_permit.generation(),
+            },
+            observed_at: Instant::now(),
+        })?;
+        opened_endpoint_id = Some(physical_playback_device_id.clone());
         let mut audio_client = device
             .get_iaudioclient()
             .map_err(|error| speaker_render_stage_error("audio-client", error))?;
@@ -502,6 +523,25 @@ where
             physical_playback_device_id,
         ))
     });
+    if let Some(endpoint_id) = opened_endpoint_id.as_deref() {
+        let normally_drained = render_result.is_ok();
+        if let Err(end_error) = on_render_event(SpeakerRenderEvent::Discontinuity {
+            reason: crate::audio::state::EchoRenderBoundary::SessionEnded {
+                session_id: render_session_id,
+                endpoint_id,
+                renderer_instance_id: &renderer_instance_id,
+                owner_generation: playback_permit.generation(),
+                normally_drained,
+                stream_started,
+            },
+            observed_at: Instant::now(),
+        }) {
+            return Err(match render_result {
+                Ok(_) => end_error,
+                Err(error) => format!("{error}; failed to publish render session end: {end_error}"),
+            });
+        }
+    }
     if live_scenario_reserved { finish_aec_live_scenario_assignments(cue_id, render_result.is_ok())?; }
     let render_result = render_result.map_err(|error| {
         format!("{error}; speaker-render-stream-started={stream_started}")
@@ -511,7 +551,7 @@ where
         output_sample_rate_hz: SPEAKER_SAMPLE_RATE_HZ,
         output_channel_count: SPEAKER_CHANNEL_COUNT,
         physical_playback_device_id,
-        renderer_instance_id: format!("desktop-process-{}", std::process::id()),
+        renderer_instance_id,
         renderer_owner_generation: playback_permit.generation(),
     })
 }
@@ -693,7 +733,9 @@ where
             .map_err(|error| error.to_string())?;
         if underrun_tracker.observe(started, tracker.submitted_frames, padding_before) {
             on_render_event(SpeakerRenderEvent::Discontinuity {
-                reason: "wasapi-render-underrun",
+                reason: crate::audio::state::EchoRenderBoundary::DeviceFault(
+                    "wasapi-render-underrun",
+                ),
                 observed_at: Instant::now(),
             })?;
         }
@@ -789,21 +831,6 @@ where
     Ok(())
 }
 
-#[derive(Default)]
-struct RenderUnderrunTracker {
-    reported_in_session: bool,
-}
-
-impl RenderUnderrunTracker {
-    fn observe(&mut self, started: bool, submitted_frames: usize, padding_frames: u32) -> bool {
-        if !self.reported_in_session && started && submitted_frames > 0 && padding_frames == 0 {
-            self.reported_in_session = true;
-            return true;
-        }
-        false
-    }
-}
-
 fn ensure_render_ownership(
     audio_client: &AudioClient,
     playback_permit: &super::playback_ownership::DesktopPlaybackPermit,
@@ -865,22 +892,6 @@ fn cancel_wasapi_render(
         return Err(format!("{cancellation}; {cleanup_error}"));
     }
     Err(cancellation)
-}
-
-fn f32_samples_to_le_bytes(samples: &[f32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(samples.len() * size_of::<f32>());
-    for sample in samples {
-        bytes.extend_from_slice(&sample.to_le_bytes());
-    }
-    bytes
-}
-
-fn audio_frames_to_duration(frame_count: usize) -> Duration {
-    Duration::from_secs_f64(frame_count as f64 / SPEAKER_SAMPLE_RATE_HZ as f64)
-}
-
-fn playback_volume(output_level: u64) -> f32 {
-    output_level.min(100) as f32 / 100.0
 }
 
 #[cfg(test)]
@@ -949,13 +960,13 @@ mod render_reference_pacer_tests {
     }
 
     #[test]
-    fn device_open_failure_publishes_discontinuities_before_and_after_the_attempt() {
+    fn pre_stream_device_open_failure_does_not_invent_a_device_discontinuity() {
         use std::sync::Mutex;
 
         static DISCONTINUITIES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
         fn record_discontinuity(event: SpeakerRenderEvent<'_>) -> Result<(), String> {
             if let SpeakerRenderEvent::Discontinuity { reason, .. } = event {
-                DISCONTINUITIES.lock().unwrap().push(reason);
+                DISCONTINUITIES.lock().unwrap().push(reason.log_reason());
             }
             Ok(())
         }
@@ -969,8 +980,35 @@ mod render_reference_pacer_tests {
         assert_eq!(error, "simulated-device-open-failure");
         assert_eq!(
             DISCONTINUITIES.lock().unwrap().as_slice(),
-            vec!["wasapi-render-session-start", "wasapi-render-failed"]
+            Vec::<&'static str>::new()
         );
+    }
+
+    #[test]
+    fn normally_drained_per_cue_attempt_does_not_publish_a_device_discontinuity() {
+        let mut discontinuities = Vec::new();
+        let mut record_discontinuity = |event: SpeakerRenderEvent<'_>| {
+            if let SpeakerRenderEvent::Discontinuity { reason, .. } = event {
+                discontinuities.push(reason.log_reason());
+            }
+            Ok(())
+        };
+
+        run_wasapi_render_attempt(&mut record_discontinuity, |_| Ok::<_, String>(()))
+            .expect("normal per-cue render boundary");
+
+        assert!(
+            discontinuities.is_empty(),
+            "a normal per-cue session boundary is not a device-level AEC discontinuity"
+        );
+    }
+
+    #[test]
+    fn every_render_attempt_gets_a_distinct_session_identity() {
+        let first = next_render_session_id();
+        let second = next_render_session_id();
+
+        assert_ne!(first, second);
     }
 
     #[test]

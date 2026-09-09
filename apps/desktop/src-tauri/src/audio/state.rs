@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::{mpsc::Sender, Arc, Mutex, MutexGuard, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -25,6 +25,7 @@ mod cue_lifecycle;
 mod report_publish;
 mod deferred_translation;
 mod echo_backend;
+pub(crate) use echo_backend::EchoRenderBoundary;
 mod ignored_fragment;
 mod source_finality;
 mod source_publish;
@@ -83,6 +84,10 @@ struct EchoRenderClock {
     last_observed_at: Option<Instant>,
     discontinuity_count: u64,
     last_discontinuity_reason: Option<&'static str>,
+    render_authority_endpoint_id: Option<String>,
+    render_authority_renderer_instance_id: Option<String>,
+    render_authority_owner_generation: Option<u64>,
+    active_render_sessions: BTreeMap<u64, (String, String, u64)>,
 }
 
 #[derive(Debug, Clone, Copy)]

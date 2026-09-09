@@ -1,5 +1,42 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EchoRenderBoundary<'a> {
+    SessionStarted {
+        session_id: u64,
+        endpoint_id: &'a str,
+        renderer_instance_id: &'a str,
+        owner_generation: u64,
+    },
+    SessionEnded {
+        session_id: u64,
+        endpoint_id: &'a str,
+        renderer_instance_id: &'a str,
+        owner_generation: u64,
+        normally_drained: bool,
+        stream_started: bool,
+    },
+    DeviceFault(&'static str),
+}
+
+impl EchoRenderBoundary<'_> {
+    pub(crate) fn log_reason(self) -> &'static str {
+        match self {
+            Self::SessionStarted { .. } => "wasapi-render-session-start",
+            Self::SessionEnded {
+                normally_drained: true,
+                ..
+            } => "wasapi-render-session-drained",
+            Self::SessionEnded {
+                stream_started: false,
+                ..
+            } => "wasapi-render-aborted-before-stream-start",
+            Self::SessionEnded { .. } => "wasapi-render-failed-after-stream-start",
+            Self::DeviceFault(reason) => reason,
+        }
+    }
+}
+
 const MAX_ECHO_RENDER_REFERENCE_LEAD_FRAMES: u64 =
     crate::audio::echo_cancel::TARGET_SAMPLE_RATE_HZ as u64;
 
@@ -57,21 +94,78 @@ impl AudioStateStore {
     /// processes the next capture frame.
     pub(crate) fn mark_echo_render_discontinuity(
         &self,
-        reason: &'static str,
+        reason: EchoRenderBoundary<'_>,
         observed_at: Instant,
     ) -> Result<(), String> {
         let mut clock = self
             .echo_render_clock
             .lock()
             .expect("echo render clock poisoned");
-        clock.last_player_position = None;
-        clock.last_submitted_frames = None;
-        clock.last_endpoint_padding_frames = None;
-        clock.last_physical_prefix_offset_frames = None;
-        clock.last_reference_lead_frames = None;
-        clock.last_observed_at = Some(observed_at);
-        clock.discontinuity_count = clock.discontinuity_count.saturating_add(1);
-        clock.last_discontinuity_reason = Some(reason);
+        clear_render_timing(&mut clock, observed_at);
+        let reason = match reason {
+            EchoRenderBoundary::SessionStarted {
+                session_id,
+                endpoint_id,
+                renderer_instance_id,
+                owner_generation,
+            } => {
+                let has_prior_authority = clock.render_authority_endpoint_id.is_some();
+                let same_authority = clock.render_authority_endpoint_id.as_deref()
+                    == Some(endpoint_id)
+                    && clock.render_authority_renderer_instance_id.as_deref()
+                        == Some(renderer_instance_id)
+                    && clock.render_authority_owner_generation == Some(owner_generation);
+                let duplicate_session = clock.active_render_sessions.contains_key(&session_id);
+                clock.render_authority_endpoint_id = Some(endpoint_id.to_string());
+                clock.render_authority_renderer_instance_id =
+                    Some(renderer_instance_id.to_string());
+                clock.render_authority_owner_generation = Some(owner_generation);
+                clock.active_render_sessions.insert(
+                    session_id,
+                    (
+                        endpoint_id.to_string(),
+                        renderer_instance_id.to_string(),
+                        owner_generation,
+                    ),
+                );
+                let reason = duplicate_session
+                    .then_some("wasapi-render-session-id-reused")
+                    .or_else(|| {
+                        (has_prior_authority && !same_authority)
+                            .then_some("wasapi-render-authority-changed")
+                    });
+                reason
+            }
+            EchoRenderBoundary::SessionEnded {
+                session_id,
+                endpoint_id,
+                renderer_instance_id,
+                owner_generation,
+                normally_drained,
+                stream_started,
+            } => {
+                let expected = clock.active_render_sessions.remove(&session_id);
+                let matching_end = expected.as_ref().is_some_and(
+                    |(expected_endpoint, expected_renderer, expected_generation)| {
+                        expected_endpoint == endpoint_id
+                            && expected_renderer == renderer_instance_id
+                            && *expected_generation == owner_generation
+                    },
+                );
+                if !matching_end {
+                    Some("wasapi-render-session-end-mismatch")
+                } else if stream_started && !normally_drained {
+                    Some("wasapi-render-failed-after-stream-start")
+                } else {
+                    None
+                }
+            }
+            EchoRenderBoundary::DeviceFault(reason) => Some(reason),
+        };
+        if let Some(reason) = reason {
+            clock.discontinuity_count = clock.discontinuity_count.saturating_add(1);
+            clock.last_discontinuity_reason = Some(reason);
+        }
         Ok(())
     }
     
@@ -237,7 +331,10 @@ mod tests {
             .expect("echo canceller poisoned") = Some(canceller);
 
         store
-            .mark_echo_render_discontinuity("wasapi-render-underrun", Instant::now())
+            .mark_echo_render_discontinuity(
+                EchoRenderBoundary::DeviceFault("wasapi-render-underrun"),
+                Instant::now(),
+            )
             .expect("publish render discontinuity");
 
         let published = store.echo_render_clock_snapshot();
@@ -265,6 +362,135 @@ mod tests {
                 .reset_count,
             1
         );
+    }
+
+    fn publish_session_start(
+        store: &AudioStateStore,
+        session_id: u64,
+        endpoint_id: &str,
+        owner_generation: u64,
+    ) {
+        store
+            .mark_echo_render_discontinuity(
+                EchoRenderBoundary::SessionStarted {
+                    session_id,
+                    endpoint_id,
+                    renderer_instance_id: "desktop-process-42",
+                    owner_generation,
+                },
+                Instant::now(),
+            )
+            .expect("publish render session start");
+    }
+
+    fn publish_session_end(
+        store: &AudioStateStore,
+        session_id: u64,
+        endpoint_id: &str,
+        owner_generation: u64,
+        normally_drained: bool,
+        stream_started: bool,
+    ) {
+        store
+            .mark_echo_render_discontinuity(
+                EchoRenderBoundary::SessionEnded {
+                    session_id,
+                    endpoint_id,
+                    renderer_instance_id: "desktop-process-42",
+                    owner_generation,
+                    normally_drained,
+                    stream_started,
+                },
+                Instant::now(),
+            )
+            .expect("publish render session end");
+    }
+
+    #[test]
+    fn normally_drained_per_cue_sessions_preserve_aec_authority() {
+        let store = AudioStateStore::new();
+
+        publish_session_start(&store, 1, "endpoint-a", 7);
+        publish_session_end(&store, 1, "endpoint-a", 7, true, true);
+        publish_session_start(&store, 2, "endpoint-a", 7);
+        publish_session_end(&store, 2, "endpoint-a", 7, true, true);
+
+        assert_eq!(store.echo_render_clock_snapshot().discontinuity_count, 0);
+    }
+
+    #[test]
+    fn endpoint_or_owner_change_remains_a_device_level_discontinuity() {
+        for (next_endpoint, next_generation) in [("endpoint-b", 7), ("endpoint-a", 8)] {
+            let store = AudioStateStore::new();
+            publish_session_start(&store, 1, "endpoint-a", 7);
+            publish_session_end(&store, 1, "endpoint-a", 7, true, true);
+
+            publish_session_start(&store, 2, next_endpoint, next_generation);
+
+            let clock = store.echo_render_clock_snapshot();
+            assert_eq!(clock.discontinuity_count, 1);
+            assert_eq!(
+                clock.last_discontinuity_reason,
+                Some("wasapi-render-authority-changed")
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_failure_after_stream_start_breaks_the_render_authority() {
+        let pre_stream = AudioStateStore::new();
+        publish_session_start(&pre_stream, 1, "endpoint-a", 7);
+        publish_session_end(&pre_stream, 1, "endpoint-a", 7, false, false);
+        assert_eq!(
+            pre_stream.echo_render_clock_snapshot().discontinuity_count,
+            0
+        );
+
+        let post_stream = AudioStateStore::new();
+        publish_session_start(&post_stream, 1, "endpoint-a", 7);
+        publish_session_end(&post_stream, 1, "endpoint-a", 7, false, true);
+        let clock = post_stream.echo_render_clock_snapshot();
+        assert_eq!(clock.discontinuity_count, 1);
+        assert_eq!(
+            clock.last_discontinuity_reason,
+            Some("wasapi-render-failed-after-stream-start")
+        );
+    }
+
+    #[test]
+    fn interleaved_sessions_match_their_own_end_without_overwriting_each_other() {
+        let store = AudioStateStore::new();
+
+        publish_session_start(&store, 11, "endpoint-a", 7);
+        publish_session_start(&store, 12, "endpoint-a", 7);
+        publish_session_end(&store, 11, "endpoint-a", 7, true, true);
+        publish_session_start(&store, 13, "endpoint-a", 7);
+        publish_session_end(&store, 12, "endpoint-a", 7, false, true);
+        publish_session_end(&store, 13, "endpoint-a", 7, true, true);
+
+        let clock = store.echo_render_clock.lock().expect("echo render clock");
+        assert_eq!(clock.discontinuity_count, 1);
+        assert_eq!(
+            clock.last_discontinuity_reason,
+            Some("wasapi-render-failed-after-stream-start")
+        );
+        assert!(clock.active_render_sessions.is_empty());
+    }
+
+    #[test]
+    fn an_end_must_match_the_exact_active_session_and_authority() {
+        let store = AudioStateStore::new();
+        publish_session_start(&store, 21, "endpoint-a", 7);
+
+        publish_session_end(&store, 22, "endpoint-a", 7, true, true);
+
+        let clock = store.echo_render_clock.lock().expect("echo render clock");
+        assert_eq!(clock.discontinuity_count, 1);
+        assert_eq!(
+            clock.last_discontinuity_reason,
+            Some("wasapi-render-session-end-mismatch")
+        );
+        assert!(clock.active_render_sessions.contains_key(&21));
     }
 
     #[test]
@@ -323,4 +549,13 @@ mod tests {
             );
         }
     }
+}
+
+fn clear_render_timing(clock: &mut EchoRenderClock, observed_at: Instant) {
+    clock.last_player_position = None;
+    clock.last_submitted_frames = None;
+    clock.last_endpoint_padding_frames = None;
+    clock.last_physical_prefix_offset_frames = None;
+    clock.last_reference_lead_frames = None;
+    clock.last_observed_at = Some(observed_at);
 }

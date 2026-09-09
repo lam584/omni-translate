@@ -571,7 +571,6 @@ impl OmniSocketEventProcessor {
                 })
             };
         }
-        flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
         match socket.read_message() {
             Ok(msg) => match msg {
         Message::Text(text) => {
@@ -599,12 +598,33 @@ impl OmniSocketEventProcessor {
                 }
             };
                 let event_type = crate::audio::realtime_ws::server_event_type(&evt, "(unknown)").to_string();
-                let mutation = admit_bailian_server_event(
+                let prioritize_deferred_successor = event_type == "input_audio_buffer.speech_started"
+                    && event_diagnostics.can_prioritize_deferred_empty_vad_successor(
+                        evt["audio_start_ms"].as_u64(),
+                    );
+                if !prioritize_deferred_successor {
+                    flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
+                }
+                let mutation = match admit_bailian_server_event(
                     provider,
                     &mut event_diagnostics,
                     &evt,
                     ModelProtocolFrameKind::Json,
-                )?;
+                ) {
+                    Ok(mutation) => mutation,
+                    Err(error) => {
+                        // A raw frame that merely resembles a contiguous
+                        // speech_started event has no authority to suppress
+                        // an expired terminal. Admission must succeed before
+                        // the narrow dispatch grace can affect ordering.
+                        flush_expired_deferred_empty_vad(
+                            &app,
+                            store,
+                            &mut event_diagnostics,
+                        );
+                        return Err(error);
+                    }
+                };
                 if let Some(session_updated) = mutation.session_updated.as_ref() {
                     store.record_strict_watch_session_updated_received(
                         &session_updated.session_identity_sha256,
@@ -1336,6 +1356,7 @@ impl OmniSocketEventProcessor {
                 }
         }
         Message::Close(_) => {
+            flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
             let reconnect_state = OmniConnectionCoordinator::reconnect_after_close(
                 OmniReconnectState {
                     socket,
@@ -1368,6 +1389,7 @@ impl OmniSocketEventProcessor {
             return poll_result!(true);
         }
         Message::Binary(_) => {
+            flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
             admit_bailian_server_event(
                 provider,
                 &mut event_diagnostics,
@@ -1375,9 +1397,16 @@ impl OmniSocketEventProcessor {
                 ModelProtocolFrameKind::Binary,
             )?;
         }
-        _ => {}
+        _ => {
+            flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
+        }
             },
             Err(error) => {
+        // No provider event is buffered for this poll, so an elapsed deferred
+        // empty-VAD terminal can now safely win. Successful reads are handled
+        // first below so an already-arrived contiguous speech boundary is not
+        // lost merely because the local deadline elapsed before dispatch.
+        flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
         let reconnect_state = OmniConnectionCoordinator::recover_read_error(
             OmniReconnectState {
                 socket,
@@ -1411,6 +1440,12 @@ impl OmniSocketEventProcessor {
         return poll_result!(true);
             }
         }
+
+        // Give the provider event already returned by read_message priority
+        // over the local empty-VAD expiry. In particular, speech_started may
+        // consume a same-continuity, equal-boundary deferred fragment before
+        // this fallback terminalizes anything still pending.
+        flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
 
         let stall = maintain_response_lifecycle(
             ResponseStallReconnectState {

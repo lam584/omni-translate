@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   compareWatchContentText,
   evaluateWatchContentConsistency,
+  normalizeWatchContentText,
   watchContentCanonicalFinalCueEvidence,
   watchContentCharacterOverlap,
 } from './watch-mode-content-verdict.mjs';
@@ -11,6 +12,48 @@ import {
 test('content overlap is normalized and multiplicity-aware', () => {
   assert.equal(watchContentCharacterOverlap('Hello，世界!', 'hello 世界'), 1);
   assert.equal(watchContentCharacterOverlap('aaaa', 'a'), 1);
+});
+
+test('strict content accepts the fixed Daniel reply synonym without relaxing identity or numbers', () => {
+  assert.ok(watchContentCharacterOverlap('Daniel回答说', '丹尼尔回复说') >= 0.45);
+  assert.deepEqual(compareWatchContentText('Daniel回答说', '丹尼尔回复说').missingClauses, []);
+
+  assert.equal(
+    watchContentCharacterOverlap(
+      'Daniel回答说，A-17号货物将于下午6点30分出发',
+      '丹尼尔回复说，8-17号批次将于下午6点30分出发',
+    ),
+    0,
+  );
+  assert.equal(watchContentCharacterOverlap('CPU使用率下降了18%', 'CPU下降80%'), 0);
+  assert.equal(watchContentCharacterOverlap('CPU使用率下降了18%', 'CPU下降20%'), 0);
+
+  assert.equal(normalizeWatchContentText('丹尼尔回复说'), '丹尼尔回复说');
+  assert.equal(normalizeWatchContentText('项目负责人回复说'), '项目负责人回复说');
+  assert.ok(watchContentCharacterOverlap(
+    'Daniel回答说计划继续',
+    '丹尼尔回复说计划继续',
+  ) < 1);
+  assert.ok(watchContentCharacterOverlap(
+    '项目负责人回答说',
+    '项目负责人回复说',
+  ) < 1);
+});
+
+test('decimal version punctuation remains inside one strict-content clause', () => {
+  const reference = '3.6.2版本把平均响应时间从920毫秒降至315毫秒';
+  const exactCue = '3.6.2版本，把平均响应时间从920毫秒降至315毫秒。';
+  assert.deepEqual(compareWatchContentText(reference, exactCue).missingClauses, []);
+  assert.equal(compareWatchContentText(reference, exactCue).passed, true);
+
+  const wrongVersion = compareWatchContentText(
+    reference,
+    '3.6.5版本，把平均响应时间从920毫秒降至315毫秒。',
+  );
+  assert.equal(wrongVersion.passed, false);
+  assert.deepEqual(wrongVersion.missingClauses, [
+    '362版本把平均响应时间从920毫秒降至315毫秒',
+  ]);
 });
 
 test('content overlap treats equivalent Chinese and Arabic numerals as equal without losing value or order', () => {
@@ -63,7 +106,7 @@ test('canonical final cue evidence narrowly rejoins an adjacent dotted version c
   ]);
   const wrongPatchVerdict = compareWatchContentText(reference, wrongPatch.comparisonText);
   assert.equal(wrongPatchVerdict.passed, false);
-  assert.ok(wrongPatchVerdict.missingClauses.includes('2版本把平均响应时间从920毫秒降至315毫秒'));
+  assert.ok(wrongPatchVerdict.missingClauses.includes('362版本把平均响应时间从920毫秒降至315毫秒'));
 
   const nonAdjacent = watchContentCanonicalFinalCueEvidence([
     '版本 3.6',

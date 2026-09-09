@@ -15,9 +15,17 @@ export function normalizeWatchContentText(value) {
     .replace(/[^\p{L}\p{N}]+/gu, '');
 }
 
+const AUDITED_CANONICAL_CLAUSE_ALIASES = new Map([
+  ['丹尼尔回复说', 'daniel回答说'],
+]);
+
+function normalizeAuditedCanonicalClauseAlias(value) {
+  return AUDITED_CANONICAL_CLAUSE_ALIASES.get(value) ?? value;
+}
+
 function normalizeWatchContentPair(left, right) {
-  const normalizedLeft = normalizeWatchContentText(left);
-  const normalizedRight = normalizeWatchContentText(right);
+  const normalizedLeft = normalizeAuditedCanonicalClauseAlias(normalizeWatchContentText(left));
+  const normalizedRight = normalizeAuditedCanonicalClauseAlias(normalizeWatchContentText(right));
   return [
     /\d/u.test(normalizedRight) ? normalizeChineseTens(normalizedLeft) : normalizedLeft,
     /\d/u.test(normalizedLeft) ? normalizeChineseTens(normalizedRight) : normalizedRight,
@@ -35,8 +43,10 @@ function watchContentNumericSequence(value) {
 export function splitWatchContentClauses(value) {
   return String(value ?? '')
     .normalize('NFKC')
+    .replace(/(?<=\d)\.(?=\d)/gu, '\uE000')
+    .replace(/(\d(?:\uE000\d+)+版本)[，,](?=把)/gu, '$1\uE001')
     .split(/[。！？；，!?;,?.\r\n]+/u)
-    .map((value) => normalizeWatchContentText(value))
+    .map((value) => normalizeWatchContentText(value.replace(/[\uE000\uE001]/gu, '')))
     .filter((value) => value.length >= 2);
 }
 

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 /// endpoint padding observed immediately after the device accepted it.
 pub(crate) enum SpeakerRenderEvent<'a> {
     Discontinuity {
-        reason: &'static str,
+        reason: crate::audio::state::EchoRenderBoundary<'a>,
         observed_at: Instant,
     },
     Frame {

@@ -1137,6 +1137,7 @@ fn terminalize_native_response_without_output<R: tauri::Runtime>(
 
 const SHORT_SERVER_VAD_FRAGMENT_MAX_MS: u64 = 100;
 const CONTIGUOUS_EMPTY_VAD_DEFER_MS: u64 = 120;
+const CONTIGUOUS_EMPTY_VAD_DISPATCH_GRACE_MS: u64 = 20;
 const CONTIGUOUS_EMPTY_VAD_START_TOLERANCE_MS: u64 = 10;
 
 pub(super) fn is_ignored_short_server_vad(duration_ms: Option<u64>) -> bool {
@@ -1186,6 +1187,22 @@ impl OmniEventDiagnostics {
         let same_continuity = self.source_continuity_active
             && self.source_continuity_id == pending.continuity_id;
         Some((pending, contiguous && same_continuity))
+    }
+
+    pub(super) fn can_prioritize_deferred_empty_vad_successor(
+        &self,
+        successor_audio_start_ms: Option<u64>,
+    ) -> bool {
+        let Some(pending) = self.deferred_empty_vad_terminal.as_ref() else {
+            return false;
+        };
+        let contiguous = successor_audio_start_ms.is_some_and(|start_ms| {
+            start_ms.abs_diff(pending.audio_end_ms) <= CONTIGUOUS_EMPTY_VAD_START_TOLERANCE_MS
+        });
+        contiguous
+            && Instant::now()
+                <= pending.expires_at
+                    + Duration::from_millis(CONTIGUOUS_EMPTY_VAD_DISPATCH_GRACE_MS)
     }
 
     fn take_expired_deferred_empty_vad(&mut self) -> Option<DeferredEmptyVadTerminal> {

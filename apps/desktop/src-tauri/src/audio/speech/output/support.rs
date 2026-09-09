@@ -1,5 +1,7 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use super::{AudioClient, SpeakerRenderEvent, RENDER_POSITION_POLL_MS};
 
 static NEXT_RENDER_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -21,6 +23,98 @@ pub(super) fn audio_frames_to_duration(frame_count: usize) -> Duration {
 
 pub(super) fn playback_volume(output_level: u64) -> f32 {
     output_level.min(100) as f32 / 100.0
+}
+
+pub(super) fn publish_render_stream_started<F>(
+    stream_started_authority: &mut bool,
+    session_id: u64,
+    endpoint_id: &str,
+    renderer_instance_id: &str,
+    owner_generation: u64,
+    on_render_event: &mut F,
+) -> Result<(), String>
+where
+    F: for<'a> FnMut(SpeakerRenderEvent<'a>) -> Result<(), String>,
+{
+    if *stream_started_authority {
+        return Ok(());
+    }
+    on_render_event(SpeakerRenderEvent::Discontinuity {
+        reason: crate::audio::state::EchoRenderBoundary::StreamStarted {
+            session_id,
+            endpoint_id,
+            renderer_instance_id,
+            owner_generation,
+        },
+        observed_at: Instant::now(),
+    })?;
+    *stream_started_authority = true;
+    Ok(())
+}
+
+pub(super) fn ensure_render_ownership(
+    audio_client: &AudioClient,
+    playback_permit: &super::super::playback_ownership::DesktopPlaybackPermit,
+    started: bool,
+) -> Result<(), String> {
+    match playback_permit.ensure_active() {
+        Ok(()) => Ok(()),
+        Err(error) => cancel_wasapi_render(audio_client, playback_permit, started, error),
+    }
+}
+
+pub(super) fn wait_for_render_poll(
+    audio_client: &AudioClient,
+    playback_permit: &super::super::playback_ownership::DesktopPlaybackPermit,
+    started: bool,
+) -> Result<(), String> {
+    match playback_permit.wait_for_endpoint_poll(Duration::from_millis(RENDER_POSITION_POLL_MS)) {
+        Ok(()) => Ok(()),
+        Err(error) => cancel_wasapi_render(audio_client, playback_permit, started, error),
+    }
+}
+
+pub(super) fn submit_render_action<T>(
+    audio_client: &AudioClient,
+    playback_permit: &super::super::playback_ownership::DesktopPlaybackPermit,
+    started: bool,
+    submit: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    match playback_permit.submit(submit) {
+        Ok(value) => Ok(value),
+        Err(error)
+            if super::super::playback_ownership::desktop_playback_was_cancelled(&error) =>
+        {
+            cancel_wasapi_render(audio_client, playback_permit, started, error)?;
+            unreachable!("cancel_wasapi_render always returns an error")
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn cancel_wasapi_render(
+    audio_client: &AudioClient,
+    playback_permit: &super::super::playback_ownership::DesktopPlaybackPermit,
+    started: bool,
+    cancellation: String,
+) -> Result<(), String> {
+    let stop_error = started
+        .then(|| audio_client.stop_stream().err().map(|error| error.to_string()))
+        .flatten();
+    let reset_error = audio_client.reset_stream().err().map(|error| error.to_string());
+    let cleanup_error = match (stop_error, reset_error) {
+        (None, None) => None,
+        (Some(stop), None) => Some(format!("IAudioClient::Stop failed: {stop}")),
+        (None, Some(reset)) => Some(format!("IAudioClient::Reset failed: {reset}")),
+        (Some(stop), Some(reset)) => Some(format!(
+            "IAudioClient::Stop failed: {stop}; IAudioClient::Reset failed: {reset}"
+        )),
+    };
+    if let Some(cleanup_error) = cleanup_error {
+        playback_permit.record_cancellation_failure(cleanup_error.clone());
+        return Err(format!("{cancellation}; {cleanup_error}"));
+    }
+    Err(cancellation)
 }
 
 #[derive(Default)]

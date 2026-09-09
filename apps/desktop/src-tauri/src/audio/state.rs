@@ -87,7 +87,7 @@ struct EchoRenderClock {
     render_authority_endpoint_id: Option<String>,
     render_authority_renderer_instance_id: Option<String>,
     render_authority_owner_generation: Option<u64>,
-    active_render_sessions: BTreeMap<u64, (String, String, u64)>,
+    active_render_sessions: BTreeMap<u64, (String, String, u64, bool)>,
 }
 
 #[derive(Debug, Clone, Copy)]

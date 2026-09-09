@@ -1531,9 +1531,14 @@ mod tests {
             assert_eq!(
                 session_update.pointer("/session/translation/corpus/phrases"),
                 Some(&json!({
+                    "CPU usage dropped by 18 percent.": "CPU使用率下降了18%。",
+                    "Daniel replied that shipment A-17 would leave at 6:30 p.m.": "Daniel回答说，A-17号货物将于下午6点30分出发。",
+                    "Does it preserve a quoted answer?": "它能否保留引用的回答？",
+                    "Is the system accurate when a speaker asks a question?": "当说话者提出问题时，系统是否准确？",
                     "Mars": "火星",
                     "Please record each sentence clearly": "请清楚记录每个句子",
                     "Version 3.6.2": "3.6.2版本",
+                    "Version 3.6.2 reduced average response time from 920 milliseconds to 315 milliseconds.": "3.6.2版本把平均响应时间从920毫秒降至315毫秒。",
                     "artificial biosphere": "人工生物圈",
                     "by October 3": "在10月3日前",
                     "endangered species": "濒危物种",

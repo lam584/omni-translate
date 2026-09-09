@@ -5,6 +5,7 @@ import {
   compareWatchContentText,
   evaluateWatchContentConsistency,
   normalizeWatchContentText,
+  uniqueWatchContentEvidence,
   watchContentCanonicalFinalCueEvidence,
   watchContentCharacterOverlap,
 } from './watch-mode-content-verdict.mjs';
@@ -119,6 +120,44 @@ test('canonical final cue evidence narrowly rejoins an adjacent dotted version c
     '.2 平均响应时间从920毫秒降至315毫秒',
   ]);
   assert.deepEqual(arbitrary.adjacentVersionContinuations, []);
+});
+
+test('canonical final cue evidence removes a duplicated .2 patch after an already complete audited version', () => {
+  const reference = '3.6.2版本把平均响应时间从920毫秒降至315毫秒';
+  const duplicatedPatch = watchContentCanonicalFinalCueEvidence([
+    '最后一个主题是软件，3.6.2版本。',
+    '.2 把平均响应时间从920毫秒降至315毫秒。',
+  ]);
+  assert.deepEqual(duplicatedPatch.adjacentVersionContinuations, [
+    '3.6.2版本把平均响应时间从920毫秒降至315毫秒。',
+  ]);
+  assert.deepEqual(compareWatchContentText(reference, duplicatedPatch.comparisonText).missingClauses, []);
+
+  const wrongVersion = watchContentCanonicalFinalCueEvidence([
+    '最后一个主题是软件，3.6.5版本。',
+    '.2 把平均响应时间从920毫秒降至315毫秒。',
+  ]);
+  assert.deepEqual(wrongVersion.adjacentVersionContinuations, []);
+  assert.equal(compareWatchContentText(reference, wrongVersion.comparisonText).passed, false);
+
+  const wrongNumbers = watchContentCanonicalFinalCueEvidence([
+    '最后一个主题是软件，3.6.2版本。',
+    '.2 把平均响应时间从920毫秒降至351毫秒。',
+  ]);
+  assert.equal(compareWatchContentText(reference, wrongNumbers.comparisonText).passed, false);
+
+  const nonAdjacent = watchContentCanonicalFinalCueEvidence([
+    '最后一个主题是软件，3.6.2版本。',
+    '这是另一条final cue。',
+    '.2 把平均响应时间从920毫秒降至315毫秒。',
+  ]);
+  assert.deepEqual(nonAdjacent.adjacentVersionContinuations, []);
+
+  const crossSourceEvidence = uniqueWatchContentEvidence([
+    '最后一个主题是软件，3.6.2版本。',
+    '.2 把平均响应时间从920毫秒降至315毫秒。',
+  ]);
+  assert.equal(compareWatchContentText(reference, crossSourceEvidence).passed, false);
 });
 
 test('text verdict reports missing and extra clauses from one policy', () => {

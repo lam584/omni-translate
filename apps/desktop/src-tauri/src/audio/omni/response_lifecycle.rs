@@ -42,6 +42,10 @@ pub(super) struct ResponseLifecycle {
 }
 
 impl ResponseLifecycle {
+    pub(super) fn is_active(&self) -> bool {
+        self.active
+    }
+
     pub(super) fn begin(&mut self, response_id: Option<&str>, now: Instant) {
         let response_id = normalized_id(response_id);
         if self.active {

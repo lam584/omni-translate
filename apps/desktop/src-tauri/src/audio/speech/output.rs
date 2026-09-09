@@ -3,7 +3,8 @@ mod support;
 
 use support::{
     audio_frames_to_duration, f32_samples_to_le_bytes, next_render_session_id,
-    playback_volume, RenderUnderrunTracker,
+    playback_volume, publish_render_stream_started, ensure_render_ownership,
+    submit_render_action, wait_for_render_poll, RenderUnderrunTracker,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -461,6 +462,9 @@ where
                 buffer_frames,
                 &playback_permit,
                 &mut stream_started,
+                render_session_id,
+                &physical_playback_device_id,
+                &renderer_instance_id,
                 on_render_event,
             )?;
             return Ok((total_audio_frames as u64, physical_playback_device_id));
@@ -493,6 +497,9 @@ where
                 buffer_frames,
                 &playback_permit,
                 &mut stream_started,
+                render_session_id,
+                &physical_playback_device_id,
+                &renderer_instance_id,
                 on_render_event,
             );
             let (status, completed_at_ms) = if render_result.is_ok() {
@@ -704,6 +711,9 @@ fn render_wasapi_frames<F>(
     buffer_frames: u32,
     playback_permit: &super::playback_ownership::DesktopPlaybackPermit,
     stream_started_authority: &mut bool,
+    render_session_id: u64,
+    endpoint_id: &str,
+    renderer_instance_id: &str,
     on_render_event: &mut F,
 ) -> Result<(), String>
 where
@@ -747,7 +757,14 @@ where
                     audio_client.start_stream().map_err(|error| error.to_string())
                 })?;
                 started = true;
-                *stream_started_authority = true;
+                publish_render_stream_started(
+                    stream_started_authority,
+                    render_session_id,
+                    endpoint_id,
+                    renderer_instance_id,
+                    playback_permit.generation(),
+                    on_render_event,
+                )?;
             }
             wait_for_render_poll(audio_client, playback_permit, started)?;
             continue;
@@ -763,7 +780,14 @@ where
                     audio_client.start_stream().map_err(|error| error.to_string())
                 })?;
                 started = true;
-                *stream_started_authority = true;
+                publish_render_stream_started(
+                    stream_started_authority,
+                    render_session_id,
+                    endpoint_id,
+                    renderer_instance_id,
+                    playback_permit.generation(),
+                    on_render_event,
+                )?;
             } else if !started && tracker.submitted_frames == 0 {
                 return Err(format!(
                     "WASAPI render buffer ({buffer_frames} frames) cannot hold one complete AEC reference frame ({reference_frames} frames)"
@@ -806,6 +830,14 @@ where
                 audio_client.start_stream().map_err(|error| error.to_string())
             })?;
             started = true;
+            publish_render_stream_started(
+                stream_started_authority,
+                render_session_id,
+                endpoint_id,
+                renderer_instance_id,
+                playback_permit.generation(),
+                on_render_event,
+            )?;
         }
     }
 
@@ -814,6 +846,14 @@ where
             audio_client.start_stream().map_err(|error| error.to_string())
         })?;
         started = true;
+        publish_render_stream_started(
+            stream_started_authority,
+            render_session_id,
+            endpoint_id,
+            renderer_instance_id,
+            playback_permit.generation(),
+            on_render_event,
+        )?;
     }
     loop {
         ensure_render_ownership(audio_client, playback_permit, started)?;
@@ -829,69 +869,6 @@ where
         audio_client.stop_stream().map_err(|error| error.to_string())
     })?;
     Ok(())
-}
-
-fn ensure_render_ownership(
-    audio_client: &AudioClient,
-    playback_permit: &super::playback_ownership::DesktopPlaybackPermit,
-    started: bool,
-) -> Result<(), String> {
-    match playback_permit.ensure_active() {
-        Ok(()) => Ok(()),
-        Err(error) => cancel_wasapi_render(audio_client, playback_permit, started, error),
-    }
-}
-
-fn wait_for_render_poll(
-    audio_client: &AudioClient,
-    playback_permit: &super::playback_ownership::DesktopPlaybackPermit,
-    started: bool,
-) -> Result<(), String> {
-    match playback_permit.wait_for_endpoint_poll(Duration::from_millis(RENDER_POSITION_POLL_MS)) {
-        Ok(()) => Ok(()),
-        Err(error) => cancel_wasapi_render(audio_client, playback_permit, started, error),
-    }
-}
-
-fn submit_render_action<T>(
-    audio_client: &AudioClient,
-    playback_permit: &super::playback_ownership::DesktopPlaybackPermit,
-    started: bool,
-    submit: impl FnOnce() -> Result<T, String>,
-) -> Result<T, String> {
-    match playback_permit.submit(submit) {
-        Ok(value) => Ok(value),
-        Err(error) if super::playback_ownership::desktop_playback_was_cancelled(&error) => {
-            cancel_wasapi_render(audio_client, playback_permit, started, error)?;
-            unreachable!("cancel_wasapi_render always returns an error")
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn cancel_wasapi_render(
-    audio_client: &AudioClient,
-    playback_permit: &super::playback_ownership::DesktopPlaybackPermit,
-    started: bool,
-    cancellation: String,
-) -> Result<(), String> {
-    let stop_error = started
-        .then(|| audio_client.stop_stream().err().map(|error| error.to_string()))
-        .flatten();
-    let reset_error = audio_client.reset_stream().err().map(|error| error.to_string());
-    let cleanup_error = match (stop_error, reset_error) {
-        (None, None) => None,
-        (Some(stop), None) => Some(format!("IAudioClient::Stop failed: {stop}")),
-        (None, Some(reset)) => Some(format!("IAudioClient::Reset failed: {reset}")),
-        (Some(stop), Some(reset)) => Some(format!(
-            "IAudioClient::Stop failed: {stop}; IAudioClient::Reset failed: {reset}"
-        )),
-    };
-    if let Some(cleanup_error) = cleanup_error {
-        playback_permit.record_cancellation_failure(cleanup_error.clone());
-        return Err(format!("{cancellation}; {cleanup_error}"));
-    }
-    Err(cancellation)
 }
 
 #[cfg(test)]

@@ -78,6 +78,12 @@ export function watchContentCanonicalFinalCueEvidence(cues) {
   for (let index = 0; index + 1 < rawCues.length; index += 1) {
     const previous = rawCues[index].trim();
     const next = rawCues[index + 1].trim();
+    const auditedCompleteVersion = previous.match(/3\.6\.2版本[。.!！]?$/u);
+    const duplicatedAuditedPatch = next.match(/^\.2\s*(把.+)$/u);
+    if (auditedCompleteVersion && duplicatedAuditedPatch) {
+      adjacentVersionContinuations.push('3.6.2版本' + duplicatedAuditedPatch[1]);
+      continue;
+    }
     if (!/^版本\s*\d+(?:\.\d+)+$/u.test(previous)) continue;
     if (!/^\.\d+(?=\s|[^\d.]|$)/u.test(next)) continue;
     adjacentVersionContinuations.push(previous + (next.startsWith('.') ? '' : ' ') + next);

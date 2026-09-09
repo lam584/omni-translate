@@ -8,6 +8,12 @@ pub(crate) enum EchoRenderBoundary<'a> {
         renderer_instance_id: &'a str,
         owner_generation: u64,
     },
+    StreamStarted {
+        session_id: u64,
+        endpoint_id: &'a str,
+        renderer_instance_id: &'a str,
+        owner_generation: u64,
+    },
     SessionEnded {
         session_id: u64,
         endpoint_id: &'a str,
@@ -23,6 +29,7 @@ impl EchoRenderBoundary<'_> {
     pub(crate) fn log_reason(self) -> &'static str {
         match self {
             Self::SessionStarted { .. } => "wasapi-render-session-start",
+            Self::StreamStarted { .. } => "wasapi-render-stream-started",
             Self::SessionEnded {
                 normally_drained: true,
                 ..
@@ -101,7 +108,6 @@ impl AudioStateStore {
             .echo_render_clock
             .lock()
             .expect("echo render clock poisoned");
-        clear_render_timing(&mut clock, observed_at);
         let reason = match reason {
             EchoRenderBoundary::SessionStarted {
                 session_id,
@@ -109,32 +115,52 @@ impl AudioStateStore {
                 renderer_instance_id,
                 owner_generation,
             } => {
-                let has_prior_authority = clock.render_authority_endpoint_id.is_some();
-                let same_authority = clock.render_authority_endpoint_id.as_deref()
-                    == Some(endpoint_id)
-                    && clock.render_authority_renderer_instance_id.as_deref()
-                        == Some(renderer_instance_id)
-                    && clock.render_authority_owner_generation == Some(owner_generation);
                 let duplicate_session = clock.active_render_sessions.contains_key(&session_id);
-                clock.render_authority_endpoint_id = Some(endpoint_id.to_string());
-                clock.render_authority_renderer_instance_id =
-                    Some(renderer_instance_id.to_string());
-                clock.render_authority_owner_generation = Some(owner_generation);
                 clock.active_render_sessions.insert(
                     session_id,
                     (
                         endpoint_id.to_string(),
                         renderer_instance_id.to_string(),
                         owner_generation,
+                        false,
                     ),
                 );
-                let reason = duplicate_session
-                    .then_some("wasapi-render-session-id-reused")
-                    .or_else(|| {
-                        (has_prior_authority && !same_authority)
-                            .then_some("wasapi-render-authority-changed")
-                    });
-                reason
+                duplicate_session.then_some("wasapi-render-session-id-reused")
+            }
+            EchoRenderBoundary::StreamStarted {
+                session_id,
+                endpoint_id,
+                renderer_instance_id,
+                owner_generation,
+            } => {
+                let matching_pending = clock.active_render_sessions.get_mut(&session_id).is_some_and(
+                    |(expected_endpoint, expected_renderer, expected_generation, started)| {
+                        let matches = expected_endpoint == endpoint_id
+                            && expected_renderer == renderer_instance_id
+                            && *expected_generation == owner_generation
+                            && !*started;
+                        if matches {
+                            *started = true;
+                        }
+                        matches
+                    },
+                );
+                if !matching_pending {
+                    Some("wasapi-render-stream-start-mismatch")
+                } else {
+                    let has_prior_authority = clock.render_authority_endpoint_id.is_some();
+                    let same_authority = clock.render_authority_endpoint_id.as_deref()
+                        == Some(endpoint_id)
+                        && clock.render_authority_renderer_instance_id.as_deref()
+                            == Some(renderer_instance_id)
+                        && clock.render_authority_owner_generation == Some(owner_generation);
+                    clock.render_authority_endpoint_id = Some(endpoint_id.to_string());
+                    clock.render_authority_renderer_instance_id =
+                        Some(renderer_instance_id.to_string());
+                    clock.render_authority_owner_generation = Some(owner_generation);
+                    (has_prior_authority && !same_authority)
+                        .then_some("wasapi-render-authority-changed")
+                }
             }
             EchoRenderBoundary::SessionEnded {
                 session_id,
@@ -146,10 +172,11 @@ impl AudioStateStore {
             } => {
                 let expected = clock.active_render_sessions.remove(&session_id);
                 let matching_end = expected.as_ref().is_some_and(
-                    |(expected_endpoint, expected_renderer, expected_generation)| {
+                    |(expected_endpoint, expected_renderer, expected_generation, expected_started)| {
                         expected_endpoint == endpoint_id
                             && expected_renderer == renderer_instance_id
                             && *expected_generation == owner_generation
+                            && *expected_started == stream_started
                     },
                 );
                 if !matching_end {
@@ -163,6 +190,7 @@ impl AudioStateStore {
             EchoRenderBoundary::DeviceFault(reason) => Some(reason),
         };
         if let Some(reason) = reason {
+            clear_render_timing(&mut clock, observed_at);
             clock.discontinuity_count = clock.discontinuity_count.saturating_add(1);
             clock.last_discontinuity_reason = Some(reason);
         }
@@ -406,13 +434,69 @@ mod tests {
             .expect("publish render session end");
     }
 
+    fn publish_stream_start(
+        store: &AudioStateStore,
+        session_id: u64,
+        endpoint_id: &str,
+        owner_generation: u64,
+    ) {
+        store
+            .mark_echo_render_discontinuity(
+                EchoRenderBoundary::StreamStarted {
+                    session_id,
+                    endpoint_id,
+                    renderer_instance_id: "desktop-process-42",
+                    owner_generation,
+                },
+                Instant::now(),
+            )
+            .expect("publish render stream start");
+    }
+
+    #[test]
+    fn pending_failure_then_recovery_does_not_change_established_authority() {
+        let store = AudioStateStore::new();
+        publish_session_start(&store, 1, "endpoint-a", 7);
+        publish_stream_start(&store, 1, "endpoint-a", 7);
+        publish_session_end(&store, 1, "endpoint-a", 7, true, true);
+
+        publish_session_start(&store, 2, "temporary-endpoint", 8);
+        publish_session_end(&store, 2, "temporary-endpoint", 8, false, false);
+        publish_session_start(&store, 3, "endpoint-a", 7);
+        publish_stream_start(&store, 3, "endpoint-a", 7);
+        publish_session_end(&store, 3, "endpoint-a", 7, true, true);
+
+        assert_eq!(store.echo_render_clock_snapshot().discontinuity_count, 0);
+    }
+
+    #[test]
+    fn started_authority_change_remains_a_device_level_discontinuity() {
+        let store = AudioStateStore::new();
+        publish_session_start(&store, 1, "endpoint-a", 7);
+        publish_stream_start(&store, 1, "endpoint-a", 7);
+        publish_session_end(&store, 1, "endpoint-a", 7, true, true);
+
+        publish_session_start(&store, 2, "endpoint-b", 8);
+        assert_eq!(store.echo_render_clock_snapshot().discontinuity_count, 0);
+        publish_stream_start(&store, 2, "endpoint-b", 8);
+
+        let clock = store.echo_render_clock_snapshot();
+        assert_eq!(clock.discontinuity_count, 1);
+        assert_eq!(
+            clock.last_discontinuity_reason,
+            Some("wasapi-render-authority-changed")
+        );
+    }
+
     #[test]
     fn normally_drained_per_cue_sessions_preserve_aec_authority() {
         let store = AudioStateStore::new();
 
         publish_session_start(&store, 1, "endpoint-a", 7);
+        publish_stream_start(&store, 1, "endpoint-a", 7);
         publish_session_end(&store, 1, "endpoint-a", 7, true, true);
         publish_session_start(&store, 2, "endpoint-a", 7);
+        publish_stream_start(&store, 2, "endpoint-a", 7);
         publish_session_end(&store, 2, "endpoint-a", 7, true, true);
 
         assert_eq!(store.echo_render_clock_snapshot().discontinuity_count, 0);
@@ -423,9 +507,11 @@ mod tests {
         for (next_endpoint, next_generation) in [("endpoint-b", 7), ("endpoint-a", 8)] {
             let store = AudioStateStore::new();
             publish_session_start(&store, 1, "endpoint-a", 7);
+            publish_stream_start(&store, 1, "endpoint-a", 7);
             publish_session_end(&store, 1, "endpoint-a", 7, true, true);
 
             publish_session_start(&store, 2, next_endpoint, next_generation);
+            publish_stream_start(&store, 2, next_endpoint, next_generation);
 
             let clock = store.echo_render_clock_snapshot();
             assert_eq!(clock.discontinuity_count, 1);
@@ -448,6 +534,7 @@ mod tests {
 
         let post_stream = AudioStateStore::new();
         publish_session_start(&post_stream, 1, "endpoint-a", 7);
+        publish_stream_start(&post_stream, 1, "endpoint-a", 7);
         publish_session_end(&post_stream, 1, "endpoint-a", 7, false, true);
         let clock = post_stream.echo_render_clock_snapshot();
         assert_eq!(clock.discontinuity_count, 1);
@@ -463,8 +550,11 @@ mod tests {
 
         publish_session_start(&store, 11, "endpoint-a", 7);
         publish_session_start(&store, 12, "endpoint-a", 7);
+        publish_stream_start(&store, 11, "endpoint-a", 7);
+        publish_stream_start(&store, 12, "endpoint-a", 7);
         publish_session_end(&store, 11, "endpoint-a", 7, true, true);
         publish_session_start(&store, 13, "endpoint-a", 7);
+        publish_stream_start(&store, 13, "endpoint-a", 7);
         publish_session_end(&store, 12, "endpoint-a", 7, false, true);
         publish_session_end(&store, 13, "endpoint-a", 7, true, true);
 

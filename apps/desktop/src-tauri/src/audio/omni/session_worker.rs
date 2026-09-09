@@ -505,7 +505,10 @@ fn run_omni_worker(
         if livetranslate_shutdown.take_evidence_queue_deadline(now) {
             trace_call.queue_pending_audio_evidence();
         }
-        if let Some((reason, error)) = livetranslate_shutdown.deadline_error(now) {
+        if let Some((reason, error)) = livetranslate_shutdown.deadline_error_with_response_state(
+            now,
+            event_diagnostics.native_response_active(),
+        ) {
             let error = provider_input_budget.finalize_failure(reason, error);
             let _ = diag_log(
                 &app,
@@ -1065,7 +1068,9 @@ fn run_omni_worker(
                 fail_connected!("reconnect-session-update-invalid", error);
             }
         }
-        if livetranslate_shutdown.session_finished_received() {
+        if livetranslate_shutdown.session_finished_received()
+            && !event_diagnostics.native_response_active()
+        {
             if direction == "inbound" {
                 if let Err(error) = store.record_strict_watch_session_finished_received() {
                     fail_connected!("livetranslate-session-finished-authority-invalid", error);

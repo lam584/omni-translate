@@ -1788,9 +1788,10 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
           'try{$x=([BitConverter]::ToString($a.ComputeHash($s))).Replace("-","").ToLowerInvariant()}finally{$a.Dispose();$s.Dispose()}',
           "if($x -cne $h){throw 'publication script SHA-256 mismatch'}",
         ].join(';');
+        const verifyEncodedCommand = Buffer.from(verifyScript, 'utf16le').toString('base64');
         const verifyResult = await runProcess(config.sshExecutable, [
           ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
-          'powershell.exe', '-NoProfile', '-NonInteractive', '-Command', verifyScript,
+          'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', verifyEncodedCommand,
         ], { signal });
         ensureSuccessful(verifyResult, 'canonical remote Provider preflight publication script verification');
         const publicationResult = await runProcess(config.sshExecutable, [
@@ -1812,11 +1813,12 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
             'Remove-Item -LiteralPath $p -Force',
             "if(Test-Path -LiteralPath $p){throw 'publication script cleanup did not remove the exact file'}",
           ].join(';');
+          const cleanupEncodedCommand = Buffer.from(cleanupScript, 'utf16le').toString('base64');
           let cleanupError = null;
           try {
             const cleanupResult = await runProcess(config.sshExecutable, [
               ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
-              'powershell.exe', '-NoProfile', '-NonInteractive', '-Command', cleanupScript,
+              'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', cleanupEncodedCommand,
             ], {});
             ensureSuccessful(cleanupResult, 'canonical remote Provider preflight publication script cleanup');
           } catch (error) {

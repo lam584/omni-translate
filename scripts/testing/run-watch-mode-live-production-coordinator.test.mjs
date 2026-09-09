@@ -1306,9 +1306,9 @@ test('remote preflight transport runs executor-bound network health before crede
         if (controllerMode === 'throw') throw new Error('simulated SSH transport termination');
         return { exitCode: controllerMode === 'nonzero' ? 23 : 0, stdout: `${JSON.stringify({ status: 'completed', outputDirectory: 'E:\\omni-shards\\provider-preflight-evidence', fields: {} })}\n`, stderr: controllerMode === 'nonzero' ? 'simulated controller failure' : '' };
       }
-      if (executable === 'ssh.exe' && joined.includes('publication script SHA-256 mismatch')) {
+      if (executable === 'ssh.exe' && remoteSource.includes('publication script SHA-256 mismatch')) {
         events.push('publication-verify');
-        assert.equal(args.includes('-EncodedCommand'), false);
+        assert.equal(args.includes('-EncodedCommand'), true);
         assert.ok(joined.length < 4_000, 'publication verification must remain a short remote command');
         return { exitCode: 0, stdout: '', stderr: '' };
       }
@@ -1319,9 +1319,10 @@ test('remote preflight transport runs executor-bound network health before crede
         const output = Buffer.from(JSON.stringify({ published: true }), 'utf8').toString('base64');
         return { exitCode: 0, stdout: `__OMNI_REMOTE_OUTPUT_V1__${output}\n__OMNI_REMOTE_COMPLETE_V1__\n`, stderr: '' };
       }
-      if (executable === 'ssh.exe' && joined.includes('publication script cleanup did not remove the exact file')) {
+      if (executable === 'ssh.exe' && remoteSource.includes('publication script cleanup did not remove the exact file')) {
         events.push('publication-cleanup');
-        assert.match(joined, /Remove-Item -LiteralPath \$p -Force/u);
+        assert.equal(args.includes('-EncodedCommand'), true);
+        assert.match(remoteSource, /Remove-Item -LiteralPath \$p -Force/u);
         return { exitCode: 0, stdout: '', stderr: '' };
       }
       if (executable === 'ssh.exe') { events.push('mkdir'); return { exitCode: 0, stdout: '{}\n', stderr: '' }; }

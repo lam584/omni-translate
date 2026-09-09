@@ -3313,13 +3313,41 @@ function fingerprintKey(fingerprint) {
 }
 
 export function aggregateProductionCellFailures({ plan, waveOutcome }) {
-  const attempted = [...waveOutcome.startedCellIds];
-  const completed = [...waveOutcome.completedCellIds];
-  const failures = waveOutcome.collectedFailures.map((failure) => ({
-    cellId: failure.cellId,
-    error: failure.error,
-    fingerprint: productionFailureFingerprint(failure, plan),
-  }));
+  const plannedIds = plan.cells.map((cell) => cell.cellId);
+  const plannedIdSet = new Set(plannedIds);
+  if (plannedIdSet.size !== plannedIds.length) {
+    throw new Error('production failure aggregation rejects duplicate planned cell IDs');
+  }
+  const canonicalizeIds = (ids, label) => {
+    const idSet = new Set(ids);
+    if (idSet.size !== ids.length) {
+      throw new Error(`production failure aggregation rejects duplicate ${label} cell IDs`);
+    }
+    const unknown = ids.find((cellId) => !plannedIdSet.has(cellId));
+    if (unknown !== undefined) {
+      throw new Error(`production failure aggregation rejects unknown ${label} cell ID: ${unknown}`);
+    }
+    return plannedIds.filter((cellId) => idSet.has(cellId));
+  };
+  const attempted = canonicalizeIds(waveOutcome.startedCellIds, 'attempted');
+  const completed = canonicalizeIds(waveOutcome.completedCellIds, 'completed');
+  const failureByCellId = new Map();
+  for (const failure of waveOutcome.collectedFailures) {
+    if (!plannedIdSet.has(failure.cellId)) {
+      throw new Error(`production failure aggregation rejects unknown failed cell ID: ${failure.cellId}`);
+    }
+    if (failureByCellId.has(failure.cellId)) {
+      throw new Error(`production failure aggregation rejects duplicate failed cell ID: ${failure.cellId}`);
+    }
+    failureByCellId.set(failure.cellId, {
+      cellId: failure.cellId,
+      error: failure.error,
+      fingerprint: productionFailureFingerprint(failure, plan),
+    });
+  }
+  const failures = plannedIds
+    .filter((cellId) => failureByCellId.has(cellId))
+    .map((cellId) => failureByCellId.get(cellId));
   const failedIds = new Set(failures.map((entry) => entry.cellId));
   const passed = completed.filter((cellId) => !failedIds.has(cellId));
   const grouped = new Map();

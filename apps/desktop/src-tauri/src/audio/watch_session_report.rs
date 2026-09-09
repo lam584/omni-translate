@@ -492,9 +492,20 @@ impl WatchSessionReportStore {
         // newer revision's first-render timestamp backwards.
         let rendered_signature = correlation_text(&receipt.translated_text);
         let source_signature = correlation_text(&receipt.source_text);
+        let published_before_receipt = |cue: &WatchCueComparisonRuntime| {
+            !rendered_signature.is_empty()
+                && ((correlation_text(&cue.published_text) == rendered_signature
+                    && cue.published_first_at_ms.is_some_and(|published| published <= elapsed))
+                    || cue.events.iter().any(|event| {
+                        event.stage == "publish"
+                            && event.elapsed_ms <= elapsed
+                            && correlation_text(&event.text) == rendered_signature
+                    }))
+        };
         let source_match = (!source_signature.is_empty()).then(|| {
             session.cues.iter().rposition(|cue| {
                 cue.cue_id == receipt.cue_id
+                    && published_before_receipt(cue)
                     && (correlation_text(&cue.source_text) == source_signature
                         || cue.events.iter().any(|event| {
                             event.stage == "source"
@@ -502,15 +513,10 @@ impl WatchSessionReportStore {
                         }))
             })
         }).flatten();
-        let content_match = source_signature.is_empty().then(|| session.cues.iter().rposition(|cue| {
+        let content_match = session.cues.iter().rposition(|cue| {
             cue.cue_id == receipt.cue_id
-                && !rendered_signature.is_empty()
-                && (correlation_text(&cue.published_text) == rendered_signature
-                    || cue.events.iter().any(|event| {
-                        event.stage == "publish"
-                            && correlation_text(&event.text) == rendered_signature
-                    }))
-        })).flatten();
+                && published_before_receipt(cue)
+        });
         let cue_match = source_match.or(content_match).or_else(|| {
             session
                 .cues

@@ -425,28 +425,17 @@ fn run_omni_worker(
     }
     macro_rules! complete_before_teardown {
         ($outcome:expr, $teardown:block) => {{
-            let teardown_result = (|| -> Result<(), String> {
-                $teardown
-                Ok(())
-            })();
-            if let Err(error) = teardown_result {
-                let error = provider_input_budget.finalize_failure(
-                    "worker-teardown-failed",
-                    error,
-                );
-                return Err(finalize_trace_error(
-                    &mut trace_call,
-                    livetranslate_shutdown.failure_evidence_deadline(Instant::now()),
-                    error,
-                ));
-            };
             let completion = provider_input_budget
                 .finalize("worker-completed")
                 .map(|()| $outcome);
-            return finalize_worker_trace(
+            return finalize_worker_trace_before_teardown(
                 &mut trace_call,
                 &livetranslate_shutdown,
                 completion,
+                || -> Result<(), String> {
+                    $teardown
+                    Ok(())
+                },
             );
         }};
     }
@@ -1197,6 +1186,36 @@ fn finalize_worker_trace<R: tauri::Runtime>(
     }
 }
 
+fn finalize_worker_trace_before_teardown<R: tauri::Runtime>(
+    trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
+    livetranslate_shutdown: &LivetranslateShutdown,
+    result: Result<OmniWorkerShutdown, String>,
+    teardown: impl FnOnce() -> Result<(), String>,
+) -> Result<OmniWorkerShutdown, String> {
+    let completion = finalize_worker_trace(trace_call, livetranslate_shutdown, result);
+    let teardown_result = teardown();
+    let Err(teardown_error) = teardown_result else {
+        return completion;
+    };
+    let persistence = trace_call.persist_terminal_supplement(
+        "worker_teardown_failure",
+        json!({ "error": teardown_error }),
+        livetranslate_shutdown.failure_evidence_deadline(Instant::now()),
+    );
+    let teardown_error = if persistence.confirmed() {
+        teardown_error
+    } else {
+        format!(
+            "{teardown_error} | teardownTraceEvidenceFinalization={}",
+            persistence.detail()
+        )
+    };
+    match completion {
+        Ok(_) => Err(teardown_error),
+        Err(primary) => Err(append_secondary_failure(primary, Some(teardown_error))),
+    }
+}
+
 fn connect_initial_with_trace<R: tauri::Runtime, T>(
     trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
     connect: impl FnOnce(
@@ -1395,6 +1414,75 @@ mod trace_finalizer_tests {
         assert!(content.contains("worker.failure.before-teardown end_call"));
         assert_eq!(error, "poll failed");
         assert!(teardown_started.load(Ordering::SeqCst));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn success_receipt_is_confirmed_before_blocking_teardown_begins() {
+        let root = crate::diagnostics::test_support::temp_dir(
+            "session-worker",
+            "success-finalizer-before-teardown",
+        );
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(DiagnosticsStateStore::new_with_root(root.to_string_lossy().to_string()));
+        app.state::<DiagnosticsStateStore>().set_min_log_level("debug");
+        let recorder = ModelTraceRecorder::new(
+            app.handle().clone(),
+            ModelTraceContext::new("provider", "model", "omni"),
+        );
+        let mut trace_call = recorder.call("worker.success.before-teardown");
+        trace_call.record_ws_send(
+            "input_audio_buffer.append",
+            serde_json::json!({"type":"input_audio_buffer.append","resampledSamples":320}),
+        );
+        let shutdown = LivetranslateShutdown::with_stop_signal(
+            false,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let teardown_started = Arc::new(AtomicBool::new(false));
+        let teardown_observed = Arc::clone(&teardown_started);
+        let receipt_returned = Arc::new(AtomicBool::new(false));
+        let receipt_observed = Arc::clone(&receipt_returned);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        trace_call.set_test_evidence_persister(move |records, deadline| {
+            assert!(deadline > Instant::now());
+            assert_eq!(records.len(), 2, "real audio and terminal evidence must be generated");
+            assert!(records.iter().any(|record| record.id.ends_with(":end")));
+            let ids = records.iter().map(|record| record.id.clone()).collect();
+            entered_tx.send(()).unwrap();
+            release_rx.recv().expect("controller must release the receipt");
+            receipt_returned.store(true, Ordering::SeqCst);
+            ids
+        });
+        let controller = std::thread::spawn(move || {
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(
+                !teardown_observed.load(Ordering::SeqCst),
+                "success teardown ran before receipt completion",
+            );
+            release_tx.send(()).unwrap();
+        });
+
+        let result = finalize_worker_trace_before_teardown(
+            &mut trace_call,
+            &shutdown,
+            Ok(OmniWorkerShutdown::LivetranslateSessionFinished),
+            || {
+                assert!(receipt_observed.load(Ordering::SeqCst));
+                teardown_started.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        controller.join().unwrap();
+        assert!(matches!(result, Ok(OmniWorkerShutdown::LivetranslateSessionFinished)));
+        assert!(teardown_started.load(Ordering::SeqCst));
+        assert!(app.state::<DiagnosticsStateStore>().flush_logs());
+        let content = fs::read_to_string(root.join("logs").join("app.log")).unwrap();
+        assert!(content.contains("input_audio_buffer.append.summary"));
+        assert!(content.contains("worker.success.before-teardown end_call"));
         let _ = fs::remove_dir_all(root);
     }
 

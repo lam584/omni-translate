@@ -578,17 +578,62 @@ test('production failure aggregation reports progress and shared root causes', (
   const summary = aggregateProductionCellFailures({
     plan,
     waveOutcome: {
-      startedCellIds: ['a', 'b', 'c'],
-      completedCellIds: ['a', 'b', 'c'],
-      collectedFailures: [failed('a'), failed('b')],
+      startedCellIds: ['a', 'c', 'b'],
+      completedCellIds: ['c', 'a', 'b'],
+      collectedFailures: [failed('b'), failed('a')],
     },
   });
   assert.deepEqual(summary.attempted, ['a', 'b', 'c']);
+  assert.deepEqual(summary.completed, ['a', 'b', 'c']);
   assert.deepEqual(summary.passed, ['c']);
   assert.deepEqual(summary.failed, ['a', 'b']);
+  assert.deepEqual(summary.failures.map((entry) => entry.cellId), ['a', 'b']);
   assert.equal(summary.sharedRootCauses.length, 1);
   assert.deepEqual(summary.sharedRootCauses[0].cellIds, ['a', 'b']);
   assert.equal(summary.cellSpecificFailures.length, 0);
+});
+
+test('production failure aggregation rejects duplicate and unknown runtime cell IDs', () => {
+  const plan = {
+    cells: [
+      { cellId: 'a', feedbackLoopPrevention: 'process-exclusion' },
+      { cellId: 'b', feedbackLoopPrevention: 'echo-cancel' },
+    ],
+  };
+  const failed = (cellId) => ({
+    cellId,
+    error: 'fixture failure',
+    outcome: {
+      result: {
+        verdict: 'failed',
+        failureLayer: 'provider',
+        stableErrorCode: 'watch.provider.session-failed',
+        lifecyclePhase: 'provider-session',
+        failureContext: {
+          endpointId: '{fixture-endpoint}',
+          bridgeInstanceId: null,
+          ownerGenerationTransition: { before: null, after: null },
+        },
+      },
+    },
+  });
+  const aggregate = (changed) => aggregateProductionCellFailures({
+    plan,
+    waveOutcome: {
+      startedCellIds: ['a', 'b'],
+      completedCellIds: ['a', 'b'],
+      collectedFailures: [failed('a')],
+      ...changed,
+    },
+  });
+  assert.throws(() => aggregate({ startedCellIds: ['a', 'a'] }), /duplicate attempted cell IDs/u);
+  assert.throws(() => aggregate({ completedCellIds: ['a', 'unknown'] }), /unknown completed cell ID: unknown/u);
+  assert.throws(() => aggregate({ collectedFailures: [failed('a'), failed('a')] }), /duplicate failed cell ID: a/u);
+  assert.throws(() => aggregate({ collectedFailures: [failed('unknown')] }), /unknown failed cell ID: unknown/u);
+  assert.throws(() => aggregateProductionCellFailures({
+    plan: { cells: [...plan.cells, plan.cells[0]] },
+    waveOutcome: { startedCellIds: [], completedCellIds: [], collectedFailures: [] },
+  }), /duplicate planned cell IDs/u);
 });
 
 test('failed production cells stop after final staging and retain the staged failure authority', () => {

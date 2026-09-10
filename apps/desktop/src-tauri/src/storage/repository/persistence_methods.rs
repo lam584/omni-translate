@@ -1,5 +1,6 @@
 use rusqlite::{params, Connection};
 use serde_json::Value;
+use std::collections::HashSet;
 
 use crate::common::MapErrToString;
 
@@ -14,9 +15,14 @@ fn insert_each_capability_str<F>(capabilities: &[Value], mut insert: F) -> Resul
 where
     F: FnMut(&str, i64) -> Result<(), String>,
 {
-    for (position, capability) in capabilities.iter().enumerate() {
+    let mut inserted = HashSet::new();
+    let mut position = 0_i64;
+    for capability in capabilities {
         if let Some(capability) = capability.as_str() {
-            insert(capability, position as i64)?;
+            if inserted.insert(capability) {
+                insert(capability, position)?;
+                position += 1;
+            }
         }
     }
     Ok(())

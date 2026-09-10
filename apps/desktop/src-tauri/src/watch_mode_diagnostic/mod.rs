@@ -1,5 +1,6 @@
 mod config;
 mod playback_drain;
+mod provider_terminal_observer;
 mod process_exclusion_restart;
 mod terminal_authority;
 mod terminal_capture;

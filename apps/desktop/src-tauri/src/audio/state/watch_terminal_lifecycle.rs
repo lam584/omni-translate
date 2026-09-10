@@ -676,6 +676,10 @@ impl StrictWatchTerminalLifecycle {
     }
 
     fn session_finished_received(&self) -> Result<bool, String> {
+        Ok(self.provider_terminal_phase()?.1)
+    }
+
+    fn provider_terminal_phase(&self) -> Result<(bool, bool), String> {
         let guard = self
             .state
             .lock()
@@ -683,7 +687,10 @@ impl StrictWatchTerminalLifecycle {
         let state = guard.as_ref().ok_or_else(|| {
             "strict Watch terminal lifecycle is not initialized".to_string()
         })?;
-        Ok(state.session_finished_received.is_some())
+        Ok((
+            state.session_finish_sent.is_some(),
+            state.session_finished_received.is_some(),
+        ))
     }
 }
 
@@ -795,6 +802,10 @@ impl AudioStateStore {
     pub(crate) fn strict_watch_session_finished_received(&self) -> Result<bool, String> {
         self.strict_watch_terminal_lifecycle
             .session_finished_received()
+    }
+
+    pub(crate) fn strict_watch_provider_terminal_phase(&self) -> Result<(bool, bool), String> {
+        self.strict_watch_terminal_lifecycle.provider_terminal_phase()
     }
 
     #[cfg(test)]

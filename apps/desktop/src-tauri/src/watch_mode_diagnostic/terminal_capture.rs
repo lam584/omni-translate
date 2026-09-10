@@ -386,42 +386,6 @@ async fn wait_for_input_complete_marker(
     }
 }
 
-fn provider_terminal_phase_reached(state: &AudioStateStore) -> Result<bool, String> {
-    state.strict_watch_session_finished_received()
-}
-
-#[cfg(test)]
-mod provider_terminal_phase_tests {
-    use super::*;
-    use crate::audio::state::RouteInputCompletionEvidence;
-
-    #[test]
-    fn session_finished_completes_provider_phase_before_playback_owner_join() {
-        let state = AudioStateStore::new();
-        state
-            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
-            .unwrap();
-        state.record_strict_watch_test_session_updated().unwrap();
-        state.record_strict_watch_provider_append(320).unwrap();
-        state.record_strict_watch_provider_input_closed().unwrap();
-        state.record_strict_watch_session_finish_sent().unwrap();
-        state
-            .record_strict_watch_response_audio_done("response")
-            .unwrap();
-        state
-            .record_strict_watch_session_finished_received()
-            .unwrap();
-        let (_owner_result_tx, owner_result_rx) =
-            std::sync::mpsc::sync_channel::<Result<RouteInputCompletionEvidence, String>>(1);
-
-        assert!(provider_terminal_phase_reached(&state).unwrap());
-        assert!(matches!(
-            owner_result_rx.try_recv(),
-            Err(std::sync::mpsc::TryRecvError::Empty)
-        ));
-    }
-}
-
 async fn run_evidence_driven_capture(
     app: AppHandle,
     config: &StrictPaidTerminalConfig,
@@ -478,11 +442,13 @@ async fn run_evidence_driven_capture(
         let result = finish_strict_watch_provider_after_input_complete(&provider_app, &state);
         let _ = provider_result_tx.send(result);
     });
-    let provider_phase_cap = config
-        .provider_shutdown_timeout
-        .saturating_add(PROVIDER_FINISH_OBSERVATION_GRACE);
     let mut input_completion = None;
     let provider_phase_started = Instant::now();
+    let mut provider_observer = super::provider_terminal_observer::ProviderTerminalObserver::new(
+        provider_phase_started,
+        config.provider_shutdown_timeout,
+        PROVIDER_FINISH_OBSERVATION_GRACE,
+    );
     loop {
         match provider_result_rx.try_recv() {
             Ok(Ok(evidence)) => {
@@ -502,26 +468,19 @@ async fn run_evidence_driven_capture(
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
-        match provider_terminal_phase_reached(&app.state::<AudioStateStore>()) {
+        match provider_observer.observe_with(Instant::now(), || super::provider_terminal_observer::terminal_phase(&app.state::<AudioStateStore>())) {
             Ok(true) => break,
             Ok(false) => {}
-            Err(error) => {
-                return Err(strict_capture_failure(
-                    recorder,
-                    "provider-finish-authority-invalid",
-                    error,
-                ));
-            }
-        }
-        if provider_phase_started.elapsed() >= provider_phase_cap {
-            return Err(strict_capture_failure(
+            Err(super::provider_terminal_observer::ProviderTerminalObservationError::Timeout(phase)) => return Err(strict_capture_failure(
                 recorder,
                 "provider-finish-timeout",
                 format!(
-                    "Provider session.finished authority was not observed within {}ms",
-                    provider_phase_cap.as_millis()
+                    "Provider terminal {phase} phase did not complete within {}ms",
+                    config.provider_shutdown_timeout.saturating_add(PROVIDER_FINISH_OBSERVATION_GRACE).as_millis()
                 ),
-            ));
+            )),
+            Err(super::provider_terminal_observer::ProviderTerminalObservationError::Authority(error)) => return Err(strict_capture_failure(recorder, "provider-finish-authority-invalid", error)),
+            Err(super::provider_terminal_observer::ProviderTerminalObservationError::ProtocolOrder) => return Err(strict_capture_failure(recorder, "provider-finish-protocol-order-invalid", "session.finished authority was observed before session.finish")),
         }
         tokio::time::sleep(INPUT_COMPLETE_POLL).await;
     }

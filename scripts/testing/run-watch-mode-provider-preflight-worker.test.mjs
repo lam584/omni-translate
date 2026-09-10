@@ -130,12 +130,27 @@ test('CLI exits after publishing a completed result even when a dependency leave
 });
 
 test('CLI stream publication failures can never exit successfully', () => {
-  for (const stream of [
-    { write: (_text, callback) => callback(new Error('pipe failed')) },
-    { write: () => { throw new Error('synchronous pipe failure'); } },
+  for (const [stream, writeSync] of [
+    [{}, () => {}],
+    [{ fd: 1 }, () => { throw new Error('synchronous file-descriptor failure'); }],
   ]) {
     const exits = [];
-    writeAndExit(stream, 'completed\n', 0, (code) => exits.push(code));
+    writeAndExit(stream, 'completed\n', 0, (code) => exits.push(code), writeSync);
     assert.deepEqual(exits, [1]);
   }
+});
+
+test('CLI publication synchronously commits the file descriptor before exiting', () => {
+  const events = [];
+  writeAndExit(
+    { fd: 7 },
+    'completed\n',
+    0,
+    (code) => events.push(['exit', code]),
+    (fd, text, position, encoding) => events.push(['write', fd, text, position, encoding]),
+  );
+  assert.deepEqual(events, [
+    ['write', 7, 'completed\n', null, 'utf8'],
+    ['exit', 0],
+  ]);
 });

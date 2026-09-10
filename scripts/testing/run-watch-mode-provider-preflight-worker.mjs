@@ -101,7 +101,13 @@ async function readStdinJson() {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
-export function writeAndExit(stream, text, exitCode, exit = process.exit) {
+export function writeAndExit(
+  stream,
+  text,
+  exitCode,
+  exit = process.exit,
+  writeSync = fs.writeSync,
+) {
   let exited = false;
   const finish = (code) => {
     if (exited) return;
@@ -109,7 +115,9 @@ export function writeAndExit(stream, text, exitCode, exit = process.exit) {
     exit(code);
   };
   try {
-    stream.write(text, (error) => finish(error ? 1 : exitCode));
+    if (!Number.isInteger(stream?.fd)) throw new Error('publication stream has no file descriptor');
+    writeSync(stream.fd, text, null, 'utf8');
+    finish(exitCode);
   } catch {
     finish(1);
   }

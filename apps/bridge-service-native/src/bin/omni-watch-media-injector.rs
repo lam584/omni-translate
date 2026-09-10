@@ -35,6 +35,8 @@ mod injector {
     const TARGET_CHANNELS: usize = 2;
     const BYTES_PER_SAMPLE: usize = std::mem::size_of::<f32>();
     const BYTES_PER_FRAME: usize = TARGET_CHANNELS * BYTES_PER_SAMPLE;
+    const RENDER_STALL_TIMEOUT: Duration = Duration::from_secs(15);
+    const RENDER_ABSOLUTE_EXTRA_TIMEOUT: Duration = Duration::from_secs(120);
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -137,6 +139,13 @@ mod injector {
                 .write_to_device(frames, &packet, None)
                 .map_err(error_text)?;
             Ok(frames)
+        }
+
+        fn current_padding_frames(&self) -> Result<usize, String> {
+            self.audio_client
+                .get_current_padding()
+                .map(|frames| frames as usize)
+                .map_err(error_text)
         }
     }
 
@@ -266,20 +275,56 @@ mod injector {
         let mut render = MediaRender::start(&device, &format)?;
         let total_frames = render_samples.len() / TARGET_CHANNELS;
         let mut pending = VecDeque::from(render_samples);
-        let started = Instant::now();
-        let timeout = render_timeout(total_frames, render_sample_rate_hz);
+        let render_started_at = Instant::now();
+        let render_absolute_timeout =
+            render_absolute_timeout(total_frames, render_sample_rate_hz);
+        let mut last_progress_at = render_started_at;
         let mut rendered_frames = 0usize;
         while !pending.is_empty() {
-            rendered_frames += render.write_available(&mut pending)?;
-            if started.elapsed() > timeout {
+            let written_frames = render.write_available(&mut pending).map_err(|error| {
+                format!(
+                    "media submission WASAPI failure: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} detail={error}",
+                    total_frames.saturating_sub(rendered_frames),
+                )
+            })?;
+            let observed_at = Instant::now();
+            if written_frames > 0 {
+                rendered_frames += written_frames;
+                last_progress_at = observed_at;
+            } else if render_has_stalled(last_progress_at, observed_at) {
                 return Err(format!(
-                    "timed out rendering media: renderedFrames={rendered_frames} totalFrames={total_frames} sourceSampleRateHz={} renderSampleRateHz={render_sample_rate_hz}",
+                    "stalled submitting media: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} sourceSampleRateHz={} renderSampleRateHz={render_sample_rate_hz} noProgressMilliseconds={}",
+                    total_frames.saturating_sub(rendered_frames),
                     decoded.source_sample_rate_hz,
+                    observed_at
+                        .saturating_duration_since(last_progress_at)
+                        .as_millis(),
+                ));
+            }
+            if render_absolute_timeout_expired(
+                render_started_at,
+                observed_at,
+                render_absolute_timeout,
+            ) {
+                return Err(format!(
+                    "media submission exceeded absolute safety limit: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} sourceSampleRateHz={} renderSampleRateHz={render_sample_rate_hz} elapsedMilliseconds={} absoluteLimitMilliseconds={}",
+                    total_frames.saturating_sub(rendered_frames),
+                    decoded.source_sample_rate_hz,
+                    observed_at
+                        .saturating_duration_since(render_started_at)
+                        .as_millis(),
+                    render_absolute_timeout.as_millis(),
                 ));
             }
             thread::sleep(Duration::from_millis(2));
         }
-        thread::sleep(Duration::from_millis(300));
+        wait_for_render_drain(
+            &render,
+            total_frames,
+            render_sample_rate_hz,
+            render_started_at,
+            render_absolute_timeout,
+        )?;
 
         Ok(InjectorResult {
             passed: true,
@@ -458,16 +503,87 @@ mod injector {
         }
     }
 
-    fn render_timeout(total_frames: usize, render_sample_rate_hz: u32) -> Duration {
-        let media_seconds = total_frames as f64 / render_sample_rate_hz.max(1) as f64;
-        // A shared-mode WASAPI endpoint may expose nominal 48 kHz while its
-        // virtual/hardware clock drains a little slower. A fixed eight-second
-        // allowance truncated the tail of the 125.8 s canonical Watch source
-        // on a real VM. Keep the timeout bounded, but scale its scheduling
-        // allowance for long media so a current stream is not mistaken for a
-        // stalled endpoint.
-        let scheduling_allowance_seconds = (media_seconds * 0.15).clamp(15.0, 30.0);
-        Duration::from_secs_f64(media_seconds + scheduling_allowance_seconds)
+    fn render_has_stalled(last_progress_at: Instant, observed_at: Instant) -> bool {
+        observed_at.saturating_duration_since(last_progress_at) > RENDER_STALL_TIMEOUT
+    }
+
+    fn render_absolute_timeout(total_frames: usize, render_sample_rate_hz: u32) -> Duration {
+        let media_duration = Duration::from_secs_f64(
+            total_frames as f64 / render_sample_rate_hz.max(1) as f64,
+        );
+        media_duration
+            .saturating_mul(2)
+            .max(media_duration.saturating_add(RENDER_ABSOLUTE_EXTRA_TIMEOUT))
+    }
+
+    fn render_absolute_timeout_expired(
+        started_at: Instant,
+        observed_at: Instant,
+        timeout: Duration,
+    ) -> bool {
+        observed_at.saturating_duration_since(started_at) > timeout
+    }
+
+    fn wait_for_render_drain(
+        render: &MediaRender,
+        submitted_frames: usize,
+        render_sample_rate_hz: u32,
+        render_started_at: Instant,
+        render_absolute_timeout: Duration,
+    ) -> Result<(), String> {
+        let mut padding_frames = render.current_padding_frames().map_err(|error| {
+            format!(
+                "media drain WASAPI failure: submittedFrames={submitted_frames} lastPaddingFrames=unknown renderSampleRateHz={render_sample_rate_hz} detail={error}"
+            )
+        })?;
+        let initial_observed_at = Instant::now();
+        if render_absolute_timeout_expired(
+            render_started_at,
+            initial_observed_at,
+            render_absolute_timeout,
+        ) {
+            return Err(format!(
+                "media drain exceeded absolute safety limit: submittedFrames={submitted_frames} paddingFrames={padding_frames} renderSampleRateHz={render_sample_rate_hz} elapsedMilliseconds={} absoluteLimitMilliseconds={}",
+                initial_observed_at
+                    .saturating_duration_since(render_started_at)
+                    .as_millis(),
+                render_absolute_timeout.as_millis(),
+            ));
+        }
+        let mut last_progress_at = initial_observed_at;
+        while padding_frames > 0 {
+            thread::sleep(Duration::from_millis(2));
+            let next_padding_frames = render.current_padding_frames().map_err(|error| {
+                format!(
+                    "media drain WASAPI failure: submittedFrames={submitted_frames} lastPaddingFrames={padding_frames} renderSampleRateHz={render_sample_rate_hz} detail={error}"
+                )
+            })?;
+            let observed_at = Instant::now();
+            if render_absolute_timeout_expired(
+                render_started_at,
+                observed_at,
+                render_absolute_timeout,
+            ) {
+                return Err(format!(
+                    "media drain exceeded absolute safety limit: submittedFrames={submitted_frames} paddingFrames={next_padding_frames} renderSampleRateHz={render_sample_rate_hz} elapsedMilliseconds={} absoluteLimitMilliseconds={}",
+                    observed_at
+                        .saturating_duration_since(render_started_at)
+                        .as_millis(),
+                    render_absolute_timeout.as_millis(),
+                ));
+            } else if next_padding_frames < padding_frames {
+                last_progress_at = observed_at;
+            } else if render_has_stalled(last_progress_at, observed_at) {
+                return Err(format!(
+                    "stalled draining media: submittedFrames={submitted_frames} paddingFrames={next_padding_frames} renderSampleRateHz={render_sample_rate_hz} noProgressMilliseconds={}",
+                    observed_at
+                        .saturating_duration_since(last_progress_at)
+                        .as_millis(),
+                ));
+            }
+            padding_frames = next_padding_frames;
+        }
+        Ok(())
     }
 
     fn apply_gain_db(samples: &mut [f32], gain_db: f32) {
@@ -766,11 +882,76 @@ mod injector {
         }
 
         #[test]
-        fn long_media_timeout_allows_slow_shared_mode_clock_without_becoming_unbounded() {
-            let canonical = render_timeout(6_039_136, 48_000).as_secs_f64();
-            assert!(canonical > 144.0 && canonical < 145.0);
-            assert_eq!(render_timeout(48_000, 48_000), Duration::from_secs(16));
-            assert_eq!(render_timeout(48_000 * 600, 48_000), Duration::from_secs(630));
+        fn progressing_render_survives_repeated_bounded_scheduler_delay() {
+            let started = Instant::now();
+            let first_progress = started + Duration::from_secs(14);
+            assert!(!render_has_stalled(started, first_progress));
+
+            let second_progress = first_progress + Duration::from_secs(14);
+            assert!(!render_has_stalled(first_progress, second_progress));
+
+            let third_progress = second_progress + Duration::from_secs(14);
+            assert!(!render_has_stalled(second_progress, third_progress));
+        }
+
+        #[test]
+        fn canonical_failure_scale_keeps_progress_authority_past_the_old_deadline() {
+            let total_frames = 6_183_136;
+            let started = Instant::now();
+            let old_deadline = started + Duration::from_millis(148_000);
+            let recent_progress = old_deadline - Duration::from_millis(2);
+
+            assert!(!render_has_stalled(recent_progress, old_deadline));
+            assert!(!render_absolute_timeout_expired(
+                started,
+                old_deadline,
+                render_absolute_timeout(total_frames, 48_000),
+            ));
+        }
+
+        #[test]
+        fn render_without_progress_reaches_a_strict_stall_deadline() {
+            let started = Instant::now();
+            assert!(!render_has_stalled(
+                started,
+                started + RENDER_STALL_TIMEOUT
+            ));
+            assert!(render_has_stalled(
+                started,
+                started + RENDER_STALL_TIMEOUT + Duration::from_millis(1)
+            ));
+        }
+
+        #[test]
+        fn pathological_fragmentary_progress_still_has_an_absolute_safety_limit() {
+            let started = Instant::now();
+            let timeout = render_absolute_timeout(48_000, 48_000);
+            assert_eq!(timeout, Duration::from_secs(121));
+            assert!(!render_absolute_timeout_expired(
+                started,
+                started + timeout,
+                timeout,
+            ));
+            assert!(render_absolute_timeout_expired(
+                started,
+                started + timeout + Duration::from_millis(1),
+                timeout,
+            ));
+        }
+
+        #[test]
+        fn drain_progress_cannot_extend_the_shared_absolute_safety_limit() {
+            let started = Instant::now();
+            let timeout = render_absolute_timeout(48_000, 48_000);
+            let last_padding_progress = started + timeout - Duration::from_secs(1);
+            let observed = started + timeout + Duration::from_millis(1);
+
+            assert!(!render_has_stalled(last_padding_progress, observed));
+            assert!(render_absolute_timeout_expired(
+                started,
+                observed,
+                timeout,
+            ));
         }
     }
 

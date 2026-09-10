@@ -163,10 +163,17 @@ impl LivetranslateShutdown {
 
     pub(super) fn tick_pause(&self) -> Duration {
         // Once input is fenced, drain already queued inbound frames without
-        // adding a fixed delay per frame. The idle-read barrier and total
-        // shutdown deadline still decide whether finish may be sent.
-        if self.pre_finish_drain_barrier.is_some()
-            && !self.shared.session_finish_sent.load(Ordering::SeqCst)
+        // adding a fixed delay per frame. Keep that receive-side acceleration
+        // after session.finish as well: the Provider may already have a finite
+        // terminal tail queued ahead of session.finished. The idle-read barrier
+        // and total shutdown deadline still bound the loop.
+        let finish_sent = self.shared.session_finish_sent.load(Ordering::SeqCst);
+        let finish_received = self
+            .shared
+            .session_finished_received
+            .load(Ordering::SeqCst);
+        if (self.pre_finish_drain_barrier.is_some() && !finish_sent)
+            || (finish_sent && !finish_received)
         {
             Duration::ZERO
         } else {
@@ -928,7 +935,73 @@ mod tests {
         assert!(shutdown.deadline_error(now + elapsed).is_none(),
             "finite receive backlog must not exhaust shutdown through fixed per-frame pacing: {elapsed:?}");
         shutdown.record_finish_sent(now + elapsed);
+        assert_eq!(shutdown.tick_pause(), Duration::ZERO);
+    }
+
+    #[test]
+    fn finite_post_finish_response_tail_reaches_session_finished_without_per_frame_pacing() {
+        let now = Instant::now();
+        let mut shutdown = LivetranslateShutdown::new(true);
+        shutdown.request(now);
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        let mut inbound = vec![text_event("response.audio.delta"); 1500];
+        inbound.push(text_event("session.finished"));
+        let mut socket = shutdown.wrap_socket(FakeSocket {
+            inbound: VecDeque::from(inbound),
+            state: Arc::new(Mutex::new(FakeSocketState::default())),
+        });
+        socket.read_message().unwrap();
+        assert!(shutdown.should_send_finish(0, true, true).unwrap());
+        shutdown.record_finish_sent(now);
+
+        let mut elapsed = Duration::ZERO;
+        for _ in 1..1500 {
+            assert!(shutdown
+                .deadline_error_with_response_state(now + elapsed, true)
+                .is_none());
+            socket.read_message().unwrap();
+            let mut waited = Duration::ZERO;
+            let mut yielded = false;
+            shutdown.pace_tick(
+                |pause| waited = pause,
+                || yielded = true,
+            );
+            assert!(yielded, "post-finish backlog must yield instead of sleeping");
+            elapsed += Duration::from_millis(1) + waited;
+        }
+        assert!(!shutdown.session_finished_received());
+        assert!(shutdown
+            .deadline_error_with_response_state(now + elapsed, true)
+            .is_none());
+        socket.read_message().expect("session.finished at the finite tail boundary");
+        assert!(shutdown.session_finished_received());
         assert_eq!(shutdown.tick_pause(), Duration::from_millis(10));
+        assert!(elapsed < Duration::from_secs(15),
+            "finite post-finish response tail must fit the unchanged terminal budget: {elapsed:?}");
+    }
+
+    #[test]
+    fn continuous_post_finish_progress_without_terminal_still_times_out() {
+        let now = Instant::now();
+        let mut shutdown = LivetranslateShutdown::new(true);
+        shutdown.request(now);
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        assert!(shutdown.should_send_finish(0, true, true).unwrap());
+        shutdown.record_finish_sent(now);
+        let deadlines = shutdown.deadlines().expect("post-finish deadlines");
+
+        assert_eq!(shutdown.tick_pause(), Duration::ZERO);
+        assert!(shutdown
+            .deadline_error_with_response_state(
+                deadlines.fail_at - Duration::from_millis(1),
+                true,
+            )
+            .is_none());
+        let (reason, error) = shutdown
+            .deadline_error_with_response_state(deadlines.fail_at, true)
+            .expect("continuous response progress cannot extend the terminal deadline");
+        assert_eq!(reason, "livetranslate-session-finished-timeout");
+        assert!(error.contains("providerResponseActive=true"));
     }
 
     #[test]

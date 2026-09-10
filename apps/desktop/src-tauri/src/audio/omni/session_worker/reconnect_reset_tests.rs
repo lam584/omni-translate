@@ -9,12 +9,10 @@ fn shutdown_drain_releases_manual_response_audio_defer() {
 }
 
 #[test]
-fn livetranslate_shutdown_drain_disables_only_realtime_chunk_throttling() {
-    assert!(!audio_pump::should_throttle_audio_chunk(1, false));
-    assert!(audio_pump::should_throttle_audio_chunk(2, false));
-    assert!(audio_pump::should_throttle_audio_chunk(8, false));
-    assert!(!audio_pump::should_throttle_audio_chunk(2, true));
-    assert!(!audio_pump::should_throttle_audio_chunk(8, true));
+fn livetranslate_shutdown_keeps_realtime_chunk_throttling() {
+    assert!(!audio_pump::should_throttle_audio_chunk(1));
+    assert!(audio_pump::should_throttle_audio_chunk(2));
+    assert!(audio_pump::should_throttle_audio_chunk(8));
 }
 
 #[test]

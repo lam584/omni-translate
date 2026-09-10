@@ -16,9 +16,8 @@ fn audio_pump_should_yield(chunks_sent_this_tick: usize) -> bool {
 
 pub(super) fn should_throttle_audio_chunk(
     chunks_sent_this_tick: usize,
-    livetranslate_shutdown_requested: bool,
 ) -> bool {
-    chunks_sent_this_tick > 1 && !livetranslate_shutdown_requested
+    chunks_sent_this_tick > 1
 }
 
 pub(super) struct OmniAudioPumpState {
@@ -556,10 +555,7 @@ impl OmniAudioPump {
                 .saturating_add(asr_chunk.len() as u64);
             store.set_stt_connected(true, buffer_size);
 
-            if should_throttle_audio_chunk(
-                chunks_sent_this_tick,
-                livetranslate_shutdown_requested,
-            ) {
+            if should_throttle_audio_chunk(chunks_sent_this_tick) {
                 thread::sleep(Duration::from_millis(OMNI_INTER_CHUNK_THROTTLE_MS));
             }
             if audio_pump_should_yield(chunks_sent_this_tick) {

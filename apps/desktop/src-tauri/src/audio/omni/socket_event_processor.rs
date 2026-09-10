@@ -2,7 +2,9 @@ use super::connection_coordinator::{
     is_idle_preconnect_session, is_released_empty_audio_commit_error, provider_error_code, provider_error_message,
 };
 use super::session_errors::is_provider_idle_timeout_error;
-use super::protocol::flush_expired_deferred_empty_vad;
+use super::protocol::{
+    flush_arbitration_expired_deferred_empty_vad, flush_expired_deferred_empty_vad,
+};
 use super::*;
 use crate::audio::glossary::GlossaryContext;
 use crate::audio::bailian_protocol::LiveTranslateServerMutation;
@@ -1402,11 +1404,16 @@ impl OmniSocketEventProcessor {
         }
             },
             Err(error) => {
-        // No provider event is buffered for this poll, so an elapsed deferred
-        // empty-VAD terminal can now safely win. Successful reads are handled
-        // first below so an already-arrived contiguous speech boundary is not
-        // lost merely because the local deadline elapsed before dispatch.
-        flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
+        // An idle read is not proof that a server boundary will not become
+        // readable on the next scheduling turn. Preserve only the dedicated
+        // hard arbitration window here. Successful non-speech frames still
+        // flush at the ordinary deadline above and therefore cannot starve
+        // the terminal.
+        flush_arbitration_expired_deferred_empty_vad(
+            &app,
+            store,
+            &mut event_diagnostics,
+        );
         let reconnect_state = OmniConnectionCoordinator::recover_read_error(
             OmniReconnectState {
                 socket,

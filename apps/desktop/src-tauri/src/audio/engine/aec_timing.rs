@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::{collections::BTreeMap, sync::OnceLock};
 
 use windows_sys::Win32::System::Performance::{
     QueryPerformanceCounter, QueryPerformanceFrequency,
@@ -10,6 +10,7 @@ const MAX_UPDATE_STEP_MS: f64 = 25.0;
 const CLOCK_DISCONTINUITY_TOLERANCE_MS: f64 = 50.0;
 const CAPTURE_DISCONTINUITY_REARM_MS: u64 = 100;
 const MAX_STABLE_CLEAN_OBSERVATION_GAP_MS: u64 = 20;
+const MAX_TRACKED_RENDER_EPOCHS: usize = 64;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CaptureClockObservation {
@@ -33,6 +34,9 @@ pub(super) struct CaptureClockObservation {
     /// Cumulative frames submitted to that same WASAPI render client. The
     /// estimator uses this position to detect render-session regression.
     pub(super) render_submitted_frames: Option<u64>,
+    /// Unique identity of the render attempt whose WASAPI stream actually
+    /// started. Pending attempts never become timing epochs.
+    pub(super) render_timeline_epoch: Option<u64>,
     pub(super) render_discontinuity_count: u64,
     pub(super) data_discontinuity: bool,
     pub(super) timestamp_error: bool,
@@ -82,6 +86,8 @@ pub(super) struct AecDelayEstimator {
     last_device_frame_index: Option<u64>,
     last_packet_qpc_100ns: Option<u64>,
     last_render_submitted_frames: Option<u64>,
+    last_render_timeline_epoch: Option<u64>,
+    render_submitted_frames_by_epoch: BTreeMap<u64, u64>,
     last_render_discontinuity_count: Option<u64>,
     capture_discontinuity_episode_active: bool,
     stable_clean_capture_frames: u64,
@@ -98,6 +104,8 @@ impl AecDelayEstimator {
             last_device_frame_index: None,
             last_packet_qpc_100ns: None,
             last_render_submitted_frames: None,
+            last_render_timeline_epoch: None,
+            render_submitted_frames_by_epoch: BTreeMap::new(),
             last_render_discontinuity_count: None,
             capture_discontinuity_episode_active: false,
             stable_clean_capture_frames: 0,
@@ -205,6 +213,21 @@ impl AecDelayEstimator {
         // of the new session must establish a baseline, not look like a second
         // regression for the boundary we just consumed.
         self.last_render_submitted_frames = observation.render_submitted_frames;
+        self.last_render_timeline_epoch = observation.render_timeline_epoch;
+        if let (Some(epoch), Some(submitted_frames)) = (
+            observation.render_timeline_epoch,
+            observation.render_submitted_frames,
+        ) {
+            self.render_submitted_frames_by_epoch
+                .insert(epoch, submitted_frames);
+            while self.render_submitted_frames_by_epoch.len() > MAX_TRACKED_RENDER_EPOCHS {
+                let Some(oldest) = self.render_submitted_frames_by_epoch.keys().next().copied()
+                else {
+                    break;
+                };
+                self.render_submitted_frames_by_epoch.remove(&oldest);
+            }
+        }
         self.last_render_discontinuity_count = Some(observation.render_discontinuity_count);
 
         let packet_age_ms = if observation.timestamp_error {
@@ -298,8 +321,17 @@ impl AecDelayEstimator {
         let Some(current) = observation.render_submitted_frames else {
             return false;
         };
-        self.last_render_submitted_frames
-            .is_some_and(|previous| current < previous)
+        let regressed = match observation.render_timeline_epoch {
+            Some(epoch) => self
+                .render_submitted_frames_by_epoch
+                .get(&epoch)
+                .is_some_and(|previous| current < *previous),
+            None if self.last_render_timeline_epoch.is_none() => self
+                .last_render_submitted_frames
+                .is_some_and(|previous| current < previous),
+            None => false,
+        };
+        regressed
             || observation
                 .render_endpoint_padding_frames
                 .is_some_and(|padding| padding as u64 > current)
@@ -343,6 +375,7 @@ mod tests {
             render_endpoint_padding_frames: None,
             render_reference_lead_frames: None,
             render_submitted_frames: None,
+            render_timeline_epoch: None,
             render_discontinuity_count: 0,
             data_discontinuity: false,
             timestamp_error: false,
@@ -427,12 +460,14 @@ mod tests {
     fn render_submit_regression_requests_reset_without_inventing_padding() {
         let mut estimator = AecDelayEstimator::new(48_000, 2);
         let mut first = observation(0, 1_000_000, 1_100_000, 0);
+        first.render_timeline_epoch = Some(11);
         first.render_submitted_frames = Some(4_800);
         first.render_endpoint_padding_frames = Some(480);
         first.render_reference_lead_frames = Some(0);
         let _ = estimator.observe_capture(first);
 
         let mut regressed = observation(480, 1_100_000, 1_200_000, 0);
+        regressed.render_timeline_epoch = Some(11);
         regressed.render_submitted_frames = Some(480);
         regressed.render_endpoint_padding_frames = Some(240);
         regressed.render_reference_lead_frames = Some(0);
@@ -446,6 +481,57 @@ mod tests {
         );
         assert_eq!(estimate.render_submitted_frames, Some(480));
         assert_eq!(estimator.reset_count(), 1);
+    }
+
+    #[test]
+    fn a_new_started_render_epoch_accepts_a_normal_submit_position_rebase() {
+        let mut estimator = AecDelayEstimator::new(48_000, 2);
+        let mut first = observation(0, 1_000_000, 1_100_000, 0);
+        first.render_timeline_epoch = Some(11);
+        first.render_submitted_frames = Some(480);
+        let initial = estimator.observe_capture(first);
+        assert!(!initial.aec_reset_required);
+
+        let mut advanced = observation(480, 1_100_000, 1_200_000, 0);
+        advanced.render_timeline_epoch = Some(11);
+        advanced.render_submitted_frames = Some(48_000);
+        let same_epoch = estimator.observe_capture(advanced);
+        assert!(!same_epoch.aec_reset_required);
+
+        let mut rebased = observation(960, 1_200_000, 1_300_000, 0);
+        rebased.render_timeline_epoch = Some(12);
+        rebased.render_submitted_frames = Some(480);
+        rebased.render_endpoint_padding_frames = Some(480);
+        let new_epoch = estimator.observe_capture(rebased);
+
+        assert!(!new_epoch.delay_reset_required);
+        assert!(!new_epoch.aec_reset_required);
+        assert_eq!(new_epoch.aec_reset_reason, None);
+    }
+
+    #[test]
+    fn interleaved_epochs_do_not_hide_a_regression_within_the_same_session() {
+        let mut estimator = AecDelayEstimator::new(48_000, 2);
+        let mut a_first = observation(0, 1_000_000, 1_100_000, 0);
+        a_first.render_timeline_epoch = Some(21);
+        a_first.render_submitted_frames = Some(480);
+        assert!(!estimator.observe_capture(a_first).aec_reset_required);
+
+        let mut b_first = observation(480, 1_100_000, 1_200_000, 0);
+        b_first.render_timeline_epoch = Some(22);
+        b_first.render_submitted_frames = Some(480);
+        assert!(!estimator.observe_capture(b_first).aec_reset_required);
+
+        let mut a_regressed = observation(960, 1_200_000, 1_300_000, 0);
+        a_regressed.render_timeline_epoch = Some(21);
+        a_regressed.render_submitted_frames = Some(240);
+        let estimate = estimator.observe_capture(a_regressed);
+
+        assert!(estimate.aec_reset_required);
+        assert_eq!(
+            estimate.aec_reset_reason,
+            Some("wasapi-render-session-discontinuity")
+        );
     }
 
     #[test]

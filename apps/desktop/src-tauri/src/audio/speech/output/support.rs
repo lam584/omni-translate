@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::VecDeque;
 
 use super::{AudioClient, SpeakerRenderEvent, RENDER_POSITION_POLL_MS};
 
@@ -50,6 +51,156 @@ where
     })?;
     *stream_started_authority = true;
     Ok(())
+}
+
+struct DeferredRenderFrame {
+    render_session_id: u64,
+    samples: Vec<f32>,
+    sample_rate_hz: u32,
+    channel_count: u16,
+    player_position: Duration,
+    submitted_frames: u64,
+    endpoint_padding_frames: u32,
+    physical_prefix_offset_frames: u32,
+    observed_at: Instant,
+}
+
+impl DeferredRenderFrame {
+    fn publish<F>(&self, on_render_event: &mut F) -> Result<(), String>
+    where
+        F: for<'a> FnMut(SpeakerRenderEvent<'a>) -> Result<(), String>,
+    {
+        on_render_event(SpeakerRenderEvent::Frame {
+            render_session_id: self.render_session_id,
+            samples: &self.samples,
+            sample_rate_hz: self.sample_rate_hz,
+            channel_count: self.channel_count,
+            player_position: self.player_position,
+            submitted_frames: self.submitted_frames,
+            endpoint_padding_frames: self.endpoint_padding_frames,
+            physical_prefix_offset_frames: self.physical_prefix_offset_frames,
+            observed_at: self.observed_at,
+        })
+    }
+}
+
+#[derive(Default)]
+pub(super) struct DeferredRenderFrames {
+    frames: VecDeque<DeferredRenderFrame>,
+}
+
+impl DeferredRenderFrames {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn defer(
+        &mut self,
+        render_session_id: u64,
+        samples: &[f32],
+        sample_rate_hz: u32,
+        channel_count: u16,
+        player_position: Duration,
+        submitted_frames: u64,
+        endpoint_padding_frames: u32,
+        physical_prefix_offset_frames: u32,
+        observed_at: Instant,
+    ) {
+        self.frames.push_back(DeferredRenderFrame {
+            render_session_id,
+            samples: samples.to_vec(),
+            sample_rate_hz,
+            channel_count,
+            player_position,
+            submitted_frames,
+            endpoint_padding_frames,
+            physical_prefix_offset_frames,
+            observed_at,
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn publish_or_defer<F>(
+        &mut self,
+        stream_started_authority: bool,
+        render_session_id: u64,
+        samples: &[f32],
+        sample_rate_hz: u32,
+        channel_count: u16,
+        player_position: Duration,
+        submitted_frames: u64,
+        endpoint_padding_frames: u32,
+        physical_prefix_offset_frames: u32,
+        observed_at: Instant,
+        on_render_event: &mut F,
+    ) -> Result<(), String>
+    where
+        F: for<'a> FnMut(SpeakerRenderEvent<'a>) -> Result<(), String>,
+    {
+        if !stream_started_authority {
+            self.defer(
+                render_session_id,
+                samples,
+                sample_rate_hz,
+                channel_count,
+                player_position,
+                submitted_frames,
+                endpoint_padding_frames,
+                physical_prefix_offset_frames,
+                observed_at,
+            );
+            return Ok(());
+        }
+        DeferredRenderFrame {
+            render_session_id,
+            samples: samples.to_vec(),
+            sample_rate_hz,
+            channel_count,
+            player_position,
+            submitted_frames,
+            endpoint_padding_frames,
+            physical_prefix_offset_frames,
+            observed_at,
+        }
+        .publish(on_render_event)
+    }
+
+    fn flush<F>(&mut self, on_render_event: &mut F) -> Result<(), String>
+    where
+        F: for<'a> FnMut(SpeakerRenderEvent<'a>) -> Result<(), String>,
+    {
+        while let Some(frame) = self.frames.pop_front() {
+            if let Err(error) = frame.publish(on_render_event) {
+                self.frames.push_front(frame);
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+}
+
+pub(super) fn publish_render_stream_started_and_flush<F>(
+    stream_started_authority: &mut bool,
+    session_id: u64,
+    endpoint_id: &str,
+    renderer_instance_id: &str,
+    owner_generation: u64,
+    deferred_frames: &mut DeferredRenderFrames,
+    on_render_event: &mut F,
+) -> Result<(), String>
+where
+    F: for<'a> FnMut(SpeakerRenderEvent<'a>) -> Result<(), String>,
+{
+    publish_render_stream_started(
+        stream_started_authority,
+        session_id,
+        endpoint_id,
+        renderer_instance_id,
+        owner_generation,
+        on_render_event,
+    )?;
+    deferred_frames.flush(on_render_event)
 }
 
 pub(super) fn ensure_render_ownership(

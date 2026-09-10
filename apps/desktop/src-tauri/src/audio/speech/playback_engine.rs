@@ -117,6 +117,7 @@ impl<'a> SpeechPlaybackEngine<'a> {
                         .store
                         .mark_echo_render_discontinuity(reason, observed_at),
                     SpeakerRenderEvent::Frame {
+                        render_session_id,
                         samples,
                         sample_rate_hz,
                         channel_count,
@@ -125,21 +126,17 @@ impl<'a> SpeechPlaybackEngine<'a> {
                         endpoint_padding_frames,
                         physical_prefix_offset_frames,
                         observed_at,
-                    } => {
-                        self.store.observe_echo_render_endpoint(
-                            submitted_frames,
-                            endpoint_padding_frames,
-                            physical_prefix_offset_frames,
-                            observed_at,
-                        );
-                        self.store.push_echo_reference_at(
+                    } => self.store.push_echo_reference_at(
+                            render_session_id,
                             samples,
                             sample_rate_hz,
                             channel_count,
                             player_position,
+                            submitted_frames,
+                            endpoint_padding_frames,
+                            physical_prefix_offset_frames,
                             observed_at,
-                        )
-                    }
+                        ),
                     SpeakerRenderEvent::AecLiveScenarioStage {
                         status,
                         stage,

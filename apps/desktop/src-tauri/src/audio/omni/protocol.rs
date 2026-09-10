@@ -510,6 +510,7 @@ struct DeferredEmptyVadTerminal {
     audio_end_ms: u64,
     continuity_id: u64,
     expires_at: Instant,
+    successor_arbitration_deadline: Instant,
 }
 
 impl OmniEventDiagnostics {
@@ -1141,8 +1142,21 @@ fn terminalize_native_response_without_output<R: tauri::Runtime>(
 
 const SHORT_SERVER_VAD_FRAGMENT_MAX_MS: u64 = 100;
 const CONTIGUOUS_EMPTY_VAD_DEFER_MS: u64 = 120;
-const CONTIGUOUS_EMPTY_VAD_DISPATCH_GRACE_MS: u64 = 20;
-const CONTIGUOUS_EMPTY_VAD_START_TOLERANCE_MS: u64 = 10;
+// The c02 production trace observed an admitted successor 54ms after the
+// ordinary terminal deadline. Keep a separate, hard-bounded arbitration
+// window for an already-imminent speech_started without delaying terminals
+// behind successful non-speech traffic.
+const CONTIGUOUS_EMPTY_VAD_SUCCESSOR_ARBITRATION_MS: u64 = 80;
+// The same trace carried a 60ms server audio-boundary gap. This tolerance is
+// local to deferred-empty split arbitration; it does not widen the generic
+// short-VAD duration threshold above.
+const CONTIGUOUS_EMPTY_VAD_SERVER_BOUNDARY_TOLERANCE_MS: u64 = 80;
+
+fn is_forward_deferred_empty_vad_boundary(audio_end_ms: u64, audio_start_ms: u64) -> bool {
+    audio_start_ms >= audio_end_ms
+        && audio_start_ms - audio_end_ms
+            <= CONTIGUOUS_EMPTY_VAD_SERVER_BOUNDARY_TOLERANCE_MS
+}
 
 pub(super) fn is_ignored_short_server_vad(duration_ms: Option<u64>) -> bool {
     duration_ms.is_some_and(|duration_ms| duration_ms <= SHORT_SERVER_VAD_FRAGMENT_MAX_MS)
@@ -1165,6 +1179,7 @@ impl OmniEventDiagnostics {
         ) else {
             return false;
         };
+        let expires_at = Instant::now() + Duration::from_millis(CONTIGUOUS_EMPTY_VAD_DEFER_MS);
         self.deferred_empty_vad_terminal = Some(DeferredEmptyVadTerminal {
             cue_id,
             input_item_id,
@@ -1175,7 +1190,9 @@ impl OmniEventDiagnostics {
             st_flag: st_flag.to_string(),
             audio_end_ms,
             continuity_id,
-            expires_at: Instant::now() + Duration::from_millis(CONTIGUOUS_EMPTY_VAD_DEFER_MS),
+            expires_at,
+            successor_arbitration_deadline: expires_at
+                + Duration::from_millis(CONTIGUOUS_EMPTY_VAD_SUCCESSOR_ARBITRATION_MS),
         });
         true
     }
@@ -1186,7 +1203,7 @@ impl OmniEventDiagnostics {
     ) -> Option<(DeferredEmptyVadTerminal, bool)> {
         let pending = self.deferred_empty_vad_terminal.take()?;
         let contiguous = successor_audio_start_ms.is_some_and(|start_ms| {
-            start_ms.abs_diff(pending.audio_end_ms) <= CONTIGUOUS_EMPTY_VAD_START_TOLERANCE_MS
+            is_forward_deferred_empty_vad_boundary(pending.audio_end_ms, start_ms)
         });
         let same_continuity = self.source_continuity_active
             && self.source_continuity_id == pending.continuity_id;
@@ -1201,18 +1218,25 @@ impl OmniEventDiagnostics {
             return false;
         };
         let contiguous = successor_audio_start_ms.is_some_and(|start_ms| {
-            start_ms.abs_diff(pending.audio_end_ms) <= CONTIGUOUS_EMPTY_VAD_START_TOLERANCE_MS
+            is_forward_deferred_empty_vad_boundary(pending.audio_end_ms, start_ms)
         });
-        contiguous
-            && Instant::now()
-                <= pending.expires_at
-                    + Duration::from_millis(CONTIGUOUS_EMPTY_VAD_DISPATCH_GRACE_MS)
+        contiguous && Instant::now() <= pending.successor_arbitration_deadline
     }
 
     fn take_expired_deferred_empty_vad(&mut self) -> Option<DeferredEmptyVadTerminal> {
         self.deferred_empty_vad_terminal
             .as_ref()
             .is_some_and(|pending| Instant::now() >= pending.expires_at)
+            .then(|| self.deferred_empty_vad_terminal.take())
+            .flatten()
+    }
+
+    fn take_arbitration_expired_deferred_empty_vad(
+        &mut self,
+    ) -> Option<DeferredEmptyVadTerminal> {
+        self.deferred_empty_vad_terminal
+            .as_ref()
+            .is_some_and(|pending| Instant::now() >= pending.successor_arbitration_deadline)
             .then(|| self.deferred_empty_vad_terminal.take())
             .flatten()
     }
@@ -1301,6 +1325,16 @@ pub(super) fn flush_expired_deferred_empty_vad<R: tauri::Runtime>(
     event_diagnostics: &mut OmniEventDiagnostics,
 ) {
     if let Some(pending) = event_diagnostics.take_expired_deferred_empty_vad() {
+        terminalize_deferred_empty_vad(app, store, &pending);
+    }
+}
+
+pub(super) fn flush_arbitration_expired_deferred_empty_vad<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    store: &AudioStateStore,
+    event_diagnostics: &mut OmniEventDiagnostics,
+) {
+    if let Some(pending) = event_diagnostics.take_arbitration_expired_deferred_empty_vad() {
         terminalize_deferred_empty_vad(app, store, &pending);
     }
 }
@@ -3704,6 +3738,7 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
                 observed_at,
             } => audio_state.mark_echo_render_discontinuity(reason, observed_at),
             crate::audio::speech::SpeakerRenderEvent::Frame {
+                render_session_id,
                 samples,
                 sample_rate_hz,
                 channel_count,
@@ -3712,21 +3747,17 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
                 endpoint_padding_frames,
                 physical_prefix_offset_frames,
                 observed_at,
-            } => {
-                audio_state.observe_echo_render_endpoint(
-                    submitted_frames,
-                    endpoint_padding_frames,
-                    physical_prefix_offset_frames,
-                    observed_at,
-                );
-                audio_state.push_echo_reference_at(
+            } => audio_state.push_echo_reference_at(
+                    render_session_id,
                     samples,
                     sample_rate_hz,
                     channel_count,
                     player_position,
+                    submitted_frames,
+                    endpoint_padding_frames,
+                    physical_prefix_offset_frames,
                     observed_at,
-                )
-            }
+                ),
             crate::audio::speech::SpeakerRenderEvent::AecLiveScenarioStage {
                 status,
                 stage,

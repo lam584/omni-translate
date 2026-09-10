@@ -3,8 +3,8 @@ mod support;
 
 use support::{
     audio_frames_to_duration, f32_samples_to_le_bytes, next_render_session_id,
-    playback_volume, publish_render_stream_started, ensure_render_ownership,
-    submit_render_action, wait_for_render_poll, RenderUnderrunTracker,
+    playback_volume, publish_render_stream_started_and_flush, ensure_render_ownership,
+    submit_render_action, wait_for_render_poll, DeferredRenderFrames, RenderUnderrunTracker,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -735,6 +735,7 @@ where
     let prefill_frames = (reference_frames * 2).min(buffer_frames as usize);
     let mut started = false;
     let mut underrun_tracker = RenderUnderrunTracker::default();
+    let mut deferred_frames = DeferredRenderFrames::default();
 
     while !tracker.is_complete() {
         ensure_render_ownership(audio_client, playback_permit, started)?;
@@ -757,12 +758,13 @@ where
                     audio_client.start_stream().map_err(|error| error.to_string())
                 })?;
                 started = true;
-                publish_render_stream_started(
+                publish_render_stream_started_and_flush(
                     stream_started_authority,
                     render_session_id,
                     endpoint_id,
                     renderer_instance_id,
                     playback_permit.generation(),
+                    &mut deferred_frames,
                     on_render_event,
                 )?;
             }
@@ -780,12 +782,13 @@ where
                     audio_client.start_stream().map_err(|error| error.to_string())
                 })?;
                 started = true;
-                publish_render_stream_started(
+                publish_render_stream_started_and_flush(
                     stream_started_authority,
                     render_session_id,
                     endpoint_id,
                     renderer_instance_id,
                     playback_permit.generation(),
+                    &mut deferred_frames,
                     on_render_event,
                 )?;
             } else if !started && tracker.submitted_frames == 0 {
@@ -811,16 +814,19 @@ where
         if let Some(window) = tracker.record_write(write_frames, endpoint_padding_frames)? {
             let frame_sample_start = window.start_frame * channel_count;
             let frame_sample_end = window.end_frame * channel_count;
-            on_render_event(SpeakerRenderEvent::Frame {
-                samples: &reference_samples[frame_sample_start..frame_sample_end],
-                sample_rate_hz: SPEAKER_SAMPLE_RATE_HZ,
-                channel_count: SPEAKER_CHANNEL_COUNT,
-                player_position: audio_frames_to_duration(window.played_frames),
-                submitted_frames: window.submitted_frames,
-                endpoint_padding_frames: window.endpoint_padding_frames,
+            deferred_frames.publish_or_defer(
+                *stream_started_authority,
+                render_session_id,
+                &reference_samples[frame_sample_start..frame_sample_end],
+                SPEAKER_SAMPLE_RATE_HZ,
+                SPEAKER_CHANNEL_COUNT,
+                audio_frames_to_duration(window.played_frames),
+                window.submitted_frames,
+                window.endpoint_padding_frames,
                 physical_prefix_offset_frames,
                 observed_at,
-            })?;
+                on_render_event,
+            )?;
         }
 
         if !started
@@ -830,12 +836,13 @@ where
                 audio_client.start_stream().map_err(|error| error.to_string())
             })?;
             started = true;
-            publish_render_stream_started(
+            publish_render_stream_started_and_flush(
                 stream_started_authority,
                 render_session_id,
                 endpoint_id,
                 renderer_instance_id,
                 playback_permit.generation(),
+                &mut deferred_frames,
                 on_render_event,
             )?;
         }
@@ -846,12 +853,13 @@ where
             audio_client.start_stream().map_err(|error| error.to_string())
         })?;
         started = true;
-        publish_render_stream_started(
+        publish_render_stream_started_and_flush(
             stream_started_authority,
             render_session_id,
             endpoint_id,
             renderer_instance_id,
             playback_permit.generation(),
+            &mut deferred_frames,
             on_render_event,
         )?;
     }
@@ -1107,6 +1115,49 @@ mod render_reference_pacer_tests {
         assert_eq!(submitted.len(), 480 * 2);
         assert_eq!(reference, submitted);
         assert!(submitted.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn prefill_reference_is_published_only_after_stream_started_authority() {
+        let mut deferred = support::DeferredRenderFrames::default();
+        deferred.defer(
+            71,
+            &[0.25; 480 * 2],
+            SPEAKER_SAMPLE_RATE_HZ,
+            SPEAKER_CHANNEL_COUNT,
+            Duration::from_millis(10),
+            480,
+            480,
+            0,
+            Instant::now(),
+        );
+        let mut events = Vec::new();
+        let mut authority_started = false;
+
+        support::publish_render_stream_started_and_flush(
+            &mut authority_started,
+            71,
+            "endpoint-a",
+            "desktop-process-42",
+            7,
+            &mut deferred,
+            &mut |event| {
+                events.push(match event {
+                    SpeakerRenderEvent::Discontinuity {
+                        reason: crate::audio::state::EchoRenderBoundary::StreamStarted { .. },
+                        ..
+                    } => "started",
+                    SpeakerRenderEvent::Frame { .. } => "frame",
+                    _ => "other",
+                });
+                Ok(())
+            },
+        )
+        .expect("publish started authority and deferred prefill");
+
+        assert!(authority_started);
+        assert_eq!(events, ["started", "frame"]);
+        assert!(deferred.is_empty());
     }
 
 }

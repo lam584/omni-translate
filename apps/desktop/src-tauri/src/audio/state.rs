@@ -87,15 +87,16 @@ struct EchoRenderClock {
     render_authority_endpoint_id: Option<String>,
     render_authority_renderer_instance_id: Option<String>,
     render_authority_owner_generation: Option<u64>,
-    active_render_sessions: BTreeMap<u64, (String, String, u64, bool)>,
+    render_timeline_epoch: Option<u64>,
+    active_render_sessions: BTreeMap<u64, (String, String, u64, bool, Option<Duration>, Option<u64>)>,
 }
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct EchoRenderClockSnapshot {
     pub(crate) player_position: Option<Duration>,
     pub(crate) submitted_frames: Option<u64>,
     pub(crate) endpoint_padding_frames: Option<u32>,
     pub(crate) reference_lead_frames: Option<u32>,
+    pub(crate) timeline_epoch: Option<u64>,
     pub(crate) last_observed_at: Option<Instant>,
     pub(crate) discontinuity_count: u64,
     pub(crate) last_discontinuity_reason: Option<&'static str>,

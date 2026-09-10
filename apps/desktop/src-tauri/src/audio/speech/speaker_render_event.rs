@@ -9,6 +9,7 @@ pub(crate) enum SpeakerRenderEvent<'a> {
         observed_at: Instant,
     },
     Frame {
+        render_session_id: u64,
         samples: &'a [f32],
         sample_rate_hz: u32,
         channel_count: u16,

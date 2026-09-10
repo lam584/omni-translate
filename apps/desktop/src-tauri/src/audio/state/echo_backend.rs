@@ -50,10 +50,14 @@ const MAX_ECHO_RENDER_REFERENCE_LEAD_FRAMES: u64 =
 impl AudioStateStore {
     pub(crate) fn push_echo_reference_at(
         &self,
+        render_session_id: u64,
         samples: &[f32],
         sample_rate_hz: u32,
         channel_count: u16,
         player_position: Duration,
+        submitted_frames: u64,
+        endpoint_padding_frames: u32,
+        physical_prefix_offset_frames: u32,
         render_time: Instant,
     ) -> Result<(), String> {
         {
@@ -61,37 +65,51 @@ impl AudioStateStore {
                 .echo_render_clock
                 .lock()
                 .expect("echo render clock poisoned");
-            if clock
-                .last_player_position
+            let Some((_, _, _, true, last_player_position, last_submitted_frames)) =
+                clock.active_render_sessions.get(&render_session_id)
+            else {
+                clock.discontinuity_count = clock.discontinuity_count.saturating_add(1);
+                clock.last_discontinuity_reason = Some("wasapi-render-frame-session-mismatch");
+                return Err(format!(
+                    "render frame does not belong to started session {render_session_id}"
+                ));
+            };
+            let position_regressed = last_player_position
                 .is_some_and(|previous| player_position < previous)
+                || last_submitted_frames.is_some_and(|previous| submitted_frames < previous);
+            let reference_frames = samples.len() / usize::from(channel_count.max(1));
+            let played = submitted_frames.saturating_sub(u64::from(endpoint_padding_frames));
+            let reference_start = submitted_frames.saturating_sub(reference_frames as u64);
+            let reference_lead_frames =
+                reference_start
+                    .saturating_sub(played)
+                    .saturating_add(u64::from(physical_prefix_offset_frames))
+                    .min(MAX_ECHO_RENDER_REFERENCE_LEAD_FRAMES) as u32;
+            if let Some(canceller) = self
+                .echo_canceller
+                .lock()
+                .expect("echo canceller poisoned")
+                .as_mut()
             {
+                canceller.push_render_at(samples, sample_rate_hz, channel_count, render_time)?;
+            }
+            let (_, _, _, _, last_player_position, last_submitted_frames) = clock
+                .active_render_sessions
+                .get_mut(&render_session_id)
+                .expect("validated render session disappeared while clock lock was held");
+            *last_player_position = Some(player_position);
+            *last_submitted_frames = Some(submitted_frames);
+            if position_regressed {
                 clock.discontinuity_count = clock.discontinuity_count.saturating_add(1);
                 clock.last_discontinuity_reason = Some("wasapi-render-position-regressed");
             }
-            let reference_frames = samples.len() / usize::from(channel_count.max(1));
-            let physical_prefix_offset_frames =
-                clock.last_physical_prefix_offset_frames.unwrap_or(0);
-            clock.last_reference_lead_frames = clock
-                .last_submitted_frames
-                .zip(clock.last_endpoint_padding_frames)
-                .map(|(submitted, padding)| {
-                    let played = submitted.saturating_sub(u64::from(padding));
-                    let reference_start = submitted.saturating_sub(reference_frames as u64);
-                    reference_start
-                        .saturating_sub(played)
-                        .saturating_add(u64::from(physical_prefix_offset_frames))
-                        .min(MAX_ECHO_RENDER_REFERENCE_LEAD_FRAMES) as u32
-                });
+            clock.last_reference_lead_frames = Some(reference_lead_frames);
             clock.last_player_position = Some(player_position);
+            clock.last_submitted_frames = Some(submitted_frames);
+            clock.last_endpoint_padding_frames = Some(endpoint_padding_frames);
+            clock.last_physical_prefix_offset_frames = Some(physical_prefix_offset_frames);
+            clock.render_timeline_epoch = Some(render_session_id);
             clock.last_observed_at = Some(render_time);
-        }
-        if let Some(canceller) = self
-            .echo_canceller
-            .lock()
-            .expect("echo canceller poisoned")
-            .as_mut()
-        {
-            canceller.push_render_at(samples, sample_rate_hz, channel_count, render_time)?;
         }
         Ok(())
     }
@@ -123,6 +141,8 @@ impl AudioStateStore {
                         renderer_instance_id.to_string(),
                         owner_generation,
                         false,
+                        None,
+                        None,
                     ),
                 );
                 duplicate_session.then_some("wasapi-render-session-id-reused")
@@ -134,7 +154,7 @@ impl AudioStateStore {
                 owner_generation,
             } => {
                 let matching_pending = clock.active_render_sessions.get_mut(&session_id).is_some_and(
-                    |(expected_endpoint, expected_renderer, expected_generation, started)| {
+                    |(expected_endpoint, expected_renderer, expected_generation, started, _, _)| {
                         let matches = expected_endpoint == endpoint_id
                             && expected_renderer == renderer_instance_id
                             && *expected_generation == owner_generation
@@ -158,6 +178,7 @@ impl AudioStateStore {
                     clock.render_authority_renderer_instance_id =
                         Some(renderer_instance_id.to_string());
                     clock.render_authority_owner_generation = Some(owner_generation);
+                    clock.render_timeline_epoch = Some(session_id);
                     (has_prior_authority && !same_authority)
                         .then_some("wasapi-render-authority-changed")
                 }
@@ -172,7 +193,7 @@ impl AudioStateStore {
             } => {
                 let expected = clock.active_render_sessions.remove(&session_id);
                 let matching_end = expected.as_ref().is_some_and(
-                    |(expected_endpoint, expected_renderer, expected_generation, expected_started)| {
+                    |(expected_endpoint, expected_renderer, expected_generation, expected_started, _, _)| {
                         expected_endpoint == endpoint_id
                             && expected_renderer == renderer_instance_id
                             && *expected_generation == owner_generation
@@ -207,33 +228,13 @@ impl AudioStateStore {
             submitted_frames: clock.last_submitted_frames,
             endpoint_padding_frames: clock.last_endpoint_padding_frames,
             reference_lead_frames: clock.last_reference_lead_frames,
+            timeline_epoch: clock.render_timeline_epoch,
             last_observed_at: clock.last_observed_at,
             discontinuity_count: clock.discontinuity_count,
             last_discontinuity_reason: clock.last_discontinuity_reason,
         }
     }
 
-    pub(crate) fn observe_echo_render_endpoint(
-        &self,
-        submitted_frames: u64,
-        endpoint_padding_frames: u32,
-        physical_prefix_offset_frames: u32,
-        observed_at: Instant,
-    ) {
-        let mut clock = self
-            .echo_render_clock
-            .lock()
-            .expect("echo render clock poisoned");
-        let played_frames = submitted_frames.saturating_sub(endpoint_padding_frames as u64);
-        clock.last_player_position = Some(Duration::from_secs_f64(
-            played_frames as f64 / crate::audio::echo_cancel::TARGET_SAMPLE_RATE_HZ as f64,
-        ));
-        clock.last_submitted_frames = Some(submitted_frames);
-        clock.last_endpoint_padding_frames = Some(endpoint_padding_frames);
-        clock.last_physical_prefix_offset_frames = Some(physical_prefix_offset_frames);
-        clock.last_observed_at = Some(observed_at);
-    }
-    
     pub(crate) fn activate_production_echo_canceller(
         &self,
     ) -> Result<EchoCancellerEngineStats, String> {
@@ -298,6 +299,53 @@ mod tests {
 
     struct ResetCountingEngine {
         reset_count: u64,
+    }
+
+    struct RejectingRenderEngine;
+
+    impl crate::audio::echo_cancel::EchoCancellerEngine for RejectingRenderEngine {
+        fn push_render_10ms(
+            &mut self,
+            _frame: &[f32],
+            _render_time: Instant,
+        ) -> Result<(), String> {
+            Err("deterministic render admission failure".to_string())
+        }
+
+        fn process_capture_10ms(
+            &mut self,
+            frame: &[f32],
+            _delay_samples: usize,
+            _capture_time: Instant,
+        ) -> Result<EchoCancellationResult, String> {
+            Ok(EchoCancellationResult {
+                samples: frame.to_vec(),
+            })
+        }
+
+        fn reset(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn stats(&self) -> EchoCancellerEngineStats {
+            EchoCancellerEngineStats {
+                backend: "webrtc-aec3",
+                render_10ms_frames: 0,
+                capture_10ms_frames: 0,
+                reset_count: 0,
+                rejected_frame_count: 1,
+                stats_read_failure_count: 0,
+                erle_db: None,
+                residual_echo_likelihood: None,
+                reported_delay_ms: None,
+                double_talk_frames: None,
+                render_underrun_count: 0,
+                capture_underrun_count: 0,
+                processing_call_count: 0,
+                processing_time_micros_total: 0,
+                max_processing_time_micros: 0,
+            }
+        }
     }
 
     impl crate::audio::echo_cancel::EchoCancellerEngine for ResetCountingEngine {
@@ -392,6 +440,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rejected_reference_admission_does_not_publish_partial_clock_state() {
+        let store = AudioStateStore::new();
+        publish_session_start(&store, 61, "endpoint-a", 7);
+        publish_stream_start(&store, 61, "endpoint-a", 7);
+        let canceller = crate::audio::echo_cancel::create_echo_canceller_for_test(Box::new(
+            RejectingRenderEngine,
+        ))
+        .expect("install rejecting AEC3 backend");
+        *store
+            .echo_canceller
+            .lock()
+            .expect("echo canceller poisoned") = Some(canceller);
+        let before = store.echo_render_clock_snapshot();
+
+        let error = publish_reference_frame(&store, 61, 480, 480)
+            .expect_err("render admission must fail");
+
+        assert!(error.contains("deterministic render admission failure"));
+        let after = store.echo_render_clock_snapshot();
+        assert_eq!(after.player_position, before.player_position);
+        assert_eq!(after.submitted_frames, before.submitted_frames);
+        assert_eq!(after.endpoint_padding_frames, before.endpoint_padding_frames);
+        assert_eq!(after.reference_lead_frames, before.reference_lead_frames);
+        assert_eq!(after.timeline_epoch, before.timeline_epoch);
+        assert_eq!(after.discontinuity_count, before.discontinuity_count);
+    }
+
     fn publish_session_start(
         store: &AudioStateStore,
         session_id: u64,
@@ -461,9 +537,12 @@ mod tests {
         publish_session_end(&store, 1, "endpoint-a", 7, true, true);
 
         publish_session_start(&store, 2, "temporary-endpoint", 8);
+        assert_eq!(store.echo_render_clock_snapshot().timeline_epoch, Some(1));
         publish_session_end(&store, 2, "temporary-endpoint", 8, false, false);
         publish_session_start(&store, 3, "endpoint-a", 7);
+        assert_eq!(store.echo_render_clock_snapshot().timeline_epoch, Some(1));
         publish_stream_start(&store, 3, "endpoint-a", 7);
+        assert_eq!(store.echo_render_clock_snapshot().timeline_epoch, Some(3));
         publish_session_end(&store, 3, "endpoint-a", 7, true, true);
 
         assert_eq!(store.echo_render_clock_snapshot().discontinuity_count, 0);
@@ -485,6 +564,49 @@ mod tests {
         assert_eq!(
             clock.last_discontinuity_reason,
             Some("wasapi-render-authority-changed")
+        );
+    }
+
+    fn publish_reference_frame(
+        store: &AudioStateStore,
+        session_id: u64,
+        player_position_frames: u64,
+        submitted_frames: u64,
+    ) -> Result<(), String> {
+        store.push_echo_reference_at(
+            session_id,
+            &vec![0.0; 480 * 2],
+            crate::audio::echo_cancel::TARGET_SAMPLE_RATE_HZ,
+            crate::audio::echo_cancel::TARGET_CHANNEL_COUNT as u16,
+            Duration::from_secs_f64(player_position_frames as f64 / 48_000.0),
+            submitted_frames,
+            480,
+            0,
+            Instant::now(),
+        )
+    }
+
+    #[test]
+    fn interleaved_frames_are_bound_to_their_session_and_detect_own_regression() {
+        let store = AudioStateStore::new();
+        publish_session_start(&store, 51, "endpoint-a", 7);
+        publish_session_start(&store, 52, "endpoint-a", 7);
+        publish_stream_start(&store, 51, "endpoint-a", 7);
+        publish_stream_start(&store, 52, "endpoint-a", 7);
+
+        publish_reference_frame(&store, 51, 480, 480).expect("A first frame");
+        publish_reference_frame(&store, 52, 480, 480).expect("B first frame");
+        assert_eq!(store.echo_render_clock_snapshot().discontinuity_count, 0);
+
+        publish_reference_frame(&store, 51, 240, 240).expect("A regressed frame");
+        let clock = store.echo_render_clock_snapshot();
+        assert_eq!(clock.timeline_epoch, Some(51));
+        assert_eq!(clock.submitted_frames, Some(240));
+        assert_eq!(clock.endpoint_padding_frames, Some(480));
+        assert_eq!(clock.discontinuity_count, 1);
+        assert_eq!(
+            clock.last_discontinuity_reason,
+            Some("wasapi-render-position-regressed")
         );
     }
 
@@ -587,16 +709,21 @@ mod tests {
     fn reference_lead_excludes_the_current_ten_ms_frame_from_endpoint_padding() {
         let store = AudioStateStore::new();
         let observed_at = Instant::now();
+        publish_session_start(&store, 31, "endpoint-a", 7);
+        publish_stream_start(&store, 31, "endpoint-a", 7);
         // 960 submitted, 840 padded => 120 already played. The current
         // reference starts at frame 480, so only 360 frames precede it; the
         // reference's own 480 frames must not enter the AEC delay hint.
-        store.observe_echo_render_endpoint(960, 840, 0, observed_at);
         store
             .push_echo_reference_at(
+                31,
                 &vec![0.0; 480 * 2],
                 crate::audio::echo_cancel::TARGET_SAMPLE_RATE_HZ,
                 crate::audio::echo_cancel::TARGET_CHANNEL_COUNT as u16,
                 Duration::from_secs_f64(120.0 / 48_000.0),
+                960,
+                840,
+                0,
                 observed_at,
             )
             .expect("record render reference");
@@ -616,18 +743,18 @@ mod tests {
         ] {
             let store = AudioStateStore::new();
             let observed_at = Instant::now();
-            store.observe_echo_render_endpoint(
-                480,
-                480,
-                physical_prefix_offset_frames,
-                observed_at,
-            );
+            publish_session_start(&store, 41, "endpoint-a", 7);
+            publish_stream_start(&store, 41, "endpoint-a", 7);
             store
                 .push_echo_reference_at(
+                    41,
                     &vec![0.0; 480 * 2],
                     crate::audio::echo_cancel::TARGET_SAMPLE_RATE_HZ,
                     crate::audio::echo_cancel::TARGET_CHANNEL_COUNT as u16,
                     Duration::ZERO,
+                    480,
+                    480,
+                    physical_prefix_offset_frames,
                     observed_at,
                 )
                 .expect("record delayed render reference");

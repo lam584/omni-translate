@@ -164,6 +164,41 @@ fn replay_contiguous_empty_vad_successor_arriving_5ms_after_defer_deadline_is_ig
 }
 
 #[test]
+fn replay_460ms_empty_lead_with_60ms_server_gap_and_54ms_late_successor_is_ignored() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    harness.store().watch_session_report.begin_or_reuse(
+        "dashscope",
+        "qwen-audio-3.0-realtime-plus",
+    );
+    let mut slice = WorkerSlice::new();
+    let mut steps = contiguous_empty_vad_steps(None);
+    steps[0] = ScriptStep::Event(json!({
+        "type": "input_audio_buffer.speech_started",
+        "item_id": "item-empty-split",
+        "audio_start_ms": 21860
+    }));
+    let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
+    for _ in 0..4 {
+        socket = harness.tick(socket, &mut slice);
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(174));
+    socket = ScriptedRealtimeSocket::new(vec![ScriptStep::Event(json!({
+        "type": "input_audio_buffer.speech_started",
+        "item_id": "item-real-continuation",
+        "audio_start_ms": 22380
+    }))], harness.shared.clone());
+    let _socket = harness.tick(socket, &mut slice);
+
+    assert!(
+        !report_has_native_empty_response(&harness),
+        "the observed 460ms empty lead and admitted successor 54ms after the soft deadline must arbitrate as one contiguous source: report={:?} diagnostics={:?}",
+        harness.store().watch_session_report.snapshot(),
+        slice.event_diagnostics,
+    );
+}
+
+#[test]
 fn replay_expired_empty_vad_is_not_starved_by_successful_non_speech_frames() {
     let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
     harness.store().watch_session_report.begin_or_reuse("dashscope", "qwen-audio-3.0-realtime-plus");
@@ -256,8 +291,44 @@ fn replay_noncontiguous_260ms_empty_vad_still_fails() {
     let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
     harness.store().watch_session_report.begin_or_reuse("dashscope", "qwen-audio-3.0-realtime-plus");
     let mut slice = WorkerSlice::new();
-    let mut socket = ScriptedRealtimeSocket::new(contiguous_empty_vad_steps(Some(22341)), harness.shared.clone());
+    let mut socket = ScriptedRealtimeSocket::new(contiguous_empty_vad_steps(Some(22440)), harness.shared.clone());
     for _ in 0..5 { socket = harness.tick(socket, &mut slice); }
+    assert!(report_has_native_empty_response(&harness));
+}
+
+#[test]
+fn replay_one_ms_overlapping_successor_does_not_delete_deferred_empty_cue() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    harness.store().watch_session_report.begin_or_reuse(
+        "dashscope",
+        "qwen-audio-3.0-realtime-plus",
+    );
+    let mut slice = WorkerSlice::new();
+    let mut socket = ScriptedRealtimeSocket::new(
+        contiguous_empty_vad_steps(Some(22319)),
+        harness.shared.clone(),
+    );
+    for _ in 0..5 {
+        socket = harness.tick(socket, &mut slice);
+    }
+    assert!(report_has_native_empty_response(&harness));
+}
+
+#[test]
+fn replay_eighty_ms_overlapping_successor_does_not_delete_deferred_empty_cue() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    harness.store().watch_session_report.begin_or_reuse(
+        "dashscope",
+        "qwen-audio-3.0-realtime-plus",
+    );
+    let mut slice = WorkerSlice::new();
+    let mut socket = ScriptedRealtimeSocket::new(
+        contiguous_empty_vad_steps(Some(22240)),
+        harness.shared.clone(),
+    );
+    for _ in 0..5 {
+        socket = harness.tick(socket, &mut slice);
+    }
     assert!(report_has_native_empty_response(&harness));
 }
 

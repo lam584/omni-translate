@@ -42,6 +42,7 @@ struct LivetranslateShutdownShared {
     finish_barrier_id: AtomicU64,
     finish_barrier_sent: AtomicBool,
     finish_barrier_observed: AtomicBool,
+    finish_barrier_observed_idle_count: AtomicU64,
 }
 
 pub(super) struct LivetranslateShutdown {
@@ -101,6 +102,7 @@ impl LivetranslateShutdown {
                 ),
                 finish_barrier_sent: AtomicBool::new(false),
                 finish_barrier_observed: AtomicBool::new(false),
+                finish_barrier_observed_idle_count: AtomicU64::new(u64::MAX),
             }),
             requested_at: None,
             finish_sent_at: None,
@@ -209,12 +211,45 @@ impl LivetranslateShutdown {
         )
     }
 
+    pub(super) fn should_send_finish_with_response_state(
+        &mut self,
+        chunks_sent_this_tick: usize,
+        pre_session_audio_queue_is_empty: bool,
+        audio_input_disconnected: bool,
+        provider_response_active: bool,
+    ) -> Result<bool, String> {
+        self.should_send_finish_at_with_response_state(
+            Instant::now(),
+            chunks_sent_this_tick,
+            pre_session_audio_queue_is_empty,
+            audio_input_disconnected,
+            provider_response_active,
+        )
+    }
+
     fn should_send_finish_at(
+        &mut self,
+        now: Instant,
+        chunks_sent_this_tick: usize,
+        pre_session_audio_queue_is_empty: bool,
+        audio_input_disconnected: bool,
+    ) -> Result<bool, String> {
+        self.should_send_finish_at_with_response_state(
+            now,
+            chunks_sent_this_tick,
+            pre_session_audio_queue_is_empty,
+            audio_input_disconnected,
+            false,
+        )
+    }
+
+    fn should_send_finish_at_with_response_state(
         &mut self,
         _now: Instant,
         chunks_sent_this_tick: usize,
         pre_session_audio_queue_is_empty: bool,
         audio_input_disconnected: bool,
+        provider_response_active: bool,
     ) -> Result<bool, String> {
         self.last_finish_observation = Some((
             chunks_sent_this_tick,
@@ -235,7 +270,8 @@ impl LivetranslateShutdown {
             && !self.shared.session_finish_sent.load(Ordering::SeqCst)
             && chunks_sent_this_tick == 0
             && pre_session_audio_queue_is_empty
-            && audio_input_disconnected;
+            && audio_input_disconnected
+            && !provider_response_active;
         if !input_fenced {
             if self.pre_finish_drain_barrier.is_some() || self.finish_barrier_dispatched {
                 self.shared.finish_barrier_id.store(
@@ -248,6 +284,9 @@ impl LivetranslateShutdown {
                 self.shared
                     .finish_barrier_observed
                     .store(false, Ordering::SeqCst);
+                self.shared
+                    .finish_barrier_observed_idle_count
+                    .store(u64::MAX, Ordering::SeqCst);
             }
             self.pre_finish_drain_barrier = None;
             self.finish_barrier_dispatched = false;
@@ -272,11 +311,16 @@ impl LivetranslateShutdown {
         // before session.finish. Together those two boundaries prevent a
         // terminal already queued on this connection from being reclassified
         // while allowing a healthy continuous response backlog to progress.
+        let pong_observed = self
+            .shared
+            .finish_barrier_observed
+            .load(Ordering::SeqCst);
+        let pong_idle_baseline = self
+            .shared
+            .finish_barrier_observed_idle_count
+            .load(Ordering::SeqCst);
         Ok(idle_reads > barrier
-            || self
-                .shared
-                .finish_barrier_observed
-                .load(Ordering::SeqCst))
+            && (!pong_observed || idle_reads > pong_idle_baseline))
     }
 
     pub(super) fn take_finish_transport_barrier(&mut self) -> Option<Message> {
@@ -400,6 +444,10 @@ impl<S: RealtimeSocket> RealtimeSocket for LivetranslateSocket<S> {
             if self.shared.finish_barrier_sent.load(Ordering::SeqCst)
                 && payload.as_ref() == expected.as_bytes()
             {
+                self.shared.finish_barrier_observed_idle_count.store(
+                    self.shared.idle_read_observation_count.load(Ordering::SeqCst),
+                    Ordering::SeqCst,
+                );
                 self.shared
                     .finish_barrier_observed
                     .store(true, Ordering::SeqCst);
@@ -947,8 +995,65 @@ mod tests {
             .should_send_finish_at(requested_at, 0, true, true)
             .unwrap());
         socket.read_message().expect("matching transport pong");
+        assert!(socket.read_message().is_err(), "post-Pong idle boundary");
         assert!(shutdown
             .should_send_finish_at(requested_at, 0, true, true)
+            .unwrap());
+    }
+
+    #[test]
+    fn active_response_invalidates_the_finish_barrier_until_a_fresh_boundary() {
+        let requested_at = Instant::now();
+        let mut shutdown = LivetranslateShutdown::new(true);
+        shutdown.request(requested_at);
+
+        assert!(!shutdown
+            .should_send_finish_at_with_response_state(
+                requested_at,
+                0,
+                true,
+                true,
+                false,
+            )
+            .unwrap());
+        let stale_payload = shutdown.finish_barrier_payload();
+        assert!(shutdown.take_finish_transport_barrier().is_some());
+
+        assert!(!shutdown
+            .should_send_finish_at_with_response_state(
+                requested_at,
+                0,
+                true,
+                true,
+                true,
+            )
+            .unwrap());
+        assert_ne!(shutdown.finish_barrier_payload(), stale_payload);
+
+        assert!(!shutdown
+            .should_send_finish_at_with_response_state(
+                requested_at,
+                0,
+                true,
+                true,
+                false,
+            )
+            .unwrap());
+        assert!(shutdown.take_finish_transport_barrier().is_some());
+        shutdown.shared.finish_barrier_observed_idle_count.store(
+            shutdown.shared.idle_read_observation_count.load(Ordering::SeqCst),
+            Ordering::SeqCst,
+        );
+        shutdown.shared.finish_barrier_observed.store(true, Ordering::SeqCst);
+        shutdown.shared.idle_read_observation_count.fetch_add(1, Ordering::SeqCst);
+        assert!(shutdown
+            .should_send_finish_at_with_response_state(
+                requested_at,
+                0,
+                true,
+                true,
+                false,
+            )
             .unwrap());
     }
 

@@ -630,10 +630,12 @@ fn run_omni_worker(
         provider_input_budget = pump_state.provider_input_budget;
         audio_input_disconnected = pump_state.audio_input_disconnected;
         let chunks_sent_this_tick = pump_state.chunks_sent_this_tick;
-        let should_send_livetranslate_finish = livetranslate_shutdown.should_send_finish(
+        let should_send_livetranslate_finish = livetranslate_shutdown
+            .should_send_finish_with_response_state(
             chunks_sent_this_tick,
             pre_session_audio_queue.is_empty(),
             audio_input_disconnected,
+            event_diagnostics.native_response_active(),
         );
         let should_send_livetranslate_finish = match should_send_livetranslate_finish {
             Ok(value) => value,

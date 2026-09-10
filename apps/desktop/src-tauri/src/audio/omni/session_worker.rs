@@ -653,6 +653,30 @@ fn run_omni_worker(
                 });
             }
         };
+        if !should_send_livetranslate_finish {
+            if let Some(barrier) = livetranslate_shutdown.take_finish_transport_barrier() {
+                trace_call.record_ws_send("livetranslate.finish_barrier", json!({
+                    "frameType": "ping",
+                }));
+                if let Err(error) = socket.send_message(barrier) {
+                    let error = provider_input_budget.finalize_failure(
+                        "livetranslate-finish-barrier-send-failed",
+                        format!(
+                            "LiveTranslate fail-closed: finish transport barrier send failed on the existing socket: {error}"
+                        ),
+                    );
+                    fail_before_teardown!(error, {
+                        terminalize_livetranslate_shutdown!();
+                        let socket_result = socket
+                            .close()
+                            .map_err(|error| format!("socketTeardown={error}"));
+                        let playback = playback_worker.shutdown_gracefully();
+                        let snapshot = emit_audio_snapshot(&app, store);
+                        combine_all_teardown_results(socket_result, playback, snapshot)
+                    });
+                }
+            }
+        }
         if should_send_livetranslate_finish {
             let finish_event = livetranslate_shutdown.finish_event(&format!(
                 "event_session_finish_{}",

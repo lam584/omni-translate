@@ -20,6 +20,8 @@ const LIVETRANSLATE_EVIDENCE_QUEUE_RESERVE: Duration = Duration::from_millis(600
 const LIVETRANSLATE_FAILURE_RESERVE: Duration = Duration::from_millis(400);
 const LIVETRANSLATE_TERMINAL_RESERVE: Duration = Duration::from_millis(100);
 const LIVETRANSLATE_EVIDENCE_WAIT_BUDGET: Duration = Duration::from_millis(300);
+const LIVETRANSLATE_FINISH_BARRIER_PREFIX: &str = "omni-livetranslate-finish-barrier:";
+static NEXT_LIVETRANSLATE_FINISH_BARRIER_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct LivetranslateShutdownDeadlines {
@@ -37,6 +39,9 @@ struct LivetranslateShutdownShared {
     session_finished_received: AtomicBool,
     pre_finish_session_finished_observed: AtomicBool,
     idle_read_observation_count: AtomicU64,
+    finish_barrier_id: AtomicU64,
+    finish_barrier_sent: AtomicBool,
+    finish_barrier_observed: AtomicBool,
 }
 
 pub(super) struct LivetranslateShutdown {
@@ -46,6 +51,7 @@ pub(super) struct LivetranslateShutdown {
     finish_sent_at: Option<Instant>,
     evidence_queued: bool,
     pre_finish_drain_barrier: Option<u64>,
+    finish_barrier_dispatched: bool,
     last_finish_observation: Option<(usize, bool, bool)>,
 }
 
@@ -90,11 +96,17 @@ impl LivetranslateShutdown {
                 session_finished_received: AtomicBool::new(false),
                 pre_finish_session_finished_observed: AtomicBool::new(false),
                 idle_read_observation_count: AtomicU64::new(0),
+                finish_barrier_id: AtomicU64::new(
+                    NEXT_LIVETRANSLATE_FINISH_BARRIER_ID.fetch_add(1, Ordering::SeqCst),
+                ),
+                finish_barrier_sent: AtomicBool::new(false),
+                finish_barrier_observed: AtomicBool::new(false),
             }),
             requested_at: None,
             finish_sent_at: None,
             evidence_queued: false,
             pre_finish_drain_barrier: None,
+            finish_barrier_dispatched: false,
             last_finish_observation: None,
         }
     }
@@ -189,6 +201,21 @@ impl LivetranslateShutdown {
         pre_session_audio_queue_is_empty: bool,
         audio_input_disconnected: bool,
     ) -> Result<bool, String> {
+        self.should_send_finish_at(
+            Instant::now(),
+            chunks_sent_this_tick,
+            pre_session_audio_queue_is_empty,
+            audio_input_disconnected,
+        )
+    }
+
+    fn should_send_finish_at(
+        &mut self,
+        _now: Instant,
+        chunks_sent_this_tick: usize,
+        pre_session_audio_queue_is_empty: bool,
+        audio_input_disconnected: bool,
+    ) -> Result<bool, String> {
         self.last_finish_observation = Some((
             chunks_sent_this_tick,
             pre_session_audio_queue_is_empty,
@@ -210,7 +237,20 @@ impl LivetranslateShutdown {
             && pre_session_audio_queue_is_empty
             && audio_input_disconnected;
         if !input_fenced {
+            if self.pre_finish_drain_barrier.is_some() || self.finish_barrier_dispatched {
+                self.shared.finish_barrier_id.store(
+                    NEXT_LIVETRANSLATE_FINISH_BARRIER_ID.fetch_add(1, Ordering::SeqCst),
+                    Ordering::SeqCst,
+                );
+                self.shared
+                    .finish_barrier_sent
+                    .store(false, Ordering::SeqCst);
+                self.shared
+                    .finish_barrier_observed
+                    .store(false, Ordering::SeqCst);
+            }
             self.pre_finish_drain_barrier = None;
+            self.finish_barrier_dispatched = false;
             return Ok(false);
         }
         let idle_reads = self
@@ -225,7 +265,37 @@ impl LivetranslateShutdown {
             self.pre_finish_drain_barrier = Some(idle_reads);
             return Ok(false);
         };
-        Ok(idle_reads > barrier)
+        // The matching Pong establishes an observable wire boundary: every
+        // frame serialized before it has been consumed. It deliberately does
+        // not claim to flush an unknowable Provider-internal task queue; the
+        // admitted LiveTranslate protocol separately forbids session.finished
+        // before session.finish. Together those two boundaries prevent a
+        // terminal already queued on this connection from being reclassified
+        // while allowing a healthy continuous response backlog to progress.
+        Ok(idle_reads > barrier
+            || self
+                .shared
+                .finish_barrier_observed
+                .load(Ordering::SeqCst))
+    }
+
+    pub(super) fn take_finish_transport_barrier(&mut self) -> Option<Message> {
+        if self.pre_finish_drain_barrier.is_none()
+            || self.finish_barrier_dispatched
+            || self.shared.session_finish_sent.load(Ordering::SeqCst)
+        {
+            return None;
+        }
+        self.finish_barrier_dispatched = true;
+        Some(Message::Ping(self.finish_barrier_payload().into()))
+    }
+
+    fn finish_barrier_payload(&self) -> Vec<u8> {
+        format!(
+            "{LIVETRANSLATE_FINISH_BARRIER_PREFIX}{}",
+            self.shared.finish_barrier_id.load(Ordering::SeqCst)
+        )
+        .into_bytes()
     }
 
     pub(super) fn finish_event(&self, event_id: &str) -> Value {
@@ -283,10 +353,12 @@ impl LivetranslateShutdown {
         let idle_reads = self.shared.idle_read_observation_count.load(Ordering::SeqCst);
         let barrier = self.pre_finish_drain_barrier
             .map(|value| value.to_string()).unwrap_or_else(|| "none".to_string());
+        let finish_barrier_sent = self.shared.finish_barrier_sent.load(Ordering::SeqCst);
+        let finish_barrier_observed = self.shared.finish_barrier_observed.load(Ordering::SeqCst);
         Some((
             reason,
             format!(
-                "LiveTranslate fail-closed: shutdown did not complete within {} seconds of the {} boundary, including evidence finalization and terminal reserves (session.finish sent={finish_sent}) {observation} currentIdleReadCount={idle_reads} currentDrainBarrier={barrier}",
+                "LiveTranslate fail-closed: shutdown did not complete within {} seconds of the {} boundary, including evidence finalization and terminal reserves (session.finish sent={finish_sent}) {observation} currentIdleReadCount={idle_reads} currentDrainBarrier={barrier} finishBarrierSent={finish_barrier_sent} finishBarrierObserved={finish_barrier_observed}",
                 LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT.as_secs(),
                 if finish_sent {
                     "session.finish send"
@@ -320,6 +392,19 @@ impl<S: RealtimeSocket> RealtimeSocket for LivetranslateSocket<S> {
                 return Err(error);
             }
         };
+        if let Message::Pong(payload) = &message {
+            let expected = format!(
+                "{LIVETRANSLATE_FINISH_BARRIER_PREFIX}{}",
+                self.shared.finish_barrier_id.load(Ordering::SeqCst)
+            );
+            if self.shared.finish_barrier_sent.load(Ordering::SeqCst)
+                && payload.as_ref() == expected.as_bytes()
+            {
+                self.shared
+                    .finish_barrier_observed
+                    .store(true, Ordering::SeqCst);
+            }
+        }
         if message_event_type(&message) == Some("session.finished") {
             if self.shared.session_finish_sent.load(Ordering::SeqCst) {
                 // Mark receipt before returning the exact event. The ordinary
@@ -344,6 +429,23 @@ impl<S: RealtimeSocket> RealtimeSocket for LivetranslateSocket<S> {
                 "LiveTranslate session.finish already sent; further writes are forbidden",
             )));
         }
+        if let Message::Ping(payload) = &message {
+            let expected = format!(
+                "{LIVETRANSLATE_FINISH_BARRIER_PREFIX}{}",
+                self.shared.finish_barrier_id.load(Ordering::SeqCst)
+            );
+            if payload.as_ref() != expected.as_bytes() {
+                return Err(tungstenite::Error::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "LiveTranslate typed sender rejected an unknown transport barrier",
+                )));
+            }
+            self.inner.send_message(message)?;
+            self.shared
+                .finish_barrier_sent
+                .store(true, Ordering::SeqCst);
+            return Ok(());
+        }
         if let Some(authority) = self.shared.authority.as_ref() {
             let Message::Text(text) = &message else {
                 return Err(tungstenite::Error::Io(io::Error::new(
@@ -364,17 +466,12 @@ impl<S: RealtimeSocket> RealtimeSocket for LivetranslateSocket<S> {
             .map_err(|error| {
                 tungstenite::Error::Io(io::Error::new(io::ErrorKind::InvalidData, error))
             })?;
-            if event.get("type").and_then(Value::as_str) == Some("session.finish") {
-                self.shared
-                    .session_finish_sent
-                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                    .map_err(|_| {
-                        tungstenite::Error::Io(io::Error::new(
-                            io::ErrorKind::ConnectionAborted,
-                            "LiveTranslate session.finish already sent",
-                        ))
-                    })?;
+            let is_finish = event.get("type").and_then(Value::as_str) == Some("session.finish");
+            self.inner.send_message(message)?;
+            if is_finish {
+                self.shared.session_finish_sent.store(true, Ordering::SeqCst);
             }
+            return Ok(());
         }
         self.inner.send_message(message)
     }
@@ -475,6 +572,10 @@ mod tests {
         state: Arc<Mutex<FakeSocketState>>,
     }
 
+    struct SendFailSocket {
+        inbound: VecDeque<Message>,
+    }
+
     impl RealtimeSocket for FakeSocket {
         fn read_message(&mut self) -> Result<Message, tungstenite::Error> {
             self.inbound.pop_front().ok_or_else(|| {
@@ -488,6 +589,24 @@ mod tests {
         fn send_message(&mut self, message: Message) -> Result<(), tungstenite::Error> {
             self.state.lock().expect("fake socket state").sent.push(message);
             Ok(())
+        }
+    }
+
+    impl RealtimeSocket for SendFailSocket {
+        fn read_message(&mut self) -> Result<Message, tungstenite::Error> {
+            self.inbound.pop_front().ok_or_else(|| {
+                tungstenite::Error::Io(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "no scripted event",
+                ))
+            })
+        }
+
+        fn send_message(&mut self, _message: Message) -> Result<(), tungstenite::Error> {
+            Err(tungstenite::Error::Io(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "scripted send failure",
+            )))
         }
     }
 
@@ -800,6 +919,135 @@ mod tests {
         }
         assert!(socket.read_message().is_err());
         assert!(shutdown.should_send_finish(0, true, true).unwrap());
+    }
+
+    #[test]
+    fn healthy_inbound_backlog_crosses_the_finish_transport_barrier() {
+        let requested_at = Instant::now();
+        let mut shutdown = LivetranslateShutdown::new(true);
+        shutdown.request(requested_at);
+        let pong = Message::Pong(shutdown.finish_barrier_payload().into());
+        let mut socket = shutdown.wrap_socket(FakeSocket {
+            inbound: VecDeque::from([text_event("response.audio.delta"), pong]),
+            state: Arc::new(Mutex::new(FakeSocketState::default())),
+        });
+
+        assert!(!shutdown
+            .should_send_finish_at(requested_at, 0, true, true)
+            .unwrap());
+        socket
+            .send_message(
+                shutdown
+                    .take_finish_transport_barrier()
+                    .expect("transport barrier"),
+            )
+            .expect("transport barrier send");
+        socket.read_message().expect("healthy provider progress");
+        assert!(!shutdown
+            .should_send_finish_at(requested_at, 0, true, true)
+            .unwrap());
+        socket.read_message().expect("matching transport pong");
+        assert!(shutdown
+            .should_send_finish_at(requested_at, 0, true, true)
+            .unwrap());
+    }
+
+    #[test]
+    fn ordinary_progress_cannot_reclassify_an_already_queued_session_finished() {
+        let requested_at = Instant::now();
+        let mut shutdown = LivetranslateShutdown::new(true);
+        shutdown.request(requested_at);
+        let mut socket = shutdown.wrap_socket(FakeSocket {
+            inbound: VecDeque::from([
+                text_event("response.audio.delta"),
+                text_event("session.finished"),
+            ]),
+            state: Arc::new(Mutex::new(FakeSocketState::default())),
+        });
+
+        assert!(!shutdown
+            .should_send_finish_at(requested_at, 0, true, true)
+            .unwrap());
+        socket
+            .send_message(
+                shutdown
+                    .take_finish_transport_barrier()
+                    .expect("transport barrier"),
+            )
+            .expect("transport barrier send");
+        socket.read_message().expect("ordinary queued response event");
+        assert!(
+            !shutdown
+                .should_send_finish_at(requested_at, 0, true, true)
+                .unwrap(),
+            "ordinary inbound progress cannot prove that the pre-finish receive queue crossed its transport boundary",
+        );
+        socket
+            .read_message()
+            .expect("already-queued pre-finish session.finished");
+        let error = shutdown
+            .should_send_finish_at(requested_at, 0, true, true)
+            .expect_err("the queued pre-finish terminal must remain fail-closed");
+        assert!(error.contains("livetranslate-session-finished-before-finish"));
+    }
+
+    #[test]
+    fn stale_pong_from_an_invalidated_fence_cannot_authorize_finish() {
+        let requested_at = Instant::now();
+        let mut shutdown = LivetranslateShutdown::new(true);
+        shutdown.request(requested_at);
+        assert!(!shutdown
+            .should_send_finish_at(requested_at, 0, true, true)
+            .unwrap());
+        let stale_pong = Message::Pong(shutdown.finish_barrier_payload().into());
+        let state = Arc::new(Mutex::new(FakeSocketState::default()));
+        let mut socket = shutdown.wrap_socket(FakeSocket {
+            inbound: VecDeque::from([stale_pong]),
+            state,
+        });
+        socket
+            .send_message(
+                shutdown
+                    .take_finish_transport_barrier()
+                    .expect("first transport barrier"),
+            )
+            .expect("first transport barrier send");
+
+        assert!(!shutdown
+            .should_send_finish_at(requested_at, 1, true, true)
+            .unwrap());
+        assert!(!shutdown
+            .should_send_finish_at(requested_at, 0, true, true)
+            .unwrap());
+        socket.read_message().expect("stale pong");
+        assert!(
+            !shutdown
+                .should_send_finish_at(requested_at, 0, true, true)
+                .unwrap(),
+            "a pong from an invalidated fence generation must not authorize finish",
+        );
+    }
+
+    #[test]
+    fn failed_finish_send_never_grants_session_finished_ack_authority() {
+        let mut shutdown = LivetranslateShutdown::new(true);
+        shutdown.request(Instant::now());
+        let finish = shutdown.finish_event("event_session_finish_send_failure");
+        let mut socket = shutdown.wrap_socket(SendFailSocket {
+            inbound: VecDeque::from([text_event("session.finished")]),
+        });
+
+        assert!(socket
+            .send_message(Message::Text(finish.to_string().into()))
+            .is_err());
+        socket
+            .read_message()
+            .expect("terminal arriving after failed local send");
+        assert!(!shutdown.session_finished_received());
+        let error = shutdown
+            .should_send_finish(0, true, true)
+            .expect_err("failed send cannot reclassify a terminal as an acknowledgement");
+        assert!(error.contains("livetranslate-session-finished-before-finish"));
     }
 
     #[test]

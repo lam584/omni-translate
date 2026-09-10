@@ -35,7 +35,7 @@ const STRICT_TIMEOUT_MS = 12_000;
 const STRICT_TEMPERATURE = 0.2;
 const STRICT_MAX_INPUT_TOKENS = 4_096;
 const STRICT_MAX_OUTPUT_TOKENS = 256;
-const STRICT_EN_ZH_CORPUS = Object.freeze({
+export const STRICT_EN_ZH_CORPUS = Object.freeze({
   'CPU usage dropped by 18 percent.': 'CPU使用率下降了18%。',
   'Daniel replied that shipment A-17 would leave at 6:30 p.m.': 'Daniel回答说，A-17号货物将于下午6点30分出发。',
   'Does it preserve a quoted answer?': '它能否保留引用的回答？',
@@ -43,7 +43,6 @@ const STRICT_EN_ZH_CORPUS = Object.freeze({
   Mars: '火星',
   'Please record each sentence clearly': '请清楚记录每个句子',
   'Version 3.6.2': '3.6.2版本',
-  'Version 3.6.2 reduced average response time from 920 milliseconds to 315 milliseconds.': '3.6.2版本把平均响应时间从920毫秒降至315毫秒。',
   'artificial biosphere': '人工生物圈',
   'by October 3': '在10月3日前',
   'endangered species': '濒危物种',

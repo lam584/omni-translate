@@ -1171,6 +1171,7 @@ impl OmniSocketEventProcessor {
                             store,
                             trace_call,
                             &direction,
+                            source_language,
                             &mut current_cue_id,
                             &mut pending_source_text,
                             &mut pending_translated_text,

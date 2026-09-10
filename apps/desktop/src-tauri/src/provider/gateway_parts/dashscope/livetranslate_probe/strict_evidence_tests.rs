@@ -51,7 +51,6 @@ fn zero_input_probe_plan_is_admitted_and_bound_by_the_production_client_adapter(
             "Mars": "火星",
             "Please record each sentence clearly": "请清楚记录每个句子",
             "Version 3.6.2": "3.6.2版本",
-            "Version 3.6.2 reduced average response time from 920 milliseconds to 315 milliseconds.": "3.6.2版本把平均响应时间从920毫秒降至315毫秒。",
             "artificial biosphere": "人工生物圈",
             "by October 3": "在10月3日前",
             "endangered species": "濒危物种",

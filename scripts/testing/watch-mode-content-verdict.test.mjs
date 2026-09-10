@@ -160,6 +160,41 @@ test('canonical final cue evidence removes a duplicated .2 patch after an alread
   assert.equal(compareWatchContentText(reference, crossSourceEvidence).passed, false);
 });
 
+test('canonical final cue evidence narrowly rejoins the audited adjacent 第二点 continuation', () => {
+  const reference = '3.6.2版本把平均响应时间从920毫秒降至315毫秒';
+  const actualAdjacentCues = watchContentCanonicalFinalCueEvidence([
+    '最后一个话题是软件，3.6.2版本。',
+    '第二点，把平均响应时间从920毫秒降至315毫秒。',
+  ]);
+  assert.deepEqual(actualAdjacentCues.adjacentVersionContinuations, [
+    '3.6.2版本把平均响应时间从920毫秒降至315毫秒。',
+  ]);
+  assert.deepEqual(
+    compareWatchContentText(reference, actualAdjacentCues.comparisonText).missingClauses,
+    [],
+  );
+
+  const rejectedPairs = [
+    ['最后一个话题是软件，3.6.5版本。', '第二点，把平均响应时间从920毫秒降至315毫秒。'],
+    ['最后一个话题是软件，3.6.2版本。', '第二点，把平均响应时间从920毫秒降至351毫秒。'],
+    ['最后一个话题是软件，3.6.2版本。', '第二点，把平均响应时间从820毫秒降至315毫秒。'],
+    ['最后一个话题是软件，3.6.2版本。', '第二点，任意其他内容。'],
+  ];
+  for (const pair of rejectedPairs) {
+    const evidence = watchContentCanonicalFinalCueEvidence(pair);
+    assert.deepEqual(evidence.adjacentVersionContinuations, []);
+    assert.equal(compareWatchContentText(reference, evidence.comparisonText).passed, false);
+  }
+
+  const nonAdjacent = watchContentCanonicalFinalCueEvidence([
+    '最后一个话题是软件，3.6.2版本。',
+    '这是无关的相邻final cue。',
+    '第二点，把平均响应时间从920毫秒降至315毫秒。',
+  ]);
+  assert.deepEqual(nonAdjacent.adjacentVersionContinuations, []);
+  assert.equal(compareWatchContentText(reference, nonAdjacent.comparisonText).passed, false);
+});
+
 test('text verdict reports missing and extra clauses from one policy', () => {
   const result = compareWatchContentText('1111. 2222.', '1111. 9999.');
   assert.equal(result.passed, false);

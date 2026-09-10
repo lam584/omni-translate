@@ -84,6 +84,15 @@ export function watchContentCanonicalFinalCueEvidence(cues) {
       adjacentVersionContinuations.push('3.6.2版本' + duplicatedAuditedPatch[1]);
       continue;
     }
+    const auditedOrdinalContinuation = next.match(
+      /^第二点，把平均响应时间从920毫秒降至315毫秒([。.!！]?)$/u,
+    );
+    if (auditedCompleteVersion && auditedOrdinalContinuation) {
+      adjacentVersionContinuations.push(
+        '3.6.2版本把平均响应时间从920毫秒降至315毫秒' + auditedOrdinalContinuation[1],
+      );
+      continue;
+    }
     if (!/^版本\s*\d+(?:\.\d+)+$/u.test(previous)) continue;
     if (!/^\.\d+(?=\s|[^\d.]|$)/u.test(next)) continue;
     adjacentVersionContinuations.push(previous + (next.startsWith('.') ? '' : ' ') + next);

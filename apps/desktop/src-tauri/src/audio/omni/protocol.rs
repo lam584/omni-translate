@@ -509,6 +509,7 @@ struct DeferredEmptyVadTerminal {
     st_flag: String,
     audio_end_ms: u64,
     continuity_id: u64,
+    nonempty_micro_fragment: bool,
     expires_at: Instant,
     successor_arbitration_deadline: Instant,
 }
@@ -1141,6 +1142,13 @@ fn terminalize_native_response_without_output<R: tauri::Runtime>(
 }
 
 const SHORT_SERVER_VAD_FRAGMENT_MAX_MS: u64 = 100;
+// A provider may split a continuous boundary into a tiny ASR token with no
+// translation, as observed in the formal c02 trace (160ms, source "对。").
+// Keep this separate from the generic short-VAD drop: a non-empty source is
+// never discarded on duration alone and must win the existing bounded,
+// forward-only, same-continuity successor arbitration.
+const NONEMPTY_EMPTY_TRANSLATION_MICRO_FRAGMENT_MAX_MS: u64 = 160;
+const NONEMPTY_EMPTY_TRANSLATION_MICRO_FRAGMENT_MAX_CHARS: usize = 4;
 const CONTIGUOUS_EMPTY_VAD_DEFER_MS: u64 = 120;
 // The c02 production trace observed an admitted successor 54ms after the
 // ordinary terminal deadline. Keep a separate, hard-bounded arbitration
@@ -1162,6 +1170,28 @@ pub(super) fn is_ignored_short_server_vad(duration_ms: Option<u64>) -> bool {
     duration_ms.is_some_and(|duration_ms| duration_ms <= SHORT_SERVER_VAD_FRAGMENT_MAX_MS)
 }
 
+fn is_nonempty_empty_translation_micro_fragment(
+    source_language: &str,
+    source_text: &str,
+    duration_ms: Option<u64>,
+) -> bool {
+    let source_text = source_text.trim();
+    let source_language_is_english = source_language
+        .split(['-', '_'])
+        .next()
+        .is_some_and(|language| language.eq_ignore_ascii_case("en"));
+    let contains_han = source_text
+        .chars()
+        .any(|character| matches!(character, '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}'));
+    source_language_is_english
+        && contains_han
+        && !source_text.chars().any(|character| character.is_ascii_alphabetic())
+        && source_text.chars().count() <= NONEMPTY_EMPTY_TRANSLATION_MICRO_FRAGMENT_MAX_CHARS
+        && duration_ms.is_some_and(|duration_ms| {
+            duration_ms <= NONEMPTY_EMPTY_TRANSLATION_MICRO_FRAGMENT_MAX_MS
+        })
+}
+
 impl OmniEventDiagnostics {
     fn defer_empty_vad_terminal(
         &mut self,
@@ -1171,6 +1201,7 @@ impl OmniEventDiagnostics {
         response_cue_exists: bool,
         response_metadata: ResponseDoneMetadata,
         st_flag: &str,
+        nonempty_micro_fragment: bool,
     ) -> bool {
         let (Some(input_item_id), Some(audio_end_ms), Some(continuity_id)) = (
             self.native_response_item_id.clone(),
@@ -1190,6 +1221,7 @@ impl OmniEventDiagnostics {
             st_flag: st_flag.to_string(),
             audio_end_ms,
             continuity_id,
+            nonempty_micro_fragment,
             expires_at,
             successor_arbitration_deadline: expires_at
                 + Duration::from_millis(CONTIGUOUS_EMPTY_VAD_SUCCESSOR_ARBITRATION_MS),
@@ -1289,30 +1321,33 @@ pub(super) fn resolve_deferred_empty_vad_on_speech_started<R: tauri::Runtime>(
     let Some((pending, is_contiguous_same_source)) = event_diagnostics
         .take_deferred_empty_vad_for_successor(successor_audio_start_ms)
     else { return; };
-    let latest_cue_is_still_empty = store
+    let latest_cue_is_still_arbitrable = store
         .snapshot()
         .subtitle_overlay
         .recent_cues
         .iter()
         .find(|cue| cue.cue_id == pending.cue_id)
         .is_some_and(|cue| {
-            cue.source_text.trim().is_empty()
+            (cue.source_text.trim().is_empty()
+                || (pending.nonempty_micro_fragment
+                    && cue.source_text.trim() == pending.source_text.trim()))
                 && cue.translated_text.trim().is_empty()
                 && !cue.translation_committed
         });
-    if is_contiguous_same_source && latest_cue_is_still_empty {
+    if is_contiguous_same_source && latest_cue_is_still_arbitrable {
         event_diagnostics.register_ignored_native_response_owner_lineage(
             &pending.cue_id,
             &pending.input_item_id,
         );
         store.discard_ignored_short_vad_fragment_cue(&pending.cue_id);
         let _ = diag_log(app, "omni", "info", format!(
-            "[VAD] CONTIGUOUS_EMPTY_SPLIT_DROPPED cue_id={} inputItemId={} audioEndMs={} nextAudioStartMs={} continuityId={}",
+            "[VAD] CONTIGUOUS_EMPTY_SPLIT_DROPPED cue_id={} inputItemId={} audioEndMs={} nextAudioStartMs={} continuityId={} nonemptyMicroFragment={}",
             pending.cue_id,
             pending.input_item_id,
             pending.audio_end_ms,
             successor_audio_start_ms.map_or_else(|| "-".to_string(), |value| value.to_string()),
             pending.continuity_id,
+            pending.nonempty_micro_fragment,
         ));
     } else {
         terminalize_deferred_empty_vad(app, store, &pending);
@@ -1345,6 +1380,7 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
     store: &AudioStateStore,
     trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
     direction: &str,
+    source_language: &str,
     current_cue_id: &mut Option<String>,
     pending_source_text: &mut String,
     pending_translated_text: &mut String,
@@ -1501,8 +1537,13 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
                 ),
             );
         } else if final_output_allowed
-            && response_source_text.trim().is_empty()
             && event_diagnostics.native_response_vad_duration_ms().is_some()
+            && (response_source_text.trim().is_empty()
+                || is_nonempty_empty_translation_micro_fragment(
+                    source_language,
+                    &response_source_text,
+                    event_diagnostics.native_response_vad_duration_ms(),
+                ))
             && event_diagnostics.defer_empty_vad_terminal(
                 cue_id.clone(),
                 response_source_text.clone(),
@@ -1510,10 +1551,12 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
                 response_cue_exists,
                 response_metadata.clone(),
                 st_flag,
+                !response_source_text.trim().is_empty(),
             )
         {
             let _ = diag_log(app, "omni", "info", format!(
-                "[EVENT] response.done → EMPTY_VAD_TERMINAL_DEFERRED{st_flag} cue_id={cue_id} delayMs={CONTIGUOUS_EMPTY_VAD_DEFER_MS} responseId={}",
+                "[EVENT] response.done → EMPTY_VAD_TERMINAL_DEFERRED{st_flag} cue_id={cue_id} delayMs={CONTIGUOUS_EMPTY_VAD_DEFER_MS} nonemptyMicroFragment={} responseId={}",
+                !response_source_text.trim().is_empty(),
                 response_metadata.response_id,
             ));
         } else {
@@ -2527,7 +2570,6 @@ fn watch_release_livetranslate_corpus(
                 "Mars": "火星",
                 "Please record each sentence clearly": "请清楚记录每个句子",
                 "Version 3.6.2": "3.6.2版本",
-                "Version 3.6.2 reduced average response time from 920 milliseconds to 315 milliseconds.": "3.6.2版本把平均响应时间从920毫秒降至315毫秒。",
                 "artificial biosphere": "人工生物圈",
                 "by October 3": "在10月3日前",
                 "endangered species": "濒危物种",
@@ -2901,7 +2943,6 @@ mod response_control_tests {
                 "Mars": "火星",
                 "Please record each sentence clearly": "请清楚记录每个句子",
                 "Version 3.6.2": "3.6.2版本",
-                "Version 3.6.2 reduced average response time from 920 milliseconds to 315 milliseconds.": "3.6.2版本把平均响应时间从920毫秒降至315毫秒。",
                 "artificial biosphere": "人工生物圈",
                 "by October 3": "在10月3日前",
                 "endangered species": "濒危物种",

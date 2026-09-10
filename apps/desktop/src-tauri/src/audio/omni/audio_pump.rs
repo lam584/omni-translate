@@ -6,6 +6,9 @@ use super::realtime_socket::ReconnectedRealtimeSocket;
 // `try_recv()` can drain an entire long media stream in one call and postpone
 // the first commit/final transcript until the session is already stopping.
 const OMNI_AUDIO_PUMP_MAX_CHUNKS_PER_TICK: usize = 8;
+const OMNI_SHUTDOWN_CEILING_DISCARD_MAX_CHUNKS_PER_TICK: usize = 1024;
+const OMNI_SHUTDOWN_CEILING_DISCARD_MAX_BYTES_PER_TICK: usize = 8 * 1024 * 1024;
+const OMNI_PROVIDER_INPUT_MAX_RAW_CHUNK_BYTES: usize = 64 * 1024;
 
 fn audio_pump_should_yield(chunks_sent_this_tick: usize) -> bool {
     chunks_sent_this_tick >= OMNI_AUDIO_PUMP_MAX_CHUNKS_PER_TICK
@@ -104,6 +107,57 @@ fn observe_provider_input_fence_after_yield(
         Err(mpsc::TryRecvError::Empty) => {}
         Err(mpsc::TryRecvError::Disconnected) => *audio_input_disconnected = true,
     }
+}
+
+fn discard_provider_input_after_shutdown_ceiling(
+    audio_rx: &mpsc::Receiver<Vec<u8>>,
+    pre_session_audio_queue: &mut VecDeque<Vec<u8>>,
+    audio_input_disconnected: &mut bool,
+    mut can_append_raw: impl FnMut(&[u8]) -> bool,
+) -> usize {
+    let mut discarded = 0usize;
+    let mut inspected_bytes = 0usize;
+    for _ in 0..OMNI_SHUTDOWN_CEILING_DISCARD_MAX_CHUNKS_PER_TICK {
+        if let Some(raw) = pre_session_audio_queue.pop_front() {
+            if raw.len() > OMNI_PROVIDER_INPUT_MAX_RAW_CHUNK_BYTES
+                || inspected_bytes.saturating_add(raw.len())
+                    > OMNI_SHUTDOWN_CEILING_DISCARD_MAX_BYTES_PER_TICK
+            {
+                pre_session_audio_queue.push_front(raw);
+                return discarded;
+            }
+            inspected_bytes = inspected_bytes.saturating_add(raw.len());
+            if can_append_raw(&raw) {
+                pre_session_audio_queue.push_front(raw);
+                return discarded;
+            }
+            discarded = discarded.saturating_add(1);
+            continue;
+        }
+        match audio_rx.try_recv() {
+            Ok(raw) => {
+                if raw.len() > OMNI_PROVIDER_INPUT_MAX_RAW_CHUNK_BYTES
+                    || inspected_bytes.saturating_add(raw.len())
+                        > OMNI_SHUTDOWN_CEILING_DISCARD_MAX_BYTES_PER_TICK
+                {
+                    pre_session_audio_queue.push_front(raw);
+                    return discarded;
+                }
+                inspected_bytes = inspected_bytes.saturating_add(raw.len());
+                if can_append_raw(&raw) {
+                    pre_session_audio_queue.push_front(raw);
+                    return discarded;
+                }
+                discarded = discarded.saturating_add(1);
+            }
+            Err(mpsc::TryRecvError::Empty) => return discarded,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                *audio_input_disconnected = true;
+                return discarded;
+            }
+        }
+    }
+    discarded
 }
 
 fn record_append_attempt_progress<R: tauri::Runtime>(
@@ -371,13 +425,31 @@ impl OmniAudioPump {
                 silence_chunks_skipped = 0;
             }
             if !provider_input_budget.can_append(asr_chunk.len() as u64) {
+                let discarded_after_ceiling = if livetranslate_shutdown_requested
+                    && provider_input_budget.strict_paid_authority_enabled()
+                {
+                    discard_provider_input_after_shutdown_ceiling(
+                        audio_rx,
+                        &mut pre_session_audio_queue,
+                        &mut audio_input_disconnected,
+                        |raw| {
+                            let samples = resample_48k_stereo_to_16k_mono(raw).len() as u64;
+                            provider_input_budget.can_append(samples)
+                        },
+                    )
+                } else {
+                    0
+                };
                 let _ = diag_log(
                     app,
                     "omni",
                     "info",
                     format!(
-                        "[AUDIO] strict provider input ceiling reached cleanly before append: nextSamples={}",
-                        asr_chunk.len()
+                        "[AUDIO] strict provider input ceiling reached cleanly before append: nextSamples={} shutdownRequested={} discardedQueuedChunks={} inputDisconnected={}",
+                        asr_chunk.len(),
+                        livetranslate_shutdown_requested,
+                        discarded_after_ceiling,
+                        audio_input_disconnected,
                     ),
                 );
                 break;
@@ -686,6 +758,119 @@ mod tests {
         assert!(!disconnected, "queued input must drain before the fence");
         assert_eq!(try_receive_provider_input(&rx, &mut disconnected), None);
         assert!(disconnected, "Disconnected proves every sender was released");
+    }
+
+    #[test]
+    fn shutdown_ceiling_discards_unsendable_input_and_observes_the_released_sender() {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        tx.send(vec![1]).expect("first queued chunk");
+        tx.send(vec![2]).expect("second queued chunk");
+        drop(tx);
+        let mut pre_session_audio_queue = VecDeque::from([vec![3], vec![4]]);
+        let mut disconnected = false;
+
+        let discarded = discard_provider_input_after_shutdown_ceiling(
+            &rx,
+            &mut pre_session_audio_queue,
+            &mut disconnected,
+            |_| false,
+        );
+
+        assert_eq!(discarded, 4);
+        assert!(pre_session_audio_queue.is_empty());
+        assert!(
+            disconnected,
+            "once the strict ceiling forbids every remaining append, shutdown must consume the finite relay backlog through its real disconnection fence",
+        );
+    }
+
+    #[test]
+    fn shutdown_ceiling_discard_yields_while_a_producer_can_still_write() {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        for _ in 0..=OMNI_SHUTDOWN_CEILING_DISCARD_MAX_CHUNKS_PER_TICK {
+            tx.send(vec![1]).expect("queued producer input");
+        }
+        let mut pre_session_audio_queue = VecDeque::new();
+        let mut disconnected = false;
+
+        let first = discard_provider_input_after_shutdown_ceiling(
+            &rx,
+            &mut pre_session_audio_queue,
+            &mut disconnected,
+            |_| false,
+        );
+        assert_eq!(first, OMNI_SHUTDOWN_CEILING_DISCARD_MAX_CHUNKS_PER_TICK);
+        assert!(!disconnected, "a live producer cannot be promoted to a fence");
+
+        let second = discard_provider_input_after_shutdown_ceiling(
+            &rx,
+            &mut pre_session_audio_queue,
+            &mut disconnected,
+            |_| false,
+        );
+        assert_eq!(second, 1);
+        assert!(!disconnected, "Empty remains non-terminal while the sender lives");
+
+        drop(tx);
+        assert_eq!(
+            discard_provider_input_after_shutdown_ceiling(
+                &rx,
+                &mut pre_session_audio_queue,
+                &mut disconnected,
+                |_| false,
+            ),
+            0,
+        );
+        assert!(disconnected, "the later real disconnect establishes the fence");
+    }
+
+    #[test]
+    fn shutdown_ceiling_retains_a_later_chunk_that_still_fits() {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        tx.send(vec![9]).expect("later smaller chunk");
+        drop(tx);
+        let mut pre_session_audio_queue = VecDeque::from([vec![8]]);
+        let mut disconnected = false;
+
+        let discarded = discard_provider_input_after_shutdown_ceiling(
+            &rx,
+            &mut pre_session_audio_queue,
+            &mut disconnected,
+            |raw| raw == [9],
+        );
+
+        assert_eq!(discarded, 1);
+        assert_eq!(pre_session_audio_queue, VecDeque::from([vec![9]]));
+        assert!(
+            !disconnected,
+            "a later complete chunk that fits must return to the ordinary append path before the real fence can be observed",
+        );
+    }
+
+    #[test]
+    fn shutdown_ceiling_discard_defers_oversized_work_without_claiming_a_fence() {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        tx.send(vec![0; OMNI_PROVIDER_INPUT_MAX_RAW_CHUNK_BYTES + 1])
+            .expect("oversized queued input");
+        drop(tx);
+        let mut pre_session_audio_queue = VecDeque::new();
+        let mut disconnected = false;
+        let mut inspected = false;
+
+        let discarded = discard_provider_input_after_shutdown_ceiling(
+            &rx,
+            &mut pre_session_audio_queue,
+            &mut disconnected,
+            |_| {
+                inspected = true;
+                false
+            },
+        );
+
+        assert_eq!(discarded, 0);
+        assert!(!inspected, "oversized input must not enter resampling work");
+        assert_eq!(pre_session_audio_queue.len(), 1);
+        assert!(!disconnected, "deferred work is not a producer fence");
     }
 
     #[test]

@@ -26,6 +26,7 @@ pub(crate) enum EchoRenderBoundary<'a> {
 }
 
 impl EchoRenderBoundary<'_> {
+    #[cfg(test)]
     pub(crate) fn log_reason(self) -> &'static str {
         match self {
             Self::SessionStarted { .. } => "wasapi-render-session-start",

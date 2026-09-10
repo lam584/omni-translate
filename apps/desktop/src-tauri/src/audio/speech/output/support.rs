@@ -175,6 +175,7 @@ impl DeferredRenderFrames {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.frames.is_empty()
     }

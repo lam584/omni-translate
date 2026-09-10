@@ -273,6 +273,7 @@ impl LivetranslateShutdown {
                 .load(Ordering::SeqCst)
     }
 
+    #[cfg(test)]
     pub(super) fn deadline_error(&self, now: Instant) -> Option<(&'static str, String)> {
         self.deadline_error_with_response_state(now, false)
     }

@@ -99,8 +99,6 @@ pub(crate) fn bridge_translation_playback_enabled_for_config(config: &Value) -> 
         && matches!(feedback_mode, Some("virtual-driver" | "process-exclusion"))
 }
 
-use std::mem::size_of;
-
 use wasapi::{
     calculate_period_100ns, deinitialize, initialize_mta, AudioClient, AudioRenderClient,
     DeviceEnumerator, Direction as WasapiDirection, SampleType, StreamMode, WaveFormat,
@@ -1128,7 +1126,7 @@ mod render_reference_pacer_tests {
         let samples = [0.25_f32, -0.5, 1.0];
         let bytes = f32_samples_to_le_bytes(&samples);
         let decoded = bytes
-            .chunks_exact(size_of::<f32>())
+            .chunks_exact(std::mem::size_of::<f32>())
             .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("four bytes")))
             .collect::<Vec<_>>();
 

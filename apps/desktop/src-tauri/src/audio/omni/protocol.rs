@@ -3209,6 +3209,7 @@ pub(super) enum OmniPlaybackCommand {
 }
 
 impl OmniPlaybackCommand {
+    #[cfg(test)]
     fn cue_id(&self) -> &str {
         match self {
             Self::Play { cue_id, .. } | Self::Stream { cue_id, .. } => cue_id,

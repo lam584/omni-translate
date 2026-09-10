@@ -211,45 +211,12 @@ impl LivetranslateShutdown {
         )
     }
 
-    pub(super) fn should_send_finish_with_response_state(
-        &mut self,
-        chunks_sent_this_tick: usize,
-        pre_session_audio_queue_is_empty: bool,
-        audio_input_disconnected: bool,
-        provider_response_active: bool,
-    ) -> Result<bool, String> {
-        self.should_send_finish_at_with_response_state(
-            Instant::now(),
-            chunks_sent_this_tick,
-            pre_session_audio_queue_is_empty,
-            audio_input_disconnected,
-            provider_response_active,
-        )
-    }
-
     fn should_send_finish_at(
-        &mut self,
-        now: Instant,
-        chunks_sent_this_tick: usize,
-        pre_session_audio_queue_is_empty: bool,
-        audio_input_disconnected: bool,
-    ) -> Result<bool, String> {
-        self.should_send_finish_at_with_response_state(
-            now,
-            chunks_sent_this_tick,
-            pre_session_audio_queue_is_empty,
-            audio_input_disconnected,
-            false,
-        )
-    }
-
-    fn should_send_finish_at_with_response_state(
         &mut self,
         _now: Instant,
         chunks_sent_this_tick: usize,
         pre_session_audio_queue_is_empty: bool,
         audio_input_disconnected: bool,
-        provider_response_active: bool,
     ) -> Result<bool, String> {
         self.last_finish_observation = Some((
             chunks_sent_this_tick,
@@ -270,8 +237,7 @@ impl LivetranslateShutdown {
             && !self.shared.session_finish_sent.load(Ordering::SeqCst)
             && chunks_sent_this_tick == 0
             && pre_session_audio_queue_is_empty
-            && audio_input_disconnected
-            && !provider_response_active;
+            && audio_input_disconnected;
         if !input_fenced {
             if self.pre_finish_drain_barrier.is_some() || self.finish_barrier_dispatched {
                 self.shared.finish_barrier_id.store(
@@ -311,6 +277,10 @@ impl LivetranslateShutdown {
         // before session.finish. Together those two boundaries prevent a
         // terminal already queued on this connection from being reclassified
         // while allowing a healthy continuous response backlog to progress.
+        let barrier_sent = self
+            .shared
+            .finish_barrier_sent
+            .load(Ordering::SeqCst);
         let pong_observed = self
             .shared
             .finish_barrier_observed
@@ -320,7 +290,9 @@ impl LivetranslateShutdown {
             .finish_barrier_observed_idle_count
             .load(Ordering::SeqCst);
         Ok(idle_reads > barrier
-            && (!pong_observed || idle_reads > pong_idle_baseline))
+            && barrier_sent
+            && pong_observed
+            && idle_reads > pong_idle_baseline)
     }
 
     pub(super) fn take_finish_transport_barrier(&mut self) -> Option<Message> {
@@ -662,6 +634,32 @@ mod tests {
         Message::Text(json!({ "type": event_type }).to_string().into())
     }
 
+    fn cross_finish_transport_barrier(
+        shutdown: &mut LivetranslateShutdown,
+        observed_at: Instant,
+    ) {
+        assert!(!shutdown
+            .should_send_finish_at(observed_at, 0, true, true)
+            .unwrap());
+        let pong = Message::Pong(shutdown.finish_barrier_payload().into());
+        let mut socket = shutdown.wrap_socket(FakeSocket {
+            inbound: VecDeque::from([pong]),
+            state: Arc::new(Mutex::new(FakeSocketState::default())),
+        });
+        socket
+            .send_message(
+                shutdown
+                    .take_finish_transport_barrier()
+                    .expect("transport barrier"),
+            )
+            .expect("transport barrier send");
+        socket.read_message().expect("matching transport pong");
+        assert!(socket.read_message().is_err(), "post-Pong idle boundary");
+        assert!(shutdown
+            .should_send_finish_at(observed_at, 0, true, true)
+            .unwrap());
+    }
+
     #[test]
     fn session_finish_event_contains_required_event_id_and_type() {
         let shutdown = LivetranslateShutdown::new(true);
@@ -865,14 +863,23 @@ mod tests {
     fn finish_requires_a_post_fence_idle_socket_read() {
         let mut shutdown = LivetranslateShutdown::new(true);
         shutdown.request(Instant::now());
-        let state = Arc::new(Mutex::new(FakeSocketState::default()));
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        let pong = Message::Pong(shutdown.finish_barrier_payload().into());
         let mut socket = shutdown.wrap_socket(FakeSocket {
-            inbound: VecDeque::new(),
-            state,
+            inbound: VecDeque::from([pong]),
+            state: Arc::new(Mutex::new(FakeSocketState::default())),
         });
 
+        socket
+            .send_message(
+                shutdown
+                    .take_finish_transport_barrier()
+                    .expect("transport barrier"),
+            )
+            .expect("transport barrier send");
+        socket.read_message().expect("matching transport pong");
         assert!(!shutdown.should_send_finish(0, true, true).unwrap());
-        assert!(socket.read_message().is_err(), "empty scripted socket is idle");
+        assert!(socket.read_message().is_err(), "post-Pong idle boundary");
         assert!(shutdown.should_send_finish(0, true, true).unwrap());
     }
 
@@ -899,21 +906,13 @@ mod tests {
         let now = Instant::now();
         let mut shutdown = LivetranslateShutdown::new(true);
         shutdown.request(now);
+        cross_finish_transport_barrier(&mut shutdown, now);
         let response_done = text_event("response.done");
         let mut socket = shutdown.wrap_socket(FakeSocket {
             inbound: VecDeque::from([response_done.clone(), text_event("session.finished")]),
             state: Arc::new(Mutex::new(FakeSocketState::default())),
         });
 
-        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
-        shutdown
-            .shared
-            .idle_read_observation_count
-            .fetch_add(1, Ordering::SeqCst);
-        assert!(
-            shutdown.should_send_finish(0, true, true).unwrap(),
-            "an active response must not delay session.finish after the input fence is drained",
-        );
         shutdown.record_finish_sent(now + Duration::from_secs(1));
 
         assert_eq!(socket.read_message().expect("response terminal"), response_done);
@@ -956,15 +955,29 @@ mod tests {
     fn ordinary_recv_requires_eventual_idle_before_finish() {
         let mut shutdown = LivetranslateShutdown::new(true);
         shutdown.request(Instant::now());
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        let pong = Message::Pong(shutdown.finish_barrier_payload().into());
         let mut socket = shutdown.wrap_socket(FakeSocket {
-            inbound: VecDeque::from([text_event("response.audio.delta"), text_event("response.done")]),
+            inbound: VecDeque::from([
+                text_event("response.audio.delta"),
+                text_event("response.done"),
+                pong,
+            ]),
             state: Arc::new(Mutex::new(FakeSocketState::default())),
         });
-        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        socket
+            .send_message(
+                shutdown
+                    .take_finish_transport_barrier()
+                    .expect("transport barrier"),
+            )
+            .expect("transport barrier send");
         for _ in 0..2 {
             socket.read_message().unwrap();
             assert!(!shutdown.should_send_finish(0, true, true).unwrap());
         }
+        socket.read_message().expect("matching transport pong");
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
         assert!(socket.read_message().is_err());
         assert!(shutdown.should_send_finish(0, true, true).unwrap());
     }
@@ -1002,59 +1015,12 @@ mod tests {
     }
 
     #[test]
-    fn active_response_invalidates_the_finish_barrier_until_a_fresh_boundary() {
+    fn active_provider_output_does_not_starve_the_input_finish_boundary() {
         let requested_at = Instant::now();
         let mut shutdown = LivetranslateShutdown::new(true);
         shutdown.request(requested_at);
 
-        assert!(!shutdown
-            .should_send_finish_at_with_response_state(
-                requested_at,
-                0,
-                true,
-                true,
-                false,
-            )
-            .unwrap());
-        let stale_payload = shutdown.finish_barrier_payload();
-        assert!(shutdown.take_finish_transport_barrier().is_some());
-
-        assert!(!shutdown
-            .should_send_finish_at_with_response_state(
-                requested_at,
-                0,
-                true,
-                true,
-                true,
-            )
-            .unwrap());
-        assert_ne!(shutdown.finish_barrier_payload(), stale_payload);
-
-        assert!(!shutdown
-            .should_send_finish_at_with_response_state(
-                requested_at,
-                0,
-                true,
-                true,
-                false,
-            )
-            .unwrap());
-        assert!(shutdown.take_finish_transport_barrier().is_some());
-        shutdown.shared.finish_barrier_observed_idle_count.store(
-            shutdown.shared.idle_read_observation_count.load(Ordering::SeqCst),
-            Ordering::SeqCst,
-        );
-        shutdown.shared.finish_barrier_observed.store(true, Ordering::SeqCst);
-        shutdown.shared.idle_read_observation_count.fetch_add(1, Ordering::SeqCst);
-        assert!(shutdown
-            .should_send_finish_at_with_response_state(
-                requested_at,
-                0,
-                true,
-                true,
-                false,
-            )
-            .unwrap());
+        cross_finish_transport_barrier(&mut shutdown, requested_at);
     }
 
     #[test]
@@ -1160,12 +1126,22 @@ mod tests {
         let now = Instant::now();
         let mut shutdown = LivetranslateShutdown::new(true);
         shutdown.request(now);
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        let pong = Message::Pong(shutdown.finish_barrier_payload().into());
+        let mut inbound = VecDeque::from(vec![text_event("response.audio.delta"); 1500]);
+        inbound.push_back(pong);
         let mut socket = shutdown.wrap_socket(FakeSocket {
-            inbound: VecDeque::from(vec![text_event("response.audio.delta"); 1500]),
+            inbound,
             state: Arc::new(Mutex::new(FakeSocketState::default())),
         });
         let mut elapsed = Duration::ZERO;
-        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        socket
+            .send_message(
+                shutdown
+                    .take_finish_transport_barrier()
+                    .expect("transport barrier"),
+            )
+            .expect("transport barrier send");
         for _ in 0..1500 {
             socket.read_message().unwrap();
             assert!(!shutdown.should_send_finish(0, true, true).unwrap());
@@ -1173,6 +1149,8 @@ mod tests {
         }
         assert!(shutdown.deadline_error(now + elapsed).is_none(),
             "finite receive backlog must not exhaust shutdown through fixed per-frame pacing: {elapsed:?}");
+        socket.read_message().expect("matching transport pong");
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
         assert!(socket.read_message().is_err());
         assert!(shutdown.should_send_finish(0, true, true).unwrap());
         shutdown.record_finish_sent(now + elapsed);
@@ -1243,18 +1221,11 @@ mod tests {
             let now = Instant::now();
             let mut shutdown = LivetranslateShutdown::new(true);
             shutdown.request(now);
-            let mut socket = shutdown.wrap_socket(FakeSocket {
-                inbound: VecDeque::new(),
-                state: Arc::new(Mutex::new(FakeSocketState::default())),
-            });
             assert!(!shutdown.should_send_finish(chunks, empty, disconnected).unwrap());
             let (_, error) = shutdown.deadline_error(now + Duration::from_secs(15)).unwrap();
             assert!(error.contains(&format!("lastObservedChunksSent={chunks} lastObservedPrequeueEmpty={empty} lastObservedInputDisconnected={disconnected}")));
             assert!(error.contains("currentDrainBarrier=none"));
-            assert!(socket.read_message().is_err());
-            assert!(!shutdown.should_send_finish(0, true, true).unwrap());
-            assert!(socket.read_message().is_err());
-            assert!(shutdown.should_send_finish(0, true, true).unwrap());
+            cross_finish_transport_barrier(&mut shutdown, now);
         }
     }
 
@@ -1265,16 +1236,28 @@ mod tests {
         shutdown.request(now);
         let (_, error) = shutdown.deadline_error(now + Duration::from_secs(15)).unwrap();
         assert!(error.contains("lastObservedChunksSent=unknown lastObservedPrequeueEmpty=unknown lastObservedInputDisconnected=unknown"));
-        let mut socket = shutdown.wrap_socket(FakeSocket {
-            inbound: VecDeque::new(),
-            state: Arc::new(Mutex::new(FakeSocketState::default())),
-        });
         assert!(!shutdown.should_send_finish(0, true, true).unwrap());
-        assert!(socket.read_message().is_err());
+        let stale_pong = Message::Pong(shutdown.finish_barrier_payload().into());
+        assert!(shutdown.take_finish_transport_barrier().is_some());
         assert!(!shutdown.should_send_finish(1, true, true).unwrap());
         assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        let fresh_pong = Message::Pong(shutdown.finish_barrier_payload().into());
+        let mut socket = shutdown.wrap_socket(FakeSocket {
+            inbound: VecDeque::from([stale_pong, fresh_pong]),
+            state: Arc::new(Mutex::new(FakeSocketState::default())),
+        });
+        socket
+            .send_message(
+                shutdown
+                    .take_finish_transport_barrier()
+                    .expect("fresh transport barrier"),
+            )
+            .expect("fresh transport barrier send");
+        socket.read_message().expect("stale transport pong");
         assert!(!shutdown.should_send_finish(0, true, true).unwrap());
-        assert!(socket.read_message().is_err());
+        socket.read_message().expect("fresh transport pong");
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        assert!(socket.read_message().is_err(), "post-Pong idle boundary");
         assert!(shutdown.should_send_finish(0, true, true).unwrap());
     }
 

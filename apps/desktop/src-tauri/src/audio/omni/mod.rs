@@ -156,7 +156,6 @@ const OMNI_ASR_MIN_CHUNK_RMS: f32 = 0.002;
 // Forty 20 ms frames keep 800 ms of trailing silence, matching the server-VAD
 // boundary while allowing manual routes to commit natural pauses promptly.
 const OMNI_ASR_SILENCE_GRACE_CHUNKS: u32 = 40;
-const OMNI_INTER_CHUNK_THROTTLE_MS: u64 = 18;
 const PROVIDER_INPUT_PCM_DUMP_MAX_SAMPLES: usize = 16_000 * 90;
 const PROVIDER_INPUT_PREFILTER_FILE: &str = "provider-input-prefilter-48k-stereo.f32le.frames";
 const PROVIDER_INPUT_PREFILTER_MAGIC: &[u8; 8] = b"OMNIPR01";

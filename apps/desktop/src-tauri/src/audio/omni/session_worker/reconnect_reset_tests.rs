@@ -9,10 +9,115 @@ fn shutdown_drain_releases_manual_response_audio_defer() {
 }
 
 #[test]
-fn livetranslate_shutdown_keeps_realtime_chunk_throttling() {
-    assert!(!audio_pump::should_throttle_audio_chunk(1));
-    assert!(audio_pump::should_throttle_audio_chunk(2));
-    assert!(audio_pump::should_throttle_audio_chunk(8));
+fn provider_audio_pacer_deducts_processing_time_from_the_media_interval() {
+    let started_at = Instant::now();
+    let mut pacer = audio_pump::ProviderAudioPacer::default();
+
+    assert_eq!(pacer.delay_before_append(started_at, 320), Duration::ZERO);
+    pacer.record_successful_append(320);
+
+    assert_eq!(
+        pacer.delay_before_append(started_at + Duration::from_millis(5), 320),
+        Duration::from_millis(15),
+    );
+}
+
+#[test]
+fn provider_audio_pacer_absorbs_outer_tick_work_without_long_term_drift() {
+    let started_at = Instant::now();
+    let mut now = started_at;
+    let mut pacer = audio_pump::ProviderAudioPacer::default();
+
+    for chunk_index in 0..100 {
+        now += pacer.delay_before_append(now, 320);
+        pacer.record_successful_append(320);
+        now += Duration::from_millis(5);
+        if (chunk_index + 1) % 8 == 0 {
+            now += Duration::from_millis(10);
+        }
+    }
+
+    assert!(
+        now.duration_since(started_at) < Duration::from_millis(2_050),
+        "processing and outer tick work must consume the absolute media deadline instead of accumulating on top of it",
+    );
+}
+
+#[test]
+fn provider_audio_pacer_avoids_the_formal_run_long_media_backlog() {
+    let started_at = Instant::now();
+    let mut now = started_at;
+    let mut pacer = audio_pump::ProviderAudioPacer::default();
+    let full_chunks = 2_013_045_u64 / 320;
+
+    for chunk_index in 0..full_chunks {
+        now += pacer.delay_before_append(now, 320);
+        pacer.record_successful_append(320);
+        now += Duration::from_millis(5);
+        if (chunk_index + 1) % 8 == 0 {
+            now += Duration::from_millis(10);
+        }
+    }
+
+    let media_duration = Duration::from_secs_f64((full_chunks * 320) as f64 / 16_000.0);
+    assert!(
+        now.duration_since(started_at) <= media_duration + Duration::from_millis(50),
+        "the formal 126-second input must not accumulate the prior fifteen-second local send backlog",
+    );
+}
+
+#[test]
+fn provider_audio_pacer_bounds_catch_up_after_a_long_stall() {
+    let started_at = Instant::now();
+    let stalled_at = started_at + Duration::from_millis(500);
+    let mut pacer = audio_pump::ProviderAudioPacer::default();
+    assert_eq!(pacer.delay_before_append(started_at, 320), Duration::ZERO);
+    pacer.record_successful_append(320);
+
+    for _ in 0..8 {
+        assert_eq!(pacer.delay_before_append(stalled_at, 320), Duration::ZERO);
+        pacer.record_successful_append(320);
+    }
+    assert_eq!(
+        pacer.delay_before_append(stalled_at, 320),
+        Duration::from_millis(20),
+        "catch-up must be bounded to one eight-chunk pump tick",
+    );
+}
+
+#[test]
+fn provider_audio_pacer_uses_samples_for_variable_chunk_deadlines() {
+    let started_at = Instant::now();
+    let mut pacer = audio_pump::ProviderAudioPacer::default();
+
+    assert_eq!(pacer.delay_before_append(started_at, 160), Duration::ZERO);
+    pacer.record_successful_append(160);
+    assert_eq!(
+        pacer.delay_before_append(started_at + Duration::from_millis(3), 640),
+        Duration::from_millis(7),
+    );
+    pacer.record_successful_append(640);
+    assert_eq!(
+        pacer.delay_before_append(started_at + Duration::from_millis(20), 320),
+        Duration::from_millis(30),
+    );
+}
+
+#[test]
+fn provider_audio_pacer_does_not_expand_catch_up_for_a_large_chunk() {
+    let started_at = Instant::now();
+    let stalled_at = started_at + Duration::from_millis(500);
+    let mut pacer = audio_pump::ProviderAudioPacer::default();
+    assert_eq!(pacer.delay_before_append(started_at, 320), Duration::ZERO);
+    pacer.record_successful_append(320);
+
+    assert_eq!(pacer.delay_before_append(stalled_at, 2_720), Duration::ZERO);
+    pacer.record_successful_append(2_720);
+    assert_eq!(
+        pacer.delay_before_append(stalled_at, 320),
+        Duration::from_millis(30),
+        "a large next chunk must not enlarge the fixed 140ms catch-up media budget",
+    );
 }
 
 #[test]

@@ -192,6 +192,7 @@ fn run_omni_worker(
     // be exclusively created, before even the first provider connection.
     let mut provider_input_budget =
         ProviderInputBudget::from_env(&provider, &direction, session_generation)?;
+    let mut provider_audio_pacer = audio_pump::ProviderAudioPacer::default();
     let mut provider_input_dump = ProviderInputPcmDump::from_env(
         &app,
         provider_input_budget.max_samples(),
@@ -550,6 +551,7 @@ fn run_omni_worker(
             provider_input_prefilter_dump,
             provider_input_dump,
             provider_input_budget,
+            provider_audio_pacer,
             audio_input_disconnected,
             chunks_sent_this_tick: 0,
             socket_reconnected: false,
@@ -628,6 +630,7 @@ fn run_omni_worker(
         provider_input_prefilter_dump = pump_state.provider_input_prefilter_dump;
         provider_input_dump = pump_state.provider_input_dump;
         provider_input_budget = pump_state.provider_input_budget;
+        provider_audio_pacer = pump_state.provider_audio_pacer;
         audio_input_disconnected = pump_state.audio_input_disconnected;
         let chunks_sent_this_tick = pump_state.chunks_sent_this_tick;
         let should_send_livetranslate_finish = livetranslate_shutdown.should_send_finish(

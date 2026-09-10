@@ -119,12 +119,12 @@ pub(crate) const SPEAKER_CHANNEL_COUNT: u16 =
 /// caller that already owns an STA gets `RPC_E_CHANGED_MODE`; COM is still
 /// initialized in that case, but this guard must not uninitialize an apartment
 /// it did not create.
-struct WasapiComApartment {
+pub(super) struct WasapiComApartment {
     should_uninitialize: bool,
 }
 
 impl WasapiComApartment {
-    fn enter() -> Result<Self, String> {
+    pub(super) fn enter() -> Result<Self, String> {
         let status = initialize_mta();
         if status.is_err() && status.0 != RPC_E_CHANGED_MODE {
             return Err(format!(
@@ -348,7 +348,7 @@ pub(crate) struct SpeakerPlaybackReceipt {
     pub(crate) renderer_owner_generation: u64,
 }
 
-pub(super) fn play_to_speaker_with_permit<F>(
+fn play_to_speaker_with_permit<F>(
     samples: &[i16],
     sample_rate_hz: u32,
     channel_count: u16,
@@ -356,6 +356,7 @@ pub(super) fn play_to_speaker_with_permit<F>(
     output_level: u64,
     playback_permit: &super::playback_ownership::DesktopPlaybackPermit,
     cue_id: &str,
+    prepared_render: Option<endpoint_recovery::PreparedSpeakerRender>,
     on_render_event: &mut F,
 ) -> Result<SpeakerPlaybackReceipt, String>
 where
@@ -396,15 +397,48 @@ where
             })
             .collect::<Vec<_>>();
         live_scenario_reserved = !live_scenarios.is_empty();
-        let _com_apartment = WasapiComApartment::enter()
-            .map_err(|error| speaker_render_stage_error("com-initialize", error))?;
-        let enumerator = DeviceEnumerator::new()
-            .map_err(|error| speaker_render_stage_error("device-enumerator", error))?;
-        let device = resolve_wasapi_render_device(&enumerator, device_id)
-            .map_err(|error| speaker_render_stage_error("endpoint-resolve", error))?;
-        let physical_playback_device_id = device
-            .get_id()
-            .map_err(|error| speaker_render_stage_error("endpoint-id", error))?;
+        let prepared_render = prepared_render_or_open(prepared_render, || {
+                let com_apartment = WasapiComApartment::enter()
+                    .map_err(|error| speaker_render_stage_error("com-initialize", error))?;
+                let enumerator = DeviceEnumerator::new()
+                    .map_err(|error| speaker_render_stage_error("device-enumerator", error))?;
+                let device = resolve_wasapi_render_device(&enumerator, device_id)
+                    .map_err(|error| speaker_render_stage_error("endpoint-resolve", error))?;
+                let endpoint_id = device
+                    .get_id()
+                    .map_err(|error| speaker_render_stage_error("endpoint-id", error))?;
+                let mut audio_client = device
+                    .get_iaudioclient()
+                    .map_err(|error| speaker_render_stage_error("audio-client", error))?;
+                let desired_format = WaveFormat::new(
+                    32, 32, &SampleType::Float, SPEAKER_SAMPLE_RATE_HZ as usize,
+                    SPEAKER_CHANNEL_COUNT as usize, None,
+                );
+                let buffer_duration_hns = calculate_period_100ns(
+                    SPEAKER_SAMPLE_RATE_HZ as i64 * RENDER_BUFFER_MS / 1_000,
+                    SPEAKER_SAMPLE_RATE_HZ as i64,
+                );
+                audio_client.initialize_client(
+                    &desired_format,
+                    &WasapiDirection::Render,
+                    &StreamMode::PollingShared { autoconvert: true, buffer_duration_hns },
+                ).map_err(|error| speaker_render_stage_error("audio-client-initialize", error))?;
+                let render_client = audio_client.get_audiorenderclient()
+                    .map_err(|error| speaker_render_stage_error("render-client", error))?;
+                let buffer_frames = audio_client.get_buffer_size()
+                    .map_err(|error| speaker_render_stage_error("buffer-size", error))?;
+                Ok(endpoint_recovery::PreparedSpeakerRender {
+                    endpoint_id,
+                    render_client,
+                    audio_client,
+                    buffer_frames,
+                    _com_apartment: com_apartment,
+                })
+            })?;
+        let physical_playback_device_id = prepared_render.endpoint_id.clone();
+        let audio_client = &prepared_render.audio_client;
+        let render_client = &prepared_render.render_client;
+        let buffer_frames = prepared_render.buffer_frames;
         on_render_event(SpeakerRenderEvent::Discontinuity {
             reason: crate::audio::state::EchoRenderBoundary::SessionStarted {
                 session_id: render_session_id,
@@ -415,37 +449,6 @@ where
             observed_at: Instant::now(),
         })?;
         opened_endpoint_id = Some(physical_playback_device_id.clone());
-        let mut audio_client = device
-            .get_iaudioclient()
-            .map_err(|error| speaker_render_stage_error("audio-client", error))?;
-        let desired_format = WaveFormat::new(
-            32,
-            32,
-            &SampleType::Float,
-            SPEAKER_SAMPLE_RATE_HZ as usize,
-            SPEAKER_CHANNEL_COUNT as usize,
-            None,
-        );
-        let buffer_duration_hns = calculate_period_100ns(
-            SPEAKER_SAMPLE_RATE_HZ as i64 * RENDER_BUFFER_MS / 1_000,
-            SPEAKER_SAMPLE_RATE_HZ as i64,
-        );
-        audio_client
-            .initialize_client(
-                &desired_format,
-                &WasapiDirection::Render,
-                &StreamMode::PollingShared {
-                    autoconvert: true,
-                    buffer_duration_hns,
-                },
-            )
-            .map_err(|error| speaker_render_stage_error("audio-client-initialize", error))?;
-        let render_client = audio_client
-            .get_audiorenderclient()
-            .map_err(|error| speaker_render_stage_error("render-client", error))?;
-        let buffer_frames = audio_client
-            .get_buffer_size()
-            .map_err(|error| speaker_render_stage_error("buffer-size", error))?;
         if buffer_frames == 0 {
             return Err("WASAPI render client reported a zero-frame buffer".to_string());
         }
@@ -453,8 +456,8 @@ where
         let total_audio_frames = final_samples.len() / SPEAKER_CHANNEL_COUNT as usize;
         if live_scenarios.is_empty() {
             render_wasapi_frames(
-                &audio_client,
-                &render_client,
+                audio_client,
+                render_client,
                 &final_samples,
                 &final_samples,
                 0,
@@ -488,8 +491,8 @@ where
                 completed_at_ms: 0,
             })?;
             let render_result = render_wasapi_frames(
-                &audio_client,
-                &render_client,
+                audio_client,
+                render_client,
                 &final_samples,
                 &scenario.physical_samples,
                 scenario.physical_prefix_offset_frames(),
@@ -561,6 +564,50 @@ where
         renderer_instance_id,
         renderer_owner_generation: playback_permit.generation(),
     })
+}
+
+fn prepared_render_or_open<T, F>(prepared: Option<T>, open: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    match prepared {
+        Some(prepared) => Ok(prepared),
+        None => open(),
+    }
+}
+
+#[cfg(test)]
+mod prepared_render_tests {
+    use super::prepared_render_or_open;
+
+    #[test]
+    fn recovery_consumes_prepared_authority_without_reopening_the_endpoint() {
+        let prepared = Box::new(41_u32);
+        let prepared_address = (&*prepared) as *const u32 as usize;
+        let mut reopen_count = 0;
+
+        let consumed = prepared_render_or_open(Some(prepared), || {
+            reopen_count += 1;
+            Ok(Box::new(99_u32))
+        })
+        .unwrap();
+
+        assert_eq!(reopen_count, 0);
+        assert_eq!((&*consumed) as *const u32 as usize, prepared_address);
+    }
+
+    #[test]
+    fn initial_attempt_opens_when_no_prepared_authority_exists() {
+        let mut open_count = 0;
+        let opened = prepared_render_or_open(None, || {
+            open_count += 1;
+            Ok(7_u32)
+        })
+        .unwrap();
+
+        assert_eq!(open_count, 1);
+        assert_eq!(opened, 7);
+    }
 }
 
 fn speaker_render_stage_error(stage: &str, error: impl std::fmt::Display) -> String {

@@ -9,15 +9,60 @@ const OMNI_AUDIO_PUMP_MAX_CHUNKS_PER_TICK: usize = 8;
 const OMNI_SHUTDOWN_CEILING_DISCARD_MAX_CHUNKS_PER_TICK: usize = 1024;
 const OMNI_SHUTDOWN_CEILING_DISCARD_MAX_BYTES_PER_TICK: usize = 8 * 1024 * 1024;
 const OMNI_PROVIDER_INPUT_MAX_RAW_CHUNK_BYTES: usize = 64 * 1024;
+const OMNI_PROVIDER_AUDIO_SAMPLE_RATE_HZ: u64 = 16_000;
+const OMNI_PROVIDER_AUDIO_CANONICAL_CHUNK_SAMPLES: u64 = 320;
+const OMNI_PROVIDER_AUDIO_MAX_CATCH_UP_SAMPLES: u64 =
+    OMNI_PROVIDER_AUDIO_CANONICAL_CHUNK_SAMPLES
+        * (OMNI_AUDIO_PUMP_MAX_CHUNKS_PER_TICK as u64 - 1);
 
 fn audio_pump_should_yield(chunks_sent_this_tick: usize) -> bool {
     chunks_sent_this_tick >= OMNI_AUDIO_PUMP_MAX_CHUNKS_PER_TICK
 }
 
-pub(super) fn should_throttle_audio_chunk(
-    chunks_sent_this_tick: usize,
-) -> bool {
-    chunks_sent_this_tick > 1
+#[derive(Debug, Default)]
+pub(super) struct ProviderAudioPacer {
+    anchor: Option<Instant>,
+    successful_samples: u64,
+}
+
+impl ProviderAudioPacer {
+    fn media_duration(samples: u64) -> Duration {
+        let seconds = samples / OMNI_PROVIDER_AUDIO_SAMPLE_RATE_HZ;
+        let remainder = samples % OMNI_PROVIDER_AUDIO_SAMPLE_RATE_HZ;
+        let nanos = remainder.saturating_mul(1_000_000_000) / OMNI_PROVIDER_AUDIO_SAMPLE_RATE_HZ;
+        Duration::new(seconds, nanos as u32)
+    }
+
+    fn max_catch_up_duration() -> Duration {
+        Self::media_duration(OMNI_PROVIDER_AUDIO_MAX_CATCH_UP_SAMPLES)
+    }
+
+    pub(super) fn delay_before_append(
+        &mut self,
+        now: Instant,
+        _next_chunk_samples: u64,
+    ) -> Duration {
+        let Some(mut anchor) = self.anchor else {
+            self.anchor = Some(now);
+            return Duration::ZERO;
+        };
+        let media_elapsed = Self::media_duration(self.successful_samples);
+        let target = anchor + media_elapsed;
+        let max_catch_up = Self::max_catch_up_duration();
+        if now > target + max_catch_up {
+            anchor = now - max_catch_up - media_elapsed;
+            self.anchor = Some(anchor);
+        }
+        (anchor + media_elapsed).saturating_duration_since(now)
+    }
+
+    pub(super) fn record_successful_append(&mut self, samples: u64) {
+        self.successful_samples = self.successful_samples.saturating_add(samples);
+    }
+
+    pub(super) fn rebase_after_reconnect(&mut self, now: Instant) {
+        self.anchor = Some(now - Self::media_duration(self.successful_samples));
+    }
 }
 
 pub(super) struct OmniAudioPumpState {
@@ -54,6 +99,7 @@ pub(super) struct OmniAudioPumpState {
     pub(super) provider_input_prefilter_dump: Option<ProviderInputPrefilterDump>,
     pub(super) provider_input_dump: Option<ProviderInputPcmDump>,
     pub(super) provider_input_budget: ProviderInputBudget,
+    pub(super) provider_audio_pacer: ProviderAudioPacer,
     /// True only after the sole capture producer has released every sender and
     /// the receiver has observed `Disconnected`. `Empty` is not terminal: a
     /// still-live producer may enqueue another chunk after the check.
@@ -315,6 +361,7 @@ impl OmniAudioPump {
             mut provider_input_prefilter_dump,
             mut provider_input_dump,
             provider_input_budget,
+            mut provider_audio_pacer,
             mut audio_input_disconnected,
             chunks_sent_this_tick: _,
             socket_reconnected: _,
@@ -456,6 +503,13 @@ impl OmniAudioPump {
             let b64 = base64_encode_i16(&asr_chunk);
             let append = super::build_dashscope_audio_append(&b64);
             let next_chunk_count = chunk_count.saturating_add(1);
+            let pacing_delay = provider_audio_pacer.delay_before_append(
+                Instant::now(),
+                asr_chunk.len() as u64,
+            );
+            if !pacing_delay.is_zero() {
+                thread::sleep(pacing_delay);
+            }
             let send_result = provider_input_budget.attempt_send(
                 asr_chunk.len() as u64,
                 || {
@@ -516,6 +570,7 @@ impl OmniAudioPump {
                 reconnected_session_update = Some(reconnected.session_update);
                 socket_reconnected = true;
                 session_ready_for_audio = false;
+                provider_audio_pacer.rebase_after_reconnect(Instant::now());
                 buffer_size = buffer_size.wrapping_sub(raw_chunk.len() as u64);
                 chunk_count = chunk_count.saturating_sub(1);
                 chunks_sent_this_tick = chunks_sent_this_tick.saturating_sub(1);
@@ -523,6 +578,7 @@ impl OmniAudioPump {
                 continue;
             }
             store.record_strict_watch_provider_append(asr_chunk.len() as u64)?;
+            provider_audio_pacer.record_successful_append(asr_chunk.len() as u64);
             manual_turn_audio_after_response = true;
             // Only audio accepted by the current socket belongs to the
             // provider's current input buffer. A failed append that triggers
@@ -555,9 +611,6 @@ impl OmniAudioPump {
                 .saturating_add(asr_chunk.len() as u64);
             store.set_stt_connected(true, buffer_size);
 
-            if should_throttle_audio_chunk(chunks_sent_this_tick) {
-                thread::sleep(Duration::from_millis(OMNI_INTER_CHUNK_THROTTLE_MS));
-            }
             if audio_pump_should_yield(chunks_sent_this_tick) {
                 // A bridge-source completion can release the sole producer
                 // exactly after the eighth queued chunk. Observe that channel
@@ -596,6 +649,7 @@ impl OmniAudioPump {
             provider_input_prefilter_dump,
             provider_input_dump,
             provider_input_budget,
+            provider_audio_pacer,
             audio_input_disconnected,
             chunks_sent_this_tick,
             socket_reconnected,
@@ -927,6 +981,7 @@ mod tests {
             provider_input_prefilter_dump: None,
             provider_input_dump: None,
             provider_input_budget: budget,
+            provider_audio_pacer: ProviderAudioPacer::default(),
             audio_input_disconnected: false,
             chunks_sent_this_tick: 0,
             socket_reconnected: false,

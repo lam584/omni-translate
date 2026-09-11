@@ -8,6 +8,7 @@ import { prepareStrictRuntimeAuthority, verifyStrictRuntimeAuthority } from './w
 import { readProductionWorkerConfig, validateProductionWorkerConfig, windowsPowerShellEnvironment } from './run-watch-mode-live-production-coordinator.mjs';
 import { buildStrictSshArgs, validateWorkerPins, verifyPinnedKnownHost } from './watch-worker-bootstrap.mjs';
 import { runLocalIsolationProcess } from './watch-mode-local-isolation-distributed.mjs';
+import { runDefaultLocalWatchDiskLifecycle } from './watch-mode-disk-lifecycle.mjs';
 
 const quote = (value) => `'${String(value).replaceAll("'", "''")}'`;
 const hash = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -22,6 +23,13 @@ const defaults = {
   distributeWatchRuntime: async (options) => {
     const { distributeWatchRuntime } = await import('./distribute-watch-runtime.mjs');
     return distributeWatchRuntime(options);
+  },
+  diskLifecycle: ({ workspaceRoot, operationRoot }) => {
+    return runDefaultLocalWatchDiskLifecycle({
+      workspaceRoot,
+      activeExecutionIds: [path.basename(operationRoot)],
+      receiptPath: path.join(operationRoot, 'local-disk-lifecycle.json'),
+    });
   },
 };
 
@@ -57,6 +65,7 @@ export async function prepareWatchRelease({ workersConfig, runtimeAuthorityPath,
     } finally { entry.completed = new Date().toISOString(); entry.durationMs = performance.now() - start; save(); }
   };
   try {
+    record.diskLifecycle = await stage('disk-lifecycle', async () => ops.diskLifecycle({ workspaceRoot, operationRoot }));
     const provenance = await stage('clean-head', async () => {
       const value = await ops.provenance({ workspaceRoot }); assertClean(value); return value;
     });
@@ -160,12 +169,19 @@ $flags=@(& git.exe ls-files -v); if($LASTEXITCODE -ne 0 -or @($flags | Where-Obj
 $dirty=@(& git.exe -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all); if($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0){throw 'source is dirty'};
 & git.exe -c core.fsmonitor=false diff --no-ext-diff --quiet HEAD --; if($LASTEXITCODE -ne 0){throw 'source content differs from HEAD'};`;
     const remoteRoot = path.win32.join(worker.guestExecutionRoot || worker.workspaceRoot, 'artifacts/testing/watch-release-preflight', path.basename(operationRoot));
+    const diskReceipt = path.win32.join(remoteRoot, 'disk-lifecycle.json');
+    const diskRoots = [
+      path.win32.join(worker.workspaceRoot, 'artifacts/testing/frozen-funnel-workers'),
+      path.win32.join(worker.workspaceRoot, 'artifacts/testing/watch-release-preflight'),
+    ].filter(Boolean);
+    const diskArgs = diskRoots.flatMap((root) => ['--root', quote(root)]).join(' ');
+    const diskCommand = `& node.exe ${quote(path.win32.join(worker.workspaceRoot, 'scripts/testing/watch-mode-disk-lifecycle.mjs'))} ${diskArgs} --volume 'C:\\' --volume 'E:\\' --protect ${quote(path.basename(operationRoot))} --receipt ${quote(diskReceipt)}; if($LASTEXITCODE -ne 0){throw 'disk lifecycle preflight failed'}`;
     const remoteFile = path.win32.join(remoteRoot, 'tiny.txt');
     const payload = Buffer.from(`watch-release-transport:${crypto.randomUUID()}\n`);
     const localFile = path.join(operationRoot, `tiny-${index}.txt`);
     const readback = path.join(operationRoot, `readback-${index}.txt`);
     fs.writeFileSync(localFile, payload, { flag: 'wx' });
-    await ssh(`${source}\nif(Test-Path -LiteralPath ${quote(remoteRoot)}){throw 'preflight execution already exists'}; New-Item -ItemType Directory -Path ${quote(remoteRoot)} | Out-Null`);
+    await ssh(`${source}\nif(Test-Path -LiteralPath ${quote(remoteRoot)}){throw 'preflight execution already exists'}; New-Item -ItemType Directory -Path ${quote(remoteRoot)} | Out-Null;\n${diskCommand}`);
     const scpArgs = args.slice(0, -1); if (!local) scpArgs[scpArgs.indexOf('-p')] = '-P';
     const remote = local ? null : `${worker.user}@${worker.transport.host}:${remoteFile.replaceAll('\\', '/')}`;
     if (local) fs.copyFileSync(localFile, remoteFile, fs.constants.COPYFILE_EXCL);
@@ -175,7 +191,7 @@ $dirty=@(& git.exe -c core.fsmonitor=false status --porcelain=v1 --untracked-fil
     if (local) fs.copyFileSync(remoteFile, readback, fs.constants.COPYFILE_EXCL);
     else await run(config.scpExecutable, [...scpArgs, remote, readback.replaceAll('\\', '/')], { cwd: workspaceRoot, env });
     if (!fs.readFileSync(readback).equals(payload)) throw new Error(`worker ${worker.workerId}: tiny readback mismatch`);
-    const receipt = { schemaVersion: 1, workerId: worker.workerId, headCommit: provenance.headCommit, uuidBios: worker.vmIdentity.uuidBios, remoteFile, sha256: hash(payload), verified: true,
+    const receipt = { schemaVersion: 1, workerId: worker.workerId, headCommit: provenance.headCommit, uuidBios: worker.vmIdentity.uuidBios, remoteFile, diskLifecycleReceipt: diskReceipt, sha256: hash(payload), verified: true,
       started, completed: new Date().toISOString(), durationMs: performance.now() - start };
     fs.writeFileSync(workerRecord, JSON.stringify(receipt, null, 2), { encoding: 'utf8', flag: 'wx' });
     return receipt;

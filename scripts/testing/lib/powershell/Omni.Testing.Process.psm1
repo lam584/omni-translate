@@ -246,7 +246,24 @@ function Get-OmniProcessGenerationState {
     # Force PS5's lazy Process wrapper to bind a native SafeProcessHandle before
     # reading identity. Keep this same object alive through any subsequent Kill.
     $null = $process.Handle
-    $actual = ConvertTo-OmniProcessGenerationTicks -Ticks ([long]$process.StartTime.ToUniversalTime().Ticks)
+    if ($process.HasExited) {
+      return [pscustomobject]@{ status = 'absent'; process = $process; error = $null }
+    }
+    $actualTicks = $null
+    try { $actualTicks = Get-OmniProcessStartTimeUtcTicks -Process $process } catch {
+      # Windows PowerShell 5 can expose a live, handle-bound Process wrapper with
+      # a transiently null StartTime. Fall back to the CIM creation timestamp,
+      # but keep the original native handle as the only termination authority.
+      $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$Target.pid)" -ErrorAction Stop
+      if ($null -eq $cim) {
+        return [pscustomobject]@{ status = 'absent'; process = $process; error = $null }
+      }
+      $actualTicks = Get-OmniProcessStartTimeUtcTicks -Process $cim
+    }
+    if ($process.HasExited) {
+      return [pscustomobject]@{ status = 'absent'; process = $process; error = $null }
+    }
+    $actual = ConvertTo-OmniProcessGenerationTicks -Ticks ([long]$actualTicks)
   } catch {
     return [pscustomobject]@{ status = 'unverifiable'; process = $process; error = $_.Exception.Message }
   }

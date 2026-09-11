@@ -219,6 +219,31 @@ test('fallback stop reads actual process identity and kills only the bound curre
   assert.deepEqual(result.killed, [77]);
 });
 
+test('fallback stop uses CIM generation when PS5 exposes a null StartTime on a live bound handle', { skip: process.platform !== 'win32' }, () => {
+  const output = runPowerShell(`
+    $module = Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force -PassThru
+    & $module {
+      $script:killed = @()
+      function script:Get-Process {
+        param($Id, $ErrorAction)
+        $fake = [pscustomobject]@{ StartTime = $null; HasExited = $false; BoundPid = [int]$Id; Handle = [IntPtr]::new(1) }
+        $fake | Add-Member ScriptMethod Kill { $script:killed += [int]$this.BoundPid }
+        $fake | Add-Member ScriptMethod Dispose { }
+        return $fake
+      }
+      function script:Get-CimInstance {
+        param($ClassName, $Filter, $ErrorAction)
+        return [pscustomobject]@{ ProcessId = 77; CreationDate = [DateTime]::new(229, [DateTimeKind]::Utc) }
+      }
+      $stopped = Stop-OmniProcessGeneration -Target ([pscustomobject]@{ pid = 77; startTimeUtcTicks = 220 })
+      [ordered]@{ stopped = $stopped; killed = @($script:killed) } | ConvertTo-Json -Compress
+    }
+  `);
+  const result = JSON.parse(output);
+  assert.equal(result.stopped, true);
+  assert.deepEqual(result.killed, [77]);
+});
+
 test('PS5 generation lookup binds and releases a native process handle', { skip: process.platform !== 'win32' }, () => {
   const output = runPowerShell(`
     $module = Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force -PassThru

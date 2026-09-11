@@ -17,11 +17,24 @@ function fakeChild(pid = 4242) {
   return child;
 }
 
+function renameFixtureDirectory(staging, outputDirectory) {
+  const renameDeadline = Date.now() + 2_000;
+  while (true) {
+    try {
+      fs.renameSync(staging, outputDirectory);
+      return;
+    } catch (error) {
+      if (!['EACCES', 'EPERM'].includes(error?.code) || Date.now() >= renameDeadline) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+}
+
 function publishEmitter(outputDirectory, value) {
   const staging = `${outputDirectory}.staging`;
   fs.mkdirSync(staging, { recursive: false });
   fs.writeFileSync(path.join(staging, 'emitter-result.json'), JSON.stringify(value));
-  fs.renameSync(staging, outputDirectory);
+  renameFixtureDirectory(staging, outputDirectory);
 }
 
 const DASH_SCOPE_MODEL = 'qwen3.5-livetranslate-flash-realtime';
@@ -173,7 +186,7 @@ function publishProbeEvidence(outputDirectory, {
     },
   }));
   fs.writeFileSync(path.join(staging, 'emitter-result.json'), JSON.stringify(emitter));
-  fs.renameSync(staging, outputDirectory);
+  renameFixtureDirectory(staging, outputDirectory);
   return authority;
 }
 

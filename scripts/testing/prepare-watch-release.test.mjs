@@ -187,6 +187,14 @@ test('local runner discovers commands in native Windows PowerShell under inherit
     else process.env.PSModulePath = originalModules;
   });
   const workerId = 'vm171';
+  const lifecycleScript = path.join(f.root, 'scripts', 'testing', 'watch-mode-disk-lifecycle.mjs');
+  fs.mkdirSync(path.dirname(lifecycleScript), { recursive: true });
+  fs.copyFileSync(path.resolve('scripts/testing/watch-mode-disk-lifecycle.mjs'), lifecycleScript);
+  const testingCommon = path.join(f.root, 'scripts', 'lib', 'testing-common.mjs');
+  fs.mkdirSync(path.dirname(testingCommon), { recursive: true });
+  fs.copyFileSync(path.resolve('scripts/lib/testing-common.mjs'), testingCommon);
+  fs.mkdirSync(path.join(f.root, 'artifacts', 'testing', 'frozen-funnel-workers'), { recursive: true });
+  fs.mkdirSync(path.join(f.root, 'artifacts', 'testing', 'watch-release-preflight'), { recursive: true });
   const config = { schemaVersion: 3, artifactKind: 'watch-mode-production-shard-workers', providerPreflightExecutor: { workerId: 'vm171' }, workers: [{
     workerId, user: 'VMUser', workspaceRoot: f.root, guestExecutionRoot: path.join(f.root, 'guest'),
     transport: { kind: 'local' }, vmIdentity: { provider: 'vmware', uuidBios: '564d0000-0000-0000-0000-000000000000' },

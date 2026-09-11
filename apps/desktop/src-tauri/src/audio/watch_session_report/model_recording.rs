@@ -142,6 +142,9 @@ impl WatchSessionReportStore {
             attempt_id.map(str::to_string),
         );
         session.push_cue_event(index, event);
+        if accepted && !text.is_empty() {
+            self.emit_incremental_cue(session, index, "model-final");
+        }
     }
 
     /// Records one adopted sentence from the secondary translation pipeline.
@@ -422,4 +425,3 @@ impl WatchSessionReportStore {
         });
     }
 }
-

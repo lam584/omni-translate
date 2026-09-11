@@ -169,8 +169,106 @@
 
     const MAX_CAPTURE_GAP_FRAMES: u64 = SAMPLE_RATE as u64 * 5;
     const DEFAULT_MAX_CAPTURE_OUTPUT_FRAMES: usize = SAMPLE_RATE * 60;
+    const HUNDRED_NS_PER_SECOND: u128 = 10_000_000;
+    const HUNDRED_NS_PER_MILLISECOND: u128 = 10_000;
+    const MAX_QPC_EPOCH_CALIBRATION_SPAN_100NS: u64 = 50_000;
+    const MAX_QPC_MAPPING_DISTANCE_100NS: u64 = 5 * 60 * 10_000_000;
 
-    #[derive(Default)]
+    #[derive(Clone, Copy, Debug)]
+    struct QpcEpochCalibration {
+        qpc_position_100ns: u64,
+        epoch_position_100ns: u128,
+        uncertainty_100ns: u64,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn QueryPerformanceCounter(performance_count: *mut i64) -> i32;
+        fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
+    }
+
+    fn system_time_epoch_100ns(now: SystemTime) -> Result<u128, String> {
+        Ok(now
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| format!("system clock precedes Unix epoch: {error}"))?
+            .as_nanos()
+            / 100)
+    }
+
+    fn qpc_ticks_to_100ns(ticks: i64, frequency: i64) -> Result<u64, String> {
+        if ticks < 0 || frequency <= 0 {
+            return Err(format!(
+                "invalid performance counter calibration: ticks={ticks} frequency={frequency}"
+            ));
+        }
+        let scaled = (ticks as u128)
+            .checked_mul(HUNDRED_NS_PER_SECOND)
+            .ok_or_else(|| "performance counter conversion overflowed".to_string())?
+            / frequency as u128;
+        u64::try_from(scaled)
+            .map_err(|_| "performance counter position exceeds u64".to_string())
+    }
+
+    fn calibrate_qpc_to_epoch() -> Result<QpcEpochCalibration, String> {
+        let epoch_before = system_time_epoch_100ns(SystemTime::now())?;
+        let mut ticks = 0i64;
+        let mut frequency = 0i64;
+        // SAFETY: Windows writes one signed 64-bit value to each valid out pointer.
+        if unsafe { QueryPerformanceCounter(&mut ticks) } == 0
+            || unsafe { QueryPerformanceFrequency(&mut frequency) } == 0
+        {
+            return Err("Windows performance counter calibration failed".to_string());
+        }
+        let epoch_after = system_time_epoch_100ns(SystemTime::now())?;
+        let span = epoch_after.checked_sub(epoch_before).ok_or_else(|| {
+            "system clock moved backward during QPC/epoch calibration".to_string()
+        })?;
+        let span_u64 = u64::try_from(span)
+            .map_err(|_| "QPC/epoch calibration span exceeds u64".to_string())?;
+        if span_u64 > MAX_QPC_EPOCH_CALIBRATION_SPAN_100NS {
+            return Err(format!(
+                "QPC/epoch calibration span {span_u64} exceeded {} (100ns units)",
+                MAX_QPC_EPOCH_CALIBRATION_SPAN_100NS
+            ));
+        }
+        let midpoint = epoch_before
+            .checked_add(span / 2)
+            .ok_or_else(|| "QPC/epoch calibration midpoint overflowed".to_string())?;
+        Ok(QpcEpochCalibration {
+            qpc_position_100ns: qpc_ticks_to_100ns(ticks, frequency)?,
+            epoch_position_100ns: midpoint,
+            uncertainty_100ns: span_u64.saturating_add(1) / 2,
+        })
+    }
+
+    fn map_qpc_to_epoch_ms(
+        packet_qpc_position_100ns: u64,
+        calibration: QpcEpochCalibration,
+    ) -> Result<u64, String> {
+        if calibration.uncertainty_100ns > MAX_QPC_EPOCH_CALIBRATION_SPAN_100NS / 2 {
+            return Err("QPC/epoch calibration uncertainty is not trustworthy".to_string());
+        }
+        let distance = packet_qpc_position_100ns.abs_diff(calibration.qpc_position_100ns);
+        if distance > MAX_QPC_MAPPING_DISTANCE_100NS {
+            return Err(format!(
+                "packet QPC is {distance} (100ns units) from calibration, exceeding {}",
+                MAX_QPC_MAPPING_DISTANCE_100NS
+            ));
+        }
+        let epoch_100ns = if packet_qpc_position_100ns >= calibration.qpc_position_100ns {
+            calibration
+                .epoch_position_100ns
+                .checked_add(u128::from(distance))
+        } else {
+            calibration
+                .epoch_position_100ns
+                .checked_sub(u128::from(distance))
+        }
+        .ok_or_else(|| "packet QPC to epoch mapping overflowed".to_string())?;
+        let epoch_ms = epoch_100ns / HUNDRED_NS_PER_MILLISECOND;
+        u64::try_from(epoch_ms).map_err(|_| "sample-zero epoch exceeds u64".to_string())
+    }
+
     struct CaptureMetrics {
         samples: Vec<f32>,
         pcm_chunks: Vec<Vec<f32>>,
@@ -182,6 +280,8 @@
         last_device_position_frames: Option<u64>,
         first_qpc_position_100ns: Option<u64>,
         sample_zero_epoch_ms: Option<u64>,
+        qpc_epoch_calibration: Result<QpcEpochCalibration, String>,
+        sample_zero_mapping_attempted: bool,
         last_qpc_position_100ns: Option<u64>,
         next_device_position_frames: Option<u64>,
         data_discontinuity_packet_count: usize,
@@ -194,6 +294,37 @@
         capture_unreliable_windows: Vec<CaptureUnreliableWindowAuthority>,
         capture_timeline_violations: Vec<String>,
         max_output_frames: usize,
+    }
+
+    impl Default for CaptureMetrics {
+        fn default() -> Self {
+            Self {
+                samples: Vec::new(),
+                pcm_chunks: Vec::new(),
+                peak: 0.0,
+                silent_packets: 0,
+                invalid_samples: 0,
+                capture_packet_count: 0,
+                first_device_position_frames: None,
+                last_device_position_frames: None,
+                first_qpc_position_100ns: None,
+                sample_zero_epoch_ms: None,
+                qpc_epoch_calibration: calibrate_qpc_to_epoch(),
+                sample_zero_mapping_attempted: false,
+                last_qpc_position_100ns: None,
+                next_device_position_frames: None,
+                data_discontinuity_packet_count: 0,
+                timestamp_error_packet_count: 0,
+                qpc_regression_packet_count: 0,
+                overlap_packet_count: 0,
+                total_gap_frames: 0,
+                total_unreliable_frames: 0,
+                capture_gaps: Vec::new(),
+                capture_unreliable_windows: Vec::new(),
+                capture_timeline_violations: Vec::new(),
+                max_output_frames: 0,
+            }
+        }
     }
 
     impl CaptureMetrics {
@@ -226,12 +357,6 @@
 
         fn append_capture_packet(&mut self, payload: &[u8], info: CapturePacketInfo) {
             self.capture_packet_count += 1;
-            if self.sample_zero_epoch_ms.is_none() {
-                self.sample_zero_epoch_ms = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .ok()
-                    .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok());
-            }
             let prior_qpc_position_100ns = self.last_qpc_position_100ns;
             self.first_device_position_frames
                 .get_or_insert(info.device_position_frames);
@@ -248,6 +373,28 @@
                     "WASAPI capture packet {} has an invalid QPC timestamp",
                     self.capture_packet_count
                 ));
+            }
+            if !self.sample_zero_mapping_attempted {
+                self.sample_zero_mapping_attempted = true;
+                if info.timestamp_error {
+                    self.capture_timeline_violations.push(
+                        "sample-zero cannot use a packet with an invalid QPC timestamp".to_string(),
+                    );
+                } else {
+                    match self
+                        .qpc_epoch_calibration
+                        .as_ref()
+                        .map_err(Clone::clone)
+                        .and_then(|calibration| {
+                            map_qpc_to_epoch_ms(info.qpc_position_100ns, *calibration)
+                        })
+                    {
+                        Ok(epoch_ms) => self.sample_zero_epoch_ms = Some(epoch_ms),
+                        Err(error) => self.capture_timeline_violations.push(format!(
+                            "sample-zero QPC/epoch authority is unavailable: {error}"
+                        )),
+                    }
+                }
             }
             if prior_qpc_position_100ns.is_some_and(|prior| info.qpc_position_100ns < prior) {
                 self.qpc_regression_packet_count += 1;
@@ -475,13 +622,14 @@
 
         fn capture_timeline_authority(&self) -> CaptureTimelineAuthority {
             CaptureTimelineAuthority {
-                schema_version: 3,
-                authority_mode: "wasapi-device-position-qpc-v3",
+                schema_version: 4,
+                authority_mode: "wasapi-device-position-qpc-epoch-calibrated-v4",
                 sample_zero_epoch_ms: self.sample_zero_epoch_ms,
-                sample_zero_time_authority: "first-capture-packet-observed-system-time-v1",
+                sample_zero_time_authority: "first-capture-packet-qpc-epoch-calibration-v2",
                 sample_rate_hz: SAMPLE_RATE as u32,
                 channel_count: CHANNELS,
-                passed: self.capture_timeline_violations.is_empty(),
+                passed: self.capture_timeline_violations.is_empty()
+                    && self.sample_zero_epoch_ms.is_some(),
                 packet_count: self.capture_packet_count,
                 output_frame_count: self.frames(),
                 max_output_frame_count: self.output_frame_budget(),
@@ -557,9 +705,106 @@
             }
         }
 
+        fn metrics_with_calibration(calibration: QpcEpochCalibration) -> CaptureMetrics {
+            CaptureMetrics {
+                qpc_epoch_calibration: Ok(calibration),
+                ..CaptureMetrics::default()
+            }
+        }
+
+        fn calibrated_metrics() -> CaptureMetrics {
+            metrics_with_calibration(QpcEpochCalibration {
+                qpc_position_100ns: 10_000,
+                epoch_position_100ns: 1_700_000_000_000u128 * HUNDRED_NS_PER_MILLISECOND,
+                uncertainty_100ns: 10,
+            })
+        }
+
+        #[test]
+        fn sample_zero_uses_packet_qpc_and_is_invariant_to_collection_delay() {
+            let packet_qpc = 8_000_000u64;
+            let epoch = 1_700_000_000_000u128 * HUNDRED_NS_PER_MILLISECOND;
+            let immediate = map_qpc_to_epoch_ms(
+                packet_qpc,
+                QpcEpochCalibration {
+                    qpc_position_100ns: packet_qpc,
+                    epoch_position_100ns: epoch,
+                    uncertainty_100ns: 5,
+                },
+            )
+            .unwrap();
+            let delayed = map_qpc_to_epoch_ms(
+                packet_qpc,
+                QpcEpochCalibration {
+                    qpc_position_100ns: packet_qpc + 10_000_000,
+                    epoch_position_100ns: epoch + 10_000_000,
+                    uncertainty_100ns: 5,
+                },
+            )
+            .unwrap();
+
+            assert_eq!(immediate, 1_700_000_000_000);
+            assert_eq!(delayed, immediate, "one second of collection delay must cancel out");
+        }
+
+        #[test]
+        fn sample_zero_rejects_untrusted_calibration_and_arithmetic_overflow() {
+            let untrusted = map_qpc_to_epoch_ms(
+                100,
+                QpcEpochCalibration {
+                    qpc_position_100ns: 100,
+                    epoch_position_100ns: 1_000_000,
+                    uncertainty_100ns: MAX_QPC_EPOCH_CALIBRATION_SPAN_100NS,
+                },
+            );
+            assert!(untrusted.unwrap_err().contains("not trustworthy"));
+
+            let overflow = map_qpc_to_epoch_ms(
+                101,
+                QpcEpochCalibration {
+                    qpc_position_100ns: 100,
+                    epoch_position_100ns: u128::MAX,
+                    uncertainty_100ns: 0,
+                },
+            );
+            assert!(overflow.unwrap_err().contains("overflowed"));
+        }
+
+        #[test]
+        fn first_bad_timestamp_fails_closed_and_cannot_be_replaced_by_a_later_packet() {
+            let mut metrics = calibrated_metrics();
+            let mut first = packet(2, 100);
+            first.timestamp_error = true;
+            metrics.append_capture_packet(&float_payload(2, 0.25), first);
+            metrics.append_capture_packet(&float_payload(2, 0.5), packet(2, 102));
+
+            let authority = metrics.capture_timeline_authority();
+            assert!(!authority.passed);
+            assert_eq!(authority.sample_zero_epoch_ms, None);
+            assert!(authority
+                .violations
+                .iter()
+                .any(|violation| violation.contains("sample-zero cannot use")));
+        }
+
+        #[test]
+        fn unavailable_calibration_fails_closed() {
+            let mut metrics = calibrated_metrics();
+            metrics.qpc_epoch_calibration = Err("synthetic calibration failure".to_string());
+            metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
+
+            let authority = metrics.capture_timeline_authority();
+            assert!(!authority.passed);
+            assert_eq!(authority.sample_zero_epoch_ms, None);
+            assert!(authority
+                .violations
+                .iter()
+                .any(|violation| violation.contains("synthetic calibration failure")));
+        }
+
         #[test]
         fn capture_timeline_inserts_a_device_position_gap_without_compressing_time() {
-            let mut metrics = CaptureMetrics::default();
+            let mut metrics = calibrated_metrics();
             metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
             let mut second = packet(2, 104);
             second.data_discontinuity = true;
@@ -571,7 +816,12 @@
             assert!(authority.sample_zero_epoch_ms.is_some());
             assert_eq!(
                 authority.sample_zero_time_authority,
-                "first-capture-packet-observed-system-time-v1"
+                "first-capture-packet-qpc-epoch-calibration-v2"
+            );
+            assert_eq!(authority.schema_version, 4);
+            assert_eq!(
+                authority.authority_mode,
+                "wasapi-device-position-qpc-epoch-calibrated-v4"
             );
             assert!(authority.passed);
             assert_eq!(authority.total_gap_frames, 2);
@@ -591,7 +841,7 @@
 
         #[test]
         fn capture_timeline_rejects_overlap_and_trims_duplicate_frames() {
-            let mut metrics = CaptureMetrics::default();
+            let mut metrics = calibrated_metrics();
             metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
             metrics.append_capture_packet(&float_payload(2, 0.5), packet(2, 101));
 
@@ -604,7 +854,7 @@
 
         #[test]
         fn capture_timeline_keeps_discontinuity_window_but_rejects_bad_qpc() {
-            let mut metrics = CaptureMetrics::default();
+            let mut metrics = calibrated_metrics();
             metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
             let mut second = packet(2, 102);
             second.data_discontinuity = true;
@@ -625,7 +875,7 @@
 
         #[test]
         fn capture_timeline_rejects_huge_device_position_gap_without_allocating() {
-            let mut metrics = CaptureMetrics::default();
+            let mut metrics = calibrated_metrics();
             metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
             let frames_before_gap = metrics.frames();
             let capacity_before_gap = metrics.samples.capacity();
@@ -644,7 +894,8 @@
         #[test]
         fn capture_timeline_rejects_repeated_bounded_gaps_at_total_output_budget() {
             let budget = MAX_CAPTURE_GAP_FRAMES as usize + 4;
-            let mut metrics = CaptureMetrics::try_with_max_output_frames(budget).unwrap();
+            let mut metrics = calibrated_metrics();
+            metrics.max_output_frames = budget;
             metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
             let mut second = packet(2, 102 + MAX_CAPTURE_GAP_FRAMES);
             second.data_discontinuity = true;
@@ -665,12 +916,15 @@
             assert!(!authority.passed);
             assert_eq!(authority.total_gap_frames, MAX_CAPTURE_GAP_FRAMES);
             assert_eq!(authority.gaps.len(), 1);
-            assert!(authority.violations[0].contains("recorder output budget"));
+            assert!(authority
+                .violations
+                .iter()
+                .any(|violation| violation.contains("recorder output budget")));
         }
 
         #[test]
         fn capture_timeline_preserves_unflagged_device_position_gap_as_independent_authority() {
-            let mut metrics = CaptureMetrics::default();
+            let mut metrics = calibrated_metrics();
             metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
             metrics.append_capture_packet(&float_payload(2, 0.5), packet(2, 104));
 
@@ -685,7 +939,7 @@
 
         #[test]
         fn capture_timeline_zero_fills_discontinuity_without_a_numeric_gap() {
-            let mut metrics = CaptureMetrics::default();
+            let mut metrics = calibrated_metrics();
             metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
             let mut second = packet(2, 102);
             second.data_discontinuity = true;

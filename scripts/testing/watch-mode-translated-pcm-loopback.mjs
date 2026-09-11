@@ -56,9 +56,9 @@ function loadCaptureTimelineAuthority(runDirectory, recordingSamples, violations
   if (
     !Number.isSafeInteger(recordingAuthority?.capturedFrames)
     || recordingAuthority.capturedFrames <= 0
-    || timeline?.schemaVersion !== 3
-    || timeline?.authorityMode !== 'wasapi-device-position-qpc-v3'
-    || timeline?.sampleZeroTimeAuthority !== 'first-capture-packet-observed-system-time-v1'
+    || timeline?.schemaVersion !== 4
+    || timeline?.authorityMode !== 'wasapi-device-position-qpc-epoch-calibrated-v4'
+    || timeline?.sampleZeroTimeAuthority !== 'first-capture-packet-qpc-epoch-calibration-v2'
     || !Number.isSafeInteger(timeline?.sampleZeroEpochMs)
     || timeline.sampleZeroEpochMs <= 0
     || timeline?.sampleRateHz !== 48_000

@@ -137,53 +137,117 @@ function Start-PhysicalOutputContentRecorder {
   }
 }
 function Complete-PhysicalOutputContentRecorder {
-  param($Recorder, [Parameter(Mandatory = $true)][string]$WorkspaceRoot, [switch]$TerminalSucceeded)
+  param(
+    $Recorder,
+    [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
+    [switch]$TerminalSucceeded,
+    $InjectedAudioQuality,
+    [string]$InjectedAudioQualityError,
+    [Nullable[bool]]$InjectedRecorderExited
+  )
   if (-not $Recorder) { return $null }
+  $resultPath = Join-Path (Split-Path -Parent $Recorder.recordingPath) 'physical-output-recording.json'
+  $stderrText = if (Test-Path -LiteralPath $Recorder.stderr -PathType Leaf) { [string](Get-Content -LiteralPath $Recorder.stderr -Raw -ErrorAction SilentlyContinue) } else { '' }
+  $failure = $null
+  $completionFailures = [System.Collections.Generic.List[object]]::new()
   $terminalAuthorityObserved = $Recorder.terminalAuthorityPath -and (Test-Path -LiteralPath $Recorder.terminalAuthorityPath -PathType Leaf)
-  if ($TerminalSucceeded -and -not $terminalAuthorityObserved) { throw "physical output recorder terminal-success stop requires the immutable desktop terminal authority" }
-  if ($TerminalSucceeded -and -not $Recorder.process.HasExited) {
-    $naturalExitWaitMilliseconds = ([int]$Recorder.terminalTailSeconds + 10) * 1000
-    [void]$Recorder.process.WaitForExit($naturalExitWaitMilliseconds)
-    $Recorder.process.Refresh()
+  if ($TerminalSucceeded -and -not $terminalAuthorityObserved) {
+    $failure = 'physical output recorder terminal-success stop requires the immutable desktop terminal authority'
+    $completionFailures.Add([pscustomobject]@{ stage='terminal-authority'; status='failed'; message=$failure })
   }
-  if (-not $Recorder.process.HasExited) {
-    Stop-OmniManagedProcessHandle -Process $Recorder.process -WaitMilliseconds 5000 | Out-Null
+  if ($PSBoundParameters.ContainsKey('InjectedRecorderExited')) {
+    $exited = [bool]$InjectedRecorderExited
+  } else {
+    if ($TerminalSucceeded -and -not $Recorder.process.HasExited) {
+      $naturalExitWaitMilliseconds = ([int]$Recorder.terminalTailSeconds + 10) * 1000
+      [void]$Recorder.process.WaitForExit($naturalExitWaitMilliseconds)
+      $Recorder.process.Refresh()
+    }
+    if (-not $Recorder.process.HasExited) {
+      try { Stop-OmniManagedProcessHandle -Process $Recorder.process -WaitMilliseconds 5000 | Out-Null } catch {
+        $message = $_.Exception.Message
+        $completionFailures.Add([pscustomobject]@{ stage='process-cleanup'; status='failed'; message=$message })
+        if (-not $failure) { $failure = $message }
+      }
+    }
+    # Refuse the next serialized cell while its recorder may retain the endpoint.
+    $exited = $Recorder.process.HasExited -or $Recorder.process.WaitForExit(5000)
   }
-  # Refuse the next serialized cell while its recorder may retain the endpoint.
-  $exited = $Recorder.process.HasExited -or $Recorder.process.WaitForExit(5000)
-  if (-not $exited) { throw "physical output recorder did not exit after forced stop; refusing to start another serialized matrix cell (Pid=$($Recorder.pid))" }
+  if (-not $exited) {
+    $message = "physical output recorder did not exit after forced stop; refusing to start another serialized matrix cell (Pid=$($Recorder.pid))"
+    $completionFailures.Add([pscustomobject]@{ stage='process-exit'; status='failed'; message=$message })
+    if (-not $failure) { $failure = $message }
+  }
   $text = if (Test-Path -LiteralPath $Recorder.stdout -PathType Leaf) {
-    Get-Content -LiteralPath $Recorder.stdout -Raw -ErrorAction SilentlyContinue
+    [string](Get-Content -LiteralPath $Recorder.stdout -Raw -ErrorAction SilentlyContinue)
   } else {
     ""
   }
   $parsed = $null
+  $parsedRecorderJson = $false
+  $parseFailure = $null
   if ($text) {
     $jsonLine = @($text -split "`r?`n" | Where-Object { $_.Trim().StartsWith("{") } | Select-Object -Last 1)
     if ($jsonLine.Count -gt 0) {
       try {
         $parsed = $jsonLine[0] | ConvertFrom-Json
+        $parsedRecorderJson = $null -ne $parsed
       } catch {
-        $parsed = $null
+        $parseFailure = "physical output recorder returned invalid JSON: $($_.Exception.Message)"
       }
     }
   }
   if (-not $parsed) {
-    $stderrText = if (Test-Path -LiteralPath $Recorder.stderr -PathType Leaf) { Get-Content -LiteralPath $Recorder.stderr -Raw -ErrorAction SilentlyContinue } else { "" }
     $parsed = [pscustomobject]@{
       passed = $false
-      error = "physical output recorder returned no JSON output"
+      error = if ($parseFailure) { $parseFailure } else { 'physical output recorder returned no JSON output' }
       stderr = $stderrText
       recordingPath = $Recorder.recordingPath
       transcriptionPcmPath = $Recorder.transcriptionPcmPath
     }
+    $parseMessage = [string]$parsed.error
+    $completionFailures.Add([pscustomobject]@{ stage='recorder-json'; status='failed'; message=$parseMessage })
+    if (-not $failure) { $failure = $parseMessage }
   }
-  $quality = Measure-PcmAudioQuality -PcmPath $Recorder.transcriptionPcmPath -SampleRateHz 16000 -WorkspaceRoot $workspaceRoot
-  if ($quality) { $parsed | Add-Member -NotePropertyName audioQuality -NotePropertyValue $quality -Force }
-  $sampleZeroEpochMs = [int64]$parsed.captureTimeline.sampleZeroEpochMs
-  if ($sampleZeroEpochMs -le 0 -or $parsed.captureTimeline.sampleZeroTimeAuthority -cne 'first-capture-packet-observed-system-time-v1') { throw 'physical output recorder did not return first-capture sample-zero time authority' }
-  $parsed | Add-Member -NotePropertyName processLaunchStartedAtEpochMs -NotePropertyValue ([int64]$Recorder.startedAtEpochMs) -Force; $parsed | Add-Member -NotePropertyName recordingStartedAtEpochMs -NotePropertyValue $sampleZeroEpochMs -Force
-  $parsed | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path (Split-Path -Parent $Recorder.recordingPath) "physical-output-recording.json") -Encoding UTF8
+  try {
+    if ($PSBoundParameters.ContainsKey('InjectedAudioQualityError')) { throw $InjectedAudioQualityError }
+    $quality = if ($PSBoundParameters.ContainsKey('InjectedAudioQuality')) {
+      $InjectedAudioQuality
+    } elseif (-not $parsedRecorderJson -or -not (Test-Path -LiteralPath $Recorder.transcriptionPcmPath -PathType Leaf)) {
+      $completionFailures.Add([pscustomobject]@{ stage='audio-quality'; status='skipped'; message='skipped due to missing valid recorder JSON or transcription PCM' })
+      $null
+    } else {
+      Measure-PcmAudioQuality -PcmPath $Recorder.transcriptionPcmPath -SampleRateHz 16000 -WorkspaceRoot $WorkspaceRoot
+    }
+    if ($quality) { $parsed | Add-Member -NotePropertyName audioQuality -NotePropertyValue $quality -Force }
+  } catch {
+    $message = "physical output recorder audio analysis failed: $($_.Exception.Message)"
+    $completionFailures.Add([pscustomobject]@{ stage='audio-quality'; status='failed'; message=$message })
+    if (-not $failure) { $failure = $message }
+  }
+  $sampleZeroEpochMs = 0
+  $sampleZeroAuthority = $null
+  $captureTimeline = $parsed.captureTimeline
+  if ($null -ne $captureTimeline) {
+    try { $sampleZeroEpochMs = [int64]$captureTimeline.sampleZeroEpochMs } catch {}
+    $sampleZeroAuthority = [string]$captureTimeline.sampleZeroTimeAuthority
+  }
+  if ($sampleZeroEpochMs -le 0 -or $sampleZeroAuthority -cne 'first-capture-packet-qpc-epoch-calibration-v2') {
+    $message = 'physical output recorder did not return first-capture sample-zero time authority'
+    $completionFailures.Add([pscustomobject]@{ stage='capture-timeline'; status='failed'; message=$message })
+    if (-not $failure) { $failure = $message }
+  } else { $parsed | Add-Member -NotePropertyName recordingStartedAtEpochMs -NotePropertyValue $sampleZeroEpochMs -Force }
+  $parsed | Add-Member -NotePropertyName processLaunchStartedAtEpochMs -NotePropertyValue ([int64]$Recorder.startedAtEpochMs) -Force
+  $parsed | Add-Member -NotePropertyName stderr -NotePropertyValue $stderrText -Force
+  $parsed | Add-Member -NotePropertyName processExited -NotePropertyValue ([bool]$exited) -Force
+  $parsed | Add-Member -NotePropertyName completionFailures -NotePropertyValue @($completionFailures) -Force
+  if ($failure) {
+    $parsed | Add-Member -NotePropertyName passed -NotePropertyValue $false -Force
+    $parsed | Add-Member -NotePropertyName completionError -NotePropertyValue $failure -Force
+  }
+  $artifactJson = ConvertTo-Json -InputObject $parsed -Depth 6 -Compress
+  [System.IO.File]::WriteAllText($resultPath, $artifactJson, [System.Text.UTF8Encoding]::new($false))
+  if ($failure) { throw "$failure Diagnostics=$resultPath" }
   return $parsed
 }
 Export-ModuleMember -Function @(

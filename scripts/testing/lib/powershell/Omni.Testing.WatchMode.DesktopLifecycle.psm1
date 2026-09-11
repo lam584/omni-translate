@@ -83,6 +83,7 @@ function Start-WatchModeDesktopShell {
   }
   $providerInputPcmPath = Join-Path $OutputDirectory "provider-input-16k-mono.pcm"
   $watchSessionReportPath = Join-Path $OutputDirectory "watch-session-report.json"
+  $incrementalEvidencePath = Join-Path $OutputDirectory "watch-incremental-cues.jsonl"
   $watchReadinessPath = Join-Path $OutputDirectory "watch-runtime-status.json"
   # The provider input ceiling and the desktop lifetime are deliberately
   # separate. Strict runs stop accepting paid input at the coordinator-signed
@@ -104,7 +105,7 @@ function Start-WatchModeDesktopShell {
     "OMNI_WATCH_MODE_INCIDENT_ID", "OMNI_WATCH_MODE_TRANSLATED_PCM_AUTHORITY_DIR", "OMNI_WATCH_MODE_MODEL_ID",
     "OMNI_WATCH_MODE_REALTIME_PROTOCOL", "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID", "OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID",
     "OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION", "OMNI_WATCH_MODE_PROCESS_EXCLUSION_RESTART_AFTER_MS", "OMNI_WATCH_MODE_AEC_LIVE_SCENARIO",
-    "OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS", "OMNI_WATCH_MODE_REPORT_PATH", "OMNI_WATCH_MODE_READINESS_PATH",
+    "OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS", "OMNI_WATCH_MODE_REPORT_PATH", "OMNI_WATCH_MODE_INCREMENTAL_EVIDENCE_PATH", "OMNI_WATCH_MODE_MEDIA_SHA256", "OMNI_WATCH_MODE_READINESS_PATH",
     "OMNI_WATCH_MODE_INPUT_COMPLETE_PATH", "OMNI_WATCH_MODE_TERMINAL_AUTHORITY_PATH", "OMNI_WATCH_MODE_INPUT_COMPLETION_WATCHDOG_MS",
     "OMNI_WATCH_MODE_PROVIDER_FINISH_TIMEOUT_MS", "OMNI_WATCH_MODE_LOCAL_PLAYBACK_DRAIN_TIMEOUT_MS", "OMNI_WATCH_MODE_REPORT_WRITE_TIMEOUT_MS",
     "OMNI_WATCH_MODE_EXIT_AFTER_REPORT", "OMNI_WATCH_MODE_LAUNCH_ID", "OMNI_WATCH_MODE_SOURCE_HEAD_COMMIT",
@@ -212,6 +213,8 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_AEC_LIVE_SCENARIO = $liveScenarioEnvironment.aecLiveScenario
     $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS = $liveScenarioEnvironment.autoStopAfterMs
     $env:OMNI_WATCH_MODE_REPORT_PATH = $watchSessionReportPath
+    $env:OMNI_WATCH_MODE_INCREMENTAL_EVIDENCE_PATH = $incrementalEvidencePath
+    $env:OMNI_WATCH_MODE_MEDIA_SHA256 = [string]$request.media.sha256
     $env:OMNI_WATCH_MODE_READINESS_PATH = $watchReadinessPath
     $requestedInputCompletePath = if ($StrictPaidAuthority) {
       [System.IO.Path]::GetFullPath([string]$request.paths.inputComplete)

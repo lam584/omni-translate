@@ -1155,7 +1155,7 @@ test('physical recorder stops immediately on failure but lets terminal success f
       `function New-FakeRecorder([string]$name, [bool]$terminal) { ` +
         `$dir = Join-Path ${quotePowerShell(root)} $name; [void](New-Item -ItemType Directory -Path $dir); ` +
         `$stdout = Join-Path $dir 'stdout.log'; $stderr = Join-Path $dir 'stderr.log'; ` +
-        `$command = if ($terminal) { 'Start-Sleep -Milliseconds 1200; [pscustomobject]@{ passed=$true; captureTimeline=[pscustomobject]@{ sampleZeroEpochMs=1; sampleZeroTimeAuthority=([string]::new([char[]](102,105,114,115,116,45,99,97,112,116,117,114,101,45,112,97,99,107,101,116,45,111,98,115,101,114,118,101,100,45,115,121,115,116,101,109,45,116,105,109,101,45,118,49))) } } | ConvertTo-Json -Compress' } else { 'Start-Sleep -Seconds 30' }; ` +
+        `$command = if ($terminal) { 'Start-Sleep -Milliseconds 1200; [pscustomobject]@{ passed=$true; captureTimeline=[pscustomobject]@{ sampleZeroEpochMs=1; sampleZeroTimeAuthority=([string]::new([char[]](102,105,114,115,116,45,99,97,112,116,117,114,101,45,112,97,99,107,101,116,45,113,112,99,45,101,112,111,99,104,45,99,97,108,105,98,114,97,116,105,111,110,45,118,50))) } } | ConvertTo-Json -Compress' } else { 'Start-Sleep -Seconds 30' }; ` +
         `$process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-Command',$command) ` +
           `-RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru; ` +
         `$terminalPath = Join-Path $dir 'evidence-driven-terminal.json'; if ($terminal) { Set-Content -LiteralPath $terminalPath -Value '{}' -Encoding utf8 }; ` +
@@ -1180,6 +1180,45 @@ test('physical recorder stops immediately on failure but lets terminal success f
   assert.equal(result.successExited, true);
   assert.ok(result.successMs >= 1_100, `recorder did not receive time to flush naturally: ${result.successMs}ms`);
   assert.equal(result.successPassed, true, 'recorder JSON was lost before graceful exit');
+});
+
+test('physical recorder persists failed JSON before authority and analysis failures escape', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-recorder-failure-json-'));
+  const cases = [
+    { name: 'missing', stdout: '{}', expected: /no JSON output|sample-zero time authority/u },
+    { name: 'bad', stdout: '{not-json', expected: /invalid JSON/u },
+    { name: 'analysis', stdout: '{"passed":true,"captureTimeline":{"sampleZeroEpochMs":1,"sampleZeroTimeAuthority":"first-capture-packet-qpc-epoch-calibration-v2"}}', analysisError: 'synthetic analysis failed', expected: /analysis failed/u },
+  ];
+  for (const item of cases) {
+    const directory = path.join(root, item.name);
+    fs.mkdirSync(directory);
+    const stdoutPath = path.join(directory, 'stdout.log');
+    const stderrPath = path.join(directory, 'stderr.log');
+    fs.writeFileSync(stdoutPath, item.stdout, 'utf8');
+    fs.writeFileSync(stderrPath, 'recorder stderr', 'utf8');
+    const injectedQuality = item.analysisError
+      ? `-InjectedAudioQualityError ${quotePowerShell(item.analysisError)}`
+      : '-InjectedAudioQuality $null';
+    const probe = runPowerShell([
+      '-Command',
+      extractedPhysicalCaptureFunctions() +
+        `$dir=${quotePowerShell(directory)}; $process=[pscustomobject]@{ Id=4242 }; ` +
+        `$recorder=[pscustomobject]@{ pid=4242; process=$process; startedAtEpochMs=123; recordingPath=(Join-Path $dir 'recording.wav'); transcriptionPcmPath=(Join-Path $dir 'recording.pcm'); stdout=${quotePowerShell(stdoutPath)}; stderr=${quotePowerShell(stderrPath)}; terminalTailSeconds=0; terminalAuthorityPath=(Join-Path $dir 'terminal.json') }; ` +
+        `$failure=$null; try { Complete-PhysicalOutputContentRecorder $recorder ${quotePowerShell(process.cwd())} ${injectedQuality} -InjectedRecorderExited $true | Out-Null } catch { $failure=$_.Exception.Message }; ` +
+        `$artifact=Get-Content -LiteralPath (Join-Path $dir 'physical-output-recording.json') -Raw | ConvertFrom-Json; [pscustomobject]@{ failure=$failure; passed=$artifact.passed; completionError=$artifact.completionError; completionFailures=$artifact.completionFailures; processExited=$artifact.processExited; stderr=$artifact.stderr } | ConvertTo-Json -Depth 5 -Compress`,
+    ]);
+    assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+    const result = JSON.parse(probe.stdout.trim().split(/\r?\n/u).at(-1));
+    assert.equal(result.passed, false);
+    assert.equal(result.processExited, true);
+    assert.match(result.stderr, /recorder stderr/u);
+    assert.ok(result.failure.includes('Diagnostics='));
+    assert.match(result.completionError, item.expected);
+    assert.ok(Array.isArray(result.completionFailures));
+    assert.ok(result.completionFailures.some((failure) => failure.status === 'failed'));
+    if (item.analysisError) assert.ok(result.completionFailures.some((failure) => failure.stage === 'audio-quality'));
+    if (item.name === 'bad') assert.ok(result.completionFailures.some((failure) => failure.stage === 'recorder-json'));
+  }
 });
 
 test('missing playback authority writes a nonempty translated PCM failure artifact', { skip: !isWindows }, () => {

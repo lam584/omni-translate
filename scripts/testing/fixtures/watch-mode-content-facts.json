@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "mediaSha256": "cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f",
+  "facts": [
+    {
+      "id": "prototype.solar-battery",
+      "category": "entity",
+      "accepted": [
+        "太阳能电池"
+      ],
+      "forbidden": [
+        "潜艇"
+      ]
+    },
+    {
+      "id": "prototype.capacity",
+      "category": "number-unit",
+      "accepted": [
+        "72.5千瓦时",
+        "72.5kWh"
+      ],
+      "relation": {
+        "category": "number-unit",
+        "windowClauses": 1,
+        "groups": [
+          [
+            "太阳能电池"
+          ],
+          [
+            "72.5千瓦时",
+            "72.5kWh"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "temperature.range",
+      "category": "number-unit",
+      "accepted": [
+        "21摄氏度降至零下4摄氏度",
+        "21度降到零下4度"
+      ]
+    },
+    {
+      "id": "shipment.distance",
+      "category": "number-unit",
+      "accepted": [
+        "842英里"
+      ],
+      "forbidden": [
+        "800英里"
+      ]
+    },
+    {
+      "id": "shipment.email",
+      "category": "entity",
+      "accepted": [
+        "support@example.com",
+        "support at example dot com"
+      ],
+      "forbidden": [
+        "support@google.com"
+      ]
+    },
+    {
+      "id": "shipment.condition",
+      "category": "condition",
+      "accepted": [
+        "如果日程发生变化",
+        "如果时间表有变",
+        "如日程有变",
+        "在日程发生变化时"
+      ],
+      "forbidden": [
+        "即使日程没有变化"
+      ]
+    },
+    {
+      "id": "software.version",
+      "category": "version",
+      "accepted": [
+        "3.6.2版本",
+        "版本3.6.2"
+      ],
+      "forbidden": [
+        "3.6.5版本"
+      ]
+    },
+    {
+      "id": "software.latency",
+      "category": "number-unit",
+      "accepted": [
+        "从920毫秒降至315毫秒",
+        "由920毫秒降低到315毫秒"
+      ]
+    },
+    {
+      "id": "meeting.datetime",
+      "category": "date-time",
+      "accepted": [
+        "9月17日星期二上午8点45分",
+        "星期二上午8点45分9月17日",
+        "9月17日周二上午8点45分"
+      ]
+    }
+  ]
+}

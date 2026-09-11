@@ -225,6 +225,11 @@ export function collectLocalIsolationDistributionFiles({ workspaceRoot, runtimeB
   if (scripts.has(path.resolve(workspaceRoot, 'scripts/testing/model-protocol-profile-contract.mjs'))) {
     scripts.add(path.resolve(workspaceRoot, 'contracts/model-protocol-profiles.v1.json'));
   }
+  // Strict content facts are audited filesystem input rather than an ESM import.
+  if (scripts.has(path.resolve(workspaceRoot, 'scripts/testing/watch-mode-report.mjs'))
+    || scripts.has(path.resolve(workspaceRoot, 'scripts/testing/watch-mode-incremental-evidence.mjs'))) {
+    scripts.add(path.resolve(workspaceRoot, 'scripts/testing/fixtures/watch-mode-content-facts.json'));
+  }
   const files = new Map();
   for (const script of scripts) {
     const bytes = fs.readFileSync(script);

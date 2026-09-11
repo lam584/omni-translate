@@ -13,8 +13,10 @@ use super::contracts::{
 use super::time_utils::{ms_marker, unix_ms};
 
 mod lifecycle;
+mod incremental_evidence;
 mod model_recording;
 mod snapshot;
+use incremental_evidence::IncrementalEvidenceWriter;
 use snapshot::{build_snapshot, correlation_text, empty_cue, sanitize_error, truncate_chars};
 #[cfg(test)]
 use snapshot::normalize_comparison_text;
@@ -36,6 +38,7 @@ fn is_internal_status_cue(cue_id: &str) -> bool {
 
 pub(crate) struct WatchSessionReportStore {
     inner: Mutex<Option<WatchSession>>,
+    incremental_evidence: IncrementalEvidenceWriter,
 }
 
 struct WatchSession {
@@ -317,6 +320,15 @@ impl WatchSession {
 }
 
 impl WatchSessionReportStore {
+    fn emit_incremental_cue(&self, session: &WatchSession, cue_index: usize, stage: &str) {
+        self.incremental_evidence.emit_cue(
+            &session.session_id,
+            session.next_event_id,
+            stage,
+            &session.cues[cue_index],
+        );
+    }
+
     pub(crate) fn discard_ignored_short_vad_fragment_cue(&self, cue_id: &str) {
         let mut guard = self.inner.lock().expect("watch session report poisoned");
         let Some(session) = guard.as_mut() else {
@@ -463,6 +475,7 @@ impl WatchSessionReportStore {
         session.push_cue_event(index, event);
         if final_event {
             session.inherit_latest_equivalent_final_receipt(index);
+            self.emit_incremental_cue(session, index, "publish-final");
         }
     }
 
@@ -608,6 +621,9 @@ impl WatchSessionReportStore {
             None,
         );
         session.push_cue_event(index, event);
+        if receipt.committed && receipt.visible {
+            self.emit_incremental_cue(session, index, "render-final");
+        }
     }
 
     pub(crate) fn record_milestone_with_detail(&self, name: &str, detail: Option<String>) {

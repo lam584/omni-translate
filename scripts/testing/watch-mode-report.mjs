@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { currentGitProvenance } from './git-provenance.mjs';
+import { evaluateLayeredWatchContent } from './watch-mode-content-verdict.mjs';
 import { derivePhysicalOutputContent } from './watch-mode/content-policy.mjs';
 import { resolveLayerVerdict } from './watch-mode/layer-classifier.mjs';
 import { collectReportInput, rebuildStoredReport, writeStoredReport } from './watch-mode/report-writer.mjs';
@@ -95,6 +96,13 @@ const DEFAULT_SOURCE_TRANSCRIPT_PATH = path.join(
   'watch-mode-en-original.txt',
 );
 const TEST_MEDIA_SHA256 = 'cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f';
+const AUDITED_CONTENT_FACTS = JSON.parse(fs.readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'watch-mode-content-facts.json'),
+  'utf8',
+));
+if (AUDITED_CONTENT_FACTS.mediaSha256 !== TEST_MEDIA_SHA256) {
+  throw new Error('audited Watch content facts are not bound to the strict media SHA256');
+}
 const STRICT_REQUIRED_CONCEPTS = [
   '十亿美元',
   '火星',
@@ -1671,6 +1679,26 @@ export function evaluateStrictContent(input) {
       ? completedNativeCues.map((cue) => cue.renderedText)
       : []),
   ]);
+  const strictFacts = [
+    ...AUDITED_CONTENT_FACTS.facts,
+    ...STRICT_REQUIRED_CONCEPTS.map((concept) => ({
+      id: `required-concept:${concept}`,
+      category: 'entity',
+      accepted: [concept, ...(STRICT_REQUIRED_CONCEPT_ALIASES.get(concept) ?? [])],
+    })),
+    ...STRICT_FORBIDDEN_ERRORS.map((item) => ({
+      id: `forbidden-error:${item.text}`,
+      category: 'unsupported-addition',
+      required: false,
+      forbidden: [item.text],
+    })),
+  ];
+  const layeredVerdict = evaluateLayeredWatchContent({
+    referenceText,
+    outputText,
+    cues: translationRoute === 'native' ? input.watchSessionReport?.cues : [],
+    facts: strictFacts,
+  });
   const referenceClauses = splitMeaningClauses(referenceText);
   const outputClauses = splitMeaningClauses(outputText);
   const missingClauses = [];
@@ -1748,12 +1776,9 @@ export function evaluateStrictContent(input) {
   }
   const failures = [];
   if (!fullMedia) failures.push(`strict reference-media gate requires full-media playback; playbackSeconds=${sourcePlaybackSeconds}`);
-  if (coverageEvidence < 0.83 || missingClausesEvidence.length > 2) {
-    failures.push(`reference translation coverage is too low; coverage=${coverageEvidence.toFixed(3)} missingClauses=${missingClausesEvidence.length}`);
+  if (layeredVerdict.status !== 'passed') {
+    failures.push(layeredVerdict.reason ?? `layered content verdict was ${layeredVerdict.status}`);
   }
-  if (missingConcepts.length > 0) failures.push(`missing required concepts: ${missingConcepts.join(', ')}`);
-  if (forbiddenErrors.length > 0) failures.push(`forbidden translation errors: ${forbiddenErrors.map((item) => item.text).join(', ')}`);
-  if (lengthRatioEvidence < 0.45 || lengthRatioEvidence > 2.4) failures.push(`strict output/reference length ratio is out of range; lengthRatio=${lengthRatioEvidence.toFixed(3)}`);
   if (translationRoute === 'secondary') {
     if (finalWriteCount < 8) failures.push(`too few final subtitle translations; finalWriteCount=${finalWriteCount}`);
     if (queuedSegmentCount < 8) failures.push(`too few queued translated speech segments; queuedSegmentCount=${queuedSegmentCount}`);
@@ -1772,10 +1797,6 @@ export function evaluateStrictContent(input) {
       failures.push(`no native translated speech playback reached the physical sink; playedSegmentCount=${playedSegmentCount}`);
     }
   }
-  if (content?.contentConsistency?.combinedEvidence?.passed === false) {
-    failures.push('combined physical/structured translation evidence did not pass');
-  }
-
   return {
     applicable: true,
     passed: failures.length === 0,
@@ -1792,6 +1813,7 @@ export function evaluateStrictContent(input) {
     strictEvidenceSource,
     missingConcepts,
     forbiddenErrors,
+    contentVerdict: layeredVerdict,
     requiredConcepts: STRICT_REQUIRED_CONCEPTS,
     translationRoute,
     nativeCompletedCueCount,

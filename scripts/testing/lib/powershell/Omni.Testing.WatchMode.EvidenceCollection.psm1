@@ -105,6 +105,7 @@ function Save-WatchModeRunArtifacts {
     physicalPlaybackDevice = 'physical-playback-device.json'
     playback = 'playback.json'
     watchSessionReport = 'watch-session-report.json'
+    incrementalCueEvidence = 'watch-incremental-cues.jsonl'
     sourceMediaTranscript = 'source-media-transcript.json'
     physicalOutputSttRaw = 'physical-output-stt.raw.json'
     physicalOutputContentRaw = 'physical-output-content.raw.json'

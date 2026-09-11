@@ -821,12 +821,12 @@ test('worker preparation normalizes and verifies signed implementation bytes bef
     source.indexOf('const readinessTransport = createSshProductionTransport'),
   );
   assert.match(readinessPlan, /authorityImplementationHashes/u);
-  assert.equal(AUTHORITY_IMPLEMENTATION_FILES.length, 60);
+  assert.equal(AUTHORITY_IMPLEMENTATION_FILES.length, 62);
   assert.ok(AUTHORITY_IMPLEMENTATION_FILES.includes('scripts/testing/prepare-watch-release.mjs'));
   assert.ok(AUTHORITY_IMPLEMENTATION_FILES.includes('scripts/testing/distribute-watch-runtime.mjs'));
 });
 
-test('fresh readiness transports all 60 production implementation entries', () => {
+test('fresh readiness transports all 62 production implementation entries', () => {
   const implementationHashes = AUTHORITY_IMPLEMENTATION_FILES.map((entryPath, index) => ({
     path: entryPath,
     bytes: index + 1,
@@ -845,7 +845,7 @@ test('fresh readiness transports all 60 production implementation entries', () =
       requestDigest: 'c'.repeat(64),
     },
   });
-  assert.equal(plan.authority.implementationHashes.length, 60);
+  assert.equal(plan.authority.implementationHashes.length, 62);
   assert.deepEqual(plan.authority.implementationHashes, implementationHashes);
 });
 

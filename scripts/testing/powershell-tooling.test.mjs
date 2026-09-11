@@ -266,32 +266,39 @@ test('reachable descendant with unreadable creation time fails closed while unre
   assert.equal(result.unrelatedCount, 1);
 });
 
-test('native tree termination keeps the verified root handle alive for the taskkill call', { skip: process.platform !== 'win32' }, () => {
+test('owned tree cleanup terminates leaf-to-root through generation-aware handles and skips a reused root PID', { skip: process.platform !== 'win32' }, () => {
   const output = runPowerShell(`
     $module = Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force -PassThru
     & $module {
-      $script:guardDisposed = $false; $script:taskkillSawLiveGuard = $false; $script:stateCalls = 0
-      $guard = [pscustomobject]@{ Handle = [IntPtr]::new(1) }
-      $guard | Add-Member ScriptMethod Dispose { $script:guardDisposed = $true }
-      function script:Test-OmniProcessIdentity { param($Lease) return $true }
-      function script:Get-OmniDescendantProcessTargets { param($RootProcessId,$RootStartTimeUtcTicks) return @() }
+      $script:stops = @(); $script:verificationCalls = @{}
+      function script:Get-OmniProcessIdentityState { param($Lease) return [pscustomobject]@{ status='current'; process=$null; error=$null } }
+      function script:Get-OmniDescendantProcessTargets {
+        param($RootProcessId,$RootStartTimeUtcTicks)
+        return @([pscustomobject]@{ pid=78; startTimeUtcTicks=230 }, [pscustomobject]@{ pid=79; startTimeUtcTicks=240 })
+      }
+      function script:Stop-OmniProcessGeneration {
+        param($Target)
+        $script:stops += [int]$Target.pid
+        # Deterministic interleaving: the root generation exits and its numeric
+        # PID is reused after the initial lease identity check. It must not be killed.
+        return [int]$Target.pid -ne 77
+      }
       function script:Get-OmniProcessGenerationState {
         param($Target)
-        $script:stateCalls += 1
-        if ($script:stateCalls -eq 1) { return [pscustomobject]@{ status='current'; process=$guard; error=$null } }
+        $pid = [int]$Target.pid
+        if ($pid -eq 77) { return [pscustomobject]@{ status='reused'; process=$null; error=$null } }
         return [pscustomobject]@{ status='absent'; process=$null; error=$null }
       }
-      function script:Stop-OmniProcessGeneration { param($Target) return $false }
-      function script:taskkill.exe { $script:taskkillSawLiveGuard = -not $script:guardDisposed; $global:LASTEXITCODE=0 }
+      function script:taskkill.exe { throw 'bare PID tree kill must never be invoked' }
       $lease = [pscustomobject]@{ ownership='managed'; pid=77; startTimeUtcTicks=220; custodyId='missing-test-record' }
       $result = Stop-OmniOwnedProcessTree -Lease $lease
-      [ordered]@{ stopped=$result.stopped; liveDuringTaskkill=$script:taskkillSawLiveGuard; disposedAfter=$script:guardDisposed } | ConvertTo-Json -Compress
+      [ordered]@{ stopped=$result.stopped; stops=@($script:stops); rootKillRequested=[bool]$result.terminationResults[-1].killRequested } | ConvertTo-Json -Compress
     }
   `);
   const result = JSON.parse(output);
   assert.equal(result.stopped, true);
-  assert.equal(result.liveDuringTaskkill, true);
-  assert.equal(result.disposedAfter, true);
+  assert.deepEqual(result.stops, [79, 78, 77]);
+  assert.equal(result.rootKillRequested, false);
 });
 
 test('managed handle cleanup preserves descendant cleanup failure after the root exits', { skip: process.platform !== 'win32' }, () => {
@@ -335,49 +342,43 @@ test('process identity lookup errors fail closed instead of masquerading as proc
   assert.match(result.failure, /could not be verified before termination/u);
 });
 
-test('owned tree cleanup captures native stderr without bypassing final exit verification', { skip: process.platform !== 'win32' }, () => {
+test('owned tree cleanup returns generation-aware termination evidence for a real process', { skip: process.platform !== 'win32' }, () => {
   const output = runPowerShell(`
     $ErrorActionPreference = 'Stop'
-    $module = Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force -PassThru
-    $process = Start-Process -FilePath $env:ComSpec -ArgumentList '/d /c ping.exe -n 30 127.0.0.1' -WindowStyle Hidden -PassThru
+    Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force
+    $process = Start-Process powershell.exe -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 30' -WindowStyle Hidden -PassThru
     try {
       $lease = Get-OmniProcessIdentity -ProcessId $process.Id -Ownership managed
-      & $module { function script:taskkill.exe { & $env:ComSpec /d /c 'echo fixture-taskkill-stderr 1>&2 & exit /b 128' } }
       $result = Stop-OmniOwnedProcessTree -Lease $lease
-      [ordered]@{ stopped = $result.stopped; alive = [bool](Get-Process -Id $process.Id -ErrorAction SilentlyContinue); preference = [string]$ErrorActionPreference; nativeExit = $result.taskkillExitCode; nativeOutput = @($result.taskkillOutput) } | ConvertTo-Json -Compress
+      [ordered]@{ stopped = $result.stopped; alive = [bool](Get-Process -Id $process.Id -ErrorAction SilentlyContinue); preference = [string]$ErrorActionPreference; rootKillRequested = [bool]$result.terminationResults[-1].killRequested } | ConvertTo-Json -Compress
     } finally { if (-not $process.HasExited) { $process.Kill(); $process.WaitForExit() } }
   `);
   const result = JSON.parse(output);
   assert.equal(result.stopped, true);
   assert.equal(result.alive, false);
   assert.equal(result.preference, 'Stop');
-  assert.equal(result.nativeExit, 128);
-  assert.match(result.nativeOutput.join('\n'), /fixture-taskkill-stderr/u);
+  assert.equal(result.rootKillRequested, true);
 });
 
-test('owned tree cleanup still rejects a live process after native and fallback failure', { skip: process.platform !== 'win32' }, () => {
+test('owned tree cleanup fails closed when a current generation remains after handle-bound kill failure', { skip: process.platform !== 'win32' }, () => {
   const output = runPowerShell(`
-    $ErrorActionPreference = 'Stop'
     $module = Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force -PassThru
-    $process = Start-Process powershell.exe -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -WindowStyle Hidden -PassThru
-    try {
-      $lease = Get-OmniProcessIdentity -ProcessId $process.Id -Ownership managed
-      & $module {
-        function script:taskkill.exe { & $env:ComSpec /d /c 'echo fixture-taskkill-denied 1>&2 & exit /b 128' }
-        function script:Stop-OmniProcessGeneration { param($Target) return $false }
-      }
+    & $module {
+      function script:Get-OmniProcessIdentityState { param($Lease) return [pscustomobject]@{ status='current'; process=$null; error=$null } }
+      function script:Get-OmniDescendantProcessTargets { param($RootProcessId,$RootStartTimeUtcTicks) return @() }
+      function script:Stop-OmniProcessGeneration { param($Target) return $false }
+      function script:Get-OmniProcessGenerationState { param($Target) return [pscustomobject]@{ status='current'; process=$null; error=$null } }
+      function script:taskkill.exe { throw 'bare PID tree kill must never be invoked' }
+      $lease = [pscustomobject]@{ ownership='managed'; pid=77; startTimeUtcTicks=220; custodyId='retained-test-record' }
       $failure = $null
       try { Stop-OmniOwnedProcessTree -Lease $lease -WaitMilliseconds 100 | Out-Null } catch { $failure = $_.Exception.Message }
-      [ordered]@{ failure = $failure; alive = [bool](Get-Process -Id $process.Id -ErrorAction SilentlyContinue); custodyRetained = (Test-OmniProcessIdentity -Lease $lease); preference = [string]$ErrorActionPreference } | ConvertTo-Json -Compress
-    } finally { if (-not $process.HasExited) { $process.Kill(); $process.WaitForExit() } }
+      [ordered]@{ failure=$failure } | ConvertTo-Json -Compress
+    }
   `);
   const result = JSON.parse(output);
   assert.match(result.failure, /owned process tree did not exit/u);
-  assert.match(result.failure, /taskkillExitCode=128.*fixture-taskkill-denied/u);
-  assert.match(result.failure, /remainingPids=\d+/u);
-  assert.equal(result.alive, true);
-  assert.equal(result.custodyRetained, true);
-  assert.equal(result.preference, 'Stop');
+  assert.match(result.failure, /remainingPids=77/u);
+  assert.doesNotMatch(result.failure, /taskkill/u);
 });
 
 test('managed process cleanup accepts an owned process that already ended', async () => {
@@ -394,6 +395,48 @@ test('managed process cleanup accepts an owned process that already ended', asyn
     assert.equal(parsed.stopped, false);
     assert.equal(parsed.alreadyExited, true);
     assert.ok(parsed.pid > 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('managed identity reports current, exited, reused, and unverifiable without killing a reused pid', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'omni-testing-process-states-'));
+  const releasePath = path.join(directory, 'release.marker');
+  try {
+    const output = runPowerShell(`
+      $module = Import-Module ${quote(path.join(moduleRoot, 'Omni.Testing.Process.psm1'))} -Force -PassThru
+      $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("while (-not (Test-Path -LiteralPath '${releasePath.replaceAll("'", "''")}')) { Start-Sleep -Milliseconds 10 }"))
+      $child = Start-Process powershell.exe -ArgumentList @('-NoProfile','-EncodedCommand',$encoded) -WindowStyle Hidden -PassThru
+      try {
+        $lease = Get-OmniProcessIdentity -ProcessId $child.Id -Ownership managed -ProcessHandle $child
+        $current = (Get-OmniProcessIdentityState -Lease $lease).status
+        Set-Content -LiteralPath ${quote(releasePath)} -Value 'go' -Encoding utf8
+        $child.WaitForExit()
+        $exited = (Get-OmniProcessIdentityState -Lease $lease).status
+        $cleanup = Stop-OmniOwnedProcessTree -Lease $lease
+
+        $other = Start-Process powershell.exe -ArgumentList '-NoProfile -Command Wait-Event' -WindowStyle Hidden -PassThru
+        try {
+          $otherLease = Get-OmniProcessIdentity -ProcessId $other.Id -Ownership managed -ProcessHandle $other
+          $reused = & $module { param($ownedLease)
+            $record = (Get-OmniProcessCustodyRegistry)[[string]$ownedLease.custodyId]
+            $ownedLease.startTimeUtcTicks = [long]$ownedLease.startTimeUtcTicks + 10
+            $record.startTimeUtcTicks = [long]$ownedLease.startTimeUtcTicks
+            (Get-OmniProcessIdentityState -Lease $ownedLease).status
+          } $otherLease
+          $refused = $null
+          try { Stop-OmniOwnedProcessTree -Lease $otherLease | Out-Null } catch { $refused = $_.Exception.Message }
+          $aliveAfterRefusal = -not $other.HasExited
+        } finally { if (-not $other.HasExited) { $other.Kill(); $other.WaitForExit() } }
+        $unverifiable = (Get-OmniProcessIdentityState -Lease ([pscustomobject]@{ schemaVersion='bad' })).status
+        [ordered]@{ current=$current; exited=$exited; cleanupStatus=$cleanup.identityStatus; reused=$reused; refused=$refused; aliveAfterRefusal=$aliveAfterRefusal; unverifiable=$unverifiable } | ConvertTo-Json -Compress
+      } finally { if (-not $child.HasExited) { $child.Kill(); $child.WaitForExit() } }
+    `);
+    const result = JSON.parse(output);
+    assert.deepEqual([result.current, result.exited, result.cleanupStatus, result.reused, result.unverifiable], ['current', 'exited', 'exited', 'reused', 'unverifiable']);
+    assert.equal(result.aliveAfterRefusal, true);
+    assert.match(result.refused, /status=reused/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

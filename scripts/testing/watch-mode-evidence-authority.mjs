@@ -49,6 +49,8 @@ export const AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Stt.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.VirtualDriverCapture.psm1',
   'scripts/testing/watch-mode-report.mjs',
+  'scripts/testing/watch-mode-content-verdict.mjs',
+  'scripts/testing/fixtures/watch-mode-content-facts.json',
   'scripts/testing/verify-watch-mode-evidence.mjs',
   'scripts/testing/watch-mode-evidence-authority.mjs',
   'scripts/testing/watch-mode-balanced-release-plan.mjs',

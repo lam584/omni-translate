@@ -352,10 +352,10 @@ function writeCaptureTimelineAuthority(fixture, gaps = [], unreliableWindows = [
       passed: true,
       capturedFrames,
       captureTimeline: {
-        schemaVersion: 3,
-        authorityMode: 'wasapi-device-position-qpc-v3',
+        schemaVersion: 4,
+        authorityMode: 'wasapi-device-position-qpc-epoch-calibrated-v4',
         sampleZeroEpochMs: fixture.recordingStartedAtEpochMs,
-        sampleZeroTimeAuthority: 'first-capture-packet-observed-system-time-v1',
+        sampleZeroTimeAuthority: 'first-capture-packet-qpc-epoch-calibration-v2',
         sampleRateHz: 48_000,
         channelCount: 2,
         passed: true,

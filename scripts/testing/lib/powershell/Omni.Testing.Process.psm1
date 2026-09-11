@@ -83,25 +83,48 @@ function Get-OmniProcessIdentity {
 
 function Test-OmniProcessIdentity {
   [CmdletBinding()]
+  param([Parameter(Mandatory = $true)]$Lease, [switch]$Detailed)
+
+  $result = Get-OmniProcessIdentityState -Lease $Lease
+  if ($Detailed) { return $result }
+  return $result.status -eq 'current'
+}
+
+function Get-OmniProcessIdentityState {
+  [CmdletBinding()]
   param([Parameter(Mandatory = $true)]$Lease)
 
-  if ($Lease.schemaVersion -cne 'omni-process-lease/v1') { return $false }
+  if ($Lease.schemaVersion -cne 'omni-process-lease/v1') {
+    return [pscustomobject]@{ status = 'unverifiable'; process = $null; error = 'unsupported process lease schema' }
+  }
   $record = (Get-OmniProcessCustodyRegistry)[[string]$Lease.custodyId]
-  if ($null -eq $record -or -not (Test-OmniProcessCustodyRecord -Lease $Lease -Record $record)) { return $false }
-  $process = Get-Process -Id ([int]$Lease.pid) -ErrorAction SilentlyContinue
-  if (-not $process) { return $false }
+  if ($null -eq $record -or -not (Test-OmniProcessCustodyRecord -Lease $Lease -Record $record)) {
+    return [pscustomobject]@{ status = 'unverifiable'; process = $null; error = 'process launch custody is missing or does not match its lease' }
+  }
+  if ($record.hasExitAuthority) {
+    try {
+      $record.process.Refresh()
+      if ($record.process.HasExited) { return [pscustomobject]@{ status = 'exited'; process = $record.process; error = $null } }
+    } catch { return [pscustomobject]@{ status = 'unverifiable'; process = $record.process; error = $_.Exception.Message } }
+  }
+  try { $process = Get-Process -Id ([int]$Lease.pid) -ErrorAction Stop } catch {
+    if ($_.FullyQualifiedErrorId -like 'NoProcessFoundForGivenId*') { return [pscustomobject]@{ status = 'exited'; process = $null; error = $null } }
+    return [pscustomobject]@{ status = 'unverifiable'; process = $null; error = $_.Exception.Message }
+  }
   try {
-    $actualPath = Get-OmniProcessExecutablePath -ProcessId ([int]$Lease.pid)
+    $null = $process.Handle
+    if ([long]$process.StartTime.ToUniversalTime().Ticks -ne [long]$Lease.startTimeUtcTicks) { return [pscustomobject]@{ status = 'reused'; process = $process; error = $null } }
+    $actualPath = if (-not [string]::IsNullOrWhiteSpace($process.Path)) { [System.IO.Path]::GetFullPath($process.Path) } else { Get-OmniProcessExecutablePath -ProcessId ([int]$Lease.pid) }
     $expectedPath = [System.IO.Path]::GetFullPath([string]$Lease.executablePath)
-    if (-not $actualPath.Equals($expectedPath, [StringComparison]::OrdinalIgnoreCase)) { return $false }
-    if ([long]$process.StartTime.ToUniversalTime().Ticks -ne [long]$Lease.startTimeUtcTicks) { return $false }
+    if (-not $actualPath.Equals($expectedPath, [StringComparison]::OrdinalIgnoreCase)) { return [pscustomobject]@{ status = 'reused'; process = $process; error = $null } }
     if ($Lease.executableSha256) {
       $actualHash = Get-OmniSha256 -LiteralPath $actualPath
-      if ($actualHash -cne [string]$Lease.executableSha256) { return $false }
+      if ($actualHash -cne [string]$Lease.executableSha256) { return [pscustomobject]@{ status = 'reused'; process = $process; error = $null } }
     }
-    return $true
+    return [pscustomobject]@{ status = 'current'; process = $process; error = $null }
   } catch {
-    return $false
+    if ($record.hasExitAuthority) { try { $record.process.Refresh(); if ($record.process.HasExited) { return [pscustomobject]@{ status = 'exited'; process = $record.process; error = $null } } } catch {} }
+    return [pscustomobject]@{ status = 'unverifiable'; process = $process; error = $_.Exception.Message }
   }
 }
 
@@ -251,25 +274,27 @@ function Stop-OmniProcessGeneration {
 function Stop-OmniOwnedProcessTree {
   param([Parameter(Mandatory = $true)]$Lease, [ValidateRange(100, 30000)][int]$WaitMilliseconds = 3000)
   if ([string]$Lease.ownership -cne 'managed') { throw "refusing to stop an externally owned process: pid=$($Lease.pid)" }
-  if (-not (Test-OmniProcessIdentity -Lease $Lease)) { throw "refusing to stop a process whose identity no longer matches its lease: pid=$($Lease.pid)" }
+  $identity = Get-OmniProcessIdentityState -Lease $Lease
+  if ($identity.status -eq 'exited') {
+    (Get-OmniProcessCustodyRegistry).Remove([string]$Lease.custodyId)
+    return [pscustomobject]@{ stopped = $false; pid = [int]$Lease.pid; alreadyExited = $true; identityStatus = 'exited' }
+  }
+  if ($identity.status -ne 'current') { throw "refusing to stop a process whose identity is not current: pid=$($Lease.pid) status=$($identity.status) error=$($identity.error)" }
   $targets = @((Get-OmniDescendantProcessTargets -RootProcessId ([int]$Lease.pid) -RootStartTimeUtcTicks ([long]$Lease.startTimeUtcTicks)))
   [array]::Reverse($targets)
   $rootTarget = [pscustomobject]@{ pid = [int]$Lease.pid; startTimeUtcTicks = [long]$Lease.startTimeUtcTicks }
   $allTargets = @($targets) + @($rootTarget)
-  # Hold a verified native handle to the root throughout taskkill so its numeric
-  # PID cannot be rebound to a different process between validation and launch.
-  $rootGuard = Get-OmniProcessGenerationState -Target $rootTarget
-  if ($rootGuard.status -ne 'current') { if ($null -ne $rootGuard.process) { $rootGuard.process.Dispose() }; throw "root process generation changed before tree termination: pid=$($Lease.pid) status=$($rootGuard.status) error=$($rootGuard.error)" }
-  $previousErrorActionPreference = $ErrorActionPreference
-  try {
-    $ErrorActionPreference = 'Continue'
-    $taskkillOutput = @(& taskkill.exe /PID ([int]$Lease.pid) /T /F 2>&1 | ForEach-Object { [string]$_ })
-    $taskkillExitCode = $LASTEXITCODE
-  } finally {
-    $ErrorActionPreference = $previousErrorActionPreference
-    if ($rootGuard.process.PSObject.Methods.Name -contains 'Dispose') { $rootGuard.process.Dispose() }
-  }
-  foreach ($target in $allTargets) { Stop-OmniProcessGeneration -Target $target | Out-Null }
+  # Never pass a previously checked numeric PID to a separate tree-kill utility.
+  # Each leaf-to-root termination re-reads the generation and kills through that
+  # same handle-bound Process object. A reused PID is skipped, and an identity
+  # lookup that cannot be proved fails closed.
+  $terminationResults = @(foreach ($target in $allTargets) {
+    [pscustomobject]@{
+      pid = [int]$target.pid
+      startTimeUtcTicks = [long]$target.startTimeUtcTicks
+      killRequested = [bool](Stop-OmniProcessGeneration -Target $target)
+    }
+  })
   $deadline = [DateTime]::UtcNow.AddMilliseconds($WaitMilliseconds)
   do {
     $remaining = @(foreach ($target in $allTargets) {
@@ -288,10 +313,10 @@ function Stop-OmniOwnedProcessTree {
   } while ([DateTime]::UtcNow -lt $deadline)
   if ($remainingIds.Count -gt 0) {
     $unverifiable = @($remaining | Where-Object { $_.status -eq 'unverifiable' } | ForEach-Object { "pid=$($_.pid):$($_.error)" })
-    throw "owned process tree did not exit within ${WaitMilliseconds}ms: rootPid=$($Lease.pid) remainingPids=$($remainingIds -join ',') unverifiable=$($unverifiable -join ';') taskkillExitCode=$taskkillExitCode taskkillOutput=$($taskkillOutput -join '; ')"
+    throw "owned process tree did not exit within ${WaitMilliseconds}ms: rootPid=$($Lease.pid) remainingPids=$($remainingIds -join ',') unverifiable=$($unverifiable -join ';')"
   }
   (Get-OmniProcessCustodyRegistry).Remove([string]$Lease.custodyId)
-  return [pscustomobject]@{ stopped = $true; pid = [int]$Lease.pid; taskkillExitCode = $taskkillExitCode; taskkillOutput = $taskkillOutput }
+  return [pscustomobject]@{ stopped = $true; pid = [int]$Lease.pid; terminationResults = $terminationResults }
 }
 
 function Stop-OmniManagedProcessHandle {
@@ -300,13 +325,15 @@ function Stop-OmniManagedProcessHandle {
   try {
     $lease = Get-OmniProcessIdentity -ProcessId ([int]$Process.Id) -Ownership managed -ProcessHandle $Process
   } catch {
-    if (Get-Process -Id ([int]$Process.Id) -ErrorAction SilentlyContinue) { throw }
+    try { $Process.Refresh() } catch {}
+    if (-not $Process.HasExited) { throw }
     return [pscustomobject]@{ stopped = $false; pid = [int]$Process.Id; alreadyExited = $true }
   }
   return Stop-OmniOwnedProcessTree -Lease $lease -WaitMilliseconds $WaitMilliseconds
 }
 Export-ModuleMember -Function @(
   'Get-OmniProcessIdentity',
+  'Get-OmniProcessIdentityState',
   'Test-OmniProcessIdentity',
   'Wait-OmniManagedProcessExit',
   'Stop-OmniOwnedProcessTree',

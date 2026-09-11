@@ -507,7 +507,7 @@ test('strict secondary reference-media content still requires the subtitle-TTS q
   assert.match(result.failures.join('\n'), /queuedSegmentCount=0/);
 });
 
-test('strict reference-media content reuses passed combined physical evidence for coverage', () => {
+test('legacy combined overlap cannot replace missing audited facts', () => {
   const structuredConceptOnly = [
     '十亿美元',
     '火星',
@@ -544,14 +544,16 @@ test('strict reference-media content reuses passed combined physical evidence fo
     },
   });
 
-  assert.equal(result.passed, true);
+  assert.equal(result.passed, false);
   assert.equal(result.coverage, 1);
   assert.equal(result.structuredCoverage < 0.83, true);
   assert.equal(result.lengthRatio, 1.12);
   assert.equal(result.strictEvidenceSource, 'combinedPhysical');
+  assert.equal(result.contentVerdict.status, 'failed');
+  assert.match(result.failures.join('\n'), /required fact was not found/);
 });
 
-test('strict reference-media content still fails when combined physical evidence fails', () => {
+test('strict reference-media content uses audited facts while retaining combined overlap as diagnostic', () => {
   const result = evaluateStrictContent({
     physicalOutputContent: strictTestMediaContent({
       contentConsistency: {
@@ -570,8 +572,9 @@ test('strict reference-media content still fails when combined physical evidence
     },
   });
 
-  assert.equal(result.passed, false);
-  assert(result.failures.some((reason) => /combined physical\/structured/.test(reason)));
+  assert.equal(result.passed, true);
+  assert.equal(result.contentVerdict.status, 'passed');
+  assert.equal(result.contentVerdict.dimensions.expressionForm.status, 'diagnostic');
 });
 
 test('strict reference-media content fails short 12 second evidence', () => {
@@ -671,7 +674,7 @@ test('classifies strict reference-media failure with all strict failure reasons'
   });
 
   assert.equal(report.failureLayer, 'strictContent');
-  assert(report.layers.strictContent.reasons.some((reason) => /coverage/.test(reason)));
+  assert(report.layers.strictContent.reasons.some((reason) => /required fact was not found/.test(reason)));
   assert(report.layers.strictContent.reasons.some((reason) => /queuedSegmentCount=1/.test(reason)));
   assert(report.layers.strictContent.reasons.some((reason) => /playedSegmentCount=1/.test(reason)));
 });

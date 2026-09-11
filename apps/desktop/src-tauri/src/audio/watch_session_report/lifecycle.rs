@@ -4,6 +4,7 @@ impl WatchSessionReportStore {
     pub(crate) fn new() -> Self {
         Self {
             inner: Mutex::new(None),
+            incremental_evidence: IncrementalEvidenceWriter::from_environment(),
         }
     }
 
@@ -135,6 +136,9 @@ impl WatchSessionReportStore {
             None,
         );
         session.push_session_event(event);
+        let session_id = session.session_id.clone();
+        drop(guard);
+        self.incremental_evidence.finish(&session_id);
     }
 
     pub(crate) fn clear(&self) {

@@ -298,7 +298,7 @@ function Stop-OmniManagedProcessHandle {
   param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process, [ValidateRange(100, 30000)][int]$WaitMilliseconds = 3000)
   if ($Process.HasExited) { return [pscustomobject]@{ stopped = $false; pid = [int]$Process.Id; alreadyExited = $true } }
   try {
-    $lease = Get-OmniProcessIdentity -ProcessId ([int]$Process.Id) -Ownership managed
+    $lease = Get-OmniProcessIdentity -ProcessId ([int]$Process.Id) -Ownership managed -ProcessHandle $Process
   } catch {
     if (Get-Process -Id ([int]$Process.Id) -ErrorAction SilentlyContinue) { throw }
     return [pscustomobject]@{ stopped = $false; pid = [int]$Process.Id; alreadyExited = $true }

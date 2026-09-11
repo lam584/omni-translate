@@ -174,6 +174,7 @@ $dirty=@(& git.exe -c core.fsmonitor=false status --porcelain=v1 --untracked-fil
       path.win32.join(worker.workspaceRoot, 'artifacts/testing/frozen-funnel-workers'),
       path.win32.join(worker.workspaceRoot, 'artifacts/testing/watch-release-preflight'),
     ].filter(Boolean);
+    const ensureDiskRoots = diskRoots.map((root) => `New-Item -ItemType Directory -Force -Path ${quote(root)} | Out-Null`).join('; ');
     const diskArgs = diskRoots.flatMap((root) => ['--root', quote(root)]).join(' ');
     const diskCommand = `& node.exe ${quote(path.win32.join(worker.workspaceRoot, 'scripts/testing/watch-mode-disk-lifecycle.mjs'))} ${diskArgs} --volume 'C:\\' --volume 'E:\\' --protect ${quote(path.basename(operationRoot))} --receipt ${quote(diskReceipt)}; if($LASTEXITCODE -ne 0){throw 'disk lifecycle preflight failed'}`;
     const remoteFile = path.win32.join(remoteRoot, 'tiny.txt');
@@ -181,7 +182,7 @@ $dirty=@(& git.exe -c core.fsmonitor=false status --porcelain=v1 --untracked-fil
     const localFile = path.join(operationRoot, `tiny-${index}.txt`);
     const readback = path.join(operationRoot, `readback-${index}.txt`);
     fs.writeFileSync(localFile, payload, { flag: 'wx' });
-    await ssh(`${source}\nif(Test-Path -LiteralPath ${quote(remoteRoot)}){throw 'preflight execution already exists'}; New-Item -ItemType Directory -Path ${quote(remoteRoot)} | Out-Null;\n${diskCommand}`);
+    await ssh(`${source}\n${ensureDiskRoots}; if(Test-Path -LiteralPath ${quote(remoteRoot)}){throw 'preflight execution already exists'}; New-Item -ItemType Directory -Path ${quote(remoteRoot)} | Out-Null;\n${diskCommand}`);
     const scpArgs = args.slice(0, -1); if (!local) scpArgs[scpArgs.indexOf('-p')] = '-P';
     const remote = local ? null : `${worker.user}@${worker.transport.host}:${remoteFile.replaceAll('\\', '/')}`;
     if (local) fs.copyFileSync(localFile, remoteFile, fs.constants.COPYFILE_EXCL);

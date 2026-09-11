@@ -1045,7 +1045,7 @@ test('zero-provider readiness reserves enough time for signed driver reinstall a
     deriveWatchProductionPrepaidCoordinatorBudgetMs()
       + deriveWatchPostReadinessExecutionBudgetMs({ cells: LIVE_LLM_CELLS }),
   );
-  assert.equal(PRODUCTION_COORDINATOR_TIMEOUT_MS, 13_882_000);
+  assert.equal(PRODUCTION_COORDINATOR_TIMEOUT_MS, 14_002_000);
 });
 
 test('production transport applies each formal cell timeout at its actual outer boundary', () => {

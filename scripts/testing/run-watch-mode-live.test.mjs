@@ -1155,7 +1155,7 @@ test('physical recorder stops immediately on failure but lets terminal success f
       `function New-FakeRecorder([string]$name, [bool]$terminal) { ` +
         `$dir = Join-Path ${quotePowerShell(root)} $name; [void](New-Item -ItemType Directory -Path $dir); ` +
         `$stdout = Join-Path $dir 'stdout.log'; $stderr = Join-Path $dir 'stderr.log'; ` +
-        `$command = if ($terminal) { 'Start-Sleep -Milliseconds 1200; Write-Output ''{"passed":true}''' } else { 'Start-Sleep -Seconds 30' }; ` +
+        `$command = if ($terminal) { 'Start-Sleep -Milliseconds 1200; [pscustomobject]@{ passed=$true; captureTimeline=[pscustomobject]@{ sampleZeroEpochMs=1; sampleZeroTimeAuthority=([string]::new([char[]](102,105,114,115,116,45,99,97,112,116,117,114,101,45,112,97,99,107,101,116,45,111,98,115,101,114,118,101,100,45,115,121,115,116,101,109,45,116,105,109,101,45,118,49))) } } | ConvertTo-Json -Compress' } else { 'Start-Sleep -Seconds 30' }; ` +
         `$process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-Command',$command) ` +
           `-RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru; ` +
         `$terminalPath = Join-Path $dir 'evidence-driven-terminal.json'; if ($terminal) { Set-Content -LiteralPath $terminalPath -Value '{}' -Encoding utf8 }; ` +

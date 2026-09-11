@@ -56,8 +56,11 @@ function loadCaptureTimelineAuthority(runDirectory, recordingSamples, violations
   if (
     !Number.isSafeInteger(recordingAuthority?.capturedFrames)
     || recordingAuthority.capturedFrames <= 0
-    || timeline?.schemaVersion !== 2
-    || timeline?.authorityMode !== 'wasapi-device-position-qpc-v2'
+    || timeline?.schemaVersion !== 3
+    || timeline?.authorityMode !== 'wasapi-device-position-qpc-v3'
+    || timeline?.sampleZeroTimeAuthority !== 'first-capture-packet-observed-system-time-v1'
+    || !Number.isSafeInteger(timeline?.sampleZeroEpochMs)
+    || timeline.sampleZeroEpochMs <= 0
     || timeline?.sampleRateHz !== 48_000
     || timeline?.channelCount !== 2
     || !Number.isInteger(timeline?.packetCount)
@@ -254,6 +257,8 @@ function loadCaptureTimelineAuthority(runDirectory, recordingSamples, violations
   return {
     schemaVersion: timeline.schemaVersion,
     authorityMode: timeline.authorityMode,
+    sampleZeroEpochMs: timeline.sampleZeroEpochMs,
+    sampleZeroTimeAuthority: timeline.sampleZeroTimeAuthority,
     passed: (
       timeline.passed === true
       && timeline.violations.length === 0
@@ -745,13 +750,18 @@ export function buildTranslatedPcmLoopbackAuthority({
   } catch (error) {
     violations.push(error.message);
   }
-  const recordingStart = Number(recordingStartedAtEpochMs);
-  if (!Number.isFinite(recordingStart) || recordingStart <= 0) violations.push('physical loopback recording start epoch is invalid');
   const captureTimelineAuthority = loadCaptureTimelineAuthority(
     resolvedRunDirectory,
     recordingSamples,
     violations,
   );
+  const declaredRecordingStart = Number(recordingStartedAtEpochMs);
+  const recordingStart = captureTimelineAuthority?.sampleZeroEpochMs ?? declaredRecordingStart;
+  if (!Number.isFinite(declaredRecordingStart) || declaredRecordingStart <= 0) {
+    violations.push('physical loopback recording start epoch is invalid');
+  } else if (Number.isFinite(recordingStart) && declaredRecordingStart !== recordingStart) {
+    violations.push('physical loopback recording start epoch does not match capture timeline sample-zero authority');
+  }
 
   const cueById = new Map(translated.cues.map((cue) => [cue.cueId, cue]));
   const references = new Map();

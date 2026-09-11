@@ -143,6 +143,8 @@
     pub(super) struct CaptureTimelineAuthority {
         schema_version: u32,
         authority_mode: &'static str,
+        sample_zero_epoch_ms: Option<u64>,
+        sample_zero_time_authority: &'static str,
         sample_rate_hz: u32,
         channel_count: usize,
         passed: bool,
@@ -179,6 +181,7 @@
         first_device_position_frames: Option<u64>,
         last_device_position_frames: Option<u64>,
         first_qpc_position_100ns: Option<u64>,
+        sample_zero_epoch_ms: Option<u64>,
         last_qpc_position_100ns: Option<u64>,
         next_device_position_frames: Option<u64>,
         data_discontinuity_packet_count: usize,
@@ -223,6 +226,12 @@
 
         fn append_capture_packet(&mut self, payload: &[u8], info: CapturePacketInfo) {
             self.capture_packet_count += 1;
+            if self.sample_zero_epoch_ms.is_none() {
+                self.sample_zero_epoch_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .ok()
+                    .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok());
+            }
             let prior_qpc_position_100ns = self.last_qpc_position_100ns;
             self.first_device_position_frames
                 .get_or_insert(info.device_position_frames);
@@ -466,8 +475,10 @@
 
         fn capture_timeline_authority(&self) -> CaptureTimelineAuthority {
             CaptureTimelineAuthority {
-                schema_version: 2,
-                authority_mode: "wasapi-device-position-qpc-v2",
+                schema_version: 3,
+                authority_mode: "wasapi-device-position-qpc-v3",
+                sample_zero_epoch_ms: self.sample_zero_epoch_ms,
+                sample_zero_time_authority: "first-capture-packet-observed-system-time-v1",
                 sample_rate_hz: SAMPLE_RATE as u32,
                 channel_count: CHANNELS,
                 passed: self.capture_timeline_violations.is_empty(),
@@ -557,6 +568,11 @@
             assert_eq!(metrics.frames(), 6);
             assert_eq!(&metrics.samples[4..8], &[0.0; 4]);
             let authority = metrics.capture_timeline_authority();
+            assert!(authority.sample_zero_epoch_ms.is_some());
+            assert_eq!(
+                authority.sample_zero_time_authority,
+                "first-capture-packet-observed-system-time-v1"
+            );
             assert!(authority.passed);
             assert_eq!(authority.total_gap_frames, 2);
             assert_eq!(authority.output_frame_count, 6);

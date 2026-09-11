@@ -179,10 +179,10 @@ function Complete-PhysicalOutputContentRecorder {
     }
   }
   $quality = Measure-PcmAudioQuality -PcmPath $Recorder.transcriptionPcmPath -SampleRateHz 16000 -WorkspaceRoot $workspaceRoot
-  if ($quality) {
-    $parsed | Add-Member -NotePropertyName audioQuality -NotePropertyValue $quality -Force
-  }
-  $parsed | Add-Member -NotePropertyName recordingStartedAtEpochMs -NotePropertyValue ([int64]$Recorder.startedAtEpochMs) -Force
+  if ($quality) { $parsed | Add-Member -NotePropertyName audioQuality -NotePropertyValue $quality -Force }
+  $sampleZeroEpochMs = [int64]$parsed.captureTimeline.sampleZeroEpochMs
+  if ($sampleZeroEpochMs -le 0 -or $parsed.captureTimeline.sampleZeroTimeAuthority -cne 'first-capture-packet-observed-system-time-v1') { throw 'physical output recorder did not return first-capture sample-zero time authority' }
+  $parsed | Add-Member -NotePropertyName processLaunchStartedAtEpochMs -NotePropertyValue ([int64]$Recorder.startedAtEpochMs) -Force; $parsed | Add-Member -NotePropertyName recordingStartedAtEpochMs -NotePropertyValue $sampleZeroEpochMs -Force
   $parsed | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path (Split-Path -Parent $Recorder.recordingPath) "physical-output-recording.json") -Encoding UTF8
   return $parsed
 }

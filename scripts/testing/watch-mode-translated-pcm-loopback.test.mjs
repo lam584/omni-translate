@@ -352,8 +352,10 @@ function writeCaptureTimelineAuthority(fixture, gaps = [], unreliableWindows = [
       passed: true,
       capturedFrames,
       captureTimeline: {
-        schemaVersion: 2,
-        authorityMode: 'wasapi-device-position-qpc-v2',
+        schemaVersion: 3,
+        authorityMode: 'wasapi-device-position-qpc-v3',
+        sampleZeroEpochMs: fixture.recordingStartedAtEpochMs,
+        sampleZeroTimeAuthority: 'first-capture-packet-observed-system-time-v1',
         sampleRateHz: 48_000,
         channelCount: 2,
         passed: true,
@@ -493,6 +495,43 @@ test('fails closed when a physical recording authority omits its capture timelin
       'physical loopback recording capture timeline authority is missing or invalid',
     ));
     assert.equal(authority.captureTimelineAuthority, null);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fails closed when capture timeline uses process launch instead of first-packet time', () => {
+  const fixture = createFixture();
+  try {
+    writeCaptureTimelineAuthority(fixture);
+    const authorityPath = path.join(fixture.runDirectory, 'physical-output-recording.json');
+    const recordingAuthority = JSON.parse(fs.readFileSync(authorityPath, 'utf8'));
+    recordingAuthority.captureTimeline.sampleZeroTimeAuthority = 'process-launch';
+    fs.writeFileSync(authorityPath, JSON.stringify(recordingAuthority), 'utf8');
+
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    assert.ok(authority.violations.includes(
+      'physical loopback recording capture timeline authority is missing or invalid',
+    ));
+    assert.equal(authority.captureTimelineAuthority, null);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fails closed when the CLI recording epoch diverges from capture sample zero', () => {
+  const fixture = createFixture();
+  try {
+    writeCaptureTimelineAuthority(fixture);
+    const authority = build({
+      ...fixture,
+      recordingStartedAtEpochMs: fixture.recordingStartedAtEpochMs - 870,
+    });
+    assert.equal(authority.passed, false);
+    assert.ok(authority.violations.includes(
+      'physical loopback recording start epoch does not match capture timeline sample-zero authority',
+    ));
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
   }

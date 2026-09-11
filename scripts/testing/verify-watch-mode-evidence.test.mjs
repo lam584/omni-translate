@@ -955,8 +955,10 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
     recordingStartedAtEpochMs,
     transcriptionPcmPath: physicalPcmPath,
     captureTimeline: {
-      schemaVersion: 2,
-      authorityMode: 'wasapi-device-position-qpc-v2',
+      schemaVersion: 3,
+      authorityMode: 'wasapi-device-position-qpc-v3',
+      sampleZeroEpochMs: recordingStartedAtEpochMs,
+      sampleZeroTimeAuthority: 'first-capture-packet-observed-system-time-v1',
       sampleRateHz: 48_000,
       channelCount: 2,
       passed: true,

@@ -239,6 +239,37 @@ test('layered content accepts formatting, segmentation, synonyms, and Chinese/Ar
   assert.equal(result.dimensions.expressionForm.status, 'diagnostic');
 });
 
+test('retained facts accept scoped temperature units and common schedule wording', () => {
+  const outputText = [
+    '室外温度从21摄氏度降至零下4度，但每个传感器都保持在线状态。',
+    '他要求团队向support@example.com发送邮件，如果行程有变。',
+    '它能区分15和50，或13和30吗？',
+  ].join('');
+  const selectedFacts = retainedFacts.filter((fact) => [
+    'temperature.range',
+    'temperature.sensor-online',
+    'shipment.condition',
+    'numeric.contrast-pairs',
+  ].includes(fact.id));
+  const result = evaluateLayeredWatchContent({ referenceText: 'audited fixture', outputText, facts: selectedFacts });
+  assert.equal(result.status, 'passed');
+});
+
+test('retained facts reject sensor substitution and a broken thirteen-to-thirty relation', () => {
+  const selectedFacts = retainedFacts.filter((fact) => [
+    'temperature.sensor-online',
+    'numeric.contrast-pairs',
+  ].includes(fact.id));
+  for (const [outputText, factId] of [
+    ['室外温度下降，但每一个答案一直在线。它能区分15和50，或13和30吗？', 'temperature.sensor-online'],
+    ['所有传感器始终在线。它能区分十五和五十，或者十三？从三十开始。', 'numeric.contrast-pairs'],
+  ]) {
+    const result = evaluateLayeredWatchContent({ referenceText: 'audited fixture', outputText, facts: selectedFacts });
+    assert.equal(result.status, 'failed');
+    assert.ok(result.dimensions.facts.some((fact) => fact.factId === factId && fact.status === 'failed'));
+  }
+});
+
 test('layered content rejects retained factual substitutions and omissions', () => {
   const rejected = [
     ['潜艇，额定功率为72.5千瓦时', 'prototype.solar-battery'],

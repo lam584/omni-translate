@@ -15,6 +15,7 @@ import {
   createLocalIsolationWorkerResultEnvelope,
   distributeLocalIsolationRuntime,
   executeDistributedLocalIsolationCell,
+  localIsolationFailureDetails,
   revalidateDistributionForWorkerRequest,
   runLocalIsolationProcess,
   runDistributedLocalIsolationCells,
@@ -43,6 +44,64 @@ test('remote directory creation uses encoded Windows PowerShell compatible synta
   assert.doesNotMatch(source, /New-Item -ItemType Directory -Force -LiteralPath/);
 });
 
+test('SCP failure records safe stage diagnostics without paths or stderr contents', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-li-scp-failure-'));
+  const source = path.join(root, 'source-secret');
+  const entry = path.join(source, 'scripts/testing/watch-mode-local-isolation.mjs');
+  fs.mkdirSync(path.dirname(entry), { recursive: true });
+  fs.writeFileSync(entry, '// transport fixture');
+  const baseWorker = worker('vm167', 'uuid-167');
+  const remoteWorker = {
+    ...baseWorker,
+    transport: { kind: 'ssh' },
+    user: 'worker',
+    host: '192.168.40.129',
+    port: 22,
+    identityFile: 'E:\\id_rsa',
+    knownHostsFile: 'E:\\known_hosts',
+    hostKeyAlias: 'vm167',
+    guestExecutionRoot: 'E:\\li',
+  };
+  const configured = [remoteWorker];
+  const secret = 'sensitive remote transport detail';
+  const run = async (command, args) => {
+    if (command !== 'scp.exe') return { exitCode: 0, stdout: '', stderr: '' };
+    assert.ok(args.includes('LogLevel=ERROR'));
+    assert.ok(!args.includes('-q'));
+    const error = new Error('raw transport failure');
+    Object.assign(error, { exitCode: 1, signal: null, stdout: '', stderr: `scp: ${secret}: No such file or directory` });
+    throw error;
+  };
+  let failure;
+  try {
+    await distributeLocalIsolationRuntime({
+      workers: configured,
+      workspaceRoot: source,
+      runtimeBinaryHashes: [],
+      stagingRoot: path.join(root, 'stage'),
+      run,
+    });
+  } catch (error) {
+    failure = localIsolationFailureDetails(error);
+  }
+  assert.equal(failure.message, `local isolation SCP distribution-file-upload failed for ${remoteWorker.workerId} (path-not-found)`);
+  assert.deepEqual(failure.scp, {
+    stage: 'distribution-file-upload',
+    workerId: remoteWorker.workerId,
+    direction: 'upload',
+    source: { pathId: failure.scp.source.pathId, pathBytes: entry.length },
+    destination: { pathId: failure.scp.destination.pathId, pathBytes: failure.scp.destination.pathBytes },
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    stderrBytes: Buffer.byteLength(`scp: ${secret}: No such file or directory`),
+    stderrSha256: crypto.createHash('sha256').update(`scp: ${secret}: No such file or directory`).digest('hex'),
+    stdoutBytes: 0,
+    classification: 'path-not-found',
+  });
+  const serialized = JSON.stringify(failure);
+  assert.doesNotMatch(serialized, /source-secret|sensitive remote transport detail|192\.168\./u);
+});
 test('worker cell creates its nested phase output root before the exclusive cell directory', () => {
   const source = fs.readFileSync(new URL('./watch-mode-local-isolation.mjs', import.meta.url), 'utf8');
   assert.match(source, /fs\.mkdirSync\(request\.outputRoot, \{ recursive: true \}\);\s+const result = await runLocalIsolationCell/);
@@ -507,6 +566,8 @@ test('one/two worker transports isolate every cell and invocation while rejectin
         } else if (command === 'scp.exe') {
           assert.equal(options.timeoutMs ?? 120_000, 120_000);
           assert.ok(args.includes('-O'));
+          assert.ok(args.includes('LogLevel=ERROR'));
+          assert.ok(!args.includes('-q'));
           assert.ok(args.includes('StrictHostKeyChecking=yes'));
           assert.ok(!args.includes('-T'));
           const [from, to] = args.slice(-2);

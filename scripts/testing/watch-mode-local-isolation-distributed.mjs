@@ -73,16 +73,82 @@ export const runLocalIsolationProcess = (command, args, { timeoutMs = LOCAL_ISOL
     child.stdout.destroy();
     child.stderr.destroy();
     child.unref();
-    finish(new Error(`${command} timed out after ${timeoutMs}ms (pid=${child.pid ?? 'unavailable'}): ${stderr || stdout}${cleanupDiagnostic}`));
+    const error = new Error(`${command} timed out after ${timeoutMs}ms (pid=${child.pid ?? 'unavailable'}): ${stderr || stdout}${cleanupDiagnostic}`);
+    Object.assign(error, { command, timedOut: true, exitCode: child.exitCode, signal: child.signalCode, stdout, stderr });
+    finish(error);
   }, timeoutMs);
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   child.stderr.on('data', (chunk) => { stderr += chunk; });
   child.on('error', (error) => finish(error));
   child.on('close', (exitCode, signal) => {
-    if (exitCode !== 0) finish(new Error(`${command} failed (${exitCode}${signal ? `, ${signal}` : ''}): ${stderr || stdout}`));
+    if (exitCode !== 0) {
+      const error = new Error(`${command} failed (${exitCode}${signal ? `, ${signal}` : ''}): ${stderr || stdout}`);
+      Object.assign(error, { command, timedOut: false, exitCode, signal, stdout, stderr });
+      finish(error);
+    }
     else finish(null, { exitCode, stdout, stderr });
   });
 });
+
+const classifyScpFailure = ({ stderr, stdout, timedOut }) => {
+  if (timedOut) return 'timeout';
+  const output = `${stderr ?? ''}\n${stdout ?? ''}`.toLowerCase();
+  if (!output.trim()) return 'empty-diagnostic';
+  if (/permission denied|authentication failed/u.test(output)) return 'authentication';
+  if (/host key verification failed|remote host identification has changed/u.test(output)) return 'host-key';
+  if (/connection (?:closed|refused|reset|timed out)|no route to host|could not resolve hostname/u.test(output)) return 'connection';
+  if (/no such file or directory|not found|cannot stat/u.test(output)) return 'path-not-found';
+  if (/filename too long|invalid argument|ambiguous target/u.test(output)) return 'path-format';
+  if (/lost connection|connection unexpectedly closed/u.test(output)) return 'remote-closed';
+  return 'other';
+};
+
+const safeScpEndpoint = (value) => {
+  const text = String(value);
+  const separator = text.indexOf(':');
+  const pathValue = separator > 0 && text.slice(0, separator).includes('@') ? text.slice(separator + 1) : text;
+  return {
+    pathId: 'sha256:' + digest(pathValue),
+    pathBytes: Buffer.byteLength(pathValue, 'utf8'),
+  };
+};
+
+const scpFailureDetails = (error, { stage, workerId, direction, source, destination }) => {
+  const stderr = String(error?.stderr ?? '');
+  const stdout = String(error?.stdout ?? '');
+  return {
+    stage,
+    workerId,
+    direction,
+    source: safeScpEndpoint(source),
+    destination: safeScpEndpoint(destination),
+    exitCode: Number.isInteger(error?.exitCode) ? error.exitCode : null,
+    signal: error?.signal ?? null,
+    timedOut: error?.timedOut === true,
+    stderrBytes: Buffer.byteLength(stderr, 'utf8'),
+    stderrSha256: crypto.createHash('sha256').update(stderr).digest('hex'),
+    stdoutBytes: Buffer.byteLength(stdout, 'utf8'),
+    classification: classifyScpFailure({ stderr, stdout, timedOut: error?.timedOut === true }),
+  };
+};
+
+const runScpOperation = async ({ run, executable, worker, stage, direction, source, destination, recursive = false }) => {
+  try {
+    return await run(executable, [
+      ...scpArgs(worker),
+      ...(recursive ? ['-r'] : []),
+      source,
+      destination,
+    ], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
+  } catch (error) {
+    const details = scpFailureDetails(error, {
+      stage, workerId: worker.workerId, direction, source, destination,
+    });
+    const wrapped = new Error(`local isolation SCP ${stage} failed for ${worker.workerId} (${details.classification})`);
+    wrapped.scp = details;
+    throw wrapped;
+  }
+};
 
 export function createLocalIsolationWorkerRequest(request) {
   const core = {
@@ -276,7 +342,7 @@ const sshArgs = (worker) => [
   '-i', worker.identityFile, '-p', String(worker.port),
 ];
 const scpArgs = (worker) => [
-  '-q', '-O', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes',
+  '-O', '-o', 'LogLevel=ERROR', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes',
   '-o', 'StrictHostKeyChecking=yes', '-o', `UserKnownHostsFile=${worker.knownHostsFile}`,
   '-o', `HostKeyAlias=${worker.hostKeyAlias}`, '-i', worker.identityFile, '-P', String(worker.port),
 ];
@@ -335,10 +401,12 @@ export async function distributeLocalIsolationRuntime({
       await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`, ...remotePowerShellArgs(mkdirScript)]);
       for (const entry of files) {
         const destination = path.win32.join(destinationRoot, ...entry.path.split('/'));
-        await run(scpExecutable, [...scpArgs(worker), localScpPath(entry.sourcePath), remoteSpec(worker, destination)]);
+        await runScpOperation({ run, executable: scpExecutable, worker, stage: 'distribution-file-upload', direction: 'upload',
+          source: localScpPath(entry.sourcePath), destination: remoteSpec(worker, destination) });
       }
       const remoteManifest = path.win32.join(destinationRoot, 'runtime-distribution.json');
-      await run(scpExecutable, [...scpArgs(worker), localScpPath(manifestPath), remoteSpec(worker, remoteManifest)]);
+      await runScpOperation({ run, executable: scpExecutable, worker, stage: 'distribution-manifest-upload', direction: 'upload',
+        source: localScpPath(manifestPath), destination: remoteSpec(worker, remoteManifest) });
       await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`,
         ...remoteNodePowerShellArgs({
           cwd: destinationRoot,
@@ -420,14 +488,16 @@ export async function executeDistributedLocalIsolationCell({
     await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`, ...remotePowerShellArgs(
       `New-Item -ItemType Directory -Force -Path '${path.win32.dirname(remoteRequest)}' | Out-Null`,
     )]);
-    await run(scpExecutable, [...scpArgs(worker), localScpPath(localRequestPath), remoteSpec(worker, remoteRequest)], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
+    await runScpOperation({ run, executable: scpExecutable, worker, stage: 'cell-request-upload', direction: 'upload',
+      source: localScpPath(localRequestPath), destination: remoteSpec(worker, remoteRequest) });
     await run(sshExecutable, [...sshArgs(worker), `${worker.user}@${worker.host}`,
       ...remoteNodePowerShellArgs({
         cwd: workerWorkspaceRoot,
         script,
         args: ['--worker-cell-request', remoteRequest, '--worker-cell-result', remoteResult],
       })], { timeoutMs: workerTimeoutMs });
-    await run(scpExecutable, [...scpArgs(worker), remoteSpec(worker, remoteResult), localScpPath(localResultPath)], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
+    await runScpOperation({ run, executable: scpExecutable, worker, stage: 'cell-result-download', direction: 'download',
+      source: remoteSpec(worker, remoteResult), destination: localScpPath(localResultPath) });
     const envelope = readEnvelope();
     fs.mkdirSync(localOutputRoot, { recursive: true });
     const remoteCellDirectory = path.win32.join(remoteOutputRoot, checked.cell.cellId.replaceAll('::', '--'));
@@ -442,7 +512,8 @@ export async function executeDistributedLocalIsolationCell({
     requireLegacyScpPath(localReceiptPath, 0, 259);
     const remoteReceiptPath = path.win32.join(remoteCellDirectory, 'cell-authority.json');
     requireLegacyScpPath(remoteReceiptPath, 0, 259);
-    await run(scpExecutable, [...scpArgs(worker), remoteSpec(worker, remoteReceiptPath), localScpPath(localReceiptPath)], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
+    await runScpOperation({ run, executable: scpExecutable, worker, stage: 'cell-receipt-download', direction: 'download',
+      source: remoteSpec(worker, remoteReceiptPath), destination: localScpPath(localReceiptPath) });
     const receiptBytes = fs.readFileSync(localReceiptPath);
     if (receiptBytes.length !== envelope.result.receipt?.bytes || fileHash(localReceiptPath) !== envelope.result.receipt?.sha256) {
       throw new Error(`local isolation worker ${workerId} cell receipt was tampered`);
@@ -453,7 +524,8 @@ export async function executeDistributedLocalIsolationCell({
       requireLegacyScpPath(resolveAuthorityPath(localTransferCellDirectory, entry.path), 0, 259);
       requireLegacyScpPath(resolveAuthorityPath(remoteCellDirectory, entry.path), 0, 259);
     }
-    await run(scpExecutable, [...scpArgs(worker), '-r', remoteSpec(worker, remoteCellDirectory), localScpPath(localTransferRoot)], { timeoutMs: LOCAL_ISOLATION_SCP_TIMEOUT_MS });
+    await runScpOperation({ run, executable: scpExecutable, worker, stage: 'cell-artifacts-download', direction: 'download', recursive: true,
+      source: remoteSpec(worker, remoteCellDirectory), destination: localScpPath(localTransferRoot) });
     fs.mkdirSync(path.dirname(localCellDirectory), { recursive: true });
     fs.renameSync(localTransferCellDirectory, localCellDirectory);
     fs.rmSync(localTransferRoot, { recursive: true, force: false });
@@ -610,6 +682,7 @@ export function localIsolationFailureDetails(error) {
   return {
     name: error?.name ?? 'Error',
     message: error?.message ?? String(error),
+    ...(error?.scp ? { scp: error.scp } : {}),
     ...(error?.cause ? { cause: localIsolationFailureDetails(error.cause) } : {}),
     ...(Array.isArray(error?.errors) ? { errors: error.errors.map(localIsolationFailureDetails) } : {}),
   };

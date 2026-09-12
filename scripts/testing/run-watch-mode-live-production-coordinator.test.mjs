@@ -204,11 +204,13 @@ test('remote directory collection validates a hash-authorized archive before ato
   const remoteDirectory = 'E:\\omni-shards\\execution\\vm167\\runs\\c04';
   const remoteArchivePath = `${remoteDirectory}.collection-lease-test.tar`;
   const remoteCalls = [];
+  const attemptEvidencePath = path.join(root, 'collection-attempt.json');
   let validationObservedFinal = null;
   try {
     const result = await collectRemoteDirectoryArchive({
       worker: { workerId: 'vm167' }, remoteDirectory, localDirectory: finalDirectory,
       remoteArchivePath, timeoutMs: 30_000, nonce: 'fixture', stagedRelativePath: 'runs/c04',
+      attemptEvidencePath, evidenceBaseDirectory: root,
       executeRemote: async (_worker, body, payload) => {
         remoteCalls.push({ body, payload });
         if (remoteCalls.length === 1) {
@@ -247,6 +249,77 @@ test('remote directory collection validates a hash-authorized archive before ato
       fs.readdirSync(path.dirname(finalDirectory)).filter((name) => name.startsWith('.incoming-')),
       [],
     );
+    const attempt = JSON.parse(fs.readFileSync(attemptEvidencePath, 'utf8'));
+    assert.deepEqual(attempt, {
+      schemaVersion: 1,
+      artifactKind: 'watch-mode-worker-collection-attempt',
+      workerId: 'vm167',
+      executionId: null,
+      status: 'passed',
+      stage: 'published',
+      remoteArchive: { bytes: archiveBytes.length, sha256 },
+      localStagingRelativePath: 'validation-shards/vm167/runs/.incoming-c04-fixture',
+      localArchive: { observed: true, bytes: archiveBytes.length },
+      transport: { exitCode: null, diagnosticClass: null, stderrSha256: null },
+      published: true,
+      cleanup: { attempted: true, succeeded: true, archiveRemoved: true, diagnosticClass: null },
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('remote directory collection persists bounded SCP failure evidence without publishing or retrying', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-cell-archive-transfer-failure-'));
+  const finalDirectory = path.join(root, 'collected-shards', 'vm167');
+  const attemptEvidencePath = path.join(root, 'collection-attempts', 'vm167.json');
+  const remoteDirectory = 'E:\\omni-shards\\execution\\vm167';
+  const remoteArchivePath = `${remoteDirectory}.collection.tar`;
+  const archiveBytes = Buffer.from('sealed-worker-archive');
+  const sha256 = crypto.createHash('sha256').update(archiveBytes).digest('hex');
+  const stderr = 'lost connection: secret-token-must-not-be-persisted';
+  let downloads = 0;
+  let remoteCalls = 0;
+  try {
+    await assert.rejects(collectRemoteDirectoryArchive({
+      worker: { workerId: 'vm167' }, remoteDirectory, localDirectory: finalDirectory,
+      remoteArchivePath, timeoutMs: 30_000, nonce: 'transfer-failure',
+      attemptEvidencePath, evidenceBaseDirectory: root,
+      executeRemote: async () => {
+        remoteCalls += 1;
+        return remoteCalls === 1
+          ? { exitCode: 0, stdout: JSON.stringify({ path: remoteArchivePath, bytes: archiveBytes.length, sha256 }), stderr: '' }
+          : { exitCode: 0, stdout: JSON.stringify({ removed: true }), stderr: '' };
+      },
+      downloadFile: async () => {
+        downloads += 1;
+        const error = new Error(`download failed: ${stderr}`);
+        error.transportExitCode = 1;
+        error.transportStderrSha256 = crypto.createHash('sha256').update(stderr).digest('hex');
+        throw error;
+      },
+      runLocalProcess: async () => { throw new Error('local archive processing must not start'); },
+      validateExtracted: async () => { throw new Error('manifest validation must not start'); },
+    }), /download failed/u);
+    assert.equal(downloads, 1);
+    assert.equal(remoteCalls, 2);
+    assert.equal(fs.existsSync(finalDirectory), false);
+    const attempt = JSON.parse(fs.readFileSync(attemptEvidencePath, 'utf8'));
+    assert.equal(attempt.status, 'failed');
+    assert.equal(attempt.stage, 'archive-download');
+    assert.deepEqual(attempt.remoteArchive, { bytes: archiveBytes.length, sha256 });
+    assert.equal(attempt.localStagingRelativePath, 'collected-shards/.incoming-vm167-transfer-failure');
+    assert.deepEqual(attempt.localArchive, { observed: false, bytes: null });
+    assert.deepEqual(attempt.transport, {
+      exitCode: 1,
+      diagnosticClass: 'connection-terminated',
+      stderrSha256: crypto.createHash('sha256').update(stderr).digest('hex'),
+    });
+    assert.equal(attempt.published, false);
+    assert.deepEqual(attempt.cleanup, {
+      attempted: true, succeeded: true, archiveRemoved: true, diagnosticClass: null,
+    });
+    assert.equal(JSON.stringify(attempt).includes('secret-token'), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

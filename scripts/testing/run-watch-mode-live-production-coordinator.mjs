@@ -300,6 +300,7 @@ export function assertSafeCollectionArchiveEntries(entries, expectedRootName) {
 export async function collectRemoteDirectoryArchive({
   worker, remoteDirectory, localDirectory, remoteArchivePath, timeoutMs,
   executeRemote, downloadFile, runLocalProcess, validateExtracted, stagedRelativePath = '',
+  attemptEvidencePath = null, evidenceBaseDirectory = null, executionId = null,
   now = Date.now,
   nonce = `${process.pid}-${crypto.randomBytes(5).toString('hex')}`,
 }) {
@@ -325,6 +326,47 @@ export async function collectRemoteDirectoryArchive({
   const temporaryParent = path.join(localParent, `.incoming-${path.basename(finalDirectory)}-${nonce}`);
   fs.mkdirSync(temporaryParent, { recursive: false });
   const localArchivePath = path.join(temporaryParent, `${expectedRootName}.collection.tar`);
+  const evidenceBase = path.resolve(String(evidenceBaseDirectory || localParent));
+  const safeRelativePath = (candidate) => {
+    const relative = path.relative(evidenceBase, candidate).replaceAll('\\', '/');
+    return !relative || path.posix.isAbsolute(relative) || relative.split('/').includes('..')
+      ? path.basename(candidate)
+      : relative;
+  };
+  const attempt = {
+    schemaVersion: 1,
+    artifactKind: 'watch-mode-worker-collection-attempt',
+    workerId: worker.workerId,
+    executionId: executionId == null ? null : String(executionId),
+    status: 'running',
+    stage: 'initialized',
+    remoteArchive: { bytes: null, sha256: null },
+    localStagingRelativePath: safeRelativePath(temporaryParent),
+    localArchive: { observed: false, bytes: null },
+    transport: { exitCode: null, diagnosticClass: null, stderrSha256: null },
+    published: false,
+    cleanup: { attempted: false, succeeded: null, archiveRemoved: null, diagnosticClass: null },
+  };
+  const persistAttempt = () => {
+    if (attemptEvidencePath) atomicWriteJson(attemptEvidencePath, attempt, { overwrite: true });
+  };
+  const observeLocalArchive = () => {
+    const observed = fs.existsSync(localArchivePath);
+    attempt.localArchive = {
+      observed,
+      bytes: observed && fs.statSync(localArchivePath).isFile() ? fs.statSync(localArchivePath).size : null,
+    };
+  };
+  const diagnosticClass = (error) => {
+    const message = String(error?.message ?? '');
+    if (/timed?\s*out|timeout|deadline/iu.test(message)) return 'timeout';
+    if (/connection.*(reset|closed|abort)|broken pipe|lost connection/iu.test(message)) return 'connection-terminated';
+    if (/permission denied|access is denied/iu.test(message)) return 'access-denied';
+    if (/no such file|cannot find|not found/iu.test(message)) return 'not-found';
+    if (/hash mismatch|authority|signature|identity/iu.test(message)) return 'authority-rejected';
+    return 'transport-failed';
+  };
+  persistAttempt();
   const deadlineMs = now() + timeoutMs;
   const remainingMs = (stage) => {
     const remaining = Math.ceil(deadlineMs - now());
@@ -361,13 +403,35 @@ $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerI
         || !/^[a-f0-9]{64}$/u.test(String(archive.sha256))) {
       throw new Error(`worker ${worker.workerId} returned invalid collection archive authority`);
     }
-    await downloadFile(worker, remoteArchive, localArchivePath, {
-      timeoutMs: remainingMs('archive download'),
-    });
+    attempt.remoteArchive = { bytes: Number(archive.bytes), sha256: archive.sha256 };
+    attempt.stage = 'remote-archive-created';
+    persistAttempt();
+    attempt.stage = 'archive-download';
+    persistAttempt();
+    try {
+      await downloadFile(worker, remoteArchive, localArchivePath, {
+        timeoutMs: remainingMs('archive download'),
+      });
+    } catch (error) {
+      observeLocalArchive();
+      attempt.transport = {
+        exitCode: Number.isInteger(error?.transportExitCode) ? error.transportExitCode : null,
+        diagnosticClass: diagnosticClass(error),
+        stderrSha256: error?.transportStderrSha256 ?? null,
+      };
+      attempt.status = 'failed';
+      persistAttempt();
+      throw error;
+    }
+    observeLocalArchive();
+    attempt.stage = 'archive-downloaded';
+    persistAttempt();
     const localArchive = fileAuthorityEntry(localArchivePath, path.basename(localArchivePath));
     if (localArchive.bytes !== Number(archive.bytes) || localArchive.sha256 !== archive.sha256) {
       throw new Error(`worker ${worker.workerId} collection archive hash mismatch`);
     }
+    attempt.stage = 'archive-verified';
+    persistAttempt();
     const systemRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
     const systemTar = path.join(systemRoot, 'System32', 'tar.exe');
     const listing = await runLocalProcess(systemTar, ['-tf', localArchivePath], {
@@ -385,10 +449,14 @@ $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerI
     if (unsafeTypes.length > 0) {
       throw new Error(`worker ${worker.workerId} collection archive contains non-file entries`);
     }
+    attempt.stage = 'inventory-validated';
+    persistAttempt();
     const extracted = await runLocalProcess(systemTar, ['-xf', localArchivePath, '-C', temporaryParent], {
       timeoutMs: remainingMs('archive extraction'),
     });
     ensureSuccessful(extracted, `collection archive extraction for ${worker.workerId}`);
+    attempt.stage = 'archive-extracted';
+    persistAttempt();
     fs.rmSync(localArchivePath, { force: true });
     const downloaded = fs.readdirSync(temporaryParent, { withFileTypes: true });
     if (downloaded.length !== 1 || !downloaded[0].isDirectory() || downloaded[0].isSymbolicLink()
@@ -402,8 +470,14 @@ $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerI
       fs.renameSync(downloadedRoot, stagedRoot);
     }
     await validateExtracted(stagedRoot, temporaryParent);
+    attempt.stage = 'manifest-validated';
+    persistAttempt();
     fs.renameSync(stagedRoot, finalDirectory);
     published = true;
+    attempt.published = true;
+    attempt.status = 'passed';
+    attempt.stage = 'published';
+    persistAttempt();
     try {
       let cleanupDirectory = path.dirname(stagedRoot);
       while (cleanupDirectory.startsWith(`${temporaryParent}${path.sep}`)) {
@@ -418,18 +492,30 @@ $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerI
     }
     return { localDirectory: finalDirectory, archiveAuthority: archive };
   } finally {
+    attempt.cleanup.attempted = true;
     try {
-      await executeRemote(worker, `
+      const cleanupResult = parseRemoteJson(await executeRemote(worker, `
 $archivePath = [string]$payload.archivePath
 Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
 [ordered]@{ removed = -not (Test-Path -LiteralPath $archivePath) } | ConvertTo-Json -Compress
 `, { archivePath: remoteArchive }, {
         timeoutMs: Math.max(1, Math.min(30_000, Math.ceil(deadlineMs - now()))),
-      });
-    } catch {
+      }), `worker ${worker.workerId} collection archive cleanup`);
+      attempt.cleanup.succeeded = cleanupResult.removed === true;
+      attempt.cleanup.archiveRemoved = cleanupResult.removed === true;
+      if (!attempt.cleanup.succeeded) attempt.cleanup.diagnosticClass = 'archive-remains';
+    } catch (error) {
+      attempt.cleanup.succeeded = false;
+      attempt.cleanup.archiveRemoved = null;
+      attempt.cleanup.diagnosticClass = diagnosticClass(error);
       // Preserve the immutable remote source and local staging. A later
       // zero-Provider recovery can distinguish packaging from transport.
     }
+    if (attempt.status === 'running') {
+      attempt.status = published ? 'passed' : 'failed';
+      if (!published) attempt.transport.diagnosticClass ??= 'collection-failed';
+    }
+    persistAttempt();
     if (!published && fs.existsSync(finalDirectory)) {
       throw new Error('remote archive collection published an unvalidated final directory');
     }
@@ -2732,7 +2818,16 @@ export function createSshProductionTransport({
       [...scpBaseArgs(worker), remoteSpec(worker, remotePath), pathForScp(localPath)],
       options,
     );
-    ensureSuccessful(result, `download from ${worker.workerId}`);
+    try {
+      ensureSuccessful(result, `download from ${worker.workerId}`);
+    } catch (error) {
+      error.transportExitCode = Number.isInteger(Number(result?.exitCode)) ? Number(result.exitCode) : null;
+      const stderr = String(result?.stderr ?? '');
+      error.transportStderrSha256 = stderr
+        ? crypto.createHash('sha256').update(stderr, 'utf8').digest('hex')
+        : null;
+      throw error;
+    }
   };
 
   async function queryWorker(worker) {
@@ -3342,12 +3437,17 @@ if ($manifestPath -cne [IO.Path]::GetFullPath([string]$payload.expectedManifestP
     const finalShardRoot = path.join(collectionParent, planWorker.workerId);
     if (fs.existsSync(finalShardRoot)) throw new Error(`refusing to overwrite collected shard ${planWorker.workerId}`);
     const remoteArchivePath = `${remoteRoot}.collection.tar`;
+    const collectionAttemptRoot = path.join(coordinatorExecutionRoot, 'collection-attempts');
+    fs.mkdirSync(collectionAttemptRoot, { recursive: true });
     await collectRemoteDirectoryArchive({
       worker,
       remoteDirectory: remoteRoot,
       localDirectory: finalShardRoot,
       remoteArchivePath,
       timeoutMs: WATCH_PRODUCTION_SHARD_COLLECTION_TIMEOUT_MS,
+      attemptEvidencePath: path.join(collectionAttemptRoot, `${planWorker.workerId}.json`),
+      evidenceBaseDirectory: coordinatorExecutionRoot,
+      executionId: plan.executionId,
       executeRemote: runRemote,
       downloadFile,
       runLocalProcess: runProcess,

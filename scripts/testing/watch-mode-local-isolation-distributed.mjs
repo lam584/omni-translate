@@ -220,6 +220,24 @@ export function collectLocalIsolationDistributionFiles({ workspaceRoot, runtimeB
     }
   };
   visit(entry);
+  // The opt-in zero-Provider probes are separate entry points, not imports of
+  // the isolation runner. Freeze their code and filesystem-only dependencies
+  // when present; older/minimal distributions remain usable for isolation but
+  // cannot satisfy the probes' own required-inventory checks.
+  const probeEntries = ['run-watch-mode-local-aec-probe.mjs', 'watch-mode-physical-source-probe.mjs'];
+  const presentProbes = probeEntries.filter((name) => fs.existsSync(path.resolve(workspaceRoot, 'scripts/testing', name)));
+  for (const name of presentProbes) visit(path.resolve(workspaceRoot, 'scripts/testing', name));
+  if (presentProbes.length) {
+    const moduleRoot = path.resolve(workspaceRoot, 'scripts/testing/lib/powershell');
+    for (const file of fs.readdirSync(moduleRoot, { withFileTypes: true })) {
+      if (file.isFile() && file.name.endsWith('.psm1')) scripts.add(path.join(moduleRoot, file.name));
+    }
+    for (const name of ['watch-mode-en-original.wav', 'watch-mode-en-original.sha256',
+      'watch-mode-audio-fixtures.json', 'watch-mode-en-original.txt', 'watch-mode-en-original.zh-CN.txt']) {
+      scripts.add(path.resolve(workspaceRoot, 'scripts/testing/fixtures', name));
+    }
+    scripts.add(path.resolve(workspaceRoot, 'scripts/installer/virtual-speaker-device.ps1'));
+  }
   // The release plan evaluates model identities during module bootstrap. Its
   // registry is a filesystem dependency, not an ESM import; freeze it too.
   if (scripts.has(path.resolve(workspaceRoot, 'scripts/testing/model-protocol-profile-contract.mjs'))) {

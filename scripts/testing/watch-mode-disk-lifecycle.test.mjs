@@ -3,124 +3,81 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { checkWatchDiskSpace, WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME as floor,
+  runWatchDiskLifecycle, runDefaultLocalWatchDiskLifecycle, parseWatchDiskLifecycleArgs,
+  verifiedWatchPath } from './watch-mode-disk-lifecycle.mjs';
 
-import {
-  WATCH_DISK_MAX_DIRECTORIES_PER_ROOT,
-  WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME,
-  runWatchDiskLifecycle,
-} from './watch-mode-disk-lifecycle.mjs';
-
+const roomy = () => ({ bavail: BigInt(floor), bsize: 1n });
 function fixture(t) {
-  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-disk-lifecycle-'));
-  const root = path.join(parent, 'history');
-  fs.mkdirSync(root);
-  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
-  return { parent, root };
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-disk-check-'));
+  t.after(() => {
+    assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  return root;
 }
 
-function addRun(root, name, order, bytes = 16) {
-  const directory = path.join(root, name);
-  fs.mkdirSync(directory);
-  fs.writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify({ executionId: name }));
-  fs.writeFileSync(path.join(directory, 'evidence.bin'), Buffer.alloc(bytes, order));
-  const timestamp = new Date(1_700_000_000_000 + order * 1000);
-  fs.utimesSync(directory, timestamp, timestamp);
-  return directory;
-}
-
-const roomyDisk = () => ({ bavail: BigInt(WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME + 1), bsize: 1n });
-
-test('retains only the newest 30 direct execution directories and deletes whole directories', (t) => {
-  const { root } = fixture(t);
-  for (let index = 0; index < 35; index += 1) addRun(root, `run-${String(index).padStart(2, '0')}`, index);
-  const receipt = runWatchDiskLifecycle({ historicalRoots: [root], statfs: roomyDisk });
-  assert.equal(receipt.deletedDirectories.length, 5);
-  assert.deepEqual(receipt.deletedDirectories.map((entry) => entry.executionId), ['run-00', 'run-01', 'run-02', 'run-03', 'run-04']);
-  assert.equal(receipt.retainedDirectories.length, WATCH_DISK_MAX_DIRECTORIES_PER_ROOT);
-  assert.equal(fs.existsSync(path.join(root, 'run-00')), false);
-  assert.equal(fs.existsSync(path.join(root, 'run-34', 'manifest.json')), true);
+test('3 GiB is an inclusive measured floor and both C and E are independently checked', () => {
+  const paths = process.platform === 'win32' ? ['C:\\', 'E:\\'] : ['/c', '/e'];
+  const calls = [];
+  const result = checkWatchDiskSpace({ requiredVolumePaths: paths, statfs: (root) => { calls.push(root); return roomy(); } });
+  assert.deepEqual(calls, paths);
+  assert.equal(result.minimumFloorSatisfied, true);
+  assert.equal(result.deletedDirectories.length, 0);
 });
 
-test('active and protected execution IDs are never deleted even when old or above retention', (t) => {
-  const { root } = fixture(t);
-  for (let index = 0; index < 33; index += 1) addRun(root, `run-${String(index).padStart(2, '0')}`, index);
-  const receipt = runWatchDiskLifecycle({ historicalRoots: [root], activeExecutionIds: ['run-00'], protectedExecutionIds: ['run-01'], statfs: roomyDisk });
-  assert.ok(receipt.retainedDirectories.find((entry) => entry.executionId === 'run-00')?.protected);
-  assert.ok(receipt.retainedDirectories.find((entry) => entry.executionId === 'run-01')?.protected);
-  assert.equal(fs.existsSync(path.join(root, 'run-00', 'manifest.json')), true);
-  assert.equal(fs.existsSync(path.join(root, 'run-01', 'manifest.json')), true);
-});
-
-test('protected directories inside the newest 30 do not expand the ordinary retention allowance', (t) => {
-  const { root } = fixture(t);
-  for (let index = 0; index < 33; index += 1) addRun(root, 'run-' + String(index).padStart(2, '0'), index);
-  const receipt = runWatchDiskLifecycle({ historicalRoots: [root], protectedExecutionIds: ['run-32'], statfs: roomyDisk });
-  assert.deepEqual(receipt.deletedDirectories.map((entry) => entry.executionId), ['run-00', 'run-01', 'run-02']);
-  assert.equal(receipt.retainedDirectories.length, WATCH_DISK_MAX_DIRECTORIES_PER_ROOT);
-});
-test('low free space removes oldest unprotected directories until the 3 GiB floor is projected', (t) => {
-  const { root } = fixture(t);
-  addRun(root, 'old', 1, 80);
-  addRun(root, 'new', 2, 80);
-  let calls = 0;
-  const statfs = () => ({ bavail: BigInt(calls++ === 0 ? WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME - 100 : WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME + 60), bsize: 1n });
-  const receipt = runWatchDiskLifecycle({ historicalRoots: [root], statfs });
-  assert.deepEqual(receipt.deletedDirectories.map((entry) => entry.executionId), ['old']);
-  assert.equal(receipt.volumes[0].beforeFreeBytes, WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME - 100);
-  assert.equal(receipt.volumes[0].afterFreeBytes, WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME + 60);
-  assert.equal(receipt.volumes[0].releasedBytes, 160);
-});
-
-test('dry-run preserves directories and writes an exclusive JSON receipt', (t) => {
-  const { parent, root } = fixture(t);
-  for (let index = 0; index < 32; index += 1) addRun(root, `run-${index}`, index);
-  const receiptPath = path.join(parent, 'receipt.json');
-  const receipt = runWatchDiskLifecycle({ historicalRoots: [root], dryRun: true, receiptPath, statfs: roomyDisk, now: () => new Date('2026-09-12T00:00:00Z') });
-  assert.equal(receipt.dryRun, true);
-  assert.equal(receipt.verdict, 'dry-run');
-  assert.equal(receipt.minimumFloorSatisfied, true);
-  assert.equal(receipt.deletedDirectories.length, 2);
-  assert.equal(fs.readdirSync(root).length, 32);
-  assert.deepEqual(JSON.parse(fs.readFileSync(receiptPath, 'utf8')), receipt);
-  assert.throws(() => runWatchDiskLifecycle({ historicalRoots: [root], dryRun: true, receiptPath, statfs: roomyDisk }), /EEXIST/);
-});
-
-test('insufficient space persists an explicit failed receipt before throwing', (t) => {
-  const { parent, root } = fixture(t);
-  const receiptPath = path.join(parent, 'failed-receipt.json');
-  const statfs = () => ({ bavail: BigInt(WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME - 1), bsize: 1n });
-  assert.throws(
-    () => runWatchDiskLifecycle({ historicalRoots: [root], receiptPath, statfs }),
-    (error) => error?.code === 'watch.disk-space.insufficient',
-  );
+for (const failure of ['low', 'missing', 'invalid', 'overflow']) test(`${failure} volume warns, saves failed receipt and fails closed`, (t) => {
+  const root = fixture(t);
+  const warnings = [];
+  const receiptPath = path.join(root, 'failure.json');
+  assert.throws(() => checkWatchDiskSpace({ requiredVolumePaths: [root], receiptPath, warn: (value) => warnings.push(value),
+    statfs: () => {
+      if (failure === 'missing') throw new Error('E: is unavailable');
+      return { bavail: failure === 'invalid' ? -1n : failure === 'overflow' ? 10n ** 30n : BigInt(floor - 1), bsize: 1n };
+    } }), (error) => error.code === 'watch.disk-space.insufficient');
+  assert.match(warnings[0], /WARNING.*3 GiB/u);
   const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
   assert.equal(receipt.verdict, 'failed');
-  assert.equal(receipt.minimumFloorSatisfied, false);
-  assert.equal(receipt.failureCode, 'watch.disk-space.insufficient');
-  assert.equal(receipt.violations.length, 1);
+  assert.equal(receipt.releasedBytes, 0);
 });
 
-test('ignores files and preserves retained evidence manifests without single-file mutation', (t) => {
-  const { root } = fixture(t);
-  const retained = addRun(root, 'retained', 2);
-  const manifestBefore = fs.readFileSync(path.join(retained, 'manifest.json'));
-  fs.writeFileSync(path.join(root, 'loose.pcm'), Buffer.from('do-not-touch'));
-  const receipt = runWatchDiskLifecycle({ historicalRoots: [root], statfs: roomyDisk });
-  assert.equal(receipt.deletedDirectories.length, 0);
-  assert.deepEqual(fs.readFileSync(path.join(retained, 'manifest.json')), manifestBefore);
-  assert.equal(fs.readFileSync(path.join(root, 'loose.pcm'), 'utf8'), 'do-not-touch');
+test('legacy generic roots never prune mixed, unknown, incomplete or signed evidence even above 30', (t) => {
+  const root = fixture(t);
+  for (const name of ['runtime-current', '.provider-preflight', 'artifacts', 'li', ...Array.from({ length: 40 }, (_, i) => `watch-prod-${i}`)]) {
+    fs.mkdirSync(path.join(root, name)); fs.writeFileSync(path.join(root, name, 'raw.pcm'), 'signed bytes');
+  }
+  const before = fs.readdirSync(root);
+  const receipt = runWatchDiskLifecycle({ historicalRoots: [root], statfs: roomy });
+  assert.equal(receipt.mode, 'check-only');
+  assert.deepEqual(receipt.deletedDirectories, []);
+  assert.deepEqual(fs.readdirSync(root), before);
+  for (const name of before) assert.equal(fs.readFileSync(path.join(root, name, 'raw.pcm'), 'utf8'), 'signed bytes');
 });
 
-test('rejects duplicate resolved roots and never traverses symlinked direct children', (t) => {
-  const { parent, root } = fixture(t);
-  assert.throws(() => runWatchDiskLifecycle({ historicalRoots: [root, path.join(root, '.')], statfs: roomyDisk }), /distinct/);
-  const outside = path.join(parent, 'outside');
-  fs.mkdirSync(outside);
-  addRun(outside, 'external-run', 1);
-  const link = path.join(root, 'linked-run');
-  try { fs.symlinkSync(outside, link, 'junction'); } catch { return; }
-  const receipt = runWatchDiskLifecycle({ historicalRoots: [root], statfs: roomyDisk });
-  assert.equal(receipt.deletedDirectories.length, 0);
-  assert.equal(fs.existsSync(path.join(outside, 'external-run', 'manifest.json')), true);
+test('local default checks C and E even if workspace/history is on another volume or absent', (t) => {
+  const root = fixture(t);
+  const calls = [];
+  runDefaultLocalWatchDiskLifecycle({ workspaceRoot: root, statfs: (value) => { calls.push(value); return roomy(); } });
+  assert.deepEqual(calls, process.platform === 'win32' ? ['C:\\', 'E:\\'] : [root]);
 });
 
+test('receipts are exclusive, absolute and never follow an ancestor junction', (t) => {
+  const root = fixture(t);
+  const receiptPath = path.join(root, 'receipt.json');
+  checkWatchDiskSpace({ receiptPath, statfs: roomy });
+  assert.throws(() => checkWatchDiskSpace({ receiptPath, statfs: roomy }), /EEXIST/u);
+  assert.throws(() => checkWatchDiskSpace({ receiptPath: 'relative.json', statfs: roomy }), /absolute/u);
+  fs.mkdirSync(path.join(root, 'actual'));
+  fs.symlinkSync(path.join(root, 'actual'), path.join(root, 'alias'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => verifiedWatchPath(path.join(root, 'alias')), /symlink\/reparse/u);
+  assert.throws(() => checkWatchDiskSpace({ receiptPath: path.join(root, 'alias', 'unsafe.json'), statfs: roomy }), /symlink\/reparse/u);
+});
+
+test('relative roots, duplicate roots and generic apply are rejected', (t) => {
+  const root = fixture(t);
+  assert.throws(() => runWatchDiskLifecycle({ historicalRoots: ['relative'], statfs: roomy }), /absolute/u);
+  assert.throws(() => runWatchDiskLifecycle({ historicalRoots: [root, path.join(root, '.')], statfs: roomy }), /distinct/u);
+  assert.throws(() => parseWatchDiskLifecycleArgs(['--apply']), /generic FIFO apply is forbidden/u);
+  assert.deepEqual(parseWatchDiskLifecycleArgs(['--check-only', '--volume', root]).requiredVolumePaths, [root]);
+  assert.throws(() => parseWatchDiskLifecycleArgs(['--receipt']), /missing value/u);
+});

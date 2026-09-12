@@ -9,6 +9,8 @@ import zlib from 'node:zlib';
 
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { currentGitProvenance } from './git-provenance.mjs';
+import { checkWatchDiskSpace, writeWatchDiskReceipt, WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME } from './watch-mode-disk-lifecycle.mjs';
+import { recordWatchHistoryReport } from './watch-mode-history-reports.mjs';
 import {
   DEFAULT_FEEDBACK_MODES,
   DEFAULT_MODELS,
@@ -1058,6 +1060,104 @@ export function readProductionWorkerConfig(configPath) {
     throw new Error(`production worker config is not valid UTF-8 JSON: ${error.message}`);
   }
   return validateProductionWorkerConfig(parsed, { configDirectory: path.dirname(resolved) });
+}
+
+/** Bounded disk-only barrier, shared with release preparation. Never prunes. */
+export async function checkProductionWorkerDisks({ config, executionId, phase, receiptDirectory,
+  runProcess = runChildProcess, checkLocal = checkWatchDiskSpace } = {}) {
+  if (!SAFE_ID.test(executionId) || !['startup', 'before-distribution', 'before-provider', 'finally'].includes(phase)
+    || !Array.isArray(config?.workers) || config.workers.length < 1 || config.workers.length > 4) {
+    throw new Error('invalid bounded worker disk-check context');
+  }
+  const local = Promise.resolve().then(() => checkLocal());
+  const workers = config.workers.map((worker) => Promise.resolve().then(async () => {
+    // Startup precedes source synchronization. Measure with Node's built-in fs,
+    // never execute a possibly older worker checkout's lifecycle/deletion code.
+    const code = `const fs=require('node:fs');const floor=${WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME};const volumes=['C:/','E:/'].map(root=>{let observedFreeBytes=null,error=null;try{const s=fs.statfsSync(root,{bigint:true});const n=s.bavail*s.bsize;if(s.bavail<0n||s.bsize<=0n||n>BigInt(Number.MAX_SAFE_INTEGER))throw Error('invalid disk measurement');observedFreeBytes=Number(n)}catch(e){error=e.message}return {samplePath:root.replace('/',String.fromCharCode(92)),observedFreeBytes,passed:error===null&&observedFreeBytes>=floor,error}});const passed=volumes.every(v=>v.passed);console.log(JSON.stringify({mode:'check-only',verdict:passed?'passed':'failed',minimumFloorSatisfied:passed,volumes}));`;
+    const body = `$ErrorActionPreference='Stop'; & node.exe -e '${code.replaceAll("'", "''")}'; if($LASTEXITCODE -ne 0){throw 'watch disk floor measurement failed'}`;
+    const command = ['powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(body, 'utf16le').toString('base64')];
+    const isLocal = worker.transport.kind === 'local';
+    const result = await runProcess(isLocal ? command[0] : config.sshExecutable,
+      isLocal ? command.slice(1) : [...sshBaseArgs(worker), `${worker.user}@${worker.host}`, ...command],
+      { timeoutMs: 20000, environment: windowsPowerShellEnvironment() });
+    ensureSuccessful(result, `worker ${worker.workerId} ${phase} disk check`);
+    const receipt = JSON.parse(String(result.stdout).trim().replace(/^\uFEFF/u, ''));
+    if (receipt.mode !== 'check-only' || receipt.verdict !== 'passed' || receipt.minimumFloorSatisfied !== true
+      || !Array.isArray(receipt.volumes) || ['c:\\', 'e:\\'].some((volume) => !receipt.volumes.some((entry) =>
+        String(entry.samplePath).toLowerCase() === volume && entry.passed === true
+        && Number.isFinite(entry.observedFreeBytes) && entry.observedFreeBytes >= WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME))) {
+      throw new Error(`worker ${worker.workerId} did not prove the C/E 3 GiB floor`);
+    }
+    return receipt;
+  }));
+  const settled = await Promise.allSettled([local, ...workers]);
+  const receipt = { schemaVersion: 1, artifactKind: 'watch-mode-production-disk-check', executionId, phase,
+    generatedAt: new Date().toISOString(), verdict: settled.every((entry) => entry.status === 'fulfilled') ? 'passed' : 'failed',
+    hosts: settled.map((entry, index) => ({ workerId: index === 0 ? 'coordinator' : config.workers[index - 1].workerId,
+      ...(entry.status === 'fulfilled' ? { status: 'passed', receipt: entry.value } : { status: 'failed', error: entry.reason.message }) })) };
+  const receiptPath = path.join(receiptDirectory, `${executionId}.disk-${phase}-${crypto.randomUUID()}.json`);
+  writeWatchDiskReceipt(receiptPath, receipt);
+  if (receipt.verdict !== 'passed') {
+    console.warn(`WARNING: ${phase} C/E disk barrier failed; start/distribution/provider work is forbidden (${receiptPath})`);
+    const error = new AggregateError(settled.filter((entry) => entry.status === 'rejected').map((entry) => entry.reason), 'watch worker disk floor barrier failed');
+    error.code = 'watch.disk-space.insufficient'; error.receiptPath = receiptPath; throw error;
+  }
+  return { ...receipt, receiptPath };
+}
+
+/** Archive only bounded diagnostic summaries; signed raw evidence is untouched. */
+export async function recordProductionWorkerHistories({ config, executionId, outcome, summary,
+  receiptDirectory, completedAt = new Date().toISOString(), runProcess = runChildProcess,
+  recordLocal = recordWatchHistoryReport } = {}) {
+  if (!SAFE_ID.test(executionId) || !['success', 'fail'].includes(outcome)
+    || !Array.isArray(config?.workers) || config.workers.length < 1 || config.workers.length > 4
+    || Buffer.byteLength(JSON.stringify(summary ?? null)) > 2048) throw new Error('invalid bounded history context');
+  const quote = (value) => `'${String(value).replaceAll("'", "''")}'`;
+  const results = await Promise.allSettled(config.workers.map(async (worker) => {
+    const workerPath = worker.transport.kind === 'local' ? path : path.win32;
+    const input = { workerId: worker.workerId, executionId, completedAt, outcome,
+      historyRoot: workerPath.join(worker.guestExecutionRoot, 'artifacts', 'retained-reports', worker.workerId),
+      auditRoot: workerPath.join(worker.workspaceRoot, 'artifacts', 'testing', 'watch-history-audit'),
+      report: { originalRefs: [], summary: { ...summary, evidenceClass: 'diagnostic-summary-only', rawEvidenceRetired: false } } };
+    let receipt;
+    if (worker.transport.kind === 'local') receipt = await recordLocal(input);
+    else {
+      // Verify the small implementation closure before import, even when build
+      // preparation failed before source synchronization. JSON travels on stdin,
+      // never as script text or an unbounded Windows command-line argument.
+      // Unlike PowerShell reading script source from stdin, the native Node
+      // child consumes data directly; keep the real PowerShell regression test.
+      const files = ['scripts/testing/watch-mode-history-reports.mjs', 'scripts/testing/watch-mode-disk-lifecycle.mjs',
+        'scripts/lib/testing-common.mjs'];
+      const checks = files.map((relative) => {
+        const expected = crypto.createHash('sha256').update(fs.readFileSync(path.join(repoRoot, relative))).digest('hex');
+        return `if((Get-FileHash -LiteralPath ${quote(path.win32.join(worker.workspaceRoot, relative))} -Algorithm SHA256).Hash.ToLowerInvariant() -ne '${expected}'){throw 'history implementation hash mismatch'}`;
+      }).join('; ');
+      const code = "const fs=await import('node:fs');const u=await import('node:url');const m=await import(u.pathToFileURL(process.argv[1]).href);const b=fs.readFileSync(0);if(b.length>16384)throw Error('history input bound');const r=m.recordWatchHistoryReport(JSON.parse(b.toString('utf8')));console.log(JSON.stringify(r));";
+      const body = `$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Text.UTF8Encoding]::new($false); ${checks}; & node.exe --input-type=module -e ${quote(code)} ${quote(path.win32.join(worker.workspaceRoot, files[0]))}; if($LASTEXITCODE -ne 0){throw 'history recording failed'}`;
+      const command = ['powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(body, 'utf16le').toString('base64')];
+      const result = await runProcess(config.sshExecutable, [...sshBaseArgs(worker), `${worker.user}@${worker.host}`, ...command],
+        { timeoutMs: 30000, input: JSON.stringify(input), environment: windowsPowerShellEnvironment() });
+      ensureSuccessful(result, `worker ${worker.workerId} history retention`);
+      if (Buffer.byteLength(String(result.stdout)) > 65536) throw new Error('history response bound exceeded');
+      receipt = JSON.parse(String(result.stdout).trim().replace(/^\uFEFF/u, ''));
+    }
+    if (receipt?.verdict !== 'success' || receipt.ok !== true || receipt.archived !== true || receipt.releaseEvidence !== false
+      || receipt.executionId !== executionId || receipt.workerId !== worker.workerId
+      || typeof receipt.reportRetained !== 'boolean' || !receipt.reportPath || !receipt.auditOutcomePath
+      || !receipt.auditArchivePath) throw Object.assign(new Error(`worker ${worker.workerId} history is incomplete`), { receipt });
+    return { ...receipt, availableReportPath: receipt.reportRetained ? receipt.reportPath : null };
+  }));
+  const receipt = { schemaVersion: 1, artifactKind: 'watch-mode-four-worker-history-receipt', executionId, completedAt,
+    verdict: results.every((result) => result.status === 'fulfilled') ? 'passed' : 'failed',
+    rawEvidenceRetired: false, workers: results.map((result, index) => ({ workerId: config.workers[index].workerId,
+      ...(result.status === 'fulfilled' ? { status: 'passed', receipt: result.value }
+        : { status: 'failed', error: result.reason.message, receipt: result.reason.receipt ?? null }) })) };
+  const receiptPath = path.join(receiptDirectory, `${executionId}.history-${crypto.randomUUID()}.json`);
+  writeWatchDiskReceipt(receiptPath, receipt);
+  if (receipt.verdict !== 'passed') throw Object.assign(new AggregateError(results.filter((result) => result.status === 'rejected')
+    .map((result) => result.reason), 'one or more worker history archives failed'), { code: 'watch.history.failed', receiptPath });
+  return { ...receipt, receiptPath };
 }
 
 export function sshBaseArgs(worker) {
@@ -3497,6 +3597,8 @@ async function runProductionCoordinatorCore({
   if (!String(runtimeAuthority ?? '').trim()) {
     throw new Error('production coordinator requires --runtime-authority before readiness/preflight/provider launch');
   }
+  operations.registerDiskLifecycleConfig?.(config);
+  await (operations.diskLifecycle ?? checkProductionWorkerDisks)({ config, executionId, phase: 'startup', receiptDirectory: coordinatorOutputRoot });
   const generatedAt = now();
   const productionWorkers = config.workers.map(({
     workerId, user, workspaceRoot, vmIdentity, deviceProfileInstances, transport,
@@ -3669,11 +3771,12 @@ async function runProductionCoordinatorCore({
       evidenceDirectory: preflight.outputDirectory,
     };
   });
-  const runProviderPreflight = (context) => runBoundedCoordinatorStage(
-    () => runProviderPreflightImplementation(context),
-    'production provider preflight',
-    deriveWatchProductionProviderPreflightBudgetMs(),
-  );
+  const runProviderPreflight = async (context) => {
+    await (operations.diskLifecycle ?? checkProductionWorkerDisks)({ config, executionId,
+      phase: 'before-provider', receiptDirectory: coordinatorOutputRoot });
+    return runBoundedCoordinatorStage(() => runProviderPreflightImplementation(context),
+      'production provider preflight', deriveWatchProductionProviderPreflightBudgetMs());
+  };
   let readinessPreparation = null;
   const runZeroProviderWorkerReadiness = async (context) => {
     const implementation = operations.runZeroProviderWorkerReadiness ?? (async ({
@@ -4052,6 +4155,8 @@ export async function runProductionCoordinator(options) {
   const coordinatorTimeoutMs = options.coordinatorTimeoutMs ?? PRODUCTION_COORDINATOR_TIMEOUT_MS;
   const coordinatorDeadlineMs = coordinatorStartedAtMs + coordinatorTimeoutMs;
   let timeoutId;
+  let diskConfig = null;
+  let primaryFailure = null;
   try {
     const core = runProductionCoordinatorCore({
       ...options,
@@ -4059,7 +4164,8 @@ export async function runProductionCoordinator(options) {
       signal: coordinatorController.signal,
       coordinatorDeadlineMs,
       deadlineNow,
-      operations: { ...options.operations, transitionCoordinatorState: transition },
+      operations: { ...options.operations, transitionCoordinatorState: transition,
+        registerDiskLifecycleConfig: (config) => { diskConfig = config; } },
     });
     const timeout = new Promise((_, reject) => {
       timeoutId = setTimeout(() => {
@@ -4071,6 +4177,7 @@ export async function runProductionCoordinator(options) {
     });
     return await Promise.race([core, timeout]);
   } catch (error) {
+    primaryFailure = error;
     const primaryError = { name: error.name ?? 'Error', message: error.message };
     const cleanupErrors = [...(error.cleanupErrors ?? error.failure?.cleanupErrors ?? [])];
     transition('failed', {
@@ -4110,6 +4217,31 @@ export async function runProductionCoordinator(options) {
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
     options.signal?.removeEventListener?.('abort', forwardAbort);
+    let finallyFailure = null;
+    if (diskConfig) {
+      try {
+        await (options.operations?.diskLifecycle ?? checkProductionWorkerDisks)({ config: diskConfig,
+          executionId, phase: 'finally', receiptDirectory: outputRoot });
+      } catch (error) {
+        const diskFailure = { code: 'watch.disk-finally.failed', message: error.message, receiptPath: error.receiptPath ?? null };
+        transition('disk-lifecycle-failed', { cleanupErrors: [...current.cleanupErrors, diskFailure] });
+        if (primaryFailure) primaryFailure.diskLifecycleFinallyError = diskFailure;
+        else finallyFailure = error;
+      }
+      try {
+        await (options.operations?.historyRetention ?? recordProductionWorkerHistories)({ config: diskConfig, executionId,
+          outcome: primaryFailure || finallyFailure ? 'fail' : 'success', receiptDirectory: outputRoot,
+          summary: { sourceStatePath: statePath, stage: current.stage, releaseEligible: false,
+            startedCellCount: current.startedCellIds.length, completedCellCount: current.completedCellIds.length,
+            cleanupErrorCount: current.cleanupErrors.length, primaryErrorName: current.primaryError?.name ?? null } });
+      } catch (error) {
+        const failure = { code: 'watch.history.failed', message: error.message, receiptPath: error.receiptPath ?? null };
+        transition('history-retention-failed', { cleanupErrors: [...current.cleanupErrors, failure] });
+        if (primaryFailure) primaryFailure.historyRetentionError = failure;
+        else finallyFailure ??= error;
+      }
+    }
+    if (finallyFailure) throw finallyFailure;
   }
 }
 

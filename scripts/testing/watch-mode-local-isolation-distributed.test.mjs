@@ -9,6 +9,7 @@ import { repoRoot } from '../lib/testing-common.mjs';
 import { writeLocalIsolationFailureManifest, runLocalIsolationCell, rebaseLocalIsolationResults } from './watch-mode-local-isolation.mjs';
 
 import {
+  collectLocalIsolationDistributionFiles,
   createDistributedLocalIsolationAssignments,
   createLocalIsolationWorkerRequest,
   createLocalIsolationWorkerResultEnvelope,
@@ -19,6 +20,21 @@ import {
   runDistributedLocalIsolationCells,
   validateLocalIsolationWorkerRequest,
 } from './watch-mode-local-isolation-distributed.mjs';
+
+test('distribution freezes zero-Provider probe entrypoints and filesystem-only dependencies', () => {
+  const files = new Map(collectLocalIsolationDistributionFiles({ workspaceRoot: repoRoot, runtimeBinaryHashes: [] })
+    .map((entry) => [entry.path, entry]));
+  for (const name of ['scripts/testing/run-watch-mode-local-aec-probe.mjs',
+    'scripts/testing/watch-mode-aec-tap-evidence.mjs', 'scripts/testing/watch-mode-physical-source-probe.mjs',
+    'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveFinalizer.psm1',
+    'scripts/testing/lib/powershell/Omni.Testing.WatchMode.AudioPlayback.psm1',
+    'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Bridge.psm1',
+    'scripts/installer/virtual-speaker-device.ps1', 'scripts/testing/fixtures/watch-mode-en-original.wav',
+    'scripts/testing/fixtures/watch-mode-en-original.sha256', 'scripts/testing/fixtures/watch-mode-audio-fixtures.json']) {
+    assert.ok(files.has(name), `missing frozen dependency: ${name}`);
+    assert.equal(files.get(name).sha256, crypto.createHash('sha256').update(fs.readFileSync(path.join(repoRoot, name))).digest('hex'));
+  }
+});
 
 test('remote directory creation uses encoded Windows PowerShell compatible syntax', () => {
   const source = fs.readFileSync(new URL('./watch-mode-local-isolation-distributed.mjs', import.meta.url), 'utf8');

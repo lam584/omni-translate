@@ -5,10 +5,9 @@ import { spawnSync } from 'node:child_process';
 import { isMain, repoRoot } from '../lib/testing-common.mjs';
 import { currentGitProvenance } from './git-provenance.mjs';
 import { prepareStrictRuntimeAuthority, verifyStrictRuntimeAuthority } from './watch-mode-strict-runtime-authority.mjs';
-import { readProductionWorkerConfig, validateProductionWorkerConfig, windowsPowerShellEnvironment } from './run-watch-mode-live-production-coordinator.mjs';
+import { readProductionWorkerConfig, validateProductionWorkerConfig, windowsPowerShellEnvironment, checkProductionWorkerDisks, recordProductionWorkerHistories } from './run-watch-mode-live-production-coordinator.mjs';
 import { buildStrictSshArgs, validateWorkerPins, verifyPinnedKnownHost } from './watch-worker-bootstrap.mjs';
 import { runLocalIsolationProcess } from './watch-mode-local-isolation-distributed.mjs';
-import { runDefaultLocalWatchDiskLifecycle } from './watch-mode-disk-lifecycle.mjs';
 
 const quote = (value) => `'${String(value).replaceAll("'", "''")}'`;
 const hash = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -24,12 +23,16 @@ const defaults = {
     const { distributeWatchRuntime } = await import('./distribute-watch-runtime.mjs');
     return distributeWatchRuntime(options);
   },
-  diskLifecycle: ({ workspaceRoot, operationRoot }) => {
-    return runDefaultLocalWatchDiskLifecycle({
-      workspaceRoot,
-      activeExecutionIds: [path.basename(operationRoot)],
-      receiptPath: path.join(operationRoot, 'local-disk-lifecycle.json'),
-    });
+  diskLifecycle: ({ workersConfig, workspaceRoot, operationRoot, phase }) => {
+    const config = typeof workersConfig === 'string' ? readProductionWorkerConfig(workersConfig)
+      : validateProductionWorkerConfig(workersConfig, { configDirectory: workspaceRoot });
+    return checkProductionWorkerDisks({ config, executionId: path.basename(operationRoot), phase, receiptDirectory: operationRoot });
+  },
+  historyRetention: ({ workersConfig, workspaceRoot, operationRoot, outcome, summary, completedAt }) => {
+    const config = typeof workersConfig === 'string' ? readProductionWorkerConfig(workersConfig)
+      : validateProductionWorkerConfig(workersConfig, { configDirectory: workspaceRoot });
+    return recordProductionWorkerHistories({ config, executionId: path.basename(operationRoot), outcome, summary,
+      completedAt, receiptDirectory: operationRoot });
   },
 };
 
@@ -50,6 +53,8 @@ export async function prepareWatchRelease({ workersConfig, runtimeAuthorityPath,
     reuse: Boolean(runtimeAuthorityPath), cache: runtimeAuthorityPath ? 'explicit-authority-verification-required' : 'none',
     cargoBuildJobs: 2, providerInvocations: 0, stages: [], failures: [] };
   const started = performance.now();
+  let primaryFailure = null;
+  const diskContext = { workspaceRoot, workersConfig, operationRoot };
   const save = () => fs.writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
   save();
   const stage = async (name, action) => {
@@ -65,7 +70,7 @@ export async function prepareWatchRelease({ workersConfig, runtimeAuthorityPath,
     } finally { entry.completed = new Date().toISOString(); entry.durationMs = performance.now() - start; save(); }
   };
   try {
-    record.diskLifecycle = await stage('disk-lifecycle', async () => ops.diskLifecycle({ workspaceRoot, operationRoot }));
+    record.diskLifecycle = await stage('disk-lifecycle', async () => ops.diskLifecycle({ ...diskContext, phase: 'startup' }));
     const provenance = await stage('clean-head', async () => {
       const value = await ops.provenance({ workspaceRoot }); assertClean(value); return value;
     });
@@ -86,6 +91,7 @@ export async function prepareWatchRelease({ workersConfig, runtimeAuthorityPath,
     });
     record.runtimeAuthorityPath = runtime.authorityPath;
     record.cache = runtimeAuthorityPath ? 'verified-completed-authority' : 'built-once';
+    record.distributionDiskLifecycle = await stage('disk-before-distribution', async () => ops.diskLifecycle({ ...diskContext, phase: 'before-distribution' }));
     const distribution = await stage('distribute-runtime', async () => {
       const result = await ops.distributeWatchRuntime({ runtimeAuthorityPath: runtime.authorityPath, workersConfig, workspaceRoot });
       // Resolving the distributor contract means all remote verification completed.
@@ -99,9 +105,33 @@ export async function prepareWatchRelease({ workersConfig, runtimeAuthorityPath,
     record.outcome = 'ready';
     return { ready: true, executionId, operationRoot, recordPath, runtimeAuthorityPath: runtime.authorityPath, distribution };
   } catch (error) {
+    primaryFailure = error;
     record.outcome = 'failed'; error.recordPath = recordPath; throw error;
   } finally {
+    let finallyFailure = null;
+    try { record.finallyDiskLifecycle = await ops.diskLifecycle({ ...diskContext, phase: 'finally' }); }
+    catch (error) {
+      record.outcome = 'failed';
+      record.failures.push({ stage: 'disk-finally', message: error.message, code: error.code ?? null, rootCause: 'undetermined' });
+      if (primaryFailure) primaryFailure.diskLifecycleFinallyError = { message: error.message, receiptPath: error.receiptPath ?? null };
+      else { error.recordPath = recordPath; finallyFailure = error; }
+    }
     record.completed = new Date().toISOString(); record.durationMs = performance.now() - started; save();
+    try {
+      record.historyRetention = await ops.historyRetention({ ...diskContext, completedAt: record.completed,
+        outcome: record.outcome === 'ready' ? 'success' : 'fail', summary: { sourceOutcomePath: recordPath,
+          releaseId: record.releaseId, preparationOutcome: record.outcome, releaseEligible: false,
+          failedStages: record.failures.map((failure) => failure.stage), providerInvocations: 0 } });
+    } catch (error) {
+      record.outcome = 'failed';
+      const failure = { stage: 'history-retention', code: error.code ?? 'watch.history.failed', message: error.message,
+        receiptPath: error.receiptPath ?? null, rootCause: 'artifact-lifecycle' };
+      record.failures.push(failure);
+      if (primaryFailure) primaryFailure.historyRetentionError = failure;
+      else { error.recordPath = recordPath; finallyFailure ??= error; }
+    }
+    save();
+    if (finallyFailure) throw finallyFailure;
   }
 }
 
@@ -170,19 +200,13 @@ $dirty=@(& git.exe -c core.fsmonitor=false status --porcelain=v1 --untracked-fil
 & git.exe -c core.fsmonitor=false diff --no-ext-diff --quiet HEAD --; if($LASTEXITCODE -ne 0){throw 'source content differs from HEAD'};`;
     const remoteRoot = path.win32.join(worker.guestExecutionRoot || worker.workspaceRoot, 'artifacts/testing/watch-release-preflight', path.basename(operationRoot));
     const diskReceipt = path.win32.join(remoteRoot, 'disk-lifecycle.json');
-    const diskRoots = [
-      path.win32.join(worker.workspaceRoot, 'artifacts/testing/frozen-funnel-workers'),
-      path.win32.join(worker.workspaceRoot, 'artifacts/testing/watch-release-preflight'),
-    ].filter(Boolean);
-    const ensureDiskRoots = diskRoots.map((root) => `New-Item -ItemType Directory -Force -Path ${quote(root)} | Out-Null`).join('; ');
-    const diskArgs = diskRoots.flatMap((root) => ['--root', quote(root)]).join(' ');
-    const diskCommand = `& node.exe ${quote(path.win32.join(worker.workspaceRoot, 'scripts/testing/watch-mode-disk-lifecycle.mjs'))} ${diskArgs} --volume 'C:\\' --volume 'E:\\' --protect ${quote(path.basename(operationRoot))} --receipt ${quote(diskReceipt)}; if($LASTEXITCODE -ne 0){throw 'disk lifecycle preflight failed'}`;
+    const diskCommand = `& node.exe ${quote(path.win32.join(worker.workspaceRoot, 'scripts/testing/watch-mode-disk-lifecycle.mjs'))} --check-only --volume 'C:\\' --volume 'E:\\' --receipt ${quote(diskReceipt)}; if($LASTEXITCODE -ne 0){throw 'disk lifecycle preflight failed'}`;
     const remoteFile = path.win32.join(remoteRoot, 'tiny.txt');
     const payload = Buffer.from(`watch-release-transport:${crypto.randomUUID()}\n`);
     const localFile = path.join(operationRoot, `tiny-${index}.txt`);
     const readback = path.join(operationRoot, `readback-${index}.txt`);
     fs.writeFileSync(localFile, payload, { flag: 'wx' });
-    await ssh(`${source}\n${ensureDiskRoots}; if(Test-Path -LiteralPath ${quote(remoteRoot)}){throw 'preflight execution already exists'}; New-Item -ItemType Directory -Path ${quote(remoteRoot)} | Out-Null;\n${diskCommand}`);
+    await ssh(`${source}\nif(Test-Path -LiteralPath ${quote(remoteRoot)}){throw 'preflight execution already exists'}; New-Item -ItemType Directory -Path ${quote(remoteRoot)} | Out-Null;\n${diskCommand}`);
     const scpArgs = args.slice(0, -1); if (!local) scpArgs[scpArgs.indexOf('-p')] = '-P';
     const remote = local ? null : `${worker.user}@${worker.transport.host}:${remoteFile.replaceAll('\\', '/')}`;
     if (local) fs.copyFileSync(localFile, remoteFile, fs.constants.COPYFILE_EXCL);

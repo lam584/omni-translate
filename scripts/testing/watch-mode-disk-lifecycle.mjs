@@ -10,247 +10,118 @@ export const WATCH_DISK_LOCAL_HISTORY_NAMES = Object.freeze([
   'watch-mode-strict-runtime',
 ]);
 
-const compareOldestFirst = (left, right) => (
-  left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name)
-);
-const compareNewestFirst = (left, right) => compareOldestFirst(right, left);
-
-function canonicalRoot(rootPath) {
-  if (typeof rootPath !== 'string' || !rootPath.trim()) throw new Error('historical root must be an explicit non-empty path');
-  const absolute = path.resolve(rootPath);
+// Check every component, not just the final directory. A junction in an ancestor
+// must not turn an apparently explicit root into another tree.
+export function verifiedWatchPath(value, { directory = true } = {}) {
+  if (typeof value !== 'string' || !path.isAbsolute(value)
+      || (process.platform === 'win32' && !/^[a-z]:[\\/]/iu.test(value))) {
+    throw new Error('watch disk path must be an explicit absolute local path');
+  }
+  const absolute = path.resolve(value);
+  const same = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  let current = path.parse(absolute).root;
+  for (const part of path.relative(current, absolute).split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    const stat = fs.lstatSync(current);
+    if (stat.isSymbolicLink() || !same(fs.realpathSync.native(current), current)) {
+      throw new Error(`watch disk symlink/reparse path is forbidden: ${current}`);
+    }
+  }
   const stat = fs.lstatSync(absolute);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`historical root must be a real directory: ${absolute}`);
-  return fs.realpathSync.native(absolute);
-}
-
-function assertDirectChild(root, target) {
-  const absolute = path.resolve(target);
-  if (path.dirname(absolute) !== root || absolute === root) {
-    throw new Error(`disk lifecycle target is not a direct child of its root: ${absolute}`);
-  }
-  const relative = path.relative(root, absolute);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative) || relative.includes(path.sep)) {
-    throw new Error(`disk lifecycle target escaped its root: ${absolute}`);
-  }
+  if (directory ? !stat.isDirectory() : !stat.isFile()) throw new Error(`unexpected watch disk path type: ${absolute}`);
   return absolute;
 }
 
-function directoryBytes(root) {
-  let total = 0;
-  const stack = [root];
-  while (stack.length > 0) {
-    const current = stack.pop();
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-      const child = path.join(current, entry.name);
-      const stat = fs.lstatSync(child);
-      if (stat.isSymbolicLink()) {
-        total += stat.size;
-      } else if (stat.isDirectory()) {
-        stack.push(child);
-      } else {
-        total += stat.size;
-      }
-    }
-  }
-  return total;
+export function writeWatchDiskReceipt(receiptPath, receipt) {
+  if (!receiptPath) return;
+  if (!path.isAbsolute(receiptPath)) throw new Error('receipt must be an explicit absolute path');
+  const target = path.resolve(receiptPath);
+  // Callers create their owned report directory; never mkdir through unchecked
+  // ancestors or overwrite an existing receipt (including a link).
+  verifiedWatchPath(path.dirname(target));
+  const fd = fs.openSync(target, 'wx');
+  try {
+    fs.writeFileSync(fd, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8');
+    fs.fsyncSync(fd);
+  } finally { fs.closeSync(fd); }
 }
 
-function volumeKey(root) {
-  return path.parse(root).root.toLowerCase();
-}
-
-function freeBytes(root, statfs = fs.statfsSync) {
-  const value = statfs(root);
-  return Number(BigInt(value.bavail) * BigInt(value.bsize));
-}
-
-function inventoryRoot(rootPath, protectedIds) {
-  const root = canonicalRoot(rootPath);
-  const directories = [];
-  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    const target = assertDirectChild(root, path.join(root, entry.name));
-    const stat = fs.lstatSync(target);
-    if (!entry.isDirectory() || stat.isSymbolicLink()) continue;
-    const realTarget = fs.realpathSync.native(target);
-    assertDirectChild(root, realTarget);
-    directories.push({
-      root,
-      path: realTarget,
-      name: entry.name,
-      executionId: entry.name,
-      mtimeMs: stat.mtimeMs,
-      bytes: directoryBytes(realTarget),
-      protected: protectedIds.has(entry.name),
-    });
-  }
-  directories.sort(compareNewestFirst);
-  return { root, directories };
-}
-
-function selectDeletions(inventories, beforeByVolume) {
-  const selected = new Set();
-  for (const inventory of inventories) {
-    for (const entry of inventory.directories.slice(WATCH_DISK_MAX_DIRECTORIES_PER_ROOT)) {
-      if (!entry.protected) selected.add(entry.path);
-    }
-  }
-  const byVolume = new Map();
-  for (const inventory of inventories) {
-    const key = volumeKey(inventory.root);
-    const entries = byVolume.get(key) ?? [];
-    entries.push(...inventory.directories.filter((entry) => !entry.protected));
-    byVolume.set(key, entries);
-  }
-  for (const [key, entries] of byVolume) {
-    let projected = beforeByVolume.get(key).freeBytes
-      + entries.filter((entry) => selected.has(entry.path)).reduce((sum, entry) => sum + entry.bytes, 0);
-    for (const entry of entries.sort(compareOldestFirst)) {
-      if (projected >= WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME) break;
-      if (selected.has(entry.path)) continue;
-      selected.add(entry.path);
-      projected += entry.bytes;
-    }
-  }
-  return selected;
-}
-
-export function runWatchDiskLifecycle({
-  historicalRoots,
-  requiredVolumePaths = historicalRoots,
-  activeExecutionIds = [],
-  protectedExecutionIds = [],
-  dryRun = false,
-  receiptPath = null,
-  now = () => new Date(),
-  statfs = fs.statfsSync,
+/** No pruning, projections, or retries: paid work requires measured free space. */
+export function checkWatchDiskSpace({
+  requiredVolumePaths = process.platform === 'win32' ? ['C:\\', 'E:\\'] : ['/'],
+  receiptPath = null, statfs = fs.statfsSync, now = () => new Date(),
+  warn = (message) => console.warn(message),
 } = {}) {
-  if (!Array.isArray(historicalRoots) || historicalRoots.length === 0) throw new Error('at least one explicit historical root is required');
-  const protectedIds = new Set([...activeExecutionIds, ...protectedExecutionIds].map(String));
-  const inventories = historicalRoots.map((root) => inventoryRoot(root, protectedIds));
-  if (new Set(inventories.map((entry) => entry.root.toLowerCase())).size !== inventories.length) {
-    throw new Error('historical roots must resolve to distinct directories');
+  if (!Array.isArray(requiredVolumePaths) || requiredVolumePaths.length === 0) throw new Error('required volumes are empty');
+  const volumes = [];
+  for (const samplePath of [...new Set(requiredVolumePaths)]) {
+    let observedFreeBytes = null;
+    let error = null;
+    try {
+      if (!path.isAbsolute(samplePath)) throw new Error('volume path is not absolute');
+      const value = statfs(samplePath, { bigint: true });
+      const bytes = BigInt(value.bavail) * BigInt(value.bsize);
+      if (BigInt(value.bavail) < 0n || BigInt(value.bsize) <= 0n || bytes > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error('invalid free-space measurement');
+      }
+      observedFreeBytes = Number(bytes);
+    } catch (cause) { error = cause.message; }
+    volumes.push({ samplePath, observedFreeBytes, minimumFreeBytes: WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME,
+      passed: error === null && observedFreeBytes >= WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME, error });
   }
-  const beforeByVolume = new Map();
-  if (!Array.isArray(requiredVolumePaths) || requiredVolumePaths.length === 0) {
-    throw new Error('at least one required volume path is required');
-  }
-  for (const volumePath of requiredVolumePaths) {
-    const absolute = path.resolve(volumePath);
-    const key = volumeKey(absolute);
-    if (!beforeByVolume.has(key)) beforeByVolume.set(key, { volume: key, samplePath: absolute, freeBytes: freeBytes(absolute, statfs) });
-  }
-  for (const inventory of inventories) {
-    const key = volumeKey(inventory.root);
-    if (!beforeByVolume.has(key)) beforeByVolume.set(key, { volume: key, samplePath: inventory.root, freeBytes: freeBytes(inventory.root, statfs) });
-  }
-  const selected = selectDeletions(inventories, beforeByVolume);
-  const deletedDirectories = [];
-  for (const entry of inventories.flatMap((inventory) => inventory.directories).filter((item) => selected.has(item.path)).sort(compareOldestFirst)) {
-    if (entry.protected) throw new Error(`refusing to delete protected execution: ${entry.executionId}`);
-    assertDirectChild(entry.root, entry.path);
-    const actual = fs.realpathSync.native(entry.path);
-    assertDirectChild(entry.root, actual);
-    if (!dryRun) fs.rmSync(actual, { recursive: true, force: false });
-    deletedDirectories.push({ root: entry.root, path: actual, executionId: entry.executionId, bytes: entry.bytes });
-  }
-  const afterVolumes = [...beforeByVolume.values()].map((before) => {
-    const measured = dryRun ? before.freeBytes : freeBytes(before.samplePath, statfs);
-    const projectedReleased = deletedDirectories.filter((entry) => volumeKey(entry.root) === before.volume)
-      .reduce((sum, entry) => sum + entry.bytes, 0);
-    return {
-      volume: before.volume,
-      beforeFreeBytes: before.freeBytes,
-      afterFreeBytes: measured,
-      releasedBytes: dryRun ? projectedReleased : Math.max(0, measured - before.freeBytes),
-      projectedReleasedBytes: projectedReleased,
-      minimumFreeBytes: WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME,
-    };
-  });
-  const retainedDirectories = inventories.flatMap((inventory) => inventory.directories)
-    .filter((entry) => !selected.has(entry.path))
-    .map((entry) => ({ root: entry.root, path: entry.path, executionId: entry.executionId, protected: entry.protected }));
-  const insufficient = afterVolumes.filter((entry) => (
-    (dryRun ? entry.afterFreeBytes + entry.projectedReleasedBytes : entry.afterFreeBytes)
-      < WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME
-  ));
-  const receipt = {
-    schemaVersion: 1,
-    artifactKind: 'watch-mode-disk-lifecycle-receipt',
-    generatedAt: now().toISOString(),
-    dryRun: Boolean(dryRun),
-    verdict: dryRun ? 'dry-run' : insufficient.length === 0 ? 'passed' : 'failed',
-    minimumFloorSatisfied: insufficient.length === 0,
-    failureCode: insufficient.length === 0 ? null : 'watch.disk-space.insufficient',
-    violations: insufficient.map((entry) => ({
-      volume: entry.volume,
-      observedFreeBytes: entry.afterFreeBytes,
-      projectedFreeBytes: entry.afterFreeBytes + (dryRun ? entry.projectedReleasedBytes : 0),
-      minimumFreeBytes: WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME,
-    })),
-    policy: {
-      minimumFreeBytesPerVolume: WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME,
-      maximumDirectoriesPerRoot: WATCH_DISK_MAX_DIRECTORIES_PER_ROOT,
-    },
-    roots: inventories.map((entry) => entry.root),
-    protectedExecutionIds: [...protectedIds].sort(),
-    deletedDirectories,
-    retainedDirectories,
-    volumes: afterVolumes,
-    releasedBytes: afterVolumes.reduce((sum, entry) => sum + entry.releasedBytes, 0),
-  };
-  if (receiptPath) {
-    const absoluteReceipt = path.resolve(receiptPath);
-    fs.mkdirSync(path.dirname(absoluteReceipt), { recursive: true });
-    fs.writeFileSync(absoluteReceipt, `${JSON.stringify(receipt, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
-  }
-  if (insufficient.length > 0) {
-    const error = new Error(`watch disk free-space floor is not met: ${insufficient.map((entry) => `${entry.volume}=${entry.afterFreeBytes}`).join(', ')}`);
-    error.code = 'watch.disk-space.insufficient';
+  const passed = volumes.every((volume) => volume.passed);
+  const receipt = { schemaVersion: 2, artifactKind: 'watch-mode-disk-lifecycle-receipt',
+    generatedAt: now().toISOString(), mode: 'check-only', verdict: passed ? 'passed' : 'failed',
+    minimumFloorSatisfied: passed, failureCode: passed ? null : 'watch.disk-space.insufficient',
+    volumes, deletedDirectories: [], releasedBytes: 0 };
+  if (!passed) warn(`WARNING: watch disk floor is not met or cannot be measured (C:/E: require >=3 GiB): ${volumes.filter((v) => !v.passed).map((v) => `${v.samplePath}=${v.observedFreeBytes ?? 'unknown'}`).join(', ')}`);
+  writeWatchDiskReceipt(receiptPath, receipt);
+  if (!passed) {
+    const error = new Error('watch disk free-space floor is not met; no start/distribution/provider work is allowed');
+    error.code = receipt.failureCode;
     error.receipt = receipt;
     throw error;
   }
   return receipt;
 }
 
-export function runDefaultLocalWatchDiskLifecycle({ workspaceRoot, receiptPath, activeExecutionIds = [], protectedExecutionIds = [] } = {}) {
-  if (typeof workspaceRoot !== 'string' || !workspaceRoot) throw new Error('workspaceRoot is required');
-  const testingRoot = path.resolve(workspaceRoot, 'artifacts', 'testing');
-  const roots = WATCH_DISK_LOCAL_HISTORY_NAMES.map((name) => path.join(testingRoot, name))
-    .filter((candidate) => fs.existsSync(candidate));
-  if (roots.length === 0) throw new Error('no watch history roots exist');
-  return runWatchDiskLifecycle({
-    historicalRoots: roots,
-    requiredVolumePaths: process.platform === 'win32' ? ['C:\\', workspaceRoot] : [workspaceRoot],
-    activeExecutionIds,
-    protectedExecutionIds,
-    receiptPath,
-  });
+/** Legacy roots are untyped, so they are NEVER deletion authority. */
+export function runWatchDiskLifecycle({ historicalRoots = [], requiredVolumePaths,
+  activeExecutionIds = [], protectedExecutionIds = [], dryRun = false, ...options } = {}) {
+  const roots = historicalRoots.map((root) => verifiedWatchPath(root));
+  if (new Set(roots.map((root) => process.platform === 'win32' ? root.toLowerCase() : root)).size !== roots.length) {
+    throw new Error('historical roots must resolve to distinct directories');
+  }
+  // Compatibility for frozen-funnel callers. The old generic FIFO could delete
+  // unknown/incomplete/signed evidence and is intentionally gone.
+  return checkWatchDiskSpace({ ...options, ...(requiredVolumePaths?.length ? { requiredVolumePaths } : {}) });
+}
+
+export function runDefaultLocalWatchDiskLifecycle({ workspaceRoot, ...options } = {}) {
+  verifiedWatchPath(workspaceRoot);
+  return checkWatchDiskSpace({ ...options,
+    requiredVolumePaths: process.platform === 'win32' ? ['C:\\', 'E:\\'] : [workspaceRoot] });
 }
 
 export function parseWatchDiskLifecycleArgs(argv) {
   const options = { historicalRoots: [], requiredVolumePaths: [], protectedExecutionIds: [] };
   for (let index = 0; index < argv.length; index += 1) {
     const name = argv[index];
+    if (name === '--check-only') continue;
     if (name === '--dry-run') { options.dryRun = true; continue; }
+    if (name === '--apply') throw new Error('generic FIFO apply is forbidden; use watch-mode-typed-history.mjs');
     const value = argv[++index];
     if (!value || value.startsWith('--')) throw new Error(`missing value for ${name}`);
     if (name === '--root') options.historicalRoots.push(value);
     else if (name === '--volume') options.requiredVolumePaths.push(value);
     else if (name === '--protect') options.protectedExecutionIds.push(value);
-    else if (name === '--receipt') options.receiptPath = value;
-    else throw new Error(`unknown argument: ${name}`);
+    else if (name === '--receipt' && !options.receiptPath) options.receiptPath = value;
+    else throw new Error(`unknown or repeated argument: ${name}`);
   }
-  if (options.requiredVolumePaths.length === 0) options.requiredVolumePaths = [...options.historicalRoots];
   return options;
 }
 
 if (isMain(import.meta.url)) {
-  try {
-    const receipt = runWatchDiskLifecycle(parseWatchDiskLifecycleArgs(process.argv.slice(2)));
-    console.log(JSON.stringify(receipt));
-  } catch (error) {
-    console.error(error.message);
-    process.exitCode = 1;
-  }
+  try { console.log(JSON.stringify(runWatchDiskLifecycle(parseWatchDiskLifecycleArgs(process.argv.slice(2))))); }
+  catch (error) { console.error(error.message); process.exitCode = 1; }
 }
-

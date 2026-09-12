@@ -8,6 +8,7 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import zlib from 'node:zlib';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
 
 import { sha256Canonical } from './watch-mode-shard-authority.mjs';
 
@@ -162,6 +163,7 @@ import {
   PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS,
   PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS,
   runProductionCoordinator,
+  checkProductionWorkerDisks,
   scpBaseArgs,
   sshBaseArgs,
   validateProductionWorkerConfig,
@@ -2769,6 +2771,8 @@ test('production coordinator passes four collected signed shard roots through st
       ),
       evidenceOutputRoot: path.join(root, 'evidence'),
       operations: {
+        diskLifecycle: async ({ phase }) => { calls.push(`disk:${phase}`); return { verdict: 'passed' }; },
+        historyRetention: async () => ({ verdict: 'passed' }),
         verifyRuntimeAuthority: async () => ({
           authorityPath: path.join(root, 'strict-runtime-authority.json'),
           authority: {
@@ -2962,6 +2966,9 @@ test('production coordinator passes four collected signed shard roots through st
       },
     };
     const result = await runProductionCoordinator(coordinatorOptions);
+    assert.equal(calls[0], 'disk:startup');
+    assert.equal(calls.at(-1), 'disk:finally');
+    assert.ok(calls.indexOf('disk:before-provider') < calls.indexOf('provider-preflight'));
     assert.deepEqual(
       calls.filter((entry) => entry.startsWith('wave:')),
       plan.waves.map((wave) => `wave:${wave.waveIndex}`),
@@ -2996,6 +3003,7 @@ test('production coordinator passes four collected signed shard roots through st
     assert.equal(calls.includes('write-manifest'), false);
     assert.equal(calls.includes('verify'), false);
     assert.equal(calls.includes('publish'), false);
+    assert.equal(calls.at(-1), 'disk:finally');
 
     failCells = true;
     calls.length = 0;
@@ -3009,8 +3017,87 @@ test('production coordinator passes four collected signed shard roots through st
     assert.equal(calls.filter((entry) => entry === 'write-manifest').length, 1);
     assert.equal(calls.filter((entry) => entry === 'verify').length, 0);
     assert.equal(calls.filter((entry) => entry === 'publish').length, 0);
+    assert.equal(calls.at(-1), 'disk:finally');
+    calls.length = 0;
+    await assert.rejects(runProductionCoordinator({ ...coordinatorOptions,
+      executionId: `disk-failed-${crypto.randomUUID()}`,
+      operations: { ...coordinatorOptions.operations, diskLifecycle: async ({ phase }) => {
+        calls.push(`disk:${phase}`); throw new Error(`disk floor ${phase}`);
+      } },
+    }), (error) => {
+      assert.equal(error.message, 'disk floor startup');
+      assert.equal(error.diskLifecycleFinallyError.message, 'disk floor finally'); return true;
+    });
+    assert.deepEqual(calls, ['disk:startup', 'disk:finally']);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('disk barrier checks main plus every worker without pruning and settles failed peers', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-disk-barrier-'));
+  t.after(() => { assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir())); fs.rmSync(root, { recursive: true, force: true }); });
+  const config = { sshExecutable: 'ssh.exe', workers: ['vm171', 'vm167', 'vm169', 'vm131'].map((workerId, index) => ({
+    workerId, workspaceRoot: 'E:\\watch-worker', user: 'VMUser', host: `host-${workerId}`, port: 22,
+    identityFile: 'identity', knownHostsFile: 'known-hosts', hostKeyAlias: workerId,
+    transport: { kind: index === 0 ? 'local' : 'ssh' },
+  })) };
+  const valid = { mode: 'check-only', verdict: 'passed', minimumFloorSatisfied: true,
+    volumes: ['C:\\', 'E:\\'].map((samplePath) => ({ samplePath, passed: true, observedFreeBytes: 3 * 1024 ** 3 })) };
+  let calls = 0;
+  const runProcess = async (exe, args, settings) => {
+    calls += 1;
+    assert.equal(settings.timeoutMs, 20000);
+    const body = Buffer.from(args.at(-1), 'base64').toString('utf16le');
+    assert.match(body, /statfsSync/u); assert.match(body, /check-only/u);
+    assert.doesNotMatch(body, /--root|--apply|Remove-Item|rmSync|watch-mode-disk-lifecycle\.mjs/u);
+    if (exe === 'ssh.exe') assert.ok(args.includes('StrictHostKeyChecking=yes'));
+    return { exitCode: 0, stdout: JSON.stringify(valid), stderr: '' };
+  };
+  const options = { config, executionId: 'disk-test', phase: 'startup', receiptDirectory: root,
+    checkLocal: () => valid, runProcess };
+  const receipt = await checkProductionWorkerDisks(options);
+  assert.equal(receipt.hosts.length, 5); assert.equal(calls, 4);
+  let failedCalls = 0;
+  await assert.rejects(checkProductionWorkerDisks({ ...options, phase: 'finally', runProcess: async (...args) => {
+    failedCalls += 1;
+    if (failedCalls === 1) return { exitCode: 1, stdout: '', stderr: 'C: full' };
+    if (failedCalls === 2) return { exitCode: 0, stdout: JSON.stringify({ ...valid, volumes: valid.volumes.slice(0, 1) }) };
+    return runProcess(...args);
+  } }), /disk floor barrier failed/u);
+  assert.equal(failedCalls, 4);
+  const records = fs.readdirSync(root).map((file) => JSON.parse(fs.readFileSync(path.join(root, file), 'utf8')));
+  assert.equal(records.find((entry) => entry.phase === 'finally').hosts.filter((host) => host.status === 'failed').length, 2);
+});
+
+test('disk startup measures independently of absent or stale worker source and rejects unknown volumes', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-disk-bootstrap-'));
+  t.after(() => { assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir())); fs.rmSync(root, { recursive: true, force: true }); });
+  const config = { workers: [{ workerId: 'vm171', workspaceRoot: 'E:\\absent-worker-source', transport: { kind: 'local' } }] };
+  const floor = 3n * 1024n ** 3n;
+  for (const scenario of ['floor', 'low', 'missing', 'negative', 'oversize']) {
+    const options = { config, executionId: `bootstrap-${scenario}`, phase: 'startup', receiptDirectory: root,
+      checkLocal: () => ({ verdict: 'passed' }), runProcess: async (_exe, args) => {
+        const body = Buffer.from(args.at(-1), 'base64').toString('utf16le');
+        assert.doesNotMatch(body, /absent-worker-source|import\(|readFile|unlink|rmSync/u);
+        const code = body.match(/& node\.exe -e '((?:''|[^'])*)';/u)?.[1].replaceAll("''", "'");
+        assert.ok(code);
+        let stdout;
+        const visited = [];
+        runInNewContext(code, { require: (name) => {
+          assert.equal(name, 'node:fs');
+          return { statfsSync: (volume) => {
+            visited.push(volume);
+            if (scenario === 'missing' && volume === 'E:/') throw new Error('missing volume');
+            return { bavail: scenario === 'low' ? floor - 1n : scenario === 'negative' ? -1n
+              : scenario === 'oversize' ? BigInt(Number.MAX_SAFE_INTEGER) + 1n : floor, bsize: 1n };
+          } };
+        }, console: { log: (value) => { stdout = value; } } });
+        assert.deepEqual(visited, ['C:/', 'E:/']);
+        return { exitCode: 0, stdout, stderr: '' };
+      } };
+    if (scenario === 'floor') assert.equal((await checkProductionWorkerDisks(options)).verdict, 'passed');
+    else await assert.rejects(checkProductionWorkerDisks(options), /disk floor barrier failed/u);
   }
 });
 
@@ -3068,6 +3155,91 @@ test('coordinator CLI exposes only the production config, local receipt, and out
   assert.equal(parsed.localIsolationAuthority, 'local-isolation-manifest.json');
   assert.equal(parsed.executionId, 'fixed-execution');
   assert.throws(() => parseProductionCoordinatorCliArgs(['--remote-command', 'whoami']), /Unknown flag/);
+});
+
+test('four-host lightweight history is collect-all, stdin-only and separate from signed evidence', async (t) => {
+  const { recordProductionWorkerHistories } = await import('./run-watch-mode-live-production-coordinator.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-history-transport-'));
+  t.after(() => {
+    assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const config = { sshExecutable: 'fake-ssh.exe', workers: ['vm171', 'vm167', 'vm169', 'vm131'].map((workerId, index) => ({
+    workerId, workspaceRoot: index ? 'E:\\watch-worker' : root, guestExecutionRoot: index ? 'E:\\shards' : root,
+    transport: { kind: index ? 'ssh' : 'local' }, user: 'user', host: 'host', port: 22,
+    knownHostsFile: 'pins', hostKeyAlias: workerId, identityFile: 'key',
+  })) };
+  const seen = [];
+  const successful = (input) => ({ verdict: 'success', workerId: input.workerId, executionId: input.executionId,
+    ok: true, archived: true, releaseEvidence: false,
+    reportRetained: true, reportPath: 'report.json', auditOutcomePath: 'audit.json', auditArchivePath: 'archive.json', rawEvidenceRetired: false });
+  const options = { config, executionId: 'history-fixture', outcome: 'fail', summary: { marker: '不可信文本; $(do-not-execute)' },
+    receiptDirectory: root, recordLocal: (input) => { seen.push(input); return successful(input); },
+    runProcess: async (exe, args, settings) => {
+      assert.equal(exe, 'fake-ssh.exe'); assert.equal(settings.timeoutMs, 30000);
+      const script = Buffer.from(args.at(-1), 'base64').toString('utf16le');
+      assert.ok(script.includes('Get-FileHash')); assert.ok(script.includes('fs.readFileSync(0)'));
+      assert.ok(!script.includes('do-not-execute'));
+      const input = JSON.parse(settings.input); seen.push(input);
+      if (input.workerId === 'vm167') throw new Error('archive unavailable');
+      return { exitCode: 0, stdout: JSON.stringify(successful(input)), stderr: '' };
+    } };
+  await assert.rejects(recordProductionWorkerHistories(options), (error) => {
+    assert.equal(error.code, 'watch.history.failed');
+    const receipt = JSON.parse(fs.readFileSync(error.receiptPath, 'utf8'));
+    assert.equal(receipt.rawEvidenceRetired, false);
+    assert.deepEqual(receipt.workers.map((entry) => entry.status), ['passed', 'failed', 'passed', 'passed']); return true;
+  });
+  assert.equal(seen.length, 4);
+  assert.ok(seen.every((entry) => entry.outcome === 'fail' && entry.report.summary.rawEvidenceRetired === false));
+  assert.deepEqual(seen.map((entry) => entry.workerId).sort(), config.workers.map((entry) => entry.workerId).sort());
+});
+
+test('automatic history transport consumes the real owned-report API without touching original evidence', async (t) => {
+  const { recordProductionWorkerHistories } = await import('./run-watch-mode-live-production-coordinator.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-history-local-'));
+  t.after(() => {
+    assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const raw = path.join(root, 'signed-original.pcm'); fs.writeFileSync(raw, 'signed-original');
+  const config = { workers: [{ workerId: 'vm171', workspaceRoot: root, guestExecutionRoot: path.join(root, 'guest'), transport: { kind: 'local' } }] };
+  const result = await recordProductionWorkerHistories({ config, executionId: 'history-real-api', outcome: 'fail',
+    summary: { originalEvidence: raw }, receiptDirectory: root });
+  assert.equal(result.verdict, 'passed');
+  const worker = result.workers[0].receipt;
+  assert.equal(worker.releaseEvidence, false);
+  assert.equal(worker.counts.retained, 1);
+  assert.ok(fs.existsSync(worker.reportPath)); assert.ok(fs.existsSync(worker.auditOutcomePath));
+  assert.equal(fs.readFileSync(raw, 'utf8'), 'signed-original');
+});
+
+test('remote history command passes UTF-8 stdin through real PowerShell to the owned Node archive', { skip: process.platform !== 'win32' }, async (t) => {
+  const { recordProductionWorkerHistories } = await import('./run-watch-mode-live-production-coordinator.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-history-powershell-'));
+  t.after(() => { assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir())); fs.rmSync(root, { recursive: true, force: true }); });
+  for (const relative of ['scripts/testing/watch-mode-history-reports.mjs', 'scripts/testing/watch-mode-disk-lifecycle.mjs', 'scripts/lib/testing-common.mjs']) {
+    const target = path.join(root, relative); fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(path.join(repoRoot, relative), target);
+  }
+  const worker = { workerId: 'vm167', workspaceRoot: root, guestExecutionRoot: path.join(root, 'guest'),
+    transport: { kind: 'ssh' }, host: 'test-host', user: 'test-user', port: 22,
+    identityFile: 'unused', knownHostsFile: 'unused', hostKeyAlias: 'vm167' };
+  const summary = { text: "中文 $(not-a-command) ; 'quoted' ` data only" };
+  const result = await recordProductionWorkerHistories({ config: { sshExecutable: 'unused', workers: [worker] },
+    executionId: 'history-native-stdin', outcome: 'fail', summary, receiptDirectory: root,
+    runProcess: async (_exe, args, settings) => {
+      // Exercise the exact generated remote command; only the SSH hop is absent.
+      const commandIndex = args.indexOf('powershell.exe'); assert.ok(commandIndex >= 0);
+      const native = spawnSync(args[commandIndex], args.slice(commandIndex + 1), {
+        input: settings.input, env: settings.environment, encoding: 'utf8', timeout: settings.timeoutMs, windowsHide: true,
+      });
+      assert.ifError(native.error);
+      return { exitCode: native.status, stdout: native.stdout, stderr: native.stderr };
+    } });
+  assert.equal(result.verdict, 'passed');
+  const report = JSON.parse(fs.readFileSync(result.workers[0].receipt.reportPath, 'utf8'));
+  assert.equal(report.summary.text, summary.text);
 });
 
 test('prepaid distribution covers every signed shard implementation with exact bytes', async () => {

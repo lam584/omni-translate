@@ -722,6 +722,7 @@ test('shard orchestration inventory is independent from local/matrix implementat
     'scripts/testing/run-watch-mode-live-shard.mjs',
     'scripts/testing/run-watch-mode-live-coordinator.mjs',
     'scripts/testing/run-watch-mode-live-production-coordinator.mjs',
+    'scripts/testing/watch-mode-history-reports.mjs',
     'scripts/testing/watch-mode-release-timeout-budget.mjs',
     'scripts/testing/watch-mode-strict-runtime-authority.mjs',
     'scripts/testing/watch-mode-provider-preflight-process.mjs',

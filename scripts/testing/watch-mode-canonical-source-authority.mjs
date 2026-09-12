@@ -428,6 +428,11 @@ export function buildPhysicalSourceWaveformAuthority({
   sourceWindowPath,
   physicalRecordingPcmPath,
   wrongReferencePcmPaths,
+  workspaceRoot = defaultWorkspaceRoot,
+  releaseExecutablePath,
+  releaseExecutableSha256,
+  noBuild = false,
+  deadlineUtcMs,
 } = {}) {
   if (!runDirectory && (!referencePcmPath || !sourceWindowPath)) {
     throw new Error('runDirectory or explicit reference/source-window paths are required');
@@ -467,7 +472,11 @@ export function buildPhysicalSourceWaveformAuthority({
     sampleRateHz: CANONICAL_SOURCE_SAMPLE_RATE_HZ,
     profile: 'canonical-waveform-v1',
     wrongReferencePaths: wrongReferencePcmPaths ?? [],
-    workspaceRoot: defaultWorkspaceRoot,
+    workspaceRoot,
+    releaseExecutablePath,
+    releaseExecutableSha256,
+    noBuild,
+    deadlineUtcMs,
   });
   const candidateAuthorities = rustMetrics.candidates.map((entry) => ({
     ...entry,

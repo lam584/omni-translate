@@ -375,12 +375,13 @@ test('owned tree cleanup returns generation-aware termination evidence for a rea
     try {
       $lease = Get-OmniProcessIdentity -ProcessId $process.Id -Ownership managed
       $result = Stop-OmniOwnedProcessTree -Lease $lease
-      [ordered]@{ stopped = $result.stopped; alive = [bool](Get-Process -Id $process.Id -ErrorAction SilentlyContinue); preference = [string]$ErrorActionPreference; rootKillRequested = [bool]$result.terminationResults[-1].killRequested } | ConvertTo-Json -Compress
+      $generation = Get-OmniProcessIdentityState -Lease $lease
+      [ordered]@{ stopped = $result.stopped; originalGenerationCurrent = $generation.status -eq 'current'; generationStatus = $generation.status; preference = [string]$ErrorActionPreference; rootKillRequested = [bool]$result.terminationResults[-1].killRequested } | ConvertTo-Json -Compress
     } finally { if (-not $process.HasExited) { $process.Kill(); $process.WaitForExit() } }
   `);
   const result = JSON.parse(output);
   assert.equal(result.stopped, true);
-  assert.equal(result.alive, false);
+  assert.equal(result.originalGenerationCurrent, false, result.generationStatus);
   assert.equal(result.preference, 'Stop');
   assert.equal(result.rootKillRequested, true);
 });

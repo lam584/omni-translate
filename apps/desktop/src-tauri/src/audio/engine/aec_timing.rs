@@ -65,6 +65,12 @@ pub(super) struct AecDelayEstimate {
     pub(super) aec_reset_required: bool,
     pub(super) aec_reset_reason: Option<&'static str>,
     pub(super) published_render_discontinuity: bool,
+    pub(super) previous_device_frame_index: Option<u64>,
+    pub(super) current_device_frame_index: u64,
+    pub(super) device_frame_delta: Option<i128>,
+    pub(super) previous_packet_qpc_100ns: Option<u64>,
+    pub(super) current_packet_qpc_100ns: u64,
+    pub(super) packet_qpc_delta_100ns: Option<i128>,
     pub(super) source: &'static str,
 }
 
@@ -123,6 +129,13 @@ impl AecDelayEstimator {
         &mut self,
         observation: CaptureClockObservation,
     ) -> AecDelayEstimate {
+        let previous_device_frame_index = self.last_device_frame_index;
+        let previous_packet_qpc_100ns = self.last_packet_qpc_100ns;
+        let device_frame_delta = previous_device_frame_index
+            .map(|previous| i128::from(observation.device_frame_index) - i128::from(previous));
+        let packet_qpc_delta_100ns = previous_packet_qpc_100ns
+            .map(|previous| i128::from(observation.packet_qpc_100ns) - i128::from(previous));
+
         // AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR makes both the device position
         // and QPC timestamp non-authoritative for this packet. Do not compare
         // them with the last good clock or install them as the next baseline.
@@ -291,6 +304,12 @@ impl AecDelayEstimator {
             aec_reset_required,
             aec_reset_reason,
             published_render_discontinuity,
+            previous_device_frame_index,
+            current_device_frame_index: observation.device_frame_index,
+            device_frame_delta,
+            previous_packet_qpc_100ns,
+            current_packet_qpc_100ns: observation.packet_qpc_100ns,
+            packet_qpc_delta_100ns,
             source: "wasapi-capture-qpc+capture-padding-validated+render-submit-position+same-client-reference-lead",
         }
     }
@@ -745,6 +764,36 @@ mod tests {
     }
 
     #[test]
+    fn capture_clock_diagnostics_report_the_exact_previous_current_delta() {
+        let mut estimator = AecDelayEstimator::new(48_000, 2);
+        let first = estimator.observe_capture(observation(
+            715_296,
+            588_923_964_168,
+            588_924_100_000,
+            0,
+        ));
+        assert_eq!(first.previous_device_frame_index, None);
+        assert_eq!(first.device_frame_delta, None);
+        assert_eq!(first.previous_packet_qpc_100ns, None);
+        assert_eq!(first.packet_qpc_delta_100ns, None);
+
+        let next = estimator.observe_capture(observation(
+            716_256,
+            588_924_164_168,
+            588_924_300_000,
+            0,
+        ));
+        assert_eq!(next.previous_device_frame_index, Some(715_296));
+        assert_eq!(next.current_device_frame_index, 716_256);
+        assert_eq!(next.device_frame_delta, Some(960));
+        assert_eq!(next.previous_packet_qpc_100ns, Some(588_923_964_168));
+        assert_eq!(next.current_packet_qpc_100ns, 588_924_164_168);
+        assert_eq!(next.packet_qpc_delta_100ns, Some(200_000));
+        assert!(!next.delay_reset_required);
+        assert!(!next.aec_reset_required);
+    }
+
+    #[test]
     fn monotonic_capture_clock_regression_resets_aec_filter() {
         let mut estimator = AecDelayEstimator::new(48_000, 2);
         let _ = estimator.observe_capture(observation(48_000, 10_000_000, 10_200_000, 0));
@@ -756,6 +805,12 @@ mod tests {
             estimate.aec_reset_reason,
             Some("wasapi-capture-clock-regression")
         );
+        assert_eq!(estimate.previous_device_frame_index, Some(48_000));
+        assert_eq!(estimate.current_device_frame_index, 47_520);
+        assert_eq!(estimate.device_frame_delta, Some(-480));
+        assert_eq!(estimate.previous_packet_qpc_100ns, Some(10_000_000));
+        assert_eq!(estimate.current_packet_qpc_100ns, 9_900_000);
+        assert_eq!(estimate.packet_qpc_delta_100ns, Some(-100_000));
     }
 
     #[test]

@@ -2329,6 +2329,22 @@ foreach($entry in $items){$item=Get-Item -LiteralPath ([string]$entry.path) -For
         ], { signal });
         ensureSuccessful(download, 'remote Provider preflight claim collection');
       });
+      const workerStdoutTarget = path.join(controlEvidenceRoot, 'provider-preflight-worker.stdout.log');
+      const workerStdoutCollected = await collect('remote Provider preflight stdout collection', async () => {
+        const download = await runProcess(config.scpExecutable, [
+          ...scpBaseArgs(executor), remoteSpec(executor, stdoutPath), pathForScp(workerStdoutTarget),
+        ], { signal });
+        ensureSuccessful(download, 'remote Provider preflight stdout collection');
+        return true;
+      });
+      const workerStderrTarget = path.join(controlEvidenceRoot, 'provider-preflight-worker.stderr.log');
+      const workerStderrCollected = await collect('remote Provider preflight stderr collection', async () => {
+        const download = await runProcess(config.scpExecutable, [
+          ...scpBaseArgs(executor), remoteSpec(executor, stderrPath), pathForScp(workerStderrTarget),
+        ], { signal });
+        ensureSuccessful(download, 'remote Provider preflight stderr collection');
+        return true;
+      });
       const resolvedLocalEvidenceDirectory = path.resolve(localEvidenceDirectory);
       const evidenceParent = path.dirname(resolvedLocalEvidenceDirectory);
       fs.mkdirSync(evidenceParent, { recursive: true });
@@ -2341,17 +2357,22 @@ foreach($entry in $items){$item=Get-Item -LiteralPath ([string]$entry.path) -For
         if (downloaded !== resolvedLocalEvidenceDirectory) fs.renameSync(downloaded, resolvedLocalEvidenceDirectory);
       });
       let remote;
-      if (result) {
+      if (workerStdoutCollected) {
         try {
-          const line = lastNonEmptyLine(result.stdout);
+          const line = lastNonEmptyLine(fs.readFileSync(workerStdoutTarget, 'utf8').replace(/^\uFEFF/u, ''));
           remote = JSON.parse(line);
         } catch (error) {
           collectionFailures.push(new Error(`remote Provider preflight worker returned invalid JSON: ${error.message}`, { cause: error }));
         }
-        if (Number(result.exitCode) !== 0) {
-          const diagnostics = String(result.stderr ?? '').trim() || String(result.stdout ?? '').trim();
-          controllerFailure = new Error(`remote Provider preflight worker failed with exit ${result.exitCode}: ${diagnostics || 'remote command produced no diagnostics'}`);
-        }
+      }
+      const collectedStderr = workerStderrCollected ? fs.readFileSync(workerStderrTarget, 'utf8').trim() : '';
+      const collectedStdout = workerStdoutCollected ? fs.readFileSync(workerStdoutTarget, 'utf8').trim() : '';
+      if (result && Number(result.exitCode) !== 0) {
+        const diagnostics = collectedStderr || collectedStdout
+          || String(result.stderr ?? '').trim() || String(result.stdout ?? '').trim();
+        controllerFailure = new Error(`remote Provider preflight worker failed with exit ${result.exitCode}: ${diagnostics || 'remote command produced no diagnostics'}`);
+      } else if (controllerFailure && (collectedStderr || collectedStdout)) {
+        controllerFailure = new Error(`${controllerFailure.message}: ${collectedStderr || collectedStdout}`, { cause: controllerFailure });
       }
       if (controllerFailure) collectionFailures.push(controllerFailure);
       if (collectionFailures.length > 0) {

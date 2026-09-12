@@ -1504,7 +1504,7 @@ test('remote preflight transport runs executor-bound network health before crede
           completedAt: new Date().toISOString(),
         };
         if (controllerMode === 'throw') throw new Error('simulated SSH transport termination');
-        return { exitCode: controllerMode === 'nonzero' ? 23 : 0, stdout: `${JSON.stringify({ status: 'completed', outputDirectory: 'E:\\omni-shards\\provider-preflight-evidence', fields: {} })}\n`, stderr: controllerMode === 'nonzero' ? 'simulated controller failure' : '' };
+        return { exitCode: controllerMode === 'nonzero' ? 23 : 0, stdout: 'wrapper framing, not worker JSON\n', stderr: controllerMode === 'nonzero' ? 'wrapper controller failure' : '' };
       }
       if (executable === 'ssh.exe' && remoteSource.includes('publication script SHA-256 mismatch')) {
         events.push('publication-verify');
@@ -1542,6 +1542,14 @@ test('remote preflight transport runs executor-bound network health before crede
           taskAbsent: true, identitiesEnded: true, temporaryFilesAbsent: true, attemptErrors: [], passed: true,
           completedAt: new Date().toISOString(),
         }), 'utf8');
+      } else if (joined.includes('provider-preflight-worker.stdout.log')) {
+        events.push('stdout');
+        fs.writeFileSync(windowsPathFromGitScpOperand(args.at(-1)), `${JSON.stringify({
+          status: 'completed', outputDirectory: 'E:\\omni-shards\\provider-preflight-evidence', fields: {},
+        })}\n`, 'utf8');
+      } else if (joined.includes('provider-preflight-worker.stderr.log')) {
+        events.push('stderr');
+        fs.writeFileSync(windowsPathFromGitScpOperand(args.at(-1)), controllerMode === 'success' ? '' : 'collected worker failure', 'utf8');
       } else if (joined.includes('provider-preflight-evidence')) {
         events.push('evidence');
         fs.mkdirSync(path.join(path.dirname(localEvidenceDirectory), 'provider-preflight-evidence'), { recursive: true });
@@ -1602,7 +1610,7 @@ test('remote preflight transport runs executor-bound network health before crede
       'upload:provider-preflight-controller.ps1',
       'mkdir',
     ], 'canonical authorization publication must precede control upload: ' + JSON.stringify(events));
-    assert.deepEqual(events.slice(-6), ['provider', 'terminal', 'process-authority', 'cleanup', 'claim', 'evidence']);
+    assert.deepEqual(events.slice(-8), ['provider', 'terminal', 'process-authority', 'cleanup', 'claim', 'stdout', 'stderr', 'evidence']);
     assert.equal(providerRuns, 1);
     assert.equal(result.outputDirectory, path.resolve(localEvidenceDirectory));
     assert.deepEqual(fs.readdirSync(authorizationRoot).sort(), [
@@ -1615,6 +1623,8 @@ test('remote preflight transport runs executor-bound network health before crede
     assert.deepEqual(fs.readdirSync(`${authorizationRoot}.control-evidence`).sort(), [
       'provider-preflight-cleanup.json',
       'provider-preflight-process-authority.json',
+      'provider-preflight-worker.stderr.log',
+      'provider-preflight-worker.stdout.log',
       'provider-preflight-worker.terminal.json',
     ]);
     await assert.rejects(transport.dispatch({ grant, authorizationDigest: 'a'.repeat(64) }), /single-use/);
@@ -1630,7 +1640,7 @@ test('remote preflight transport runs executor-bound network health before crede
             ? /failed with exit 23/u.test(entry.message)
             : /simulated SSH transport termination/u.test(entry.message)),
       );
-      assert.deepEqual(events.slice(-6), ['provider', 'terminal', 'process-authority', 'cleanup', 'claim', 'evidence'], `${mode}: ${JSON.stringify(events)}`);
+      assert.deepEqual(events.slice(-8), ['provider', 'terminal', 'process-authority', 'cleanup', 'claim', 'stdout', 'stderr', 'evidence'], `${mode}: ${JSON.stringify(events)}`);
     }
     assert.equal(providerRuns, 3);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
@@ -2236,6 +2246,8 @@ test('production coordinator verifies a prebuilt runtime and never rebuilds it',
   assert.doesNotMatch(source, /buildStrictRuntimeAuthority/);
   assert.match(source, /\$workerExitCode = \[int\]\$worker\.ExitCode[\s\S]*?\$worker\.Dispose\(\)[\s\S]*?\$exitCode = \$workerExitCode/);
   assert.match(source, /try \{ \[IO\.File\]::AppendAllText\([^\n]+\) \} catch \{ \}/);
+  assert.match(source, /remote Provider preflight stdout collection/);
+  assert.match(source, /lastNonEmptyLine\(fs\.readFileSync\(workerStdoutTarget/);
   const remoteWorker = fs.readFileSync(
     path.join(repoRoot, 'scripts/testing/run-watch-mode-provider-preflight-worker.mjs'),
     'utf8',

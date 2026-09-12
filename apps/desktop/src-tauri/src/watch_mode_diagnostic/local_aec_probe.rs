@@ -388,10 +388,15 @@ mod tests {
     }
 
     #[test]
-    fn probe_request_rejects_unrecognized_provider_and_stimulus_fields() {
-        let value = json!({"schemaVersion":1,"executionId":"local-aec-test","outputDirectory":"E:/probe",
-            "renderPcmPath":"E:/source.pcm","renderPcmSha256":"0".repeat(64),"physicalDeviceId":"default", "provider":"remote"});
-        assert!(serde_json::from_value::<ProbeRequest>(value).is_err());
+    fn probe_request_accepts_exact_cli_contract_and_rejects_control_plane_fields() {
+        let exact = json!({"schemaVersion":1,"executionId":"local-aec-test","outputDirectory":"E:/probe",
+            "renderPcmPath":"E:/source.pcm","renderPcmSha256":"0".repeat(64),"physicalDeviceId":"default"});
+        assert!(serde_json::from_value::<ProbeRequest>(exact.clone()).is_ok());
+        for (name, value) in [("deadlineUtc", json!("2026-09-12T12:00:00Z")), ("provider", json!("remote"))] {
+            let mut invalid = exact.clone();
+            invalid.as_object_mut().unwrap().insert(name.to_string(), value);
+            assert!(serde_json::from_value::<ProbeRequest>(invalid).is_err(), "unexpected field {name} must be rejected");
+        }
     }
 
     #[test]

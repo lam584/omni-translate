@@ -9,7 +9,7 @@ import { repoRoot } from '../lib/testing-common.mjs';
 import { AUTHORITY_RUNTIME_BINARY_FILES } from './watch-mode-evidence-authority.mjs';
 import { LOCAL_ISOLATION_DISTRIBUTION_KIND } from './watch-mode-local-isolation-distributed.mjs';
 import { AEC_TAP_FILES, verifyAecTapEvidence } from './watch-mode-aec-tap-evidence.mjs';
-import { AEC_PROBE_CAPABILITY_ID, AEC_PROBE_INTERACTIVE_FILES, AEC_PROBE_JOB_HELPER, isProviderCredentialEnvironmentName, localAecProbeDesktopPowerShell, localAecProbePowerShell, parseLocalAecProbeArgs, runLocalAecProbe, verifyLocalAecProbeRuntime } from './run-watch-mode-local-aec-probe.mjs';
+import { AEC_PROBE_CAPABILITY_ID, AEC_PROBE_INTERACTIVE_FILES, AEC_PROBE_JOB_HELPER, createLocalAecProbeRequest, isProviderCredentialEnvironmentName, localAecProbeDesktopPowerShell, localAecProbePowerShell, parseLocalAecProbeArgs, runLocalAecProbe, verifyLocalAecProbeRuntime } from './run-watch-mode-local-aec-probe.mjs';
 
 const hash = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const canonicalize = (value) => Array.isArray(value) ? value.map(canonicalize)
@@ -261,11 +261,47 @@ function fixtureExecute(_script, { outputDirectory, request, requestPath, runtim
   json(path.join(authorityRoot, 'cleanup.scheduler.json'), { passed: true, taskCleanupPassed: true, processCleanup: { passed: true } });
   return { commandPath, launchPath, processAuthorityPath, terminalPath, taskTerminalPath, terminal, taskTerminal };
 }
+test('CLI producer request exactly matches the deny-unknown Rust consumer contract', () => {
+  const request = createLocalAecProbeRequest({ executionId: 'local-aec-contract', outputDirectory: 'E:\\probe',
+    renderPcmPath: 'E:\\source.pcm', renderPcmSha256: 'a'.repeat(64), physicalDeviceId: endpoint });
+  assert.deepEqual(Object.keys(request).sort(), [
+    'executionId', 'outputDirectory', 'physicalDeviceId', 'renderPcmPath', 'renderPcmSha256', 'schemaVersion',
+  ]);
+  assert.equal(Object.hasOwn(request, 'deadlineUtc'), false);
+});
+
+test('producer failure keeps complete interactive descendant and task cleanup evidence', async (t) => {
+  const root = temporary(t);
+  const options = probeOptions(root, runtimeFixture(root));
+  await assert.rejects(runLocalAecProbe(options, { execute: (script, context) => {
+    const result = fixtureExecute(script, context);
+    const receiptPath = path.join(context.outputDirectory, 'local-aec-probe-result.json');
+    const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
+    receipt.status = 'failed'; receipt.failure = 'synthetic producer failure';
+    json(receiptPath, receipt);
+    return result;
+  } }), (error) => {
+    const result = JSON.parse(fs.readFileSync(path.join(error.outputDirectory, 'result.json'), 'utf8'));
+    const cleanup = JSON.parse(fs.readFileSync(path.join(error.outputDirectory, 'interactive', result.executionId, 'cleanup.scheduler.json'), 'utf8'));
+    assert.equal(result.status, 'failed');
+    assert.equal(result.ownedJobExited, true);
+    assert.equal(cleanup.passed, true);
+    assert.equal(cleanup.taskCleanupPassed, true);
+    assert.equal(cleanup.processCleanup.passed, true);
+    return true;
+  });
+});
+
 test('runner binds stimulus, fresh execution, process custody and complete tap without authorizing release', async (t) => {
   const root = temporary(t);
   const options = probeOptions(root, runtimeFixture(root));
   const first = await runLocalAecProbe(options, { execute: fixtureExecute });
   const second = await runLocalAecProbe(options, { execute: fixtureExecute });
+  const emittedRequest = JSON.parse(fs.readFileSync(path.join(first.outputDirectory, 'request.json'), 'utf8'));
+  assert.deepEqual(Object.keys(emittedRequest).sort(), [
+    'executionId', 'outputDirectory', 'physicalDeviceId', 'renderPcmPath', 'renderPcmSha256', 'schemaVersion',
+  ]);
+  assert.equal(Object.hasOwn(emittedRequest, 'deadlineUtc'), false);
   assert.notEqual(first.executionId, second.executionId);
   assert.equal(first.tapIntegrity.complete, true);
   assert.equal(first.providerCalls, 0);

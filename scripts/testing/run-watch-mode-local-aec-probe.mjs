@@ -34,6 +34,9 @@ export const AEC_PROBE_INTERACTIVE_FILES = Object.freeze([
 // trusted signed distribution digest. NEVER run an old EXE to query support:
 // it could ignore the opt-in and preconnect a persisted Provider at startup.
 export const AEC_PROBE_CAPABILITY_ID = 'omni-local-aec-probe/no-provider-startup/v1/20260912';
+export const createLocalAecProbeRequest = ({ executionId, outputDirectory, renderPcmPath, renderPcmSha256, physicalDeviceId }) => ({
+  schemaVersion: 1, executionId, outputDirectory, renderPcmPath, renderPcmSha256, physicalDeviceId,
+});
 
 function readProbeReceipt(outputDirectory) {
   const file = path.join(outputDirectory, 'local-aec-probe-result.json');
@@ -295,8 +298,8 @@ export async function runLocalAecProbe(options, dependencies = {}) {
     const renderPcmPath = fs.realpathSync.native(options.renderPcmPath);
     const bytes = fs.readFileSync(renderPcmPath);
     if (!bytes.length || bytes.length % 2 || bytes.length > 16_000 * 2 * 180) throw new Error('invalid bounded s16le/16k/mono stimulus');
-    const request = { schemaVersion: 1, executionId, outputDirectory, renderPcmPath, deadlineUtc: new Date(deadline).toISOString(),
-      renderPcmSha256: hash(bytes), physicalDeviceId: options.physicalDeviceId };
+    const request = createLocalAecProbeRequest({ executionId, outputDirectory, renderPcmPath,
+      renderPcmSha256: hash(bytes), physicalDeviceId: options.physicalDeviceId });
     const requestPath = path.join(outputDirectory, 'request.json');
     writeJson(requestPath, request);
     writeJson(path.join(outputDirectory, 'selected-runtime.json'), runtime);

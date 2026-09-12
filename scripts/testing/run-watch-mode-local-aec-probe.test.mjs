@@ -369,6 +369,10 @@ test('controller uses the existing InteractiveToken request and scheduler contra
   assert.doesNotMatch(runnerSource, /deadlineUtc: request\.deadlineUtc/u);
   const localAecModule = fs.readFileSync(path.join(root, 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveLocalAec.psm1'), 'utf8');
   assert.match(localAecModule, /'deadlineUtc'/u);
+  const collectorSource = fs.readFileSync(path.join(root, 'scripts/testing/collect-watch-mode-interactive-process-authority.ps1'), 'utf8');
+  assert.match(collectorSource, /\$Mode -eq 'local-aec-probe'.*'shard-node'/u);
+  assert.match(collectorSource, /\$Mode -eq 'local-aec-probe'.*'desktop'/u);
+  assert.doesNotMatch(collectorSource, /local-aec-probe'\) \{ @\('desktop', 'bridge'\)/u);
   assert.match(fs.readFileSync(path.join(root, 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1'), 'utf8'), /LogonType Interactive/u);
   assert.doesNotMatch(script, /OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST/u);
 });

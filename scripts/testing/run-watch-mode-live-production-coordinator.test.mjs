@@ -2081,7 +2081,8 @@ test('interactive shard PowerShell emitters use shard authority schema v2', () =
   assert.match(collector, /\$executionExitCode -eq 0/);
   assert.match(collector, /interactive cell execution receipt identity mismatch/);
   assert.match(launcher, /'-ExecutionReceiptPath'/);
-  assert.match(collector, /\$requiredRoles = @\('shard-node', 'cell-powershell'\)/);
+  assert.match(collector, /\$requiredRoles = if \(\$Mode -eq 'local-aec-probe'\) \{ @\('shard-node'\) \} else \{ @\('shard-node', 'cell-powershell'\) \}/);
+  assert.match(collector, /\$Mode -eq 'local-aec-probe'\) \{ @\('desktop'\) \} else \{ @\('desktop', 'bridge'\) \}/);
 });
 
 test('interactive shard retains redirected process exit status and rejects unknown status', { skip: !isWindows }, () => {

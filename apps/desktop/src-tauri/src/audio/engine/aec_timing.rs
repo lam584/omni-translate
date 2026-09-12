@@ -38,6 +38,11 @@ pub(super) struct CaptureClockObservation {
     /// started. Pending attempts never become timing epochs.
     pub(super) render_timeline_epoch: Option<u64>,
     pub(super) render_discontinuity_count: u64,
+    /// Reason attached to the most recently published render discontinuity.
+    /// A drained/refilled WASAPI buffer invalidates the external delay hint,
+    /// but it does not change the render device/session authority and must not
+    /// destroy AEC3's learned acoustic filter.
+    pub(super) render_discontinuity_reason: Option<&'static str>,
     pub(super) data_discontinuity: bool,
     pub(super) timestamp_error: bool,
 }
@@ -127,8 +132,11 @@ impl AecDelayEstimator {
         let published_render_discontinuity = self
             .last_render_discontinuity_count
             .is_some_and(|previous| previous != observation.render_discontinuity_count);
+        let render_position_discontinuity = self.render_position_discontinuity(observation);
         let render_clock_discontinuity =
-            published_render_discontinuity || self.render_position_discontinuity(observation);
+            published_render_discontinuity || render_position_discontinuity;
+        let render_boundary_requires_aec_reset = published_render_discontinuity
+            && observation.render_discontinuity_reason != Some("wasapi-render-underrun");
         let capture_padding_invalid = observation
             .capture_padding_frames
             .is_some_and(|padding| padding > observation.capture_buffer_frames);
@@ -145,7 +153,7 @@ impl AecDelayEstimator {
             observation.data_discontinuity && !self.capture_discontinuity_episode_active;
         let aec_reset_reason = if capture_discontinuity_boundary {
             Some("wasapi-capture-data-discontinuity")
-        } else if render_clock_discontinuity {
+        } else if render_boundary_requires_aec_reset || render_position_discontinuity {
             Some("wasapi-render-session-discontinuity")
         } else if clock_discontinuity == Some(CaptureClockDiscontinuity::Regression) {
             Some("wasapi-capture-clock-regression")
@@ -377,6 +385,7 @@ mod tests {
             render_submitted_frames: None,
             render_timeline_epoch: None,
             render_discontinuity_count: 0,
+            render_discontinuity_reason: None,
             data_discontinuity: false,
             timestamp_error: false,
         }
@@ -549,6 +558,26 @@ mod tests {
         // official WebRTC delay formula.
         assert_eq!(estimate.capture_padding_frames, Some(1_921));
         assert_eq!(estimate.delay_ms, 10.0);
+    }
+
+    #[test]
+    fn render_underrun_resets_delay_without_destroying_aec_adaptation() {
+        let mut estimator = AecDelayEstimator::new(48_000, 2);
+        let mut first = observation(0, 1_000_000, 1_100_000, 0);
+        first.render_discontinuity_count = 4;
+        let initial = estimator.observe_capture(first);
+        assert!(!initial.delay_reset_required);
+
+        let mut underrun = observation(480, 1_100_000, 1_400_000, 0);
+        underrun.render_discontinuity_count = 5;
+        underrun.render_discontinuity_reason = Some("wasapi-render-underrun");
+        let estimate = estimator.observe_capture(underrun);
+
+        assert!(estimate.delay_reset_required);
+        assert!(estimate.published_render_discontinuity);
+        assert!(!estimate.aec_reset_required);
+        assert_eq!(estimate.aec_reset_reason, None);
+        assert_eq!(estimate.delay_ms, 30.0);
     }
 
     #[test]

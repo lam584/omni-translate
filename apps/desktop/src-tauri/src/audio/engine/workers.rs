@@ -208,6 +208,7 @@ fn run_capture_loop(
                 render_submitted_frames: render_clock.submitted_frames,
                 render_timeline_epoch: render_clock.timeline_epoch,
                 render_discontinuity_count: render_clock.discontinuity_count,
+                render_discontinuity_reason: render_clock.last_discontinuity_reason,
                 data_discontinuity: buffer_info.flags.data_discontinuity,
                 timestamp_error: buffer_info.flags.timestamp_error,
             });

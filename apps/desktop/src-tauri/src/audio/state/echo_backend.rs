@@ -94,6 +94,16 @@ impl AudioStateStore {
             {
                 canceller.push_render_at(samples, sample_rate_hz, channel_count, render_time)?;
             }
+            self.aec_diagnostic_tap.record_render(
+                samples,
+                sample_rate_hz,
+                channel_count,
+                crate::audio::engine::aec_timing::qpc_now_100ns(),
+                clock.discontinuity_count,
+                render_session_id,
+                submitted_frames,
+                endpoint_padding_frames,
+            );
             let (_, _, _, _, last_player_position, last_submitted_frames) = clock
                 .active_render_sessions
                 .get_mut(&render_session_id)
@@ -114,7 +124,7 @@ impl AudioStateStore {
         }
         Ok(())
     }
-    
+
     /// Publishes a monotonic render-discontinuity identity and its reason.
     /// The capture worker is the sole owner of resetting AEC3 before it
     /// processes the next capture frame.
@@ -218,7 +228,7 @@ impl AudioStateStore {
         }
         Ok(())
     }
-    
+
     pub(crate) fn echo_render_clock_snapshot(&self) -> EchoRenderClockSnapshot {
         let clock = self
             .echo_render_clock
@@ -247,13 +257,24 @@ impl AudioStateStore {
             .expect("echo canceller poisoned") = Some(canceller);
         Ok(stats)
     }
-    
+
+    #[cfg(test)]
     pub(crate) fn process_echo_capture(
         &self,
         captured: &[f32],
         delay_samples: usize,
     ) -> Result<EchoCancellationResult, String> {
-        self.echo_canceller
+        self.process_echo_capture_with_metadata(captured, delay_samples, None)
+    }
+
+    pub(crate) fn process_echo_capture_with_metadata(
+        &self,
+        captured: &[f32],
+        delay_samples: usize,
+        metadata: Option<AecCaptureFrameMetadata>,
+    ) -> Result<EchoCancellationResult, String> {
+        let result = self
+            .echo_canceller
             .lock()
             .expect("echo canceller poisoned")
             .as_mut()
@@ -261,10 +282,25 @@ impl AudioStateStore {
                 "WebRTC AEC3 production engine is not active; capture cannot be processed"
                     .to_string()
             })
-            .and_then(|canceller| canceller.process_capture(captured, delay_samples))
+            .and_then(|canceller| canceller.process_capture(captured, delay_samples))?;
+        if let Some(metadata) = metadata {
+            self.aec_diagnostic_tap
+                .record_capture(captured, &result.samples, metadata);
+        }
+        Ok(result)
     }
-    
+
+    #[cfg(test)]
     pub(crate) fn reset_echo_canceller(&self) -> Result<(), String> {
+        self.reset_echo_canceller_with_diagnostic("unspecified", None, 0)
+    }
+
+    pub(crate) fn reset_echo_canceller_with_diagnostic(
+        &self,
+        reason: &str,
+        observed_qpc_100ns: Option<u64>,
+        continuity_id: u64,
+    ) -> Result<(), String> {
         let mut guard = self
             .echo_canceller
             .lock()
@@ -273,7 +309,10 @@ impl AudioStateStore {
             "WebRTC AEC3 production engine is not active; reset is unavailable"
                 .to_string()
         })?;
-        canceller.reset()
+        canceller.reset()?;
+        self.aec_diagnostic_tap
+            .record_reset(reason, observed_qpc_100ns, continuity_id);
+        Ok(())
     }
 
     pub(crate) fn record_aec3_capture_chunk(&self, playback_active: bool) {
@@ -283,7 +322,7 @@ impl AudioStateStore {
             .echo_capture_diagnostics
             .record_aec3_capture(playback_active);
     }
-    
+
     /// Engine identity and native AEC3 counters for the periodic summary.
     pub(crate) fn echo_canceller_stats(&self) -> Option<EchoCancellerEngineStats> {
         self.echo_canceller

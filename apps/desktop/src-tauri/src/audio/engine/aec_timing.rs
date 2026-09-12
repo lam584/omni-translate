@@ -338,7 +338,7 @@ impl AecDelayEstimator {
     }
 }
 
-pub(super) fn qpc_now_100ns() -> Option<u64> {
+pub(crate) fn qpc_now_100ns() -> Option<u64> {
     static FREQUENCY: OnceLock<Option<i64>> = OnceLock::new();
     let frequency = *FREQUENCY.get_or_init(|| {
         let mut frequency = 0_i64;

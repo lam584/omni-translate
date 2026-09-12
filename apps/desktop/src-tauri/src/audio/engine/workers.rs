@@ -91,7 +91,7 @@ fn run_capture_loop(
     emit_audio_snapshot(&app, store)?;
 
     if spec.echo_cancel_enabled() {
-        store.reset_echo_canceller()?;
+        store.reset_echo_canceller_with_diagnostic("route-start", qpc_now_100ns(), 0)?;
         diag_log_detail(
             &app,
             "audio",
@@ -176,6 +176,7 @@ fn run_capture_loop(
         let buffer_info = capture_client
             .read_from_device_to_deque(&mut sample_queue)
             .map_err_str()?;
+        let mut capture_tap_clock = None;
         if spec.echo_cancel_enabled()
             && (sample_queue.len() >= chunk_len
                 || buffer_info.flags.data_discontinuity
@@ -206,10 +207,11 @@ fn run_capture_loop(
                     render_clock.endpoint_padding_frames,
                     render_clock.reference_lead_frames,
                 );
+            let observed_qpc_100ns = qpc_now_100ns();
             let estimate = aec_delay_estimator.observe_capture(CaptureClockObservation {
                 device_frame_index: queue_head_device_frame_index,
                 packet_qpc_100ns: queue_head_qpc_100ns,
-                observed_qpc_100ns: qpc_now_100ns(),
+                observed_qpc_100ns,
                 capture_padding_frames,
                 capture_buffer_frames: buffer_frame_count,
                 render_clock_age_ms,
@@ -225,11 +227,18 @@ fn run_capture_loop(
                 timestamp_error: buffer_info.flags.timestamp_error,
             });
             current_aec_delay_samples = estimate.delay_samples;
+            capture_tap_clock = Some((
+                buffer_info.index,
+                buffer_info.timestamp,
+                queue_head_device_frame_index,
+                queue_head_qpc_100ns,
+                observed_qpc_100ns,
+                render_clock.discontinuity_count,
+            ));
             if estimate.aec_reset_required {
                 // This capture worker is the sole reset owner. Render
                 // producers only publish a monotonic discontinuity identity;
                 // consume it here before any queued capture is processed.
-                store.reset_echo_canceller()?;
                 let reset_reason = if estimate.published_render_discontinuity
                     && estimate.aec_reset_reason
                         == Some("wasapi-render-session-discontinuity")
@@ -240,6 +249,11 @@ fn run_capture_loop(
                 } else {
                     estimate.aec_reset_reason.unwrap_or("unknown")
                 };
+                store.reset_echo_canceller_with_diagnostic(
+                    reset_reason,
+                    observed_qpc_100ns,
+                    render_clock.discontinuity_count,
+                )?;
                 diag_log_detail(
                     &app,
                     "audio",
@@ -310,7 +324,36 @@ fn run_capture_loop(
                         .saturating_mul(CHUNK_FRAMES)
                         .saturating_mul(CHANNEL_COUNT),
                 );
-                let cancellation = store.process_echo_capture(&f32_chunk, delay_samples)?;
+                let tap_metadata = capture_tap_clock.map(
+                    |(
+                        packet_device_frame_index,
+                        packet_qpc_100ns,
+                        queue_head_device_frame_index,
+                        queue_head_qpc_100ns,
+                        observed_qpc_100ns,
+                        continuity_id,
+                    )| {
+                        let frame_offset = chunk_index.saturating_mul(CHUNK_FRAMES) as u64;
+                        let qpc_offset_100ns = frame_offset.saturating_mul(10_000_000)
+                            / SAMPLE_RATE_HZ as u64;
+                        AecCaptureFrameMetadata {
+                            packet_device_frame_index,
+                            packet_qpc_100ns,
+                            queue_head_device_frame_index: queue_head_device_frame_index
+                                .saturating_add(frame_offset),
+                            queue_head_qpc_100ns: queue_head_qpc_100ns
+                                .saturating_add(qpc_offset_100ns),
+                            observed_qpc_100ns,
+                            continuity_id,
+                            delay_samples,
+                        }
+                    },
+                );
+                let cancellation = store.process_echo_capture_with_metadata(
+                    &f32_chunk,
+                    delay_samples,
+                    tap_metadata,
+                )?;
                 // AEC3 output is the capture stream. Playback state is logged
                 // only as context and cannot delete a capture block.
                 let playback_active = store.inbound_speaker_playback_active();

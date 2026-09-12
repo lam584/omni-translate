@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::{mpsc::Sender, Arc, Mutex, MutexGuard, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+pub(crate) use super::aec_diagnostic_tap::AecCaptureFrameMetadata;
+use super::aec_diagnostic_tap::AecDiagnosticTap;
 use super::contracts::{
     AudioDeviceRuntime, AudioRuntimeSnapshot, EchoCaptureDiagnosticsRuntime,
     SpeechRuntimeSnapshot,
@@ -162,6 +164,7 @@ pub(crate) struct AudioStateStore {
     /// Active public AEC backend. This slot can only be populated through the
     /// verified WebRTC AEC3 factory.
     echo_canceller: Mutex<Option<ProductionEchoCanceller>>,
+    aec_diagnostic_tap: AecDiagnosticTap,
     echo_render_clock: Mutex<EchoRenderClock>,
     /// Monotonic timestamp of the most recent observed speaker playback. The
     /// ASR completion can arrive just after the playback worker flips back to

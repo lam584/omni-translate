@@ -19,6 +19,7 @@ impl AudioStateStore {
             audio_cache: AudioCacheStore::new(),
             desktop_playback_ownership: DesktopPlaybackOwnership::default(),
             echo_canceller: Mutex::new(None),
+            aec_diagnostic_tap: AecDiagnosticTap::from_env(),
             echo_render_clock: Mutex::new(EchoRenderClock::default()),
             speaker_playback_last_active_at: Mutex::new(None),
             deferred_subtitle_translation_cues: DeferredTranslationStore::new(),

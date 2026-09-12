@@ -241,9 +241,9 @@ test('layered content accepts formatting, segmentation, synonyms, and Chinese/Ar
 
 test('retained facts accept scoped temperature units and common schedule wording', () => {
   const outputText = [
-    '室外温度从21摄氏度降至零下4度，但每个传感器都保持在线状态。',
+    '室外温度从21摄氏度降至零下4度，但所有传感器均保持在线运行。',
     '他要求团队向support@example.com发送邮件，如果行程有变。',
-    '它能区分15和50，或13和30吗？',
+    '它能区分十五和五十，或十三和三十吗？',
   ].join('');
   const selectedFacts = retainedFacts.filter((fact) => [
     'temperature.range',

@@ -428,7 +428,8 @@ $traceArguments = @(
     '-CellId', ('"' + [string]$request.cellId + '"'),
     '-WorkerId', ('"' + [string]$request.workerId + '"'),
     '-VmIdentityDigest', [string]$request.vmIdentityDigest,
-    '-ExecutionReceiptPath', ('"' + [string]$request.executionReceiptPath + '"')
+    '-ExecutionReceiptPath', ('"' + [string]$request.executionReceiptPath + '"'),
+    '-Mode', ('"' + [string]$request.mode + '"')
   )
 if ([bool]$request.requireRecorder) { $traceArguments += '-RequireRecorder' }
 $trace = Start-Process -FilePath 'powershell.exe' `

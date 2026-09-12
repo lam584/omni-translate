@@ -410,6 +410,11 @@ test('Provider credential environment inventory is removed without matching beni
   for (const name of ['PATH','USERPROFILE','OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST','TENCENT_READ_TIMEOUT_MS']) assert.equal(isProviderCredentialEnvironmentName(name), false, name);
 });
 
+test('interactive launcher binds process authority collection to the request mode', () => {
+  const source = fs.readFileSync(path.join(repoRoot, 'scripts/testing/run-watch-mode-interactive-task.ps1'), 'utf8');
+  assert.ok(source.includes(`'-Mode', ('\"' + [string]$request.mode + '\"')`));
+});
+
 test('local AEC interactive argv quotes runner and request paths containing spaces', () => {
   const source = fs.readFileSync(path.join(repoRoot, 'scripts/testing/run-watch-mode-interactive-task.ps1'), 'utf8');
   assert.ok(source.includes(`('\"' + [string]$request.shardRunnerPath + '\"')`));

@@ -270,6 +270,32 @@ test('CLI producer request exactly matches the deny-unknown Rust consumer contra
   assert.equal(Object.hasOwn(request, 'deadlineUtc'), false);
 });
 
+test('interactive local AEC resolver carries a future control-plane deadline and rejects missing or expired values', (t) => {
+  const root = temporary(t);
+  const outputDirectory = path.join(root, 'output'); fs.mkdirSync(outputDirectory);
+  const files = Object.fromEntries(['probeRequest','desktopExecutable','finalizerHelper','desktopIdentityReporter'].map((name) => {
+    const file = path.join(root, name + '.bin'); fs.writeFileSync(file, name); return [name, { file, sha256: hash(fs.readFileSync(file)) }];
+  }));
+  const base = { executionId: 'local-aec-resolver', probeRequestPath: files.probeRequest.file, probeRequestSha256: files.probeRequest.sha256,
+    outputDirectory, desktopExecutable: files.desktopExecutable.file, desktopExecutableSha256: files.desktopExecutable.sha256,
+    finalizerHelperPath: files.finalizerHelper.file, finalizerHelperSha256: files.finalizerHelper.sha256,
+    desktopIdentityReporterPath: files.desktopIdentityReporter.file, desktopIdentityReporterSha256: files.desktopIdentityReporter.sha256,
+    nodeDesktopAuthorityPath: path.join(outputDirectory, 'node-desktop-identity.json') };
+  const modulePath = path.join(repoRoot, 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveLocalAec.psm1');
+  const invoke = (payload) => {
+    const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+    const command = `Import-Module '${modulePath.replaceAll("'", "''")}' -Force; $p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))|ConvertFrom-Json; Resolve-OmniInteractiveLocalAecFields -Payload $p | ConvertTo-Json -Compress`;
+    return spawnSync('powershell.exe', ['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',command], { encoding: 'utf8', windowsHide: true });
+  };
+  const deadlineUtc = new Date(Date.now() + 60_000).toISOString();
+  const accepted = invoke({ ...base, deadlineUtc });
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.equal(JSON.parse(accepted.stdout).deadlineUtc, deadlineUtc);
+  for (const payload of [{ ...base }, { ...base, deadlineUtc: 'invalid' }, { ...base, deadlineUtc: '2026-09-11T00:00:00Z' }]) {
+    const rejected = invoke(payload); assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /deadlineUtc|deadline is invalid or expired/u);
+  }
+});
 test('producer failure keeps complete interactive descendant and task cleanup evidence', async (t) => {
   const root = temporary(t);
   const options = probeOptions(root, runtimeFixture(root));
@@ -337,6 +363,12 @@ test('controller uses the existing InteractiveToken request and scheduler contra
   assert.match(script, /Invoke-OmniInteractiveScheduledTask/u);
   assert.match(script, /requireSeparateControlPlane=\$true/u);
   assert.match(script, /expectedVmUuidBios/u);
+  assert.match(script, /deadlineUtc='[^']+'/u);
+  const runnerSource = fs.readFileSync(path.join(root, 'scripts/testing/run-watch-mode-local-aec-probe.mjs'), 'utf8');
+  assert.match(runnerSource, /deadlineUtc: command\.deadlineUtc/u);
+  assert.doesNotMatch(runnerSource, /deadlineUtc: request\.deadlineUtc/u);
+  const localAecModule = fs.readFileSync(path.join(root, 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveLocalAec.psm1'), 'utf8');
+  assert.match(localAecModule, /'deadlineUtc'/u);
   assert.match(fs.readFileSync(path.join(root, 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1'), 'utf8'), /LogonType Interactive/u);
   assert.doesNotMatch(script, /OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST/u);
 });

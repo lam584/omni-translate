@@ -115,7 +115,7 @@ $payload=[ordered]@{
  requireSeparateControlPlane=$true; launcherSha256=${quote(launcher.sha256)}
  processAuthorityCollectorSha256=${quote(collector.sha256)}; shardRunnerSha256=${quote(runner.sha256)}
  probeRequestPath=${quote(requestPath)}; probeRequestSha256=(Get-FileHash -LiteralPath ${quote(requestPath)} -Algorithm SHA256).Hash.ToLowerInvariant()
- outputDirectory=${quote(outputDirectory)}; desktopExecutable=${quote(runtime.executable)}
+ outputDirectory=${quote(outputDirectory)}; deadlineUtc=${quote(deadlineUtc)}; desktopExecutable=${quote(runtime.executable)}
  desktopExecutableSha256=${quote(runtime.executableSha256)}; finalizerHelperPath=${quote(helper.path)}
  finalizerHelperSha256=${quote(helper.sha256)}; desktopIdentityReporterPath=${quote(desktopReporter.path)}
  desktopIdentityReporterSha256=${quote(desktopReporter.sha256)}; nodeDesktopAuthorityPath=(Join-Path ${quote(outputDirectory)} 'node-desktop-identity.json')
@@ -169,9 +169,11 @@ export function executeInteractiveLocalAecRequest(commandPath) {
       || ['executionId','planDigest','leaseId','leaseDigest','cellId','workerId','vmIdentityDigest'].some((name) => desktopReceipt[name] !== command[name])) throw new Error('desktop identity receipt is invalid');
   const script = localAecProbeDesktopPowerShell({ executable: command.desktopExecutable, executableSha256: command.desktopExecutableSha256,
     runtimeRoot: command.workspaceRoot, outputDirectory: command.outputDirectory, requestPath: command.probeRequestPath,
-    deadlineUtc: request.deadlineUtc, helperPath: command.finalizerHelperPath, helperSha256: command.finalizerHelperSha256 });
+    deadlineUtc: command.deadlineUtc, helperPath: command.finalizerHelperPath, helperSha256: command.finalizerHelperSha256 });
+  const deadlineMs = Date.parse(command.deadlineUtc);
+  if (!Number.isFinite(deadlineMs) || deadlineMs <= Date.now()) throw new Error('interactive local AEC deadline is invalid or expired');
   const result = spawnSync('powershell.exe', ['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],
-    { windowsHide: true, encoding: 'utf8', timeout: Math.max(1, Date.parse(request.deadlineUtc) - Date.now()) + 12_000, maxBuffer: 8 * 1024 * 1024, env: windowsPowerShellEnvironment() });
+    { windowsHide: true, encoding: 'utf8', timeout: Math.max(1, deadlineMs - Date.now()) + 12_000, maxBuffer: 8 * 1024 * 1024, env: windowsPowerShellEnvironment() });
   if (result.error || result.status !== 0) throw new Error(result.error?.message ?? result.stderr ?? 'interactive Desktop probe failed');
   const parsed = JSON.parse(result.stdout.trim());
   fs.writeFileSync(path.join(command.outputDirectory, 'owned-launch-result.json'), JSON.stringify(parsed, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });

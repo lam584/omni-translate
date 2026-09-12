@@ -2245,6 +2245,8 @@ test('production coordinator verifies a prebuilt runtime and never rebuilds it',
   assert.match(source, /verifyStrictRuntimeAuthority/);
   assert.doesNotMatch(source, /buildStrictRuntimeAuthority/);
   assert.match(source, /\$workerExitCode = \[int\]\$worker\.ExitCode[\s\S]*?\$worker\.Dispose\(\)[\s\S]*?\$exitCode = \$workerExitCode/);
+  assert.match(source, /\$workerPid = \[int\]\$worker\.Id[\s\S]*?\$worker\.Dispose\(\)[\s\S]*?\[int\]\$_\.pid -ne \$workerPid/);
+  assert.doesNotMatch(source, /\[int\]\$_\.pid -ne \[int\]\$worker\.Id/);
   assert.match(source, /try \{ \[IO\.File\]::AppendAllText\([^\n]+\) \} catch \{ \}/);
   assert.match(source, /remote Provider preflight stdout collection/);
   assert.match(source, /lastNonEmptyLine\(fs\.readFileSync\(workerStdoutTarget/);

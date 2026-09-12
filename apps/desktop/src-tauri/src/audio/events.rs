@@ -10,7 +10,7 @@ use super::engine::AudioRouteSupervisor;
 use super::gemini_live;
 use super::speech;
 use super::session_supervisor::AudioSessionSupervisor;
-use super::state::AudioStateStore;
+use super::state::{AudioStateStore, RouteInputCompletionEvidence};
 use super::subtitle_translate;
 use super::translate;
 use crate::bridge::{ipc::BridgeIpcClient, state::BridgeStateStore};
@@ -35,9 +35,10 @@ pub(crate) use route_config::resolve_model_provider_from_config_value;
 pub(crate) use route_config::resolve_composite_template_provider;
 pub(crate) use route_config::subtitle_source_language_or_english;
 pub(crate) use route_config::{resolve_realtime_profile, RealtimeProtocol};
+pub(crate) use route_config::{
+    authorize_bailian_model_operation, authorize_bailian_native_translate,
+};
 pub(crate) use route_config::is_livetranslate_route_model;
-pub(crate) use route_config::model_name_is_livetranslate;
-use route_config::infer_legacy_omni_model;
 #[cfg(test)]
 use route_config::{
     is_openai_realtime_provider, resolve_realtime_audio_mode_for_route,
@@ -59,7 +60,6 @@ const AUDIO_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(6);
 const OMNI_PRECONNECT_SESSION_READINESS_TIMEOUT: Duration = Duration::from_secs(45);
 const OMNI_ROUTE_SESSION_READINESS_TIMEOUT: Duration = Duration::from_secs(90);
 const OMNI_PRECONNECT_COMMAND_TIMEOUT: Duration = Duration::from_secs(50);
-const OMNI_ROUTE_COMMAND_TIMEOUT: Duration = Duration::from_secs(95);
 const DEFAULT_ROUTE_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Single source for the route mode: a document missing `devices.routeMode`
@@ -79,15 +79,14 @@ fn should_show_subtitle_overlay_for_route(direction: &str, config: &Value) -> bo
 
 fn route_command_timeout(direction: &str, config: &Value) -> Duration {
     if direction == "inbound" && configured_route_mode(config) == "watch" {
-        // Registry-promoted omni models need the same generous budget as
-        // name-inferred ones, so resolve the provider first and only fall
-        // back to name inference when no provider matches.
+        // Connection policy follows the resolved provider profile. A model
+        // name that merely looks realtime/omni is a UI hint, not authority to
+        // grant the longer connection budget.
         let timeout_budget = config
             .pointer("/devices/inboundVoiceModelId")
             .and_then(Value::as_str)
             .map(|requested| match resolve_model_provider_from_config_value(config, requested) {
                 Some(provider) => Duration::from_millis(resolve_realtime_profile(&provider, &provider.model).timeout_budget_ms),
-                None if infer_legacy_omni_model(&resolve_voice_model_runtime_id(requested)) => OMNI_ROUTE_COMMAND_TIMEOUT,
                 None => DEFAULT_ROUTE_COMMAND_TIMEOUT,
             });
         if let Some(timeout) = timeout_budget { return timeout; }
@@ -104,35 +103,128 @@ fn route_command_timeout_message(direction: &str, config: &Value, timeout: Durat
     )
 }
 
-fn resolve_voice_model_runtime_id(value: &str) -> String {
-    value
-        .rsplit_once("::")
-        .map(|(_, model)| model)
-        .unwrap_or(value)
-        .to_string()
-}
-
 fn stop_existing_inbound_pipeline(
     app: &AppHandle,
     state: &AudioStateStore,
     keep_omni: bool,
 ) -> Result<(), String> {
-    AudioRouteSupervisor::new(app.clone(), state).stop("inbound")?;
-    if let Some(bridge_state) = app.try_state::<BridgeStateStore>() {
-        let snapshot = bridge_state.snapshot();
-        let _ = BridgeIpcClient::new(&snapshot).flush_source();
+    complete_inbound_capture_and_provider(app, state, keep_omni, false)?;
+    finalize_inbound_capture_consumers(app, state)?;
+    Ok(())
+}
+
+fn complete_inbound_capture_and_provider(
+    app: &AppHandle,
+    state: &AudioStateStore,
+    keep_omni: bool,
+    require_omni_owner: bool,
+) -> Result<RouteInputCompletionEvidence, String> {
+    let mut input_completion = AudioRouteSupervisor::new(app.clone(), state)
+        .complete_input("inbound")?;
+    if !input_completion.provider_sender_released {
+        return Err(
+            "inbound capture did not release its Provider input sender | code: watch.capture-input-fence-failed"
+                .to_string(),
+        );
     }
+    input_completion.provider_input_closed_source_sequence =
+        record_strict_watch_provider_input_closed_for_completion(state, require_omni_owner)?;
     if let Some(handle) = state.take_stt_handle("inbound") {
         let _ = handle.stop_tx.send(());
     }
     if !keep_omni {
-        if let Some(handle) = state.take_omni_handle("inbound") {
-            handle.stop_and_join("inbound")?;
+        match state.take_omni_handle("inbound") {
+            Some(handle) => handle.stop_and_join("inbound")?,
+            None if require_omni_owner => {
+                return Err(
+                    "strict inbound Provider session owner is missing at input completion | code: watch.provider-owner-missing"
+                        .to_string(),
+                )
+            }
+            None => {}
         }
+    }
+    Ok(input_completion)
+}
+
+fn record_strict_watch_provider_input_closed_for_completion(
+    state: &AudioStateStore,
+    terminal_input_completion: bool,
+) -> Result<u64, String> {
+    if terminal_input_completion {
+        state.record_strict_watch_provider_input_closed()
+    } else {
+        Ok(0)
+    }
+}
+
+#[cfg(test)]
+mod strict_watch_input_completion_tests {
+    use super::*;
+
+    #[test]
+    fn route_start_cleanup_does_not_consume_current_strict_run_input_completion_fence() {
+        let state = AudioStateStore::new();
+        state
+            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
+            .unwrap();
+
+        assert_eq!(
+            record_strict_watch_provider_input_closed_for_completion(&state, false).unwrap(),
+            0
+        );
+        assert!(
+            record_strict_watch_provider_input_closed_for_completion(&state, true).unwrap() > 0
+        );
+    }
+}
+
+fn finalize_inbound_capture_consumers(
+    app: &AppHandle,
+    state: &AudioStateStore,
+) -> Result<(), String> {
+    AudioRouteSupervisor::new(app.clone(), state).stop("inbound")?;
+    if let Some(bridge_state) = app.try_state::<BridgeStateStore>() {
+        let snapshot = bridge_state.snapshot();
+        BridgeIpcClient::new(&snapshot).flush_source()?;
     }
     let _ = subtitle_translate::stop_subtitle_translate(app.clone(), state);
     let _ = speech::stop_dispatch(app.clone(), state);
     Ok(())
+}
+
+pub(crate) fn finish_strict_watch_provider_after_input_complete(
+    app: &AppHandle,
+    state: &AudioStateStore,
+) -> Result<RouteInputCompletionEvidence, String> {
+    state.bump_inbound_route_generation();
+    let _pipeline_guard = state.lock_inbound_pipeline();
+    let input_completion = complete_inbound_capture_and_provider(app, state, false, true)?;
+    if !state.strict_watch_session_finished_received()? {
+        return Err(
+            "strict inbound Provider worker joined without session.finished authority | code: watch.provider-finish-authority-missing"
+                .to_string(),
+        );
+    }
+    Ok(input_completion)
+}
+
+pub(crate) fn finalize_strict_watch_inbound_after_terminal_drain(
+    app: &AppHandle,
+    state: &AudioStateStore,
+) -> Result<AudioRuntimeSnapshot, String> {
+    let _pipeline_guard = state.lock_inbound_pipeline();
+    finalize_inbound_capture_consumers(app, state)?;
+    let snapshot = state.snapshot();
+    if snapshot.inbound.stream_bound || snapshot.stt_connected {
+        return Err(
+            "strict inbound terminal teardown returned with capture/provider still active | code: watch.terminal-teardown-incomplete"
+                .to_string(),
+        );
+    }
+    state.watch_session_report.complete();
+    crate::history::finalize_session_if_routes_idle(app, &snapshot);
+    Ok(state.snapshot())
 }
 
 /// Tear down any prior session for `direction` before a new route start.
@@ -348,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn watch_inbound_route_resolves_realtime_audio_mode_from_model_and_registry() {
+    fn watch_inbound_route_resolves_audio_mode_only_after_manifest_authorization() {
         let watch_config = json!({
             "devices": { "routeMode": "watch" },
             "vad": { "bypass": true }
@@ -357,7 +449,7 @@ mod tests {
             "devices": { "routeMode": "game" },
             "vad": { "bypass": true }
         });
-        let omni_provider: ProviderDraftInput = serde_json::from_value(provider_value(
+        let mut omni_value = provider_value(
             "template-dashscope-realtime",
             "dashscope",
             "dashscope",
@@ -365,48 +457,29 @@ mod tests {
             "https://dashscope.aliyuncs.com/api/v1",
             "websocket",
             "dashscope",
-        ))
-        .expect("provider should parse");
-        let live_provider: ProviderDraftInput = serde_json::from_value(provider_value(
-            "template-dashscope-realtime",
-            "dashscope",
-            "dashscope",
-            "qwen3.5-livetranslate-flash-realtime",
-            "https://dashscope.aliyuncs.com/api/v1",
-            "websocket",
-            "dashscope",
-        ))
-        .expect("provider should parse");
-        let registry_provider: ProviderDraftInput = serde_json::from_value(json!({
-            "templateId": "template-dashscope-realtime",
-            "providerId": "dashscope",
-            "kind": "dashscope",
-            "displayName": "dashscope",
-            "model": "custom-realtime",
-            "baseUrl": "https://dashscope.aliyuncs.com/api/v1",
-            "transport": "websocket",
-            "authRef": { "kind": "system", "reference": "dashscope", "headerName": "Authorization", "scheme": "bearer" },
-            "streamEnabled": true,
-            "timeoutMs": 30000,
-            "systemPromptTemplate": "",
-            "sceneModelAssignments": [],
-            "localModelCapabilityRegistry": [
-                {
-                    "id": "registry-custom",
-                    "modelId": "custom-realtime",
-                    "capabilities": ["speech-to-speech"],
-                    "realtimeAudioMode": "semantic_vad"
-                }
-            ]
-        }))
-        .expect("provider should parse");
+        );
+        omni_value["region"] = json!("cn-beijing");
+        let omni_provider: ProviderDraftInput =
+            serde_json::from_value(omni_value).expect("provider should parse");
+        let live_provider: ProviderDraftInput =
+            serde_json::from_value(bailian_livetranslate_provider_value(None))
+                .expect("provider should parse");
+        let registry_provider: ProviderDraftInput =
+            serde_json::from_value(bailian_livetranslate_provider_value(Some("semantic_vad")))
+                .expect("provider should parse");
 
         assert_eq!(
             resolve_realtime_audio_mode_for_route("inbound", &watch_config, &omni_provider)
                 .expect("mode")
                 .as_str(),
-            "semantic_vad"
+            "server_vad"
         );
+        let denied_omni = resolve_realtime_profile(&omni_provider, &omni_provider.model);
+        assert_eq!(denied_omni.source, route_config::RealtimeProfileSource::None);
+        assert!(denied_omni
+            .model_protocol_error
+            .as_deref()
+            .is_some_and(|error| error.contains("model_protocol.adapter_unavailable")));
         assert_eq!(
             resolve_realtime_audio_mode_for_route("outbound", &watch_config, &omni_provider)
                 .expect("PTT mode")
@@ -448,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_registry_wins_over_official_seed_and_manual_only_watch_fails_early() {
+    fn custom_registry_selection_cannot_bypass_manifest_profile_authority() {
         let mut value = provider_value(
             "template-dashscope-realtime",
             "dashscope",
@@ -483,6 +556,12 @@ mod tests {
             resolve_realtime_profile(&custom, &custom.model).realtime_audio_mode,
             "server_vad"
         );
+        let custom_profile = resolve_realtime_profile(&custom, &custom.model);
+        assert_eq!(custom_profile.source, route_config::RealtimeProfileSource::None);
+        assert!(custom_profile
+            .model_protocol_error
+            .as_deref()
+            .is_some_and(|error| error.contains("model_protocol.profile_declaration_missing")));
 
         value["localModelCapabilityRegistry"] = json!([{
             "id": "custom-manual-only",
@@ -494,17 +573,22 @@ mod tests {
             "source": "custom"
         }]);
         let manual_only: ProviderDraftInput = serde_json::from_value(value).expect("provider");
-        let error = resolve_realtime_audio_mode_for_route(
+        let plan = ResolvedRoutePlan::from_resolved_provider(
             "inbound",
             &json!({"devices": {"routeMode": "watch"}}),
-            &manual_only,
-        )
-        .expect_err("continuous Watch rejects manual-only models before connect");
-        assert!(error.contains("manual-only"));
+            manual_only.model.clone(),
+            manual_only,
+        );
+        assert_eq!(plan.kind, ResolvedRouteKind::DashscopeStt);
+        assert!(plan.model_protocol_authority.is_none());
+        assert!(plan
+            .configuration_error
+            .as_deref()
+            .is_some_and(|error| error.contains("model_protocol.profile_declaration_missing")));
     }
 
     #[test]
-    fn qwen_audio_watch_serializes_turns_even_with_persisted_server_vad_registry() {
+    fn qwen_audio_incompatible_operation_fails_before_watch_turn_policy() {
         let mut value = provider_value(
             "template-dashscope-realtime",
             "dashscope",
@@ -518,6 +602,9 @@ mod tests {
             "id": "seed-qwen-audio-3.0-realtime-plus",
             "modelId": "qwen-audio-3.0-realtime-plus",
             "capabilities": ["speech-to-text", "speech-to-speech"],
+            "registryVersion": "bailian-model-protocol-registry/v1",
+            "profileId": "bailian.qwen-audio-chat.realtime.ws",
+            "profileVersion": 1,
             "realtimeProtocol": "dashscope-omni",
             "realtimeAudioMode": "server_vad",
             "interactionCapabilities": ["auto_vad", "streaming"]
@@ -536,9 +623,14 @@ mod tests {
             provider.model.clone(),
             provider.clone(),
         );
-        assert_eq!(watch_plan.realtime_audio_mode, "manual");
-        assert_eq!(watch_plan.vad_policy, ResolvedVadPolicy::ManualCommit);
-        assert_eq!(watch_plan.session_reuse_key.realtime_audio_mode, "manual");
+        assert_eq!(watch_plan.realtime_audio_mode, "server_vad");
+        assert_eq!(watch_plan.vad_policy, ResolvedVadPolicy::ServerVad);
+        assert_eq!(watch_plan.session_reuse_key.realtime_audio_mode, "server_vad");
+        assert!(watch_plan.model_protocol_authority.is_none());
+        assert!(watch_plan
+            .configuration_error
+            .as_deref()
+            .is_some_and(|error| error.contains("model_protocol.operation_not_supported")));
 
         let game_plan = ResolvedRoutePlan::from_resolved_provider(
             "inbound",
@@ -591,9 +683,9 @@ mod tests {
             "template-openai-compatible-realtime",
             "provider-openai",
             "openai-compatible",
-            "gpt-realtime",
+            "gpt-realtime-2.1",
             "https://api.openai.com/v1",
-            "streaming-http",
+            "websocket",
             "credential://provider/openai/default",
         ))
         .expect("provider should parse");
@@ -677,6 +769,33 @@ mod tests {
             "responseModalities": ["text"],
             "customHeaders": []
         })
+    }
+
+    fn bailian_livetranslate_provider_value(realtime_audio_mode: Option<&str>) -> Value {
+        let mut value = provider_value(
+            "template-dashscope-realtime",
+            "dashscope",
+            "dashscope",
+            "qwen3.5-livetranslate-flash-realtime",
+            "https://dashscope.aliyuncs.com/api/v1",
+            "websocket",
+            "dashscope",
+        );
+        value["region"] = json!("cn-beijing");
+        if let Some(mode) = realtime_audio_mode {
+            value["localModelCapabilityRegistry"] = json!([{
+                "id": "declared-livetranslate",
+                "modelId": "qwen3.5-livetranslate-flash-realtime",
+                "capabilities": ["speech-to-speech"],
+                "registryVersion": "bailian-model-protocol-registry/v1",
+                "profileId": "bailian.livetranslate.realtime.ws",
+                "profileVersion": 1,
+                "realtimeProtocol": "dashscope-livetranslate",
+                "realtimeAudioMode": mode,
+                "interactionCapabilities": ["auto_vad", "streaming"]
+            }]);
+        }
+        value
     }
 
     fn config_with_providers(providers: Vec<Value>) -> Value {
@@ -770,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_omni_voice_model_resolves_to_dashscope_without_scene_assignment() {
+    fn plain_omni_voice_model_does_not_infer_a_provider_without_assignment() {
         let config = config_with_providers(vec![
             provider_value(
                 "template-deepseek",
@@ -792,18 +911,15 @@ mod tests {
             ),
         ]);
 
-        let provider =
-            resolve_model_provider_from_config_value(&config, "qwen3.5-omni-plus-realtime")
-                .expect("plain Omni model should resolve to DashScope provider");
-
-        assert_eq!(provider.kind, "dashscope");
-        assert_eq!(provider.provider_id, "provider-dashscope");
-        assert_eq!(provider.base_url, "https://dashscope.aliyuncs.com/api/v1");
-        assert_eq!(provider.model, "qwen3.5-omni-plus-realtime");
+        assert!(resolve_model_provider_from_config_value(
+            &config,
+            "qwen3.5-omni-plus-realtime"
+        )
+        .is_none());
     }
 
     #[test]
-    fn named_dashscope_realtime_model_ignores_earlier_openai_exact_match() {
+    fn exact_provider_model_wins_without_vendor_name_inference() {
         let model = "qwen3.5-omni-plus-realtime";
         let config = config_with_providers(vec![
             provider_value(
@@ -829,8 +945,8 @@ mod tests {
         let provider = resolve_model_provider_from_config_value(&config, model)
             .expect("named DashScope realtime model should resolve");
 
-        assert_eq!(provider.kind, "dashscope");
-        assert_eq!(provider.provider_id, "provider-dashscope");
+        assert_eq!(provider.kind, "openai-compatible");
+        assert_eq!(provider.provider_id, "provider-openai-compatible");
         assert_eq!(provider.model, model);
     }
 
@@ -1040,19 +1156,13 @@ mod tests {
 
     #[test]
     fn resolved_route_plan_builds_vad_policy_table() {
-        let provider: ProviderDraftInput = serde_json::from_value(provider_value(
-            "template-dashscope-realtime",
-            "dashscope",
-            "dashscope",
-            "qwen3.5-omni-plus-realtime",
-            "https://dashscope.aliyuncs.com/api/v1",
-            "websocket",
-            "dashscope",
-        )).expect("provider should parse");
+        let provider: ProviderDraftInput =
+            serde_json::from_value(bailian_livetranslate_provider_value(None))
+                .expect("provider should parse");
         let cases = [
-            ("watch", true, ResolvedVadPolicy::ServerVad, "semantic_vad", false),
+            ("watch", true, ResolvedVadPolicy::ServerVad, "server_vad", false),
             ("game", true, ResolvedVadPolicy::ManualCommit, "manual", true),
-            ("watch", false, ResolvedVadPolicy::ServerVad, "semantic_vad", false),
+            ("watch", false, ResolvedVadPolicy::ServerVad, "server_vad", false),
         ];
         for (route_mode, bypass, expected_policy, expected_audio_mode, expected_legacy_bypass) in cases {
             let config = json!({
@@ -1068,6 +1178,8 @@ mod tests {
             assert_eq!(plan.legacy_vad_bypass, expected_legacy_bypass, "routeMode={route_mode}");
             assert_eq!(plan.target_language, "ja");
             assert_eq!(plan.session_reuse_key.model, provider.model);
+            assert!(plan.configuration_error.is_none());
+            assert!(plan.model_protocol_authority.is_some());
             assert!(
                 plan.instructions.contains("Preserve every numerical value"),
                 "realtime translation plans must retain numeric magnitude exactly",
@@ -1076,7 +1188,7 @@ mod tests {
     }
 
     #[test]
-    fn resolved_route_plan_requires_explicit_protocol_instead_of_s2s_capability_inference() {
+    fn resolved_route_plan_rejects_model_and_registry_protocol_inference_for_bailian() {
         let mut value = provider_value(
             "template-dashscope-realtime",
             "dashscope",
@@ -1091,18 +1203,26 @@ mod tests {
             "subtitles": { "targetLanguage": "zh-CN" }
         });
 
-        // No registry entry: the model name contains "qwen-audio" + "realtime",
-        // so infer_realtime_protocol classifies it as DashscopeOmni.
+        // A model name is not wire authority. Qwen Audio is present in the
+        // manifest, but its Desktop adapter is not enabled for native translate.
         let plain: ProviderDraftInput =
             serde_json::from_value(value.clone()).expect("provider should parse");
         let plan = ResolvedRoutePlan::from_resolved_provider(
             "inbound", &config, plain.model.clone(), plain.clone(),
         );
-        assert_eq!(plan.kind, ResolvedRouteKind::Omni);
-        assert_eq!(plan.voice, "longanqian");
+        assert_eq!(plan.kind, ResolvedRouteKind::DashscopeStt);
+        assert_eq!(
+            plan.voice, "Ethan",
+            "an unauthorized model name must not select a provider-specific voice"
+        );
+        assert!(plan.model_protocol_authority.is_none());
+        assert!(plan
+            .configuration_error
+            .as_deref()
+            .is_some_and(|error| error.contains("model_protocol.operation_not_supported")));
 
-        // Capabilities describe what the model can do; the explicit protocol
-        // describes how to communicate with it.
+        // A local protocol string without the immutable profile declaration is
+        // likewise incapable of authorizing the route.
         value["localModelCapabilityRegistry"] = json!([{
             "id": "registry-audio-realtime",
             "modelId": "qwen-audio-3.0-realtime-plus",
@@ -1116,8 +1236,16 @@ mod tests {
         let plan = ResolvedRoutePlan::from_resolved_provider(
             "inbound", &config, registered.model.clone(), registered,
         );
-        assert_eq!(plan.kind, ResolvedRouteKind::Omni);
-        assert_eq!(plan.voice, "longanqian");
+        assert_eq!(plan.kind, ResolvedRouteKind::DashscopeStt);
+        assert_eq!(
+            plan.voice, "Ethan",
+            "a local registry hint must not select a provider-specific voice"
+        );
+        assert!(plan.model_protocol_authority.is_none());
+        assert!(plan
+            .configuration_error
+            .as_deref()
+            .is_some_and(|error| error.contains("model_protocol.profile_declaration_missing")));
 
         // STT-only registry entries must not be promoted.
         value["localModelCapabilityRegistry"] = json!([{
@@ -1134,10 +1262,15 @@ mod tests {
             "inbound", &config, stt_only.model.clone(), stt_only,
         );
         assert_eq!(plan.kind, ResolvedRouteKind::DashscopeStt);
+        assert!(plan.model_protocol_authority.is_none());
+        assert!(plan
+            .configuration_error
+            .as_deref()
+            .is_some_and(|error| error.contains("model_protocol.profile_declaration_missing")));
     }
 
     #[test]
-    fn resolved_profile_honors_explicit_protocol_denial_and_first_duplicate() {
+    fn resolved_profile_honors_fail_closed_authority_and_first_duplicate_policy() {
         let mut value = provider_value(
             "template-dashscope-realtime", "dashscope", "dashscope",
             "named-omni-realtime", "https://dashscope.aliyuncs.com/api/v1",
@@ -1161,14 +1294,21 @@ mod tests {
         ]);
         let provider: ProviderDraftInput = serde_json::from_value(value).expect("provider");
         let profile = resolve_realtime_profile(&provider, &provider.model);
-        assert_eq!(profile.route_kind, ResolvedRouteKind::DashscopeStt);
+        assert_eq!(profile.route_kind, ResolvedRouteKind::LocalVad);
+        assert_eq!(profile.protocol_dialect, None);
+        assert_eq!(profile.source, route_config::RealtimeProfileSource::None);
         assert_eq!(profile.realtime_audio_mode, "server_vad");
+        assert!(!profile.preconnect_allowed);
+        assert!(profile
+            .model_protocol_error
+            .as_deref()
+            .is_some_and(|error| error.contains("model_protocol.profile_declaration_missing")));
         assert_eq!(profile.diagnostics.len(), 1);
         assert!(profile.diagnostics[0].contains("first-deny"));
     }
 
     #[test]
-    fn explicit_unhinted_protocol_gets_omni_timeout_and_preconnect_policy() {
+    fn explicit_unhinted_protocol_cannot_grant_omni_timeout_or_preconnect_policy() {
         let mut value = provider_value(
             "template-dashscope-realtime", "dashscope", "dashscope",
             "deployment-blue", "https://dashscope.aliyuncs.com/api/v1",
@@ -1183,23 +1323,50 @@ mod tests {
         }]);
         let provider: ProviderDraftInput = serde_json::from_value(value.clone()).expect("provider");
         let profile = resolve_realtime_profile(&provider, &provider.model);
-        assert_eq!(profile.route_kind, ResolvedRouteKind::Omni);
-        assert!(profile.preconnect_allowed);
-        assert_eq!(Duration::from_millis(profile.timeout_budget_ms), OMNI_ROUTE_COMMAND_TIMEOUT);
+        assert_eq!(profile.route_kind, ResolvedRouteKind::LocalVad);
+        assert!(!profile.preconnect_allowed);
+        assert_eq!(Duration::from_millis(profile.timeout_budget_ms), DEFAULT_ROUTE_COMMAND_TIMEOUT);
+        assert!(profile
+            .model_protocol_error
+            .as_deref()
+            .is_some_and(|error| error.contains("model_protocol.profile_declaration_missing")));
 
         let config = json!({
             "providers": [value],
             "devices": { "routeMode": "watch", "inboundVoiceModelId": "deployment-blue" }
         });
-        assert_eq!(route_command_timeout("inbound", &config), OMNI_ROUTE_COMMAND_TIMEOUT);
+        assert_eq!(route_command_timeout("inbound", &config), DEFAULT_ROUTE_COMMAND_TIMEOUT);
+
+        let unresolved_name_only = json!({
+            "devices": {
+                "routeMode": "watch",
+                "inboundVoiceModelId": "future-omni-realtime-2099"
+            }
+        });
+        assert_eq!(
+            route_command_timeout("inbound", &unresolved_name_only),
+            DEFAULT_ROUTE_COMMAND_TIMEOUT,
+            "model-name inference must not grant a connection-policy budget"
+        );
+
+        let authorized = bailian_livetranslate_provider_value(None);
+        let authorized_config = json!({
+            "providers": [authorized],
+            "devices": {
+                "routeMode": "watch",
+                "inboundVoiceModelId": "qwen3.5-livetranslate-flash-realtime"
+            }
+        });
+        assert_eq!(
+            route_command_timeout("inbound", &authorized_config),
+            Duration::from_secs(95),
+            "only the exact enabled manifest profile receives the realtime route budget"
+        );
     }
 
     #[test]
-    fn explicit_protocol_matrix_is_alias_invariant() {
+    fn explicit_non_bailian_protocol_matrix_is_alias_invariant() {
         let matrix = [
-            ("dashscope-omni", "dashscope", ResolvedRouteKind::Omni, "pcm16", 16_000),
-            ("dashscope-livetranslate", "dashscope", ResolvedRouteKind::Omni, "pcm", 16_000),
-            ("dashscope-asr", "dashscope", ResolvedRouteKind::DashscopeStt, "pcm", 16_000),
             ("openai-conversation", "openai-compatible", ResolvedRouteKind::OpenAiRealtime, "pcm16", 24_000),
             ("openai-translation", "openai-compatible", ResolvedRouteKind::OpenAiRealtime, "pcm16", 24_000),
             ("openai-transcription", "openai-compatible", ResolvedRouteKind::OpenAiRealtime, "pcm16", 24_000),
@@ -1229,6 +1396,35 @@ mod tests {
                 assert_eq!(profile.sample_rate, sample_rate);
                 assert_eq!(profile.source, route_config::RealtimeProfileSource::Registry);
             }
+        }
+
+        for protocol in ["dashscope-omni", "dashscope-livetranslate", "dashscope-asr"] {
+            let model = format!("deployment-{protocol}");
+            let mut value = provider_value(
+                "template-explicit",
+                "explicit",
+                "dashscope",
+                &model,
+                "https://dashscope.aliyuncs.com/api/v1",
+                "websocket",
+                "explicit",
+            );
+            value["localModelCapabilityRegistry"] = json!([{
+                "id": format!("entry-{protocol}"),
+                "modelId": model,
+                "capabilities": [],
+                "interactionCapabilities": [],
+                "realtimeProtocol": protocol
+            }]);
+            let provider: ProviderDraftInput = serde_json::from_value(value).expect("provider");
+            let profile = resolve_realtime_profile(&provider, &provider.model);
+            assert_eq!(profile.protocol_dialect, None);
+            assert_eq!(profile.route_kind, ResolvedRouteKind::LocalVad);
+            assert_eq!(profile.source, route_config::RealtimeProfileSource::None);
+            assert!(profile
+                .model_protocol_error
+                .as_deref()
+                .is_some_and(|error| error.contains("model_protocol.profile_declaration_missing")));
         }
     }
 

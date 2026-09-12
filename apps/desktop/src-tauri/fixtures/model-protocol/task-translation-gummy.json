@@ -1,0 +1,117 @@
+{
+  "schemaVersion": "model-protocol-wire-fixture/v1",
+  "dialectId": "bailian-gummy-task-ws-v1",
+  "checkedAt": "2026-08-30",
+  "sanitized": true,
+  "sources": [
+    { "url": "https://help.aliyun.com/zh/model-studio/real-time-websocket-api-1", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/real-time-speech-translation/", "checkedAt": "2026-08-30" }
+  ],
+  "sequence": [
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "run-task",
+      "wire": {
+        "header": { "action": "run-task", "task_id": "55555555-5555-4555-8555-555555555555", "streaming": "duplex" },
+        "payload": {
+          "task_group": "audio",
+          "task": "asr",
+          "function": "recognition",
+          "model": "gummy-realtime-v1",
+          "parameters": { "format": "pcm", "sample_rate": 16000, "translation_enabled": true },
+          "input": {}
+        }
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "task-started",
+      "wire": { "header": { "event": "task-started", "task_id": "55555555-5555-4555-8555-555555555555", "attributes": {} }, "payload": {} }
+    },
+    { "direction": "client", "frameKind": "binary", "eventType": "binary.audio", "activeTaskId": "55555555-5555-4555-8555-555555555555" },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "result-generated",
+      "wire": {
+        "header": { "event": "result-generated", "task_id": "55555555-5555-4555-8555-555555555555", "attributes": {} },
+        "payload": { "output": { "sentence": { "sentence_id": 0, "sentence_end": false, "transcription": "你好", "translations": [{ "lang": "en", "text": "hello" }] } } }
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "result-generated",
+      "wire": {
+        "header": { "event": "result-generated", "task_id": "55555555-5555-4555-8555-555555555555", "attributes": {} },
+        "payload": { "output": { "sentence": { "sentence_id": 0, "sentence_end": true, "transcription": "你好", "translations": [{ "lang": "en", "text": "hello" }] } } }
+      }
+    },
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "finish-task",
+      "wire": { "header": { "action": "finish-task", "task_id": "55555555-5555-4555-8555-555555555555", "streaming": "duplex" }, "payload": { "input": {} } }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "task-finished",
+      "wire": { "header": { "event": "task-finished", "task_id": "55555555-5555-4555-8555-555555555555", "attributes": {} }, "payload": { "output": {}, "usage": null } }
+    },
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "run-task",
+      "wire": {
+        "header": { "action": "run-task", "task_id": "66666666-6666-4666-8666-666666666666", "streaming": "duplex" },
+        "payload": {
+          "task_group": "audio",
+          "task": "asr",
+          "function": "recognition",
+          "model": "gummy-realtime-v1",
+          "parameters": { "format": "pcm", "sample_rate": 16000, "translation_enabled": true },
+          "input": {}
+        }
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "task-started",
+      "wire": { "header": { "event": "task-started", "task_id": "66666666-6666-4666-8666-666666666666", "attributes": {} }, "payload": {} }
+    },
+    { "direction": "client", "frameKind": "binary", "eventType": "binary.audio", "activeTaskId": "66666666-6666-4666-8666-666666666666" },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "result-generated",
+      "wire": {
+        "header": { "event": "result-generated", "task_id": "66666666-6666-4666-8666-666666666666", "attributes": {} },
+        "payload": { "output": { "sentence": { "sentence_id": 0, "sentence_end": true, "transcription": "再见", "translations": [{ "lang": "en", "text": "goodbye" }] } } }
+      }
+    },
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "finish-task",
+      "wire": { "header": { "action": "finish-task", "task_id": "66666666-6666-4666-8666-666666666666", "streaming": "duplex" }, "payload": { "input": {} } }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "task-finished",
+      "wire": { "header": { "event": "task-finished", "task_id": "66666666-6666-4666-8666-666666666666", "attributes": {} }, "payload": { "output": {}, "usage": null } }
+    }
+  ],
+  "expect": {
+    "operation": "native_translate",
+    "outputAudio": false,
+    "terminalOrder": ["finish-task", "task-finished"],
+    "sameConnectionSequentialReuse": true,
+    "freshTaskIdPerTask": true,
+    "failureInvalidatesConnection": true
+  }
+}

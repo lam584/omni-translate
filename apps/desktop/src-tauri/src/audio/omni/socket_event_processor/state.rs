@@ -1,8 +1,7 @@
 use super::*;
 
-pub(in crate::audio::omni) struct OmniSocketEventState<S: RealtimeSocket, R: tauri::Runtime = tauri::Wry> {
+pub(in crate::audio::omni) struct OmniSocketEventState<S: RealtimeSocket> {
     pub(in crate::audio::omni) socket: S,
-    pub(in crate::audio::omni) trace_call: crate::diagnostics::model_trace::ModelTraceCall<R>,
     pub(in crate::audio::omni) reconnect_count: usize,
     pub(in crate::audio::omni) pending_audio_buffer: Vec<i16>,
     pub(in crate::audio::omni) active_voice: String,
@@ -63,9 +62,10 @@ pub(in crate::audio::omni) struct OmniSocketEventContext<'a, R: tauri::Runtime =
     pub(in crate::audio::omni) echo_guard_enabled: bool,
 }
 
-pub(in crate::audio::omni) struct OmniSocketPollResult<S: RealtimeSocket, R: tauri::Runtime = tauri::Wry> {
-    pub(in crate::audio::omni) state: OmniSocketEventState<S, R>,
+pub(in crate::audio::omni) struct OmniSocketPollResult<S: RealtimeSocket> {
+    pub(in crate::audio::omni) state: OmniSocketEventState<S>,
     pub(in crate::audio::omni) skip_tick: bool,
     pub(in crate::audio::omni) socket_reconnected: bool,
+    pub(in crate::audio::omni) reconnected_session_update: Option<Value>,
     pub(in crate::audio::omni) stop_worker: bool,
 }

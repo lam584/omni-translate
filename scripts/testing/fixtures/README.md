@@ -19,10 +19,13 @@ remain in Git, while their WAV and checksum outputs are generated only when a
 developer explicitly needs those diagnostic variants. This keeps a clean
 checkout small without requiring Git LFS or an external download host.
 
-The direct runner's 180-second Watch capture budget can consume each fixture
-in full. The matrix runner may intentionally impose a shorter per-model budget;
-use it only when a sampled run is desired or pass limits compatible with the
-current matrix policy.
+The strict release runner consumes the canonical fixture in full and completes
+through its evidence-driven terminal: input completion, Provider finish,
+renderer receipt, local playback quiescence, and immutable report publication.
+Its 180/225-second mode-specific input-completion limits are fail-closed
+watchdogs, not Provider sample budgets, socket lifetimes, or normal success
+waits. Explicit diagnostic runs may still select other fixtures and their own
+bounded timing policy, but they do not create formal release authority.
 
 For `npm run test:audio-model-integration`, set both `audioTestFile` and
 `audio.testFile` in the local `scripts/testing/llm-integration.config.json` to

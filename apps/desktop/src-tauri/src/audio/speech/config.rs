@@ -111,6 +111,19 @@ impl SpeechConfig {
             })?,
             None => provider,
         };
+        if selected_tts_model.is_some() && provider.kind == "dashscope" {
+            crate::audio::events::authorize_bailian_model_operation(
+                &provider,
+                &provider.model,
+                "tts",
+            )
+            .map_err(|error| {
+                format!(
+                    "Configured DashScope TTS model '{}' is not authorized for TTS: {error}",
+                    provider.model
+                )
+            })?;
+        }
         let secondary_segment_tts_enabled = secondary_translation_active
             && secondary_audio_enabled
             && resolve_translation_audio_source(config, true)
@@ -273,10 +286,17 @@ fn resolve_model_provider_from_config_value(
 
 fn is_livetranslate_model_reference(config: &Value, model_id: &str) -> bool {
     resolve_model_provider_from_config_value(config, model_id)
-        .map(|provider| {
-            crate::audio::events::resolve_realtime_profile(&provider, &provider.model)
-                .protocol_dialect
-                == Some(crate::audio::events::RealtimeProtocol::DashscopeLivetranslate)
+        .and_then(|provider| {
+            (provider.kind == "dashscope").then(|| {
+                crate::provider::model_protocol_profile::lookup_model_protocol_profiles_for_inspection(
+                    &provider.model,
+                )
+                .ok()
+                .is_some_and(|profiles| {
+                    profiles.len() == 1
+                        && profiles[0].wire_dialect == "bailian-livetranslate-session-ws-v1"
+                })
+            })
         })
         .unwrap_or(false)
 }
@@ -317,6 +337,78 @@ fn parse_mix(config: &Value, prefix: &str) -> RouteMixConfig {
 #[cfg(test)]
 mod config_tests {
     use super::*;
+
+    fn livetranslate_tts_config(model: &str) -> Value {
+        json!({
+            "providers": [
+                {"templateId":"live","providerId":"live-provider","kind":"dashscope","displayName":"Live","model":"qwen3.5-livetranslate-flash-realtime","baseUrl":"https://dashscope.aliyuncs.com/api/v1","transport":"websocket","authRef":{"kind":"credential-ref","reference":"none","headerName":"Authorization","scheme":"none"},"streamEnabled":true,"timeoutMs":5000,"systemPromptTemplate":""},
+                {"templateId":"tts","providerId":"tts-provider","kind":"openai-compatible","displayName":"TTS","model":"tts-1","baseUrl":"","transport":"http-json","authRef":{"kind":"credential-ref","reference":"none","headerName":"Authorization","scheme":"none"},"streamEnabled":true,"timeoutMs":5000,"systemPromptTemplate":""}
+            ],
+            "devices": {
+                "subtitleTranslationMode":"secondary",
+                "subtitleTranslationModelId":"translator::text-model",
+                "outputSpeechEnabled":true,
+                "inboundSecondaryAudioModelId":model
+            },
+            "speech":{"translationAudioSource":"subtitle-tts","textToSpeechModelId":"tts::tts-1"}
+        })
+    }
+
+    #[test]
+    fn livetranslate_candidates_allow_secondary_speech_to_use_real_tts() {
+        // Exercise the production parser and embedded manifest, not a dialect stub.
+        for model in [
+            "qwen3.5-livetranslate-flash-realtime",
+            "qwen3.5-livetranslate-flash-realtime-2026-05-19",
+            "qwen3-livetranslate-flash-realtime",
+            "qwen3-livetranslate-flash-realtime-2025-09-22",
+        ] {
+            for reference in [model.to_string(), format!("live::{model}")] {
+                let config = livetranslate_tts_config(&reference);
+                let speech = SpeechConfig::from_value(&config)
+                    .unwrap_or_else(|error| panic!("{reference}: {error}"));
+                assert_eq!(speech.provider.provider_id, "tts-provider");
+                assert_eq!(speech.provider.model, "tts-1");
+                assert!(speech.secondary_segment_tts_enabled);
+                assert!(speech.enabled);
+            }
+        }
+    }
+
+    #[test]
+    fn livetranslate_lookalikes_and_missing_providers_fail_closed() {
+        for reference in [
+            "live::qwen3.5-livetranslate-flash-realtime-next",
+            "live::QWEN3.5-LIVETRANSLATE-FLASH-REALTIME",
+            "live:: qwen3.5-livetranslate-flash-realtime",
+            "deleted::qwen3.5-livetranslate-flash-realtime",
+        ] {
+            let error = SpeechConfig::from_value(&livetranslate_tts_config(reference))
+                .err().expect("unresolved or unknown selections must not fall through to TTS");
+            assert!(error.contains("cannot be resolved") || error.contains("not authorized for TTS"), "{reference}: {error}");
+        }
+    }
+
+    #[test]
+    fn livetranslate_filter_preserves_other_provider_and_tts_authorization() {
+        let mut config = livetranslate_tts_config("tts::qwen3.5-livetranslate-flash-realtime");
+        let speech = SpeechConfig::from_value(&config).expect("other providers are not classified by Bailian model names");
+        assert_eq!(speech.provider.model, "qwen3.5-livetranslate-flash-realtime");
+        assert_eq!(speech.provider.provider_id, "tts-provider");
+
+        config["devices"]["inboundSecondaryAudioModelId"] = json!("tts::tts-1");
+        let speech = SpeechConfig::from_value(&config).expect("ordinary TTS remains selected");
+        assert_eq!(speech.provider.model, "tts-1");
+        assert!(speech.secondary_segment_tts_enabled);
+
+        for model in ["qwen3.5-omni-plus-realtime", "qwen3-tts-flash-realtime"] {
+            config["devices"]["inboundSecondaryAudioModelId"] = json!("live::qwen3.5-livetranslate-flash-realtime");
+            config["speech"]["textToSpeechModelId"] = json!(format!("live::{model}"));
+            let error = SpeechConfig::from_value(&config).err().expect("fallback must still pass TTS authorization");
+            assert!(error.contains(model), "authorization must inspect the fallback: {error}");
+            assert!(error.contains("not authorized for TTS"));
+        }
+    }
 
     #[test]
     fn legacy_mix_defaults_smart_gain_only_for_inbound_watch_audio() {

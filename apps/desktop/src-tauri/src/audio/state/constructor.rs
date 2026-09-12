@@ -19,6 +19,7 @@ impl AudioStateStore {
             audio_cache: AudioCacheStore::new(),
             desktop_playback_ownership: DesktopPlaybackOwnership::default(),
             echo_canceller: Mutex::new(None),
+            aec_diagnostic_tap: AecDiagnosticTap::from_env(),
             echo_render_clock: Mutex::new(EchoRenderClock::default()),
             speaker_playback_last_active_at: Mutex::new(None),
             deferred_subtitle_translation_cues: DeferredTranslationStore::new(),
@@ -29,6 +30,11 @@ impl AudioStateStore {
             bridge_translation_status_receipts: Mutex::new(
                 BridgeTranslationStatusReceipts::default(),
             ),
+            translation_playback_quiescence: Arc::new(
+                TranslationPlaybackQuiescence::default(),
+            ),
+            strict_watch_terminal_lifecycle:
+                watch_terminal_lifecycle::StrictWatchTerminalLifecycle::default(),
             bridge_source_runtime_evidence: Mutex::new(
                 BridgeSourceRuntimeEvidence::default(),
             ),

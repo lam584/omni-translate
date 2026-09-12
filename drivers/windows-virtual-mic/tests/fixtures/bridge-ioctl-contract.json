@@ -53,7 +53,7 @@
     "chunkBytes": 3840
   },
   "bridgeSourceGeometry": {
-    "maxBufferedMilliseconds": 500
+    "maxBufferedMilliseconds": 1000
   },
   "virtualMicGeometry": {
     "sampleRateHz": 48000,

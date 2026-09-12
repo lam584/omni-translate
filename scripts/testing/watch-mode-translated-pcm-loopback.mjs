@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { isMain, parseCliArgs } from '../lib/testing-common.mjs';
-import { matchTranslatedLoopbackWithRust } from './watch-mode-rust-audio-analysis.mjs';
+import { matchTranslatedLoopbackBatchWithRust } from './watch-mode-rust-audio-analysis.mjs';
 
 export const TRANSLATED_PCM_AUTHORITY_KIND = 'watch-mode-translated-cue-pcm-authority';
 export const TRANSLATED_PCM_LOOPBACK_KIND = 'watch-mode-translated-pcm-loopback-correlation';
@@ -11,9 +11,287 @@ export const TRANSLATED_PCM_SUMMARY_FILE = 'translated-cue-pcm-summary.json';
 export const TRANSLATED_PCM_JOURNAL_FILE = 'translated-cue-pcm-authority.jsonl';
 export const LOOPBACK_SAMPLE_RATE_HZ = 16_000;
 export const MIN_COMPLETE_MATCHED_CUES = 2;
+const LOOPBACK_ANCHOR_BOUNDARY_JITTER_SAMPLES = 1;
+
+export function translatedLoopbackAnchorsAreOrdered(anchorMatches) {
+  return anchorMatches.every((entry, index) => (
+    index === 0
+    // matchedEndSample is end-exclusive. Independent resampling/correlation
+    // searches may quantize adjacent anchor lags one loopback sample apart;
+    // tolerate only that boundary jitter, never a substantive window overlap.
+    || entry.matchedStartSample + LOOPBACK_ANCHOR_BOUNDARY_JITTER_SAMPLES
+      >= anchorMatches[index - 1].matchedEndSample
+  ));
+}
+
+const BRIDGE_RENDERER_KIND = 'bridge-physical-playback';
+const DESKTOP_RENDERER_KIND = 'desktop-speaker';
+const BRIDGE_FEEDBACK_MODES = new Set(['virtual-driver', 'process-exclusion']);
+const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value ?? {}, key);
+
+function expectedRendererKind(feedbackLoopPrevention) {
+  if (feedbackLoopPrevention === 'echo-cancel') return DESKTOP_RENDERER_KIND;
+  if (BRIDGE_FEEDBACK_MODES.has(feedbackLoopPrevention)) return BRIDGE_RENDERER_KIND;
+  throw new Error(`unsupported translated PCM feedbackLoopPrevention: ${feedbackLoopPrevention || 'missing'}`);
+}
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
 
 const sha256File = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 const rounded = (value, digits = 6) => Number(Number(value).toFixed(digits));
+
+function loadCaptureTimelineAuthority(runDirectory, recordingSamples, violations) {
+  const authorityPath = path.join(runDirectory, 'physical-output-recording.json');
+  if (!fs.existsSync(authorityPath)) return null;
+  let recordingAuthority;
+  try {
+    recordingAuthority = readJson(authorityPath, 'physical output recording authority');
+  } catch (error) {
+    violations.push(error.message);
+    return null;
+  }
+  const timeline = recordingAuthority?.captureTimeline;
+  if (
+    !Number.isSafeInteger(recordingAuthority?.capturedFrames)
+    || recordingAuthority.capturedFrames <= 0
+    || timeline?.schemaVersion !== 4
+    || timeline?.authorityMode !== 'wasapi-device-position-qpc-epoch-calibrated-v4'
+    || timeline?.sampleZeroTimeAuthority !== 'first-capture-packet-qpc-epoch-calibration-v2'
+    || !Number.isSafeInteger(timeline?.sampleZeroEpochMs)
+    || timeline.sampleZeroEpochMs <= 0
+    || timeline?.sampleRateHz !== 48_000
+    || timeline?.channelCount !== 2
+    || !Number.isInteger(timeline?.packetCount)
+    || timeline.packetCount <= 0
+    || !Number.isSafeInteger(timeline?.outputFrameCount)
+    || timeline.outputFrameCount <= 0
+    || timeline.outputFrameCount !== recordingAuthority.capturedFrames
+    || !Number.isSafeInteger(timeline?.maxOutputFrameCount)
+    || timeline.maxOutputFrameCount < timeline.outputFrameCount
+    || !Number.isSafeInteger(timeline?.firstDevicePositionFrames)
+    || timeline.firstDevicePositionFrames < 0
+    || !Number.isSafeInteger(timeline?.lastDevicePositionFrames)
+    || timeline.lastDevicePositionFrames < 0
+    || !Number.isSafeInteger(timeline?.endDevicePositionFramesExclusive)
+    || timeline.endDevicePositionFramesExclusive <= timeline.lastDevicePositionFrames
+    || !Number.isSafeInteger(timeline?.firstQpcPosition100ns)
+    || timeline.firstQpcPosition100ns < 0
+    || !Number.isSafeInteger(timeline?.lastQpcPosition100ns)
+    || timeline.lastQpcPosition100ns < 0
+    || timeline.firstDevicePositionFrames > timeline.lastDevicePositionFrames
+    || timeline.endDevicePositionFramesExclusive - timeline.firstDevicePositionFrames
+      !== timeline.outputFrameCount
+    || timeline.firstQpcPosition100ns > timeline.lastQpcPosition100ns
+    || typeof timeline?.passed !== 'boolean'
+    || !['dataDiscontinuityPacketCount', 'timestampErrorPacketCount', 'qpcRegressionPacketCount', 'overlapPacketCount']
+      .every((key) => Number.isSafeInteger(timeline?.[key]) && timeline[key] >= 0)
+    || !['dataDiscontinuityPacketCount', 'timestampErrorPacketCount', 'qpcRegressionPacketCount', 'overlapPacketCount']
+      .every((key) => timeline[key] <= timeline.packetCount)
+    || timeline.timestampErrorPacketCount !== 0
+    || timeline.qpcRegressionPacketCount !== 0
+    || timeline.overlapPacketCount !== 0
+    || !Number.isSafeInteger(timeline?.totalGapFrames)
+    || timeline.totalGapFrames < 0
+    || !Number.isSafeInteger(timeline?.totalUnreliableFrames)
+    || timeline.totalUnreliableFrames < 0
+    || !Array.isArray(timeline?.gaps)
+    || !Array.isArray(timeline?.unreliableWindows)
+    || !Array.isArray(timeline?.violations)
+    || !timeline.violations.every(nonEmptyString)
+  ) {
+    violations.push('physical loopback recording capture timeline authority is missing or invalid');
+    return null;
+  }
+  let derivedTimelinePassed = true;
+  const expectedRecordingSamples = Math.max(1, Math.floor(
+    timeline.outputFrameCount * LOOPBACK_SAMPLE_RATE_HZ / timeline.sampleRateHz,
+  ));
+  if (recordingSamples !== expectedRecordingSamples) {
+    derivedTimelinePassed = false;
+    violations.push(
+      `physical loopback capture timeline output frames do not match the 16 kHz recording: expected ${expectedRecordingSamples} sample(s), observed ${recordingSamples}`,
+    );
+  }
+  const deviceSpanFrames = timeline.lastDevicePositionFrames
+    - timeline.firstDevicePositionFrames;
+  const qpcSpanFrames = (timeline.lastQpcPosition100ns - timeline.firstQpcPosition100ns)
+    * timeline.sampleRateHz / 10_000_000;
+  const qpcSpanToleranceFrames = Math.max(
+    timeline.sampleRateHz / 2,
+    deviceSpanFrames * 0.01,
+  );
+  if (Math.abs(qpcSpanFrames - deviceSpanFrames) > qpcSpanToleranceFrames) {
+    derivedTimelinePassed = false;
+    violations.push(
+      `physical loopback capture device/QPC spans disagree: device ${deviceSpanFrames} frame(s), QPC ${Math.round(qpcSpanFrames)} frame(s), tolerance ${Math.ceil(qpcSpanToleranceFrames)} frame(s)`,
+    );
+  }
+  if (timeline.passed !== true || timeline.violations.length > 0) {
+    violations.push(
+      `physical loopback capture timeline authority failed: ${timeline.violations.join('; ') || 'authority marked failed'}`,
+    );
+  }
+  const gaps = [];
+  let priorEndFrame = 0;
+  const maximumNativeFrames = timeline.outputFrameCount;
+  for (const [index, gap] of timeline.gaps.entries()) {
+    const outputStartFrame = Number(gap?.outputStartFrame);
+    const frameCount = Number(gap?.frameCount);
+    const gapEndFrame = outputStartFrame + frameCount;
+    if (
+      !Number.isSafeInteger(outputStartFrame)
+      || outputStartFrame < 0
+      || !Number.isSafeInteger(frameCount)
+      || frameCount <= 0
+      || outputStartFrame < priorEndFrame
+      || gapEndFrame > maximumNativeFrames
+      || !Number.isSafeInteger(Number(gap?.expectedDevicePositionFrames))
+      || !Number.isSafeInteger(Number(gap?.observedDevicePositionFrames))
+      || Number(gap.expectedDevicePositionFrames)
+        !== timeline.firstDevicePositionFrames + outputStartFrame
+      || Number(gap.observedDevicePositionFrames) - Number(gap.expectedDevicePositionFrames) !== frameCount
+      || !Number.isSafeInteger(Number(gap?.qpcPosition100ns))
+      || Number(gap.qpcPosition100ns) < timeline.firstQpcPosition100ns
+      || Number(gap.qpcPosition100ns) > timeline.lastQpcPosition100ns
+    ) {
+      derivedTimelinePassed = false;
+      violations.push(`physical loopback capture timeline gap ${index} is invalid`);
+      continue;
+    }
+    const loopbackStartSample = Math.floor(
+      outputStartFrame * LOOPBACK_SAMPLE_RATE_HZ / timeline.sampleRateHz,
+    );
+    const loopbackEndSample = Math.ceil(
+      gapEndFrame * LOOPBACK_SAMPLE_RATE_HZ / timeline.sampleRateHz,
+    );
+    gaps.push({
+      kind: 'device-position-gap',
+      index,
+      outputStartFrame,
+      frameCount,
+      qpcPosition100ns: Number(gap.qpcPosition100ns),
+      loopbackStartSample,
+      loopbackEndSample,
+    });
+    priorEndFrame = gapEndFrame;
+  }
+  const summedGapFrames = gaps.reduce((sum, gap) => sum + gap.frameCount, 0);
+  if (summedGapFrames !== timeline.totalGapFrames) {
+    derivedTimelinePassed = false;
+    violations.push('physical loopback capture timeline total gap frames do not match its gap ledger');
+  }
+
+  const unreliableWindows = [];
+  let priorUnreliableEndFrame = 0;
+  let priorPacketIndex = 0;
+  for (const [index, window] of timeline.unreliableWindows.entries()) {
+    const outputStartFrame = Number(window?.outputStartFrame);
+    const frameCount = Number(window?.frameCount);
+    const windowEndFrame = outputStartFrame + frameCount;
+    const packetIndex = Number(window?.packetIndex);
+    if (
+      !Number.isSafeInteger(outputStartFrame)
+      || outputStartFrame < 0
+      || !Number.isSafeInteger(frameCount)
+      || frameCount <= 0
+      || outputStartFrame < priorUnreliableEndFrame
+      || windowEndFrame > maximumNativeFrames
+      || !Number.isSafeInteger(packetIndex)
+      || packetIndex <= priorPacketIndex
+      || packetIndex > timeline.packetCount
+      || !Number.isSafeInteger(Number(window?.devicePositionFrames))
+      || Number(window.devicePositionFrames)
+        !== timeline.firstDevicePositionFrames + outputStartFrame
+      || !Number.isSafeInteger(Number(window?.qpcPosition100ns))
+      || Number(window.qpcPosition100ns) < timeline.firstQpcPosition100ns
+      || Number(window.qpcPosition100ns) > timeline.lastQpcPosition100ns
+      || window?.reason !== 'data-discontinuity'
+    ) {
+      derivedTimelinePassed = false;
+      violations.push(`physical loopback capture timeline unreliable window ${index} is invalid`);
+      continue;
+    }
+    unreliableWindows.push({
+      kind: 'data-discontinuity-window',
+      index,
+      outputStartFrame,
+      frameCount,
+      packetIndex,
+      devicePositionFrames: Number(window.devicePositionFrames),
+      qpcPosition100ns: Number(window.qpcPosition100ns),
+      reason: window.reason,
+      loopbackStartSample: Math.floor(
+        outputStartFrame * LOOPBACK_SAMPLE_RATE_HZ / timeline.sampleRateHz,
+      ),
+      loopbackEndSample: Math.ceil(
+        windowEndFrame * LOOPBACK_SAMPLE_RATE_HZ / timeline.sampleRateHz,
+      ),
+    });
+    priorUnreliableEndFrame = windowEndFrame;
+    priorPacketIndex = packetIndex;
+  }
+  const summedUnreliableFrames = unreliableWindows.reduce(
+    (sum, window) => sum + window.frameCount,
+    0,
+  );
+  if (summedUnreliableFrames !== timeline.totalUnreliableFrames) {
+    derivedTimelinePassed = false;
+    violations.push('physical loopback capture timeline total unreliable frames do not match its window ledger');
+  }
+  if (timeline.dataDiscontinuityPacketCount !== unreliableWindows.length) {
+    derivedTimelinePassed = false;
+    violations.push('physical loopback capture timeline discontinuity count does not match its unreliable-window ledger');
+  }
+  const repairedIntervals = [...gaps, ...unreliableWindows]
+    .sort((left, right) => left.outputStartFrame - right.outputStartFrame);
+  if (repairedIntervals.some((entry, index) => (
+    index > 0
+    && entry.outputStartFrame
+      < repairedIntervals[index - 1].outputStartFrame + repairedIntervals[index - 1].frameCount
+  ))) {
+    derivedTimelinePassed = false;
+    violations.push('physical loopback capture timeline repaired intervals overlap');
+  }
+  return {
+    schemaVersion: timeline.schemaVersion,
+    authorityMode: timeline.authorityMode,
+    sampleZeroEpochMs: timeline.sampleZeroEpochMs,
+    sampleZeroTimeAuthority: timeline.sampleZeroTimeAuthority,
+    passed: (
+      timeline.passed === true
+      && timeline.violations.length === 0
+      && derivedTimelinePassed
+    ),
+    sampleRateHz: timeline.sampleRateHz,
+    channelCount: timeline.channelCount,
+    packetCount: timeline.packetCount,
+    outputFrameCount: timeline.outputFrameCount,
+    maxOutputFrameCount: timeline.maxOutputFrameCount,
+    firstDevicePositionFrames: timeline.firstDevicePositionFrames,
+    lastDevicePositionFrames: timeline.lastDevicePositionFrames,
+    endDevicePositionFramesExclusive: timeline.endDevicePositionFramesExclusive,
+    firstQpcPosition100ns: timeline.firstQpcPosition100ns,
+    lastQpcPosition100ns: timeline.lastQpcPosition100ns,
+    dataDiscontinuityPacketCount: timeline.dataDiscontinuityPacketCount,
+    timestampErrorPacketCount: timeline.timestampErrorPacketCount,
+    qpcRegressionPacketCount: timeline.qpcRegressionPacketCount,
+    overlapPacketCount: timeline.overlapPacketCount,
+    totalGapFrames: timeline.totalGapFrames,
+    totalUnreliableFrames: timeline.totalUnreliableFrames,
+    gaps,
+    unreliableWindows,
+    violations: timeline.violations,
+  };
+}
+
+function captureAuthorityIntervalsIntersectingWindow(captureTimeline, startSample, endSample) {
+  if (!captureTimeline || !Number.isFinite(startSample) || !Number.isFinite(endSample)) return [];
+  return [...captureTimeline.gaps, ...captureTimeline.unreliableWindows].filter((entry) => (
+    entry.loopbackStartSample < endSample && startSample < entry.loopbackEndSample
+  ));
+}
 
 function pcmWindowRms(bytes, offsetSamples, sampleCount) {
   let squareSum = 0;
@@ -28,21 +306,25 @@ function selectHighEnergyAnchors(cue) {
   const sampleRateHz = Number(cue.sampleRateHz);
   const channelCount = Number(cue.channelCount);
   const totalFrames = Number(cue.frameCount);
+  const durationSeconds = totalFrames / sampleRateHz;
+  const anchorCount = durationSeconds >= 1.2 ? 3 : durationSeconds >= 0.8 ? 2 : durationSeconds >= 0.4 ? 1 : 0;
+  if (anchorCount === 0) {
+    return { anchors: [], auditable: false, reason: 'cue is shorter than the minimum 400ms acoustic window' };
+  }
   const minimumFrames = Math.ceil(sampleRateHz * 0.4);
   const anchors = [];
-  for (let regionIndex = 0; regionIndex < 3; regionIndex += 1) {
-    const regionStart = Math.floor(totalFrames * regionIndex / 3);
-    const regionEnd = Math.floor(totalFrames * (regionIndex + 1) / 3);
+  const anchorNames = anchorCount === 3 ? ['early', 'middle', 'late']
+    : anchorCount === 2 ? ['early', 'late'] : ['full'];
+  for (let regionIndex = 0; regionIndex < anchorCount; regionIndex += 1) {
+    const regionStart = Math.floor(totalFrames * regionIndex / anchorCount);
+    const regionEnd = Math.floor(totalFrames * (regionIndex + 1) / anchorCount);
     const regionFrames = regionEnd - regionStart;
-    const windowFrames = Math.min(
-      Math.floor(sampleRateHz * 0.75),
-      Math.max(minimumFrames, Math.floor(regionFrames * 0.8)),
-    );
+    const windowFrames = minimumFrames;
     if (regionFrames < minimumFrames || windowFrames > regionFrames) {
-      throw new Error(`cue ${cue.cueId} is too short for three independent 400ms anchors`);
+      return { anchors: [], auditable: false, reason: 'cue cannot provide the required independent 400ms acoustic windows' };
     }
     const strideFrames = Math.max(1, Math.floor(sampleRateHz * 0.05));
-    let best = null;
+    const candidates = [];
     for (
       let frameOffset = regionStart;
       frameOffset + windowFrames <= regionEnd;
@@ -51,25 +333,67 @@ function selectHighEnergyAnchors(cue) {
       const sampleOffset = frameOffset * channelCount;
       const sampleCount = windowFrames * channelCount;
       const rms = pcmWindowRms(cue.pcmBytes, sampleOffset, sampleCount);
-      if (!best || rms > best.rms) best = { frameOffset, sampleOffset, sampleCount, rms };
+      candidates.push({ frameOffset, sampleOffset, sampleCount, rms });
     }
-    if (!best || best.rms < 0.003) {
-      throw new Error(`cue ${cue.cueId} ${['early', 'middle', 'late'][regionIndex]} anchor is silent`);
+    candidates.sort((left, right) => right.rms - left.rms || left.frameOffset - right.frameOffset);
+    const maximumRms = candidates[0]?.rms ?? 0;
+    const highEnergyCandidates = [];
+    // Keep independent alternatives when the loudest window is masked in the
+    // physical mix by the original programme.  A half-peak reference is
+    // still a high-energy cue window (and must also clear the absolute
+    // silence floor below); the normal correlation, wrong-cue
+    // identity margin, timing, ordering, and three-anchor gates remain the
+    // authority for whether that alternative was actually rendered.
+    for (const candidate of candidates) {
+      if (candidate.rms < maximumRms * 0.5 || candidate.rms < 0.003) break;
+      if (highEnergyCandidates.some((selected) => (
+        candidate.frameOffset < selected.frameOffset + windowFrames
+        && selected.frameOffset < candidate.frameOffset + windowFrames
+      ))) continue;
+      highEnergyCandidates.push(candidate);
+      if (highEnergyCandidates.length === 3) break;
+    }
+    if (maximumRms < 0.003 || highEnergyCandidates.length === 0) {
+      return { anchors: [], auditable: false, reason: `cue ${anchorNames[regionIndex]} acoustic window is silent` };
     }
     anchors.push({
-      name: ['early', 'middle', 'late'][regionIndex],
-      frameOffset: best.frameOffset,
-      rms: rounded(best.rms),
-      reference: {
-        referencePath: cue.pcmPath,
-        referenceSampleRateHz: sampleRateHz,
-        referenceChannels: channelCount,
-        referenceOffsetSamples: best.sampleOffset,
-        referenceSampleCount: best.sampleCount,
-      },
+      name: anchorNames[regionIndex],
+      candidates: highEnergyCandidates.map((candidate) => ({
+        frameOffset: candidate.frameOffset,
+        rms: rounded(candidate.rms),
+        reference: {
+          referencePath: cue.pcmPath,
+          referenceSampleRateHz: sampleRateHz,
+          referenceChannels: channelCount,
+          referenceOffsetSamples: candidate.sampleOffset,
+          referenceSampleCount: candidate.sampleCount,
+        },
+      })),
     });
   }
-  return anchors;
+  return { anchors, auditable: true, reason: null };
+}
+
+function expectedAnchorPlaybackAtMs(cue, anchor, startedAtMs) {
+  const sampleRateHz = Number(cue.sampleRateHz);
+  const channelCount = Number(cue.channelCount);
+  const anchorSampleOffset = anchor.frameOffset * channelCount;
+  let scheduledAtMs = startedAtMs;
+  for (const chunk of cue.chunks) {
+    const chunkSampleOffset = Number(chunk.sampleOffset);
+    const chunkSampleCount = Number(chunk.sampleCount);
+    const chunkDurationMs = chunkSampleCount * 1_000 / (sampleRateHz * channelCount);
+    scheduledAtMs = Math.max(scheduledAtMs, Number(chunk.acceptedAtMs));
+    if (
+      anchorSampleOffset >= chunkSampleOffset
+      && anchorSampleOffset < chunkSampleOffset + chunkSampleCount
+    ) {
+      return scheduledAtMs
+        + (anchorSampleOffset - chunkSampleOffset) * 1_000 / (sampleRateHz * channelCount);
+    }
+    scheduledAtMs += chunkDurationMs;
+  }
+  throw new Error(`anchor ${anchor.name} is outside translated PCM chunk coverage`);
 }
 
 function readRegularFile(filePath, label) {
@@ -167,13 +491,35 @@ function playbackLifecycle(scopedLog, requiredCueIds) {
   return { byCue, violations };
 }
 
-function validateTranslatedAuthority({ authorityDirectory, expectedIdentity }) {
+function processExclusionRestartPlayback(scopedLog) {
+  const summaryLine = scopedLog
+    .split(/\r?\n/)
+    .findLast((line) => /\bevent=process_exclusion_restart_summary\b/.test(line));
+  if (!summaryLine) return null;
+  const value = (key) => summaryLine.match(new RegExp(`\\b${key}=([^\\s]+)`))?.[1] ?? '';
+  const number = (key) => Number(value(key));
+  return {
+    status: value('status'),
+    recoveredAtMs: number('recoveredAtUnixMs') || number('recoveredAtMs'),
+    oldPlaybackOwnerGeneration: number('oldPlaybackOwnerGeneration'),
+    newPlaybackOwnerGeneration: number('newPlaybackOwnerGeneration'),
+    oldPhysicalPlaybackDeviceId: value('oldPhysicalPlaybackDeviceId'),
+    newPhysicalPlaybackDeviceId: value('newPhysicalPlaybackDeviceId'),
+    physicalPlaybackStatus: value('physicalPlaybackStatus'),
+  };
+}
+
+function validateTranslatedAuthority({
+  authorityDirectory,
+  expectedIdentity,
+  feedbackLoopPrevention,
+}) {
   const summaryPath = path.join(authorityDirectory, TRANSLATED_PCM_SUMMARY_FILE);
   const journalPath = path.join(authorityDirectory, TRANSLATED_PCM_JOURNAL_FILE);
   const summary = readJson(summaryPath, 'translated PCM summary');
   const violations = [];
   const identity = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: TRANSLATED_PCM_AUTHORITY_KIND,
     direction: 'inbound',
     ...expectedIdentity,
@@ -187,6 +533,22 @@ function validateTranslatedAuthority({ authorityDirectory, expectedIdentity }) {
   const cues = Array.isArray(summary.acceptedCues) ? summary.acceptedCues : [];
   if (Number(summary.cueCount) !== cues.length || cues.length === 0) violations.push('translated PCM summary cueCount is empty or inconsistent');
   const cueIds = new Set();
+  const expectedKind = expectedRendererKind(feedbackLoopPrevention);
+  const bridgeOnlyFields = [
+    'sessionId',
+    'bridgeInstanceId',
+    'sourceGeneration',
+    'sourceGenerationToken',
+    'playbackOwnerGeneration',
+  ];
+  const desktopOnlyFields = [
+    'rendererInstanceId',
+    'rendererOwnerGeneration',
+    'renderAttemptId',
+    'playedFrames',
+    'playedSampleRateHz',
+    'playedChannelCount',
+  ];
   let totalSamples = 0;
   let totalBytes = 0;
   const validatedCues = [];
@@ -199,20 +561,57 @@ function validateTranslatedAuthority({ authorityDirectory, expectedIdentity }) {
     const sampleCount = Number(cue.sampleCount);
     const frameCount = Number(cue.frameCount);
     const bytes = Number(cue.bytes);
-    if (!String(cue.bridgeInstanceId ?? '').trim()) violations.push(`translated PCM cue ${cue.cueId} bridge instance is missing`);
-    if (!Number.isSafeInteger(Number(cue.playbackOwnerGeneration)) || Number(cue.playbackOwnerGeneration) <= 0) {
-      violations.push(`translated PCM cue ${cue.cueId} playback owner generation is invalid`);
+    if (!nonEmptyString(cue.responseId)) violations.push(`translated PCM cue ${cue.cueId} response identity is missing`);
+    if (cue.rendererKind !== expectedKind) {
+      violations.push(`translated PCM cue ${cue.cueId} renderer kind ${cue.rendererKind ?? 'missing'} is incompatible with ${feedbackLoopPrevention}`);
     }
     if (!String(cue.physicalPlaybackDeviceId ?? '').trim()) violations.push(`translated PCM cue ${cue.cueId} physical endpoint is missing`);
     if (!Number.isInteger(sampleRateHz) || sampleRateHz < 8_000 || sampleRateHz > 48_000) violations.push(`translated PCM cue ${cue.cueId} sample rate is invalid`);
     if (!Number.isInteger(channelCount) || channelCount <= 0 || channelCount > 2) violations.push(`translated PCM cue ${cue.cueId} channel count is invalid`);
     if (!Number.isInteger(sampleCount) || sampleCount <= 0 || bytes !== sampleCount * 2) violations.push(`translated PCM cue ${cue.cueId} sample/byte count mismatch`);
-    if (frameCount !== sampleCount / channelCount || Number(cue.acceptedFrames) !== frameCount) violations.push(`translated PCM cue ${cue.cueId} frame/ACK count mismatch`);
+    if (frameCount !== sampleCount / channelCount) violations.push(`translated PCM cue ${cue.cueId} frame count mismatch`);
+    if (cue.rendererKind === BRIDGE_RENDERER_KIND) {
+      if (!nonEmptyString(cue.sessionId)
+        || !nonEmptyString(cue.bridgeInstanceId)
+        || !Number.isSafeInteger(Number(cue.sourceGeneration))
+        || Number(cue.sourceGeneration) <= 0
+        || !nonEmptyString(cue.sourceGenerationToken)
+        || cue.sourceGenerationToken !== `${cue.bridgeInstanceId}:${cue.sessionId}:${cue.sourceGeneration}`
+        || !Number.isSafeInteger(Number(cue.playbackOwnerGeneration))
+        || Number(cue.playbackOwnerGeneration) <= 0
+        || Number(cue.acceptedFrames) !== frameCount) {
+        violations.push(`translated PCM cue ${cue.cueId} Bridge renderer authority is incomplete or inconsistent`);
+      }
+      if (desktopOnlyFields.some((field) => hasOwn(cue, field))) {
+        violations.push(`translated PCM cue ${cue.cueId} Bridge renderer contains forbidden Desktop fields`);
+      }
+    } else if (cue.rendererKind === DESKTOP_RENDERER_KIND) {
+      const playedFrames = Number(cue.playedFrames);
+      const playedSampleRateHz = Number(cue.playedSampleRateHz);
+      const playedChannelCount = Number(cue.playedChannelCount);
+      if (!nonEmptyString(cue.rendererInstanceId)
+        || !Number.isSafeInteger(Number(cue.rendererOwnerGeneration))
+        || Number(cue.rendererOwnerGeneration) <= 0
+        || !nonEmptyString(cue.renderAttemptId)
+        || !Number.isSafeInteger(playedFrames)
+        || playedFrames <= 0
+        || !Number.isInteger(playedSampleRateHz)
+        || playedSampleRateHz <= 0
+        || !Number.isInteger(playedChannelCount)
+        || playedChannelCount <= 0
+        || playedFrames * sampleRateHz !== frameCount * playedSampleRateHz) {
+        violations.push(`translated PCM cue ${cue.cueId} Desktop speaker played authority is incomplete or duration-mismatched`);
+      }
+      if (bridgeOnlyFields.some((field) => hasOwn(cue, field))) {
+        violations.push(`translated PCM cue ${cue.cueId} Desktop renderer contains forbidden Bridge fields`);
+      }
+    }
     const chunks = Array.isArray(cue.chunks) ? cue.chunks : [];
     if (chunks.length !== Number(cue.chunkCount) || chunks.length === 0) {
       violations.push(`translated PCM cue ${cue.cueId} chunk metadata is missing or inconsistent`);
     }
     let nextSampleOffset = 0;
+    let priorAcceptedAtMs = 0;
     for (const [chunkPosition, chunk] of chunks.entries()) {
       const chunkSampleCount = Number(chunk.sampleCount);
       if (
@@ -224,7 +623,9 @@ function validateTranslatedAuthority({ authorityDirectory, expectedIdentity }) {
         || chunk.requestId !== cue.requestIds?.[chunkPosition]
         || !Number.isSafeInteger(Number(chunk.acceptedAtMs))
         || Number(chunk.acceptedAtMs) <= 0
+        || Number(chunk.acceptedAtMs) < priorAcceptedAtMs
       ) violations.push(`translated PCM cue ${cue.cueId} chunk ${chunkPosition} metadata is invalid`);
+      priorAcceptedAtMs = Number(chunk.acceptedAtMs);
       nextSampleOffset += Number.isInteger(chunkSampleCount) && chunkSampleCount > 0 ? chunkSampleCount : 0;
     }
     if (nextSampleOffset !== sampleCount) violations.push(`translated PCM cue ${cue.cueId} chunk sample coverage mismatch`);
@@ -246,15 +647,42 @@ function validateTranslatedAuthority({ authorityDirectory, expectedIdentity }) {
   const journal = journalLines.map((line, index) => {
     try { return JSON.parse(line); } catch (error) { throw new Error(`translated PCM journal line ${index + 1} is invalid: ${error.message}`); }
   });
+  let priorJournalOccurredAtMs = 0;
   for (const [index, event] of journal.entries()) {
     if (Number(event.sequence) !== index + 1) violations.push(`translated PCM journal sequence mismatch at ${index + 1}`);
+    const occurredAtMs = Number(event.occurredAtMs);
+    if (!Number.isSafeInteger(occurredAtMs)
+      || occurredAtMs <= 0
+      || (index > 0 && occurredAtMs < priorJournalOccurredAtMs)) {
+      violations.push(`translated PCM journal timestamp is invalid or non-monotonic at ${index + 1}`);
+    }
+    priorJournalOccurredAtMs = occurredAtMs;
     for (const [key, expected] of Object.entries(identity)) {
       if (expected !== undefined && event?.[key] !== expected) violations.push(`translated PCM journal ${key} mismatch at ${index + 1}`);
     }
   }
   if (journal[0]?.event !== 'initialized' || journal.at(-1)?.event !== 'finalized') violations.push('translated PCM journal must run initialized to finalized');
   if (journal.some((event) => event.event === 'stream_aborted')) violations.push('translated PCM journal contains stream_aborted');
-  if (journal.filter((event) => event.event === 'bridge_write_accepted').length !== cues.length) violations.push('translated PCM journal accepted count mismatch');
+  const cueEvents = journal.filter((event) => (
+    event.event === 'bridge_write_accepted' || event.event === 'desktop_speaker_played'
+  ));
+  if (cueEvents.length !== cues.length) {
+    violations.push('translated PCM journal renderer completion count mismatch');
+  }
+  for (const [index, cue] of cues.entries()) {
+    const event = cueEvents[index];
+    const expectedEvent = cue.rendererKind === BRIDGE_RENDERER_KIND
+      ? 'bridge_write_accepted'
+      : 'desktop_speaker_played';
+    if (!event
+      || event.event !== expectedEvent
+      || event.detail?.cueId !== cue.cueId
+      || event.detail?.responseId !== cue.responseId
+      || event.detail?.rendererKind !== cue.rendererKind
+      || event.detail?.sha256 !== cue.sha256) {
+      violations.push(`translated PCM cue ${cue.cueId} journal event does not bind its renderer completion`);
+    }
+  }
   return {
     summary,
     cues: validatedCues,
@@ -275,6 +703,7 @@ export function buildTranslatedPcmLoopbackAuthority({
   leaseId,
   modelId,
   protocol,
+  feedbackLoopPrevention,
 }) {
   const violations = [];
   const resolvedRunDirectory = path.resolve(runDirectory);
@@ -284,6 +713,7 @@ export function buildTranslatedPcmLoopbackAuthority({
     translated = validateTranslatedAuthority({
       authorityDirectory,
       expectedIdentity: { cellId, leaseId, runMarker, model: modelId, protocol },
+      feedbackLoopPrevention,
     });
     violations.push(...translated.violations);
   } catch (error) {
@@ -296,6 +726,7 @@ export function buildTranslatedPcmLoopbackAuthority({
     violations.push(`translated PCM loopback requires at least ${MIN_COMPLETE_MATCHED_CUES} complete rendered cues; found ${requiredCueIds.length}`);
   }
   let lifecycle = new Map();
+  let scopedLog = '';
   try {
     const log = readRegularFile(appLogPath, 'run app.log').bytes.toString('utf8');
     // The run marker is intentionally repeated by later diagnostic events.
@@ -303,7 +734,8 @@ export function buildTranslatedPcmLoopbackAuthority({
     // lifecycle events are not discarded when the report-save event repeats it.
     const markerIndex = log.indexOf(runMarker);
     if (markerIndex < 0) throw new Error('run marker is absent from app.log');
-    const parsedLifecycle = playbackLifecycle(log.slice(markerIndex), requiredCueIds);
+    scopedLog = log.slice(markerIndex);
+    const parsedLifecycle = playbackLifecycle(scopedLog, requiredCueIds);
     lifecycle = parsedLifecycle.byCue;
     violations.push(...parsedLifecycle.violations);
   } catch (error) {
@@ -318,8 +750,18 @@ export function buildTranslatedPcmLoopbackAuthority({
   } catch (error) {
     violations.push(error.message);
   }
-  const recordingStart = Number(recordingStartedAtEpochMs);
-  if (!Number.isFinite(recordingStart) || recordingStart <= 0) violations.push('physical loopback recording start epoch is invalid');
+  const captureTimelineAuthority = loadCaptureTimelineAuthority(
+    resolvedRunDirectory,
+    recordingSamples,
+    violations,
+  );
+  const declaredRecordingStart = Number(recordingStartedAtEpochMs);
+  const recordingStart = captureTimelineAuthority?.sampleZeroEpochMs ?? declaredRecordingStart;
+  if (!Number.isFinite(declaredRecordingStart) || declaredRecordingStart <= 0) {
+    violations.push('physical loopback recording start epoch is invalid');
+  } else if (Number.isFinite(recordingStart) && declaredRecordingStart !== recordingStart) {
+    violations.push('physical loopback recording start epoch does not match capture timeline sample-zero authority');
+  }
 
   const cueById = new Map(translated.cues.map((cue) => [cue.cueId, cue]));
   const references = new Map();
@@ -330,78 +772,174 @@ export function buildTranslatedPcmLoopbackAuthority({
       continue;
     }
     try {
-      references.set(cueId, { anchors: selectHighEnergyAnchors(cue) });
+      references.set(cueId, selectHighEnergyAnchors(cue));
     } catch (error) {
       violations.push(`cue ${cueId}: ${error.message}`);
     }
   }
 
-  const matchReference = (reference, expectedStartSamples) => {
-    try {
-      const metrics = matchTranslatedLoopbackWithRust({
-        ...reference,
-        recordingPath,
-        expectedStartSamples,
-      });
-      return {
-        ...metrics,
-        passed: (
-          metrics.waveformMedian >= 0.32
-          && metrics.waveformMinimum >= 0.20
-          && metrics.derivativeMedian >= 0.24
-          && metrics.derivativeMinimum >= 0.14
-          && Math.abs(metrics.timingErrorSeconds) <= 0.65
-        ),
-      };
-    } catch (error) {
-      return { passed: false, score: 0, segmentMatches: [], reason: error.message };
-    }
-  };
-
   const matches = [];
+  const unauditableCues = [];
+  const cueContexts = [];
+  const diagonalRequests = [];
+  let requestSequence = 0;
   for (const cueId of requiredCueIds) {
     const referenceSet = references.get(cueId);
     const startedAtMs = lifecycle.get(cueId)?.started?.occurredAtMs;
     if (!referenceSet || !Number.isFinite(startedAtMs) || recordingSamples === 0 || !Number.isFinite(recordingStart)) continue;
+    if (!referenceSet.auditable) {
+      unauditableCues.push({ cueId, reason: referenceSet.reason });
+      continue;
+    }
     const cue = cueById.get(cueId);
-    const anchorMatches = referenceSet.anchors.map((anchor, anchorIndex) => {
-      const expectedStart = Math.round(
-        (startedAtMs - recordingStart) * LOOPBACK_SAMPLE_RATE_HZ / 1000
-        + anchor.frameOffset * LOOPBACK_SAMPLE_RATE_HZ / Number(cue.sampleRateHz),
-      );
-      const diagonal = matchReference(anchor.reference, expectedStart);
-      let strongestWrongAnchorScore = 0;
-      for (const [otherCueId, otherSet] of references.entries()) {
-        if (otherCueId === cueId) continue;
-        const wrongAnchor = otherSet.anchors[anchorIndex];
-        strongestWrongAnchorScore = Math.max(
-          strongestWrongAnchorScore,
-          matchReference(wrongAnchor.reference, expectedStart).score,
+    const anchorTasks = referenceSet.anchors.map((anchor, anchorIndex) => (
+      anchor.candidates.map((candidate) => {
+        const expectedAnchorAtMs = expectedAnchorPlaybackAtMs(cue, candidate, startedAtMs);
+        const expectedStart = Math.round(
+          (expectedAnchorAtMs - recordingStart) * LOOPBACK_SAMPLE_RATE_HZ / 1_000,
         );
+        const requestId = `diagonal-${requestSequence += 1}`;
+        diagonalRequests.push({ requestId, ...candidate.reference, expectedStartSamples: expectedStart });
+        return { requestId, anchor, anchorIndex, candidate, expectedStart, wrongRequestIds: [] };
+      })
+    ));
+    cueContexts.push({ cueId, cue, referenceSet, anchorTasks });
+  }
+
+  let diagonalMetrics = new Map();
+  if (diagonalRequests.length > 0) {
+    try {
+      diagonalMetrics = matchTranslatedLoopbackBatchWithRust({ recordingPath, requests: diagonalRequests });
+    } catch (error) {
+      violations.push(error.message);
+    }
+  }
+  const wrongRequests = [];
+  for (const context of cueContexts) {
+    for (const tasks of context.anchorTasks) {
+      for (const task of tasks) {
+        const diagonal = diagonalMetrics.get(task.requestId);
+        if (!diagonal) continue;
+        for (const [otherCueId, otherSet] of references.entries()) {
+          if (otherCueId === context.cueId || !otherSet.auditable || otherSet.anchors.length === 0) continue;
+          const relativeIndex = context.referenceSet.anchors.length === 1
+            ? 0
+            : task.anchorIndex / (context.referenceSet.anchors.length - 1);
+          const wrongAnchor = otherSet.anchors[Math.round(relativeIndex * (otherSet.anchors.length - 1))];
+          for (const wrongCandidate of wrongAnchor.candidates) {
+            const requestId = `wrong-${requestSequence += 1}`;
+            task.wrongRequestIds.push(requestId);
+            wrongRequests.push({
+              requestId,
+              ...wrongCandidate.reference,
+              // The diagonal search has already located the physical window.
+              // Wrong cues are compared at that exact window rather than
+              // independently searching for unrelated audio nearby.
+              expectedStartSamples: diagonal.matchedStartSample,
+              searchRadiusSamples: 0,
+            });
+          }
+        }
       }
-      const identityMargin = diagonal.score - strongestWrongAnchorScore;
-      return {
-        anchor: anchor.name,
-        referenceFrameOffset: anchor.frameOffset,
-        referenceRms: anchor.rms,
-        expectedPlaybackStartSeconds: rounded(expectedStart / LOOPBACK_SAMPLE_RATE_HZ),
-        strongestWrongAnchorScore: rounded(strongestWrongAnchorScore),
-        identityMargin: rounded(identityMargin),
-        ...diagonal,
-        passed: diagonal.passed && identityMargin >= 0.08,
-      };
+    }
+  }
+  let wrongMetrics = new Map();
+  if (wrongRequests.length > 0) {
+    try {
+      wrongMetrics = matchTranslatedLoopbackBatchWithRust({ recordingPath, requests: wrongRequests });
+    } catch (error) {
+      violations.push(error.message);
+    }
+  }
+  const failedMetrics = (reason) => ({ passed: false, score: 0, segmentMatches: [], reason });
+  const withThresholdResult = (metrics) => ({
+    ...metrics,
+    passed: (
+      metrics.waveformMedian >= 0.32
+      && metrics.waveformMinimum >= 0.20
+      && metrics.derivativeMedian >= 0.24
+      && metrics.derivativeMinimum >= 0.14
+      && Math.abs(metrics.timingErrorSeconds) <= 0.65
+    ),
+  });
+  for (const { cueId, cue, referenceSet, anchorTasks } of cueContexts) {
+    const anchorMatches = anchorTasks.map((tasks) => {
+      const candidateMatches = tasks.map((task) => {
+        const rawDiagonal = diagonalMetrics.get(task.requestId);
+        const diagonal = rawDiagonal
+          ? withThresholdResult(rawDiagonal)
+          : failedMetrics('translated loopback diagonal batch result is missing');
+        const strongestWrongAnchorScore = Math.max(
+          0,
+          ...task.wrongRequestIds.map((requestId) => wrongMetrics.get(requestId)?.score ?? 0),
+        );
+        const identityMargin = diagonal.score - strongestWrongAnchorScore;
+        const captureAuthorityIntersections = captureAuthorityIntervalsIntersectingWindow(
+          captureTimelineAuthority,
+          diagonal.matchedStartSample,
+          diagonal.matchedEndSample,
+        );
+        return {
+          anchor: task.anchor.name,
+          candidateCount: task.anchor.candidates.length,
+          referenceFrameOffset: task.candidate.frameOffset,
+          referenceRms: task.candidate.rms,
+          expectedPlaybackStartSeconds: rounded(task.expectedStart / LOOPBACK_SAMPLE_RATE_HZ),
+          strongestWrongAnchorScore: rounded(strongestWrongAnchorScore),
+          identityMargin: rounded(identityMargin),
+          ...diagonal,
+          captureAuthorityPassed: captureAuthorityIntersections.length === 0,
+          captureAuthorityIntersections,
+          passed: (
+            diagonal.passed
+            && identityMargin >= 0.08
+            && captureAuthorityIntersections.length === 0
+          ),
+        };
+      });
+      return candidateMatches.sort((left, right) => (
+        Number(right.passed) - Number(left.passed)
+        || right.score - left.score
+        || right.identityMargin - left.identityMargin
+        || left.referenceFrameOffset - right.referenceFrameOffset
+      ))[0];
     });
     const passingAnchors = anchorMatches.filter((entry) => entry.passed);
-    const anchorsOrdered = anchorMatches.every((entry, index) => (
-      index === 0 || entry.matchedStartSample >= anchorMatches[index - 1].matchedEndSample
-    ));
-    const passed = passingAnchors.length >= 3 && anchorsOrdered;
+    const anchorsOrdered = translatedLoopbackAnchorsAreOrdered(anchorMatches);
+    const requiredAnchorMatches = referenceSet.anchors.length;
+    const passed = passingAnchors.length === requiredAnchorMatches && anchorsOrdered;
+    for (const anchorMatch of anchorMatches) {
+      for (const interval of anchorMatch.captureAuthorityIntersections ?? []) {
+        violations.push(
+          `physical loopback capture-authority ${interval.kind} ${interval.index} intersects required translated cue ${cueId} ${anchorMatch.anchor} anchor`,
+        );
+      }
+    }
     matches.push({
       cueId,
+      responseId: cue.responseId ?? null,
+      rendererKind: cue.rendererKind ?? null,
+      sessionId: cue.sessionId ?? null,
       bridgeInstanceId: cue.bridgeInstanceId ?? null,
-      playbackOwnerGeneration: Number(cue.playbackOwnerGeneration),
+      sourceGeneration: Number.isSafeInteger(Number(cue.sourceGeneration))
+        ? Number(cue.sourceGeneration) : null,
+      sourceGenerationToken: cue.sourceGenerationToken ?? null,
+      playbackOwnerGeneration: Number.isSafeInteger(Number(cue.playbackOwnerGeneration))
+        ? Number(cue.playbackOwnerGeneration) : null,
+      rendererInstanceId: cue.rendererInstanceId ?? null,
+      rendererOwnerGeneration: Number.isSafeInteger(Number(cue.rendererOwnerGeneration))
+        ? Number(cue.rendererOwnerGeneration) : null,
+      renderAttemptId: cue.renderAttemptId ?? null,
+      playedFrames: Number.isSafeInteger(Number(cue.playedFrames)) ? Number(cue.playedFrames) : null,
+      playedSampleRateHz: Number.isInteger(Number(cue.playedSampleRateHz))
+        ? Number(cue.playedSampleRateHz) : null,
+      playedChannelCount: Number.isInteger(Number(cue.playedChannelCount))
+        ? Number(cue.playedChannelCount) : null,
       physicalPlaybackDeviceId: cue.physicalPlaybackDeviceId ?? null,
-      requiredAnchorMatches: 3,
+      queuedAtMs: lifecycle.get(cueId)?.queued?.occurredAtMs ?? null,
+      startedAtMs: lifecycle.get(cueId)?.started?.occurredAtMs ?? null,
+      completedAtMs: lifecycle.get(cueId)?.completed?.occurredAtMs ?? null,
+      requiredAnchorMatches,
       matchedAnchorCount: passingAnchors.length,
       anchorMatches,
       score: Math.min(...anchorMatches.map((entry) => entry.score)),
@@ -410,9 +948,24 @@ export function buildTranslatedPcmLoopbackAuthority({
       matchedEndSample: anchorMatches.at(-1)?.matchedEndSample ?? null,
       passed,
     });
-    if (!passed) violations.push(`translated cue ${cueId} did not correlate three ordered high-energy physical anchors`);
+    if (!passed) {
+      const anchorRequirement = requiredAnchorMatches === 3
+        ? 'three ordered high-energy physical anchors'
+        : `${requiredAnchorMatches} ordered high-energy physical anchor(s)`;
+      violations.push(`translated cue ${cueId} did not correlate ${anchorRequirement}`);
+    }
   }
-  if (matches.length !== requiredCueIds.length) violations.push('not every complete rendered cue produced a loopback match result');
+  if (matches.length < MIN_COMPLETE_MATCHED_CUES) {
+    violations.push(`translated PCM loopback requires at least ${MIN_COMPLETE_MATCHED_CUES} acoustically auditable complete cues; found ${matches.length}`);
+  }
+  if (matches.length + unauditableCues.length !== requiredCueIds.length) {
+    violations.push('not every complete rendered cue produced a loopback match or explicit unauditable classification');
+  }
+  const finalRequiredCueId = requiredCueIds.at(-1) ?? null;
+  const finalRequiredCueMatch = matches.find((entry) => entry.cueId === finalRequiredCueId);
+  if (finalRequiredCueId && !finalRequiredCueMatch?.passed) {
+    violations.push(`final complete rendered cue ${finalRequiredCueId} must itself be acoustically auditable and passed`);
+  }
   const lifecycleStarts = requiredCueIds.map((cueId) => lifecycle.get(cueId)?.started?.index);
   if (lifecycleStarts.some((value, index) => index > 0 && value <= lifecycleStarts[index - 1])) {
     violations.push('translated PCM playback lifecycles are not in complete-cue order');
@@ -430,27 +983,33 @@ export function buildTranslatedPcmLoopbackAuthority({
     }
   }
   let restartPlaybackEvidence = null;
-  if (String(cellId).includes('process-exclusion')) {
-    const generations = matches
-      .map((entry) => entry.playbackOwnerGeneration)
-      .filter(Number.isSafeInteger);
-    const newOwnerGeneration = Math.max(...generations);
-    const endpointIds = [...new Set(matches.map((entry) => entry.physicalPlaybackDeviceId).filter(Boolean))];
-    const endpointId = String(endpointIds[0] ?? '');
+  if (feedbackLoopPrevention === 'process-exclusion') {
+    const restart = processExclusionRestartPlayback(scopedLog);
+    const newOwnerGeneration = restart?.newPlaybackOwnerGeneration;
+    const endpointId = String(restart?.newPhysicalPlaybackDeviceId ?? '');
     const postRestartMatches = matches.filter((entry) => (
       entry.passed
       && entry.playbackOwnerGeneration === newOwnerGeneration
       && entry.physicalPlaybackDeviceId === endpointId
+      && Number.isFinite(restart?.recoveredAtMs)
+      && entry.queuedAtMs >= restart.recoveredAtMs
+      && entry.startedAtMs >= restart.recoveredAtMs
+      && entry.completedAtMs >= restart.recoveredAtMs
     ));
     restartPlaybackEvidence = {
-      recoveredAtMs: null,
-      playbackOwnerGeneration: Number.isFinite(newOwnerGeneration) ? newOwnerGeneration : null,
+      recoveredAtMs: Number.isFinite(restart?.recoveredAtMs) ? restart.recoveredAtMs : null,
+      playbackOwnerGeneration: Number.isSafeInteger(newOwnerGeneration) ? newOwnerGeneration : null,
       physicalPlaybackDeviceId: endpointId || null,
       matchedCueIds: postRestartMatches.map((entry) => entry.cueId),
       passed: (
-        new Set(generations).size >= 2
-        && newOwnerGeneration > Math.min(...generations)
-        && endpointIds.length === 1
+        restart?.status === 'passed'
+        && restart?.physicalPlaybackStatus === 'ready'
+        && Number.isSafeInteger(restart?.oldPlaybackOwnerGeneration)
+        && Number.isSafeInteger(newOwnerGeneration)
+        && newOwnerGeneration > restart.oldPlaybackOwnerGeneration
+        && restart.oldPhysicalPlaybackDeviceId !== ''
+        && endpointId === restart.oldPhysicalPlaybackDeviceId
+        && Number.isFinite(restart.recoveredAtMs)
         && postRestartMatches.length > 0
       ),
     };
@@ -459,7 +1018,7 @@ export function buildTranslatedPcmLoopbackAuthority({
     }
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: TRANSLATED_PCM_LOOPBACK_KIND,
     authorityMode: 'translated-pcm-loopback-multi-anchor-v2',
     passed: violations.length === 0,
@@ -470,6 +1029,7 @@ export function buildTranslatedPcmLoopbackAuthority({
     leaseId,
     modelId,
     protocol,
+    feedbackLoopPrevention,
     sampleRateHz: LOOPBACK_SAMPLE_RATE_HZ,
     recordingStartedAtEpochMs: recordingStart,
     recording: {
@@ -478,12 +1038,15 @@ export function buildTranslatedPcmLoopbackAuthority({
       bytes: recordingSamples * 2,
       sha256: recordingSamples > 0 ? sha256File(recordingPath) : null,
     },
+    captureTimelineAuthority,
     translatedPcmAuthority: translated.artifacts,
     acceptedCueCount: translated.cues.length,
     requiredCompleteCueIds: requiredCueIds,
     requiredCompleteCueCount: requiredCueIds.length,
+    finalRequiredCueId,
     matchedCueCount: matches.filter((entry) => entry.passed).length,
     matches,
+    unauditableCues,
     restartPlaybackEvidence,
     thresholds: {
       minimumCompleteCueCount: MIN_COMPLETE_MATCHED_CUES,
@@ -511,6 +1074,7 @@ if (isMain(import.meta.url)) {
         leaseId: '',
         modelId: '',
         protocol: '',
+        feedbackLoopPrevention: '',
       },
     });
     const authority = buildTranslatedPcmLoopbackAuthority({
@@ -522,6 +1086,7 @@ if (isMain(import.meta.url)) {
       leaseId: options.leaseId,
       modelId: options.modelId,
       protocol: options.protocol,
+      feedbackLoopPrevention: options.feedbackLoopPrevention,
     });
     process.stdout.write(`${JSON.stringify(authority)}\n`);
     if (!authority.passed) process.exitCode = 1;

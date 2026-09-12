@@ -1,0 +1,97 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "azure-openai.fixture.realtime-transcription-intent.v1",
+  "providerId": "azure-openai",
+  "protocolProfileId": "azure-openai.realtime.transcription.websocket.ga",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["azure-openai.docs.realtime", "azure-openai.docs.realtime-reference"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived Azure GA intent endpoint and transcription session."
+  },
+  "scenario": "Transcribe live audio through the Azure GA intent endpoint using an opaque deployment id in the session body",
+  "data": {
+    "endpointStatus": "verified",
+    "networkAuthorized": false,
+    "authorizationReason": "Fixture-only documentation replay; network access is not authorized.",
+    "catalogModelId": "gpt-live-transcribe",
+    "deploymentId": "watch-stt-prod",
+    "connection": {
+      "url": "wss://sanitized-resource.openai.azure.com/openai/v1/realtime?intent=transcription",
+      "headers": {
+        "api-key": "<azure-openai-api-key>"
+      }
+    },
+    "authContract": {
+      "profileId": "azure-openai.auth.api-key-header",
+      "parameters": [
+        { "location": "header", "name": "api-key", "value": "<azure-openai-api-key>" }
+      ]
+    },
+    "audioContract": {
+      "encoding": "pcm_s16le",
+      "sampleRateHz": 24000,
+      "channels": 1
+    },
+    "clientEvents": [
+      {
+        "type": "session.update",
+        "session": {
+          "type": "transcription",
+          "audio": {
+            "input": {
+              "format": {
+                "type": "audio/pcm",
+                "rate": 24000
+              },
+              "transcription": {
+                "model": "watch-stt-prod"
+              },
+              "turn_detection": {
+                "type": "server_vad"
+              }
+            }
+          }
+        }
+      },
+      {
+        "type": "input_audio_buffer.append",
+        "audio": "<base64-pcm16-24khz-mono>"
+      }
+    ],
+    "serverEvents": [
+      {
+        "type": "session.created"
+      },
+      {
+        "type": "session.updated"
+      },
+      {
+        "type": "conversation.item.input_audio_transcription.delta",
+        "item_id": "item_transcription_1",
+        "content_index": 0,
+        "delta": "partial "
+      },
+      {
+        "type": "conversation.item.input_audio_transcription.completed",
+        "item_id": "item_transcription_1",
+        "content_index": 0,
+        "transcript": "completed transcript"
+      }
+    ],
+    "failureVariant": {
+      "type": "conversation.item.input_audio_transcription.failed",
+      "item_id": "item_transcription_2",
+      "content_index": 0,
+      "error": {
+        "type": "transcription_error",
+        "code": "audio_unintelligible",
+        "message": "<sanitized-transcription-error>"
+      },
+      "expectedOutcome": "discard-item-and-reuse-session"
+    }
+  }
+}

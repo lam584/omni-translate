@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::{collections::BTreeMap, sync::OnceLock};
 
 use windows_sys::Win32::System::Performance::{
     QueryPerformanceCounter, QueryPerformanceFrequency,
@@ -8,6 +8,9 @@ const MAX_DELAY_MS: f64 = 1_000.0;
 const SMOOTHING_ALPHA: f64 = 0.2;
 const MAX_UPDATE_STEP_MS: f64 = 25.0;
 const CLOCK_DISCONTINUITY_TOLERANCE_MS: f64 = 50.0;
+const CAPTURE_DISCONTINUITY_REARM_MS: u64 = 100;
+const MAX_STABLE_CLEAN_OBSERVATION_GAP_MS: u64 = 20;
+const MAX_TRACKED_RENDER_EPOCHS: usize = 64;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CaptureClockObservation {
@@ -31,6 +34,9 @@ pub(super) struct CaptureClockObservation {
     /// Cumulative frames submitted to that same WASAPI render client. The
     /// estimator uses this position to detect render-session regression.
     pub(super) render_submitted_frames: Option<u64>,
+    /// Unique identity of the render attempt whose WASAPI stream actually
+    /// started. Pending attempts never become timing epochs.
+    pub(super) render_timeline_epoch: Option<u64>,
     pub(super) render_discontinuity_count: u64,
     pub(super) data_discontinuity: bool,
     pub(super) timestamp_error: bool,
@@ -48,8 +54,19 @@ pub(super) struct AecDelayEstimate {
     pub(super) render_reference_lead_frames: Option<u32>,
     pub(super) effective_render_reference_lead_frames: Option<u32>,
     pub(super) render_submitted_frames: Option<u64>,
-    pub(super) reset_required: bool,
+    /// Invalid timing authority always drops the delay smoother, but only a
+    /// real stream boundary may destroy AEC3's learned filter.
+    pub(super) delay_reset_required: bool,
+    pub(super) aec_reset_required: bool,
+    pub(super) aec_reset_reason: Option<&'static str>,
+    pub(super) published_render_discontinuity: bool,
     pub(super) source: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureClockDiscontinuity {
+    Regression,
+    Drift,
 }
 
 /// External stream-delay estimator for AEC3.
@@ -69,7 +86,11 @@ pub(super) struct AecDelayEstimator {
     last_device_frame_index: Option<u64>,
     last_packet_qpc_100ns: Option<u64>,
     last_render_submitted_frames: Option<u64>,
+    last_render_timeline_epoch: Option<u64>,
+    render_submitted_frames_by_epoch: BTreeMap<u64, u64>,
     last_render_discontinuity_count: Option<u64>,
+    capture_discontinuity_episode_active: bool,
+    stable_clean_capture_frames: u64,
     reset_count: u64,
     timestamp_error_count: u64,
 }
@@ -83,7 +104,11 @@ impl AecDelayEstimator {
             last_device_frame_index: None,
             last_packet_qpc_100ns: None,
             last_render_submitted_frames: None,
+            last_render_timeline_epoch: None,
+            render_submitted_frames_by_epoch: BTreeMap::new(),
             last_render_discontinuity_count: None,
+            capture_discontinuity_episode_active: false,
+            stable_clean_capture_frames: 0,
             reset_count: 0,
             timestamp_error_count: 0,
         }
@@ -93,28 +118,115 @@ impl AecDelayEstimator {
         &mut self,
         observation: CaptureClockObservation,
     ) -> AecDelayEstimate {
-        let clock_discontinuity = self.clock_discontinuity(observation);
-        let render_clock_discontinuity = self.render_clock_discontinuity(observation);
+        // AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR makes both the device position
+        // and QPC timestamp non-authoritative for this packet. Do not compare
+        // them with the last good clock or install them as the next baseline.
+        let clock_discontinuity = (!observation.timestamp_error)
+            .then(|| self.clock_discontinuity(observation))
+            .flatten();
+        let published_render_discontinuity = self
+            .last_render_discontinuity_count
+            .is_some_and(|previous| previous != observation.render_discontinuity_count);
+        let render_clock_discontinuity =
+            published_render_discontinuity || self.render_position_discontinuity(observation);
         let capture_padding_invalid = observation
             .capture_padding_frames
             .is_some_and(|padding| padding > observation.capture_buffer_frames);
-        let reset_required = observation.data_discontinuity
+        let delay_reset_required = observation.data_discontinuity
             || observation.timestamp_error
             || capture_padding_invalid
-            || clock_discontinuity
+            || clock_discontinuity.is_some()
             || render_clock_discontinuity;
+        // Some WASAPI/virtualized endpoints alternate DATA_DISCONTINUITY with
+        // short clean observations roughly every 30 ms. Keep resetting delay
+        // authority for every flagged packet, but preserve AEC3's learned
+        // filter until a continuous clean capture window ends the episode.
+        let capture_discontinuity_boundary =
+            observation.data_discontinuity && !self.capture_discontinuity_episode_active;
+        let aec_reset_reason = if capture_discontinuity_boundary {
+            Some("wasapi-capture-data-discontinuity")
+        } else if render_clock_discontinuity {
+            Some("wasapi-render-session-discontinuity")
+        } else if clock_discontinuity == Some(CaptureClockDiscontinuity::Regression) {
+            Some("wasapi-capture-clock-regression")
+        } else {
+            None
+        };
+        let aec_reset_required = aec_reset_reason.is_some();
         if observation.timestamp_error {
             self.timestamp_error_count = self.timestamp_error_count.saturating_add(1);
         }
-        if reset_required {
+        if delay_reset_required {
             self.smoothed_delay_ms = None;
             self.reset_count = self.reset_count.saturating_add(1);
         }
 
-        self.last_device_frame_index = Some(observation.device_frame_index);
-        self.last_packet_qpc_100ns = Some(observation.packet_qpc_100ns);
-        if let Some(submitted) = observation.render_submitted_frames {
-            self.last_render_submitted_frames = Some(submitted);
+        if observation.data_discontinuity {
+            self.capture_discontinuity_episode_active = true;
+            self.stable_clean_capture_frames = 0;
+        } else if delay_reset_required {
+            // Timestamp, padding, capture-clock, and render-clock faults are
+            // not stable capture and must not rearm a discontinuity episode.
+            self.stable_clean_capture_frames = 0;
+        } else if self.capture_discontinuity_episode_active {
+            let clean_frame_advance = self
+                .last_device_frame_index
+                .and_then(|previous| observation.device_frame_index.checked_sub(previous));
+            let clean_qpc_advance_100ns = self
+                .last_packet_qpc_100ns
+                .and_then(|previous| observation.packet_qpc_100ns.checked_sub(previous));
+            let max_clean_frame_advance = u64::from(self.sample_rate_hz)
+                .saturating_mul(MAX_STABLE_CLEAN_OBSERVATION_GAP_MS)
+                / 1_000;
+            let max_clean_qpc_advance_100ns =
+                MAX_STABLE_CLEAN_OBSERVATION_GAP_MS.saturating_mul(10_000);
+            let cadence_is_stable = clean_frame_advance.is_some_and(|frames| {
+                frames > 0 && frames <= max_clean_frame_advance
+            }) && clean_qpc_advance_100ns.is_some_and(|ticks| {
+                ticks > 0 && ticks <= max_clean_qpc_advance_100ns
+            });
+            if cadence_is_stable {
+                self.stable_clean_capture_frames = self
+                    .stable_clean_capture_frames
+                    .saturating_add(clean_frame_advance.unwrap_or(0));
+            } else {
+                // A device/QPC jump is an unobserved span, not proof that
+                // clean capture continued through the gap.
+                self.stable_clean_capture_frames = 0;
+            }
+            let required_clean_frames = u64::from(self.sample_rate_hz)
+                .saturating_mul(CAPTURE_DISCONTINUITY_REARM_MS)
+                / 1_000;
+            if self.stable_clean_capture_frames >= required_clean_frames {
+                self.capture_discontinuity_episode_active = false;
+                self.stable_clean_capture_frames = 0;
+            }
+        }
+
+        if !observation.timestamp_error {
+            self.last_device_frame_index = Some(observation.device_frame_index);
+            self.last_packet_qpc_100ns = Some(observation.packet_qpc_100ns);
+        }
+        // The render producer clears its published position when it announces
+        // a session boundary. Mirror that absence here instead of retaining a
+        // position from the preceding WASAPI client: the first submitted frame
+        // of the new session must establish a baseline, not look like a second
+        // regression for the boundary we just consumed.
+        self.last_render_submitted_frames = observation.render_submitted_frames;
+        self.last_render_timeline_epoch = observation.render_timeline_epoch;
+        if let (Some(epoch), Some(submitted_frames)) = (
+            observation.render_timeline_epoch,
+            observation.render_submitted_frames,
+        ) {
+            self.render_submitted_frames_by_epoch
+                .insert(epoch, submitted_frames);
+            while self.render_submitted_frames_by_epoch.len() > MAX_TRACKED_RENDER_EPOCHS {
+                let Some(oldest) = self.render_submitted_frames_by_epoch.keys().next().copied()
+                else {
+                    break;
+                };
+                self.render_submitted_frames_by_epoch.remove(&oldest);
+            }
         }
         self.last_render_discontinuity_count = Some(observation.render_discontinuity_count);
 
@@ -167,7 +279,10 @@ impl AecDelayEstimator {
             render_reference_lead_frames: observation.render_reference_lead_frames,
             effective_render_reference_lead_frames,
             render_submitted_frames: observation.render_submitted_frames,
-            reset_required,
+            delay_reset_required,
+            aec_reset_required,
+            aec_reset_reason,
+            published_render_discontinuity,
             source: "wasapi-capture-qpc+capture-padding-validated+render-submit-position+same-client-reference-lead",
         }
     }
@@ -180,43 +295,50 @@ impl AecDelayEstimator {
         self.timestamp_error_count
     }
 
-    fn clock_discontinuity(&self, observation: CaptureClockObservation) -> bool {
+    fn clock_discontinuity(
+        &self,
+        observation: CaptureClockObservation,
+    ) -> Option<CaptureClockDiscontinuity> {
         let (Some(previous_index), Some(previous_qpc)) =
             (self.last_device_frame_index, self.last_packet_qpc_100ns)
         else {
-            return false;
+            return None;
         };
         if observation.device_frame_index < previous_index
             || observation.packet_qpc_100ns < previous_qpc
         {
-            return true;
+            return Some(CaptureClockDiscontinuity::Regression);
         }
         let frame_delta = observation.device_frame_index - previous_index;
         let expected_delta_ms = frame_delta as f64 * 1_000.0 / self.sample_rate_hz as f64;
         let actual_delta_ms =
             (observation.packet_qpc_100ns - previous_qpc) as f64 / 10_000.0;
-        (actual_delta_ms - expected_delta_ms).abs() > CLOCK_DISCONTINUITY_TOLERANCE_MS
+        ((actual_delta_ms - expected_delta_ms).abs() > CLOCK_DISCONTINUITY_TOLERANCE_MS)
+            .then_some(CaptureClockDiscontinuity::Drift)
     }
 
-    fn render_clock_discontinuity(&self, observation: CaptureClockObservation) -> bool {
-        if self
-            .last_render_discontinuity_count
-            .is_some_and(|previous| previous != observation.render_discontinuity_count)
-        {
-            return true;
-        }
+    fn render_position_discontinuity(&self, observation: CaptureClockObservation) -> bool {
         let Some(current) = observation.render_submitted_frames else {
             return false;
         };
-        self.last_render_submitted_frames
-            .is_some_and(|previous| current < previous)
+        let regressed = match observation.render_timeline_epoch {
+            Some(epoch) => self
+                .render_submitted_frames_by_epoch
+                .get(&epoch)
+                .is_some_and(|previous| current < *previous),
+            None if self.last_render_timeline_epoch.is_none() => self
+                .last_render_submitted_frames
+                .is_some_and(|previous| current < previous),
+            None => false,
+        };
+        regressed
             || observation
                 .render_endpoint_padding_frames
                 .is_some_and(|padding| padding as u64 > current)
     }
 }
 
-pub(super) fn qpc_now_100ns() -> Option<u64> {
+pub(crate) fn qpc_now_100ns() -> Option<u64> {
     static FREQUENCY: OnceLock<Option<i64>> = OnceLock::new();
     let frequency = *FREQUENCY.get_or_init(|| {
         let mut frequency = 0_i64;
@@ -253,6 +375,7 @@ mod tests {
             render_endpoint_padding_frames: None,
             render_reference_lead_frames: None,
             render_submitted_frames: None,
+            render_timeline_epoch: None,
             render_discontinuity_count: 0,
             data_discontinuity: false,
             timestamp_error: false,
@@ -280,7 +403,8 @@ mod tests {
             estimate.source,
             "wasapi-capture-qpc+capture-padding-validated+render-submit-position+same-client-reference-lead"
         );
-        assert!(!estimate.reset_required);
+        assert!(!estimate.delay_reset_required);
+        assert!(!estimate.aec_reset_required);
     }
 
     #[test]
@@ -336,20 +460,78 @@ mod tests {
     fn render_submit_regression_requests_reset_without_inventing_padding() {
         let mut estimator = AecDelayEstimator::new(48_000, 2);
         let mut first = observation(0, 1_000_000, 1_100_000, 0);
+        first.render_timeline_epoch = Some(11);
         first.render_submitted_frames = Some(4_800);
         first.render_endpoint_padding_frames = Some(480);
         first.render_reference_lead_frames = Some(0);
         let _ = estimator.observe_capture(first);
 
         let mut regressed = observation(480, 1_100_000, 1_200_000, 0);
+        regressed.render_timeline_epoch = Some(11);
         regressed.render_submitted_frames = Some(480);
         regressed.render_endpoint_padding_frames = Some(240);
         regressed.render_reference_lead_frames = Some(0);
         let estimate = estimator.observe_capture(regressed);
 
-        assert!(estimate.reset_required);
+        assert!(estimate.delay_reset_required);
+        assert!(estimate.aec_reset_required);
+        assert_eq!(
+            estimate.aec_reset_reason,
+            Some("wasapi-render-session-discontinuity")
+        );
         assert_eq!(estimate.render_submitted_frames, Some(480));
         assert_eq!(estimator.reset_count(), 1);
+    }
+
+    #[test]
+    fn a_new_started_render_epoch_accepts_a_normal_submit_position_rebase() {
+        let mut estimator = AecDelayEstimator::new(48_000, 2);
+        let mut first = observation(0, 1_000_000, 1_100_000, 0);
+        first.render_timeline_epoch = Some(11);
+        first.render_submitted_frames = Some(480);
+        let initial = estimator.observe_capture(first);
+        assert!(!initial.aec_reset_required);
+
+        let mut advanced = observation(480, 1_100_000, 1_200_000, 0);
+        advanced.render_timeline_epoch = Some(11);
+        advanced.render_submitted_frames = Some(48_000);
+        let same_epoch = estimator.observe_capture(advanced);
+        assert!(!same_epoch.aec_reset_required);
+
+        let mut rebased = observation(960, 1_200_000, 1_300_000, 0);
+        rebased.render_timeline_epoch = Some(12);
+        rebased.render_submitted_frames = Some(480);
+        rebased.render_endpoint_padding_frames = Some(480);
+        let new_epoch = estimator.observe_capture(rebased);
+
+        assert!(!new_epoch.delay_reset_required);
+        assert!(!new_epoch.aec_reset_required);
+        assert_eq!(new_epoch.aec_reset_reason, None);
+    }
+
+    #[test]
+    fn interleaved_epochs_do_not_hide_a_regression_within_the_same_session() {
+        let mut estimator = AecDelayEstimator::new(48_000, 2);
+        let mut a_first = observation(0, 1_000_000, 1_100_000, 0);
+        a_first.render_timeline_epoch = Some(21);
+        a_first.render_submitted_frames = Some(480);
+        assert!(!estimator.observe_capture(a_first).aec_reset_required);
+
+        let mut b_first = observation(480, 1_100_000, 1_200_000, 0);
+        b_first.render_timeline_epoch = Some(22);
+        b_first.render_submitted_frames = Some(480);
+        assert!(!estimator.observe_capture(b_first).aec_reset_required);
+
+        let mut a_regressed = observation(960, 1_200_000, 1_300_000, 0);
+        a_regressed.render_timeline_epoch = Some(21);
+        a_regressed.render_submitted_frames = Some(240);
+        let estimate = estimator.observe_capture(a_regressed);
+
+        assert!(estimate.aec_reset_required);
+        assert_eq!(
+            estimate.aec_reset_reason,
+            Some("wasapi-render-session-discontinuity")
+        );
     }
 
     #[test]
@@ -361,7 +543,8 @@ mod tests {
         let estimate = estimator.observe_capture(invalid);
 
         assert!(estimate.capture_padding_invalid);
-        assert!(estimate.reset_required);
+        assert!(estimate.delay_reset_required);
+        assert!(!estimate.aec_reset_required);
         // Padding remains visible for diagnostics but is not added to the
         // official WebRTC delay formula.
         assert_eq!(estimate.capture_padding_frames, Some(1_921));
@@ -374,18 +557,60 @@ mod tests {
         let mut first = observation(0, 1_000_000, 1_100_000, 0);
         first.render_discontinuity_count = 4;
         let initial = estimator.observe_capture(first);
-        assert!(!initial.reset_required);
+        assert!(!initial.delay_reset_required);
+        assert!(!initial.aec_reset_required);
 
         let mut restarted = observation(480, 1_100_000, 1_400_000, 0);
         restarted.render_discontinuity_count = 5;
         let estimate = estimator.observe_capture(restarted);
 
-        assert!(estimate.reset_required);
+        assert!(estimate.delay_reset_required);
+        assert!(estimate.aec_reset_required);
+        assert!(estimate.published_render_discontinuity);
+        assert_eq!(
+            estimate.aec_reset_reason,
+            Some("wasapi-render-session-discontinuity")
+        );
         assert_eq!(estimate.delay_ms, 30.0);
+
+        let mut next_observation = observation(960, 1_200_000, 1_500_000, 0);
+        next_observation.render_discontinuity_count = 5;
+        let next = estimator.observe_capture(next_observation);
+        assert!(!next.aec_reset_required);
+        assert!(!next.published_render_discontinuity);
     }
 
     #[test]
-    fn bounds_and_smooths_large_delay_changes() {
+    fn published_render_session_boundary_clears_previous_submit_position() {
+        let mut estimator = AecDelayEstimator::new(48_000, 2);
+        let mut previous_session = observation(0, 1_000_000, 1_100_000, 0);
+        previous_session.render_submitted_frames = Some(48_000);
+        previous_session.render_discontinuity_count = 4;
+        let initial = estimator.observe_capture(previous_session);
+        assert!(!initial.aec_reset_required);
+
+        let mut published_boundary = observation(480, 1_100_000, 1_200_000, 0);
+        published_boundary.render_submitted_frames = None;
+        published_boundary.render_discontinuity_count = 5;
+        let boundary = estimator.observe_capture(published_boundary);
+        assert!(boundary.aec_reset_required);
+        assert!(boundary.published_render_discontinuity);
+        assert_eq!(estimator.reset_count(), 1);
+
+        let mut first_new_session_frame = observation(960, 1_200_000, 1_300_000, 0);
+        first_new_session_frame.render_submitted_frames = Some(480);
+        first_new_session_frame.render_endpoint_padding_frames = Some(480);
+        first_new_session_frame.render_discontinuity_count = 5;
+        let first_frame = estimator.observe_capture(first_new_session_frame);
+
+        assert!(!first_frame.delay_reset_required);
+        assert!(!first_frame.aec_reset_required);
+        assert!(!first_frame.published_render_discontinuity);
+        assert_eq!(estimator.reset_count(), 1);
+    }
+
+    #[test]
+    fn delayed_observation_is_bounded_without_resetting_timing_or_aec() {
         let mut estimator = AecDelayEstimator::new(48_000, 2);
         let first = estimator.observe_capture(observation(0, 1_000_000, 1_100_000, 0));
         let second = estimator.observe_capture(observation(
@@ -396,8 +621,13 @@ mod tests {
         ));
 
         assert_eq!(first.delay_ms, 10.0);
-        // Candidate jumps to 800 ms, but one update may move only 20% of 25 ms.
+        // The packet clock itself advanced by the expected 10 ms; only the
+        // worker observed this packet late. Bound the hint without treating a
+        // desktop scheduling delay as a device discontinuity.
         assert_eq!(second.delay_ms, 15.0);
+        assert!(!second.delay_reset_required);
+        assert!(!second.aec_reset_required);
+        assert_eq!(second.aec_reset_reason, None);
     }
 
     #[test]
@@ -408,9 +638,66 @@ mod tests {
         regressed.data_discontinuity = true;
         let estimate = estimator.observe_capture(regressed);
 
-        assert!(estimate.reset_required);
+        assert!(estimate.delay_reset_required);
+        assert!(estimate.aec_reset_required);
+        assert_eq!(
+            estimate.aec_reset_reason,
+            Some("wasapi-capture-data-discontinuity")
+        );
         assert_eq!(estimate.delay_ms, 10.0);
         assert_eq!(estimator.reset_count(), 1);
+    }
+
+    #[test]
+    fn capture_discontinuity_episode_rearms_only_after_stable_clean_audio() {
+        let mut estimator = AecDelayEstimator::new(48_000, 2);
+        let mut first = observation(0, 1_000_000, 1_100_000, 0);
+        first.data_discontinuity = true;
+        let first = estimator.observe_capture(first);
+
+        let short_clean =
+            estimator.observe_capture(observation(480, 1_100_000, 1_200_000, 0));
+        let mut same_episode = observation(1_440, 1_300_000, 1_400_000, 0);
+        same_episode.data_discontinuity = true;
+        let same_episode = estimator.observe_capture(same_episode);
+
+        for step in 1..=10 {
+            let frame_index = 1_440 + step * 480;
+            let packet_qpc = 1_300_000 + u64::from(step) * 100_000;
+            let _ = estimator.observe_capture(observation(
+                frame_index,
+                packet_qpc,
+                packet_qpc + 100_000,
+                0,
+            ));
+        }
+        let mut next_episode = observation(6_720, 2_400_000, 2_500_000, 0);
+        next_episode.data_discontinuity = true;
+        let next_episode = estimator.observe_capture(next_episode);
+
+        assert!(first.aec_reset_required);
+        assert!(first.delay_reset_required);
+        assert!(!short_clean.aec_reset_required);
+        assert!(!same_episode.aec_reset_required);
+        assert!(same_episode.delay_reset_required);
+        assert!(next_episode.aec_reset_required);
+    }
+
+    #[test]
+    fn one_clean_observation_cannot_count_an_unobserved_device_span_as_stable_audio() {
+        let mut estimator = AecDelayEstimator::new(48_000, 2);
+        let mut first = observation(0, 1_000_000, 1_100_000, 0);
+        first.data_discontinuity = true;
+        assert!(estimator.observe_capture(first).aec_reset_required);
+
+        let _ = estimator.observe_capture(observation(4_800, 2_000_000, 2_100_000, 0));
+
+        let mut same_episode = observation(5_280, 2_100_000, 2_200_000, 0);
+        same_episode.data_discontinuity = true;
+        let same_episode = estimator.observe_capture(same_episode);
+
+        assert!(same_episode.delay_reset_required);
+        assert!(!same_episode.aec_reset_required);
     }
 
     #[test]
@@ -421,10 +708,25 @@ mod tests {
         invalid.timestamp_error = true;
         let estimate = estimator.observe_capture(invalid);
 
-        assert!(estimate.reset_required);
+        assert!(estimate.delay_reset_required);
+        assert!(!estimate.aec_reset_required);
         assert_eq!(estimate.packet_age_ms, None);
         assert_eq!(estimate.delay_ms, 0.0);
         assert_eq!(estimator.timestamp_error_count(), 1);
+    }
+
+    #[test]
+    fn monotonic_capture_clock_regression_resets_aec_filter() {
+        let mut estimator = AecDelayEstimator::new(48_000, 2);
+        let _ = estimator.observe_capture(observation(48_000, 10_000_000, 10_200_000, 0));
+        let estimate = estimator.observe_capture(observation(47_520, 9_900_000, 10_300_000, 0));
+
+        assert!(estimate.delay_reset_required);
+        assert!(estimate.aec_reset_required);
+        assert_eq!(
+            estimate.aec_reset_reason,
+            Some("wasapi-capture-clock-regression")
+        );
     }
 
     #[test]

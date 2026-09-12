@@ -1,0 +1,36 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "volc-ast-s2s-protobuf-v2",
+  "providerId": "volcengine-doubao",
+  "protocolProfileId": "volcengine-doubao.ast-v2.s2s-pcm16",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["ast-v2-api"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Decoded protobuf events; audio bytes and serialized protobuf bytes are intentionally omitted."
+  },
+  "scenario": "AST S2S PCM16 session returns translated subtitle and TTS events",
+  "data": {
+    "connectionUrl": "wss://openspeech.bytedance.com/api/v4/ast/v2/translate",
+    "authContract": { "profileId": "volc-ast-current-headers", "parameters": [{ "location": "header", "name": "X-Api-Key", "value": "fixture-key-redacted" }, { "location": "header", "name": "X-Api-Resource-Id", "value": "volc.service_type.10053" }] },
+    "audioContract": { "encoding": "pcm_s16le", "sampleRateHz": 16000, "bitDepth": 16, "channels": 1, "outputEncoding": "pcm_s16le" },
+    "audio": { "payloadOmitted": true, "reason": "protobuf-bytes-not-fabricated" },
+    "clientEvents": [{ "type": "TaskRequest=200" }, { "type": "FinishSession=102" }],
+    "serverEvents": [{ "type": "tts=350-352" }, { "type": "SessionFinished=152", "terminal": true }],
+    "websocketBinaryFrame": { "encoding": "protobuf", "vendorEnvelope": "none" },
+    "configuration": { "mode": "s2s", "input": { "format": "pcm-s16le", "sampleRateHz": 16000, "channels": 1, "chunkMs": 80 }, "output": { "format": "pcm-s16le", "sampleRateHz": 16000, "channels": 1 } },
+    "events": [
+      { "direction": "client", "event": 100, "name": "StartSession" },
+      { "direction": "server", "event": 150, "name": "SessionStarted" },
+      { "direction": "server", "event": 654, "name": "TranslatedSubtitleResponse", "decoded": { "text": "Hello" } },
+      { "direction": "server", "event": 350, "name": "TTSStart" },
+      { "direction": "server", "event": 352, "name": "TTSResponse", "decoded": { "audio": "omitted-pcm-s16le" } },
+      { "direction": "server", "event": 351, "name": "TTSEnd" },
+      { "direction": "client", "event": 102, "name": "FinishSession" },
+      { "direction": "server", "event": 152, "name": "SessionFinished" }
+    ]
+  }
+}

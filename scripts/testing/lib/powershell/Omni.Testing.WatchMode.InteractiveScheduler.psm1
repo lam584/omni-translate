@@ -2,6 +2,8 @@
 
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Process.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.IO.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.InteractiveCleanup.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.InteractiveFinalizer.psm1') -Force
 
 function Stop-GuardedNode {
   param([string]$LaunchPath)
@@ -35,6 +37,7 @@ function Stop-GuardedNode {
   }
 }
 
+
 function Invoke-OmniInteractiveScheduledTask {
   param([Parameter(Mandatory = $true)]$Context)
   foreach ($property in $Context.PSObject.Properties) {
@@ -47,6 +50,9 @@ function Invoke-OmniInteractiveScheduledTask {
     $principal = New-ScheduledTaskPrincipal -UserId $command.expectedUserId -LogonType Interactive -RunLevel Limited
   $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 12) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
   $registered = $false
+  $primaryError = $null
+  $cleanupError = $null
+  $resultJson = $null
   try {
     if (Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue) {
       throw 'interactive scheduled task name already exists'
@@ -169,8 +175,9 @@ function Invoke-OmniInteractiveScheduledTask {
         }
       }
       Write-OmniImmutableJson -LiteralPath $finalizationRequestPath -Value $finalizationRequest
-      $finalizerOutput = @(& $nodeExecutable $runnerPath '--finalize-interactive-request' $finalizationRequestPath 2>&1)
-      if ($LASTEXITCODE -ne 0) { throw "interactive cell guest finalizer failed: $($finalizerOutput -join ' | ')" }
+      $finalized = Invoke-OmniInteractiveFinalizer -WorkspaceRoot ([string]$command.workspaceRoot) `
+        -NodeExecutable $nodeExecutable -RunnerPath $runnerPath -RequestPath $finalizationRequestPath -DeadlineUtc $deadline
+      $finalizerOutput = @($finalized.output)
       $finalResultPath = [string](@($finalizerOutput | Where-Object { $_ } | Select-Object -Last 1)[0])
       if (-not (Test-Path -LiteralPath $finalResultPath -PathType Leaf)) {
         throw 'interactive cell guest finalizer returned no immutable result'
@@ -178,7 +185,7 @@ function Invoke-OmniInteractiveScheduledTask {
     } else {
       $finalResultPath = [string]$terminal.authorityPath
     }
-    [ordered]@{
+    $resultJson = [ordered]@{
       commandPath = $commandPath
       commandSha256 = $commandSha256
       launchPath = $launchPath
@@ -191,13 +198,44 @@ function Invoke-OmniInteractiveScheduledTask {
       terminal = $terminal
       taskTerminal = $taskTerminal
     } | ConvertTo-Json -Depth 20 -Compress
+  } catch {
+    $primaryError = $_
   } finally {
     if ($registered) {
-      Stop-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue
-      Stop-GuardedNode $launchPath
-      Unregister-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+      if ($mode -in @('shard-cell', 'incident-plus-cell')) {
+        $cleanupReceipt = [ordered]@{
+          schemaVersion = 1; artifactKind = 'watch-mode-interactive-scheduler-cleanup'
+          executionId = [string]$command.executionId; leaseId = [string]$command.leaseId
+          cellId = [string]$command.cellId; workerId = [string]$command.workerId
+          passed = $false; status = 'cleanup-incomplete'; processCleanup = $null; taskCleanupPassed = $false
+        }
+        try {
+          # Only a completed collector authority can authorize orphan termination.
+          # Missing/failed authority is not an excuse for a PID-tree fallback.
+          $cleanupReceipt.processCleanup = Stop-OmniInteractiveOwnedProcesses -LaunchPath $launchPath `
+            -ProcessAuthorityPath $processAuthorityPath -ExpectedBinding $command -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(30))
+          if ($cleanupReceipt.processCleanup.passed -ne $true) { $cleanupError = 'interactive process cleanup incomplete' }
+        } catch { $cleanupError = 'interactive process cleanup incomplete' }
+        try {
+          Stop-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop
+          Unregister-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Confirm:$false -ErrorAction Stop
+          $cleanupReceipt.taskCleanupPassed = $true
+        } catch { $cleanupError = 'interactive scheduled task cleanup incomplete' }
+        $cleanupReceipt.passed = $null -eq $cleanupError
+        if ($cleanupReceipt.passed) { $cleanupReceipt.status = 'completed' }
+        try {
+          Write-OmniImmutableJson -LiteralPath (Join-Path ([IO.Path]::GetDirectoryName($commandPath)) 'cleanup.scheduler.json') -Value $cleanupReceipt
+        } catch { $cleanupError = 'interactive cleanup receipt publication failed' }
+      } else {
+        Stop-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue
+        Stop-GuardedNode $launchPath
+        Unregister-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+      }
     }
   }
+  if ($null -ne $primaryError) { throw $primaryError }
+  if ($null -ne $cleanupError) { throw $cleanupError }
+  $resultJson
   
 }
 

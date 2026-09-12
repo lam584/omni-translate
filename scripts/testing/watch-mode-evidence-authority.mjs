@@ -4,16 +4,18 @@ import path from 'node:path';
 
 import { repoRoot } from '../lib/testing-common.mjs';
 
-export const STRICT_MATRIX_SCHEMA_VERSION = 5;
+export const STRICT_MATRIX_SCHEMA_VERSION = 6;
 export const STRICT_MATRIX_ARTIFACT_KIND = 'watch-mode-strict-matrix-authority';
-export const CELL_AUTHORITY_SCHEMA_VERSION = 3;
+export const CELL_AUTHORITY_SCHEMA_VERSION = 4;
 export const CELL_AUTHORITY_ARTIFACT_KIND = 'watch-mode-live-cell-authority';
 export const CELL_AUTHORITY_FILE = 'matrix-cell-authority.json';
-export const MATRIX_RUNNER_ID = 'scripts/testing/run-watch-mode-live-matrix.mjs';
+export const MATRIX_RUNNER_ID = 'scripts/testing/run-watch-mode-live-production-coordinator.mjs';
+export const LEGACY_MATRIX_RUNNER_ID = 'scripts/testing/run-watch-mode-live-matrix.mjs';
 export const LIVE_RUN_COLLECTOR_ID = 'scripts/testing/run-watch-mode-live.ps1';
 
 export const AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   MATRIX_RUNNER_ID,
+  LEGACY_MATRIX_RUNNER_ID,
   LIVE_RUN_COLLECTOR_ID,
   'scripts/testing/lib/powershell/Omni.Testing.IO.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.Process.psm1',
@@ -47,11 +49,20 @@ export const AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Stt.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.VirtualDriverCapture.psm1',
   'scripts/testing/watch-mode-report.mjs',
+  'scripts/testing/watch-mode-content-verdict.mjs',
+  'scripts/testing/fixtures/watch-mode-content-facts.json',
   'scripts/testing/verify-watch-mode-evidence.mjs',
   'scripts/testing/watch-mode-evidence-authority.mjs',
   'scripts/testing/watch-mode-balanced-release-plan.mjs',
   'scripts/testing/watch-mode-local-isolation.mjs',
   'scripts/testing/watch-mode-strict-runtime-authority.mjs',
+  'scripts/testing/watch-mode-disk-lifecycle.mjs',
+  'scripts/testing/prepare-watch-release.mjs',
+  'scripts/testing/distribute-watch-runtime.mjs',
+  'scripts/testing/run-frozen-test-funnel.mjs',
+  'scripts/testing/frozen-test-funnel-distributed.mjs',
+  'scripts/testing/watch-mode-test-receipts.mjs',
+  'scripts/testing/run-with-vm3-test-environment.mjs',
   'scripts/testing/collect-watch-mode-system-metrics.ps1',
   'scripts/development/build-desktop-release.mjs',
   'scripts/release/new-local-release-certificate.ps1',
@@ -73,12 +84,27 @@ export const AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
 // across a commit or runtime authority digest.
 export const PAID_AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/watch-mode-external-provider-budget.mjs',
+  'scripts/testing/watch-mode-model-protocol-authority.mjs',
+  'scripts/testing/model-protocol-profile-contract.mjs',
+  'scripts/testing/watch-mode-provider-preflight-authorization.mjs',
+  'contracts/model-protocol-profiles.v1.json',
+  'contracts/model-protocol-profiles.schema.json',
   'scripts/testing/watch-mode-canonical-source-authority.mjs',
   'scripts/testing/watch-mode-translated-pcm-loopback.mjs',
   'scripts/testing/release-manual-collector.mjs',
+  'scripts/testing/frozen-desktop-release-authority.mjs',
+  'scripts/testing/frozen-virtual-mic-release-authority.mjs',
+  'scripts/testing/run-virtual-mic-release-evidence.mjs',
+  'scripts/testing/virtual-mic-release-evidence.mjs',
+  'scripts/testing/watch-mode-provider-preflight-manual-source.mjs',
   'scripts/testing/watch-mode-provider-preflight-authority.mjs',
   'scripts/testing/watch-mode-provider-preflight-process.mjs',
   'scripts/testing/watch-mode-provider-network-health.mjs',
+  'apps/desktop/src-tauri/src/audio/pcm_resample.rs',
+  'apps/desktop/src-tauri/src/audio/omni/mod.rs',
+  'apps/desktop/src-tauri/src/audio/omni/audio_pump.rs',
+  'apps/desktop/src-tauri/src/audio/omni/session_worker.rs',
+  'apps/desktop/src-tauri/src/audio/omni/provider_input_budget.rs',
   'scripts/testing/fixtures/watch-mode-audio-fixtures.json',
 ]);
 
@@ -90,6 +116,7 @@ export const AUTHORITY_RUNTIME_BINARY_FILES = Object.freeze([
   'target/release/omni-tone-render-probe.exe',
   'target/release/omni-driver-audio-probe.exe',
   'target/release/omni-virtual-mic-target-capture.exe',
+  'target/release/watch-worker-credential.exe',
   'target/debug/omni-realtime-diagnostic.exe',
   'target/release/omni-benchmark.exe',
   'drivers/windows-virtual-mic/package/omni-virtual-speaker.sys',
@@ -106,10 +133,13 @@ const COMMON_CELL_ARTIFACTS = Object.freeze([
   'virtual-driver-media-source-preflight.json',
   'driver.json',
   'external-provider-budget.json',
+  'evidence-driven-terminal.json',
+  'input-complete.json',
   'physical-output-probe.json',
   'physical-playback-device.json',
   'playback.json',
   'provider-input-16k-mono.pcm',
+  'provider-input-prefilter-48k-stereo.f32le.frames',
   'provider-input-budget-lease.json',
   'provider-input-budget-ledger.json',
   'provider-input-budget-ledger.json.journal.jsonl',
@@ -148,7 +178,7 @@ export function sha256File(filePath) {
 export function requiredCellArtifactPaths(feedbackLoopPrevention) {
   const mode = String(feedbackLoopPrevention ?? '').trim();
   const paths = [...COMMON_CELL_ARTIFACTS];
-  if (mode === 'virtual-driver' || mode === 'process-exclusion') {
+  if (['echo-cancel', 'virtual-driver', 'process-exclusion'].includes(mode)) {
     paths.push(...PHYSICAL_CONTENT_ARTIFACTS);
   }
   if (mode === 'process-exclusion') paths.push(...PROCESS_EXCLUSION_ARTIFACTS);
@@ -156,9 +186,8 @@ export function requiredCellArtifactPaths(feedbackLoopPrevention) {
 }
 
 export function forbiddenCellArtifactPaths(feedbackLoopPrevention) {
-  const paths = [];
-  if (feedbackLoopPrevention === 'echo-cancel') paths.push(...PHYSICAL_CONTENT_ARTIFACTS);
-  return paths.sort();
+  void feedbackLoopPrevention;
+  return [];
 }
 
 function assertRegularEvidenceFile(filePath, label) {
@@ -271,11 +300,31 @@ export function writeCellAuthorityReceipt({
       cellId: matrixCell.cellId,
       tier: matrixCell.tier,
       providerMode: matrixCell.providerMode,
-      durationSeconds: matrixCell.durationSeconds,
+      inputCompletionWatchdogSeconds: matrixCell.inputCompletionWatchdogSeconds,
+      processExclusionRestartAfterSeconds: matrixCell.processExclusionRestartAfterSeconds,
+      processExclusionRestartQuietSeconds: matrixCell.processExclusionRestartQuietSeconds,
+      providerFinishTimeoutSeconds: matrixCell.providerFinishTimeoutSeconds,
+      localPlaybackDrainTimeoutSeconds: matrixCell.localPlaybackDrainTimeoutSeconds,
+      reportWriteTimeoutSeconds: matrixCell.reportWriteTimeoutSeconds,
+      cellHardWatchdogSeconds: matrixCell.cellHardWatchdogSeconds,
+      authoritativeTransformedReferenceFrames: matrixCell.authoritativeTransformedReferenceFrames,
+      boundedCaptureGraceFrames: matrixCell.boundedCaptureGraceFrames,
+      maxExternalAudioSamples: matrixCell.maxExternalAudioSamples,
+      auxiliaryExternalAudioSeconds: matrixCell.auxiliaryExternalAudioSeconds,
+      subtitleTranslationMode: matrixCell.subtitleTranslationMode,
       modelId: matrixCell.modelId,
+      ...(matrixCell.modelProtocolProfileIdentity ? {
+        modelProtocolProfileIdentity: structuredClone(matrixCell.modelProtocolProfileIdentity),
+      } : {}),
       feedbackLoopPrevention: matrixCell.feedbackLoopPrevention,
       deviceClass: matrixCell.deviceClass,
       deviceProfileId: matrixCell.deviceProfileId,
+      ...(matrixCell.deviceProfileInstanceId ? {
+        deviceProfileInstanceId: matrixCell.deviceProfileInstanceId,
+        physicalPlaybackDeviceId: matrixCell.physicalPlaybackDeviceId,
+        workerId: matrixCell.workerId,
+        vmIdentityDigest: matrixCell.vmIdentityDigest,
+      } : {}),
     },
     implementationHashes,
     paidImplementationHashes,

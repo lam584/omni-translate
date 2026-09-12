@@ -5,6 +5,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use omni_logging::pipeline::{EvidenceReceipt, EvidenceRecord};
+use serde_json::Value;
+
 use super::contracts::{
     DiagnosticLogCategoryRuntime, DiagnosticLogEntryRuntime, DiagnosticsRuntimeSnapshot,
     ModelTraceCallRuntime, ModelTraceSummaryRuntime,
@@ -280,6 +283,59 @@ impl DiagnosticsStateStore {
         Ok(entry)
     }
 
+    pub(crate) fn prepare_model_trace_evidence(
+        &self,
+        evidence_id: String,
+        summary: String,
+        detail: Value,
+        elapsed_ms: u128,
+    ) -> EvidenceRecord {
+        let emitted_at = crate::shared::time::now_unix_seconds_marker();
+        let entry = DiagnosticLogEntryRuntime {
+            id: format!("model-trace-debug-{emitted_at}"),
+            category: "model-trace".to_string(),
+            level: "debug".to_string(),
+            summary,
+            detail: Some(super::redaction::sanitize_text(&detail.to_string())),
+            emitted_at,
+            source: Some(format!("{}:{}", file!(), line!())),
+            elapsed_ms: Some(elapsed_ms),
+        };
+        let mut state = self.inner.lock().expect("diagnostics state poisoned");
+        let line = format_app_log_line(
+            &format_log_timestamp(),
+            &entry,
+            Some(super::session_id()),
+        );
+        let category = state
+            .categories
+            .entry("model-trace".to_string())
+            .or_insert_with(|| DiagnosticCategoryState {
+                entry_count: 0,
+                last_entry_at: None,
+            });
+        category.entry_count += 1;
+        category.last_entry_at = Some(entry.emitted_at.clone());
+        state.recent_logs.insert(0, entry);
+        state.recent_logs.truncate(MAX_RECENT_LOGS);
+        EvidenceRecord {
+            id: evidence_id,
+            line,
+        }
+    }
+
+    pub(crate) fn submit_evidence(&self, record: EvidenceRecord) {
+        self.pipeline.submit_evidence(record);
+    }
+
+    pub(crate) fn persist_evidence(
+        &self,
+        records: Vec<EvidenceRecord>,
+        timeout: Duration,
+    ) -> EvidenceReceipt {
+        self.pipeline.persist_evidence(records, timeout)
+    }
+
     pub(crate) fn record_model_trace_call_started(&self, call: ModelTraceCallRuntime) {
         let mut state = self.inner.lock().expect("diagnostics state poisoned");
         state.model_trace_summary.active_trace_id = Some(call.trace_id.clone());
@@ -324,6 +380,39 @@ impl DiagnosticsStateStore {
             call.elapsed_ms = elapsed_ms;
             call.last_error = last_error;
         }
+    }
+
+    pub(crate) fn record_model_trace_persistence_failure(
+        &self,
+        trace_id: &str,
+        call_id: &str,
+        detail: String,
+    ) {
+        let mut state = self.inner.lock().expect("diagnostics state poisoned");
+        let Some(call_index) = state
+            .model_trace_summary
+            .recent_calls
+            .iter()
+            .position(|item| item.call_id == call_id)
+        else {
+            return;
+        };
+        let previous_status = state.model_trace_summary.recent_calls[call_index]
+            .status
+            .clone();
+        if previous_status == "succeeded" {
+            state.model_trace_summary.succeeded_calls =
+                state.model_trace_summary.succeeded_calls.saturating_sub(1);
+        }
+        if previous_status != "failed" {
+            state.model_trace_summary.failed_calls += 1;
+        }
+        let error = format!("model trace terminal evidence was not confirmed: {detail}");
+        let call = &mut state.model_trace_summary.recent_calls[call_index];
+        call.status = "failed".to_string();
+        call.last_error = Some(error.clone());
+        state.model_trace_summary.active_trace_id = Some(trace_id.to_string());
+        state.model_trace_summary.last_error = Some(error);
     }
 
     pub(crate) fn mark_self_check(&self, emitted_at: String) {

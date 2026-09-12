@@ -1,0 +1,67 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "google-gemini.interactions-transcription",
+  "providerId": "google-gemini",
+  "protocolProfileId": "google-gemini.interactions-transcription",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "google-gemini.audio-transcription",
+      "google-gemini.interactions-reference"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived non-realtime transcription request."
+  },
+  "scenario": "Gemini Interactions API transcribes referenced audio in one HTTP request",
+  "data": {
+    "request": {
+      "event": "interactions.create",
+      "method": "POST",
+      "url": "https://generativelanguage.googleapis.com/v1beta/interactions",
+      "headers": {
+        "x-goog-api-key": "<redacted-google-api-key>",
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "model": "gemini-3.5-transcribe",
+        "input": [
+          {
+            "type": "audio",
+            "uri": "gs://<sanitized-bucket>/<sanitized-audio-object>"
+          },
+          {
+            "type": "text",
+            "text": "Transcribe this audio."
+          }
+        ]
+      }
+    },
+    "authContract": {
+      "profileId": "google-gemini.api-key-header",
+      "parameters": [
+        { "location": "header", "name": "x-goog-api-key", "value": "<redacted-google-api-key>" }
+      ]
+    },
+    "response": {
+      "type": "interaction",
+      "status": "completed",
+      "outputs": [
+        {
+          "type": "text",
+          "text": "<sanitized-final-transcript>"
+        }
+      ]
+    },
+    "terminalEvent": { "type": "interaction", "status": "completed", "terminal": true },
+    "audioContract": {
+      "input": "Referenced audio object URI accepted by the Interactions API",
+      "fixtureAudio": "gs://<sanitized-bucket>/<sanitized-audio-object>"
+    },
+    "audio": { "uri": "gs://<sanitized-bucket>/<sanitized-audio-object>" },
+    "boundary": "This is finite file/URI transcription over HTTP, not the native Live WebSocket transcription profile.",
+    "implementationStatus": "disabled/not-implemented"
+  }
+}

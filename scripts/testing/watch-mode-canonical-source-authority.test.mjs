@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,6 +30,15 @@ function pcmBuffer(samples) {
 function writePcm(filePath, samples) {
   fs.writeFileSync(filePath, pcmBuffer(samples));
   return filePath;
+}
+
+function withExactRestartQuietWindow(referenceBytes) {
+  const insertionOffsetBytes = 90 * 16_000 * 2;
+  return Buffer.concat([
+    referenceBytes.subarray(0, insertionOffsetBytes),
+    Buffer.alloc(45 * 16_000 * 2),
+    referenceBytes.subarray(insertionOffsetBytes),
+  ]);
 }
 
 function makeWave({ sampleRateHz = 24_000, channels = 1, samples, audioFormat = 1, bitsPerSample = 16 }) {
@@ -91,6 +101,10 @@ function authorityFixture(runDirectory) {
         channels: 1,
         durationSeconds: Number(fixture.referencePcm.durationSeconds.toFixed(6)),
         sha256: fixture.referencePcm.sha256,
+        transformation: 'none',
+        restartQuietWindowAfterSeconds: 0,
+        restartQuietWindowSeconds: 0,
+        insertedSilenceSamples: 0,
       },
       fixture: fixture.fixture,
     },
@@ -234,6 +248,7 @@ test('validates exact WAV/checksum/metadata/text and run reference PCM authority
   const validation = validateCanonicalSourceAuthority({ runDirectory, workspaceRoot });
   assert.equal(validation.passed, true);
   assert.equal(validation.referencePcm.byteForByteInjectorReconstruction, true);
+  assert.equal(validation.referencePcm.transformation, 'none');
   assert.equal(validation.sourceText.bytes, Buffer.byteLength(authority.source, 'utf8'));
   assert.equal(validation.source, authority.source);
   assert.equal(validation.translation, authority.translation);
@@ -251,8 +266,87 @@ test('reference-only validation rejects a same-length forged injector PCM before
   fs.writeFileSync(referencePath, forged);
   assert.throws(
     () => validateCanonicalReferencePcm({ runDirectory, workspaceRoot }),
-    /not byte-for-byte the injector reconstruction/,
+    /neither the byte-for-byte injector reconstruction nor its exact 90s\/45s restart quiet-window variant/,
   );
+});
+
+test('accepts only the exact 90s/45s restart quiet-window reference and binds its source authority', () => {
+  const runDirectory = temporaryDirectory('canonical-quiet-window');
+  const { fixture, authority, referencePath } = authorityFixture(runDirectory);
+  const variant = withExactRestartQuietWindow(fixture.referencePcm.buffer);
+  fs.writeFileSync(referencePath, variant);
+  const referenceValidation = validateCanonicalReferencePcm({ runDirectory, workspaceRoot });
+  assert.deepEqual(referenceValidation.referencePcm, {
+    path: 'source-media-reference-16k-mono.pcm',
+    bytes: fixture.referencePcm.bytes + 45 * 16_000 * 2,
+    samples: fixture.referencePcm.samples + 45 * 16_000,
+    sampleRateHz: 16_000,
+    channels: 1,
+    durationSeconds: Number((fixture.referencePcm.durationSeconds + 45).toFixed(6)),
+    sha256: crypto.createHash('sha256').update(variant).digest('hex'),
+    transformation: 'restart-quiet-window-v1',
+    restartQuietWindowAfterSeconds: 90,
+    restartQuietWindowSeconds: 45,
+    insertedSilenceSamples: 45 * 16_000,
+  });
+
+  const transformedAuthority = { ...authority, referencePcm: referenceValidation.referencePcm };
+  const sourceValidation = validateCanonicalSourceAuthority({
+    runDirectory,
+    workspaceRoot,
+    sourceAuthority: transformedAuthority,
+  });
+  assert.equal(sourceValidation.referencePcm.transformation, 'restart-quiet-window-v1');
+  assert.equal(sourceValidation.referencePcm.byteForByteInjectorReconstruction, true);
+
+  assert.throws(
+    () => validateCanonicalSourceAuthority({ runDirectory, workspaceRoot, sourceAuthority: authority }),
+    /canonical referencePcm keys mismatch|canonical referencePcm\.(bytes|samples|durationSeconds|sha256|transformation) mismatch/,
+  );
+  fs.writeFileSync(referencePath, fixture.referencePcm.buffer);
+  assert.throws(
+    () => validateCanonicalSourceAuthority({ runDirectory, workspaceRoot, sourceAuthority: transformedAuthority }),
+    /canonical referencePcm keys mismatch|canonical referencePcm\.(bytes|samples|durationSeconds|sha256|transformation) mismatch/,
+  );
+});
+
+test('rejects restart quiet-window PCM at any noncanonical position, duration, or sample value', () => {
+  const cases = [
+    {
+      label: 'wrong-position',
+      build: (reference) => Buffer.concat([
+        reference.subarray(0, 89 * 16_000 * 2),
+        Buffer.alloc(45 * 16_000 * 2),
+        reference.subarray(89 * 16_000 * 2),
+      ]),
+    },
+    {
+      label: 'wrong-duration',
+      build: (reference) => Buffer.concat([
+        reference.subarray(0, 90 * 16_000 * 2),
+        Buffer.alloc(44 * 16_000 * 2),
+        reference.subarray(90 * 16_000 * 2),
+      ]),
+    },
+    {
+      label: 'nonzero-sample',
+      build: (reference) => {
+        const bytes = withExactRestartQuietWindow(reference);
+        bytes.writeInt16LE(1, 90 * 16_000 * 2 + 20);
+        return bytes;
+      },
+    },
+  ];
+  for (const entry of cases) {
+    const runDirectory = temporaryDirectory(`canonical-${entry.label}`);
+    const referencePath = path.join(runDirectory, 'source-media-reference-16k-mono.pcm');
+    fs.writeFileSync(referencePath, entry.build(buildCanonicalReferencePcm({ workspaceRoot })));
+    assert.throws(
+      () => validateCanonicalReferencePcm({ runDirectory, workspaceRoot }),
+      /neither the byte-for-byte injector reconstruction nor its exact 90s\/45s restart quiet-window variant/,
+      entry.label,
+    );
+  }
 });
 
 test('rejects Buffer.alloc pseudo-PCM even when a claimed passed authority points at it', () => {
@@ -261,7 +355,7 @@ test('rejects Buffer.alloc pseudo-PCM even when a claimed passed authority point
   fs.writeFileSync(referencePath, Buffer.alloc(authority.referencePcm.bytes));
   assert.throws(
     () => validateCanonicalSourceAuthority({ runDirectory, workspaceRoot, sourceAuthority: authority }),
-    /not byte-for-byte the injector reconstruction/,
+    /neither the byte-for-byte injector reconstruction nor its exact 90s\/45s restart quiet-window variant/,
   );
 });
 
@@ -334,6 +428,26 @@ test('uses deterministic negative controls without optional WAV fixtures', () =>
     authority.wrongReferences.map((entry) => entry.label),
     ['deterministic-733hz-control', 'deterministic-1211hz-control'],
   );
+});
+
+test('physical waveform authority accepts the exact restart quiet-window reference as the compared source', () => {
+  const canonical = buildCanonicalReferencePcm({ workspaceRoot });
+  const variant = withExactRestartQuietWindow(canonical);
+  const reference = new Int16Array(variant.buffer, variant.byteOffset, variant.length / 2);
+  const fixture = physicalFixture({
+    reference,
+    recorded: transformed(reference, { noise: 0 }),
+    wrong: [unrelatedTone(reference, 733), unrelatedTone(reference, 1_211)],
+  });
+  const authority = buildPhysicalSourceWaveformAuthority({
+    runDirectory: fixture.directory,
+    referencePcmPath: fixture.referencePath,
+    sourceWindowPath: fixture.sourceWindowPath,
+    wrongReferencePcmPaths: fixture.wrongReferencePcmPaths,
+  });
+  assert.equal(authority.passed, true, authority.violations.join('; '));
+  assert.equal(authority.referencePcm.bytes, variant.length);
+  assert.ok(authority.passingCandidateCount >= authority.thresholds.minimumPassingCandidateCount);
 });
 
 test('accepts distributed source fragments under bounded endpoint-clock drift and dense overlap', () => {

@@ -7,7 +7,11 @@ import {
   fileReceipt,
 } from './real-device-audio-release-evidence.mjs';
 import { materializeRealDeviceAudioReleaseEvidence } from './run-real-device-audio-release-evidence.mjs';
-import { requiredCellArtifactPaths } from './watch-mode-evidence-authority.mjs';
+import {
+  CELL_AUTHORITY_SCHEMA_VERSION,
+  STRICT_MATRIX_SCHEMA_VERSION,
+  requiredCellArtifactPaths,
+} from './watch-mode-evidence-authority.mjs';
 
 const writeText = (candidate, value) => {
   ensureDir(path.dirname(candidate));
@@ -210,6 +214,9 @@ export function createRealDeviceAudioAuthorityFixture({
     'playback.json': {
       passed: true,
       playbackMode: 'wasapi-media-injector',
+      sourceGainDb: -5,
+      postrollSilenceFrames: 144000,
+      postrollSilenceSeconds: 3,
       injectorProcessId: 1300,
     },
     'system-metrics.json': {
@@ -278,7 +285,7 @@ export function createRealDeviceAudioAuthorityFixture({
     else writeText(candidate, 'authorized raw evidence\n');
   }
   const receipt = {
-    schemaVersion: 3,
+    schemaVersion: CELL_AUTHORITY_SCHEMA_VERSION,
     artifactKind: 'watch-mode-live-cell-authority',
     generatedAt: '2026-08-10T09:35:00.000Z',
     provenance,
@@ -291,7 +298,7 @@ export function createRealDeviceAudioAuthorityFixture({
   const receiptPath = path.join(runDirectory, 'matrix-cell-authority.json');
   writeJson(receiptPath, receipt);
   const manifest = {
-    schemaVersion: 4,
+    schemaVersion: STRICT_MATRIX_SCHEMA_VERSION,
     artifactKind: 'watch-mode-strict-matrix-authority',
     strict: true,
     evidenceMode: 'live',

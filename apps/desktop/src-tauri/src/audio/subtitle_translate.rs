@@ -25,9 +25,11 @@ use super::translation_scheduler::{
     should_accept_translation, should_dedupe_written_translation, should_retry_translation,
     translation_attempt_key, translation_job_key, translation_rank, TranslationDelta,
     TranslationEnqueueResult, TranslationJob, TranslationOutcome, TranslationRank,
-    TranslationScheduler, TranslationUpdate, TranslationWriteState, FINAL_TRANSLATION_DEADLINE,
-    FORCED_TRANSLATION_DEADLINE, MAX_RATE_LIMIT_ATTEMPTS, MAX_RETRIABLE_SENTENCE_ATTEMPTS,
+    TranslationScheduler, TranslationUpdate, TranslationWriteState, MAX_RATE_LIMIT_ATTEMPTS,
+    MAX_RETRIABLE_SENTENCE_ATTEMPTS,
 };
+#[cfg(test)]
+use super::translation_scheduler::{FINAL_TRANSLATION_DEADLINE, FORCED_TRANSLATION_DEADLINE};
 
 const POLL_INTERVAL_MS: u64 = 50;
 // A speech turn can produce several sentences at once. Eight slots keep the
@@ -897,11 +899,13 @@ mod tests {
             provider: ProviderDraftInput {
                 template_id: "test".to_string(),
                 provider_id: "provider-test".to_string(),
+                manifest_provider_id: None,
                 kind: "openai-compatible".to_string(),
                 template_realtime_protocol: None,
                 realtime_protocol: None,
                 display_name: "Test".to_string(),
                 model: "test-model".to_string(),
+                deployment_id: None,
                 base_url: "http://localhost".to_string(),
                 transport: "http".to_string(),
                 auth_ref: crate::provider::contracts::ProviderAuthRefInput {
@@ -919,6 +923,7 @@ mod tests {
                 response_modalities: vec!["text".to_string()],
                 custom_headers: Vec::new(),
                 scene_model_assignments: Vec::new(),
+                model_protocol_bindings: Vec::new(),
                 local_model_capability_registry: Vec::new(),
                 model_catalog_cache: Default::default(),
             },

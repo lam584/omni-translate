@@ -1,0 +1,36 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "tencent-tts-cloudapi-long-text-v1",
+  "providerId": "tencent-cloud",
+  "protocolProfileId": "tencent-cloud.tts.long-text-2019-08-23",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["tts-long-text"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Task identifiers and text are synthetic. This fixture deliberately stops at task acceptance."
+  },
+  "scenario": "CreateTtsTask accepts a long-text synthesis job without claiming audio completion",
+  "data": {
+    "authContract": { "profileId": "cloudapi-tc3-header", "parameters": [
+      { "location": "header", "name": "Authorization", "value": "TC3-HMAC-SHA256 fixture-redacted" }, { "location": "header", "name": "Content-Type", "value": "application/json; charset=utf-8" },
+      { "location": "header", "name": "Host", "value": "tts.tencentcloudapi.com" }, { "location": "header", "name": "X-TC-Action", "value": "CreateTtsTask" },
+      { "location": "header", "name": "X-TC-Version", "value": "2019-08-23" }, { "location": "header", "name": "X-TC-Timestamp", "value": "1700000000" }
+    ] },
+    "audioContract": { "encoding": "mp3", "sampleRateHz": 16000, "channels": 1, "availability": "result-query-required" },
+    "audio": { "payloadAvailable": false, "reason": "create-task-only" },
+    "request": {
+      "type": "CreateTtsTask.request",
+      "method": "POST",
+      "url": "https://tts.tencentcloudapi.com/",
+      "headers": { "X-TC-Action": "CreateTtsTask", "X-TC-Version": "2019-08-23", "Authorization": "TC3-HMAC-SHA256 synthetic-redacted" },
+      "json": { "Text": "synthetic long-text fixture", "ModelType": 1, "VoiceType": 101001, "Codec": "mp3", "SampleRate": 16000 }
+    },
+    "response": { "type": "CreateTtsTask.accepted", "terminal": true, "Response": { "Data": { "TaskId": "fixture-task-id" }, "RequestId": "00000000-0000-4000-8000-000000000002" } },
+    "terminalSemantics": "task-accepted-only",
+    "audioComplete": false,
+    "requiresResultQueryProfile": true
+  }
+}

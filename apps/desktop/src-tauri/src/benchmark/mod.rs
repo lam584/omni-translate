@@ -38,6 +38,8 @@ struct BenchmarkConfig {
     voice: String,
     target_language: String,
     protocol_dialect: Option<crate::audio::events::RealtimeProtocol>,
+    model_protocol_authority:
+        Option<crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -444,16 +446,12 @@ mod tests {
             "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-plus-realtime"
         );
 
-        // Custom DashScope gateways use the same fixed protocol path as production.
-        let custom = build_default_benchmark_url(
+        let unknown = build_default_benchmark_url(
             "wss://custom.example.com/ws/v1",
             "my-model",
         )
-        .expect("custom URL should build");
-        assert_eq!(
-            custom.as_str(),
-            "wss://custom.example.com/api-ws/v1/realtime?model=my-model"
-        );
+        .expect_err("an unknown model has no inspection-derived endpoint path");
+        assert!(unknown.contains("未登记明确的 WebSocket 协议入口"));
     }
 
     #[test]
@@ -471,6 +469,7 @@ mod tests {
             voice: "Ethan".to_string(),
             target_language: "zh".to_string(),
             protocol_dialect: Some(crate::audio::events::RealtimeProtocol::OpenAiConversation),
+            model_protocol_authority: None,
         };
         let openai = build_openai_session_update(&config);
         assert_eq!(
@@ -634,6 +633,7 @@ mod tests {
             voice: "Ethan".to_string(),
             target_language: "zh".to_string(),
             protocol_dialect: Some(crate::audio::events::RealtimeProtocol::DashscopeOmni),
+            model_protocol_authority: None,
         };
         assert!(build_session_update(&config)["session"]["turn_detection"].is_null());
 

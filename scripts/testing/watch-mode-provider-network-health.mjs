@@ -3,7 +3,10 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import tls from 'node:tls';
+
+import { sha256Canonical } from './watch-mode-shard-authority.mjs';
 
 export const DEFAULT_PROVIDER_HEALTH_URL = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime';
 export const PROVIDER_NETWORK_HEALTH_TIMEOUT_MS = 5_000;
@@ -149,4 +152,57 @@ export async function runProviderNetworkHealth({
     throw error;
   }
   return receipt;
+}
+
+async function readStdinJson() {
+  const chunks = [];
+  let bytes = 0;
+  for await (const chunk of process.stdin) {
+    bytes += chunk.length;
+    if (bytes > 64 * 1024) throw new Error('provider network health request exceeds 64 KiB');
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
+export function validateProviderNetworkHealthRequest(request) {
+  const executor = request?.executor;
+  if (request?.schemaVersion !== 1
+    || request?.artifactKind !== 'watch-mode-provider-network-health-request'
+    || typeof request.executionId !== 'string'
+    || !String(executor?.workerId ?? '').trim()
+    || executor?.transportAuthority?.kind !== 'ssh'
+    || !String(executor?.transportAuthority?.hostKeyAlias ?? '').trim()
+    || !String(executor?.transportAuthority?.hostKeyAlgorithm ?? '').trim()
+    || !/^SHA256:[A-Za-z0-9+/]{43}$/u.test(String(executor?.transportAuthority?.hostKeySha256 ?? ''))
+    || executor?.interactiveUser !== 'VMUser'
+    || executor?.vmIdentity?.provider !== 'vmware'
+    || executor?.vmIdentityDigest !== sha256Canonical(executor.vmIdentity)
+    || !/^[a-f0-9]{64}$/u.test(String(executor?.runtimeBundleDigest ?? ''))
+    || executor?.readinessAuthority?.workerId !== executor.workerId
+    || executor?.readinessAuthority?.providerCalls !== 0
+    || executor?.readinessAuthority?.path !== `worker-readiness/${executor.workerId}.json`
+    || !/^[a-f0-9]{64}$/u.test(String(executor?.readinessAuthority?.sha256 ?? ''))) {
+    throw new Error('provider network health request is not bound to its signed configured executor');
+  }
+  return structuredClone(request);
+}
+
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  let executor;
+  try {
+    const request = validateProviderNetworkHealthRequest(await readStdinJson());
+    executor = request.executor;
+    const receipt = await runProviderNetworkHealth({
+      executionId: request.executionId,
+      providerId: 'dashscope',
+    });
+    process.stdout.write(`${JSON.stringify({ ...receipt, executor })}\n`);
+  } catch (error) {
+    if (error.receipt && executor) {
+      process.stdout.write(`${JSON.stringify({ ...error.receipt, executor })}\n`);
+    }
+    console.error(`provider-network-health: ${error.message}`);
+    process.exitCode = 1;
+  }
 }

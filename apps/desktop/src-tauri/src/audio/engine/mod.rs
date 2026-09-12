@@ -20,7 +20,9 @@ use super::contracts::{
 };
 use super::events::AUDIO_RUNTIME_SNAPSHOT_EVENT;
 use super::state::{
-    AudioRouteHandle, AudioStateStore, BridgeSourceFrameIdentity, CapturedSegmentAudio,
+    AecCaptureFrameMetadata, AudioRouteHandle, AudioStateStore, BridgeSourceFrameIdentity,
+    CapturedSegmentAudio,
+    RouteInputCompletionEvidence, RouteInputCompletionRequest,
 };
 use super::time_utils::{ms_marker, now_unix_millis_marker, unix_ms};
 use crate::bridge::contracts::BridgeTranslationFrameHeader;
@@ -35,20 +37,25 @@ mod retry;
 mod samples;
 mod device_catalog;
 mod device_initializer;
-mod aec_timing;
+pub(crate) mod aec_timing;
 mod bridge_source_io;
+mod bridge_playback_ack;
 mod bridge_source_startup;
 mod bridge_worker_authority;
 mod echo_diagnostics;
+mod route_join;
 
 use self::bridge_source_io::{
     apply_bridge_source_identity_observation, bridge_source_identity_disposition,
-    bridge_source_route_error,
-    bridge_translation_status_disposition,
-    read_bridge_source_payload, record_bridge_translation_status,
-    write_bridge_translation_status_ack, BridgeSourceEnvelope,
-    BridgeSourceIdentityDisposition, BridgeTranslationStatusDisposition,
+    bridge_source_route_error, read_bridge_source_payload, BridgeSourceEnvelope,
+    BridgeSourceIdentityDisposition,
 };
+#[cfg(test)]
+use self::bridge_source_io::{
+    bridge_translation_status_disposition, write_bridge_translation_status_ack,
+    BridgeTranslationStatusDisposition,
+};
+use self::bridge_playback_ack::handle_bridge_translation_status;
 use self::bridge_source_startup::validate_bridge_source_startup;
 use self::bridge_worker_authority::{
     apply_bridge_source_worker_error_if_current,
@@ -61,6 +68,7 @@ use self::bridge_worker_authority::{
     commit_bridge_source_worker_error_if_current,
 };
 use self::echo_diagnostics::EchoCancelDiagnostics;
+use self::route_join::{route_join_terminal_result, wait_for_route_join, RouteJoinWaitError};
 
 use self::retry::{
     with_audio_init_retry, AudioInitError, RetryAction, AUDIO_INIT_BASE_DELAY_MS,
@@ -89,7 +97,6 @@ const DEVICE_FALLBACK_DELAY_MS: u64 = 500;
 // binds the stream but never delivers frames; that must surface as an
 // attributable failure instead of a silent "started but zero frames" success.
 const AUDIO_FLOW_HEALTH_WINDOW_SECS: u64 = 4;
-
 /// Application-facing lifecycle boundary for a capture route.
 /// The engine retains low-level device routines; callers use this supervisor
 /// so route start/stop orchestration has one explicit owner.
@@ -115,6 +122,7 @@ impl<'a> AudioRouteSupervisor<'a> {
     pub(crate) fn stop(&self, direction: &str) -> Result<AudioRuntimeSnapshot, String> {
         stop_route(self.app.clone(), self.store, direction)
     }
+
 }
 
 pub(crate) fn bootstrap_audio_runtime(
@@ -195,6 +203,12 @@ pub(crate) fn start_route(
         };
 
     let waits_for_bridge_source = spec.uses_bridge_source();
+    let (input_completion_tx, input_completion_rx) = if waits_for_bridge_source {
+        let (tx, rx) = mpsc::channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
     let bridge_source_context = if waits_for_bridge_source {
         let bridge_snapshot = app.state::<BridgeStateStore>().snapshot();
         diag_log_detail(
@@ -260,6 +274,7 @@ pub(crate) fn start_route(
                 direction: route_direction.clone(),
                 spec: worker_spec,
                 stop_rx,
+                input_completion_rx,
                 stt_sender,
                 init_done: Some(init_done_for_worker),
                 bridge_source_context,
@@ -346,6 +361,9 @@ pub(crate) fn start_route(
             join_handle,
         },
     );
+    if let Some(input_completion_tx) = input_completion_tx {
+        store.store_route_input_completion_sender(direction, input_completion_tx);
+    }
     Ok(store.snapshot())
 }
 
@@ -354,6 +372,7 @@ pub(crate) fn stop_route(
     store: &AudioStateStore,
     direction: &str,
 ) -> Result<AudioRuntimeSnapshot, String> {
+    let _ = store.take_route_input_completion_sender(direction);
     if let Some(handle) = store.take_session(direction) {
         store.mark_route_stopping(direction);
         emit_audio_snapshot(&app, store)?;
@@ -377,7 +396,8 @@ pub(crate) fn stop_route(
             })
             .map_err_str()?;
 
-        match done_rx.recv_timeout(Duration::from_millis(1_500)) {
+        let join_wait = wait_for_route_join(&done_rx, Duration::from_millis(1_500));
+        match join_wait {
             Ok(()) => {
                 if !marked.swap(true, Ordering::SeqCst) {
                     let _ = store.mark_route_stopped_if_stopping(direction);
@@ -389,7 +409,7 @@ pub(crate) fn stop_route(
                     format!("已停止 {} 音频采集。", direction),
                 );
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
+            Err(RouteJoinWaitError::Timeout) => {
                 let _ = diag_log_detail(
                     &app,
                     "audio",
@@ -398,12 +418,9 @@ pub(crate) fn stop_route(
                     format!("direction={direction} timeoutMs=1500"),
                 );
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                if !marked.swap(true, Ordering::SeqCst) {
-                    let _ = store.mark_route_stopped_if_stopping(direction);
-                }
-            }
+            Err(RouteJoinWaitError::Disconnected) => {}
         }
+        route_join_terminal_result(direction, join_wait)?;
     } else {
         store.mark_route_stopped(direction);
         diag_log(
@@ -484,7 +501,7 @@ fn pick_device(enumerator: &DeviceEnumerator, spec: &RouteSpec) -> Result<Device
         for device_result in &collection {
             let device = device_result.map_err_str()?;
             let device_id = device.get_id().map_err_str()?;
-            if device_id == spec.requested_device_id {
+            if same_windows_audio_device_id(&device_id, &spec.requested_device_id) {
                 return Ok(device);
             }
             if spec.feedback_loop_prevention == "virtual-driver"
@@ -505,7 +522,18 @@ fn pick_device(enumerator: &DeviceEnumerator, spec: &RouteSpec) -> Result<Device
         );
     }
 
+    if !spec.requested_device_id.is_empty() {
+        return Err(format!(
+            "requested audio endpoint was not found; default endpoint fallback is forbidden: {}",
+            spec.requested_device_id
+        ));
+    }
+
     enumerator.get_default_device(&direction).map_err_str()
+}
+
+fn same_windows_audio_device_id(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
 }
 
 fn collect_render_device_ids(enumerator: &DeviceEnumerator) -> Result<Vec<String>, String> {
@@ -537,7 +565,7 @@ fn find_device_by_id(
     for device_result in &collection {
         let Ok(device) = device_result else { continue };
         if let Ok(device_id) = device.get_id() {
-            if device_id == target_id {
+            if same_windows_audio_device_id(&device_id, target_id) {
                 return Some(device);
             }
         }
@@ -545,7 +573,11 @@ fn find_device_by_id(
     None
 }
 
+include!("input_completion.rs");
+include!("provider_input_fence.rs");
+include!("route_worker.rs");
 include!("workers.rs");
+include!("capture_timing.rs");
 include!("warm_route.rs");
 #[derive(Clone)]
 pub(crate) struct RouteSpec {
@@ -967,6 +999,18 @@ mod tests {
     }
 
     #[test]
+    fn windows_audio_endpoint_identity_is_case_insensitive() {
+        assert!(same_windows_audio_device_id(
+            "{0.0.0.00000000}.{A609DEE5-4FFD-49D6-B7F2-705CFA934363}",
+            "{0.0.0.00000000}.{a609dee5-4ffd-49d6-b7f2-705cfa934363}",
+        ));
+        assert!(!same_windows_audio_device_id(
+            "{0.0.0.00000000}.{a609dee5-4ffd-49d6-b7f2-705cfa934363}",
+            "{0.0.0.00000000}.{27efe749-03d9-4ac0-88c6-2838b0beec7a}",
+        ));
+    }
+
+    #[test]
     fn route_processor_ignores_bluetooth_headset_noise_floor() {
         let mut processor = RouteProcessor::new(
             RouteSpec::from_config(&outbound_mic7_config(), "outbound")
@@ -994,16 +1038,17 @@ mod tests {
     }
 
     #[test]
-    fn route_spec_skips_local_vad_only_for_realtime_omni_models_of_the_route_direction() {
+    fn route_spec_skips_local_vad_only_for_manifest_authorized_realtime_models_of_the_route_direction() {
         let config = json!({
           "providers": [{
             "templateId": "template-dashscope-realtime",
             "providerId": "dashscope",
             "kind": "dashscope",
             "displayName": "DashScope",
-            "model": "qwen3.5-omni-plus-realtime",
+            "model": "qwen3.5-livetranslate-flash-realtime",
             "baseUrl": "https://dashscope.aliyuncs.com/api/v1",
             "transport": "websocket",
+            "region": "cn-beijing",
             "authRef": { "kind": "system", "reference": "dashscope", "headerName": "Authorization", "scheme": "bearer" },
             "streamEnabled": true,
             "timeoutMs": 30000,
@@ -1012,7 +1057,7 @@ mod tests {
             "localModelCapabilityRegistry": []
           }],
           "devices": {
-            "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+            "inboundVoiceModelId": "qwen3.5-livetranslate-flash-realtime",
             "outboundVoiceModelId": "gpt-4o-mini-transcribe",
             "inboundRoute": { "routeId": "inbound-route", "input": { "deviceId": "speaker-1" } },
             "outboundRoute": { "routeId": "outbound-route", "input": { "deviceId": "mic-7" } }
@@ -1020,41 +1065,56 @@ mod tests {
         });
 
         let inbound = RouteSpec::from_config(&config, "inbound").expect("inbound spec");
-        assert!(inbound.skip_local_vad, "omni realtime model does server-side VAD");
+        assert!(inbound.skip_local_vad, "the exact enabled manifest profile does server-side VAD");
 
         let outbound = RouteSpec::from_config(&config, "outbound").expect("outbound spec");
         assert!(!outbound.skip_local_vad, "non-realtime outbound model keeps local VAD");
 
         let unset = RouteSpec::from_config(&json!({ "devices": {} }), "inbound").expect("unset spec");
         assert!(!unset.skip_local_vad, "missing model id keeps local VAD");
+
+        let mut manifest_only = config.clone();
+        manifest_only["providers"][0]["model"] = json!("qwen3.5-omni-plus-realtime");
+        manifest_only["devices"]["inboundVoiceModelId"] =
+            json!("qwen3.5-omni-plus-realtime");
+        let denied = RouteSpec::from_config(&manifest_only, "inbound")
+            .expect("manifest-only route spec remains locally processable");
+        assert!(
+            !denied.skip_local_vad,
+            "a manifest-only adapter must not authorize server segmentation"
+        );
     }
 
     #[test]
-    fn route_spec_uses_registry_profile_for_unhinted_alias_vad_policy() {
+    fn route_spec_uses_exact_manifest_profile_for_registry_vad_policy() {
         let config = json!({
           "providers": [{
             "templateId": "template-dashscope-realtime",
             "providerId": "dashscope",
             "kind": "dashscope",
             "displayName": "DashScope",
-            "model": "qwen-audio-3.0-realtime-plus",
+            "model": "qwen3.5-livetranslate-flash-realtime",
             "baseUrl": "https://dashscope.aliyuncs.com/api/v1",
             "transport": "websocket",
+            "region": "cn-beijing",
             "authRef": { "kind": "system", "reference": "dashscope", "headerName": "Authorization", "scheme": "bearer" },
             "streamEnabled": true,
             "timeoutMs": 30000,
             "systemPromptTemplate": "",
             "sceneModelAssignments": [],
             "localModelCapabilityRegistry": [{
-              "id": "alias", "modelId": "qwen-audio-3.0-realtime-plus",
+              "id": "alias", "modelId": "qwen3.5-livetranslate-flash-realtime",
               "capabilities": ["speech-to-speech"],
-              "realtimeProtocol": "dashscope-omni",
+              "registryVersion": "bailian-model-protocol-registry/v1",
+              "profileId": "bailian.livetranslate.realtime.ws",
+              "profileVersion": 1,
+              "realtimeProtocol": "dashscope-livetranslate",
               "realtimeAudioMode": "server_vad",
               "interactionCapabilities": ["streaming", "auto_vad"]
             }]
           }],
           "devices": {
-            "inboundVoiceModelId": "qwen-audio-3.0-realtime-plus",
+            "inboundVoiceModelId": "qwen3.5-livetranslate-flash-realtime",
             "inboundRoute": { "routeId": "inbound-route", "input": { "deviceId": "speaker-1" } }
           }
         });
@@ -1240,6 +1300,7 @@ mod tests {
             source_generation_token: Some(
                 "bridge-instance-1:session-1:7".to_string(),
             ),
+            physical_playback_device_id: None,
             cue_id: None,
             created_at_ms: None,
             estimated_duration_ms: None,
@@ -1249,6 +1310,17 @@ mod tests {
             translated_audio_enhancement_applied: false,
             translation_sink: None,
             route_direction: None,
+        }
+    }
+
+    fn playback_authority(session_id: &str) -> crate::audio::state::TranslationPlaybackAuthority {
+        crate::audio::state::TranslationPlaybackAuthority {
+            session_id: session_id.to_string(),
+            bridge_instance_id: "bridge-instance-1".to_string(),
+            source_generation: 7,
+            source_generation_token: format!("bridge-instance-1:{session_id}:7"),
+            playback_owner_generation: 11,
+            physical_playback_device_id: "physical-endpoint-1".to_string(),
         }
     }
 
@@ -1379,6 +1451,34 @@ mod tests {
     }
 
     #[test]
+    fn revoked_bridge_source_incarnation_cannot_rebind_with_a_higher_generation() {
+        let current = crate::bridge::contracts::BridgeRuntimeSnapshot {
+            bridge_process_id: Some(42),
+            bridge_instance_id: Some("bridge-instance".to_string()),
+            session_id: Some("session".to_string()),
+            source_generation: 7,
+            source_generation_token: None,
+            ..Default::default()
+        };
+        let old_sidecar_reconnect = BridgeSourceFrameIdentity {
+            bridge_process_id: 42,
+            bridge_instance_id: "bridge-instance".to_string(),
+            session_id: "session".to_string(),
+            source_generation: 8,
+            source_generation_token: "bridge-instance:session:8".to_string(),
+            frame_timestamp_ms: 1_000,
+            read_timestamp_ms: 1_001,
+        };
+
+        assert_eq!(
+            bridge_source_identity_disposition(&current, &old_sidecar_reconnect),
+            BridgeSourceIdentityDisposition::Reject(
+                "bridge-source-incarnation-revoked".to_string()
+            ),
+        );
+    }
+
+    #[test]
     fn bridge_source_heartbeat_reasserts_current_subscriber_without_faking_pcm_progress() {
         let mut current = crate::bridge::contracts::BridgeRuntimeSnapshot {
             bridge_process_id: Some(42),
@@ -1492,6 +1592,9 @@ mod tests {
         header["reason"] = Value::String("physical-output-open-failed".to_string());
         header["errorCode"] =
             Value::String("bridge.translation-playback-failed".to_string());
+        header["playbackOwnerGeneration"] = Value::from(11_u64);
+        header["physicalPlaybackDeviceId"] =
+            Value::String("physical-endpoint-1".to_string());
         let envelope = bridge_source_json_envelope_bytes(&header, &[]);
 
         assert_eq!(
@@ -1499,6 +1602,11 @@ mod tests {
             BridgeSourceEnvelope::TranslationStatus {
                 status_id: "bridge-status-output-failure".to_string(),
                 session_id: "session-1".to_string(),
+                bridge_instance_id: "bridge-instance-1".to_string(),
+                source_generation: 7,
+                source_generation_token: "bridge-instance-1:session-1:7".to_string(),
+                playback_owner_generation: 11,
+                physical_playback_device_id: "physical-endpoint-1".to_string(),
                 cue_id: "cue-output-failure".to_string(),
                 status: "route-failed".to_string(),
                 reason: "physical-output-open-failed".to_string(),
@@ -1520,6 +1628,9 @@ mod tests {
         header["cueId"] = Value::String("cue-without-status-id".to_string());
         header["playbackStatus"] = Value::String("completed".to_string());
         header["reason"] = Value::String("physical-playback-completed".to_string());
+        header["playbackOwnerGeneration"] = Value::from(11_u64);
+        header["physicalPlaybackDeviceId"] =
+            Value::String("physical-endpoint-1".to_string());
         let envelope = bridge_source_json_envelope_bytes(&header, &[]);
 
         assert!(read_bridge_source_payload(&mut std::io::Cursor::new(envelope))
@@ -1533,7 +1644,7 @@ mod tests {
         write_bridge_translation_status_ack(
             &mut wire,
             "bridge-status-output-failure",
-            "session-1",
+            &playback_authority("session-1"),
         )
         .unwrap();
 
@@ -1566,7 +1677,7 @@ mod tests {
         assert!(write_bridge_translation_status_ack(
             &mut BrokenAckWriter,
             "bridge-status-retry",
-            "session-1",
+            &playback_authority("session-1"),
         )
         .is_err());
         assert!(
@@ -1601,7 +1712,7 @@ mod tests {
         write_bridge_translation_status_ack(
             &mut wire,
             "bridge-status-old-session",
-            "old-session",
+            &playback_authority("old-session"),
         )
         .unwrap();
         let header_size = u32::from_le_bytes(wire[..4].try_into().unwrap()) as usize;

@@ -1,10 +1,39 @@
 use super::*;
 
+#[derive(Clone, Debug)]
+struct ProcessLoopbackCaptureFailure {
+    detail: String,
+    stop_failed: bool,
+}
+
+impl From<String> for ProcessLoopbackCaptureFailure {
+    fn from(detail: String) -> Self {
+        Self {
+            detail,
+            // Capture failed without an observed IAudioClient::Stop failure.
+            // This distinguishes capture-failed from stop-failed diagnostics;
+            // neither failure is shutdown authority.
+            stop_failed: false,
+        }
+    }
+}
+
+fn process_loopback_terminal_status(
+    capture_result: &Result<(), ProcessLoopbackCaptureFailure>,
+) -> &'static str {
+    match capture_result {
+        Ok(()) => "stopped",
+        Err(error) if error.stop_failed => "stop-failed",
+        Err(_) => "capture-failed",
+    }
+}
+
 /// Captures the system render mix while excluding the bridge process tree.
 /// This is a distinct backend: activation or capture failures stop the route
 /// and are never converted into driver or endpoint-loopback fallbacks.
 pub(super) struct ProcessLoopbackCaptureWorker {
     state: Arc<Mutex<BridgeState>>,
+    lifecycle: Arc<ProcessLoopbackLifecycle>,
     runtime_root: PathBuf,
     playback_tx: mpsc::SyncSender<PlaybackCommand>,
     playback_control_tx: mpsc::Sender<PlaybackControlCommand>,
@@ -21,8 +50,10 @@ impl ProcessLoopbackCaptureWorker {
         translation_queue: Arc<Mutex<TranslationPlaybackQueue>>,
         source_tx: mpsc::SyncSender<Vec<u8>>,
     ) -> Self {
+        let lifecycle = state.lock().unwrap().process_loopback_lifecycle.clone();
         Self {
             state,
+            lifecycle,
             runtime_root,
             playback_tx,
             playback_control_tx,
@@ -59,32 +90,55 @@ fn run_process_loopback_source_worker(worker: ProcessLoopbackCaptureWorker) {
             }
             current.source_generation
         };
+        if !worker.lifecycle.begin_generation(generation) {
+            return;
+        }
         {
             let mut current = worker.state.lock().unwrap();
+            current.process_loopback_terminal_generation = None;
+            current.process_loopback_terminal_status = None;
+            current.process_loopback_terminal_timestamp_ms = None;
+            current.process_loopback_terminal_detail = None;
             current.update_progress("opening-process-loopback");
         }
-        match capture_process_loopback_generation(
+        let capture_result = capture_process_loopback_generation(
             &worker.state,
             &worker.runtime_root,
             &worker.playback_tx,
             &worker.source_tx,
             generation,
-        ) {
+        );
+        let terminal_evidence = ProcessLoopbackTerminalEvidence::new(
+            generation,
+            process_loopback_terminal_status(&capture_result),
+            capture_result
+                .as_ref()
+                .err()
+                .map(|error| error.detail.clone()),
+        );
+        record_process_loopback_terminal_evidence(&worker.state, &terminal_evidence);
+        worker.lifecycle.publish_terminal(terminal_evidence);
+        let shutdown_requested = worker.lifecycle.shutdown_is_requested();
+        match capture_result {
             Ok(()) => {}
             Err(error) => {
                 append_bridge_service_log(
                     &worker.runtime_root,
                     &format!(
-                        "event=process_loopback_failed generation={generation} error={error}"
+                        "event=process_loopback_failed generation={generation} error={}",
+                        error.detail,
                     ),
                 );
                 fail_process_loopback_route(
                     &worker.state,
                     &worker.playback_control_tx,
                     &worker.translation_queue,
-                    error,
+                    error.detail,
                 );
             }
+        }
+        if shutdown_requested {
+            return;
         }
     }
 }
@@ -95,7 +149,7 @@ fn capture_process_loopback_generation(
     playback_tx: &mpsc::SyncSender<PlaybackCommand>,
     source_tx: &mpsc::SyncSender<Vec<u8>>,
     generation: u64,
-) -> Result<(), String> {
+) -> Result<(), ProcessLoopbackCaptureFailure> {
     let mut audio_client = wasapi::AudioClient::new_application_loopback_client(
         unsafe { GetCurrentProcessId() },
         INCLUDE_BRIDGE_PROCESS_TREE_IN_LOOPBACK,
@@ -122,14 +176,57 @@ fn capture_process_loopback_generation(
     let event_handle = audio_client.set_get_eventhandle().map_err_str()?;
     let capture_client = audio_client.get_audiocaptureclient().map_err_str()?;
     audio_client.start_stream().map_err_str()?;
+    let capture_result = capture_started_process_loopback_generation(
+        state,
+        runtime_root,
+        playback_tx,
+        source_tx,
+        generation,
+        &desired_format,
+        &event_handle,
+        &capture_client,
+    );
+    let stop_result = audio_client.stop_stream().map_err_str();
+    // The lifecycle terminal is published by the worker only after this
+    // function returns. Drop every COM capture object before crossing that
+    // evidence boundary so a shutdown ACK cannot outrun AudioSrv teardown.
+    drop(capture_client);
+    drop(event_handle);
+    drop(audio_client);
+    match (capture_result, stop_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(capture_error), Ok(())) => Err(ProcessLoopbackCaptureFailure::from(capture_error)),
+        (Ok(()), Err(stop_error)) => Err(ProcessLoopbackCaptureFailure {
+            detail: format!(
+                "failed to stop process loopback generation {generation}: {stop_error}"
+            ),
+            stop_failed: true,
+        }),
+        (Err(capture_error), Err(stop_error)) => Err(ProcessLoopbackCaptureFailure {
+            detail: format!(
+                "{capture_error}; failed to stop process loopback generation {generation}: {stop_error}"
+            ),
+            stop_failed: true,
+        }),
+    }
+}
+
+fn capture_started_process_loopback_generation(
+    state: &Arc<Mutex<BridgeState>>,
+    runtime_root: &Path,
+    playback_tx: &mpsc::SyncSender<PlaybackCommand>,
+    source_tx: &mpsc::SyncSender<Vec<u8>>,
+    generation: u64,
+    desired_format: &WaveFormat,
+    event_handle: &wasapi::Handle,
+    capture_client: &wasapi::AudioCaptureClient,
+) -> Result<(), String> {
     {
         let mut current = state.lock().unwrap();
         if current.source_capture_mode != SourceCaptureMode::ProcessExclusion
             || !current.source_subscriber_active
             || current.source_generation != generation
         {
-            drop(current);
-            let _ = audio_client.stop_stream();
             return Ok(());
         }
         current.process_loopback_status = ProcessLoopbackStatus::Ready;
@@ -160,7 +257,6 @@ fn capture_process_loopback_generation(
                 && current.source_generation == generation
         };
         if !should_continue {
-            let _ = audio_client.stop_stream();
             return Ok(());
         }
         while let Some(packet_frames) = capture_client
@@ -258,6 +354,82 @@ mod tests {
     #[test]
     fn idle_process_loopback_event_timeout_keeps_capture_route_alive() {
         assert!(wait_for_process_capture_event(Err(wasapi::WasapiError::EventTimeout)).is_ok());
+    }
+
+    #[test]
+    fn shutdown_barrier_rejects_generation_activation_without_waiting() {
+        let lifecycle = ProcessLoopbackLifecycle::default();
+        let terminal = lifecycle
+            .request_shutdown_and_wait(41, Duration::ZERO)
+            .expect("an idle lifecycle can publish terminal evidence immediately");
+        assert_eq!(terminal.generation, 41);
+        assert_eq!(terminal.status, "not-active");
+        assert!(!lifecycle.begin_generation(41));
+        assert!(!lifecycle.begin_generation(42));
+        assert_eq!(lifecycle.active_generation(), None);
+    }
+
+    #[test]
+    fn shutdown_wait_accepts_only_the_active_generation_terminal() {
+        let lifecycle = Arc::new(ProcessLoopbackLifecycle::default());
+        assert!(lifecycle.begin_generation(73));
+        let waiter_lifecycle = lifecycle.clone();
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let waiter = thread::spawn(move || {
+            result_tx
+                .send(waiter_lifecycle.request_shutdown_and_wait(
+                    74,
+                    Duration::from_secs(1),
+                ))
+                .unwrap();
+        });
+        loop {
+            if lifecycle.state.lock().unwrap().shutdown_requested {
+                break;
+            }
+            thread::yield_now();
+        }
+        lifecycle.publish_terminal(ProcessLoopbackTerminalEvidence::new(
+            72,
+            "stopped",
+            None,
+        ));
+        assert!(result_rx.try_recv().is_err());
+        let expected = ProcessLoopbackTerminalEvidence::new(73, "stopped", None);
+        lifecycle.publish_terminal(expected.clone());
+        assert_eq!(result_rx.recv().unwrap().unwrap(), expected);
+        waiter.join().unwrap();
+    }
+
+    #[test]
+    fn active_generation_without_terminal_evidence_times_out_fail_closed() {
+        let lifecycle = ProcessLoopbackLifecycle::default();
+        assert!(lifecycle.begin_generation(91));
+        let error = lifecycle
+            .request_shutdown_and_wait(91, Duration::ZERO)
+            .expect_err("shutdown cannot infer terminal evidence from a timeout");
+        assert!(error.contains("generation 91"), "{error}");
+        assert_eq!(lifecycle.active_generation(), Some(91));
+    }
+
+    #[test]
+    fn capture_failure_with_successful_stop_is_not_a_stopped_terminal() {
+        let capture_result = Err(ProcessLoopbackCaptureFailure::from(
+            "capture event failed".to_string(),
+        ));
+        assert_eq!(
+            process_loopback_terminal_status(&capture_result),
+            "capture-failed"
+        );
+
+        let stop_failure = Err(ProcessLoopbackCaptureFailure {
+            detail: "IAudioClient::Stop failed".to_string(),
+            stop_failed: true,
+        });
+        assert_eq!(
+            process_loopback_terminal_status(&stop_failure),
+            "stop-failed"
+        );
     }
 }
 

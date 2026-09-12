@@ -5,7 +5,6 @@ Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Process.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Windows.Audio.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Bridge.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.AudioAnalysis.psm1') -Force
-
 function Write-TestMediaReferencePcm {
   param(
     [string]$PathToMedia,
@@ -45,9 +44,8 @@ function Write-TestMediaReferencePcm {
   }
   return $referencePcmPath
 }
-
 function Start-TestMediaPlayback {
-  param([string]$PathToMedia, [string]$PlaybackEndpointId, [string]$OutputDirectory, [Parameter(Mandatory = $true)][string]$WorkspaceRoot, [Parameter(Mandatory = $true)][int]$PlaybackSeconds)
+  param([string]$PathToMedia, [string]$PlaybackEndpointId, [string]$OutputDirectory, [Parameter(Mandatory = $true)][string]$WorkspaceRoot, [Parameter(Mandatory = $true)][int]$PlaybackSeconds, [int]$RestartQuietWindowAfterSeconds = 0, [int]$RestartQuietWindowSeconds = 0)
   if (-not (Test-Path -LiteralPath $PathToMedia -PathType Leaf)) {
     throw "Test media file not found: $PathToMedia"
   }
@@ -55,7 +53,14 @@ function Start-TestMediaPlayback {
   if (Test-Path -LiteralPath $injectorExe -PathType Leaf) {
     $resolvedMediaPath = (Resolve-Path -LiteralPath $PathToMedia).Path
     $mediaSha256 = (Get-FileHash -LiteralPath $resolvedMediaPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $args = @("--media", $resolvedMediaPath)
+    $strictSourceGainDb = -5
+    $strictPostrollSilenceSeconds = 3
+    $args = @(
+      "--media", $resolvedMediaPath,
+      "--gain-db", "$strictSourceGainDb",
+      "--postroll-silence-seconds", "$strictPostrollSilenceSeconds"
+    )
+    if ($RestartQuietWindowAfterSeconds -gt 0 -and $RestartQuietWindowSeconds -gt 0) { $args += @("--restart-quiet-window-after-seconds", "$RestartQuietWindowAfterSeconds", "--restart-quiet-window-seconds", "$RestartQuietWindowSeconds") }
     $referencePcmPath = $null
     if ($OutputDirectory) {
       $referencePcmPath = Join-Path $OutputDirectory "source-media-reference-16k-mono.pcm"
@@ -88,6 +93,11 @@ function Start-TestMediaPlayback {
       finishedAtMs = if ($result.finishedAtMs) { $result.finishedAtMs } else { $playbackFinishedAtMs }
       renderedFrames = $result.renderedFrames
       renderedSeconds = $result.renderedSeconds
+      renderSampleRateHz = $result.renderSampleRateHz
+      restartQuietWindowAfterSeconds = $result.restartQuietWindowAfterSeconds; restartQuietWindowFrames = $result.restartQuietWindowFrames; restartQuietWindowSeconds = $result.restartQuietWindowSeconds
+      sourceGainDb = $result.sourceGainDb
+      postrollSilenceFrames = $result.postrollSilenceFrames
+      postrollSilenceSeconds = $result.postrollSilenceSeconds
       referencePcmPath = $referencePcmPath
     }
   }
@@ -192,8 +202,6 @@ namespace OmniTranslate {
     referencePcmPath = $referencePcmPath
   }
 }
-
-
 Export-ModuleMember -Function @(
   'Write-TestMediaReferencePcm',
   'Start-TestMediaPlayback',

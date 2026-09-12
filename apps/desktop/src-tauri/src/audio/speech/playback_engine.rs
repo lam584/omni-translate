@@ -100,7 +100,7 @@ impl<'a> SpeechPlaybackEngine<'a> {
             None,
         );
         let speaker_frames = if output_route.play_to_speaker {
-            let frames = play_to_speaker(
+            let receipt = play_to_speaker(
                 &mix.speaker_samples,
                 mix.sample_rate_hz,
                 mix.channel_count,
@@ -117,6 +117,7 @@ impl<'a> SpeechPlaybackEngine<'a> {
                         .store
                         .mark_echo_render_discontinuity(reason, observed_at),
                     SpeakerRenderEvent::Frame {
+                        render_session_id,
                         samples,
                         sample_rate_hz,
                         channel_count,
@@ -125,21 +126,17 @@ impl<'a> SpeechPlaybackEngine<'a> {
                         endpoint_padding_frames,
                         physical_prefix_offset_frames,
                         observed_at,
-                    } => {
-                        self.store.observe_echo_render_endpoint(
-                            submitted_frames,
-                            endpoint_padding_frames,
-                            physical_prefix_offset_frames,
-                            observed_at,
-                        );
-                        self.store.push_echo_reference_at(
+                    } => self.store.push_echo_reference_at(
+                            render_session_id,
                             samples,
                             sample_rate_hz,
                             channel_count,
                             player_position,
+                            submitted_frames,
+                            endpoint_padding_frames,
+                            physical_prefix_offset_frames,
                             observed_at,
-                        )
-                    }
+                        ),
                     SpeakerRenderEvent::AecLiveScenarioStage {
                         status,
                         stage,
@@ -171,6 +168,7 @@ impl<'a> SpeechPlaybackEngine<'a> {
                     }
                 },
             )?;
+            let frames = receipt.rendered_frames;
             let _ = append_diagnostics_log(
                 self.app,
                 "audio",
@@ -188,7 +186,7 @@ impl<'a> SpeechPlaybackEngine<'a> {
                     SPEAKER_SAMPLE_RATE_HZ,
                     SPEAKER_CHANNEL_COUNT,
                     self.config.speaker_output_level,
-                    self.config.speaker_device_id.as_deref().unwrap_or("default")
+                    receipt.physical_playback_device_id
                 )),
                 None,
                 None,

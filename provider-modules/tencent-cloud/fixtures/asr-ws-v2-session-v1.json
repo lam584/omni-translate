@@ -1,0 +1,35 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "tencent-asr-ws-v2-session-v1",
+  "providerId": "tencent-cloud",
+  "protocolProfileId": "tencent-cloud.asr.ws-v2",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["asr-websocket"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic event sequence derived from the official slice_type and final definitions."
+  },
+  "scenario": "ASR interim slice, steady slice, and whole-stream terminal",
+  "data": {
+    "connectionUrl": "wss://asr.cloud.tencent.com/asr/v2/1250000000",
+    "authContract": { "profileId": "asr-v2-hmac-sha1-query", "parameters": [
+      { "location": "path", "name": "appid", "value": "1250000000" }, { "location": "query", "name": "secretid", "value": "AKIDEXAMPLE" },
+      { "location": "query", "name": "timestamp", "value": "1700000000" }, { "location": "query", "name": "expired", "value": "1700003600" },
+      { "location": "query", "name": "nonce", "value": "42" }, { "location": "query", "name": "voice_id", "value": "fixture-voice" },
+      { "location": "query", "name": "signature", "value": "fixture-signature-redacted" }
+    ] },
+    "audioContract": { "encoding": "pcm_s16le", "sampleRateHz": 16000, "bitDepth": 16, "channels": 1 },
+    "transport": { "websocketText": "json", "websocketBinary": "naked-audio", "vendorEnvelope": "none" },
+    "events": [
+      { "direction": "client", "frameType": "binary", "payloadOmitted": true, "codec": "pcm-s16le" },
+      { "direction": "server", "frameType": "text", "json": { "code": 0, "voice_id": "fixture-voice", "message_id": "fixture-message-1", "result": { "slice_type": 0, "index": 0, "voice_text_str": "测" } } },
+      { "direction": "server", "frameType": "text", "json": { "code": 0, "voice_id": "fixture-voice", "message_id": "fixture-message-2", "result": { "slice_type": 1, "index": 0, "voice_text_str": "测试" } } },
+      { "direction": "server", "frameType": "text", "json": { "code": 0, "voice_id": "fixture-voice", "message_id": "fixture-message-3", "result": { "slice_type": 2, "index": 0, "voice_text_str": "测试完成。" } }, "semantics": "stable slice, not connection terminal" },
+      { "direction": "client", "frameType": "text", "json": { "type": "end" } },
+      { "direction": "server", "type": "final", "terminal": true, "frameType": "text", "json": { "code": 0, "voice_id": "fixture-voice", "final": 1 }, "semantics": "whole stream terminal" }
+    ]
+  }
+}

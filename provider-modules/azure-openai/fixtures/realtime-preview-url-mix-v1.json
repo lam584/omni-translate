@@ -1,0 +1,32 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "azure-openai.fixture.realtime-preview-url-mix.v1",
+  "providerId": "azure-openai",
+  "protocolProfileId": "azure-openai.realtime.conversation.websocket.2025-04-01-preview",
+  "protocolProfileVersion": 1,
+  "kind": "error",
+  "provenance": {
+    "sourceDocumentationIds": ["azure-openai.docs.realtime-websocket"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived URL-format guard; no 404 response was captured."
+  },
+  "scenario": "Reject GA and deprecated preview URL components when they are mixed",
+  "data": {
+    "endpointStatus": "deprecated",
+    "networkAuthorized": false,
+    "failClosedReason": "Deprecated preview addressing is retained only as an offline rejection vector.",
+    "authContract": {
+      "profileId": "azure-openai.auth.api-key-header",
+      "parameters": [{ "location": "header", "name": "api-key", "value": "<azure-openai-api-key-not-sent>" }]
+    },
+    "validGa": "wss://sanitized-resource.openai.azure.com/openai/v1/realtime?model=watch-realtime-prod",
+    "validDeprecatedPreview": "wss://sanitized-resource.openai.azure.com/openai/realtime?api-version=2025-04-01-preview&deployment=watch-realtime-prod",
+    "invalidMixedExamples": [
+      "wss://sanitized-resource.openai.azure.com/openai/v1/realtime?api-version=2025-04-01-preview&deployment=watch-realtime-prod",
+      "wss://sanitized-resource.openai.azure.com/openai/realtime?model=watch-realtime-prod"
+    ],
+    "expectedOutcome": "fail before network I/O; Microsoft Learn states mixed endpoint formats result in 404"
+  }
+}

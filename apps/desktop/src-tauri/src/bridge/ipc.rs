@@ -846,6 +846,26 @@ mod tests {
     }
 
     #[test]
+    fn relocated_release_checks_its_runtime_workspace_before_the_build_checkout() {
+        let exe_path = Path::new(r"E:\watch-worker\target\release\omni-desktop-shell.exe");
+        let exe_dir = exe_path.parent().unwrap();
+        let bridge_candidates = installed_bridge_cli_candidates(exe_dir);
+        assert_eq!(
+            bridge_candidates[0],
+            Path::new(r"E:\watch-worker\target\release\omni-bridge-service.exe")
+        );
+        assert_eq!(
+            relocated_workspace_root(exe_path).as_deref(),
+            Some(Path::new(r"E:\watch-worker"))
+        );
+        assert_eq!(
+            relocated_workspace_root(Path::new(r"C:\Program Files\Omni\desktop\omni-desktop-shell.exe")),
+            None,
+            "an arbitrary installed ancestor must never become an executable asset root"
+        );
+    }
+
+    #[test]
     fn assets_root_prefers_the_dev_checkout() {
         assert_eq!(
             assets_root(),
@@ -961,6 +981,17 @@ mod tests {
     }
 
     #[test]
+    fn source_flush_cannot_report_success_when_the_bridge_rejects_the_boundary() {
+        let mut snapshot = BridgeRuntimeSnapshot::default();
+        snapshot.pipe_path = r"\\.\pipe\omni-bridge-missing-source-flush-test-pipe".to_string();
+
+        let error = flush_bridge_source(&snapshot)
+            .expect_err("a missing Bridge cannot acknowledge the source flush boundary");
+
+        assert!(!error.trim().is_empty());
+    }
+
+    #[test]
     fn control_response_limit_excludes_the_line_terminator() {
         let maximum_payload = "x".repeat(omni_bridge_protocol::MAX_CONTROL_MESSAGE_BYTES);
 
@@ -992,6 +1023,12 @@ mod tests {
             event_type: "bridge.translation.nack".to_string(),
             request_id: "request-1".to_string(),
             frame_id: "frame-1".to_string(),
+            session_id: "session-1".to_string(),
+            bridge_instance_id: "bridge-instance-1".to_string(),
+            source_generation: 1,
+            source_generation_token: "bridge-instance-1:session-1:1".to_string(),
+            playback_owner_generation: 1,
+            physical_playback_device_id: "physical-endpoint-1".to_string(),
             accepted_frames: 0,
             playback_frames_written: 0,
             error_code: Some("bridge.session-mismatch".to_string()),
@@ -1008,6 +1045,12 @@ mod tests {
                 event_type: "bridge.translation.ack".to_string(),
                 request_id: "request-1".to_string(),
                 frame_id: "frame-1".to_string(),
+                session_id: "session-1".to_string(),
+                bridge_instance_id: "bridge-instance-1".to_string(),
+                source_generation: 1,
+                source_generation_token: "bridge-instance-1:session-1:1".to_string(),
+                playback_owner_generation: 1,
+                physical_playback_device_id: "physical-endpoint-1".to_string(),
                 accepted_frames: 32,
                 playback_frames_written: 64,
                 error_code: None,
@@ -1087,7 +1130,10 @@ mod tests {
             None,
             Some(4242),
             Some("bridge-instance-timing".to_string()),
+            Some(3),
+            Some("bridge-instance-timing:session-timing:3".to_string()),
             Some(7),
+            Some("physical-endpoint-timing".to_string()),
         );
 
         assert_eq!(header.cue_id.as_deref(), Some("cue-timing"));
@@ -1114,12 +1160,21 @@ mod tests {
         session_id: Option<&str>,
         bridge_instance_id: Option<&str>,
     ) -> BridgeRuntimeSnapshot {
+        let session = session_id.map(str::to_string);
+        let instance = bridge_instance_id.map(str::to_string);
         BridgeRuntimeSnapshot {
             process_status: "running".to_string(),
             bridge_state: "running".to_string(),
             lifecycle_state: "ready".to_string(),
-            session_id: session_id.map(str::to_string),
-            bridge_instance_id: bridge_instance_id.map(str::to_string),
+            session_id: session.clone(),
+            bridge_instance_id: instance.clone(),
+            source_generation: 1,
+            source_generation_token: instance
+                .zip(session)
+                .map(|(instance, session)| format!("{instance}:{session}:1")),
+            physical_playback_status: "ready".to_string(),
+            resolved_physical_playback_device_id: "physical-endpoint".to_string(),
+            playback_owner_generation: 1,
             ..Default::default()
         }
     }
@@ -1185,7 +1240,7 @@ mod tests {
     }
 
     #[test]
-    fn translation_owner_requires_both_ready_connection_identifiers() {
+    fn translation_owner_requires_complete_ready_playback_authority() {
         assert!(BridgeTranslationSinkOwner::from_snapshot(&translation_owner_snapshot(
             Some("session"),
             Some("instance")
@@ -1201,5 +1256,16 @@ mod tests {
             Some("instance")
         ))
         .is_none());
+        let mut not_ready = translation_owner_snapshot(Some("session"), Some("instance"));
+        not_ready.physical_playback_status = "rebinding".to_string();
+        assert!(BridgeTranslationSinkOwner::from_snapshot(&not_ready).is_none());
+
+        let mut missing_endpoint = translation_owner_snapshot(Some("session"), Some("instance"));
+        missing_endpoint.resolved_physical_playback_device_id.clear();
+        assert!(BridgeTranslationSinkOwner::from_snapshot(&missing_endpoint).is_none());
+
+        let mut missing_generation = translation_owner_snapshot(Some("session"), Some("instance"));
+        missing_generation.playback_owner_generation = 0;
+        assert!(BridgeTranslationSinkOwner::from_snapshot(&missing_generation).is_none());
     }
 }

@@ -1,0 +1,138 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "openai.fixture.realtime-conversation-wire.v1",
+  "providerId": "openai",
+  "protocolProfileId": "openai.realtime.conversation.websocket.ga",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["openai.docs.realtime", "openai.docs.realtime-websocket"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived fixture; no Provider traffic was captured."
+  },
+  "scenario": "GA WebSocket conversation handshake, PCM input, and completed text response",
+  "data": {
+  "endpointStatus": "verified",
+  "networkAuthorized": false,
+  "authorizationReason": "Fixture-only documentation replay; network access is not authorized.",
+  "connection": {
+    "url": "wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1",
+    "headers": {
+      "Authorization": "Bearer <openai-api-key>"
+    },
+    "forbiddenHeaders": ["OpenAI-Beta"]
+  },
+  "authContract": {
+    "profileId": "openai.auth.bearer-header",
+    "parameters": [
+      { "location": "header", "name": "Authorization", "value": "Bearer <openai-api-key>" }
+    ]
+  },
+  "audioContract": {
+    "encoding": "pcm_s16le",
+    "sampleRateHz": 24000,
+    "channels": 1
+  },
+  "clientEvents": [
+    {
+      "type": "session.update",
+      "session": {
+        "type": "realtime",
+        "output_modalities": ["text"],
+        "audio": {
+          "input": {
+            "format": {
+              "type": "audio/pcm",
+              "rate": 24000
+            },
+            "turn_detection": {
+              "type": "server_vad"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "input_audio_buffer.append",
+      "audio": "<base64-pcm16-24khz-mono>"
+    }
+  ],
+  "serverEvents": [
+    {
+      "type": "session.created",
+      "session": {
+        "id": "sess_sanitized",
+        "type": "realtime"
+      }
+    },
+    {
+      "type": "session.updated",
+      "session": {
+        "id": "sess_sanitized",
+        "type": "realtime"
+      }
+    },
+    {
+      "type": "response.created",
+      "response": {
+        "id": "resp_sanitized",
+        "status": "in_progress"
+      }
+    },
+    {
+      "type": "response.output_text.delta",
+      "response_id": "resp_sanitized",
+      "item_id": "item_assistant_sanitized",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "translated "
+    },
+    {
+      "type": "response.output_text.done",
+      "response_id": "resp_sanitized",
+      "item_id": "item_assistant_sanitized",
+      "output_index": 0,
+      "content_index": 0,
+      "text": "translated subtitle"
+    },
+    {
+      "type": "response.done",
+      "response": {
+        "id": "resp_sanitized",
+        "status": "completed",
+        "output": []
+      }
+    }
+  ],
+  "interleavedEvents": [
+    {
+      "type": "response.output_text.delta",
+      "response_id": "resp_interrupted",
+      "item_id": "item_assistant_interrupted",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "old partial"
+    },
+    {
+      "type": "input_audio_buffer.speech_started",
+      "item_id": "item_user_new"
+    },
+    {
+      "type": "response.done",
+      "response": {
+        "id": "resp_interrupted",
+        "status": "cancelled",
+        "output": []
+      }
+    },
+    {
+      "type": "conversation.item.input_audio_transcription.delta",
+      "item_id": "item_user_new",
+      "content_index": 0,
+      "delta": "new source"
+    }
+  ]
+  }
+}

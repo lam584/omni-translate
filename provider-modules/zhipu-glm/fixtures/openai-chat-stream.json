@@ -1,0 +1,83 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "zhipu-glm.openai-chat-stream",
+  "providerId": "zhipu-glm",
+  "protocolProfileId": "zhipu-glm.openai-chat",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "zhipu-glm.openai-compatibility"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived synthetic HTTP/SSE fixture. It is not a GLM-Realtime capture."
+  },
+  "scenario": "Zhipu OpenAI-compatible text generation over HTTP/SSE",
+  "data": {
+    "request": {
+      "event": "chat.completions.create",
+      "method": "POST",
+      "url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+      "headers": {
+        "Authorization": "Bearer <redacted-zhipu-api-key>",
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "model": "glm-5.3-flash",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Translate the supplied sentence."
+          }
+        ],
+        "stream": true
+      }
+    },
+    "authContract": {
+      "profileId": "zhipu-glm.bearer-api-key",
+      "parameters": [
+        { "location": "header", "name": "Authorization", "value": "Bearer <redacted-zhipu-api-key>" }
+      ]
+    },
+    "response": {
+      "status": 200,
+      "contentType": "text/event-stream",
+      "frames": [
+        {
+          "data": {
+            "object": "chat.completion.chunk",
+            "model": "glm-5.3-flash",
+            "choices": [
+              {
+                "index": 0,
+                "delta": {
+                  "content": "<sanitized-text-delta>"
+                },
+                "finish_reason": null
+              }
+            ]
+          }
+        },
+        {
+          "data": {
+            "object": "chat.completion.chunk",
+            "model": "glm-5.3-flash",
+            "choices": [
+              {
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop"
+              }
+            ]
+          }
+        },
+        {
+          "data": "[DONE]"
+        }
+      ]
+    },
+    "boundary": "This compatibility profile covers HTTP chat completions only. It does not define GLM-Realtime setup, audio, VAD, event, or terminal behavior."
+  }
+}

@@ -1,3 +1,12 @@
+#[path = "output/support.rs"]
+mod support;
+
+use support::{
+    audio_frames_to_duration, f32_samples_to_le_bytes, next_render_session_id,
+    playback_volume, publish_render_stream_started_and_flush, ensure_render_ownership,
+    submit_render_action, wait_for_render_poll, DeferredRenderFrames, RenderUnderrunTracker,
+};
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct SpeechOutputRoutePlan {
     pub(crate) play_to_speaker: bool,
@@ -90,10 +99,8 @@ pub(crate) fn bridge_translation_playback_enabled_for_config(config: &Value) -> 
         && matches!(feedback_mode, Some("virtual-driver" | "process-exclusion"))
 }
 
-use std::mem::size_of;
-
 use wasapi::{
-    calculate_period_100ns, deinitialize, initialize_mta, AudioClient, AudioRenderClient, Device,
+    calculate_period_100ns, deinitialize, initialize_mta, AudioClient, AudioRenderClient,
     DeviceEnumerator, Direction as WasapiDirection, SampleType, StreamMode, WaveFormat,
 };
 
@@ -110,12 +117,12 @@ pub(crate) const SPEAKER_CHANNEL_COUNT: u16 =
 /// caller that already owns an STA gets `RPC_E_CHANGED_MODE`; COM is still
 /// initialized in that case, but this guard must not uninitialize an apartment
 /// it did not create.
-struct WasapiComApartment {
+pub(super) struct WasapiComApartment {
     should_uninitialize: bool,
 }
 
 impl WasapiComApartment {
-    fn enter() -> Result<Self, String> {
+    pub(super) fn enter() -> Result<Self, String> {
         let status = initialize_mta();
         if status.is_err() && status.0 != RPC_E_CHANGED_MODE {
             return Err(format!(
@@ -329,25 +336,36 @@ impl Drop for WasapiComApartment {
     }
 }
 
-pub(crate) fn play_to_speaker<F>(
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SpeakerPlaybackReceipt {
+    pub(crate) rendered_frames: u64,
+    pub(crate) output_sample_rate_hz: u32,
+    pub(crate) output_channel_count: u16,
+    pub(crate) physical_playback_device_id: String,
+    pub(crate) renderer_instance_id: String,
+    pub(crate) renderer_owner_generation: u64,
+}
+
+fn play_to_speaker_with_permit<F>(
     samples: &[i16],
     sample_rate_hz: u32,
     channel_count: u16,
     device_id: Option<&str>,
     output_level: u64,
-    playback_ownership: &super::playback_ownership::DesktopPlaybackOwnership,
+    playback_permit: &super::playback_ownership::DesktopPlaybackPermit,
     cue_id: &str,
-    playback_source: &'static str,
-    mut on_render_event: F,
-) -> Result<u64, String>
+    prepared_render: Option<endpoint_recovery::PreparedSpeakerRender>,
+    on_render_event: &mut F,
+) -> Result<SpeakerPlaybackReceipt, String>
 where
     F: for<'a> FnMut(SpeakerRenderEvent<'a>) -> Result<(), String>,
 {
-    if samples.is_empty() {
-        return Ok(0);
-    }
-    let playback_permit = playback_ownership.acquire(cue_id, playback_source)?;
-    run_wasapi_render_attempt(&mut on_render_event, |on_render_event| {
+    let mut live_scenario_reserved = false;
+    let mut stream_started = false;
+    let renderer_instance_id = format!("desktop-process-{}", std::process::id());
+    let render_session_id = next_render_session_id();
+    let mut opened_endpoint_id = None;
+    let render_result = run_wasapi_render_attempt(on_render_event, |on_render_event| {
         playback_permit.ensure_active()?;
         if sample_rate_hz == 0 || channel_count == 0 {
             return Err("speaker PCM sample rate and channel count must be non-zero".to_string());
@@ -365,93 +383,126 @@ where
             channel_count,
             output_level,
         );
-        let live_scenario = active_aec_live_scenario_assignment(cue_id)?.map(|assignment| {
-            AecLiveScenarioRender::build(
-                assignment,
-                &final_samples,
-                SPEAKER_SAMPLE_RATE_HZ,
-                SPEAKER_CHANNEL_COUNT,
-            )
-        });
-        let _com_apartment = WasapiComApartment::enter()?;
-        let enumerator = DeviceEnumerator::new().map_err(|error| error.to_string())?;
-        let device = resolve_wasapi_render_device(&enumerator, device_id)?;
-        let mut audio_client = device.get_iaudioclient().map_err(|error| error.to_string())?;
-        let desired_format = WaveFormat::new(
-            32,
-            32,
-            &SampleType::Float,
-            SPEAKER_SAMPLE_RATE_HZ as usize,
-            SPEAKER_CHANNEL_COUNT as usize,
-            None,
-        );
-        let buffer_duration_hns = calculate_period_100ns(
-            SPEAKER_SAMPLE_RATE_HZ as i64 * RENDER_BUFFER_MS / 1_000,
-            SPEAKER_SAMPLE_RATE_HZ as i64,
-        );
-        audio_client
-            .initialize_client(
-                &desired_format,
-                &WasapiDirection::Render,
-                &StreamMode::PollingShared {
-                    autoconvert: true,
-                    buffer_duration_hns,
-                },
-            )
-            .map_err(|error| error.to_string())?;
-        let render_client = audio_client
-            .get_audiorenderclient()
-            .map_err(|error| error.to_string())?;
-        let buffer_frames = audio_client
-            .get_buffer_size()
-            .map_err(|error| error.to_string())?;
+        let live_scenarios = active_aec_live_scenario_assignments(cue_id)?
+            .into_iter()
+            .map(|assignment| {
+                AecLiveScenarioRender::build(
+                    assignment,
+                    &final_samples,
+                    SPEAKER_SAMPLE_RATE_HZ,
+                    SPEAKER_CHANNEL_COUNT,
+                )
+            })
+            .collect::<Vec<_>>();
+        live_scenario_reserved = !live_scenarios.is_empty();
+        let prepared_render = prepared_render_or_open(prepared_render, || {
+                let com_apartment = WasapiComApartment::enter()
+                    .map_err(|error| speaker_render_stage_error("com-initialize", error))?;
+                let enumerator = DeviceEnumerator::new()
+                    .map_err(|error| speaker_render_stage_error("device-enumerator", error))?;
+                let device = resolve_wasapi_render_device(&enumerator, device_id)
+                    .map_err(|error| speaker_render_stage_error("endpoint-resolve", error))?;
+                let endpoint_id = device
+                    .get_id()
+                    .map_err(|error| speaker_render_stage_error("endpoint-id", error))?;
+                let mut audio_client = device
+                    .get_iaudioclient()
+                    .map_err(|error| speaker_render_stage_error("audio-client", error))?;
+                let desired_format = WaveFormat::new(
+                    32, 32, &SampleType::Float, SPEAKER_SAMPLE_RATE_HZ as usize,
+                    SPEAKER_CHANNEL_COUNT as usize, None,
+                );
+                let buffer_duration_hns = calculate_period_100ns(
+                    SPEAKER_SAMPLE_RATE_HZ as i64 * RENDER_BUFFER_MS / 1_000,
+                    SPEAKER_SAMPLE_RATE_HZ as i64,
+                );
+                audio_client.initialize_client(
+                    &desired_format,
+                    &WasapiDirection::Render,
+                    &StreamMode::PollingShared { autoconvert: true, buffer_duration_hns },
+                ).map_err(|error| speaker_render_stage_error("audio-client-initialize", error))?;
+                let render_client = audio_client.get_audiorenderclient()
+                    .map_err(|error| speaker_render_stage_error("render-client", error))?;
+                let buffer_frames = audio_client.get_buffer_size()
+                    .map_err(|error| speaker_render_stage_error("buffer-size", error))?;
+                Ok(endpoint_recovery::PreparedSpeakerRender {
+                    endpoint_id,
+                    render_client,
+                    audio_client,
+                    buffer_frames,
+                    _com_apartment: com_apartment,
+                })
+            })?;
+        let physical_playback_device_id = prepared_render.endpoint_id.clone();
+        let audio_client = &prepared_render.audio_client;
+        let render_client = &prepared_render.render_client;
+        let buffer_frames = prepared_render.buffer_frames;
+        on_render_event(SpeakerRenderEvent::Discontinuity {
+            reason: crate::audio::state::EchoRenderBoundary::SessionStarted {
+                session_id: render_session_id,
+                endpoint_id: &physical_playback_device_id,
+                renderer_instance_id: &renderer_instance_id,
+                owner_generation: playback_permit.generation(),
+            },
+            observed_at: Instant::now(),
+        })?;
+        opened_endpoint_id = Some(physical_playback_device_id.clone());
         if buffer_frames == 0 {
             return Err("WASAPI render client reported a zero-frame buffer".to_string());
         }
         playback_permit.ensure_active()?;
         let total_audio_frames = final_samples.len() / SPEAKER_CHANNEL_COUNT as usize;
-        let physical_samples = live_scenario
-            .as_ref()
-            .map(|scenario| scenario.physical_samples.as_slice())
-            .unwrap_or(final_samples.as_slice());
-        let physical_prefix_offset_frames = live_scenario
-            .as_ref()
-            .map(AecLiveScenarioRender::physical_prefix_offset_frames)
-            .unwrap_or(0);
-        let scenario_started_at_ms = live_scenario
-            .as_ref()
-            .map(|scenario| {
-                let started_at_ms = crate::shared::time::now_unix_millis();
-                on_render_event(SpeakerRenderEvent::AecLiveScenarioStage {
-                    status: "started",
-                    stage: scenario.assignment.phase.as_str(),
-                    ordinal: scenario.assignment.ordinal,
-                    delay_ms: scenario.assignment.phase.delay_ms(),
-                    nonlinearity: scenario.assignment.phase.nonlinearity(),
-                    reference_frames: scenario
-                        .reference_frames(&final_samples, SPEAKER_CHANNEL_COUNT),
-                    physical_frames: scenario.physical_frames(SPEAKER_CHANNEL_COUNT),
-                    changed_samples: scenario.changed_samples as u64,
-                    changed_ratio: scenario.changed_ratio,
-                    started_at_ms,
-                    completed_at_ms: 0,
-                })?;
-                Ok::<u64, String>(started_at_ms)
-            })
-            .transpose()?;
-        let render_result = render_wasapi_frames(
-            &audio_client,
-            &render_client,
-            &final_samples,
-            physical_samples,
-            physical_prefix_offset_frames,
-            buffer_frames,
-            &playback_permit,
-            on_render_event,
-        );
-        if let (Some(scenario), Some(started_at_ms)) =
-            (live_scenario.as_ref(), scenario_started_at_ms)
-        {
+        if live_scenarios.is_empty() {
+            render_wasapi_frames(
+                audio_client,
+                render_client,
+                &final_samples,
+                &final_samples,
+                0,
+                0,
+                buffer_frames,
+                &playback_permit,
+                &mut stream_started,
+                render_session_id,
+                &physical_playback_device_id,
+                &renderer_instance_id,
+                on_render_event,
+            )?;
+            return Ok((total_audio_frames as u64, physical_playback_device_id));
+        }
+
+        let mut submitted_frame_base = 0_u64;
+        for scenario in &live_scenarios {
+            let started_at_ms = crate::shared::time::now_unix_millis();
+            on_render_event(SpeakerRenderEvent::AecLiveScenarioStage {
+                status: "started",
+                stage: scenario.assignment.phase.as_str(),
+                ordinal: scenario.assignment.ordinal,
+                delay_ms: scenario.assignment.phase.delay_ms(),
+                nonlinearity: scenario.assignment.phase.nonlinearity(),
+                reference_frames: scenario
+                    .reference_frames(&final_samples, SPEAKER_CHANNEL_COUNT),
+                physical_frames: scenario.physical_frames(SPEAKER_CHANNEL_COUNT),
+                changed_samples: scenario.changed_samples as u64,
+                changed_ratio: scenario.changed_ratio,
+                started_at_ms,
+                completed_at_ms: 0,
+            })?;
+            let render_result = render_wasapi_frames(
+                audio_client,
+                render_client,
+                &final_samples,
+                &scenario.physical_samples,
+                scenario.physical_prefix_offset_frames(),
+                submitted_frame_base,
+                buffer_frames,
+                &playback_permit,
+                &mut stream_started,
+                render_session_id,
+                &physical_playback_device_id,
+                &renderer_instance_id,
+                on_render_event,
+            );
             let (status, completed_at_ms) = if render_result.is_ok() {
                 ("completed", crate::shared::time::now_unix_millis())
             } else {
@@ -471,47 +522,94 @@ where
                 started_at_ms,
                 completed_at_ms,
             })?;
+            render_result?;
+            submitted_frame_base = submitted_frame_base
+                .saturating_add(scenario.physical_frames(SPEAKER_CHANNEL_COUNT));
         }
-        render_result?;
-        Ok(total_audio_frames as u64)
+        Ok((
+            (total_audio_frames as u64).saturating_mul(live_scenarios.len() as u64),
+            physical_playback_device_id,
+        ))
+    });
+    if let Some(endpoint_id) = opened_endpoint_id.as_deref() {
+        let normally_drained = render_result.is_ok();
+        if let Err(end_error) = on_render_event(SpeakerRenderEvent::Discontinuity {
+            reason: crate::audio::state::EchoRenderBoundary::SessionEnded {
+                session_id: render_session_id,
+                endpoint_id,
+                renderer_instance_id: &renderer_instance_id,
+                owner_generation: playback_permit.generation(),
+                normally_drained,
+                stream_started,
+            },
+            observed_at: Instant::now(),
+        }) {
+            return Err(match render_result {
+                Ok(_) => end_error,
+                Err(error) => format!("{error}; failed to publish render session end: {end_error}"),
+            });
+        }
+    }
+    if live_scenario_reserved { finish_aec_live_scenario_assignments(cue_id, render_result.is_ok())?; }
+    let render_result = render_result.map_err(|error| {
+        format!("{error}; speaker-render-stream-started={stream_started}")
+    });
+    render_result.map(|(rendered_frames, physical_playback_device_id)| SpeakerPlaybackReceipt {
+        rendered_frames,
+        output_sample_rate_hz: SPEAKER_SAMPLE_RATE_HZ,
+        output_channel_count: SPEAKER_CHANNEL_COUNT,
+        physical_playback_device_id,
+        renderer_instance_id,
+        renderer_owner_generation: playback_permit.generation(),
     })
 }
 
-fn run_wasapi_render_attempt<F, A, T>(
-    on_render_event: &mut F,
-    attempt: A,
-) -> Result<T, String>
+fn prepared_render_or_open<T, F>(prepared: Option<T>, open: F) -> Result<T, String>
 where
-    F: for<'a> FnMut(SpeakerRenderEvent<'a>) -> Result<(), String>,
-    A: FnOnce(&mut F) -> Result<T, String>,
+    F: FnOnce() -> Result<T, String>,
 {
-    // Reset before COM/device/client activation. Otherwise an open or format
-    // failure would leave the preceding render session's clock and AEC filter
-    // active even though this physical playback attempt never started.
-    on_render_event(SpeakerRenderEvent::Discontinuity {
-        reason: "wasapi-render-session-start",
-        observed_at: Instant::now(),
-    })?;
-    match attempt(on_render_event) {
-        Ok(value) => Ok(value),
-        Err(error) => {
-            let reason = if super::playback_ownership::desktop_playback_was_cancelled(&error) {
-                "wasapi-render-ownership-cancelled"
-            } else {
-                "wasapi-render-failed"
-            };
-            let reset_result = on_render_event(SpeakerRenderEvent::Discontinuity {
-                reason,
-                observed_at: Instant::now(),
-            });
-            Err(match reset_result {
-                Ok(()) => error,
-                Err(reset_error) => format!(
-                    "{error}; failed to reset AEC after render failure: {reset_error}"
-                ),
-            })
-        }
+    match prepared {
+        Some(prepared) => Ok(prepared),
+        None => open(),
     }
+}
+
+#[cfg(test)]
+mod prepared_render_tests {
+    use super::prepared_render_or_open;
+
+    #[test]
+    fn recovery_consumes_prepared_authority_without_reopening_the_endpoint() {
+        let prepared = Box::new(41_u32);
+        let prepared_address = (&*prepared) as *const u32 as usize;
+        let mut reopen_count = 0;
+
+        let consumed = prepared_render_or_open(Some(prepared), || {
+            reopen_count += 1;
+            Ok(Box::new(99_u32))
+        })
+        .unwrap();
+
+        assert_eq!(reopen_count, 0);
+        assert_eq!((&*consumed) as *const u32 as usize, prepared_address);
+    }
+
+    #[test]
+    fn initial_attempt_opens_when_no_prepared_authority_exists() {
+        let mut open_count = 0;
+        let opened = prepared_render_or_open(None, || {
+            open_count += 1;
+            Ok(7_u32)
+        })
+        .unwrap();
+
+        assert_eq!(open_count, 1);
+        assert_eq!(opened, 7);
+    }
+}
+
+fn speaker_render_stage_error(stage: &str, error: impl std::fmt::Display) -> String {
+    format!("speaker-render-stage={stage} error={error}")
 }
 
 fn speaker_pcm_48k_stereo(
@@ -550,6 +648,7 @@ struct RenderSubmitTracker {
     reference_frames: usize,
     reference_start_frame: usize,
     submitted_frames: usize,
+    submitted_frame_base: u64,
 }
 
 impl RenderSubmitTracker {
@@ -558,10 +657,25 @@ impl RenderSubmitTracker {
         Self::new_with_reference(total_frames, total_frames, reference_frames)
     }
 
+    #[cfg(test)]
     fn new_with_reference(
         total_frames: usize,
         total_reference_frames: usize,
         reference_frames: usize,
+    ) -> Self {
+        Self::new_with_reference_at(
+            total_frames,
+            total_reference_frames,
+            reference_frames,
+            0,
+        )
+    }
+
+    fn new_with_reference_at(
+        total_frames: usize,
+        total_reference_frames: usize,
+        reference_frames: usize,
+        submitted_frame_base: u64,
     ) -> Self {
         Self {
             total_frames,
@@ -569,6 +683,7 @@ impl RenderSubmitTracker {
             reference_frames: reference_frames.max(1),
             reference_start_frame: 0,
             submitted_frames: 0,
+            submitted_frame_base,
         }
     }
 
@@ -610,11 +725,17 @@ impl RenderSubmitTracker {
         let window = RenderReferenceWindow {
             start_frame: reference_start_frame,
             end_frame: reference_end_frame,
-            submitted_frames: self.submitted_frames as u64,
+            submitted_frames: self
+                .submitted_frame_base
+                .saturating_add(self.submitted_frames as u64),
             endpoint_padding_frames,
             played_frames: self
-                .submitted_frames
-                .saturating_sub(endpoint_padding_frames as usize),
+                .submitted_frame_base
+                .saturating_add(
+                    self.submitted_frames
+                        .saturating_sub(endpoint_padding_frames as usize) as u64,
+                )
+                .min(usize::MAX as u64) as usize,
         };
         self.reference_start_frame = self.submitted_frames;
         Ok((reference_start_frame < reference_end_frame).then_some(window))
@@ -631,8 +752,13 @@ fn render_wasapi_frames<F>(
     reference_samples: &[f32],
     physical_samples: &[f32],
     physical_prefix_offset_frames: u32,
+    submitted_frame_base: u64,
     buffer_frames: u32,
     playback_permit: &super::playback_ownership::DesktopPlaybackPermit,
+    stream_started_authority: &mut bool,
+    render_session_id: u64,
+    endpoint_id: &str,
+    renderer_instance_id: &str,
     on_render_event: &mut F,
 ) -> Result<(), String>
 where
@@ -645,28 +771,29 @@ where
         * RENDER_REFERENCE_FRAME_MS as usize
         / 1_000)
         .max(1);
-    let mut tracker = RenderSubmitTracker::new_with_reference(
+    let mut tracker = RenderSubmitTracker::new_with_reference_at(
         total_frames,
         total_reference_frames,
         reference_frames,
+        submitted_frame_base,
     );
     let prefill_frames = (reference_frames * 2).min(buffer_frames as usize);
     let mut started = false;
-    let mut underrun_reported = false;
+    let mut underrun_tracker = RenderUnderrunTracker::default();
+    let mut deferred_frames = DeferredRenderFrames::default();
 
     while !tracker.is_complete() {
         ensure_render_ownership(audio_client, playback_permit, started)?;
         let padding_before = audio_client
             .get_current_padding()
             .map_err(|error| error.to_string())?;
-        if started && tracker.submitted_frames > 0 && padding_before == 0 && !underrun_reported {
+        if underrun_tracker.observe(started, tracker.submitted_frames, padding_before) {
             on_render_event(SpeakerRenderEvent::Discontinuity {
-                reason: "wasapi-render-underrun",
+                reason: crate::audio::state::EchoRenderBoundary::DeviceFault(
+                    "wasapi-render-underrun",
+                ),
                 observed_at: Instant::now(),
             })?;
-            underrun_reported = true;
-        } else if padding_before > 0 {
-            underrun_reported = false;
         }
 
         let available_frames = buffer_frames.saturating_sub(padding_before) as usize;
@@ -676,6 +803,15 @@ where
                     audio_client.start_stream().map_err(|error| error.to_string())
                 })?;
                 started = true;
+                publish_render_stream_started_and_flush(
+                    stream_started_authority,
+                    render_session_id,
+                    endpoint_id,
+                    renderer_instance_id,
+                    playback_permit.generation(),
+                    &mut deferred_frames,
+                    on_render_event,
+                )?;
             }
             wait_for_render_poll(audio_client, playback_permit, started)?;
             continue;
@@ -691,6 +827,15 @@ where
                     audio_client.start_stream().map_err(|error| error.to_string())
                 })?;
                 started = true;
+                publish_render_stream_started_and_flush(
+                    stream_started_authority,
+                    render_session_id,
+                    endpoint_id,
+                    renderer_instance_id,
+                    playback_permit.generation(),
+                    &mut deferred_frames,
+                    on_render_event,
+                )?;
             } else if !started && tracker.submitted_frames == 0 {
                 return Err(format!(
                     "WASAPI render buffer ({buffer_frames} frames) cannot hold one complete AEC reference frame ({reference_frames} frames)"
@@ -714,16 +859,19 @@ where
         if let Some(window) = tracker.record_write(write_frames, endpoint_padding_frames)? {
             let frame_sample_start = window.start_frame * channel_count;
             let frame_sample_end = window.end_frame * channel_count;
-            on_render_event(SpeakerRenderEvent::Frame {
-                samples: &reference_samples[frame_sample_start..frame_sample_end],
-                sample_rate_hz: SPEAKER_SAMPLE_RATE_HZ,
-                channel_count: SPEAKER_CHANNEL_COUNT,
-                player_position: audio_frames_to_duration(window.played_frames),
-                submitted_frames: window.submitted_frames,
-                endpoint_padding_frames: window.endpoint_padding_frames,
+            deferred_frames.publish_or_defer(
+                *stream_started_authority,
+                render_session_id,
+                &reference_samples[frame_sample_start..frame_sample_end],
+                SPEAKER_SAMPLE_RATE_HZ,
+                SPEAKER_CHANNEL_COUNT,
+                audio_frames_to_duration(window.played_frames),
+                window.submitted_frames,
+                window.endpoint_padding_frames,
                 physical_prefix_offset_frames,
                 observed_at,
-            })?;
+                on_render_event,
+            )?;
         }
 
         if !started
@@ -733,6 +881,15 @@ where
                 audio_client.start_stream().map_err(|error| error.to_string())
             })?;
             started = true;
+            publish_render_stream_started_and_flush(
+                stream_started_authority,
+                render_session_id,
+                endpoint_id,
+                renderer_instance_id,
+                playback_permit.generation(),
+                &mut deferred_frames,
+                on_render_event,
+            )?;
         }
     }
 
@@ -741,6 +898,15 @@ where
             audio_client.start_stream().map_err(|error| error.to_string())
         })?;
         started = true;
+        publish_render_stream_started_and_flush(
+            stream_started_authority,
+            render_session_id,
+            endpoint_id,
+            renderer_instance_id,
+            playback_permit.generation(),
+            &mut deferred_frames,
+            on_render_event,
+        )?;
     }
     loop {
         ensure_render_ownership(audio_client, playback_permit, started)?;
@@ -758,135 +924,6 @@ where
     Ok(())
 }
 
-fn ensure_render_ownership(
-    audio_client: &AudioClient,
-    playback_permit: &super::playback_ownership::DesktopPlaybackPermit,
-    started: bool,
-) -> Result<(), String> {
-    match playback_permit.ensure_active() {
-        Ok(()) => Ok(()),
-        Err(error) => cancel_wasapi_render(audio_client, playback_permit, started, error),
-    }
-}
-
-fn wait_for_render_poll(
-    audio_client: &AudioClient,
-    playback_permit: &super::playback_ownership::DesktopPlaybackPermit,
-    started: bool,
-) -> Result<(), String> {
-    match playback_permit.wait_for_endpoint_poll(Duration::from_millis(RENDER_POSITION_POLL_MS)) {
-        Ok(()) => Ok(()),
-        Err(error) => cancel_wasapi_render(audio_client, playback_permit, started, error),
-    }
-}
-
-fn submit_render_action<T>(
-    audio_client: &AudioClient,
-    playback_permit: &super::playback_ownership::DesktopPlaybackPermit,
-    started: bool,
-    submit: impl FnOnce() -> Result<T, String>,
-) -> Result<T, String> {
-    match playback_permit.submit(submit) {
-        Ok(value) => Ok(value),
-        Err(error) if super::playback_ownership::desktop_playback_was_cancelled(&error) => {
-            cancel_wasapi_render(audio_client, playback_permit, started, error)?;
-            unreachable!("cancel_wasapi_render always returns an error")
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn cancel_wasapi_render(
-    audio_client: &AudioClient,
-    playback_permit: &super::playback_ownership::DesktopPlaybackPermit,
-    started: bool,
-    cancellation: String,
-) -> Result<(), String> {
-    let stop_error = started
-        .then(|| audio_client.stop_stream().err().map(|error| error.to_string()))
-        .flatten();
-    let reset_error = audio_client.reset_stream().err().map(|error| error.to_string());
-    let cleanup_error = match (stop_error, reset_error) {
-        (None, None) => None,
-        (Some(stop), None) => Some(format!("IAudioClient::Stop failed: {stop}")),
-        (None, Some(reset)) => Some(format!("IAudioClient::Reset failed: {reset}")),
-        (Some(stop), Some(reset)) => Some(format!(
-            "IAudioClient::Stop failed: {stop}; IAudioClient::Reset failed: {reset}"
-        )),
-    };
-    if let Some(cleanup_error) = cleanup_error {
-        playback_permit.record_cancellation_failure(cleanup_error.clone());
-        return Err(format!("{cancellation}; {cleanup_error}"));
-    }
-    Err(cancellation)
-}
-
-fn f32_samples_to_le_bytes(samples: &[f32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(samples.len() * size_of::<f32>());
-    for sample in samples {
-        bytes.extend_from_slice(&sample.to_le_bytes());
-    }
-    bytes
-}
-
-fn audio_frames_to_duration(frame_count: usize) -> Duration {
-    Duration::from_secs_f64(frame_count as f64 / SPEAKER_SAMPLE_RATE_HZ as f64)
-}
-
-fn playback_volume(output_level: u64) -> f32 {
-    output_level.min(100) as f32 / 100.0
-}
-
-fn is_default_output_device_alias(device_id: &str) -> bool {
-    matches!(
-        device_id.trim(),
-        "" | "default" | "speaker-default" | "system-output-default"
-    )
-}
-
-fn resolve_wasapi_render_device(
-    enumerator: &DeviceEnumerator,
-    requested: Option<&str>,
-) -> Result<Device, String> {
-    let Some(requested) = requested.filter(|id| !is_default_output_device_alias(id)) else {
-        return enumerator
-            .get_default_device(&WasapiDirection::Render)
-            .map_err(|error| error.to_string());
-    };
-    if let Ok(device) = enumerator.get_device(requested) {
-        return Ok(device);
-    }
-    let requested_name = normalized_device_name(requested);
-    let collection = enumerator
-        .get_device_collection(&WasapiDirection::Render)
-        .map_err(|error| error.to_string())?;
-    for device in &collection {
-        let device = device.map_err(|error| error.to_string())?;
-        let id_matches = device
-            .get_id()
-            .map(|id| id == requested)
-            .unwrap_or(false);
-        let name_matches = device
-            .get_friendlyname()
-            .map(|name| normalized_device_name(&name).contains(&requested_name))
-            .unwrap_or(false);
-        if id_matches || name_matches {
-            return Ok(device);
-        }
-    }
-    Err(format!(
-        "configured speaker output device not found: {requested}"
-    ))
-}
-
-fn normalized_device_name(value: &str) -> String {
-    value
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .flat_map(char::to_lowercase)
-        .collect()
-}
-
 #[cfg(test)]
 pub(crate) fn i16_to_f32(samples: &[i16]) -> Vec<f32> {
     samples
@@ -898,6 +935,19 @@ pub(crate) fn i16_to_f32(samples: &[i16]) -> Vec<f32> {
 #[cfg(test)]
 mod render_reference_pacer_tests {
     use super::*;
+
+    #[test]
+    fn speaker_render_stage_preserves_hresult_and_exact_stage() {
+        let error = speaker_render_stage_error(
+            "audio-client-initialize",
+            "Windows returned an error: file not found (0x80070002)",
+        );
+
+        assert_eq!(
+            error,
+            "speaker-render-stage=audio-client-initialize error=Windows returned an error: file not found (0x80070002)"
+        );
+    }
 
     #[test]
     fn unavailable_render_space_cannot_advance_the_submit_position() {
@@ -916,13 +966,37 @@ mod render_reference_pacer_tests {
     }
 
     #[test]
-    fn device_open_failure_resets_before_and_after_the_attempt() {
+    fn render_refill_cycles_emit_only_one_underrun_edge_per_session() {
+        let mut tracker = RenderUnderrunTracker::default();
+        let observations = [0, 480, 0, 480, 0, 480, 0];
+        let emitted = observations
+            .into_iter()
+            .filter(|padding| tracker.observe(true, 960, *padding))
+            .count();
+
+        assert_eq!(emitted, 1);
+        assert!(!tracker.observe(true, 1_440, 0));
+    }
+
+    #[test]
+    fn a_new_render_session_can_report_its_own_real_underrun_edge() {
+        let mut first_session = RenderUnderrunTracker::default();
+        assert!(first_session.observe(true, 480, 0));
+        assert!(!first_session.observe(true, 960, 0));
+
+        let mut second_session = RenderUnderrunTracker::default();
+        assert!(!second_session.observe(false, 0, 0));
+        assert!(second_session.observe(true, 480, 0));
+    }
+
+    #[test]
+    fn pre_stream_device_open_failure_does_not_invent_a_device_discontinuity() {
         use std::sync::Mutex;
 
         static DISCONTINUITIES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
         fn record_discontinuity(event: SpeakerRenderEvent<'_>) -> Result<(), String> {
             if let SpeakerRenderEvent::Discontinuity { reason, .. } = event {
-                DISCONTINUITIES.lock().unwrap().push(reason);
+                DISCONTINUITIES.lock().unwrap().push(reason.log_reason());
             }
             Ok(())
         }
@@ -936,8 +1010,35 @@ mod render_reference_pacer_tests {
         assert_eq!(error, "simulated-device-open-failure");
         assert_eq!(
             DISCONTINUITIES.lock().unwrap().as_slice(),
-            vec!["wasapi-render-session-start", "wasapi-render-failed"]
+            Vec::<&'static str>::new()
         );
+    }
+
+    #[test]
+    fn normally_drained_per_cue_attempt_does_not_publish_a_device_discontinuity() {
+        let mut discontinuities = Vec::new();
+        let mut record_discontinuity = |event: SpeakerRenderEvent<'_>| {
+            if let SpeakerRenderEvent::Discontinuity { reason, .. } = event {
+                discontinuities.push(reason.log_reason());
+            }
+            Ok(())
+        };
+
+        run_wasapi_render_attempt(&mut record_discontinuity, |_| Ok::<_, String>(()))
+            .expect("normal per-cue render boundary");
+
+        assert!(
+            discontinuities.is_empty(),
+            "a normal per-cue session boundary is not a device-level AEC discontinuity"
+        );
+    }
+
+    #[test]
+    fn every_render_attempt_gets_a_distinct_session_identity() {
+        let first = next_render_session_id();
+        let second = next_render_session_id();
+
+        assert_ne!(first, second);
     }
 
     #[test]
@@ -970,6 +1071,26 @@ mod render_reference_pacer_tests {
         assert_eq!(window.submitted_frames, 480);
         assert_eq!(window.endpoint_padding_frames, 360);
         assert_eq!(window.played_frames, 120);
+    }
+
+    #[test]
+    fn consecutive_live_scenario_stages_keep_submit_and_player_positions_monotonic() {
+        let mut first_tracker = RenderSubmitTracker::new_with_reference_at(480, 480, 480, 0);
+        let first = first_tracker
+            .record_write(480, 120)
+            .expect("first stage write")
+            .expect("first stage reference");
+        let mut second_tracker =
+            RenderSubmitTracker::new_with_reference_at(480, 480, 480, 480);
+        let second = second_tracker
+            .record_write(480, 120)
+            .expect("second stage write")
+            .expect("second stage reference");
+
+        assert_eq!(first.submitted_frames, 480);
+        assert_eq!(first.played_frames, 360);
+        assert_eq!(second.submitted_frames, 960);
+        assert_eq!(second.played_frames, 840);
     }
 
     fn collect_paced_reference(submitted: &[f32]) -> Vec<f32> {
@@ -1005,7 +1126,7 @@ mod render_reference_pacer_tests {
         let samples = [0.25_f32, -0.5, 1.0];
         let bytes = f32_samples_to_le_bytes(&samples);
         let decoded = bytes
-            .chunks_exact(size_of::<f32>())
+            .chunks_exact(std::mem::size_of::<f32>())
             .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("four bytes")))
             .collect::<Vec<_>>();
 
@@ -1039,6 +1160,49 @@ mod render_reference_pacer_tests {
         assert_eq!(submitted.len(), 480 * 2);
         assert_eq!(reference, submitted);
         assert!(submitted.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn prefill_reference_is_published_only_after_stream_started_authority() {
+        let mut deferred = support::DeferredRenderFrames::default();
+        deferred.defer(
+            71,
+            &[0.25; 480 * 2],
+            SPEAKER_SAMPLE_RATE_HZ,
+            SPEAKER_CHANNEL_COUNT,
+            Duration::from_millis(10),
+            480,
+            480,
+            0,
+            Instant::now(),
+        );
+        let mut events = Vec::new();
+        let mut authority_started = false;
+
+        support::publish_render_stream_started_and_flush(
+            &mut authority_started,
+            71,
+            "endpoint-a",
+            "desktop-process-42",
+            7,
+            &mut deferred,
+            &mut |event| {
+                events.push(match event {
+                    SpeakerRenderEvent::Discontinuity {
+                        reason: crate::audio::state::EchoRenderBoundary::StreamStarted { .. },
+                        ..
+                    } => "started",
+                    SpeakerRenderEvent::Frame { .. } => "frame",
+                    _ => "other",
+                });
+                Ok(())
+            },
+        )
+        .expect("publish started authority and deferred prefill");
+
+        assert!(authority_started);
+        assert_eq!(events, ["started", "frame"]);
+        assert!(deferred.is_empty());
     }
 
 }

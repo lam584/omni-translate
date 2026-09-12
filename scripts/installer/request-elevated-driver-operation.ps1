@@ -1,5 +1,5 @@
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('install', 'uninstall', 'reinstall')][string]$Action,
+  [Parameter(Mandatory = $true)][ValidateSet('install', 'uninstall', 'reinstall', 'probe')][string]$Action,
   [Parameter(Mandatory = $true)][string]$OperationId,
   [Parameter(Mandatory = $true)][string]$ResultPath,
   [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
@@ -9,6 +9,7 @@ param(
   [Parameter(Mandatory = $true)][string]$BridgeVersion,
   [Parameter(Mandatory = $true)][string]$TargetDeviceId,
   [string]$VirtualRenderDeviceId = 'omni-virtual-speaker-default',
+  [string]$PhysicalPlaybackDeviceId = '',
   [string]$ReadinessResultPath = '',
   [string]$VirtualMicEvidenceOutputDirectory = ''
 )
@@ -51,6 +52,9 @@ if (-not [string]::IsNullOrWhiteSpace($ReadinessResultPath)) {
 }
 if (-not [string]::IsNullOrWhiteSpace($VirtualMicEvidenceOutputDirectory)) {
   $arguments += @('-VirtualMicEvidenceOutputDirectory', $VirtualMicEvidenceOutputDirectory)
+}
+if (-not [string]::IsNullOrWhiteSpace($PhysicalPlaybackDeviceId)) {
+  $arguments += @('-PhysicalPlaybackDeviceId', $PhysicalPlaybackDeviceId)
 }
 
 try {

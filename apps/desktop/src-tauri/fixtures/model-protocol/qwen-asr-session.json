@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "model-protocol-wire-fixture/v1",
+  "dialectId": "bailian-qwen-asr-session-ws-v1",
+  "checkedAt": "2026-08-30",
+  "sanitized": true,
+  "sources": [
+    { "url": "https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-interaction-process", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-client-events", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-server-events", "checkedAt": "2026-08-30" }
+  ],
+  "sequence": [
+    { "direction": "server", "frameKind": "json", "eventType": "session.created" },
+    { "direction": "client", "frameKind": "json", "eventType": "session.update" },
+    { "direction": "server", "frameKind": "json", "eventType": "session.updated" },
+    { "direction": "client", "frameKind": "json-base64", "eventType": "input_audio_buffer.append" },
+    { "direction": "server", "frameKind": "json", "eventType": "conversation.item.input_audio_transcription.text", "payload": { "text": "上", "stash": "海" } },
+    { "direction": "server", "frameKind": "json", "eventType": "conversation.item.input_audio_transcription.completed", "payload": { "transcript": "上海" } },
+    { "direction": "client", "frameKind": "json", "eventType": "session.finish" },
+    { "direction": "server", "frameKind": "json", "eventType": "session.finished" }
+  ],
+  "expect": {
+    "committedTranscript": "上海",
+    "terminalOrder": ["session.finish", "session.finished"],
+    "forbiddenEvents": ["run-task", "task-finished"]
+  }
+}

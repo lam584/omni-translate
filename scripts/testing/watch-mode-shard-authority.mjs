@@ -7,8 +7,13 @@ import {
   BALANCED_RELEASE_PLAN,
   LIVE_LLM_CELLS,
 } from './watch-mode-balanced-release-plan.mjs';
+import { rebuildReportFromDirectory } from './watch-mode-report.mjs';
+import {
+  assertWatchModelProtocolIdentity,
+} from './watch-mode-model-protocol-authority.mjs';
 
-export const SHARD_AUTHORITY_SCHEMA_VERSION = 2;
+export const SHARD_AUTHORITY_SCHEMA_VERSION = 3;
+const SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION = 2;
 export const SHARD_EXECUTION_PLAN_KIND = 'watch-mode-paid-shard-execution-plan';
 export const SHARD_CELL_LEASE_KIND = 'watch-mode-paid-shard-cell-lease';
 export const SHARD_CELL_RESULT_KIND = 'watch-mode-paid-shard-cell-result';
@@ -32,7 +37,7 @@ export const SHARD_INTERACTIVE_CELL_EXECUTION_FILE = 'interactive-cell-execution
 export const SHARD_INTERACTIVE_CELL_EXECUTION_KIND =
   'watch-mode-interactive-shard-cell-execution';
 
-export const PROVIDER_INPUT_BUDGET_LEDGER_SCHEMA_VERSION = 1;
+export const PROVIDER_INPUT_BUDGET_LEDGER_SCHEMA_VERSION = 2;
 export const PROVIDER_INPUT_BUDGET_LEDGER_KIND = 'watch-mode-provider-input-budget-ledger';
 export const PROVIDER_INPUT_BUDGET_LEDGER_FILE = 'provider-input-budget-ledger.json';
 export const PROVIDER_INPUT_BUDGET_JOURNAL_FILE = `${PROVIDER_INPUT_BUDGET_LEDGER_FILE}.journal.jsonl`;
@@ -50,40 +55,67 @@ export const SHARD_STRICT_PAID_PROVIDER_IDENTITY = Object.freeze({
   customHeaderCount: 0,
 });
 export const SHARD_STRICT_PAID_MODEL_PROTOCOLS = Object.freeze({
-  'qwen3.5-omni-flash-realtime': 'dashscope-omni',
   'qwen3.5-livetranslate-flash-realtime': 'dashscope-livetranslate',
+});
+const SHARD_STRICT_PREFLIGHT_LIFECYCLE_BUDGET = Object.freeze({
+  firstServerEventLatencyMs: 1_200,
+  socketEventTimeoutMs: 12_000,
 });
 
 export const SHARD_INPUT_SAMPLE_RATE_HZ = 16_000;
-export const SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES = 2_880_000;
-export const SHARD_CELL_MAX_EXTERNAL_AUDIO_SECONDS = 180;
-export const SHARD_MATRIX_CELL_COUNT = 8;
-export const SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES = 23_040_000;
-export const SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SECONDS = 1_440;
-export const SHARD_ALLOWED_WORKER_COUNTS = Object.freeze([1]);
+export const SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES = 2_877_045;
+export const SHARD_MATRIX_CELL_COUNT = 4;
+export const SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES = 10_100_180;
+export const SHARD_ALLOWED_WORKER_COUNTS = Object.freeze([1, 2, 3, 4]);
 export const SHARD_MIN_WORKER_COUNT = 1;
-export const SHARD_MAX_WORKER_COUNT = 1;
+export const SHARD_MAX_WORKER_COUNT = 4;
 
 // This inventory is intentionally separate from AUTHORITY_IMPLEMENTATION_FILES.
-// Adding shard orchestration must not invalidate a previously captured six-cell
+// Adding shard orchestration must not invalidate a previously captured three-cell
 // zero-Provider local-isolation authority.
 export const SHARD_ORCHESTRATION_IMPLEMENTATION_FILES = Object.freeze([
+  'scripts/testing/watch-mode-four-worker-plan.mjs',
   'scripts/testing/watch-mode-shard-authority.mjs',
   'scripts/testing/run-watch-mode-live-shard.mjs',
   'scripts/testing/run-watch-mode-live-coordinator.mjs',
   'scripts/testing/run-watch-mode-live-production-coordinator.mjs',
+  'scripts/testing/watch-mode-release-timeout-budget.mjs',
   'scripts/testing/watch-mode-strict-runtime-authority.mjs',
   'scripts/testing/watch-mode-provider-preflight-process.mjs',
+  'scripts/testing/run-watch-mode-provider-preflight-worker.mjs',
+  'scripts/testing/watch-worker-bootstrap.mjs',
   'scripts/testing/watch-mode-provider-network-health.mjs',
   'scripts/testing/invoke-watch-mode-interactive-task.ps1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveFinalizer.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1',
   'scripts/testing/run-watch-mode-interactive-task.ps1',
   'scripts/testing/collect-watch-mode-interactive-process-authority.ps1',
   'scripts/testing/release-manual-collector.mjs',
+  'scripts/testing/frozen-desktop-release-authority.mjs',
+  'scripts/testing/frozen-virtual-mic-release-authority.mjs',
+  'scripts/testing/run-virtual-mic-release-evidence.mjs',
+  'scripts/testing/virtual-mic-release-evidence.mjs',
+  'scripts/testing/watch-mode-provider-preflight-manual-source.mjs',
   'scripts/testing/watch-mode-provider-preflight-authority.mjs',
   'scripts/testing/watch-mode-provider-preflight-authorization.mjs',
 ]);
+
+import { fixedFourWorkerAssignments, FOUR_WORKER_DISPATCH_SCHEDULE } from './watch-mode-four-worker-plan.mjs';
+
+function assertFourWorkerPlan(plan) {
+  if (plan.workers.length !== 4) return;
+  const expected = fixedFourWorkerAssignments(plan.workers);
+  const actual = plan.cells.map((cell) => ({
+    cellId: cell.cellId, workerId: cell.workerId, waveIndex: cell.waveIndex,
+    deviceProfileInstanceId: cell.deviceProfileInstance.instanceId,
+  }));
+  if (canonicalJson(actual) !== canonicalJson(expected)
+      || canonicalJson(plan.dispatchSchedule) !== canonicalJson(FOUR_WORKER_DISPATCH_SCHEDULE)) {
+    throw new Error('four-worker plan requires fixed placement and signed 0/3/6/9 second dispatch schedule');
+  }
+}
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const EXECUTION_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{7,127}$/i;
@@ -94,6 +126,7 @@ const ALLOWED_JOURNAL_EVENTS = new Set([
   'reserved',
   'reserve_rejected',
   'send_failed',
+  'reconnect_rejected',
   'reconnect',
   'finalized',
 ]);
@@ -341,12 +374,20 @@ function approvedCellProjection(cell) {
     cellId: cell.cellId,
     tier: cell.tier,
     providerMode: cell.providerMode,
-    durationSeconds: cell.durationSeconds,
-    externalProviderSessionCeilingSeconds:
-      cell.externalProviderSessionCeilingSeconds ?? cell.durationSeconds,
+    inputCompletionWatchdogSeconds: cell.inputCompletionWatchdogSeconds,
+    processExclusionRestartAfterSeconds: cell.processExclusionRestartAfterSeconds,
+    processExclusionRestartQuietSeconds: cell.processExclusionRestartQuietSeconds,
+    providerFinishTimeoutSeconds: cell.providerFinishTimeoutSeconds,
+    localPlaybackDrainTimeoutSeconds: cell.localPlaybackDrainTimeoutSeconds,
+    reportWriteTimeoutSeconds: cell.reportWriteTimeoutSeconds,
+    cellHardWatchdogSeconds: cell.cellHardWatchdogSeconds,
+    authoritativeTransformedReferenceFrames: cell.authoritativeTransformedReferenceFrames,
+    boundedCaptureGraceFrames: cell.boundedCaptureGraceFrames,
+    maxExternalAudioSamples: cell.maxExternalAudioSamples,
     auxiliaryExternalAudioSeconds: cell.auxiliaryExternalAudioSeconds ?? 0,
     subtitleTranslationMode: cell.subtitleTranslationMode ?? 'native',
     modelId: cell.modelId,
+    modelProtocolProfileIdentity: structuredClone(cell.modelProtocolProfileIdentity),
     feedbackLoopPrevention: cell.feedbackLoopPrevention,
     deviceClass: cell.deviceClass,
   };
@@ -392,10 +433,11 @@ function assertDeviceProfileInstance(profile, label) {
 
 function assertWorkers(workers) {
   if (!Array.isArray(workers) || !SHARD_ALLOWED_WORKER_COUNTS.includes(workers.length)) {
-    throw new Error('strict paid execution requires exactly one local worker');
+    throw new Error('strict paid execution requires between one and four identity-bound workers');
   }
   const workerIds = new Set();
   const vmIds = new Set();
+  const sshHostKeys = new Set();
   for (const [index, worker] of workers.entries()) {
     assertObject(worker, `workers[${index}]`);
     const workerId = assertIdentifier(worker.workerId, `workers[${index}].workerId`);
@@ -406,6 +448,30 @@ function assertWorkers(workers) {
     if (vmIds.has(vmDigest)) throw new Error(`duplicate VM identity for worker ${workerId}`);
     vmIds.add(vmDigest);
     if (worker.vmIdentityDigest !== vmDigest) throw new Error(`worker ${workerId} VM identity digest mismatch`);
+    if (worker.transportAuthority == null) {
+      if (workers.length > 1) {
+        throw new Error(`worker ${workerId} is missing signed transport authority`);
+      }
+    } else if (worker.transportAuthority.kind === 'local') {
+      if (canonicalJson(worker.transportAuthority) !== canonicalJson({ kind: 'local' })) {
+        throw new Error(`worker ${workerId} local transport authority has unexpected fields`);
+      }
+    } else if (worker.transportAuthority.kind === 'ssh') {
+      const transport = worker.transportAuthority;
+      if (
+        canonicalJson(Object.keys(transport).sort())
+          !== canonicalJson(['hostKeyAlgorithm', 'hostKeyAlias', 'hostKeySha256', 'kind'].sort())
+        || !IDENTIFIER_PATTERN.test(String(transport.hostKeyAlias ?? ''))
+        || !/^ssh-(?:ed25519|rsa)$/u.test(String(transport.hostKeyAlgorithm ?? ''))
+        || !/^SHA256:[A-Za-z0-9+/]{43}$/u.test(String(transport.hostKeySha256 ?? ''))
+      ) throw new Error(`worker ${workerId} SSH transport authority is invalid`);
+      if (sshHostKeys.has(transport.hostKeySha256)) {
+        throw new Error(`worker ${workerId} reuses a signed SSH host key`);
+      }
+      sshHostKeys.add(transport.hostKeySha256);
+    } else {
+      throw new Error(`worker ${workerId} transport authority kind is invalid`);
+    }
     if (!Array.isArray(worker.deviceProfileInstances) || worker.deviceProfileInstances.length === 0) {
       throw new Error(`worker ${workerId} has no device profile instances`);
     }
@@ -441,26 +507,35 @@ function assertBoundPrerequisites(plan) {
   opaqueAuthority(plan.providerPreflightAuthority, 'provider preflight authority', (value) => {
     if (
       value.status !== 'completed'
-      || value.operation !== 'text-translation-preflight'
+      || value.operation !== 'livetranslate-session-lifecycle-preflight'
+      || value.inputMode !== 'none'
+      || value.providerInputMode !== 'none'
+      || value.responseMode !== 'text-only'
+      || value.terminalEvent !== 'session.finished'
       || Number(value.invocationCount) !== 1
       || Number(value.externalAudioSamples) !== 0
-      || canonicalJson(value.tokenBudget) !== canonicalJson({
-        maxInputTokens: 4_096,
-        maxOutputTokens: 256,
-      })
-      || typeof value.inputTokens !== 'number'
-      || !Number.isSafeInteger(value.inputTokens)
-      || value.inputTokens < 0
-      || value.inputTokens > 4_096
-      || typeof value.outputTokens !== 'number'
-      || !Number.isSafeInteger(value.outputTokens)
-      || value.outputTokens < 0
-      || value.outputTokens > 256
+      || canonicalJson(value.lifecycleBudget)
+        !== canonicalJson(SHARD_STRICT_PREFLIGHT_LIFECYCLE_BUDGET)
+      || value.evidenceOutcome !== 'livetranslate-session-finished'
+      || value.firstServerEvent?.type !== 'session.created'
+      || !Number.isSafeInteger(value.firstServerEvent?.monotonicMs)
+      || value.firstServerEvent.monotonicMs < 0
+      || value.firstServerEvent.monotonicMs > 1_200
+      || !value.sessionAuthority
+      || !value.rawTrace
+      || value.tokenBudget != null
+      || value.inputTokens != null
+      || value.outputTokens != null
       || (value.audioSeconds != null
         && (typeof value.audioSeconds !== 'number' || value.audioSeconds !== 0))
     ) {
-      throw new Error('provider preflight authority must bind exactly one completed text-only invocation');
+      throw new Error('provider preflight authority must bind exactly one completed zero-input LiveTranslate lifecycle');
     }
+    assertWatchModelProtocolIdentity(
+      value.modelProtocolProfileIdentity,
+      LIVE_LLM_CELLS[0].modelProtocolProfileIdentity,
+      'provider preflight authority model protocol profile identity',
+    );
   });
   const hasTwoStagePreflight = Boolean(
     plan.providerPreflightGrant
@@ -477,7 +552,7 @@ function assertBoundPrerequisites(plan) {
     if (
       !Array.isArray(plan.providerPreflightLeaseReservations)
       || plan.providerPreflightLeaseReservations.length !== SHARD_MATRIX_CELL_COUNT
-    ) throw new Error('execution plan must bind exactly eight provider preflight lease reservations');
+    ) throw new Error(`execution plan must bind exactly ${SHARD_MATRIX_CELL_COUNT} provider preflight lease reservations`);
     plan.providerPreflightLeaseReservations.forEach((entry, index) => {
       opaqueAuthority(entry, `provider preflight lease reservation authority ${index}`, (value) => {
         if (
@@ -485,6 +560,11 @@ function assertBoundPrerequisites(plan) {
           || value.leaseId !== plan.cells[index].leaseId
           || !SHA256_PATTERN.test(String(value.digest ?? ''))
         ) throw new Error(`provider preflight lease reservation authority ${index} is invalid`);
+        assertWatchModelProtocolIdentity(
+          value.modelProtocolProfileIdentity,
+          LIVE_LLM_CELLS[index].modelProtocolProfileIdentity,
+          `provider preflight lease reservation authority ${index} model protocol profile identity`,
+        );
       });
     });
     if (
@@ -494,12 +574,14 @@ function assertBoundPrerequisites(plan) {
       || canonicalJson(plan.providerPreflightAuthorization.leaseReservationDigests)
         !== canonicalJson(plan.providerPreflightLeaseReservations.map((entry) => entry.digest))
       || !SHA256_PATTERN.test(String(plan.providerPreflightAuthorization.authorizationDigest ?? ''))
-      || canonicalJson(plan.providerPreflightAuthorization.tokenBudget) !== canonicalJson({
-        maxInputTokens: 4_096,
-        maxOutputTokens: 256,
-      })
-      || canonicalJson(plan.providerPreflightAuthorization.tokenBudget)
-        !== canonicalJson(plan.providerPreflightAuthority.tokenBudget)
+      || plan.providerPreflightAuthorization.inputMode !== 'none'
+      || plan.providerPreflightAuthorization.providerInputMode !== 'none'
+      || plan.providerPreflightAuthorization.responseMode !== 'text-only'
+      || plan.providerPreflightAuthorization.terminalEvent !== 'session.finished'
+      || canonicalJson(plan.providerPreflightAuthorization.lifecycleBudget)
+        !== canonicalJson(SHARD_STRICT_PREFLIGHT_LIFECYCLE_BUDGET)
+      || canonicalJson(plan.providerPreflightAuthorization.lifecycleBudget)
+        !== canonicalJson(plan.providerPreflightAuthority.lifecycleBudget)
       || plan.providerPreflightAuthorization.consumptionClaim?.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
       || plan.providerPreflightAuthorization.consumptionClaim?.artifactKind
         !== 'watch-mode-provider-preflight-consumption-claim'
@@ -515,18 +597,38 @@ function assertBoundPrerequisites(plan) {
       || !SHA256_PATTERN.test(String(plan.providerPreflightAuthorization.consumptionClaim?.sha256 ?? ''))
       || plan.providerPreflightAuthorization.consumptionClaim?.retryPolicy !== 'new-execution-required'
     ) throw new Error('execution plan provider preflight authorization set is invalid');
+    assertWatchModelProtocolIdentity(
+      plan.providerPreflightAuthorization.modelProtocolProfileIdentity,
+      LIVE_LLM_CELLS[0].modelProtocolProfileIdentity,
+      'execution plan provider preflight authorization model protocol profile identity',
+    );
     opaqueAuthority(plan.providerPreflightCompletion, 'provider preflight completion authority', (value) => {
       if (
         !SHA256_PATTERN.test(String(value.digest ?? ''))
         || value.grantDigest !== plan.providerPreflightGrant.digest
         || value.authorizationDigest !== plan.providerPreflightAuthorization.authorizationDigest
-        || canonicalJson(value.tokenBudget) !== canonicalJson(plan.providerPreflightAuthority.tokenBudget)
-        || value.inputTokens !== plan.providerPreflightAuthority.inputTokens
-        || value.outputTokens !== plan.providerPreflightAuthority.outputTokens
+        || value.inputMode !== plan.providerPreflightAuthority.inputMode
+        || value.providerInputMode !== plan.providerPreflightAuthority.providerInputMode
+        || value.responseMode !== plan.providerPreflightAuthority.responseMode
+        || value.terminalEvent !== plan.providerPreflightAuthority.terminalEvent
+        || canonicalJson(value.lifecycleBudget)
+          !== canonicalJson(plan.providerPreflightAuthority.lifecycleBudget)
+        || value.evidenceOutcome !== plan.providerPreflightAuthority.evidenceOutcome
+        || canonicalJson(value.firstServerEvent)
+          !== canonicalJson(plan.providerPreflightAuthority.firstServerEvent)
+        || canonicalJson(value.sessionAuthority)
+          !== canonicalJson(plan.providerPreflightAuthority.sessionAuthority)
+        || canonicalJson(value.rawTrace)
+          !== canonicalJson(plan.providerPreflightAuthority.rawTrace)
         || value.audioSeconds !== plan.providerPreflightAuthority.audioSeconds
         || canonicalJson(value.consumptionClaim)
           !== canonicalJson(plan.providerPreflightAuthorization.consumptionClaim)
       ) throw new Error('provider preflight completion authority is invalid');
+      assertWatchModelProtocolIdentity(
+        value.modelProtocolProfileIdentity,
+        LIVE_LLM_CELLS[0].modelProtocolProfileIdentity,
+        'provider preflight completion authority model protocol profile identity',
+      );
     });
   }
 }
@@ -536,6 +638,9 @@ function normalizeWorkers(workers) {
     const vmIdentity = structuredClone(worker.vmIdentity);
     return {
       workerId: String(worker.workerId),
+      ...(worker.transportAuthority
+        ? { transportAuthority: structuredClone(worker.transportAuthority) }
+        : {}),
       ...(String(worker.interactiveUser ?? '').trim()
         ? { interactiveUser: String(worker.interactiveUser).trim() }
         : {}),
@@ -571,7 +676,7 @@ export function createWorkerReadinessRequest({
   for (const worker of normalizedWorkers) worker.vmIdentityDigest = sha256Canonical(worker.vmIdentity);
   assertWorkers(normalizedWorkers);
   if (!Array.isArray(assignments) || assignments.length !== LIVE_LLM_CELLS.length) {
-    throw new Error('worker readiness request requires all eight fixed cell assignments');
+    throw new Error(`worker readiness request requires all ${SHARD_MATRIX_CELL_COUNT} fixed cell assignments`);
   }
   const assigned = assignments.map((assignment, cellIndex) => {
     const approved = LIVE_LLM_CELLS[cellIndex];
@@ -754,7 +859,7 @@ export function createSignedExecutionPlan({
       deviceProfileInstance: structuredClone(profile),
       deviceProfileInstanceDigest: sha256Canonical(profile),
       leaseId: assignment.leaseId ?? `lease-${randomHex(randomBytes)}`,
-      maxExternalAudioSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+      maxExternalAudioSamples: approvedCell.maxExternalAudioSamples,
       inputSampleRateHz: SHARD_INPUT_SAMPLE_RATE_HZ,
     };
   });
@@ -814,18 +919,21 @@ export function createSignedExecutionPlan({
       allocationMode: 'immutable-disjoint-cell-leases',
       inputSampleRateHz: SHARD_INPUT_SAMPLE_RATE_HZ,
       cellMaxExternalAudioSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
-      cellMaxExternalAudioSeconds: SHARD_CELL_MAX_EXTERNAL_AUDIO_SECONDS,
       matrixMaxExternalAudioSamples: SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
-      matrixMaxExternalAudioSeconds: SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SECONDS,
-      allocatedExternalAudioSamples: plannedCells.length * SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+      allocatedExternalAudioSamples: plannedCells.reduce(
+        (sum, cell) => sum + cell.maxExternalAudioSamples,
+        0,
+      ),
       cellCount: plannedCells.length,
       reclaimPolicy: 'never-within-execution',
       retryPolicy: 'new-execution-required',
     },
+    ...(normalizedWorkers.length === 4 ? { dispatchSchedule: structuredClone(FOUR_WORKER_DISPATCH_SCHEDULE) } : {}),
     workers: normalizedWorkers,
     waves,
     cells: plannedCells,
   };
+  assertFourWorkerPlan(core);
   assertBoundPrerequisites(core);
   const planDigest = sha256Canonical(core);
   const signed = { ...core, planDigest };
@@ -867,6 +975,7 @@ export function verifySignedExecutionPlan(plan, {
   }
   assertWorkers(plan.workers);
   assertExactPaidCells(plan.cells);
+  assertFourWorkerPlan(plan);
   const workerById = new Map(plan.workers.map((worker) => [worker.workerId, worker]));
   const cellIds = new Set();
   const leases = new Set();
@@ -887,8 +996,11 @@ export function verifySignedExecutionPlan(plan, {
       || cell.deviceProfileInstanceDigest !== sha256Canonical(profile)
       || profile.deviceClass !== cell.deviceClass
     ) throw new Error(`shard cell ${index} device profile binding mismatch`);
-    if (Number(cell.maxExternalAudioSamples) !== SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES || Number(cell.inputSampleRateHz) !== SHARD_INPUT_SAMPLE_RATE_HZ) {
-      throw new Error(`shard cell ${index} does not have the fixed external audio lease`);
+    if (
+      Number(cell.maxExternalAudioSamples) !== Number(LIVE_LLM_CELLS[index].maxExternalAudioSamples)
+      || Number(cell.inputSampleRateHz) !== SHARD_INPUT_SAMPLE_RATE_HZ
+    ) {
+      throw new Error(`shard cell ${index} does not have its mode-derived external audio lease`);
     }
     const slot = `${cell.workerId}::${cell.waveIndex}`;
     if (workerWaveSlots.has(slot)) throw new Error(`worker ${cell.workerId} has two cells in wave ${cell.waveIndex}`);
@@ -937,7 +1049,7 @@ export function verifySignedExecutionPlan(plan, {
     || Number(plan.budget.cellCount) !== SHARD_MATRIX_CELL_COUNT
     || plan.budget.reclaimPolicy !== 'never-within-execution'
     || plan.budget.retryPolicy !== 'new-execution-required'
-  ) throw new Error('shard execution plan budget is not the fixed fail-closed 24-minute allocation');
+  ) throw new Error('shard execution plan budget is not the fixed fail-closed LiveTranslate allocation');
   assertBoundPrerequisites(plan);
   if (currentProvenance && canonicalJson(currentProvenance) !== canonicalJson(plan.provenance)) {
     throw new Error('worker/coordinator source provenance does not exactly match the execution plan');
@@ -980,7 +1092,8 @@ export function issueCellLeases(plan, privateKeyPem, { issuedAt = new Date() } =
       sourceHeadCommit: plan.provenance.headCommit,
       runtimeBundleDigest: plan.authority.runtimeBundleDigest,
       inputSampleRateHz: SHARD_INPUT_SAMPLE_RATE_HZ,
-      maxExternalAudioSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+      maxExternalAudioSamples: cell.maxExternalAudioSamples,
+      modelProtocolProfileIdentity: structuredClone(cell.modelProtocolProfileIdentity),
       reclaimPolicy: 'never-within-execution',
       retryPolicy: 'new-execution-required',
     };
@@ -1015,12 +1128,21 @@ export function verifyCellLease(lease, plan, { now = new Date(), checkExpiry = t
     sourceHeadCommit: plan.provenance.headCommit,
     runtimeBundleDigest: plan.authority.runtimeBundleDigest,
     inputSampleRateHz: SHARD_INPUT_SAMPLE_RATE_HZ,
-    maxExternalAudioSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+    maxExternalAudioSamples: cell.maxExternalAudioSamples,
+    modelProtocolProfileIdentity: cell.modelProtocolProfileIdentity,
     reclaimPolicy: 'never-within-execution',
     retryPolicy: 'new-execution-required',
   };
   for (const [key, expected] of Object.entries(exact)) {
-    if (lease[key] !== expected) throw new Error(`shard cell lease ${key} does not match the execution plan`);
+    if (key === 'modelProtocolProfileIdentity') {
+      assertWatchModelProtocolIdentity(
+        lease[key],
+        expected,
+        'shard cell lease model protocol profile identity',
+      );
+    } else if (lease[key] !== expected) {
+      throw new Error(`shard cell lease ${key} does not match the execution plan`);
+    }
   }
   if (lease.expiresAt !== plan.expiresAt) throw new Error('shard cell lease expiry does not match the execution plan');
   const issuedAtMs = assertIsoDate(lease.issuedAt, 'cell lease issuedAt');
@@ -1058,7 +1180,9 @@ function readJsonLines(filePath, label) {
 
 function assertProviderIdentity(value, expected, label) {
   for (const [key, expectedValue] of Object.entries(expected)) {
-    if (value?.[key] !== expectedValue) throw new Error(`${label} ${key} mismatch`);
+    if (key === 'modelProtocolProfileIdentity') {
+      assertWatchModelProtocolIdentity(value?.[key], expectedValue, `${label} ${key}`);
+    } else if (value?.[key] !== expectedValue) throw new Error(`${label} ${key} mismatch`);
   }
 }
 
@@ -1078,6 +1202,7 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
     direction: 'inbound',
     model: cell.modelId,
     protocol: SHARD_STRICT_PAID_MODEL_PROTOCOLS[cell.modelId],
+    modelProtocolProfileIdentity: cell.modelProtocolProfileIdentity,
     ...SHARD_STRICT_PAID_PROVIDER_IDENTITY,
   };
   assertProviderIdentity(ledger, expectedIdentity, 'provider input budget ledger');
@@ -1092,26 +1217,40 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
     cellId: cell.cellId,
     leaseId: lease.leaseId,
     runMarker: ledger.runMarker,
-    maxSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+    maxSamples: cell.maxExternalAudioSamples,
+    modelProtocolProfileIdentity: cell.modelProtocolProfileIdentity,
   }, 'provider input launch lease');
-  if (Number(ledger.maxSamples) !== SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES || Number(ledger.maxSamples) !== lease.maxExternalAudioSamples) {
+  if (Number(ledger.maxSamples) !== Number(cell.maxExternalAudioSamples) || Number(ledger.maxSamples) !== lease.maxExternalAudioSamples) {
     throw new Error('provider input budget ledger maxSamples does not match the signed cell lease');
   }
   const actualSamples = Number(ledger.totalAttemptedSamples);
-  if (!Number.isSafeInteger(actualSamples) || actualSamples <= 0 || actualSamples > SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES) {
+  if (!Number.isSafeInteger(actualSamples) || actualSamples < 0 || actualSamples > Number(cell.maxExternalAudioSamples)) {
     throw new Error('provider input budget ledger totalAttemptedSamples is outside the signed cell lease');
   }
   const appendAttempts = Number(ledger.appendAttempts);
-  if (!Number.isSafeInteger(appendAttempts) || appendAttempts <= 0) {
-    throw new Error('provider input budget ledger appendAttempts must be positive');
+  if (!Number.isSafeInteger(appendAttempts) || appendAttempts < 0) {
+    throw new Error('provider input budget ledger appendAttempts is invalid');
   }
+  const reconnectRejectedTerminal = /^reconnect-forbidden-(?:socket-close|read-error|voice-fallback)$/u
+    .test(String(ledger.terminalReason ?? ''));
+  const preProviderTerminal = ledger.terminalReason === 'runner-failed-before-provider-session';
+  const nonBudgetFailureTerminal = reconnectRejectedTerminal
+    || preProviderTerminal
+    || ledger.terminalReason === 'livetranslate-session-finished-timeout'
+    || ledger.terminalReason === 'livetranslate-audio-drain-timeout';
+  const expectedInitialConnectAttempts = preProviderTerminal ? 0 : 1;
+  if (preProviderTerminal && (
+    Number(ledger.sessionGeneration) !== 0
+    || actualSamples !== 0
+    || appendAttempts !== 0
+  )) throw new Error('pre-provider terminal must bind generation, samples, and append attempts to zero');
   if (
     Number(ledger.sendFailures) !== 0
-    || Number(ledger.initialConnectAttempts) !== 1
+    || Number(ledger.initialConnectAttempts) !== expectedInitialConnectAttempts
     || Number(ledger.reconnects) !== 0
     || ledger.budgetExceeded !== false
     || ledger.finalized !== true
-    || ledger.terminalReason !== 'worker-completed'
+    || (ledger.terminalReason !== 'worker-completed' && !nonBudgetFailureTerminal)
   ) throw new Error('provider input budget ledger is not a strict terminal success');
   const journalIdentity = {
     ...expectedIdentity,
@@ -1153,14 +1292,28 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
   if (journal[0]?.event !== 'initialized' || counts.initialized !== 1) {
     throw new Error('provider input budget journal must begin with exactly one initialized event');
   }
-  if (counts.initial_connect_attempt !== 1) {
-    throw new Error('provider input budget journal must contain exactly one initial_connect_attempt event');
+  if (counts.initial_connect_attempt !== expectedInitialConnectAttempts) {
+    throw new Error(`provider input budget journal must contain exactly ${expectedInitialConnectAttempts} initial_connect_attempt event(s)`);
   }
   if (journal.at(-1)?.event !== 'finalized' || journal.at(-1)?.finalized !== true || counts.finalized !== 1) {
     throw new Error('provider input budget journal must end with exactly one finalized event');
   }
-  if (counts.reserved < 1 || counts.reserved !== appendAttempts || reservedSamples !== actualSamples) {
+  if (ledger.terminalReason === 'livetranslate-audio-drain-timeout') {
+    if (journal.at(-1).terminalReason !== ledger.terminalReason) {
+      throw new Error('provider input budget journal terminal reason does not match the final ledger');
+    }
+    // This is a finalized product failure, not permission to manufacture a
+    // terminal from an unfinished ledger or publish a passing report.
+    const report = readJson(path.join(runDirectory, 'report.json'), 'failed terminal report');
+    if (!['failed', 'blocked'].includes(report.verdict)) {
+      throw new Error('provider input audio-drain failure requires a failed strict report');
+    }
+  }
+  if (counts.reserved !== appendAttempts || reservedSamples !== actualSamples) {
     throw new Error('provider input budget journal reserved events do not match the final ledger');
+  }
+  if (counts.reconnect_rejected !== (reconnectRejectedTerminal ? 1 : 0)) {
+    throw new Error('provider input budget journal reconnect rejection does not match the final terminal reason');
   }
   for (const forbidden of ['reserve_rejected', 'send_failed', 'reconnect']) {
     if (counts[forbidden] !== 0) throw new Error(`provider input budget journal contains forbidden ${forbidden}`);
@@ -1186,6 +1339,7 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
     direction: ledger.direction,
     model: ledger.model,
     protocol: ledger.protocol,
+    modelProtocolProfileIdentity: structuredClone(ledger.modelProtocolProfileIdentity),
     strictPaidAuthority: ledger.strictPaidAuthority,
     providerId: ledger.providerId,
     templateId: ledger.templateId,
@@ -1220,7 +1374,9 @@ function readDeviceAuthority(runDirectory, cell) {
   ) throw new Error(`physical playback device does not match shard cell ${cell.cellId}`);
   if (
     planned.expectedPhysicalPlaybackDeviceName
-    && device.resolvedDeviceName !== planned.expectedPhysicalPlaybackDeviceName
+    && !device.resolvedDeviceName.toLocaleLowerCase().includes(
+      planned.expectedPhysicalPlaybackDeviceName.toLocaleLowerCase(),
+    )
   ) throw new Error(`physical playback device name does not match shard profile ${planned.profileId}`);
   return {
     ...fileAuthorityEntry(filePath, relativePath),
@@ -1266,6 +1422,8 @@ export function validateWorkerZeroProviderReadinessAuthority({
     || receipt.readinessRequestDigest !== checkedRequest.requestDigest
     || receipt.workerId !== worker.workerId
     || receipt.vmIdentityDigest !== worker.vmIdentityDigest
+    || canonicalJson(receipt.transportAuthority ?? null)
+      !== canonicalJson(worker.transportAuthority ?? null)
     || receipt.runtimeBundleDigest !== checkedRequest.runtimeBundleDigest
     || Number(receipt.providerCalls) !== 0
   ) throw new Error('worker zero-provider readiness receipt identity/budget binding mismatch');
@@ -1400,7 +1558,7 @@ export function validateInteractiveLaunchAuthority({
   const commandFile = fileAuthorityEntry(commandPath, path.basename(commandPath));
   const identity = { plan, lease, worker };
   if (
-    command.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
+    command.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
     || command.artifactKind !== 'watch-mode-interactive-task-command'
     || command.mode !== 'shard-cell'
     || interactiveIdentityFailure(command, identity, 'interactive command')
@@ -1419,7 +1577,7 @@ export function validateInteractiveLaunchAuthority({
     || !SHA256_PATTERN.test(String(command.nodeSha256 ?? '').toLowerCase())
   ) throw new Error('interactive task command does not match the signed lease/worker');
   if (
-    launch.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
+    launch.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
     || launch.artifactKind !== 'watch-mode-interactive-shard-launch-authority'
     || interactiveIdentityFailure(launch, identity, 'interactive launch')
     || launch.vmIdentityDigest !== worker.vmIdentityDigest
@@ -1442,7 +1600,7 @@ export function validateInteractiveLaunchAuthority({
     || Number(launch.explorerProcess.sessionId) !== Number(launch.sessionId)
   ) throw new Error('interactive launch process parent/session topology is invalid');
   if (
-    release.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
+    release.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
     || release.artifactKind !== 'watch-mode-interactive-shard-claim-release'
     || interactiveIdentityFailure(release, identity, 'interactive claim release')
     || release.vmIdentityDigest !== worker.vmIdentityDigest
@@ -1471,6 +1629,140 @@ export function validateInteractiveLaunchAuthority({
       release: fileAuthorityEntry(releasePath, path.basename(releasePath)),
     },
   };
+}
+
+function interactiveProcessGenerationKey(processEntry) {
+  return `${Number(processEntry.pid)}:${String(processEntry.startedAt ?? '')}`;
+}
+
+function interactiveParentGenerationKey(processEntry) {
+  return `${Number(processEntry.parentPid)}:${String(processEntry.parentStartedAt ?? '')}`;
+}
+
+export function validateInteractiveProcessAuthority({
+  processAuthority,
+  execution,
+  launch,
+  plan,
+  lease,
+  worker,
+}) {
+  const identity = { plan, lease, worker };
+  const processStartedAtMs = Date.parse(String(processAuthority.startedAt ?? ''));
+  const processCompletedAtMs = Date.parse(String(processAuthority.completedAt ?? ''));
+  const expectedRequiredRoles = ['shard-node', 'cell-powershell'];
+  if (Number(execution.exitCode) === 0) {
+    expectedRequiredRoles.push('desktop', 'bridge', 'recorder');
+  }
+  if (
+    processAuthority.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
+    || processAuthority.artifactKind !== 'watch-mode-interactive-process-authority'
+    || interactiveIdentityFailure(processAuthority, identity, 'interactive process authority')
+    || processAuthority.vmIdentityDigest !== worker.vmIdentityDigest
+    || processAuthority.passed !== true
+    || Number(processAuthority.expectedSessionId) !== 1
+    || processAuthority.expectedOwnerSid !== launch.ownerSid
+    || Number(processAuthority.rootProcessId) !== Number(launch.nodeProcess.pid)
+    || !Array.isArray(processAuthority.processes)
+    || Number(processAuthority.processCount) !== processAuthority.processes.length
+    || processAuthority.processes.length < 1
+    || processAuthority.processes.some((entry) => (
+      Number(entry.sessionId) !== 1 || entry.ownerSid !== launch.ownerSid
+    ))
+    || !Number.isFinite(processStartedAtMs)
+    || !Number.isFinite(processCompletedAtMs)
+    || processStartedAtMs > processCompletedAtMs
+    || !Number.isInteger(Number(processAuthority.sampleIntervalMs))
+    || Number(processAuthority.sampleIntervalMs) < 100
+    || Number(processAuthority.sampleIntervalMs) > 5_000
+    || !Array.isArray(processAuthority.errors)
+    || processAuthority.errors.length !== 0
+    || Number(processAuthority.executionExitCode) !== Number(execution.exitCode)
+    || !Array.isArray(processAuthority.requiredRoles)
+    || canonicalJson([...processAuthority.requiredRoles].sort()) !== canonicalJson([...expectedRequiredRoles].sort())
+  ) throw new Error('interactive process authority is invalid');
+  const processByGeneration = new Map();
+  const processesByPid = new Map();
+  for (const [index, processEntry] of processAuthority.processes.entries()) {
+    assertInteractiveProcessIdentity(
+      processEntry,
+      { sessionId: 1, ownerSid: launch.ownerSid },
+      `interactive traced process ${index}`,
+    );
+    const startedAtMs = Date.parse(String(processEntry.startedAt ?? ''));
+    const firstSeenAtMs = Date.parse(String(processEntry.firstSeenAt ?? ''));
+    const lastSeenAtMs = Date.parse(String(processEntry.lastSeenAt ?? ''));
+    const generationKey = interactiveProcessGenerationKey(processEntry);
+    if (
+      processByGeneration.has(generationKey)
+      || !String(processEntry.role ?? '').trim()
+      || !String(processEntry.ownerUser ?? '').trim()
+      || !String(processEntry.ownerDomain ?? '').trim()
+      || typeof processEntry.commandLine !== 'string'
+      || !Number.isFinite(firstSeenAtMs)
+      || !Number.isFinite(lastSeenAtMs)
+      || startedAtMs > firstSeenAtMs
+      || firstSeenAtMs < processStartedAtMs - Number(processAuthority.sampleIntervalMs)
+      || firstSeenAtMs > lastSeenAtMs
+      || lastSeenAtMs > processCompletedAtMs + Number(processAuthority.sampleIntervalMs)
+    ) throw new Error(`interactive traced process ${index} observation identity is invalid`);
+    processByGeneration.set(generationKey, processEntry);
+    const pid = Number(processEntry.pid);
+    const generations = processesByPid.get(pid) ?? [];
+    generations.push(processEntry);
+    processesByPid.set(pid, generations);
+  }
+  const rootGenerations = processesByPid.get(Number(processAuthority.rootProcessId)) ?? [];
+  const tracedRoot = rootGenerations.find((entry) => entry.startedAt === launch.nodeProcess.startedAt);
+  if (
+    rootGenerations.length !== 1
+    || !tracedRoot
+    || tracedRoot.role !== 'shard-node'
+    || Number(tracedRoot.pid) !== Number(launch.nodeProcess.pid)
+    || Number(tracedRoot.parentPid) !== Number(launch.taskProcess.pid)
+    || String(tracedRoot.imagePath).toLowerCase()
+      !== String(launch.nodeProcess.imagePath).toLowerCase()
+    || String(tracedRoot.imageSha256).toLowerCase()
+      !== String(launch.nodeProcess.imageSha256).toLowerCase()
+  ) throw new Error('interactive traced shard root does not match the launched Node process');
+  const parentByGeneration = new Map();
+  for (const processEntry of processAuthority.processes) {
+    if (processEntry === tracedRoot) continue;
+    const childStartedAtMs = Date.parse(processEntry.startedAt);
+    const childFirstSeenAtMs = Date.parse(processEntry.firstSeenAt);
+    const childGenerationKey = interactiveProcessGenerationKey(processEntry);
+    const parentGenerationKey = interactiveParentGenerationKey(processEntry);
+    const parent = processByGeneration.get(parentGenerationKey);
+    if (
+      !parent
+      || parentGenerationKey === childGenerationKey
+      || Date.parse(parent.startedAt) > childStartedAtMs
+      || Date.parse(parent.firstSeenAt) > childFirstSeenAtMs + Number(processAuthority.sampleIntervalMs)
+      || Date.parse(parent.lastSeenAt) + Number(processAuthority.sampleIntervalMs) < childFirstSeenAtMs
+    ) {
+      throw new Error(`interactive traced process ${processEntry.pid} has no valid parent generation in the captured root process tree`);
+    }
+    parentByGeneration.set(childGenerationKey, parentGenerationKey);
+  }
+  const rootGenerationKey = interactiveProcessGenerationKey(tracedRoot);
+  for (const processEntry of processAuthority.processes) {
+    let generationKey = interactiveProcessGenerationKey(processEntry);
+    const visited = new Set();
+    while (generationKey !== rootGenerationKey && !visited.has(generationKey)) {
+      visited.add(generationKey);
+      generationKey = parentByGeneration.get(generationKey);
+      if (!generationKey) break;
+    }
+    if (generationKey !== rootGenerationKey) {
+      throw new Error(`interactive traced process ${processEntry.pid} is outside the captured root process generation tree`);
+    }
+  }
+  for (const role of expectedRequiredRoles) {
+    if (!processAuthority.processes.some((entry) => entry.role === role)) {
+      throw new Error(`interactive process authority is missing required role ${role}`);
+    }
+  }
+  return { processCompletedAtMs };
 }
 
 export function validateInteractiveSessionAuthority({
@@ -1560,83 +1852,16 @@ export function validateInteractiveSessionAuthority({
   const expectedTaskActionArguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass '
     + `-File "${launch.command.launcherPath}" -RequestPath "${launch.command.scheduledCommandPath}" `
     + `-ExpectedRequestSha256 ${launch.files.command.sha256}`;
-  const processStartedAtMs = Date.parse(String(processAuthority.startedAt ?? ''));
-  const processCompletedAtMs = Date.parse(String(processAuthority.completedAt ?? ''));
+  const { processCompletedAtMs } = validateInteractiveProcessAuthority({
+    processAuthority,
+    execution,
+    launch: launch.launch,
+    plan,
+    lease,
+    worker,
+  });
   if (
-    processAuthority.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
-    || processAuthority.artifactKind !== 'watch-mode-interactive-process-authority'
-    || interactiveIdentityFailure(processAuthority, identity, 'interactive process authority')
-    || processAuthority.vmIdentityDigest !== worker.vmIdentityDigest
-    || processAuthority.passed !== true
-    || Number(processAuthority.expectedSessionId) !== 1
-    || processAuthority.expectedOwnerSid !== launch.launch.ownerSid
-    || Number(processAuthority.rootProcessId) !== Number(launch.launch.nodeProcess.pid)
-    || !Array.isArray(processAuthority.processes)
-    || Number(processAuthority.processCount) !== processAuthority.processes.length
-    || processAuthority.processes.length < 1
-    || processAuthority.processes.some((entry) => (
-      Number(entry.sessionId) !== 1 || entry.ownerSid !== launch.launch.ownerSid
-    ))
-    || !Number.isFinite(processStartedAtMs)
-    || !Number.isFinite(processCompletedAtMs)
-    || processStartedAtMs > processCompletedAtMs
-    || !Number.isInteger(Number(processAuthority.sampleIntervalMs))
-    || Number(processAuthority.sampleIntervalMs) < 100
-    || Number(processAuthority.sampleIntervalMs) > 5_000
-    || !Array.isArray(processAuthority.errors)
-    || processAuthority.errors.length !== 0
-  ) throw new Error('interactive process authority is invalid');
-  const processByPid = new Map();
-  for (const [index, processEntry] of processAuthority.processes.entries()) {
-    assertInteractiveProcessIdentity(
-      processEntry,
-      { sessionId: 1, ownerSid: launch.launch.ownerSid },
-      `interactive traced process ${index}`,
-    );
-    const firstSeenAtMs = Date.parse(String(processEntry.firstSeenAt ?? ''));
-    const lastSeenAtMs = Date.parse(String(processEntry.lastSeenAt ?? ''));
-    if (
-      processByPid.has(Number(processEntry.pid))
-      || !String(processEntry.role ?? '').trim()
-      || !String(processEntry.ownerUser ?? '').trim()
-      || !String(processEntry.ownerDomain ?? '').trim()
-      || typeof processEntry.commandLine !== 'string'
-      || !Number.isFinite(firstSeenAtMs)
-      || !Number.isFinite(lastSeenAtMs)
-      || firstSeenAtMs < processStartedAtMs - Number(processAuthority.sampleIntervalMs)
-      || firstSeenAtMs > lastSeenAtMs
-      || lastSeenAtMs > processCompletedAtMs + Number(processAuthority.sampleIntervalMs)
-    ) throw new Error(`interactive traced process ${index} observation identity is invalid`);
-    processByPid.set(Number(processEntry.pid), processEntry);
-  }
-  const tracedRoot = processByPid.get(Number(processAuthority.rootProcessId));
-  if (
-    !tracedRoot
-    || tracedRoot.role !== 'shard-node'
-    || Number(tracedRoot.pid) !== Number(launch.launch.nodeProcess.pid)
-    || Number(tracedRoot.parentPid) !== Number(launch.launch.taskProcess.pid)
-    || tracedRoot.startedAt !== launch.launch.nodeProcess.startedAt
-    || String(tracedRoot.imagePath).toLowerCase()
-      !== String(launch.launch.nodeProcess.imagePath).toLowerCase()
-    || String(tracedRoot.imageSha256).toLowerCase()
-      !== String(launch.launch.nodeProcess.imageSha256).toLowerCase()
-  ) throw new Error('interactive traced shard root does not match the launched Node process');
-  for (const processEntry of processAuthority.processes) {
-    if (processEntry.role !== 'shard-node' && !processByPid.has(Number(processEntry.parentPid))) {
-      throw new Error(`interactive traced process ${processEntry.pid} is outside the captured root process tree`);
-    }
-  }
-  const requiredRoles = new Set(['shard-node', 'cell-powershell', 'desktop', 'bridge']);
-  if (plan.cells[Number(lease.cellIndex)]?.feedbackLoopPrevention !== 'echo-cancel') {
-    requiredRoles.add('recorder');
-  }
-  for (const role of requiredRoles) {
-    if (!processAuthority.processes.some((entry) => entry.role === role)) {
-      throw new Error(`interactive process authority is missing required role ${role}`);
-    }
-  }
-  if (
-    terminal.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
+    terminal.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
     || terminal.artifactKind !== 'watch-mode-interactive-task-terminal'
     || interactiveIdentityFailure(terminal, identity, 'interactive terminal')
     || terminal.vmIdentityDigest !== worker.vmIdentityDigest
@@ -1652,7 +1877,7 @@ export function validateInteractiveSessionAuthority({
     || processCompletedAtMs > Date.parse(String(terminal.completedAt ?? ''))
   ) throw new Error('interactive task terminal does not match the completed shard process');
   if (
-    taskTerminal.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
+    taskTerminal.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
     || taskTerminal.artifactKind !== 'watch-mode-interactive-scheduled-task-terminal'
     || taskTerminal.executionId !== plan.executionId
     || taskTerminal.planDigest !== plan.planDigest
@@ -1675,11 +1900,11 @@ export function validateInteractiveSessionAuthority({
     || Date.parse(taskTerminal.completedAt) < Date.parse(terminal.completedAt)
   ) throw new Error('interactive scheduled task terminal is invalid');
   if (
-    execution.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
+    execution.schemaVersion !== SHARD_INTERACTIVE_COMPONENT_SCHEMA_VERSION
     || execution.artifactKind !== SHARD_INTERACTIVE_CELL_EXECUTION_KIND
     || interactiveIdentityFailure(execution, identity, 'interactive cell execution')
     || execution.vmIdentityDigest !== worker.vmIdentityDigest
-    || Number(execution.exitCode) !== 0
+    || ![0, 1].includes(Number(execution.exitCode))
     || !String(execution.runDirectory ?? '').trim()
     || path.isAbsolute(String(execution.runDirectory))
     || String(execution.runDirectory).replaceAll('\\', '/').split('/').includes('..')
@@ -1769,6 +1994,133 @@ function resultCore(result) {
   return core;
 }
 
+const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+
+function strictFailureIdentityString(value, label) {
+  if (typeof value !== 'string' || value.trim() !== value || !value) {
+    throw new Error(`${label} must be a non-empty canonical string`);
+  }
+  if (value.toLowerCase() === 'unknown') {
+    throw new Error(`${label} must not be unknown`);
+  }
+  return value;
+}
+
+function strictNullableFailureIdentityString(value, label) {
+  if (value === null) return null;
+  return strictFailureIdentityString(value, label);
+}
+
+function strictNullableOwnerGeneration(value, label) {
+  if (value === null) return null;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative safe integer or null`);
+  }
+  return value;
+}
+
+const CROSS_WORKSPACE_FIXTURE_PATH_PATTERN = /(?:^|[\\/])scripts[\\/]testing[\\/]fixtures[\\/](.+)$/i;
+
+function normalizeCrossWorkspaceReferencePaths(value) {
+  if (Array.isArray(value)) return value.map((entry) => normalizeCrossWorkspaceReferencePaths(entry));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => {
+    if (key === 'referencePath' && typeof entry === 'string') {
+      const match = entry.match(CROSS_WORKSPACE_FIXTURE_PATH_PATTERN);
+      if (match) return [key, `scripts/testing/fixtures/${match[1].replaceAll('\\', '/')}`];
+    }
+    return [key, normalizeCrossWorkspaceReferencePaths(entry)];
+  }));
+}
+
+export function strictReportAuthorityProjection(report) {
+  if (!report || typeof report !== 'object' || Array.isArray(report)) return report;
+  const {
+    generatedAt: _generatedAt,
+    commit: _commit,
+    provenance: _provenance,
+    artifacts: _artifacts,
+    ...stable
+  } = report;
+  return normalizeCrossWorkspaceReferencePaths(stable);
+}
+
+function assertStoredReportMatchesRawEvidence(runDirectory, report, provenance) {
+  let rebuilt;
+  try {
+    rebuilt = rebuildReportFromDirectory(runDirectory, {
+      mode: 'live',
+      provenance,
+    });
+  } catch (error) {
+    throw new Error(`strict cell report raw evidence could not be rebuilt: ${error.message}`);
+  }
+  if (
+    canonicalJson(strictReportAuthorityProjection(report))
+      !== canonicalJson(strictReportAuthorityProjection(rebuilt))
+  ) {
+    throw new Error('strict cell report authority does not match the independently rebuilt raw evidence');
+  }
+  return rebuilt;
+}
+
+export function strictFailureIdentityProjection(value, label = 'failure identity') {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const failureLayer = strictFailureIdentityString(value.failureLayer, `${label} failureLayer`);
+  const stableErrorCode = strictFailureIdentityString(
+    value.stableErrorCode,
+    `${label} stableErrorCode`,
+  );
+  if (['watch.strict-cell.failed', 'watch.strict-cell.blocked'].includes(stableErrorCode)) {
+    throw new Error(`${label} stableErrorCode is not a stable specific failure identity`);
+  }
+  const lifecyclePhase = strictFailureIdentityString(
+    value.lifecyclePhase,
+    `${label} lifecyclePhase`,
+  );
+  const context = value.failureContext;
+  if (!context || typeof context !== 'object' || Array.isArray(context)) {
+    throw new Error(`${label} failure context must be an object`);
+  }
+  for (const key of ['endpointId', 'bridgeInstanceId', 'ownerGenerationTransition']) {
+    if (!hasOwn(context, key)) {
+      throw new Error(`${label} failure context is missing ${key}`);
+    }
+  }
+  const transition = context.ownerGenerationTransition;
+  if (!transition || typeof transition !== 'object' || Array.isArray(transition)) {
+    throw new Error(`${label} owner generation transition must be an object`);
+  }
+  for (const key of ['before', 'after']) {
+    if (!hasOwn(transition, key)) {
+      throw new Error(`${label} owner generation transition is missing ${key}`);
+    }
+  }
+  strictNullableFailureIdentityString(context.endpointId, `${label} endpointId`);
+  strictNullableFailureIdentityString(context.bridgeInstanceId, `${label} bridgeInstanceId`);
+  strictNullableOwnerGeneration(transition.before, `${label} owner generation before`);
+  strictNullableOwnerGeneration(transition.after, `${label} owner generation after`);
+  return {
+    failureLayer,
+    stableErrorCode,
+    lifecyclePhase,
+    failureContext: structuredClone(context),
+  };
+}
+
+export function interactiveExecutionExitMatchesReport(exitCode, reportVerdict) {
+  const normalizedExitCode = Number(exitCode);
+  if (![0, 1].includes(normalizedExitCode)) return false;
+  // The interactive process reports evidence-collection execution, while the
+  // Node report is the sole verdict authority. A blocked/failed report may be
+  // produced after an otherwise successful collector exit (notably routes
+  // without a physical-output collector), so only a passing report requires a
+  // zero execution code.
+  return reportVerdict === 'passed' ? normalizedExitCode === 0 : true;
+}
+
 export function buildShardCellResult({
   plan,
   lease,
@@ -1798,8 +2150,23 @@ export function buildShardCellResult({
   const resolvedRunDirectory = path.resolve(runDirectory);
   const runDirectoryRelative = relativeAuthorityChild(resolvedShardRoot, resolvedRunDirectory, 'shard run directory');
   const report = readJson(path.join(resolvedRunDirectory, 'report.json'), 'strict cell report');
-  if (!['passed', 'failed'].includes(report.verdict)) {
+  if (!['passed', 'failed', 'blocked'].includes(report.verdict)) {
     throw new Error(`shard cell report has unsupported verdict: ${report.verdict ?? 'missing'}`);
+  }
+  const resultVerdict = report.verdict === 'passed' ? 'passed' : 'failed';
+  const failureIdentity = resultVerdict === 'failed'
+    ? strictFailureIdentityProjection(report, 'strict cell report failure identity')
+    : null;
+  assertStoredReportMatchesRawEvidence(resolvedRunDirectory, report, plan.provenance);
+  const interactiveExecution = plan.workerReadinessRequest
+    ? readJson(
+      path.join(resolvedRunDirectory, SHARD_INTERACTIVE_CELL_EXECUTION_FILE),
+      'interactive cell execution receipt',
+    )
+    : null;
+  if (interactiveExecution
+    && !interactiveExecutionExitMatchesReport(interactiveExecution.exitCode, report.verdict)) {
+    throw new Error('interactive cell execution exit code does not match the strict report verdict');
   }
   const usageAuthority = validateProviderUsageAuthority(resolvedRunDirectory, { cell, lease });
   const deviceAuthority = readDeviceAuthority(resolvedRunDirectory, cell);
@@ -1853,12 +2220,9 @@ export function buildShardCellResult({
     schemaVersion: SHARD_AUTHORITY_SCHEMA_VERSION,
     artifactKind: SHARD_CELL_RESULT_KIND,
     generatedAt: generatedAt instanceof Date ? generatedAt.toISOString() : String(generatedAt),
-    verdict: report.verdict,
-    ...(report.verdict === 'failed' ? {
-      failureLayer: report.failureLayer ?? 'unknown',
-      stableErrorCode: report.stableErrorCode ?? report.failureCode ?? 'watch.strict-cell.failed',
-      lifecyclePhase: report.lifecyclePhase ?? null,
-    } : {}),
+    verdict: resultVerdict,
+    reportVerdict: report.verdict,
+    ...(failureIdentity ?? {}),
     executionId: plan.executionId,
     planDigest: plan.planDigest,
     leaseDigest: lease.leaseDigest,
@@ -1942,9 +2306,19 @@ export function validateShardCellResult({
     result.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
     || result.artifactKind !== SHARD_CELL_RESULT_KIND
     || !['passed', 'failed'].includes(result.verdict)
-    || (result.verdict === 'failed' && !String(result.stableErrorCode ?? '').trim())
   ) {
     throw new Error('unsupported shard cell result');
+  }
+  const resultFailureIdentity = result.verdict === 'failed'
+    ? strictFailureIdentityProjection(result, 'shard cell result failure identity')
+    : null;
+  if (result.verdict === 'passed' && [
+    'failureLayer',
+    'stableErrorCode',
+    'lifecyclePhase',
+    'failureContext',
+  ].some((key) => hasOwn(result, key))) {
+    throw new Error('passing shard cell result must not contain failure identity fields');
   }
   if (result.resultDigest !== sha256Canonical(resultCore(result))) throw new Error('shard cell result digest mismatch');
   const resultGeneratedAtMs = assertIsoDate(result.generatedAt, 'shard cell result generatedAt');
@@ -1976,6 +2350,23 @@ export function validateShardCellResult({
   const runDirectory = resolveAuthorityChild(shardRoot, result.runDirectory, 'shard cell run directory');
   const expectedResultPath = path.join(runDirectory, SHARD_CELL_RESULT_FILE);
   if (path.resolve(resultPath) !== path.resolve(expectedResultPath)) throw new Error('shard cell result path does not match its run directory');
+  const report = readJson(path.join(runDirectory, 'report.json'), 'strict cell report');
+  const expectedVerdict = report.verdict === 'passed' ? 'passed' : 'failed';
+  if (
+    !['passed', 'failed', 'blocked'].includes(report.verdict)
+    || result.reportVerdict !== report.verdict
+    || result.verdict !== expectedVerdict
+  ) throw new Error('shard cell result verdict does not match its strict report');
+  if (result.verdict === 'failed') {
+    const reportFailureIdentity = strictFailureIdentityProjection(
+      report,
+      'strict cell report failure identity',
+    );
+    if (canonicalJson(resultFailureIdentity) !== canonicalJson(reportFailureIdentity)) {
+      throw new Error('shard cell result failure identity does not match its strict report');
+    }
+  }
+  assertStoredReportMatchesRawEvidence(runDirectory, report, plan.provenance);
   const usage = validateProviderUsageAuthority(runDirectory, { cell: plannedCell, lease });
   if (canonicalJson(usage) !== canonicalJson(result.usageAuthority)) throw new Error('shard cell result usage authority mismatch');
   const device = readDeviceAuthority(runDirectory, plannedCell);
@@ -2055,6 +2446,7 @@ export function buildShardManifest({
         failureLayer: result.failureLayer,
         stableErrorCode: result.stableErrorCode,
         lifecyclePhase: result.lifecyclePhase,
+        failureContext: result.failureContext,
       } : {}),
       actualExternalAudioSamples: result.usageAuthority.actualExternalAudioSamples,
     };
@@ -2063,7 +2455,11 @@ export function buildShardManifest({
     (sum, entry) => sum + Number(entry.actualExternalAudioSamples),
     0,
   );
-  if (actualExternalAudioSamples > expectedCells.length * SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES) {
+  const reservedExternalAudioSamples = expectedCells.reduce(
+    (sum, cell) => sum + Number(cell.maxExternalAudioSamples),
+    0,
+  );
+  if (actualExternalAudioSamples > reservedExternalAudioSamples) {
     throw new Error(`worker ${workerId} shard usage exceeds its immutable leases`);
   }
   const core = {
@@ -2078,7 +2474,7 @@ export function buildShardManifest({
     runtimeBundleDigest: plan.authority.runtimeBundleDigest,
     shardOrchestrationDigest: plan.authority.shardOrchestrationDigest,
     assignedCellCount: expectedCells.length,
-    reservedExternalAudioSamples: expectedCells.length * SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+    reservedExternalAudioSamples,
     actualExternalAudioSamples,
     results: resultAuthorities,
   };
@@ -2161,6 +2557,26 @@ export function validateShardManifest({
       || validated.result.verdict !== binding.verdict
       || Number(validated.result.usageAuthority.actualExternalAudioSamples) !== Number(binding.actualExternalAudioSamples)
     ) throw new Error(`shard manifest result ${index} authority mismatch`);
+    if (validated.result.verdict === 'failed') {
+      const manifestFailureIdentity = strictFailureIdentityProjection(
+        binding,
+        `shard manifest result ${index} failure identity`,
+      );
+      const resultFailureIdentity = strictFailureIdentityProjection(
+        validated.result,
+        `shard cell result ${index} failure identity`,
+      );
+      if (canonicalJson(manifestFailureIdentity) !== canonicalJson(resultFailureIdentity)) {
+        throw new Error(`shard manifest result ${index} failure identity authority mismatch`);
+      }
+    } else if ([
+      'failureLayer',
+      'stableErrorCode',
+      'lifecyclePhase',
+      'failureContext',
+    ].some((key) => hasOwn(binding, key))) {
+      throw new Error(`passing shard manifest result ${index} must not contain failure identity fields`);
+    }
     validatedResults.push(validated);
   }
   const expectedVerdict = validatedResults.every(({ result }) => result.verdict === 'passed') ? 'passed' : 'failed';
@@ -2171,7 +2587,10 @@ export function validateShardManifest({
   );
   if (
     Number(manifest.assignedCellCount) !== expectedCells.length
-    || Number(manifest.reservedExternalAudioSamples) !== expectedCells.length * SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES
+    || Number(manifest.reservedExternalAudioSamples) !== expectedCells.reduce(
+      (sum, cell) => sum + Number(cell.maxExternalAudioSamples),
+      0,
+    )
     || Number(manifest.actualExternalAudioSamples) !== actual
     || actual > Number(manifest.reservedExternalAudioSamples)
   ) throw new Error('shard manifest aggregate budget mismatch');

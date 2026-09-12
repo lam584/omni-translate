@@ -98,11 +98,23 @@ describe('realTimeSessionPageHelpers', () => {
 
   it('uses the resolved registry profile instead of independently parsing model names', () => {
     const config = structuredClone(appConfigDraftMock);
-    config.providers[0].localModelCapabilityRegistry.unshift({
-      id: 'alias', modelId: 'deployment-blue', capabilities: ['speech-to-speech'],
-      realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'server_vad', interactionCapabilities: ['streaming'],
+    const modelId = 'qwen3.5-livetranslate-flash-realtime';
+    const declaredEntry = config.providers[0].localModelCapabilityRegistry.find((entry) => entry.modelId === modelId);
+    expect(declaredEntry).toMatchObject({
+      registryVersion: 'bailian-model-protocol-registry/v1',
+      profileId: 'bailian.livetranslate.realtime.ws',
+      profileVersion: 1,
     });
-    expect(resolveVoiceModelRuntime('template-dashscope-realtime::deployment-blue', config).realtimeProfile?.routeKind).toBe('omni');
+    config.providers[0].localModelCapabilityRegistry = [{
+      ...declaredEntry!,
+      // The legacy field is deliberately wrong: manifest identity wins.
+      realtimeProtocol: 'dashscope-omni',
+    }];
+    expect(resolveVoiceModelRuntime(`template-dashscope-realtime::${modelId}`, config).realtimeProfile).toMatchObject({
+      routeKind: 'omni',
+      protocolDialect: 'dashscope-livetranslate',
+      source: 'manifest',
+    });
     expect(resolveVoiceModelRuntime('provider::plain-model', config)).toMatchObject({
       voiceModelRaw: 'plain-model',
       realtimeProfile: { routeKind: 'local-vad', protocolDialect: null, source: 'none' },

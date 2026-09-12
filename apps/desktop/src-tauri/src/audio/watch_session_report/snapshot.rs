@@ -52,55 +52,61 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
     let session_elapsed_ms = session.elapsed_ms();
     let mut cues = session.cues.clone();
     let mut session_issues = session.issues.clone();
-    let latest_revisions = cues.iter().fold(HashMap::<String, u64>::new(), |mut latest, cue| {
-        latest
-            .entry(cue.cue_id.clone())
-            .and_modify(|revision| *revision = (*revision).max(cue.revision))
-            .or_insert(cue.revision);
-        latest
-    });
+    let latest_indices = cues.iter().enumerate().fold(
+        HashMap::<String, usize>::new(),
+        |mut latest, (index, cue)| {
+            latest
+                .entry(cue.cue_id.clone())
+                .and_modify(|latest_index| {
+                    let latest_cue = &cues[*latest_index];
+                    if (cue.revision, cue.sequence, index)
+                        > (latest_cue.revision, latest_cue.sequence, *latest_index)
+                    {
+                        *latest_index = index;
+                    }
+                })
+                .or_insert(index);
+            latest
+        },
+    );
     // A streaming provider can publish and visibly render many cumulative
     // revisions, then emit one final source-only hypothesis immediately before
     // capture stops. That interrupted tail remains useful diagnostic detail,
     // but it must not replace the logical cue's latest complete visible
     // revision in latency/completeness summaries. If the logical cue has no
     // complete predecessor, omit the interrupted fragment from summary samples.
-    let representative_revisions = latest_revisions
+    let representative_indices = latest_indices
         .iter()
-        .filter_map(|(cue_id, latest_revision)| {
-            let latest = cues
-                .iter()
-                .find(|cue| cue.cue_id == *cue_id && cue.revision == *latest_revision)?;
+        .filter_map(|(cue_id, latest_index)| {
+            let latest = &cues[*latest_index];
             if is_interrupted_session_tail(latest, completed, session_elapsed_ms) {
                 return cues
                     .iter()
-                    .filter(|cue| {
+                    .enumerate()
+                    .filter(|(index, cue)| {
                         cue.cue_id == *cue_id
-                            && cue.revision < *latest_revision
+                            && (cue.revision, cue.sequence, *index)
+                                < (latest.revision, latest.sequence, *latest_index)
                             && cue_has_complete_visible_pipeline(cue)
                     })
-                    .max_by_key(|cue| cue.revision)
-                    .map(|cue| (cue_id.clone(), cue.revision));
+                    .max_by_key(|(index, cue)| (cue.revision, cue.sequence, *index))
+                    .map(|(index, _)| (cue_id.clone(), index));
             }
-            Some((cue_id.clone(), *latest_revision))
+            Some((cue_id.clone(), *latest_index))
         })
         .collect::<HashMap<_, _>>();
 
-    for cue in &mut cues {
-        let latest_revision = latest_revisions
-            .get(&cue.cue_id)
-            .copied();
-        let interrupted_tail = latest_revision == Some(cue.revision)
+    for (index, cue) in cues.iter_mut().enumerate() {
+        let latest_index = latest_indices.get(&cue.cue_id).copied();
+        let interrupted_tail = latest_index == Some(index)
             && is_interrupted_session_tail(cue, completed, session_elapsed_ms);
-        let superseded_revision = !interrupted_tail
-            && representative_revisions
-                .get(&cue.cue_id)
-                .map_or(true, |representative| cue.revision != *representative);
         cue.events.sort_by_key(|event| event.elapsed_ms);
-        let superseded = superseded_revision;
+        let superseded = !interrupted_tail
+            && representative_indices.get(&cue.cue_id).copied() != Some(index);
         if superseded {
             cue.translation_state = Some(SubtitleTranslationStateRuntime::Superseded);
         }
+        normalize_final_pipeline_timestamps(cue);
         cue.source_to_llm_first_ms = duration_between(cue.source_at_ms, cue.llm_first_at_ms);
         cue.source_to_render_ms = duration_between(cue.source_at_ms, cue.rendered_first_at_ms);
         cue.llm_first_to_publish_ms =
@@ -156,10 +162,12 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
 
     let latest_cues = cues
         .iter()
-        .filter(|cue| {
-            representative_revisions
+        .enumerate()
+        .filter_map(|(index, cue)| {
+            representative_indices
                 .get(&cue.cue_id)
-                .is_some_and(|revision| cue.revision == *revision)
+                .is_some_and(|representative| index == *representative)
+                .then_some(cue)
         })
         .collect::<Vec<_>>();
     if completed
@@ -258,6 +266,7 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
         route_mode: session.route_mode.clone(),
         provider_id: session.provider_id.clone(),
         model: session.model.clone(),
+        model_protocol_profile_identity: session.model_protocol_profile_identity.clone(),
         started_at: session.started_at.clone(),
         ended_at: session.ended_at.clone(),
         elapsed_ms: session_elapsed_ms,
@@ -305,6 +314,43 @@ fn duration_between(start: Option<u64>, end: Option<u64>) -> Option<u64> {
     match (start, end) {
         (Some(start), Some(end)) if end >= start => Some(end - start),
         _ => None,
+    }
+}
+
+fn normalize_final_pipeline_timestamps(cue: &mut WatchCueComparisonRuntime) {
+    if cue.translation_state != Some(SubtitleTranslationStateRuntime::Final) {
+        return;
+    }
+
+    let model = normalize_comparison_text(&cue.llm_text);
+    let published = normalize_comparison_text(&cue.published_text);
+    let rendered = normalize_comparison_text(&cue.rendered_text);
+    if !model.is_empty() && model == published {
+        if let Some(llm_final) = cue.llm_final_at_ms {
+            cue.published_final_at_ms = Some(cue.published_final_at_ms.unwrap_or(llm_final).max(llm_final));
+        }
+    }
+    if !published.is_empty() && published == rendered {
+        // An equivalent final revision can inherit a committed visible receipt
+        // from a superseded revision. The donor keeps the real render event and
+        // its original timestamp; the selected final revision has no local
+        // render event of its own. Anchor that revision's first-stage pipeline
+        // at publication confirmation so its derived stage order remains
+        // monotonic without rewriting the authoritative donor evidence.
+        let inherited_render_receipt = cue.rendered_first_at_ms.is_some()
+            && !cue.events.iter().any(|event| event.stage == "render");
+        if inherited_render_receipt {
+            if let Some(published_first) = cue.published_first_at_ms {
+                cue.rendered_first_at_ms = Some(
+                    cue.rendered_first_at_ms
+                        .unwrap_or(published_first)
+                        .max(published_first),
+                );
+            }
+        }
+        if let Some(published_final) = cue.published_final_at_ms {
+            cue.rendered_final_at_ms = Some(cue.rendered_final_at_ms.unwrap_or(published_final).max(published_final));
+        }
     }
 }
 

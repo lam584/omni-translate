@@ -1,32 +1,4 @@
-/// Owns a single capture route's lifecycle dependencies.
-///
-/// Keeping the channel, route specification and UI handle together prevents
-/// the thread launcher from becoming a second orchestration implementation.
-
-struct RouteWorker {
-    app: AppHandle,
-    direction: String,
-    spec: RouteSpec,
-    stop_rx: mpsc::Receiver<()>,
-    stt_sender: Option<mpsc::Sender<Vec<u8>>>,
-    init_done: Option<Arc<AtomicBool>>,
-    bridge_source_context: Option<BridgeSourceWorkerContext>,
-}
-
-impl RouteWorker {
-    fn run(self, store: &AudioStateStore) -> Result<(), String> {
-        run_route_worker(
-            self.app,
-            store,
-            &self.direction,
-            self.spec,
-            self.stop_rx,
-            self.stt_sender,
-            self.init_done,
-            self.bridge_source_context,
-        )
-    }
-}
+const ECHO_CANCEL_RESET_DIAGNOSTIC_LEVEL: &str = "warning";
 
 fn run_route_worker(
     app: AppHandle,
@@ -34,6 +6,7 @@ fn run_route_worker(
     direction: &str,
     spec: RouteSpec,
     stop_rx: mpsc::Receiver<()>,
+    input_completion_rx: Option<mpsc::Receiver<RouteInputCompletionRequest>>,
     stt_sender: Option<mpsc::Sender<Vec<u8>>>,
     init_done: Option<Arc<AtomicBool>>,
     bridge_source_context: Option<BridgeSourceWorkerContext>,
@@ -46,6 +19,9 @@ fn run_route_worker(
             direction,
             spec,
             stop_rx,
+            input_completion_rx.ok_or_else(|| {
+                "Bridge source worker started without an input-completion receiver".to_string()
+            })?,
             stt_sender,
             init_done,
             bridge_source_context.ok_or_else(|| {
@@ -115,7 +91,7 @@ fn run_capture_loop(
     emit_audio_snapshot(&app, store)?;
 
     if spec.echo_cancel_enabled() {
-        store.reset_echo_canceller()?;
+        store.reset_echo_canceller_with_diagnostic("route-start", qpc_now_100ns(), 0)?;
         diag_log_detail(
             &app,
             "audio",
@@ -148,20 +124,28 @@ fn run_capture_loop(
         );
     }
 
-    audio_client.start_stream().map_err_str()?;
+    let mut echo_diagnostics = EchoCancelDiagnostics::new();
+    if let Err(error) = audio_client.start_stream().map_err_str() {
+        if spec.echo_cancel_enabled() {
+            // The route-start reset already happened before WASAPI start. Even
+            // when start fails, close that reset event stream with one native
+            // terminal snapshot so diagnostics cannot report a stale window.
+            echo_diagnostics.log_final(&app, store, direction);
+        }
+        return Err(error);
+    }
     // The stream is bound and the route now reports ready. Microphone capture is
     // expected to deliver packets promptly, but system loopback legitimately has
     // no frames while every media source is paused. Keep Watch alive in that
     // state so users can start it before pressing play.
     let capture_started_at = Instant::now();
     let mut inbound_wait_logged = false;
-    let mut echo_diagnostics = EchoCancelDiagnostics::new();
     let mut aec_delay_estimator = AecDelayEstimator::new(SAMPLE_RATE_HZ as u32, CHANNEL_COUNT);
     let mut current_aec_delay_samples = 0_usize;
     let mut last_delay_diagnostic_at: Option<Instant> = None;
-    loop {
+    let capture_result = (|| -> Result<(), String> {
+      loop {
         if stop_rx.try_recv().is_ok() {
-            let _ = audio_client.stop_stream();
             break;
         }
 
@@ -169,7 +153,6 @@ fn run_capture_loop(
             && capture_started_at.elapsed() >= Duration::from_secs(AUDIO_FLOW_HEALTH_WINDOW_SECS)
         {
             if should_fail_on_initial_frame_stall(direction) {
-                let _ = audio_client.stop_stream();
                 return Err(audio_flow_stall_error(direction, capture_started_at.elapsed()));
             }
             if !inbound_wait_logged {
@@ -193,6 +176,7 @@ fn run_capture_loop(
         let buffer_info = capture_client
             .read_from_device_to_deque(&mut sample_queue)
             .map_err_str()?;
+        let mut capture_tap_clock = None;
         if spec.echo_cancel_enabled()
             && (sample_queue.len() >= chunk_len
                 || buffer_info.flags.data_discontinuity
@@ -223,10 +207,11 @@ fn run_capture_loop(
                     render_clock.endpoint_padding_frames,
                     render_clock.reference_lead_frames,
                 );
+            let observed_qpc_100ns = qpc_now_100ns();
             let estimate = aec_delay_estimator.observe_capture(CaptureClockObservation {
                 device_frame_index: queue_head_device_frame_index,
                 packet_qpc_100ns: queue_head_qpc_100ns,
-                observed_qpc_100ns: qpc_now_100ns(),
+                observed_qpc_100ns,
                 capture_padding_frames,
                 capture_buffer_frames: buffer_frame_count,
                 render_clock_age_ms,
@@ -236,24 +221,53 @@ fn run_capture_loop(
                 render_endpoint_padding_frames,
                 render_reference_lead_frames,
                 render_submitted_frames: render_clock.submitted_frames,
+                render_timeline_epoch: render_clock.timeline_epoch,
                 render_discontinuity_count: render_clock.discontinuity_count,
                 data_discontinuity: buffer_info.flags.data_discontinuity,
                 timestamp_error: buffer_info.flags.timestamp_error,
             });
             current_aec_delay_samples = estimate.delay_samples;
-            if estimate.reset_required {
-                store.reset_echo_canceller()?;
+            capture_tap_clock = Some((
+                buffer_info.index,
+                buffer_info.timestamp,
+                queue_head_device_frame_index,
+                queue_head_qpc_100ns,
+                observed_qpc_100ns,
+                render_clock.discontinuity_count,
+            ));
+            if estimate.aec_reset_required {
+                // This capture worker is the sole reset owner. Render
+                // producers only publish a monotonic discontinuity identity;
+                // consume it here before any queued capture is processed.
+                let reset_reason = if estimate.published_render_discontinuity
+                    && estimate.aec_reset_reason
+                        == Some("wasapi-render-session-discontinuity")
+                {
+                    render_clock
+                        .last_discontinuity_reason
+                        .unwrap_or("wasapi-render-session-discontinuity")
+                } else {
+                    estimate.aec_reset_reason.unwrap_or("unknown")
+                };
+                store.reset_echo_canceller_with_diagnostic(
+                    reset_reason,
+                    observed_qpc_100ns,
+                    render_clock.discontinuity_count,
+                )?;
                 diag_log_detail(
                     &app,
                     "audio",
-                    "warn",
+                    ECHO_CANCEL_RESET_DIAGNOSTIC_LEVEL,
                     "event=echo_cancel_reset",
                     format!(
-                        "direction={} reason=capture-clock-discontinuity dataDiscontinuity={} timestampError={} capturePaddingInvalid={} packetDeviceFrameIndex={} queueHeadDeviceFrameIndex={} packetTimestamp100ns={} queueHeadTimestamp100ns={} queuedCaptureFrames={} paddingFrames={:?} bufferFrames={} delayMs={:.1} delaySource={} estimatorResetCount={} timestampErrorCount={}",
+                        "direction={} reason={} renderDiscontinuityId={} dataDiscontinuity={} timestampError={} capturePaddingInvalid={} delayResetRequired={} packetDeviceFrameIndex={} queueHeadDeviceFrameIndex={} packetTimestamp100ns={} queueHeadTimestamp100ns={} queuedCaptureFrames={} paddingFrames={:?} bufferFrames={} delayMs={:.1} delaySource={} estimatorResetCount={} timestampErrorCount={}",
                         direction,
+                        reset_reason,
+                        render_clock.discontinuity_count,
                         buffer_info.flags.data_discontinuity,
                         buffer_info.flags.timestamp_error,
                         estimate.capture_padding_invalid,
+                        estimate.delay_reset_required,
                         buffer_info.index,
                         queue_head_device_frame_index,
                         buffer_info.timestamp,
@@ -310,7 +324,36 @@ fn run_capture_loop(
                         .saturating_mul(CHUNK_FRAMES)
                         .saturating_mul(CHANNEL_COUNT),
                 );
-                let cancellation = store.process_echo_capture(&f32_chunk, delay_samples)?;
+                let tap_metadata = capture_tap_clock.map(
+                    |(
+                        packet_device_frame_index,
+                        packet_qpc_100ns,
+                        queue_head_device_frame_index,
+                        queue_head_qpc_100ns,
+                        observed_qpc_100ns,
+                        continuity_id,
+                    )| {
+                        let frame_offset = chunk_index.saturating_mul(CHUNK_FRAMES) as u64;
+                        let qpc_offset_100ns = frame_offset.saturating_mul(10_000_000)
+                            / SAMPLE_RATE_HZ as u64;
+                        AecCaptureFrameMetadata {
+                            packet_device_frame_index,
+                            packet_qpc_100ns,
+                            queue_head_device_frame_index: queue_head_device_frame_index
+                                .saturating_add(frame_offset),
+                            queue_head_qpc_100ns: queue_head_qpc_100ns
+                                .saturating_add(qpc_offset_100ns),
+                            observed_qpc_100ns,
+                            continuity_id,
+                            delay_samples,
+                        }
+                    },
+                );
+                let cancellation = store.process_echo_capture_with_metadata(
+                    &f32_chunk,
+                    delay_samples,
+                    tap_metadata,
+                )?;
                 // AEC3 output is the capture stream. Playback state is logged
                 // only as context and cannot delete a capture block.
                 let playback_active = store.inbound_speaker_playback_active();
@@ -339,9 +382,20 @@ fn run_capture_loop(
         }
 
         let _ = event_handle.wait_for_event(500);
+      }
+      Ok(())
+    })();
+
+    // Every path after a successful WASAPI start converges here. The capture
+    // worker remains the sole reset owner, attempts exactly one stream stop,
+    // then snapshots the real native counters after no further reset can occur.
+    let stop_result = audio_client.stop_stream().map_err_str();
+    if spec.echo_cancel_enabled() {
+        echo_diagnostics.log_final(&app, store, direction);
     }
 
-    Ok(())
+    capture_result?;
+    stop_result
 }
 
 pub(crate) fn process_loopback_route_start_error(
@@ -400,21 +454,23 @@ fn accept_bridge_source_identity(
     );
     let authoritative = bridge_state.update_snapshot(|current| {
         disposition = bridge_source_identity_disposition(current, identity);
-        apply_bridge_source_identity_observation(current, identity, &disposition, is_pcm_frame);
+        let accepted =
+            apply_bridge_source_identity_observation(current, identity, &disposition, is_pcm_frame);
+        if accepted && is_pcm_frame {
+            // Keep the disposition/current-owner check, snapshot mutation and
+            // accepted-frame evidence under the Bridge state lock. A restart
+            // cannot otherwise interleave after acceptance but before the
+            // diagnostic ledger records which owner supplied the frame.
+            store.record_bridge_source_frame_accepted(identity.clone());
+        }
     });
     match disposition {
         BridgeSourceIdentityDisposition::Current => {
             worker_context.rebind(authoritative);
-            if is_pcm_frame {
-                store.record_bridge_source_frame_accepted(identity.clone());
-            }
             true
         }
         BridgeSourceIdentityDisposition::Rebind => {
             worker_context.rebind(authoritative);
-            if is_pcm_frame {
-                store.record_bridge_source_frame_accepted(identity.clone());
-            }
             diag_log_detail(
                 app,
                 "bridge",
@@ -465,7 +521,8 @@ fn run_bridge_source_route_worker(
     direction: &str,
     spec: RouteSpec,
     stop_rx: mpsc::Receiver<()>,
-    stt_sender: Option<mpsc::Sender<Vec<u8>>>,
+    input_completion_rx: mpsc::Receiver<RouteInputCompletionRequest>,
+    mut stt_sender: Option<mpsc::Sender<Vec<u8>>>,
     init_done: Option<Arc<AtomicBool>>,
     bridge_source_context: BridgeSourceWorkerContext,
 ) -> Result<(), String> {
@@ -484,11 +541,22 @@ fn run_bridge_source_route_worker(
     let mut last_summary_at = Instant::now();
     let mut first_heartbeat_logged = false;
     let mut first_pcm_logged = false;
+    let mut provider_input_completed = false;
     loop {
         let mut source_pipe = loop {
             if stop_rx.try_recv().is_ok() {
                 return Ok(());
             }
+            observe_bridge_input_completion_request(
+                &app,
+                store,
+                direction,
+                &input_completion_rx,
+                &mut processor,
+                &mut sample_queue,
+                &mut stt_sender,
+                &mut provider_input_completed,
+            )?;
             match OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -561,6 +629,16 @@ fn run_bridge_source_route_worker(
             if stop_rx.try_recv().is_ok() {
                 return Ok(());
             }
+            observe_bridge_input_completion_request(
+                &app,
+                store,
+                direction,
+                &input_completion_rx,
+                &mut processor,
+                &mut sample_queue,
+                &mut stt_sender,
+                &mut provider_input_completed,
+            )?;
             let payload = match read_bridge_source_payload(&mut source_pipe) {
                 Ok(BridgeSourceEnvelope::Frame { payload, identity }) => {
                     if !accept_bridge_source_identity(
@@ -570,6 +648,10 @@ fn run_bridge_source_route_worker(
                         &identity,
                         true,
                     ) {
+                        continue;
+                    }
+                    if provider_input_completed {
+                        ignored_envelope_count = ignored_envelope_count.saturating_add(1);
                         continue;
                     }
                     pcm_frame_count += 1;
@@ -629,59 +711,35 @@ fn run_bridge_source_route_worker(
                 Ok(BridgeSourceEnvelope::TranslationStatus {
                     status_id,
                     session_id,
+                    bridge_instance_id,
+                    source_generation,
+                    source_generation_token,
+                    playback_owner_generation,
+                    physical_playback_device_id,
                     cue_id,
                     status,
                     reason,
                     error_code,
                     timestamp_ms,
                 }) => {
-                    let active_session_id = app
-                        .state::<BridgeStateStore>()
-                        .snapshot()
-                        .session_id;
-                    let disposition = bridge_translation_status_disposition(
+                    if !handle_bridge_translation_status(
+                        &app,
                         store,
-                        active_session_id.as_deref(),
-                        &status_id,
-                        &session_id,
-                    );
-                    if disposition == BridgeTranslationStatusDisposition::Apply {
-                        record_bridge_translation_status(
-                            &app,
-                            store,
-                            &status_id,
-                            &cue_id,
-                            &status,
-                            &reason,
-                            error_code.as_deref(),
-                            timestamp_ms,
-                        );
-                    } else {
-                        diag_log_detail(
-                            &app,
-                            "bridge",
-                            "info",
-                            "event=translation_playback_status_idempotent_skip",
-                            format!(
-                                "statusId={status_id} cueId={cue_id} reason={} eventSessionId={session_id} activeSessionId={}",
-                                disposition.as_str(),
-                                active_session_id.as_deref().unwrap_or("-")
-                            ),
-                        );
-                    }
-                    if let Err(error) = write_bridge_translation_status_ack(
                         &mut source_pipe,
                         &status_id,
                         &session_id,
+                        &bridge_instance_id,
+                        source_generation,
+                        &source_generation_token,
+                        playback_owner_generation,
+                        &physical_playback_device_id,
+                        &cue_id,
+                        &status,
+                        &reason,
+                        error_code.as_deref(),
+                        timestamp_ms,
                     ) {
                         sample_queue.clear();
-                        diag_log_detail(
-                            &app,
-                            "audio",
-                            "warning",
-                            "Bridge translation status acknowledgement failed. Reconnecting.",
-                            error,
-                        );
                         break;
                     }
                     continue;
@@ -803,39 +861,6 @@ fn audio_flow_stall_error(direction: &str, elapsed: Duration) -> String {
 
 fn should_fail_on_initial_frame_stall(direction: &str) -> bool {
     direction != "inbound"
-}
-
-fn active_render_delay_frames(
-    playback_active: bool,
-    endpoint_padding_frames: Option<u32>,
-    reference_lead_frames: Option<u32>,
-) -> (Option<u32>, Option<u32>) {
-    if playback_active {
-        (endpoint_padding_frames, reference_lead_frames)
-    } else {
-        (None, None)
-    }
-}
-
-fn capture_queue_head_clock(
-    packet_device_frame_index: u64,
-    packet_qpc_100ns: u64,
-    queued_bytes_before_read: usize,
-    block_align: usize,
-    sample_rate_hz: u32,
-) -> (u64, u64, u64) {
-    if block_align == 0 || sample_rate_hz == 0 {
-        return (packet_device_frame_index, packet_qpc_100ns, 0);
-    }
-    let queued_frames = (queued_bytes_before_read / block_align) as u64;
-    let queued_duration_100ns = queued_frames
-        .saturating_mul(10_000_000)
-        .saturating_div(u64::from(sample_rate_hz));
-    (
-        packet_device_frame_index.saturating_sub(queued_frames),
-        packet_qpc_100ns.saturating_sub(queued_duration_100ns),
-        queued_frames,
-    )
 }
 
 fn process_captured_chunk(

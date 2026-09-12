@@ -140,7 +140,7 @@ describe('PreviewDesktopApi', () => {
     const loaded = await api.configuration.load();
     expect(loaded).toEqual(appConfigDraftMock);
     expect(loaded.devices.inboundVoiceModelId).toBe('qwen3.5-livetranslate-flash-realtime');
-    expect(loaded.devices.outboundVoiceModelId).toBe('qwen3.5-omni-plus-realtime');
+    expect(loaded.devices.outboundVoiceModelId).toBe('qwen3.5-livetranslate-flash-realtime');
     expect(loaded.devices.subtitleTranslationMode).toBe('native');
     expect(loaded.providers[0].sceneModelAssignments.find((item) => item.scenario === 'watch')?.modelIds)
       .toEqual(['qwen3.5-livetranslate-flash-realtime']);
@@ -230,8 +230,11 @@ describe('PreviewDesktopApi', () => {
     const config = draft();
     const open = vi.spyOn(window, 'open').mockReturnValue(null);
 
-    const profile = await api.provider.resolveRealtimeProfile(config, config.providers[0]!.model);
-    expect(profile.modelId).toBe(config.providers[0]!.model);
+    await expect(api.provider.resolveRealtimeProfile(config, config.providers[0]!.model)).resolves.toMatchObject({
+      modelId: 'qwen3.5-livetranslate-flash-realtime',
+      protocolDialect: 'dashscope-livetranslate',
+      source: 'manifest',
+    });
     expect(await api.session.refreshDevices()).toMatchObject({ status: 'preview' });
     expect(await api.session.preconnect(config)).toMatchObject({ status: 'preview' });
     expect(await api.session.cancelPreconnect()).toMatchObject({ status: 'preview' });

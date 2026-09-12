@@ -26,8 +26,9 @@ fn main() {
 #[cfg(windows)]
 mod probe {
     use omni_bridge_service::probe_support::{
-        coarse_dominant_frequency, component_amplitude, for_each_capture_packet,
-        isolated_component_amplitude, open_capture_stream,
+        coarse_dominant_frequency, component_amplitude, for_each_capture_packet_with_info,
+        isolated_component_amplitude, open_capture_stream, CapturePacketInfo,
+        IsolatedComponentAmplitude,
     };
     use omni_bridge_service::{
         AudioFrameHeader, AudioRouteDirection, AudioSampleFormat, TranslationAudioSink,
@@ -51,7 +52,7 @@ mod probe {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use wasapi::{
         initialize_mta, AudioCaptureClient, AudioClient, Device, DeviceEnumerator, Direction,
-        SampleType, WaveFormat,
+        Handle, SampleType, StreamMode, WasapiError, WaveFormat,
     };
     use windows_sys::Win32::{
         Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
@@ -60,7 +61,11 @@ mod probe {
                 CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
                 TH32CS_SNAPPROCESS,
             },
-            Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject},
+            Threading::{
+                CreateMutexW, OpenProcess, QueryFullProcessImageNameW, ReleaseMutex,
+                TerminateProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+                PROCESS_TERMINATE,
+            },
         },
     };
 
@@ -74,6 +79,45 @@ mod probe {
     const STREAM_TONE_FREQUENCIES_HZ: [f32; 4] = [700.0, 900.0, 1_100.0, 1_300.0];
     const MIN_OUTPUT_RMS: f32 = 0.015;
     const MIN_OUTPUT_COMPONENT: f32 = 0.015;
+    const RECORDING_FREQUENCY_ANALYSIS_SECONDS: usize = 5;
+    const MAX_RECORD_SECONDS: f32 = 600.0;
+    const CAPTURE_PACKET_TOLERANCE_FRAMES: usize = SAMPLE_RATE;
+    #[derive(Clone)]
+    struct TranslationAuthority {
+        bridge_instance_id: String,
+        source_generation: u64,
+        source_generation_token: String,
+        playback_owner_generation: u64,
+        physical_playback_device_id: String,
+    }
+
+    fn translation_authority_from_init(init: &Value) -> Result<TranslationAuthority, String> {
+        Ok(TranslationAuthority {
+            bridge_instance_id: init["bridgeInstanceId"]
+                .as_str()
+                .ok_or_else(|| format!("bridge init omitted bridgeInstanceId: {init}"))?
+                .to_string(),
+            source_generation: init["sourceGeneration"]
+                .as_u64()
+                .ok_or_else(|| format!("bridge init omitted sourceGeneration: {init}"))?,
+            source_generation_token: init["sourceGenerationToken"]
+                .as_str()
+                .ok_or_else(|| format!("bridge init omitted sourceGenerationToken: {init}"))?
+                .to_string(),
+            playback_owner_generation: init["playbackOwnerGeneration"]
+                .as_u64()
+                .ok_or_else(|| format!("bridge init omitted playbackOwnerGeneration: {init}"))?,
+            physical_playback_device_id: init["resolvedPhysicalPlaybackDeviceId"]
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    format!("bridge init omitted resolvedPhysicalPlaybackDeviceId: {init}")
+                })?
+                .to_string(),
+        })
+    }
+    include!("omni_physical_output_probe/process_exclusion_detectability.rs");
+    include!("omni_physical_output_probe/process_exclusion_evidence.rs");
     include!("omni_physical_output_probe/process_exclusion.rs");
 
     #[derive(Serialize)]
@@ -98,6 +142,7 @@ mod probe {
         pub tone_component: f32,
         pub silent_packets: usize,
         pub invalid_samples: usize,
+        pub capture_timeline: Option<CaptureTimelineAuthority>,
         pub process_exclusion_fingerprint: Option<ProcessExclusionFingerprintEvidence>,
         pub detail: Option<String>,
     }
@@ -124,6 +169,7 @@ mod probe {
                 tone_component: 0.0,
                 silent_packets: 0,
                 invalid_samples: 0,
+                capture_timeline: None,
                 process_exclusion_fingerprint: None,
                 detail: Some(detail),
             }
@@ -150,6 +196,7 @@ mod probe {
                 tone_component: 0.0,
                 silent_packets: 0,
                 invalid_samples: 0,
+                capture_timeline: None,
                 process_exclusion_fingerprint: None,
                 detail: Some(detail),
             }
@@ -172,6 +219,11 @@ mod probe {
         record_path: Option<PathBuf>,
         transcription_pcm_path: Option<PathBuf>,
         record_seconds: f32,
+        terminal_marker_path: Option<PathBuf>,
+        terminal_tail_seconds: f32,
+        terminal_run_marker: Option<String>,
+        terminal_cell_id: Option<String>,
+        terminal_lease_id: Option<String>,
         process_exclusion_fingerprint: bool,
         streaming_tone: bool,
         tone_player_exe: Option<PathBuf>,
@@ -272,28 +324,25 @@ mod probe {
             }),
         )?;
         let before_frames = before["playbackFramesWritten"].as_u64().unwrap_or(0);
-        let bridge_instance_id = init["bridgeInstanceId"].as_str().map(str::to_string);
-        let playback_owner_generation = init["playbackOwnerGeneration"].as_u64();
+        let translation_authority = translation_authority_from_init(&init)?;
         let capture = LoopbackCapture::start(&capture_device)?;
         thread::sleep(Duration::from_millis(250));
         let sender_pipe_name = pipe_name.clone();
         let sender_session_id = session_id.clone();
-        let sender_bridge_instance_id = bridge_instance_id.clone();
+        let sender_translation_authority = translation_authority.clone();
         let streaming_tone = args.streaming_tone;
         let sender = thread::spawn(move || {
             if streaming_tone {
                 send_streaming_translation_tone(
                     &sender_pipe_name,
                     &sender_session_id,
-                    sender_bridge_instance_id,
-                    playback_owner_generation,
+                    sender_translation_authority,
                 )
             } else {
                 send_translation_tone(
                     &sender_pipe_name,
                     &sender_session_id,
-                    sender_bridge_instance_id,
-                    playback_owner_generation,
+                    sender_translation_authority,
                 )
             }
         });
@@ -380,6 +429,7 @@ mod probe {
             tone_component,
             silent_packets: metrics.silent_packets,
             invalid_samples: metrics.invalid_samples,
+            capture_timeline: None,
             process_exclusion_fingerprint: None,
             detail,
         })
@@ -394,6 +444,11 @@ mod probe {
         let mut record_path: Option<PathBuf> = None;
         let mut transcription_pcm_path: Option<PathBuf> = None;
         let mut record_seconds = 30.0_f32;
+        let mut terminal_marker_path: Option<PathBuf> = None;
+        let mut terminal_tail_seconds = 2.0_f32;
+        let mut terminal_run_marker = None;
+        let mut terminal_cell_id = None;
+        let mut terminal_lease_id = None;
         let mut process_exclusion_fingerprint = false;
         let mut streaming_tone = false;
         let mut tone_player_exe = None;
@@ -430,6 +485,27 @@ mod probe {
                         .parse::<f32>()
                         .map_err(|error| format!("invalid --record-seconds '{raw}': {error}"))?;
                 }
+                "--terminal-marker-path" => {
+                    terminal_marker_path = Some(PathBuf::from(next_arg(
+                        &mut args,
+                        "--terminal-marker-path",
+                    )?))
+                }
+                "--terminal-tail-seconds" => {
+                    let raw = next_arg(&mut args, "--terminal-tail-seconds")?;
+                    terminal_tail_seconds = raw.parse::<f32>().map_err(|error| {
+                        format!("invalid --terminal-tail-seconds '{raw}': {error}")
+                    })?;
+                }
+                "--terminal-run-marker" => {
+                    terminal_run_marker = Some(next_arg(&mut args, "--terminal-run-marker")?)
+                }
+                "--terminal-cell-id" => {
+                    terminal_cell_id = Some(next_arg(&mut args, "--terminal-cell-id")?)
+                }
+                "--terminal-lease-id" => {
+                    terminal_lease_id = Some(next_arg(&mut args, "--terminal-lease-id")?)
+                }
                 "--process-exclusion-fingerprint" => process_exclusion_fingerprint = true,
                 "--streaming-tone" => streaming_tone = true,
                 "--tone-player-exe" => {
@@ -438,8 +514,28 @@ mod probe {
                 _ => return Err(format!("unknown argument: {arg}")),
             }
         }
-        if record_only && record_seconds <= 0.0 {
-            return Err("--record-seconds must be greater than 0".to_string());
+        if record_only
+            && (!record_seconds.is_finite()
+                || record_seconds <= 0.0
+                || record_seconds > MAX_RECORD_SECONDS)
+        {
+            return Err(format!(
+                "--record-seconds must be finite, greater than 0, and at most {MAX_RECORD_SECONDS}"
+            ));
+        }
+        if terminal_tail_seconds < 0.0 {
+            return Err("--terminal-tail-seconds must not be negative".to_string());
+        }
+        if terminal_marker_path.is_some() && !record_only {
+            return Err("--terminal-marker-path requires --record-only".to_string());
+        }
+        if terminal_marker_path.is_some()
+            && (terminal_run_marker.is_none()
+                || terminal_cell_id.is_none()
+                || terminal_lease_id.is_none())
+        {
+            return Err("--terminal-marker-path requires run marker, cell id, and lease id"
+                .to_string());
         }
         if record_only && process_exclusion_fingerprint {
             return Err(
@@ -456,6 +552,11 @@ mod probe {
             record_path,
             transcription_pcm_path,
             record_seconds,
+            terminal_marker_path,
+            terminal_tail_seconds,
+            terminal_run_marker,
+            terminal_cell_id,
+            terminal_lease_id,
             process_exclusion_fingerprint,
             streaming_tone,
             tone_player_exe,
@@ -468,13 +569,39 @@ mod probe {
         endpoint_id: String,
         endpoint_name: String,
     ) -> Result<ProbeResult, String> {
-        let capture = LoopbackCapture::start(capture_device)?;
-        let mut metrics = CaptureMetrics::default();
+        if args
+            .terminal_marker_path
+            .as_ref()
+            .is_some_and(|path| path.exists())
+        {
+            return Err(
+                "physical output recorder terminal marker existed before capture started"
+                    .to_string(),
+            );
+        }
+        let capture = RecorderLoopbackCapture::start(capture_device)?;
+        let max_output_frames = ((args.record_seconds as f64 * SAMPLE_RATE as f64).ceil()
+            as usize)
+            .checked_add(CAPTURE_PACKET_TOLERANCE_FRAMES)
+            .ok_or_else(|| "physical output recorder frame budget overflowed".to_string())?;
+        let mut metrics = CaptureMetrics::try_with_max_output_frames(max_output_frames)?;
         let started = Instant::now();
         let duration = Duration::from_millis((args.record_seconds * 1000.0).ceil() as u64);
+        let terminal_tail =
+            Duration::from_millis((args.terminal_tail_seconds * 1000.0).ceil() as u64);
+        let mut terminal_observed_at = None;
         while started.elapsed() < duration {
-            capture.collect_available(&mut metrics)?;
-            thread::sleep(Duration::from_millis(2));
+            capture.wait_and_collect_available(&mut metrics)?;
+            let elapsed = started.elapsed();
+            let terminal_exists = terminal_marker_matches_identity(args);
+            if should_stop_after_terminal_tail(
+                terminal_exists,
+                &mut terminal_observed_at,
+                elapsed,
+                terminal_tail,
+            ) {
+                break;
+            }
         }
         capture.collect_available(&mut metrics)?;
         let rms = metrics.rms();
@@ -508,6 +635,7 @@ mod probe {
                 metrics.invalid_samples
             ));
         }
+        failures.extend(metrics.capture_timeline_violations.iter().cloned());
         let detail = (!failures.is_empty()).then(|| failures.join("; "));
         Ok(ProbeResult {
             passed: detail.is_none(),
@@ -525,15 +653,62 @@ mod probe {
             captured_frames: metrics.frames(),
             peak: metrics.peak,
             rms,
-            tone_frequency_hz: estimate_dominant_frequency(&first_channel_samples(
-                &metrics.samples,
-            )),
+            tone_frequency_hz: estimate_recording_dominant_frequency(&metrics.samples),
             tone_component: 0.0,
             silent_packets: metrics.silent_packets,
             invalid_samples: metrics.invalid_samples,
+            capture_timeline: Some(metrics.capture_timeline_authority()),
             process_exclusion_fingerprint: None,
             detail,
         })
+    }
+
+    fn should_stop_after_terminal_tail(
+        terminal_exists: bool,
+        terminal_observed_at: &mut Option<Duration>,
+        elapsed: Duration,
+        terminal_tail: Duration,
+    ) -> bool {
+        if !terminal_exists {
+            return false;
+        }
+        let observed_at = terminal_observed_at.get_or_insert(elapsed);
+        elapsed.saturating_sub(*observed_at) >= terminal_tail
+    }
+
+    fn terminal_marker_matches_identity(args: &Args) -> bool {
+        let Some(path) = args.terminal_marker_path.as_ref() else {
+            return false;
+        };
+        let Ok(bytes) = fs::read(path) else {
+            return false;
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+            return false;
+        };
+        terminal_value_matches_identity(
+            &value,
+            args.terminal_run_marker.as_deref().unwrap_or_default(),
+            args.terminal_cell_id.as_deref().unwrap_or_default(),
+            args.terminal_lease_id.as_deref().unwrap_or_default(),
+        )
+    }
+
+    fn terminal_value_matches_identity(
+        value: &Value,
+        run_marker: &str,
+        cell_id: &str,
+        lease_id: &str,
+    ) -> bool {
+        let status = value["status"].as_str();
+        value["runMarker"].as_str() == Some(run_marker)
+            && value["cellId"].as_str() == Some(cell_id)
+            && value["leaseId"].as_str() == Some(lease_id)
+            // A marker-scoped failed terminal is also an immutable end of the
+            // owning run. It must stop capture only after the configured tail
+            // so failure evidence is flushed without treating the run as a
+            // success.
+            && matches!(status, Some("completed" | "failed"))
     }
 
     fn write_install_state(runtime_root: &PathBuf) -> Result<(), String> {
@@ -579,8 +754,16 @@ mod probe {
                 .arg(&config.trigger_path)
                 .arg("--diagnostic-child-tone-pid-path")
                 .arg(&config.pid_path)
+                .arg("--diagnostic-child-tone-ready-receipt-path")
+                .arg(&config.ready_receipt_path)
                 .arg("--diagnostic-child-tone-result-path")
                 .arg(&config.result_path)
+                .arg("--diagnostic-child-tone-start-signal-path")
+                .arg(&config.start_signal_path)
+                .arg("--diagnostic-child-tone-abort-signal-path")
+                .arg(&config.abort_signal_path)
+                .arg("--diagnostic-child-tone-receipt-id")
+                .arg(&config.receipt_id)
                 .arg("--diagnostic-child-tone-endpoint-id")
                 .arg(&config.endpoint_id)
                 .arg("--diagnostic-child-tone-frequency-hz")
@@ -613,8 +796,7 @@ mod probe {
     fn send_translation_tone(
         pipe_name: &str,
         session_id: &str,
-        bridge_instance_id: Option<String>,
-        playback_owner_generation: Option<u64>,
+        authority: TranslationAuthority,
     ) -> Result<(), String> {
         send_translation_tone_at(
             pipe_name,
@@ -623,16 +805,14 @@ mod probe {
             TONE_AMPLITUDE,
             TONE_SECONDS,
             "physical-output",
-            bridge_instance_id,
-            playback_owner_generation,
+            authority,
         )
     }
 
     fn send_streaming_translation_tone(
         pipe_name: &str,
         session_id: &str,
-        bridge_instance_id: Option<String>,
-        playback_owner_generation: Option<u64>,
+        authority: TranslationAuthority,
     ) -> Result<(), String> {
         let chunk_seconds = 0.5;
         for (chunk_index, frequency_hz) in STREAM_TONE_FREQUENCIES_HZ.iter().enumerate() {
@@ -647,8 +827,7 @@ mod probe {
                 } else {
                     TranslationStreamState::Chunk
                 },
-                bridge_instance_id.clone(),
-                playback_owner_generation,
+                authority.clone(),
             )?;
             thread::sleep(Duration::from_millis(500));
         }
@@ -659,8 +838,7 @@ mod probe {
             0.0,
             4,
             TranslationStreamState::End,
-            bridge_instance_id,
-            playback_owner_generation,
+            authority,
         )
     }
 
@@ -671,8 +849,7 @@ mod probe {
         seconds: f32,
         chunk_index: u32,
         stream_state: TranslationStreamState,
-        bridge_instance_id: Option<String>,
-        playback_owner_generation: Option<u64>,
+        authority: TranslationAuthority,
     ) -> Result<(), String> {
         let payload = if stream_state == TranslationStreamState::End {
             Vec::new()
@@ -687,8 +864,7 @@ mod probe {
             Some(chunk_index),
             Some(stream_state),
             (seconds.max(0.0) * 1_000.0).ceil() as u64,
-            bridge_instance_id,
-            playback_owner_generation,
+            authority,
         )
     }
 
@@ -699,8 +875,7 @@ mod probe {
         amplitude: f32,
         seconds: f32,
         label: &str,
-        bridge_instance_id: Option<String>,
-        playback_owner_generation: Option<u64>,
+        authority: TranslationAuthority,
     ) -> Result<(), String> {
         let payload = tone_pcm16le_at(frequency_hz, amplitude, seconds);
         let duration_ms = (seconds.max(0.0) * 1_000.0).ceil() as u64;
@@ -712,8 +887,7 @@ mod probe {
             None,
             None,
             duration_ms,
-            bridge_instance_id,
-            playback_owner_generation,
+            authority,
         )
     }
 
@@ -725,8 +899,7 @@ mod probe {
         chunk_index: Option<u32>,
         stream_state: Option<TranslationStreamState>,
         duration_ms: u64,
-        bridge_instance_id: Option<String>,
-        playback_owner_generation: Option<u64>,
+        authority: TranslationAuthority,
     ) -> Result<(), String> {
         let path = format!(r"\\.\pipe\{pipe_name}-audio");
         let mut pipe = open_pipe(&path)?;
@@ -744,10 +917,11 @@ mod probe {
             timestamp_ms: created_at_ms,
             payload_bytes: payload.len(),
             bridge_process_id: None,
-            bridge_instance_id,
-            playback_owner_generation,
-            source_generation: None,
-            source_generation_token: None,
+            bridge_instance_id: Some(authority.bridge_instance_id),
+            playback_owner_generation: Some(authority.playback_owner_generation),
+            source_generation: Some(authority.source_generation),
+            source_generation_token: Some(authority.source_generation_token),
+            physical_playback_device_id: Some(authority.physical_playback_device_id),
             cue_id: Some(format!("{label}-cue")),
             created_at_ms: Some(created_at_ms),
             estimated_duration_ms: Some(duration_ms),
@@ -902,6 +1076,14 @@ mod probe {
         }
     }
 
+    fn stop_child_confirmed(child: &mut Child) -> Result<(), String> {
+        if child.try_wait().map_err(error_text)?.is_none() {
+            child.kill().map_err(error_text)?;
+        }
+        child.wait().map_err(error_text)?;
+        Ok(())
+    }
+
     fn first_channel_samples(samples: &[f32]) -> Vec<f32> {
         samples
             .chunks_exact(CHANNELS)
@@ -911,6 +1093,19 @@ mod probe {
 
     fn estimate_dominant_frequency(samples: &[f32]) -> f32 {
         coarse_dominant_frequency(samples)
+    }
+
+    fn estimate_recording_dominant_frequency(samples: &[f32]) -> f32 {
+        estimate_dominant_frequency(&first_channel_samples(
+            recording_frequency_analysis_samples(samples),
+        ))
+    }
+
+    fn recording_frequency_analysis_samples(samples: &[f32]) -> &[f32] {
+        let max_samples = SAMPLE_RATE
+            .saturating_mul(CHANNELS)
+            .saturating_mul(RECORDING_FREQUENCY_ANALYSIS_SECONDS);
+        &samples[..samples.len().min(max_samples)]
     }
 
     fn write_wav_pcm16(
@@ -1001,5 +1196,109 @@ mod probe {
 
     fn error_text(error: impl std::fmt::Display) -> String {
         error.to_string()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{
+            recording_frequency_analysis_samples, should_stop_after_terminal_tail,
+            terminal_value_matches_identity, CHANNELS, RECORDING_FREQUENCY_ANALYSIS_SECONDS,
+            SAMPLE_RATE,
+        };
+        use serde_json::json;
+        use std::time::Duration;
+
+        #[test]
+        fn terminal_marker_stops_only_after_its_tail_window() {
+            let mut observed_at = None;
+            assert!(!should_stop_after_terminal_tail(
+                false,
+                &mut observed_at,
+                Duration::from_secs(5),
+                Duration::from_secs(2),
+            ));
+            assert_eq!(observed_at, None);
+            assert!(!should_stop_after_terminal_tail(
+                true,
+                &mut observed_at,
+                Duration::from_secs(6),
+                Duration::from_secs(2),
+            ));
+            assert_eq!(observed_at, Some(Duration::from_secs(6)));
+            assert!(!should_stop_after_terminal_tail(
+                true,
+                &mut observed_at,
+                Duration::from_millis(7_999),
+                Duration::from_secs(2),
+            ));
+            assert!(should_stop_after_terminal_tail(
+                true,
+                &mut observed_at,
+                Duration::from_secs(8),
+                Duration::from_secs(2),
+            ));
+        }
+
+        #[test]
+        fn terminal_marker_requires_the_exact_terminal_run_identity() {
+            let value = json!({
+                "runMarker": "run-a",
+                "cellId": "cell-a",
+                "leaseId": "lease-a",
+                "status": "completed",
+            });
+            assert!(terminal_value_matches_identity(
+                &value, "run-a", "cell-a", "lease-a"
+            ));
+            assert!(!terminal_value_matches_identity(
+                &value, "run-b", "cell-a", "lease-a"
+            ));
+            assert!(!terminal_value_matches_identity(
+                &value, "run-a", "cell-b", "lease-a"
+            ));
+            assert!(!terminal_value_matches_identity(
+                &value, "run-a", "cell-a", "lease-b"
+            ));
+            let failed = json!({
+                "runMarker": "run-a",
+                "cellId": "cell-a",
+                "leaseId": "lease-a",
+                "status": "failed",
+            });
+            assert!(terminal_value_matches_identity(
+                &failed,
+                "run-a",
+                "cell-a",
+                "lease-a"
+            ));
+            let active = json!({
+                "runMarker": "run-a",
+                "cellId": "cell-a",
+                "leaseId": "lease-a",
+                "status": "active",
+            });
+            assert!(!terminal_value_matches_identity(
+                &active,
+                "run-a",
+                "cell-a",
+                "lease-a"
+            ));
+        }
+
+        #[test]
+        fn recording_frequency_analysis_is_bounded_to_five_seconds() {
+            let bounded_sample_count =
+                SAMPLE_RATE * CHANNELS * RECORDING_FREQUENCY_ANALYSIS_SECONDS;
+            let samples = vec![0.0; bounded_sample_count + SAMPLE_RATE * CHANNELS * 20];
+
+            assert_eq!(
+                recording_frequency_analysis_samples(&samples).len(),
+                bounded_sample_count
+            );
+            assert_eq!(
+                recording_frequency_analysis_samples(&samples[..CHANNELS * 17]).len(),
+                CHANNELS * 17
+            );
+        }
     }
 }

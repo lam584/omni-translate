@@ -9,8 +9,18 @@ use serde_json::json;
 use url::Url;
 
 use crate::provider::contracts::ProviderDraftInput;
+use crate::audio::contracts::ModelProtocolProfileIdentityRuntime;
 
-const MAX_STRICT_PROVIDER_INPUT_SAMPLES: u64 = 180 * 16_000;
+#[path = "provider_input_budget/environment.rs"]
+mod environment;
+
+// Absolute ceiling shared with the separately signed 180-second incident
+// replay authority. Formal LiveTranslate release cells always receive the
+// lower exact mode-derived lease from the coordinator and are reverified
+// against that signed value; this constant is not their budget.
+const MAX_PROVIDER_INPUT_AUTHORITY_SAMPLES: u64 = 2_880_000;
+const STRICT_ORDINARY_CELL_MAX_SAMPLES: u64 = 2_173_045;
+const STRICT_PROCESS_CELL_MAX_SAMPLES: u64 = 2_877_045;
 const MAX_SAMPLES_ENV: &str = "OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES";
 const LEDGER_PATH_ENV: &str = "OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH";
 const CELL_ID_ENV: &str = "OMNI_WATCH_MODE_CELL_ID";
@@ -20,6 +30,8 @@ const RUN_MARKER_ENV: &str = "OMNI_WATCH_MODE_RUN_MARKER";
 const PCM_PATH_ENV: &str = "OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH";
 const MODEL_ENV: &str = "OMNI_WATCH_MODE_MODEL_ID";
 const PROTOCOL_ENV: &str = "OMNI_WATCH_MODE_REALTIME_PROTOCOL";
+const MODEL_PROTOCOL_PROFILE_IDENTITY_ENV: &str =
+    "OMNI_WATCH_MODE_MODEL_PROTOCOL_PROFILE_IDENTITY";
 const STRICT_PAID_AUTHORITY_ENV: &str = "OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY";
 const INCIDENT_REPLAY_AUTHORITY_ENV: &str = "OMNI_WATCH_MODE_INCIDENT_REPLAY_AUTHORITY";
 const LOCAL_SINGLE_SESSION_AUTHORITY_ENV: &str =
@@ -44,6 +56,31 @@ const STRICT_LIVETRANSLATE_PROTOCOL: &str = "dashscope-livetranslate";
 const INCIDENT_PLUS_MODEL: &str = "qwen3.5-omni-plus-realtime";
 const INCIDENT_PLUS_PROTOCOL: &str = "dashscope-omni";
 const INCIDENT_PLUS_ID: &str = "watch-mode-loss-incident-plus-v1";
+
+fn strict_release_cell_max_samples(cell_id: &str) -> Result<u64, String> {
+    let parts = cell_id.split("::").collect::<Vec<_>>();
+    let [tier, model, feedback_mode, device_class] = parts.as_slice() else {
+        return Err(format!(
+            "strict paid Provider input cellId is not a formal four-part release cell: {cell_id}"
+        ));
+    };
+    if *model != STRICT_LIVETRANSLATE_MODEL || *device_class != "default-speaker" {
+        return Err(format!(
+            "strict paid Provider input cellId is outside the formal LiveTranslate release authority: {cell_id}"
+        ));
+    }
+    match (*tier, *feedback_mode) {
+        ("pairwise-live", "virtual-driver" | "echo-cancel") => {
+            Ok(STRICT_ORDINARY_CELL_MAX_SAMPLES)
+        }
+        ("pairwise-live" | "model-stability", "process-exclusion") => {
+            Ok(STRICT_PROCESS_CELL_MAX_SAMPLES)
+        }
+        _ => Err(format!(
+            "strict paid Provider input cellId is not an approved formal release cell: {cell_id}"
+        )),
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct ProviderInputBudget {
@@ -72,6 +109,7 @@ struct EnabledProviderInputBudget {
     custom_header_count: usize,
     model: String,
     protocol: String,
+    model_protocol_profile_identity: ModelProtocolProfileIdentityRuntime,
     max_samples: u64,
     total_attempted_samples: AtomicU64,
     append_attempts: AtomicU64,
@@ -111,349 +149,25 @@ impl ProviderInputBudget {
         )
     }
 
-    fn from_environment(
-        provider: &ProviderDraftInput,
-        direction: &str,
-        session_generation: u64,
-        model: &str,
-        protocol: &str,
-        read_env: impl Fn(&str) -> Option<String>,
-    ) -> Result<Self, String> {
-        let max_samples = read_env(MAX_SAMPLES_ENV);
-        let ledger_path = read_env(LEDGER_PATH_ENV);
-        let cell_id = read_env(CELL_ID_ENV);
-        let lease_id = read_env(LEASE_ID_ENV);
-        let strict_paid_authority = match read_env(STRICT_PAID_AUTHORITY_ENV) {
-            None => false,
-            Some(value) if value.trim() == "1" => true,
-            Some(_) => {
-                return Err(format!(
-                    "{STRICT_PAID_AUTHORITY_ENV} must be exactly 1 when present"
-                ))
-            }
-        };
-        let incident_replay_authority = match read_env(INCIDENT_REPLAY_AUTHORITY_ENV) {
-            None => false,
-            Some(value) if value.trim() == "1" => true,
-            Some(_) => {
-                return Err(format!(
-                    "{INCIDENT_REPLAY_AUTHORITY_ENV} must be exactly 1 when present"
-                ))
-            }
-        };
-        let local_single_session_authority =
-            match read_env(LOCAL_SINGLE_SESSION_AUTHORITY_ENV) {
-                None => false,
-                Some(value) if value.trim() == "1" => true,
-                Some(_) => {
-                    return Err(format!(
-                        "{LOCAL_SINGLE_SESSION_AUTHORITY_ENV} must be exactly 1 when present"
-                    ))
-                }
-            };
-        if [
-            strict_paid_authority,
-            incident_replay_authority,
-            local_single_session_authority,
-        ]
-        .into_iter()
-        .filter(|enabled| *enabled)
-        .count()
-            > 1
-        {
-            return Err(
-                "strict paid, incident replay, and local single-session provider authorities are mutually exclusive".to_string(),
-            );
-        }
-        // CELL_ID/AUTOSTART/RUN_MARKER are shared by ordinary Watch Mode runs.
-        // Only budget-specific variables opt into this production send gate;
-        // once any is present, the complete binding is mandatory. The paid
-        // authority sentinel is independent: it must never be bypassable by
-        // removing every budget-specific variable.
-        if !strict_paid_authority
-            && !incident_replay_authority
-            && !local_single_session_authority
-            && max_samples.is_none()
-            && ledger_path.is_none()
-            && lease_id.is_none()
-        {
-            return Ok(Self { enabled: None });
-        }
-        let required = |name: &str, value: Option<String>| -> Result<String, String> {
-            value
-                .map(|entry| entry.trim().to_string())
-                .filter(|entry| !entry.is_empty())
-                .ok_or_else(|| format!("strict provider input budget requires {name}"))
-        };
-        let max_samples = required(MAX_SAMPLES_ENV, max_samples)?
-            .parse::<u64>()
-            .map_err(|error| {
-                format!("{MAX_SAMPLES_ENV} must be a positive integer: {error}")
-            })?;
-        if max_samples == 0 || max_samples > MAX_STRICT_PROVIDER_INPUT_SAMPLES {
-            return Err(format!(
-                "{MAX_SAMPLES_ENV} must be within 1..={MAX_STRICT_PROVIDER_INPUT_SAMPLES}"
-            ));
-        }
-        let ledger_path = required(LEDGER_PATH_ENV, ledger_path)?;
-        let cell_id = required(CELL_ID_ENV, cell_id)?;
-        let lease_id = required(LEASE_ID_ENV, lease_id)?;
-        let run_marker = required(RUN_MARKER_ENV, read_env(RUN_MARKER_ENV))?;
-        let autostart = required(AUTOSTART_ENV, read_env(AUTOSTART_ENV))?;
-        if !matches!(autostart.as_str(), "1" | "true" | "TRUE" | "yes" | "YES") {
-            return Err(format!(
-                "strict provider input budget requires {AUTOSTART_ENV}=1"
-            ));
-        }
-        if direction != "inbound" {
-            return Err(
-                "strict provider input budget permits only the inbound Watch route".to_string(),
-            );
-        }
-        let model = model.trim();
-        if model.is_empty() {
-            return Err("strict provider input budget requires an actual provider model".to_string());
-        }
-        let protocol = protocol.trim();
-        if protocol.is_empty() {
-            return Err(
-                "strict provider input budget requires an actual realtime protocol".to_string(),
-            );
-        }
-        let provider_id = provider.provider_id.trim();
-        let template_id = provider.template_id.trim();
-        let provider_kind = provider.kind.trim();
-        let credential_reference = provider.auth_ref.reference.trim();
-        let auth_header_name = provider.auth_ref.header_name.trim();
-        let auth_scheme = provider.auth_ref.scheme.trim();
-        let custom_header_count = provider.custom_headers.len();
-        let endpoint = Url::parse(provider.base_url.trim()).map_err(|_| {
-            "strict provider input budget requires a valid provider baseUrl".to_string()
-        })?;
-        let endpoint_host = endpoint
-            .host_str()
-            .map(str::to_ascii_lowercase)
-            .ok_or_else(|| {
-                "strict provider input budget requires a provider baseUrl with a hostname"
-                    .to_string()
-            })?;
-        let incident_id = if incident_replay_authority {
-            let incident_id = required(INCIDENT_ID_ENV, read_env(INCIDENT_ID_ENV))?;
-            if incident_id != INCIDENT_PLUS_ID {
-                return Err(format!(
-                    "incident replay provider authority requires {INCIDENT_ID_ENV}={INCIDENT_PLUS_ID}"
-                ));
-            }
-            Some(incident_id)
-        } else {
-            None
-        };
-        if local_single_session_authority {
-            if session_generation == 0 {
-                return Err(
-                    "local single-session provider authority requires a non-zero session generation"
-                        .to_string(),
-                );
-            }
-            required(PCM_PATH_ENV, read_env(PCM_PATH_ENV))?;
-            let expected_model = required(MODEL_ENV, read_env(MODEL_ENV))?;
-            let expected_protocol = required(PROTOCOL_ENV, read_env(PROTOCOL_ENV))?;
-            if !matches!(
-                (expected_model.as_str(), expected_protocol.as_str()),
-                (STRICT_OMNI_MODEL, STRICT_OMNI_PROTOCOL)
-                    | (STRICT_LIVETRANSLATE_MODEL, STRICT_LIVETRANSLATE_PROTOCOL)
-                    | (INCIDENT_PLUS_MODEL, INCIDENT_PLUS_PROTOCOL)
-            ) {
-                return Err(format!(
-                    "local single-session provider authority rejected model/protocol pair {expected_model}/{expected_protocol}"
-                ));
-            }
-            if model != expected_model || protocol != expected_protocol {
-                return Err(format!(
-                    "local single-session provider authority runtime pair mismatch: expected={expected_model}/{expected_protocol} actual={model}/{protocol}"
-                ));
-            }
-            if provider_id != STRICT_PROVIDER_ID
-                || template_id != STRICT_TEMPLATE_ID
-                || provider_kind != STRICT_PROVIDER_KIND
-                || endpoint_host != STRICT_ENDPOINT_HOST
-                || provider.auth_ref.kind != "credential-ref"
-                || credential_reference != STRICT_CREDENTIAL_REFERENCE
-                || auth_header_name != "Authorization"
-                || auth_scheme != "bearer"
-                || custom_header_count != 0
-                || provider.transport != "websocket"
-                || !matches!(endpoint.scheme(), "https" | "wss")
-                || !endpoint.username().is_empty()
-                || endpoint.password().is_some()
-                || endpoint.port().is_some()
-            {
-                return Err(
-                    "local single-session provider authority requires the canonical DashScope TLS websocket provider and credential reference".to_string(),
-                );
-            }
-        }
-        if strict_paid_authority || incident_replay_authority {
-            if session_generation == 0 {
-                return Err(
-                    "strict paid provider authority requires a non-zero session generation"
-                        .to_string(),
-                );
-            }
-            required(PCM_PATH_ENV, read_env(PCM_PATH_ENV))?;
-            let expected_model = required(MODEL_ENV, read_env(MODEL_ENV))?;
-            let expected_protocol = required(PROTOCOL_ENV, read_env(PROTOCOL_ENV))?;
-            let expected_provider_id =
-                required(EXPECTED_PROVIDER_ID_ENV, read_env(EXPECTED_PROVIDER_ID_ENV))?;
-            let expected_template_id = required(
-                EXPECTED_TEMPLATE_ID_ENV,
-                read_env(EXPECTED_TEMPLATE_ID_ENV),
-            )?;
-            let expected_provider_kind = required(
-                EXPECTED_PROVIDER_KIND_ENV,
-                read_env(EXPECTED_PROVIDER_KIND_ENV),
-            )?;
-            let expected_endpoint_host = required(
-                EXPECTED_ENDPOINT_HOST_ENV,
-                read_env(EXPECTED_ENDPOINT_HOST_ENV),
-            )?
-            .to_ascii_lowercase();
-            let expected_credential_reference = required(
-                EXPECTED_CREDENTIAL_REFERENCE_ENV,
-                read_env(EXPECTED_CREDENTIAL_REFERENCE_ENV),
-            )?;
-            let approved_pair = if strict_paid_authority {
-                matches!(
-                    (expected_model.as_str(), expected_protocol.as_str()),
-                    (STRICT_OMNI_MODEL, STRICT_OMNI_PROTOCOL)
-                        | (STRICT_LIVETRANSLATE_MODEL, STRICT_LIVETRANSLATE_PROTOCOL)
-                )
-            } else {
-                matches!(
-                    (expected_model.as_str(), expected_protocol.as_str()),
-                    (INCIDENT_PLUS_MODEL, INCIDENT_PLUS_PROTOCOL)
-                )
-            };
-            if !approved_pair {
-                return Err(format!(
-                    "provider authority rejected model/protocol pair {expected_model}/{expected_protocol}"
-                ));
-            }
-            for (label, actual, expected, fixed) in [
-                ("providerId", provider_id, expected_provider_id.as_str(), STRICT_PROVIDER_ID),
-                ("templateId", template_id, expected_template_id.as_str(), STRICT_TEMPLATE_ID),
-                ("providerKind", provider_kind, expected_provider_kind.as_str(), STRICT_PROVIDER_KIND),
-                (
-                    "endpointHost",
-                    endpoint_host.as_str(),
-                    expected_endpoint_host.as_str(),
-                    STRICT_ENDPOINT_HOST,
-                ),
-                (
-                    "credentialReference",
-                    credential_reference,
-                    expected_credential_reference.as_str(),
-                    STRICT_CREDENTIAL_REFERENCE,
-                ),
-            ] {
-                if expected != fixed {
-                    return Err(format!(
-                        "strict paid provider authority {label} expectation must be {fixed}; got {expected}"
-                    ));
-                }
-                if actual != expected {
-                    return Err(format!(
-                        "strict paid provider authority {label} mismatch: expected={expected} actual={actual}"
-                    ));
-                }
-            }
-            if model != expected_model {
-                return Err(format!(
-                    "strict paid provider authority model mismatch: expected={expected_model} actual={model}"
-                ));
-            }
-            if protocol != expected_protocol {
-                return Err(format!(
-                    "strict paid provider authority protocol mismatch: expected={expected_protocol} actual={protocol}"
-                ));
-            }
-            if provider.auth_ref.kind != "credential-ref"
-                || !credential_reference.starts_with("credential://")
-                || provider.auth_ref.header_name != "Authorization"
-                || provider.auth_ref.scheme != "bearer"
-                || !provider.custom_headers.is_empty()
-                || provider.transport != "websocket"
-                || !matches!(endpoint.scheme(), "https" | "wss")
-                || !endpoint.username().is_empty()
-                || endpoint.password().is_some()
-                || endpoint.port().is_some()
-            {
-                return Err(
-                    "strict paid provider authority requires a canonical TLS websocket endpoint, credential-ref bearer authentication, and no custom headers".to_string(),
-                );
-            }
-        }
-        let final_ledger = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(Path::new(&ledger_path))
-            .map_err(|error| {
-                format!(
-                    "strict provider input budget ledger must be a new exclusive file: {error}"
-                )
-            })?;
-        let journal_path = format!("{ledger_path}.journal.jsonl");
-        let journal = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(Path::new(&journal_path))
-            .map_err(|error| {
-                format!(
-                    "strict provider input budget journal must be a new exclusive file: {error}"
-                )
-            })?;
-        let budget = Self {
-            enabled: Some(EnabledProviderInputBudget {
-                final_ledger: Mutex::new(final_ledger),
-                journal: Mutex::new(journal),
-                cell_id,
-                lease_id,
-                run_marker,
-                session_generation,
-                strict_paid_authority,
-                incident_replay_authority,
-                local_single_session_authority,
-                incident_id,
-                provider_id: provider_id.to_string(),
-                template_id: template_id.to_string(),
-                provider_kind: provider_kind.to_string(),
-                endpoint_host,
-                credential_reference: credential_reference.to_string(),
-                auth_header_name: auth_header_name.to_string(),
-                auth_scheme: auth_scheme.to_string(),
-                custom_header_count,
-                model: model.to_string(),
-                protocol: protocol.to_string(),
-                max_samples,
-                total_attempted_samples: AtomicU64::new(0),
-                append_attempts: AtomicU64::new(0),
-                send_failures: AtomicU64::new(0),
-                initial_connect_attempts: AtomicU64::new(0),
-                reconnect_count: AtomicU64::new(0),
-                sequence: AtomicU64::new(0),
-                budget_exceeded: AtomicBool::new(false),
-                finalized: AtomicBool::new(false),
-                terminal_reason: Mutex::new(None),
-            }),
-        };
-        budget.write_event("initialized", None, false)?;
-        Ok(budget)
-    }
 
     pub(super) fn max_samples(&self) -> Option<usize> {
         self.enabled
             .as_ref()
             .map(|budget| budget.max_samples as usize)
+    }
+
+    /// Returns whether a complete append still fits without mutating the
+    /// authority ledger. The subsequent atomic reservation remains the final
+    /// race-safe gate; this check lets the audio pump end cleanly at the exact
+    /// ceiling instead of deliberately attempting one rejected append.
+    pub(super) fn can_append(&self, sample_count: u64) -> bool {
+        self.enabled.as_ref().is_none_or(|budget| {
+            budget
+                .total_attempted_samples
+                .load(Ordering::SeqCst)
+                .checked_add(sample_count)
+                .is_some_and(|next| next <= budget.max_samples)
+        })
     }
 
     pub(super) fn strict_paid_authority_enabled(&self) -> bool {
@@ -524,17 +238,20 @@ impl ProviderInputBudget {
         budget.authorize_reconnect_before_connect(trigger)
     }
 
-    pub(super) fn mark_terminal(&self, reason: &str) {
-        if let Some(budget) = self.enabled.as_ref() {
-            budget.set_terminal_reason(reason);
-        }
-    }
-
     pub(super) fn finalize(&self, reason: &str) -> Result<(), String> {
         let Some(budget) = self.enabled.as_ref() else {
             return Ok(());
         };
         budget.finalize(reason)
+    }
+
+    pub(super) fn finalize_failure(&self, reason: &str, error: String) -> String {
+        match self.finalize(reason) {
+            Ok(()) => error,
+            Err(finalize_error) => format!(
+                "{error} | provider input budget ledger finalization failed: {finalize_error}"
+            ),
+        }
     }
 
     fn write_event(
@@ -566,22 +283,30 @@ impl ProviderInputBudget {
     ) -> Result<Self, String> {
         let ledger_path = ledger_path.to_string_lossy().into_owned();
         let pcm_path = format!("{ledger_path}.pcm");
+        let authority = crate::audio::events::authorize_bailian_native_translate(provider)?;
+        let identity_json = serde_json::to_string(
+            &ModelProtocolProfileIdentityRuntime::from(&authority),
+        )
+        .map_err(|error| format!("test protocol identity serialize failed: {error}"))?;
         Self::from_environment(
             provider,
             "inbound",
             7,
             &provider.model,
-            STRICT_OMNI_PROTOCOL,
+            STRICT_LIVETRANSLATE_PROTOCOL,
             |name| match name {
-                MAX_SAMPLES_ENV => Some("32000".to_string()),
+                MAX_SAMPLES_ENV => Some(STRICT_ORDINARY_CELL_MAX_SAMPLES.to_string()),
                 LEDGER_PATH_ENV => Some(ledger_path.clone()),
-                CELL_ID_ENV => Some("strict-reconnect-test".to_string()),
+                CELL_ID_ENV => Some(format!(
+                    "pairwise-live::{STRICT_LIVETRANSLATE_MODEL}::virtual-driver::default-speaker"
+                )),
                 LEASE_ID_ENV => Some("strict-reconnect-lease".to_string()),
                 AUTOSTART_ENV => Some("1".to_string()),
                 RUN_MARKER_ENV => Some("strict-reconnect-run".to_string()),
                 PCM_PATH_ENV => Some(pcm_path.clone()),
-                MODEL_ENV => Some(STRICT_OMNI_MODEL.to_string()),
-                PROTOCOL_ENV => Some(STRICT_OMNI_PROTOCOL.to_string()),
+                MODEL_ENV => Some(STRICT_LIVETRANSLATE_MODEL.to_string()),
+                PROTOCOL_ENV => Some(STRICT_LIVETRANSLATE_PROTOCOL.to_string()),
+                MODEL_PROTOCOL_PROFILE_IDENTITY_ENV => Some(identity_json.clone()),
                 STRICT_PAID_AUTHORITY_ENV => Some("1".to_string()),
                 EXPECTED_PROVIDER_ID_ENV => Some(STRICT_PROVIDER_ID.to_string()),
                 EXPECTED_TEMPLATE_ID_ENV => Some(STRICT_TEMPLATE_ID.to_string()),
@@ -601,10 +326,10 @@ impl ProviderInputBudget {
             "templateId": STRICT_TEMPLATE_ID,
             "providerId": STRICT_PROVIDER_ID,
             "kind": STRICT_PROVIDER_KIND,
-            "templateRealtimeProtocol": STRICT_OMNI_PROTOCOL,
-            "realtimeProtocol": STRICT_OMNI_PROTOCOL,
+            "templateRealtimeProtocol": STRICT_LIVETRANSLATE_PROTOCOL,
+            "realtimeProtocol": STRICT_LIVETRANSLATE_PROTOCOL,
             "displayName": "DashScope strict reconnect test",
-            "model": STRICT_OMNI_MODEL,
+            "model": STRICT_LIVETRANSLATE_MODEL,
             "baseUrl": format!("https://{STRICT_ENDPOINT_HOST}/api/v1"),
             "transport": "websocket",
             "authRef": {
@@ -729,7 +454,10 @@ impl EnabledProviderInputBudget {
         }
         self.set_terminal_reason(reason);
         if let Err(error) = self.write_event("finalized", None, true) {
-            self.finalized.store(false, Ordering::SeqCst);
+            // Finalization is an exactly-once attempt. A journal write can
+            // fail after partially reaching the file, so reopening the gate
+            // would let Drop append a second terminal record over ambiguous
+            // bytes. Keep the gate closed and surface the persistence error.
             return Err(error);
         }
         Ok(())
@@ -753,7 +481,7 @@ impl EnabledProviderInputBudget {
             "watch-mode-provider-input-budget-ledger"
         };
         let record = json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "artifactKind": artifact_kind,
             "event": event,
             "sequence": sequence,
@@ -778,6 +506,7 @@ impl EnabledProviderInputBudget {
             "customHeaderCount": self.custom_header_count,
             "model": self.model,
             "protocol": self.protocol,
+            "modelProtocolProfileIdentity": self.model_protocol_profile_identity,
             "attemptedSamples": attempted_samples,
             "totalAttemptedSamples": self.total_attempted_samples.load(Ordering::SeqCst),
             "maxSamples": self.max_samples,
@@ -818,7 +547,7 @@ impl EnabledProviderInputBudget {
             "watch-mode-provider-input-budget-ledger"
         };
         let record = json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "artifactKind": artifact_kind,
             "cellId": self.cell_id,
             "leaseId": self.lease_id,
@@ -840,6 +569,7 @@ impl EnabledProviderInputBudget {
             "customHeaderCount": self.custom_header_count,
             "model": self.model,
             "protocol": self.protocol,
+            "modelProtocolProfileIdentity": self.model_protocol_profile_identity,
             "totalAttemptedSamples": self.total_attempted_samples.load(Ordering::SeqCst),
             "maxSamples": self.max_samples,
             "appendAttempts": self.append_attempts.load(Ordering::SeqCst),
@@ -891,11 +621,13 @@ mod tests {
         ProviderDraftInput {
             template_id: STRICT_TEMPLATE_ID.to_string(),
             provider_id: provider_id.to_string(),
+            manifest_provider_id: None,
             kind: STRICT_PROVIDER_KIND.to_string(),
-            template_realtime_protocol: Some(STRICT_OMNI_PROTOCOL.to_string()),
-            realtime_protocol: Some(STRICT_OMNI_PROTOCOL.to_string()),
+            template_realtime_protocol: Some(STRICT_LIVETRANSLATE_PROTOCOL.to_string()),
+            realtime_protocol: Some(STRICT_LIVETRANSLATE_PROTOCOL.to_string()),
             display_name: "DashScope".to_string(),
-            model: STRICT_OMNI_MODEL.to_string(),
+            model: STRICT_LIVETRANSLATE_MODEL.to_string(),
+            deployment_id: None,
             base_url: format!("https://{STRICT_ENDPOINT_HOST}/api/v1"),
             transport: "websocket".to_string(),
             auth_ref: ProviderAuthRefInput {
@@ -913,6 +645,7 @@ mod tests {
             response_modalities: vec!["text".to_string()],
             custom_headers: Vec::new(),
             scene_model_assignments: Vec::new(),
+            model_protocol_bindings: Vec::new(),
             local_model_capability_registry: Vec::new(),
             model_catalog_cache: Default::default(),
         }
@@ -930,9 +663,8 @@ mod tests {
             (AUTOSTART_ENV.to_string(), "1".to_string()),
             (RUN_MARKER_ENV.to_string(), "run-1".to_string()),
             (PCM_PATH_ENV.to_string(), path.with_extension("pcm").to_string_lossy().into_owned()),
-            (MODEL_ENV.to_string(), STRICT_OMNI_MODEL.to_string()),
-            (PROTOCOL_ENV.to_string(), STRICT_OMNI_PROTOCOL.to_string()),
-            (STRICT_PAID_AUTHORITY_ENV.to_string(), "1".to_string()),
+            (MODEL_ENV.to_string(), STRICT_LIVETRANSLATE_MODEL.to_string()),
+            (PROTOCOL_ENV.to_string(), STRICT_LIVETRANSLATE_PROTOCOL.to_string()),
             (EXPECTED_PROVIDER_ID_ENV.to_string(), STRICT_PROVIDER_ID.to_string()),
             (EXPECTED_TEMPLATE_ID_ENV.to_string(), STRICT_TEMPLATE_ID.to_string()),
             (EXPECTED_PROVIDER_KIND_ENV.to_string(), STRICT_PROVIDER_KIND.to_string()),
@@ -942,6 +674,32 @@ mod tests {
                 STRICT_CREDENTIAL_REFERENCE.to_string(),
             ),
         ])
+    }
+
+    fn strict_environment(path: &Path, feedback_mode: &str) -> HashMap<String, String> {
+        let max_samples = match feedback_mode {
+            "virtual-driver" | "echo-cancel" => STRICT_ORDINARY_CELL_MAX_SAMPLES,
+            "process-exclusion" => STRICT_PROCESS_CELL_MAX_SAMPLES,
+            _ => panic!("unsupported strict feedback mode: {feedback_mode}"),
+        };
+        let mut environment = enabled_environment(path, &max_samples.to_string());
+        environment.insert(STRICT_PAID_AUTHORITY_ENV.to_string(), "1".to_string());
+        let authority = crate::audio::events::authorize_bailian_native_translate(
+            &provider(STRICT_PROVIDER_ID),
+        )
+        .expect("strict test model protocol authority");
+        environment.insert(
+            MODEL_PROTOCOL_PROFILE_IDENTITY_ENV.to_string(),
+            serde_json::to_string(&ModelProtocolProfileIdentityRuntime::from(&authority))
+                .expect("strict test model protocol identity serializes"),
+        );
+        environment.insert(
+            CELL_ID_ENV.to_string(),
+            format!(
+                "pairwise-live::{STRICT_LIVETRANSLATE_MODEL}::{feedback_mode}::default-speaker"
+            ),
+        );
+        environment
     }
 
     fn budget_from_map(
@@ -959,7 +717,10 @@ mod tests {
             "inbound",
             7,
             &provider.model,
-            STRICT_OMNI_PROTOCOL,
+            provider
+                .realtime_protocol
+                .as_deref()
+                .unwrap_or(STRICT_LIVETRANSLATE_PROTOCOL),
             |name| environment.get(name).cloned(),
         )
     }
@@ -998,10 +759,13 @@ mod tests {
             LOCAL_SINGLE_SESSION_AUTHORITY_ENV.to_string(),
             "1".to_string(),
         );
-        environment.insert(MODEL_ENV.to_string(), INCIDENT_PLUS_MODEL.to_string());
+        environment.insert(
+            MODEL_ENV.to_string(),
+            STRICT_LIVETRANSLATE_MODEL.to_string(),
+        );
         environment.insert(
             PROTOCOL_ENV.to_string(),
-            INCIDENT_PLUS_PROTOCOL.to_string(),
+            STRICT_LIVETRANSLATE_PROTOCOL.to_string(),
         );
         environment
     }
@@ -1051,10 +815,10 @@ mod tests {
         assert_eq!(final_record["cellId"], "paid-cell-1");
         assert_eq!(final_record["leaseId"], "lease-1");
         assert_eq!(final_record["runMarker"], "run-1");
-        assert_eq!(final_record["model"], "qwen3.5-omni-flash-realtime");
-        assert_eq!(final_record["protocol"], "dashscope-omni");
+        assert_eq!(final_record["model"], STRICT_LIVETRANSLATE_MODEL);
+        assert_eq!(final_record["protocol"], STRICT_LIVETRANSLATE_PROTOCOL);
         assert_eq!(final_record["sessionGeneration"], 7);
-        assert_eq!(final_record["strictPaidAuthority"], true);
+        assert_eq!(final_record["strictPaidAuthority"], false);
         assert_eq!(final_record["providerId"], STRICT_PROVIDER_ID);
         assert_eq!(final_record["templateId"], STRICT_TEMPLATE_ID);
         assert_eq!(final_record["providerKind"], STRICT_PROVIDER_KIND);
@@ -1111,6 +875,109 @@ mod tests {
     }
 
     #[test]
+    fn exact_cap_can_be_observed_without_recording_a_rejected_attempt() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("ledger.json");
+        let environment = enabled_environment(&path, "10");
+        let budget = budget_from_map(&environment).expect("budget");
+
+        assert!(budget.can_append(10));
+        budget
+            .attempt_send(10, || Ok(()), || Ok::<_, ()>(()))
+            .expect("exact-cap reservation")
+            .expect("send");
+        assert!(!budget.can_append(1));
+        budget.finalize("worker-completed").expect("finalize");
+
+        let journal = journal_records(&path);
+        assert_eq!(
+            journal
+                .iter()
+                .filter(|entry| entry["event"] == "reserve_rejected")
+                .count(),
+            0
+        );
+        let final_record = final_record(&path);
+        assert_eq!(final_record["budgetExceeded"], false);
+        assert_eq!(final_record["totalAttemptedSamples"], 10);
+        assert_eq!(final_record["terminalReason"], "worker-completed");
+    }
+
+    #[test]
+    fn failure_finalization_preserves_the_product_error_and_closes_the_ledger_once() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("ledger.json");
+        let environment = enabled_environment(&path, "10");
+        let budget = budget_from_map(&environment).expect("budget");
+
+        let error = budget.finalize_failure(
+            "livetranslate-audio-drain-timeout",
+            "shutdown did not complete within 15 seconds".to_string(),
+        );
+
+        assert_eq!(error, "shutdown did not complete within 15 seconds");
+        let final_record = final_record(&path);
+        assert_eq!(final_record["finalized"], true);
+        assert_eq!(
+            final_record["terminalReason"],
+            "livetranslate-audio-drain-timeout"
+        );
+        let journal = journal_records(&path);
+        assert_eq!(journal.last().expect("terminal journal record")["event"], "finalized");
+        assert_eq!(
+            journal
+                .iter()
+                .filter(|entry| entry["event"] == "finalized")
+                .count(),
+            1
+        );
+
+        drop(budget);
+        assert_eq!(
+            journal_records(&path)
+                .iter()
+                .filter(|entry| entry["event"] == "finalized")
+                .count(),
+            1,
+            "Drop must not append a second terminal record"
+        );
+    }
+
+    #[test]
+    fn failed_finalization_attempt_cannot_be_retried_by_cleanup() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("ledger.json");
+        let environment = enabled_environment(&path, "10");
+        let budget = budget_from_map(&environment).expect("budget");
+        let enabled = budget.enabled.as_ref().expect("enabled budget");
+        let sequence_before_finalization = enabled.sequence.load(Ordering::SeqCst);
+
+        let _ = std::panic::catch_unwind(|| {
+            let _journal = enabled.journal.lock().expect("journal lock");
+            panic!("poison journal writer");
+        });
+
+        let error = budget.finalize_failure(
+            "livetranslate-audio-drain-timeout",
+            "product failure".to_string(),
+        );
+        assert!(error.contains("product failure"));
+        assert!(error.contains("journal lock was poisoned"));
+        assert!(enabled.finalized.load(Ordering::SeqCst));
+        assert_eq!(
+            enabled.sequence.load(Ordering::SeqCst),
+            sequence_before_finalization + 1,
+        );
+
+        budget.finalize("worker-drop").expect("cleanup observes the closed gate");
+        assert_eq!(
+            enabled.sequence.load(Ordering::SeqCst),
+            sequence_before_finalization + 1,
+            "cleanup must not attempt a second terminal journal append",
+        );
+    }
+
+    #[test]
     fn ordinary_budgeted_send_failure_and_retry_consume_two_reservations() {
         let directory = tempdir().expect("tempdir");
         let path = directory.path().join("ledger.json");
@@ -1155,7 +1022,7 @@ mod tests {
     fn strict_reconnect_authorization_persists_terminal_rejection_before_connector_call() {
         let directory = tempdir().expect("tempdir");
         let path = directory.path().join("ledger.json");
-        let environment = enabled_environment(&path, "20");
+        let environment = strict_environment(&path, "virtual-driver");
         let budget = budget_from_map(&environment).expect("budget");
         let connector_attempts = Cell::new(0);
         budget
@@ -1231,24 +1098,115 @@ mod tests {
     }
 
     #[test]
-    fn incident_plus_authority_accepts_only_the_signed_plus_omni_pair() {
+    fn strict_release_cell_rejects_a_cross_mode_sample_lease_before_ledger_creation() {
+        let directory = tempdir().expect("tempdir");
+        let virtual_path = directory.path().join("virtual-mismatch.json");
+        let mut virtual_environment = enabled_environment(&virtual_path, "2877045");
+        virtual_environment.insert(STRICT_PAID_AUTHORITY_ENV.to_string(), "1".to_string());
+        virtual_environment.insert(
+            CELL_ID_ENV.to_string(),
+            format!(
+                "pairwise-live::{STRICT_LIVETRANSLATE_MODEL}::virtual-driver::default-speaker"
+            ),
+        );
+        let virtual_error = budget_from_map(&virtual_environment)
+            .expect_err("virtual-driver cannot borrow the process-exclusion sample ceiling");
+        assert!(virtual_error.contains("2173045"), "{virtual_error}");
+        assert!(!virtual_path.exists());
+
+        let process_path = directory.path().join("process-mismatch.json");
+        let mut process_environment = enabled_environment(&process_path, "2173045");
+        process_environment.insert(STRICT_PAID_AUTHORITY_ENV.to_string(), "1".to_string());
+        process_environment.insert(
+            CELL_ID_ENV.to_string(),
+            format!(
+                "pairwise-live::{STRICT_LIVETRANSLATE_MODEL}::process-exclusion::default-speaker"
+            ),
+        );
+        let process_error = budget_from_map(&process_environment)
+            .expect_err("process-exclusion cannot accept a truncating ordinary sample ceiling");
+        assert!(process_error.contains("2877045"), "{process_error}");
+        assert!(!process_path.exists());
+
+        let exact_process_path = directory.path().join("process-exact.json");
+        let exact_process_environment =
+            strict_environment(&exact_process_path, "process-exclusion");
+        let exact_process = budget_from_map(&exact_process_environment)
+            .expect("process-exclusion accepts its exact formal sample ceiling");
+        assert_eq!(
+            exact_process.max_samples(),
+            Some(STRICT_PROCESS_CELL_MAX_SAMPLES as usize),
+        );
+    }
+
+    #[test]
+    fn strict_authority_rejects_missing_extra_or_tampered_profile_identity_before_ledger() {
+        let directory = tempdir().expect("tempdir");
+
+        let missing_path = directory.path().join("missing-profile-identity.json");
+        let mut missing = strict_environment(&missing_path, "virtual-driver");
+        missing.remove(MODEL_PROTOCOL_PROFILE_IDENTITY_ENV);
+        let missing_error = budget_from_map(&missing)
+            .expect_err("strict authority requires the signed profile identity");
+        assert!(
+            missing_error.contains(MODEL_PROTOCOL_PROFILE_IDENTITY_ENV),
+            "{missing_error}"
+        );
+        assert!(!missing_path.exists());
+
+        let extra_path = directory.path().join("extra-profile-identity.json");
+        let mut extra = strict_environment(&extra_path, "virtual-driver");
+        let mut extra_identity: Value = serde_json::from_str(
+            extra
+                .get(MODEL_PROTOCOL_PROFILE_IDENTITY_ENV)
+                .expect("identity exists"),
+        )
+        .expect("identity is JSON");
+        extra_identity["untrustedExtraField"] = json!(true);
+        extra.insert(
+            MODEL_PROTOCOL_PROFILE_IDENTITY_ENV.to_string(),
+            extra_identity.to_string(),
+        );
+        let extra_error = budget_from_map(&extra)
+            .expect_err("unknown signed identity fields fail closed");
+        assert!(
+            extra_error.contains("unknown field `untrustedExtraField`"),
+            "{extra_error}"
+        );
+        assert!(!extra_path.exists());
+
+        let tampered_path = directory.path().join("tampered-profile-identity.json");
+        let mut tampered = strict_environment(&tampered_path, "virtual-driver");
+        let mut tampered_identity: Value = serde_json::from_str(
+            tampered
+                .get(MODEL_PROTOCOL_PROFILE_IDENTITY_ENV)
+                .expect("identity exists"),
+        )
+        .expect("identity is JSON");
+        tampered_identity["terminalLifecycle"] = json!("owner-close-after-response-drain");
+        tampered.insert(
+            MODEL_PROTOCOL_PROFILE_IDENTITY_ENV.to_string(),
+            tampered_identity.to_string(),
+        );
+        let tampered_error = budget_from_map(&tampered)
+            .expect_err("tampered signed identity fails before Provider authority creation");
+        assert!(
+            tampered_error.contains("signed Watch identity does not match"),
+            "{tampered_error}"
+        );
+        assert!(!tampered_path.exists());
+    }
+
+    #[test]
+    fn incident_plus_authority_rejects_manifest_only_omni_before_ledger_creation() {
         let directory = tempdir().expect("tempdir");
         let path = directory.path().join("incident-ledger.json");
         let environment = incident_environment(&path, "10");
-        let budget = budget_from_map_with_provider(&environment, &incident_provider())
-            .expect("incident authority accepts Plus with dashscope-omni");
+        let error = budget_from_map_with_provider(&environment, &incident_provider())
+            .expect_err("manifest-only Omni cannot receive incident Provider authority");
 
-        budget
-            .record_initial_connect_attempt()
-            .expect("one incident initial connection is authorized");
-        drop(budget);
-
-        let ledger = final_record(&path);
-        assert_eq!(ledger["strictPaidAuthority"], false);
-        assert_eq!(ledger["incidentReplayAuthority"], true);
-        assert_eq!(ledger["incidentId"], INCIDENT_PLUS_ID);
-        assert_eq!(ledger["model"], INCIDENT_PLUS_MODEL);
-        assert_eq!(ledger["protocol"], INCIDENT_PLUS_PROTOCOL);
+        assert!(error.contains("model_protocol.adapter_unavailable"), "{error}");
+        assert!(!path.exists(), "adapter rejection must precede ledger creation");
     }
 
     #[test]
@@ -1292,11 +1250,10 @@ mod tests {
     }
 
     #[test]
-    fn local_single_session_authority_accepts_only_known_watch_model_protocol_pairs() {
+    fn local_single_session_authority_accepts_only_enabled_watch_adapter() {
         let directory = tempdir().expect("tempdir");
         for (index, (model, protocol)) in [
             (STRICT_OMNI_MODEL, STRICT_OMNI_PROTOCOL),
-            (STRICT_LIVETRANSLATE_MODEL, STRICT_LIVETRANSLATE_PROTOCOL),
             (INCIDENT_PLUS_MODEL, INCIDENT_PLUS_PROTOCOL),
         ]
         .into_iter()
@@ -1310,7 +1267,7 @@ mod tests {
             selected_provider.model = model.to_string();
             selected_provider.template_realtime_protocol = Some(protocol.to_string());
             selected_provider.realtime_protocol = Some(protocol.to_string());
-            let budget = ProviderInputBudget::from_environment(
+            let error = ProviderInputBudget::from_environment(
                 &selected_provider,
                 "inbound",
                 7,
@@ -1318,13 +1275,25 @@ mod tests {
                 protocol,
                 |name| environment.get(name).cloned(),
             )
-            .expect("known smoke model/protocol pair is accepted");
-            drop(budget);
-            let ledger = final_record(&path);
-            assert_eq!(ledger["model"], model);
-            assert_eq!(ledger["protocol"], protocol);
-            assert_eq!(ledger["localSingleSessionAuthority"], true);
+            .expect_err("manifest-only adapter must fail before local smoke ledger creation");
+            assert!(error.contains("model_protocol.adapter_unavailable"), "{error}");
+            assert!(!path.exists());
         }
+
+        let path = directory.path().join("enabled-livetranslate.json");
+        let environment = local_single_session_environment(&path, "10");
+        let budget = budget_from_map(&environment)
+            .expect("enabled LiveTranslate adapter is accepted");
+        drop(budget);
+        let ledger = final_record(&path);
+        assert_eq!(ledger["schemaVersion"], 2);
+        assert_eq!(ledger["model"], STRICT_LIVETRANSLATE_MODEL);
+        assert_eq!(ledger["protocol"], STRICT_LIVETRANSLATE_PROTOCOL);
+        assert_eq!(ledger["localSingleSessionAuthority"], true);
+        assert_eq!(
+            ledger["modelProtocolProfileIdentity"]["profileId"],
+            "bailian.livetranslate.realtime.ws"
+        );
     }
 
     #[test]
@@ -1332,8 +1301,8 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let path = directory.path().join("smoke-ledger.json");
         let environment = local_single_session_environment(&path, "10");
-        let budget = budget_from_map_with_provider(&environment, &incident_provider())
-            .expect("local smoke authority accepts a known Watch model");
+        let budget = budget_from_map(&environment)
+            .expect("local smoke authority accepts the enabled LiveTranslate adapter");
 
         budget
             .record_initial_connect_attempt()
@@ -1373,7 +1342,7 @@ mod tests {
     fn strict_authority_rejects_an_earlier_alternate_dashscope_provider() {
         let directory = tempdir().expect("tempdir");
         let path = directory.path().join("ledger.json");
-        let environment = enabled_environment(&path, "10");
+        let environment = strict_environment(&path, "virtual-driver");
         let alternate = provider("provider-dashscope-alternate");
 
         let error = budget_from_map_with_provider(&environment, &alternate)
@@ -1413,7 +1382,7 @@ mod tests {
             ),
         ] {
             let path = directory.path().join(format!("{label}.json"));
-            let environment = enabled_environment(&path, "10");
+            let environment = strict_environment(&path, "virtual-driver");
             let mut candidate = provider(STRICT_PROVIDER_ID);
             mutate(&mut candidate);
             let error = budget_from_map_with_provider(&environment, &candidate)
@@ -1427,7 +1396,7 @@ mod tests {
     fn strict_authority_records_one_initial_attempt_and_rejects_retry() {
         let directory = tempdir().expect("tempdir");
         let path = directory.path().join("ledger.json");
-        let environment = enabled_environment(&path, "10");
+        let environment = strict_environment(&path, "virtual-driver");
         let budget = budget_from_map(&environment).expect("budget");
 
         budget
@@ -1469,7 +1438,7 @@ mod tests {
     fn strict_pcm_write_failure_charges_reservation_and_blocks_socket_send() {
         let directory = tempdir().expect("tempdir");
         let ledger_path = directory.path().join("ledger.json");
-        let environment = enabled_environment(&ledger_path, "10");
+        let environment = strict_environment(&ledger_path, "virtual-driver");
         let budget = budget_from_map(&environment).expect("budget");
         let read_only_path = directory.path().join("read-only.pcm");
         fs::write(&read_only_path, b"").expect("seed PCM file");

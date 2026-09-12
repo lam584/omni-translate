@@ -149,7 +149,7 @@ static void test_overwrite_counters() {
 static void test_startup_preroll_fits_default_budget() {
     const uint32_t frameBytes = 3840; // 20 ms, 48 kHz stereo PCM16.
     const uint32_t prerollFrames = 10; // 200 ms startup burst.
-    ASSERT_EQ(RingBuffer::kDefaultMaxBuffered, 96000u);
+    ASSERT_EQ(RingBuffer::kDefaultMaxBuffered, 192000u);
 
     std::vector<uint8_t> storage(RingBuffer::kDefaultMaxBuffered, 0);
     RingBuffer ring;

@@ -3,19 +3,20 @@ use std::hash::{Hash, Hasher};
 
 use crate::audio::omni::{self, OmniOutputMode};
 use crate::provider::contracts::ProviderDraftInput;
+use crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile;
 
 use super::{RealtimeProtocol, ResolvedRealtimeProfile};
 
 pub(super) fn resolve_livetranslate_contract(
-    model: &str,
+    authority: &AuthorizedModelProtocolProfile,
     source_language: &str,
     target_language: &str,
     requested_output_mode: OmniOutputMode,
 ) -> Result<(String, String, OmniOutputMode), String> {
-    let source = omni::resolve_livetranslate_language(model, source_language, "en")?;
-    let target = omni::resolve_livetranslate_language(model, target_language, "zh")?;
+    let source = omni::resolve_livetranslate_language(authority, source_language, "en")?;
+    let target = omni::resolve_livetranslate_language(authority, target_language, "zh")?;
     let output_mode =
-        omni::resolve_livetranslate_output_mode(model, &target, requested_output_mode)?;
+        omni::resolve_livetranslate_output_mode(authority, &target, requested_output_mode)?;
     Ok((source, target, output_mode))
 }
 

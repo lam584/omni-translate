@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "model-protocol-wire-fixture/v1",
+  "dialectId": "bailian-qwen-audio-chat-realtime-ws-v1",
+  "checkedAt": "2026-08-30",
+  "sanitized": true,
+  "sources": [
+    { "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-user-guides", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-client-events", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-server-events", "checkedAt": "2026-08-30" }
+  ],
+  "sequence": [
+    { "direction": "server", "frameKind": "json", "eventType": "session.created" },
+    { "direction": "client", "frameKind": "json", "eventType": "session.update" },
+    { "direction": "server", "frameKind": "json", "eventType": "session.updated" },
+    { "direction": "client", "frameKind": "json-base64", "eventType": "input_audio_buffer.append" },
+    { "direction": "server", "frameKind": "json", "eventType": "conversation.item.ambient_audio_transcription.delta", "payload": { "text": "嗯", "stash": "" } },
+    { "direction": "server", "frameKind": "json", "eventType": "conversation.item.ambient_audio_transcription.completed", "payload": { "transcript": "嗯" } },
+    { "direction": "server", "frameKind": "json", "eventType": "input_audio_buffer.speech_stopped", "payload": { "reason": "turn_invalid" } },
+    { "direction": "server", "frameKind": "json", "eventType": "response.done" }
+  ],
+  "expect": {
+    "ambientSnapshotIsConversationInput": false,
+    "turnInvalidIsSpeechStoppedReasonNotEventType": true,
+    "forbiddenEvents": ["session.finished"]
+  }
+}

@@ -12,8 +12,17 @@ use ring::signature::{UnparsedPublicKey, ED25519};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::audio::contracts::ModelProtocolProfileIdentityRuntime;
 use crate::audio::events::resolve_realtime_profile;
 use crate::provider::contracts::ProviderDraftInput;
+use crate::provider::model_protocol_profile::{
+    authorize_model_protocol_invocation, ModelProtocolAuthorizationRequest,
+};
+
+#[cfg(test)]
+mod provider_preflight_protocol_tests;
+#[cfg(test)]
+mod provider_preflight_worker_tests;
 
 const GRANT_PATH_ENV: &str = "OMNI_RELEASE_EVIDENCE_PREFLIGHT_GRANT_PATH";
 const RESERVATION_DIRECTORY_ENV: &str =
@@ -30,6 +39,8 @@ const RESERVATION_DIRECTORY: &str = "provider-preflight-lease-reservations";
 const CONSUMPTION_CLAIM_FILE: &str = "provider-preflight-consumption-claim.json";
 const RESERVATION_KIND: &str = "watch-mode-provider-preflight-lease-reservation";
 const GRANT_KIND: &str = "watch-mode-provider-preflight-grant";
+const STRICT_SIGNED_AUTHORITY_SCHEMA_VERSION: u64 = 3;
+const INCIDENT_SIGNED_AUTHORITY_SCHEMA_VERSION: u64 = 2;
 const CONSUMPTION_KIND: &str = "watch-mode-provider-preflight-authorization-consumption";
 const CONSUMPTION_CLAIM_KIND: &str =
     "watch-mode-provider-preflight-consumption-claim";
@@ -56,45 +67,59 @@ const PROVIDER_TEMPLATE_ID: &str = "template-dashscope-realtime";
 const PROVIDER_KIND: &str = "dashscope";
 const PROVIDER_ENDPOINT_HOST: &str = "dashscope.aliyuncs.com";
 const PROVIDER_CREDENTIAL_REFERENCE: &str = "credential://provider/dashscope/default";
-const PREFLIGHT_MODEL: &str = "qwen3.5-omni-flash-realtime";
-const PREFLIGHT_PROTOCOL: &str = "dashscope-omni";
+const PREFLIGHT_MODEL: &str = "qwen3.5-livetranslate-flash-realtime";
+const PREFLIGHT_PROTOCOL: &str = "dashscope-livetranslate";
 const INCIDENT_PREFLIGHT_MODEL: &str = "qwen3.5-omni-plus-realtime";
 const INCIDENT_PREFLIGHT_PROTOCOL: &str = "dashscope-omni";
-const CELL_MAX_SAMPLES: u64 = 2_880_000;
-const MATRIX_MAX_SAMPLES: u64 = 23_040_000;
+const INCIDENT_CELL_MAX_SAMPLES: u64 = 2_880_000;
+const MATRIX_MAX_SAMPLES: u64 = 10_100_180;
 const INCIDENT_MATRIX_MAX_SAMPLES: u64 = 8_640_000;
 const PREFLIGHT_MAX_INPUT_TOKENS: u64 = 4_096;
 const PREFLIGHT_MAX_OUTPUT_TOKENS: u64 = 256;
+const STRICT_MODEL_PROTOCOL_OPERATION: &str = "native_translate";
+const STRICT_MODEL_PROTOCOL_TRANSPORT: &str = "websocket";
+const STRICT_MODEL_PROTOCOL_REGION: &str = "cn-beijing";
+const MODEL_PROTOCOL_PROFILE_IDENTITY_FIELDS: [&str; 15] = [
+    "registryVersion",
+    "profileId",
+    "profileVersion",
+    "operation",
+    "transport",
+    "region",
+    "endpointFamily",
+    "endpointPath",
+    "wireDialect",
+    "wireDialectVersion",
+    "inputFraming",
+    "outputFraming",
+    "terminalLifecycle",
+    "adapterId",
+    "exactModelId",
+];
 
-const CELL_MODELS: [&str; 8] = [
-    "qwen3.5-omni-flash-realtime",
-    "qwen3.5-omni-flash-realtime",
-    "qwen3.5-omni-flash-realtime",
-    "qwen3.5-livetranslate-flash-realtime",
-    "qwen3.5-livetranslate-flash-realtime",
-    "qwen3.5-livetranslate-flash-realtime",
-    "qwen3.5-omni-flash-realtime",
-    "qwen3.5-livetranslate-flash-realtime",
+const CELL_MODELS: [&str; 4] = [
+    PREFLIGHT_MODEL,
+    PREFLIGHT_MODEL,
+    PREFLIGHT_MODEL,
+    PREFLIGHT_MODEL,
 ];
-const CELL_FEEDBACK_MODES: [&str; 8] = [
+const CELL_FEEDBACK_MODES: [&str; 4] = [
     "process-exclusion",
     "virtual-driver",
     "echo-cancel",
     "process-exclusion",
-    "virtual-driver",
-    "echo-cancel",
-    "process-exclusion",
-    "process-exclusion",
 ];
-const CELL_DEVICE_CLASSES: [&str; 8] = [
+const CELL_DEVICE_CLASSES: [&str; 4] = [
     "default-speaker",
     "default-speaker",
     "default-speaker",
     "default-speaker",
-    "default-speaker",
-    "default-speaker",
-    "default-speaker",
-    "default-speaker",
+];
+const CELL_MAX_EXTERNAL_AUDIO_SAMPLES: [u64; 4] = [
+    2_877_045,
+    2_173_045,
+    2_173_045,
+    2_877_045,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,9 +200,55 @@ impl PreflightAuthorityProfile {
         }
     }
 
+    fn operation(self) -> &'static str {
+        match self {
+            Self::StrictReleaseMatrix => "livetranslate-session-lifecycle-preflight",
+            Self::IncidentPlusReplay => "text-translation-preflight",
+        }
+    }
+
+    fn signed_authority_schema_version(self) -> u64 {
+        match self {
+            Self::StrictReleaseMatrix => STRICT_SIGNED_AUTHORITY_SCHEMA_VERSION,
+            Self::IncidentPlusReplay => INCIDENT_SIGNED_AUTHORITY_SCHEMA_VERSION,
+        }
+    }
+
+    fn model_protocol_profile_identity(
+        self,
+    ) -> Result<Option<ModelProtocolProfileIdentityRuntime>, String> {
+        match self {
+            Self::StrictReleaseMatrix => authorize_model_protocol_invocation(
+                ModelProtocolAuthorizationRequest {
+                    exact_model_id: PREFLIGHT_MODEL,
+                    operation: STRICT_MODEL_PROTOCOL_OPERATION,
+                    transport: STRICT_MODEL_PROTOCOL_TRANSPORT,
+                    region: STRICT_MODEL_PROTOCOL_REGION,
+                    endpoint_host: PROVIDER_ENDPOINT_HOST,
+                    audio_input: None,
+                    audio_output: None,
+                    declared_registry_version: None,
+                    declared_profile_id: None,
+                    declared_profile_version: None,
+                    declared_wire_dialect: None,
+                    declared_endpoint_family: None,
+                    declared_terminal_lifecycle: None,
+                },
+            )
+            .map(|authority| Some(ModelProtocolProfileIdentityRuntime::from(&authority)))
+            .map_err(|error| {
+                format!(
+                    "strict provider preflight model protocol registry authorization failed: {}",
+                    error.code()
+                )
+            }),
+            Self::IncidentPlusReplay => Ok(None),
+        }
+    }
+
     fn cell_count(self) -> usize {
         match self {
-            Self::StrictReleaseMatrix => 8,
+            Self::StrictReleaseMatrix => 4,
             Self::IncidentPlusReplay => 3,
         }
     }
@@ -186,6 +257,23 @@ impl PreflightAuthorityProfile {
         match self {
             Self::StrictReleaseMatrix => MATRIX_MAX_SAMPLES,
             Self::IncidentPlusReplay => INCIDENT_MATRIX_MAX_SAMPLES,
+        }
+    }
+
+    fn cell_max_samples(self, index: usize) -> u64 {
+        match self {
+            Self::StrictReleaseMatrix => CELL_MAX_EXTERNAL_AUDIO_SAMPLES[index],
+            Self::IncidentPlusReplay => INCIDENT_CELL_MAX_SAMPLES,
+        }
+    }
+
+    fn declared_cell_max_samples(self) -> u64 {
+        match self {
+            Self::StrictReleaseMatrix => *CELL_MAX_EXTERNAL_AUDIO_SAMPLES
+                .iter()
+                .max()
+                .expect("strict release sample authority is non-empty"),
+            Self::IncidentPlusReplay => INCIDENT_CELL_MAX_SAMPLES,
         }
     }
 }
@@ -199,9 +287,14 @@ pub(super) struct ProviderPreflightAuthorization {
     authorization_digest: String,
     expires_at: DateTime<Utc>,
     profile: PreflightAuthorityProfile,
+    model_protocol_profile_identity: Option<ModelProtocolProfileIdentityRuntime>,
 }
 
 impl ProviderPreflightAuthorization {
+    pub(super) fn is_strict_livetranslate(&self) -> bool {
+        self.profile == PreflightAuthorityProfile::StrictReleaseMatrix
+    }
+
     pub(super) fn load_required(source_head_commit: &str) -> Result<Self, String> {
         let values = [
             env_value(GRANT_PATH_ENV),
@@ -227,7 +320,13 @@ impl ProviderPreflightAuthorization {
             return Err("provider preflight authority paths must use the canonical grant filename".to_string());
         }
         verify_signed_authority(&grant, None, "provider preflight grant")?;
-        validate_grant(&grant, source_head_commit, profile)?;
+        let model_protocol_profile_identity = profile.model_protocol_profile_identity()?;
+        validate_grant(
+            &grant,
+            source_head_commit,
+            profile,
+            model_protocol_profile_identity.as_ref(),
+        )?;
         let authorization_root = validate_authorization_paths(
             &grant_path,
             &reservation_directory,
@@ -313,6 +412,7 @@ impl ProviderPreflightAuthorization {
                 grant_generated_at,
                 grant_expires_at,
                 profile,
+                model_protocol_profile_identity.as_ref(),
             )?;
             let issued_at = required_str(&reservation, "/issuedAt", "reservation issuedAt")?;
             if parse_time(issued_at, "reservation issuedAt")? >= observed_at {
@@ -323,20 +423,36 @@ impl ProviderPreflightAuthorization {
             reservation_issued_at.push(Value::String(issued_at.to_string()));
             let digest = required_str(&reservation, "/digest", "reservation digest")?;
             reservation_digests.push(Value::String(digest.to_string()));
-            reservations.push(json!({
+            let mut projected_reservation = json!({
                 "cellIndex": index,
                 "cellId": required_str(&reservation, "/cellId", "reservation cellId")?,
                 "workerId": required_str(&reservation, "/workerId", "reservation workerId")?,
                 "waveIndex": required_u64(&reservation, "/waveIndex", "reservation waveIndex")?,
                 "leaseId": required_str(&reservation, "/leaseId", "reservation leaseId")?,
-                "maxExternalAudioSamples": CELL_MAX_SAMPLES,
+                "maxExternalAudioSamples": required_u64(
+                    &reservation,
+                    "/maxExternalAudioSamples",
+                    "reservation budget",
+                )?,
                 "digest": digest,
                 "issuedAt": issued_at,
-            }));
+            })
+            .as_object()
+            .cloned()
+            .ok_or_else(|| {
+                format!("provider preflight reservation {index} cannot be projected")
+            })?;
+            if let Some(identity) = model_protocol_profile_identity.as_ref() {
+                projected_reservation.insert(
+                    "modelProtocolProfileIdentity".to_string(),
+                    model_protocol_profile_identity_value(identity)?,
+                );
+            }
+            reservations.push(Value::Object(projected_reservation));
         }
 
         let authorization_digest = sha256_canonical(&json!({
-            "schemaVersion": 1,
+            "schemaVersion": profile.signed_authority_schema_version(),
             "artifactKind": profile.authorization_set_kind(),
             "executionId": required_str(&grant, "/executionId", "grant executionId")?,
             "grantDigest": required_str(&grant, "/digest", "grant digest")?,
@@ -348,7 +464,7 @@ impl ProviderPreflightAuthorization {
             return Err("provider preflight authorization digest mismatch".to_string());
         }
         let mut authority = json!({
-            "schemaVersion": 1,
+            "schemaVersion": profile.signed_authority_schema_version(),
             "artifactKind": profile.consumption_kind(),
             "executionId": required_str(&grant, "/executionId", "grant executionId")?,
             "grantDigest": required_str(&grant, "/digest", "grant digest")?,
@@ -357,14 +473,14 @@ impl ProviderPreflightAuthorization {
             "providerId": PROVIDER_ID,
             "model": profile.preflight_model(),
             "protocol": profile.preflight_protocol(),
-            "operation": "text-translation-preflight",
-            "inputMode": "text-only",
+            "operation": profile.operation(),
+            "inputMode": if profile == PreflightAuthorityProfile::StrictReleaseMatrix {
+                "none"
+            } else {
+                "text-only"
+            },
             "invocationCount": 1,
             "externalAudioSamples": 0,
-            "tokenBudget": {
-                "maxInputTokens": PREFLIGHT_MAX_INPUT_TOKENS,
-                "maxOutputTokens": PREFLIGHT_MAX_OUTPUT_TOKENS,
-            },
             "leaseReservations": reservations,
             "grantGeneratedAt": required_str(&grant, "/generatedAt", "grant generatedAt")?,
             "reservationIssuedAts": reservation_issued_at,
@@ -373,8 +489,32 @@ impl ProviderPreflightAuthorization {
         .as_object()
         .cloned()
         .ok_or_else(|| "provider preflight authority cannot be represented as an object".to_string())?;
+        if let Some(identity) = model_protocol_profile_identity.as_ref() {
+            authority.insert(
+                "modelProtocolProfileIdentity".to_string(),
+                model_protocol_profile_identity_value(identity)?,
+            );
+        }
         if profile == PreflightAuthorityProfile::IncidentPlusReplay {
             authority.insert("incidentId".to_string(), Value::String(INCIDENT_ID.to_string()));
+            authority.insert(
+                "tokenBudget".to_string(),
+                json!({
+                    "maxInputTokens": PREFLIGHT_MAX_INPUT_TOKENS,
+                    "maxOutputTokens": PREFLIGHT_MAX_OUTPUT_TOKENS,
+                }),
+            );
+        } else {
+            authority.insert("providerInputMode".to_string(), json!("none"));
+            authority.insert("responseMode".to_string(), json!("text-only"));
+            authority.insert("terminalEvent".to_string(), json!("session.finished"));
+            authority.insert(
+                "lifecycleBudget".to_string(),
+                json!({
+                    "firstServerEventLatencyMs": 1_200,
+                    "socketEventTimeoutMs": 12_000,
+                }),
+            );
         }
         let authority = Value::Object(authority);
         Ok(Self {
@@ -386,6 +526,7 @@ impl ProviderPreflightAuthorization {
             authorization_digest,
             expires_at: grant_expires_at,
             profile,
+            model_protocol_profile_identity,
         })
     }
 
@@ -466,13 +607,125 @@ impl ProviderPreflightAuthorization {
         provider.model.clone_from(&self.model);
         provider.template_realtime_protocol = Some(self.protocol.clone());
         provider.realtime_protocol = Some(self.protocol.clone());
-        let resolved = resolve_realtime_profile(provider, &provider.model)
+        self.bind_signed_official_registry_declaration(provider)?;
+        let resolved_profile = resolve_realtime_profile(provider, &provider.model);
+        let resolved = resolved_profile
             .protocol_dialect
             .map(|value| value.as_str());
         if resolved != Some(self.protocol.as_str()) {
             return Err("authorized provider model did not resolve to the signed protocol".to_string());
         }
+        if let Some(expected_identity) = self.model_protocol_profile_identity.as_ref() {
+            let resolved_authority = resolved_profile
+                .model_protocol_authority
+                .as_ref()
+                .ok_or_else(|| {
+                    resolved_profile.model_protocol_error.unwrap_or_else(|| {
+                        "strict provider preflight did not resolve a registry-authorized model protocol identity"
+                            .to_string()
+                    })
+                })?;
+            let resolved_identity = ModelProtocolProfileIdentityRuntime::from(resolved_authority);
+            if &resolved_identity != expected_identity {
+                return Err(
+                    "strict provider preflight configuration does not match the signed registry-derived model protocol identity"
+                        .to_string(),
+                );
+            }
+        }
         Ok(configured_model)
+    }
+
+    fn bind_signed_official_registry_declaration(
+        &self,
+        provider: &mut ProviderDraftInput,
+    ) -> Result<(), String> {
+        let Some(expected) = self.model_protocol_profile_identity.as_ref() else {
+            return Ok(());
+        };
+        let matching_indices = provider
+            .local_model_capability_registry
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                entry
+                    .model_id
+                    .trim()
+                    .eq_ignore_ascii_case(self.model.trim())
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if matching_indices.is_empty() {
+            return Ok(());
+        }
+        if matching_indices.len() != 1 {
+            return Err(
+                "strict provider preflight requires exactly one signed registry-derived exact-model declaration"
+                    .to_string(),
+            );
+        }
+        let entry = &mut provider.local_model_capability_registry[matching_indices[0]];
+        if !entry.id.starts_with("seed-") || entry.source.as_deref() != Some("official") {
+            return Err(
+                "strict provider preflight cannot replace a non-official exact-model registry declaration with signed authority"
+                    .to_string(),
+            );
+        }
+        bind_signed_string(
+            &mut entry.model_protocol_registry_version,
+            &expected.registry_version,
+            "registryVersion",
+        )?;
+        bind_signed_string(
+            &mut entry.model_protocol_profile_id,
+            &expected.profile_id,
+            "profileId",
+        )?;
+        bind_signed_u32(
+            &mut entry.model_protocol_profile_version,
+            expected.profile_version,
+            "profileVersion",
+        )?;
+        bind_signed_string(
+            &mut entry.realtime_protocol,
+            &self.protocol,
+            "realtimeProtocol",
+        )?;
+        Ok(())
+    }
+}
+
+fn bind_signed_string(
+    configured: &mut Option<String>,
+    expected: &str,
+    field: &str,
+) -> Result<(), String> {
+    match configured.as_deref() {
+        Some(actual) if actual != expected => Err(format!(
+            "strict provider preflight {field} does not match the signed registry-derived authority: expected={expected} actual={actual}"
+        )),
+        Some(_) => Ok(()),
+        None => {
+            *configured = Some(expected.to_string());
+            Ok(())
+        }
+    }
+}
+
+fn bind_signed_u32(
+    configured: &mut Option<u32>,
+    expected: u32,
+    field: &str,
+) -> Result<(), String> {
+    match *configured {
+        Some(actual) if actual != expected => Err(format!(
+            "strict provider preflight {field} does not match the signed registry-derived authority: expected={expected} actual={actual}"
+        )),
+        Some(_) => Ok(()),
+        None => {
+            *configured = Some(expected);
+            Ok(())
+        }
     }
 }
 
@@ -592,7 +845,7 @@ fn create_consumption_claim(
     let executable_bytes = fs::read(&executable)
         .map_err(|error| format!("provider preflight Desktop executable cannot be read: {error}"))?;
     let mut claim = json!({
-        "schemaVersion": 1,
+        "schemaVersion": profile.signed_authority_schema_version(),
         "artifactKind": profile.consumption_claim_kind(),
         "executionId": required_str(grant, "/executionId", "grant executionId")?,
         "grantDigest": required_str(grant, "/digest", "grant digest")?,
@@ -685,18 +938,92 @@ fn portable_executable_path(executable: PathBuf) -> Result<PathBuf, String> {
     }
 }
 
+fn model_protocol_profile_identity_value(
+    identity: &ModelProtocolProfileIdentityRuntime,
+) -> Result<Value, String> {
+    serde_json::to_value(identity).map_err(|error| {
+        format!("registry-authorized model protocol identity cannot serialize: {error}")
+    })
+}
+
+fn validate_model_protocol_profile_identity(
+    value: Option<&Value>,
+    expected: &ModelProtocolProfileIdentityRuntime,
+    label: &str,
+) -> Result<(), String> {
+    let value = value.ok_or_else(|| format!("{label} is missing"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("{label} must be the exact 15-field object"))?;
+    let actual_fields = object
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let expected_fields = MODEL_PROTOCOL_PROFILE_IDENTITY_FIELDS
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if actual_fields != expected_fields {
+        return Err(format!(
+            "{label} fields do not match the exact 15-field registry-derived identity"
+        ));
+    }
+    let parsed: ModelProtocolProfileIdentityRuntime = serde_json::from_value(value.clone())
+        .map_err(|error| format!("{label} is invalid: {error}"))?;
+    let expected_value = model_protocol_profile_identity_value(expected)?;
+    let expected_object = expected_value
+        .as_object()
+        .ok_or_else(|| format!("{label} expected registry identity is not an object"))?;
+    for field in MODEL_PROTOCOL_PROFILE_IDENTITY_FIELDS {
+        if object.get(field) != expected_object.get(field) {
+            return Err(format!("{label} {field} mismatch"));
+        }
+    }
+    if &parsed != expected {
+        return Err(format!("{label} does not match the registry-derived identity"));
+    }
+    Ok(())
+}
+
+fn validate_grant_model_protocol_profile_identities(
+    grant: &Value,
+    expected: &ModelProtocolProfileIdentityRuntime,
+) -> Result<(), String> {
+    validate_model_protocol_profile_identity(
+        grant.pointer("/authorization/modelProtocolProfileIdentity"),
+        expected,
+        "provider preflight grant authorization model protocol profile identity",
+    )?;
+    for (index, cell) in required_array(grant, "/cells", "grant cells")?
+        .iter()
+        .enumerate()
+    {
+        validate_model_protocol_profile_identity(
+            cell.get("modelProtocolProfileIdentity"),
+            expected,
+            &format!("provider preflight grant cell {index} model protocol profile identity"),
+        )?;
+    }
+    Ok(())
+}
+
 fn validate_grant(
     grant: &Value,
     source_head_commit: &str,
     profile: PreflightAuthorityProfile,
+    model_protocol_profile_identity: Option<&ModelProtocolProfileIdentityRuntime>,
 ) -> Result<(), String> {
-    if required_u64(grant, "/schemaVersion", "grant schemaVersion")? != 1
+    if required_u64(grant, "/schemaVersion", "grant schemaVersion")?
+        != profile.signed_authority_schema_version()
         || required_str(grant, "/artifactKind", "grant artifactKind")?
             != match profile {
                 PreflightAuthorityProfile::StrictReleaseMatrix => GRANT_KIND,
                 PreflightAuthorityProfile::IncidentPlusReplay => INCIDENT_GRANT_KIND,
             }
-        || required_str(grant, "/provenance/source", "grant provenance source")? != "git"
+    {
+        return Err("provider preflight grant schema is unsupported".to_string());
+    }
+    if required_str(grant, "/provenance/source", "grant provenance source")? != "git"
         || required_str(grant, "/provenance/captureStatus", "grant capture status")? != "captured"
         || grant
             .get("provenance")
@@ -709,14 +1036,15 @@ fn validate_grant(
         return Err("provider preflight grant provenance does not match the exact clean Desktop build".to_string());
     }
     let workers = required_array(grant, "/workers", "grant workers")?;
-    let expected_worker_count = match profile {
-        PreflightAuthorityProfile::StrictReleaseMatrix => 1,
-        PreflightAuthorityProfile::IncidentPlusReplay => 2,
+    let valid_worker_count = match profile {
+        PreflightAuthorityProfile::StrictReleaseMatrix => (1..=4).contains(&workers.len()),
+        PreflightAuthorityProfile::IncidentPlusReplay => workers.len() == 2,
     };
-    if workers.len() != expected_worker_count
+    if !valid_worker_count
         || required_u64(grant, "/localIsolationAuthority/providerCalls", "local provider calls")? != 0
         || required_u64(grant, "/budget/inputSampleRateHz", "budget sample rate")? != 16_000
-        || required_u64(grant, "/budget/cellMaxExternalAudioSamples", "cell budget")? != CELL_MAX_SAMPLES
+        || required_u64(grant, "/budget/cellMaxExternalAudioSamples", "cell budget")?
+            != profile.declared_cell_max_samples()
         || required_u64(grant, "/budget/matrixMaxExternalAudioSamples", "matrix budget")?
             != profile.matrix_max_samples()
         || required_str(grant, "/budget/reclaimPolicy", "budget reclaim policy")? != "never-within-execution"
@@ -729,12 +1057,17 @@ fn validate_grant(
     {
         return Err("incident Plus preflight grant incident binding is invalid".to_string());
     }
+    let expected_input_mode = if profile == PreflightAuthorityProfile::StrictReleaseMatrix {
+        "none"
+    } else {
+        "text-only"
+    };
     for (pointer, expected) in [
         ("/authorization/providerId", PROVIDER_ID),
         ("/authorization/model", profile.preflight_model()),
         ("/authorization/protocol", profile.preflight_protocol()),
-        ("/authorization/operation", "text-translation-preflight"),
-        ("/authorization/inputMode", "text-only"),
+        ("/authorization/operation", profile.operation()),
+        ("/authorization/inputMode", expected_input_mode),
         ("/authorization/systemPromptTemplate", "game-live-translation-cn"),
     ] {
         if required_str(grant, pointer, "grant authorization")? != expected {
@@ -743,10 +1076,6 @@ fn validate_grant(
     }
     if required_u64(grant, "/authorization/invocationCount", "preflight invocation count")? != 1
         || required_u64(grant, "/authorization/externalAudioSamples", "preflight audio samples")? != 0
-        || required_u64(grant, "/authorization/tokenBudget/maxInputTokens", "preflight input token cap")?
-            != PREFLIGHT_MAX_INPUT_TOKENS
-        || required_u64(grant, "/authorization/tokenBudget/maxOutputTokens", "preflight output token cap")?
-            != PREFLIGHT_MAX_OUTPUT_TOKENS
         || required_u64(grant, "/authorization/timeoutMs", "preflight timeout")? != 12_000
         || grant
             .get("authorization")
@@ -760,11 +1089,67 @@ fn validate_grant(
     {
         return Err("provider preflight grant invocation/audio authorization is invalid".to_string());
     }
+    match profile {
+        PreflightAuthorityProfile::StrictReleaseMatrix => {
+            if required_str(
+                grant,
+                "/authorization/providerInputMode",
+                "preflight provider input mode",
+            )? != "none"
+                || required_str(
+                    grant,
+                    "/authorization/responseMode",
+                    "preflight response mode",
+                )? != "text-only"
+                || required_str(
+                    grant,
+                    "/authorization/terminalEvent",
+                    "preflight terminal event",
+                )? != "session.finished"
+                || required_u64(
+                    grant,
+                    "/authorization/lifecycleBudget/firstServerEventLatencyMs",
+                    "preflight first event latency budget",
+                )? != 1_200
+                || required_u64(
+                    grant,
+                    "/authorization/lifecycleBudget/socketEventTimeoutMs",
+                    "preflight socket event watchdog",
+                )? != 12_000
+                || grant.pointer("/authorization/tokenBudget").is_some()
+            {
+                return Err(
+                    "strict provider preflight grant is not the zero-audio LiveTranslate lifecycle authorization"
+                        .to_string(),
+                );
+            }
+        }
+        PreflightAuthorityProfile::IncidentPlusReplay => {
+            if required_u64(
+                grant,
+                "/authorization/tokenBudget/maxInputTokens",
+                "preflight input token cap",
+            )? != PREFLIGHT_MAX_INPUT_TOKENS
+                || required_u64(
+                    grant,
+                    "/authorization/tokenBudget/maxOutputTokens",
+                    "preflight output token cap",
+                )? != PREFLIGHT_MAX_OUTPUT_TOKENS
+            {
+                return Err(
+                    "incident Plus provider preflight token authorization is invalid".to_string(),
+                );
+            }
+        }
+    }
 
     let worker_ids = workers
         .iter()
         .map(|worker| required_str(worker, "/workerId", "grant workerId").map(str::to_string))
         .collect::<Result<HashSet<_>, _>>()?;
+    if worker_ids.len() != workers.len() {
+        return Err("provider preflight grant worker identities must be unique".to_string());
+    }
     let cells = required_array(grant, "/cells", "grant cells")?;
     let mut lease_ids = HashSet::new();
     let mut worker_wave_slots = HashSet::new();
@@ -774,22 +1159,36 @@ fn validate_grant(
             profile.cell_count()
         ));
     }
+    match (profile, model_protocol_profile_identity) {
+        (PreflightAuthorityProfile::StrictReleaseMatrix, Some(identity)) => {
+            validate_grant_model_protocol_profile_identities(grant, identity)?;
+        }
+        (PreflightAuthorityProfile::StrictReleaseMatrix, None) => {
+            return Err(
+                "strict provider preflight has no registry-authorized model protocol identity"
+                    .to_string(),
+            );
+        }
+        (PreflightAuthorityProfile::IncidentPlusReplay, None) => {}
+        (PreflightAuthorityProfile::IncidentPlusReplay, Some(_)) => {
+            return Err(
+                "incident Plus preflight unexpectedly received a strict model protocol identity"
+                    .to_string(),
+            );
+        }
+    }
     for (index, cell) in cells.iter().enumerate() {
         let (expected_id, expected_model, expected_protocol, expected_feedback, expected_device) =
             match profile {
                 PreflightAuthorityProfile::StrictReleaseMatrix => {
-                    let tier = if index < 6 { "pairwise-live" } else { "model-stability" };
+                    let tier = if index < 3 { "pairwise-live" } else { "model-stability" };
                     (
                         format!(
                             "{tier}::{}::{}::{}",
                             CELL_MODELS[index], CELL_FEEDBACK_MODES[index], CELL_DEVICE_CLASSES[index]
                         ),
                         CELL_MODELS[index],
-                        if CELL_MODELS[index].contains("livetranslate") {
-                            "dashscope-livetranslate"
-                        } else {
-                            "dashscope-omni"
-                        },
+                        PREFLIGHT_PROTOCOL,
                         CELL_FEEDBACK_MODES[index],
                         CELL_DEVICE_CLASSES[index],
                     )
@@ -822,7 +1221,7 @@ fn validate_grant(
             || required_str(cell, "/deviceClass", "grant device class")?
                 != expected_device
             || required_u64(cell, "/maxExternalAudioSamples", "grant cell budget")?
-                != CELL_MAX_SAMPLES
+                != profile.cell_max_samples(index)
             || !worker_ids.contains(worker_id)
             || required_str(cell, "/deviceProfileInstanceId", "grant device profile")?.is_empty()
             || !lease_ids.insert(lease_id.to_string())
@@ -855,6 +1254,7 @@ fn validate_reservation(
     grant_generated_at: DateTime<Utc>,
     grant_expires_at: DateTime<Utc>,
     profile: PreflightAuthorityProfile,
+    model_protocol_profile_identity: Option<&ModelProtocolProfileIdentityRuntime>,
 ) -> Result<(), String> {
     let cell = required_array(grant, "/cells", "grant cells")?
         .get(index)
@@ -884,12 +1284,13 @@ fn validate_reservation(
             return Err(format!("provider preflight reservation {index} does not match its grant"));
         }
     }
-    if required_u64(reservation, "/schemaVersion", "reservation schemaVersion")? != 1
+    if required_u64(reservation, "/schemaVersion", "reservation schemaVersion")?
+        != profile.signed_authority_schema_version()
         || required_u64(reservation, "/cellIndex", "reservation cellIndex")? != index as u64
         || required_u64(reservation, "/waveIndex", "reservation waveIndex")?
             != required_u64(cell, "/waveIndex", "grant waveIndex")?
         || required_u64(reservation, "/maxExternalAudioSamples", "reservation budget")?
-            != CELL_MAX_SAMPLES
+            != required_u64(cell, "/maxExternalAudioSamples", "grant cell budget")?
         || issued_at <= grant_generated_at
         || issued_at >= grant_expires_at
         || expires_at != grant_expires_at
@@ -897,6 +1298,28 @@ fn validate_reservation(
             != required_str(grant, "/coordinator/publicKeyPem", "grant public key")?
     {
         return Err(format!("provider preflight reservation {index} is invalid"));
+    }
+    match (profile, model_protocol_profile_identity) {
+        (PreflightAuthorityProfile::StrictReleaseMatrix, Some(identity)) => {
+            validate_model_protocol_profile_identity(
+                reservation.get("modelProtocolProfileIdentity"),
+                identity,
+                &format!(
+                    "provider preflight reservation {index} model protocol profile identity"
+                ),
+            )?;
+        }
+        (PreflightAuthorityProfile::StrictReleaseMatrix, None) => {
+            return Err(format!(
+                "provider preflight reservation {index} has no registry-authorized model protocol identity"
+            ));
+        }
+        (PreflightAuthorityProfile::IncidentPlusReplay, None) => {}
+        (PreflightAuthorityProfile::IncidentPlusReplay, Some(_)) => {
+            return Err(format!(
+                "incident Plus provider preflight reservation {index} unexpectedly received a strict model protocol identity"
+            ));
+        }
     }
     Ok(())
 }
@@ -1085,7 +1508,7 @@ mod tests {
     use serde_json::Map;
     use std::sync::{Arc, Barrier};
 
-    fn sign_test_authority(mut core: Map<String, Value>) -> Value {
+    pub(super) fn sign_test_authority(mut core: Map<String, Value>) -> Value {
         let seed = [7_u8; 32];
         let key_pair = Ed25519KeyPair::from_seed_unchecked(&seed).unwrap();
         let mut der = vec![0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];
@@ -1113,6 +1536,13 @@ mod tests {
         Value::Object(core)
     }
 
+    fn strict_registry_identity() -> ModelProtocolProfileIdentityRuntime {
+        PreflightAuthorityProfile::StrictReleaseMatrix
+            .model_protocol_profile_identity()
+            .expect("checked-in model protocol registry must authorize strict Watch")
+            .expect("strict Watch must have a model protocol profile identity")
+    }
+
     #[test]
     fn canonical_json_matches_node_sorted_object_grammar() {
         let value = json!({
@@ -1134,10 +1564,31 @@ mod tests {
     fn reservation_filenames_match_node_safe_cell_ids() {
         assert_eq!(
             safe_cell_id(
-                "pairwise-live::qwen3.5-omni-flash-realtime::process-exclusion::default-speaker"
+                "pairwise-live::qwen3.5-livetranslate-flash-realtime::process-exclusion::default-speaker"
             ),
-            "pairwise-live-qwen3.5-omni-flash-realtime-process-exclusion-default-speaker"
+            "pairwise-live-qwen3.5-livetranslate-flash-realtime-process-exclusion-default-speaker"
         );
+    }
+
+    #[test]
+    fn strict_release_sample_authority_is_mode_derived_not_a_uniform_180_seconds() {
+        let strict = PreflightAuthorityProfile::StrictReleaseMatrix;
+        assert_eq!(strict.declared_cell_max_samples(), 2_877_045);
+        assert_eq!(
+            (0..strict.cell_count())
+                .map(|index| strict.cell_max_samples(index))
+                .collect::<Vec<_>>(),
+            vec![2_877_045, 2_173_045, 2_173_045, 2_877_045]
+        );
+        assert_eq!(
+            (0..strict.cell_count())
+                .map(|index| strict.cell_max_samples(index))
+                .sum::<u64>(),
+            strict.matrix_max_samples()
+        );
+
+        let incident = PreflightAuthorityProfile::IncidentPlusReplay;
+        assert_eq!(incident.declared_cell_max_samples(), 2_880_000);
     }
 
     #[cfg(windows)]
@@ -1168,6 +1619,158 @@ mod tests {
         assert!(decode_public_key(&rsa_like)
             .unwrap_err()
             .contains("not an Ed25519 SPKI key"));
+    }
+
+    #[test]
+    fn strict_and_incident_profiles_pin_distinct_authority_schema_versions() {
+        assert_eq!(
+            PreflightAuthorityProfile::StrictReleaseMatrix
+                .signed_authority_schema_version(),
+            3
+        );
+        assert_eq!(
+            PreflightAuthorityProfile::IncidentPlusReplay
+                .signed_authority_schema_version(),
+            2
+        );
+    }
+
+    #[test]
+    fn rejects_strict_v2_and_incident_v3_before_provenance_validation() {
+        let strict_v2 = json!({
+            "schemaVersion": 2,
+            "artifactKind": GRANT_KIND,
+        });
+        assert_eq!(
+            validate_grant(
+                &strict_v2,
+                "0123456789abcdef0123456789abcdef01234567",
+                PreflightAuthorityProfile::StrictReleaseMatrix,
+                None,
+            )
+            .unwrap_err(),
+            "provider preflight grant schema is unsupported"
+        );
+        let incident_v3 = json!({
+            "schemaVersion": 3,
+            "artifactKind": INCIDENT_GRANT_KIND,
+        });
+        assert_eq!(
+            validate_grant(
+                &incident_v3,
+                "0123456789abcdef0123456789abcdef01234567",
+                PreflightAuthorityProfile::IncidentPlusReplay,
+                None,
+            )
+            .unwrap_err(),
+            "provider preflight grant schema is unsupported"
+        );
+    }
+
+    #[test]
+    fn strict_identity_is_rebuilt_from_the_checked_in_registry() {
+        let identity = strict_registry_identity();
+        let value = model_protocol_profile_identity_value(&identity).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "registryVersion": "bailian-model-protocol-registry/v1",
+                "profileId": "bailian.livetranslate.realtime.ws",
+                "profileVersion": 1,
+                "operation": "native_translate",
+                "transport": "websocket",
+                "region": "cn-beijing",
+                "endpointFamily": "dashscope-realtime-v1",
+                "endpointPath": "/api-ws/v1/realtime",
+                "wireDialect": "bailian-livetranslate-session-ws-v1",
+                "wireDialectVersion": 1,
+                "inputFraming": "json-base64",
+                "outputFraming": "json-base64",
+                "terminalLifecycle": "session.finish->session.finished",
+                "adapterId": "desktop-livetranslate-session-v1",
+                "exactModelId": "qwen3.5-livetranslate-flash-realtime",
+            })
+        );
+        validate_model_protocol_profile_identity(
+            Some(&value),
+            &identity,
+            "strict identity",
+        )
+        .unwrap();
+        assert!(PreflightAuthorityProfile::IncidentPlusReplay
+            .model_protocol_profile_identity()
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn strict_identity_rejects_every_field_tamper_and_any_shape_drift() {
+        let identity = strict_registry_identity();
+        let original = model_protocol_profile_identity_value(&identity).unwrap();
+
+        for field in MODEL_PROTOCOL_PROFILE_IDENTITY_FIELDS {
+            let mut tampered = original.clone();
+            let current = tampered.get(field).unwrap();
+            tampered[field] = if let Some(number) = current.as_u64() {
+                json!(number + 1)
+            } else {
+                json!(format!("{}-tampered", current.as_str().unwrap()))
+            };
+            let error = validate_model_protocol_profile_identity(
+                Some(&tampered),
+                &identity,
+                "strict identity",
+            )
+            .unwrap_err();
+            assert!(error.contains(field), "unexpected {field} error: {error}");
+        }
+
+        for field in MODEL_PROTOCOL_PROFILE_IDENTITY_FIELDS {
+            let mut missing = original.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            let error = validate_model_protocol_profile_identity(
+                Some(&missing),
+                &identity,
+                "strict identity",
+            )
+            .unwrap_err();
+            assert!(error.contains("exact 15-field"), "unexpected {field} error: {error}");
+        }
+
+        let mut extra = original.clone();
+        extra["unexpectedField"] = json!(true);
+        assert!(validate_model_protocol_profile_identity(
+            Some(&extra),
+            &identity,
+            "strict identity",
+        )
+        .unwrap_err()
+        .contains("exact 15-field"));
+        assert!(validate_model_protocol_profile_identity(None, &identity, "strict identity")
+            .unwrap_err()
+            .contains("missing"));
+    }
+
+    #[test]
+    fn strict_grant_requires_the_registry_identity_in_authorization_and_every_cell() {
+        let identity = strict_registry_identity();
+        let value = model_protocol_profile_identity_value(&identity).unwrap();
+        let mut grant = json!({
+            "authorization": {
+                "modelProtocolProfileIdentity": value.clone(),
+            },
+            "cells": (0..4)
+                .map(|_| json!({ "modelProtocolProfileIdentity": value.clone() }))
+                .collect::<Vec<_>>(),
+        });
+        validate_grant_model_protocol_profile_identities(&grant, &identity).unwrap();
+
+        grant["cells"][2]["modelProtocolProfileIdentity"]["endpointPath"] =
+            json!("/tampered");
+        let error = validate_grant_model_protocol_profile_identities(&grant, &identity)
+            .unwrap_err();
+        assert!(error.contains("cell 2"));
+        assert!(error.contains("endpointPath"));
     }
 
     #[test]
@@ -1229,6 +1832,7 @@ mod tests {
         assert_eq!(results.iter().filter(|result| result.is_err()).count(), 7);
         let claim_path = root.path().join(CONSUMPTION_CLAIM_FILE);
         let claim: Value = serde_json::from_slice(&fs::read(claim_path).unwrap()).unwrap();
+        assert_eq!(claim["schemaVersion"], 3);
         assert_eq!(claim["authorizationDigest"], digest);
         assert_eq!(claim["retryPolicy"], "new-execution-required");
         assert!(results

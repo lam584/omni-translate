@@ -6,7 +6,7 @@ use tauri::AppHandle;
 /// OpenAI and Gemini realtime workers, whose per-turn cue state carries an
 /// identical commit contract: prefer the transcribed source text, fall back to
 /// the translated output, and skip empty turns entirely.
-pub(super) fn commit_realtime_cue(
+pub(crate) fn commit_realtime_cue(
     app: &AppHandle,
     store: &AudioStateStore,
     cue_id: Option<&str>,

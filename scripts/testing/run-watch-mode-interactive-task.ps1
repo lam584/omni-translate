@@ -8,7 +8,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-
 Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.IO.psm1') -Force
 
 function Invoke-Utf8JsonProcess {
@@ -365,6 +364,8 @@ $node = Start-Process -FilePath ([string]$request.nodeExecutable) `
   -RedirectStandardError ([string]$request.stderrPath) `
   -WindowStyle Hidden `
   -PassThru
+# Retain the native handle before redirected PS5.1 Start-Process loses exit status.
+$nodeHandle = $node.Handle
 $nodeIdentity = Get-ProcessIdentity $node.Id
 if ($nodeIdentity.sessionId -ne $activeConsoleSessionId -or $nodeIdentity.ownerSid -cne $windowsIdentity.User.Value) {
   Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue
@@ -426,7 +427,8 @@ $traceArguments = @(
     '-LeaseDigest', [string]$request.leaseDigest,
     '-CellId', ('"' + [string]$request.cellId + '"'),
     '-WorkerId', ('"' + [string]$request.workerId + '"'),
-    '-VmIdentityDigest', [string]$request.vmIdentityDigest
+    '-VmIdentityDigest', [string]$request.vmIdentityDigest,
+    '-ExecutionReceiptPath', ('"' + [string]$request.executionReceiptPath + '"')
   )
 if ([bool]$request.requireRecorder) { $traceArguments += '-RequireRecorder' }
 $trace = Start-Process -FilePath 'powershell.exe' `
@@ -434,10 +436,12 @@ $trace = Start-Process -FilePath 'powershell.exe' `
   -WindowStyle Hidden `
   -PassThru
 $node.WaitForExit()
+if ($null -eq $node.ExitCode) { throw 'interactive shard Node exit code is unavailable' }
+$nodeExitCode = [int]$node.ExitCode
 $trace.WaitForExit(30000) | Out-Null
 if (-not $trace.HasExited) { Stop-Process -Id $trace.Id -Force -ErrorAction SilentlyContinue }
 $executionReceiptObserved = $false
-if ($node.ExitCode -eq 0 -and (Test-Path -LiteralPath ([string]$request.executionReceiptPath) -PathType Leaf)) {
+if ($nodeExitCode -eq 0 -and (Test-Path -LiteralPath ([string]$request.executionReceiptPath) -PathType Leaf)) {
   $executionReceiptObserved = $true
 }
 $terminal = [ordered]@{
@@ -457,11 +461,11 @@ $terminal = [ordered]@{
   ownerSid = $common.ownerSid
   nodePid = $node.Id
   nodeStartedAt = $nodeIdentity.startedAt
-  exitCode = $node.ExitCode
+  exitCode = $nodeExitCode
   processAuthorityExitCode = if ($trace.HasExited) { $trace.ExitCode } else { -1 }
   executionReceiptPath = ('interactive/' + [string]$request.leaseId + '/execution.json')
   executionReceiptObserved = $executionReceiptObserved
   completedAt = [DateTime]::UtcNow.ToString('o')
 }
 Write-OmniImmutableJson -LiteralPath ([string]$request.terminalPath) -Value $terminal
-exit $node.ExitCode
+exit $nodeExitCode

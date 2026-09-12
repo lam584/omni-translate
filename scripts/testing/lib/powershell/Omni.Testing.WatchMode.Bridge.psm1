@@ -1,5 +1,4 @@
 #requires -Version 5.1
-
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.IO.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Process.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Configuration.psm1') -Force
@@ -66,7 +65,8 @@ function Read-BridgeSourceFrame {
 function New-BridgeSourceProbeInitPayload {
   param(
     [string]$FeedbackMode,
-    [string]$SessionId
+    [string]$SessionId,
+    [Parameter(Mandatory = $true)][string]$PhysicalPlaybackDeviceId
   )
   $sourceCaptureMode = if ($FeedbackMode -eq "process-exclusion") { "process-exclusion" } else { "virtual-driver" }
   return [ordered]@{
@@ -77,7 +77,7 @@ function New-BridgeSourceProbeInitPayload {
     installChannel = 'development'
     targetDeviceId = 'virtual-mic-default'
     virtualRenderDeviceId = 'virtual-speaker-default'
-    physicalPlaybackDeviceId = 'default'
+    physicalPlaybackDeviceId = $PhysicalPlaybackDeviceId
     physicalPlaybackLevel = 50
     monitorPlaybackEnabled = $false
     translationPlaybackEnabled = $true
@@ -100,6 +100,7 @@ function Invoke-BridgeSourceProbe {
   param(
     [string]$OutputDirectory,
     [string]$FeedbackMode = "virtual-driver",
+    [Parameter(Mandatory = $true)][string]$PhysicalPlaybackDeviceId,
     [Parameter(Mandatory = $true)][string]$WorkspaceRoot
   )
   $bridgeExe = Join-Path $WorkspaceRoot 'target/release/omni-bridge-service.exe'
@@ -138,11 +139,12 @@ function Invoke-BridgeSourceProbe {
   $frame = $null
   $audioProbeProcess = $null
   $phase = "init"
+  $primaryFailure = $false
   try {
     Start-Sleep -Milliseconds 600
     $phase = "init"
     $sessionId = "watch-mode-probe-session-$PID"
-    $initPayload = New-BridgeSourceProbeInitPayload $FeedbackMode $sessionId
+    $initPayload = New-BridgeSourceProbeInitPayload $FeedbackMode $sessionId $PhysicalPlaybackDeviceId
     $init = Write-NamedPipeJsonLine $pipeName $initPayload
     if (Test-UsesVirtualDriverBackend $FeedbackMode) {
       $phase = "source_frame"
@@ -231,6 +233,7 @@ function Invoke-BridgeSourceProbe {
       stderr = $stderr
     }
   } catch {
+    $primaryFailure = $true
     $errorMessage = $_.Exception.Message
     $stateQueryError = $null
     if ($init -and -not $state) {
@@ -271,11 +274,27 @@ function Invoke-BridgeSourceProbe {
     } | ConvertTo-Json -Depth 12 | Set-Content -Path $diagnosticsPath -Encoding UTF8
     throw "bridge source probe failed during ${phase}: $errorMessage Diagnostics=$diagnosticsPath"
   } finally {
-    if ($audioProbeProcess -and -not $audioProbeProcess.HasExited) {
-      Stop-OmniManagedProcessHandle -Process $audioProbeProcess | Out-Null
+    $cleanupErrors = @()
+    foreach ($cleanupTarget in @(
+      [pscustomobject]@{ name = 'audioProbe'; process = $audioProbeProcess },
+      [pscustomobject]@{ name = 'bridge'; process = $process }
+    )) {
+      if (-not $cleanupTarget.process) { continue }
+      try {
+        Stop-OmniManagedProcessHandle -Process $cleanupTarget.process | Out-Null
+      } catch {
+        $cleanupErrors += "$($cleanupTarget.name): $($_.Exception.Message)"
+      }
     }
-    if (-not $process.HasExited) {
-      Stop-OmniManagedProcessHandle -Process $process | Out-Null
+    if ($cleanupErrors.Count -gt 0 -and (Test-Path -LiteralPath $diagnosticsPath -PathType Leaf)) {
+      try {
+        $cleanupDiagnostics = Get-Content -LiteralPath $diagnosticsPath -Raw | ConvertFrom-Json
+        $cleanupDiagnostics | Add-Member -NotePropertyName cleanupErrors -NotePropertyValue @($cleanupErrors) -Force
+        $cleanupDiagnostics | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $diagnosticsPath -Encoding UTF8
+      } catch {}
+    }
+    if ($cleanupErrors.Count -gt 0 -and -not $primaryFailure) {
+      throw "bridge source probe cleanup failed: $($cleanupErrors -join '; ')"
     }
   }
 }

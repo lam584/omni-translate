@@ -117,7 +117,7 @@ AddReg=AUDIOHW.AddReg
 
 [AUDIOHW.AddReg]
 HKR,,DeviceType,0x10001,0x0000001D
-HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GRGWGX;;;BA)(A;;GRGWGX;;;IU)"
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GRGWGX;;;BA)(A;;GRGWGX;;;IU)(A;;GRGWGX;;;LS)"
 
 [OMNI_Device.NT.Wdf]
 KmdfService=omni_translate_virtual_speaker,OMNI_WdfSect

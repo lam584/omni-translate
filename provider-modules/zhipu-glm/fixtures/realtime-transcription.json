@@ -1,0 +1,87 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "zhipu-glm.realtime-transcription",
+  "providerId": "zhipu-glm",
+  "protocolProfileId": "zhipu-glm.realtime-transcription",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "zhipu-glm.realtime-guide",
+      "zhipu-glm.realtime-asyncapi"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic transcription-session exchange that preserves an official documentation spelling inconsistency."
+  },
+  "scenario": "GLM-Realtime input transcription uses a separate session update and asynchronous completion",
+  "data": {
+    "connection": {
+      "url": "wss://open.bigmodel.cn/api/paas/v4/realtime",
+      "headers": { "Authorization": "Bearer <redacted-zhipu-api-key>" }
+    },
+    "authContract": {
+      "profileId": "zhipu-glm.bearer-api-key",
+      "parameters": [
+        { "location": "header", "name": "Authorization", "value": "Bearer <redacted-zhipu-api-key>" }
+      ]
+    },
+    "clientMessages": [
+      {
+        "type": "transcription_session.update",
+        "event_id": "<sanitized-client-event-id>",
+        "session": {
+          "input_audio_format": "pcm16",
+          "input_audio_noise_reduction": {
+            "type": "far_field"
+          },
+          "modalities": [
+            "text"
+          ],
+          "turn_detection": {
+            "type": "server_vad",
+            "threshold": 0.5,
+            "prefix_padding_ms": 300,
+            "silence_duration_ms": 500,
+            "create_response": false,
+            "interrupt_response": false
+          }
+        }
+      },
+      {
+        "type": "input_audio_buffer.append",
+        "audio": "AAAAAA=="
+      }
+    ],
+    "serverMessages": [
+      {
+        "type": "transcription_session.updated",
+        "session": {
+          "id": "<sanitized-transcription-session-id>",
+          "object": "realtime.transcription_session"
+        }
+      },
+      {
+        "type": "conversation.item.input_audio_transcription.completed",
+        "item_id": "<sanitized-item-id>",
+        "transcript": "<sanitized-final-input-transcript>"
+      }
+    ],
+    "audioContract": {
+      "input": "PCM signed 16-bit little-endian, mono, 16000 Hz",
+      "fixtureAudio": "AAAAAA== is inert synthetic silence"
+    },
+    "documentationSpellingConflict": {
+      "proseEventType": "transcription.session.updated",
+      "exampleEventType": "transcription_session.updated",
+      "requiredImplementationPolicy": "accept both only after provider-owned fixture tests establish the compatibility rule"
+    },
+    "assertions": [
+      "Input transcription completion is asynchronous relative to response generation",
+      "This transcription session is not the same as response.audio_transcript, which describes model output audio",
+      "AAAAAA== is synthetic silence, not a captured recording"
+    ],
+    "implementationStatus": "disabled/not-implemented"
+  }
+}

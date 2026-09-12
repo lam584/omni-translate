@@ -1,0 +1,33 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "volc-ark-responses-sse-v3",
+  "providerId": "volcengine-doubao",
+  "protocolProfileId": "volcengine-doubao.ark.responses-v3",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["ark-quickstart-user", "ark-responses"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic SSE sequence using official event names. The API key and response identifiers are not real."
+  },
+  "scenario": "Ark Responses text generation streams typed deltas through response.completed",
+  "data": {
+    "authContract": { "profileId": "volc-ark-bearer", "parameters": [{ "location": "header", "name": "Authorization", "value": "Bearer <redacted>" }] },
+    "clientEvents": [{ "type": "https.json.request", "body": { "stream": true } }],
+    "responseEvents": [{ "type": "sse.response.created" }, { "type": "sse.response.output_text.delta" }, { "type": "sse.response.completed", "terminal": true }],
+    "request": {
+      "method": "POST",
+      "url": "https://ark.cn-beijing.volces.com/api/v3/responses",
+      "headers": { "Authorization": "Bearer <redacted>", "Content-Type": "application/json" },
+      "json": { "model": "doubao-seed-2-1-pro-260628", "input": "Reply with a short fixture sentence.", "stream": true }
+    },
+    "sse": [
+      { "event": "response.created", "data": { "type": "response.created", "response": { "id": "resp_fixture", "status": "in_progress" } } },
+      { "event": "response.output_text.delta", "data": { "type": "response.output_text.delta", "delta": "fixture " } },
+      { "event": "response.output_text.delta", "data": { "type": "response.output_text.delta", "delta": "complete" } },
+      { "event": "response.completed", "data": { "type": "response.completed", "response": { "id": "resp_fixture", "status": "completed" } } }
+    ]
+  }
+}

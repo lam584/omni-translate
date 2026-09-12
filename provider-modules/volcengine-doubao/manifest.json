@@ -1,0 +1,799 @@
+{
+  "$schema": "../../contracts/provider-manifest.schema.json",
+  "schemaVersion": "provider-manifest/v1",
+  "manifestVersion": 1,
+  "checkedAt": "2026-08-31",
+  "provider": {
+    "id": "volcengine-doubao",
+    "displayName": "Volcengine / Doubao",
+    "templateId": "template-volcengine-doubao",
+    "kind": "volcengine-doubao",
+    "source": "official",
+    "description": "Volcengine Ark text inference and Doubao Seed ASR, AST, realtime voice, and TTS as separate protocol families.",
+    "defaultModelId": "doubao-seed-2-1-pro-260628",
+    "defaultApiFamilyId": "volc-ark-responses",
+    "defaultCredentialId": "volc-ark-api-key",
+    "defaultRegion": "cn-beijing",
+    "notes": "Ark, Seed ASR, AST, realtime voice, and TTS do not share a speech wire protocol. No repository runtime adapter exists and nothing is live-verified."
+  },
+  "documentation": [
+    { "id": "ark-root", "title": "Volcengine Ark documentation", "url": "https://www.volcengine.com/docs/82379/", "checkedAt": "2026-08-31" },
+    { "id": "ark-quickstart-user", "title": "Ark Responses getting started", "url": "https://www.volcengine.com/docs/82379/1795150", "checkedAt": "2026-08-31" },
+    { "id": "ark-quickstart-current", "title": "Ark current quickstart", "url": "https://www.volcengine.com/docs/82379/1399008", "checkedAt": "2026-08-31" },
+    { "id": "ark-models-user", "title": "Ark model list legacy entry URL", "url": "https://www.volcengine.com/docs/82379/1554711", "checkedAt": "2026-08-31" },
+    { "id": "ark-models-current", "title": "Ark current model list", "url": "https://www.volcengine.com/docs/82379/1330310", "checkedAt": "2026-08-31" },
+    { "id": "ark-responses", "title": "Ark Responses API", "url": "https://www.volcengine.com/docs/82379/1569618", "checkedAt": "2026-08-31" },
+    { "id": "ark-chat", "title": "Ark Chat Completions API", "url": "https://www.volcengine.com/docs/82379/1494384", "checkedAt": "2026-08-31" },
+    { "id": "realtime-voice-intro", "title": "Doubao end-to-end realtime voice model", "url": "https://www.volcengine.com/docs/6561/1594360", "checkedAt": "2026-08-31" },
+    { "id": "realtime-voice-current", "title": "Doubao realtime voice model 3.0 full-duplex API", "url": "https://www.volcengine.com/docs/6561/2549778", "checkedAt": "2026-08-31" },
+    { "id": "realtime-voice-legacy", "title": "Historical end-to-end realtime voice interface", "url": "https://www.volcengine.com/docs/6561/1594356", "checkedAt": "2026-08-31" },
+    { "id": "realtime-voice-product", "title": "Doubao realtime voice product page", "url": "https://www.volcengine.com/product/realtime-voice-model", "checkedAt": "2026-08-31" },
+    { "id": "ast-intro", "title": "Doubao speech simultaneous translation model", "url": "https://www.volcengine.com/docs/6561/1631605", "checkedAt": "2026-08-31" },
+    { "id": "ast-v2-api", "title": "Speech simultaneous translation 2.0 WebSocket API", "url": "https://www.volcengine.com/docs/6561/1756902", "checkedAt": "2026-08-31" },
+    { "id": "seed-asr-intro", "title": "Doubao large-model speech recognition", "url": "https://www.volcengine.com/docs/6561/1354871", "checkedAt": "2026-08-31" },
+    { "id": "seed-asr-user-wire", "title": "Large-model streaming recognition user-supplied URL", "url": "https://www.volcengine.com/docs/6561/1354867", "checkedAt": "2026-08-31" },
+    { "id": "seed-asr-bidirectional", "title": "Seed ASR current bidirectional streaming API", "url": "https://www.volcengine.com/docs/6561/2630027", "checkedAt": "2026-08-31" },
+    { "id": "seed-asr-unidirectional", "title": "Seed ASR current unidirectional streaming API", "url": "https://www.volcengine.com/docs/6561/2628951", "checkedAt": "2026-08-31" },
+    { "id": "seed-asr-binary-protocol", "title": "Seed ASR binary WebSocket protocol", "url": "https://www.volcengine.com/docs/6561/1354869", "checkedAt": "2026-08-31" },
+    { "id": "seed-asr-sdk", "title": "Large-model streaming recognition SDK", "url": "https://www.volcengine.com/docs/6561/1395846", "checkedAt": "2026-08-31" },
+    { "id": "tts-v1-legacy", "title": "WebSocket unidirectional streaming TTS V1 not recommended", "url": "https://www.volcengine.com/docs/6561/2228192", "checkedAt": "2026-08-31" },
+    { "id": "tts-v3-unidirectional", "title": "TTS V3 unidirectional streaming API", "url": "https://www.volcengine.com/docs/6561/2534913", "checkedAt": "2026-08-31" },
+    { "id": "tts-v3-bidirectional", "title": "TTS V3 bidirectional streaming API", "url": "https://www.volcengine.com/docs/6561/2532486", "checkedAt": "2026-08-31" },
+    { "id": "doubao-speech-product", "title": "Doubao speech product entry", "url": "https://www.volcengine.com/product/asr", "checkedAt": "2026-08-31" }
+  ],
+  "credentials": [
+    {
+      "id": "volc-ark-api-key",
+      "reference": "credential://provider/volcengine-doubao/ark",
+      "fields": [
+        { "id": "api-key", "label": "Ark API Key", "secret": true, "required": true, "format": "Volcengine Ark API key" }
+      ]
+    },
+    {
+      "id": "volc-speech-api-key",
+      "reference": "credential://provider/volcengine-doubao/speech",
+      "fields": [
+        { "id": "api-key", "label": "Speech API Key", "secret": true, "required": true, "format": "Doubao speech X-Api-Key" }
+      ]
+    },
+    {
+      "id": "volc-legacy-speech-credentials",
+      "reference": "credential://provider/volcengine-doubao/speech-legacy",
+      "fields": [
+        { "id": "app-id", "label": "App ID", "secret": false, "required": true, "format": "Legacy speech application id" },
+        { "id": "access-key", "label": "Access key or token", "secret": true, "required": true, "format": "Legacy speech access credential" }
+      ]
+    }
+  ],
+  "authProfiles": [
+    {
+      "id": "volc-ark-bearer",
+      "type": "bearer",
+      "credentialId": "volc-ark-api-key",
+      "parameters": [
+        { "location": "header", "name": "Authorization", "source": "credential", "credentialFieldId": "api-key", "scheme": "Bearer", "required": true }
+      ]
+    },
+    {
+      "id": "volc-seed-asr-asr2-duration-headers",
+      "type": "multi-header-api-key",
+      "credentialId": "volc-speech-api-key",
+      "parameters": [
+        { "location": "header", "name": "X-Api-Key", "source": "credential", "credentialFieldId": "api-key", "required": true },
+        { "location": "header", "name": "X-Api-Resource-Id", "source": "static", "staticValue": "volc.seedasr.sauc.duration", "required": true },
+        { "location": "header", "name": "X-Api-Request-Id", "source": "derived", "derivation": "new UUID per connection", "required": true },
+        { "location": "header", "name": "X-Api-Sequence", "source": "static", "staticValue": "-1", "required": true }
+      ]
+    },
+    {
+      "id": "volc-seed-asr-asr2-concurrent-headers",
+      "type": "multi-header-api-key",
+      "credentialId": "volc-speech-api-key",
+      "parameters": [
+        { "location": "header", "name": "X-Api-Key", "source": "credential", "credentialFieldId": "api-key", "required": true },
+        { "location": "header", "name": "X-Api-Resource-Id", "source": "static", "staticValue": "volc.seedasr.sauc.concurrent", "required": true },
+        { "location": "header", "name": "X-Api-Request-Id", "source": "derived", "derivation": "new UUID per connection", "required": true },
+        { "location": "header", "name": "X-Api-Sequence", "source": "static", "staticValue": "-1", "required": true }
+      ]
+    },
+    {
+      "id": "volc-ast-current-headers",
+      "type": "multi-header-api-key",
+      "credentialId": "volc-speech-api-key",
+      "parameters": [
+        { "location": "header", "name": "X-Api-Key", "source": "credential", "credentialFieldId": "api-key", "required": true },
+        { "location": "header", "name": "X-Api-Resource-Id", "source": "static", "staticValue": "volc.service_type.10053", "required": true }
+      ]
+    },
+    {
+      "id": "volc-realtime-voice-api-key",
+      "type": "api-key",
+      "credentialId": "volc-speech-api-key",
+      "parameters": [
+        { "location": "header", "name": "X-Api-Key", "source": "credential", "credentialFieldId": "api-key", "required": true }
+      ]
+    },
+    {
+      "id": "volc-realtime-voice-legacy-headers",
+      "type": "multi-header-api-key",
+      "credentialId": "volc-legacy-speech-credentials",
+      "parameters": [
+        { "location": "header", "name": "X-Api-App-Id", "source": "credential", "credentialFieldId": "app-id", "required": true },
+        { "location": "header", "name": "X-Api-Access-Key", "source": "credential", "credentialFieldId": "access-key", "required": true },
+        { "location": "header", "name": "X-Api-Resource-Id", "source": "derived", "derivation": "legacy realtime voice resource selected by explicit legacy profile", "required": true }
+      ]
+    },
+    {
+      "id": "volc-tts-v3-seed-tts-headers",
+      "type": "multi-header-api-key",
+      "credentialId": "volc-speech-api-key",
+      "parameters": [
+        { "location": "header", "name": "X-Api-Key", "source": "credential", "credentialFieldId": "api-key", "required": true },
+        { "location": "header", "name": "X-Api-Resource-Id", "source": "static", "staticValue": "seed-tts-2.0", "required": true },
+        { "location": "header", "name": "X-Api-Request-Id", "source": "derived", "derivation": "new UUID per request or connection", "required": true }
+      ]
+    },
+    {
+      "id": "volc-tts-v1-legacy-bearer",
+      "type": "bearer",
+      "credentialId": "volc-legacy-speech-credentials",
+      "parameters": [
+        { "location": "header", "name": "Authorization", "source": "credential", "credentialFieldId": "access-key", "scheme": "Bearer;", "required": true }
+      ]
+    }
+  ],
+  "transports": [
+    {
+      "id": "volc-ark-sse-json",
+      "kind": "sse",
+      "requestFraming": "json",
+      "responseFraming": "sse",
+      "requestEnvelope": { "kind": "none", "byteOrder": "not-applicable", "description": "HTTPS JSON request body." },
+      "responseEnvelope": { "kind": "none", "byteOrder": "not-applicable", "description": "UTF-8 SSE records. Terminal records are API-family-specific: typed Responses events versus Chat Completions data records." }
+    },
+    {
+      "id": "volc-seed-asr-binary-v3",
+      "kind": "websocket",
+      "requestFraming": "binary",
+      "responseFraming": "binary",
+      "requestEnvelope": { "kind": "typed-header", "id": "volc-seed-asr-nibble-sequence-v1", "byteOrder": "big-endian", "description": "Four-byte nibble header, optional signed sequence, unsigned payload length, then JSON or audio payload, commonly gzip-compressed." },
+      "responseEnvelope": { "kind": "typed-header", "id": "volc-seed-asr-nibble-sequence-v1", "byteOrder": "big-endian", "description": "Four-byte nibble header, optional signed sequence, unsigned payload length, then JSON or error payload." }
+    },
+    {
+      "id": "volc-ast-protobuf-v2",
+      "kind": "websocket",
+      "requestFraming": "protobuf",
+      "responseFraming": "protobuf",
+      "requestEnvelope": { "kind": "none", "byteOrder": "not-applicable", "description": "Each WebSocket Binary frame is exactly one serialized TranslateRequest protobuf message." },
+      "responseEnvelope": { "kind": "none", "byteOrder": "not-applicable", "description": "Each WebSocket Binary frame is exactly one serialized TranslateResponse protobuf message." }
+    },
+    {
+      "id": "volc-realtime-voice-json-v3",
+      "kind": "websocket",
+      "requestFraming": "json-base64",
+      "responseFraming": "json-base64",
+      "requestEnvelope": { "kind": "none", "byteOrder": "not-applicable", "description": "WebSocket Text JSON events; audio bytes are Base64 in JSON." },
+      "responseEnvelope": { "kind": "none", "byteOrder": "not-applicable", "description": "WebSocket Text JSON events; output audio deltas are Base64 in JSON." }
+    },
+    {
+      "id": "volc-realtime-voice-binary-legacy",
+      "kind": "websocket",
+      "requestFraming": "binary",
+      "responseFraming": "binary",
+      "requestEnvelope": { "kind": "typed-header", "id": "volc-realtime-voice-event-envelope-legacy", "byteOrder": "big-endian", "description": "Historical four-byte event-oriented Volcengine binary framing." },
+      "responseEnvelope": { "kind": "typed-header", "id": "volc-realtime-voice-event-envelope-legacy", "byteOrder": "big-endian", "description": "Historical four-byte event-oriented Volcengine binary framing." }
+    },
+    {
+      "id": "volc-tts-binary-event-v3",
+      "kind": "websocket",
+      "requestFraming": "binary",
+      "responseFraming": "binary",
+      "requestEnvelope": { "kind": "typed-header", "id": "volc-tts-event-envelope-v3", "byteOrder": "big-endian", "description": "Four-byte nibble header with WithEvent flag, signed event id, length-prefixed connect/session ids, optional sequence, payload length, and payload." },
+      "responseEnvelope": { "kind": "typed-header", "id": "volc-tts-event-envelope-v3", "byteOrder": "big-endian", "description": "Event-oriented TTS V3 envelope; distinct from the Seed ASR sequence envelope." }
+    },
+    {
+      "id": "volc-tts-binary-sequence-v1",
+      "kind": "websocket",
+      "requestFraming": "binary",
+      "responseFraming": "binary",
+      "requestEnvelope": { "kind": "typed-header", "id": "volc-tts-sequence-envelope-v1", "byteOrder": "big-endian", "description": "Historical four-byte sequence protocol." },
+      "responseEnvelope": { "kind": "typed-header", "id": "volc-tts-sequence-envelope-v1", "byteOrder": "big-endian", "description": "Historical audio sequence protocol; a negative sequence is terminal." }
+    }
+  ],
+  "audioProfiles": [
+    {
+      "id": "volc-seed-asr-pcm16-audio",
+      "input": { "required": true, "formats": ["pcm-s16le"], "sampleRatesHz": [16000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian"] },
+      "output": { "required": false, "formats": [], "sampleRatesHz": [], "channels": [] }
+    },
+    {
+      "id": "volc-ast-s2t-audio",
+      "input": { "required": true, "formats": ["pcm-s16le", "wav-pcm-s16le"], "sampleRatesHz": [16000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian"], "chunkDurationMs": { "recommended": 80 } },
+      "output": { "required": false, "formats": [], "sampleRatesHz": [], "channels": [] }
+    },
+    {
+      "id": "volc-ast-s2s-pcm16-audio",
+      "input": { "required": true, "formats": ["pcm-s16le", "wav-pcm-s16le"], "sampleRatesHz": [16000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian"], "chunkDurationMs": { "recommended": 80 } },
+      "output": { "required": true, "formats": ["pcm-s16le"], "sampleRatesHz": [16000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian"] }
+    },
+    {
+      "id": "volc-realtime-voice-v3-audio",
+      "input": { "required": true, "formats": ["pcm-s16le", "speech-opus"], "sampleRatesHz": [16000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian", "not-applicable"], "chunkDurationMs": { "recommended": 20 } },
+      "output": { "required": true, "formats": ["pcm-s16le", "ogg-opus"], "sampleRatesHz": [24000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian", "not-applicable"] }
+    },
+    {
+      "id": "volc-realtime-voice-legacy-audio",
+      "input": { "required": true, "formats": ["pcm-s16le"], "sampleRatesHz": [16000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian"] },
+      "output": { "required": true, "formats": ["pcm-s16le"], "sampleRatesHz": [24000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian"] }
+    },
+    {
+      "id": "volc-tts-v3-audio",
+      "input": { "required": false, "formats": [], "sampleRatesHz": [], "channels": [] },
+      "output": { "required": true, "formats": ["pcm-s16le", "wav-pcm-s16le", "mp3", "ogg-opus"], "sampleRatesHz": [8000, 16000, 22050, 24000, 32000, 44100, 48000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian", "not-applicable"] }
+    },
+    {
+      "id": "volc-tts-v1-legacy-audio",
+      "input": { "required": false, "formats": [], "sampleRatesHz": [], "channels": [] },
+      "output": { "required": true, "formats": ["pcm-s16le", "mp3", "ogg-opus"], "sampleRatesHz": [8000, 16000, 24000, 48000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian", "not-applicable"] }
+    }
+  ],
+  "lifecycleProfiles": [
+    {
+      "id": "volc-ark-responses-sse-lifecycle",
+      "handshake": [],
+      "clientEvents": ["https.json.request"],
+      "serverEvents": ["sse.response.created", "sse.response.output_text.delta", "sse.response.completed", "sse.response.failed", "sse.response.incomplete", "https.error"],
+      "vadModes": ["none"],
+      "terminal": "response.completed is the successful terminal event; response.failed and response.incomplete are non-success terminals. Do not require the Chat Completions data: [DONE] sentinel.",
+      "reuse": "single-request",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "volc-ark-chat-sse-lifecycle",
+      "handshake": [],
+      "clientEvents": ["https.json.request"],
+      "serverEvents": ["sse.chat.completion.chunk", "sse.choice.finish_reason", "sse.done", "https.error"],
+      "vadModes": ["none"],
+      "terminal": "A choice finish_reason records semantic completion and data: [DONE] terminates the Chat Completions SSE stream.",
+      "reuse": "single-request",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "volc-seed-asr-lifecycle",
+      "handshake": ["full-client-request"],
+      "clientEvents": ["full-client-request", "audio-only", "last-audio"],
+      "serverEvents": ["full-server-response", "error", "last-package"],
+      "vadModes": ["server-vad", "semantic-vad"],
+      "terminal": "is_last_package=true or the negative final response sequence is the transport terminal. utterances.definite=true only stabilizes an utterance.",
+      "reuse": "single-session",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "replaceable-snapshot"
+    },
+    {
+      "id": "volc-ast-v2-lifecycle",
+      "handshake": ["StartSession=100", "SessionStarted=150"],
+      "clientEvents": ["TaskRequest=200", "UpdateConfig=201", "FinishSession=102"],
+      "serverEvents": ["source-subtitle=650-652", "translated-subtitle=653-655", "tts=350-352", "AudioMuted=250", "Usage=154", "SessionFinished=152", "SessionFailed=153"],
+      "vadModes": ["server-vad"],
+      "terminal": "FinishSession requests drain; SessionFinished is normal terminal and SessionFailed is error terminal. AudioMuted is not terminal.",
+      "reuse": "single-session",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "mixed"
+    },
+    {
+      "id": "volc-realtime-voice-v3-lifecycle",
+      "handshake": ["session.create", "session.created"],
+      "clientEvents": ["session.update", "input_audio_buffer.append", "input_audio_buffer.commit", "input_audio_mute.commit", "input_audio_mute.unmute.commit", "response.cancel", "session.close"],
+      "serverEvents": ["session.updated", "asr.started", "asr.delta", "asr.completed", "asr.failed", "response.text.delta", "response.text.done", "response.audio.started", "response.audio.delta", "response.audio.done", "response.done", "session.closed", "error"],
+      "vadModes": ["server-vad", "manual", "client-activity"],
+      "terminal": "response.done ends one turn, response.audio.done ends one output-audio turn, and session.closed is the full session terminal.",
+      "reuse": "multi-turn",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "volc-realtime-voice-legacy-lifecycle",
+      "handshake": ["legacy-start-connection", "legacy-connection-started"],
+      "clientEvents": ["legacy-audio", "legacy-finish-session"],
+      "serverEvents": ["legacy-asr", "legacy-dialogue", "legacy-audio", "legacy-session-finished", "legacy-error"],
+      "vadModes": ["server-vad", "manual"],
+      "terminal": "Historical event protocol session-finished or error event.",
+      "reuse": "multi-turn",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "mixed"
+    },
+    {
+      "id": "volc-tts-v3-unidirectional-lifecycle",
+      "handshake": ["websocket.upgrade.accepted"],
+      "clientEvents": ["one-shot-synthesis-request"],
+      "serverEvents": ["TTSSentenceStart", "TTSResponse", "TTSSentenceEnd", "TTSSubtitle", "SessionFinished", "error"],
+      "vadModes": ["none"],
+      "terminal": "SessionFinished is the normal terminal event; the error event is terminal on failure.",
+      "reuse": "single-request",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "not-applicable"
+    },
+    {
+      "id": "volc-tts-v3-bidirectional-lifecycle",
+      "handshake": ["StartConnection", "ConnectionStarted", "StartSession", "SessionStarted"],
+      "clientEvents": ["TaskRequest", "FinishSession", "CancelSession", "FinishConnection"],
+      "serverEvents": ["TTSResponse", "SessionFinished", "SessionCanceled", "ConnectionFinished", "error"],
+      "vadModes": ["none"],
+      "terminal": "SessionFinished ends one synthesis task; ConnectionFinished ends the reusable WebSocket connection.",
+      "reuse": "sequential-tasks",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "not-applicable"
+    },
+    {
+      "id": "volc-tts-v1-legacy-lifecycle",
+      "handshake": ["websocket.upgrade.accepted"],
+      "clientEvents": ["legacy-full-request"],
+      "serverEvents": ["legacy-audio-sequence", "legacy-error"],
+      "vadModes": ["none"],
+      "terminal": "A negative response sequence marks the last audio package in the historical protocol.",
+      "reuse": "single-request",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "not-applicable"
+    }
+  ],
+  "apiFamilies": [
+    {
+      "id": "volc-ark-responses",
+      "displayName": "Volcengine Ark Responses API",
+      "baseUrlTemplate": "https://ark.cn-beijing.volces.com/api/v3",
+      "endpointTemplate": "/responses",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": "v3",
+      "transportId": "volc-ark-sse-json",
+      "authProfileIds": ["volc-ark-bearer"],
+      "defaultAuthProfileId": "volc-ark-bearer",
+      "maturity": "unspecified",
+      "documentationIds": ["ark-root", "ark-quickstart-user", "ark-quickstart-current", "ark-models-user", "ark-responses"]
+    },
+    {
+      "id": "volc-ark-chat",
+      "displayName": "Volcengine Ark Chat Completions API",
+      "baseUrlTemplate": "https://ark.cn-beijing.volces.com/api/v3",
+      "endpointTemplate": "/chat/completions",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": "v3",
+      "transportId": "volc-ark-sse-json",
+      "authProfileIds": ["volc-ark-bearer"],
+      "defaultAuthProfileId": "volc-ark-bearer",
+      "maturity": "unspecified",
+      "documentationIds": ["ark-root", "ark-models-user", "ark-chat"]
+    },
+    {
+      "id": "volc-seed-asr-async",
+      "displayName": "Doubao Seed ASR optimized streaming WebSocket",
+      "baseUrlTemplate": "wss://openspeech.bytedance.com",
+      "endpointTemplate": "/api/v3/sauc/bigmodel_async",
+      "endpointStatus": "verified",
+      "modelAddressing": "none",
+      "apiVersion": "v3",
+      "transportId": "volc-seed-asr-binary-v3",
+      "authProfileIds": ["volc-seed-asr-asr2-duration-headers", "volc-seed-asr-asr2-concurrent-headers"],
+      "defaultAuthProfileId": "volc-seed-asr-asr2-duration-headers",
+      "maturity": "ga",
+      "documentationIds": ["seed-asr-intro", "seed-asr-user-wire", "seed-asr-bidirectional", "seed-asr-unidirectional", "seed-asr-binary-protocol", "seed-asr-sdk", "doubao-speech-product"]
+    },
+    {
+      "id": "volc-ast-v2",
+      "displayName": "Doubao speech simultaneous translation 2.0",
+      "baseUrlTemplate": "wss://openspeech.bytedance.com",
+      "endpointTemplate": "/api/v4/ast/v2/translate",
+      "endpointStatus": "verified",
+      "modelAddressing": "none",
+      "apiVersion": "v2",
+      "transportId": "volc-ast-protobuf-v2",
+      "authProfileIds": ["volc-ast-current-headers"],
+      "defaultAuthProfileId": "volc-ast-current-headers",
+      "maturity": "unspecified",
+      "documentationIds": ["ast-intro", "ast-v2-api"]
+    },
+    {
+      "id": "volc-realtime-voice-v3",
+      "displayName": "Doubao realtime voice 3.0 full duplex",
+      "baseUrlTemplate": "wss://openspeech.bytedance.com",
+      "endpointTemplate": "/api/v3/duplex/realtime/dialogue",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": "v3",
+      "transportId": "volc-realtime-voice-json-v3",
+      "authProfileIds": ["volc-realtime-voice-api-key"],
+      "defaultAuthProfileId": "volc-realtime-voice-api-key",
+      "maturity": "unspecified",
+      "documentationIds": ["realtime-voice-intro", "realtime-voice-current", "realtime-voice-product"]
+    },
+    {
+      "id": "volc-realtime-voice-legacy",
+      "displayName": "Doubao historical realtime voice event protocol",
+      "baseUrlTemplate": "wss://openspeech.bytedance.com",
+      "endpointTemplate": "/api/v3/realtime/dialogue",
+      "endpointStatus": "deprecated",
+      "modelAddressing": "model-id",
+      "apiVersion": "legacy-v3",
+      "transportId": "volc-realtime-voice-binary-legacy",
+      "authProfileIds": ["volc-realtime-voice-legacy-headers"],
+      "defaultAuthProfileId": "volc-realtime-voice-legacy-headers",
+      "maturity": "deprecated",
+      "documentationIds": ["realtime-voice-legacy"]
+    },
+    {
+      "id": "volc-tts-v3-unidirectional",
+      "displayName": "Doubao TTS V3 unidirectional streaming",
+      "baseUrlTemplate": "wss://openspeech.bytedance.com",
+      "endpointTemplate": "/api/v3/tts/unidirectional/stream",
+      "endpointStatus": "verified",
+      "modelAddressing": "none",
+      "apiVersion": "v3",
+      "transportId": "volc-tts-binary-event-v3",
+      "authProfileIds": ["volc-tts-v3-seed-tts-headers"],
+      "defaultAuthProfileId": "volc-tts-v3-seed-tts-headers",
+      "maturity": "unspecified",
+      "documentationIds": ["tts-v3-unidirectional"]
+    },
+    {
+      "id": "volc-tts-v3-bidirectional",
+      "displayName": "Doubao TTS V3 bidirectional streaming",
+      "baseUrlTemplate": "wss://openspeech.bytedance.com",
+      "endpointTemplate": "/api/v3/tts/bidirection",
+      "endpointStatus": "verified",
+      "modelAddressing": "none",
+      "apiVersion": "v3",
+      "transportId": "volc-tts-binary-event-v3",
+      "authProfileIds": ["volc-tts-v3-seed-tts-headers"],
+      "defaultAuthProfileId": "volc-tts-v3-seed-tts-headers",
+      "maturity": "unspecified",
+      "documentationIds": ["tts-v3-bidirectional"]
+    },
+    {
+      "id": "volc-tts-v1-legacy",
+      "displayName": "Doubao historical TTS WebSocket V1",
+      "baseUrlTemplate": "wss://openspeech.bytedance.com",
+      "endpointTemplate": "/api/v1/tts/ws_binary",
+      "endpointStatus": "deprecated",
+      "modelAddressing": "none",
+      "apiVersion": "v1",
+      "transportId": "volc-tts-binary-sequence-v1",
+      "authProfileIds": ["volc-tts-v1-legacy-bearer"],
+      "defaultAuthProfileId": "volc-tts-v1-legacy-bearer",
+      "maturity": "deprecated",
+      "documentationIds": ["tts-v1-legacy"]
+    }
+  ],
+  "protocolProfiles": [
+    {
+      "id": "volcengine-doubao.ark.responses-v3",
+      "version": 1,
+      "apiFamilyId": "volc-ark-responses",
+      "transportId": "volc-ark-sse-json",
+      "authProfileIds": ["volc-ark-bearer"],
+      "defaultAuthProfileId": "volc-ark-bearer",
+      "lifecycleProfileId": "volc-ark-responses-sse-lifecycle",
+      "operations": ["text"],
+      "capabilities": ["text-generation", "text-translation"],
+      "maturity": "unspecified",
+      "adapter": { "id": "volc-ark-responses-adapter", "status": "disabled", "verification": "not-implemented", "reason": "No Volcengine runtime adapter exists in the repository." },
+      "documentationIds": ["ark-quickstart-user", "ark-quickstart-current", "ark-responses"],
+      "fixtureIds": ["volc-ark-responses-sse-v3"],
+      "notes": "The configured base already includes /api/v3; append /responses, not /v1/responses."
+    },
+    {
+      "id": "volcengine-doubao.ark.chat-completions-v3",
+      "version": 1,
+      "apiFamilyId": "volc-ark-chat",
+      "transportId": "volc-ark-sse-json",
+      "authProfileIds": ["volc-ark-bearer"],
+      "defaultAuthProfileId": "volc-ark-bearer",
+      "lifecycleProfileId": "volc-ark-chat-sse-lifecycle",
+      "operations": ["text"],
+      "capabilities": ["text-generation", "text-translation"],
+      "maturity": "unspecified",
+      "adapter": { "id": "volc-ark-chat-adapter", "status": "disabled", "verification": "not-implemented", "reason": "No Volcengine runtime adapter exists in the repository." },
+      "documentationIds": ["ark-chat"],
+      "fixtureIds": ["volc-ark-chat-sse-v3"]
+    },
+    {
+      "id": "volcengine-doubao.seed-asr-v3.async.asr2-duration",
+      "version": 1,
+      "apiFamilyId": "volc-seed-asr-async",
+      "transportId": "volc-seed-asr-binary-v3",
+      "authProfileIds": ["volc-seed-asr-asr2-duration-headers"],
+      "defaultAuthProfileId": "volc-seed-asr-asr2-duration-headers",
+      "audioProfileId": "volc-seed-asr-pcm16-audio",
+      "lifecycleProfileId": "volc-seed-asr-lifecycle",
+      "operations": ["realtime-transcription"],
+      "capabilities": ["speech-to-text", "realtime-transcription"],
+      "maturity": "ga",
+      "adapter": { "id": "volc-seed-asr-adapter", "status": "disabled", "verification": "not-implemented", "reason": "No Seed ASR envelope codec or runtime adapter exists." },
+      "documentationIds": ["seed-asr-intro", "seed-asr-bidirectional", "seed-asr-binary-protocol"],
+      "fixtureIds": ["volc-seed-asr-duration-session-v3"],
+      "notes": "model_name remains bigmodel; ASR generation and duration billing are selected explicitly by X-Api-Resource-Id. Broader codec/rate claims conflict across official pages, so the first deterministic audio contract is PCM s16le 16 kHz mono."
+    },
+    {
+      "id": "volcengine-doubao.seed-asr-v3.async.asr2-concurrent",
+      "version": 1,
+      "apiFamilyId": "volc-seed-asr-async",
+      "transportId": "volc-seed-asr-binary-v3",
+      "authProfileIds": ["volc-seed-asr-asr2-concurrent-headers"],
+      "defaultAuthProfileId": "volc-seed-asr-asr2-concurrent-headers",
+      "audioProfileId": "volc-seed-asr-pcm16-audio",
+      "lifecycleProfileId": "volc-seed-asr-lifecycle",
+      "operations": ["realtime-transcription"],
+      "capabilities": ["speech-to-text", "realtime-transcription"],
+      "maturity": "ga",
+      "adapter": { "id": "volc-seed-asr-adapter", "status": "disabled", "verification": "not-implemented", "reason": "No Seed ASR envelope codec or runtime adapter exists." },
+      "documentationIds": ["seed-asr-intro", "seed-asr-bidirectional", "seed-asr-binary-protocol"],
+      "fixtureIds": ["volc-seed-asr-concurrent-auth-v3"]
+    },
+    {
+      "id": "volcengine-doubao.ast-v2.s2t",
+      "version": 1,
+      "apiFamilyId": "volc-ast-v2",
+      "transportId": "volc-ast-protobuf-v2",
+      "authProfileIds": ["volc-ast-current-headers"],
+      "defaultAuthProfileId": "volc-ast-current-headers",
+      "audioProfileId": "volc-ast-s2t-audio",
+      "lifecycleProfileId": "volc-ast-v2-lifecycle",
+      "operations": ["realtime-translation"],
+      "capabilities": ["speech-translation", "realtime-transcription"],
+      "maturity": "unspecified",
+      "adapter": { "id": "volc-ast-v2-adapter", "status": "disabled", "verification": "not-implemented", "reason": "No AST protobuf adapter exists." },
+      "documentationIds": ["ast-intro", "ast-v2-api"],
+      "fixtureIds": ["volc-ast-s2t-protobuf-v2"],
+      "notes": "Naked protobuf in each WebSocket Binary frame. There is no four-byte Volcengine envelope."
+    },
+    {
+      "id": "volcengine-doubao.ast-v2.s2s-pcm16",
+      "version": 1,
+      "apiFamilyId": "volc-ast-v2",
+      "transportId": "volc-ast-protobuf-v2",
+      "authProfileIds": ["volc-ast-current-headers"],
+      "defaultAuthProfileId": "volc-ast-current-headers",
+      "audioProfileId": "volc-ast-s2s-pcm16-audio",
+      "lifecycleProfileId": "volc-ast-v2-lifecycle",
+      "operations": ["realtime-translation"],
+      "capabilities": ["speech-translation", "speech-to-speech", "text-to-speech"],
+      "maturity": "unspecified",
+      "adapter": { "id": "volc-ast-v2-adapter", "status": "disabled", "verification": "not-implemented", "reason": "No AST protobuf adapter exists." },
+      "documentationIds": ["ast-intro", "ast-v2-api"],
+      "fixtureIds": ["volc-ast-s2s-protobuf-v2"],
+      "notes": "This initial deterministic output profile selects PCM int16 at 16 kHz. Provider-documented PCM float32 24 kHz and Ogg Opus 48 kHz require separate audio profiles."
+    },
+    {
+      "id": "volcengine-doubao.realtime-voice-v3.seeduplex-1-2-6-1",
+      "version": 1,
+      "apiFamilyId": "volc-realtime-voice-v3",
+      "transportId": "volc-realtime-voice-json-v3",
+      "authProfileIds": ["volc-realtime-voice-api-key"],
+      "defaultAuthProfileId": "volc-realtime-voice-api-key",
+      "audioProfileId": "volc-realtime-voice-v3-audio",
+      "lifecycleProfileId": "volc-realtime-voice-v3-lifecycle",
+      "operations": ["realtime-conversation"],
+      "capabilities": ["speech-to-speech", "realtime-transcription", "text-generation", "text-to-speech"],
+      "maturity": "unspecified",
+      "adapter": { "id": "volc-realtime-voice-v3-adapter", "status": "disabled", "verification": "not-implemented", "reason": "No current JSON/base64 realtime voice adapter exists." },
+      "documentationIds": ["realtime-voice-current"],
+      "fixtureIds": ["volc-realtime-voice-duplex-session-v3"]
+    },
+    {
+      "id": "volcengine-doubao.realtime-voice-v3.legacy-events",
+      "version": 1,
+      "apiFamilyId": "volc-realtime-voice-legacy",
+      "transportId": "volc-realtime-voice-binary-legacy",
+      "authProfileIds": ["volc-realtime-voice-legacy-headers"],
+      "defaultAuthProfileId": "volc-realtime-voice-legacy-headers",
+      "audioProfileId": "volc-realtime-voice-legacy-audio",
+      "lifecycleProfileId": "volc-realtime-voice-legacy-lifecycle",
+      "operations": ["realtime-conversation"],
+      "capabilities": ["speech-to-speech", "realtime-transcription", "text-generation", "text-to-speech"],
+      "maturity": "deprecated",
+      "adapter": { "id": "volc-realtime-voice-legacy-adapter", "status": "disabled", "verification": "not-implemented", "reason": "Historical protocol is retained for explicit migration only." },
+      "documentationIds": ["realtime-voice-legacy"],
+      "fixtureIds": ["volc-realtime-voice-legacy-event-frame"],
+      "legacyProtocolIds": ["volc-realtime-dialogue-binary-v3"]
+    },
+    {
+      "id": "volcengine-doubao.tts-v3.unidirectional.seed-tts-2-0",
+      "version": 1,
+      "apiFamilyId": "volc-tts-v3-unidirectional",
+      "transportId": "volc-tts-binary-event-v3",
+      "authProfileIds": ["volc-tts-v3-seed-tts-headers"],
+      "defaultAuthProfileId": "volc-tts-v3-seed-tts-headers",
+      "audioProfileId": "volc-tts-v3-audio",
+      "lifecycleProfileId": "volc-tts-v3-unidirectional-lifecycle",
+      "operations": ["tts"],
+      "capabilities": ["text-to-speech"],
+      "maturity": "unspecified",
+      "adapter": { "id": "volc-tts-v3-adapter", "status": "disabled", "verification": "not-implemented", "reason": "No TTS V3 event-envelope adapter exists." },
+      "documentationIds": ["tts-v3-unidirectional"],
+      "fixtureIds": ["volc-tts-unidirectional-event-frame-v3"]
+    },
+    {
+      "id": "volcengine-doubao.tts-v3.bidirectional.seed-tts-2-0",
+      "version": 1,
+      "apiFamilyId": "volc-tts-v3-bidirectional",
+      "transportId": "volc-tts-binary-event-v3",
+      "authProfileIds": ["volc-tts-v3-seed-tts-headers"],
+      "defaultAuthProfileId": "volc-tts-v3-seed-tts-headers",
+      "audioProfileId": "volc-tts-v3-audio",
+      "lifecycleProfileId": "volc-tts-v3-bidirectional-lifecycle",
+      "operations": ["tts"],
+      "capabilities": ["text-to-speech"],
+      "maturity": "unspecified",
+      "adapter": { "id": "volc-tts-v3-adapter", "status": "disabled", "verification": "not-implemented", "reason": "No TTS V3 event-envelope adapter exists." },
+      "documentationIds": ["tts-v3-bidirectional"],
+      "fixtureIds": ["volc-tts-bidirectional-event-frame-v3"]
+    },
+    {
+      "id": "volcengine-doubao.tts-v1.ws-binary-legacy",
+      "version": 1,
+      "apiFamilyId": "volc-tts-v1-legacy",
+      "transportId": "volc-tts-binary-sequence-v1",
+      "authProfileIds": ["volc-tts-v1-legacy-bearer"],
+      "defaultAuthProfileId": "volc-tts-v1-legacy-bearer",
+      "audioProfileId": "volc-tts-v1-legacy-audio",
+      "lifecycleProfileId": "volc-tts-v1-legacy-lifecycle",
+      "operations": ["tts"],
+      "capabilities": ["text-to-speech"],
+      "maturity": "deprecated",
+      "adapter": { "id": "volc-tts-v1-legacy-adapter", "status": "disabled", "verification": "not-implemented", "reason": "The official page marks this historical V1 interface as not recommended." },
+      "documentationIds": ["tts-v1-legacy"],
+      "fixtureIds": ["volc-tts-sequence-frame-v1-legacy"]
+    }
+  ],
+  "models": [
+    {
+      "id": "doubao-seed-2-1-pro-260628",
+      "displayName": "Doubao Seed 2.1 Pro 260628",
+      "capabilities": ["text-generation", "text-translation"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        { "operation": "text", "protocolProfileId": "volcengine-doubao.ark.responses-v3", "protocolProfileVersion": 1 }
+      ],
+      "documentationIds": ["ark-models-current", "ark-quickstart-current"]
+    },
+    {
+      "id": "doubao-seed-2-1-turbo-260628",
+      "displayName": "Doubao Seed 2.1 Turbo 260628",
+      "capabilities": ["text-generation", "text-translation"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        { "operation": "text", "protocolProfileId": "volcengine-doubao.ark.responses-v3", "protocolProfileVersion": 1 }
+      ],
+      "documentationIds": ["ark-models-current"]
+    },
+    {
+      "id": "doubao-seed-2-0-lite-260428",
+      "displayName": "Doubao Seed 2.0 Lite 260428",
+      "aliases": ["doubao-seed-2-0-lite-260215"],
+      "capabilities": ["text-generation", "text-translation"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        { "operation": "text", "protocolProfileId": "volcengine-doubao.ark.responses-v3", "protocolProfileVersion": 1 }
+      ],
+      "documentationIds": ["ark-models-current", "ark-quickstart-user"],
+      "availability": "The older quickstart still shows the 260215 example; current model-catalog identifiers take precedence."
+    },
+    {
+      "id": "volc.seedasr.sauc.duration",
+      "displayName": "Seed ASR 2.0 duration billing",
+      "aliases": ["bigmodel"],
+      "capabilities": ["speech-to-text", "realtime-transcription"],
+      "maturity": "ga",
+      "protocolBindings": [
+        { "operation": "realtime-transcription", "protocolProfileId": "volcengine-doubao.seed-asr-v3.async.asr2-duration", "protocolProfileVersion": 1 }
+      ],
+      "documentationIds": ["seed-asr-intro", "seed-asr-bidirectional"]
+    },
+    {
+      "id": "volc.seedasr.sauc.concurrent",
+      "displayName": "Seed ASR 2.0 concurrent billing",
+      "aliases": ["bigmodel"],
+      "capabilities": ["speech-to-text", "realtime-transcription"],
+      "maturity": "ga",
+      "protocolBindings": [
+        { "operation": "realtime-transcription", "protocolProfileId": "volcengine-doubao.seed-asr-v3.async.asr2-concurrent", "protocolProfileVersion": 1 }
+      ],
+      "documentationIds": ["seed-asr-intro", "seed-asr-bidirectional"]
+    },
+    {
+      "id": "doubao-ast-v2-s2t",
+      "displayName": "Doubao AST 2.0 speech to translated text",
+      "aliases": ["volc.service_type.10053"],
+      "capabilities": ["speech-translation", "realtime-transcription"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        { "operation": "realtime-translation", "protocolProfileId": "volcengine-doubao.ast-v2.s2t", "protocolProfileVersion": 1 }
+      ],
+      "documentationIds": ["ast-intro", "ast-v2-api"]
+    },
+    {
+      "id": "doubao-ast-v2-s2s-pcm16",
+      "displayName": "Doubao AST 2.0 speech to speech PCM16",
+      "aliases": ["volc.service_type.10053"],
+      "capabilities": ["speech-translation", "speech-to-speech", "text-to-speech"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        { "operation": "realtime-translation", "protocolProfileId": "volcengine-doubao.ast-v2.s2s-pcm16", "protocolProfileVersion": 1 }
+      ],
+      "documentationIds": ["ast-intro", "ast-v2-api"]
+    },
+    {
+      "id": "1.2.6.1",
+      "displayName": "Seeduplex realtime voice 3.0 model 1.2.6.1",
+      "capabilities": ["speech-to-speech", "realtime-transcription", "text-generation", "text-to-speech"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        { "operation": "realtime-conversation", "protocolProfileId": "volcengine-doubao.realtime-voice-v3.seeduplex-1-2-6-1", "protocolProfileVersion": 1 }
+      ],
+      "documentationIds": ["realtime-voice-current"]
+    },
+    {
+      "id": "seed-tts-2.0-unidirectional",
+      "displayName": "Seed TTS 2.0 unidirectional streaming",
+      "aliases": ["seed-tts-2.0"],
+      "capabilities": ["text-to-speech"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        { "operation": "tts", "protocolProfileId": "volcengine-doubao.tts-v3.unidirectional.seed-tts-2-0", "protocolProfileVersion": 1 }
+      ],
+      "documentationIds": ["tts-v3-unidirectional"]
+    },
+    {
+      "id": "seed-tts-2.0-bidirectional",
+      "displayName": "Seed TTS 2.0 bidirectional streaming",
+      "aliases": ["seed-tts-2.0"],
+      "capabilities": ["text-to-speech"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        { "operation": "tts", "protocolProfileId": "volcengine-doubao.tts-v3.bidirectional.seed-tts-2-0", "protocolProfileVersion": 1 }
+      ],
+      "documentationIds": ["tts-v3-bidirectional"]
+    }
+  ],
+  "probes": [
+    { "id": "volc-ark-responses-fixture-probe", "protocolProfileId": "volcengine-doubao.ark.responses-v3", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-ark-responses-sse-v3" },
+    { "id": "volc-ark-chat-fixture-probe", "protocolProfileId": "volcengine-doubao.ark.chat-completions-v3", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-ark-chat-sse-v3" },
+    { "id": "volc-seed-asr-duration-fixture-probe", "protocolProfileId": "volcengine-doubao.seed-asr-v3.async.asr2-duration", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-seed-asr-duration-session-v3" },
+    { "id": "volc-seed-asr-concurrent-fixture-probe", "protocolProfileId": "volcengine-doubao.seed-asr-v3.async.asr2-concurrent", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-seed-asr-concurrent-auth-v3" },
+    { "id": "volc-ast-s2t-fixture-probe", "protocolProfileId": "volcengine-doubao.ast-v2.s2t", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-ast-s2t-protobuf-v2" },
+    { "id": "volc-ast-s2s-fixture-probe", "protocolProfileId": "volcengine-doubao.ast-v2.s2s-pcm16", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-ast-s2s-protobuf-v2" },
+    { "id": "volc-realtime-voice-v3-fixture-probe", "protocolProfileId": "volcengine-doubao.realtime-voice-v3.seeduplex-1-2-6-1", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-realtime-voice-duplex-session-v3" },
+    { "id": "volc-realtime-voice-legacy-fixture-probe", "protocolProfileId": "volcengine-doubao.realtime-voice-v3.legacy-events", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-realtime-voice-legacy-event-frame" },
+    { "id": "volc-tts-unidirectional-fixture-probe", "protocolProfileId": "volcengine-doubao.tts-v3.unidirectional.seed-tts-2-0", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-tts-unidirectional-event-frame-v3" },
+    { "id": "volc-tts-bidirectional-fixture-probe", "protocolProfileId": "volcengine-doubao.tts-v3.bidirectional.seed-tts-2-0", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-tts-bidirectional-event-frame-v3" },
+    { "id": "volc-tts-v1-fixture-probe", "protocolProfileId": "volcengine-doubao.tts-v1.ws-binary-legacy", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-tts-sequence-frame-v1-legacy" }
+  ],
+  "smokes": [
+    { "id": "volc-ark-responses-fixture-smoke", "protocolProfileId": "volcengine-doubao.ark.responses-v3", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-ark-responses-sse-v3", "notes": "Offline only; no provider call." },
+    { "id": "volc-ark-chat-fixture-smoke", "protocolProfileId": "volcengine-doubao.ark.chat-completions-v3", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-ark-chat-sse-v3" },
+    { "id": "volc-seed-asr-duration-fixture-smoke", "protocolProfileId": "volcengine-doubao.seed-asr-v3.async.asr2-duration", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-seed-asr-duration-session-v3" },
+    { "id": "volc-seed-asr-concurrent-fixture-smoke", "protocolProfileId": "volcengine-doubao.seed-asr-v3.async.asr2-concurrent", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-seed-asr-concurrent-auth-v3" },
+    { "id": "volc-ast-s2t-fixture-smoke", "protocolProfileId": "volcengine-doubao.ast-v2.s2t", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-ast-s2t-protobuf-v2" },
+    { "id": "volc-ast-s2s-fixture-smoke", "protocolProfileId": "volcengine-doubao.ast-v2.s2s-pcm16", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-ast-s2s-protobuf-v2" },
+    { "id": "volc-realtime-voice-v3-fixture-smoke", "protocolProfileId": "volcengine-doubao.realtime-voice-v3.seeduplex-1-2-6-1", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-realtime-voice-duplex-session-v3" },
+    { "id": "volc-realtime-voice-legacy-fixture-smoke", "protocolProfileId": "volcengine-doubao.realtime-voice-v3.legacy-events", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-realtime-voice-legacy-event-frame" },
+    { "id": "volc-tts-unidirectional-fixture-smoke", "protocolProfileId": "volcengine-doubao.tts-v3.unidirectional.seed-tts-2-0", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-tts-unidirectional-event-frame-v3" },
+    { "id": "volc-tts-bidirectional-fixture-smoke", "protocolProfileId": "volcengine-doubao.tts-v3.bidirectional.seed-tts-2-0", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-tts-bidirectional-event-frame-v3" },
+    { "id": "volc-tts-v1-fixture-smoke", "protocolProfileId": "volcengine-doubao.tts-v1.ws-binary-legacy", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "volc-tts-sequence-frame-v1-legacy" }
+  ],
+  "fixtures": [
+    { "id": "volc-ark-responses-sse-v3", "path": "provider-modules/volcengine-doubao/fixtures/ark-responses-sse-v3.json", "kind": "wire", "sourceDocumentationIds": ["ark-quickstart-user", "ark-responses"] },
+    { "id": "volc-ark-chat-sse-v3", "path": "provider-modules/volcengine-doubao/fixtures/ark-chat-sse-v3.json", "kind": "wire", "sourceDocumentationIds": ["ark-chat"] },
+    { "id": "volc-seed-asr-duration-session-v3", "path": "provider-modules/volcengine-doubao/fixtures/seed-asr-duration-session-v3.json", "kind": "wire", "sourceDocumentationIds": ["seed-asr-bidirectional", "seed-asr-binary-protocol"] },
+    { "id": "volc-seed-asr-concurrent-auth-v3", "path": "provider-modules/volcengine-doubao/fixtures/seed-asr-concurrent-auth-v3.json", "kind": "probe", "sourceDocumentationIds": ["seed-asr-bidirectional"] },
+    { "id": "volc-ast-s2t-protobuf-v2", "path": "provider-modules/volcengine-doubao/fixtures/ast-s2t-protobuf-v2.json", "kind": "wire", "sourceDocumentationIds": ["ast-v2-api"] },
+    { "id": "volc-ast-s2s-protobuf-v2", "path": "provider-modules/volcengine-doubao/fixtures/ast-s2s-protobuf-v2.json", "kind": "wire", "sourceDocumentationIds": ["ast-v2-api"] },
+    { "id": "volc-realtime-voice-duplex-session-v3", "path": "provider-modules/volcengine-doubao/fixtures/realtime-voice-duplex-session-v3.json", "kind": "wire", "sourceDocumentationIds": ["realtime-voice-current"] },
+    { "id": "volc-realtime-voice-legacy-event-frame", "path": "provider-modules/volcengine-doubao/fixtures/realtime-voice-legacy-event-frame.json", "kind": "wire", "sourceDocumentationIds": ["realtime-voice-legacy"] },
+    { "id": "volc-tts-unidirectional-event-frame-v3", "path": "provider-modules/volcengine-doubao/fixtures/tts-unidirectional-event-frame-v3.json", "kind": "wire", "sourceDocumentationIds": ["tts-v3-unidirectional"] },
+    { "id": "volc-tts-bidirectional-event-frame-v3", "path": "provider-modules/volcengine-doubao/fixtures/tts-bidirectional-event-frame-v3.json", "kind": "wire", "sourceDocumentationIds": ["tts-v3-bidirectional"] },
+    { "id": "volc-tts-sequence-frame-v1-legacy", "path": "provider-modules/volcengine-doubao/fixtures/tts-sequence-frame-v1-legacy.json", "kind": "wire", "sourceDocumentationIds": ["tts-v1-legacy"] }
+  ]
+}

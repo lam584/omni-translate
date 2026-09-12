@@ -3,6 +3,7 @@ mod archive_gap;
 mod crypto;
 mod cue_ingress;
 mod fs_safety;
+mod ignored_fragment;
 mod playback;
 mod repository;
 
@@ -22,9 +23,10 @@ use crate::audio::contracts::{AudioRuntimeSnapshot, SubtitleCueRuntime};
 pub(crate) use repository::{
     HistoryCuePage, HistorySessionDetail, HistorySessionPage, HistoryStatistics,
 };
+pub(crate) use playback::{HistoryAudioTrack, HistoryChangedEventV2};
+#[cfg(test)]
 pub(crate) use playback::{
-    HistoryAudioTrack, HistoryChangedEventV2, HistoryPlaybackEventV2,
-    HistoryPlaybackStartV2, HistoryPlaybackStopV2,
+    HistoryPlaybackEventV2, HistoryPlaybackStartV2, HistoryPlaybackStopV2,
 };
 pub(crate) use playback::emit_changed;
 use audio::AudioTrack;
@@ -140,6 +142,7 @@ enum ArchiveControl {
         acknowledged: mpsc::Sender<Result<(), String>>,
     },
     AudioGap { session_id: String },
+    DiscardCue { session_id: String, cue_id: String },
 }
 
 impl HistoryStateStore {
@@ -664,6 +667,11 @@ fn archive_worker(
                     ) {
                         log::warn!("[omni][history] archive gap boundary failed: {error}");
                     }
+                }
+                ArchiveControl::DiscardCue { session_id, cue_id } => {
+                    ignored_fragment::discard_queued_cue(
+                        &state, &cue_rx, &cue_overflow, &mut pending, session_id, cue_id,
+                    );
                 }
             }
         }

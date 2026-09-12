@@ -26,6 +26,22 @@ test('report rejects legacy or missing step schemas instead of migrating them', 
     /unsupported watch-mode step schema/,
   );
 });
+
+test('step normalization preserves passed, skipped, failed, and blocked states', () => {
+  const steps = normalizeSteps([
+    { schemaVersion: 'watch-mode-step/v2', id: 'passed-step', status: 'passed', data: {}, error: null },
+    { schemaVersion: 'watch-mode-step/v2', id: 'skipped-step', status: 'skipped', data: { reason: 'policy skip' }, error: null },
+    { schemaVersion: 'watch-mode-step/v2', id: 'failed-step', status: 'failed', data: null, error: { message: 'failed' } },
+    { schemaVersion: 'watch-mode-step/v2', id: 'blocked-step', status: 'blocked', data: null, error: { message: 'blocked' } },
+  ]);
+
+  assert.deepEqual(steps.map(({ status, ok }) => ({ status, ok })), [
+    { status: 'passed', ok: true },
+    { status: 'skipped', ok: false },
+    { status: 'failed', ok: false },
+    { status: 'blocked', ok: false },
+  ]);
+});
 import {
   classify,
   healthyApp,
@@ -41,7 +57,13 @@ import {
 } from './watch-mode-report-test-helpers.mjs';
 import { WATCH_MODE_RUN_COLLECTION_SCHEMA, writeWatchModeRunCollection } from './watch-mode-run-collection.mjs';
 
-function writeCollection(directory, evidence, { failure = null, steps = [], marker = null, startedAtLocal = null } = {}) {
+function writeCollection(directory, evidence, {
+  failure = null,
+  steps = [],
+  marker = null,
+  startedAtLocal = null,
+  runtimeStatus = null,
+} = {}) {
   fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(path.join(directory, 'fixture-evidence.raw.json'), JSON.stringify(evidence), 'utf8');
   fs.writeFileSync(path.join(directory, 'run-metadata.json'), JSON.stringify({
@@ -49,6 +71,9 @@ function writeCollection(directory, evidence, { failure = null, steps = [], mark
     modelId: evidence.modelId ?? null,
     feedbackMode: evidence.feedbackLoopPrevention ?? null,
   }), 'utf8');
+  if (runtimeStatus) {
+    fs.writeFileSync(path.join(directory, 'watch-runtime-status.json'), JSON.stringify(runtimeStatus), 'utf8');
+  }
   writeWatchModeRunCollection(directory, {
     schemaVersion: WATCH_MODE_RUN_COLLECTION_SCHEMA,
     artifactKind: 'watch-mode-run-collection',
@@ -59,11 +84,107 @@ function writeCollection(directory, evidence, { failure = null, steps = [], mark
     artifacts: {
       appLog: 'app.log', bridgeLog: 'bridge-service.log',
       runMetadata: 'run-metadata.json', fixtureEvidence: 'fixture-evidence.raw.json',
+      ...(runtimeStatus ? { runtimeStatus: 'watch-runtime-status.json' } : {}),
     },
     primaryError: failure,
     cleanupErrors: [],
   });
 }
+
+test('structured runtime Provider failure precedes downstream capture and Bridge failures', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-report-runtime-provider-'));
+  const marker = 'watch_mode_diagnostic.run_id=runtime-provider-first';
+  const providerFailure = {
+    code: 'watch.provider.session-failed',
+    message: 'model_protocol.payload_invalid: previous_item_id string is required',
+  };
+  writeCollection(tempDir, {
+    feedbackLoopPrevention: 'process-exclusion',
+    driver: healthyDriver,
+    wasapi: healthyWasapi,
+    bridge: healthyBridge,
+    physicalOutput: healthyPhysicalOutput,
+    physicalOutputContentRaw: healthyPhysicalOutputContent,
+    app: healthyApp,
+    watchSessionReport: null,
+    provider: null,
+  }, {
+    marker,
+    failure: {
+      message: 'custodied Watch desktop terminal failed: terminalErrorCode=capture-input-fence-failed',
+    },
+    runtimeStatus: {
+      schemaVersion: 'watch-mode-readiness/v2',
+      runMarker: marker,
+      processId: 3136,
+      state: 'failed',
+      updatedAtMs: 1_000,
+      frontendIpc: { status: 'ready', atMs: 100, error: null },
+      provider: { status: 'failed', atMs: 1_000, error: providerFailure },
+      bridge: { status: 'ready', atMs: 200, error: null },
+      route: { status: 'ready', atMs: 300, error: null },
+      failure: providerFailure,
+    },
+  });
+  fs.writeFileSync(path.join(tempDir, 'app.log'), marker);
+  fs.writeFileSync(path.join(tempDir, 'bridge-service.log'), healthyBridgeLog);
+
+  const { report } = writeReport({ inputDir: tempDir, outputDir: tempDir, mode: 'live' });
+
+  assert.equal(report.failureLayer, 'provider');
+  assert.equal(report.stableErrorCode, 'watch.provider.session-failed');
+  assert.equal(report.lifecyclePhase, 'provider-session');
+  assert.equal(report.runtimeStatus.provider.atMs, 1_000);
+  assert.equal(report.layers.provider.status, 'failed');
+  assert.equal(report.layers.bridge.status, 'failed');
+  assert.equal(report.layers.app.status, 'failed');
+  assert.equal(report.diagnostics.evidence.runtimeFailure.atMs, 1_000);
+  assert.match(report.failureReason, /previous_item_id string is required/);
+  assert.equal(report.artifacts.runtimeStatus, path.join(tempDir, 'watch-runtime-status.json'));
+});
+
+test('healthy structured runtime status does not create a Provider failure', () => {
+  const report = classify({
+    runtimeStatus: {
+      state: 'ready',
+      failure: null,
+      provider: { status: 'ready', atMs: 1_000, error: null },
+    },
+  });
+
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.layers.provider.status, 'passed');
+  assert.equal(report.diagnostics.evidence.runtimeFailure, null);
+});
+
+test('runtime status artifact must match the indexed run marker', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-report-runtime-marker-'));
+  const marker = 'watch_mode_diagnostic.run_id=expected';
+  writeCollection(tempDir, {
+    provider: healthyProvider,
+  }, {
+    marker,
+    runtimeStatus: {
+      schemaVersion: 'watch-mode-readiness/v2',
+      runMarker: 'watch_mode_diagnostic.run_id=wrong',
+      processId: 3136,
+      state: 'ready',
+      updatedAtMs: 1_000,
+      frontendIpc: { status: 'ready', atMs: 100, error: null },
+      provider: { status: 'ready', atMs: 1_000, error: null },
+      bridge: { status: 'ready', atMs: 200, error: null },
+      route: { status: 'ready', atMs: 300, error: null },
+      failure: null,
+    },
+  });
+  fs.writeFileSync(path.join(tempDir, 'app.log'), marker);
+  fs.writeFileSync(path.join(tempDir, 'bridge-service.log'), healthyBridgeLog);
+
+  assert.throws(
+    () => writeReport({ inputDir: tempDir, outputDir: tempDir, mode: 'live' }),
+    /runtimeStatus runMarker does not match runMetadata/,
+  );
+});
 
 test('preserves physical output mixed-output detail in markdown', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-report-physical-detail-'));
@@ -419,6 +540,32 @@ test('classifies provider errors after local layers pass', () => {
   assert.match(report.failureReason, /provider|failed/);
 });
 
+test('assigns stable readiness identity to workspace access denial', () => {
+  const report = classify({
+    provider: { totalCalls: 1, failedCalls: 1, error: 'Workspace access denied.' },
+    appLogText: healthyAppLog,
+  });
+
+  assert.equal(report.failureLayer, 'provider');
+  assert.equal(report.stableErrorCode, 'provider.workspace-access-denied');
+  assert.equal(report.lifecyclePhase, 'provider-readiness');
+});
+
+test('assigns stable active-response identity to response stream timeout', () => {
+  const report = classify({
+    provider: {
+      totalCalls: 1,
+      failedCalls: 1,
+      error: 'COMMON_ERROR: Response stream timeout (timeout_seconds=60, elapsed_ms=68215)',
+    },
+    appLogText: healthyAppLog,
+  });
+
+  assert.equal(report.failureLayer, 'provider');
+  assert.equal(report.stableErrorCode, 'provider.response-stream-timeout');
+  assert.equal(report.lifecyclePhase, 'active-response');
+});
+
 test('preserves provider status code and model evidence in report and markdown', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-report-provider-'));
   const providerErrorLine = 'provider.translate_text end_call | {"payload":{"error":"HTTP 429 quota exceeded code=QuotaExceeded providerId=provider-dashscope modelId=qwen3.6-flash-2026-04-16","status":"failed"}}';
@@ -555,6 +702,30 @@ test('does not fail recovered provider timeout when physical output content pass
   assert.equal(report.verdict, 'passed');
   assert.equal(report.failureLayer, null);
   assert.equal(report.layers.provider.status, 'passed');
+});
+
+test('does not classify strict local endpoint rejection as a Provider failure', () => {
+  const report = classify({
+    appLogText: [
+      'watch_mode.route_start | direction=inbound routeMode=watch',
+      '预热初始化失败，将回退到点击时冷启动。 | direction=outbound error=requested audio endpoint was not found; default endpoint fallback is forbidden: microphone-default',
+    ].join('\n'),
+  });
+
+  assert.equal(report.layers.provider.status, 'passed');
+  assert.deepEqual(report.layers.app.parsedLog.providerErrorLines, []);
+});
+
+test('does not classify a clean realtime websocket close as a Provider failure', () => {
+  const report = classify({
+    appLogText: [
+      'watch_mode.route_start | direction=inbound routeMode=watch',
+      '[SOCKET] WebSocket closed sid=fixture-session',
+    ].join('\n'),
+  });
+
+  assert.equal(report.layers.provider.status, 'passed');
+  assert.deepEqual(report.layers.app.parsedLog.providerErrorLines, []);
 });
 
 test('parses bridge source pacer metrics', () => {

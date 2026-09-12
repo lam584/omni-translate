@@ -17,7 +17,6 @@ import {
 } from './run-watch-mode-live-matrix.mjs';
 import {
   LIVE_LLM_CELLS,
-  MODEL_STABILITY_CELLS,
   balancedReleasePlanFailure,
 } from './watch-mode-balanced-release-plan.mjs';
 import {
@@ -38,9 +37,10 @@ import {
 
 export const RELEASE_MANUAL_SCHEMA_VERSION = 2;
 export const RELEASE_EVIDENCE_RECEIPT_SCHEMA_VERSION = 1;
-export const PERFORMANCE_LIVE_SOURCE_SCHEMA_VERSION = 2;
+export const PERFORMANCE_LIVE_SOURCE_SCHEMA_VERSION = 3;
 export const PERFORMANCE_SYSTEM_METRICS_SCHEMA_VERSION = 1;
 export const PERFORMANCE_STRICT_SOURCE_RECEIPT_KIND = 'performance-strict-matrix-source-receipt';
+export const PERFORMANCE_STRICT_SOURCE_RECEIPT_SCHEMA_VERSION = 2;
 export const DEFAULT_MANUAL_EVIDENCE_MAX_AGE_DAYS = 14;
 
 export const MANUAL_E2E_SCENARIOS = [
@@ -73,9 +73,7 @@ export const PERFORMANCE_THRESHOLDS = Object.freeze({
   ttsRoundTripLatencyMs: 2200,
   cpuP95Percent: 65,
   memoryPeakMb: 900,
-  stabilityWindowMinutes: Math.min(
-    ...MODEL_STABILITY_CELLS.map((cell) => cell.durationSeconds / 60),
-  ),
+  terminalStageCoveragePercent: 100,
   allowedDropouts: 0,
 });
 
@@ -86,7 +84,7 @@ export const PERFORMANCE_MEASUREMENT_NAMES = [
   'cpuP95Percent',
   'memoryPeakMb',
   'observedDropouts',
-  'stabilityDurationMinutes',
+  'terminalStageCoveragePercent',
 ];
 
 const asForwardSlash = (value) => value.split(path.sep).join('/');
@@ -475,12 +473,10 @@ export const performanceThresholdIssues = (measurements, thresholds = PERFORMANC
   if (Number.isFinite(measurements?.observedDropouts) && measurements.observedDropouts !== 0) {
     issues.push(`observedDropouts must be 0, received ${measurements.observedDropouts}`);
   }
-  if (
-    Number.isFinite(measurements?.stabilityDurationMinutes)
-    && measurements.stabilityDurationMinutes < thresholds.stabilityWindowMinutes
-  ) {
+  if (Number.isFinite(measurements?.terminalStageCoveragePercent)
+    && measurements.terminalStageCoveragePercent < thresholds.terminalStageCoveragePercent) {
     issues.push(
-      `stabilityDurationMinutes=${measurements.stabilityDurationMinutes} is shorter than ${thresholds.stabilityWindowMinutes}`,
+      `terminalStageCoveragePercent=${measurements.terminalStageCoveragePercent} is lower than ${thresholds.terminalStageCoveragePercent}`,
     );
   }
   return issues;
@@ -538,7 +534,7 @@ const strictPerformanceShapeFailure = (manifest) => {
       deviceClasses.filter((candidate) => candidate === deviceClass).length === 1
     ))
   ) {
-    return 'canonical strict matrix device profiles are not exactly default-speaker and usb';
+    return `canonical strict matrix device profiles are not exactly: ${SUPPORTED_DEVICE_CLASSES.join(', ')}`;
   }
   const expectedCells = expectedPerformanceCellKeys();
   const actualCells = Array.isArray(manifest.cells)
@@ -637,13 +633,15 @@ export function resolvePerformanceStrictAuthority({
     const artifactByPath = new Map(receipt.artifacts.map((artifact) => [artifact.path, artifact]));
     const rawReport = artifactByPath.get('report.json');
     const rawSystemMetrics = artifactByPath.get('system-metrics.json');
-    if (!rawReport || !rawSystemMetrics) {
-      throw new Error(`canonical strict matrix cell ${index} receipt does not bind report.json and system-metrics.json`);
+    const rawTerminal = artifactByPath.get('evidence-driven-terminal.json');
+    if (!rawReport || !rawSystemMetrics || !rawTerminal) {
+      throw new Error(`canonical strict matrix cell ${index} receipt does not bind report.json, system-metrics.json, and evidence-driven-terminal.json`);
     }
     rawArtifactsByCell.set(cellKey, {
       receiptPath,
       report: rawReport,
       systemMetrics: rawSystemMetrics,
+      terminal: rawTerminal,
     });
   }
   return {
@@ -683,7 +681,7 @@ export function buildPerformanceStrictSourceReceipt(manifest, sourceArtifacts) {
     return receiptArtifactBinding(matches[0]);
   };
   return {
-    schemaVersion: 1,
+    schemaVersion: PERFORMANCE_STRICT_SOURCE_RECEIPT_SCHEMA_VERSION,
     artifactKind: PERFORMANCE_STRICT_SOURCE_RECEIPT_KIND,
     canonicalManifest: exactlyOne('watch-mode-strict-matrix'),
     sourceManifest: exactlyOne('watch-mode-strict-source-manifest'),
@@ -698,6 +696,7 @@ export function buildPerformanceStrictSourceReceipt(manifest, sourceArtifacts) {
         receiptSha256: cell.receiptSha256,
         report: exactlyOneCell('watch-mode-report', cellKey),
         systemMetrics: exactlyOneCell('system-metrics', cellKey),
+        terminal: exactlyOneCell('evidence-driven-terminal', cellKey),
       };
     }),
   };
@@ -934,6 +933,7 @@ export function derivePerformanceMeasurementsFromSource(
       'watch-mode-strict-verification-receipt',
       'watch-mode-report',
       'system-metrics',
+      'evidence-driven-terminal',
     ].includes(artifact?.role)) {
       issues.push(`unsupported performance source artifact role: ${artifact?.role ?? '(missing)'}`);
       continue;
@@ -966,6 +966,7 @@ export function derivePerformanceMeasurementsFromSource(
   );
   const reportArtifacts = usableArtifacts.filter((artifact) => artifact.role === 'watch-mode-report');
   const metricsArtifacts = usableArtifacts.filter((artifact) => artifact.role === 'system-metrics');
+  const terminalArtifacts = usableArtifacts.filter((artifact) => artifact.role === 'evidence-driven-terminal');
   const expectedCells = expectedPerformanceCellKeys();
   if (manifestArtifacts.length !== 1) issues.push('performance source must contain exactly one strict matrix manifest');
   if (sourceManifestArtifacts.length !== 1) {
@@ -979,6 +980,9 @@ export function derivePerformanceMeasurementsFromSource(
   }
   if (metricsArtifacts.length !== expectedCells.length) {
     issues.push(`performance source must contain exactly ${expectedCells.length} system metrics files`);
+  }
+  if (terminalArtifacts.length !== expectedCells.length) {
+    issues.push(`performance source must contain exactly ${expectedCells.length} evidence-driven terminal files`);
   }
 
   let authority = strictAuthority;
@@ -1059,6 +1063,7 @@ export function derivePerformanceMeasurementsFromSource(
 
   const reportByCell = new Map();
   const metricsByCell = new Map();
+  const terminalByCell = new Map();
   for (const artifact of reportArtifacts) {
     if (reportByCell.has(artifact.cellKey)) issues.push(`duplicate Watch report cellKey: ${artifact.cellKey}`);
     reportByCell.set(artifact.cellKey, artifact);
@@ -1067,10 +1072,17 @@ export function derivePerformanceMeasurementsFromSource(
     if (metricsByCell.has(artifact.cellKey)) issues.push(`duplicate system metrics cellKey: ${artifact.cellKey}`);
     metricsByCell.set(artifact.cellKey, artifact);
   }
+  for (const artifact of terminalArtifacts) {
+    if (terminalByCell.has(artifact.cellKey)) issues.push(`duplicate terminal cellKey: ${artifact.cellKey}`);
+    terminalByCell.set(artifact.cellKey, artifact);
+  }
   if (
     reportByCell.size !== expectedCells.length
     || metricsByCell.size !== expectedCells.length
-    || expectedCells.some((cellKey) => !reportByCell.has(cellKey) || !metricsByCell.has(cellKey))
+    || terminalByCell.size !== expectedCells.length
+    || expectedCells.some((cellKey) => (
+      !reportByCell.has(cellKey) || !metricsByCell.has(cellKey) || !terminalByCell.has(cellKey)
+    ))
   ) {
     issues.push(`performance source cell set must be exactly: ${expectedCells.join(', ')}`);
   }
@@ -1078,7 +1090,6 @@ export function derivePerformanceMeasurementsFromSource(
   const providerLatencies = [];
   const subtitleLatencies = [];
   const ttsLatencies = [];
-  const stabilityDurationsMs = [];
   const cpuP95Values = [];
   const memoryPeakValues = [];
   let observedDropouts = 0;
@@ -1087,7 +1098,8 @@ export function derivePerformanceMeasurementsFromSource(
   for (const cellKey of expectedCells) {
     const reportArtifact = reportByCell.get(cellKey);
     const metricsArtifact = metricsByCell.get(cellKey);
-    if (!reportArtifact || !metricsArtifact) continue;
+    const terminalArtifact = terminalByCell.get(cellKey);
+    if (!reportArtifact || !metricsArtifact || !terminalArtifact) continue;
     try {
       const report = authority?.reportsByCell?.get(cellKey);
       const originalRunDirectory = authority?.runDirectoriesByCell?.get(cellKey);
@@ -1126,9 +1138,14 @@ export function derivePerformanceMeasurementsFromSource(
         path.join(originalRunDirectory, 'system-metrics.json'),
         `${cellKey} system metrics`,
       );
+      bindArchivedCopyToAuthority(
+        terminalArtifact,
+        path.join(originalRunDirectory, 'evidence-driven-terminal.json'),
+        `${cellKey} evidence-driven terminal`,
+      );
       const rawAuthority = authority?.rawArtifactsByCell?.get(cellKey);
       if (!rawAuthority) {
-        issues.push(`${cellKey}: strict authority did not return fixed raw report/system-metrics bindings`);
+        issues.push(`${cellKey}: strict authority did not return fixed raw report/system-metrics/terminal bindings`);
       } else {
         bindArchivedCopyToCellReceipt(
           reportArtifact,
@@ -1139,6 +1156,11 @@ export function derivePerformanceMeasurementsFromSource(
           metricsArtifact,
           rawAuthority.systemMetrics,
           `${cellKey} system metrics`,
+        );
+        bindArchivedCopyToCellReceipt(
+          terminalArtifact,
+          rawAuthority.terminal,
+          `${cellKey} evidence-driven terminal`,
         );
       }
 
@@ -1155,7 +1177,6 @@ export function derivePerformanceMeasurementsFromSource(
         continue;
       }
       const watchDurationMs = Math.min(elapsedMs, summaryDurationMs);
-      if (manifestCell?.tier === 'model-stability') stabilityDurationsMs.push(watchDurationMs);
       const recomputedLatency = recomputeWatchLatencyEvidence(watch, cellKey);
       issues.push(...recomputedLatency.issues);
       const providerLatency = recomputedLatency.providerLatencyMs;
@@ -1196,7 +1217,7 @@ export function derivePerformanceMeasurementsFromSource(
     providerLatencies.length === expectedCells.length,
     subtitleLatencies.length === expectedCells.length,
     ttsLatencies.length === LIVE_LLM_CELLS.filter((cell) => cell.feedbackLoopPrevention !== 'echo-cancel').length,
-    stabilityDurationsMs.length === MODEL_STABILITY_CELLS.length,
+    terminalByCell.size === expectedCells.length,
     cpuP95Values.length === expectedCells.length,
     memoryPeakValues.length === expectedCells.length,
   ].every(Boolean);
@@ -1207,7 +1228,9 @@ export function derivePerformanceMeasurementsFromSource(
     cpuP95Percent: roundedMeasurement(Math.max(...cpuP95Values)),
     memoryPeakMb: roundedMeasurement(Math.max(...memoryPeakValues)),
     observedDropouts: roundedMeasurement(observedDropouts),
-    stabilityDurationMinutes: roundedMeasurement(Math.min(...stabilityDurationsMs) / 60000),
+    terminalStageCoveragePercent: roundedMeasurement(
+      (terminalByCell.size / expectedCells.length) * 100,
+    ),
   } : null;
   return {
     issues: [...new Set(issues)],

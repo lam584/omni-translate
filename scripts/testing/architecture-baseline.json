@@ -4,7 +4,7 @@
     "React screen >600 lines: apps/desktop/src/pages/AudioRoutingScreen.tsx",
     "React screen >600 lines: apps/desktop/src/pages/DiagnosticsScreen.tsx",
     "React screen >600 lines: apps/desktop/src/pages/RealTimeSessionScreen.tsx",
-    "Rust function >300 lines: apps/desktop/src-tauri/src/audio/gemini_live.rs",
+    "Rust function >300 lines: apps/desktop/src-tauri/src/provider/adapters/gemini_live.rs",
     "Rust function >300 lines: apps/desktop/src-tauri/src/audio/omni/asr_event_processor.rs",
     "Rust function >300 lines: apps/desktop/src-tauri/src/audio/omni/audio_pump.rs",
     "Rust function >300 lines: apps/desktop/src-tauri/src/audio/omni/provider_input_budget.rs",
@@ -19,7 +19,7 @@
     "Rust module >900 lines: apps/desktop/src-tauri/src/audio/omni/replay_tests.rs",
     "Rust module >900 lines: apps/desktop/src-tauri/src/audio/omni/session_worker.rs",
     "Rust module >900 lines: apps/desktop/src-tauri/src/audio/omni/socket_event_processor.rs",
-    "Rust module >900 lines: apps/desktop/src-tauri/src/audio/openai_realtime.rs",
+    "Rust module >900 lines: apps/desktop/src-tauri/src/provider/adapters/openai_realtime.rs",
     "Rust module >900 lines: apps/desktop/src-tauri/src/release_evidence_diagnostic/provider_preflight_authority.rs"
   ]
 }

@@ -1,0 +1,81 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "google-gemini.openai-chat-stream",
+  "providerId": "google-gemini",
+  "protocolProfileId": "google-gemini.openai-chat",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "google-gemini.openai-compatibility"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived, synthetic OpenAI-compatible text stream. It is not a Gemini Live capture."
+  },
+  "scenario": "OpenAI-compatible text generation over HTTP/SSE",
+  "data": {
+    "request": {
+      "event": "chat.completions.create",
+      "method": "POST",
+      "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      "headers": {
+        "Authorization": "Bearer <redacted-google-api-key>",
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "model": "gemini-2.5-flash",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Translate the supplied sentence."
+          }
+        ],
+        "stream": true
+      }
+    },
+    "authContract": {
+      "profileId": "google-gemini.openai-bearer",
+      "parameters": [
+        { "location": "header", "name": "Authorization", "value": "Bearer <redacted-google-api-key>" }
+      ]
+    },
+    "response": {
+      "status": 200,
+      "contentType": "text/event-stream",
+      "frames": [
+        {
+          "data": {
+            "object": "chat.completion.chunk",
+            "choices": [
+              {
+                "index": 0,
+                "delta": {
+                  "content": "<sanitized-text-delta>"
+                },
+                "finish_reason": null
+              }
+            ]
+          }
+        },
+        {
+          "data": {
+            "object": "chat.completion.chunk",
+            "choices": [
+              {
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop"
+              }
+            ]
+          }
+        },
+        {
+          "data": "[DONE]"
+        }
+      ]
+    },
+    "boundary": "This HTTP/SSE compatibility surface is text-oriented and must not be used as the transport or event contract for Gemini Live."
+  }
+}

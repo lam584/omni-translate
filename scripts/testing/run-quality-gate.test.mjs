@@ -11,6 +11,8 @@ import { archiveReleaseManualEvidence } from './archive-release-manual-evidence.
 import { assemblePerformanceBaseline } from './assemble-performance-baseline.mjs';
 import {
   RELEASE_MANUAL_PRODUCTION_EMITTERS,
+  assertPublishedPreflightOutputRoot,
+  collectPublishedProviderPreflightManualEvidence,
   collectDesktopReleaseManualEvidence,
   collectInstallReleaseManualEvidence,
   collectOverlayReleaseManualEvidence,
@@ -20,7 +22,10 @@ import {
   testOnlyValidateCanonicalExecutableAuthority,
   testOnlyValidateReleaseRunnerProcessAuthority,
   validateRawReleaseManualEvidence,
+  validateReleaseManualCollectorPackage,
 } from './release-manual-collector.mjs';
+import { createFrozenDesktopFixture } from './frozen-desktop-release-authority-test-helpers.mjs';
+import { resolveFrozenVirtualMicAuthority } from './frozen-virtual-mic-release-authority.mjs';
 import { materializeRealDeviceAudioRawFixture } from './real-device-audio-release-evidence-test-helpers.mjs';
 import { materializeOverlayClickThroughRawFixture } from './overlay-click-through-release-evidence-test-helpers.mjs';
 import { prepareInstallRegressionReport } from './prepare-install-regression-report.mjs';
@@ -58,6 +63,7 @@ import {
   BALANCED_RELEASE_PLAN,
   LIVE_LLM_CELLS,
 } from './watch-mode-balanced-release-plan.mjs';
+import { STRICT_MATRIX_SCHEMA_VERSION } from './watch-mode-evidence-authority.mjs';
 import { buildSteps } from './run-all-tests.mjs';
 import { buildAutoSteps } from './run-quality-gate-auto.mjs';
 import {
@@ -67,6 +73,33 @@ import {
 } from './run-quality-gate.mjs';
 
 const makeTempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'quality-gate-test-'));
+
+test('published preflight output rejects source containment and Windows aliases before writes', (t) => {
+  const root = fs.realpathSync.native(makeTempDir());
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const execution = path.join(root, 'execution');
+  const runtime = path.join(root, 'runtime');
+  fs.mkdirSync(execution); fs.mkdirSync(runtime);
+  for (const source of [execution, runtime]) {
+    assert.throws(() => assertPublishedPreflightOutputRoot(source, [execution, runtime]), /outside frozen/);
+    assert.throws(() => assertPublishedPreflightOutputRoot(path.join(source, 'new', 'output'), [execution, runtime]), /outside frozen/);
+    if (process.platform === 'win32') {
+      assert.throws(() => assertPublishedPreflightOutputRoot(path.join(source.toUpperCase(), 'new'), [execution, runtime]), /outside frozen/);
+    }
+  }
+  const alias = path.join(root, 'alias');
+  fs.symlinkSync(execution, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => assertPublishedPreflightOutputRoot(path.join(alias, 'missing', 'output'), [execution, runtime]), /reparse/);
+  assert.deepEqual(fs.readdirSync(execution), []);
+  assert.deepEqual(fs.readdirSync(runtime), []);
+  assert.equal(assertPublishedPreflightOutputRoot(path.join(root, 'independent'), [execution, runtime]), path.join(root, 'independent'));
+});
+
+test('published preflight collector rejects caller raw, authority and launch overrides', async () => {
+  for (const key of ['source', 'scenarioId', 'expectedAuthorization', 'launch', 'build', 'skip', 'now']) {
+    await assert.rejects(collectPublishedProviderPreflightManualEvidence({ [key]: true }), /does not accept/);
+  }
+});
 const TEST_NOW = new Date('2026-08-10T10:00:00.000Z');
 const TEST_PROVENANCE = Object.freeze({
   schemaVersion: 1,
@@ -89,9 +122,18 @@ const validationOptions = (workspaceRoot, currentProvenance = TEST_PROVENANCE) =
 
 const runGit = (cwd, args) => spawnSync('git', args, { cwd, encoding: 'utf8' });
 
+test('performance contract uses a finite evidence-driven terminal coverage threshold', () => {
+  assert.equal(Number.isFinite(PERFORMANCE_THRESHOLDS.terminalStageCoveragePercent), true);
+  assert.equal(PERFORMANCE_THRESHOLDS.terminalStageCoveragePercent, 100);
+  assert.equal('stabilityWindowMinutes' in PERFORMANCE_THRESHOLDS, false);
+  assert.ok(PERFORMANCE_MEASUREMENT_NAMES.includes('terminalStageCoveragePercent'));
+  assert.equal(PERFORMANCE_MEASUREMENT_NAMES.includes('stabilityDurationMinutes'), false);
+});
+
 const makeCleanGitWorkspace = () => {
   const workspaceRoot = makeTempDir();
   fs.cpSync(path.resolve('scripts'), path.join(workspaceRoot, 'scripts'), { recursive: true });
+  fs.cpSync(path.resolve('contracts'), path.join(workspaceRoot, 'contracts'), { recursive: true });
   fs.writeFileSync(path.join(workspaceRoot, '.gitignore'), 'target/\n', 'utf8');
   fs.writeFileSync(path.join(workspaceRoot, 'tracked.txt'), 'release evidence CLI fixture\n', 'utf8');
   for (const args of [
@@ -845,7 +887,12 @@ const writeDesktopEmitterFixture = (
        audioSeconds: payload.audioSeconds,
     } : {}),
   });
-  const payloadPaths = [payloadFile, 'diagnostics-bundle'];
+  const payloadPaths = [
+    payloadFile,
+    'diagnostics-bundle',
+    ...(scenarioId === 'E2E-PROVIDER-PROBE'
+      && payload.protocol === 'dashscope-livetranslate' ? ['raw'] : []),
+  ];
   writeJson(path.join(rawDirectory, 'emitter-result.json'), {
     schemaVersion: 1,
     artifactKind: 'desktop-release-evidence-emitter-result',
@@ -987,21 +1034,24 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
       }, fixtureOptions);
       break;
     case 'E2E-PROVIDER-PROBE': {
+      const providerProbeWorkspaceRoot = 'C:\\Program Files\\Omni Translate';
+      const providerProbeDesktopExecutable = fixtureOptions.desktopExecutable
+        ?? path.win32.join(providerProbeWorkspaceRoot, 'target', 'release', 'omni-desktop-shell.exe');
       const grantGeneratedAt = new Date(TEST_NOW.getTime() - 10_000).toISOString();
-      const reservationIssuedAts = Array.from({ length: 8 }, (_, index) => (
+      const reservationIssuedAts = Array.from({ length: LIVE_LLM_CELLS.length }, (_, index) => (
         new Date(TEST_NOW.getTime() - 9_500 + index).toISOString()
       ));
       const authorizationObservedAt = new Date(TEST_NOW.getTime() - 2_000).toISOString();
       const consumptionClaimedAt = new Date(TEST_NOW.getTime() - 1_750).toISOString();
       const providerConnectStartedAt = new Date(TEST_NOW.getTime() - 1_500).toISOString();
       const providerConnectCompletedAt = TEST_NOW.toISOString();
-      const leaseReservations = Array.from({ length: 8 }, (_, index) => ({
+      const leaseReservations = LIVE_LLM_CELLS.map((cell, index) => ({
         cellIndex: index,
-        cellId: `paid-cell-${index + 1}`,
-        workerId: `vm${(index % 2) + 1}`,
-        waveIndex: Math.floor(index / 2),
+        cellId: cell.cellId,
+        workerId: 'vm1',
+        waveIndex: index,
         leaseId: `lease-${index + 1}`,
-        maxExternalAudioSamples: 2_880_000,
+        maxExternalAudioSamples: cell.maxExternalAudioSamples,
         digest: `${index + 1}`.repeat(64),
         issuedAt: reservationIssuedAts[index],
       }));
@@ -1013,15 +1063,23 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
         leaseReservationDigests: leaseReservations.map((entry) => entry.digest),
         authorizationDigest: 'b'.repeat(64),
         providerId: 'provider-dashscope',
-        model: 'qwen3.5-omni-flash-realtime',
-        protocol: 'dashscope-omni',
-        operation: 'text-translation-preflight',
-        inputMode: 'text-only',
+        model: 'qwen3.5-livetranslate-flash-realtime',
+        protocol: 'dashscope-livetranslate',
+        operation: 'livetranslate-session-lifecycle-preflight',
+        inputMode: 'none',
+        providerInputMode: 'none',
+        responseMode: 'text-only',
+        terminalEvent: 'session.finished',
         invocationCount: 1,
         externalAudioSamples: 0,
-        tokenBudget: {
-          maxInputTokens: 4_096,
-          maxOutputTokens: 256,
+        lifecycleBudget: {
+          firstServerEventLatencyMs: 1_200,
+          socketEventTimeoutMs: 12_000,
+        },
+        executor: {
+          workspaceRoot: path.win32.dirname(path.win32.dirname(path.win32.dirname(
+            providerProbeDesktopExecutable,
+          ))),
         },
         leaseReservations,
         grantGeneratedAt,
@@ -1035,10 +1093,10 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
           coordinatorKeyId: 'c'.repeat(64),
           claimedAt: consumptionClaimedAt,
           desktopProcessId: 5101,
-          desktopExecutablePath: 'C:\\Program Files\\Omni Translate\\omni-desktop-shell.exe',
+          desktopExecutablePath: providerProbeDesktopExecutable,
           desktopExecutableRelativePath: 'target/release/omni-desktop-shell.exe',
           desktopExecutableBytes: 123_456,
-          desktopExecutableSha256: 'd'.repeat(64),
+          desktopExecutableSha256: fixtureOptions.desktopExecutableSha256 ?? 'd'.repeat(64),
           retryPolicy: 'new-execution-required',
           path: 'provider-preflight-consumption-claim.json',
           bytes: 1_024,
@@ -1046,17 +1104,142 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
         },
         authorizationObservedAt,
       };
+      const sessionIdentitySha256 = 'f'.repeat(64);
+      const sessionUpdate = {
+        event_id: 'evt_fixture_session',
+        type: 'session.update',
+        session: {
+          modalities: ['text'],
+          sample_rate: 16_000,
+          input_audio_format: 'pcm',
+          input_audio_transcription: {
+            language: 'en',
+            model: 'qwen3-asr-flash-realtime',
+          },
+          translation: {
+            corpus: {
+              phrases: {
+                'CPU usage dropped by 18 percent.': 'CPU使用率下降了18%。',
+                'Daniel replied that shipment A-17 would leave at 6:30 p.m.': 'Daniel回答说，A-17号货物将于下午6点30分出发。',
+                'Does it preserve a quoted answer?': '它能否保留引用的回答？',
+                'Is the system accurate when a speaker asks a question?': '当说话者提出问题时，系统是否准确？',
+                Mars: '火星',
+                'Please record each sentence clearly': '请清楚记录每个句子',
+                'Version 3.6.2': '3.6.2版本',
+                'artificial biosphere': '人工生物圈',
+                'by October 3': '在10月3日前',
+                'endangered species': '濒危物种',
+                'five hundred million dollars': '五亿美元',
+                'flying cars': '飞行汽车',
+                'forty-eight hours': '48小时',
+                'light bulb': '灯泡',
+                'one billion': '十亿',
+                'proper names': '专有名称',
+                'reduced average response time from 920 milliseconds to 315 milliseconds': '把平均响应时间从920毫秒降至315毫秒',
+              },
+            },
+            language: 'zh',
+          },
+          turn_detection: {
+            silence_duration_ms: 400,
+            threshold: 0,
+            type: 'server_vad',
+          },
+        },
+      };
+      const sessionFinish = { event_id: 'evt_fixture_finish', type: 'session.finish' };
+      const tracePayload = (direction, type, monotonicMs, payload, extra = {}) => {
+        const rawRedactedPayload = JSON.stringify(payload);
+        return {
+          monotonicMs,
+          direction,
+          type,
+          ...extra,
+          rawRedactedPayload,
+          sha256: sha256(rawRedactedPayload),
+        };
+      };
+      const traceEntries = [
+        tracePayload('transport', 'websocket.upgrade', 0, {
+          scheme: 'wss',
+          host: 'dashscope.aliyuncs.com',
+          path: '/api-ws/v1/realtime',
+          query: { model: preflightAuthorization.model },
+          requestHeaderNames: ['authorization'],
+        }, { status: 101 }),
+        tracePayload('server-to-client', 'session.created', 420, {
+          type: 'session.created',
+          session: {
+            id: sessionIdentitySha256,
+            model: preflightAuthorization.model,
+          },
+        }),
+        tracePayload('client-to-server', 'session.update', 421, sessionUpdate),
+        tracePayload('server-to-client', 'session.updated', 422, {
+          type: 'session.updated',
+          session: {
+            id: sessionIdentitySha256,
+            model: preflightAuthorization.model,
+            ...sessionUpdate.session,
+            turn_detection: {
+              ...sessionUpdate.session.turn_detection,
+              create_response: true,
+              interrupt_response: true,
+            },
+          },
+        }),
+        tracePayload('client-to-server', 'session.finish', 423, sessionFinish),
+        tracePayload('server-to-client', 'session.finished', 424, {
+          event_id: 'evt_server_finished_fixture',
+          type: 'session.finished',
+        }),
+      ];
+      const traceDirectory = path.join(rawDirectory, 'raw');
+      const tracePath = path.join(traceDirectory, 'provider-websocket-trace.jsonl');
+      fs.mkdirSync(traceDirectory, { recursive: true });
+      const traceBytes = Buffer.from(`${traceEntries.map((entry) => JSON.stringify(entry)).join('\n')}\n`);
+      fs.writeFileSync(tracePath, traceBytes);
+      const rawTrace = {
+        path: 'raw/provider-websocket-trace.jsonl',
+        bytes: traceBytes.byteLength,
+        sha256: sha256(traceBytes),
+        eventCount: traceEntries.length,
+      };
+      const lifecycleEvidence = {
+        providerInputMode: 'none',
+        responseMode: 'text-only',
+        terminalEvent: 'session.finished',
+        lifecycleBudget: {
+          firstServerEventLatencyMs: 1_200,
+          socketEventTimeoutMs: 12_000,
+        },
+        evidenceOutcome: 'livetranslate-session-finished',
+        firstServerEvent: { type: 'session.created', monotonicMs: 420 },
+        firstServerEventLatencyMs: 420,
+        sessionAuthority: {
+          sessionIdentitySha256,
+          serverModel: preflightAuthorization.model,
+          echoedSessionConfigSha256: sha256('{"input_audio_format":"pcm",'
+            + '"input_audio_transcription":{"language":"en","model":"qwen3-asr-flash-realtime"},'
+            + '"modalities":["text"],"sample_rate":16000,"translation":{"corpus":{"phrases":'
+            + '{"CPU usage dropped by 18 percent.":"CPU使用率下降了18%。","Daniel replied that shipment A-17 would leave at 6:30 p.m.":"Daniel回答说，A-17号货物将于下午6点30分出发。","Does it preserve a quoted answer?":"它能否保留引用的回答？","Is the system accurate when a speaker asks a question?":"当说话者提出问题时，系统是否准确？","Mars":"火星","Please record each sentence clearly":"请清楚记录每个句子","Version 3.6.2":"3.6.2版本","artificial biosphere":"人工生物圈","by October 3":"在10月3日前","endangered species":"濒危物种","five hundred million dollars":"五亿美元","flying cars":"飞行汽车","forty-eight hours":"48小时","light bulb":"灯泡","one billion":"十亿","proper names":"专有名称","reduced average response time from 920 milliseconds to 315 milliseconds":"把平均响应时间从920毫秒降至315毫秒"}},'
+            + '"language":"zh"},'
+            + '"turn_detection":{"silence_duration_ms":400,"threshold":0.0,"type":"server_vad"}}'),
+        },
+        rawTrace,
+      };
       writeDesktopEmitterFixture(rawDirectory, scenarioId, 'provider-probe-result.json', {
         schemaVersion: 1,
         artifactKind: 'provider-production-probe-result',
         source: 'desktop-api-v2',
         productionMode: true,
-        operation: 'text-translation-preflight',
-        inputMode: 'text-only',
+        operation: 'livetranslate-session-lifecycle-preflight',
+        inputMode: 'none',
+        ...lifecycleEvidence,
         externalAudioSamples: 0,
         providerInvocationCount: 1,
-        inputTokens: 64,
-        outputTokens: 12,
+        inputTokens: null,
+        outputTokens: null,
         audioSeconds: null,
         checkedAt: TEST_NOW.toISOString(),
         desktopProcessId: 5101,
@@ -1089,6 +1272,8 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
           reference: 'credential://provider/dashscope/default',
         },
         rawProbeResult: {
+          productionMode: true,
+          ...lifecycleEvidence,
           id: 'probe-fixture',
           templateId: 'template-dashscope-realtime',
           providerId: 'provider-dashscope',
@@ -1098,8 +1283,13 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
           preflightAuthorization,
           providerConnectStartedAt,
           providerConnectCompletedAt,
-          inputTokens: 64,
-          outputTokens: 12,
+          providerInvocationCount: 1,
+          externalAudioSamples: 0,
+          inputAudioBufferCommitCount: 0,
+          conversationItemCreateInputTextCount: 0,
+          responseCreateCount: 0,
+          inputTokens: null,
+          outputTokens: null,
           audioSeconds: null,
           verdict: 'available',
           checkedAt: TEST_NOW.toISOString(),
@@ -1121,7 +1311,7 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
             { id: 'dashscope-streaming', key: 'streaming', label: '流式能力', status: 'pass', summary: '已观察到增量事件，实际传输模式为 websocket。' },
             { id: 'dashscope-latency', key: 'latency', label: '实时适用性', status: 'pass', summary: '首个有效事件耗时 420 ms，预算 1200 ms。' },
             { id: 'dashscope-error-shape', key: 'error-shape', label: '错误结构', status: 'pass', summary: '本次请求未触发上游错误，当前归一化链路可用。' },
-            { id: 'dashscope-response-shape', key: 'response-shape', label: '响应格式稳定性', status: 'pass', summary: '已完整得到 translation.completed 与 response.completed。' },
+            { id: 'dashscope-response-shape', key: 'response-shape', label: '响应格式稳定性', status: 'pass', summary: '已完整得到 session.created、session.updated 与 session.finished。' },
           ],
           guidance: [
             '当前延迟 420 ms，允许字幕与译音并行。',
@@ -1134,7 +1324,7 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
           },
           error: null,
         },
-      }, fixtureOptions);
+      }, { ...fixtureOptions, desktopExecutable: providerProbeDesktopExecutable });
       break;
     }
     case 'E2E-REAL-DEVICE-AUDIO': {
@@ -1268,6 +1458,54 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
       throw new Error(`missing raw evidence fixture for ${scenarioId}`);
   }
 };
+
+test('published Probe collector packages real raw schemas and revalidates archives without new collection', () => {
+  // Only the upstream signed-source adapter and machine identity are doubled.
+  // The public collector, raw validators, copy/hash checks and archive are real.
+  const root = fs.realpathSync.native(makeTempDir());
+  try {
+    const raw = path.join(root, 'execution', 'provider-preflight-evidence', 'raw');
+    fs.mkdirSync(raw, { recursive: true });
+    const desktop = path.join(root, 'target/release/omni-desktop-shell.exe');
+    fs.mkdirSync(path.dirname(desktop), { recursive: true });
+    fs.writeFileSync(desktop, 'test-only-build-commit-fixture');
+    for (const relative of ['scripts/testing/collect-release-manual-evidence.mjs', 'scripts/testing/run-watch-mode-live-production-coordinator.mjs', 'scripts/testing/run-desktop-release-evidence.mjs']) {
+      fs.mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
+      fs.copyFileSync(path.resolve(relative), path.join(root, relative));
+    }
+    writeScenarioRawEvidence(raw, 'E2E-PROVIDER-PROBE', {
+      desktopExecutable: desktop, desktopExecutableSha256: sha256(fs.readFileSync(desktop)),
+    });
+    const moduleUrl = (relative) => new URL(relative, import.meta.url).href;
+    const source = [
+      "import assert from 'node:assert/strict'; import fs from 'node:fs'; import path from 'node:path';",
+      "import {mock} from 'node:test'; import * as cp from 'node:child_process';",
+      `import * as common from ${JSON.stringify(moduleUrl('../lib/testing-common.mjs'))};`,
+      `import * as git from ${JSON.stringify(moduleUrl('./git-provenance.mjs'))};`,
+      `const root=${JSON.stringify(root)},raw=${JSON.stringify(raw)},desktop=${JSON.stringify(desktop)},clean=${JSON.stringify(TEST_PROVENANCE)};`,
+      `const RealDate=Date;globalThis.Date=class extends RealDate{constructor(...a){super(...(a.length?a:[${JSON.stringify(TEST_NOW.toISOString())}]))}static now(){return new RealDate(${JSON.stringify(TEST_NOW.toISOString())}).getTime()}};`,
+      "let verified=0,queries=0;const forbidden=()=>{throw Error('new collection/build/Provider process forbidden')};",
+      "mock.module('node:child_process',{namedExports:{...cp,spawn:forbidden,spawnSync:(command,args)=>{assert.equal(command,desktop);assert.deepEqual(args,['--build-commit']);queries++;return {status:0,stdout:clean.headCommit,stderr:''}}}});",
+      `mock.module(${JSON.stringify(moduleUrl('../lib/testing-common.mjs'))},{namedExports:{...common,repoRoot:root}});`,
+      `mock.module(${JSON.stringify(moduleUrl('./git-provenance.mjs'))},{namedExports:{...git,currentGitProvenance:()=>clean}});`,
+      "const binding={runtimeAuthorityPath:path.join(root,'runtime','authority.json'),executionRoot:path.join(root,'execution'),schemaVersion:1};",
+      "const expected=JSON.parse(fs.readFileSync(path.join(raw,'provider-probe-result.json'))).preflightAuthorization;delete expected.authorizationObservedAt;",
+      `mock.module(${JSON.stringify(moduleUrl('./watch-mode-provider-preflight-manual-source.mjs'))},{namedExports:{verifyProviderPreflightManualSource:(options)=>{assert.deepEqual(options,{runtimeAuthorityPath:binding.runtimeAuthorityPath,executionRoot:binding.executionRoot});verified++;return {sourceRoot:raw,sourceBinding:binding,expectedAuthorization:expected}}}});`,
+      `const collector=await import(${JSON.stringify(moduleUrl('./release-manual-collector.mjs?published-collector-test'))});`,
+      "const collected=await collector.collectPublishedProviderPreflightManualEvidence({...binding, schemaVersion:undefined}).catch(e=>{assert.match(e.message,/does not accept/);return null});assert.equal(collected,null);",
+      "const result=await collector.collectPublishedProviderPreflightManualEvidence({runtimeAuthorityPath:binding.runtimeAuthorityPath,executionRoot:binding.executionRoot});",
+      "assert.equal(result.manifest.authority.runner,'scripts/testing/run-watch-mode-live-production-coordinator.mjs');assert.deepEqual(result.manifest.preflightSource,binding);",
+      `const {archiveReleaseManualEvidence}=await import(${JSON.stringify(moduleUrl('./archive-release-manual-evidence.mjs?published-collector-test'))});`,
+      "const archived=archiveReleaseManualEvidence({source:result.packageDirectory,scenarioId:'E2E-PROVIDER-PROBE',workspaceRoot:root,provenance:clean});assert.ok(archived);",
+      "const checked=collector.validateReleaseManualCollectorPackage(result.packageDirectory,'E2E-PROVIDER-PROBE',{workspaceRoot:root,currentProvenance:clean});assert.deepEqual(checked.issues,[]);assert.ok(verified>=4);assert.ok(queries>=1);",
+      "const manifest=JSON.parse(fs.readFileSync(result.manifestPath));manifest.preflightSource.extra='tampered';fs.writeFileSync(result.manifestPath,JSON.stringify(manifest));assert.ok(collector.validateReleaseManualCollectorPackage(result.packageDirectory,'E2E-PROVIDER-PROBE',{workspaceRoot:root,currentProvenance:clean}).issues.some(x=>x.includes('binding changed')));",
+    ].join('\n');
+    const checked = spawnSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', source], {
+      encoding: 'utf8', timeout: 30_000,
+    });
+    assert.equal(checked.status, 0, `${checked.error?.message ?? ''}\n${checked.stdout}\n${checked.stderr}`);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 
 const buildManualFixture = (artifactKind = 'manual-e2e') => {
   const workspaceRoot = makeTempDir();
@@ -1428,6 +1666,7 @@ const buildPerformanceWorkspace = ({
   memoryMb = 400,
   dropouts = 0,
   omitMetricsCell = null,
+  omitTerminalCell = null,
 } = {}) => {
   const workspaceRoot = makeTempDir();
   const evidenceRoot = path.join(workspaceRoot, 'artifacts/testing/watch-mode-live');
@@ -1438,13 +1677,11 @@ const buildPerformanceWorkspace = ({
   for (const plannedCell of LIVE_LLM_CELLS) {
         const {
           cellId: cellKey,
-          tier,
           modelId,
           feedbackLoopPrevention,
           deviceClass,
-          durationSeconds,
         } = plannedCell;
-        const cellDurationMs = durationMs ?? durationSeconds * 1000;
+        const cellDurationMs = durationMs ?? 180_000;
         processId += 1;
         const runDirectory = path.join(evidenceRoot, 'runs', String(runDirectories.length + 1).padStart(2, '0'));
         fs.mkdirSync(runDirectory, { recursive: true });
@@ -1507,6 +1744,14 @@ const buildPerformanceWorkspace = ({
           },
         };
         writeJson(path.join(runDirectory, 'report.json'), report);
+        if (omitTerminalCell !== cellKey) {
+          writeJson(path.join(runDirectory, 'evidence-driven-terminal.json'), {
+            schemaVersion: 1,
+            artifactKind: 'watch-mode-evidence-driven-terminal',
+            status: 'completed',
+            cellId: cellKey,
+          });
+        }
         if (omitMetricsCell !== cellKey) {
           writeJson(path.join(runDirectory, 'system-metrics.json'), buildSystemMetrics({
             processId,
@@ -1518,13 +1763,7 @@ const buildPerformanceWorkspace = ({
         runDirectories.push(runDirectory);
         const runDirectoryRelative = path.relative(evidenceRoot, runDirectory).split(path.sep).join('/');
         cells.push({
-          cellId: cellKey,
-          tier,
-          providerMode: 'live-dashscope',
-          durationSeconds,
-          modelId,
-          feedbackLoopPrevention,
-          deviceClass,
+          ...plannedCell,
           deviceProfileId: deviceClass,
           runDirectory: runDirectoryRelative,
           receiptPath: `${runDirectoryRelative}/matrix-cell-authority.json`,
@@ -1549,7 +1788,7 @@ const buildPerformanceWorkspace = ({
     testFixture: true,
   });
   writeJson(manifestPath, {
-    schemaVersion: 3,
+    schemaVersion: STRICT_MATRIX_SCHEMA_VERSION,
     artifactKind: 'watch-mode-strict-matrix-authority',
     generatedAt: TEST_NOW.toISOString(),
     evidenceMode: 'live',
@@ -1581,8 +1820,8 @@ function testPerformanceAuthorityResolver({ workspaceRoot, manifestPath }) {
   );
   assert.equal(path.resolve(manifestPath), path.resolve(expectedManifestPath));
   const manifest = readJson(manifestPath);
-  if (manifest.schemaVersion !== 3 || manifest.artifactKind !== 'watch-mode-strict-matrix-authority') {
-    throw new Error('test performance authority requires the schema-v3 strict manifest');
+  if (manifest.schemaVersion !== STRICT_MATRIX_SCHEMA_VERSION || manifest.artifactKind !== 'watch-mode-strict-matrix-authority') {
+    throw new Error(`test performance authority requires the schema-v${STRICT_MATRIX_SCHEMA_VERSION} strict manifest`);
   }
   const runDirectories = manifest.runDirectories.map((candidate) => (
     path.resolve(path.dirname(manifestPath), candidate)
@@ -1600,6 +1839,8 @@ function testPerformanceAuthorityResolver({ workspaceRoot, manifestPath }) {
     const reportHash = hashEvidenceArtifact(path.join(runDirectory, 'report.json'));
     const metricsPath = path.join(runDirectory, 'system-metrics.json');
     const metricsHash = fs.existsSync(metricsPath) ? hashEvidenceArtifact(metricsPath) : null;
+    const terminalPath = path.join(runDirectory, 'evidence-driven-terminal.json');
+    const terminalHash = fs.existsSync(terminalPath) ? hashEvidenceArtifact(terminalPath) : null;
     rawArtifactsByCell.set(cellKey, {
       receiptPath: path.join(runDirectory, 'matrix-cell-authority.json'),
       report: {
@@ -1611,6 +1852,11 @@ function testPerformanceAuthorityResolver({ workspaceRoot, manifestPath }) {
         path: 'system-metrics.json',
         bytes: metricsHash.byteCount,
         sha256: metricsHash.sha256,
+      } : null,
+      terminal: terminalHash ? {
+        path: 'evidence-driven-terminal.json',
+        bytes: terminalHash.byteCount,
+        sha256: terminalHash.sha256,
       } : null,
     });
     authorizedReports.set(
@@ -2128,6 +2374,7 @@ test('production authority allowlist contains Desktop, audio, overlay, virtual-m
 });
 
 test('virtual-mic runner rejects generic inputs and fixes the current-HEAD target/release binaries', () => {
+  assert.equal(parseVirtualMicReleaseArgs(['--runtime-authority', 'frozen.json']).runtimeAuthority, 'frozen.json');
   assert.throws(
     () => parseVirtualMicReleaseArgs(['--source', 'caller-authored']),
     /Unknown flag --source/,
@@ -2323,6 +2570,176 @@ test('dedicated Desktop runner launches one production process and binds its PID
   } finally {
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   }
+});
+
+for (const scenarioId of ['E2E-PROVIDER-CONFIG', 'E2E-DIAGNOSTICS-EXPORT']) {
+  test(`frozen ${scenarioId} captures once and archive revalidates the whole authority`, async (t) => {
+    const workspaceRoot = makeTempDir();
+    t.after(() => fs.rmSync(workspaceRoot, { recursive: true, force: true }));
+    const f = createFrozenDesktopFixture(workspaceRoot);
+    const plan = buildDesktopReleaseEvidencePlan({
+      ...f, scenarioId, outputRoot: 'raw', collectorOutputRoot: 'collector', now: TEST_NOW,
+    });
+    let launches = 0;
+    const result = await runDesktopReleaseEvidence({
+      plan, listRunning: () => [], now: TEST_NOW,
+      launch(executable) {
+        launches += 1;
+        assert.equal(executable, path.join(workspaceRoot, f.frozenRuntime.desktop.path));
+        fs.mkdirSync(plan.runDirectory, { recursive: true });
+        writeScenarioRawEvidence(plan.runDirectory, scenarioId, {
+          processId: 7501, desktopExecutable: executable,
+          desktopExecutableSha256: f.frozenRuntime.desktop.sha256,
+          sourceHeadCommit: f.provenance.headCommit,
+        });
+        return { pid: 7501 };
+      },
+      wait: async () => ({ code: 0, processId: 7501 }),
+      collectEvidence: (options) => testOnlyCollectReleaseManualEvidence({
+        ...options, testOnlyAllowSyntheticAuthority: true,
+      }),
+    });
+    assert.equal(launches, 1);
+    assert.deepEqual(readJson(result.manifestPath).frozenRuntime, f.frozenRuntime);
+    const archived = archiveReleaseManualEvidence({
+      source: result.packageDirectory, scenarioId, workspaceRoot, provenance: f.provenance,
+      now: TEST_NOW, testOnlyAllowSyntheticAuthority: true,
+    });
+    const validate = () => validateReleaseManualCollectorPackage(archived.archivedPath, scenarioId, {
+      workspaceRoot, currentProvenance: f.provenance, now: TEST_NOW.getTime(),
+      testOnlyAllowSyntheticAuthority: true,
+    });
+    assert.deepEqual(validate().issues, []);
+    const driver = path.join(workspaceRoot, 'drivers/windows-virtual-mic/package/omni-virtual-speaker.sys');
+    const before = fs.readFileSync(driver);
+    fs.appendFileSync(driver, 'drift after archive');
+    assert.match(validate().issues.join('\n'), /frozen runtime authority.*binary inventory/);
+    assert.throws(() => archiveReleaseManualEvidence({
+      source: result.packageDirectory, scenarioId, workspaceRoot, provenance: f.provenance,
+      now: TEST_NOW, testOnlyAllowSyntheticAuthority: true,
+    }), /frozen runtime authority/);
+    fs.writeFileSync(driver, before);
+    assert.deepEqual(validate().issues, []);
+  });
+}
+
+test('frozen virtual mic fixture packages and archives matching bindings and rejects manifest-only drift', (t) => {
+  const workspaceRoot = makeTempDir();
+  t.after(() => fs.rmSync(workspaceRoot, { recursive: true, force: true }));
+  const source = path.join(workspaceRoot, 'raw-virtual-mic');
+  fs.mkdirSync(source, { recursive: true });
+  // Synthetic raw audio and executables only; freeze their bytes before packaging.
+  writeVirtualMicCaptureEvidence(source, { workspaceRoot });
+  const f = createFrozenDesktopFixture(workspaceRoot);
+  f.write('scripts/testing/frozen-virtual-mic-release-authority.mjs', 'fixture virtual mic verifier\n');
+  writeVirtualMicCaptureEvidence(source, { workspaceRoot, provenance: f.provenance });
+  const frozenVirtualMicRuntime = resolveFrozenVirtualMicAuthority({
+    runtimeAuthority: f.runtimeAuthority, workspaceRoot,
+  });
+  const emitterPath = path.join(source, 'emitter-result.json');
+  const emitter = readJson(emitterPath);
+  emitter.runtimeMode = 'frozen';
+  emitter.frozenVirtualMicRuntime = frozenVirtualMicRuntime;
+  emitter.timeline[0].event = 'frozen-runtime-verification-started';
+  emitter.timeline[1].event = 'frozen-runtime-verified';
+  writeJson(emitterPath, emitter);
+  const scenarioId = 'E2E-VIRTUAL-MIC-CAPTURE';
+  const collected = testOnlyCollectReleaseManualEvidence({
+    source, scenarioId, workspaceRoot, provenance: f.provenance, frozenVirtualMicRuntime,
+    now: TEST_NOW, testOnlyAllowSyntheticAuthority: true,
+  });
+  const options = {
+    workspaceRoot, currentProvenance: f.provenance, now: TEST_NOW.getTime(),
+    testOnlyAllowSyntheticAuthority: true,
+  };
+  assert.deepEqual(validateReleaseManualCollectorPackage(collected.packageDirectory, scenarioId, options).issues, []);
+  const archived = archiveReleaseManualEvidence({
+    source: collected.packageDirectory, scenarioId, workspaceRoot, provenance: f.provenance,
+    now: TEST_NOW, testOnlyAllowSyntheticAuthority: true,
+  });
+  const manifestPath = path.join(archived.archivedPath, 'collector-manifest.json');
+  const manifest = readJson(manifestPath);
+  const archivedEmitter = readJson(path.join(archived.archivedPath, 'artifacts', 'emitter-result.json'));
+  assert.deepEqual(manifest.frozenVirtualMicRuntime, frozenVirtualMicRuntime);
+  assert.deepEqual(archivedEmitter.frozenVirtualMicRuntime, manifest.frozenVirtualMicRuntime);
+  const validate = () => validateReleaseManualCollectorPackage(archived.archivedPath, scenarioId, options);
+  assert.deepEqual(validate().issues, []);
+  for (const mutate of [
+    (value) => { delete value.frozenVirtualMicRuntime; },
+    (value) => { value.frozenVirtualMicRuntime.authorityDigest = '0'.repeat(64); },
+  ]) {
+    const changed = structuredClone(manifest);
+    mutate(changed);
+    writeJson(manifestPath, changed);
+    assert.match(validate().issues.join('\n'), /frozen virtual microphone package\/emitter binding mismatch/);
+  }
+  writeJson(manifestPath, manifest);
+  assert.deepEqual(validate().issues, []);
+});
+
+test('frozen overlay manual package and archive bind the runtime and verifier source', (t) => {
+  const workspaceRoot = makeTempDir();
+  t.after(() => fs.rmSync(workspaceRoot, { recursive: true, force: true }));
+  const source = path.join(workspaceRoot, 'raw-overlay');
+  // Materialize PE/tooling fixtures before freezing, then capture at the fixture HEAD.
+  materializeOverlayClickThroughRawFixture({
+    rawDirectory: source, workspaceRoot, provenance: TEST_PROVENANCE, now: TEST_NOW,
+  });
+  const f = createFrozenDesktopFixture(workspaceRoot);
+  materializeOverlayClickThroughRawFixture({
+    rawDirectory: source, workspaceRoot, provenance: f.provenance, now: TEST_NOW,
+  });
+  const scenarioId = 'E2E-OVERLAY-CLICK-THROUGH';
+  const collected = testOnlyCollectReleaseManualEvidence({
+    source, scenarioId, workspaceRoot, provenance: f.provenance, frozenRuntime: f.frozenRuntime,
+    now: TEST_NOW, testOnlyAllowSyntheticAuthority: true,
+  });
+  const archived = archiveReleaseManualEvidence({
+    source: collected.packageDirectory, scenarioId, workspaceRoot, provenance: f.provenance,
+    now: TEST_NOW, testOnlyAllowSyntheticAuthority: true,
+  });
+  const validate = () => validateReleaseManualCollectorPackage(archived.archivedPath, scenarioId, {
+    workspaceRoot, currentProvenance: f.provenance, now: TEST_NOW.getTime(),
+    testOnlyAllowSyntheticAuthority: true,
+  });
+  assert.deepEqual(validate().issues, []);
+  fs.appendFileSync(path.join(workspaceRoot, f.frozenRuntime.verifier.path), 'changed verifier');
+  assert.match(validate().issues.join('\n'), /frozen runtime authority.*binding changed/);
+});
+
+test('frozen Desktop rejects drift before launch, after capture, and an already owned Desktop', async (t) => {
+  const workspaceRoot = makeTempDir();
+  t.after(() => fs.rmSync(workspaceRoot, { recursive: true, force: true }));
+  const f = createFrozenDesktopFixture(workspaceRoot);
+  const plan = buildDesktopReleaseEvidencePlan({
+    ...f, scenarioId: 'E2E-DIAGNOSTICS-EXPORT', outputRoot: 'raw', now: TEST_NOW,
+  });
+  const driver = path.join(workspaceRoot, 'drivers/windows-virtual-mic/package/omni-virtual-speaker.sys');
+  const before = fs.readFileSync(driver);
+  const neverLaunch = () => assert.fail('must not launch');
+  const neverCollect = () => assert.fail('must not package');
+  await assert.rejects(runDesktopReleaseEvidence({
+    plan, listRunning: () => [8000], launch: neverLaunch, collectEvidence: neverCollect,
+  }), /close every existing/);
+  fs.appendFileSync(driver, 'before launch');
+  await assert.rejects(runDesktopReleaseEvidence({
+    plan, listRunning: () => [], launch: neverLaunch, collectEvidence: neverCollect,
+  }), /binary inventory/);
+  fs.writeFileSync(driver, before);
+  await assert.rejects(runDesktopReleaseEvidence({
+    plan, listRunning: () => [], now: TEST_NOW,
+    launch(executable) {
+      fs.mkdirSync(plan.runDirectory, { recursive: true });
+      writeScenarioRawEvidence(plan.runDirectory, plan.scenarioId, {
+        processId: 7501, desktopExecutable: executable,
+        desktopExecutableSha256: f.frozenRuntime.desktop.sha256,
+        sourceHeadCommit: f.provenance.headCommit,
+      });
+      fs.appendFileSync(driver, 'during capture');
+      return { pid: 7501 };
+    },
+    wait: async () => ({ code: 0, processId: 7501 }), collectEvidence: neverCollect,
+  }), /binary inventory/);
 });
 
 test('dedicated Desktop runner rejects arbitrary executable and caller-authored source overrides', () => {
@@ -2539,25 +2956,25 @@ test('Provider probe validator cross-checks raw result, top-level fields, and di
       expected: /routingDecision\/guidance is not the production available route/,
     },
     {
-      name: 'missing-input-token-usage',
+      name: 'synthetic-input-token-usage',
       mutate(value) {
-        value.inputTokens = null;
+        value.inputTokens = 1;
       },
-      expected: /token\/audio usage exceeds or omits the signed text-only budget/,
+      expected: /zero audio and no synthetic token usage/,
     },
     {
       name: 'output-token-budget-exceeded',
       mutate(value) {
         value.outputTokens = 257;
       },
-      expected: /token\/audio usage exceeds or omits the signed text-only budget/,
+      expected: /zero audio and no synthetic token usage/,
     },
     {
       name: 'text-preflight-reports-audio',
       mutate(value) {
         value.audioSeconds = 0.01;
       },
-      expected: /token\/audio usage exceeds or omits the signed text-only budget/,
+      expected: /zero audio and no synthetic token usage/,
     },
     {
       name: 'http-endpoint',
@@ -2877,7 +3294,9 @@ test('prepare helpers expose ready Desktop, real-device, overlay, and v6 virtual
     const e2e = fs.readFileSync(e2ePath, 'utf8');
     assert.match(e2e, /E2E-PROVIDER-CONFIG[\s\S]*AuthorityStatus: ready \(same-process production Desktop emitter\)/);
     assert.match(e2e, /E2E-PROVIDER-PROBE[\s\S]*run-desktop-release-evidence\.mjs --scenario-id E2E-PROVIDER-PROBE/);
-    assert.match(e2e, /E2E-REAL-DEVICE-AUDIO[\s\S]*AuthorityStatus: ready \(canonical strict-v2 Watch Mode authority/);
+    assert.match(e2e, /E2E-REAL-DEVICE-AUDIO[\s\S]*canonical strict Watch Mode schema-v6 budget-balanced authority/);
+    assert.match(e2e, /E2E-REAL-DEVICE-AUDIO[\s\S]*SelectedCell: qwen3\.5-livetranslate-flash-realtime\/process-exclusion\/default-speaker/);
+    assert.doesNotMatch(e2e, /qwen3\.5-omni pairwise-live|schema-v4 budget-balanced authority/);
     assert.match(e2e, /E2E-REAL-DEVICE-AUDIO[\s\S]*ProductionCommand: npm run collect:release-evidence:real-device-audio/);
     assert.match(e2e, /E2E-REAL-DEVICE-AUDIO[\s\S]*cell-raw\//);
     assert.match(e2e, /E2E-DIAGNOSTICS-EXPORT[\s\S]*RequiredArtifacts: emitter-result\.json, diagnostics-export-receipt\.json, diagnostics-bundle\//);
@@ -2907,7 +3326,7 @@ test('prepare helpers expose ready Desktop, real-device, overlay, and v6 virtual
     assert.deepEqual(Object.keys(performance.measurements), PERFORMANCE_MEASUREMENT_NAMES);
     assert.ok(testPerformanceReport(performance).includes('verdict is not PASS'));
     assert.ok(testPerformanceReport(performance)
-      .includes('missing or invalid measurement: stabilityDurationMinutes'));
+      .includes('missing or invalid measurement: terminalStageCoveragePercent'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -2939,13 +3358,13 @@ test('production performance authority rejects a legacy schema-v1 canonical mani
       manifestPath: fixture.manifestPath,
       currentProvenance: TEST_PROVENANCE,
       now: TEST_NOW.getTime(),
-    }), /schemaVersion=4/);
+    }), new RegExp(`schemaVersion=${STRICT_MATRIX_SCHEMA_VERSION}`));
   } finally {
     fs.rmSync(fixture.workspaceRoot, { recursive: true, force: true });
   }
 });
 
-test('performance assembler and validator recompute the eight paid balanced-plan cells', () => {
+test('performance assembler and validator recompute the four paid balanced-plan cells', () => {
   const fixture = assembleFixture();
   try {
     assert.equal(fixture.verdict, 'PASS');
@@ -2956,7 +3375,7 @@ test('performance assembler and validator recompute the eight paid balanced-plan
       cpuP95Percent: 20,
       memoryPeakMb: 400,
       observedDropouts: 0,
-      stabilityDurationMinutes: 3,
+      terminalStageCoveragePercent: 100,
     });
     assert.deepEqual(
       testPerformanceReport(fixture.report, validationOptions(fixture.workspaceRoot)),
@@ -3077,11 +3496,10 @@ test('performance validator rejects rehashed hand-edited aggregate numbers', () 
   }
 });
 
-test('performance gate rejects threshold violations, dropouts, and short stability runs', () => {
+test('performance gate rejects latency threshold violations and dropouts', () => {
   for (const [options, expectedIssue] of [
     [{ providerLatencyMs: 1300 }, 'providerFirstEventLatencyMs=1300 exceeds threshold 1200'],
     [{ dropouts: 1 }, 'observedDropouts must be 0'],
-    [{ durationMs: 2 * 60 * 1000 }, 'stabilityDurationMinutes=2 is shorter than 3'],
   ]) {
     const fixture = assembleFixture(options);
     try {
@@ -3119,6 +3537,22 @@ test('performance assembler refuses a canonical matrix cell without raw system m
       now: TEST_NOW,
       performanceAuthorityResolver: testPerformanceAuthorityResolver,
     }), /raw system metrics are missing/);
+  } finally {
+    fs.rmSync(fixture.workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test('performance assembler refuses a paid cell without receipt-bound terminal evidence', () => {
+  const missingCell = LIVE_LLM_CELLS[0].cellId;
+  const fixture = buildPerformanceWorkspace({ omitTerminalCell: missingCell });
+  try {
+    assert.throws(() => assemblePerformanceBaseline({
+      operator: 'QA Robot',
+      workspaceRoot: fixture.workspaceRoot,
+      provenance: TEST_PROVENANCE,
+      now: TEST_NOW,
+      performanceAuthorityResolver: testPerformanceAuthorityResolver,
+    }), /evidence-driven terminal authority is missing/);
   } finally {
     fs.rmSync(fixture.workspaceRoot, { recursive: true, force: true });
   }
@@ -3313,6 +3747,7 @@ test('buildAutoSteps honors the skip switches', () => {
     'integration-bridge-contract',
     'driver-boundaries',
     'watch-mode-tooling',
+    'watch-mode-coordinator-tooling',
     'release-tooling',
     'quality-gate-tooling',
     'startup-tooling',
@@ -3329,7 +3764,7 @@ test('buildAutoSteps honors the skip switches', () => {
       'audit-architecture', 'audit-powershell-boundaries', 'audit-dead-code', 'audit-error-handling', 'audit-rust-warnings', 'i18n-ratchet',
       'verify-desktop', 'benchmark-core-tests', 'diagnostics-benchmark-tests',
       'contracts', 'config-paths', 'integration-bridge-contract',
-      'driver-boundaries', 'watch-mode-tooling', 'release-tooling', 'quality-gate-tooling',
+      'driver-boundaries', 'watch-mode-tooling', 'watch-mode-coordinator-tooling', 'release-tooling', 'quality-gate-tooling',
       'startup-tooling', 'powershell-tooling', 'coverage-base',
     ],
   );
@@ -3347,6 +3782,7 @@ test('test:all includes every deterministic cross-layer gate', () => {
     'integration-bridge-contract',
     'driver-boundaries',
     'watch-mode-tooling',
+    'watch-mode-coordinator-tooling',
     'release-tooling',
     'quality-gate-tooling',
     'startup-tooling',

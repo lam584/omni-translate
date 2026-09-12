@@ -161,10 +161,21 @@ fn write_command_once_quiet(
     pipe_path: &str,
     command: &DriverBridgeCommand,
 ) -> Result<DriverBridgeEvent, String> {
-    let mut pipe = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(pipe_path)
+    write_command_once_quiet_with_open(pipe_path, command, || {
+        OpenOptions::new().read(true).write(true).open(pipe_path)
+    })
+}
+
+fn write_command_once_quiet_with_open(
+    pipe_path: &str,
+    command: &DriverBridgeCommand,
+    mut open: impl FnMut() -> std::io::Result<fs::File>,
+) -> Result<DriverBridgeEvent, String> {
+    let mut pipe = if matches!(command, DriverBridgeCommand::SourceFlush(_)) {
+        open_source_flush_pipe(&mut open)
+    } else {
+        open()
+    }
         .map_err(|error| error.to_string())?;
     let payload = serde_json::to_string(command).map_err(|error| error.to_string())?;
     if payload.len() > omni_bridge_protocol::MAX_CONTROL_MESSAGE_BYTES {
@@ -193,11 +204,229 @@ fn write_command_once_quiet(
     serde_json::from_str(response.trim()).map_err(|error| error.to_string())
 }
 
+fn open_source_flush_pipe(
+    mut open: impl FnMut() -> std::io::Result<fs::File>,
+) -> std::io::Result<fs::File> {
+    // Only an unopened SourceFlush may wait for a busy control instance. Missing
+    // pipes and all other errors remain immediate; no write/read is retried.
+    let deadline = Instant::now() + Duration::from_millis(500);
+    loop {
+        match open() {
+            Ok(pipe) => return Ok(pipe),
+            Err(error) => {
+                if !cfg!(windows) || error.raw_os_error() != Some(231) {
+                    return Err(error);
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(error);
+                }
+                thread::sleep(remaining.min(Duration::from_millis(10)));
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(all(test, windows))]
+mod source_flush_busy_tests {
+    use super::*;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateNamedPipeW(name: *const u16, access: u32, mode: u32, instances: u32,
+            output: u32, input: u32, timeout: u32, security: *const std::ffi::c_void)
+            -> *mut std::ffi::c_void;
+        fn DisconnectNamedPipe(pipe: *mut std::ffi::c_void) -> i32;
+        fn ConnectNamedPipe(pipe: *mut std::ffi::c_void, overlapped: *mut std::ffi::c_void) -> i32;
+    }
+
+    fn busy_pipe() -> (BridgeRuntimeSnapshot, fs::File, fs::File) {
+        let mut snapshot = BridgeRuntimeSnapshot::default();
+        snapshot.pipe_path = format!(r"\\.\pipe\omni-source-flush-test-{}", Uuid::new_v4());
+        let name: Vec<u16> = snapshot.pipe_path.encode_utf16().chain(Some(0)).collect();
+        // One byte-mode, nonblocking instance: the held client guarantees 231.
+        let raw = unsafe { CreateNamedPipeW(name.as_ptr(), 3, 1, 1, 4096, 4096, 0, std::ptr::null()) };
+        assert_ne!(raw as isize, -1, "{}", std::io::Error::last_os_error());
+        let server = unsafe { fs::File::from_raw_handle(raw) };
+        let occupied = OpenOptions::new().read(true).write(true).open(&snapshot.pipe_path).unwrap();
+        let error = OpenOptions::new().read(true).write(true).open(&snapshot.pipe_path).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(231));
+        (snapshot, server, occupied)
+    }
+
+    fn exchange_with_listening_pipe(response: impl FnOnce(serde_json::Value) -> String + Send + 'static)
+        -> Result<(), String>
+    {
+        let (snapshot, mut server, occupied) = busy_pipe();
+        drop(occupied);
+        assert_ne!(unsafe { DisconnectNamedPipe(server.as_raw_handle()) }, 0);
+        // ACK end-to-end coverage starts listening; busy retry is tested below
+        // through the production open seam, not inferred from thread timing.
+        unsafe { ConnectNamedPipe(server.as_raw_handle(), std::ptr::null_mut()); }
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut request = Vec::new();
+            while Instant::now() < deadline {
+                let mut buffer = [0; 4096];
+                if let Ok(count) = server.read(&mut buffer) {
+                    request.extend_from_slice(&buffer[..count]);
+                    if request.contains(&b'\n') { break; }
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            if request.is_empty() { return 0; }
+            let command: serde_json::Value = serde_json::from_slice(&request).unwrap();
+            assert_eq!(command["type"], "bridge.source.flush");
+            let response = response(command);
+            writeln!(server, "{response}").unwrap();
+            let _ = done_rx.recv_timeout(Duration::from_secs(10));
+            request.iter().filter(|&&byte| byte == b'\n').count()
+        });
+        let result = flush_bridge_source(&snapshot);
+        let _ = done_tx.send(());
+        let received = worker.join().unwrap();
+        assert_eq!(received, 1);
+        result
+    }
+
+    #[test]
+    fn source_flush_preserves_terminal_ack() {
+        let result = exchange_with_listening_pipe(|command| serde_json::json!({
+            "type": "bridge.error", "requestId": command["requestId"],
+            "code": "bridge.source-flush-failed", "message": "terminal-test-ack",
+            "retriable": true, "bridgeState": "running", "driverHealth": "running"
+        }).to_string());
+        assert_eq!(result, Err("bridge.source-flush-failed: terminal-test-ack".to_string()));
+    }
+
+    fn closed_ack(command: &serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "type": "bridge.state.snapshot", "requestId": command["requestId"],
+            "protocolVersion": omni_bridge_protocol::BRIDGE_PROTOCOL_VERSION,
+            "bridgeState": "running", "lifecycleState": "ready", "driverHealth": "running",
+            "bridgeVersion": "test", "physicalPlaybackStatus": "ready",
+            "playbackOwnerGeneration": 0, "queuedFrames": 0,
+            "sourceSubscriberActive": false, "sourcePendingBytes": 0,
+            "sourcePacerQueuedFrames": 0, "monitorSourceQueuedFrames": 0
+        })
+    }
+
+    #[test]
+    fn source_flush_accepts_only_closed_matching_ack() {
+        assert_eq!(exchange_with_listening_pipe(|command| closed_ack(&command).to_string()), Ok(()));
+        for (field, value) in [
+            ("requestId", serde_json::json!("wrong-request")),
+            ("sourceSubscriberActive", serde_json::json!(true)),
+            ("sourcePendingBytes", serde_json::json!(1)),
+            ("sourcePacerQueuedFrames", serde_json::json!(1)),
+            ("monitorSourceQueuedFrames", serde_json::json!(1)),
+        ] {
+            let result = exchange_with_listening_pipe(move |command| {
+                let mut ack = closed_ack(&command);
+                ack[field] = value;
+                ack.to_string()
+            });
+            assert!(result.unwrap_err().contains("acknowledgement did not close the source boundary"));
+        }
+    }
+
+    #[test]
+    fn source_flush_observed_busy_retries_only_before_send() {
+        // Both outcomes happen after the server has received the complete RPC.
+        // Count every open through the same helper used by the production caller.
+        for disconnect in [false, true] {
+            let (snapshot, mut server, occupied) = busy_pipe();
+            let mut occupied = Some(occupied);
+            let (connected_tx, connected_rx) = mpsc::channel();
+            let (done_tx, done_rx) = mpsc::channel();
+            let mut server_control = Some(server.try_clone().unwrap());
+            let worker = thread::spawn(move || {
+                if connected_rx.recv_timeout(Duration::from_secs(2)).is_err() { return 0; }
+                let deadline = Instant::now() + Duration::from_secs(2);
+                let mut request = Vec::new();
+                while Instant::now() < deadline {
+                    let mut buffer = [0; 4096];
+                    if let Ok(count) = server.read(&mut buffer) {
+                        request.extend_from_slice(&buffer[..count]);
+                        if request.contains(&b'\n') { break; }
+                    }
+                    thread::yield_now();
+                }
+                let command: serde_json::Value = serde_json::from_slice(&request).unwrap();
+                assert_eq!(command["type"], "bridge.source.flush");
+                if disconnect {
+                    assert_ne!(unsafe { DisconnectNamedPipe(server.as_raw_handle()) }, 0);
+                } else {
+                    writeln!(server, "invalid-json").unwrap();
+                    let _ = done_rx.recv_timeout(Duration::from_secs(10));
+                }
+                request.iter().filter(|&&byte| byte == b'\n').count()
+            });
+            let mut opens = 0;
+            let result = write_command_once_quiet_with_open(&snapshot.pipe_path,
+                &DriverBridgeCommand::SourceFlush(BridgeSourceFlushRequest {
+                    request_id: "observed-busy".into(),
+                }), || {
+                    opens += 1;
+                    assert!(opens <= 2, "must not reopen after sending an RPC");
+                    let opened = OpenOptions::new().read(true).write(true).open(&snapshot.pipe_path);
+                    if opens == 1 {
+                        // This is the actual first production-helper open, not a
+                        // preflight. Release only after capturing its real 231.
+                        assert_eq!(opened.as_ref().unwrap_err().raw_os_error(), Some(231));
+                        drop(occupied.take());
+                        let control = server_control.take().unwrap();
+                        assert_ne!(unsafe { DisconnectNamedPipe(control.as_raw_handle()) }, 0);
+                        unsafe { ConnectNamedPipe(control.as_raw_handle(), std::ptr::null_mut()); }
+                    } else {
+                        assert!(opened.is_ok());
+                        connected_tx.send(()).unwrap();
+                    }
+                    opened
+                });
+            let _ = done_tx.send(());
+            drop(connected_tx);
+            let received = worker.join().unwrap();
+            assert_eq!(opens, 2, "one observed busy open, then exactly one successful open");
+            assert_eq!(received, 1);
+            let error = result.err().expect("invalid response/disconnect must fail");
+            if !disconnect { assert!(error.contains("expected value"), "{error}"); }
+        }
+    }
+
+    #[test]
+    fn source_flush_busy_is_bounded_and_other_quiet_commands_remain_immediate() {
+        let (snapshot, _server, _occupied) = busy_pipe();
+        let started = Instant::now();
+        assert!(write_command_once_quiet(&snapshot.pipe_path,
+            &DriverBridgeCommand::StateQuery(BridgeStateQuery { request_id: "busy-query".into() })).is_err());
+        assert!(started.elapsed() < Duration::from_millis(500));
+        let started = Instant::now();
+        assert!(flush_bridge_source(&snapshot).is_err());
+        assert!(started.elapsed() >= Duration::from_millis(200));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn source_flush_missing_pipe_is_immediate() {
+        let mut snapshot = BridgeRuntimeSnapshot::default();
+        snapshot.pipe_path = format!(r"\\.\pipe\omni-missing-{}", Uuid::new_v4());
+        let started = Instant::now();
+        assert!(flush_bridge_source(&snapshot).is_err());
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
 }
 
 /// Map a bridge state-query response into the public `BridgeStateResponse`

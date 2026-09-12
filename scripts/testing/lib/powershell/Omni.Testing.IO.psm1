@@ -8,13 +8,8 @@ function Set-OmniUtf8NoBomContent {
   )
 
   $parent = Split-Path -Parent $LiteralPath
-  if (-not $parent) {
-    $parent = (Get-Location).Path
-    $LiteralPath = Join-Path $parent $LiteralPath
-  }
-  if ($parent) {
-    [System.IO.Directory]::CreateDirectory($parent) | Out-Null
-  }
+  if (-not $parent) { $parent = (Get-Location).Path; $LiteralPath = Join-Path $parent $LiteralPath }
+  if ($parent) { [System.IO.Directory]::CreateDirectory($parent) | Out-Null }
   [System.IO.File]::WriteAllText(
     $LiteralPath,
     $Value,
@@ -129,27 +124,32 @@ function Write-OmniImmutableJson {
     [Parameter(Mandatory = $true)]$Value,
     [ValidateRange(2, 100)][int]$Depth = 20
   )
-
-  if (Test-Path -LiteralPath $LiteralPath) {
-    throw "immutable JSON target already exists: $LiteralPath"
-  }
   $parent = Split-Path -Parent $LiteralPath
+  if (-not $parent) {
+    $parent = (Get-Location).Path
+    $LiteralPath = Join-Path $parent $LiteralPath
+  }
   if ($parent) {
     [System.IO.Directory]::CreateDirectory($parent) | Out-Null
   }
   $json = $Value | ConvertTo-Json -Depth $Depth
   $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($json)
-  $stream = [System.IO.File]::Open(
-    $LiteralPath,
-    [System.IO.FileMode]::CreateNew,
-    [System.IO.FileAccess]::Write,
-    [System.IO.FileShare]::None
-  )
+  $fileName = Split-Path -Leaf $LiteralPath
+  $temporaryPath = Join-Path $parent ".$fileName.$PID.$([guid]::NewGuid().ToString('N')).tmp"
+  $stream = $null
   try {
+    $stream = [System.IO.File]::Open($temporaryPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
     $stream.Write($bytes, 0, $bytes.Length)
     $stream.Flush($true)
-  } finally {
     $stream.Dispose()
+    $stream = $null
+    # Same-volume File.Move publishes atomically and refuses replacement.
+    try { [System.IO.File]::Move($temporaryPath, $LiteralPath) } catch {
+      throw "immutable JSON publish failed for '$LiteralPath': $($_.Exception.Message)"
+    }
+  } finally {
+    if ($null -ne $stream) { $stream.Dispose() }
+    Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
   }
 }
 

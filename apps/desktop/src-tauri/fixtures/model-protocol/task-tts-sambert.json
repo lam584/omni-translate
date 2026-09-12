@@ -1,0 +1,89 @@
+{
+  "schemaVersion": "model-protocol-wire-fixture/v1",
+  "dialectId": "bailian-sambert-one-shot-task-ws-v1",
+  "checkedAt": "2026-08-30",
+  "sanitized": true,
+  "sources": [
+    { "url": "https://help.aliyun.com/zh/model-studio/realtime-tts-user-guide", "checkedAt": "2026-08-30" }
+  ],
+  "sequence": [
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "run-task",
+      "wire": {
+        "header": { "action": "run-task", "task_id": "99999999-9999-4999-8999-999999999999", "streaming": "out" },
+        "payload": {
+          "task_group": "audio",
+          "task": "tts",
+          "function": "SpeechSynthesizer",
+          "model": "sambert-zhichu-v1",
+          "parameters": { "text_type": "PlainText", "format": "pcm", "sample_rate": 16000 },
+          "input": { "text": "hello" }
+        }
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "task-started",
+      "wire": { "header": { "event": "task-started", "task_id": "99999999-9999-4999-8999-999999999999", "attributes": {} }, "payload": {} }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "result-generated",
+      "wire": { "header": { "event": "result-generated", "task_id": "99999999-9999-4999-8999-999999999999", "attributes": {} }, "payload": { "output": {} } }
+    },
+    { "direction": "server", "frameKind": "binary", "eventType": "binary.audio", "activeTaskId": "99999999-9999-4999-8999-999999999999" },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "task-finished",
+      "wire": { "header": { "event": "task-finished", "task_id": "99999999-9999-4999-8999-999999999999", "attributes": {} }, "payload": { "output": {}, "usage": null } }
+    },
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "run-task",
+      "wire": {
+        "header": { "action": "run-task", "task_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "streaming": "out" },
+        "payload": {
+          "task_group": "audio",
+          "task": "tts",
+          "function": "SpeechSynthesizer",
+          "model": "sambert-zhichu-v1",
+          "parameters": { "text_type": "PlainText", "format": "pcm", "sample_rate": 16000 },
+          "input": { "text": "second task" }
+        }
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "task-started",
+      "wire": { "header": { "event": "task-started", "task_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "attributes": {} }, "payload": {} }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "result-generated",
+      "wire": { "header": { "event": "result-generated", "task_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "attributes": {} }, "payload": { "output": {} } }
+    },
+    { "direction": "server", "frameKind": "binary", "eventType": "binary.audio", "activeTaskId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "task-finished",
+      "wire": { "header": { "event": "task-finished", "task_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "attributes": {} }, "payload": { "output": {}, "usage": null } }
+    }
+  ],
+  "expect": {
+    "inputTextInRunTask": true,
+    "terminalOrder": ["run-task", "task-finished"],
+    "forbiddenEvents": ["continue-task", "finish-task", "input_text_buffer.append"],
+    "sameConnectionSequentialReuse": true,
+    "freshTaskIdPerTask": true,
+    "failureInvalidatesConnection": true
+  }
+}

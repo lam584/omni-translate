@@ -1,0 +1,86 @@
+{
+  "schemaVersion": "model-protocol-wire-fixture/v1",
+  "dialectId": "bailian-multimodal-dialog-task-ws-v1",
+  "checkedAt": "2026-08-30",
+  "sanitized": true,
+  "sources": [
+    { "url": "https://help.aliyun.com/zh/model-studio/multimodal-interaction-protocol", "checkedAt": "2026-08-30" }
+  ],
+  "sequence": [
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "run-task",
+      "innerEventType": "Start",
+      "wire": {
+        "header": { "action": "run-task", "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "streaming": "duplex" },
+        "payload": {
+          "task_group": "aigc",
+          "task": "multimodal-generation",
+          "function": "generation",
+          "model": "multimodal-dialog",
+          "input": { "directive": "Start", "workspace_id": "llm-sanitized", "app_id": "app-sanitized" },
+          "parameters": {}
+        }
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "result-generated",
+      "innerEventType": "Started",
+      "wire": {
+        "header": { "event": "result-generated", "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+        "payload": { "output": { "event": "Started", "dialog_id": "dialog-sanitized" } }
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "result-generated",
+      "innerEventType": "DialogStateChanged",
+      "wire": {
+        "header": { "event": "result-generated", "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+        "payload": { "output": { "event": "DialogStateChanged", "state": "Listening", "dialog_id": "dialog-sanitized" } }
+      }
+    },
+    { "direction": "client", "frameKind": "binary", "eventType": "binary.audio", "activeTaskId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "result-generated",
+      "innerEventType": "DialogStateChanged",
+      "wire": {
+        "header": { "event": "result-generated", "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+        "payload": { "output": { "event": "DialogStateChanged", "state": "Responding", "dialog_id": "dialog-sanitized" } }
+      }
+    },
+    { "direction": "server", "frameKind": "binary", "eventType": "binary.audio", "activeTaskId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "finish-task",
+      "innerEventType": "Stop",
+      "wire": {
+        "header": { "action": "finish-task", "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "streaming": "duplex" },
+        "payload": { "input": { "directive": "Stop", "dialog_id": "dialog-sanitized" } }
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "result-generated",
+      "innerEventType": "Stopped",
+      "wire": {
+        "header": { "event": "result-generated", "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+        "payload": { "output": { "event": "Stopped", "dialog_id": "dialog-sanitized" } }
+      }
+    }
+  ],
+  "expect": {
+    "audioReadyAfter": "DialogStateChanged(Listening)",
+    "startedIsAudioReady": false,
+    "terminalOrder": ["finish-task/Stop", "result-generated/Stopped"],
+    "responseTimeoutSeconds": 60
+  }
+}

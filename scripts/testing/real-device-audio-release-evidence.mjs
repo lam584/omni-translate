@@ -14,7 +14,6 @@ import {
 import {
   CANONICAL_STRICT_MATRIX_MANIFEST,
   DEFAULT_FEEDBACK_MODES,
-  DEFAULT_MODELS,
   SUPPORTED_DEVICE_CLASSES,
 } from './run-watch-mode-live-matrix.mjs';
 import {
@@ -33,6 +32,7 @@ import {
 } from './verify-watch-mode-evidence.mjs';
 import {
   LIVE_LLM_CELLS,
+  RELEASE_MODELS,
   balancedReleasePlanFailure,
 } from './watch-mode-balanced-release-plan.mjs';
 
@@ -46,9 +46,9 @@ export const REAL_DEVICE_AUDIO_AUTHORITY_COLLECTOR_ID = 'omni.watch-mode-strict-
 export const REAL_DEVICE_AUDIO_AUTHORITY_COLLECTOR_VERSION = 2;
 
 export const REAL_DEVICE_AUDIO_SELECTED_CELL = Object.freeze({
-  cellId: 'pairwise-live::qwen3.5-omni-flash-realtime::process-exclusion::default-speaker',
+  cellId: 'pairwise-live::qwen3.5-livetranslate-flash-realtime::process-exclusion::default-speaker',
   tier: 'pairwise-live',
-  modelId: 'qwen3.5-omni-flash-realtime',
+  modelId: 'qwen3.5-livetranslate-flash-realtime',
   feedbackLoopPrevention: 'process-exclusion',
   deviceClass: 'default-speaker',
   // Selector default for fixtures only. Production selection binds the actual
@@ -78,7 +78,6 @@ export const REAL_DEVICE_AUDIO_PROFILE = Object.freeze({
   artifacts: REAL_DEVICE_AUDIO_ARTIFACTS,
 });
 
-const MIN_SESSION_DURATION_MS = 180_000;
 const MIN_PHYSICAL_RECORDING_SECONDS = 60;
 const MIN_COMPLETE_CUES = 8;
 const MAX_AGE_DAYS = 14;
@@ -130,7 +129,7 @@ export const exactReleaseGridFailure = (manifest) => {
   }
   const validationPlanFailure = balancedReleasePlanFailure(manifest.validationPlan);
   if (validationPlanFailure) return validationPlanFailure;
-  if (!isDeepStrictEqual(manifest.models, DEFAULT_MODELS)
+  if (!isDeepStrictEqual(manifest.models, RELEASE_MODELS)
     || !isDeepStrictEqual(manifest.feedbackLoopPreventionModes, DEFAULT_FEEDBACK_MODES)) {
     return 'canonical strict matrix model/route set is not the exact release grid';
   }
@@ -141,7 +140,7 @@ export const exactReleaseGridFailure = (manifest) => {
     || !SUPPORTED_DEVICE_CLASSES.every((deviceClass) => (
       profileClasses.filter((candidate) => candidate === deviceClass).length === 1
     ))) {
-    return 'canonical strict matrix device profiles are not exactly default-speaker and usb';
+    return `canonical strict matrix device profiles are not exactly: ${SUPPORTED_DEVICE_CLASSES.join(', ')}`;
   }
   const expectedCount = LIVE_LLM_CELLS.length;
   if (!Array.isArray(manifest.cells) || manifest.cells.length !== expectedCount
@@ -156,12 +155,26 @@ export const exactReleaseGridFailure = (manifest) => {
   ]));
   for (const expected of LIVE_LLM_CELLS) {
     const actual = manifest.cells.find((cell) => cell.cellId === expected.cellId);
-    if (
-      !actual
-      || actual.tier !== expected.tier
-      || actual.durationSeconds !== expected.durationSeconds
-      || actual.deviceProfileId !== profileByClass.get(expected.deviceClass)
-    ) {
+    const contractKeys = [
+      'tier',
+      'providerMode',
+      'inputCompletionWatchdogSeconds',
+      'processExclusionRestartAfterSeconds',
+      'processExclusionRestartQuietSeconds',
+      'providerFinishTimeoutSeconds',
+      'localPlaybackDrainTimeoutSeconds',
+      'reportWriteTimeoutSeconds',
+      'cellHardWatchdogSeconds',
+      'authoritativeTransformedReferenceFrames',
+      'boundedCaptureGraceFrames',
+      'maxExternalAudioSamples',
+      'modelId',
+      'feedbackLoopPrevention',
+      'deviceClass',
+    ];
+    if (!actual
+      || contractKeys.some((key) => actual[key] !== expected[key])
+      || actual.deviceProfileId !== profileByClass.get(expected.deviceClass)) {
       return `canonical strict matrix is missing balanced release cell ${expected.cellId}`;
     }
   }
@@ -206,7 +219,7 @@ export function resolveCanonicalRealDeviceAudioAuthority({
   const strict = findWatchModeEvidence({
     root: path.dirname(resolved.manifestPath),
     strict: true,
-    models: DEFAULT_MODELS,
+    models: RELEASE_MODELS,
     feedbackModes: DEFAULT_FEEDBACK_MODES,
     deviceClasses: SUPPORTED_DEVICE_CLASSES,
     releaseCells: LIVE_LLM_CELLS,
@@ -325,7 +338,7 @@ export function inspectAuthorizedRealDeviceCell(resolved) {
   const issues = [];
   const { cell, report, receipt, runDirectory } = resolved;
   if (selectedCellKey(cell) !== selectedCellKey(REAL_DEVICE_AUDIO_SELECTED_CELL)) {
-    issues.push('selected authority cell is not the fixed qwen3.5-omni process-exclusion/default-speaker cell');
+    issues.push('selected authority cell is not the fixed qwen3.5-livetranslate process-exclusion/default-speaker cell');
   }
   if (receipt?.schemaVersion !== CELL_AUTHORITY_SCHEMA_VERSION
     || receipt?.artifactKind !== CELL_AUTHORITY_ARTIFACT_KIND
@@ -350,10 +363,11 @@ export function inspectAuthorizedRealDeviceCell(resolved) {
   const watch = readJson(path.join(runDirectory, 'watch-session-report.json'));
   const elapsedMs = Number(watch?.elapsedMs);
   const summaryDurationMs = Number(watch?.summary?.durationMs);
-  if (watch?.status !== 'completed' || elapsedMs < MIN_SESSION_DURATION_MS
-    || summaryDurationMs < MIN_SESSION_DURATION_MS
+  if (watch?.status !== 'completed'
+    || !Number.isFinite(elapsedMs) || elapsedMs <= 0
+    || !Number.isFinite(summaryDurationMs) || summaryDurationMs <= 0
     || Math.abs(elapsedMs - summaryDurationMs) > 1000) {
-    issues.push('real-device Watch session is not a completed continuous budget-approved pairwise-live session');
+    issues.push('real-device Watch session lacks completed, internally consistent evidence-driven terminal timing');
   }
   const expectedCues = Array.isArray(watch?.cues)
     ? watch.cues.filter((cue) => cue?.comparisonStatus !== 'superseded')

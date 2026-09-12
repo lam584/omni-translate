@@ -16,6 +16,8 @@ struct RawResult {
     response_done_ms: Option<f64>,
     response_done_audio_chunks_sent: Option<usize>,
     response_done_audio_sent_secs: Option<f64>,
+    session_finished: bool,
+    live_translate_plan: Option<PreparedLiveTranslateBenchmarkPlan>,
 }
 
 fn empty_run_result(run_index: usize, model: String, audio_duration_secs: f64) -> RunResult {

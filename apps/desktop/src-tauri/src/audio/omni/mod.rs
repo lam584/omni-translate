@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::TcpStream;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
@@ -14,12 +15,42 @@ use tungstenite::client::{connect_with_config, IntoClientRequest};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::Message;
 
+#[cfg(test)]
+thread_local! {
+    static TEST_OMNI_CONNECT_URI_OVERRIDE: std::cell::RefCell<Option<tungstenite::http::Uri>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_test_omni_connect_uri_override(uri: &str) {
+    let uri = uri
+        .parse::<tungstenite::http::Uri>()
+        .expect("test Omni connect override must be a valid URI");
+    TEST_OMNI_CONNECT_URI_OVERRIDE.with(|slot| {
+        assert!(
+            slot.borrow().is_none(),
+            "test Omni connect override must be consumed before another is registered"
+        );
+        *slot.borrow_mut() = Some(uri);
+    });
+}
+
 fn connect_without_redirects(
     request: tungstenite::handshake::client::Request,
 ) -> tungstenite::Result<(
     tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
     tungstenite::handshake::client::Response,
 )> {
+    #[cfg(test)]
+    let request = {
+        let mut request = request;
+        TEST_OMNI_CONNECT_URI_OVERRIDE.with(|slot| {
+            if let Some(uri) = slot.borrow_mut().take() {
+                *request.uri_mut() = uri;
+            }
+        });
+        request
+    };
     // Authentication is already attached to this request. A redirect must not
     // replay that credential to another origin.
     connect_with_config(request, None, 0)
@@ -125,8 +156,9 @@ const OMNI_ASR_MIN_CHUNK_RMS: f32 = 0.002;
 // Forty 20 ms frames keep 800 ms of trailing silence, matching the server-VAD
 // boundary while allowing manual routes to commit natural pauses promptly.
 const OMNI_ASR_SILENCE_GRACE_CHUNKS: u32 = 40;
-const OMNI_INTER_CHUNK_THROTTLE_MS: u64 = 18;
 const PROVIDER_INPUT_PCM_DUMP_MAX_SAMPLES: usize = 16_000 * 90;
+const PROVIDER_INPUT_PREFILTER_FILE: &str = "provider-input-prefilter-48k-stereo.f32le.frames";
+const PROVIDER_INPUT_PREFILTER_MAGIC: &[u8; 8] = b"OMNIPR01";
 
 #[derive(Debug)]
 struct ProviderInputPcmDump {
@@ -291,6 +323,96 @@ impl ProviderInputPcmDump {
     }
 }
 
+/// Durable framing for the exact 48 kHz stereo f32 chunks consumed by the
+/// production Omni pump before resampling, RMS gating, silence grace, and the
+/// provider-input budget decision. Keeping chunk boundaries is essential:
+/// the trailing-silence allowance is expressed in chunks rather than time.
+#[derive(Debug)]
+struct ProviderInputPrefilterDump {
+    file: std::fs::File,
+    path: String,
+    strict_paid_authority: bool,
+}
+
+impl ProviderInputPrefilterDump {
+    fn from_provider_pcm_path(
+        provider_pcm_path: Option<&str>,
+        strict_paid_authority: bool,
+    ) -> Result<Option<Self>, String> {
+        if !strict_paid_authority {
+            return Ok(None);
+        }
+        let provider_pcm_path = provider_pcm_path.ok_or_else(|| {
+            "strict paid provider authority requires a provider PCM path before creating prefilter authority".to_string()
+        })?;
+        let parent = Path::new(provider_pcm_path).parent().ok_or_else(|| {
+            format!("strict paid provider PCM path has no parent: {provider_pcm_path}")
+        })?;
+        let path = parent.join(PROVIDER_INPUT_PREFILTER_FILE);
+        let path_text = path.to_string_lossy().into_owned();
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| {
+                format!(
+                    "strict paid provider prefilter authority must be a new exclusive file: path={path_text} error={error}"
+                )
+            })?;
+        file.write_all(PROVIDER_INPUT_PREFILTER_MAGIC)
+            .and_then(|_| file.flush())
+            .map_err(|error| {
+                format!(
+                    "strict paid provider prefilter authority header write failed: path={path_text} error={error}"
+                )
+            })?;
+        Ok(Some(Self {
+            file,
+            path: path_text,
+            strict_paid_authority,
+        }))
+    }
+
+    fn append_chunk<R: tauri::Runtime>(
+        &mut self,
+        app: &AppHandle<R>,
+        raw_chunk: &[u8],
+    ) -> Result<(), String> {
+        let result = self.append_chunk_bytes(raw_chunk);
+        if let Err(error) = &result {
+            let _ = diag_log(
+                app,
+                "omni",
+                "warning",
+                format!(
+                    "[WATCH] provider prefilter authority write failed: path={} error={error}",
+                    self.path
+                ),
+            );
+        }
+        if self.strict_paid_authority {
+            result
+        } else {
+            Ok(())
+        }
+    }
+
+    fn append_chunk_bytes(&mut self, raw_chunk: &[u8]) -> Result<(), String> {
+        let byte_length = u32::try_from(raw_chunk.len()).map_err(|_| {
+            format!(
+                "provider prefilter authority chunk exceeds u32 framing: path={} bytes={}",
+                self.path,
+                raw_chunk.len()
+            )
+        })?;
+        self.file
+            .write_all(&byte_length.to_le_bytes())
+            .and_then(|_| self.file.write_all(raw_chunk))
+            .and_then(|_| self.file.flush())
+            .map_err(|error| error.to_string())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RealtimeAudioMode {
     Manual,
@@ -310,7 +432,9 @@ impl RealtimeAudioMode {
             Some(other) => Err(format!(
                 "模型 {model} 配置了不支持的实时语音模式: {other}"
             )),
-            None => Ok(default_realtime_audio_mode(model)),
+            None => Err(format!(
+                "模型 {model} 缺少显式 realtimeAudioMode；运行时不会按模型名推断协议"
+            )),
         }
     }
 
@@ -343,15 +467,6 @@ impl RealtimeAudioMode {
     }
 }
 
-pub(crate) fn default_realtime_audio_mode(model: &str) -> RealtimeAudioMode {
-    if crate::audio::events::model_name_is_livetranslate(model) {
-        RealtimeAudioMode::ServerVad
-    } else {
-        RealtimeAudioMode::Manual
-    }
-}
-
-
 /// 48 kHz stereo f32 capture -> 16 kHz mono i16, as the DashScope wire
 /// format expects. Thin fixed-rate front for the shared capture resampler.
 fn resample_48k_stereo_to_16k_mono(input: &[u8]) -> Vec<i16> {
@@ -369,8 +484,17 @@ fn initial_connect_backoff(retry_count: usize) -> Duration {
 fn build_dashscope_ws_request(
     provider: &ProviderDraftInput,
 ) -> Result<tungstenite::handshake::client::Request, String> {
+    let authority = crate::audio::events::authorize_bailian_native_translate(provider)?;
     let ws_url = to_websocket_url(&provider.base_url, &provider.model)
         .map_err(|error| format!("无法构建 WebSocket URL: {}", error.message))?;
+    if ws_url.path() != authority.endpoint_path {
+        return Err(format!(
+            "model_protocol.endpoint_family_mismatch: profile '{}' requires endpoint path '{}' but request resolved '{}'",
+            authority.profile_id,
+            authority.endpoint_path,
+            ws_url.path()
+        ));
+    }
     let mut request = ws_url
         .as_str()
         .into_client_request()
@@ -390,6 +514,56 @@ mod unit_tests {
         should_use_native_output_fallback,
     };
     use base64::Engine;
+    use tempfile::tempdir;
+
+    #[test]
+    fn strict_prefilter_dump_preserves_exact_chunk_boundaries() {
+        let directory = tempdir().expect("tempdir");
+        let provider_pcm_path = directory.path().join("provider-input-16k-mono.pcm");
+        let provider_pcm_path = provider_pcm_path.to_string_lossy().into_owned();
+        let mut dump = ProviderInputPrefilterDump::from_provider_pcm_path(
+            Some(&provider_pcm_path),
+            true,
+        )
+        .expect("strict prefilter authority")
+        .expect("strict mode enables the dump");
+        dump.append_chunk_bytes(&[1, 2, 3]).expect("first chunk");
+        dump.append_chunk_bytes(&[4, 5]).expect("second chunk");
+        drop(dump);
+
+        let bytes = std::fs::read(directory.path().join(PROVIDER_INPUT_PREFILTER_FILE))
+            .expect("prefilter authority bytes");
+        assert_eq!(&bytes[..8], PROVIDER_INPUT_PREFILTER_MAGIC);
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 3);
+        assert_eq!(&bytes[12..15], &[1, 2, 3]);
+        assert_eq!(u32::from_le_bytes(bytes[15..19].try_into().unwrap()), 2);
+        assert_eq!(&bytes[19..], &[4, 5]);
+    }
+
+    #[test]
+    fn strict_prefilter_dump_is_exclusive_and_non_strict_is_disabled() {
+        let directory = tempdir().expect("tempdir");
+        let provider_pcm_path = directory.path().join("provider-input-16k-mono.pcm");
+        let provider_pcm_path = provider_pcm_path.to_string_lossy().into_owned();
+        let first = ProviderInputPrefilterDump::from_provider_pcm_path(
+            Some(&provider_pcm_path),
+            true,
+        )
+        .expect("first strict authority")
+        .expect("strict authority enabled");
+        assert!(ProviderInputPrefilterDump::from_provider_pcm_path(
+            Some(&provider_pcm_path),
+            true,
+        )
+        .is_err());
+        drop(first);
+        assert!(ProviderInputPrefilterDump::from_provider_pcm_path(
+            Some(&provider_pcm_path),
+            false,
+        )
+        .expect("non-strict mode")
+        .is_none());
+    }
 
     #[test]
     fn session_update_omits_empty_voice() {
@@ -623,16 +797,17 @@ mod unit_tests {
 
     #[test]
     fn livetranslate_language_contract_defaults_auto_source_and_rejects_unknown_codes() {
+        let authority = crate::audio::bailian_protocol::livetranslate_test_authority();
         assert_eq!(
             resolve_livetranslate_language(
-                "qwen3.5-livetranslate-flash-realtime",
+                &authority,
                 "auto",
                 "en",
             ),
             Ok("en".to_string())
         );
         assert!(resolve_livetranslate_language(
-            "qwen3.5-livetranslate-flash-realtime",
+            &authority,
             "xx-Unknown",
             "en",
         )
@@ -641,9 +816,10 @@ mod unit_tests {
 
     #[test]
     fn livetranslate_audio_output_falls_back_to_text_for_unsupported_target() {
+        let authority = crate::audio::bailian_protocol::livetranslate_test_authority();
         assert_eq!(
             resolve_livetranslate_output_mode(
-                "qwen3.5-livetranslate-flash-realtime",
+                &authority,
                 "sw",
                 OmniOutputMode::TextAndAudio,
             ),
@@ -842,7 +1018,9 @@ pub(crate) use self::protocol::{
     build_dashscope_audio_append, build_dashscope_input_audio_commit,
     build_dashscope_response_create_for_protocol, build_dashscope_session_update,
     build_dashscope_text_item,
+    apply_watch_release_livetranslate_corpus,
     build_omni_session_update_for_provider_with_output_mode, OmniOutputMode, OmniSpeechConfig,
+    native_response_id_from_event,
     resolve_livetranslate_language, resolve_livetranslate_output_mode,
 };
 use self::translated_pcm_authority::TranslatedPcmAuthority;
@@ -850,20 +1028,19 @@ use self::protocol::{
     check_vad_warning, elapsed_ms_since,
     ensure_transcription_cue_id, handle_response_done, handle_session_ready_event,
     manual_turn_response_stream_active,
-    native_response_id_from_event, next_omni_cue_id, record_native_playback_stale,
+    next_omni_cue_id, record_native_playback_stale,
     reset_manual_turn_input_state, reset_omni_turn_state,
     resolve_completed_transcription, resolve_native_response_source_text,
     response_stream_owns_current_cue,
     extract_response_done_text,
     set_socket_read_timeout, set_socket_write_timeout, start_omni_playback,
-    try_reconnect, write_live_source_to_cue, write_native_output_final_to_cue,
-    write_native_output_preview_to_cue,
+    try_reconnect, write_live_source_to_cue, write_native_output_preview_to_cue,
     update_native_response_cue_source,
     OmniEventDiagnostics, OmniPlaybackCommand, OmniPlaybackEnqueueOutcome,
     OmniPlaybackOverflowReason, OmniPlaybackQueue, OmniPlaybackWorker,
 };
 #[cfg(test)]
-use self::protocol::write_native_translation_to_cue;
+use self::protocol::{write_native_output_final_to_cue, write_native_translation_to_cue};
 #[cfg(test)]
 use protocol::{build_omni_session_update, build_omni_session_update_with_output_mode};
 #[cfg(test)]
@@ -956,7 +1133,7 @@ mod native_translation_tests {
     }
 
     #[test]
-    fn qwen35_omni_semantic_vad_uses_watch_defaults() {
+    fn qwen35_omni_semantic_vad_splits_continuous_watch_audio_at_fixture_pauses() {
         let session = build_omni_session_update(
             "qwen3.5-omni-plus-realtime",
             "longanqian",
@@ -981,8 +1158,40 @@ mod native_translation_tests {
             session
                 .pointer("/session/turn_detection/silence_duration_ms")
                 .and_then(Value::as_u64),
-            Some(800)
+            Some(400)
         );
+    }
+
+    #[test]
+    fn qwen35_release_models_split_continuous_watch_audio_at_fixture_pauses() {
+        for model in ["qwen3.5-omni-flash-realtime", "qwen3.5-livetranslate-flash-realtime"] {
+            for (audio_mode, expected_type) in [
+                (RealtimeAudioMode::ServerVad, "server_vad"),
+                (RealtimeAudioMode::SemanticVad, "semantic_vad"),
+            ] {
+                let session = build_omni_session_update(
+                    model,
+                    "longanqian",
+                    "translate naturally",
+                    audio_mode,
+                    "zh-CN",
+                );
+                assert_eq!(
+                    session
+                        .pointer("/session/turn_detection/type")
+                        .and_then(Value::as_str),
+                    Some(expected_type),
+                    "{model} {audio_mode:?}",
+                );
+                assert_eq!(
+                    session
+                        .pointer("/session/turn_detection/silence_duration_ms")
+                        .and_then(Value::as_u64),
+                    Some(400),
+                    "{model} {audio_mode:?}",
+                );
+            }
+        }
     }
 
     #[test]

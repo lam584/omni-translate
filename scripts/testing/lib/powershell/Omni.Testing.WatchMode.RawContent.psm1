@@ -38,7 +38,33 @@ function Get-TranslatedPcmLoopbackAuthority {
   $MatrixCellId = [string]$Context.request.matrix.cellId
   $WatchModelId = [string]$Context.request.model.id
   $WatchRealtimeProtocol = [string]$Context.request.model.protocol
+  $FeedbackLoopPrevention = [string]$Context.request.feedbackMode
   $matcherPath = Join-Path $workspaceRoot "scripts/testing/watch-mode-translated-pcm-loopback.mjs"
+  $stdoutPath = Join-Path $OutputDirectory "translated-pcm-loopback.stdout.json"
+  $stderrPath = Join-Path $OutputDirectory "translated-pcm-loopback.stderr.log"
+  if (-not $PlaybackAuthority -or $PlaybackAuthority.passed -ne $true) {
+    $authority = [pscustomobject]@{
+      schemaVersion = 2
+      artifactKind = 'watch-mode-translated-pcm-loopback-authority'
+      authorityMode = 'translated-pcm-loopback-correlation-v1'
+      passed = $false
+      cellId = $MatrixCellId
+      modelId = $WatchModelId
+      feedbackLoopPrevention = $FeedbackLoopPrevention
+      error = if ($PlaybackAuthority -and $PlaybackAuthority.error) {
+        [string]$PlaybackAuthority.error
+      } else {
+        'translated cue playback authority is unavailable'
+      }
+    }
+    [System.IO.File]::WriteAllText(
+      $stdoutPath,
+      ($authority | ConvertTo-Json -Depth 8),
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    [System.IO.File]::WriteAllText($stderrPath, '', [System.Text.UTF8Encoding]::new($false))
+    return $authority
+  }
   $leaseFileName = if ($LocalCanonicalContentAuthority) {
     "smoke-provider-session-lease.json"
   } else {
@@ -65,10 +91,9 @@ function Get-TranslatedPcmLoopbackAuthority {
     "--cell-id", $MatrixCellId,
     "--lease-id", ([string]$lease.leaseId),
     "--model-id", $WatchModelId,
-    "--protocol", $protocol
+    "--protocol", $protocol,
+    "--feedback-loop-prevention", $FeedbackLoopPrevention
   )
-  $stdoutPath = Join-Path $OutputDirectory "translated-pcm-loopback.stdout.json"
-  $stderrPath = Join-Path $OutputDirectory "translated-pcm-loopback.stderr.log"
   $process = Start-Process -FilePath "node" -ArgumentList $arguments -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -WindowStyle Hidden -Wait -PassThru
   if (-not (Test-Path -LiteralPath $stdoutPath -PathType Leaf)) {
     return [pscustomobject]@{ passed = $false; authorityMode = "translated-pcm-loopback-correlation-v1"; error = "translated PCM matcher returned no JSON"; exitCode = $process.ExitCode }

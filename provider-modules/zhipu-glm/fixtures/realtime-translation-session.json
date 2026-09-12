@@ -1,0 +1,76 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "zhipu-glm.realtime-translation-session",
+  "providerId": "zhipu-glm",
+  "protocolProfileId": "zhipu-glm.realtime-translation",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "zhipu-glm.realtime-guide"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "The guide presents realtime translation as a use case, not as a dedicated translationConfig protocol. This synthetic mode fixture is intentionally non-executable."
+  },
+  "scenario": "GLM-Realtime conversation configured as a speech translator",
+  "data": {
+    "connection": {
+      "url": "wss://open.bigmodel.cn/api/paas/v4/realtime",
+      "headers": { "Authorization": "Bearer <redacted-zhipu-api-key>" }
+    },
+    "authContract": {
+      "profileId": "zhipu-glm.bearer-api-key",
+      "parameters": [
+        { "location": "header", "name": "Authorization", "value": "Bearer <redacted-zhipu-api-key>" }
+      ]
+    },
+    "clientMessage": {
+      "type": "session.update",
+      "event_id": "<sanitized-client-event-id>",
+      "session": {
+        "model": "glm-realtime-flash",
+        "modalities": [
+          "text",
+          "audio"
+        ],
+        "instructions": "Translate each spoken source utterance into <target-language>; return only the translation.",
+        "voice": "tongtong",
+        "input_audio_format": "pcm16",
+        "output_audio_format": "pcm",
+        "turn_detection": {
+          "type": "server_vad"
+        }
+      }
+    },
+    "clientMessages": [
+      { "type": "input_audio_buffer.append", "audio": "AAAAAA==" },
+      { "type": "input_audio_buffer.commit" },
+      { "type": "response.create" }
+    ],
+    "serverMessages": [
+      { "type": "session.updated", "session": { "model": "glm-realtime-flash" } },
+      { "type": "response.text.done", "text": "<sanitized-translation>" },
+      { "type": "response.audio.delta", "delta": "AAAAAA==" },
+      { "type": "response.done", "response": { "status": "completed" }, "terminal": true }
+    ],
+    "audioContract": {
+      "input": "PCM signed 16-bit little-endian, mono, 16000 Hz",
+      "output": "PCM signed 16-bit little-endian, mono, 24000 Hz",
+      "fixtureAudio": "AAAAAA== is inert synthetic silence"
+    },
+    "modeBoundary": {
+      "dedicatedVendorTranslationConfig": false,
+      "transport": "native GLM-Realtime WebSocket",
+      "authoritativeTextCandidate": "response.text.done",
+      "advisoryOnly": "response.audio_transcript.done"
+    },
+    "assertions": [
+      "Translation shares the native GLM-Realtime event lifecycle",
+      "It must not be routed through the OpenAI-compatible text profile for streaming audio",
+      "The advisory audio transcript cannot be treated as guaranteed translated model text"
+    ],
+    "implementationStatus": "disabled/not-implemented"
+  }
+}

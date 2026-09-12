@@ -10,6 +10,7 @@ import {
   healthyPhysicalOutput,
   healthyProcessExclusionFingerprint,
   healthyProcessExclusionBridge,
+  healthyProcessExclusionRestartLog,
 } from './watch-mode-report-test-helpers.mjs';
 
 test('marks environment precheck failures blocked before downstream recording failures', () => {
@@ -40,6 +41,22 @@ test('echo-cancel environment failure is not attributed to its skipped driver la
   assert.equal(report.verdict, 'blocked');
   assert.equal(report.failureLayer, 'environment');
   assert.equal(report.layers.driver.status, 'skipped');
+});
+
+test('frozen runtime policy skips are not environment precheck failures', () => {
+  const report = classify({
+    steps: [{
+      schemaVersion: 'watch-mode-step/v2',
+      id: 'build-bridge-service-native',
+      phase: 'initialize',
+      status: 'skipped',
+      data: { reason: 'frozen runtime authority forbids rebuilding inside evidence collection' },
+      error: null,
+    }],
+  });
+
+  assert.equal(report.layers.environment.status, 'passed');
+  assert.equal(report.diagnostics.failedSteps.some((step) => step.name === 'build bridge service native'), false);
 });
 
 test('process-exclusion reports unsupported capability at the bridge layer', () => {
@@ -160,6 +177,136 @@ test('process-exclusion live report rejects a route that never performed the con
   assert.equal(report.verdict, 'failed');
   assert.equal(report.failureLayer, 'bridge');
   assert.match(report.failureReason, /controlled live Bridge restart/i);
+  assert.equal(report.stableErrorCode, 'bridge.restart-authority-failed');
+  assert.equal(report.lifecyclePhase, 'bridge-restart');
+});
+
+test('process-exclusion restart idle timeout has a stable quiescence fingerprint', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'process-exclusion',
+    bridge: healthyProcessExclusionBridge,
+    driver: null,
+    wasapi: null,
+    physicalOutput: healthyProcessExclusionFingerprint,
+    appLogText: 'event=process_exclusion_restart_failed phase=restart-quiescence error=restart-quiescence-timeout: pendingNativeAudio=true queuedCommands=1 activeCommands=0 pendingBridgeAcks=0',
+    systemMetrics: null,
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.stableErrorCode, 'bridge.restart-quiescence-timeout');
+  assert.equal(report.lifecyclePhase, 'bridge-restart-quiescence');
+});
+
+test('process-exclusion restart owner failure has a stable authority fingerprint and transition', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'process-exclusion',
+    bridge: healthyProcessExclusionBridge,
+    driver: null,
+    wasapi: null,
+    physicalOutput: healthyProcessExclusionFingerprint,
+    appLogText: healthyProcessExclusionRestartLog.replace(
+      'newPlaybackOwnerGeneration=2002',
+      'newPlaybackOwnerGeneration=1000',
+    ),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'bridge');
+  assert.equal(report.stableErrorCode, 'playback.physical-owner-authority-failed');
+  assert.equal(report.lifecyclePhase, 'bridge-playback-rebind');
+  assert.equal(report.failureContext.endpointId, '{hda-test-endpoint}');
+  assert.deepEqual(report.failureContext.ownerGenerationTransition, {
+    before: 1001,
+    after: 1000,
+  });
+});
+
+test('process-exclusion restart rejects duplicate terminal summaries', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'process-exclusion',
+    bridge: healthyProcessExclusionBridge,
+    driver: null,
+    wasapi: null,
+    physicalOutput: healthyProcessExclusionFingerprint,
+    appLogText: [
+      healthyProcessExclusionRestartLog,
+      healthyProcessExclusionRestartLog,
+    ].join('\n'),
+  });
+  const restart = report.layers.bridge.data.processExclusionRestart;
+
+  assert.equal(restart.summaryCount, 2);
+  assert.equal(restart.completed, false);
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.stableErrorCode, 'bridge.restart-authority-failed');
+  assert.equal(report.lifecyclePhase, 'bridge-restart');
+});
+
+test('translated PCM authority failure has a stable physical proof fingerprint', () => {
+  const report = classify({
+    physicalOutputContent: {
+      passed: false,
+      error: 'translated-pcm-authority-failed: no complete cue matched the physical endpoint',
+    },
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'physicalOutputContent');
+  assert.equal(report.stableErrorCode, 'playback.translated-pcm-authority-failed');
+  assert.equal(report.lifecyclePhase, 'physical-playback-proof');
+});
+
+test('evidence-driven terminal failures retain their exact lifecycle phase', () => {
+  const cases = [
+    ['input-complete-timeout', 'watch.input-complete-timeout', 'input-completion'],
+    ['input-complete-invalid', 'watch.input-complete-invalid', 'input-completion'],
+    ['capture-input-fence-timeout', 'watch.capture-input-fence-timeout', 'capture-input-fence'],
+    ['capture-input-fence-disconnected', 'watch.capture-input-fence-disconnected', 'capture-input-fence'],
+    ['capture-join-timeout', 'watch.capture-join-timeout', 'terminal-teardown'],
+    ['provider-finish-timeout', 'provider.session-finished-timeout', 'provider-finish'],
+    ['provider-finish-protocol-order-invalid', 'provider.session-finished-order-invalid', 'provider-finish'],
+    ['provider-finish-authority-invalid', 'provider.session-finished-authority-invalid', 'provider-finish'],
+    ['provider-owner-task-failed', 'provider.owner-task-failed', 'provider-finish'],
+    ['local-playback-drain-timeout', 'playback.local-drain-timeout', 'local-playback-drain'],
+    ['terminal-owner-evidence-incomplete', 'watch.terminal-owner-evidence-incomplete', 'terminal-evidence'],
+    ['terminal-teardown-task-failed', 'watch.terminal-teardown-task-failed', 'terminal-teardown'],
+    ['report-write-timeout', 'watch.report-write-timeout', 'report-write'],
+    ['report-write-immutable-exists', 'watch.report-write-immutable-exists', 'report-write'],
+  ];
+
+  for (const [terminalErrorCode, stableErrorCode, lifecyclePhase] of cases) {
+    const report = classify({
+      failure: {
+        message: `custodied Watch desktop terminal failed: exitCode=1 terminalErrorCode=${terminalErrorCode}`,
+      },
+    });
+    assert.equal(report.stableErrorCode, stableErrorCode, terminalErrorCode);
+    assert.equal(report.lifecyclePhase, lifecyclePhase, terminalErrorCode);
+  }
+
+  const sourceFlush = classify({
+    failure: {
+      message: 'custodied Watch desktop terminal failed: exitCode=1 terminalErrorCode=terminal-teardown-failed terminalError=Bridge flush failed | code: bridge.source-flush-failed',
+    },
+  });
+  assert.equal(sourceFlush.stableErrorCode, 'bridge.source-flush-failed');
+  assert.equal(sourceFlush.lifecyclePhase, 'terminal-teardown');
+
+  const terminalTimeoutWithCompetingText = classify({
+    failure: {
+      message: 'custodied Watch desktop terminal failed: terminalErrorCode=provider-finish-timeout terminalError=response stream timeout',
+    },
+  });
+  assert.equal(terminalTimeoutWithCompetingText.stableErrorCode, 'provider.session-finished-timeout');
+  assert.equal(terminalTimeoutWithCompetingText.lifecyclePhase, 'provider-finish');
+
+  const unknownTerminalCode = classify({
+    failure: {
+      message: 'custodied Watch desktop terminal failed: terminalErrorCode=new-unregistered-stage terminalError=response stream timeout',
+    },
+  });
+  assert.equal(unknownTerminalCode.stableErrorCode, 'watch.terminal-error-code-unregistered');
+  assert.equal(unknownTerminalCode.lifecyclePhase, 'terminal-evidence');
 });
 
 test('surfaces bridge source probe diagnostics before generic bridge counters', () => {

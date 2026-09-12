@@ -1,0 +1,103 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "openai.fixture.realtime-translation-wire.v1",
+  "providerId": "openai",
+  "protocolProfileId": "openai.realtime.translation.websocket.current",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "openai.docs.realtime-translation",
+      "openai.docs.translation-client-events",
+      "openai.docs.translation-server-events"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived continuous translation session fixture."
+  },
+  "scenario": "Continuous translation with restricted session fields and close-to-closed draining",
+  "data": {
+  "endpointStatus": "verified",
+  "networkAuthorized": false,
+  "authorizationReason": "Fixture-only documentation replay; network access is not authorized.",
+  "authContract": {
+    "profileId": "openai.auth.bearer-header",
+    "parameters": [{ "location": "header", "name": "Authorization", "value": "Bearer <openai-api-key>" }]
+  },
+  "audioContract": { "profileId": "openai.audio.translation-pcm16-24k-mono", "encoding": "pcm16", "sampleRateHz": 24000, "channels": 1 },
+  "connection": {
+    "url": "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate",
+    "headers": {
+      "Authorization": "Bearer <openai-api-key>"
+    }
+  },
+  "clientEvents": [
+    {
+      "type": "session.update",
+      "session": {
+        "audio": {
+          "output": {
+            "language": "zh"
+          }
+        }
+      }
+    },
+    {
+      "type": "session.input_audio_buffer.append",
+      "audio": "<base64-pcm16-24khz-mono>"
+    },
+    {
+      "type": "session.close"
+    }
+  ],
+  "forbiddenSessionFields": [
+    "session.audio.input.format",
+    "session.audio.output.format",
+    "session.audio.input.turn_detection"
+  ],
+  "serverEvents": [
+    {
+      "type": "session.created",
+      "session": {
+        "id": "sess_translation_sanitized"
+      }
+    },
+    {
+      "type": "session.updated",
+      "session": {
+        "id": "sess_translation_sanitized"
+      }
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": "source "
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": "translation "
+    },
+    {
+      "type": "session.output_audio.delta",
+      "delta": "<base64-pcm16-24khz-mono>",
+      "sample_rate": 24000,
+      "channels": 1,
+      "format": "pcm16"
+    },
+    {
+      "type": "error",
+      "error": {
+        "message": "<sanitized-recoverable-error>"
+      },
+      "sessionRemainsOpen": true
+    },
+    {
+      "type": "session.closed",
+      "terminal": true,
+      "session": {
+        "id": "sess_translation_sanitized"
+      }
+    }
+  ]
+  }
+}

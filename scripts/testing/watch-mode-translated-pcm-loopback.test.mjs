@@ -8,13 +8,14 @@ import test from 'node:test';
 
 import {
   buildTranslatedPcmLoopbackAuthority,
+  translatedLoopbackAnchorsAreOrdered,
 } from './watch-mode-translated-pcm-loopback.mjs';
 
 const RUN_MARKER = 'watch_mode_diagnostic.run_id=translated-pcm-test';
-const CELL_ID = 'pairwise-live::qwen3.5-omni-flash-realtime::process-exclusion::default-speaker';
+const CELL_ID = 'pairwise-live::qwen3.5-livetranslate-flash-realtime::process-exclusion::default-speaker';
 const LEASE_ID = 'translated-pcm-test-lease';
-const MODEL_ID = 'qwen3.5-omni-flash-realtime';
-const PROTOCOL = 'dashscope-omni';
+const MODEL_ID = 'qwen3.5-livetranslate-flash-realtime';
+const PROTOCOL = 'dashscope-livetranslate';
 
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 
@@ -91,19 +92,44 @@ function createFixture({
   playbackOffsetsSeconds: providedOffsets = [3.2, 9.4],
   renderedPlaybackOffsetsSeconds = providedOffsets,
   streamChunkGapSeconds = 0,
+  renderUsingAcceptedChunkSchedule = false,
+  interfereWithStrongestMiddleAnchor = false,
+  interfereWithDominantLateAnchor = false,
+  dropFinalLateAnchor = false,
+  cueSeconds = [2.6, 2.6],
+  playbackOwnerGenerations = [10, 20],
+  feedbackLoopPrevention = 'process-exclusion',
 } = {}) {
   const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'translated-loopback-'));
   const authorityDirectory = path.join(runDirectory, 'translated-cue-pcm');
   const cueDirectory = path.join(authorityDirectory, 'cue-pcm');
   fs.mkdirSync(cueDirectory, { recursive: true });
   const recordingStartedAtEpochMs = new Date(2026, 7, 13, 12, 0, 0, 0).getTime();
-  const cueIds = ['omni-cue-test-1', 'omni-cue-test-2'];
+  const cellId = CELL_ID.replace('::process-exclusion::', `::${feedbackLoopPrevention}::`);
+  const rendererKind = feedbackLoopPrevention === 'echo-cancel'
+    ? 'desktop-speaker'
+    : 'bridge-physical-playback';
+  const cueIds = cueSeconds.map((_, index) => `omni-cue-test-${index + 1}`);
   const playbackOffsetsSeconds = providedOffsets;
-  const recording = sourceMediaPcm();
+  const requiredRecordingSeconds = Math.max(
+    16,
+    ...renderedPlaybackOffsetsSeconds.map((offset, index) => offset + cueSeconds[index] + 4),
+  );
+  const recording = sourceMediaPcm(
+    16_000,
+    renderUsingAcceptedChunkSchedule ? Math.max(32, requiredRecordingSeconds) : requiredRecordingSeconds,
+  );
   const acceptedCues = [];
   for (let index = 0; index < cueIds.length; index += 1) {
     const cueSeed = 11 + index * 19;
-    const samples = deterministicCue(cueSeed);
+    const samples = deterministicCue(cueSeed, { seconds: cueSeconds[index] });
+    if (interfereWithDominantLateAnchor && index === cueIds.length - 1) {
+      const regionStart = Math.floor(samples.length * 2 / 3);
+      const dominantEnd = Math.min(samples.length, regionStart + Math.ceil(24_000 * 0.4));
+      for (let offset = regionStart; offset < dominantEnd; offset += 1) {
+        samples[offset] = Math.max(-0.98, Math.min(0.98, samples[offset] * 1.65));
+      }
+    }
     const bytes = pcmBuffer(samples);
     const relativePath = `cue-pcm/${index + 1}.pcm`;
     fs.writeFileSync(path.join(authorityDirectory, relativePath), bytes);
@@ -114,15 +140,25 @@ function createFixture({
         : samples;
     const chunkLength = streamChunkGapSeconds > 0 ? Math.ceil(samples.length / 3) : samples.length;
     const chunks = [];
+    let priorRenderedChunkEndSeconds = renderedPlaybackOffsetsSeconds[index];
     for (let sampleOffset = 0, chunkIndex = 0; sampleOffset < samples.length; sampleOffset += chunkLength, chunkIndex += 1) {
       const sampleCount = Math.min(chunkLength, samples.length - sampleOffset);
-      const chunkStartSeconds = renderedPlaybackOffsetsSeconds[index] + sampleOffset / 24_000;
+      const acceptedAtSeconds = playbackOffsetsSeconds[index] - 0.8
+        + chunkIndex * streamChunkGapSeconds;
+      const chunkStartSeconds = renderUsingAcceptedChunkSchedule
+        ? Math.max(priorRenderedChunkEndSeconds, acceptedAtSeconds)
+        : renderedPlaybackOffsetsSeconds[index] + sampleOffset / 24_000;
       const loopback = renderBridgeReferenceToLoopback(
         renderedSamples.slice(sampleOffset, sampleOffset + sampleCount), 24_000,
       );
       const start = Math.round(chunkStartSeconds * 16_000);
       for (let offset = 0; offset < loopback.length; offset += 1) {
-        const rendered = recordingMode === 'source-only' ? 0 : loopback[offset] * 0.55;
+        const globalRenderedFrame = Math.round(sampleOffset * 16_000 / 24_000) + offset;
+        const finalLateAnchorMissing = dropFinalLateAnchor
+          && index === cueIds.length - 1
+          && globalRenderedFrame >= Math.round(samples.length * 16_000 / 24_000 * 2 / 3);
+        const rendered = recordingMode === 'source-only' || finalLateAnchorMissing
+          ? 0 : loopback[offset] * 0.55;
         recording[start + offset] = Math.max(-0.99, Math.min(0.99, recording[start + offset] + rendered));
       }
       chunks.push({
@@ -130,13 +166,15 @@ function createFixture({
         requestId: `request-${index}-${chunkIndex}`,
         sampleOffset,
         sampleCount,
-        acceptedAtMs: Math.round(recordingStartedAtEpochMs
-          + (playbackOffsetsSeconds[index] - 0.8 + chunkIndex * streamChunkGapSeconds) * 1_000),
+        acceptedAtMs: Math.round(recordingStartedAtEpochMs + acceptedAtSeconds * 1_000),
       });
+      priorRenderedChunkEndSeconds = chunkStartSeconds + sampleCount / 24_000;
     }
     acceptedCues.push({
       sequence: index + 1,
       cueId: cueIds[index],
+      responseId: `response-${index + 1}`,
+      rendererKind,
       requestIds: chunks.map((chunk) => chunk.requestId),
       sampleRateHz: 24_000,
       channelCount: 1,
@@ -145,15 +183,62 @@ function createFixture({
       bytes: bytes.length,
       sha256: sha256(bytes),
       relativePath,
-      acceptedFrames: samples.length,
+      ...(rendererKind === 'bridge-physical-playback' ? {
+        acceptedFrames: samples.length,
+      } : {}),
       chunkCount: chunks.length,
       chunks,
       createdAtMs: recordingStartedAtEpochMs + playbackOffsetsSeconds[index] * 1_000 - 50,
-      completedAtMs: recordingStartedAtEpochMs + (playbackOffsetsSeconds[index] + 2.6) * 1_000,
-      bridgeInstanceId: index === 0 ? 'bridge-before-restart' : 'bridge-after-restart',
-      playbackOwnerGeneration: index === 0 ? 10 : 20,
+      completedAtMs: recordingStartedAtEpochMs + (playbackOffsetsSeconds[index] + cueSeconds[index]) * 1_000,
+      ...(rendererKind === 'bridge-physical-playback' ? {
+        sessionId: index === 0 ? 'session-before-restart' : 'session-after-restart',
+        bridgeInstanceId: index === 0 ? 'bridge-before-restart' : 'bridge-after-restart',
+        sourceGeneration: index === 0 ? 1 : 2,
+        sourceGenerationToken: index === 0
+          ? 'bridge-before-restart:session-before-restart:1'
+          : 'bridge-after-restart:session-after-restart:2',
+        playbackOwnerGeneration: playbackOwnerGenerations[index]
+          ?? playbackOwnerGenerations.at(-1),
+      } : {
+        rendererInstanceId: 'desktop-renderer-instance-1',
+        rendererOwnerGeneration: 1,
+        renderAttemptId: `desktop-render-attempt-${index + 1}`,
+        playedFrames: samples.length * 2,
+        playedSampleRateHz: 48_000,
+        playedChannelCount: 2,
+      }),
       physicalPlaybackDeviceId: '{hda-test-endpoint}',
     });
+    if (interfereWithStrongestMiddleAnchor && index === 0) {
+      const windowFrames = Math.ceil(24_000 * 0.4);
+      const regionStart = Math.floor(samples.length / 3);
+      const regionEnd = Math.floor(samples.length * 2 / 3);
+      let strongest = { frameOffset: regionStart, rms: -1 };
+      for (let frameOffset = regionStart; frameOffset + windowFrames <= regionEnd; frameOffset += 1_200) {
+        let squareSum = 0;
+        for (let offset = 0; offset < windowFrames; offset += 1) {
+          squareSum += samples[frameOffset + offset] ** 2;
+        }
+        const rms = Math.sqrt(squareSum / windowFrames);
+        if (rms > strongest.rms) strongest = { frameOffset, rms };
+      }
+      const interferenceStart = Math.round(
+        (renderedPlaybackOffsetsSeconds[index] + strongest.frameOffset / 24_000) * 16_000,
+      );
+      for (let offset = 0; offset < Math.round(0.4 * 16_000); offset += 1) {
+        const time = offset / 16_000;
+        recording[interferenceStart + offset] = 0.75 * Math.sin(2 * Math.PI * 1_337 * time);
+      }
+    }
+    if (interfereWithDominantLateAnchor && index === cueIds.length - 1) {
+      const interferenceStart = Math.round(
+        (renderedPlaybackOffsetsSeconds[index] + samples.length * 2 / 3 / 24_000) * 16_000,
+      );
+      for (let offset = 0; offset < Math.round(0.4 * 16_000); offset += 1) {
+        const time = offset / 16_000;
+        recording[interferenceStart + offset] = 0.78 * Math.sin(2 * Math.PI * 1_337 * time);
+      }
+    }
   }
   fs.writeFileSync(path.join(runDirectory, 'physical-output-recording-16k-mono.pcm'), pcmBuffer(recording));
   fs.writeFileSync(path.join(runDirectory, 'watch-session-report.json'), JSON.stringify({
@@ -166,9 +251,9 @@ function createFixture({
     })),
   }), 'utf8');
   const identity = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-translated-cue-pcm-authority',
-    cellId: CELL_ID,
+    cellId,
     leaseId: LEASE_ID,
     runMarker: RUN_MARKER,
     sessionGeneration: 1,
@@ -194,12 +279,19 @@ function createFixture({
     { ...identity, event: 'initialized', sequence: 1, occurredAtMs: recordingStartedAtEpochMs },
     ...acceptedCues.map((cue, index) => ({
       ...identity,
-      event: 'bridge_write_accepted',
+      event: cue.rendererKind === 'bridge-physical-playback'
+        ? 'bridge_write_accepted'
+        : 'desktop_speaker_played',
       sequence: index + 2,
       occurredAtMs: cue.completedAtMs,
       detail: cue,
     })),
-    { ...identity, event: 'finalized', sequence: acceptedCues.length + 2, occurredAtMs: recordingStartedAtEpochMs + 15_000 },
+    {
+      ...identity,
+      event: 'finalized',
+      sequence: acceptedCues.length + 2,
+      occurredAtMs: Math.max(...acceptedCues.map((cue) => cue.completedAtMs)) + 100,
+    },
   ];
   fs.writeFileSync(
     path.join(authorityDirectory, 'translated-cue-pcm-authority.jsonl'),
@@ -211,8 +303,8 @@ function createFixture({
     const startMs = recordingStartedAtEpochMs + playbackOffsetsSeconds[index] * 1_000;
     lines.push(`${localTimestamp(startMs - 20)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=queued`);
     lines.push(`${localTimestamp(startMs)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=started`);
-    lines.push(`${localTimestamp(startMs + 2_600)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=completed`);
-    if (index === 0) {
+    lines.push(`${localTimestamp(startMs + cueSeconds[index] * 1_000)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=completed`);
+    if (index === 0 && feedbackLoopPrevention === 'process-exclusion') {
       const restartAtMs = recordingStartedAtEpochMs + 7_000;
       lines.push(`${localTimestamp(restartAtMs)} [NORMAL] event=process_exclusion_restart_summary | status=passed runMarker=${RUN_MARKER} recoveredAtUnixMs=${restartAtMs} oldPlaybackOwnerGeneration=10 newPlaybackOwnerGeneration=20 oldPhysicalPlaybackDeviceId={hda-test-endpoint} newPhysicalPlaybackDeviceId={hda-test-endpoint} physicalPlaybackStatus=ready physicalPlaybackRebindDurationMs=250`);
     }
@@ -223,6 +315,8 @@ function createFixture({
     authorityDirectory,
     recordingStartedAtEpochMs,
     summary,
+    cellId,
+    feedbackLoopPrevention,
     sourceMediaPeak: recording.reduce((peak, sample) => Math.max(peak, Math.abs(sample)), 0),
   };
 }
@@ -232,14 +326,78 @@ function build(fixture) {
     runDirectory: fixture.runDirectory,
     runMarker: RUN_MARKER,
     recordingStartedAtEpochMs: fixture.recordingStartedAtEpochMs,
-    cellId: CELL_ID,
+    cellId: fixture.cellId,
     leaseId: LEASE_ID,
     modelId: MODEL_ID,
     protocol: PROTOCOL,
+    feedbackLoopPrevention: fixture.feedbackLoopPrevention,
   });
 }
 
-test('matches every hashed Bridge-accepted translated cue in ordered physical loopback windows', () => {
+function writeCaptureTimelineAuthority(fixture, gaps = [], unreliableWindows = []) {
+  const recordingSamples = fs.statSync(
+    path.join(fixture.runDirectory, 'physical-output-recording-16k-mono.pcm'),
+  ).size / 2;
+  const capturedFrames = recordingSamples * 3;
+  const firstDevicePositionFrames = 10_000;
+  const endDevicePositionFramesExclusive = firstDevicePositionFrames + capturedFrames;
+  const lastDevicePositionFrames = endDevicePositionFramesExclusive - 480;
+  const firstQpcPosition100ns = 1_000_000;
+  const lastQpcPosition100ns = firstQpcPosition100ns + Math.round(
+    (lastDevicePositionFrames - firstDevicePositionFrames) * 10_000_000 / 48_000,
+  );
+  fs.writeFileSync(
+    path.join(fixture.runDirectory, 'physical-output-recording.json'),
+    JSON.stringify({
+      passed: true,
+      capturedFrames,
+      captureTimeline: {
+        schemaVersion: 4,
+        authorityMode: 'wasapi-device-position-qpc-epoch-calibrated-v4',
+        sampleZeroEpochMs: fixture.recordingStartedAtEpochMs,
+        sampleZeroTimeAuthority: 'first-capture-packet-qpc-epoch-calibration-v2',
+        sampleRateHz: 48_000,
+        channelCount: 2,
+        passed: true,
+        packetCount: 100,
+        outputFrameCount: capturedFrames,
+        maxOutputFrameCount: capturedFrames + 48_000,
+        firstDevicePositionFrames,
+        lastDevicePositionFrames,
+        endDevicePositionFramesExclusive,
+        firstQpcPosition100ns,
+        lastQpcPosition100ns,
+        dataDiscontinuityPacketCount: unreliableWindows.length,
+        timestampErrorPacketCount: 0,
+        qpcRegressionPacketCount: 0,
+        overlapPacketCount: 0,
+        totalGapFrames: gaps.reduce((sum, gap) => sum + gap.frameCount, 0),
+        totalUnreliableFrames: unreliableWindows.reduce(
+          (sum, window) => sum + window.frameCount,
+          0,
+        ),
+        gaps,
+        unreliableWindows,
+        violations: [],
+      },
+    }),
+    'utf8',
+  );
+}
+
+test('treats one loopback sample of independently matched anchor boundary jitter as ordered', () => {
+  const latestC04ShortCueAnchors = [
+    { matchedStartSample: 36_971, matchedEndSample: 43_371 },
+    { matchedStartSample: 43_370, matchedEndSample: 49_770 },
+  ];
+  assert.equal(translatedLoopbackAnchorsAreOrdered(latestC04ShortCueAnchors), true);
+  assert.equal(translatedLoopbackAnchorsAreOrdered([
+    latestC04ShortCueAnchors[0],
+    { matchedStartSample: 43_369, matchedEndSample: 49_769 },
+  ]), false, 'two samples of overlap are not boundary jitter');
+});
+
+test('matches every schema-v2 Bridge-rendered translated cue in ordered physical loopback windows', () => {
   const fixture = createFixture();
   try {
     const authority = build(fixture);
@@ -253,6 +411,287 @@ test('matches every hashed Bridge-accepted translated cue in ordered physical lo
   }
 });
 
+test('fails capture authority when a repaired WASAPI gap intersects a required cue anchor', () => {
+  const fixture = createFixture();
+  try {
+    writeCaptureTimelineAuthority(fixture, [{
+      outputStartFrame: Math.round(3.2 * 48_000),
+      frameCount: 48_000,
+      expectedDevicePositionFrames: 10_000 + Math.round(3.2 * 48_000),
+      observedDevicePositionFrames: 10_000 + Math.round(3.2 * 48_000) + 48_000,
+      qpcPosition100ns: 43_000_000,
+    }]);
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    assert.ok(authority.violations.some((violation) => (
+      violation.includes('capture-authority device-position-gap 0 intersects required translated cue omni-cue-test-1 early anchor')
+    )), authority.violations.join('; '));
+    const firstMatch = authority.matches.find((match) => match.cueId === 'omni-cue-test-1');
+    assert.equal(firstMatch.anchorMatches[0].captureAuthorityPassed, false);
+    assert.equal(firstMatch.anchorMatches[0].captureAuthorityIntersections.length, 1);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('accepts a discontinuity window away from every required cue anchor', () => {
+  const fixture = createFixture();
+  try {
+    writeCaptureTimelineAuthority(fixture, [], [{
+      outputStartFrame: 0,
+      frameCount: 480,
+      packetIndex: 1,
+      devicePositionFrames: 10_000,
+      qpcPosition100ns: 1_000_000,
+      reason: 'data-discontinuity',
+    }]);
+    const authority = build(fixture);
+    assert.equal(authority.passed, true, authority.violations.join('; '));
+    assert.equal(authority.captureTimelineAuthority.unreliableWindows.length, 1);
+    assert.ok(authority.matches.every((match) => (
+      match.anchorMatches.every((anchor) => anchor.captureAuthorityIntersections.length === 0)
+    )));
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fails capture authority when a discontinuity window intersects a required cue anchor', () => {
+  const fixture = createFixture();
+  try {
+    const outputStartFrame = Math.round(3.2 * 48_000);
+    writeCaptureTimelineAuthority(fixture, [], [{
+      outputStartFrame,
+      frameCount: 48_000,
+      packetIndex: 40,
+      devicePositionFrames: 10_000 + outputStartFrame,
+      qpcPosition100ns: 43_000_000,
+      reason: 'data-discontinuity',
+    }]);
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    assert.ok(authority.violations.some((violation) => (
+      violation.includes('capture-authority data-discontinuity-window 0 intersects required translated cue omni-cue-test-1 early anchor')
+    )), authority.violations.join('; '));
+    const firstMatch = authority.matches.find((match) => match.cueId === 'omni-cue-test-1');
+    assert.equal(firstMatch.anchorMatches[0].captureAuthorityPassed, false);
+    assert.equal(firstMatch.anchorMatches[0].captureAuthorityIntersections[0].kind, 'data-discontinuity-window');
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fails closed when a physical recording authority omits its capture timeline', () => {
+  const fixture = createFixture();
+  try {
+    fs.writeFileSync(
+      path.join(fixture.runDirectory, 'physical-output-recording.json'),
+      JSON.stringify({ passed: true }),
+      'utf8',
+    );
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    assert.ok(authority.violations.includes(
+      'physical loopback recording capture timeline authority is missing or invalid',
+    ));
+    assert.equal(authority.captureTimelineAuthority, null);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fails closed when capture timeline uses process launch instead of first-packet time', () => {
+  const fixture = createFixture();
+  try {
+    writeCaptureTimelineAuthority(fixture);
+    const authorityPath = path.join(fixture.runDirectory, 'physical-output-recording.json');
+    const recordingAuthority = JSON.parse(fs.readFileSync(authorityPath, 'utf8'));
+    recordingAuthority.captureTimeline.sampleZeroTimeAuthority = 'process-launch';
+    fs.writeFileSync(authorityPath, JSON.stringify(recordingAuthority), 'utf8');
+
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    assert.ok(authority.violations.includes(
+      'physical loopback recording capture timeline authority is missing or invalid',
+    ));
+    assert.equal(authority.captureTimelineAuthority, null);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fails closed when the CLI recording epoch diverges from capture sample zero', () => {
+  const fixture = createFixture();
+  try {
+    writeCaptureTimelineAuthority(fixture);
+    const authority = build({
+      ...fixture,
+      recordingStartedAtEpochMs: fixture.recordingStartedAtEpochMs - 870,
+    });
+    assert.equal(authority.passed, false);
+    assert.ok(authority.violations.includes(
+      'physical loopback recording start epoch does not match capture timeline sample-zero authority',
+    ));
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fails closed when WASAPI device and QPC spans disagree by orders of magnitude', () => {
+  const fixture = createFixture();
+  try {
+    writeCaptureTimelineAuthority(fixture);
+    const authorityPath = path.join(fixture.runDirectory, 'physical-output-recording.json');
+    const recordingAuthority = JSON.parse(fs.readFileSync(authorityPath, 'utf8'));
+    recordingAuthority.captureTimeline.lastQpcPosition100ns =
+      recordingAuthority.captureTimeline.firstQpcPosition100ns + 10_000;
+    fs.writeFileSync(authorityPath, JSON.stringify(recordingAuthority), 'utf8');
+
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    assert.ok(authority.violations.some((violation) => (
+      violation.includes('capture device/QPC spans disagree')
+    )), authority.violations.join('; '));
+    assert.equal(authority.captureTimelineAuthority.passed, false);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fails closed when the discontinuity count does not match the unreliable-window ledger', () => {
+  const fixture = createFixture();
+  try {
+    writeCaptureTimelineAuthority(fixture);
+    const authorityPath = path.join(fixture.runDirectory, 'physical-output-recording.json');
+    const recordingAuthority = JSON.parse(fs.readFileSync(authorityPath, 'utf8'));
+    recordingAuthority.captureTimeline.dataDiscontinuityPacketCount = 1;
+    fs.writeFileSync(authorityPath, JSON.stringify(recordingAuthority), 'utf8');
+
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    assert.ok(authority.violations.includes(
+      'physical loopback capture timeline discontinuity count does not match its unreliable-window ledger',
+    ));
+    assert.equal(authority.captureTimelineAuthority.passed, false);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('accepts schema-v2 echo-cancel cues only from the Desktop speaker renderer', () => {
+  const fixture = createFixture({ feedbackLoopPrevention: 'echo-cancel' });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, true, authority.violations.join('; '));
+    assert.equal(authority.feedbackLoopPrevention, 'echo-cancel');
+    assert.equal(authority.finalRequiredCueId, 'omni-cue-test-2');
+    assert.ok(authority.matches.every((match) => (
+      match.rendererKind === 'desktop-speaker'
+      && match.renderAttemptId
+      && match.bridgeInstanceId === null
+      && match.playbackOwnerGeneration === null
+    )));
+    assert.equal(authority.matches.at(-1).passed, true);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('rejects mixed renderer fields, wrong completion events, and aborted echo authority', () => {
+  const fixture = createFixture({ feedbackLoopPrevention: 'echo-cancel' });
+  try {
+    const summaryPath = path.join(
+      fixture.authorityDirectory,
+      'translated-cue-pcm-summary.json',
+    );
+    const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+    summary.acceptedCues[0].responseId = '';
+    summary.acceptedCues[0].sessionId = 'forged-bridge-session';
+    fs.writeFileSync(summaryPath, JSON.stringify(summary), 'utf8');
+
+    const journalPath = path.join(
+      fixture.authorityDirectory,
+      'translated-cue-pcm-authority.jsonl',
+    );
+    const journal = fs.readFileSync(journalPath, 'utf8')
+      .trim()
+      .split(/\r?\n/u)
+      .map(JSON.parse);
+    journal[1].detail = structuredClone(summary.acceptedCues[0]);
+    journal[2].event = 'bridge_write_accepted';
+    const finalized = journal.pop();
+    journal.push({
+      ...journal[0],
+      event: 'stream_aborted',
+      sequence: journal.length + 1,
+      occurredAtMs: finalized.occurredAtMs - 1,
+      detail: { cueId: summary.acceptedCues[1].cueId, reason: 'fixture-cancelled' },
+    });
+    finalized.sequence = journal.length + 1;
+    journal.push(finalized);
+    fs.writeFileSync(
+      journalPath,
+      `${journal.map(JSON.stringify).join('\n')}\n`,
+      'utf8',
+    );
+
+    const authority = build(fixture);
+    const violations = authority.violations.join('; ');
+    assert.equal(authority.passed, false);
+    assert.match(violations, /response identity is missing/);
+    assert.match(violations, /Desktop renderer contains forbidden Bridge fields/);
+    assert.match(violations, /journal event does not bind its renderer completion/);
+    assert.match(violations, /journal contains stream_aborted/);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('uses the signed restart summary only for complete post-recovery playback on the new owner', () => {
+  const fixture = createFixture({ playbackOwnerGenerations: [10, 20] });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, true, authority.violations.join('; '));
+    assert.deepEqual(authority.restartPlaybackEvidence, {
+      recoveredAtMs: fixture.recordingStartedAtEpochMs + 7_000,
+      playbackOwnerGeneration: 20,
+      physicalPlaybackDeviceId: '{hda-test-endpoint}',
+      matchedCueIds: ['omni-cue-test-2'],
+      passed: true,
+    });
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('rejects new-owner labels when every complete cue finished before restart recovery', () => {
+  const fixture = createFixture({
+    playbackOffsetsSeconds: [1, 4],
+    playbackOwnerGenerations: [20, 20],
+  });
+  try {
+    const recoveredAtMs = fixture.recordingStartedAtEpochMs + 7_000;
+    assert.ok(
+      fixture.summary.acceptedCues.every((cue) => cue.completedAtMs < recoveredAtMs),
+      'the counterexample must contain no complete cue after recoveredAt',
+    );
+
+    const authority = build(fixture);
+    assert.equal(
+      authority.passed,
+      false,
+      'a claimed new owner cannot turn pre-recovery acoustic playback into post-restart authority',
+    );
+    assert.equal(authority.restartPlaybackEvidence?.passed, false);
+    assert.match(
+      authority.violations.join('; '),
+      /post-restart|recoveredAt|recovery/i,
+    );
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
 test('uses started playback time plus PCM offsets even when ACK timestamps arrive early', () => {
   const fixture = createFixture({ streamChunkGapSeconds: 0.08 });
   try {
@@ -260,6 +699,131 @@ test('uses started playback time plus PCM offsets even when ACK timestamps arriv
     assert.equal(authority.passed, true, JSON.stringify(authority.matches));
     assert.ok(authority.matches.every((match) => match.requiredAnchorMatches === 3));
     assert.ok(authority.matches.every((match) => match.matchedAnchorCount === 3));
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('maps anchors through accepted chunk gaps after the physical stream drains', () => {
+  const fixture = createFixture({
+    streamChunkGapSeconds: 4,
+    cueSeconds: [8, 8],
+    playbackOffsetsSeconds: [3.2, 16],
+    renderUsingAcceptedChunkSchedule: true,
+  });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, true, JSON.stringify(authority.matches));
+    assert.ok(authority.matches.every((match) => match.matchedAnchorCount === 3));
+    assert.ok(authority.matches.every((match) => (
+      match.anchorMatches.every((anchor) => Math.abs(anchor.timingErrorSeconds) <= 0.65)
+    )));
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('uses another independent high-energy window when the strongest window is masked by source audio', () => {
+  const fixture = createFixture({
+    interfereWithStrongestMiddleAnchor: true,
+    cueSeconds: [8, 8],
+    playbackOffsetsSeconds: [2, 14],
+  });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, true, JSON.stringify(authority.matches));
+    assert.ok(authority.matches[0].anchorMatches.some((anchor) => anchor.candidateCount > 1));
+    assert.equal(authority.matches[0].matchedAnchorCount, 3);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('keeps three anchors when a dominant late window is masked by independent source audio', () => {
+  const fixture = createFixture({
+    interfereWithDominantLateAnchor: true,
+    cueSeconds: [8, 8],
+    playbackOffsetsSeconds: [2, 14],
+  });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, true, JSON.stringify(authority.matches));
+    const finalMatch = authority.matches.at(-1);
+    assert.equal(finalMatch.requiredAnchorMatches, 3);
+    assert.equal(finalMatch.matchedAnchorCount, 3);
+    assert.equal(finalMatch.anchorMatches.at(-1).passed, true);
+    assert.equal(authority.restartPlaybackEvidence?.passed, true);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('still rejects a final cue whose late third was not physically rendered', () => {
+  const fixture = createFixture({
+    dropFinalLateAnchor: true,
+    cueSeconds: [8, 8],
+    playbackOffsetsSeconds: [2, 14],
+  });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    const finalMatch = authority.matches.at(-1);
+    assert.equal(finalMatch.requiredAnchorMatches, 3);
+    assert.equal(finalMatch.matchedAnchorCount, 2);
+    assert.equal(finalMatch.anchorMatches.at(-1).passed, false);
+    assert.equal(authority.restartPlaybackEvidence?.passed, false);
+    assert.match(authority.violations.join('; '), /final complete rendered cue/);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('uses duration-adaptive anchors for medium and short complete cues', () => {
+  for (const { seconds, requiredAnchorMatches } of [
+    { seconds: 1.0, requiredAnchorMatches: 2 },
+    { seconds: 0.6, requiredAnchorMatches: 1 },
+  ]) {
+    const fixture = createFixture({ cueSeconds: [seconds, seconds] });
+    try {
+      const authority = build(fixture);
+      assert.equal(authority.passed, true, authority.violations.join('; '));
+      assert.equal(authority.matchedCueCount, 2);
+      assert.ok(authority.matches.every((match) => match.requiredAnchorMatches === requiredAnchorMatches));
+      assert.deepEqual(authority.unauditableCues, []);
+    } finally {
+      fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+    }
+  }
+});
+
+test('sub-400ms cues are explicit non-authority and cannot replace two acoustic proofs', () => {
+  const fixture = createFixture({ cueSeconds: [0.3, 0.3] });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    assert.equal(authority.matches.length, 0);
+    assert.equal(authority.unauditableCues.length, 2);
+    assert.match(authority.violations.join('; '), /at least 2 acoustically auditable complete cues/);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('rejects an unauditable final cue even when two earlier cues have complete acoustic proof', () => {
+  const fixture = createFixture({
+    cueSeconds: [2.6, 2.6, 0.3],
+    playbackOffsetsSeconds: [1, 5, 10],
+    playbackOwnerGenerations: [10, 20, 20],
+  });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.matchedCueCount, 2);
+    assert.equal(authority.finalRequiredCueId, 'omni-cue-test-3');
+    assert.equal(authority.passed, false);
+    assert.match(
+      authority.violations.join('; '),
+      /final complete rendered cue omni-cue-test-3 must itself be acoustically auditable and passed/,
+    );
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
   }
@@ -290,15 +854,16 @@ test('CLI accepts the complete strict runner argument contract', () => {
       '--app-log', path.join(fixture.runDirectory, 'app.log'),
       '--run-marker', RUN_MARKER,
       '--recording-started-at-ms', String(fixture.recordingStartedAtEpochMs),
-      '--cell-id', CELL_ID,
+      '--cell-id', fixture.cellId,
       '--lease-id', LEASE_ID,
       '--model-id', MODEL_ID,
       '--protocol', PROTOCOL,
+      '--feedback-loop-prevention', fixture.feedbackLoopPrevention,
     ], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     const authority = JSON.parse(result.stdout);
     assert.equal(authority.passed, true, authority.violations?.join('; '));
-    assert.equal(authority.cellId, CELL_ID);
+    assert.equal(authority.cellId, fixture.cellId);
     assert.equal(authority.leaseId, LEASE_ID);
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });

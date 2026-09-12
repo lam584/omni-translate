@@ -1,6 +1,8 @@
 use super::*;
 
 mod audio_playback;
+mod fifo_ownership;
+mod ignored_short_vad;
 
 /// Native server-VAD providers may begin the next speech window just before
 /// the prior turn's output and ASR final arrive. The response used to commit a
@@ -126,6 +128,65 @@ fn replay_speech_started_item_id_owns_response_without_asr_delta() {
     assert_eq!(matching[0].cue_id, cue_id);
     assert!(matching[0].committed);
     assert_eq!(matching[0].translated_text, translated);
+}
+
+/// LiveTranslate can start a response before it emits speech_stopped and it
+/// may provide only a response id on that early event. The active VAD cue is
+/// still the unique source owner; the later ASR final must enrich that cue
+/// instead of creating a text-only duplicate with no audio lifecycle.
+#[test]
+fn replay_response_created_before_speech_stopped_keeps_one_audio_owned_cue() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    let mut slice = WorkerSlice::new();
+    let source = "This benchmark remains one provider-owned cue.";
+    let translated = "这项基准测试仍属于同一个提示。";
+    let steps = vec![
+        ScriptStep::Event(json!({
+            "type": "input_audio_buffer.speech_started",
+            "item_id": "item-early-response"
+        })),
+        ScriptStep::Event(json!({
+            "type": "response.created",
+            "response": { "id": "response-early" }
+        })),
+        ScriptStep::Event(json!({
+            "type": "response.audio_transcript.done",
+            "response_id": "response-early",
+            "transcript": translated
+        })),
+        ScriptStep::Event(json!({
+            "type": "input_audio_buffer.speech_stopped",
+            "item_id": "item-early-response"
+        })),
+        ScriptStep::Event(json!({
+            "type": "response.done",
+            "response": { "id": "response-early", "status": "completed" }
+        })),
+        ScriptStep::Event(json!({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-early-response",
+            "transcript": source
+        })),
+    ];
+    let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
+    socket = harness.tick(socket, &mut slice);
+    let cue_id = slice.current_cue_id.clone().expect("speech start cue");
+    for _ in 1..6 {
+        socket = harness.tick(socket, &mut slice);
+    }
+
+    let snapshot = harness.store().snapshot();
+    let matching: Vec<_> = snapshot
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .filter(|cue| cue.source_text == source || cue.translated_text == translated)
+        .collect();
+    assert_eq!(matching.len(), 1, "response and ASR final must share one cue");
+    assert_eq!(matching[0].cue_id, cue_id);
+    assert_eq!(matching[0].source_text, source);
+    assert_eq!(matching[0].translated_text, translated);
+    assert!(matching[0].committed);
 }
 
 /// DashScope documents item_id on speech_stopped. That boundary must bind the
@@ -271,7 +332,10 @@ fn replay_fast_next_speech_turn_detected_cancel_keeps_item_lineage() {
         .event_diagnostics
         .native_response_cue_for_input_item("item-fast-one")
         .expect("first response owner");
-    std::thread::sleep(Duration::from_millis(2));
+    // A completed owner-bound empty VAD response is held for the bounded
+    // contiguous-split window. This isolated 1s segment must still reach the
+    // original failure terminal once that window expires.
+    std::thread::sleep(Duration::from_millis(140));
     socket = harness.tick(socket, &mut slice);
     let second_cue_id = slice.current_cue_id.clone().expect("second speech cue");
     assert_ne!(first_cue_id, second_cue_id);
@@ -329,13 +393,20 @@ fn replay_native_empty_response_reaches_failure_terminal_and_keeps_late_asr_fina
     let source = "To bring extinct";
     let final_source = "To bring extinct species back to life.";
     let steps = vec![
-        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_started" })),
+        ScriptStep::Event(json!({
+            "type": "input_audio_buffer.speech_started",
+            "audio_start_ms": 21680
+        })),
         ScriptStep::Event(json!({
             "type": "conversation.item.input_audio_transcription.delta",
             "item_id": "item-empty-response",
             "delta": source
         })),
-        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_stopped" })),
+        ScriptStep::Event(json!({
+            "type": "input_audio_buffer.speech_stopped",
+            "item_id": "item-empty-response",
+            "audio_end_ms": 22680
+        })),
         ScriptStep::Event(json!({
             "type": "response.done",
             "response": { "status": "completed" }
@@ -390,6 +461,39 @@ fn replay_native_empty_response_reaches_failure_terminal_and_keeps_late_asr_fina
     }));
 }
 
+#[test]
+fn replay_normal_server_vad_delta_is_visible_before_speech_stopped() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    let mut slice = WorkerSlice::new();
+    let steps = vec![
+        ScriptStep::Event(json!({
+            "type": "input_audio_buffer.speech_started",
+            "item_id": "item-four-second-vad",
+            "audio_start_ms": 1000
+        })),
+        ScriptStep::Event(json!({
+            "type": "conversation.item.input_audio_transcription.delta",
+            "item_id": "item-four-second-vad",
+            "delta": "normal speech is already visible"
+        })),
+        ScriptStep::Event(json!({
+            "type": "input_audio_buffer.speech_stopped",
+            "item_id": "item-four-second-vad",
+            "audio_end_ms": 5000
+        })),
+    ];
+    let socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
+    let socket = harness.tick(socket, &mut slice);
+    let socket = harness.tick(socket, &mut slice);
+
+    let before_stop = harness.store().snapshot();
+    assert!(before_stop.subtitle_overlay.recent_cues.iter().any(|cue| {
+        cue.source_text == "normal speech is already visible" && !cue.committed
+    }));
+
+    let _socket = harness.tick(socket, &mut slice);
+}
+
 /// Qwen Audio reports a server-VAD barge-in as a cancelled response with
 /// `turn_detected`, not as a completed response with an empty translation.
 /// Keep that distinction visible so diagnostics point to turn overlap instead
@@ -416,6 +520,11 @@ fn replay_turn_detected_response_uses_cancellation_terminal() {
             "delta": "不完整"
         })),
         ScriptStep::Event(json!({
+            "type": "response.audio_transcript.done",
+            "response_id": "resp-turn-detected",
+            "transcript": "不完整的译文"
+        })),
+        ScriptStep::Event(json!({
             "type": "response.done",
             "response": {
                 "id": "resp-turn-detected",
@@ -428,7 +537,7 @@ fn replay_turn_detected_response_uses_cancellation_terminal() {
         })),
     ];
     let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
-    for _ in 0..5 {
+    for _ in 0..6 {
         socket = harness.tick(socket, &mut slice);
     }
 
@@ -745,96 +854,6 @@ fn replay_next_speech_started_does_not_steal_prior_native_response() {
             || normalize_for_replay_assert(&cue.source_text)
                 != normalize_for_replay_assert(&cue.translated_text)
     }));
-}
-
-/// A fast continuous source can finish two VAD input turns before the first
-/// native translation starts streaming. The ownership tracker must preserve
-/// both stopped turns in FIFO order instead of letting the second stop replace
-/// the first owner and strand a source-only cue as "calling LLM".
-#[test]
-fn replay_two_stopped_turns_before_first_response_keep_fifo_ownership() {
-    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
-    let mut slice = WorkerSlice::new();
-    let source_one = "You'll see how we're going to bring extinct species back to life.";
-    let translated_one = "您将看到我们将如何让灭绝物种复活。";
-    let source_two = "What?";
-    let translated_two = "什么？";
-    let steps = vec![
-        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_started" })),
-        ScriptStep::Event(json!({
-            "type": "conversation.item.input_audio_transcription.delta",
-            "item_id": "item-one",
-            "delta": source_one
-        })),
-        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_stopped" })),
-        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_started" })),
-        ScriptStep::Event(json!({
-            "type": "conversation.item.input_audio_transcription.delta",
-            "item_id": "item-two",
-            "delta": source_two
-        })),
-        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_stopped" })),
-        ScriptStep::Event(json!({
-            "type": "response.audio_transcript.done",
-            "response_id": "response-one",
-            "transcript": translated_one
-        })),
-        ScriptStep::Event(json!({
-            "type": "response.done",
-            "response": { "id": "response-one" }
-        })),
-        ScriptStep::Event(json!({
-            "type": "conversation.item.input_audio_transcription.completed",
-            "item_id": "item-one",
-            "transcript": source_one
-        })),
-        ScriptStep::Event(json!({
-            "type": "response.audio_transcript.done",
-            "response_id": "response-two",
-            "transcript": translated_two
-        })),
-        ScriptStep::Event(json!({
-            "type": "response.done",
-            "response": { "id": "response-two" }
-        })),
-        ScriptStep::Event(json!({
-            "type": "conversation.item.input_audio_transcription.completed",
-            "item_id": "item-two",
-            "transcript": source_two
-        })),
-    ];
-    let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
-    for _ in 0..3 {
-        socket = harness.tick(socket, &mut slice);
-    }
-    std::thread::sleep(Duration::from_millis(2));
-    for _ in 3..12 {
-        socket = harness.tick(socket, &mut slice);
-    }
-
-    let snapshot = harness.store().snapshot();
-    let first = snapshot
-        .subtitle_overlay
-        .recent_cues
-        .iter()
-        .find(|cue| cue.source_text == source_one)
-        .expect("first source cue");
-    let second = snapshot
-        .subtitle_overlay
-        .recent_cues
-        .iter()
-        .find(|cue| cue.source_text == source_two)
-        .expect("second source cue");
-    assert!(first.committed);
-    assert!(second.committed);
-    assert_eq!(first.translated_text, translated_one);
-    assert_eq!(second.translated_text, translated_two);
-    assert!(snapshot
-        .subtitle_overlay
-        .recent_cues
-        .iter()
-        .filter(|cue| !cue.committed)
-        .all(|cue| cue.source_text.trim().is_empty()));
 }
 
 fn normalize_for_replay_assert(text: &str) -> String {

@@ -4,16 +4,22 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import crypto from 'node:crypto';
+import { Worker } from 'node:worker_threads';
 
 import {
-  STRICT_PAID_MATRIX_CEILING_SECONDS,
+  STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
+  PROVIDER_INPUT_PREFILTER_FILE,
+  PROVIDER_INPUT_PREFILTER_MAGIC,
+  PROVIDER_SEND_BOUNDARY_JOURNAL_FILE,
   actualProviderInputSamplesFromLog,
   assertCellExternalProviderBudget,
   assertMatrixExternalProviderBudget,
   buildCellExternalProviderBudget,
   buildMatrixExternalProviderBudget,
   isAbsoluteEvidencePathForFixedFile,
-  reserveStrictPaidCell,
+  reserveStrictPaidCellInputSamples,
+  replayProviderInputPrefilter,
+  writePreProviderTerminalAuthority,
   writeCellExternalProviderBudget,
 } from './watch-mode-external-provider-budget.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
@@ -23,22 +29,169 @@ import {
 } from './watch-mode-canonical-source-authority.mjs';
 
 const MARKER = 'watch_mode_diagnostic.run_id=0123456789abcdef0123456789abcdef';
-const MODEL = 'qwen3.5-omni-flash-realtime';
+const MODEL = 'qwen3.5-livetranslate-flash-realtime';
 const CELL_ID = LIVE_LLM_CELLS[0].cellId;
+const MODEL_PROTOCOL_PROFILE_IDENTITY = LIVE_LLM_CELLS[0].modelProtocolProfileIdentity;
 const fileSha256 = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+const inputCeilingSamplesForMode = (feedbackLoopPrevention) => LIVE_LLM_CELLS.find(
+  (cell) => cell.feedbackLoopPrevention === feedbackLoopPrevention,
+)?.maxExternalAudioSamples;
+
+function preProviderReceiptFixture(t, { existing = true } = {}) {
+  const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-terminal-receipt-'));
+  t.after(() => {
+    assert.ok(path.resolve(runDirectory).startsWith(`${path.resolve(os.tmpdir())}${path.sep}`));
+    fs.rmSync(runDirectory, { recursive: true, force: true });
+  });
+  const options = { runDirectory, runMarker: MARKER, cellId: CELL_ID, leaseId: 'coordinator-lease', modelId: MODEL,
+    inputCeilingSamples: inputCeilingSamplesForMode('echo-cancel'), occurredAtMs: 7 };
+  const receipt = { schemaVersion: 2, artifactKind: 'watch-mode-provider-input-budget-lease', nonAuthoritative: false,
+    cellId: CELL_ID, leaseId: options.leaseId, runMarker: MARKER, maxSamples: options.inputCeilingSamples,
+    modelProtocolProfileIdentity: structuredClone(MODEL_PROTOCOL_PROFILE_IDENTITY) };
+  const leasePath = path.join(runDirectory, 'provider-input-budget-lease.json');
+  fs.writeFileSync(path.join(runDirectory, 'app.log'), `${MARKER}\n`, 'utf8');
+  if (existing) fs.writeFileSync(leasePath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8');
+  return { runDirectory, options, receipt, leasePath };
+}
+
+test('pre-provider terminal accepts existing strict receipt with explicit nonAuthoritative false unchanged', (t) => {
+  const f = preProviderReceiptFixture(t);
+  const before = fs.readFileSync(f.leasePath);
+  writePreProviderTerminalAuthority(f.options);
+  assert.deepEqual(fs.readFileSync(f.leasePath), before);
+  const budget = buildCellExternalProviderBudget(buildOptions(f.runDirectory));
+  assert.equal(budget.passed, true, budget.violations.join('; '));
+  assert.equal(budget.calls.mainRealtime, 0);
+  assert.equal(budget.actualProviderInputSamples, 0);
+});
+
+test('pre-provider terminal creates the same explicit authoritative receipt when absent', (t) => {
+  const f = preProviderReceiptFixture(t, { existing: false });
+  writePreProviderTerminalAuthority(f.options);
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.leasePath)), f.receipt);
+});
+
+for (const [label, mutate] of [
+  ['non-authoritative', (r) => { r.nonAuthoritative = true; }],
+  ['missing authority flag', (r) => { delete r.nonAuthoritative; }],
+  ['string authority flag', (r) => { r.nonAuthoritative = 'false'; }],
+  ['unknown field', (r) => { r.unrecognized = false; }],
+  ['lease id', (r) => { r.leaseId = 'different'; }],
+  ['run marker', (r) => { r.runMarker = 'different'; }],
+  ['cell id', (r) => { r.cellId = 'different'; }],
+  ['ceiling', (r) => { r.maxSamples++; }],
+  ['schema', (r) => { r.schemaVersion++; }],
+  ['kind', (r) => { r.artifactKind = 'different'; }],
+  ['model identity', (r) => { r.modelProtocolProfileIdentity.exactModelId = 'different'; }],
+  ['unknown nested field', (r) => { r.modelProtocolProfileIdentity.unrecognized = false; }],
+]) test(`pre-provider terminal rejects ${label} without replacing evidence`, (t) => {
+  const f = preProviderReceiptFixture(t); mutate(f.receipt);
+  const bytes = JSON.stringify(f.receipt); fs.writeFileSync(f.leasePath, bytes, 'utf8');
+  assert.throws(() => writePreProviderTerminalAuthority(f.options), /receipt does not match/);
+  assert.equal(fs.readFileSync(f.leasePath, 'utf8'), bytes);
+  assert.equal(fs.existsSync(path.join(f.runDirectory, 'provider-input-budget-ledger.json')), false);
+  assert.equal(fs.existsSync(path.join(f.runDirectory, PROVIDER_SEND_BOUNDARY_JOURNAL_FILE)), false);
+});
+
+for (const file of ['provider-input-budget-ledger.json', PROVIDER_SEND_BOUNDARY_JOURNAL_FILE,
+  'provider-input-16k-mono.pcm', PROVIDER_INPUT_PREFILTER_FILE]) {
+  test(`pre-provider terminal preserves partial or existing ${file} and emits no replacement`, (t) => {
+    const f = preProviderReceiptFixture(t);
+    const artifact = path.join(f.runDirectory, file); const bytes = Buffer.from('partial-or-real-provider-evidence');
+    fs.writeFileSync(artifact, bytes);
+    const before = fs.readdirSync(f.runDirectory).sort();
+    assert.throws(() => writePreProviderTerminalAuthority(f.options), /refusing to replace/);
+    assert.deepEqual(fs.readdirSync(f.runDirectory).sort(), before);
+    assert.deepEqual(fs.readFileSync(artifact), bytes);
+  });
+}
+
+test('pre-provider terminal rejects malformed existing receipt without output', (t) => {
+  const f = preProviderReceiptFixture(t); fs.writeFileSync(f.leasePath, '{', 'utf8');
+  assert.throws(() => writePreProviderTerminalAuthority(f.options));
+  assert.equal(fs.readFileSync(f.leasePath, 'utf8'), '{');
+  assert.equal(fs.existsSync(path.join(f.runDirectory, 'provider-input-budget-ledger.json')), false);
+});
+
+test('interrupted terminal journal write remains failed evidence and cannot be resumed as zero-call success', (t) => {
+  const f = preProviderReceiptFixture(t);
+  const writeFileSync = fs.writeFileSync;
+  const journalPath = path.join(f.runDirectory, PROVIDER_SEND_BOUNDARY_JOURNAL_FILE);
+  const mock = t.mock.method(fs, 'writeFileSync', (file, ...args) => {
+    if (file === journalPath) throw new Error('injected journal write failure');
+    return writeFileSync(file, ...args);
+  });
+  try { assert.throws(() => writePreProviderTerminalAuthority(f.options), /injected journal write failure/); }
+  finally { mock.mock.restore(); }
+  const ledgerPath = path.join(f.runDirectory, 'provider-input-budget-ledger.json');
+  const before = fs.readFileSync(ledgerPath);
+  assert.equal(fs.existsSync(journalPath), false);
+  assert.equal(buildCellExternalProviderBudget(buildOptions(f.runDirectory)).passed, false);
+  assert.throws(() => writePreProviderTerminalAuthority(f.options), /refusing to replace/);
+  assert.deepEqual(fs.readFileSync(ledgerPath), before);
+  assert.equal(fs.existsSync(journalPath), false);
+});
+
+test('concurrent terminal writers elect one exclusive ledger owner and preserve receipt bytes', async (t) => {
+  const f = preProviderReceiptFixture(t); const before = fs.readFileSync(f.leasePath);
+  const moduleUrl = new URL('./watch-mode-external-provider-budget.mjs', import.meta.url).href;
+  const workers = [7, 8].map((occurredAtMs) => new Worker(`
+    const {parentPort,workerData}=require('node:worker_threads');
+    import(workerData.moduleUrl).then(({writePreProviderTerminalAuthority})=>{
+      parentPort.once('message',()=>{try{writePreProviderTerminalAuthority(workerData.options);parentPort.postMessage({ok:true});}
+        catch(error){parentPort.postMessage({ok:false,message:error.message});}});
+      parentPort.postMessage({ready:true});
+    }).catch(error=>{throw error;});`, { eval: true, workerData: { moduleUrl, options: { ...f.options, occurredAtMs } } }));
+  t.after(async () => { await Promise.all(workers.map((w) => w.terminate())); });
+  const finished = workers.map((worker) => new Promise((resolve, reject) => {
+    worker.on('error', reject); worker.on('message', (message) => { if (!message.ready) resolve(message); });
+  }));
+  await Promise.all(workers.map((worker) => new Promise((resolve) => worker.once('message', resolve))));
+  workers.forEach((worker) => worker.postMessage('go'));
+  const results = await Promise.all(finished);
+  assert.equal(results.filter((r) => r.ok).length, 1);
+  assert.deepEqual(fs.readFileSync(f.leasePath), before);
+  const ledger = JSON.parse(fs.readFileSync(path.join(f.runDirectory, 'provider-input-budget-ledger.json')));
+  const journal = fs.readFileSync(path.join(f.runDirectory, PROVIDER_SEND_BOUNDARY_JOURNAL_FILE), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(journal.length, 2);
+  assert.ok(journal.every((entry) => entry.occurredAtMs === ledger.occurredAtMs));
+  assert.equal(buildCellExternalProviderBudget(buildOptions(f.runDirectory)).passed, true);
+});
+
+function writePrefilterFixture(runDirectory, samples, amplitude = 0.25) {
+  const raw = Buffer.alloc(samples * 3 * 8);
+  for (let offset = 0; offset < raw.length; offset += 8) {
+    raw.writeFloatLE(amplitude, offset);
+    raw.writeFloatLE(amplitude, offset + 4);
+  }
+  const header = Buffer.alloc(4);
+  header.writeUInt32LE(raw.length);
+  fs.writeFileSync(
+    path.join(runDirectory, PROVIDER_INPUT_PREFILTER_FILE),
+    Buffer.concat([PROVIDER_INPUT_PREFILTER_MAGIC, header, raw]),
+  );
+  const replay = replayProviderInputPrefilter({
+    filePath: path.join(runDirectory, PROVIDER_INPUT_PREFILTER_FILE),
+    maxSamples: inputCeilingSamplesForMode('process-exclusion'),
+  });
+  fs.writeFileSync(
+    path.join(runDirectory, 'provider-input-16k-mono.pcm'),
+    replay.expectedProviderPcm,
+  );
+  return replay.expectedProviderPcm.length / 2;
+}
 
 function createRunDirectory({
   feedbackMode = 'echo-cancel',
-  samples = 16_000 * 126,
+  samples = 320,
+  prefilterSamples = samples,
   extraLog = '',
   remoteArtifact = null,
 } = {}) {
   const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-paid-budget-'));
   const diagnosticPcmSamples = samples;
-  fs.writeFileSync(
-    path.join(runDirectory, 'provider-input-16k-mono.pcm'),
-    Buffer.alloc(diagnosticPcmSamples * 2, 1),
-  );
+  const inputCeilingSamples = inputCeilingSamplesForMode(feedbackMode);
+  writePrefilterFixture(runDirectory, prefilterSamples);
   fs.writeFileSync(path.join(runDirectory, 'app.log'), [
     'historical unrelated provider log',
     MARKER,
@@ -47,7 +200,7 @@ function createRunDirectory({
     extraLog,
   ].join('\n'), 'utf8');
   const identity = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-provider-input-budget-ledger',
     cellId: CELL_ID,
     leaseId: 'fixture-lease',
@@ -64,17 +217,19 @@ function createRunDirectory({
     authScheme: 'bearer',
     customHeaderCount: 0,
     model: MODEL,
-    protocol: 'dashscope-omni',
+    protocol: 'dashscope-livetranslate',
+    modelProtocolProfileIdentity: structuredClone(MODEL_PROTOCOL_PROFILE_IDENTITY),
   };
   fs.writeFileSync(
     path.join(runDirectory, 'provider-input-budget-lease.json'),
     JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       artifactKind: 'watch-mode-provider-input-budget-lease',
       cellId: CELL_ID,
       leaseId: identity.leaseId,
       runMarker: MARKER,
-      maxSamples: 16_000 * 180,
+      maxSamples: inputCeilingSamples,
+      modelProtocolProfileIdentity: structuredClone(MODEL_PROTOCOL_PROFILE_IDENTITY),
     }),
     'utf8',
   );
@@ -85,7 +240,7 @@ function createRunDirectory({
     occurredAtMs: 1,
     attemptedSamples: null,
     totalAttemptedSamples: 0,
-    maxSamples: 16_000 * 180,
+    maxSamples: inputCeilingSamples,
     appendAttempts: 0,
     sendFailures: 0,
     initialConnectAttempts: 0,
@@ -247,7 +402,10 @@ function buildOptions(runDirectory, overrides = {}) {
     modelId: MODEL,
     feedbackLoopPrevention: 'echo-cancel',
     translationMode: 'native',
-    sessionCeilingSeconds: 180,
+    inputCeilingSamples: inputCeilingSamplesForMode(
+      overrides.feedbackLoopPrevention ?? 'echo-cancel',
+    ),
+    expectedModelProtocolProfileIdentity: MODEL_PROTOCOL_PROFILE_IDENTITY,
     generatedAt: new Date('2026-08-13T01:03:00.000Z'),
     ...overrides,
   };
@@ -261,7 +419,178 @@ test('actual provider input uses sent-sample trace summaries instead of the 90-s
   assert.deepEqual(actualProviderInputSamplesFromLog(log), {
     samples: 2_016_000,
     summaryCount: 2,
+    violations: [],
   });
+});
+
+test('rewritten trace evidence is deduplicated by stable eventId without changing legacy lines', () => {
+  const unique = Array.from({ length: 67 }, (_, index) => ({
+    eventId: 'call:audio:' + (index + 1),
+    samples: 32_000,
+  }));
+  unique.push({ eventId: 'call:audio:68', samples: 28_800 });
+  const rewritten = unique.flatMap(({ eventId, samples }) => {
+    const line = JSON.stringify({
+      eventId,
+      event: 'ws.send.input_audio_buffer.append.summary',
+      payload: { resampledSamplesTotal: samples },
+    });
+    return [line, `2026-09-07 19:00:00.000 [DEBUG] [model-trace] source - summary | ${line}  (42ms) sid=test`];
+  });
+  assert.deepEqual(actualProviderInputSamplesFromLog(rewritten.join('\n')), {
+    samples: 2_172_800,
+    summaryCount: 68,
+    violations: [],
+  });
+
+  const legacy = '{"event":"ws.send.input_audio_buffer.append.summary","payload":{"resampledSamplesTotal":320}}';
+  assert.deepEqual(actualProviderInputSamplesFromLog([legacy, legacy].join('\n')), {
+    samples: 640,
+    summaryCount: 2,
+    violations: [],
+  });
+});
+
+test('conflicting rewritten trace evidence fails closed', () => {
+  const first = JSON.stringify({
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: { resampledSamplesTotal: 32_000 },
+  });
+  const conflicting = JSON.stringify({
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: { resampledSamplesTotal: 1 },
+  });
+  assert.deepEqual(actualProviderInputSamplesFromLog([first, conflicting].join('\n')), {
+    samples: 32_000,
+    summaryCount: 1,
+    violations: ['conflicting model-trace evidence for eventId call-1:audio:1'],
+  });
+});
+
+test('same-sample rewrites with conflicting batch content fail closed', () => {
+  const base = {
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: {
+      resampledSamplesTotal: 32_000,
+      rawBytesTotal: 64_000,
+      chunks: { count: 100, firstChunkCount: 1, lastChunkCount: 100 },
+    },
+  };
+  const conflicting = structuredClone(base);
+  conflicting.payload.rawBytesTotal = 1;
+  conflicting.payload.chunks = { count: 100, firstChunkCount: 900, lastChunkCount: 999 };
+  const result = actualProviderInputSamplesFromLog(
+    [JSON.stringify(base), JSON.stringify(conflicting)].join('\n'),
+  );
+  assert.deepEqual(result.violations, [
+    'conflicting model-trace evidence for eventId call-1:audio:1',
+  ]);
+});
+
+test('duplicate eventId evidence missing samples fails closed instead of being skipped', () => {
+  const first = {
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: { resampledSamplesTotal: 32_000 },
+  };
+  const missingSamples = {
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: { rawBytesTotal: 1 },
+  };
+  const result = actualProviderInputSamplesFromLog(
+    [JSON.stringify(first), JSON.stringify(missingSamples)].join('\n'),
+  );
+  assert.equal(result.samples, 32_000);
+  assert.equal(result.summaryCount, 1);
+  assert.deepEqual(result.violations, [
+    'model-trace evidence for eventId call-1:audio:1 is missing valid resampledSamplesTotal',
+    'conflicting model-trace evidence for eventId call-1:audio:1',
+  ]);
+});
+
+test('semantic duplicate evidence ignores JSON object field order', () => {
+  const first = {
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: {
+      resampledSamplesTotal: 32_000,
+      rawBytesTotal: 64_000,
+      chunks: { count: 100, firstChunkCount: 1, lastChunkCount: 100 },
+    },
+  };
+  const reordered = {
+    payload: {
+      chunks: { lastChunkCount: 100, firstChunkCount: 1, count: 100 },
+      rawBytesTotal: 64_000,
+      resampledSamplesTotal: 32_000,
+    },
+    event: 'ws.send.input_audio_buffer.append.summary',
+    callId: 'call-1',
+    eventId: 'call-1:audio:1',
+  };
+  assert.deepEqual(
+    actualProviderInputSamplesFromLog(
+      [JSON.stringify(first), JSON.stringify(reordered)].join('\n'),
+    ),
+    { samples: 32_000, summaryCount: 1, violations: [] },
+  );
+});
+
+test('stable evidence ids remain distinct across calls', () => {
+  const lines = ['call-1', 'call-2'].map((callId) => JSON.stringify({
+    eventId: callId + ':audio:1',
+    callId,
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: { resampledSamplesTotal: 32_000 },
+  }));
+  assert.deepEqual(actualProviderInputSamplesFromLog(lines.join('\n')), {
+    samples: 64_000,
+    summaryCount: 2,
+    violations: [],
+  });
+});
+
+test('prefilter replay reproduces f32 resampling, RMS gating, and exactly 40 silence-grace chunks', () => {
+  const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-prefilter-replay-'));
+  try {
+    const chunks = [0, 0.25, ...Array(41).fill(0)].map((amplitude) => {
+      const raw = Buffer.alloc(320 * 3 * 8);
+      for (let offset = 0; offset < raw.length; offset += 8) {
+        raw.writeFloatLE(amplitude, offset);
+        raw.writeFloatLE(amplitude, offset + 4);
+      }
+      const length = Buffer.alloc(4);
+      length.writeUInt32LE(raw.length);
+      return Buffer.concat([length, raw]);
+    });
+    const filePath = path.join(runDirectory, PROVIDER_INPUT_PREFILTER_FILE);
+    fs.writeFileSync(filePath, Buffer.concat([PROVIDER_INPUT_PREFILTER_MAGIC, ...chunks]));
+    const replay = replayProviderInputPrefilter({ filePath, maxSamples: 100_000 });
+    assert.equal(replay.authority.rawInput.chunkCount, 43);
+    assert.deepEqual(replay.authority.decisions, {
+      audibleChunks: 1,
+      silenceGraceChunks: 40,
+      skippedSilenceChunks: 2,
+      emptyResampleChunks: 0,
+      budgetRejectedChunks: 0,
+      acceptedChunks: 41,
+      acceptedSamples: 13_120,
+    });
+    assert.equal(replay.expectedProviderPcm.readInt16LE(0), 8191);
+    assert.equal(replay.expectedProviderPcm.length, 13_120 * 2);
+  } finally {
+    fs.rmSync(runDirectory, { recursive: true, force: true });
+  }
 });
 
 test('paid budget scopes from the standalone marker, not a later runMarker field', () => {
@@ -271,7 +600,7 @@ test('paid budget scopes from the standalone marker, not a later runMarker field
   try {
     const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
     assert.equal(budget.passed, true, budget.violations.join('; '));
-    assert.equal(budget.actualProviderInputSamples, 2_016_000);
+    assert.equal(budget.actualProviderInputSamples, 320);
   } finally {
     fs.rmSync(runDirectory, { recursive: true, force: true });
   }
@@ -301,8 +630,8 @@ test('strict paid cell accepts only the main realtime session and reconstructs i
   try {
     const { ledger } = writeCellExternalProviderBudget(buildOptions(runDirectory));
     assert.equal(ledger.passed, true);
-    assert.equal(ledger.actualProviderInputSamples, 16_000 * 126);
-    assert.equal(ledger.actualProviderInputSeconds, 126);
+    assert.equal(ledger.actualProviderInputSamples, 320);
+    assert.equal(ledger.actualProviderInputSeconds, 0.02);
     assert.deepEqual(ledger.calls, {
       mainRealtime: 1,
       sourceTranscript: 0,
@@ -311,6 +640,141 @@ test('strict paid cell accepts only the main realtime session and reconstructs i
       secondaryTts: 0,
     });
     assert.equal(assertCellExternalProviderBudget(runDirectory).passed, true);
+  } finally {
+    fs.rmSync(runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('strict paid cell rejects either provider PCM or prefilter raw tampering', () => {
+  for (const target of ['provider-input-16k-mono.pcm', PROVIDER_INPUT_PREFILTER_FILE]) {
+    const runDirectory = createRunDirectory();
+    try {
+      const filePath = path.join(runDirectory, target);
+      const bytes = fs.readFileSync(filePath);
+      bytes[bytes.length - 1] ^= 0x40;
+      fs.writeFileSync(filePath, bytes);
+      const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
+      assert.equal(budget.passed, false, target);
+      assert.match(
+        budget.violations.join('; '),
+        /not byte-for-byte equal|do not match send-boundary total/,
+      );
+    } finally {
+      fs.rmSync(runDirectory, { recursive: true, force: true });
+    }
+  }
+});
+
+test('strict paid cell accepts a proven reconnect rejection without accepting a reconnect', () => {
+  const runDirectory = createRunDirectory();
+  try {
+    const ledgerPath = path.join(runDirectory, 'provider-input-budget-ledger.json');
+    const journalPath = path.join(runDirectory, 'provider-input-budget-ledger.json.journal.jsonl');
+    const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    const journal = fs.readFileSync(journalPath, 'utf8').trim().split(/\r?\n/u).map(JSON.parse);
+    ledger.terminalReason = 'reconnect-forbidden-socket-close';
+    const finalized = journal.pop();
+    const reconnectRejected = {
+      ...journal.at(-1),
+      event: 'reconnect_rejected',
+      sequence: journal.length + 1,
+      occurredAtMs: 4,
+      attemptedSamples: null,
+      terminalReason: ledger.terminalReason,
+    };
+    finalized.sequence = journal.length + 2;
+    finalized.occurredAtMs = 5;
+    finalized.terminalReason = ledger.terminalReason;
+    fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger)}\n`, 'utf8');
+    fs.writeFileSync(
+      journalPath,
+      `${[...journal, reconnectRejected, finalized].map(JSON.stringify).join('\n')}\n`,
+      'utf8',
+    );
+
+    const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
+    assert.equal(budget.passed, true);
+    assert.equal(budget.providerSendBoundary.journal.eventCounts.reconnect_rejected, 1);
+    assert.equal(budget.providerSendBoundary.reconnects, 0);
+  } finally {
+    fs.rmSync(runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('strict paid budget accepts a lease-bound zero-input terminal for collect-all reporting', () => {
+  const runDirectory = createRunDirectory({ feedbackMode: 'echo-cancel' });
+  try {
+    const ledgerPath = path.join(runDirectory, 'provider-input-budget-ledger.json');
+    const journalPath = path.join(runDirectory, 'provider-input-budget-ledger.json.journal.jsonl');
+    const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    const journal = fs.readFileSync(journalPath, 'utf8').trim().split(/\r?\n/u).map(JSON.parse);
+    ledger.totalAttemptedSamples = 0;
+    ledger.appendAttempts = 0;
+    ledger.terminalReason = 'livetranslate-session-finished-timeout';
+    const terminal = {
+      ...journal.at(-1),
+      sequence: 3,
+      totalAttemptedSamples: 0,
+      appendAttempts: 0,
+      terminalReason: ledger.terminalReason,
+    };
+    fs.writeFileSync(ledgerPath, JSON.stringify(ledger), 'utf8');
+    fs.writeFileSync(
+      journalPath,
+      `${[journal[0], journal[1], terminal].map(JSON.stringify).join('\n')}\n`,
+      'utf8',
+    );
+    fs.writeFileSync(path.join(runDirectory, 'provider-input-16k-mono.pcm'), Buffer.alloc(0));
+    fs.writeFileSync(
+      path.join(runDirectory, PROVIDER_INPUT_PREFILTER_FILE),
+      PROVIDER_INPUT_PREFILTER_MAGIC,
+    );
+    const appLogPath = path.join(runDirectory, 'app.log');
+    const appLog = fs.readFileSync(appLogPath, 'utf8')
+      .split(/\r?\n/u)
+      .filter((line) => !line.includes('input_audio_buffer.append.summary'))
+      .join('\n');
+    fs.writeFileSync(appLogPath, appLog, 'utf8');
+
+    const budget = buildCellExternalProviderBudget(buildOptions(runDirectory, {
+      feedbackLoopPrevention: 'echo-cancel',
+    }));
+    assert.equal(budget.passed, true);
+    assert.equal(budget.actualProviderInputSamples, 0);
+    assert.equal(budget.calls.mainRealtime, 1);
+  } finally {
+    fs.rmSync(runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('strict paid budget records an authentic zero-call terminal before Provider startup', () => {
+  const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-pre-provider-budget-'));
+  try {
+    fs.writeFileSync(path.join(runDirectory, 'app.log'), `${MARKER}\n`, 'utf8');
+    writePreProviderTerminalAuthority({
+      runDirectory,
+      runMarker: MARKER,
+      cellId: CELL_ID,
+      leaseId: 'coordinator-lease',
+      modelId: MODEL,
+      inputCeilingSamples: inputCeilingSamplesForMode('echo-cancel'),
+      occurredAtMs: 7,
+    });
+    const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
+    assert.equal(budget.passed, true, budget.violations.join('; '));
+    assert.equal(budget.actualProviderInputSamples, 0);
+    assert.equal(budget.calls.mainRealtime, 0);
+    assert.equal(budget.providerSendBoundary.sessionGeneration, 0);
+    assert.equal(budget.providerSendBoundary.initialConnectAttempts, 0);
+    assert.equal(budget.providerSendBoundary.terminalReason, 'runner-failed-before-provider-session');
+    assert.deepEqual(budget.providerSendBoundary.journal.eventCounts, { initialized: 1, finalized: 1 });
+    assert.throws(() => writePreProviderTerminalAuthority({
+      runDirectory,
+      runMarker: MARKER,
+      cellId: CELL_ID,
+      leaseId: 'coordinator-lease',
+      modelId: MODEL,
+    }), /refusing to replace/);
   } finally {
     fs.rmSync(runDirectory, { recursive: true, force: true });
   }
@@ -331,7 +795,7 @@ test('strict paid cell rejects remote STT artifacts, secondary calls, reconnects
       expected: /log reconnect count.*send-boundary authority/,
     },
     {
-      options: { samples: 16_000 * 181 },
+      options: { samples: 16_000 * 181, prefilterSamples: 320 },
       expected: /exceeded maxSamples|do not match send-boundary total/,
     },
   ];
@@ -352,7 +816,7 @@ test('strict paid cell rejects a send-boundary ledger for the wrong realtime pro
   try {
     const ledgerPath = path.join(runDirectory, 'provider-input-budget-ledger.json');
     const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
-    ledger.protocol = 'dashscope-livetranslate';
+    ledger.protocol = 'dashscope-omni';
     fs.writeFileSync(ledgerPath, JSON.stringify(ledger), 'utf8');
     const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
     assert.equal(budget.passed, false);
@@ -411,7 +875,7 @@ test('strict paid cell rejects forged provider identity and any missing or repea
   }
 });
 
-test('strict paid cell rejects forged canonical and lifecycle-only physical authority', () => {
+test('strict paid budget leaves canonical and physical verdicts to report and verifier', () => {
   const runDirectory = createRunDirectory({ feedbackMode: 'process-exclusion' });
   try {
     const sourcePath = path.join(runDirectory, 'source-media-transcript.json');
@@ -419,15 +883,13 @@ test('strict paid cell rejects forged canonical and lifecycle-only physical auth
     source.mediaSha256 = '0'.repeat(64);
     fs.writeFileSync(sourcePath, JSON.stringify(source), 'utf8');
     let budget = buildCellExternalProviderBudget(buildOptions(runDirectory, { feedbackLoopPrevention: 'process-exclusion' }));
-    assert.equal(budget.passed, false);
-    assert.match(budget.violations.join('; '), /canonical source media bytes\/hash mismatch/);
+    assert.equal(budget.passed, true);
 
     source.mediaSha256 = fileSha256(path.resolve('scripts/testing/fixtures/watch-mode-en-original.wav'));
     source.source = `${source.source} forged`;
     fs.writeFileSync(sourcePath, JSON.stringify(source), 'utf8');
     budget = buildCellExternalProviderBudget(buildOptions(runDirectory, { feedbackLoopPrevention: 'process-exclusion' }));
-    assert.equal(budget.passed, false);
-    assert.match(budget.violations.join('; '), /top-level source\/translation text mismatch/);
+    assert.equal(budget.passed, true);
 
     const canonical = loadCanonicalFixtureAuthority({ workspaceRoot: path.resolve('.') });
     source.source = canonical.sourceText.text;
@@ -437,8 +899,7 @@ test('strict paid cell rejects forged canonical and lifecycle-only physical auth
     forgedReference.writeInt16LE(forgedReference.readInt16LE(0) ^ 1, 0);
     fs.writeFileSync(referencePath, forgedReference);
     budget = buildCellExternalProviderBudget(buildOptions(runDirectory, { feedbackLoopPrevention: 'process-exclusion' }));
-    assert.equal(budget.passed, false);
-    assert.match(budget.violations.join('; '), /not byte-for-byte the injector reconstruction/);
+    assert.equal(budget.passed, true);
 
     fs.writeFileSync(referencePath, canonical.referencePcm.buffer);
     const physicalPath = path.join(runDirectory, 'physical-output-content.raw.json');
@@ -446,14 +907,29 @@ test('strict paid cell rejects forged canonical and lifecycle-only physical auth
     physical.translatedSpeech.acousticAuthority.passed = false;
     fs.writeFileSync(physicalPath, JSON.stringify(physical), 'utf8');
     budget = buildCellExternalProviderBudget(buildOptions(runDirectory, { feedbackLoopPrevention: 'process-exclusion' }));
+    assert.equal(budget.passed, true);
+    assert.equal(budget.physicalAuthority.translatedPcmLoopbackPassed, false);
+
+    // A fail-closed local recorder artifact may not have reached the stage
+    // that records an external-audio duration. Absence is not evidence of a
+    // paid call; the report/verifier owns the local content failure.
+    physical.passed = false;
+    delete physical.externalAudioSeconds;
+    fs.writeFileSync(physicalPath, JSON.stringify(physical), 'utf8');
+    budget = buildCellExternalProviderBudget(buildOptions(runDirectory, { feedbackLoopPrevention: 'process-exclusion' }));
+    assert.equal(budget.passed, true);
+
+    physical.remoteProviderCalls = 1;
+    fs.writeFileSync(physicalPath, JSON.stringify(physical), 'utf8');
+    budget = buildCellExternalProviderBudget(buildOptions(runDirectory, { feedbackLoopPrevention: 'process-exclusion' }));
     assert.equal(budget.passed, false);
-    assert.match(budget.violations.join('; '), /translated-PCM loopback evidence/);
+    assert.match(budget.violations.join('; '), /declares external Provider usage/);
   } finally {
     fs.rmSync(runDirectory, { recursive: true, force: true });
   }
 });
 
-test('strict paid cell rejects a forged source window and an unbound sttSourceWindow receipt', () => {
+test('strict paid budget leaves forged acoustic windows to report and verifier', () => {
   for (const mode of ['forged-prefix', 'unbound-receipt']) {
     const runDirectory = createRunDirectory({ feedbackMode: 'process-exclusion' });
     try {
@@ -474,39 +950,36 @@ test('strict paid cell rejects a forged source window and an unbound sttSourceWi
       const budget = buildCellExternalProviderBudget(buildOptions(runDirectory, {
         feedbackLoopPrevention: 'process-exclusion',
       }));
-      assert.equal(budget.passed, false, mode);
-      assert.match(
-        budget.violations.join('; '),
-        mode === 'forged-prefix'
-          ? /not the exact prefix of the physical recording PCM/
-          : /physical output authority lacks passed local source/,
-        mode,
-      );
+      assert.equal(budget.passed, true, mode);
     } finally {
       fs.rmSync(runDirectory, { recursive: true, force: true });
     }
   }
 });
 
-test('strict paid reservation fails before a ninth three-minute provider session', () => {
-  let reservedSeconds = 0;
-  for (let index = 0; index < 8; index += 1) {
-    reservedSeconds = reserveStrictPaidCell({ reservedSeconds });
+test('strict paid reservation fails before any sample allocation beyond the four-cell matrix', () => {
+  let reservedSamples = 0;
+  for (const cell of LIVE_LLM_CELLS) {
+    reservedSamples = reserveStrictPaidCellInputSamples({
+      reservedSamples,
+      nextCellSamples: cell.maxExternalAudioSamples,
+    });
   }
-  assert.equal(reservedSeconds, STRICT_PAID_MATRIX_CEILING_SECONDS);
+  assert.equal(reservedSamples, STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES);
   assert.throws(
-    () => reserveStrictPaidCell({ reservedSeconds }),
-    /before the next provider session; ceiling is 1440s/,
+    () => reserveStrictPaidCellInputSamples({ reservedSamples, nextCellSamples: 1 }),
+    /would reserve .* input samples/,
   );
 });
 
-test('matrix ledger binds eight cells, actual samples, and zero auxiliary calls', () => {
+test('matrix ledger binds four cells, actual samples, and zero auxiliary calls', () => {
   const cells = LIVE_LLM_CELLS.map((plannedCell, index) => ({
     passed: true,
     cellId: plannedCell.cellId,
     modelId: plannedCell.modelId,
+    modelProtocolProfileIdentity: structuredClone(plannedCell.modelProtocolProfileIdentity),
     feedbackLoopPrevention: plannedCell.feedbackLoopPrevention,
-    sessionCeilingSeconds: 180,
+    providerInputSampleCeiling: plannedCell.maxExternalAudioSamples,
     actualProviderInputSamples: 16_000 * 126,
     actualProviderInputSeconds: 126,
     auxiliaryExternalAudioSeconds: 0,
@@ -522,8 +995,8 @@ test('matrix ledger binds eight cells, actual samples, and zero auxiliary calls'
     generatedAt: new Date('2026-08-13T02:00:00.000Z'),
   });
   assert.equal(ledger.passed, true);
-  assert.equal(ledger.reservedSessionSeconds, 1_440);
-  assert.equal(ledger.actualProviderInputSeconds, 1_008);
+  assert.equal(ledger.reservedInputSamples, 10_100_180);
+  assert.equal(ledger.actualProviderInputSeconds, 504);
   const matrixDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-paid-matrix-budget-'));
   try {
     const matrixPath = path.join(matrixDirectory, 'external-provider-budget-matrix.json');

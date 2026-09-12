@@ -1,0 +1,45 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "openai.fixture.realtime-transcription-whisper-unresolved.v1",
+  "providerId": "openai",
+  "protocolProfileId": "openai.realtime.transcription-whisper.websocket.unresolved",
+  "protocolProfileVersion": 1,
+  "kind": "probe",
+  "provenance": {
+    "sourceDocumentationIds": ["openai.docs.realtime-transcription", "openai.docs.model-realtime-whisper"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived fail-closed contract; no endpoint or credential was exercised."
+  },
+  "scenario": "Keep GPT-Realtime-Whisper manual turn detection explicit while its WebSocket connection URL remains unresolved",
+  "data": {
+    "endpointStatus": "unresolved",
+    "connectionUrl": null,
+    "networkAuthorized": false,
+    "failClosedReason": "No current official WebSocket connection URL is established.",
+    "authContract": {
+      "profileId": "openai.auth.bearer-header",
+      "parameters": [{ "location": "header", "name": "Authorization", "value": "Bearer <openai-api-key-not-sent>" }]
+    },
+    "sessionUpdate": {
+      "type": "session.update",
+      "session": {
+        "type": "transcription",
+        "audio": {
+          "input": {
+            "format": {
+              "type": "audio/pcm",
+              "rate": 24000
+            },
+            "transcription": {
+              "model": "gpt-realtime-whisper"
+            },
+            "turn_detection": null
+          }
+        }
+      }
+    },
+    "manualTurnEvents": ["input_audio_buffer.append", "input_audio_buffer.commit"]
+  }
+}

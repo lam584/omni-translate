@@ -1,0 +1,33 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "tencent-tts-stream-ws-v1-session-v1",
+  "providerId": "tencent-cloud",
+  "protocolProfileId": "tencent-cloud.tts.stream-ws-v1",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["tts-stream-ws"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "The text is intentionally short and synthetic; the signature is omitted."
+  },
+  "scenario": "Query-only realtime TTS request drains Binary audio and final=1",
+  "data": {
+    "connectionUrl": "wss://tts.cloud.tencent.com/stream_ws",
+    "authContract": { "profileId": "tts-ws-v1-hmac-sha1-query", "parameters": [
+      { "location": "query", "name": "Action", "value": "TextToStreamAudioWS" }, { "location": "query", "name": "AppId", "value": "1250000000" },
+      { "location": "query", "name": "SecretId", "value": "AKIDEXAMPLE" }, { "location": "query", "name": "Timestamp", "value": "1700000000" },
+      { "location": "query", "name": "Expired", "value": "1700003600" }, { "location": "query", "name": "SessionId", "value": "fixture-session" },
+      { "location": "query", "name": "Signature", "value": "fixture-signature-redacted" }
+    ] },
+    "audioContract": { "encoding": "pcm_s16le", "sampleRateHz": 16000, "bitDepth": 16, "channels": 1 },
+    "audio": { "payloadBase64": "AAECAw==", "illustrative": true },
+    "upgradeQuery": { "Action": "TextToStreamAudioWS", "AppId": "1250000000", "SecretId": "AKIDEXAMPLE", "SessionId": "fixture-session", "Codec": "pcm", "SampleRate": 16000, "Text": "fixture text", "Signature": "omitted-synthetic-signature" },
+    "clientApplicationFrames": [{ "type": "https.request", "queryOnly": true }],
+    "serverFrames": [
+      { "frameType": "binary", "payloadBase64": "AAECAw==", "encoding": "pcm-s16le" },
+      { "type": "final.text-json", "terminal": true, "frameType": "text", "json": { "code": 0, "message": "success", "session_id": "fixture-session", "request_id": "fixture-request", "final": 1 }, "semantics": "all audio emitted; client closes" }
+    ]
+  }
+}

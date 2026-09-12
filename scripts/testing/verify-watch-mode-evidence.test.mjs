@@ -16,15 +16,25 @@ import {
   fileAuthorityEntry,
   requiredCellArtifactPaths,
   sha256File,
+  STRICT_MATRIX_ARTIFACT_KIND,
+  STRICT_MATRIX_SCHEMA_VERSION,
 } from './watch-mode-evidence-authority.mjs';
 import {
-  STRICT_PAID_MATRIX_CEILING_SECONDS,
+  STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
   STRICT_PAID_MODEL_PROTOCOLS,
   STRICT_PAID_PROVIDER_IDENTITY,
+  PROVIDER_INPUT_PREFILTER_FILE,
+  PROVIDER_INPUT_PREFILTER_MAGIC,
+  replayProviderInputPrefilter,
   writeCellExternalProviderBudget,
   writeMatrixExternalProviderBudget,
 } from './watch-mode-external-provider-budget.mjs';
-import { LIVE_LLM_CELLS, RELEASE_MODELS } from './watch-mode-balanced-release-plan.mjs';
+import {
+  BALANCED_RELEASE_PLAN,
+  LIVE_LLM_CELLS,
+  RELEASE_MODELS,
+} from './watch-mode-balanced-release-plan.mjs';
+import { deriveWatchModelProtocolIdentity } from './watch-mode-model-protocol-authority.mjs';
 import {
   SHARD_EXECUTION_PLAN_FILE,
   SHARD_INTERACTIVE_CELL_EXECUTION_FILE,
@@ -37,11 +47,14 @@ import {
   SHARD_INTERACTIVE_TERMINAL_FILE,
   SHARD_WORKER_READINESS_FILE,
   SHARD_WORKER_READINESS_KIND,
+  SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
+  authorityInventoryDigest,
   createWorkerReadinessRequest,
   currentShardOrchestrationImplementationHashes,
   createSignedExecutionPlan,
   generateCoordinatorSigningKeyPair,
   issueCellLeases,
+  sha256Canonical,
   validateWorkerZeroProviderReadinessAuthority,
   writeShardCellResult,
   writeShardManifest,
@@ -78,7 +91,6 @@ import {
 } from './watch-mode-canonical-source-authority.mjs';
 import {
   ECHO_CANCEL_REQUIRED_LAYERS,
-  MIN_STRICT_SESSION_DURATION_MS,
   REQUIRED_LAYERS,
   buildStrictShardCellAuthorityProjection,
   findWatchModeEvidence,
@@ -92,6 +104,7 @@ import {
   strictProcessExclusionRestartFailure,
   strictProvenanceFailure,
   strictWatchSessionReportFailure,
+  validateEvidenceDrivenTerminal,
   assertStrictTranslatedPcmLoopbackAuthority,
   verifyStrictShardProviderPreflightAuthority,
   verifyStrictShardProviderPreflightAuthorization,
@@ -100,41 +113,456 @@ import {
   writeStrictMatrixVerificationReceipt,
 } from './verify-watch-mode-evidence.mjs';
 
+const AUTHORITY_FIXTURE_SESSION_DURATION_MS = 180_000;
+
+test('strict canonical verifier rejects a staged failed cell before reading completed-only receipts', () => {
+  const evidenceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-failed-canonical-verifier-'));
+  const manifestPath = path.join(evidenceRoot, 'failed-matrix.json');
+  const cellIds = LIVE_LLM_CELLS.map((cell) => cell.cellId);
+  try {
+    assert.throws(() => verifyProductionStrictMatrixAuthority({
+      manifestPath,
+      manifest: {
+        schemaVersion: STRICT_MATRIX_SCHEMA_VERSION,
+        artifactKind: STRICT_MATRIX_ARTIFACT_KIND,
+        validationPlan: BALANCED_RELEASE_PLAN,
+        collectAll: {
+          verdict: 'failed',
+          attempted: cellIds,
+          completed: cellIds,
+          passed: cellIds.slice(1),
+          failed: [cellIds[0]],
+        },
+      },
+      evidenceRoot,
+      currentProvenance: {},
+      workspaceRoot: process.cwd(),
+      currentRuntimeBinaryHashes: [],
+      releaseCells: LIVE_LLM_CELLS,
+      requireLocalIsolation: false,
+    }), /strict collect-all matrix contains failed or incomplete cells/u);
+  } finally {
+    fs.rmSync(evidenceRoot, { recursive: true, force: true });
+  }
+});
+
+const formalTimingForMode = (feedbackLoopPrevention) => {
+  const cell = LIVE_LLM_CELLS.find(
+    (entry) => entry.feedbackLoopPrevention === feedbackLoopPrevention,
+  );
+  assert.ok(cell, `missing formal timing for ${feedbackLoopPrevention}`);
+  return {
+    inputCompletionWatchdogSeconds: cell.inputCompletionWatchdogSeconds,
+    processExclusionRestartAfterSeconds: cell.processExclusionRestartAfterSeconds,
+    processExclusionRestartQuietSeconds: cell.processExclusionRestartQuietSeconds,
+    providerFinishTimeoutSeconds: cell.providerFinishTimeoutSeconds,
+    localPlaybackDrainTimeoutSeconds: cell.localPlaybackDrainTimeoutSeconds,
+    reportWriteTimeoutSeconds: cell.reportWriteTimeoutSeconds,
+    cellHardWatchdogSeconds: cell.cellHardWatchdogSeconds,
+    authoritativeTransformedReferenceFrames: cell.authoritativeTransformedReferenceFrames,
+    boundedCaptureGraceFrames: cell.boundedCaptureGraceFrames,
+    maxExternalAudioSamples: cell.maxExternalAudioSamples,
+    auxiliaryExternalAudioSeconds: cell.auxiliaryExternalAudioSeconds,
+    subtitleTranslationMode: cell.subtitleTranslationMode,
+  };
+};
+
 const verifyStrictMatrixAuthority = (options) => verifyProductionStrictMatrixAuthority({
   ...options,
   requireLocalIsolation: false,
   releaseCells: Array.isArray(options?.manifest?.cells)
-    ? options.manifest.cells.map((cell) => ({
-      cellId: cell.cellId,
-      tier: cell.tier,
-      providerMode: cell.providerMode,
-      durationSeconds: cell.durationSeconds,
-      modelId: cell.modelId,
-      feedbackLoopPrevention: cell.feedbackLoopPrevention,
-      deviceClass: cell.deviceClass,
-    }))
+    ? options.manifest.cells.map((cell) => {
+      const releaseAuthority = LIVE_LLM_CELLS.find((approved) => (
+        approved.modelId === cell.modelId
+        && approved.feedbackLoopPrevention === cell.feedbackLoopPrevention
+        && approved.tier === cell.tier
+      )) ?? LIVE_LLM_CELLS.find((approved) => (
+        approved.modelId === cell.modelId
+        && approved.feedbackLoopPrevention === cell.feedbackLoopPrevention
+      ));
+      return {
+        cellId: cell.cellId,
+        tier: cell.tier,
+        providerMode: cell.providerMode,
+        inputCompletionWatchdogSeconds: releaseAuthority?.inputCompletionWatchdogSeconds,
+        processExclusionRestartAfterSeconds: releaseAuthority?.processExclusionRestartAfterSeconds,
+        processExclusionRestartQuietSeconds: releaseAuthority?.processExclusionRestartQuietSeconds,
+        providerFinishTimeoutSeconds: releaseAuthority?.providerFinishTimeoutSeconds,
+        localPlaybackDrainTimeoutSeconds: releaseAuthority?.localPlaybackDrainTimeoutSeconds,
+        reportWriteTimeoutSeconds: releaseAuthority?.reportWriteTimeoutSeconds,
+        cellHardWatchdogSeconds: releaseAuthority?.cellHardWatchdogSeconds,
+        authoritativeTransformedReferenceFrames: releaseAuthority?.authoritativeTransformedReferenceFrames,
+        boundedCaptureGraceFrames: releaseAuthority?.boundedCaptureGraceFrames,
+        maxExternalAudioSamples: releaseAuthority?.maxExternalAudioSamples,
+        auxiliaryExternalAudioSeconds: releaseAuthority?.auxiliaryExternalAudioSeconds,
+        subtitleTranslationMode: releaseAuthority?.subtitleTranslationMode,
+        modelId: cell.modelId,
+        modelProtocolProfileIdentity: structuredClone(
+          releaseAuthority?.modelProtocolProfileIdentity,
+        ),
+        feedbackLoopPrevention: cell.feedbackLoopPrevention,
+        deviceClass: cell.deviceClass,
+      };
+    })
     : undefined,
+});
+
+test('evidence-driven terminal requires typed session readiness and eleven terminal producer stages', () => {
+  const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-drain-terminal-'));
+  const identity = {
+    runMarker: 'run-1',
+    cellId: 'cell-1',
+    leaseId: 'lease-1',
+    sourceHeadCommit: 'a'.repeat(40),
+    runtimeBundleDigest: 'b'.repeat(64),
+    launchId: '123e4567-e89b-42d3-a456-426614174000',
+    producerProcessId: 4_321,
+    producerStartTimeUtcTicks: '621355968010000000',
+    producerExecutableSha256: 'c'.repeat(64),
+  };
+  const reportPath = path.join(runDirectory, 'watch-session-report.json');
+  const reportBytes = Buffer.from(JSON.stringify({ sessionId: 'watch-1', status: 'completed' }));
+  fs.writeFileSync(reportPath, reportBytes);
+  const reportSha256 = crypto.createHash('sha256').update(reportBytes).digest('hex');
+  const plannedCell = {
+    cellId: identity.cellId,
+    localPlaybackDrainTimeoutSeconds: 120,
+    authoritativeTransformedReferenceFrames: 1_000,
+    boundedCaptureGraceFrames: 200,
+    maxExternalAudioSamples: 1_200,
+  };
+  fs.writeFileSync(path.join(runDirectory, 'input-complete.json'), JSON.stringify({
+    schemaVersion: 1,
+    artifactKind: 'watch-mode-input-complete',
+    runMarker: identity.runMarker,
+    cellId: identity.cellId,
+    leaseId: identity.leaseId,
+    mediaPlaybackCompletedAtUnixMs: 1_000,
+    signaledAtUnixMs: 1_010,
+    completedAtUnixMs: 1_010,
+    authoritativeTransformedReferenceFrames: 1_000,
+    boundedCaptureGraceFrames: 200,
+    maxExternalAudioSamples: 1_200,
+  }));
+  const events = [
+    ['sessionUpdatedReceived', 1_000, {
+      authority: 'desktop-livetranslate-typed-session-owner', sourceSequence: 1,
+      sessionIdentitySha256: 'd'.repeat(64), sentSessionConfigSha256: 'e'.repeat(64),
+      echoedSessionConfigSha256: 'e'.repeat(64),
+    }],
+    ['mediaPlaybackCompleted', 1_000, { authority: 'runner-input-complete-marker' }],
+    ['inputCompleteSignaled', 1_010, { authority: 'runner-immutable-input-complete-marker' }],
+    ['lastProviderAppend', 1_015, {
+      sourceSequence: 2, appendIndex: 7, acceptedSamplesTotal: 1_200, samples: 200,
+    }],
+    ['inputCompleteObserved', 1_020, {
+      authority: 'desktop-marker-watcher', markerSignaledAtUnixMs: 1_010, acceptedExactlyOnce: true,
+      sourceSequence: 3, captureProducerFenced: true, providerInputSenderReleased: true,
+    }],
+    ['sessionFinishSent', 1_040, {
+      sourceSequence: 4, finishCount: 1, lastProviderAppendSourceSequence: 2,
+      providerInputClosedSourceSequence: 3,
+      providerWritesAfterFinish: 0,
+    }],
+    ['lastResponseAudioDone', 1_050, { sourceSequence: 5, responseId: 'response-1' }],
+    ['sessionFinishedReceived', 1_060, {
+      sourceSequence: 6, finishCount: 1, providerWritesAfterFinish: 0,
+    }],
+    ['finalRendererAck', 1_070, {
+      sourceSequence: 7, cueId: 'cue-3', responseId: 'response-1', cueSequence: 3, lastCueSequence: 3,
+      receiptAuthority: 'bridge-translation-status-ack', receiptId: 'status-9',
+      coversLastCue: true,
+    }],
+    ['localPlaybackQuiescent', 1_080, {
+      stableForMs: 750,
+      speakerPlaybackActive: false,
+      completionAuthority: 'all-local-playback-owners-quiescent',
+      playbackWatchdogMs: 120_000,
+      waitedMs: 750,
+      initialPendingAudioFrames: null,
+      outputSampleRateHz: null,
+      estimatedPendingAudioMs: null,
+      finalPendingNativeAudio: false,
+      finalQueuedCommands: 0,
+      finalActiveCommands: 0,
+      finalPendingAudioFrames: 0,
+      finalPendingPlaybackSubmissions: 0,
+      finalPendingBridgeAcks: 0,
+      finalActiveBridgeCues: 0,
+      finalRestartBarrier: false,
+    }],
+    ['reportWritten', 1_090, {
+      reportPath: 'watch-session-report.json',
+      byteLength: reportBytes.length,
+      sha256: reportSha256,
+    }],
+  ];
+  const terminalPath = path.join(runDirectory, 'evidence-driven-terminal.json');
+  const terminal = {
+    schemaVersion: 3,
+    artifactKind: 'watch-mode-evidence-driven-terminal',
+    runMarker: identity.runMarker,
+    cellId: identity.cellId,
+    leaseId: identity.leaseId,
+    sourceHeadCommit: identity.sourceHeadCommit,
+    runtimeBundleDigest: identity.runtimeBundleDigest,
+    launchId: identity.launchId,
+    producerProcessId: identity.producerProcessId,
+    producerStartTimeUtcTicks: identity.producerStartTimeUtcTicks,
+    producerStartedAtUnixMs: 1_000,
+    producerExecutableSha256: identity.producerExecutableSha256,
+    status: 'completed',
+    startedAtUnixMs: 1_000,
+    completedAtUnixMs: 1_100,
+    events: events.map(([stage, observedAtUnixMs, detail], index) => ({
+      sequence: index + 1,
+      stage,
+      observedAtUnixMs,
+      detail,
+    })),
+  };
+  fs.writeFileSync(terminalPath, JSON.stringify(terminal));
+
+  assert.doesNotThrow(() => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity));
+  const knownFrameEstimate = structuredClone(terminal);
+  Object.assign(
+    knownFrameEstimate.events.find((event) => event.stage === 'localPlaybackQuiescent').detail,
+    {
+      initialPendingAudioFrames: 1_004_707,
+      outputSampleRateHz: 24_000,
+      estimatedPendingAudioMs: 41_863,
+    },
+  );
+  fs.writeFileSync(terminalPath, JSON.stringify(knownFrameEstimate));
+  assert.doesNotThrow(
+    () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+    'known pending PCM duration is diagnostic evidence and not the success deadline',
+  );
+  const inconsistentEstimate = structuredClone(knownFrameEstimate);
+  inconsistentEstimate.events.find(
+    (event) => event.stage === 'localPlaybackQuiescent',
+  ).detail.estimatedPendingAudioMs = 41_862;
+  fs.writeFileSync(terminalPath, JSON.stringify(inconsistentEstimate));
+  assert.throws(
+    () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+    /diagnostic estimate does not match/i,
+    'a complete diagnostic triple must remain internally consistent',
+  );
+  const predictedDeadline = structuredClone(knownFrameEstimate);
+  predictedDeadline.events.find(
+    (event) => event.stage === 'localPlaybackQuiescent',
+  ).detail.drainBudgetMs = 45_613;
+  fs.writeFileSync(terminalPath, JSON.stringify(predictedDeadline));
+  assert.throws(
+    () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+    /may not treat a frame estimate as a success budget/i,
+  );
+  const wrongWatchdog = structuredClone(knownFrameEstimate);
+  wrongWatchdog.events.find(
+    (event) => event.stage === 'localPlaybackQuiescent',
+  ).detail.playbackWatchdogMs = 45_613;
+  fs.writeFileSync(terminalPath, JSON.stringify(wrongWatchdog));
+  assert.throws(
+    () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+    /event-driven completion\/watchdog authority/i,
+  );
+  const unknownFinalPendingFrames = structuredClone(terminal);
+  unknownFinalPendingFrames.events.find(
+    (event) => event.stage === 'localPlaybackQuiescent',
+  ).detail.finalPendingAudioFrames = null;
+  fs.writeFileSync(terminalPath, JSON.stringify(unknownFinalPendingFrames));
+  assert.doesNotThrow(
+    () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+    'an unknown diagnostic frame count does not override event-driven owner quiescence',
+  );
+  for (const partialEstimate of [
+    { initialPendingAudioFrames: 1_004_707 },
+    { outputSampleRateHz: 24_000 },
+    { estimatedPendingAudioMs: 41_863 },
+    { initialPendingAudioFrames: 1_004_707, outputSampleRateHz: 24_000 },
+    { initialPendingAudioFrames: 1_004_707, estimatedPendingAudioMs: 41_863 },
+    { outputSampleRateHz: 24_000, estimatedPendingAudioMs: 41_863 },
+  ]) {
+    const partialDiagnostic = structuredClone(terminal);
+    Object.assign(
+      partialDiagnostic.events.find(
+        (event) => event.stage === 'localPlaybackQuiescent',
+      ).detail,
+      partialEstimate,
+    );
+    fs.writeFileSync(terminalPath, JSON.stringify(partialDiagnostic));
+    assert.doesNotThrow(
+      () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+      'partial frame/rate estimates are diagnostic-only and may not decide completion',
+    );
+  }
+  fs.writeFileSync(terminalPath, JSON.stringify(terminal));
+  fs.writeFileSync(reportPath, JSON.stringify({ sessionId: 'watch-tampered', status: 'completed' }));
+  assert.throws(
+    () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+    /reportWritten.*(length|hash)|report.*(length|hash)/i,
+    'terminal success must bind the exact immutable report bytes',
+  );
+  fs.writeFileSync(reportPath, reportBytes);
+  for (const [field, value] of [
+    ['producerProcessId', 9_999],
+    ['producerStartTimeUtcTicks', '621355968010000001'],
+    ['producerStartedAtUnixMs', 1],
+    ['producerExecutableSha256', 'd'.repeat(64)],
+    ['sourceHeadCommit', 'c'.repeat(40)],
+    ['runtimeBundleDigest', 'd'.repeat(64)],
+    ['launchId', '123e4567-e89b-42d3-a456-426614174001'],
+  ]) {
+    const wrongProducer = structuredClone(terminal);
+    wrongProducer[field] = value;
+    fs.writeFileSync(terminalPath, JSON.stringify(wrongProducer));
+    assert.throws(
+      () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+      /producer\/process\/source\/runtime identity mismatch/i,
+      `${field} from another desktop launch must fail`,
+    );
+  }
+  fs.writeFileSync(terminalPath, JSON.stringify(terminal));
+  const earlyFinalAck = structuredClone(terminal);
+  const earlyAckEvent = earlyFinalAck.events.find((event) => event.stage === 'finalRendererAck');
+  const finishedEvent = earlyFinalAck.events.find(
+    (event) => event.stage === 'sessionFinishedReceived',
+  );
+  earlyAckEvent.observedAtUnixMs = 1_055;
+  earlyAckEvent.detail.sourceSequence = 6;
+  finishedEvent.detail.sourceSequence = 7;
+  earlyFinalAck.events.sort((left, right) => left.observedAtUnixMs - right.observedAtUnixMs);
+  earlyFinalAck.events = earlyFinalAck.events.map((event, index) => ({
+    ...event,
+    sequence: index + 1,
+  }));
+  fs.writeFileSync(terminalPath, JSON.stringify(earlyFinalAck));
+  assert.doesNotThrow(
+    () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+    'a real final renderer ACK may precede session.finished while still covering the last cue',
+  );
+  const streamingResponseBeforeFinish = structuredClone(terminal);
+  const streamingResponseEvent = streamingResponseBeforeFinish.events.find(
+    (event) => event.stage === 'lastResponseAudioDone',
+  );
+  const streamingInputObservedEvent = streamingResponseBeforeFinish.events.find(
+    (event) => event.stage === 'inputCompleteObserved',
+  );
+  const streamingFinishEvent = streamingResponseBeforeFinish.events.find(
+    (event) => event.stage === 'sessionFinishSent',
+  );
+  streamingResponseEvent.observedAtUnixMs = 1_035;
+  streamingResponseEvent.detail.sourceSequence = 4;
+  streamingFinishEvent.detail.sourceSequence = 5;
+  streamingInputObservedEvent.detail.sourceSequence = 3;
+  streamingFinishEvent.detail.providerInputClosedSourceSequence = 3;
+  streamingResponseBeforeFinish.events.sort(
+    (left, right) => left.observedAtUnixMs - right.observedAtUnixMs,
+  );
+  streamingResponseBeforeFinish.events = streamingResponseBeforeFinish.events.map(
+    (event, index) => ({ ...event, sequence: index + 1 }),
+  );
+  fs.writeFileSync(terminalPath, JSON.stringify(streamingResponseBeforeFinish));
+  assert.doesNotThrow(
+    () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+    'LiveTranslate may complete the final streaming response before session.finish',
+  );
+  for (const stage of events.map(([name]) => name)) {
+    const missing = structuredClone(terminal);
+    missing.events = missing.events.filter((event) => event.stage !== stage)
+      .map((event, index) => ({ ...event, sequence: index + 1 }));
+    fs.writeFileSync(terminalPath, JSON.stringify(missing));
+    assert.throws(
+      () => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity),
+      /terminal event inventory|missing/i,
+      `missing ${stage} must fail`,
+    );
+  }
+  for (const mutate of [
+    (copy) => { copy.events.find((event) => event.stage === 'sessionUpdatedReceived').detail.echoedSessionConfigSha256 = 'f'.repeat(64); },
+    (copy) => { copy.events.find((event) => event.stage === 'sessionFinishSent').detail.finishCount = 2; },
+    (copy) => { copy.events.find((event) => event.stage === 'sessionFinishSent').detail.lastProviderAppendSourceSequence = 3; },
+    (copy) => { copy.events.find((event) => event.stage === 'sessionFinishedReceived').detail.providerWritesAfterFinish = 1; },
+    (copy) => { copy.events.find((event) => event.stage === 'finalRendererAck').detail.lastCueSequence = 4; },
+    (copy) => {
+      const finish = copy.events.find((event) => event.stage === 'sessionFinishSent');
+      const finished = copy.events.find((event) => event.stage === 'sessionFinishedReceived');
+      finish.detail.sourceSequence = 5;
+      finished.detail.sourceSequence = 4;
+    },
+    (copy) => {
+      const response = copy.events.find((event) => event.stage === 'lastResponseAudioDone');
+      const ack = copy.events.find((event) => event.stage === 'finalRendererAck');
+      ack.detail.sourceSequence = response.detail.sourceSequence;
+    },
+    (copy) => { [copy.events[3], copy.events[4]] = [copy.events[4], copy.events[3]]; },
+    (copy) => { copy.completedAtUnixMs = 'garbage'; },
+    (copy) => { copy.completedAtUnixMs = 1_080; },
+    (copy) => {
+      const reportIndex = copy.events.findIndex((event) => event.stage === 'reportWritten');
+      [copy.events[reportIndex - 1], copy.events[reportIndex]] = [copy.events[reportIndex], copy.events[reportIndex - 1]];
+      copy.events = copy.events.map((event, index) => ({ ...event, sequence: index + 1 }));
+    },
+  ]) {
+    const tampered = structuredClone(terminal);
+    mutate(tampered);
+    fs.writeFileSync(terminalPath, JSON.stringify(tampered));
+    assert.throws(() => validateEvidenceDrivenTerminal(runDirectory, plannedCell, identity));
+  }
+  fs.rmSync(runDirectory, { recursive: true, force: true });
 });
 
 // Frozen "now" + exact clean HEAD so strict provenance can be exercised
 // deterministically without depending on the test process worktree.
 const FIXTURE_NOW = Date.parse('2026-06-06T00:00:00.000Z');
+const TEST_PROCESS_STARTED_AT_UNIX_MS = FIXTURE_NOW - 1_000;
+const TEST_PROCESS_START_TIME_UTC_TICKS = String(
+  BigInt(TEST_PROCESS_STARTED_AT_UNIX_MS) * 10_000n + 621_355_968_000_000_000n,
+);
+const TEST_PROCESS_EXECUTABLE_SHA256 = 'c'.repeat(64);
 const CLEAN_CURRENT_PROVENANCE = Object.freeze({
   schemaVersion: 1,
   source: 'git',
   captureStatus: 'captured',
-  headCommit: 'fixture-commit',
+  headCommit: 'a'.repeat(40),
   worktreeClean: true,
   dirtyEntryCount: 0,
 });
+const fixturePreflightLifecycle = (model = PROVIDER_PREFLIGHT_MODEL) => ({
+  operation: 'livetranslate-session-lifecycle-preflight',
+  inputMode: 'none',
+  providerInputMode: 'none',
+  responseMode: 'text-only',
+  terminalEvent: 'session.finished',
+  lifecycleBudget: {
+    firstServerEventLatencyMs: 1_200,
+    socketEventTimeoutMs: 12_000,
+  },
+  evidenceOutcome: 'livetranslate-session-finished',
+  firstServerEvent: { type: 'session.created', monotonicMs: 606 },
+  sessionAuthority: {
+    sessionIdentitySha256: '8'.repeat(64),
+    serverModel: model,
+    echoedSessionConfigSha256: '9'.repeat(64),
+  },
+  rawTrace: {
+    path: 'raw/provider-websocket-trace.jsonl',
+    bytes: 256,
+    sha256: '7'.repeat(64),
+    eventCount: 6,
+  },
+});
 const TEST_RUNTIME_BINARY_HASHES = Object.freeze([]);
+const TEST_RUNTIME_BUNDLE_DIGEST = sha256Canonical(TEST_RUNTIME_BINARY_HASHES);
 const provenanceOk = { now: FIXTURE_NOW, currentProvenance: CLEAN_CURRENT_PROVENANCE };
+const WATCH_MODEL_PROTOCOL_PROFILE_IDENTITY = deriveWatchModelProtocolIdentity(RELEASE_MODELS[0]);
 const healthyWatchSessionReport = {
   sessionId: 'watch-fixture',
+  modelProtocolProfileIdentity: WATCH_MODEL_PROTOCOL_PROFILE_IDENTITY,
   status: 'completed',
-  elapsedMs: MIN_STRICT_SESSION_DURATION_MS,
+  elapsedMs: AUTHORITY_FIXTURE_SESSION_DURATION_MS,
   summary: {
-    durationMs: MIN_STRICT_SESSION_DURATION_MS,
+    durationMs: AUTHORITY_FIXTURE_SESSION_DURATION_MS,
     unrenderedCueCount: 0,
     cueCount: 1,
     p95AudioToRenderFirstMs: 7_000,
@@ -155,6 +583,7 @@ const healthyWatchSessionReport = {
     issues: [],
   }],
 };
+const healthyRealtimeSession = Object.freeze({ readinessEvent: 'session.updated' });
 
 const AEC_PLAYBACK_STARTED_AT_MS = Date.parse('2026-06-05T10:45:00.000Z');
 const healthyAecScenarioData = {
@@ -242,13 +671,13 @@ const healthyProcessRestartData = {
   newPhysicalPlaybackDeviceId: '{hda-test-endpoint}',
   physicalPlaybackStatus: 'ready',
   physicalPlaybackRebindDurationMs: 250,
-  oldLastFrameTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 899_000,
-  oldLastFrameReadTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 899_100,
-  newFirstFrameTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 901_000,
-  newFirstFrameReadTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 901_100,
+  oldLastFrameTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 89_000,
+  oldLastFrameReadTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 89_100,
+  newFirstFrameTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 91_000,
+  newFirstFrameReadTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 91_100,
   startedAtMs: PROCESS_METRICS_STARTED_AT_MS,
-  restartTriggeredAtMs: PROCESS_METRICS_STARTED_AT_MS + 900_000,
-  recoveredAtMs: PROCESS_METRICS_STARTED_AT_MS + 902_000,
+  restartTriggeredAtMs: PROCESS_METRICS_STARTED_AT_MS + 90_000,
+  recoveredAtMs: PROCESS_METRICS_STARTED_AT_MS + 92_000,
   downtimeMs: 2_000,
   sourceFramesBefore: 43_200_000,
   sourceFramesAfter: 43_296_000,
@@ -259,13 +688,13 @@ const healthyProcessRestartData = {
   sourceSubscriberActive: true,
   systemMetrics: {
     valid: true,
-    sampleCount: 1_799,
-    durationMs: 1_798_000,
-    samplesWithOldPid: 899,
-    samplesWithNewPid: 899,
+    sampleCount: 174,
+    durationMs: 174_000,
+    samplesWithOldPid: 90,
+    samplesWithNewPid: 84,
     oldPidAbsentAfterNew: true,
     startedAt: new Date(PROCESS_METRICS_STARTED_AT_MS).toISOString(),
-    finishedAt: new Date(PROCESS_METRICS_STARTED_AT_MS + 1_800_000).toISOString(),
+    finishedAt: new Date(PROCESS_METRICS_STARTED_AT_MS + 174_000).toISOString(),
   },
 };
 
@@ -347,6 +776,33 @@ function pcmBuffer(samples) {
   return bytes;
 }
 
+function writeStereo48kWavFromMono16k(filePath, samples) {
+  const nativeFrames = samples.length * 3;
+  const dataBytes = nativeFrames * 2 * 2;
+  const wav = Buffer.alloc(44 + dataBytes);
+  wav.write('RIFF', 0, 'ascii');
+  wav.writeUInt32LE(36 + dataBytes, 4);
+  wav.write('WAVEfmt ', 8, 'ascii');
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(2, 22);
+  wav.writeUInt32LE(48_000, 24);
+  wav.writeUInt32LE(48_000 * 2 * 2, 28);
+  wav.writeUInt16LE(4, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write('data', 36, 'ascii');
+  wav.writeUInt32LE(dataBytes, 40);
+  for (let frame = 0; frame < nativeFrames; frame += 1) {
+    const sample = Math.max(
+      -32_768,
+      Math.min(32_767, Math.round(samples[Math.floor(frame / 3)] * 32_767)),
+    );
+    wav.writeInt16LE(sample, 44 + frame * 4);
+    wav.writeInt16LE(sample, 44 + frame * 4 + 2);
+  }
+  fs.writeFileSync(filePath, wav);
+}
+
 function deterministicTranslatedCue(seed, sampleRateHz = 24_000, seconds = 1.4) {
   const output = new Float32Array(Math.round(sampleRateHz * seconds));
   let state = seed >>> 0;
@@ -392,18 +848,30 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
   leaseId,
   modelId,
   protocol,
+  feedbackLoopPrevention,
 }) {
   const authorityDirectory = path.join(runDirectory, 'translated-cue-pcm');
   const cueDirectory = path.join(authorityDirectory, 'cue-pcm');
   fs.mkdirSync(cueDirectory, { recursive: true });
-  const recordingStartedAtEpochMs = new Date(2026, 7, 13, 12, 0, 0, 0).getTime();
+  const playbackFixture = JSON.parse(fs.readFileSync(
+    path.join(runDirectory, 'playback.json'),
+    'utf8',
+  ));
+  const recordingStartedAtEpochMs = Number(playbackFixture.startedAtMs) - 1_000;
   const cueIds = ['authority-cue-1', 'authority-cue-2'];
-  const playbackOffsetsSeconds = [2.2, 5.8];
-  const canonical = loadCanonicalFixtureAuthority();
+  const processExclusion = feedbackLoopPrevention === 'process-exclusion';
+  const rendererKind = feedbackLoopPrevention === 'echo-cancel'
+    ? 'desktop-speaker'
+    : 'bridge-physical-playback';
+  const playbackOffsetsSeconds = processExclusion ? [2.2, 100] : [2.2, 5.8];
+  const sourceReference = fs.readFileSync(
+    path.join(runDirectory, 'source-media-reference-16k-mono.pcm'),
+  );
+  const sourceReferenceSamples = sourceReference.length / 2;
   const sourceLagSamples = 16_000;
-  const recording = new Float32Array(canonical.referencePcm.samples + sourceLagSamples);
-  for (let index = 0; index < canonical.referencePcm.samples; index += 1) {
-    recording[sourceLagSamples + index] = canonical.referencePcm.buffer.readInt16LE(index * 2)
+  const recording = new Float32Array(sourceReferenceSamples + sourceLagSamples);
+  for (let index = 0; index < sourceReferenceSamples; index += 1) {
+    recording[sourceLagSamples + index] = sourceReference.readInt16LE(index * 2)
       / 32_768 * 0.25;
   }
   const acceptedCues = [];
@@ -423,6 +891,8 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
     acceptedCues.push({
       sequence: index + 1,
       cueId: cueIds[index],
+      responseId: `authority-response-${index + 1}`,
+      rendererKind,
       requestIds: [`request-${index + 1}`],
       sampleRateHz: 24_000,
       channelCount: 1,
@@ -431,7 +901,9 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
       bytes: bytes.length,
       sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
       relativePath,
-      acceptedFrames: samples.length,
+      ...(rendererKind === 'bridge-physical-playback' ? {
+        acceptedFrames: samples.length,
+      } : {}),
       chunkCount: 1,
       chunks: [{
         chunkIndex: 0,
@@ -443,8 +915,22 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
       createdAtMs: recordingStartedAtEpochMs + playbackOffsetsSeconds[index] * 1_000 - 50,
       completedAtMs: recordingStartedAtEpochMs
         + (playbackOffsetsSeconds[index] + samples.length / 24_000) * 1_000,
-      bridgeInstanceId: index === 0 ? 'bridge-instance-old' : 'bridge-instance-new',
-      playbackOwnerGeneration: index === 0 ? 1001 : 2002,
+      ...(rendererKind === 'bridge-physical-playback' ? {
+        sessionId: index === 0 ? 'bridge-session-old' : 'bridge-session-new',
+        bridgeInstanceId: index === 0 ? 'bridge-instance-old' : 'bridge-instance-new',
+        sourceGeneration: index + 1,
+        sourceGenerationToken: index === 0
+          ? 'bridge-instance-old:bridge-session-old:1'
+          : 'bridge-instance-new:bridge-session-new:2',
+        playbackOwnerGeneration: index === 0 ? 1001 : 2002,
+      } : {
+        rendererInstanceId: 'desktop-renderer-instance-1',
+        rendererOwnerGeneration: 1,
+        renderAttemptId: `desktop-render-attempt-${index + 1}`,
+        playedFrames: samples.length * 2,
+        playedSampleRateHz: 48_000,
+        playedChannelCount: 2,
+      }),
       physicalPlaybackDeviceId: '{hda-test-endpoint}',
     });
   }
@@ -456,13 +942,46 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
   const physicalPcm = pcmBuffer(recording);
   fs.writeFileSync(physicalPcmPath, physicalPcm);
   fs.writeFileSync(sourceWindowPath, physicalPcm);
+  writeStereo48kWavFromMono16k(
+    path.join(runDirectory, 'physical-output-recording.wav'),
+    recording,
+  );
   const recordingAuthorityPath = path.join(runDirectory, 'physical-output-recording.json');
   const recordingAuthority = JSON.parse(fs.readFileSync(recordingAuthorityPath, 'utf8'));
   fs.writeFileSync(recordingAuthorityPath, `${JSON.stringify({
     ...recordingAuthority,
     passed: true,
+    capturedFrames: recording.length * 3,
     recordingStartedAtEpochMs,
     transcriptionPcmPath: physicalPcmPath,
+    captureTimeline: {
+      schemaVersion: 4,
+      authorityMode: 'wasapi-device-position-qpc-epoch-calibrated-v4',
+      sampleZeroEpochMs: recordingStartedAtEpochMs,
+      sampleZeroTimeAuthority: 'first-capture-packet-qpc-epoch-calibration-v2',
+      sampleRateHz: 48_000,
+      channelCount: 2,
+      passed: true,
+      packetCount: 100,
+      outputFrameCount: recording.length * 3,
+      maxOutputFrameCount: recording.length * 3 + 48_000,
+      firstDevicePositionFrames: 10_000,
+      lastDevicePositionFrames: 10_000 + recording.length * 3 - 480,
+      endDevicePositionFramesExclusive: 10_000 + recording.length * 3,
+      firstQpcPosition100ns: 1_000_000,
+      lastQpcPosition100ns: 1_000_000 + Math.round(
+        (recording.length * 3 - 480) * 10_000_000 / 48_000,
+      ),
+      dataDiscontinuityPacketCount: 0,
+      timestampErrorPacketCount: 0,
+      qpcRegressionPacketCount: 0,
+      overlapPacketCount: 0,
+      totalGapFrames: 0,
+      totalUnreliableFrames: 0,
+      gaps: [],
+      unreliableWindows: [],
+      violations: [],
+    },
   }, null, 2)}\n`, 'utf8');
   const watchReportPath = path.join(runDirectory, 'watch-session-report.json');
   const watchReport = JSON.parse(fs.readFileSync(watchReportPath, 'utf8'));
@@ -475,7 +994,7 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
   }));
   fs.writeFileSync(watchReportPath, `${JSON.stringify(watchReport, null, 2)}\n`, 'utf8');
   const identity = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-translated-cue-pcm-authority',
     cellId,
     leaseId,
@@ -507,7 +1026,9 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
     { ...identity, event: 'initialized', sequence: 1, occurredAtMs: recordingStartedAtEpochMs },
     ...acceptedCues.map((cue, index) => ({
       ...identity,
-      event: 'bridge_write_accepted',
+      event: cue.rendererKind === 'bridge-physical-playback'
+        ? 'bridge_write_accepted'
+        : 'desktop_speaker_played',
       sequence: index + 2,
       occurredAtMs: cue.completedAtMs,
       detail: cue,
@@ -516,7 +1037,7 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
       ...identity,
       event: 'finalized',
       sequence: acceptedCues.length + 2,
-      occurredAtMs: recordingStartedAtEpochMs + 8_000,
+      occurredAtMs: Math.max(...acceptedCues.map((cue) => cue.completedAtMs)) + 100,
     },
   ];
   fs.writeFileSync(
@@ -531,6 +1052,12 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
     lifecycleLines.push(`${fixtureLocalTimestamp(startMs)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=started`);
     lifecycleLines.push(`${fixtureLocalTimestamp(startMs + 1_400)} [NORMAL] event=translation_playback_status | cueId=${cueIds[index]} status=completed`);
   }
+  if (processExclusion) {
+    const recoveredAtMs = recordingStartedAtEpochMs + 90_150;
+    lifecycleLines.push(
+      `${fixtureLocalTimestamp(recoveredAtMs)} [NORMAL] event=process_exclusion_restart_summary | status=passed runMarker=${runMarker} recoveredAtUnixMs=${recoveredAtMs} oldPlaybackOwnerGeneration=1001 newPlaybackOwnerGeneration=2002 oldPhysicalPlaybackDeviceId={hda-test-endpoint} newPhysicalPlaybackDeviceId={hda-test-endpoint} physicalPlaybackStatus=ready physicalPlaybackRebindDurationMs=200`,
+    );
+  }
   fs.appendFileSync(path.join(runDirectory, 'app.log'), `${lifecycleLines.join('\n')}\n`, 'utf8');
   const authority = buildTranslatedPcmLoopbackAuthority({
     runDirectory,
@@ -540,6 +1067,7 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
     leaseId,
     modelId,
     protocol,
+    feedbackLoopPrevention,
   });
   assert.equal(authority.passed, true, authority.violations.join('; '));
   fs.writeFileSync(
@@ -586,13 +1114,14 @@ function writeReport(root, directoryName, overrides = {}) {
   const report = {
     schemaVersion: 1,
     generatedAt: '2026-06-05T11:13:32.000Z',
-    commit: 'fixture-commit',
+    commit: 'a'.repeat(40),
     provenance: CLEAN_CURRENT_PROVENANCE,
     mode: 'live',
     translationRoute: 'secondary',
     verdict: 'passed',
     failureLayer: null,
     layers,
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: healthyWatchSessionReport,
     ...overrides,
   };
@@ -601,7 +1130,7 @@ function writeReport(root, directoryName, overrides = {}) {
 }
 
 function writeAuthorityRawCell(root, directoryName, {
-  modelId = 'qwen3.5-omni-flash-realtime',
+  modelId = 'qwen3.5-livetranslate-flash-realtime',
   feedbackLoopPrevention = 'echo-cancel',
   deviceClass = 'default-speaker',
   profileId = 'authority-profile',
@@ -611,8 +1140,9 @@ function writeAuthorityRawCell(root, directoryName, {
   const directory = path.join(root, directoryName);
   fs.mkdirSync(directory, { recursive: true });
   const generatedAt = new Date(Date.now() - 2_000);
-  const metricsStartedAt = new Date(generatedAt.getTime() - MIN_STRICT_SESSION_DURATION_MS);
+  const metricsStartedAt = new Date(generatedAt.getTime() - AUTHORITY_FIXTURE_SESSION_DURATION_MS);
   const desktopProcessId = 6001;
+  const desktopLaunchId = crypto.randomUUID();
   const device = deviceEvidence(deviceClass, { profileId });
   const snapshots = {
     runMarker: 'watch_mode_diagnostic.run_id=authority-fixture',
@@ -656,6 +1186,13 @@ function writeAuthorityRawCell(root, directoryName, {
     'physical-playback-device.json': device,
     'playback.json': {
       playbackMode: 'wasapi-media-injector',
+      sourceGainDb: -5,
+      restartQuietWindowAfterSeconds: feedbackLoopPrevention === 'process-exclusion' ? 90 : 0,
+      restartQuietWindowFrames: feedbackLoopPrevention === 'process-exclusion' ? 2_160_000 : 0,
+      restartQuietWindowSeconds: feedbackLoopPrevention === 'process-exclusion' ? 45 : 0,
+      renderSampleRateHz: 48_000,
+      postrollSilenceFrames: 144000,
+      postrollSilenceSeconds: 3,
       mediaSha256: sha256File(path.resolve('scripts/testing/fixtures/watch-mode-en-original.wav')),
       injectorProcessId: 7001,
       startedAtMs: metricsStartedAt.getTime() + 1_000,
@@ -695,7 +1232,7 @@ function writeAuthorityRawCell(root, directoryName, {
         workingSetMb: 100,
       }, {
         timestamp: generatedAt.toISOString(),
-        elapsedMs: MIN_STRICT_SESSION_DURATION_MS,
+        elapsedMs: AUTHORITY_FIXTURE_SESSION_DURATION_MS,
         processCount: 1,
         processIds: [desktopProcessId],
         processNamesById: { [desktopProcessId]: 'omni-desktop-shell' },
@@ -720,7 +1257,13 @@ function writeAuthorityRawCell(root, directoryName, {
       id: 'start-desktop-shell',
       phase: 'desktopLaunch',
       status: 'passed',
-      data: { pid: desktopProcessId, systemMetricsSampler: { rootProcessId: desktopProcessId } },
+      data: {
+        pid: desktopProcessId,
+        launchId: desktopLaunchId,
+        processStartTimeUtcTicks: TEST_PROCESS_START_TIME_UTC_TICKS,
+        processExecutableSha256: TEST_PROCESS_EXECUTABLE_SHA256,
+        systemMetricsSampler: { rootProcessId: desktopProcessId },
+      },
       error: null,
     }],
     ownedProcesses: [],
@@ -734,11 +1277,9 @@ function writeAuthorityRawCell(root, directoryName, {
     primaryError: null,
     cleanupErrors: [],
   };
-  if (feedbackLoopPrevention !== 'echo-cancel') {
-    jsonArtifacts['physical-output-content.raw.json'] = { passed: false, detail: 'authority fixture' };
-    jsonArtifacts['physical-output-recording.json'] = { passed: false, capturedFrames: 1 };
-    jsonArtifacts['source-media-transcript.json'] = { passed: false, transcript: '' };
-  }
+  jsonArtifacts['physical-output-content.raw.json'] = { passed: false, detail: 'authority fixture' };
+  jsonArtifacts['physical-output-recording.json'] = { passed: false, capturedFrames: 1 };
+  jsonArtifacts['source-media-transcript.json'] = { passed: false, transcript: '' };
   for (const [relativePath, value] of Object.entries(jsonArtifacts)) {
     fs.writeFileSync(path.join(directory, relativePath), `${JSON.stringify(value, null, 2)}\n`, 'utf8');
   }
@@ -747,16 +1288,17 @@ function writeAuthorityRawCell(root, directoryName, {
     'watch_mode.route_start subtitleTranslationMode=native translationAudioSource=omni-native',
     'watch_mode.omni_preconnect_started detail=direction=inbound sid=authority-fixture',
     'watch_mode.omni_preconnect_reused detail=direction=inbound sid=authority-fixture',
+    'watch_mode.omni_session_ready | event=session.updated queuedAudioChunks=0 droppedBeforeReady=0',
   ];
   if (feedbackLoopPrevention === 'echo-cancel') {
     const playbackStartedAtMs = metricsStartedAt.getTime() + 1_000;
     appLogLines.push(
-      `watch_mode.omni_session_config | model=${modelId} realtimeAudioMode=server_vad outputMode=text-and-audio inputAudioFormat=pcm16 isLivetranslate=false subtitleTranslateActive=false sid=authority-fixture`,
+      `watch_mode.omni_session_config | model=${modelId} realtimeAudioMode=server_vad outputMode=text-and-audio inputAudioFormat=pcm16 isLivetranslate=true subtitleTranslateActive=false sid=authority-fixture`,
       '[AUDIO] playback request received: cue_id=authority-aec samples=24000 sample_rate_hz=24000 duration_ms=1000 enabled=true local_playback=true virtual_mic=false sid=authority-fixture',
       '[AUDIO] speaker playback completed: cue_id=authority-aec frames=24000 sample_rate_hz=24000 sid=authority-fixture',
       'event=echo_cancel_backend | backend=webrtc-aec3 frameMs=10 renderSubmitFormat=48000-f32-stereo renderClock=wasapi-submit-position endpointRenderPadding=same-client-get-current-padding webRtcAec3Ready=true msvcBuildVerified=true linkedBackendPresent=true fixtureVerified=true sid=authority-fixture',
-      'event=echo_cancel_summary | direction=inbound backend=webrtc-aec3 render10msFrames=50 capture10msFrames=50 processedCapture10msFrames=50 resetCount=1 rejectedFrames=0 statsReadFailures=0 renderUnderruns=0 captureUnderruns=0 erleDb=10.0 residualEchoLikelihood=0.08 reportedDelayMs=0 doubleTalkFrames=0 avgProcessingUs=110.0 maxProcessingUs=230 captureChunks=50 intervalCaptureChunks=50 playbackActiveChunks=40 asrForwardedChunks=50 asrDeletedChunks=0 avgPreDb=-40.0 avgPostDb=-50.0 avgRemovedDb=10.0 sid=authority-fixture',
-      'event=echo_cancel_summary | direction=inbound backend=webrtc-aec3 render10msFrames=100 capture10msFrames=100 processedCapture10msFrames=100 resetCount=1 rejectedFrames=0 statsReadFailures=0 renderUnderruns=0 captureUnderruns=0 erleDb=20.0 residualEchoLikelihood=0.02 reportedDelayMs=125 doubleTalkFrames=12 avgProcessingUs=120.0 maxProcessingUs=250 captureChunks=100 intervalCaptureChunks=100 playbackActiveChunks=90 asrForwardedChunks=100 asrDeletedChunks=0 avgPreDb=-40.0 avgPostDb=-60.0 avgRemovedDb=20.0 sid=authority-fixture',
+      'event=echo_cancel_summary | direction=inbound final=false backend=webrtc-aec3 render10msFrames=50 capture10msFrames=50 processedCapture10msFrames=50 resetCount=1 rejectedFrames=0 statsReadFailures=0 renderUnderruns=0 captureUnderruns=0 erleDb=10.0 residualEchoLikelihood=0.08 reportedDelayMs=0 doubleTalkFrames=0 avgProcessingUs=110.0 maxProcessingUs=230 captureChunks=50 intervalCaptureChunks=50 playbackActiveChunks=40 asrForwardedChunks=50 asrDeletedChunks=0 avgPreDb=-40.0 avgPostDb=-50.0 avgRemovedDb=10.0 sid=authority-fixture',
+      'event=echo_cancel_summary | direction=inbound final=true backend=webrtc-aec3 render10msFrames=100 capture10msFrames=100 processedCapture10msFrames=100 resetCount=1 rejectedFrames=0 statsReadFailures=0 renderUnderruns=0 captureUnderruns=0 erleDb=20.0 residualEchoLikelihood=0.02 reportedDelayMs=125 doubleTalkFrames=12 avgProcessingUs=120.0 maxProcessingUs=250 captureChunks=100 intervalCaptureChunks=100 playbackActiveChunks=90 asrForwardedChunks=100 asrDeletedChunks=0 avgPreDb=-40.0 avgPostDb=-60.0 avgRemovedDb=20.0 sid=authority-fixture',
       `event=aec_live_scenario_stage status=completed cueId=authority-aec-1 stage=double-talk ordinal=1 delayMs=0 nonlinearity=none referenceFrames=4800 physicalFrames=4800 changedSamples=0 changedRatio=0.000000 started=true completed=true startedAtMs=${playbackStartedAtMs + 1_000} completedAtMs=${playbackStartedAtMs + 1_100} source=runtime-physical-render playbackSource=native-omni`,
       `event=aec_live_scenario_stage status=completed cueId=authority-aec-2 stage=dynamic-delay ordinal=2 delayMs=80 nonlinearity=none referenceFrames=4800 physicalFrames=8640 changedSamples=0 changedRatio=0.000000 started=true completed=true startedAtMs=${playbackStartedAtMs + 2_000} completedAtMs=${playbackStartedAtMs + 2_100} source=runtime-physical-render playbackSource=native-omni`,
       `event=aec_live_scenario_stage status=completed cueId=authority-aec-3 stage=nonlinear ordinal=3 delayMs=160 nonlinearity=soft-clip referenceFrames=4800 physicalFrames=12480 changedSamples=9600 changedRatio=1.000000 started=true completed=true startedAtMs=${playbackStartedAtMs + 3_000} completedAtMs=${playbackStartedAtMs + 3_100} source=runtime-physical-render playbackSource=native-omni`,
@@ -768,13 +1310,51 @@ function writeAuthorityRawCell(root, directoryName, {
   fs.writeFileSync(path.join(directory, 'app.log'), `${appLogLines.join('\n')}\n`, 'utf8');
   fs.writeFileSync(path.join(directory, 'bridge-service.log'), 'authority bridge log\n', 'utf8');
   const canonical = loadCanonicalFixtureAuthority();
+  const restartInsertionOffsetBytes = 90 * 16_000 * 2;
+  const referencePcmBuffer = feedbackLoopPrevention === 'process-exclusion'
+    ? Buffer.concat([
+        canonical.referencePcm.buffer.subarray(0, restartInsertionOffsetBytes),
+        Buffer.alloc(45 * 16_000 * 2),
+        canonical.referencePcm.buffer.subarray(restartInsertionOffsetBytes),
+      ])
+    : canonical.referencePcm.buffer;
+  const referencePcmAuthority = {
+    path: 'source-media-reference-16k-mono.pcm',
+    bytes: referencePcmBuffer.length,
+    samples: referencePcmBuffer.length / 2,
+    sampleRateHz: 16_000,
+    channels: 1,
+    durationSeconds: Number((referencePcmBuffer.length / 2 / 16_000).toFixed(6)),
+    sha256: crypto.createHash('sha256').update(referencePcmBuffer).digest('hex'),
+    transformation: feedbackLoopPrevention === 'process-exclusion'
+      ? 'restart-quiet-window-v1'
+      : 'none',
+    restartQuietWindowAfterSeconds: feedbackLoopPrevention === 'process-exclusion' ? 90 : 0,
+    restartQuietWindowSeconds: feedbackLoopPrevention === 'process-exclusion' ? 45 : 0,
+    insertedSilenceSamples: feedbackLoopPrevention === 'process-exclusion' ? 45 * 16_000 : 0,
+  };
   fs.writeFileSync(
     path.join(directory, 'source-media-reference-16k-mono.pcm'),
-    canonical.referencePcm.buffer,
+    referencePcmBuffer,
+  );
+  const providerRawChunk = Buffer.alloc(320 * 3 * 8);
+  for (let offset = 0; offset < providerRawChunk.length; offset += 8) {
+    providerRawChunk.writeFloatLE(0.25, offset);
+    providerRawChunk.writeFloatLE(0.25, offset + 4);
+  }
+  const providerRawLength = Buffer.alloc(4);
+  providerRawLength.writeUInt32LE(providerRawChunk.length);
+  const providerPrefilterPath = path.join(directory, PROVIDER_INPUT_PREFILTER_FILE);
+  fs.writeFileSync(
+    providerPrefilterPath,
+    Buffer.concat([PROVIDER_INPUT_PREFILTER_MAGIC, providerRawLength, providerRawChunk]),
   );
   fs.writeFileSync(
     path.join(directory, 'provider-input-16k-mono.pcm'),
-    canonical.referencePcm.buffer,
+    replayProviderInputPrefilter({
+      filePath: providerPrefilterPath,
+      maxSamples: 2_877_045,
+    }).expectedProviderPcm,
   );
   for (const relativePath of requiredCellArtifactPaths(feedbackLoopPrevention)) {
     const filePath = path.join(directory, ...relativePath.split('/'));
@@ -782,29 +1362,28 @@ function writeAuthorityRawCell(root, directoryName, {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, Buffer.from([1, 2, 3, 4]));
   }
-  if (feedbackLoopPrevention !== 'echo-cancel') {
-    const recordingFrames = writePcm16Wav(
-      path.join(directory, 'physical-output-recording.wav'),
-      {
-        durationSeconds: 60,
-        tones: [{ frequencyHz: 440, amplitude: 0.1 }],
-      },
-    );
-    fs.writeFileSync(path.join(directory, 'physical-output-recording.json'), `${JSON.stringify({
+  const recordingFrames = writePcm16Wav(
+    path.join(directory, 'physical-output-recording.wav'),
+    {
+      durationSeconds: 60,
+      tones: [{ frequencyHz: 440, amplitude: 0.1 }],
+    },
+  );
+  fs.writeFileSync(path.join(directory, 'physical-output-recording.json'), `${JSON.stringify({
+    passed: true,
+    capturedFrames: recordingFrames,
+  })}\n`, 'utf8');
+  fs.writeFileSync(path.join(directory, 'physical-output-content.raw.json'), `${JSON.stringify({
+    passed: true,
+    recording: {
       passed: true,
+      recordingPath: 'physical-output-recording.wav',
+      transcriptionPcmPath: 'physical-output-recording-16k-mono.pcm',
       capturedFrames: recordingFrames,
-    })}\n`, 'utf8');
-    fs.writeFileSync(path.join(directory, 'physical-output-content.raw.json'), `${JSON.stringify({
-      passed: true,
-      recording: {
-        passed: true,
-        recordingPath: 'physical-output-recording.wav',
-        transcriptionPcmPath: 'physical-output-recording-16k-mono.pcm',
-        capturedFrames: 960_000,
-        rms: 0.07,
-      },
-    })}\n`, 'utf8');
-    if (feedbackLoopPrevention === 'virtual-driver') {
+      rms: 0.07,
+    },
+  })}\n`, 'utf8');
+  if (feedbackLoopPrevention === 'virtual-driver') {
       const runtimeSha256 = (relativePath, fallback) => runtimeBinaryHashes
         .find((entry) => entry.path === relativePath)?.sha256 ?? fallback;
       fs.writeFileSync(path.join(directory, 'driver.json'), `${JSON.stringify({
@@ -851,7 +1430,6 @@ function writeAuthorityRawCell(root, directoryName, {
         toneComponent: 0.08,
         invalidSamples: 0,
       })}\n`, 'utf8');
-    }
   }
   if (feedbackLoopPrevention === 'process-exclusion') {
     const runtimeRoot = path.join(directory, 'physical-output-probe-runtime');
@@ -898,9 +1476,8 @@ function writeAuthorityRawCell(root, directoryName, {
       processExclusionFingerprint: fingerprint,
     })}\n`, 'utf8');
   }
-  if (feedbackLoopPrevention !== 'echo-cancel') {
-    const referencePcmPath = path.join(directory, 'source-media-reference-16k-mono.pcm');
-    fs.writeFileSync(path.join(directory, 'source-media-transcript.json'), `${JSON.stringify({
+  const referencePcmPath = path.join(directory, 'source-media-reference-16k-mono.pcm');
+  fs.writeFileSync(path.join(directory, 'source-media-transcript.json'), `${JSON.stringify({
       schemaVersion: 2,
       passed: true,
       authorityMode: 'canonical-fixture-local-v2',
@@ -925,18 +1502,10 @@ function writeAuthorityRawCell(root, directoryName, {
         bytes: canonical.translationText.bytes,
         sha256: canonical.translationText.sha256,
       },
-      referencePcm: {
-        path: 'source-media-reference-16k-mono.pcm',
-        bytes: canonical.referencePcm.bytes,
-        samples: canonical.referencePcm.samples,
-        sampleRateHz: 16_000,
-        channels: 1,
-        durationSeconds: Number(canonical.referencePcm.durationSeconds.toFixed(6)),
-        sha256: canonical.referencePcm.sha256,
-      },
+      referencePcm: referencePcmAuthority,
       fixture: canonical.fixture,
-    }, null, 2)}\n`, 'utf8');
-    fs.writeFileSync(path.join(directory, 'physical-output-content.raw.json'), `${JSON.stringify({
+  }, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(path.join(directory, 'physical-output-content.raw.json'), `${JSON.stringify({
       passed: true,
       authorityMode: 'local-pcm-cue-playback-v1',
       remoteProviderCalls: 0,
@@ -954,13 +1523,10 @@ function writeAuthorityRawCell(root, directoryName, {
         playbackAuthority: { passed: true, invalidCues: [] },
         acousticAuthority: { passed: true },
       },
-    }, null, 2)}\n`, 'utf8');
-  }
+  }, null, 2)}\n`, 'utf8');
   const collectionPath = path.join(directory, 'run-collection.json');
   const collection = JSON.parse(fs.readFileSync(collectionPath, 'utf8'));
-  if (feedbackLoopPrevention !== 'echo-cancel') {
-    collection.artifacts.physicalOutputContentRaw = 'physical-output-content.raw.json';
-  }
+  collection.artifacts.physicalOutputContentRaw = 'physical-output-content.raw.json';
   fs.writeFileSync(collectionPath, `${JSON.stringify(collection, null, 2)}\n`, 'utf8');
   writeDirectoryReport({ inputDir: directory, outputDir: directory, mode: 'live' });
   return directory;
@@ -969,36 +1535,54 @@ function writeAuthorityRawCell(root, directoryName, {
 function writeStrictPaidBudgetFixture(runDirectory, cell, {
   generatedAt = new Date(),
   leaseId = `lease-${path.basename(runDirectory)}-${cell.cellId}`,
+  sourceHeadCommit = CLEAN_CURRENT_PROVENANCE.headCommit,
+  runtimeBundleDigest = TEST_RUNTIME_BUNDLE_DIGEST,
 } = {}) {
   const collection = JSON.parse(fs.readFileSync(path.join(runDirectory, 'run-collection.json'), 'utf8'));
   const metadata = JSON.parse(fs.readFileSync(path.join(runDirectory, collection.artifacts.runMetadata), 'utf8'));
+  const desktopLaunch = collection.steps.find((step) => step?.id === 'start-desktop-shell')?.data;
   const runMarker = metadata.runMarker;
   const providerPcmPath = path.join(runDirectory, 'provider-input-16k-mono.pcm');
   const totalAttemptedSamples = fs.statSync(providerPcmPath).size / 2;
-  const maxSamples = Number(cell.durationSeconds) * 16_000;
+  const releaseAuthority = LIVE_LLM_CELLS.find((entry) => (
+    entry.modelId === cell.modelId
+    && entry.feedbackLoopPrevention === cell.feedbackLoopPrevention
+    && entry.tier === (cell.tier ?? 'pairwise-live')
+  )) ?? LIVE_LLM_CELLS.find((entry) => (
+    entry.modelId === cell.modelId
+    && entry.feedbackLoopPrevention === cell.feedbackLoopPrevention
+  ));
+  assert.ok(releaseAuthority, `missing formal release authority for ${cell.modelId}/${cell.feedbackLoopPrevention}`);
+  const maxSamples = Number(cell.maxExternalAudioSamples ?? releaseAuthority.maxExternalAudioSamples);
   const identity = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-provider-input-budget-ledger',
     cellId: cell.cellId,
     runMarker,
     direction: 'inbound',
     model: cell.modelId,
     protocol: STRICT_PAID_MODEL_PROTOCOLS[cell.modelId],
+    modelProtocolProfileIdentity: structuredClone(
+      releaseAuthority.modelProtocolProfileIdentity,
+    ),
     ...STRICT_PAID_PROVIDER_IDENTITY,
   };
   const sessionGeneration = 1;
   fs.appendFileSync(
     path.join(runDirectory, 'app.log'),
-    `input_audio_buffer.append.summary {"resampledSamplesTotal":${totalAttemptedSamples}}\n`,
+    `[CONNECT] connected Omni\ninput_audio_buffer.append.summary {"resampledSamplesTotal":${totalAttemptedSamples}}\n`,
     'utf8',
   );
   fs.writeFileSync(path.join(runDirectory, 'provider-input-budget-lease.json'), `${JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-provider-input-budget-lease',
     leaseId,
     cellId: cell.cellId,
     runMarker,
     maxSamples,
+    modelProtocolProfileIdentity: structuredClone(
+      releaseAuthority.modelProtocolProfileIdentity,
+    ),
   }, null, 2)}\n`, 'utf8');
   fs.writeFileSync(path.join(runDirectory, 'provider-input-budget-ledger.json'), `${JSON.stringify({
     ...identity,
@@ -1058,15 +1642,175 @@ function writeStrictPaidBudgetFixture(runDirectory, cell, {
     `${journal.map((entry) => JSON.stringify(entry)).join('\n')}\n`,
     'utf8',
   );
-  if (cell.feedbackLoopPrevention !== 'echo-cancel') {
-    writeTranslatedPcmLoopbackFixture(runDirectory, {
-      runMarker,
-      cellId: cell.cellId,
-      leaseId,
-      modelId: cell.modelId,
-      protocol: STRICT_PAID_MODEL_PROTOCOLS[cell.modelId],
-    });
-  }
+  const metricsFinishedAtUnixMs = Date.parse(JSON.parse(fs.readFileSync(
+    path.join(runDirectory, 'system-metrics.json'),
+    'utf8',
+  )).finishedAt);
+  const mediaPlaybackCompletedAtUnixMs = metricsFinishedAtUnixMs - 2_000;
+  fs.writeFileSync(path.join(runDirectory, 'input-complete.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    artifactKind: 'watch-mode-input-complete',
+    runMarker,
+    cellId: cell.cellId,
+    leaseId,
+    mediaPlaybackCompletedAtUnixMs,
+    signaledAtUnixMs: mediaPlaybackCompletedAtUnixMs + 10,
+    completedAtUnixMs: mediaPlaybackCompletedAtUnixMs + 10,
+    authoritativeTransformedReferenceFrames: cell.authoritativeTransformedReferenceFrames
+      ?? releaseAuthority.authoritativeTransformedReferenceFrames,
+    boundedCaptureGraceFrames: cell.boundedCaptureGraceFrames
+      ?? releaseAuthority.boundedCaptureGraceFrames,
+    maxExternalAudioSamples: maxSamples,
+  }, null, 2)}\n`, 'utf8');
+  const reportAuthority = fileAuthorityEntry(
+    path.join(runDirectory, 'watch-session-report.json'),
+    'watch-session-report.json',
+  );
+  const terminalStages = [
+    ['mediaPlaybackCompleted', { authority: 'runner-input-complete-marker' }],
+    ['inputCompleteSignaled', { authority: 'runner-immutable-input-complete-marker' }],
+    ['sessionUpdatedReceived', {
+      authority: 'desktop-livetranslate-typed-session-owner',
+      sourceSequence: 1,
+      sessionIdentitySha256: 'd'.repeat(64),
+      sentSessionConfigSha256: 'e'.repeat(64),
+      echoedSessionConfigSha256: 'e'.repeat(64),
+    }],
+    ['lastProviderAppend', {
+      authority: 'desktop-provider-socket-send-owner',
+      sourceSequence: 2,
+      appendIndex: 1,
+      samples: 320,
+      acceptedSamplesTotal: 320,
+    }],
+    ['inputCompleteObserved', {
+      authority: 'desktop-input-complete-watcher',
+      markerSignaledAtUnixMs: mediaPlaybackCompletedAtUnixMs + 10,
+      acceptedExactlyOnce: true,
+      sourceSequence: 3,
+      captureProducerFenced: true,
+      providerInputSenderReleased: true,
+    }],
+    ['sessionFinishSent', {
+      authority: 'desktop-livetranslate-socket-owner',
+      sourceSequence: 4,
+      finishCount: 1,
+      lastProviderAppendSourceSequence: 2,
+      providerInputClosedSourceSequence: 3,
+      providerWritesAfterFinish: 0,
+    }],
+    ['lastResponseAudioDone', {
+      authority: 'desktop-provider-socket-event-owner',
+      sourceSequence: 5,
+      responseId: 'fixture-response-1',
+      semantics: 'last-provider-audio-response-completed',
+    }],
+    ['sessionFinishedReceived', {
+      authority: 'desktop-livetranslate-socket-owner',
+      sourceSequence: 6,
+      finishCount: 1,
+      providerWritesAfterFinish: 0,
+    }],
+    ['finalRendererAck', {
+      authority: 'desktop-renderer-receipt-owner',
+      sourceSequence: 7,
+      cueId: 'fixture-cue-1',
+      responseId: 'fixture-response-1',
+      cueSequence: 1,
+      lastCueSequence: 1,
+      coversLastCue: true,
+      receiptAuthority: 'bridge-translation-status-ack',
+      receiptId: 'fixture-receipt-1',
+    }],
+    ['localPlaybackQuiescent', {
+      stableForMs: 750,
+      speakerPlaybackActive: false,
+      completionAuthority: 'all-local-playback-owners-quiescent',
+      playbackWatchdogMs: 120_000,
+      waitedMs: 750,
+      initialPendingAudioFrames: null,
+      outputSampleRateHz: null,
+      estimatedPendingAudioMs: null,
+      finalPendingNativeAudio: false,
+      finalQueuedCommands: 0,
+      finalActiveCommands: 0,
+      finalPendingAudioFrames: 0,
+      finalPendingPlaybackSubmissions: 0,
+      finalPendingBridgeAcks: 0,
+      finalActiveBridgeCues: 0,
+      finalRestartBarrier: false,
+    }],
+    ['reportWritten', {
+      reportPath: reportAuthority.path,
+      byteLength: reportAuthority.bytes,
+      sha256: reportAuthority.sha256,
+    }],
+  ];
+  fs.writeFileSync(path.join(runDirectory, 'evidence-driven-terminal.json'), `${JSON.stringify({
+    schemaVersion: 3,
+    artifactKind: 'watch-mode-evidence-driven-terminal',
+    runMarker,
+    cellId: cell.cellId,
+    leaseId,
+    producerProcessId: desktopLaunch.pid,
+    producerStartTimeUtcTicks: desktopLaunch.processStartTimeUtcTicks,
+    producerStartedAtUnixMs: TEST_PROCESS_STARTED_AT_UNIX_MS,
+    producerExecutableSha256: desktopLaunch.processExecutableSha256,
+    sourceHeadCommit,
+    runtimeBundleDigest,
+    launchId: desktopLaunch.launchId,
+    status: 'completed',
+    startedAtUnixMs: mediaPlaybackCompletedAtUnixMs,
+    completedAtUnixMs: mediaPlaybackCompletedAtUnixMs + 100,
+    events: terminalStages.map(([stage, detail], index) => ({
+      sequence: index + 1,
+      stage,
+      observedAtUnixMs: mediaPlaybackCompletedAtUnixMs + index * 10,
+      detail,
+    })),
+  }, null, 2)}\n`, 'utf8');
+  writeTranslatedPcmLoopbackFixture(runDirectory, {
+    runMarker,
+    cellId: cell.cellId,
+    leaseId,
+    modelId: cell.modelId,
+    protocol: STRICT_PAID_MODEL_PROTOCOLS[cell.modelId],
+    feedbackLoopPrevention: cell.feedbackLoopPrevention,
+  });
+  // The translated-PCM fixture materializes the final cue authority in the
+  // production Watch report. Bind the terminal receipt only after those
+  // producer-side bytes have reached their final form.
+  const finalReportAuthority = fileAuthorityEntry(
+    path.join(runDirectory, 'watch-session-report.json'),
+    'watch-session-report.json',
+  );
+  const terminalPath = path.join(runDirectory, 'evidence-driven-terminal.json');
+  const terminal = JSON.parse(fs.readFileSync(terminalPath, 'utf8'));
+  const lastResponseAudioDone = terminal.events.find(
+    (event) => event.stage === 'lastResponseAudioDone',
+  );
+  lastResponseAudioDone.detail.responseId = 'authority-response-2';
+  const finalRendererAck = terminal.events.find((event) => event.stage === 'finalRendererAck');
+  finalRendererAck.detail = {
+    ...finalRendererAck.detail,
+    cueId: 'authority-cue-2',
+    responseId: 'authority-response-2',
+    cueSequence: 2,
+    lastCueSequence: 2,
+    receiptAuthority: cell.feedbackLoopPrevention === 'echo-cancel'
+      ? 'speaker-render-completed'
+      : 'bridge-translation-status-ack',
+    receiptId: cell.feedbackLoopPrevention === 'echo-cancel'
+      ? 'desktop-render-attempt-2'
+      : 'request-2',
+  };
+  const reportWritten = terminal.events.find((event) => event.stage === 'reportWritten');
+  reportWritten.detail = {
+    reportPath: finalReportAuthority.path,
+    byteLength: finalReportAuthority.bytes,
+    sha256: finalReportAuthority.sha256,
+  };
+  fs.writeFileSync(terminalPath, `${JSON.stringify(terminal, null, 2)}\n`, 'utf8');
   return writeCellExternalProviderBudget({
     runDirectory,
     runMarker,
@@ -1074,7 +1818,7 @@ function writeStrictPaidBudgetFixture(runDirectory, cell, {
     modelId: cell.modelId,
     feedbackLoopPrevention: cell.feedbackLoopPrevention,
     translationMode: 'native',
-    sessionCeilingSeconds: cell.durationSeconds,
+    inputCeilingSamples: maxSamples,
     generatedAt,
   }).ledger;
 }
@@ -1177,9 +1921,7 @@ function writeInteractiveSessionBundleFixture(runDirectory, {
     ['cell-powershell', nodePid + 1, nodePid, 'powershell.exe'],
     ['desktop', nodePid + 2, nodePid + 1, 'omni-desktop-shell.exe'],
     ['bridge', nodePid + 3, nodePid + 2, 'omni-bridge-service.exe'],
-    ...(plan.cells[lease.cellIndex].feedbackLoopPrevention === 'echo-cancel'
-      ? []
-      : [['recorder', nodePid + 4, nodePid + 1, 'omni-physical-output-probe.exe']]),
+    ['recorder', nodePid + 4, nodePid + 1, 'omni-physical-output-probe.exe'],
   ];
   const firstSeenAt = new Date(baseMs + 350).toISOString();
   const lastSeenAt = new Date(baseMs + 600).toISOString();
@@ -1190,6 +1932,12 @@ function writeInteractiveSessionBundleFixture(runDirectory, {
     firstSeenAt,
     lastSeenAt,
   }));
+  const processByPid = new Map(processes.map((entry) => [entry.pid, entry]));
+  for (const processEntry of processes) {
+    processEntry.parentStartedAt = processEntry.role === 'shard-node'
+      ? null
+      : processByPid.get(processEntry.parentPid).startedAt;
+  }
   const processAuthority = writeComponent(SHARD_INTERACTIVE_PROCESS_AUTHORITY_FILE, {
     schemaVersion: 2,
     artifactKind: 'watch-mode-interactive-process-authority',
@@ -1201,6 +1949,8 @@ function writeInteractiveSessionBundleFixture(runDirectory, {
     startedAt: new Date(baseMs + 325).toISOString(),
     completedAt: new Date(baseMs + 650).toISOString(),
     sampleIntervalMs: 250,
+    executionExitCode: 0,
+    requiredRoles: roleSpecs.map(([role]) => role),
     processCount: processes.length,
     processes,
     errors: [],
@@ -1254,7 +2004,7 @@ function writeInteractiveSessionBundleFixture(runDirectory, {
     completedAt: new Date(baseMs + 900).toISOString(),
   });
   const summary = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     artifactKind: 'watch-mode-interactive-shard-session-authority',
     ...common,
     vmIdentityDigest: worker.vmIdentityDigest,
@@ -1347,6 +2097,30 @@ function writeProcessExclusionRestartFixture(runDirectory) {
     `${Object.entries(summary).map(([key, value]) => `${key}=${value}`).join(' ')}\n`,
     'utf8',
   );
+  const matcherPath = path.join(runDirectory, 'translated-pcm-loopback.stdout.json');
+  if (fs.existsSync(matcherPath)) {
+    const previous = JSON.parse(fs.readFileSync(matcherPath, 'utf8'));
+    const rebuilt = buildTranslatedPcmLoopbackAuthority({
+      runDirectory,
+      runMarker: previous.runMarker,
+      recordingStartedAtEpochMs: previous.recordingStartedAtEpochMs,
+      cellId: previous.cellId,
+      leaseId: previous.leaseId,
+      modelId: previous.modelId,
+      protocol: previous.protocol,
+      feedbackLoopPrevention: previous.feedbackLoopPrevention,
+    });
+    assert.equal(rebuilt.passed, true, rebuilt.violations.join('; '));
+    fs.writeFileSync(matcherPath, `${JSON.stringify(rebuilt, null, 2)}\n`, 'utf8');
+    const physicalAuthorityPath = path.join(runDirectory, 'physical-output-content.raw.json');
+    const physicalAuthority = JSON.parse(fs.readFileSync(physicalAuthorityPath, 'utf8'));
+    physicalAuthority.translatedSpeech.acousticAuthority = rebuilt;
+    fs.writeFileSync(
+      physicalAuthorityPath,
+      `${JSON.stringify(physicalAuthority, null, 2)}\n`,
+      'utf8',
+    );
+  }
 }
 
 function writeAuthorityMatrixManifest(root, entries, {
@@ -1354,16 +2128,43 @@ function writeAuthorityMatrixManifest(root, entries, {
   runtimeBinaryHashes = TEST_RUNTIME_BINARY_HASHES,
   rebuildReportAfterBudget = true,
 } = {}) {
-  const releaseCells = entries.map((entry) => entry.cell);
+  const releaseCells = entries.map((entry) => {
+    const cell = entry.cell;
+    const releaseAuthority = LIVE_LLM_CELLS.find((approved) => (
+      approved.modelId === cell.modelId
+      && approved.feedbackLoopPrevention === cell.feedbackLoopPrevention
+      && approved.tier === (cell.tier ?? 'pairwise-live')
+    )) ?? LIVE_LLM_CELLS.find((approved) => (
+      approved.modelId === cell.modelId
+      && approved.feedbackLoopPrevention === cell.feedbackLoopPrevention
+    ));
+    assert.ok(releaseAuthority, `missing formal release authority for ${cell.modelId}/${cell.feedbackLoopPrevention}`);
+    return {
+      ...cell,
+      authoritativeTransformedReferenceFrames: cell.authoritativeTransformedReferenceFrames
+        ?? releaseAuthority.authoritativeTransformedReferenceFrames,
+      boundedCaptureGraceFrames: cell.boundedCaptureGraceFrames
+        ?? releaseAuthority.boundedCaptureGraceFrames,
+      maxExternalAudioSamples: cell.maxExternalAudioSamples
+        ?? releaseAuthority.maxExternalAudioSamples,
+      modelProtocolProfileIdentity: structuredClone(
+        cell.modelProtocolProfileIdentity ?? releaseAuthority.modelProtocolProfileIdentity,
+      ),
+    };
+  });
   const budgetGeneratedAt = now instanceof Date
     ? new Date(now.getTime() - 1_000)
     : new Date();
   const cellBudgets = entries.map((entry, index) => writeStrictPaidBudgetFixture(
     entry.runDirectory,
-    entry.cell,
+    releaseCells[index],
     {
       generatedAt: budgetGeneratedAt,
       leaseId: entry.leaseId ?? `lease-${index}-${entry.cell.cellId}`,
+      sourceHeadCommit: CLEAN_CURRENT_PROVENANCE.headCommit,
+      runtimeBundleDigest: runtimeBinaryHashes.length === 0
+        ? TEST_RUNTIME_BUNDLE_DIGEST
+        : authorityInventoryDigest(runtimeBinaryHashes),
     },
   ));
   if (rebuildReportAfterBudget) {
@@ -1378,7 +2179,10 @@ function writeAuthorityMatrixManifest(root, entries, {
   const matrixBudget = writeMatrixExternalProviderBudget(root, cellBudgets, {
     generatedAt: authorityNow,
     expectedCells: releaseCells,
-    matrixCeilingSeconds: STRICT_PAID_MATRIX_CEILING_SECONDS,
+    matrixInputSampleCeiling: releaseCells.reduce(
+      (total, cell) => total + cell.maxExternalAudioSamples,
+      0,
+    ),
   });
   const matrixBudgetAuthority = fileAuthorityEntry(
     matrixBudget.filePath,
@@ -1413,7 +2217,7 @@ function writeAuthorityMatrixManifest(root, entries, {
 }
 
 function writeAuthorityManifest(root, runDirectory, {
-  modelId = 'qwen3.5-omni-flash-realtime',
+  modelId = 'qwen3.5-livetranslate-flash-realtime',
   feedbackLoopPrevention = 'echo-cancel',
   deviceClass = 'default-speaker',
   profileId = 'authority-profile',
@@ -1425,7 +2229,7 @@ function writeAuthorityManifest(root, runDirectory, {
     cellId: `test::${modelId}::${feedbackLoopPrevention}::${deviceClass}`,
     tier: 'pairwise-live',
     providerMode: 'live-dashscope',
-    durationSeconds: MIN_STRICT_SESSION_DURATION_MS / 1_000,
+    ...formalTimingForMode(feedbackLoopPrevention),
     modelId,
     feedbackLoopPrevention,
     deviceClass,
@@ -1471,6 +2275,15 @@ function refreshMatrixBudgetAuthority(root, manifest) {
 function rewriteRecordedCellBudget(runDirectory, cell) {
   const budgetPath = path.join(runDirectory, 'external-provider-budget.json');
   const recorded = JSON.parse(fs.readFileSync(budgetPath, 'utf8'));
+  const releaseAuthority = LIVE_LLM_CELLS.find((approved) => (
+    approved.modelId === cell.modelId
+    && approved.feedbackLoopPrevention === cell.feedbackLoopPrevention
+    && approved.tier === cell.tier
+  )) ?? LIVE_LLM_CELLS.find((approved) => (
+    approved.modelId === cell.modelId
+    && approved.feedbackLoopPrevention === cell.feedbackLoopPrevention
+  ));
+  assert.ok(releaseAuthority, `missing formal release authority for ${cell.modelId}/${cell.feedbackLoopPrevention}`);
   return writeCellExternalProviderBudget({
     runDirectory,
     runMarker: recorded.runMarker,
@@ -1478,7 +2291,7 @@ function rewriteRecordedCellBudget(runDirectory, cell) {
     modelId: cell.modelId,
     feedbackLoopPrevention: cell.feedbackLoopPrevention,
     translationMode: 'native',
-    sessionCeilingSeconds: cell.durationSeconds,
+    inputCeilingSamples: releaseAuthority.maxExternalAudioSamples,
     generatedAt: recorded.generatedAt,
   }).ledger;
 }
@@ -1516,15 +2329,38 @@ function deviceEvidence(deviceClass, overrides = {}) {
 }
 
 test('strict Watch report validation requires a complete visible three-stage cue', () => {
-  assert.equal(strictWatchSessionReportFailure({ watchSessionReport: healthyWatchSessionReport }), null);
+  assert.equal(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
+    watchSessionReport: healthyWatchSessionReport,
+  }), null);
+  assert.match(strictWatchSessionReportFailure({
+    watchSessionReport: healthyWatchSessionReport,
+  }), /readiness must be session\.updated.*missing/);
+  assert.match(strictWatchSessionReportFailure({
+    realtimeSession: { readinessEvent: 'session.created' },
+    watchSessionReport: healthyWatchSessionReport,
+  }), /readiness must be session\.updated.*session\.created/);
+  assert.match(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
+    runnerReportedModelProtocolProfileIdentity: WATCH_MODEL_PROTOCOL_PROFILE_IDENTITY,
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      modelProtocolProfileIdentity: {
+        ...WATCH_MODEL_PROTOCOL_PROFILE_IDENTITY,
+        endpointPath: '/runner-self-reported-path',
+      },
+    },
+  }), /watchSessionReport model protocol profile identity endpointPath mismatch/);
   assert.match(strictWatchSessionReportFailure({}), /requires a saved/);
   assert.match(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       summary: { ...healthyWatchSessionReport.summary, unrenderedCueCount: 1 },
     },
   }), /published cue\(s\) without visible rendering/);
   assert.match(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       summary: { ...healthyWatchSessionReport.summary, unrenderedCueCount: 0 },
@@ -1542,6 +2378,7 @@ test('strict Watch report validation requires a complete visible three-stage cue
     },
   }), /explicit issue.*not-published/);
   assert.equal(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       cues: [
@@ -1563,6 +2400,7 @@ test('strict Watch report validation requires a complete visible three-stage cue
     },
   }), null);
   assert.match(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       cues: [{
@@ -1583,6 +2421,7 @@ test('strict Watch report validation requires a complete visible three-stage cue
     },
   }), /no complete model/);
   assert.match(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       cues: [
@@ -1603,6 +2442,7 @@ test('strict Watch report validation requires a complete visible three-stage cue
     },
   }), /explicit issue/);
   assert.match(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       cues: [{
@@ -1613,6 +2453,7 @@ test('strict Watch report validation requires a complete visible three-stage cue
     },
   }), /explicit issue/);
   assert.equal(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       cues: [
@@ -1631,6 +2472,7 @@ test('strict Watch report validation requires a complete visible three-stage cue
     },
   }), null);
   assert.equal(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
       cues: [{
@@ -1645,15 +2487,31 @@ test('strict Watch report validation requires a complete visible three-stage cue
     },
   }), null);
   assert.match(strictWatchSessionReportFailure({
+    realtimeSession: healthyRealtimeSession,
     watchSessionReport: {
       ...healthyWatchSessionReport,
-      elapsedMs: MIN_STRICT_SESSION_DURATION_MS - 1,
+      elapsedMs: 0,
       summary: {
         ...healthyWatchSessionReport.summary,
-        durationMs: MIN_STRICT_SESSION_DURATION_MS - 1,
+        durationMs: 0,
       },
     },
-  }), /duration is too short/);
+  }), /duration must be positive/);
+});
+
+test('strict Watch completion is evidence-driven and has no uniform 180-second success floor', () => {
+  const ordinaryEvidenceDrivenReport = {
+    realtimeSession: healthyRealtimeSession,
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      elapsedMs: 129_000,
+      summary: {
+        ...healthyWatchSessionReport.summary,
+        durationMs: 129_000,
+      },
+    },
+  };
+  assert.equal(strictWatchSessionReportFailure(ordinaryEvidenceDrivenReport), null);
 });
 
 test('strict device evidence independently verifies classifying endpoint signals', () => {
@@ -1903,14 +2761,14 @@ test('strict mode fails when strict content is not applicable', () => {
 test('strict mode passes when strict content is applicable and passed', () => {
   const root = makeTempRoot();
   writeReport(root, '20260605-191332', {
-    modelId: 'qwen3.5-omni-flash-realtime',
+    modelId: 'qwen3.5-livetranslate-flash-realtime',
     layers: strictContentLayers(),
   });
 
   const result = findScopedStrictEvidence(root, provenanceOk);
 
   assert.equal(result.ok, true);
-  assert.equal(result.latest.modelId, 'qwen3.5-omni-flash-realtime');
+  assert.equal(result.latest.modelId, 'qwen3.5-livetranslate-flash-realtime');
 });
 
 test('strict verifier refuses to scan outputRoot without an explicit current-run scope', () => {
@@ -1920,7 +2778,7 @@ test('strict verifier refuses to scan outputRoot without an explicit current-run
   const result = findWatchModeEvidence({ root, strict: true, ...provenanceOk });
 
   assert.equal(result.ok, false);
-  assert.match(result.reason, /requires the schema-v5 budget-balanced authority manifest/);
+  assert.match(result.reason, /requires the schema-v6 budget-balanced authority manifest/);
   assert.equal(result.candidates.length, 0, 'historical reports must not be scanned in strict mode');
 });
 
@@ -1991,11 +2849,151 @@ test('strict authority rebuilds report evidence from the fixed raw inventory', (
   );
   assert.equal(
     verified.externalProviderBudget.actualProviderInputSamples,
-    loadCanonicalFixtureAuthority().referencePcm.samples,
+    320,
   );
   assert.equal(
     verified.externalProviderBudget.cells[0].leaseId,
     manifest.externalProviderBudget.cells[0].leaseId,
+  );
+});
+
+test('strict authority rejects a rehashed WAV truncated by half a second despite self-consistent RIFF metadata', () => {
+  const root = makeTempRoot();
+  const runDirectory = writeAuthorityRawCell(root, 'authority-truncated-physical-wav');
+  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  const wavPath = path.join(runDirectory, 'physical-output-recording.wav');
+  const wav = fs.readFileSync(wavPath);
+  const blockAlign = wav.readUInt16LE(32);
+  const removedFrames = 24_000;
+  const removedBytes = removedFrames * blockAlign;
+  const originalDataBytes = wav.readUInt32LE(40);
+  assert.ok(originalDataBytes > removedBytes);
+  const truncatedDataBytes = originalDataBytes - removedBytes;
+  const truncatedWav = Buffer.from(wav.subarray(0, 44 + truncatedDataBytes));
+  truncatedWav.writeUInt32LE(36 + truncatedDataBytes, 4);
+  truncatedWav.writeUInt32LE(truncatedDataBytes, 40);
+  fs.writeFileSync(wavPath, truncatedWav);
+
+  refreshCellReceiptArtifacts(root, manifest, 0, ['physical-output-recording.wav']);
+
+  assert.throws(
+    () => verifyStrictMatrixAuthority({
+      manifestPath,
+      manifest,
+      evidenceRoot: root,
+      currentProvenance: CLEAN_CURRENT_PROVENANCE,
+      workspaceRoot: path.resolve('.'),
+      now: Date.now() + 2_000,
+      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    }),
+    /physical-output WAV, recording, and capture timeline frame counts must match exactly/,
+  );
+});
+
+test('strict authority rejects media playback without the fixed VAD-closing postroll', () => {
+  const root = makeTempRoot();
+  const runDirectory = writeAuthorityRawCell(root, 'authority-missing-postroll');
+  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  const playbackPath = path.join(runDirectory, 'playback.json');
+  const playback = JSON.parse(fs.readFileSync(playbackPath, 'utf8'));
+  playback.postrollSilenceFrames = 0;
+  playback.postrollSilenceSeconds = 0;
+  fs.writeFileSync(playbackPath, `${JSON.stringify(playback, null, 2)}\n`, 'utf8');
+  refreshCellReceiptArtifacts(root, manifest, 0, ['playback.json']);
+
+  assert.throws(
+    () => verifyStrictMatrixAuthority({
+      manifestPath,
+      manifest,
+      evidenceRoot: root,
+      currentProvenance: CLEAN_CURRENT_PROVENANCE,
+      workspaceRoot: path.resolve('.'),
+      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    }),
+    /playback\.json is not a completed production media-injector timeline/,
+  );
+});
+
+test('strict process-exclusion authority rejects playback without the midpoint restart quiet window', () => {
+  const root = makeTempRoot();
+  const options = {
+    feedbackLoopPrevention: 'process-exclusion',
+    modelId: 'qwen3.5-livetranslate-flash-realtime',
+  };
+  const runDirectory = writeAuthorityRawCell(root, 'authority-missing-restart-window', options);
+  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, options);
+  const playbackPath = path.join(runDirectory, 'playback.json');
+  const playback = JSON.parse(fs.readFileSync(playbackPath, 'utf8'));
+  playback.restartQuietWindowFrames = 0;
+  playback.restartQuietWindowSeconds = 0;
+  fs.writeFileSync(playbackPath, `${JSON.stringify(playback, null, 2)}\n`, 'utf8');
+  refreshCellReceiptArtifacts(root, manifest, 0, ['playback.json']);
+
+  assert.throws(
+    () => verifyStrictMatrixAuthority({
+      manifestPath,
+      manifest,
+      evidenceRoot: root,
+      currentProvenance: CLEAN_CURRENT_PROVENANCE,
+      workspaceRoot: path.resolve('.'),
+      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    }),
+    /restart quiet-window authority is invalid/,
+  );
+});
+
+test('strict process-exclusion authority binds quiet-window frames to the render clock', () => {
+  const root = makeTempRoot();
+  const options = {
+    feedbackLoopPrevention: 'process-exclusion',
+    modelId: 'qwen3.5-livetranslate-flash-realtime',
+  };
+  const runDirectory = writeAuthorityRawCell(root, 'authority-wrong-restart-window-frames', options);
+  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, options);
+  const playbackPath = path.join(runDirectory, 'playback.json');
+  const playback = JSON.parse(fs.readFileSync(playbackPath, 'utf8'));
+  playback.restartQuietWindowFrames = 1;
+  fs.writeFileSync(playbackPath, `${JSON.stringify(playback, null, 2)}\n`, 'utf8');
+  refreshCellReceiptArtifacts(root, manifest, 0, ['playback.json']);
+
+  assert.throws(
+    () => verifyStrictMatrixAuthority({
+      manifestPath,
+      manifest,
+      evidenceRoot: root,
+      currentProvenance: CLEAN_CURRENT_PROVENANCE,
+      workspaceRoot: path.resolve('.'),
+      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    }),
+    /restart quiet-window authority is invalid/,
+  );
+});
+
+test('strict non-process authority rejects any injected restart quiet window', () => {
+  const root = makeTempRoot();
+  const options = {
+    feedbackLoopPrevention: 'virtual-driver',
+    modelId: 'qwen3.5-livetranslate-flash-realtime',
+  };
+  const runDirectory = writeAuthorityRawCell(root, 'authority-unexpected-restart-window', options);
+  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, options);
+  const playbackPath = path.join(runDirectory, 'playback.json');
+  const playback = JSON.parse(fs.readFileSync(playbackPath, 'utf8'));
+  playback.restartQuietWindowAfterSeconds = 90;
+  playback.restartQuietWindowFrames = 2_160_000;
+  fs.writeFileSync(playbackPath, `${JSON.stringify(playback, null, 2)}\n`, 'utf8');
+  refreshCellReceiptArtifacts(root, manifest, 0, ['playback.json']);
+
+  assert.throws(
+    () => verifyStrictMatrixAuthority({
+      manifestPath,
+      manifest,
+      evidenceRoot: root,
+      currentProvenance: CLEAN_CURRENT_PROVENANCE,
+      workspaceRoot: path.resolve('.'),
+      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    }),
+    /restart quiet-window authority is invalid/,
   );
 });
 
@@ -2072,11 +3070,11 @@ test('strict authority rejects a wrong Rust model-protocol pair after all hashes
   const ledgerPath = path.join(runDirectory, 'provider-input-budget-ledger.json');
   const journalPath = path.join(runDirectory, 'provider-input-budget-ledger.json.journal.jsonl');
   const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
-  ledger.protocol = 'dashscope-livetranslate';
+  ledger.protocol = 'dashscope-omni';
   fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, 'utf8');
   const journal = fs.readFileSync(journalPath, 'utf8').trim().split(/\r?\n/).map((line) => {
     const entry = JSON.parse(line);
-    entry.protocol = 'dashscope-livetranslate';
+    entry.protocol = 'dashscope-omni';
     return entry;
   });
   fs.writeFileSync(journalPath, `${journal.map((entry) => JSON.stringify(entry)).join('\n')}\n`, 'utf8');
@@ -2100,14 +3098,16 @@ test('strict authority rejects a wrong Rust model-protocol pair after all hashes
   );
 });
 
-test('strict authority independently rejects a tampered matrix aggregate above the 23,040,000-sample cap', () => {
+test('strict authority independently rejects a tampered matrix aggregate above the mode-derived sample cap', () => {
   const root = makeTempRoot();
   const runDirectory = writeAuthorityRawCell(root, 'authority-tampered-matrix-budget');
   const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
   const matrixPath = path.join(root, manifest.externalProviderBudget.ledgerPath);
   const matrix = JSON.parse(fs.readFileSync(matrixPath, 'utf8'));
-  matrix.actualProviderInputSamples = 23_040_001;
-  matrix.actualProviderInputSeconds = 1_440.000063;
+  matrix.actualProviderInputSamples = SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES + 1;
+  matrix.actualProviderInputSeconds = Number(
+    ((SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES + 1) / 16_000).toFixed(6),
+  );
   fs.writeFileSync(matrixPath, `${JSON.stringify(matrix, null, 2)}\n`, 'utf8');
   refreshMatrixBudgetAuthority(root, manifest);
 
@@ -2124,9 +3124,9 @@ test('strict authority independently rejects a tampered matrix aggregate above t
   );
 });
 
-test('production strict authority requires all eight fixed paid cells', () => {
+test('production strict authority requires all four fixed paid cells', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-one-of-eight');
+  const runDirectory = writeAuthorityRawCell(root, 'authority-one-of-four');
   const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
 
   assert.throws(
@@ -2139,7 +3139,7 @@ test('production strict authority requires all eight fixed paid cells', () => {
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
       requireLocalIsolation: false,
     }),
-    /must contain exactly 8 paid live cells/,
+    /must contain exactly 4 paid live cells/,
   );
 });
 
@@ -2292,27 +3292,32 @@ test('strict shard preflight rejects a self-consistent model outside the paid re
     artifactKind: 'watch-mode-provider-preflight-authorization-consumption',
     executionId,
     grantDigest: '1'.repeat(64),
-    leaseReservationDigests: Array.from({ length: 8 }, (_, index) => (
+    leaseReservationDigests: Array.from({ length: LIVE_LLM_CELLS.length }, (_, index) => (
       (index + 2).toString(16).repeat(64).slice(0, 64)
     )),
     authorizationDigest: 'a'.repeat(64),
     providerId: PROVIDER_PREFLIGHT_PROVIDER_ID,
     model: unsupportedModel,
     protocol: PROVIDER_PREFLIGHT_PROTOCOL,
-    operation: 'text-translation-preflight',
-    inputMode: 'text-only',
+    operation: 'livetranslate-session-lifecycle-preflight',
+    inputMode: 'none',
+    providerInputMode: 'none',
+    responseMode: 'text-only',
+    terminalEvent: 'session.finished',
+    lifecycleBudget: {
+      firstServerEventLatencyMs: 1_200,
+      socketEventTimeoutMs: 12_000,
+    },
     invocationCount: 1,
     externalAudioSamples: 0,
-    tokenBudget: { maxInputTokens: 4_096, maxOutputTokens: 256 },
     consumptionClaim: unsupportedClaim,
     grantGeneratedAt,
-    reservationIssuedAts: Array.from({ length: 8 }, () => reservationIssuedAt),
+    reservationIssuedAts: Array.from({ length: LIVE_LLM_CELLS.length }, () => reservationIssuedAt),
   };
   fs.mkdirSync(executionRoot);
   fs.mkdirSync(sourceRoot);
   fs.writeFileSync(path.join(sourceRoot, 'provider-probe-result.json'), `${JSON.stringify({
-    operation: 'text-translation-preflight',
-    inputMode: 'text-only',
+    ...fixturePreflightLifecycle(unsupportedModel),
     externalAudioSamples: 0,
     providerInvocationCount: 1,
     executionId,
@@ -2335,65 +3340,35 @@ test('strict shard preflight rejects a self-consistent model outside the paid re
       leaseReservationDigests: expectedAuthorization.leaseReservationDigests,
       authorizationDigest: expectedAuthorization.authorizationDigest,
       consumptionClaim: unsupportedClaim,
-      operation: 'text-translation-preflight',
-      inputMode: 'text-only',
+      ...fixturePreflightLifecycle(unsupportedModel),
       externalAudioSamples: 0,
       providerInvocationCount: 1,
-      tokenBudget: expectedAuthorization.tokenBudget,
-      inputTokens: 12,
-      outputTokens: 3,
       audioSeconds: null,
     },
   });
-  const written = writeCoordinatorProviderPreflightReceipt({
-    executionRoot,
-    executionId,
-    preflight: {
-      providerId: PROVIDER_PREFLIGHT_PROVIDER_ID,
-      operation: 'text-translation-preflight',
-      inputMode: 'text-only',
-      status: 'completed',
-      externalAudioSamples: 0,
-      providerInvocationCount: 1,
-      model: unsupportedModel,
-      evidenceDirectory: sourceRoot,
-    },
-    provenance: CLEAN_CURRENT_PROVENANCE,
-    generatedAt: receiptGeneratedAt,
-    expectedAuthorization,
-    validateEvidence: validateFixture,
-  });
-
   assert.throws(
-    () => verifyStrictShardProviderPreflightAuthority({
-      plan: {
-        executionId,
-        providerPreflightAuthority: {
-          ...written.authority,
-          path: 'execution/provider-preflight-receipt.json',
-        },
-      },
+    () => writeCoordinatorProviderPreflightReceipt({
       executionRoot,
-      executionRootRelative: 'execution',
-      evidenceRoot: root,
-      currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
-      validationAt: new Date(),
-      authorization: {
-        consumption: expectedAuthorization,
-        claimProjection: unsupportedClaim,
-        leaseReservations: Array.from({ length: 8 }, () => ({
-          issuedAt: reservationIssuedAt,
-        })),
-        completion: { generatedAt: completionGeneratedAt },
+      executionId,
+      preflight: {
+        providerId: PROVIDER_PREFLIGHT_PROVIDER_ID,
+        ...fixturePreflightLifecycle(unsupportedModel),
+        status: 'completed',
+        externalAudioSamples: 0,
+        providerInvocationCount: 1,
+        model: unsupportedModel,
+        evidenceDirectory: sourceRoot,
       },
+      provenance: CLEAN_CURRENT_PROVENANCE,
+      generatedAt: receiptGeneratedAt,
+      expectedAuthorization,
       validateEvidence: validateFixture,
     }),
-    /preflight is not exactly one completed text-only invocation/,
+    /authorization failed.*adapter_unavailable/,
   );
 });
 
-test('strict production verifier rebuilds the staged eight-cell authority from one local manifest', () => {
+test('strict production verifier rebuilds the staged four-cell authority from one local manifest', () => {
   const root = makeTempRoot();
   const evidenceRoot = path.join(root, 'evidence');
   const coordinatorRoot = path.join(root, 'coordinator-source');
@@ -2439,6 +3414,7 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
   });
   const workers = [{
     workerId: 'vm1',
+    workspaceRoot,
     interactiveUser: 'VMUser',
     vmIdentity: { provider: 'vmware', uuidBios: 'verifier-vm-1' },
     deviceProfileInstances: [deviceProfile(
@@ -2493,7 +3469,7 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
         startedAt: new Date(baseMs - 9_750).toISOString(),
       };
       const receipt = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         artifactKind: SHARD_WORKER_READINESS_KIND,
         generatedAt: new Date(baseMs - 9_000).toISOString(),
         executionId,
@@ -2625,7 +3601,7 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
       (entry) => entry.path === PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE,
     );
     const consumptionClaim = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       artifactKind: PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_KIND,
       executionId,
       grantDigest: preflightGrant.digest,
@@ -2703,8 +3679,8 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
           expectedPreflightAuthorization.leaseReservationDigests,
         authorizationDigest: expectedPreflightAuthorization.authorizationDigest,
         consumptionClaim: consumptionClaimProjection,
-        operation: 'text-translation-preflight',
-        inputMode: 'text-only',
+        executor: structuredClone(expectedPreflightAuthorization.executor),
+        ...fixturePreflightLifecycle(),
         externalAudioSamples: 0,
         providerInvocationCount: 1,
         connectionAttempts: 1,
@@ -2713,9 +3689,6 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
         connectionClosed: true,
         connectionOwner: `preflight:${observedPreflightAuthorization.executionId}`,
         connectionGeneration: 1,
-        tokenBudget: expectedPreflightAuthorization.tokenBudget,
-        inputTokens: 42,
-        outputTokens: 7,
         audioSeconds: null,
       },
     });
@@ -2735,8 +3708,8 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
         desktopProcessId: consumptionClaim.desktopProcessId,
         desktopExecutable: consumptionClaim.desktopExecutablePath,
         desktopExecutableSha256: consumptionClaim.desktopExecutableSha256,
-        inputTokens: 42,
-        outputTokens: 7,
+        inputTokens: null,
+        outputTokens: null,
         audioSeconds: null,
         preflightAuthorization: observedPreflightAuthorization,
         providerConnectStartedAt,
@@ -2764,12 +3737,11 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
           exists: true,
           reference: 'credential://provider/dashscope/default',
         },
-        operation: 'text-translation-preflight',
-        inputMode: 'text-only',
+        ...fixturePreflightLifecycle(),
         externalAudioSamples: 0,
         providerInvocationCount: 1,
-        inputTokens: 42,
-        outputTokens: 7,
+        inputTokens: null,
+        outputTokens: null,
         audioSeconds: null,
         connectionAttempts: 1,
         connectionCount: 1,
@@ -2778,6 +3750,11 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
         connectionOwner: `preflight:${observedPreflightAuthorization.executionId}`,
         connectionGeneration: 1,
         rawProbeResult: {
+          ...fixturePreflightLifecycle(),
+          productionMode: true,
+          latencyBudgetMs: 1_200,
+          measuredLatencyMs: 606,
+          firstServerEventLatencyMs: 606,
           configuredModel,
           model: PROVIDER_PREFLIGHT_MODEL,
           protocol: PROVIDER_PREFLIGHT_PROTOCOL,
@@ -2787,9 +3764,14 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
           transportRequested: 'websocket',
           transportEffective: 'websocket',
           fallbackApplied: false,
-          inputTokens: 42,
-          outputTokens: 7,
+          inputTokens: null,
+          outputTokens: null,
           audioSeconds: null,
+          providerInvocationCount: 1,
+          externalAudioSamples: 0,
+          inputAudioBufferCommitCount: 0,
+          conversationItemCreateInputTextCount: 0,
+          responseCreateCount: 0,
           connectionAttempts: 1,
           connectionCount: 1,
           connectionOpened: true,
@@ -2837,8 +3819,8 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
         providerConnectStartedAt,
         providerConnectCompletedAt,
         transportEffective: 'websocket',
-        inputTokens: 42,
-        outputTokens: 7,
+        inputTokens: null,
+        outputTokens: null,
         audioSeconds: null,
         connectionAttempts: 1,
         connectionCount: 1,
@@ -2854,8 +3836,7 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
       executionId,
       preflight: {
         providerId: PROVIDER_PREFLIGHT_PROVIDER_ID,
-        operation: 'text-translation-preflight',
-        inputMode: 'text-only',
+        ...fixturePreflightLifecycle(),
         status: 'completed',
         externalAudioSamples: 0,
         providerInvocationCount: 1,
@@ -2904,7 +3885,14 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
         grantDigest: preflightGrant.digest,
         leaseReservationDigests: preflightReservations.map((entry) => entry.digest),
         authorizationDigest: authorizationPackage.authorizationDigest,
-        tokenBudget: structuredClone(expectedPreflightAuthorization.tokenBudget),
+        inputMode: expectedPreflightAuthorization.inputMode,
+        providerInputMode: expectedPreflightAuthorization.providerInputMode,
+        responseMode: expectedPreflightAuthorization.responseMode,
+        terminalEvent: expectedPreflightAuthorization.terminalEvent,
+        lifecycleBudget: structuredClone(expectedPreflightAuthorization.lifecycleBudget),
+        modelProtocolProfileIdentity: structuredClone(
+          expectedPreflightAuthorization.modelProtocolProfileIdentity,
+        ),
         consumptionClaim: consumptionClaimProjection,
       },
       providerPreflightCompletion: {
@@ -2912,9 +3900,18 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
         digest: preflightCompletion.digest,
         grantDigest: preflightCompletion.grantDigest,
         authorizationDigest: preflightCompletion.authorizationDigest,
-        tokenBudget: structuredClone(preflight.authority.tokenBudget),
-        inputTokens: preflight.authority.inputTokens,
-        outputTokens: preflight.authority.outputTokens,
+        inputMode: preflight.authority.inputMode,
+        providerInputMode: preflight.authority.providerInputMode,
+        responseMode: preflight.authority.responseMode,
+        terminalEvent: preflight.authority.terminalEvent,
+        lifecycleBudget: structuredClone(preflight.authority.lifecycleBudget),
+        modelProtocolProfileIdentity: structuredClone(
+          preflight.authority.modelProtocolProfileIdentity,
+        ),
+        evidenceOutcome: preflight.authority.evidenceOutcome,
+        firstServerEvent: structuredClone(preflight.authority.firstServerEvent),
+        sessionAuthority: structuredClone(preflight.authority.sessionAuthority),
+        rawTrace: structuredClone(preflight.authority.rawTrace),
         audioSeconds: preflight.authority.audioSeconds,
         consumptionClaim: consumptionClaimProjection,
       },
@@ -2963,6 +3960,8 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
       writeStrictPaidBudgetFixture(runDirectory, cell, {
         generatedAt: new Date(baseMs + cell.waveIndex * 3_000 + 500),
         leaseId: lease.leaseId,
+        sourceHeadCommit: plan.provenance.headCommit,
+        runtimeBundleDigest: plan.authority.runtimeBundleDigest,
       });
       fs.writeFileSync(
         path.join(runDirectory, SHARD_WORKER_READINESS_FILE),
@@ -3070,7 +4069,7 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
     const matrixBudget = writeMatrixExternalProviderBudget(evidenceRoot, stagedCellBudgets, {
       generatedAt: new Date(baseMs + 31_500),
       expectedCells: LIVE_LLM_CELLS,
-      matrixCeilingSeconds: STRICT_PAID_MATRIX_CEILING_SECONDS,
+      matrixInputSampleCeiling: STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
     });
     const matrixBudgetAuthority = fileAuthorityEntry(
       matrixBudget.filePath,
@@ -3082,8 +4081,63 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
       ledgerBytes: matrixBudgetAuthority.bytes,
       ledgerSha256: matrixBudgetAuthority.sha256,
     };
+    const failedShardAuthorities = staged.matrixIntegration.cells.filter((cell) => cell.verdict === 'failed');
+    const failedCellIds = failedShardAuthorities.map((cell) => cell.cellId);
+    const failures = failedShardAuthorities.map((cell) => ({
+      cellId: cell.cellId,
+      error: 'fixture strict report failed',
+      fingerprint: {
+        authoritySource: 'validated-shard-result',
+        failureLayer: cell.failureLayer,
+        stableErrorCode: cell.stableErrorCode,
+        feedbackMode: LIVE_LLM_CELLS.find((planned) => planned.cellId === cell.cellId).feedbackLoopPrevention,
+        lifecyclePhase: cell.lifecyclePhase,
+        endpointId: cell.failureContext.endpointId,
+        ownerGenerationTransition: structuredClone(cell.failureContext.ownerGenerationTransition),
+        bridgeInstanceId: cell.failureContext.bridgeInstanceId,
+      },
+    }));
+    const groupedFailures = new Map();
+    for (const failure of failures) {
+      const fingerprint = failure.fingerprint;
+      const key = JSON.stringify([
+        fingerprint.failureLayer,
+        fingerprint.stableErrorCode,
+        fingerprint.feedbackMode,
+        fingerprint.lifecyclePhase,
+        fingerprint.endpointId,
+        fingerprint.bridgeInstanceId,
+        fingerprint.ownerGenerationTransition?.before,
+        fingerprint.ownerGenerationTransition?.after,
+      ]);
+      const group = groupedFailures.get(key) ?? { fingerprint, cellIds: [], errors: [] };
+      group.cellIds.push(failure.cellId);
+      group.errors.push(failure.error);
+      groupedFailures.set(key, group);
+    }
+    const failureGroups = [...groupedFailures.values()].map((group) => ({
+      ...group,
+      cellIds: group.cellIds.sort(),
+      errors: [...new Set(group.errors)].sort(),
+    }));
+    const failureSummary = {
+      attempted: LIVE_LLM_CELLS.map((cell) => cell.cellId),
+      completed: LIVE_LLM_CELLS.map((cell) => cell.cellId),
+      passed: LIVE_LLM_CELLS.map((cell) => cell.cellId).filter((cellId) => !failedCellIds.includes(cellId)),
+      failed: failedCellIds,
+      failures,
+      sharedRootCauses: failureGroups.filter((group) => group.cellIds.length > 1),
+      cellSpecificFailures: failureGroups.filter((group) => group.cellIds.length === 1),
+    };
     const failureFingerprintPath = path.join(staged.finalExecutionRoot, 'failure-fingerprints.json');
-    fs.writeFileSync(failureFingerprintPath, '{"failures":[]}\n', 'utf8');
+    fs.writeFileSync(failureFingerprintPath, `${JSON.stringify({
+      schemaVersion: 2,
+      artifactKind: 'watch-mode-production-failure-fingerprints',
+      generatedAt: new Date(baseMs + 31_750).toISOString(),
+      executionId,
+      collectAllCompleted: true,
+      ...failureSummary,
+    })}\n`, 'utf8');
     const failureFingerprintAuthority = fileAuthorityEntry(
       failureFingerprintPath,
       path.relative(evidenceRoot, failureFingerprintPath).split(path.sep).join('/'),
@@ -3103,19 +4157,35 @@ test('strict production verifier rebuilds the staged eight-cell authority from o
       authorityRuntimeBinaryHashes: runtimeBinaryHashes,
       releaseCells: LIVE_LLM_CELLS,
       externalProviderBudget,
-      failureSummary: {
-        attempted: LIVE_LLM_CELLS.map((cell) => cell.cellId),
-        completed: LIVE_LLM_CELLS.map((cell) => cell.cellId),
-        passed: LIVE_LLM_CELLS.map((cell) => cell.cellId),
-        failed: [],
-        failures: [],
-        sharedRootCauses: [],
-        cellSpecificFailures: [],
-      },
+      failureSummary,
       failureFingerprintAuthority,
       shardExecution: staged.shardExecution,
       matrixIntegration: staged.matrixIntegration,
     });
+
+    if (failedCellIds.length > 0) {
+      assert.deepEqual(
+        manifest.cells.filter((cell) => cell.verdict === 'failed').map((cell) => cell.cellId),
+        failedCellIds,
+      );
+      assert.ok(manifest.cells.filter((cell) => cell.verdict === 'failed').every((cell) => (
+        !Object.hasOwn(cell, 'receiptPath')
+        && cell.shardAuthority.result.resultDigest
+      )));
+      assert.throws(() => verifyProductionStrictMatrixAuthority({
+        manifestPath,
+        manifest,
+        evidenceRoot,
+        currentProvenance: shardProvenance,
+        workspaceRoot,
+        currentRuntimeBinaryHashes: runtimeBinaryHashes,
+        releaseCells: LIVE_LLM_CELLS,
+        requireLocalIsolation: false,
+        now: baseMs + 33_000,
+        validatePreflightEvidence: validateFixturePreflight,
+      }), /strict collect-all matrix contains failed or incomplete cells/u);
+      return;
+    }
 
     const verified = verifyProductionStrictMatrixAuthority({
       manifestPath,
@@ -3201,8 +4271,8 @@ test('strict authority rejects duplicate Rust provider lease IDs across cells', 
     cellId: 'test::lease-unique::first',
     tier: 'pairwise-live',
     providerMode: 'live-dashscope',
-    durationSeconds: 180,
-    modelId: 'qwen3.5-omni-flash-realtime',
+    ...formalTimingForMode('echo-cancel'),
+    modelId: 'qwen3.5-livetranslate-flash-realtime',
     feedbackLoopPrevention: 'echo-cancel',
     deviceClass: 'default-speaker',
   };
@@ -3276,10 +4346,8 @@ test('strict authority rejects reordered matrix budget cells after the ledger ha
     cellId: `test::ordered-budget::${suffix}`,
     tier: 'pairwise-live',
     providerMode: 'live-dashscope',
-    durationSeconds: 180,
-    modelId: index === 0
-      ? 'qwen3.5-omni-flash-realtime'
-      : 'qwen3.5-livetranslate-flash-realtime',
+    ...formalTimingForMode('echo-cancel'),
+    modelId: 'qwen3.5-livetranslate-flash-realtime',
     feedbackLoopPrevention: 'echo-cancel',
     deviceClass: 'default-speaker',
   }));
@@ -3371,7 +4439,18 @@ test('canonical strict authority round-trips the complete verifier receipt cell 
     cellId: manifest.cells[0].cellId,
     tier: manifest.cells[0].tier,
     providerMode: manifest.cells[0].providerMode,
-    durationSeconds: manifest.cells[0].durationSeconds,
+    inputCompletionWatchdogSeconds: manifest.cells[0].inputCompletionWatchdogSeconds,
+    processExclusionRestartAfterSeconds: manifest.cells[0].processExclusionRestartAfterSeconds,
+    processExclusionRestartQuietSeconds: manifest.cells[0].processExclusionRestartQuietSeconds,
+    providerFinishTimeoutSeconds: manifest.cells[0].providerFinishTimeoutSeconds,
+    localPlaybackDrainTimeoutSeconds: manifest.cells[0].localPlaybackDrainTimeoutSeconds,
+    reportWriteTimeoutSeconds: manifest.cells[0].reportWriteTimeoutSeconds,
+    cellHardWatchdogSeconds: manifest.cells[0].cellHardWatchdogSeconds,
+    authoritativeTransformedReferenceFrames: manifest.cells[0].authoritativeTransformedReferenceFrames,
+    boundedCaptureGraceFrames: manifest.cells[0].boundedCaptureGraceFrames,
+    maxExternalAudioSamples: manifest.cells[0].maxExternalAudioSamples,
+    auxiliaryExternalAudioSeconds: manifest.cells[0].auxiliaryExternalAudioSeconds,
+    subtitleTranslationMode: manifest.cells[0].subtitleTranslationMode,
     modelId: manifest.cells[0].modelId,
     feedbackLoopPrevention: manifest.cells[0].feedbackLoopPrevention,
     deviceClass: manifest.cells[0].deviceClass,
@@ -3416,7 +4495,7 @@ test('canonical strict authority round-trips the complete verifier receipt cell 
   );
 
   const incompleteReceipt = JSON.parse(fs.readFileSync(verification.receiptPath, 'utf8'));
-  delete incompleteReceipt.cells[0].durationSeconds;
+  delete incompleteReceipt.cells[0].inputCompletionWatchdogSeconds;
   fs.writeFileSync(
     verification.receiptPath,
     `${JSON.stringify(incompleteReceipt, null, 2)}\n`,
@@ -3472,7 +4551,7 @@ test('strict process-exclusion authority independently recomputes the three-tone
   const root = makeTempRoot();
   const options = {
     feedbackLoopPrevention: 'process-exclusion',
-    modelId: 'qwen3.5-omni-flash-realtime',
+    modelId: 'qwen3.5-livetranslate-flash-realtime',
   };
   const runDirectory = writeAuthorityRawCell(root, 'authority-process-wav', options);
   const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, options);
@@ -3495,7 +4574,7 @@ test('strict translated PCM verifier rehashes every cue and rejects matcher-outp
   const root = makeTempRoot();
   const options = {
     feedbackLoopPrevention: 'process-exclusion',
-    modelId: 'qwen3.5-omni-flash-realtime',
+    modelId: 'qwen3.5-livetranslate-flash-realtime',
   };
   const runDirectory = writeAuthorityRawCell(root, 'authority-translated-pcm-tamper', options);
   const { manifest } = writeAuthorityManifest(root, runDirectory, options);
@@ -3511,6 +4590,29 @@ test('strict translated PCM verifier rehashes every cue and rejects matcher-outp
     index: 0,
   });
   assert.equal(initial.passed, true);
+
+  const terminal = JSON.parse(fs.readFileSync(
+    path.join(runDirectory, 'evidence-driven-terminal.json'),
+    'utf8',
+  ));
+  assert.doesNotThrow(() => assertStrictTranslatedPcmLoopbackAuthority({
+    runDirectory,
+    cell,
+    cellExternalProviderBudget,
+    index: 0,
+    evidenceDrivenTerminal: { terminal },
+  }));
+  terminal.events.find((event) => event.stage === 'finalRendererAck').detail.cueId = 'authority-cue-1';
+  assert.throws(
+    () => assertStrictTranslatedPcmLoopbackAuthority({
+      runDirectory,
+      cell,
+      cellExternalProviderBudget,
+      index: 0,
+      evidenceDrivenTerminal: { terminal },
+    }),
+    /terminal renderer ACK does not bind the final acoustically passed translated cue/,
+  );
 
   const stdoutPath = path.join(runDirectory, 'translated-pcm-loopback.stdout.json');
   const stdout = JSON.parse(fs.readFileSync(stdoutPath, 'utf8'));
@@ -3546,24 +4648,146 @@ test('strict translated PCM verifier rehashes every cue and rejects matcher-outp
   );
 });
 
+test('every formal paid cell requires an independently readable translated PCM run directory', () => {
+  const root = makeTempRoot();
+  for (const [index, cell] of LIVE_LLM_CELLS.entries()) {
+    const missingRunDirectory = path.join(root, `missing-paid-cell-${index}`);
+    assert.equal(fs.existsSync(missingRunDirectory), false);
+    assert.throws(
+      () => assertStrictTranslatedPcmLoopbackAuthority({
+        runDirectory: missingRunDirectory,
+        cell,
+        cellExternalProviderBudget: {
+          runMarker: `watch_mode_diagnostic.run_id=missing-paid-cell-${index}`,
+          providerSendBoundary: {
+            leaseId: `lease-missing-paid-cell-${index}`,
+            protocol: STRICT_PAID_MODEL_PROTOCOLS[cell.modelId],
+          },
+        },
+        index,
+      }),
+      `${cell.cellId} must not bypass translated PCM reconstruction`,
+    );
+  }
+});
+
+test('echo-cancel strict authority rejects relabeled Bridge playback evidence', () => {
+  const root = makeTempRoot();
+  const options = {
+    feedbackLoopPrevention: 'process-exclusion',
+    modelId: 'qwen3.5-livetranslate-flash-realtime',
+  };
+  const runDirectory = writeAuthorityRawCell(root, 'authority-echo-cancel-pcm-tamper', options);
+  const { manifest } = writeAuthorityManifest(root, runDirectory, options);
+  const formalEchoCancelCell = LIVE_LLM_CELLS.find(
+    (cell) => cell.feedbackLoopPrevention === 'echo-cancel',
+  );
+  assert.ok(formalEchoCancelCell, 'release plan must contain an echo-cancel paid cell');
+  const cell = {
+    ...manifest.cells[0],
+    cellId: formalEchoCancelCell.cellId,
+    modelId: formalEchoCancelCell.modelId,
+    feedbackLoopPrevention: formalEchoCancelCell.feedbackLoopPrevention,
+  };
+  const cellExternalProviderBudget = JSON.parse(fs.readFileSync(
+    path.join(runDirectory, 'external-provider-budget.json'),
+    'utf8',
+  ));
+  const summaryPath = path.join(
+    runDirectory,
+    'translated-cue-pcm',
+    'translated-cue-pcm-summary.json',
+  );
+  const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+  summary.cellId = cell.cellId;
+  summary.model = cell.modelId;
+  fs.writeFileSync(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
+  const journalPath = path.join(
+    runDirectory,
+    'translated-cue-pcm',
+    'translated-cue-pcm-authority.jsonl',
+  );
+  const journal = fs.readFileSync(journalPath, 'utf8').trim().split(/\r?\n/).map(JSON.parse);
+  for (const event of journal) {
+    event.cellId = cell.cellId;
+    event.model = cell.modelId;
+  }
+  fs.writeFileSync(journalPath, `${journal.map(JSON.stringify).join('\n')}\n`, 'utf8');
+
+  const recordingAuthority = JSON.parse(fs.readFileSync(
+    path.join(runDirectory, 'physical-output-recording.json'),
+    'utf8',
+  ));
+  const untampered = buildTranslatedPcmLoopbackAuthority({
+    runDirectory,
+    appLogPath: path.join(runDirectory, 'app.log'),
+    runMarker: cellExternalProviderBudget.runMarker,
+    recordingStartedAtEpochMs: Number(recordingAuthority.recordingStartedAtEpochMs),
+    cellId: cell.cellId,
+    leaseId: cellExternalProviderBudget.providerSendBoundary.leaseId,
+    modelId: cell.modelId,
+    protocol: cellExternalProviderBudget.providerSendBoundary.protocol,
+    feedbackLoopPrevention: cell.feedbackLoopPrevention,
+  });
+  assert.equal(
+    untampered.passed,
+    false,
+    'Bridge playback evidence must not become echo-cancel authority by relabeling identity fields',
+  );
+});
+
+test('echo-cancel strict authority accepts schema-v2 Desktop speaker playback evidence', () => {
+  const root = makeTempRoot();
+  const options = {
+    feedbackLoopPrevention: 'echo-cancel',
+    modelId: 'qwen3.5-livetranslate-flash-realtime',
+  };
+  const runDirectory = writeAuthorityRawCell(root, 'authority-echo-cancel-desktop-speaker', options);
+  const { manifest } = writeAuthorityManifest(root, runDirectory, options);
+  const cell = manifest.cells[0];
+  const cellExternalProviderBudget = JSON.parse(fs.readFileSync(
+    path.join(runDirectory, 'external-provider-budget.json'),
+    'utf8',
+  ));
+
+  const authority = assertStrictTranslatedPcmLoopbackAuthority({
+    runDirectory,
+    cell,
+    cellExternalProviderBudget,
+    index: 0,
+    evidenceDrivenTerminal: {
+      terminal: JSON.parse(fs.readFileSync(
+        path.join(runDirectory, 'evidence-driven-terminal.json'),
+        'utf8',
+      )),
+    },
+  });
+
+  assert.equal(authority.passed, true);
+  assert.equal(authority.finalRequiredCueId, 'authority-cue-2');
+  assert.equal(authority.matches.at(-1)?.rendererKind, 'desktop-speaker');
+  assert.equal(authority.matches.at(-1)?.renderAttemptId, 'desktop-render-attempt-2');
+  assert.equal(authority.matches.at(-1)?.passed, true);
+});
+
 test('strict virtual-driver authority binds the running SYS and signature identity to the current package', () => {
   const root = makeTempRoot();
   const runtimeBinaryHashes = [{
     path: 'drivers/windows-virtual-mic/package/omni-virtual-speaker.sys',
     bytes: 123,
-    sha256: 'driver-package-hash',
+    sha256: 'a'.repeat(64),
   }, {
     path: 'drivers/windows-virtual-mic/package/omni-virtual-speaker.cat',
     bytes: 123,
-    sha256: 'driver-catalog-hash',
+    sha256: 'b'.repeat(64),
   }, {
     path: 'drivers/windows-virtual-mic/package/omni-virtual-speaker.inf',
     bytes: 123,
-    sha256: 'driver-inf-hash',
+    sha256: 'c'.repeat(64),
   }];
   const options = {
     feedbackLoopPrevention: 'virtual-driver',
-    modelId: 'qwen3.5-omni-flash-realtime',
+    modelId: 'qwen3.5-livetranslate-flash-realtime',
     runtimeBinaryHashes,
   };
   const runDirectory = writeAuthorityRawCell(root, 'authority-installed-driver', options);
@@ -3610,7 +4834,7 @@ test('strict authority rejects a report-only schema-v1 matrix even when all 18 s
       workspaceRoot: path.resolve('.'),
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
-    /requires watch-mode-strict-matrix-authority schemaVersion=5/,
+    /requires watch-mode-strict-matrix-authority schemaVersion=6/,
   );
 });
 
@@ -3675,13 +4899,12 @@ test('strict authority rejects swapping a manifest cell to a copied run director
 test('strict authority rejects a self-consistently rehashed summary that disagrees with raw evidence', () => {
   const root = makeTempRoot();
   const runDirectory = writeAuthorityRawCell(root, 'authority-summary-change');
+  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
   const reportPath = path.join(runDirectory, 'report.json');
   const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
   report.modelId = 'forged-model';
   fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, {
-    rebuildReportAfterBudget: false,
-  });
+  refreshCellReceiptArtifacts(root, manifest, 0, ['report.json']);
 
   assert.throws(
     () => verifyStrictMatrixAuthority({
@@ -3764,15 +4987,15 @@ test('strict manifest provenance must match the exact clean current HEAD', () =>
   );
 });
 
-test('strict model matrix requires every requested model', () => {
+test('scoped strict diagnostic search requires every explicitly requested model', () => {
   const root = makeTempRoot();
   const strictLayers = strictContentLayers();
-  writeReport(root, '20260605-191332-qwen3.5-omni-flash-realtime', {
-    modelId: 'qwen3.5-omni-flash-realtime',
+  writeReport(root, '20260605-191332-diagnostic-model-a', {
+    modelId: 'diagnostic-model-a',
     layers: strictLayers,
   });
-  writeReport(root, '20260605-201332-qwen3.5-livetranslate-flash-realtime', {
-    modelId: 'qwen3.5-livetranslate-flash-realtime',
+  writeReport(root, '20260605-201332-diagnostic-model-b', {
+    modelId: 'diagnostic-model-b',
     verdict: 'failed',
     failureLayer: 'provider',
     failureReason: 'provider request failed in the current matrix cell',
@@ -3784,8 +5007,8 @@ test('strict model matrix requires every requested model', () => {
 
   const result = findScopedStrictEvidence(root, {
     models: [
-      'qwen3.5-omni-flash-realtime',
-      'qwen3.5-livetranslate-flash-realtime',
+      'diagnostic-model-a',
+      'diagnostic-model-b',
     ],
     ...provenanceOk,
   });
@@ -3794,35 +5017,35 @@ test('strict model matrix requires every requested model', () => {
   assert.equal(result.modelResults.length, 2);
   assert.equal(result.modelResults[0].ok, true);
   assert.equal(result.modelResults[1].ok, false);
-  assert.match(result.reason, /qwen3\.5-livetranslate-flash-realtime/);
+  assert.match(result.reason, /diagnostic-model-b/);
 });
 
-test('strict model matrix passes when both requested models pass', () => {
+test('scoped strict diagnostic search can inspect two explicitly requested non-release models', () => {
   const root = makeTempRoot();
   const strictLayers = strictContentLayers();
-  writeReport(root, '20260605-191332-qwen3.5-omni-flash-realtime', {
+  writeReport(root, '20260605-191332-diagnostic-model-a', {
     generatedAt: '2026-06-05T11:13:32.000Z',
-    modelId: 'qwen3.5-omni-flash-realtime',
+    modelId: 'diagnostic-model-a',
     layers: strictLayers,
   });
-  writeReport(root, '20260605-201332-qwen3.5-livetranslate-flash-realtime', {
+  writeReport(root, '20260605-201332-diagnostic-model-b', {
     generatedAt: '2026-06-05T12:13:32.000Z',
-    modelId: 'qwen3.5-livetranslate-flash-realtime',
+    modelId: 'diagnostic-model-b',
     layers: strictLayers,
   });
 
   const result = findScopedStrictEvidence(root, {
     models: [
-      'qwen3.5-omni-flash-realtime',
-      'qwen3.5-livetranslate-flash-realtime',
+      'diagnostic-model-a',
+      'diagnostic-model-b',
     ],
     ...provenanceOk,
   });
 
   assert.equal(result.ok, true);
   assert.deepEqual(result.modelResults.map((item) => item.modelId), [
-    'qwen3.5-omni-flash-realtime',
-    'qwen3.5-livetranslate-flash-realtime',
+    'diagnostic-model-a',
+    'diagnostic-model-b',
   ]);
 });
 
@@ -3890,7 +5113,7 @@ test('strict AEC evidence requires real three-stage render injection and zero su
   assert.match(strictAecScenarioFailure(dryRun), /live run/i);
 });
 
-test('strict process-exclusion evidence requires a real midpoint restart across the required timeline', () => {
+test('strict process-exclusion evidence binds the frozen 90s restart and 45s quiet window', () => {
   const healthyReport = {
     mode: 'live',
     layers: {
@@ -3902,11 +5125,11 @@ test('strict process-exclusion evidence requires a real midpoint restart across 
   };
   assert.equal(strictProcessExclusionRestartFailure(healthyReport), null);
 
-  const fiveMinuteSimulation = structuredClone(healthyReport);
-  const evidence = fiveMinuteSimulation.layers.bridge.data.processExclusionRestart;
-  evidence.systemMetrics.durationMs = 300_000;
-  evidence.systemMetrics.finishedAt = new Date(PROCESS_METRICS_STARTED_AT_MS + 300_000).toISOString();
-  assert.match(strictProcessExclusionRestartFailure(fiveMinuteSimulation), /required real process-tree/i);
+  const shortPostRestartWindow = structuredClone(healthyReport);
+  const evidence = shortPostRestartWindow.layers.bridge.data.processExclusionRestart;
+  evidence.systemMetrics.durationMs = 120_000;
+  evidence.systemMetrics.finishedAt = new Date(PROCESS_METRICS_STARTED_AT_MS + 120_000).toISOString();
+  assert.match(strictProcessExclusionRestartFailure(shortPostRestartWindow), /45-second post-restart/i);
 
   const sameIdentity = structuredClone(healthyReport);
   sameIdentity.layers.bridge.data.processExclusionRestart.newBridgeProcessId = 4242;
@@ -3946,87 +5169,70 @@ test('default gate ignores echo-cancel runs so virtual-driver evidence stays aut
   assert.equal(result.latest.feedbackMode, 'virtual-driver');
 });
 
-test('strict feedback-mode matrix requires every model and feedback mode combination', () => {
+test('strict release feedback matrix requires every LiveTranslate route', () => {
   const root = makeTempRoot();
   const strictLayers = strictContentLayers();
-  writeReport(root, '20260605-191332-omni', {
-    modelId: 'qwen3.5-omni-flash-realtime',
+  writeReport(root, '20260605-191332-livetranslate', {
+    modelId: 'qwen3.5-livetranslate-flash-realtime',
     layers: strictLayers,
   });
-  writeReport(root, '20260605-201332-omni-echo-cancel', {
+  writeReport(root, '20260605-201332-livetranslate-echo-cancel', {
     generatedAt: '2026-06-05T12:13:32.000Z',
-    modelId: 'qwen3.5-omni-flash-realtime',
+    modelId: 'qwen3.5-livetranslate-flash-realtime',
     feedbackLoopPrevention: 'echo-cancel',
     layers: echoCancelLayers(),
   });
-  writeReport(root, '20260605-211332-livetranslate', {
+  writeReport(root, '20260605-211332-livetranslate-process-exclusion', {
     modelId: 'qwen3.5-livetranslate-flash-realtime',
+    feedbackLoopPrevention: 'process-exclusion',
     verdict: 'failed',
     failureLayer: 'provider',
     failureReason: 'provider request failed in the current matrix cell',
     layers: {
-      ...strictLayers,
+      ...processExclusionLayers(),
       provider: { status: 'failed', reason: 'provider request failed in the current matrix cell' },
     },
   });
-  writeReport(root, '20260605-221332-livetranslate-echo-cancel', {
-    modelId: 'qwen3.5-livetranslate-flash-realtime',
-    feedbackLoopPrevention: 'echo-cancel',
-    verdict: 'failed',
-    failureLayer: 'provider',
-    failureReason: 'provider request failed in the current matrix cell',
-    layers: {
-      ...echoCancelLayers(),
-      provider: { status: 'failed', reason: 'provider request failed in the current matrix cell' },
-    },
-  });
-
   const result = findScopedStrictEvidence(root, {
-    models: [
-      'qwen3.5-omni-flash-realtime',
-      'qwen3.5-livetranslate-flash-realtime',
-    ],
-    feedbackModes: ['virtual-driver', 'echo-cancel'],
+    models: ['qwen3.5-livetranslate-flash-realtime'],
+    feedbackModes: ['virtual-driver', 'echo-cancel', 'process-exclusion'],
     ...provenanceOk,
   });
 
   assert.equal(result.ok, false);
-  assert.equal(result.modelResults.length, 4);
+  assert.equal(result.modelResults.length, 3);
   assert.equal(result.modelResults.filter((item) => item.ok).length, 2);
-  assert.match(result.reason, /qwen3\.5-livetranslate-flash-realtime\[virtual-driver\]/);
-  assert.match(result.reason, /qwen3\.5-livetranslate-flash-realtime\[echo-cancel\]/);
+  assert.match(result.reason, /qwen3\.5-livetranslate-flash-realtime\[process-exclusion\]/);
 });
 
-test('strict mode rejects a completed live report shorter than thirty minutes', () => {
+test('strict mode accepts evidence-complete live reports without a uniform duration floor', () => {
   const root = makeTempRoot();
   writeReport(root, '20260605-191332-short-live', {
     layers: strictContentLayers(),
     watchSessionReport: {
       ...healthyWatchSessionReport,
-      elapsedMs: MIN_STRICT_SESSION_DURATION_MS - 1,
+      elapsedMs: 129_000,
       summary: {
         ...healthyWatchSessionReport.summary,
-        durationMs: MIN_STRICT_SESSION_DURATION_MS - 1,
+        durationMs: 129_000,
       },
     },
   });
 
   const result = findScopedStrictEvidence(root, provenanceOk);
 
-  assert.equal(result.ok, false);
-  assert.match(result.reason, /duration is too short/);
-  assert.deepEqual(result.failedLayers, ['watchSessionReport']);
+  assert.equal(result.ok, true);
 });
 
 test('strict device matrix rejects a live report without classifiable endpoint evidence', () => {
   const root = makeTempRoot();
   writeReport(root, '20260605-191332-missing-device', {
-    modelId: 'qwen3.5-omni-flash-realtime',
+    modelId: 'qwen3.5-livetranslate-flash-realtime',
     layers: strictContentLayers(),
   });
 
   const result = findScopedStrictEvidence(root, {
-    models: ['qwen3.5-omni-flash-realtime'],
+    models: ['qwen3.5-livetranslate-flash-realtime'],
     feedbackModes: ['virtual-driver'],
     deviceClasses: ['default-speaker'],
     ...provenanceOk,
@@ -4037,13 +5243,15 @@ test('strict device matrix rejects a live report without classifiable endpoint e
   assert.match(result.reason, /requires report\.deviceEvidence/);
 });
 
-test('strict device matrix rejects one captured session copied across model cells', () => {
+test('strict device matrix rejects one captured session copied across LiveTranslate route cells', () => {
   const root = makeTempRoot();
-  const models = ['qwen3.5-omni-flash-realtime', 'qwen3.5-livetranslate-flash-realtime'];
-  for (const [index, modelId] of models.entries()) {
+  const modelId = 'qwen3.5-livetranslate-flash-realtime';
+  const feedbackModes = ['virtual-driver', 'echo-cancel'];
+  for (const [index, feedbackLoopPrevention] of feedbackModes.entries()) {
     writeReport(root, `20260605-19133${index}-default-speaker`, {
       modelId,
-      layers: strictContentLayers(),
+      feedbackLoopPrevention,
+      layers: feedbackLoopPrevention === 'echo-cancel' ? echoCancelLayers() : strictContentLayers(),
       deviceEvidence: deviceEvidence('default-speaker'),
       watchSessionReport: {
         ...healthyWatchSessionReport,
@@ -4053,8 +5261,8 @@ test('strict device matrix rejects one captured session copied across model cell
   }
 
   const result = findScopedStrictEvidence(root, {
-    models,
-    feedbackModes: ['virtual-driver'],
+    models: [modelId],
+    feedbackModes,
     deviceClasses: ['default-speaker'],
     ...provenanceOk,
   });
@@ -4065,12 +5273,9 @@ test('strict device matrix rejects one captured session copied across model cell
   assert.match(result.reason, /duplicate live artifact\/session/);
 });
 
-test('strict device matrix accepts the complete two-model by three-route single-device grid', () => {
+test('strict device matrix accepts the complete LiveTranslate three-route single-device grid', () => {
   const root = makeTempRoot();
-  const models = [
-    'qwen3.5-omni-flash-realtime',
-    'qwen3.5-livetranslate-flash-realtime',
-  ];
+  const models = ['qwen3.5-livetranslate-flash-realtime'];
   const feedbackModes = ['process-exclusion', 'virtual-driver', 'echo-cancel'];
   const deviceClasses = ['default-speaker'];
   let runIndex = 0;
@@ -4109,7 +5314,7 @@ test('strict device matrix accepts the complete two-model by three-route single-
   });
 
   assert.equal(result.ok, true, result.reason);
-  assert.equal(result.modelResults.length, 6);
+  assert.equal(result.modelResults.length, 3);
   assert.ok(result.modelResults.every((entry) => entry.ok));
 });
 

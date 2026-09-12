@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { currentGitProvenance } from './git-provenance.mjs';
+import { evaluateLayeredWatchContent } from './watch-mode-content-verdict.mjs';
 import { derivePhysicalOutputContent } from './watch-mode/content-policy.mjs';
 import { resolveLayerVerdict } from './watch-mode/layer-classifier.mjs';
 import { collectReportInput, rebuildStoredReport, writeStoredReport } from './watch-mode/report-writer.mjs';
@@ -95,6 +96,13 @@ const DEFAULT_SOURCE_TRANSCRIPT_PATH = path.join(
   'watch-mode-en-original.txt',
 );
 const TEST_MEDIA_SHA256 = 'cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f';
+const AUDITED_CONTENT_FACTS = JSON.parse(fs.readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'watch-mode-content-facts.json'),
+  'utf8',
+));
+if (AUDITED_CONTENT_FACTS.mediaSha256 !== TEST_MEDIA_SHA256) {
+  throw new Error('audited Watch content facts are not bound to the strict media SHA256');
+}
 const STRICT_REQUIRED_CONCEPTS = [
   '十亿美元',
   '火星',
@@ -181,6 +189,25 @@ function isBenignCredentialLifecycleLine(line) {
   return /\bstart action=|calling CredReadW|CredReadW succeeded|\boutcome=ok\b/i.test(text);
 }
 
+function isNonProviderLifecycleLine(line) {
+  const text = String(line ?? '');
+  // Audio endpoint resolution belongs to the local audio/infrastructure layer.
+  // In particular, release-evidence runs deliberately forbid default endpoint
+  // fallback; that failure must never be relabelled as a Provider failure just
+  // because the structured log field is named `error`.
+  if (/requested audio endpoint was not found; default endpoint fallback is forbidden/i.test(text)) {
+    return true;
+  }
+  // A clean websocket close is a lifecycle event. Actual transport failures
+  // carry a close code/reason or an explicit failed/error marker and remain
+  // eligible for Provider classification.
+  if (/\[SOCKET\]\s+WebSocket closed\b/i.test(text)
+    && !/\b(?:failed|error|timeout|timed out|ECONNRESET|ENOTFOUND)\b|\bcode=(?!1000\b)\d+|\breason=\S+/i.test(text)) {
+    return true;
+  }
+  return false;
+}
+
 export function normalizeSteps(steps) {
   if (!Array.isArray(steps)) return [];
   const unsupported = steps.find((step) => step?.schemaVersion !== 'watch-mode-step/v2');
@@ -189,6 +216,7 @@ export function normalizeSteps(steps) {
   }
   return steps.map((step) => ({
     name: String(step?.id ?? '(unnamed-step)').replaceAll('-', ' '),
+    status: step.status,
     ok: step?.status === 'passed',
     error: step?.error?.message ? String(step.error.message) : null,
     result: step?.data ?? null,
@@ -328,7 +356,10 @@ export function parseAppLog(text) {
   const providerErrorLines = matchingLines(
     nonMarkerText,
     /\b(?:status|httpStatus|code)=(?:401|403|429)\b|\bHTTP\s+(?:401|403|429)\b|"status"\s*:\s*"failed"|"error"\s*:\s*(?!"?null\b|null\b)[{\["0-9tfa-zA-Z_-]|unauthori[sz]ed|forbidden|invalid api key|(?:credential|\bauth(?:orization|entication)?\b).{0,80}(?:failed|error|missing|invalid|denied)|(?:failed|error|missing|invalid|denied).{0,80}(?:credential|\bauth(?:orization|entication)?\b)|rate limit|quota|insufficient|billing|\btimeout\b|timed out|ECONNRESET|ENOTFOUND|network error|websocket.*(?:failed|closed)|model_trace failed|provider.*failed/i,
-  ).filter((line) => !isBenignCredentialLifecycleLine(line)).slice(-30);
+  ).filter((line) => (
+    !isBenignCredentialLifecycleLine(line)
+    && !isNonProviderLifecycleLine(line)
+  )).slice(-30);
   const errorLines = matchingLines(
     nonMarkerText,
     /error|failed|panic|\btimeout\b|timed out|unauthori[sz]ed|rate limit|credential/i,
@@ -351,6 +382,7 @@ export function parseAppLog(text) {
     nativePlaybackRequestLines: matchingLines(nonMarkerText, /\[AUDIO\] playback request received:/i),
     nativeSpeakerPlaybackCompletedLines: matchingLines(nonMarkerText, /\[AUDIO\] speaker playback completed:/i),
     echoCancelBackendLines: matchingLines(nonMarkerText, /event=echo_cancel_backend/i),
+    echoCancelResetLines: matchingLines(nonMarkerText, /event=echo_cancel_reset/i),
     echoCancelSummaryLines: matchingLines(nonMarkerText, /event=echo_cancel_summary/i),
     // These diagnostic-only events intentionally include the run marker in
     // some builds. Parse them from the already run-scoped source text rather
@@ -414,27 +446,80 @@ function parseOmniRealtimeDiagnostics(appLog) {
 }
 
 function normalizedEnglishTokens(value) {
-  return String(value ?? '')
+  const rawTokens = String(value ?? '')
     .normalize('NFKC')
     .toLowerCase()
-    .match(/[a-z0-9]+/g) ?? [];
+    .match(/\d[\d,]*(?:\.\d+)?|[a-z]+/g) ?? [];
+  return rawTokens.flatMap((token) => {
+    if (!/^\d/.test(token)) return [token];
+    const normalized = token.replaceAll(',', '');
+    const [integer, fraction] = normalized.split('.');
+    const words = integerToEnglishTokens(Number(integer));
+    if (fraction == null) return words;
+    return [...words, 'point', ...fraction.split('').flatMap((digit) => integerToEnglishTokens(Number(digit)))];
+  });
 }
 
-function tokenRecall(reference, candidate) {
+function integerToEnglishTokens(value) {
+  if (!Number.isSafeInteger(value) || value < 0) return [String(value)];
+  const units = [
+    'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+    'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
+    'seventeen', 'eighteen', 'nineteen',
+  ];
+  const tens = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+  if (value < units.length) return [units[value]];
+  if (value < 100) return [tens[Math.floor(value / 10)], ...(value % 10 ? [units[value % 10]] : [])];
+  for (const [scale, label] of [[1_000_000_000, 'billion'], [1_000_000, 'million'], [1_000, 'thousand'], [100, 'hundred']]) {
+    if (value >= scale) {
+      const quotient = Math.floor(value / scale);
+      const remainder = value % scale;
+      return [
+        ...integerToEnglishTokens(quotient),
+        label,
+        ...(remainder ? integerToEnglishTokens(remainder) : []),
+      ];
+    }
+  }
+  return [String(value)];
+}
+
+function orderedTokenRecall(reference, candidate) {
   const referenceTokens = normalizedEnglishTokens(reference);
   if (referenceTokens.length === 0) return 0;
-  const available = new Map();
-  for (const token of normalizedEnglishTokens(candidate)) {
-    available.set(token, (available.get(token) ?? 0) + 1);
+  const candidateTokens = normalizedEnglishTokens(candidate);
+  // The oracle is intentionally order-sensitive. A global token bag lets
+  // unrelated or shuffled cues fabricate coverage for a missing media
+  // segment. One rolling LCS row keeps the comparison independent of cue
+  // boundaries while preserving the reference-media event order.
+  let previous = new Uint32Array(candidateTokens.length + 1);
+  for (const referenceToken of referenceTokens) {
+    const current = new Uint32Array(candidateTokens.length + 1);
+    for (let index = 1; index <= candidateTokens.length; index += 1) {
+      current[index] = referenceToken === candidateTokens[index - 1]
+        ? previous[index - 1] + 1
+        : Math.max(previous[index], current[index - 1]);
+    }
+    previous = current;
   }
-  let matched = 0;
-  for (const token of referenceTokens) {
-    const count = available.get(token) ?? 0;
-    if (count <= 0) continue;
-    matched += 1;
-    available.set(token, count - 1);
+  return previous[candidateTokens.length] / referenceTokens.length;
+}
+
+function orderedCharacterRecall(reference, candidate) {
+  const referenceCharacters = [...normalizeMeaningText(reference)];
+  if (referenceCharacters.length === 0) return 0;
+  const candidateCharacters = [...normalizeMeaningText(candidate)];
+  let previous = new Uint32Array(candidateCharacters.length + 1);
+  for (const referenceCharacter of referenceCharacters) {
+    const current = new Uint32Array(candidateCharacters.length + 1);
+    for (let index = 1; index <= candidateCharacters.length; index += 1) {
+      current[index] = referenceCharacter === candidateCharacters[index - 1]
+        ? previous[index - 1] + 1
+        : Math.max(previous[index], current[index - 1]);
+    }
+    previous = current;
   }
-  return matched / referenceTokens.length;
+  return previous[candidateCharacters.length] / referenceCharacters.length;
 }
 
 function acceptedWatchSourceText(watchSessionReport) {
@@ -456,6 +541,7 @@ function acceptedWatchSourceText(watchSessionReport) {
       .map((cue) => String(cue.cueId ?? '').trim())
       .filter(Boolean),
     sourceText: acceptedCues.map((cue) => cue.sourceText ?? '').filter(Boolean).join('\n'),
+    translatedText: acceptedCues.map((cue) => cue.renderedText ?? '').filter(Boolean).join('\n'),
   };
 }
 
@@ -471,14 +557,28 @@ function parseAecExpectedSegmentEvidence(input) {
   const expectedSegments = referenceText
     ? referenceText.split(/\r?\n\s*\r?\n/).map((segment) => segment.trim()).filter(Boolean)
     : [];
+  const translatedReferenceText = playbackSha256 === TEST_MEDIA_SHA256
+    ? readTextIfExists(DEFAULT_STRICT_REFERENCE_PATH).trim()
+    : '';
+  const translatedReferenceSegments = translatedReferenceText
+    ? translatedReferenceText.split(/\r?\n\s*\r?\n/).map((segment) => segment.trim()).filter(Boolean)
+    : [];
   const accepted = acceptedWatchSourceText(input.watchSessionReport);
   const minimumTokenRecall = 0.65;
   const segmentResults = expectedSegments.map((segment, index) => {
-    const recall = tokenRecall(segment, accepted.sourceText);
+    const sourceRecall = orderedTokenRecall(segment, accepted.sourceText);
+    const translatedReferenceSegment = translatedReferenceSegments[index] ?? '';
+    const translatedRecall = translatedReferenceSegment
+      ? orderedCharacterRecall(translatedReferenceSegment, accepted.translatedText)
+      : 0;
+    const recall = Math.max(sourceRecall, translatedRecall);
     return {
       ordinal: index + 1,
       expectedTokenCount: normalizedEnglishTokens(segment).length,
       tokenRecall: Number(recall.toFixed(4)),
+      sourceTokenRecall: Number(sourceRecall.toFixed(4)),
+      translatedCharacterRecall: Number(translatedRecall.toFixed(4)),
+      acceptedEvidence: translatedRecall > sourceRecall ? 'rendered-translation' : 'source-transcript',
       accepted: recall >= minimumTokenRecall,
     };
   });
@@ -608,6 +708,8 @@ function parseAecDiagnostics(appLog, input) {
   const echoSummaries = appLog.echoCancelSummaryLines
     .map(parseKeyValueLine)
     .filter((summary) => Object.keys(summary).length > 0);
+  const terminalEchoSummaries = echoSummaries.filter((summary) => summary.final === 'true');
+  const terminalEchoSummary = terminalEchoSummaries.at(-1) ?? null;
   const maxMetric = (key, fallback = 0) => echoSummaries.reduce(
     (maximum, summary) => Math.max(maximum, asNumber(summary[key], fallback)),
     fallback,
@@ -693,6 +795,11 @@ function parseAecDiagnostics(appLog, input) {
     maxRejectedFrames: maxMetric('rejectedFrames'),
     maxStatsReadFailures: maxMetric('statsReadFailures'),
     maxResetCount: maxMetric('resetCount'),
+    terminalSummaryCount: terminalEchoSummaries.length,
+    terminalResetCount: terminalEchoSummary == null
+      ? null
+      : asNumber(terminalEchoSummary.resetCount, null),
+    explicitResetEventCount: appLog.echoCancelResetLines.length,
     maxRenderUnderruns: maxMetric('renderUnderruns'),
     maxCaptureUnderruns: maxMetric('captureUnderruns'),
     erleMetricCount: erle.count,
@@ -727,9 +834,10 @@ function parseProcessExclusionRestart(appLog, input) {
   const events = appLog.processExclusionRestartLines
     .map(parseKeyValueLine)
     .filter((event) => Object.keys(event).length > 0);
-  const summary = [...events].reverse().find((event) => (
+  const summaries = events.filter((event) => (
     event.event === 'process_exclusion_restart_summary'
-  )) ?? {};
+  ));
+  const summary = summaries.length === 1 ? summaries[0] : {};
   const oldBridgeProcessId = asNumber(summary.oldBridgeProcessId, NaN);
   const newBridgeProcessId = asNumber(summary.newBridgeProcessId, NaN);
   const oldSourceGeneration = String(summary.oldSourceGeneration ?? '');
@@ -860,7 +968,8 @@ function parseProcessExclusionRestart(appLog, input) {
     && samplesWithNewPid.length > 0
     && oldPidAbsentAfterNew
   );
-  const completed = identityChanged
+  const completed = summaries.length === 1
+    && identityChanged
     && frameContinuity
     && runtimeReady
     && playbackRebound
@@ -868,6 +977,8 @@ function parseProcessExclusionRestart(appLog, input) {
     && metricsProveTransition;
   return {
     requested: input.feedbackLoopPrevention === 'process-exclusion' && input.mode === 'live',
+    summaryCount: summaries.length,
+    terminalStatus: summary.status ?? null,
     evidenceMode: completed && input.mode === 'live' ? 'live' : input.mode ?? 'unknown',
     fixtureOnly: !(completed && input.mode === 'live'),
     completed,
@@ -1058,6 +1169,13 @@ function driverLayerFailed(driver) {
     return null;
   }
   if (driver.error) return driver.error;
+  const installedAuthority = driver.InstalledDriverAuthority ?? driver.installedDriverAuthority;
+  const readinessEndpointId = driver.WasapiEndpointId ?? driver.wasapiEndpointId;
+  if (
+    installedAuthority
+    && String(installedAuthority.installedServiceState ?? '').toLowerCase() === 'running'
+    && String(readinessEndpointId ?? '').trim()
+  ) return null;
   if (driver.RootDeviceStatus && driver.RootDeviceStatus !== 'OK') return `root device status is ${driver.RootDeviceStatus}`;
   if (!driver.Endpoint && !driver.endpoint) return 'virtual audio endpoint was not found';
   if (driver.DriverHealth && !['running', 'ready'].includes(String(driver.DriverHealth))) {
@@ -1072,6 +1190,10 @@ function wasapiLayerFailed(wasapi) {
     return wasapi.error;
   }
   if (wasapi.error) return wasapi.error;
+  if (
+    (wasapi.InstalledDriverAuthority ?? wasapi.installedDriverAuthority)
+    && String(wasapi.WasapiEndpointId ?? wasapi.wasapiEndpointId ?? '').trim()
+  ) return null;
   const toneFrames = asNumber(wasapi.ToneFrames ?? wasapi.toneFrames);
   const toneRms = asNumber(wasapi.ToneRms ?? wasapi.toneRms);
   const invalidSamples = asNumber(wasapi.InvalidSamples ?? wasapi.invalidSamples);
@@ -1243,7 +1365,8 @@ export function watchSessionReportFailure(report, { required = true } = {}) {
     return code === 'speaker-playback-failed' || severity === 'error';
   });
   if (sessionIssue) {
-    return `watch session report contains a session-level error; category=${sessionIssue.category ?? '-'} code=${sessionIssue.code ?? '-'} severity=${sessionIssue.severity ?? '-'}`;
+    const message = String(sessionIssue.message ?? '').replace(/\s+/gu, ' ').trim().slice(0, 512);
+    return `watch session report contains a session-level error; category=${sessionIssue.category ?? '-'} code=${sessionIssue.code ?? '-'} severity=${sessionIssue.severity ?? '-'}${message ? ` message=${message}` : ''}`;
   }
   const cues = Array.isArray(report.cues) ? report.cues : [];
   const completeCues = cues.filter((cue) => (
@@ -1535,11 +1658,47 @@ export function evaluateStrictContent(input) {
   const fullMedia = content?.sourceReference?.fullMedia === true
     || sourcePlaybackSeconds == null
     || sourcePlaybackSeconds <= 0;
+  // Keep the historical strict-content helper default on the secondary
+  // contract. A live native route is explicit at classification time, so it
+  // alone selects native completion evidence below.
+  const translationRoute = input.translationRoute === 'native' ? 'native' : 'secondary';
+  const completedNativeCues = (Array.isArray(input.watchSessionReport?.cues)
+    ? input.watchSessionReport.cues : []).filter((cue) => (
+    ['exact', 'formatting-only'].includes(cue?.comparisonStatus)
+    && cue?.translationState !== 'error'
+    && cue?.translationState !== 'superseded'
+    && String(cue?.llmText ?? '').trim()
+    && String(cue?.publishedText ?? '').trim()
+    && String(cue?.renderedText ?? '').trim()
+  ));
   const outputText = uniqueEvidenceText([
     content?.translation,
     content?.subtitleText,
     content?.segmentTranslationText,
+    ...(translationRoute === 'native'
+      ? completedNativeCues.map((cue) => cue.renderedText)
+      : []),
   ]);
+  const strictFacts = [
+    ...AUDITED_CONTENT_FACTS.facts,
+    ...STRICT_REQUIRED_CONCEPTS.map((concept) => ({
+      id: `required-concept:${concept}`,
+      category: 'entity',
+      accepted: [concept, ...(STRICT_REQUIRED_CONCEPT_ALIASES.get(concept) ?? [])],
+    })),
+    ...STRICT_FORBIDDEN_ERRORS.map((item) => ({
+      id: `forbidden-error:${item.text}`,
+      category: 'unsupported-addition',
+      required: false,
+      forbidden: [item.text],
+    })),
+  ];
+  const layeredVerdict = evaluateLayeredWatchContent({
+    referenceText,
+    outputText,
+    cues: translationRoute === 'native' ? input.watchSessionReport?.cues : [],
+    facts: strictFacts,
+  });
   const referenceClauses = splitMeaningClauses(referenceText);
   const outputClauses = splitMeaningClauses(outputText);
   const missingClauses = [];
@@ -1566,18 +1725,8 @@ export function evaluateStrictContent(input) {
   const lengthRatio = referenceChars > 0 ? outputChars / referenceChars : 0;
   const subtitleQueue = content?.subtitleQueue ?? {};
   const speechSegmentation = input.speechSegmentation ?? {};
-  // Keep the historical strict-content helper default on the secondary
-  // contract. A live native route is explicit at classification time, so it
-  // alone selects native completion evidence below.
-  const translationRoute = input.translationRoute === 'native' ? 'native' : 'secondary';
   const completedNativeCueIds = new Set(
-    (Array.isArray(input.watchSessionReport?.cues) ? input.watchSessionReport.cues : [])
-      .filter((cue) => (
-        ['exact', 'formatting-only'].includes(cue?.comparisonStatus)
-        && String(cue?.llmText ?? '').trim()
-        && String(cue?.publishedText ?? '').trim()
-        && String(cue?.renderedText ?? '').trim()
-      ))
+    completedNativeCues
       .map((cue) => String(cue.cueId ?? '').trim())
       .filter(Boolean),
   );
@@ -1627,12 +1776,9 @@ export function evaluateStrictContent(input) {
   }
   const failures = [];
   if (!fullMedia) failures.push(`strict reference-media gate requires full-media playback; playbackSeconds=${sourcePlaybackSeconds}`);
-  if (coverageEvidence < 0.83 || missingClausesEvidence.length > 2) {
-    failures.push(`reference translation coverage is too low; coverage=${coverageEvidence.toFixed(3)} missingClauses=${missingClausesEvidence.length}`);
+  if (layeredVerdict.status !== 'passed') {
+    failures.push(layeredVerdict.reason ?? `layered content verdict was ${layeredVerdict.status}`);
   }
-  if (missingConcepts.length > 0) failures.push(`missing required concepts: ${missingConcepts.join(', ')}`);
-  if (forbiddenErrors.length > 0) failures.push(`forbidden translation errors: ${forbiddenErrors.map((item) => item.text).join(', ')}`);
-  if (lengthRatioEvidence < 0.45 || lengthRatioEvidence > 2.4) failures.push(`strict output/reference length ratio is out of range; lengthRatio=${lengthRatioEvidence.toFixed(3)}`);
   if (translationRoute === 'secondary') {
     if (finalWriteCount < 8) failures.push(`too few final subtitle translations; finalWriteCount=${finalWriteCount}`);
     if (queuedSegmentCount < 8) failures.push(`too few queued translated speech segments; queuedSegmentCount=${queuedSegmentCount}`);
@@ -1651,10 +1797,6 @@ export function evaluateStrictContent(input) {
       failures.push(`no native translated speech playback reached the physical sink; playedSegmentCount=${playedSegmentCount}`);
     }
   }
-  if (content?.contentConsistency?.combinedEvidence?.passed === false) {
-    failures.push('combined physical/structured translation evidence did not pass');
-  }
-
   return {
     applicable: true,
     passed: failures.length === 0,
@@ -1671,6 +1813,7 @@ export function evaluateStrictContent(input) {
     strictEvidenceSource,
     missingConcepts,
     forbiddenErrors,
+    contentVerdict: layeredVerdict,
     requiredConcepts: STRICT_REQUIRED_CONCEPTS,
     translationRoute,
     nativeCompletedCueCount,
@@ -1714,6 +1857,38 @@ function physicalOutputContentLayerFailed(content) {
         ?? `physical output recording did not contain mixed audible output; rms=${asNumber(content.mixedOutput.rms)} peak=${asNumber(content.mixedOutput.peak)}`;
     }
     if (content.translatedSpeech?.passed === false) {
+      const playbackAuthority = content.translatedSpeech.playbackAuthority ?? {};
+      const acousticAuthority = content.translatedSpeech.acousticAuthority ?? {};
+      const allInvalidCueIds = Array.isArray(playbackAuthority.invalidCues)
+        ? playbackAuthority.invalidCues.map((cue) => String(cue?.cueId ?? '').trim()).filter(Boolean)
+        : [];
+      const allViolations = Array.isArray(acousticAuthority.violations)
+        ? acousticAuthority.violations.map((violation) => String(violation).replace(/\s+/gu, ' ').trim()).filter(Boolean)
+        : [];
+      const invalidCueIds = allInvalidCueIds.slice(0, 5);
+      const violations = allViolations.slice(0, 3).map((violation) => violation.slice(0, 512));
+      if (
+        playbackAuthority.passed === false
+        || acousticAuthority.passed === false
+        || invalidCueIds.length > 0
+        || violations.length > 0
+      ) {
+        const authorityDetails = [
+          `queuedSegments=${asNumber(content.translatedSpeech.queuedSegments)}`,
+          `playedSegments=${asNumber(content.translatedSpeech.playedSegments)}`,
+          Number.isFinite(Number(playbackAuthority.queuedCueCount))
+            ? `queuedCueCount=${Number(playbackAuthority.queuedCueCount)}` : null,
+          Number.isFinite(Number(playbackAuthority.startedCueCount))
+            ? `startedCueCount=${Number(playbackAuthority.startedCueCount)}` : null,
+          Number.isFinite(Number(playbackAuthority.completedCueCount))
+            ? `completedCueCount=${Number(playbackAuthority.completedCueCount)}` : null,
+          allInvalidCueIds.length > 0 ? `invalidCueCount=${allInvalidCueIds.length}` : null,
+          invalidCueIds.length > 0 ? `invalidCueIds=${invalidCueIds.join(',')}` : null,
+          allViolations.length > 0 ? `violationCount=${allViolations.length}` : null,
+          violations.length > 0 ? `violations=${violations.join(' | ')}` : null,
+        ].filter(Boolean);
+        return `translated speech physical authority failed; ${authorityDetails.join(' ')}`;
+      }
       return content.translatedSpeech.detail
         ?? content.translatedSpeech.error
         ?? `secondary translated speech was not written to physical output; queuedSegments=${asNumber(content.translatedSpeech.queuedSegments)} playedSegments=${asNumber(content.translatedSpeech.playedSegments)}`;
@@ -1817,6 +1992,31 @@ function createLayer(name, data, extra = {}) {
   };
 }
 
+function structuredRuntimeFailure(runtimeStatus) {
+  if (runtimeStatus?.state !== 'failed' || !runtimeStatus.failure) return null;
+  const componentLayers = [
+    ['frontendIpc', 'app'],
+    ['provider', 'provider'],
+    ['bridge', 'bridge'],
+    ['route', 'app'],
+  ];
+  const match = componentLayers.find(([component]) => (
+    runtimeStatus[component]?.status === 'failed'
+    && runtimeStatus[component]?.error?.code === runtimeStatus.failure.code
+    && runtimeStatus[component]?.error?.message === runtimeStatus.failure.message
+  ));
+  if (!match) return null;
+  const [component, layer] = match;
+  return {
+    component,
+    layer,
+    code: runtimeStatus.failure.code,
+    message: runtimeStatus.failure.message,
+    atMs: asNumber(runtimeStatus[component].atMs, null),
+    reason: `structured Watch runtime reported ${runtimeStatus.failure.code}: ${runtimeStatus.failure.message}`,
+  };
+}
+
 function addLayerFailure(layers, layer, reason, mode) {
   if (!reason) return;
   const entry = layers[layer];
@@ -1833,7 +2033,7 @@ function addLayerFailure(layers, layer, reason, mode) {
   }
 }
 
-function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
+function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog, runtimeFailure) {
   const steps = normalizeSteps(input.steps);
   const feedbackLoopPrevention = normalizeFeedbackLoopPrevention(
     input.feedbackLoopPrevention ?? input.snapshots?.feedbackLoopPrevention,
@@ -1842,7 +2042,7 @@ function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
   const driverlessVariant = feedbackLoopPrevention !== 'virtual-driver';
   const failedSteps = steps
     .filter((step) => (
-      !step.ok
+      ['failed', 'blocked'].includes(step.status)
       && !(
         driverlessVariant
         && /^(?:driver probe|driver probe after repair)$/i.test(step.name)
@@ -1884,6 +2084,7 @@ function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
       ], 12),
       appReadiness: uniqueTail(matchingLines(input.appLogText ?? '', /readiness|session\.(?:created|updated)|ws\.recv\.session|watch_mode\.omni_session_ready|diagnostic_autostart_(?:ipc_ready|infrastructure_failed)/i), 12),
       realtimeSession: parseOmniRealtimeDiagnostics(appLog),
+      runtimeFailure,
       aec: layers.aec?.data ?? null,
       bridgeErrors: echoCancelVariant ? [] : uniqueTail(bridgeLog.errorLines, 12),
       bridgeSourceSummary: echoCancelVariant ? [] : uniqueTail(bridgeLog.sourceSummaryLines, 5),
@@ -1892,6 +2093,159 @@ function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
       processExclusionRestart: layers.bridge?.data?.processExclusionRestart ?? null,
       physicalOutput: summarizePhysicalOutput(input.physicalOutput),
       physicalOutputContent: summarizePhysicalOutputContent(input.physicalOutputContent),
+    },
+  };
+}
+
+const EVIDENCE_DRIVEN_TERMINAL_FAILURES = Object.freeze({
+  'input-complete-timeout': ['watch.input-complete-timeout', 'input-completion'],
+  'input-complete-invalid': ['watch.input-complete-invalid', 'input-completion'],
+  'capture-input-fence-timeout': ['watch.capture-input-fence-timeout', 'capture-input-fence'],
+  'capture-input-fence-disconnected': ['watch.capture-input-fence-disconnected', 'capture-input-fence'],
+  'capture-input-fence-failed': ['watch.capture-input-fence-failed', 'capture-input-fence'],
+  'capture-join-timeout': ['watch.capture-join-timeout', 'terminal-teardown'],
+  'capture-join-disconnected': ['watch.capture-join-disconnected', 'terminal-teardown'],
+  'provider-finish-timeout': ['provider.session-finished-timeout', 'provider-finish'],
+  'provider-finish-protocol-order-invalid': ['provider.session-finished-order-invalid', 'provider-finish'],
+  'provider-finish-authority-invalid': ['provider.session-finished-authority-invalid', 'provider-finish'],
+  'provider-finish-failed': ['provider.session-finish-failed', 'provider-finish'],
+  'provider-owner-missing': ['provider.owner-missing', 'provider-finish'],
+  'provider-owner-task-failed': ['provider.owner-task-failed', 'provider-finish'],
+  'local-playback-drain-timeout': ['playback.local-drain-timeout', 'local-playback-drain'],
+  'terminal-owner-evidence-incomplete': ['watch.terminal-owner-evidence-incomplete', 'terminal-evidence'],
+  'terminal-owner-identity-mismatch': ['watch.terminal-owner-identity-mismatch', 'terminal-evidence'],
+  'terminal-teardown-failed': ['watch.terminal-teardown-failed', 'terminal-teardown'],
+  'terminal-teardown-task-failed': ['watch.terminal-teardown-task-failed', 'terminal-teardown'],
+  'report-write-timeout': ['watch.report-write-timeout', 'report-write'],
+  'report-write-immutable-exists': ['watch.report-write-immutable-exists', 'report-write'],
+  'report-write-serialization-failed': ['watch.report-write-serialization-failed', 'report-write'],
+  'report-write-io-failed': ['watch.report-write-io-failed', 'report-write'],
+  'report-write-task-failed': ['watch.report-write-task-failed', 'report-write'],
+});
+
+function evidenceDrivenTerminalFailureIdentity(evidence) {
+  const terminalErrorCode = evidence.match(/\bterminalErrorCode=([a-z0-9.-]+)/i)?.[1]?.toLowerCase();
+  if (!terminalErrorCode) return null;
+  if (terminalErrorCode === 'terminal-teardown-failed' && /bridge\.source-flush-failed/i.test(evidence)) {
+    return { stableErrorCode: 'bridge.source-flush-failed', lifecyclePhase: 'terminal-teardown' };
+  }
+  const identity = EVIDENCE_DRIVEN_TERMINAL_FAILURES[terminalErrorCode];
+  return identity
+    ? { stableErrorCode: identity[0], lifecyclePhase: identity[1] }
+    : { stableErrorCode: 'watch.terminal-error-code-unregistered', lifecyclePhase: 'terminal-evidence' };
+}
+
+function stableFailureIdentity({ failureLayer, failureReason, diagnostics, layers, watchSessionReport, runtimeFailure }) {
+  if (!failureLayer) return null;
+  const sessionIssues = Array.isArray(watchSessionReport?.issues)
+    ? watchSessionReport.issues : [];
+  const reportCues = Array.isArray(watchSessionReport?.cues)
+    ? watchSessionReport.cues : [];
+  const physicalPlaybackQueueOverflow = sessionIssues.some((issue) => (
+    issue?.code === 'bridge-translation-write-failed'
+    && /bridge\.queue-overflow|physical translation stream cannot start while a complete cue is queued or playing/i
+      .test(String(issue?.message ?? ''))
+  ));
+  const nativeTurnCancellationIssue = sessionIssues.find((issue) => (
+    issue?.code === 'native-response-cancelled'
+    && /(?:^|\s)reason=turn_detected(?:\s|$)/i.test(String(issue?.message ?? ''))
+  ));
+  const nativeTurnCancelledCues = nativeTurnCancellationIssue
+    ? reportCues.filter((cue) => (
+      cue?.translationState === 'error'
+      && cue?.comparisonStatus === 'different'
+      && (Array.isArray(cue?.issues) ? cue.issues : [])
+        .some((issue) => issue?.code === 'translation-terminal-error')
+    ))
+    : [];
+  const nativeResponseCancellation = nativeTurnCancelledCues.length > 0
+    ? {
+        reason: 'turn_detected',
+        occurrenceCount: Math.max(1, asNumber(nativeTurnCancellationIssue?.occurrenceCount, 1)),
+        failedCueCount: nativeTurnCancelledCues.length,
+      }
+    : null;
+  const evidence = [
+    failureReason,
+    diagnostics?.runnerFailure,
+    ...(diagnostics?.evidence?.providerErrors ?? []),
+    ...(diagnostics?.evidence?.appErrors ?? []),
+  ].filter(Boolean).join('\n');
+  const terminalFailureIdentity = evidenceDrivenTerminalFailureIdentity(evidence);
+  let stableErrorCode;
+  let lifecyclePhase;
+  if (runtimeFailure?.layer === failureLayer) {
+    stableErrorCode = runtimeFailure.code;
+    lifecyclePhase = {
+      provider: 'provider-session',
+      bridge: 'bridge-runtime',
+      app: 'application-runtime',
+    }[runtimeFailure.layer] ?? 'cell-runtime';
+  } else if (terminalFailureIdentity) {
+    ({ stableErrorCode, lifecyclePhase } = terminalFailureIdentity);
+  } else if (/workspace access denied/i.test(evidence)) {
+    stableErrorCode = 'provider.workspace-access-denied';
+    lifecyclePhase = 'provider-readiness';
+  } else if (/response stream timeout|timeout_seconds=.*elapsed_ms/i.test(evidence)) {
+    stableErrorCode = 'provider.response-stream-timeout';
+    lifecyclePhase = 'active-response';
+  } else if (/bridge\.source-flush-failed/i.test(evidence)) {
+    stableErrorCode = 'bridge.source-flush-failed';
+    lifecyclePhase = 'terminal-teardown';
+  } else if (physicalPlaybackQueueOverflow) {
+    stableErrorCode = 'bridge.queue-overflow';
+    lifecyclePhase = 'physical-playback-queue';
+  } else if (nativeResponseCancellation) {
+    stableErrorCode = 'watch.native-response-turn-cancelled';
+    lifecyclePhase = 'active-response';
+  } else if (/restart-quiescence-timeout/i.test(evidence)) {
+    stableErrorCode = 'bridge.restart-quiescence-timeout';
+    lifecyclePhase = 'bridge-restart-quiescence';
+  } else if (/residual echo likelihood is unavailable|residualEchoLikelihood/i.test(evidence)) {
+    stableErrorCode = 'aec.residual-echo-likelihood-unavailable';
+    lifecyclePhase = 'aec-evidence';
+  } else if (/translated(?:-pcm| PCM).*(?:authority|correlat)|translated-pcm-authority/i.test(evidence)) {
+    stableErrorCode = 'playback.translated-pcm-authority-failed';
+    lifecyclePhase = 'physical-playback-proof';
+  } else if (/controlled live Bridge restart|Bridge restart evidence/i.test(evidence)) {
+    stableErrorCode = 'bridge.restart-authority-failed';
+    lifecyclePhase = 'bridge-restart';
+  } else if (/playback owner|owner generation|physical endpoint|physical playback.*(?:ready|rebind)/i.test(evidence)) {
+    stableErrorCode = 'playback.physical-owner-authority-failed';
+    lifecyclePhase = 'bridge-playback-rebind';
+  } else {
+    const normalizedLayer = String(failureLayer).replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
+    stableErrorCode = `watch.${normalizedLayer}.failed`;
+    lifecyclePhase = {
+      environment: 'environment-preflight',
+      provider: 'provider-session',
+      app: 'application-runtime',
+      bridge: 'bridge-runtime',
+      aec: 'aec-runtime',
+      physicalOutput: 'physical-playback-proof',
+      physicalOutputContent: 'physical-content-proof',
+      strictContent: 'strict-content-proof',
+    }[failureLayer] ?? 'cell-runtime';
+  }
+
+  const restart = layers?.bridge?.data?.processExclusionRestart ?? {};
+  const physicalOutput = diagnostics?.evidence?.physicalOutput ?? {};
+  return {
+    stableErrorCode,
+    lifecyclePhase,
+    failureContext: {
+      endpointId: restart.newPhysicalPlaybackDeviceId
+        ?? restart.resolvedPhysicalPlaybackDeviceId
+        ?? physicalOutput.resolvedPhysicalPlaybackDeviceId
+        ?? null,
+      bridgeInstanceId: restart.newBridgeInstanceId ?? null,
+      ownerGenerationTransition: {
+        before: Number.isSafeInteger(Number(restart.oldPlaybackOwnerGeneration))
+          ? Number(restart.oldPlaybackOwnerGeneration) : null,
+        after: Number.isSafeInteger(Number(restart.newPlaybackOwnerGeneration))
+          ? Number(restart.newPlaybackOwnerGeneration) : null,
+      },
+      nativeResponseCancellation,
     },
   };
 }
@@ -1912,6 +2266,18 @@ function speechSegmentationLayerFailed(segmentation, translationRoute) {
 
 function processExclusionRestartLayerFailed(evidence, { required = false } = {}) {
   if (!required) return null;
+  if (
+    evidence
+    && evidence.completed !== true
+    && evidence.identityChanged === true
+    && evidence.frameContinuity === true
+    && evidence.runtimeReady === true
+    && evidence.playbackRebound !== true
+    && evidence.timingValid === true
+    && evidence.metricsProveTransition === true
+  ) {
+    return `physical playback owner authority failed during Bridge rebind: status=${evidence.physicalPlaybackStatus ?? 'missing'} endpoint=${evidence.oldPhysicalPlaybackDeviceId ?? 'missing'}->${evidence.newPhysicalPlaybackDeviceId ?? 'missing'} ownerGeneration=${evidence.oldPlaybackOwnerGeneration ?? 'missing'}->${evidence.newPlaybackOwnerGeneration ?? 'missing'}`;
+  }
   if (!evidence || evidence.completed !== true) {
     return 'process-exclusion did not prove a controlled live Bridge restart with new process/session/generation identity, physical playback ownership rebind, continuous source frames, and zero old frames';
   }
@@ -1962,6 +2328,15 @@ function aecLayerFailed(aec, { requireLiveScenario = false } = {}) {
   }
   if (aec.maxStatsReadFailures > 0) {
     return `echo-cancel failed to read native AEC3 statistics ${aec.maxStatsReadFailures} times`;
+  }
+  if (aec.terminalSummaryCount !== 1 || aec.terminalResetCount == null) {
+    return `echo-cancel did not emit exactly one terminal native AEC3 summary; terminalSummaries=${aec.terminalSummaryCount}`;
+  }
+  if (
+    aec.terminalResetCount !== aec.maxResetCount
+    || aec.maxResetCount !== aec.explicitResetEventCount
+  ) {
+    return `echo-cancel native reset counters do not match terminal summary and explicit reset event evidence; terminalResetCount=${aec.terminalResetCount} maxResetCount=${aec.maxResetCount} explicitResetEvents=${aec.explicitResetEventCount}`;
   }
   if (aec.asrDeletedChunkMetricCount <= 0) {
     return 'echo-cancel did not report the explicit ASR deletion invariant';
@@ -2045,7 +2420,7 @@ function isVirtualDriverDiagnosticFailure(message) {
 
 function environmentPrecheckFailed(input, feedbackLoopPrevention = 'virtual-driver') {
   const precheck = normalizeSteps(input.steps).find((step) => (
-    !step.ok
+    ['failed', 'blocked'].includes(step.status)
     && !(
       feedbackLoopPrevention !== 'virtual-driver'
       && /^(?:driver probe|driver probe after repair)$/i.test(step.name)
@@ -2087,6 +2462,18 @@ export function classifyWatchModeRun(input) {
     translationRoute,
     speechSegmentation,
   });
+  const runtimeFailure = structuredRuntimeFailure(input.runtimeStatus);
+  const providerData = runtimeFailure?.layer === 'provider'
+    ? {
+        ...(input.provider ?? {}),
+        error: runtimeFailure.reason,
+        runtimeStatus: {
+          status: input.runtimeStatus.provider.status,
+          atMs: runtimeFailure.atMs,
+          error: input.runtimeStatus.provider.error,
+        },
+      }
+    : input.provider;
   const physicalOutputContentSkipped = input.physicalOutputContent?.skipped === true;
   const layers = {
     environment: createLayer('environment', input.steps),
@@ -2114,7 +2501,7 @@ export function classifyWatchModeRun(input) {
     }, {
       parsedLog: appLog,
     }),
-    provider: createLayer('provider', input.provider),
+    provider: createLayer('provider', providerData),
   };
   if (physicalOutputContentSkipped) {
     layers.physicalOutputContent.status = 'skipped';
@@ -2156,8 +2543,8 @@ export function classifyWatchModeRun(input) {
     ? null
     : rawRunnerFailureReason;
   const environmentReason = environmentPrecheckFailed(input, feedbackLoopPrevention);
-  const hardProviderReason = providerLayerFailed(input.provider, appLog, input.physicalOutputContent, { hardOnly: true });
-  const providerReason = providerLayerFailed(input.provider, appLog, input.physicalOutputContent, {
+  const hardProviderReason = providerLayerFailed(providerData, appLog, input.physicalOutputContent, { hardOnly: true });
+  const providerReason = providerLayerFailed(providerData, appLog, input.physicalOutputContent, {
     requireFailedCallLogEvidence: echoCancelVariant,
   });
   const providerBeforeAppReason = omniAudibleNoVadReason(appLog);
@@ -2174,14 +2561,25 @@ export function classifyWatchModeRun(input) {
   const watchReportReason = watchSessionReportFailure(input.watchSessionReport, {
     required: (input.mode ?? 'live') === 'live',
   });
+  const appReason = appLayerFailed(app, appLog, {
+    translationRoute,
+    watchSessionReport: input.watchSessionReport,
+    requireWatchReport: (input.mode ?? 'live') === 'live',
+  });
+  const deferMissingTerminalAecReason = Boolean(
+    aecReason
+    && /did not emit exactly one terminal native AEC3 summary/i.test(aecReason)
+    && (subtitleConfigReason || secondaryPreconnectReason || appReason || watchReportReason),
+  );
   const checks = runnerFailureReason
     ? [
+        ...(runtimeFailure ? [[runtimeFailure.layer, runtimeFailure.reason]] : []),
         ['driver', driverLayerFailed(input.driver)],
         ['wasapi', wasapiLayerFailed(input.wasapi) ?? wasapiInjectedPlaybackFailed(input.wasapi, input.playback, appLog)],
         ['bridge', bridgeLayerFailed(input.bridge, bridgeLog, feedbackLoopPrevention) ?? processExclusionRestartReason],
         ['environment', environmentReason],
-        ...(aecReason ? [['aec', aecReason]] : []),
         ['app', environmentReason ? null : runnerFailureReason],
+        ...(!deferMissingTerminalAecReason && aecReason ? [['aec', aecReason]] : []),
         ['physicalOutput', physicalOutputLayerFailed(input.physicalOutput, {
           requireProcessFingerprint: processExclusionVariant,
         })],
@@ -2194,31 +2592,30 @@ export function classifyWatchModeRun(input) {
         ['provider', providerReason],
         ['speechSegmentation', speechSegmentationLayerFailed(speechSegmentation, translationRoute)],
         ['app', watchReportReason],
+        ...(deferMissingTerminalAecReason ? [['aec', aecReason]] : []),
         ['strictContent', physicalOutputContentSkipped ? null : layers.strictContent.reason],
       ]
     : [
+        ...(runtimeFailure ? [[runtimeFailure.layer, runtimeFailure.reason]] : []),
         ['driver', driverLayerFailed(input.driver)],
         ['wasapi', wasapiLayerFailed(input.wasapi) ?? wasapiInjectedPlaybackFailed(input.wasapi, input.playback, appLog)],
         ['bridge', bridgeLayerFailed(input.bridge, bridgeLog, feedbackLoopPrevention) ?? processExclusionRestartReason],
         ['physicalOutput', physicalOutputLayerFailed(input.physicalOutput, {
           requireProcessFingerprint: processExclusionVariant,
         })],
-        ...(aecReason ? [['aec', aecReason]] : []),
+        ...(!deferMissingTerminalAecReason && aecReason ? [['aec', aecReason]] : []),
         ...(subtitleConfigReason ? [['app', subtitleConfigReason]] : []),
         ...(hardProviderReason ? [['provider', hardProviderReason]] : []),
         ...(providerBeforeAppReason ? [['provider', providerReason]] : []),
         ...(secondaryPreconnectReason ? [['app', secondaryPreconnectReason]] : []),
-        ['app', appLayerFailed(app, appLog, {
-          translationRoute,
-          watchSessionReport: input.watchSessionReport,
-          requireWatchReport: (input.mode ?? 'live') === 'live',
-        })],
+        ['app', appReason],
         ['physicalOutputContent', physicalOutputContentSkipped
           ? null
           : physicalOutputContentLayerFailed(input.physicalOutputContent)],
         ...(providerBeforeAppReason ? [] : [['provider', providerReason]]),
         ['speechSegmentation', speechSegmentationLayerFailed(speechSegmentation, translationRoute)],
         ['app', watchReportReason],
+        ...(deferMissingTerminalAecReason ? [['aec', aecReason]] : []),
         ['strictContent', physicalOutputContentSkipped ? null : layers.strictContent.reason],
       ];
 
@@ -2240,10 +2637,26 @@ export function classifyWatchModeRun(input) {
   }
 
   const { failureLayer, verdict } = resolveLayerVerdict({ activeChecks, layers, environmentReason });
-  const diagnostics = buildReportDiagnostics(input, layers, activeChecks, appLog, bridgeLog);
+  const diagnostics = buildReportDiagnostics(
+    input,
+    layers,
+    activeChecks,
+    appLog,
+    bridgeLog,
+    runtimeFailure,
+  );
+  const failureReason = failureLayer ? layers[failureLayer].reason : null;
+  const failureIdentity = stableFailureIdentity({
+    failureLayer,
+    failureReason,
+    diagnostics,
+    layers,
+    watchSessionReport: input.watchSessionReport,
+    runtimeFailure,
+  });
   const provenance = input.provenance ?? currentGitProvenance();
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt: new Date().toISOString(),
     // Keep the legacy top-level commit for report consumers, while strict
     // verification uses the explicit clean-worktree provenance object below.
@@ -2254,12 +2667,14 @@ export function classifyWatchModeRun(input) {
     modelId: input.modelId ?? input.snapshots?.modelId ?? null,
     feedbackLoopPrevention,
     deviceEvidence: input.deviceEvidence ?? input.snapshots?.deviceEvidence ?? null,
+    runtimeStatus: input.runtimeStatus ?? null,
     realtimeSession,
     translationRoute,
     watchSessionReport: input.watchSessionReport ?? null,
     verdict,
     failureLayer,
-    failureReason: failureLayer ? layers[failureLayer].reason : null,
+    failureReason,
+    ...(failureIdentity ?? {}),
     suspectFiles: failureLayer ? DEFAULT_SUSPECT_FILES[failureLayer] : [],
     layers,
     diagnostics,
@@ -2279,6 +2694,8 @@ export function renderMarkdownReport(report) {
     `- Device: class=${report.deviceEvidence?.deviceClass ?? '-'} profile=${report.deviceEvidence?.profileId ?? '-'} id=${report.deviceEvidence?.resolvedDeviceId ?? '-'} name=${report.deviceEvidence?.resolvedDeviceName ?? '-'}`,
     `- Verdict: ${report.verdict}`,
     `- FailureLayer: ${report.failureLayer ?? '-'}`,
+    `- StableErrorCode: ${report.stableErrorCode ?? '-'}`,
+    `- LifecyclePhase: ${report.lifecyclePhase ?? '-'}`,
     `- FailureReason: ${report.failureReason ?? '-'}`,
     '',
     '## Layer Summary',

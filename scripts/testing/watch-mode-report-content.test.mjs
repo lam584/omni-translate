@@ -5,13 +5,32 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { evaluateStrictContent } from './watch-mode-report.mjs';
+import { derivePhysicalOutputContent, evaluateStrictContent } from './watch-mode-report.mjs';
 import {
   classify,
   healthyPhysicalOutputContent,
   strictTestMediaContent,
   testMediaReferenceTranslation,
 } from './watch-mode-report-test-helpers.mjs';
+
+test('physical output derivation preserves an absent collector verdict across repeated projection', () => {
+  const raw = { ...healthyPhysicalOutputContent };
+  delete raw.passed;
+  delete raw.collectorPassed;
+
+  const once = derivePhysicalOutputContent(raw);
+  const twice = derivePhysicalOutputContent(once);
+
+  assert.equal(once.collectorPassed, null);
+  assert.equal(twice.collectorPassed, null);
+  assert.equal(twice.passed, once.passed);
+
+  const legacyCollectorVerdict = derivePhysicalOutputContent({
+    ...raw,
+    passed: false,
+  });
+  assert.equal(legacyCollectorVerdict.collectorPassed, false);
+});
 
 test('classifies physical output content that does not match subtitles', () => {
   const report = classify({
@@ -315,6 +334,109 @@ test('strict native reference-media content accepts completed native cues instea
   assert.equal(result.finalWriteCount, 0);
 });
 
+test('strict native content coverage includes every selected visible cue instead of only the final overlay snapshot', () => {
+  const nativeVisibleParagraphs = testMediaReferenceTranslation.split(/\n\n/u);
+  const nativeVisibleHead = nativeVisibleParagraphs.slice(0, 3).join('\n\n');
+  const nativeVisibleTail = nativeVisibleParagraphs.slice(3).join('\n\n');
+  const result = evaluateStrictContent({
+    translationRoute: 'native',
+    physicalOutputContent: strictTestMediaContent({
+      translation: '',
+      subtitleText: '',
+      segmentTranslationText: '',
+      subtitleQueue: { finalWriteCount: 0, queuedSegmentCount: 0, playedSegmentCount: 2 },
+      translatedSpeech: {
+        passed: true,
+        queuedSegments: 0,
+        playedSegments: 2,
+        transcriptChars: testMediaReferenceTranslation.length,
+      },
+    }),
+    watchSessionReport: {
+      cues: [
+        {
+          cueId: 'native-visible-1',
+          comparisonStatus: 'exact',
+          translationState: 'final',
+          llmText: nativeVisibleHead,
+          publishedText: nativeVisibleHead,
+          renderedText: nativeVisibleHead,
+        },
+        {
+          cueId: 'native-visible-2',
+          comparisonStatus: 'formatting-only',
+          translationState: 'final',
+          llmText: nativeVisibleTail,
+          publishedText: nativeVisibleTail,
+          renderedText: nativeVisibleTail,
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.passed, true);
+  assert.equal(result.nativeCompletedCueCount, 2);
+  assert.equal(result.structuredCoverage, 1);
+});
+
+test('strict native content coverage excludes superseded and mismatched cue text', () => {
+  const result = evaluateStrictContent({
+    translationRoute: 'native',
+    physicalOutputContent: strictTestMediaContent({
+      translation: '',
+      subtitleText: '',
+      segmentTranslationText: '',
+      subtitleQueue: { finalWriteCount: 0, queuedSegmentCount: 0, playedSegmentCount: 1 },
+      translatedSpeech: {
+        passed: true,
+        queuedSegments: 0,
+        playedSegments: 1,
+        transcriptChars: testMediaReferenceTranslation.length,
+      },
+    }),
+    watchSessionReport: {
+      cues: [
+        {
+          cueId: 'native-selected',
+          comparisonStatus: 'exact',
+          translationState: 'final',
+          llmText: '少量有效译文',
+          publishedText: '少量有效译文',
+          renderedText: '少量有效译文',
+        },
+        {
+          cueId: 'native-superseded',
+          comparisonStatus: 'superseded',
+          translationState: 'superseded',
+          llmText: testMediaReferenceTranslation,
+          publishedText: testMediaReferenceTranslation,
+          renderedText: testMediaReferenceTranslation,
+        },
+        {
+          cueId: 'native-mismatched',
+          comparisonStatus: 'different',
+          translationState: 'error',
+          llmText: testMediaReferenceTranslation,
+          publishedText: testMediaReferenceTranslation,
+          renderedText: testMediaReferenceTranslation,
+        },
+        {
+          cueId: 'native-contradictory-error',
+          comparisonStatus: 'exact',
+          translationState: 'error',
+          llmText: testMediaReferenceTranslation,
+          publishedText: testMediaReferenceTranslation,
+          renderedText: testMediaReferenceTranslation,
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.passed, false);
+  assert.equal(result.nativeCompletedCueCount, 1);
+  assert.equal(result.structuredCoverage < 0.2, true);
+});
+
 test('strict native reference-media content accepts one complete continuous-source cue', () => {
   const result = evaluateStrictContent({
     translationRoute: 'native',
@@ -385,7 +507,7 @@ test('strict secondary reference-media content still requires the subtitle-TTS q
   assert.match(result.failures.join('\n'), /queuedSegmentCount=0/);
 });
 
-test('strict reference-media content reuses passed combined physical evidence for coverage', () => {
+test('legacy combined overlap cannot replace missing audited facts', () => {
   const structuredConceptOnly = [
     '十亿美元',
     '火星',
@@ -422,14 +544,16 @@ test('strict reference-media content reuses passed combined physical evidence fo
     },
   });
 
-  assert.equal(result.passed, true);
+  assert.equal(result.passed, false);
   assert.equal(result.coverage, 1);
   assert.equal(result.structuredCoverage < 0.83, true);
   assert.equal(result.lengthRatio, 1.12);
   assert.equal(result.strictEvidenceSource, 'combinedPhysical');
+  assert.equal(result.contentVerdict.status, 'failed');
+  assert.match(result.failures.join('\n'), /required fact was not found/);
 });
 
-test('strict reference-media content still fails when combined physical evidence fails', () => {
+test('strict reference-media content uses audited facts while retaining combined overlap as diagnostic', () => {
   const result = evaluateStrictContent({
     physicalOutputContent: strictTestMediaContent({
       contentConsistency: {
@@ -448,8 +572,9 @@ test('strict reference-media content still fails when combined physical evidence
     },
   });
 
-  assert.equal(result.passed, false);
-  assert(result.failures.some((reason) => /combined physical\/structured/.test(reason)));
+  assert.equal(result.passed, true);
+  assert.equal(result.contentVerdict.status, 'passed');
+  assert.equal(result.contentVerdict.dimensions.expressionForm.status, 'diagnostic');
 });
 
 test('strict reference-media content fails short 12 second evidence', () => {
@@ -549,7 +674,7 @@ test('classifies strict reference-media failure with all strict failure reasons'
   });
 
   assert.equal(report.failureLayer, 'strictContent');
-  assert(report.layers.strictContent.reasons.some((reason) => /coverage/.test(reason)));
+  assert(report.layers.strictContent.reasons.some((reason) => /required fact was not found/.test(reason)));
   assert(report.layers.strictContent.reasons.some((reason) => /queuedSegmentCount=1/.test(reason)));
   assert(report.layers.strictContent.reasons.some((reason) => /playedSegmentCount=1/.test(reason)));
 });

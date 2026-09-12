@@ -1,7 +1,9 @@
 import { spawnSync } from 'node:child_process';
+import { FOUR_WORKER_CELL_IDS, FOUR_WORKER_ISOLATION_CELLS, DEFAULT_PAID_ISOLATION_POLICY, defaultPaidIsolationPlacements } from './watch-mode-four-worker-plan.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import { compactTimestamp, isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { currentGitProvenance, exactGitProvenanceFailure } from './git-provenance.mjs';
@@ -10,16 +12,28 @@ import {
   currentAuthorityRuntimeBinaryHashes,
   fileAuthorityEntry,
   sameAuthorityInventory,
+  resolveAuthorityPath,
 } from './watch-mode-evidence-authority.mjs';
 import {
   BALANCED_RELEASE_PLAN_ID,
   LOCAL_ISOLATION_CELLS,
+  LIVE_LLM_CELLS,
   RELEASE_DEVICE_CLASSES,
 } from './watch-mode-balanced-release-plan.mjs';
 import { verifyStrictRuntimeAuthority } from './watch-mode-strict-runtime-authority.mjs';
-import { atomicWriteJson } from './watch-mode-shard-authority.mjs';
+import {
+  createLocalIsolationWorkerResultEnvelope,
+  distributeLocalIsolationRuntime,
+  executeDistributedLocalIsolationCell,
+  localIsolationFailureDetails,
+  revalidateDistributionForWorkerRequest,
+  runDistributedLocalIsolationCells,
+  validateLocalIsolationWorkerRequest,
+  validateDistributionRevalidationReceipt,
+  verifyDistributedRuntimeDistribution,
+} from './watch-mode-local-isolation-distributed.mjs';
 
-export const LOCAL_ISOLATION_SCHEMA_VERSION = 2;
+export const LOCAL_ISOLATION_SCHEMA_VERSION = 3;
 export const LOCAL_ISOLATION_ARTIFACT_KIND = 'watch-mode-local-isolation-authority';
 export const LOCAL_ISOLATION_CELL_ARTIFACT_KIND = 'watch-mode-local-isolation-cell';
 export const LOCAL_ISOLATION_RUNNER_ID = 'scripts/testing/watch-mode-local-isolation.mjs';
@@ -47,6 +61,26 @@ const TRANSIENT_ENDPOINT_CREATE_RETRY_DELAY_MS = 750;
 
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const portable = (value) => value.split(path.sep).join('/');
+
+const currentLocalIsolationImplementationHashes = ({ workspaceRoot }) => [
+  ...currentAuthorityImplementationHashes({ workspaceRoot }),
+  fileAuthorityEntry(
+    path.resolve(workspaceRoot, 'scripts/testing/watch-mode-local-isolation-distributed.mjs'),
+    'scripts/testing/watch-mode-local-isolation-distributed.mjs',
+  ),
+  fileAuthorityEntry(
+    path.resolve(workspaceRoot, 'scripts/testing/watch-mode-four-worker-plan.mjs'),
+    'scripts/testing/watch-mode-four-worker-plan.mjs',
+  ),
+];
+
+const atomicWriteJson = (filePath, value, { overwrite = false } = {}) => {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+  if (overwrite && fs.existsSync(filePath)) fs.rmSync(filePath);
+  fs.renameSync(temporary, filePath);
+};
 
 function assertCleanCurrentHead(provenance) {
   if (
@@ -137,6 +171,10 @@ const isRetryableProcessFingerprintWindowFailure = (result, label) => {
   }
   const fingerprint = payload?.processExclusionFingerprint;
   const detail = String(payload?.detail ?? '');
+  const incompleteSourceWindow = detail.includes('Bridge source pipe captured only ')
+    && Number(fingerprint?.sourceCapturedFrames) > 0
+    && Number(fingerprint?.sourceCapturedFrames) < 48_000;
+  const incompleteExternalWindow = detail.includes('external fingerprint did not survive process loopback:');
   return payload?.passed === false
     && fingerprint?.sourceCaptureMode === 'process-exclusion'
     && fingerprint?.captureBackend === 'wasapi-process-exclusion'
@@ -145,7 +183,7 @@ const isRetryableProcessFingerprintWindowFailure = (result, label) => {
     && Number(fingerprint?.excludedProcessId) === Number(fingerprint?.bridgeProcessId)
     && Number(fingerprint?.physicalExternalComponent) >= 0.01
     && Number(fingerprint?.physicalBridgeChildComponent) >= 0.01
-    && detail.includes('external fingerprint did not survive process loopback:')
+    && (incompleteExternalWindow || incompleteSourceWindow)
     && !detail.includes('translation fingerprint was not physically detectable')
     && !detail.includes('leaked into source pipe');
 };
@@ -286,6 +324,7 @@ export async function runLocalIsolationCell({
   runIteration = runLocalIsolationProbeIteration,
   targetDurationSeconds = cell.durationSeconds,
   artifactKind = LOCAL_ISOLATION_CELL_ARTIFACT_KIND,
+  workerAuthority = null,
 }) {
   const startedAtMs = now();
   const cellDirectory = path.join(outputRoot, cell.cellId.replaceAll('::', '--'));
@@ -310,6 +349,11 @@ export async function runLocalIsolationCell({
     feedbackLoopPrevention: cell.feedbackLoopPrevention,
     deviceClass: cell.deviceClass,
     deviceProfileId: profile.profileId,
+    ...(workerAuthority ? {
+      workerId: workerAuthority.workerId,
+      vmIdentityDigest: workerAuthority.vmIdentityDigest,
+      deviceProfileInstanceId: workerAuthority.deviceProfileInstanceId,
+    } : {}),
     requestedDeviceId: profile.physicalPlaybackDeviceId,
     expectedDeviceName: profile.expectedPhysicalPlaybackDeviceName,
     targetDurationMs,
@@ -332,6 +376,7 @@ export async function runLocalIsolationCell({
   atomicWriteJson(receiptPath, receipt);
   return {
     ...summary,
+    runtimeBinaryHashes,
     runDirectory: portable(path.relative(outputRoot, cellDirectory)),
     receipt: fileAuthorityEntry(receiptPath, portable(path.relative(outputRoot, receiptPath))),
   };
@@ -341,16 +386,32 @@ export function verifyLocalIsolationManifest({
   manifestPath,
   workspaceRoot = repoRoot,
   provenance = currentGitProvenance({ cwd: workspaceRoot }),
-  implementationHashes = currentAuthorityImplementationHashes({ workspaceRoot }),
+  implementationHashes = currentLocalIsolationImplementationHashes({ workspaceRoot }),
   runtimeBinaryHashes = currentAuthorityRuntimeBinaryHashes({ workspaceRoot }),
   runtimeAuthorityPath = null,
+  expectedWorkers = null,
+  expectedAssignments = null,
 }) {
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
+  let manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
+  if (manifest.sourceManifest) {
+    const { sourceManifest, ...published } = manifest;
+    const sourcePath = resolveAuthorityPath(path.dirname(path.resolve(manifestPath)), sourceManifest.path, 'local isolation source manifest');
+    const observed = fileAuthorityEntry(sourcePath, sourceManifest.path);
+    if (observed.bytes !== sourceManifest.bytes || observed.sha256 !== sourceManifest.sha256) {
+      throw new Error('local isolation canonical source manifest hash mismatch');
+    }
+    manifest = JSON.parse(fs.readFileSync(sourcePath, 'utf8').replace(/^\uFEFF/, ''));
+    if (!isDeepStrictEqual(published, manifest) || manifest.sourceManifest) {
+      throw new Error('local isolation canonical publication does not match its source manifest');
+    }
+    manifestPath = sourcePath;
+  }
   const planIdAccepted = manifest.planId === BALANCED_RELEASE_PLAN_ID;
   if (
     manifest.schemaVersion !== LOCAL_ISOLATION_SCHEMA_VERSION
     || manifest.artifactKind !== LOCAL_ISOLATION_ARTIFACT_KIND
     || !planIdAccepted
+    || manifest.providerCalls !== 0
     || manifest.verdict !== 'passed'
   ) throw new Error('local isolation manifest is not a passed balanced release authority');
   if (!runtimeAuthorityPath) throw new Error('local isolation verification requires the frozen strict runtime authority');
@@ -379,15 +440,54 @@ export function verifyLocalIsolationManifest({
     || aecLogAuthority.bytes !== manifest.aec3Gate?.bytes
     || aecLogAuthority.sha256 !== manifest.aec3Gate?.sha256
   ) throw new Error('local isolation manifest does not bind a passed AEC3 MSVC gate');
-  if (!Array.isArray(manifest.cells) || manifest.cells.length !== LOCAL_ISOLATION_CELLS.length) {
-    throw new Error(`local isolation manifest must contain ${LOCAL_ISOLATION_CELLS.length} cells`);
+  const fourWorkers = manifest.workerRuntimeDistributions?.length === 4;
+  if (manifest.placementPolicy != null && manifest.placementPolicy !== DEFAULT_PAID_ISOLATION_POLICY) {
+    throw new Error('unknown local isolation placement policy');
   }
-  if (!Array.isArray(manifest.preflightSmoke) || manifest.preflightSmoke.length !== LOCAL_ISOLATION_CELLS.length) {
+  const placements = manifest.placementPolicy === DEFAULT_PAID_ISOLATION_POLICY
+    ? defaultPaidIsolationPlacements(manifest.workerRuntimeDistributions?.map((worker) => worker.workerId)) : null;
+  const expectedCells = placements ? placements.map((entry) => entry.cell)
+    : fourWorkers ? FOUR_WORKER_ISOLATION_CELLS : LOCAL_ISOLATION_CELLS;
+  const expectedWorkerIds = placements ? placements.map((entry) => entry.workerId) : fourWorkers ? FOUR_WORKER_CELL_IDS : null;
+  if (!Array.isArray(manifest.cells) || manifest.cells.length !== expectedCells.length) {
+    throw new Error(`local isolation manifest must contain ${expectedCells.length} cells`);
+  }
+  if (!Array.isArray(manifest.preflightSmoke) || manifest.preflightSmoke.length !== expectedCells.length) {
     throw new Error('local isolation manifest must bind one short preflight smoke per feedback route');
   }
-  for (let index = 0; index < LOCAL_ISOLATION_CELLS.length; index += 1) {
-    const expected = LOCAL_ISOLATION_CELLS[index];
+  const workerIds = new Map();
+  const vmIdentityDigests = new Set();
+  if (!Array.isArray(manifest.workerRuntimeDistributions)
+      || manifest.workerRuntimeDistributions.length < 1
+      || manifest.workerRuntimeDistributions.length > 4) {
+    throw new Error('local isolation manifest must bind one to four worker runtime distributions');
+  }
+  const distributionWorkers = new Set();
+  for (const distribution of manifest.workerRuntimeDistributions) {
+    if (!distribution.workerId || distributionWorkers.has(distribution.workerId)) {
+      throw new Error('local isolation manifest has a duplicate worker runtime distribution');
+    }
+    distributionWorkers.add(distribution.workerId);
+    if (!distribution.vmIdentityDigest) throw new Error(`local isolation worker ${distribution.workerId} has no VM identity`);
+    const distributionPath = path.resolve(manifestRoot, distribution.authority?.path ?? '');
+    const authority = fileAuthorityEntry(distributionPath, distribution.authority?.path ?? '');
+    if (authority.bytes !== distribution.authority?.bytes || authority.sha256 !== distribution.authority?.sha256) {
+      throw new Error(`local isolation worker ${distribution.workerId} runtime distribution changed`);
+    }
+    const distributionManifest = JSON.parse(fs.readFileSync(distributionPath, 'utf8'));
+    const distributedByPath = new Map(distributionManifest.files.map((entry) => [entry.path, entry]));
+    const distributedRuntime = runtimeBinaryHashes.map((entry) => distributedByPath.get(entry.path));
+    if (distributionManifest.distributionDigest !== distribution.distributionDigest
+        || !sameAuthorityInventory(distributedRuntime, runtimeBinaryHashes)) {
+      throw new Error(`local isolation worker ${distribution.workerId} runtime distribution authority mismatch`);
+    }
+  }
+  for (let index = 0; index < expectedCells.length; index += 1) {
+    const expected = expectedCells[index];
     const smoke = manifest.preflightSmoke[index];
+    if (expectedWorkerIds && smoke?.workerId !== expectedWorkerIds[index]) {
+      throw new Error('four-worker local isolation smoke placement mismatch');
+    }
     if (
       smoke?.cellId !== `${expected.cellId}::smoke`
       || smoke?.feedbackLoopPrevention !== expected.feedbackLoopPrevention
@@ -396,12 +496,50 @@ export function verifyLocalIsolationManifest({
       || Number(smoke?.targetDurationMs) < 30_000
       || Number(smoke?.targetDurationMs) > 60_000
       || Number(smoke?.durationMs) < Number(smoke?.targetDurationMs)
+      || !smoke?.workerId
+      || !smoke?.vmIdentityDigest
+      || !smoke?.deviceProfileInstanceId
     ) throw new Error(`local isolation preflight smoke failed for ${expected.feedbackLoopPrevention}`);
+    const smokeReceiptPath = path.resolve(manifestRoot, smoke.receipt?.path ?? '');
+    const smokeAuthority = fileAuthorityEntry(smokeReceiptPath, smoke.receipt?.path ?? '');
+    if (smokeAuthority.bytes !== smoke.receipt?.bytes || smokeAuthority.sha256 !== smoke.receipt?.sha256) {
+      throw new Error(`local isolation preflight smoke receipt hash mismatch for ${expected.feedbackLoopPrevention}`);
+    }
+    const smokeReceipt = JSON.parse(fs.readFileSync(smokeReceiptPath, 'utf8'));
+    const smokeDistribution = manifest.workerRuntimeDistributions.find((entry) => entry.workerId === smoke.workerId);
+    validateDistributionRevalidationReceipt(smoke.preLaunchRevalidation, {
+      runtimeBinaryHashes,
+      distributionDigest: smokeDistribution?.distributionDigest,
+    });
+    if (
+      smokeReceipt.cellId !== smoke.cellId
+      || smokeReceipt.providerCalls !== 0
+      || smokeReceipt.workerId !== smoke.workerId
+      || smokeReceipt.vmIdentityDigest !== smoke.vmIdentityDigest
+      || smokeReceipt.deviceProfileInstanceId !== smoke.deviceProfileInstanceId
+      || smokeReceipt.deviceProfileId !== smoke.deviceProfileId
+      || smokeReceipt.requestedDeviceId !== smoke.requestedDeviceId
+      || smokeReceipt.expectedDeviceName !== smoke.expectedDeviceName
+      || !sameAuthorityInventory(smokeReceipt.runtimeBinaryHashes, runtimeBinaryHashes)
+    ) throw new Error(`local isolation preflight smoke receipt identity mismatch for ${expected.feedbackLoopPrevention}`);
+    for (const artifact of smokeReceipt.artifacts ?? []) {
+      const artifactPath = path.resolve(path.dirname(smokeReceiptPath), artifact.path);
+      const current = fileAuthorityEntry(artifactPath, artifact.path);
+      if (current.bytes !== artifact.bytes || current.sha256 !== artifact.sha256) {
+        throw new Error(`local isolation preflight smoke artifact changed: ${artifact.path}`);
+      }
+    }
   }
   const root = manifestRoot;
-  for (let index = 0; index < LOCAL_ISOLATION_CELLS.length; index += 1) {
-    const expected = LOCAL_ISOLATION_CELLS[index];
+  for (let index = 0; index < expectedCells.length; index += 1) {
+    const expected = expectedCells[index];
     const cell = manifest.cells[index];
+    if (expectedWorkerIds && (cell?.workerId !== expectedWorkerIds[index]
+        || cell?.vmIdentityDigest !== manifest.workerRuntimeDistributions.find(
+          (entry) => entry.workerId === expectedWorkerIds[index],
+        )?.vmIdentityDigest)) {
+      throw new Error('four-worker local isolation formal worker/VM placement mismatch');
+    }
     if (
       cell?.cellId !== expected.cellId
       || cell?.providerMode !== 'disabled'
@@ -409,14 +547,50 @@ export function verifyLocalIsolationManifest({
       || Number(cell?.durationMs) < expected.durationSeconds * 1_000
       || Number(cell?.iterationCount) < 1
       || cell?.verdict !== 'passed'
+      || !cell?.workerId
+      || !cell?.vmIdentityDigest
+      || !cell?.deviceProfileInstanceId
     ) throw new Error(`local isolation cell ${expected.cellId} is incomplete or used a Provider`);
+    const priorVmDigest = workerIds.get(cell.workerId);
+    if (priorVmDigest && priorVmDigest !== cell.vmIdentityDigest) {
+      throw new Error(`local isolation worker ${cell.workerId} changed VM identity between cells`);
+    }
+    if (!priorVmDigest && vmIdentityDigests.has(cell.vmIdentityDigest)) {
+      throw new Error(`local isolation VM identity is reused by worker ${cell.workerId}`);
+    }
+    workerIds.set(cell.workerId, cell.vmIdentityDigest);
+    vmIdentityDigests.add(cell.vmIdentityDigest);
+    const smoke = manifest.preflightSmoke[index];
+    if (
+      smoke.workerId !== cell.workerId
+      || smoke.vmIdentityDigest !== cell.vmIdentityDigest
+      || smoke.deviceProfileInstanceId !== cell.deviceProfileInstanceId
+      || smoke.deviceProfileId !== cell.deviceProfileId
+      || smoke.requestedDeviceId !== cell.requestedDeviceId
+      || smoke.expectedDeviceName !== cell.expectedDeviceName
+    ) throw new Error(`local isolation smoke/formal authority mismatch for ${expected.cellId}`);
     const receiptPath = path.resolve(root, cell.receipt.path);
     const authority = fileAuthorityEntry(receiptPath, cell.receipt.path);
     if (authority.bytes !== cell.receipt.bytes || authority.sha256 !== cell.receipt.sha256) {
       throw new Error(`local isolation cell ${expected.cellId} receipt hash mismatch`);
     }
     const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
-    if (receipt.cellId !== expected.cellId || receipt.providerCalls !== 0) {
+    const cellDistribution = manifest.workerRuntimeDistributions.find((entry) => entry.workerId === cell.workerId);
+    validateDistributionRevalidationReceipt(cell.preLaunchRevalidation, {
+      runtimeBinaryHashes,
+      distributionDigest: cellDistribution?.distributionDigest,
+    });
+    if (
+      receipt.cellId !== expected.cellId
+      || receipt.providerCalls !== 0
+      || receipt.workerId !== cell.workerId
+      || receipt.vmIdentityDigest !== cell.vmIdentityDigest
+      || receipt.deviceProfileInstanceId !== cell.deviceProfileInstanceId
+      || receipt.deviceProfileId !== cell.deviceProfileId
+      || receipt.requestedDeviceId !== cell.requestedDeviceId
+      || receipt.expectedDeviceName !== cell.expectedDeviceName
+      || !sameAuthorityInventory(receipt.runtimeBinaryHashes, runtimeBinaryHashes)
+    ) {
       throw new Error(`local isolation cell ${expected.cellId} receipt identity mismatch`);
     }
     for (const artifact of receipt.artifacts ?? []) {
@@ -427,23 +601,69 @@ export function verifyLocalIsolationManifest({
       }
     }
   }
+  if (workerIds.size !== manifest.workerRuntimeDistributions.length
+      || [...workerIds].some(([workerId, vmDigest]) => (
+        !distributionWorkers.has(workerId)
+        || manifest.workerRuntimeDistributions.find((entry) => entry.workerId === workerId)?.vmIdentityDigest !== vmDigest
+      ))) {
+    throw new Error('local isolation cells do not match the signed worker runtime distributions');
+  }
+  if (expectedWorkers !== null || expectedAssignments !== null) {
+    verifyLocalIsolationPaidBindings(manifest, expectedWorkers, expectedAssignments);
+  }
   return manifest;
+}
+
+function verifyLocalIsolationPaidBindings(manifest, workers, assignments) {
+  const fail = () => { throw new Error('local isolation does not cover the current paid assignment worker/VM/route/profile'); };
+  if (!Array.isArray(workers) || !workers.length || !Array.isArray(assignments)
+      || assignments.length !== LIVE_LLM_CELLS.length) fail();
+  const byId = new Map(workers.map((worker) => [worker.workerId, worker]));
+  if (byId.size !== workers.length || manifest.workerRuntimeDistributions.length !== workers.length) fail();
+  for (const worker of workers) {
+    const vmDigest = sha256(Buffer.from(JSON.stringify(Object.fromEntries(Object.entries(worker.vmIdentity ?? {}).sort()))));
+    const distribution = manifest.workerRuntimeDistributions.find((entry) => entry.workerId === worker.workerId);
+    if (!worker.vmIdentity || !distribution || distribution.vmIdentityDigest !== vmDigest
+        || (worker.vmIdentityDigest && worker.vmIdentityDigest !== vmDigest)) fail();
+  }
+  for (const [index, paid] of LIVE_LLM_CELLS.entries()) {
+    const assignment = assignments[index];
+    const worker = byId.get(assignment?.workerId);
+    const profiles = worker?.deviceProfileInstances?.filter((profile) => profile.instanceId === assignment.deviceProfileInstanceId) ?? [];
+    if (assignment?.cellId !== paid.cellId || profiles.length !== 1) fail();
+    const profile = profiles[0];
+    const distribution = manifest.workerRuntimeDistributions.find((entry) => entry.workerId === worker.workerId);
+    const matches = manifest.cells.filter((cell) => cell.workerId === worker.workerId
+      && cell.vmIdentityDigest === distribution.vmIdentityDigest
+      && cell.feedbackLoopPrevention === paid.feedbackLoopPrevention
+      && cell.deviceClass === paid.deviceClass && profile.deviceClass === paid.deviceClass
+      && cell.deviceProfileInstanceId === profile.instanceId
+      && cell.deviceProfileId === profile.profileId
+      && cell.requestedDeviceId === profile.physicalPlaybackDeviceId
+      && cell.expectedDeviceName === profile.expectedPhysicalPlaybackDeviceName);
+    if (matches.length !== 1) fail();
+  }
 }
 
 export async function runLocalIsolationMatrix({
   deviceProfiles,
+  workers,
   outputRoot = DEFAULT_OUTPUT_ROOT,
   workspaceRoot = repoRoot,
   provenance = currentGitProvenance({ cwd: workspaceRoot }),
   now = () => Date.now(),
   runCell = runLocalIsolationCell,
+  executeWorkerCell,
+  distributeRuntime = distributeLocalIsolationRuntime,
+  sshExecutable = 'ssh.exe',
+  scpExecutable = 'scp.exe',
   smokeDurationSeconds = 45,
   runtimeAuthorityPath,
 }) {
   assertCleanCurrentHead(provenance);
   if (!runtimeAuthorityPath) throw new Error('local isolation requires --runtime-authority');
   const frozenRuntime = verifyStrictRuntimeAuthority(runtimeAuthorityPath, { workspaceRoot, provenance });
-  const implementationHashes = currentAuthorityImplementationHashes({ workspaceRoot });
+  const implementationHashes = currentLocalIsolationImplementationHashes({ workspaceRoot });
   const runtimeBinaryHashes = currentAuthorityRuntimeBinaryHashes({ workspaceRoot });
   const generatedAtMs = now();
   const matrixDirectory = path.resolve(
@@ -452,46 +672,48 @@ export async function runLocalIsolationMatrix({
     `${compactTimestamp(new Date(generatedAtMs))}-${provenance.headCommit.slice(0, 12)}`,
   );
   createLocalIsolationMatrixDirectory(matrixDirectory);
+  const recordFailure = (error) => {
+    writeLocalIsolationFailureManifest({ matrixDirectory, provenance, error });
+    throw error;
+  };
   const aecGateLogPath = path.join(matrixDirectory, 'aec3-msvc-gate.log');
   const frozenAecLog = path.resolve(
     path.dirname(frozenRuntime.authorityPath),
     frozenRuntime.authority.aec3Gate.authority.path,
   );
   fs.copyFileSync(frozenAecLog, aecGateLogPath, fs.constants.COPYFILE_EXCL);
-  const profiles = new Map(deviceProfiles.map((profile) => [profile.deviceClass, profile]));
   if (!Number.isInteger(smokeDurationSeconds) || smokeDurationSeconds < 30 || smokeDurationSeconds > 60) {
     throw new Error('local isolation smoke duration must be between 30 and 60 seconds');
   }
-  const smokeRoot = path.join(matrixDirectory, 'preflight-smoke');
+  // Keep the physical smoke directory short: every nested artifact must stay
+  // below the legacy Windows SCP path ceiling on remote workers.
+  const smokeRoot = path.join(matrixDirectory, 'smoke');
   fs.mkdirSync(smokeRoot, { recursive: false });
-  const preflightSmoke = [];
-  for (const cell of LOCAL_ISOLATION_CELLS) {
-    preflightSmoke.push(await runCell({
-      cell: { ...cell, cellId: `${cell.cellId}::smoke` },
-      profile: profiles.get(cell.deviceClass),
-      outputRoot: smokeRoot,
-      provenance,
-      implementationHashes,
-      runtimeBinaryHashes,
-      workspaceRoot,
-      now,
-      targetDurationSeconds: smokeDurationSeconds,
-      artifactKind: 'watch-mode-local-isolation-smoke-cell',
-    }));
-  }
-  const cells = [];
-  for (const cell of LOCAL_ISOLATION_CELLS) {
-    cells.push(await runCell({
-      cell,
-      profile: profiles.get(cell.deviceClass),
-      outputRoot: matrixDirectory,
-      provenance,
-      implementationHashes,
-      runtimeBinaryHashes,
-      workspaceRoot,
-      now,
-    }));
-  }
+  const distributionRoot = path.join(matrixDirectory, 'distribution');
+  const deployments = await distributeRuntime({
+    workers, workspaceRoot, runtimeBinaryHashes, stagingRoot: distributionRoot,
+    sshExecutable, scpExecutable,
+  }).catch(recordFailure);
+  const deploymentByWorker = new Map(deployments.map((entry) => [entry.workerId, entry]));
+  const requestRoot = path.join(matrixDirectory, 'worker-requests');
+  fs.mkdirSync(requestRoot, { recursive: false });
+  const localTransport = executeWorkerCell ?? (async (request) => executeDistributedLocalIsolationCell({
+    request: { ...request, distribution: deploymentByWorker.get(request.worker.workerId) },
+    requestRoot,
+    workerWorkspaceRoot: deploymentByWorker.get(request.worker.workerId).workspaceRoot,
+    localOutputRoot: request.phase === 'smoke' ? smokeRoot : matrixDirectory,
+    sshExecutable,
+    scpExecutable,
+  }));
+  const distributed = await runDistributedLocalIsolationCells({
+    workers,
+    provenance,
+    implementationHashes,
+    runtimeBinaryHashes,
+    smokeDurationSeconds,
+    executeCell: localTransport,
+  }).catch(recordFailure);
+  const { preflightSmoke, cells } = rebaseLocalIsolationResults(distributed, { matrixDirectory, smokeRoot });
   const manifest = {
     schemaVersion: LOCAL_ISOLATION_SCHEMA_VERSION,
     artifactKind: LOCAL_ISOLATION_ARTIFACT_KIND,
@@ -514,29 +736,70 @@ export async function runLocalIsolationMatrix({
       verdict: 'passed',
     },
     deviceProfiles,
+    workerRuntimeDistributions: deployments.map((entry) => ({
+      workerId: entry.workerId,
+      vmIdentityDigest: workers.find((worker) => worker.workerId === entry.workerId)?.vmIdentityDigest
+        ?? crypto.createHash('sha256').update(JSON.stringify(
+          Object.fromEntries(Object.entries(workers.find((worker) => worker.workerId === entry.workerId).vmIdentity).sort()),
+        )).digest('hex'),
+      workspaceRoot: entry.workspaceRoot,
+      distributionDigest: entry.manifest.distributionDigest,
+      authority: fileAuthorityEntry(
+        entry.manifestPath,
+        portable(path.relative(matrixDirectory, entry.manifestPath)),
+      ),
+    })),
+    placementPolicy: DEFAULT_PAID_ISOLATION_POLICY,
     preflightSmoke,
     cells,
     providerCalls: 0,
     verdict: 'passed',
   };
-  const manifestPath = path.join(matrixDirectory, 'local-isolation-manifest.json');
-  atomicWriteJson(manifestPath, manifest);
-  verifyLocalIsolationManifest({
-    manifestPath,
+  return publishLocalIsolationManifest({
+    manifest, matrixDirectory,
+    canonicalPath: path.resolve(workspaceRoot, outputRoot, LOCAL_ISOLATION_CANONICAL_MANIFEST),
     workspaceRoot,
     provenance,
     implementationHashes,
     runtimeBinaryHashes,
     runtimeAuthorityPath: frozenRuntime.authorityPath,
   });
-  const canonicalPath = path.resolve(workspaceRoot, outputRoot, LOCAL_ISOLATION_CANONICAL_MANIFEST);
+}
+
+export function rebaseLocalIsolationResults(distributed, { matrixDirectory, smokeRoot }) {
+  return {
+    ...distributed,
+    preflightSmoke: distributed.preflightSmoke.map((entry) => ({
+      ...entry,
+      runDirectory: portable(path.relative(matrixDirectory, resolveAuthorityPath(smokeRoot, entry.runDirectory))),
+      receipt: {
+        ...entry.receipt,
+        path: portable(path.relative(matrixDirectory, resolveAuthorityPath(smokeRoot, entry.receipt.path))),
+      },
+    })),
+  };
+}
+
+export function publishLocalIsolationManifest({ manifest, matrixDirectory, canonicalPath, ...verification }) {
+  const manifestPath = path.join(matrixDirectory, 'local-isolation-manifest.json');
+  if (fs.existsSync(manifestPath)) throw new Error(`local isolation source manifest already exists: ${manifestPath}`);
+  const candidatePath = path.join(matrixDirectory, 'local-isolation-candidate.json');
+  atomicWriteJson(candidatePath, manifest);
+  try {
+    verifyLocalIsolationManifest({ ...verification, manifestPath: candidatePath });
+  } catch (error) {
+    atomicWriteJson(candidatePath, { ...manifest, verdict: 'failed' }, { overwrite: true });
+    writeLocalIsolationFailureManifest({ matrixDirectory, provenance: manifest.provenance, error });
+    throw error;
+  }
+  fs.renameSync(candidatePath, manifestPath);
   atomicWriteJson(canonicalPath, {
     ...manifest,
     sourceManifest: fileAuthorityEntry(
       manifestPath,
       portable(path.relative(path.dirname(canonicalPath), manifestPath)),
     ),
-  });
+  }, { overwrite: true });
   return { manifestPath, canonicalPath, manifest };
 }
 
@@ -545,22 +808,102 @@ export function createLocalIsolationMatrixDirectory(matrixDirectory) {
   fs.mkdirSync(matrixDirectory, { recursive: false });
 }
 
+export function writeLocalIsolationFailureManifest({ matrixDirectory, provenance, error }) {
+  const manifestPath = path.join(matrixDirectory, 'local-isolation-failure.json');
+  atomicWriteJson(manifestPath, {
+    schemaVersion: 1,
+    artifactKind: 'watch-mode-local-isolation-failure',
+    verdict: 'failed',
+    providerCalls: 0,
+    provenance,
+    error: localIsolationFailureDetails(error),
+  });
+  return manifestPath;
+}
+
 if (isMain(import.meta.url)) {
   try {
     if (process.platform !== 'win32') throw new Error('local isolation authority requires Windows');
+    if (process.argv.includes('--verify-distribution')) {
+      const args = parseCliArgs(process.argv.slice(2), { defaults: { verifyDistribution: '' } });
+      const manifestPath = path.resolve(args.verifyDistribution);
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/u, ''));
+      verifyDistributedRuntimeDistribution({ workspaceRoot: path.dirname(manifestPath), manifest });
+      console.log(JSON.stringify({ verified: true, distributionDigest: manifest.distributionDigest }));
+      process.exit(0);
+    }
+    if (process.argv.includes('--worker-cell-request')) {
+      const args = parseCliArgs(process.argv.slice(2), {
+        defaults: { workerCellRequest: '', workerCellResult: '' },
+      });
+      const request = validateLocalIsolationWorkerRequest(JSON.parse(
+        fs.readFileSync(path.resolve(args.workerCellRequest), 'utf8').replace(/^\uFEFF/u, ''),
+      ));
+      const identity = spawnSync('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        '(Get-CimInstance -ClassName Win32_ComputerSystemProduct).UUID',
+      ], { encoding: 'utf8', windowsHide: true });
+      if (identity.status !== 0) throw new Error(`failed to read worker BIOS UUID: ${identity.stderr}`);
+      if (String(identity.stdout).trim().toLowerCase() !== String(request.worker.vmIdentity.uuidBios).trim().toLowerCase()) {
+        throw new Error('local isolation worker BIOS UUID does not match the immutable request');
+      }
+      const preLaunchRevalidation = revalidateDistributionForWorkerRequest({ request, workspaceRoot: repoRoot });
+      fs.mkdirSync(request.outputRoot, { recursive: true });
+      const result = await runLocalIsolationCell({
+        cell: request.cell,
+        profile: request.profile,
+        outputRoot: request.outputRoot,
+        provenance: request.provenance,
+        implementationHashes: request.implementationHashes,
+        runtimeBinaryHashes: request.runtimeBinaryHashes,
+        workspaceRoot: repoRoot,
+        targetDurationSeconds: request.targetDurationSeconds,
+        artifactKind: request.cellArtifactKind,
+        workerAuthority: request.workerAuthority,
+      });
+      atomicWriteJson(
+        path.resolve(args.workerCellResult),
+        createLocalIsolationWorkerResultEnvelope(request, { ...result, preLaunchRevalidation }),
+      );
+      console.log(JSON.stringify({ passed: true, cellId: result.cellId }));
+      process.exit(0);
+    }
     const args = parseCliArgs(process.argv.slice(2), {
-      defaults: { outputRoot: DEFAULT_OUTPUT_ROOT, deviceProfiles: '', runtimeAuthority: '' },
+      defaults: {
+        outputRoot: DEFAULT_OUTPUT_ROOT,
+        deviceProfiles: '',
+        runtimeAuthority: '',
+        workerConfig: '',
+      },
     });
     if (!args.runtimeAuthority) throw new Error('--runtime-authority is required');
-    const deviceProfiles = parseLocalIsolationDeviceProfiles(args.deviceProfiles);
+    if (!args.workerConfig) throw new Error('--worker-config is required');
+    // Load the production validator in an isolated process. The production
+    // coordinator imports this module to verify local authority, so importing
+    // it back from this CLI would create a cyclic top-level-await dependency.
+    const configLoader = spawnSync(process.execPath, [
+      '--input-type=module', '--eval',
+      `import { readProductionWorkerConfig } from ${JSON.stringify(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url).href)}; process.stdout.write(JSON.stringify(readProductionWorkerConfig(process.argv[1])));`,
+      path.resolve(repoRoot, args.workerConfig),
+    ], { cwd: repoRoot, encoding: 'utf8', windowsHide: true });
+    if (configLoader.status !== 0) throw new Error(`worker config validation failed: ${configLoader.stderr}`);
+    const workerConfig = JSON.parse(configLoader.stdout);
+    const deviceProfiles = args.deviceProfiles
+      ? parseLocalIsolationDeviceProfiles(args.deviceProfiles)
+      : workerConfig.workers.flatMap((worker) => worker.deviceProfileInstances.map((profile) => ({
+        ...profile, workerId: worker.workerId,
+      })));
     const result = await runLocalIsolationMatrix({
       deviceProfiles,
+      workers: workerConfig.workers,
       outputRoot: args.outputRoot,
       runtimeAuthorityPath: path.resolve(repoRoot, args.runtimeAuthority),
+      sshExecutable: workerConfig.sshExecutable,
+      scpExecutable: workerConfig.scpExecutable,
     });
     console.log(JSON.stringify(result, null, 2));
   } catch (error) {
-    console.error(error.message);
+    console.error(JSON.stringify(localIsolationFailureDetails(error), null, 2));
     process.exitCode = 1;
   }
 }

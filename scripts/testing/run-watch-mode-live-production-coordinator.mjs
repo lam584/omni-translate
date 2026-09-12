@@ -1,7 +1,10 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { fixedFourWorkerAssignments } from './watch-mode-four-worker-plan.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
@@ -14,7 +17,6 @@ import {
   buildVerifyArgv,
   publishSuccessfulStrictMatrixManifest,
   stageShardMatrixIntegration,
-  strictRuntimeEnvironment,
   writeMatrixRunManifest,
 } from './run-watch-mode-live-matrix.mjs';
 import {
@@ -36,33 +38,480 @@ import {
   SHARD_CELL_RESULT_FILE,
   SHARD_EXECUTION_PLAN_FILE,
   atomicWriteJson,
+  canonicalJson,
   createWorkerReadinessRequest,
   currentShardOrchestrationImplementationHashes,
+  coordinatorKeyIdForPublicKey,
+  signCoordinatorAuthority,
+  strictFailureIdentityProjection,
   validateShardCellResult,
   validateShardManifest,
 } from './watch-mode-shard-authority.mjs';
 import {
+  COORDINATOR_FIRST_WAVE_STAGGER_MS,
   defaultSingleWorkerAssignments,
+  defaultTwoWorkerAssignments,
+  fixedThreeWorkerAssignments,
   prepareCoordinatorExecution,
   runCoordinatorWaves,
   writeCoordinatorAggregate,
 } from './run-watch-mode-live-coordinator.mjs';
 import {
-  PROVIDER_PREFLIGHT_AUTHORIZATION_DIGEST_ENV,
-  PROVIDER_PREFLIGHT_GRANT_PATH_ENV,
-  PROVIDER_PREFLIGHT_RESERVATION_DIRECTORY_ENV,
+  PROVIDER_PREFLIGHT_INPUT_MODE,
+  PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET,
+  PROVIDER_PREFLIGHT_OPERATION,
+  PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE,
+  PROVIDER_PREFLIGHT_RESPONSE_MODE,
+  PROVIDER_PREFLIGHT_TERMINAL_EVENT,
 } from './watch-mode-provider-preflight-authorization.mjs';
-import { runManagedProviderPreflight } from './watch-mode-provider-preflight-process.mjs';
-import { runProviderNetworkHealth } from './watch-mode-provider-network-health.mjs';
+import { provisionCredential } from './watch-worker-bootstrap.mjs';
+import {
+  REMOTE_PROVIDER_PREFLIGHT_REQUEST_KIND,
+  REMOTE_PROVIDER_PREFLIGHT_REQUEST_SCHEMA_VERSION,
+} from './run-watch-mode-provider-preflight-worker.mjs';
+import {
+  WATCH_PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
+  WATCH_PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS,
+  WATCH_PRODUCTION_AUTHORITY_INVENTORY_CAPTURE_TIMEOUT_MS,
+  WATCH_PRODUCTION_ENDPOINT_READINESS_REMOTE_TIMEOUT_MS,
+  WATCH_PRODUCTION_ENDPOINT_READINESS_TASK_TIMEOUT_MS,
+  WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
+  WATCH_PRODUCTION_GUEST_FINALIZER_TIMEOUT_MS,
+  WATCH_PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS,
+  WATCH_PRODUCTION_PROVENANCE_CAPTURE_TIMEOUT_MS,
+  WATCH_PRODUCTION_PRESERVED_READINESS_TIMEOUT_MS,
+  WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS,
+  WATCH_PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS,
+  WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_ATTEMPTS,
+  WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_RETRY_DELAY_MS,
+  WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS,
+  WATCH_PRODUCTION_RUNTIME_AUTHORITY_VERIFICATION_TIMEOUT_MS,
+  WATCH_PRODUCTION_LOCAL_ISOLATION_VERIFICATION_TIMEOUT_MS,
+  WATCH_PRODUCTION_SHARD_COLLECTION_TIMEOUT_MS,
+  WATCH_PRODUCTION_WORKER_QUERY_TIMEOUT_MS,
+  WATCH_PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS,
+  deriveWatchPostReadinessExecutionBudgetMs,
+  deriveWatchProductionCoordinatorPreparationBudgetMs,
+  deriveWatchProductionInteractiveCellTimeoutMs,
+  deriveWatchProductionCoordinatorTimeoutMs,
+  deriveWatchProductionFinalEvidenceBudgetMs,
+  deriveWatchProductionInitialWorkerReadinessBudgetMs,
+  deriveWatchProductionNetworkHealthBudgetMs,
+  deriveWatchProductionProviderPreflightBudgetMs,
+  deriveWatchProductionRemoteCellTimeoutMs,
+} from './watch-mode-release-timeout-budget.mjs';
 
 export const PRODUCTION_COORDINATOR_RUNNER_ID =
   'scripts/testing/run-watch-mode-live-production-coordinator.mjs';
-export const PRODUCTION_WORKER_CONFIG_SCHEMA_VERSION = 1;
+
+export const REMOTE_PROVIDER_PREFLIGHT_PUBLICATION_BODY = String.raw`
+function ConvertTo-ExtendedLengthPath([string]$logicalPath) {
+  $full = [IO.Path]::GetFullPath($logicalPath)
+  if ($full.StartsWith('\\?\')) { return $full }
+  if ($full.StartsWith('\\')) { return '\\?\UNC\' + $full.Substring(2) }
+  return '\\?\' + $full
+}
+function Get-ExtendedLengthFileSha256([string]$extendedPath) {
+  $stream = [IO.File]::Open($extendedPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  try {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return -join @($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) }
+    finally { $sha.Dispose() }
+  } finally { $stream.Dispose() }
+}
+$sourceRoot = [IO.Path]::GetFullPath([string]$payload.sourceRoot)
+$targetRoot = [IO.Path]::GetFullPath([string]$payload.targetRoot)
+$extendedTargetRoot = ConvertTo-ExtendedLengthPath $targetRoot
+if ([IO.Directory]::Exists($extendedTargetRoot) -or [IO.File]::Exists($extendedTargetRoot)) { throw 'canonical remote Provider preflight authorization root already exists' }
+[IO.Directory]::CreateDirectory($extendedTargetRoot) | Out-Null
+[IO.Directory]::CreateDirectory((ConvertTo-ExtendedLengthPath (Join-Path $targetRoot 'provider-preflight-lease-reservations'))) | Out-Null
+[IO.Directory]::CreateDirectory((ConvertTo-ExtendedLengthPath (Join-Path $targetRoot 'worker-readiness'))) | Out-Null
+foreach ($entry in @($payload.files)) {
+  $relative = [string]$entry.path
+  $source = ConvertTo-ExtendedLengthPath (Join-Path $sourceRoot ($relative -replace '/', '\'))
+  $target = ConvertTo-ExtendedLengthPath (Join-Path $targetRoot ($relative -replace '/', '\'))
+  if (-not [IO.File]::Exists($source)) { throw "staged authorization file is missing: $relative" }
+  $attributes = [IO.File]::GetAttributes($source)
+  $length = (New-Object IO.FileInfo($source)).Length
+  if (($attributes -band [IO.FileAttributes]::Directory) -ne 0 -or ($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $length -ne [long]$entry.bytes -or (Get-ExtendedLengthFileSha256 $source) -cne [string]$entry.sha256) { throw "staged authorization authority mismatch: $relative" }
+  [IO.File]::Copy($source, $target, $false)
+  if ((Get-ExtendedLengthFileSha256 $target) -cne [string]$entry.sha256) { throw "published authorization authority mismatch: $relative" }
+}
+[pscustomobject]@{ published = $true; logicalTargetRoot = $targetRoot } | ConvertTo-Json -Compress
+`;
+
+function writeTarOctal(header, offset, length, value) {
+  const encoded = Math.trunc(value).toString(8).padStart(length - 1, '0');
+  if (encoded.length > length - 1) throw new Error('deterministic transfer tar numeric field overflow');
+  header.write(encoded, offset, length - 1, 'ascii');
+  header[offset + length - 1] = 0;
+}
+
+export function createDeterministicReadinessTransferArchive({ archivePath, entries }) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new Error('readiness transfer archive requires at least one entry');
+  }
+  const chunks = [];
+  for (const [index, entry] of entries.entries()) {
+    const memberPath = `payload/${String(index).padStart(4, '0')}`;
+    const bytes = fs.readFileSync(entry.localPath);
+    const actual = { bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+    if (actual.bytes !== entry.bytes || actual.sha256 !== entry.sha256) {
+      throw new Error(`readiness transfer source changed before archive creation: ${entry.path}`);
+    }
+    const header = Buffer.alloc(512);
+    header.write(memberPath, 0, 100, 'ascii');
+    writeTarOctal(header, 100, 8, 0o644);
+    writeTarOctal(header, 108, 8, 0);
+    writeTarOctal(header, 116, 8, 0);
+    writeTarOctal(header, 124, 12, bytes.length);
+    writeTarOctal(header, 136, 12, 0);
+    header.fill(0x20, 148, 156);
+    header[156] = '0'.charCodeAt(0);
+    header.write('ustar\0', 257, 6, 'ascii');
+    header.write('00', 263, 2, 'ascii');
+    writeTarOctal(header, 148, 8, header.reduce((sum, byte) => sum + byte, 0));
+    chunks.push(header, bytes);
+    const padding = (512 - (bytes.length % 512)) % 512;
+    if (padding > 0) chunks.push(Buffer.alloc(padding));
+  }
+  chunks.push(Buffer.alloc(1024));
+  fs.writeFileSync(archivePath, Buffer.concat(chunks), { flag: 'wx' });
+  const archiveBytes = fs.readFileSync(archivePath);
+  return {
+    bytes: archiveBytes.length,
+    sha256: crypto.createHash('sha256').update(archiveBytes).digest('hex'),
+    entries: entries.map((entry, index) => ({
+      memberPath: `payload/${String(index).padStart(4, '0')}`,
+      path: entry.path,
+      destinationPath: entry.remotePath,
+      bytes: entry.bytes,
+      sha256: entry.sha256,
+    })),
+  };
+}
+
+export const PRODUCTION_READINESS_BATCH_EXTRACTION_BODY = String.raw`
+$archive = [IO.Path]::GetFullPath([string]$payload.archivePath)
+$remoteRoot = [IO.Path]::GetFullPath([string]$payload.remoteRoot).TrimEnd('\')
+$workspaceRoot = [IO.Path]::GetFullPath([string]$payload.workspaceRoot).TrimEnd('\')
+if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) { throw 'readiness transfer archive is missing' }
+$archiveItem = Get-Item -LiteralPath $archive -Force
+$archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($archiveItem.Length -ne [int64]$payload.archive.bytes -or $archiveHash -cne [string]$payload.archive.sha256) { throw 'readiness transfer archive hash/size mismatch' }
+$expectedMembers = @($payload.archive.entries | ForEach-Object { [string]$_.memberPath })
+$systemTar = Join-Path $env:SystemRoot 'System32\tar.exe'
+if (-not (Test-Path -LiteralPath $systemTar -PathType Leaf)) { throw 'system tar is missing' }
+$actualMembers = @(& $systemTar -tf $archive 2>&1)
+if ($LASTEXITCODE -ne 0) { throw 'readiness transfer archive inventory failed' }
+if ($actualMembers.Count -ne $expectedMembers.Count) { throw 'readiness transfer archive inventory count mismatch' }
+for ($index = 0; $index -lt $expectedMembers.Count; $index++) {
+  if ([string]$actualMembers[$index] -cne [string]$expectedMembers[$index]) { throw 'readiness transfer archive inventory mismatch' }
+}
+$staging = Join-Path $remoteRoot 'readiness-transfer-staging'
+if (Test-Path -LiteralPath $staging) { throw 'readiness transfer staging already exists' }
+[void](New-Item -ItemType Directory -Path $staging)
+try {
+  & $systemTar -xf $archive -C $staging
+  if ($LASTEXITCODE -ne 0) { throw 'readiness transfer archive extraction failed' }
+  $verified = @()
+  foreach ($entry in @($payload.archive.entries)) {
+    $member = [string]$entry.memberPath
+    if ($member -notmatch '^payload/[0-9]{4}$') { throw 'readiness transfer member is malformed' }
+    $source = [IO.Path]::GetFullPath((Join-Path $staging $member))
+    if (-not $source.StartsWith($staging.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'readiness transfer member escaped staging' }
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw 'readiness transfer member is missing after extraction' }
+    $item = Get-Item -LiteralPath $source -Force
+    $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($item.Length -ne [int64]$entry.bytes -or $hash -cne [string]$entry.sha256) { throw 'readiness transfer member hash/size mismatch' }
+    $relative = ([string]$entry.path).Replace('/', '\')
+    $segments = $relative.Split([char]92)
+    if ([IO.Path]::IsPathRooted($relative) -or $segments -contains '.' -or $segments -contains '..') { throw 'readiness transfer destination is malformed' }
+    $targetRoot = if ([string]$entry.targetKind -ceq 'workspace') { $workspaceRoot } elseif ([string]$entry.targetKind -ceq 'execution') { $remoteRoot } else { throw 'readiness transfer target kind is invalid' }
+    $target = [IO.Path]::GetFullPath((Join-Path $targetRoot $relative))
+    if (-not $target.StartsWith($targetRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'readiness transfer destination escaped root' }
+    $verified += [pscustomobject]@{ source=$source; target=$target }
+  }
+  foreach ($entry in $verified) {
+    [void](New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName([string]$entry.target)) -Force)
+    Copy-Item -LiteralPath ([string]$entry.source) -Destination ([string]$entry.target) -Force
+  }
+} finally {
+  Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+}
+`;
+
+export async function stageProductionReadinessBatch({
+  worker, transferEntries, coordinatorExecutionRoot, remoteRoot, uploadFile, executeRemote,
+}) {
+  const transferRoot = path.join(coordinatorExecutionRoot, '.transport', worker.workerId);
+  fs.mkdirSync(transferRoot, { recursive: true });
+  const archivePath = path.join(transferRoot, 'readiness-transfer.tar');
+  const remoteArchivePath = path.win32.join(remoteRoot, 'readiness-transfer.tar');
+  const transfer = createDeterministicReadinessTransferArchive({ archivePath, entries: transferEntries });
+  await uploadFile(worker, archivePath, remoteArchivePath, { timeoutMs: WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS });
+  await executeRemote(worker, PRODUCTION_READINESS_BATCH_EXTRACTION_BODY, {
+    archivePath: remoteArchivePath,
+    remoteRoot,
+    workspaceRoot: worker.workspaceRoot,
+    archive: {
+      bytes: transfer.bytes,
+      sha256: transfer.sha256,
+      entries: transfer.entries.map((entry, index) => ({ ...entry, targetKind: transferEntries[index].targetKind })),
+    },
+  }, { timeoutMs: WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS });
+  return transfer;
+}
+export const PRODUCTION_WORKER_CONFIG_SCHEMA_VERSION = 3;
 export const PRODUCTION_WORKER_CONFIG_KIND = 'watch-mode-production-shard-workers';
-export const PRODUCTION_REMOTE_CELL_TIMEOUT_MS = 650_000;
-export const PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS = 15 * 60 * 1_000;
-export const PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS = 10 * 60 * 1_000;
-export const PRODUCTION_COORDINATOR_TIMEOUT_MS = 150 * 60 * 1_000;
+export const PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS =
+  WATCH_PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS;
+export const PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS = WATCH_PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS;
+export const PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS =
+  WATCH_PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS;
+export const PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS =
+  WATCH_PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS;
+export const PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS =
+  WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS;
+export const PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS =
+  WATCH_PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS;
+export const PRODUCTION_COORDINATOR_TIMEOUT_MS = deriveWatchProductionCoordinatorTimeoutMs();
+
+export function assertSafeCollectionArchiveEntries(entries, expectedRootName) {
+  if (!Array.isArray(entries) || entries.length === 0 || !/^[^\\/]+$/u.test(expectedRootName)) {
+    throw new Error('collection archive has invalid inventory boundary');
+  }
+  const expectedRoot = `${expectedRootName}/`;
+  const observed = new Set();
+  for (const entry of entries) {
+    const normalized = String(entry).replaceAll('\\', '/');
+    if (normalized.startsWith('/') || /^[a-z]:/iu.test(normalized)
+        || normalized.includes(':') || normalized.split('/').includes('..')
+        || !normalized.startsWith(expectedRoot) || observed.has(normalized)) {
+      throw new Error('collection archive has unsafe inventory');
+    }
+    observed.add(normalized);
+  }
+}
+
+export async function collectRemoteDirectoryArchive({
+  worker, remoteDirectory, localDirectory, remoteArchivePath, timeoutMs,
+  executeRemote, downloadFile, runLocalProcess, validateExtracted, stagedRelativePath = '',
+  now = Date.now,
+  nonce = `${process.pid}-${crypto.randomBytes(5).toString('hex')}`,
+}) {
+  if (!worker?.workerId || typeof executeRemote !== 'function' || typeof downloadFile !== 'function'
+      || typeof runLocalProcess !== 'function' || typeof validateExtracted !== 'function'
+      || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('remote archive collection requires complete bounded transport inputs');
+  }
+  const remoteRoot = path.win32.resolve(String(remoteDirectory ?? ''));
+  const remoteArchive = path.win32.resolve(String(remoteArchivePath ?? ''));
+  const finalDirectory = path.resolve(String(localDirectory ?? ''));
+  const expectedRootName = path.win32.basename(remoteRoot);
+  const stagedRelative = String(stagedRelativePath || expectedRootName).replaceAll('\\', '/');
+  if (!remoteRoot || !remoteArchive || !finalDirectory || !/^[^\\/]+$/u.test(expectedRootName)
+      || path.posix.isAbsolute(stagedRelative) || stagedRelative.split('/').some((part) => !part || part === '..' || part.includes(':'))) {
+    throw new Error('remote archive collection paths are invalid');
+  }
+  if (fs.existsSync(finalDirectory)) {
+    throw new Error(`refusing to overwrite collected directory ${finalDirectory}`);
+  }
+  const localParent = path.dirname(finalDirectory);
+  fs.mkdirSync(localParent, { recursive: true });
+  const temporaryParent = path.join(localParent, `.incoming-${path.basename(finalDirectory)}-${nonce}`);
+  fs.mkdirSync(temporaryParent, { recursive: false });
+  const localArchivePath = path.join(temporaryParent, `${expectedRootName}.collection.tar`);
+  const deadlineMs = now() + timeoutMs;
+  const remainingMs = (stage) => {
+    const remaining = Math.ceil(deadlineMs - now());
+    if (remaining <= 0) throw new Error(`collection deadline expired before ${stage}`);
+    return remaining;
+  };
+  let published = false;
+  try {
+    const archive = parseRemoteJson(await executeRemote(worker, `
+$remoteRoot = [IO.Path]::GetFullPath([string]$payload.remoteRoot).TrimEnd('\\')
+$archivePath = [IO.Path]::GetFullPath([string]$payload.archivePath)
+if (-not (Test-Path -LiteralPath $remoteRoot -PathType Container)) { throw 'collection root is missing' }
+$rootItem = Get-Item -LiteralPath $remoteRoot -Force -ErrorAction Stop
+if ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'collection root is a reparse point' }
+$reparse = @(Get-ChildItem -LiteralPath $remoteRoot -Recurse -Force | Where-Object {
+  ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+})
+if ($reparse.Count -ne 0) { throw 'collection root contains a reparse point' }
+if (Test-Path -LiteralPath $archivePath) { throw 'collection archive already exists' }
+$systemTar = Join-Path $env:SystemRoot 'System32\\tar.exe'
+if (-not (Test-Path -LiteralPath $systemTar -PathType Leaf)) { throw 'native system tar is missing' }
+$parent = Split-Path -Parent $remoteRoot
+$leaf = Split-Path -Leaf $remoteRoot
+& $systemTar -cf $archivePath -C $parent $leaf
+if ($LASTEXITCODE -ne 0) { throw 'collection archive creation failed' }
+$item = Get-Item -LiteralPath $archivePath
+$hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+[ordered]@{ path = $archivePath; bytes = [int64]$item.Length; sha256 = $hash } | ConvertTo-Json -Compress
+`, { remoteRoot, archivePath: remoteArchive }, {
+      timeoutMs: remainingMs('remote archive creation'),
+    }), `worker ${worker.workerId} collection archive`);
+    if (String(archive.path).toLowerCase() !== remoteArchive.toLowerCase()
+        || !Number.isSafeInteger(Number(archive.bytes)) || Number(archive.bytes) <= 0
+        || !/^[a-f0-9]{64}$/u.test(String(archive.sha256))) {
+      throw new Error(`worker ${worker.workerId} returned invalid collection archive authority`);
+    }
+    await downloadFile(worker, remoteArchive, localArchivePath, {
+      timeoutMs: remainingMs('archive download'),
+    });
+    const localArchive = fileAuthorityEntry(localArchivePath, path.basename(localArchivePath));
+    if (localArchive.bytes !== Number(archive.bytes) || localArchive.sha256 !== archive.sha256) {
+      throw new Error(`worker ${worker.workerId} collection archive hash mismatch`);
+    }
+    const systemRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
+    const systemTar = path.join(systemRoot, 'System32', 'tar.exe');
+    const listing = await runLocalProcess(systemTar, ['-tf', localArchivePath], {
+      timeoutMs: remainingMs('archive inventory listing'),
+    });
+    ensureSuccessful(listing, `collection archive listing for ${worker.workerId}`);
+    const entries = String(listing.stdout ?? '').split(/\r?\n/u).filter(Boolean);
+    assertSafeCollectionArchiveEntries(entries, expectedRootName);
+    const verboseListing = await runLocalProcess(systemTar, ['-tvf', localArchivePath], {
+      timeoutMs: remainingMs('archive type listing'),
+    });
+    ensureSuccessful(verboseListing, `collection archive type listing for ${worker.workerId}`);
+    const unsafeTypes = String(verboseListing.stdout ?? '').split(/\r?\n/u).filter(Boolean)
+      .filter((entry) => !entry.startsWith('-') && !entry.startsWith('d'));
+    if (unsafeTypes.length > 0) {
+      throw new Error(`worker ${worker.workerId} collection archive contains non-file entries`);
+    }
+    const extracted = await runLocalProcess(systemTar, ['-xf', localArchivePath, '-C', temporaryParent], {
+      timeoutMs: remainingMs('archive extraction'),
+    });
+    ensureSuccessful(extracted, `collection archive extraction for ${worker.workerId}`);
+    fs.rmSync(localArchivePath, { force: true });
+    const downloaded = fs.readdirSync(temporaryParent, { withFileTypes: true });
+    if (downloaded.length !== 1 || !downloaded[0].isDirectory() || downloaded[0].isSymbolicLink()
+        || downloaded[0].name !== expectedRootName) {
+      throw new Error(`worker ${worker.workerId} collection did not contain exactly the expected directory`);
+    }
+    const downloadedRoot = path.join(temporaryParent, downloaded[0].name);
+    const stagedRoot = path.join(temporaryParent, ...stagedRelative.split('/'));
+    if (path.resolve(stagedRoot) !== path.resolve(downloadedRoot)) {
+      fs.mkdirSync(path.dirname(stagedRoot), { recursive: true });
+      fs.renameSync(downloadedRoot, stagedRoot);
+    }
+    await validateExtracted(stagedRoot, temporaryParent);
+    fs.renameSync(stagedRoot, finalDirectory);
+    published = true;
+    try {
+      let cleanupDirectory = path.dirname(stagedRoot);
+      while (cleanupDirectory.startsWith(`${temporaryParent}${path.sep}`)) {
+        fs.rmdirSync(cleanupDirectory);
+        cleanupDirectory = path.dirname(cleanupDirectory);
+      }
+      fs.rmdirSync(temporaryParent);
+    } catch {
+      // Publication is the authority boundary. Best-effort removal of the now
+      // non-authoritative staging parent must not turn a validated result into
+      // a collection failure or make recovery refuse the already-published result.
+    }
+    return { localDirectory: finalDirectory, archiveAuthority: archive };
+  } finally {
+    try {
+      await executeRemote(worker, `
+$archivePath = [string]$payload.archivePath
+Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+[ordered]@{ removed = -not (Test-Path -LiteralPath $archivePath) } | ConvertTo-Json -Compress
+`, { archivePath: remoteArchive }, {
+        timeoutMs: Math.max(1, Math.min(30_000, Math.ceil(deadlineMs - now()))),
+      });
+    } catch {
+      // Preserve the immutable remote source and local staging. A later
+      // zero-Provider recovery can distinguish packaging from transport.
+    }
+    if (!published && fs.existsSync(finalDirectory)) {
+      throw new Error('remote archive collection published an unvalidated final directory');
+    }
+  }
+}
+
+export function assertProductionCoordinatorWaveBudget({
+  coordinatorDeadlineMs,
+  currentTimeMs,
+  cells = LIVE_LLM_CELLS,
+  workerCount = 1,
+}) {
+  if (!Number.isFinite(coordinatorDeadlineMs) || !Number.isFinite(currentTimeMs)) {
+    throw new Error('production coordinator wave budget requires finite deadline timestamps');
+  }
+  const requiredExecutionMs = deriveWatchPostReadinessExecutionBudgetMs({ cells, workerCount });
+  const remainingMs = coordinatorDeadlineMs - currentTimeMs;
+  if (remainingMs < requiredExecutionMs) {
+    throw new Error(
+      `production coordinator refuses paid waves with ${remainingMs}ms remaining; `
+      + `${requiredExecutionMs}ms is required for complete post-readiness execution`,
+    );
+  }
+  return { remainingMs, requiredExecutionMs };
+}
+
+export function runBoundedCoordinatorStage(operation, label, timeoutMs) {
+  if (typeof operation !== 'function' || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('bounded coordinator stage requires an operation and positive timeout');
+  }
+  const startedAtMs = Date.now();
+  const timeoutError = () => new Error(`${label} timed out after ${timeoutMs}ms`);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback();
+    };
+    const timer = setTimeout(() => finish(() => reject(timeoutError())), timeoutMs);
+    Promise.resolve()
+      .then(operation)
+      .then(
+        (value) => finish(() => {
+          // A synchronous operation can starve this Promise's timer. It still
+          // must not turn a missed deadline into successful authority. Critical
+          // filesystem/hash stages use the killable child boundary below; this
+          // elapsed-time check makes the remaining cooperative seam fail closed.
+          if (Date.now() - startedAtMs >= timeoutMs) reject(timeoutError());
+          else resolve(value);
+        }),
+        (error) => finish(() => reject(error)),
+      );
+  });
+}
+
+function remainingAbsoluteStageMs({ deadlineMs, deadlineNow, label, maximumTimeoutMs }) {
+  const remainingMs = Math.ceil(deadlineMs - deadlineNow());
+  if (remainingMs <= 0) {
+    throw new Error(`${label} shared post-final evidence deadline expired before stage`);
+  }
+  return Math.min(remainingMs, maximumTimeoutMs);
+}
+
+export async function runBoundedCoordinatorStageWithinDeadline({
+  operation,
+  label,
+  deadlineMs,
+  deadlineNow,
+  maximumTimeoutMs,
+}) {
+  const timeoutMs = remainingAbsoluteStageMs({
+    deadlineMs,
+    deadlineNow,
+    label,
+    maximumTimeoutMs,
+  });
+  const result = await runBoundedCoordinatorStage(operation, label, timeoutMs);
+  if (deadlineNow() > deadlineMs) {
+    throw new Error(`${label} completed after the shared post-final evidence deadline`);
+  }
+  return result;
+}
 
 const SAFETY_FAILURE_PATTERNS = Object.freeze([
   /provider.*(?:authorization|budget|unauthorized|unreserved|extra connection|duplicate connection|connection[- ]owner|lease)/iu,
@@ -75,7 +524,20 @@ const SAFETY_FAILURE_PATTERNS = Object.freeze([
 ]);
 
 export function productionCellFailureDisposition({ outcome, error }) {
-  const evidence = `${error?.message ?? ''}\n${JSON.stringify(outcome ?? {})}`;
+  // Classify only explicit failure identity fields. Stringifying the complete
+  // result made unrelated values adjacent (for example an endpointId followed
+  // later by an acoustic "wrong reference" diagnostic), which could satisfy a
+  // cross-field safety regexp and incorrectly turn an ordinary blocked verdict
+  // into fail-fast.
+  const result = outcome?.result ?? {};
+  const evidence = [
+    error?.message,
+    result.stableErrorCode,
+    result.failureLayer,
+    result.lifecyclePhase,
+    result.primaryError?.code,
+    result.primaryError?.message,
+  ].filter((value) => String(value ?? '').trim()).join('\n');
   return SAFETY_FAILURE_PATTERNS.some((pattern) => pattern.test(evidence)) ? 'stop' : 'collect';
 }
 
@@ -115,6 +577,18 @@ $driverRequired = [bool]$payload.driverRequired
 $expected = $payload.driver
 $authority = $null
 if ($driverRequired) {
+  $physicalPlaybackDeviceIds = @($payload.profiles | ForEach-Object {
+    [string]$_.physicalPlaybackDeviceId
+  } | Where-Object {
+    -not [string]::IsNullOrWhiteSpace($_)
+  } | Sort-Object -Unique)
+  if ($physicalPlaybackDeviceIds.Count -ne 1) {
+    throw "driver readiness requires exactly one explicit physical playback endpoint; found $($physicalPlaybackDeviceIds.Count)"
+  }
+  $physicalPlaybackDeviceId = [string]$physicalPlaybackDeviceIds[0]
+  if ($physicalPlaybackDeviceId.Trim().ToLowerInvariant() -in @('default', 'speaker-default', 'system-output-default')) {
+    throw 'driver readiness rejects physical playback endpoint aliases'
+  }
   # A development Authenticode signature and the WDK-stamped DriverVer make a
   # freshly rebuilt package byte-distinct even when the driver source did not
   # change.  Synchronize the exact runtime package that this execution signed
@@ -155,6 +629,59 @@ if ($driverRequired) {
     [string]$packageSysSignature.SignerCertificate.Thumbprint -ne [string]$packageCertificate.Thumbprint -or
     [string]$packageMetadata.signerThumbprint -ne [string]$packageCertificate.Thumbprint
   ) { throw 'driver trust certificate does not match the signed runtime package signer' }
+  $driverOperation = $null
+  $existingRuntimeRoot = Join-Path $remoteRoot 'logs\driver-runtime-existing'
+  $existingEvidenceRoot = Join-Path $existingRuntimeRoot 'virtual-mic'
+  $existingOperationPath = Join-Path $existingRuntimeRoot 'operation.json'
+  $existingReadinessPath = Join-Path $existingRuntimeRoot 'readiness.json'
+  try {
+    $probeArguments = @{
+      Action = 'probe'
+      OperationId = "$( [string]$payload.executionId )-$( [string]$payload.workerId )-driver-existing-probe"
+      ResultPath = $existingOperationPath
+      WorkspaceRoot = $workspace
+      RuntimeRoot = $existingRuntimeRoot
+      InstallChannel = 'development'
+      DriverVersion = '0.10.0-dev'
+      BridgeVersion = '0.1.0'
+      TargetDeviceId = 'virtual-mic-default'
+      PhysicalPlaybackDeviceId = $physicalPlaybackDeviceId
+      ReadinessResultPath = $existingReadinessPath
+      VirtualMicEvidenceOutputDirectory = $existingEvidenceRoot
+    }
+    & $elevationRequestScript @probeArguments
+    $existingOperation = Get-Content -LiteralPath $existingOperationPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $existingReadiness = if ($existingOperation.succeeded -eq $true -and (Test-Path -LiteralPath $existingReadinessPath -PathType Leaf)) {
+      Get-Content -LiteralPath $existingReadinessPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    } else { $null }
+    if ($existingReadiness -and $existingReadiness.InstalledDriverAuthority) {
+      $candidate = $existingReadiness.InstalledDriverAuthority
+      if (
+        [string]$candidate.installedServiceState -eq 'Running' -and
+        [string]$candidate.installedSysSha256 -eq [string]$expected.sysSha256 -and
+        [string]$candidate.packageSysSha256 -eq [string]$expected.sysSha256 -and
+        [string]$candidate.packageCatSha256 -eq [string]$expected.catSha256 -and
+        [string]$candidate.packageInfSha256 -eq [string]$expected.infSha256 -and
+        [string]$candidate.installedSysSignatureStatus -eq 'Valid' -and
+        [string]$candidate.packageCatalogSignatureStatus -eq 'Valid'
+      ) {
+        $authority = $candidate
+        $driverOperation = [ordered]@{
+          action = 'probe'
+          succeeded = $true
+          phase = 'completed'
+          elevated = [bool]$existingOperation.elevated
+          elevationMode = [string]$existingOperation.elevationMode
+          summary = 'The installed driver already matches the frozen runtime; reinstall was skipped.'
+        }
+      }
+    }
+  } catch {
+    # An unavailable or mismatched installed package is not accepted as
+    # readiness. It falls through to the exact UAC-bound reinstall below.
+    $authority = $null
+  }
+  if (-not $authority) {
   $driverOperationId = "$( [string]$payload.executionId )-$( [string]$payload.workerId )-driver-readiness"
   $driverOperationResultPath = Join-Path $driverRuntimeRoot 'elevated-operation.json'
   $driverReadinessResultPath = Join-Path $driverRuntimeRoot 'installed-driver-readiness.json'
@@ -169,6 +696,7 @@ if ($driverRequired) {
     DriverVersion = '0.10.0-dev'
     BridgeVersion = '0.1.0'
     TargetDeviceId = 'virtual-mic-default'
+    PhysicalPlaybackDeviceId = $physicalPlaybackDeviceId
     ReadinessResultPath = $driverReadinessResultPath
     VirtualMicEvidenceOutputDirectory = $driverEvidenceRoot
   }
@@ -194,6 +722,7 @@ if ($driverRequired) {
   $driver = Get-Content -LiteralPath $driverReadinessResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
   if (-not $driver -or -not $driver.InstalledDriverAuthority) { throw 'installed driver authority was not returned' }
   $authority = $driver.InstalledDriverAuthority
+  }
   if (
     [string]$authority.installedServiceState -ne 'Running' -or
     [string]$authority.installedSysSha256 -ne [string]$expected.sysSha256 -or
@@ -223,6 +752,7 @@ $control = [ordered]@{
   readinessRequestDigest = [string]$payload.readinessRequestDigest
   workerId = [string]$payload.workerId
   vmIdentityDigest = [string]$payload.vmIdentityDigest
+  transportAuthority = $payload.transportAuthority
   runtimeBundleDigest = [string]$payload.runtimeBundleDigest
   providerCalls = 0
   driverRequired = $driverRequired
@@ -267,13 +797,14 @@ if (
   @($interactive.profiles).Count -ne @($payload.profiles).Count
 ) { throw 'worker readiness component identity/session binding mismatch' }
 $receipt = [ordered]@{
-  schemaVersion = 2
+  schemaVersion = 3
   artifactKind = 'watch-mode-production-worker-zero-provider-readiness'
   generatedAt = [DateTime]::UtcNow.ToString('o')
   executionId = [string]$payload.executionId
   readinessRequestDigest = [string]$payload.readinessRequestDigest
   workerId = [string]$payload.workerId
   vmIdentityDigest = [string]$payload.vmIdentityDigest
+  transportAuthority = $payload.transportAuthority
   runtimeBundleDigest = [string]$payload.runtimeBundleDigest
   providerCalls = 0
   driverRequired = [bool]$control.driverRequired
@@ -344,12 +875,27 @@ function executableValue(value, label) {
   return text;
 }
 
-function knownHostsContainsAlias(filePath, alias, port) {
+function knownHostsBinding(filePath, alias, port) {
   const accepted = new Set([alias, `[${alias}]:${port}`]);
-  return fs.readFileSync(filePath, 'utf8').split(/\r?\n/).some((line) => {
-    const hosts = line.trim().split(/\s+/, 1)[0]?.split(',') ?? [];
-    return hosts.some((host) => accepted.has(host));
+  const matches = fs.readFileSync(filePath, 'utf8').split(/\r?\n/).flatMap((line) => {
+    const fields = line.trim().split(/\s+/);
+    const hosts = fields[0]?.split(',') ?? [];
+    return hosts.some((host) => accepted.has(host)) && fields.length >= 3
+      ? [{ algorithm: fields[1], publicKey: fields[2] }]
+      : [];
   });
+  if (matches.length !== 1) return null;
+  let keyBytes;
+  try {
+    keyBytes = Buffer.from(matches[0].publicKey, 'base64');
+  } catch {
+    return null;
+  }
+  if (keyBytes.length === 0) return null;
+  return {
+    ...matches[0],
+    sha256: `SHA256:${crypto.createHash('sha256').update(keyBytes).digest('base64').replace(/=+$/u, '')}`,
+  };
 }
 
 function validateProfile(profile, workerId, index) {
@@ -384,44 +930,28 @@ function validateProfile(profile, workerId, index) {
   return structuredClone(profile);
 }
 
-function canonicalDeviceProfiles(profiles, authorityLabel) {
-  const byClass = new Map();
-  for (const profile of profiles) {
-    const projected = {
-      profileId: profile.profileId,
-      deviceClass: profile.deviceClass,
-      physicalPlaybackDeviceId: profile.physicalPlaybackDeviceId,
-      expectedPhysicalPlaybackDeviceName: profile.expectedPhysicalPlaybackDeviceName,
-    };
-    const prior = byClass.get(profile.deviceClass);
-    if (prior && JSON.stringify(prior) !== JSON.stringify(projected)) {
-      throw new Error(`${authorityLabel} disagree on ${profile.deviceClass} matrix profile identity`);
-    }
-    byClass.set(profile.deviceClass, projected);
-  }
-  return SUPPORTED_DEVICE_CLASSES.map((deviceClass) => {
-    const profile = byClass.get(deviceClass);
-    if (!profile) throw new Error(`${authorityLabel} have no ${deviceClass} profile`);
-    return profile;
-  });
-}
-
 export function validateProductionWorkerConfig(config, { configDirectory = repoRoot } = {}) {
   exactKeys(config, [
     'schemaVersion',
     'artifactKind',
+    'providerPreflightExecutor',
     'workers',
   ], 'production worker config');
   if (
     config.schemaVersion !== PRODUCTION_WORKER_CONFIG_SCHEMA_VERSION
     || config.artifactKind !== PRODUCTION_WORKER_CONFIG_KIND
     || !Array.isArray(config.workers)
-    || config.workers.length !== 1
-  ) throw new Error('production worker config must be schema v1 with exactly one local worker');
+    || config.workers.length < 1
+    || config.workers.length > 4
+  ) throw new Error('production worker config must be schema v3 with one to four workers');
+  exactKeys(config.providerPreflightExecutor, ['workerId'], 'production provider preflight executor');
   const workerIds = new Set();
+  const vmUuids = new Set();
+  const sshHostKeys = new Set();
   const workers = config.workers.map((worker, workerIndex) => {
     exactKeys(worker, [
       'workerId',
+      'transport',
       'user',
       'workspaceRoot',
       'guestExecutionRoot',
@@ -430,6 +960,29 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     ], `production worker ${workerIndex}`);
     const workerId = String(worker.workerId ?? '');
     const user = String(worker.user ?? '');
+    exactKeys(worker.transport, worker.transport?.kind === 'local'
+      ? ['kind']
+      : ['kind', 'host', 'port', 'identityFile', 'knownHostsFile', 'hostKeyAlias'],
+    `worker ${workerId} transport`);
+    if (!['local', 'ssh'].includes(worker.transport.kind)) throw new Error(`worker ${workerId} has invalid transport kind`);
+    let transport;
+    if (worker.transport.kind === 'local') {
+      transport = { kind: 'local' };
+    } else {
+      const port = Number(worker.transport.port);
+      if (!SAFE_HOST.test(String(worker.transport.host ?? '')) || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
+        throw new Error(`worker ${workerId} has invalid SSH host or port`);
+      }
+      const identityFile = regularFile(path.resolve(configDirectory, worker.transport.identityFile), `worker ${workerId} SSH identity`);
+      const knownHostsFile = regularFile(path.resolve(configDirectory, worker.transport.knownHostsFile), `worker ${workerId} known-hosts`);
+      const hostKey = knownHostsBinding(knownHostsFile, worker.transport.hostKeyAlias, port);
+      if (!SAFE_ID.test(String(worker.transport.hostKeyAlias ?? '')) || !hostKey) {
+        throw new Error(`worker ${workerId} known-hosts does not bind its host key alias`);
+      }
+      if (sshHostKeys.has(hostKey.sha256)) throw new Error(`worker ${workerId} reuses an SSH host key`);
+      sshHostKeys.add(hostKey.sha256);
+      transport = { kind: 'ssh', host: worker.transport.host, port, identityFile, knownHostsFile, hostKeyAlias: worker.transport.hostKeyAlias, hostKeyAlgorithm: hostKey.algorithm, hostKeySha256: hostKey.sha256 };
+    }
     if (!SAFE_ID.test(workerId) || workerIds.has(workerId)) throw new Error(`worker ${workerIndex} has invalid or duplicate workerId`);
     if (!/^[a-z0-9._-]{1,64}$/i.test(user)) throw new Error(`worker ${workerId} has invalid interactive Windows user`);
     if (!SAFE_REMOTE_WINDOWS_ROOT.test(String(worker.workspaceRoot ?? ''))) throw new Error(`worker ${workerId} workspaceRoot must be a fixed safe Windows path without spaces`);
@@ -438,6 +991,9 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     if (worker.vmIdentity.provider !== 'vmware' || !SAFE_UUID.test(String(worker.vmIdentity.uuidBios ?? ''))) {
       throw new Error(`worker ${workerId} must bind a portable VMware BIOS UUID`);
     }
+    const normalizedUuid = String(worker.vmIdentity.uuidBios).toLowerCase();
+    if (vmUuids.has(normalizedUuid)) throw new Error(`worker ${workerId} reuses a VMware BIOS UUID`);
+    vmUuids.add(normalizedUuid);
     if (!Array.isArray(worker.deviceProfileInstances) || worker.deviceProfileInstances.length === 0) {
       throw new Error(`worker ${workerId} has no device profile instances`);
     }
@@ -450,6 +1006,8 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     workerIds.add(workerId);
     return {
       workerId,
+      transport,
+      ...(transport.kind === 'ssh' ? transport : {}),
       user,
       workspaceRoot: worker.workspaceRoot,
       guestExecutionRoot: worker.guestExecutionRoot,
@@ -457,8 +1015,11 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
       deviceProfileInstances,
     };
   });
-  // All paid cells run serially on the one local interactive Windows session.
-  const assignments = defaultSingleWorkerAssignments(workers);
+  const assignments = workers.length === 1
+    ? defaultSingleWorkerAssignments(workers)
+    : workers.length === 2
+      ? defaultTwoWorkerAssignments(workers)
+      : workers.length === 4 ? fixedFourWorkerAssignments(workers) : fixedThreeWorkerAssignments(workers);
   const workersById = new Map(workers.map((worker) => [worker.workerId, worker]));
   const assignedProfiles = assignments.map((assignment) => {
     const worker = workersById.get(assignment.workerId);
@@ -470,8 +1031,22 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     }
     return profile;
   });
-  canonicalDeviceProfiles(assignedProfiles, 'production worker assignments');
-  return { workers };
+  if (assignedProfiles.length !== LIVE_LLM_CELLS.length) {
+    throw new Error('production worker assignments must bind every fixed cell to one profile');
+  }
+  const preflightExecutor = workers.find((worker) => worker.workerId === config.providerPreflightExecutor.workerId);
+  if (!preflightExecutor
+    || (workers.length === 4 && preflightExecutor.transport.kind !== 'ssh')) {
+    throw new Error('four-worker production provider preflight executor must be one explicitly configured SSH worker');
+  }
+  return { workers, assignments, preflightExecutor, sshExecutable: 'ssh.exe', scpExecutable: 'scp.exe' };
+}
+
+export function verifyProductionLocalIsolationManifest({ workers, assignments, ...verification }) {
+  if (!Array.isArray(workers) || !Array.isArray(assignments)) {
+    throw new Error('production local isolation requires current workers and paid assignments');
+  }
+  return verifyLocalIsolationManifest({ ...verification, expectedWorkers: workers, expectedAssignments: assignments });
 }
 
 export function readProductionWorkerConfig(configPath) {
@@ -513,16 +1088,17 @@ export function scpBaseArgs(worker) {
   ];
 }
 
-function runChildProcess(executable, args, {
+export function runChildProcess(executable, args, {
   cwd = repoRoot,
   signal,
-  timeoutMs = 60_000,
+  timeoutMs = WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS,
   environment = process.env,
   input = '',
   completionMarker = null,
+  spawnProcess = spawn,
 } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, {
+    const child = spawnProcess(executable, args, {
       cwd,
       env: environment,
       shell: false,
@@ -596,8 +1172,323 @@ function runChildProcess(executable, args, {
   });
 }
 
-export const PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS = 5 * 60 * 1000;
-export const PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS = 5 * 60 * 1000;
+const COORDINATOR_CHILD_STAGE_FLAG = '--internal-coordinator-child-stage';
+const COORDINATOR_CHILD_RESULT_PREFIX = '__OMNI_COORDINATOR_CHILD_RESULT_V1__';
+const COORDINATOR_MODULE_PATH = fileURLToPath(import.meta.url);
+
+export async function runKillableCoordinatorProcessStage({
+  stageLabel,
+  executable,
+  args = [],
+  input = '',
+  deadlineMs,
+  maximumTimeoutMs = Number.POSITIVE_INFINITY,
+  deadlineNow = Date.now,
+  signal,
+  cwd = repoRoot,
+  environment = process.env,
+  runProcess = runChildProcess,
+  spawnProcess,
+}) {
+  if (
+    !String(stageLabel ?? '').trim()
+    || !String(executable ?? '').trim()
+    || !Number.isFinite(deadlineMs)
+    || !(maximumTimeoutMs === Number.POSITIVE_INFINITY
+      || (Number.isSafeInteger(maximumTimeoutMs) && maximumTimeoutMs > 0))
+  ) throw new Error('killable coordinator process stage requires label, executable, and deadlines');
+  const remainingCoordinatorMs = Math.ceil(deadlineMs - deadlineNow());
+  if (remainingCoordinatorMs <= 0) {
+    throw new Error(`${stageLabel} shared coordinator deadline expired before child launch`);
+  }
+  const timeoutMs = Math.max(1, Math.min(remainingCoordinatorMs, maximumTimeoutMs));
+  const timeoutBoundary = remainingCoordinatorMs <= maximumTimeoutMs
+    ? 'the shared coordinator deadline'
+    : 'its stage ceiling';
+  const result = await runProcess(executable, args, {
+    cwd,
+    signal,
+    timeoutMs,
+    environment,
+    input,
+    spawnProcess,
+  });
+  const exitCode = Number(result?.exitCode ?? result?.status ?? 1);
+  if (exitCode === 124) {
+    throw new Error(
+      `${stageLabel} timed out after ${timeoutMs}ms at ${timeoutBoundary}`,
+    );
+  }
+  if (exitCode !== 0) {
+    const detail = String(result?.stderr ?? result?.stdout ?? '').trim().slice(0, 2_000);
+    throw new Error(`${stageLabel} child failed with exit ${exitCode}${detail ? `: ${detail}` : ''}`);
+  }
+  if (deadlineNow() > deadlineMs) {
+    throw new Error(`${stageLabel} completed after the shared coordinator deadline`);
+  }
+  return result;
+}
+
+async function runCoordinatorChildStage({
+  stage,
+  payload,
+  stageLabel,
+  coordinatorDeadlineMs,
+  maximumTimeoutMs,
+  deadlineNow,
+  signal,
+  runProcess,
+  spawnProcess,
+}) {
+  const result = await runKillableCoordinatorProcessStage({
+    stageLabel,
+    executable: process.execPath,
+    args: [COORDINATOR_MODULE_PATH, COORDINATOR_CHILD_STAGE_FLAG, stage],
+    input: JSON.stringify({ schemaVersion: 1, stage, payload }),
+    deadlineMs: coordinatorDeadlineMs,
+    maximumTimeoutMs,
+    deadlineNow,
+    signal,
+    runProcess,
+    spawnProcess,
+  });
+  const resultLine = String(result.stdout ?? '')
+    .split(/\r?\n/u)
+    .find((line) => line.startsWith(COORDINATOR_CHILD_RESULT_PREFIX));
+  if (!resultLine) throw new Error(`${stageLabel} child omitted its result envelope`);
+  try {
+    return JSON.parse(resultLine.slice(COORDINATOR_CHILD_RESULT_PREFIX.length));
+  } catch (error) {
+    throw new Error(`${stageLabel} child returned invalid result JSON: ${error.message}`);
+  }
+}
+
+export async function runProductionEvidenceVerifier({
+  evidenceOutputRoot,
+  manifestPath,
+  timeoutMs = WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
+  runProcess = runChildProcess,
+  spawnProcess,
+  signal,
+}) {
+  const result = await runProcess(
+    process.execPath,
+    buildVerifyArgv(
+      evidenceOutputRoot,
+      DEFAULT_MODELS,
+      DEFAULT_FEEDBACK_MODES,
+      SUPPORTED_DEVICE_CLASSES,
+      manifestPath,
+      { strict: true },
+    ),
+    {
+      cwd: repoRoot,
+      timeoutMs,
+      environment: process.env,
+      spawnProcess,
+      signal,
+    },
+  );
+  const exitCode = Number(result?.exitCode ?? result?.status ?? 1);
+  if (exitCode === 124) {
+    throw new Error(
+      `strict-evidence-verifier timed out after ${timeoutMs}ms; canonical manifest was not published`,
+    );
+  }
+  if (exitCode !== 0) {
+    throw new Error(
+      `strict-evidence-verifier failed with exit ${exitCode}; canonical manifest was not published`,
+    );
+  }
+  return result;
+}
+
+function performFinalEvidenceStaging(payload, operations = {}) {
+  const generatedAt = new Date(payload.generatedAt);
+  if (Number.isNaN(generatedAt.getTime())) {
+    throw new Error('final evidence staging requires a valid generatedAt timestamp');
+  }
+  const aggregation = (operations.writeCoordinatorAggregate ?? writeCoordinatorAggregate)({
+    outputRoot: payload.executionRoot,
+    executionRoot: payload.executionRoot,
+    plan: payload.plan,
+    leases: payload.leases,
+    shards: payload.shards,
+    generatedAt,
+  });
+  const staged = (operations.stageShardMatrixIntegration ?? stageShardMatrixIntegration)({
+    evidenceRoot: payload.evidenceOutputRoot,
+    executionRootName: `shards-${payload.plan.executionId}`,
+    planPath: payload.planPath,
+    leasePaths: payload.leasePaths,
+    coordinatorAggregatePath: aggregation.aggregatePath,
+    shards: payload.shards,
+    collectedMatrixIntegration: aggregation.matrixIntegration,
+    validationAt: generatedAt,
+  });
+  const stagedFailureFingerprintPath = path.join(
+    staged.finalExecutionRoot,
+    'failure-fingerprints.json',
+  );
+  fs.copyFileSync(
+    payload.failureFingerprintPath,
+    stagedFailureFingerprintPath,
+    fs.constants.COPYFILE_EXCL,
+  );
+  const failureFingerprintAuthority = fileAuthorityEntry(
+    stagedFailureFingerprintPath,
+    relativeChildPath(
+      payload.evidenceOutputRoot,
+      stagedFailureFingerprintPath,
+      'staged failure fingerprints',
+    ),
+  );
+  const assertBudget = operations.assertCellExternalProviderBudget
+    ?? assertCellExternalProviderBudget;
+  const rawBudgets = staged.runDirectories.map((runDirectory, index) => assertBudget(
+    runDirectory,
+    {
+      cellId: LIVE_LLM_CELLS[index].cellId,
+      modelId: LIVE_LLM_CELLS[index].modelId,
+      feedbackLoopPrevention: LIVE_LLM_CELLS[index].feedbackLoopPrevention,
+      inputCeilingSamples: LIVE_LLM_CELLS[index].maxExternalAudioSamples,
+    },
+  ));
+  const matrixBudget = (
+    operations.writeMatrixExternalProviderBudget ?? writeMatrixExternalProviderBudget
+  )(payload.evidenceOutputRoot, rawBudgets, {
+    fileName: `watch-mode-external-provider-budget-${payload.plan.executionId}.json`,
+  });
+  const budgetAuthority = fileAuthorityEntry(
+    matrixBudget.filePath,
+    path.basename(matrixBudget.filePath),
+  );
+  const externalProviderBudget = {
+    ...matrixBudget.ledger,
+    ledgerPath: budgetAuthority.path,
+    ledgerBytes: budgetAuthority.bytes,
+    ledgerSha256: budgetAuthority.sha256,
+  };
+  const manifestResult = (operations.writeMatrixRunManifest ?? writeMatrixRunManifest)({
+    outputRoot: payload.evidenceOutputRoot,
+    modelList: DEFAULT_MODELS,
+    feedbackModeList: DEFAULT_FEEDBACK_MODES,
+    deviceProfiles: productionDeviceProfiles(payload.plan),
+    runDirectories: staged.runDirectories,
+    strict: true,
+    now: generatedAt,
+    provenance: payload.plan.provenance,
+    authorityRuntimeBinaryHashes: payload.plan.authority.runtimeBinaryHashes,
+    releaseCells: LIVE_LLM_CELLS,
+    localIsolationAuthority: payload.plan.localIsolationAuthority,
+    externalProviderBudget,
+    failureSummary: payload.failureSummary,
+    failureFingerprintAuthority,
+    shardExecution: staged.shardExecution,
+    matrixIntegration: staged.matrixIntegration,
+  });
+  return { staged, externalProviderBudget, manifestResult };
+}
+
+function performCanonicalManifestPublication(payload, operations = {}) {
+  const verifiedAt = new Date(payload.verifiedAt);
+  if (Number.isNaN(verifiedAt.getTime())) {
+    throw new Error('canonical manifest publication requires a valid verifiedAt timestamp');
+  }
+  return (operations.publishSuccessfulStrictMatrixManifest
+    ?? publishSuccessfulStrictMatrixManifest)({
+    outputRoot: payload.evidenceOutputRoot,
+    manifestPath: payload.manifestPath,
+    verifiedAt,
+    currentProvenance: payload.currentProvenance,
+    currentRuntimeBinaryHashes: payload.currentRuntimeBinaryHashes,
+  });
+}
+
+export function assertProductionCellsPassedForCanonicalVerification({
+  failureSummary,
+  manifestPath,
+  startedCellIds = [],
+  completedCellIds = [],
+}) {
+  if (!failureSummary || !Array.isArray(failureSummary.failed)) {
+    throw new Error('production final evidence staging requires a valid collect-all failure summary');
+  }
+  if (failureSummary.failed.length === 0) return;
+  const error = new Error(
+    `production cells failed after final evidence staging: ${failureSummary.failed.join(', ')}`,
+  );
+  error.code = 'watch.production.cells-failed';
+  error.failurePath = manifestPath;
+  error.startedCellIds = [...startedCellIds];
+  error.completedCellIds = [...completedCellIds];
+  throw error;
+}
+
+async function executeCoordinatorChildStage(stage, payload) {
+  if (stage.startsWith('runtime-authority-')) {
+    return verifyStrictRuntimeAuthority(payload.authorityPath, {
+      workspaceRoot: payload.workspaceRoot,
+    });
+  }
+  if (stage === 'final-evidence-staging') return performFinalEvidenceStaging(payload);
+  if (stage === 'canonical-manifest-publication') {
+    return performCanonicalManifestPublication(payload);
+  }
+  throw new Error(`unknown internal coordinator child stage: ${stage}`);
+}
+
+export function productionImplementationDistributionEntries(authority) {
+  const entries = new Map();
+  for (const entry of [
+    ...(authority.implementationHashes ?? []),
+    ...(authority.shardOrchestrationImplementationHashes ?? []),
+    ...(authority.incidentImplementationHashes ?? []),
+  ]) {
+    const existing = entries.get(entry.path);
+    if (existing && (existing.bytes !== entry.bytes || existing.sha256 !== entry.sha256)) {
+      throw new Error(`signed implementation inventories disagree for ${entry.path}`);
+    }
+    entries.set(entry.path, entry);
+  }
+  return [...entries.values()];
+}
+
+export function createProductionWorkerReadinessTransportPlan({
+  executionId,
+  provenance,
+  authorityImplementationHashes,
+  shardOrchestrationImplementationHashes,
+  workerReadinessRequest,
+}) {
+  return {
+    executionId,
+    provenance,
+    authority: {
+      implementationHashes: authorityImplementationHashes,
+      runtimeBinaryHashes: workerReadinessRequest.runtimeBinaryHashes,
+      runtimeBundleDigest: workerReadinessRequest.runtimeBundleDigest,
+      shardOrchestrationImplementationHashes,
+    },
+    workers: workerReadinessRequest.workers,
+    cells: workerReadinessRequest.assignments,
+    planDigest: workerReadinessRequest.requestDigest,
+  };
+}
+
+export function selectChangedRuntimeEntries(entries, observed) {
+  if (!Array.isArray(observed) || observed.length !== entries.length
+      || new Set(observed.map((entry) => entry.path)).size !== entries.length
+      || observed.some((entry) => !entries.some((expected) => expected.path === entry.path))) {
+    throw new Error('runtime pre-check must cover each signed path exactly once');
+  }
+  const byPath = new Map(observed.map((entry) => [entry.path, entry]));
+  return entries.filter((entry) => {
+    const actual = byPath.get(entry.path);
+    return actual.exists !== true || Number(actual.bytes) !== entry.bytes || actual.sha256 !== entry.sha256;
+  });
+}
+
 const REMOTE_POWERSHELL_COMPLETION_MARKER = '__OMNI_REMOTE_COMPLETE_V1__';
 const REMOTE_POWERSHELL_OUTPUT_FRAME_PREFIX = '__OMNI_REMOTE_OUTPUT_V1__';
 
@@ -635,7 +1526,8 @@ export function decodeRemotePowerShellFileOutput(result) {
   }
 }
 
-export function remotePowerShellInvocation(body, payload) {
+export function remotePowerShellInvocation(body, payload, { mode = 'encoded' } = {}) {
+  if (!['encoded', 'file-only'].includes(mode)) throw new Error('unsupported remote PowerShell invocation mode');
   const payloadBase64 = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
   const source = [
     "$ErrorActionPreference = 'Stop'",
@@ -659,6 +1551,27 @@ export function remotePowerShellInvocation(body, payload) {
     '$payload = $payloadJson | ConvertFrom-Json',
     body,
   ].join('\n');
+  const fileInvocation = {
+    fileScript: [
+      'Import-Module Microsoft.PowerShell.Security -ErrorAction Stop',
+      '$omniRemoteOutput = @(',
+      source,
+      ')',
+      '$omniRemoteBytes = [Text.Encoding]::UTF8.GetBytes((@($omniRemoteOutput) -join [Environment]::NewLine))',
+      '$omniRemoteEncoded = [Convert]::ToBase64String($omniRemoteBytes)',
+      'for ($offset = 0; $offset -lt $omniRemoteEncoded.Length; $offset += 160) {',
+      '  $length = [Math]::Min(160, $omniRemoteEncoded.Length - $offset)',
+      `  [Console]::Out.WriteLine('${REMOTE_POWERSHELL_OUTPUT_FRAME_PREFIX}' + $omniRemoteEncoded.Substring($offset, $length))`,
+      '  [Console]::Out.Flush()',
+      '}',
+      `[Console]::Out.WriteLine('${REMOTE_POWERSHELL_COMPLETION_MARKER}')`,
+      '[Console]::Out.Flush()',
+    ].join('\n'),
+    input: '',
+  };
+  // Uploaded/local -File invocations never put this source on a command line.
+  // Do not construct unused encoded arguments or apply their size limit here.
+  if (mode === 'file-only') return fileInvocation;
   // Windows OpenSSH on the evidence VMs does not forward stdin into a
   // non-interactive remote PowerShell session.  Passing source through stdin
   // therefore deadlocks before a worker can return its readiness receipt.
@@ -686,26 +1599,11 @@ export function remotePowerShellInvocation(body, payload) {
   }
   return {
     script: bootstrap,
-    fileScript: [
-      'Import-Module Microsoft.PowerShell.Security -ErrorAction Stop',
-      '$omniRemoteOutput = @(',
-      source,
-      ')',
-      '$omniRemoteBytes = [Text.Encoding]::UTF8.GetBytes((@($omniRemoteOutput) -join [Environment]::NewLine))',
-      '$omniRemoteEncoded = [Convert]::ToBase64String($omniRemoteBytes)',
-      'for ($offset = 0; $offset -lt $omniRemoteEncoded.Length; $offset += 160) {',
-      '  $length = [Math]::Min(160, $omniRemoteEncoded.Length - $offset)',
-      `  [Console]::Out.WriteLine('${REMOTE_POWERSHELL_OUTPUT_FRAME_PREFIX}' + $omniRemoteEncoded.Substring($offset, $length))`,
-      '  [Console]::Out.Flush()',
-      '}',
-      `[Console]::Out.WriteLine('${REMOTE_POWERSHELL_COMPLETION_MARKER}')`,
-      '[Console]::Out.Flush()',
-    ].join('\n'),
+    ...fileInvocation,
     args: [
       'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
       '-EncodedCommand', encodedCommand,
     ],
-    input: '',
   };
 }
 
@@ -714,12 +1612,12 @@ function lastNonEmptyLine(text) {
     .filter((line) => line && line !== REMOTE_POWERSHELL_COMPLETION_MARKER).at(-1);
 }
 
-function remotePathForScp(remotePath) {
-  return String(remotePath).replaceAll('\\', '/');
+function pathForScp(filePath) {
+  return String(filePath).replaceAll('\\', '/');
 }
 
 function remoteSpec(worker, remotePath) {
-  return `${worker.user}@${worker.host}:${remotePathForScp(remotePath)}`;
+  return `${worker.user}@${worker.host}:${pathForScp(remotePath)}`;
 }
 
 function ensureSuccessful(result, label) {
@@ -739,6 +1637,698 @@ function parseRemoteJson(result, label) {
   } catch (error) {
     throw new Error(`${label} returned invalid JSON: ${error.message}`);
   }
+}
+
+export function validateProviderPreflightInteractiveTerminal(terminal, expected) {
+  const keys = [
+    'artifactKind', 'authorizationDigest', 'completedAt', 'controllerSha256', 'desktop',
+    'executionId', 'exitCode', 'launcherSha256', 'ownerSid', 'processAuthoritySha256',
+    'requestSha256', 'schemaVersion', 'sessionId', 'taskName', 'taskPath', 'workerId',
+  ].sort();
+  if (canonicalJson(Object.keys(terminal ?? {}).sort()) !== canonicalJson(keys)
+    || terminal.schemaVersion !== 1
+    || terminal.artifactKind !== 'watch-mode-provider-preflight-interactive-terminal'
+    || terminal.executionId !== expected.executionId || terminal.workerId !== expected.workerId
+    || terminal.authorizationDigest !== expected.authorizationDigest
+    || terminal.controllerSha256 !== expected.controllerSha256
+    || terminal.launcherSha256 !== expected.launcherSha256
+    || terminal.processAuthoritySha256 !== expected.processAuthoritySha256
+    || terminal.requestSha256 !== expected.requestSha256
+    || terminal.taskName !== expected.taskName || terminal.taskPath !== '\\OmniTranslate\\'
+    || Number(terminal.sessionId) !== expected.sessionId || terminal.ownerSid !== expected.ownerSid
+    || terminal.desktop !== expected.desktop || !Number.isInteger(Number(terminal.exitCode))
+    || !Number.isFinite(Date.parse(terminal.completedAt))) {
+    throw new Error('remote Provider preflight terminal is not an exact bound authority');
+  }
+  return terminal;
+}
+
+export function validateProviderPreflightCleanupReceipt(cleanup, expected) {
+  const keys = [
+    'artifactKind', 'attemptErrors', 'completedAt', 'executionId', 'identitiesEnded', 'passed',
+    'processAuthoritySha256', 'schemaVersion', 'taskAbsent', 'taskName', 'taskPath',
+    'temporaryFilesAbsent', 'workerId',
+  ].sort();
+  if (canonicalJson(Object.keys(cleanup ?? {}).sort()) !== canonicalJson(keys)
+    || cleanup.schemaVersion !== 1 || cleanup.artifactKind !== 'watch-mode-provider-preflight-cleanup'
+    || cleanup.executionId !== expected.executionId || cleanup.workerId !== expected.workerId
+    || cleanup.taskName !== expected.taskName || cleanup.taskPath !== '\\OmniTranslate\\'
+    || cleanup.processAuthoritySha256 !== expected.processAuthoritySha256
+    || cleanup.taskAbsent !== true || cleanup.identitiesEnded !== true
+    || cleanup.temporaryFilesAbsent !== true || cleanup.passed !== true
+    || !Array.isArray(cleanup.attemptErrors) || cleanup.attemptErrors.length !== 0
+    || !Number.isFinite(Date.parse(cleanup.completedAt))) {
+    throw new Error('remote Provider preflight cleanup receipt is not a positive bound authority');
+  }
+  return cleanup;
+}
+
+export function validateProviderPreflightProcessAuthority(authority, expected) {
+  const identityKeys = ['imagePath', 'ownerSid', 'parentPid', 'pid', 'sessionId', 'startedAt'].sort();
+  const validIdentity = (identity) => canonicalJson(Object.keys(identity ?? {}).sort()) === canonicalJson(identityKeys)
+    && Number.isInteger(Number(identity.pid)) && Number(identity.pid) > 0
+    && Number.isInteger(Number(identity.parentPid)) && Number(identity.parentPid) >= 0
+    && Number(identity.sessionId) === expected.sessionId && identity.ownerSid === expected.ownerSid
+    && path.win32.isAbsolute(identity.imagePath) && Number.isFinite(Date.parse(identity.startedAt));
+  const keys = [
+    'artifactKind', 'descendants', 'executionId', 'expectedOwnerSid', 'expectedSessionId',
+    'launcher', 'schemaVersion', 'worker', 'workerId',
+  ].sort();
+  if (canonicalJson(Object.keys(authority ?? {}).sort()) !== canonicalJson(keys)
+    || authority.schemaVersion !== 1
+    || authority.artifactKind !== 'watch-mode-provider-preflight-process-authority'
+    || authority.executionId !== expected.executionId || authority.workerId !== expected.workerId
+    || Number(authority.expectedSessionId) !== expected.sessionId
+    || authority.expectedOwnerSid !== expected.ownerSid
+    || !validIdentity(authority.launcher) || !validIdentity(authority.worker)
+    || Number(authority.worker.parentPid) !== Number(authority.launcher.pid)
+    || !Array.isArray(authority.descendants)
+    || authority.descendants.some((identity) => !validIdentity(identity))) {
+    throw new Error('remote Provider preflight process authority is not exactly bound');
+  }
+  const identities = [authority.launcher, authority.worker, ...authority.descendants];
+  if (new Set(identities.map((identity) => Number(identity.pid))).size !== identities.length) {
+    throw new Error('remote Provider preflight process authority contains duplicate identities');
+  }
+  return authority;
+}
+
+export function createSshProviderPreflightTransport({
+  config,
+  executor,
+  executionId,
+  authorizationRoot,
+  localEvidenceDirectory,
+  runProcess = runChildProcess,
+  provision = provisionCredential,
+  onProviderCallStarted = () => {},
+  signingKeys,
+  runtimeBinaryHashes,
+  workspaceRoot = repoRoot,
+  verifyExecutor = async ({ grant }) => {
+    const configuredTransportAuthority = {
+      kind: 'ssh',
+      hostKeyAlias: executor.transport.hostKeyAlias,
+      hostKeyAlgorithm: executor.transport.hostKeyAlgorithm,
+      hostKeySha256: executor.transport.hostKeySha256,
+    };
+    if (grant.executor.workerId !== executor.workerId
+      || canonicalJson(grant.executor.transportAuthority) !== canonicalJson(configuredTransportAuthority)
+      || grant.executor.interactiveUser !== executor.user
+      || JSON.stringify(grant.executor.vmIdentity) !== JSON.stringify(executor.vmIdentity)
+      || grant.executor.readinessAuthority?.providerCalls !== 0) {
+      throw new Error('remote Provider preflight executor failed signed identity/readiness verification');
+    }
+  },
+}) {
+  if (!executor?.workerId || executor?.transport?.kind !== 'ssh') {
+    throw new Error('remote Provider preflight transport requires the explicitly configured SSH executor');
+  }
+  let dispatched = false;
+  const remoteRoot = path.win32.join(executor.guestExecutionRoot, executionId, executor.workerId);
+  const authorizationDirectoryId = crypto.createHash('sha256')
+    .update(`${executionId}\0${executor.workerId}`, 'utf8').digest('hex').slice(0, 20);
+  // Authorization filenames are contract identities and can be long. Keep their
+  // remote parent short enough for legacy Windows SCP without shortening names.
+  const remoteAuthorizationRoot = path.win32.join(
+    executor.guestExecutionRoot, '.provider-preflight', authorizationDirectoryId,
+  );
+  const remoteCanonicalAuthorizationRoot = path.win32.join(
+    executor.workspaceRoot, 'artifacts', 'testing', 'watch-mode-live-coordinator',
+    `${executionId}.preflight-authorization`,
+  );
+  const remoteEvidenceRoot = path.win32.join(remoteRoot, 'provider-preflight-evidence');
+  const helperRelativePath = 'target/release/watch-worker-credential.exe';
+  const helperAuthority = runtimeBinaryHashes?.find((entry) => entry?.path === helperRelativePath);
+  if (!helperAuthority
+    || !Number.isSafeInteger(helperAuthority.bytes)
+    || !/^[a-f0-9]{64}$/u.test(String(helperAuthority.sha256 ?? ''))) {
+    throw new Error('remote Provider preflight requires signed watch-worker-credential runtime authority');
+  }
+  const localHelper = resolveAuthorityPath(workspaceRoot, helperAuthority.path, 'signed credential helper');
+  const actualHelperAuthority = fileAuthorityEntry(localHelper, helperAuthority.path);
+  if (actualHelperAuthority.bytes !== helperAuthority.bytes
+    || actualHelperAuthority.sha256 !== helperAuthority.sha256) {
+    throw new Error('signed watch-worker-credential runtime authority does not match local helper bytes');
+  }
+  const remoteHelper = path.win32.join(executor.workspaceRoot, 'target', 'release', 'watch-worker-credential.exe');
+  const authorizationFiles = () => {
+    const reservations = fs.readdirSync(path.join(authorizationRoot, 'provider-preflight-lease-reservations'))
+      .sort().map((name) => `provider-preflight-lease-reservations/${name}`);
+    const readiness = fs.readdirSync(path.join(authorizationRoot, 'worker-readiness'))
+      .sort().map((name) => `worker-readiness/${name}`);
+    const files = ['provider-preflight-grant.json', 'worker-readiness-request.json', ...reservations, ...readiness];
+    if (files.some((relative) => !/^[a-z0-9._/-]+$/iu.test(relative))) {
+      throw new Error('remote Provider preflight authorization contains a nonportable path');
+    }
+    return files;
+  };
+  return {
+    async dispatch({ grant, authorizationDigest, signal }) {
+      if (dispatched) throw new Error('remote Provider preflight transport is single-use');
+      dispatched = true;
+      await verifyExecutor({ grant, executor });
+      if (!signingKeys?.privateKeyPem || !signingKeys?.publicKeyPem) {
+        throw new Error('remote Provider preflight transport requires coordinator signing keys');
+      }
+      const networkHealthRequest = {
+        schemaVersion: 1,
+        artifactKind: 'watch-mode-provider-network-health-request',
+        executionId,
+        executor: structuredClone(grant.executor),
+      };
+      const networkHealthEntrypoint = path.win32.join(
+        executor.workspaceRoot, 'scripts', 'testing', 'watch-mode-provider-network-health.mjs',
+      );
+      const networkHealthCommand = Buffer.from([
+        "$ErrorActionPreference = 'Stop'",
+        `[Environment]::CurrentDirectory = '${executor.workspaceRoot.replaceAll("'", "''")}'`,
+        `Set-Location -LiteralPath '${executor.workspaceRoot.replaceAll("'", "''")}'`,
+        `& node.exe '${networkHealthEntrypoint.replaceAll("'", "''")}'`,
+        'exit $LASTEXITCODE',
+      ].join('\n'), 'utf16le').toString('base64');
+      const networkHealthResult = await runProcess(config.sshExecutable, [
+        ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
+        'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', networkHealthCommand,
+      ], { signal, input: JSON.stringify(networkHealthRequest), timeoutMs: deriveWatchProductionNetworkHealthBudgetMs() });
+      let networkHealthReceipt;
+      if (Number(networkHealthResult?.exitCode) !== 0) {
+        const line = lastNonEmptyLine(networkHealthResult.stdout);
+        try {
+          networkHealthReceipt = JSON.parse(line);
+        } catch {
+          ensureSuccessful(networkHealthResult, 'remote Provider network health');
+        }
+        if (networkHealthReceipt.executionId !== executionId
+          || networkHealthReceipt.providerCalls !== 0
+          || networkHealthReceipt.verdict !== 'failed'
+          || canonicalJson(networkHealthReceipt.executor) !== canonicalJson(networkHealthRequest.executor)) {
+          throw new Error('failed remote Provider network health receipt is not bound to the signed configured executor');
+        }
+        const networkHealthFailure = signCoordinatorAuthority({
+          schemaVersion: 1,
+          artifactKind: 'watch-mode-provider-network-health-authority',
+          executionId,
+          executor: structuredClone(grant.executor),
+          receipt: networkHealthReceipt,
+        }, signingKeys.privateKeyPem, signingKeys.publicKeyPem);
+        const networkHealthFailurePath = path.join(authorizationRoot, 'provider-network-health-authority.json');
+        atomicWriteJson(networkHealthFailurePath, networkHealthFailure);
+        const error = new Error('remote Provider network health failed before credential provision and paid Provider preflight');
+        error.providerCalls = 0;
+        error.networkHealthPath = networkHealthFailurePath;
+        throw error;
+      }
+      networkHealthReceipt = parseRemoteJson(networkHealthResult, 'remote Provider network health');
+      if (networkHealthReceipt.executionId !== executionId
+        || networkHealthReceipt.providerCalls !== 0
+        || networkHealthReceipt.verdict !== 'passed'
+        || canonicalJson(networkHealthReceipt.executor) !== canonicalJson(networkHealthRequest.executor)) {
+        throw new Error('remote Provider network health receipt is not bound to the signed configured executor');
+      }
+      const networkHealth = signCoordinatorAuthority({
+        schemaVersion: 1,
+        artifactKind: 'watch-mode-provider-network-health-authority',
+        executionId,
+        executor: structuredClone(grant.executor),
+        receipt: networkHealthReceipt,
+      }, signingKeys.privateKeyPem, signingKeys.publicKeyPem);
+      await provision({
+        localHelper,
+        sshPath: config.sshExecutable,
+        sshArgs: [...sshBaseArgs(executor), `${executor.user}@${executor.host}`],
+        remoteHelper,
+      });
+      const files = authorizationFiles();
+      const mkdir = remotePowerShellInvocation(`
+$root = [IO.Path]::GetFullPath([string]$payload.authorizationRoot)
+if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorization root already exists' }
+[IO.Directory]::CreateDirectory($root) | Out-Null
+[IO.Directory]::CreateDirectory((Join-Path $root 'provider-preflight-lease-reservations')) | Out-Null
+[IO.Directory]::CreateDirectory((Join-Path $root 'worker-readiness')) | Out-Null
+[pscustomobject]@{ created = $true } | ConvertTo-Json -Compress
+`, { authorizationRoot: remoteAuthorizationRoot });
+      const mkdirResult = await runProcess(config.sshExecutable, [
+        ...sshBaseArgs(executor), `${executor.user}@${executor.host}`, ...mkdir.args,
+      ], { signal, input: mkdir.input });
+      ensureSuccessful(mkdirResult, 'remote Provider preflight authorization root creation');
+      const uploadStagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-preflight-upload-'));
+      try {
+        for (const [index, relative] of files.entries()) {
+          const source = path.join(authorizationRoot, ...relative.split('/'));
+          const stagedSource = path.join(uploadStagingRoot, `${index}${path.extname(relative)}`);
+          fs.copyFileSync(source, stagedSource, fs.constants.COPYFILE_EXCL);
+          const sourceAuthority = fileAuthorityEntry(source, relative);
+          const stagedAuthority = fileAuthorityEntry(stagedSource, relative);
+          if (sourceAuthority.bytes !== stagedAuthority.bytes
+            || sourceAuthority.sha256 !== stagedAuthority.sha256) {
+            throw new Error(`remote Provider preflight authorization staging changed ${relative}`);
+          }
+          const destination = path.win32.join(remoteAuthorizationRoot, ...relative.split('/'));
+          const upload = await runProcess(config.scpExecutable, [
+            ...scpBaseArgs(executor), pathForScp(stagedSource), remoteSpec(executor, destination),
+          ], { signal });
+          ensureSuccessful(upload, `remote Provider preflight authorization upload ${relative}`);
+        }
+      } finally {
+        fs.rmSync(uploadStagingRoot, { recursive: true, force: true });
+      }
+      const publication = remotePowerShellInvocation(REMOTE_PROVIDER_PREFLIGHT_PUBLICATION_BODY, {
+        sourceRoot: remoteAuthorizationRoot,
+        targetRoot: remoteCanonicalAuthorizationRoot,
+        files: files.map((relative) => fileAuthorityEntry(
+          path.join(authorizationRoot, ...relative.split('/')), relative,
+        )),
+      }, { mode: 'file-only' });
+      const publicationUploadRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-preflight-publication-'));
+      const publicationScriptName = `publish-${crypto.randomBytes(12).toString('hex')}.ps1`;
+      const localPublicationScript = path.join(publicationUploadRoot, publicationScriptName);
+      const remotePublicationScript = path.win32.join(remoteAuthorizationRoot, publicationScriptName);
+      fs.writeFileSync(localPublicationScript, publication.fileScript, { encoding: 'utf8', flag: 'wx' });
+      const publicationAuthority = fileAuthorityEntry(localPublicationScript, publicationScriptName);
+      let publicationUploaded = false;
+      let publicationError = null;
+      try {
+        const uploadResult = await runProcess(config.scpExecutable, [
+          ...scpBaseArgs(executor), pathForScp(localPublicationScript),
+          remoteSpec(executor, remotePublicationScript),
+        ], { signal });
+        ensureSuccessful(uploadResult, 'canonical remote Provider preflight publication script upload');
+        publicationUploaded = true;
+        const verifyScript = [
+          "$ErrorActionPreference='Stop'",
+          `$p='${remotePublicationScript.replaceAll("'", "''")}'`,
+          `$n=${publicationAuthority.bytes}`,
+          `$h='${publicationAuthority.sha256}'`,
+          '$i=Get-Item -LiteralPath $p -Force',
+          "if($i.PSIsContainer -or (($i.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)){throw 'publication script is not a regular file'}",
+          "if($i.Length -ne $n){throw 'publication script byte length mismatch'}",
+          '$s=[IO.File]::OpenRead($p);$a=[Security.Cryptography.SHA256]::Create()',
+          'try{$x=([BitConverter]::ToString($a.ComputeHash($s))).Replace("-","").ToLowerInvariant()}finally{$a.Dispose();$s.Dispose()}',
+          "if($x -cne $h){throw 'publication script SHA-256 mismatch'}",
+        ].join(';');
+        const verifyEncodedCommand = Buffer.from(verifyScript, 'utf16le').toString('base64');
+        const verifyResult = await runProcess(config.sshExecutable, [
+          ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
+          'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', verifyEncodedCommand,
+        ], { signal });
+        ensureSuccessful(verifyResult, 'canonical remote Provider preflight publication script verification');
+        const publicationResult = await runProcess(config.sshExecutable, [
+          ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
+          'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+          '-File', remotePublicationScript,
+        ], { signal, input: publication.input });
+        const decodedPublicationResult = decodeRemotePowerShellFileOutput(publicationResult);
+        ensureSuccessful(decodedPublicationResult, 'canonical remote Provider preflight authorization publication');
+      } catch (error) {
+        publicationError = error;
+        throw error;
+      } finally {
+        fs.rmSync(publicationUploadRoot, { recursive: true, force: true });
+        if (publicationUploaded) {
+          const cleanupScript = [
+            "$ErrorActionPreference='Stop'",
+            `$p='${remotePublicationScript.replaceAll("'", "''")}'`,
+            'Remove-Item -LiteralPath $p -Force',
+            "if(Test-Path -LiteralPath $p){throw 'publication script cleanup did not remove the exact file'}",
+          ].join(';');
+          const cleanupEncodedCommand = Buffer.from(cleanupScript, 'utf16le').toString('base64');
+          let cleanupError = null;
+          try {
+            const cleanupResult = await runProcess(config.sshExecutable, [
+              ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
+              'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', cleanupEncodedCommand,
+            ], {});
+            ensureSuccessful(cleanupResult, 'canonical remote Provider preflight publication script cleanup');
+          } catch (error) {
+            cleanupError = error;
+          }
+          if (cleanupError) {
+            if (publicationError) {
+              throw new AggregateError(
+                [publicationError, cleanupError],
+                'canonical remote Provider preflight publication and exact script cleanup both failed',
+              );
+            }
+            throw cleanupError;
+          }
+        }
+      }
+      const request = {
+        schemaVersion: REMOTE_PROVIDER_PREFLIGHT_REQUEST_SCHEMA_VERSION,
+        artifactKind: REMOTE_PROVIDER_PREFLIGHT_REQUEST_KIND,
+        executionId,
+        executor: structuredClone(grant.executor),
+        grantPath: path.win32.join(remoteCanonicalAuthorizationRoot, 'provider-preflight-grant.json'),
+        leaseReservationDirectory: path.win32.join(remoteCanonicalAuthorizationRoot, 'provider-preflight-lease-reservations'),
+        authorizationDigest,
+        executablePath: path.win32.join(executor.workspaceRoot, 'target', 'release', 'omni-desktop-shell.exe'),
+        outputDirectory: remoteEvidenceRoot,
+      };
+      const workerEntrypoint = path.win32.join(
+        executor.workspaceRoot, 'scripts', 'testing', 'run-watch-mode-provider-preflight-worker.mjs',
+      );
+      const requestPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-request.json');
+      const launcherPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-interactive-launcher.ps1');
+      const controllerPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-controller.ps1');
+      const stdoutPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-worker.stdout.log');
+      const stderrPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-worker.stderr.log');
+      const terminalPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-worker.terminal.json');
+      const processAuthorityPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-process-authority.json');
+      const cleanupPath = path.win32.join(remoteAuthorizationRoot, 'provider-preflight-cleanup.json');
+      const taskName = `OmniPreflight-${crypto.createHash('sha256').update(`${executionId}|${executor.workerId}`, 'utf8').digest('hex').slice(0, 24)}`;
+      const psQuote = (value) => `'${String(value).replaceAll("'", "''")}'`;
+      const readinessPath = path.join(authorizationRoot, ...grant.executor.readinessAuthority.path.split('/'));
+      const readinessBytes = fs.readFileSync(readinessPath);
+      const readinessActual = {
+        bytes: readinessBytes.byteLength,
+        sha256: crypto.createHash('sha256').update(readinessBytes).digest('hex'),
+      };
+      const readiness = JSON.parse(readinessBytes.toString('utf8').replace(/^\uFEFF/u, ''));
+      const expectedSessionId = Number(readiness.interactiveSession?.sessionId);
+      const expectedOwnerSid = String(readiness.interactiveSession?.ownerSid ?? '');
+      const expectedDesktop = String(readiness.interactiveSession?.desktop ?? '');
+      if (readiness.workerId !== executor.workerId
+        || readinessActual.bytes !== grant.executor.readinessAuthority.bytes
+        || readinessActual.sha256 !== grant.executor.readinessAuthority.sha256
+        || !Number.isInteger(expectedSessionId) || expectedSessionId <= 0
+        || !/^S-1-/u.test(expectedOwnerSid)
+        || expectedDesktop !== 'WinSta0\\Default') {
+        throw new Error('remote Provider preflight signed readiness has no exact interactive identity');
+      }
+      const requestText = JSON.stringify(request);
+      const requestSha256 = crypto.createHash('sha256').update(requestText, 'utf8').digest('hex');
+      const launcherSource = [
+        'param([Parameter(Mandatory=$true)][string]$NodePath,[Parameter(Mandatory=$true)][string]$ControllerSha256,[Parameter(Mandatory=$true)][string]$LauncherSha256)',
+        "$ErrorActionPreference = 'Stop'",
+        `$launcherItem = Get-Item -LiteralPath $PSCommandPath -Force; if ($launcherItem.PSIsContainer -or ($launcherItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $LauncherSha256) { throw 'interactive Provider preflight launcher self authority mismatch' }`,
+        '$exitCode = 1',
+        'try {',
+        `  [Environment]::CurrentDirectory = ${psQuote(executor.workspaceRoot)}`,
+        `  Set-Location -LiteralPath ${psQuote(executor.workspaceRoot)}`,
+        `  function New-ProcessIdentity([Microsoft.Management.Infrastructure.CimInstance]$cim) { $managed=Get-Process -Id ([int]$cim.ProcessId) -ErrorAction Stop; $owner=Invoke-CimMethod -InputObject $cim -MethodName GetOwnerSid -ErrorAction Stop; [ordered]@{ pid=[int]$cim.ProcessId; parentPid=[int]$cim.ParentProcessId; imagePath=[IO.Path]::GetFullPath([string]$cim.ExecutablePath); startedAt=$managed.StartTime.ToUniversalTime().ToString('o'); sessionId=[int]$managed.SessionId; ownerSid=[string]$owner.Sid } }`,
+        `  $launcherProcess = Get-CimInstance Win32_Process -Filter ("ProcessId=$PID") -ErrorAction Stop`,
+        `  $launcherIdentity = New-ProcessIdentity $launcherProcess`,
+        `  $worker = Start-Process -FilePath $NodePath -ArgumentList @(${psQuote(workerEntrypoint)}) -WorkingDirectory ${psQuote(executor.workspaceRoot)} -RedirectStandardInput ${psQuote(requestPath)} -RedirectStandardOutput ${psQuote(stdoutPath)} -RedirectStandardError ${psQuote(stderrPath)} -PassThru -WindowStyle Normal`,
+        '  $workerCim = Get-CimInstance Win32_Process -Filter ("ProcessId=$($worker.Id)") -ErrorAction Stop',
+        '  $workerIdentity = New-ProcessIdentity $workerCim',
+        '  $known = @{}; $known[[int]$workerIdentity.pid] = $workerIdentity',
+        '  while (-not $worker.HasExited) { $snapshot=@(Get-CimInstance Win32_Process -ErrorAction Stop); $frontier=@([int]$worker.Id); do { $next=@(); foreach($parent in $frontier){ foreach($child in @($snapshot | Where-Object { [int]$_.ParentProcessId -eq $parent })){ $pidValue=[int]$child.ProcessId; if(-not $known.ContainsKey($pidValue)){ try{$known[$pidValue]=New-ProcessIdentity $child}catch{} }; $next += $pidValue } }; $frontier=@($next) } while($frontier.Count -gt 0); Start-Sleep -Milliseconds 50; $worker.Refresh() }',
+        '  $worker.WaitForExit()',
+        `  $authority = [ordered]@{ schemaVersion=1; artifactKind='watch-mode-provider-preflight-process-authority'; executionId=${psQuote(executionId)}; workerId=${psQuote(executor.workerId)}; expectedSessionId=${expectedSessionId}; expectedOwnerSid=${psQuote(expectedOwnerSid)}; launcher=$launcherIdentity; worker=$workerIdentity; descendants=@($known.Values | Where-Object { [int]$_.pid -ne [int]$worker.Id } | Sort-Object pid) } | ConvertTo-Json -Depth 8 -Compress`,
+        `  $authorityBytes=(New-Object Text.UTF8Encoding($false)).GetBytes($authority+[Environment]::NewLine); $authorityStream=New-Object IO.FileStream(${psQuote(processAuthorityPath)},[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read,4096,[IO.FileOptions]::WriteThrough); try{$authorityStream.Write($authorityBytes,0,$authorityBytes.Length);$authorityStream.Flush($true)}finally{$authorityStream.Dispose()}`,
+        `  $processAuthoritySha256=(Get-FileHash -LiteralPath ${psQuote(processAuthorityPath)} -Algorithm SHA256).Hash.ToLowerInvariant()`,
+        '  $exitCode = [int]$worker.ExitCode',
+        '} catch {',
+        `  [IO.File]::AppendAllText(${psQuote(stderrPath)}, ($_ | Out-String), (New-Object Text.UTF8Encoding($false)))`,
+        '  $exitCode = 1',
+        '} finally {',
+        `  if (-not $processAuthoritySha256 -and (Test-Path -LiteralPath ${psQuote(processAuthorityPath)} -PathType Leaf)) { $processAuthoritySha256=(Get-FileHash -LiteralPath ${psQuote(processAuthorityPath)} -Algorithm SHA256).Hash.ToLowerInvariant() }`,
+        `  $terminal = [ordered]@{ schemaVersion=1; artifactKind='watch-mode-provider-preflight-interactive-terminal'; executionId=${psQuote(executionId)}; workerId=${psQuote(executor.workerId)}; authorizationDigest=${psQuote(authorizationDigest)}; controllerSha256=$ControllerSha256; launcherSha256=$LauncherSha256; processAuthoritySha256=[string]$processAuthoritySha256; requestSha256=${psQuote(requestSha256)}; taskName=${psQuote(taskName)}; taskPath='\\OmniTranslate\\'; exitCode=[int]$exitCode; sessionId=[int](Get-Process -Id $PID).SessionId; ownerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; desktop=${psQuote(expectedDesktop)}; completedAt=[DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress`,
+        `  $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($terminal + [Environment]::NewLine)`,
+        `  $stream = New-Object IO.FileStream(${psQuote(terminalPath)}, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read, 4096, [IO.FileOptions]::WriteThrough)`,
+        '  try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }',
+        '}',
+        'exit $exitCode',
+      ].join('\n');
+      const launcherBytes = Buffer.byteLength(launcherSource, 'utf8');
+      const launcherSha256 = crypto.createHash('sha256').update(launcherSource, 'utf8').digest('hex');
+      const controllerSource = [
+        'param([Parameter(Mandatory=$true)][long]$ControllerBytes,[Parameter(Mandatory=$true)][string]$ControllerSha256,[Parameter(Mandatory=$true)][long]$LauncherBytes,[Parameter(Mandatory=$true)][string]$LauncherSha256)',
+        "$ErrorActionPreference = 'Stop'",
+        `$root = ${psQuote(remoteAuthorizationRoot)}`,
+        `$requestPath = ${psQuote(requestPath)}`,
+        `$launcherPath = ${psQuote(launcherPath)}`,
+        `$stdoutPath = ${psQuote(stdoutPath)}`,
+        `$stderrPath = ${psQuote(stderrPath)}`,
+        `$terminalPath = ${psQuote(terminalPath)}`,
+        `$processAuthorityPath = ${psQuote(processAuthorityPath)}`,
+        `$taskName = ${psQuote(taskName)}`,
+        `$taskPath = '\\OmniTranslate\\'`,
+        `$expectedSid = ${psQuote(expectedOwnerSid)}`,
+        `$expectedSessionId = ${expectedSessionId}`,
+        `$expectedDesktop = ${psQuote(expectedDesktop)}`,
+        '$registered = $false',
+        '$controllerExitCode = 1',
+        '$controllerError = $null',
+        'try {',
+        `$nodePath = (Get-Command node.exe -CommandType Application -ErrorAction Stop).Source`,
+        `if (-not (Test-Path -LiteralPath $nodePath -PathType Leaf)) { throw 'remote Provider preflight Node executable is unavailable' }`,
+        `$requestText = [Console]::In.ReadToEnd()`,
+        `$requestDigest = [BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).ComputeHash([Text.Encoding]::UTF8.GetBytes($requestText))).Replace('-', '').ToLowerInvariant()`,
+        `if (([Text.Encoding]::UTF8.GetByteCount($requestText)) -le 0 -or $requestDigest -cne ${psQuote(requestSha256)}) { throw 'remote Provider preflight request digest mismatch' }`,
+        `$requestBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($requestText)`,
+        `$requestStream = New-Object IO.FileStream($requestPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read, 4096, [IO.FileOptions]::WriteThrough)`,
+        'try { $requestStream.Write($requestBytes, 0, $requestBytes.Length); $requestStream.Flush($true) } finally { $requestStream.Dispose() }',
+        `$launcherItem = Get-Item -LiteralPath $launcherPath -Force`,
+        `if ($launcherItem.PSIsContainer -or ($launcherItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $launcherItem.Length -ne $LauncherBytes -or (Get-FileHash -LiteralPath $launcherPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $LauncherSha256) { throw 'remote Provider preflight launcher authority mismatch' }`,
+        `$self = Get-Item -LiteralPath $PSCommandPath -Force`,
+        `if ($self.PSIsContainer -or ($self.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $self.Length -ne $ControllerBytes -or (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $ControllerSha256) { throw 'remote Provider preflight controller authority mismatch' }`,
+        `$arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $launcherPath + '" -NodePath "' + $nodePath + '" -ControllerSha256 "' + $ControllerSha256 + '" -LauncherSha256 "' + $LauncherSha256 + '"'`,
+        `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments`,
+        `$principal = New-ScheduledTaskPrincipal -UserId ${psQuote(executor.user)} -LogonType Interactive -RunLevel Limited`,
+        `$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 4) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries`,
+        `  if (Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue) { throw 'interactive Provider preflight task already exists' }`,
+        '  Register-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null',
+        '  $registered = $true',
+        '  $xml = [xml](Export-ScheduledTask -TaskPath $taskPath -TaskName $taskName)',
+        `  if ([string]$xml.Task.Principals.Principal.LogonType -cne 'InteractiveToken' -or [string]$xml.Task.Principals.Principal.UserId -cne $expectedSid) { throw 'interactive Provider preflight task principal mismatch' }`,
+        '  Start-ScheduledTask -TaskPath $taskPath -TaskName $taskName',
+        `  $deadline = [DateTime]::UtcNow.AddMilliseconds(${deriveWatchProductionProviderPreflightBudgetMs()})`,
+        '  while (-not (Test-Path -LiteralPath $terminalPath -PathType Leaf)) {',
+        `    if ([DateTime]::UtcNow -ge $deadline) { throw 'interactive Provider preflight task timed out before terminal receipt' }`,
+        '    Start-Sleep -Milliseconds 100',
+        '  }',
+        '  $terminal = Get-Content -LiteralPath $terminalPath -Raw -Encoding UTF8 | ConvertFrom-Json',
+        `  $expectedTerminalKeys = @('artifactKind','authorizationDigest','completedAt','controllerSha256','desktop','executionId','exitCode','launcherSha256','ownerSid','processAuthoritySha256','requestSha256','schemaVersion','sessionId','taskName','taskPath','workerId') | Sort-Object`,
+        `  if ((@($terminal.PSObject.Properties.Name | Sort-Object) -join '|') -cne ($expectedTerminalKeys -join '|') -or [int]$terminal.schemaVersion -ne 1 -or [string]$terminal.artifactKind -cne 'watch-mode-provider-preflight-interactive-terminal' -or [string]$terminal.executionId -cne ${psQuote(executionId)} -or [string]$terminal.workerId -cne ${psQuote(executor.workerId)} -or [string]$terminal.authorizationDigest -cne ${psQuote(authorizationDigest)} -or [string]$terminal.controllerSha256 -cne $ControllerSha256 -or [string]$terminal.launcherSha256 -cne $LauncherSha256 -or [string]$terminal.requestSha256 -cne ${psQuote(requestSha256)} -or [string]$terminal.taskName -cne $taskName -or [string]$terminal.taskPath -cne $taskPath -or [int]$terminal.sessionId -ne $expectedSessionId -or [string]$terminal.ownerSid -cne $expectedSid -or [string]$terminal.desktop -cne $expectedDesktop) { throw 'interactive Provider preflight terminal authority mismatch' }`,
+        `  if (-not (Test-Path -LiteralPath $processAuthorityPath -PathType Leaf) -or (Get-FileHash -LiteralPath $processAuthorityPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$terminal.processAuthoritySha256) { throw 'interactive Provider preflight process authority digest mismatch' }`,
+        '  if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) { [Console]::Out.Write((Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8)) }',
+        '  if (Test-Path -LiteralPath $stderrPath -PathType Leaf) { [Console]::Error.Write((Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8)) }',
+        '  $controllerExitCode = [int]$terminal.exitCode',
+        '} catch {',
+        '  $controllerError = $_',
+        `  try { [IO.File]::AppendAllText($stderrPath, ($_ | Out-String), (New-Object Text.UTF8Encoding($false))) } catch { }`,
+        '} finally {',
+        `  $cleanupErrors = New-Object 'System.Collections.Generic.List[string]'`,
+        `  $processAuthoritySha256=''; $identities=@(); try { if(Test-Path -LiteralPath $processAuthorityPath -PathType Leaf){ $processAuthoritySha256=(Get-FileHash -LiteralPath $processAuthorityPath -Algorithm SHA256).Hash.ToLowerInvariant(); $processAuthority=Get-Content -LiteralPath $processAuthorityPath -Raw -Encoding UTF8 | ConvertFrom-Json; $identities=@($processAuthority.launcher,$processAuthority.worker)+@($processAuthority.descendants) } else { $cleanupErrors.Add('process-authority-read: missing') } } catch { $cleanupErrors.Add('process-authority-read: '+$_.Exception.Message) }`,
+        `  try { $existingTask=Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue; if($null -ne $existingTask){ Stop-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue; $stopDeadline=[DateTime]::UtcNow.AddSeconds(10); do { $existingTask=Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue; if($null -eq $existingTask -or [string]$existingTask.State -ne 'Running'){break}; Start-Sleep -Milliseconds 100 } while([DateTime]::UtcNow -lt $stopDeadline); if($null -ne $existingTask -and [string]$existingTask.State -eq 'Running'){ $cleanupErrors.Add('task-stop: task remained running') }; Unregister-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue } } catch { $cleanupErrors.Add('task-cleanup: '+$_.Exception.Message) }`,
+        `  $identityDeadline=[DateTime]::UtcNow.AddSeconds(10); $identitiesEnded=$false; do { $live=@(); foreach($identity in @($identities)){ if($null -eq $identity){continue}; try { $candidate=Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$identity.pid) -ErrorAction SilentlyContinue; if($null -eq $candidate){continue}; $managed=Get-Process -Id ([int]$identity.pid) -ErrorAction Stop; $sameStart=$managed.StartTime.ToUniversalTime().ToString('o') -ceq [string]$identity.startedAt; $sameImage=[IO.Path]::GetFullPath([string]$candidate.ExecutablePath) -ceq [string]$identity.imagePath; if($sameStart -and $sameImage){$live += [int]$identity.pid} } catch { } }; $identitiesEnded=($live.Count -eq 0); if(-not $identitiesEnded){Start-Sleep -Milliseconds 100} } while(-not $identitiesEnded -and [DateTime]::UtcNow -lt $identityDeadline); if(-not $identitiesEnded){$cleanupErrors.Add('process-cleanup: bound identities still running '+($live -join ','))}`,
+        `  foreach ($temporary in @($requestPath,$launcherPath,$PSCommandPath)) { try { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force -ErrorAction Stop } } catch { $cleanupErrors.Add('temporary-cleanup: '+$temporary+': '+$_.Exception.Message) } }`,
+        `  $taskAbsent=($null -eq (Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue)); $temporaryFilesAbsent=(-not (Test-Path -LiteralPath $requestPath) -and -not (Test-Path -LiteralPath $launcherPath) -and -not (Test-Path -LiteralPath $PSCommandPath))`,
+        `  $cleanup = [ordered]@{ schemaVersion=1; artifactKind='watch-mode-provider-preflight-cleanup'; executionId=${psQuote(executionId)}; workerId=${psQuote(executor.workerId)}; taskName=$taskName; taskPath=$taskPath; processAuthoritySha256=$processAuthoritySha256; taskAbsent=$taskAbsent; identitiesEnded=$identitiesEnded; temporaryFilesAbsent=$temporaryFilesAbsent; attemptErrors=@($cleanupErrors); passed=$false; completedAt=[DateTime]::UtcNow.ToString('o') }; $cleanup.passed=($cleanup.taskAbsent -and $cleanup.identitiesEnded -and $cleanup.temporaryFilesAbsent -and $cleanup.attemptErrors.Count -eq 0)`,
+        `  try { $cleanupBytes=(New-Object Text.UTF8Encoding($false)).GetBytes(($cleanup|ConvertTo-Json -Compress)+[Environment]::NewLine); $cleanupStream=New-Object IO.FileStream(${psQuote(cleanupPath)},[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::Read,4096,[IO.FileOptions]::WriteThrough); try{$cleanupStream.Write($cleanupBytes,0,$cleanupBytes.Length);$cleanupStream.Flush($true)}finally{$cleanupStream.Dispose()} } catch { [Console]::Error.WriteLine('cleanup-receipt-write: '+$_.Exception.Message) }`,
+        '}',
+        `if ($null -ne $controllerError) { throw $controllerError }`,
+        `if (-not $cleanup.passed) { throw 'interactive Provider preflight cleanup did not complete' }`,
+        'exit $controllerExitCode',
+      ].join('\n');
+      const controllerBytes = Buffer.byteLength(controllerSource, 'utf8');
+      const controllerSha256 = crypto.createHash('sha256').update(controllerSource, 'utf8').digest('hex');
+      const controlStagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-preflight-control-'));
+      try {
+        for (const [name, source, destination] of [
+          ['provider-preflight-interactive-launcher.ps1', launcherSource, launcherPath],
+          ['provider-preflight-controller.ps1', controllerSource, controllerPath],
+        ]) {
+          const stagedSource = path.join(controlStagingRoot, name);
+          fs.writeFileSync(stagedSource, source, { encoding: 'utf8', flag: 'wx' });
+          const upload = await runProcess(config.scpExecutable, [
+            ...scpBaseArgs(executor), pathForScp(stagedSource), remoteSpec(executor, destination),
+          ], { signal });
+          ensureSuccessful(upload, `remote Provider preflight control upload ${name}`);
+        }
+      } finally {
+        fs.rmSync(controlStagingRoot, { recursive: true, force: true });
+      }
+      const controlVerification = remotePowerShellInvocation(`
+$items=@($payload.items)
+foreach($entry in $items){$item=Get-Item -LiteralPath ([string]$entry.path) -Force;if($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.Length -ne [long]$entry.bytes -or (Get-FileHash -LiteralPath ([string]$entry.path) -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$entry.sha256){throw 'remote Provider preflight control authority mismatch'}}
+[pscustomobject]@{verified=$true}|ConvertTo-Json -Compress
+`, { items: [
+        { path: launcherPath, bytes: launcherBytes, sha256: launcherSha256 },
+        { path: controllerPath, bytes: controllerBytes, sha256: controllerSha256 },
+      ] });
+      const controlVerificationResult = await runProcess(config.sshExecutable, [
+        ...sshBaseArgs(executor), `${executor.user}@${executor.host}`, ...controlVerification.args,
+      ], { signal, input: controlVerification.input });
+      ensureSuccessful(controlVerificationResult, 'remote Provider preflight control authority verification');
+      onProviderCallStarted();
+      let result;
+      let controllerFailure;
+      try {
+        result = await runProcess(config.sshExecutable, [
+          ...sshBaseArgs(executor), `${executor.user}@${executor.host}`,
+          'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', controllerPath,
+          '-ControllerBytes', String(controllerBytes), '-ControllerSha256', controllerSha256,
+          '-LauncherBytes', String(launcherBytes), '-LauncherSha256', launcherSha256,
+        ], { signal, input: requestText, timeoutMs: deriveWatchProductionProviderPreflightBudgetMs() + 30_000 });
+      } catch (error) {
+        controllerFailure = error;
+      }
+      const collectionFailures = [];
+      const collect = async (label, operation) => {
+        try { return await operation(); }
+        catch (error) { collectionFailures.push(new Error(`${label}: ${error.message}`, { cause: error })); return undefined; }
+      };
+      const controlEvidenceRoot = `${authorizationRoot}.control-evidence`;
+      fs.mkdirSync(controlEvidenceRoot, { recursive: true });
+      const terminalTarget = path.join(controlEvidenceRoot, 'provider-preflight-worker.terminal.json');
+      const terminal = await collect('remote Provider preflight terminal collection', async () => {
+        const download = await runProcess(config.scpExecutable, [
+          ...scpBaseArgs(executor), remoteSpec(executor, terminalPath), pathForScp(terminalTarget),
+        ], { signal });
+        ensureSuccessful(download, 'remote Provider preflight terminal collection');
+        return JSON.parse(fs.readFileSync(terminalTarget, 'utf8').replace(/^\uFEFF/u, ''));
+      });
+      const processAuthorityTarget = path.join(controlEvidenceRoot, 'provider-preflight-process-authority.json');
+      const processAuthority = await collect('remote Provider preflight process authority collection', async () => {
+        const download = await runProcess(config.scpExecutable, [
+          ...scpBaseArgs(executor), remoteSpec(executor, processAuthorityPath), pathForScp(processAuthorityTarget),
+        ], { signal });
+        ensureSuccessful(download, 'remote Provider preflight process authority collection');
+        const bytes = fs.readFileSync(processAuthorityTarget);
+        const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+        const authority = validateProviderPreflightProcessAuthority(
+          JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/u, '')),
+          { executionId, workerId: executor.workerId, sessionId: expectedSessionId, ownerSid: expectedOwnerSid },
+        );
+        return { authority, sha256 };
+      });
+      if (terminal && processAuthority) {
+        await collect('remote Provider preflight terminal validation', async () => validateProviderPreflightInteractiveTerminal(
+          terminal,
+          {
+            executionId, workerId: executor.workerId, authorizationDigest,
+            controllerSha256, launcherSha256, processAuthoritySha256: processAuthority.sha256,
+            requestSha256, taskName, sessionId: expectedSessionId,
+            ownerSid: expectedOwnerSid, desktop: expectedDesktop,
+          },
+        ));
+      }
+      const cleanupTarget = path.join(controlEvidenceRoot, 'provider-preflight-cleanup.json');
+      await collect('remote Provider preflight cleanup receipt collection', async () => {
+        const download = await runProcess(config.scpExecutable, [
+          ...scpBaseArgs(executor), remoteSpec(executor, cleanupPath), pathForScp(cleanupTarget),
+        ], { signal });
+        ensureSuccessful(download, 'remote Provider preflight cleanup receipt collection');
+        const cleanup = JSON.parse(fs.readFileSync(cleanupTarget, 'utf8').replace(/^\uFEFF/u, ''));
+        validateProviderPreflightCleanupReceipt(cleanup, {
+          executionId, workerId: executor.workerId, taskName,
+          processAuthoritySha256: processAuthority?.sha256 ?? terminal?.processAuthoritySha256,
+        });
+      });
+      const claimSource = path.win32.join(remoteCanonicalAuthorizationRoot, 'provider-preflight-consumption-claim.json');
+      const claimTarget = path.join(authorizationRoot, 'provider-preflight-consumption-claim.json');
+      await collect('remote Provider preflight claim collection', async () => {
+        const download = await runProcess(config.scpExecutable, [
+          ...scpBaseArgs(executor), remoteSpec(executor, claimSource), pathForScp(claimTarget),
+        ], { signal });
+        ensureSuccessful(download, 'remote Provider preflight claim collection');
+      });
+      const resolvedLocalEvidenceDirectory = path.resolve(localEvidenceDirectory);
+      const evidenceParent = path.dirname(resolvedLocalEvidenceDirectory);
+      fs.mkdirSync(evidenceParent, { recursive: true });
+      await collect('remote Provider preflight evidence collection', async () => {
+        const evidenceDownload = await runProcess(config.scpExecutable, [
+          ...scpBaseArgs(executor), '-r', remoteSpec(executor, remoteEvidenceRoot), pathForScp(evidenceParent),
+        ], { signal });
+        ensureSuccessful(evidenceDownload, 'remote Provider preflight evidence collection');
+        const downloaded = path.join(evidenceParent, path.win32.basename(remoteEvidenceRoot));
+        if (downloaded !== resolvedLocalEvidenceDirectory) fs.renameSync(downloaded, resolvedLocalEvidenceDirectory);
+      });
+      let remote;
+      if (result) {
+        try {
+          const line = lastNonEmptyLine(result.stdout);
+          remote = JSON.parse(line);
+        } catch (error) {
+          collectionFailures.push(new Error(`remote Provider preflight worker returned invalid JSON: ${error.message}`, { cause: error }));
+        }
+        if (Number(result.exitCode) !== 0) {
+          const diagnostics = String(result.stderr ?? '').trim() || String(result.stdout ?? '').trim();
+          controllerFailure = new Error(`remote Provider preflight worker failed with exit ${result.exitCode}: ${diagnostics || 'remote command produced no diagnostics'}`);
+        }
+      }
+      if (controllerFailure) collectionFailures.push(controllerFailure);
+      if (collectionFailures.length > 0) {
+        throw new AggregateError(collectionFailures, 'remote Provider preflight failed after collect-all evidence recovery');
+      }
+      return { ...remote, outputDirectory: resolvedLocalEvidenceDirectory, networkHealth };
+    },
+  };
+}
+
+// The injected operation is the existing bounded interactive-task observer.
+export async function observeOwnedCellCompletion({ signal, timeoutMs, execute, preserveFailure }) {
+  if (signal?.aborted) throw signal.reason ?? new Error('paid dispatch cancelled before launch');
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error('owned cell observer requires a bounded timeout');
+  try {
+    // stopAll still cancels the owned guest via cancelCell. Do not also kill
+    // its control-plane observer: it must wait for real task exit/finalization
+    // and collect late files under the existing remote-cell deadline.
+    return await runBoundedCoordinatorStage(
+      () => execute({ signal: undefined, timeoutMs }), 'owned cell terminal observation', timeoutMs,
+    );
+  } catch (error) {
+    if (preserveFailure) {
+      // Surface safety failures immediately. The coordinator fences/cancels
+      // paid peers before invoking this read-only bounded evidence collector.
+      error.collectFailureEvidence = async () => {
+        try { error.failureEvidence = await preserveFailure(); }
+        catch { error.failureEvidenceErrors = [{ code: 'watch.collection.failed-cell-unavailable' }]; }
+      };
+    }
+    throw error;
+  }
+}
+
+export function failedCellEvidencePaths(cell, lease) {
+  if (!Number.isInteger(cell.cellIndex) || cell.cellIndex < 0 || cell.cellIndex > 3
+    || !/^lease-[a-z0-9-]+$/iu.test(lease.leaseId)) throw new Error('failed evidence cell/lease identity invalid');
+  const run = `runs/c${String(cell.cellIndex + 1).padStart(2, '0')}`;
+  return [
+    ...['app.log', 'bridge-service.log', 'desktop-shell.stderr.log', 'desktop-shell.stdout.log',
+      'report.json', 'report.md', 'watch-session-report.json', 'evidence-driven-terminal.json',
+      'provider-input-budget-ledger.json', 'provider-input-budget-ledger.json.journal.jsonl',
+      'run-collection.json', 'run-metadata.json'].map((name) => `${run}/${name}`),
+    ...['execution.json', 'terminal.json', 'task-terminal.json', 'process-authority.json',
+      'cleanup.scheduler.json', 'stderr.log', 'stdout.log'].map((name) => `interactive/${lease.leaseId}/${name}`),
+  ];
+}
+
+export async function preserveFailedCellEvidence({ plan, cell, lease, directory, inventory, download }) {
+  const allowed = new Set(failedCellEvidencePaths(cell, lease));
+  const seen = new Set();
+  if (!Array.isArray(inventory)) throw new Error('failed evidence inventory missing');
+  for (const entry of inventory) {
+    if (!allowed.has(entry.path) || seen.has(entry.path)
+      || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0 || entry.bytes > 64 * 1024 * 1024
+      || !/^[a-f0-9]{64}$/iu.test(entry.sha256)) throw new Error('failed evidence inventory authority invalid');
+    seen.add(entry.path);
+  }
+  if (fs.existsSync(directory)) throw new Error('failed evidence destination already exists');
+  fs.mkdirSync(directory, { recursive: true });
+  const files = [];
+  for (const entry of inventory) {
+    const destination = path.join(directory, ...entry.path.split('/'));
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    await download(entry.path, destination);
+    const actual = fileAuthorityEntry(destination, entry.path, { allowEmpty: true });
+    if (actual.bytes !== entry.bytes || actual.sha256 !== entry.sha256.toLowerCase()) {
+      throw new Error('failed evidence hash/size changed during collection');
+    }
+    files.push(actual);
+  }
+  const manifestPath = path.join(directory, 'failed-cell-evidence.json');
+  atomicWriteJson(manifestPath, {
+    schemaVersion: 1, artifactKind: 'watch-mode-failed-cell-diagnostics',
+    executionId: plan.executionId, planDigest: plan.planDigest, cellId: cell.cellId,
+    workerId: cell.workerId, leaseId: lease.leaseId, leaseDigest: lease.leaseDigest,
+    // Raw diagnostics are not a shard result or a claim of Provider safety.
+    status: 'diagnostics-only', files, missing: [...allowed].filter((entry) => !seen.has(entry)),
+  });
+  return { manifestPath, ...fileAuthorityEntry(manifestPath, 'failed-cell-evidence.json') };
 }
 
 export async function runRemoteJsonWithRetries(operation, label, {
@@ -838,6 +2428,7 @@ export function createSshProductionTransport({
   reusePreparedWorkers = false,
   runProcess = runChildProcess,
   workspaceRoot = repoRoot,
+  deadlineNow = () => Date.now(),
 }) {
   const workersById = new Map(config.workers.map((worker) => [worker.workerId, worker]));
   const leasePathById = new Map(leasePaths.map((leasePath) => {
@@ -856,12 +2447,31 @@ export function createSshProductionTransport({
   const completedRemoteResults = new Map();
   const coordinatorWorkspace = path.win32.resolve(workspaceRoot).toLowerCase();
   const isCoordinatorLocalWorker = (worker) => (
-    path.win32.resolve(worker.workspaceRoot).toLowerCase() === coordinatorWorkspace
+    worker.transport?.kind === 'local'
+    && path.win32.resolve(worker.workspaceRoot).toLowerCase() === coordinatorWorkspace
   );
 
   const runRemote = async (worker, body, payload, options = {}) => {
     const { requireControlPlane: _requireControlPlane = false, ...processOptions } = options;
-    const invocation = remotePowerShellInvocation(body, payload);
+    const stageTimeoutMs = processOptions.timeoutMs ?? WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS;
+    if (!Number.isSafeInteger(stageTimeoutMs) || stageTimeoutMs <= 0) {
+      throw new Error('remote command shared deadline requires a positive timeoutMs');
+    }
+    const stageStartedAtMs = deadlineNow();
+    const stageDeadlineMs = stageStartedAtMs + stageTimeoutMs;
+    const remainingStageTimeoutMs = (phase, maximumMs = stageTimeoutMs) => {
+      const remainingMs = Math.ceil(stageDeadlineMs - deadlineNow());
+      if (remainingMs <= 0) {
+        throw new Error(`remote command shared deadline expired before ${phase}`);
+      }
+      return Math.min(remainingMs, maximumMs);
+    };
+    const stageProcessOptions = (phase, overrides = {}, maximumMs = stageTimeoutMs) => ({
+      ...processOptions,
+      ...overrides,
+      timeoutMs: remainingStageTimeoutMs(phase, maximumMs),
+    });
+    const invocation = remotePowerShellInvocation(body, payload, { mode: 'file-only' });
     if (isCoordinatorLocalWorker(worker)) {
       const transportRoot = path.join(coordinatorExecutionRoot, '.transport', worker.workerId);
       fs.mkdirSync(transportRoot, { recursive: true });
@@ -874,13 +2484,15 @@ export function createSshProductionTransport({
         const localResult = await runProcess('powershell.exe', [
           '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
           '-File', localScriptPath,
-        ], {
-          ...processOptions,
+        ], stageProcessOptions('local PowerShell execution', {
           cwd: worker.workspaceRoot,
           environment: windowsPowerShellEnvironment(processOptions.environment ?? process.env),
           input: '',
           completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
-        });
+        }));
+        if (deadlineNow() > stageDeadlineMs) {
+          throw new Error('remote command shared deadline expired during local PowerShell execution');
+        }
         return decodeRemotePowerShellFileOutput(localResult);
       } finally {
         fs.rmSync(localScriptPath, { force: true });
@@ -899,14 +2511,15 @@ export function createSshProductionTransport({
     // until the readiness timeout even after the command has produced JSON.
     fs.writeFileSync(localScriptPath, invocation.fileScript, 'utf8');
     let uploaded = false;
+    let primaryError = null;
     try {
       if (isCoordinatorLocalWorker(worker)) {
         fs.copyFileSync(localScriptPath, remoteScriptPath);
       } else {
         const uploadResult = await runProcess(
           config.scpExecutable,
-          [...scpBaseArgs(worker), localScriptPath, remoteSpec(worker, remoteScriptPath)],
-          processOptions,
+          [...scpBaseArgs(worker), pathForScp(localScriptPath), remoteSpec(worker, remoteScriptPath)],
+          stageProcessOptions('command upload'),
         );
         ensureSuccessful(uploadResult, `command upload to ${worker.workerId}`);
       }
@@ -916,25 +2529,38 @@ export function createSshProductionTransport({
         `${worker.user}@${worker.host}`,
         'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
         '-File', remoteScriptPath,
-      ], {
-        ...processOptions,
+      ], stageProcessOptions('SSH execution', {
         input: '',
         completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
-      });
+      }));
+      if (deadlineNow() > stageDeadlineMs) {
+        throw new Error('remote command shared deadline expired during SSH execution');
+      }
       return decodeRemotePowerShellFileOutput(remoteResult);
+    } catch (error) {
+      primaryError = error;
+      throw error;
     } finally {
       fs.rmSync(localScriptPath, { force: true });
       if (uploaded) {
         if (isCoordinatorLocalWorker(worker)) {
           fs.rmSync(remoteScriptPath, { force: true });
         } else {
-          const cleanupResult = await runProcess(config.sshExecutable, [
-            ...sshBaseArgs(worker),
-            `${worker.user}@${worker.host}`,
-            'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
-            `Remove-Item -LiteralPath '${remoteScriptPath}' -Force -ErrorAction SilentlyContinue`,
-          ], { timeoutMs: 30_000 });
-          ensureSuccessful(cleanupResult, `command cleanup on ${worker.workerId}`);
+          const cleanupRemainingMs = Math.ceil(stageDeadlineMs - deadlineNow());
+          if (cleanupRemainingMs > 0) {
+            const cleanupResult = await runProcess(config.sshExecutable, [
+              ...sshBaseArgs(worker),
+              `${worker.user}@${worker.host}`,
+              'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+              `Remove-Item -LiteralPath '${remoteScriptPath}' -Force -ErrorAction SilentlyContinue`,
+            ], stageProcessOptions('remote script cleanup', {}, 30_000));
+            ensureSuccessful(cleanupResult, `command cleanup on ${worker.workerId}`);
+            if (deadlineNow() > stageDeadlineMs && !primaryError) {
+              throw new Error('remote command shared deadline expired during remote script cleanup');
+            }
+          } else if (!primaryError) {
+            throw new Error('remote command shared deadline expired before remote script cleanup');
+          }
         }
       }
     }
@@ -947,7 +2573,7 @@ export function createSshProductionTransport({
     }
     const result = await runProcess(
       config.scpExecutable,
-      [...scpBaseArgs(worker), localPath, remoteSpec(worker, remotePath)],
+      [...scpBaseArgs(worker), pathForScp(localPath), remoteSpec(worker, remotePath)],
       options,
     );
     ensureSuccessful(result, `upload to ${worker.workerId}`);
@@ -965,7 +2591,20 @@ export function createSshProductionTransport({
     }
     const result = await runProcess(
       config.scpExecutable,
-      [...scpBaseArgs(worker), '-r', remoteSpec(worker, remotePath), localParent],
+      [...scpBaseArgs(worker), '-r', remoteSpec(worker, remotePath), pathForScp(localParent)],
+      options,
+    );
+    ensureSuccessful(result, `download from ${worker.workerId}`);
+  };
+  const downloadFile = async (worker, remotePath, localPath, options = {}) => {
+    fs.mkdirSync(path.dirname(localPath), { recursive: true });
+    if (isCoordinatorLocalWorker(worker)) {
+      fs.copyFileSync(remotePath, localPath, fs.constants.COPYFILE_EXCL);
+      return;
+    }
+    const result = await runProcess(
+      config.scpExecutable,
+      [...scpBaseArgs(worker), remoteSpec(worker, remotePath), pathForScp(localPath)],
       options,
     );
     ensureSuccessful(result, `download from ${worker.workerId}`);
@@ -988,7 +2627,9 @@ if ($LASTEXITCODE -ne 0) { throw 'git untracked query failed' }
 $dirtyEntryCount = @($untracked).Count + [int]($unstagedExit -eq 1) + [int]($stagedExit -eq 1)
 $uuid = [string](Get-CimInstance Win32_ComputerSystemProduct).UUID
 [pscustomobject]@{ headCommit = $head.ToLowerInvariant(); dirtyEntries = $dirtyEntryCount; uuidBios = $uuid.ToLowerInvariant() } | ConvertTo-Json -Compress
-`, { workspaceRoot: worker.workspaceRoot }, { timeoutMs: 45_000 });
+`, { workspaceRoot: worker.workspaceRoot }, {
+      timeoutMs: WATCH_PRODUCTION_WORKER_QUERY_TIMEOUT_MS,
+    });
     const state = parseRemoteJson(result, `worker ${worker.workerId} readiness`);
     if (
       state.headCommit !== String(plan.provenance.headCommit).toLowerCase()
@@ -1004,18 +2645,7 @@ $uuid = [string](Get-CimInstance Win32_ComputerSystemProduct).UUID
     await queryWorker(worker);
     const remoteRoot = remoteRoots.get(worker.workerId);
     const remotePlanPath = path.win32.join(remoteRoot, SHARD_EXECUTION_PLAN_FILE);
-    const implementationEntriesByPath = new Map();
-    for (const entry of [
-      ...(plan.authority.implementationHashes ?? []),
-      ...(plan.authority.incidentImplementationHashes ?? []),
-    ]) {
-      const existing = implementationEntriesByPath.get(entry.path);
-      if (existing && (existing.bytes !== entry.bytes || existing.sha256 !== entry.sha256)) {
-        throw new Error(`signed implementation inventories disagree for ${entry.path}`);
-      }
-      implementationEntriesByPath.set(entry.path, entry);
-    }
-    const implementationEntries = [...implementationEntriesByPath.values()].map((entry) => {
+    const implementationEntries = productionImplementationDistributionEntries(plan.authority).map((entry) => {
       const localPath = resolveAuthorityPath(workspaceRoot, entry.path, 'implementation authority entry');
       const current = fileAuthorityEntry(localPath, entry.path);
       if (current.bytes !== entry.bytes || current.sha256 !== entry.sha256) {
@@ -1058,6 +2688,8 @@ foreach ($entry in @($payload.entries)) {
 [pscustomobject]@{ entries = $entries } | ConvertTo-Json -Depth 4 -Compress
 `, {
       entries: runtimeEntries.map(({ path: entryPath, remotePath }) => ({ path: entryPath, remotePath })),
+    }, {
+      timeoutMs: WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS,
     }), `worker ${worker.workerId} runtime pre-check`);
     if ((remoteWorkspaceState.entries ?? []).length !== runtimeEntries.length) {
       throw new Error(`worker ${worker.workerId} runtime pre-check returned an incomplete inventory`);
@@ -1066,7 +2698,7 @@ foreach ($entry in @($payload.entries)) {
       const signed = runtimeEntries.find((candidate) => candidate.path === entry.path);
       if (!signed) throw new Error(`worker ${worker.workerId} returned an unrequested runtime path`);
       // Existing bytes may differ only at the exact fixed plan runtime target;
-      // source files are never uploaded and remain protected by clean HEAD.
+      // implementation files are separately byte-verified and protected by clean HEAD.
       if (entry.exists === true && (!Number.isInteger(Number(entry.bytes)) || !/^[a-f0-9]{64}$/.test(String(entry.sha256 ?? '')))) {
         throw new Error(`worker ${worker.workerId} runtime pre-check is malformed for ${entry.path}`);
       }
@@ -1086,9 +2718,13 @@ foreach ($directory in @($payload.runtimeDirectories)) {
         ...implementationEntries.map((entry) => path.win32.dirname(entry.remotePath)),
         ...runtimeEntries.map((entry) => path.win32.dirname(entry.remotePath)),
       ])],
+    }, {
+      timeoutMs: WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS,
     }), `worker ${worker.workerId} isolated-root initialization`);
-    await upload(worker, planPath, remotePlanPath);
-    if (!reusePreparedWorkers) {
+    if (reusePreparedWorkers) {
+      await upload(worker, planPath, remotePlanPath);
+    } else if (isCoordinatorLocalWorker(worker)) {
+      await upload(worker, planPath, remotePlanPath);
       // Git may report a clean Windows checkout while core.autocrlf has changed
       // the working-tree bytes of signed PowerShell/text authority files.  The
       // shard validates the bytes it will actually execute, so normalize every
@@ -1096,7 +2732,35 @@ foreach ($directory in @($payload.runtimeDirectories)) {
       // or Provider preflight.  Re-checking git state below still rejects real
       // source divergence because these bytes are the exact signed Git content.
       for (const entry of implementationEntries) await upload(worker, entry.localPath, entry.remotePath);
-      for (const entry of runtimeEntries) await upload(worker, entry.localPath, entry.remotePath);
+      // A pre-distributed identical binary needs verification, not another copy.
+      // The complete implementation/runtime hash check below remains mandatory.
+      for (const entry of selectChangedRuntimeEntries(runtimeEntries, remoteWorkspaceState.entries)) {
+        await upload(worker, entry.localPath, entry.remotePath);
+      }
+    } else {
+      const changedRuntimeEntries = selectChangedRuntimeEntries(runtimeEntries, remoteWorkspaceState.entries);
+      const transferEntries = [
+        {
+          path: SHARD_EXECUTION_PLAN_FILE,
+          localPath: planPath,
+          remotePath: remotePlanPath,
+          targetKind: 'execution',
+          ...fileAuthorityEntry(planPath, SHARD_EXECUTION_PLAN_FILE),
+        },
+        ...implementationEntries.map((entry) => ({ ...entry, targetKind: 'workspace' })),
+        ...changedRuntimeEntries.map((entry) => ({ ...entry, targetKind: 'workspace' })),
+      ];
+      await stageProductionReadinessBatch({
+        worker,
+        transferEntries,
+        coordinatorExecutionRoot,
+        remoteRoot,
+        uploadFile: upload,
+        executeRemote: async (...args) => ensureSuccessful(
+          await runRemote(...args),
+          `worker ${worker.workerId} readiness batch extraction`,
+        ),
+      });
     }
     const verification = await runRemoteJsonWithRetries((attempt) => runRemote(worker, `
 $implementation = @()
@@ -1107,6 +2771,11 @@ foreach ($entry in @($payload.implementationEntries)) {
   $hash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($item.Length -ne [int64]$entry.bytes -or $hash -ne [string]$entry.sha256) { throw "implementation mismatch: $target" }
   $implementation += [pscustomobject]@{ path = [string]$entry.path; bytes = [int64]$item.Length; sha256 = $hash }
+}
+$refreshPaths = @($payload.implementationEntries | ForEach-Object { [string]$_.path })
+if ($refreshPaths.Count -gt 0) {
+  & git.exe -C ([string]$payload.workspaceRoot) update-index --refresh -- @refreshPaths
+  if ($LASTEXITCODE -ne 0) { throw 'implementation index refresh failed after byte verification' }
 }
 $actual = @()
 foreach ($entry in @($payload.entries)) {
@@ -1120,6 +2789,7 @@ foreach ($entry in @($payload.entries)) {
 $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SHA256).Hash.ToLowerInvariant()
 [pscustomobject]@{ implementation = $implementation; runtime = $actual; planSha256 = $planHash } | ConvertTo-Json -Depth 5 -Compress
 `, {
+      workspaceRoot: worker.workspaceRoot,
       implementationEntries: implementationEntries.map(({ path: entryPath, bytes, sha256, remotePath }) => ({
         path: entryPath, bytes, sha256, remotePath,
       })),
@@ -1129,7 +2799,10 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
       planPath: remotePlanPath,
     }, {
       timeoutMs: PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS,
-    }), `worker ${worker.workerId} runtime verification`);
+    }), `worker ${worker.workerId} runtime verification`, {
+      attempts: WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_ATTEMPTS,
+      delayMs: WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_RETRY_DELAY_MS,
+    });
     if (verification.planSha256 !== fileAuthorityEntry(planPath, path.basename(planPath)).sha256) {
       throw new Error(`worker ${worker.workerId} copied plan hash mismatch`);
     }
@@ -1159,6 +2832,7 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
       readinessRequestDigest: plan.workerReadinessRequest?.requestDigest ?? plan.planDigest,
       workerId: worker.workerId,
       vmIdentityDigest: plan.workers.find((entry) => entry.workerId === worker.workerId)?.vmIdentityDigest,
+      transportAuthority: plan.workers.find((entry) => entry.workerId === worker.workerId)?.transportAuthority,
       runtimeBundleDigest: plan.authority.runtimeBundleDigest,
       driver,
       driverRequired: Boolean(plan.workers.find((entry) => (
@@ -1173,6 +2847,7 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
           worker,
           PRODUCTION_PRESERVED_WORKER_READINESS_BODY,
           readinessPayload,
+          { timeoutMs: WATCH_PRODUCTION_PRESERVED_READINESS_TIMEOUT_MS },
         ), `worker ${worker.workerId} preserved zero-provider readiness`)
       : await (async () => {
           parseRemoteJson(await runRemote(
@@ -1193,7 +2868,7 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
               worker,
               remoteRoot,
               mode: 'endpoint-readiness',
-              timeoutMs: 300_000,
+              timeoutMs: WATCH_PRODUCTION_ENDPOINT_READINESS_TASK_TIMEOUT_MS,
               requireSeparateControlPlane: !isCoordinatorLocalWorker(worker),
             }),
             readinessRequestDigest: readinessPayload.readinessRequestDigest,
@@ -1209,7 +2884,10 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
               controlScriptSha256: interactiveRequest.controlScriptSha256,
               interactiveRequest,
             },
-            { timeoutMs: 330_000, requireControlPlane: true },
+            {
+              timeoutMs: WATCH_PRODUCTION_ENDPOINT_READINESS_REMOTE_TIMEOUT_MS,
+              requireControlPlane: true,
+            },
           ), `worker ${worker.workerId} interactive endpoint readiness`);
           return parseRemoteJson(await runRemote(
             worker,
@@ -1239,21 +2917,68 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
     return { workerId: worker.workerId, remoteRoot, readiness };
   }
 
+  async function preserveCellFailure({ cell, lease, worker, remoteRoot }) {
+    const relativePaths = failedCellEvidencePaths(cell, lease);
+    const inventory = parseRemoteJson(await runRemote(worker, `
+$root = [IO.Path]::GetFullPath([string]$payload.remoteRoot).TrimEnd('\\')
+if ((Get-CimInstance Win32_ComputerSystemProduct).UUID -ine [string]$payload.vmUuidBios) { throw 'failure evidence VM identity mismatch' }
+$entries = @()
+foreach ($relative in @($payload.relativePaths)) {
+  $full = [IO.Path]::GetFullPath((Join-Path $root ([string]$relative)))
+  if (-not $full.StartsWith($root + '\\', [StringComparison]::OrdinalIgnoreCase)) { throw 'failure evidence path outside root' }
+  if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+  $item = Get-Item -LiteralPath $full -Force -ErrorAction Stop
+  $ancestor = $item
+  while ($null -ne $ancestor) {
+    if ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'failure evidence reparse path' }
+    if ($ancestor.FullName -ieq $root) { break }
+    if ($ancestor -is [IO.FileInfo]) { $ancestor = $ancestor.Directory } else { $ancestor = $ancestor.Parent }
+  }
+  if ($item.Length -gt 67108864) { throw 'failure evidence file exceeds bounded collection size' }
+  $entries += [ordered]@{ path=[string]$relative; bytes=$item.Length; sha256=(Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash.ToLowerInvariant() }
+}
+ConvertTo-Json -InputObject @($entries) -Depth 4 -Compress
+`, { remoteRoot, relativePaths, vmUuidBios: worker.vmIdentity.uuidBios }, {
+      timeoutMs: PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
+    }), `failed-cell evidence inventory ${cell.cellId}`);
+    const directory = path.join(coordinatorExecutionRoot, 'failed-cell-evidence', lease.leaseId);
+    const deadline = deadlineNow() + PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS;
+    return preserveFailedCellEvidence({ plan, cell, lease, directory, inventory,
+      download: async (relative, destination) => {
+        const timeoutMs = Math.ceil(deadline - deadlineNow());
+        if (timeoutMs <= 0) throw new Error('failed-cell collection deadline expired');
+        const remotePath = path.win32.join(remoteRoot, ...relative.split('/'));
+        if (isCoordinatorLocalWorker(worker)) {
+          fs.copyFileSync(remotePath, destination, fs.constants.COPYFILE_EXCL);
+          return;
+        }
+        ensureSuccessful(await runProcess(config.scpExecutable,
+          [...scpBaseArgs(worker), remoteSpec(worker, remotePath), pathForScp(destination)],
+          { timeoutMs }), `failed-cell evidence download ${cell.cellId}`);
+      },
+    });
+  }
+
   async function dispatchCell({ cell, lease, signal }) {
     const worker = workersById.get(cell.workerId);
     const remoteRoot = remoteRoots.get(cell.workerId);
     const leasePath = leasePathById.get(lease.leaseId);
     if (!worker || !remoteRoot || !leasePath) throw new Error(`transport lacks binding for ${cell.cellId}`);
     const remoteLeasePath = path.win32.join(remoteRoot, 'leases', `${String(cell.cellIndex + 1).padStart(2, '0')}-${lease.leaseId}.json`);
-    await upload(worker, leasePath, remoteLeasePath, { signal, timeoutMs: 60_000 });
+    await upload(worker, leasePath, remoteLeasePath, {
+      signal,
+      timeoutMs: PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS,
+    });
     remoteLeasePaths.set(lease.leaseId, remoteLeasePath);
+    const interactiveCellTimeoutMs = deriveWatchProductionInteractiveCellTimeoutMs(cell);
+    const remoteCellTimeoutMs = deriveWatchProductionRemoteCellTimeoutMs(cell);
     const interactiveRequest = {
       ...interactiveRequestBase({
         plan,
         worker,
         remoteRoot,
         mode: 'shard-cell',
-        timeoutMs: PRODUCTION_REMOTE_CELL_TIMEOUT_MS - 30_000,
+        timeoutMs: interactiveCellTimeoutMs,
         requireSeparateControlPlane: !isCoordinatorLocalWorker(worker),
       }),
       planPath: path.win32.join(remoteRoot, SHARD_EXECUTION_PLAN_FILE),
@@ -1266,11 +2991,12 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
       feedbackLoopPrevention: cell.feedbackLoopPrevention,
       readinessPath: path.win32.join(remoteRoot, 'readiness', 'zero-provider-readiness.json'),
     };
+    return observeOwnedCellCompletion({ signal, timeoutMs: remoteCellTimeoutMs, execute: async ({ signal: observationSignal, timeoutMs }) => {
     const result = await runRemote(worker, PRODUCTION_INTERACTIVE_SESSION_LAUNCH_BODY, {
       workspaceRoot: worker.workspaceRoot,
       controlScriptSha256: interactiveRequest.controlScriptSha256,
       interactiveRequest,
-    }, { signal, timeoutMs: PRODUCTION_REMOTE_CELL_TIMEOUT_MS, requireControlPlane: true });
+    }, { signal: observationSignal, timeoutMs, requireControlPlane: true });
     ensureSuccessful(result, `remote paid cell ${cell.cellId}`);
     const interactive = JSON.parse(lastNonEmptyLine(result.stdout));
     const interactiveTerminal = interactive.terminal;
@@ -1288,7 +3014,33 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
     const validationRoot = validationRoots.get(worker.workerId);
     const localRunDirectory = path.join(validationRoot, ...runRelative.split(path.win32.sep));
     if (fs.existsSync(localRunDirectory)) throw new Error(`refusing to overwrite validation result for ${cell.cellId}`);
-    await downloadTree(worker, remoteRunDirectory, path.dirname(localRunDirectory), { timeoutMs: 300_000 });
+    if (isCoordinatorLocalWorker(worker)) {
+      await downloadTree(worker, remoteRunDirectory, path.dirname(localRunDirectory), {
+        timeoutMs: PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
+      });
+    } else {
+      await collectRemoteDirectoryArchive({
+        worker,
+        remoteDirectory: remoteRunDirectory,
+        localDirectory: localRunDirectory,
+        remoteArchivePath: `${remoteRunDirectory}.collection-${lease.leaseId}.tar`,
+        stagedRelativePath: runRelative.split(path.win32.sep).join('/'),
+        timeoutMs: PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
+        executeRemote: runRemote,
+        downloadFile,
+        runLocalProcess: runProcess,
+        now: deadlineNow,
+        validateExtracted: async (stagedRunDirectory, stagedShardRoot) => {
+          validateShardCellResult({
+            resultPath: path.join(stagedRunDirectory, SHARD_CELL_RESULT_FILE),
+            plan,
+            lease,
+            shardRoot: stagedShardRoot,
+            now: new Date(),
+          });
+        },
+      });
+    }
     const localResultPath = path.join(localRunDirectory, SHARD_CELL_RESULT_FILE);
     const validated = validateShardCellResult({
       resultPath: localResultPath,
@@ -1309,71 +3061,51 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
       processAuthorityPath: interactive.processAuthorityPath,
     });
     return { ...validated, resultPath: localResultPath };
+    }, preserveFailure: () => preserveCellFailure({ cell, lease, worker, remoteRoot }) });
   }
 
   async function cancelCell({ cell, lease }) {
     const worker = workersById.get(cell.workerId);
     const remoteRoot = remoteRoots.get(cell.workerId);
-    if (!worker || !remoteRoot) return;
+    if (!worker || !remoteRoot) throw new Error('worker cleanup lacks its execution root');
+    const plannedWorker = plan.workers.find((entry) => entry.workerId === cell.workerId);
+    const cleanupModule = 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1';
+    const cleanupHash = orchestrationHash(plan, cleanupModule);
+    if (!cleanupHash) throw new Error('worker cleanup module lacks signed inventory authority');
     const taskName = interactiveTaskName({
-      executionId: plan.executionId,
-      workerId: worker.workerId,
-      leaseId: lease.leaseId,
+      executionId: plan.executionId, workerId: worker.workerId, leaseId: lease.leaseId,
     });
-    await runRemote(worker, `
+    const cancellation = await runRemote(worker, `
 $root = [IO.Path]::GetFullPath([string]$payload.remoteRoot)
+$authorityRoot = Join-Path $root ('interactive\\' + [string]$payload.binding.leaseId)
+$modulePath = Join-Path ([string]$payload.workspaceRoot) 'scripts\\testing\\lib\\powershell\\Omni.Testing.WatchMode.InteractiveCleanup.psm1'
+if ((Get-FileHash -LiteralPath $modulePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -cne [string]$payload.cleanupHash) {
+  throw 'worker cleanup module hash mismatch'
+}
+Import-Module $modulePath -Force
+Import-Module (Join-Path ([string]$payload.workspaceRoot) 'scripts\\testing\\lib\\powershell\\Omni.Testing.IO.psm1') -Force
+$account = New-Object Security.Principal.NTAccount($env:COMPUTERNAME, [string]$payload.user)
+$payload.binding | Add-Member -NotePropertyName expectedUserSid -NotePropertyValue ($account.Translate([Security.Principal.SecurityIdentifier]).Value)
+$receipt = Stop-OmniInteractiveOwnedProcesses -LaunchPath (Join-Path $authorityRoot 'launch.json') -ProcessAuthorityPath (Join-Path $authorityRoot 'process-authority.json') -ExpectedBinding $payload.binding -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(10))
+$receiptPath = Join-Path $authorityRoot ('cleanup.cancel-' + [guid]::NewGuid().ToString('N') + '.json')
+Write-OmniImmutableJson -LiteralPath $receiptPath -Value $receipt
 $taskPath = '\\OmniTranslate\\'
-$taskName = [string]$payload.taskName
-$launchPath = Join-Path $root ('interactive\\' + [string]$payload.leaseId + '\\launch.json')
-
-# The task name is derived from the signed execution/worker/lease tuple.  Stop
-# only that exact task before considering a child process.  A missing task is
-# normal when the one-shot control helper has already cleaned it up.
-if (Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue) {
-  Stop-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue
+if (Get-ScheduledTask -TaskPath $taskPath -TaskName ([string]$payload.taskName) -ErrorAction SilentlyContinue) {
+  Stop-ScheduledTask -TaskPath $taskPath -TaskName ([string]$payload.taskName) -ErrorAction Stop
+  Unregister-ScheduledTask -TaskPath $taskPath -TaskName ([string]$payload.taskName) -Confirm:$false -ErrorAction Stop
 }
-for ($attempt = 0; $attempt -lt 20 -and -not (Test-Path -LiteralPath $launchPath -PathType Leaf); $attempt++) {
-  Start-Sleep -Milliseconds 250
-}
-if (Test-Path -LiteralPath $launchPath -PathType Leaf) {
-  try {
-    $launch = Get-Content -LiteralPath $launchPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if (
-      $launch.schemaVersion -ne 2 -or
-      [string]$launch.artifactKind -ne 'watch-mode-interactive-shard-launch-authority' -or
-      [string]$launch.executionId -ne [string]$payload.executionId -or
-      [string]$launch.leaseId -ne [string]$payload.leaseId -or
-      [string]$launch.workerId -ne [string]$payload.workerId -or
-      [string]$launch.taskName -ne $taskName
-    ) { throw 'launch authority does not bind the cancelled lease' }
-    $processId = [int]$launch.nodeProcess.pid
-    $actual = Get-CimInstance Win32_Process -Filter "ProcessId=$processId" -ErrorAction SilentlyContinue
-    if ($actual) {
-      $process = Get-Process -Id $processId -ErrorAction Stop
-      $actualStartedAt = $process.StartTime.ToUniversalTime().ToString('o')
-      $actualImagePath = [IO.Path]::GetFullPath([string]$actual.ExecutablePath)
-      $actualImageSha256 = (Get-FileHash -LiteralPath $actualImagePath -Algorithm SHA256).Hash.ToLowerInvariant()
-      if (
-        [int]$actual.SessionId -eq [int]$launch.nodeProcess.sessionId -and
-        $actualStartedAt -ceq [string]$launch.nodeProcess.startedAt -and
-        $actualImagePath -ceq [IO.Path]::GetFullPath([string]$launch.nodeProcess.imagePath) -and
-        $actualImageSha256 -ceq [string]$launch.nodeProcess.imageSha256
-      ) { & taskkill.exe /PID $processId /F /T 2>$null | Out-Null }
-    }
-  } catch {
-    # A malformed or stale launch authority never permits an unguarded kill.
-  }
-}
-if (Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue) {
-  Unregister-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-}
+if (-not $receipt.passed) { throw 'worker cancellation could not confirm complete owned-process cleanup' }
 `, {
-      remoteRoot,
-      executionId: plan.executionId,
-      workerId: worker.workerId,
-      leaseId: lease.leaseId,
-      taskName,
-    }, { timeoutMs: 15_000 }).catch(() => {});
+      remoteRoot, workspaceRoot: worker.workspaceRoot, user: worker.user, cleanupHash, taskName,
+      binding: {
+        executionId: plan.executionId, planDigest: plan.planDigest,
+        workerId: worker.workerId, vmIdentityDigest: plannedWorker.vmIdentityDigest,
+        leaseId: lease.leaseId, leaseDigest: lease.leaseDigest, cellId: cell.cellId,
+        expectedVmUuidBios: worker.vmIdentity.uuidBios, expectedSessionId: 1,
+      },
+    }, { timeoutMs: 15_000 });
+    ensureSuccessful(cancellation, `worker cancellation ${cell.cellId}`);
+    return { passed: true, status: 'cleanup-completed' };
   }
 
   async function collectWorker({ worker: planWorker, leases, results, generatedAt = new Date() }) {
@@ -1450,6 +3182,7 @@ $request = [ordered]@{
 $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes((($request | ConvertTo-Json -Depth 12 -Compress) + [Environment]::NewLine))
 $stream = New-Object IO.FileStream($requestPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read, 4096, [IO.FileOptions]::WriteThrough)
 try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+Set-Location -LiteralPath $workspace
 $output = @(& node.exe $runnerPath '--finalize-worker-request' $requestPath 2>&1)
 if ($LASTEXITCODE -ne 0) { throw "guest worker finalizer failed: $($output -join ' | ')" }
 $manifestPath = [IO.Path]::GetFullPath([string](@($output | Where-Object { $_ } | Select-Object -Last 1)[0]))
@@ -1474,6 +3207,8 @@ if ($manifestPath -cne [IO.Path]::GetFullPath([string]$payload.expectedManifestP
       workerId: planWorker.workerId,
       expectedHeadCommit: String(plan.provenance.headCommit).toLowerCase(),
       shardRunnerSha256: orchestrationHash(plan, ORCHESTRATION_SHARD_RUNNER),
+    }, {
+      timeoutMs: WATCH_PRODUCTION_GUEST_FINALIZER_TIMEOUT_MS,
     }), `worker ${planWorker.workerId} guest shard finalization`);
     if (String(finalized.manifestPath).toLowerCase() !== remoteManifestPath.toLowerCase()) {
       throw new Error(`worker ${planWorker.workerId} returned an unexpected manifest path`);
@@ -1481,29 +3216,32 @@ if ($manifestPath -cne [IO.Path]::GetFullPath([string]$payload.expectedManifestP
     const collectionParent = path.join(coordinatorExecutionRoot, 'collected-shards');
     const finalShardRoot = path.join(collectionParent, planWorker.workerId);
     if (fs.existsSync(finalShardRoot)) throw new Error(`refusing to overwrite collected shard ${planWorker.workerId}`);
-    fs.mkdirSync(collectionParent, { recursive: true });
-    const temporaryParent = path.join(
-      collectionParent,
-      `.incoming-${planWorker.workerId}-${process.pid}-${crypto.randomBytes(5).toString('hex')}`,
-    );
-    fs.mkdirSync(temporaryParent, { recursive: false });
-    await downloadTree(worker, remoteRoot, temporaryParent, { timeoutMs: 600_000 });
-    const downloaded = fs.readdirSync(temporaryParent, { withFileTypes: true });
-    if (downloaded.length !== 1 || !downloaded[0].isDirectory() || downloaded[0].isSymbolicLink()) {
-      throw new Error(`worker ${planWorker.workerId} recovery did not contain exactly one shard directory`);
-    }
-    const downloadedRoot = path.join(temporaryParent, downloaded[0].name);
-    fs.renameSync(downloadedRoot, finalShardRoot);
-    fs.rmdirSync(temporaryParent);
-    const manifestPath = path.join(finalShardRoot, 'shard-manifest.json');
-    validateShardManifest({
-      manifestPath,
-      shardRoot: finalShardRoot,
-      plan,
-      leases,
-      now: generatedAt,
+    const remoteArchivePath = `${remoteRoot}.collection.tar`;
+    await collectRemoteDirectoryArchive({
+      worker,
+      remoteDirectory: remoteRoot,
+      localDirectory: finalShardRoot,
+      remoteArchivePath,
+      timeoutMs: WATCH_PRODUCTION_SHARD_COLLECTION_TIMEOUT_MS,
+      executeRemote: runRemote,
+      downloadFile,
+      runLocalProcess: runProcess,
+      now: deadlineNow,
+      validateExtracted: async (downloadedRoot) => {
+        validateShardManifest({
+          manifestPath: path.join(downloadedRoot, 'shard-manifest.json'),
+          shardRoot: downloadedRoot,
+          plan,
+          leases,
+          now: generatedAt,
+        });
+      },
     });
-    return { workerId: planWorker.workerId, shardRoot: finalShardRoot, manifestPath };
+    return {
+      workerId: planWorker.workerId,
+      shardRoot: finalShardRoot,
+      manifestPath: path.join(finalShardRoot, 'shard-manifest.json'),
+    };
   }
 
   return {
@@ -1514,51 +3252,138 @@ if ($manifestPath -cne [IO.Path]::GetFullPath([string]$payload.expectedManifestP
     executeRemote: runRemote,
     uploadFile: upload,
     downloadTree,
+    downloadFile,
   };
 }
 
 function productionDeviceProfiles(plan) {
-  return canonicalDeviceProfiles(
-    plan.cells.map((cell) => cell.deviceProfileInstance),
-    'signed workers',
-  );
+  return SUPPORTED_DEVICE_CLASSES.map((deviceClass) => {
+    const profile = plan.cells.find(
+      (cell) => cell.deviceProfileInstance?.deviceClass === deviceClass,
+    )?.deviceProfileInstance;
+    if (!profile) throw new Error(`signed workers have no ${deviceClass} profile`);
+    // This legacy matrix summary is class-level only. Per-cell shard authority
+    // retains each worker's exact physical endpoint and is the strict source of
+    // truth for distributed execution.
+    return structuredClone(profile);
+  });
 }
 
-function firstDefined(...values) {
-  return values.find((value) => value !== undefined && value !== null && value !== '') ?? null;
+export async function collectProductionWorkers({ preparation, transport, waveOutcome, now = () => new Date() }) {
+  const settled = await Promise.allSettled(preparation.plan.workers.map((worker) => Promise.resolve().then(() => transport.collectWorker({
+    worker,
+    leases: preparation.leases,
+    results: waveOutcome.results,
+    generatedAt: now(),
+  }))));
+  // Remote error text may contain native stdout/stderr. Persist only a fixed
+  // classification, never arbitrary message/stack/output or supplied codes.
+  const workers = settled.map((entry, index) => {
+    const workerId = preparation.plan.workers[index].workerId;
+    if (entry.status === 'fulfilled') return { workerId, status: 'collected' };
+    const message = String(entry.reason?.message ?? '');
+    const code = /timed?\s*out|timeout|deadline/iu.test(message) ? 'watch.collection.timeout'
+      : /authority|digest|hash|signature|identity|outside/iu.test(message) ? 'watch.collection.authority-rejected'
+        : 'watch.collection.worker-failed';
+    return { workerId, status: 'failed', code };
+  });
+  const failurePath = path.join(preparation.executionRoot, 'worker-collection-results.json');
+  atomicWriteJson(failurePath, {
+    schemaVersion: 1,
+    artifactKind: 'watch-mode-worker-collection-results',
+    executionId: preparation.plan.executionId,
+    generatedAt: now().toISOString(),
+    allWorkersSettled: true,
+    workers,
+  });
+  const failures = workers.filter((worker) => worker.status === 'failed');
+  if (failures.length > 0) {
+    const error = new AggregateError(failures.map((worker) => Object.assign(
+      new Error(`${worker.workerId}: ${worker.code}`), { code: worker.code, workerId: worker.workerId },
+    )), 'production worker collection failed; final evidence was not staged');
+    error.code = 'watch.collection.failed';
+    error.failurePath = failurePath;
+    error.startedCellIds = [...waveOutcome.startedCellIds];
+    error.completedCellIds = [...waveOutcome.completedCellIds];
+    throw error;
+  }
+  return settled.map((entry) => entry.value);
+}
+
+export async function runProductionWavesPreservingFailure({ run, executionRoot, plan }) {
+  try { return await run(); }
+  catch (error) {
+    // All worker pipelines have settled. Successful late peers were already
+    // downloaded and validated by dispatchCell; failed finalizers carry only
+    // separately hashed diagnostics, never a fabricated shard result.
+    const results = error.partialResults instanceof Map ? [...error.partialResults.entries()] : [];
+    const manifestPath = path.join(executionRoot, 'failed-wave-collection.json');
+    atomicWriteJson(manifestPath, {
+      schemaVersion: 1, artifactKind: 'watch-mode-failed-wave-collection',
+      executionId: plan.executionId, planDigest: plan.planDigest,
+      status: 'failed', startedCellIds: error.startedCellIds ?? [],
+      completedCellIds: error.completedCellIds ?? [],
+      validatedResults: results.map(([cellId, outcome]) => ({ cellId,
+        verdict: outcome.result?.verdict, resultDigest: outcome.result?.resultDigest,
+        resultPath: outcome.resultPath ?? null,
+      })),
+      failedCellEvidence: error.failedCellEvidence ?? [],
+      cleanupErrors: error.cleanupErrors ?? [],
+    });
+    error.failureCollectionPath = manifestPath;
+    throw error;
+  }
 }
 
 export function productionFailureFingerprint(failure, plan) {
-  const result = failure?.outcome?.result ?? {};
+  const result = failure?.outcome?.result;
   const cell = plan.cells.find((candidate) => candidate.cellId === failure.cellId) ?? {};
-  const report = result.report ?? result.summary?.report ?? result.cellAuthority?.report ?? {};
-  const restart = result.restartSummary ?? report.restartSummary ?? result.bridgeRestart ?? {};
+  if (result?.verdict !== 'failed') {
+    throw new Error(`production failure ${failure?.cellId ?? 'unknown cell'} lacks a validated failed shard result`);
+  }
+  const identity = strictFailureIdentityProjection(
+    result,
+    `production failure ${failure.cellId} validated shard result`,
+  );
+  const context = identity.failureContext;
   return {
-    failureLayer: firstDefined(result.failureLayer, report.failureLayer, report.verdict?.failureLayer, 'unknown'),
-    stableErrorCode: firstDefined(result.stableErrorCode, result.errorCode, report.stableErrorCode, 'unknown'),
+    authoritySource: 'validated-shard-result',
+    failureLayer: identity.failureLayer,
+    stableErrorCode: identity.stableErrorCode,
     feedbackMode: cell.feedbackLoopPrevention ?? null,
-    lifecyclePhase: firstDefined(result.lifecyclePhase, report.lifecyclePhase, restart.phase, 'unknown'),
-    endpointId: firstDefined(
-      restart.afterEndpointId,
-      restart.resolvedPhysicalPlaybackDeviceId,
-      result.resolvedPhysicalPlaybackDeviceId,
-      cell.deviceProfileInstance?.physicalPlaybackDeviceId,
-    ),
-    ownerGenerationTransition: {
-      before: firstDefined(restart.beforePlaybackOwnerGeneration, restart.previousPlaybackOwnerGeneration),
-      after: firstDefined(restart.afterPlaybackOwnerGeneration, restart.playbackOwnerGeneration),
-    },
+    lifecyclePhase: identity.lifecyclePhase,
+    endpointId: context.endpointId,
+    ownerGenerationTransition: structuredClone(context.ownerGenerationTransition),
+    bridgeInstanceId: context.bridgeInstanceId,
   };
 }
 
 export function resolveLocalIsolationAuthorityPath(manifestPath, { workspaceRoot = repoRoot } = {}) {
-  const resolved = resolveAuthorityPath(workspaceRoot, manifestPath, '--local-isolation-authority');
+  // Collectors return an absolute manifest path; the CLI also accepts the
+  // repository-relative form. Both must resolve inside the same authority root.
+  const resolved = typeof manifestPath === 'string' && path.isAbsolute(manifestPath)
+    ? path.resolve(manifestPath)
+    : resolveAuthorityPath(workspaceRoot, manifestPath, '--local-isolation-authority');
   const authorityRoot = path.resolve(workspaceRoot, 'artifacts', 'testing', 'watch-mode-local-isolation');
-  if (!resolved.startsWith(`${authorityRoot}${path.sep}`)) {
+  const relative = path.relative(authorityRoot, resolved);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new Error('--local-isolation-authority must point inside artifacts/testing/watch-mode-local-isolation');
   }
   if (path.basename(resolved) !== 'local-isolation-manifest.json') {
     throw new Error('--local-isolation-authority must point to local-isolation-manifest.json');
+  }
+  // Lexical containment is insufficient for Windows junctions (including a
+  // redirected workspace itself). Missing descendants are valid at resolution
+  // time, but every existing ancestor must be checked without following links.
+  for (let ancestor = resolved; ; ancestor = path.dirname(ancestor)) {
+    try {
+      if (fs.lstatSync(ancestor).isSymbolicLink()) {
+        throw new Error(`--local-isolation-authority rejects reparse/symlink ancestry: ${ancestor}`);
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    if (ancestor === path.dirname(ancestor)) break;
   }
   return resolved;
 }
@@ -1570,19 +3395,48 @@ function fingerprintKey(fingerprint) {
     fingerprint.feedbackMode,
     fingerprint.lifecyclePhase,
     fingerprint.endpointId,
+    fingerprint.bridgeInstanceId,
     fingerprint.ownerGenerationTransition?.before,
     fingerprint.ownerGenerationTransition?.after,
   ]);
 }
 
 export function aggregateProductionCellFailures({ plan, waveOutcome }) {
-  const attempted = [...waveOutcome.startedCellIds];
-  const completed = [...waveOutcome.completedCellIds];
-  const failures = waveOutcome.collectedFailures.map((failure) => ({
-    cellId: failure.cellId,
-    error: failure.error,
-    fingerprint: productionFailureFingerprint(failure, plan),
-  }));
+  const plannedIds = plan.cells.map((cell) => cell.cellId);
+  const plannedIdSet = new Set(plannedIds);
+  if (plannedIdSet.size !== plannedIds.length) {
+    throw new Error('production failure aggregation rejects duplicate planned cell IDs');
+  }
+  const canonicalizeIds = (ids, label) => {
+    const idSet = new Set(ids);
+    if (idSet.size !== ids.length) {
+      throw new Error(`production failure aggregation rejects duplicate ${label} cell IDs`);
+    }
+    const unknown = ids.find((cellId) => !plannedIdSet.has(cellId));
+    if (unknown !== undefined) {
+      throw new Error(`production failure aggregation rejects unknown ${label} cell ID: ${unknown}`);
+    }
+    return plannedIds.filter((cellId) => idSet.has(cellId));
+  };
+  const attempted = canonicalizeIds(waveOutcome.startedCellIds, 'attempted');
+  const completed = canonicalizeIds(waveOutcome.completedCellIds, 'completed');
+  const failureByCellId = new Map();
+  for (const failure of waveOutcome.collectedFailures) {
+    if (!plannedIdSet.has(failure.cellId)) {
+      throw new Error(`production failure aggregation rejects unknown failed cell ID: ${failure.cellId}`);
+    }
+    if (failureByCellId.has(failure.cellId)) {
+      throw new Error(`production failure aggregation rejects duplicate failed cell ID: ${failure.cellId}`);
+    }
+    failureByCellId.set(failure.cellId, {
+      cellId: failure.cellId,
+      error: failure.error,
+      fingerprint: productionFailureFingerprint(failure, plan),
+    });
+  }
+  const failures = plannedIds
+    .filter((cellId) => failureByCellId.has(cellId))
+    .map((cellId) => failureByCellId.get(cellId));
   const failedIds = new Set(failures.map((entry) => entry.cellId));
   const passed = completed.filter((cellId) => !failedIds.has(cellId));
   const grouped = new Map();
@@ -1618,6 +3472,8 @@ async function runProductionCoordinatorCore({
   executionId = `watch-shard-${crypto.randomUUID()}`,
   signal = null,
   now = () => new Date(),
+  coordinatorDeadlineMs,
+  deadlineNow = Date.now,
   operations = {},
 }) {
   const transitionCoordinatorState = operations.transitionCoordinatorState ?? (() => {});
@@ -1643,31 +3499,114 @@ async function runProductionCoordinatorCore({
   }
   const generatedAt = now();
   const productionWorkers = config.workers.map(({
-    workerId, user, vmIdentity, deviceProfileInstances,
+    workerId, user, workspaceRoot, vmIdentity, deviceProfileInstances, transport,
   }) => ({
-    workerId, interactiveUser: user, vmIdentity, deviceProfileInstances,
+    workerId,
+    interactiveUser: user,
+    workspaceRoot,
+    vmIdentity,
+    deviceProfileInstances,
+    transportAuthority: transport.kind === 'local'
+      ? { kind: 'local' }
+      : {
+          kind: 'ssh',
+          hostKeyAlias: transport.hostKeyAlias,
+          hostKeyAlgorithm: transport.hostKeyAlgorithm,
+          hostKeySha256: transport.hostKeySha256,
+        },
   }));
-  const productionAssignments = defaultSingleWorkerAssignments(config.workers);
-  const productionWaveCount = Math.max(...productionAssignments.map((entry) => entry.waveIndex)) + 1;
-  const captureProvenance = operations.captureProvenance
+  const productionAssignments = config.assignments;
+  const captureProvenanceImplementation = operations.captureProvenance
     ?? (async () => currentGitProvenance({ cwd: repoRoot }));
-  const verifyRuntimeAuthority = operations.verifyRuntimeAuthority
+  const captureProvenance = () => runBoundedCoordinatorStage(
+    captureProvenanceImplementation,
+    'production provenance capture',
+    WATCH_PRODUCTION_PROVENANCE_CAPTURE_TIMEOUT_MS,
+  );
+  const verifyRuntimeAuthorityImplementation = operations.verifyRuntimeAuthority
     ?? ((authorityPath) => verifyStrictRuntimeAuthority(authorityPath, { workspaceRoot: repoRoot }));
-  const frozenRuntime = await verifyRuntimeAuthority(runtimeAuthority);
+  const verifyRuntimeAuthority = (
+    authorityPath,
+    stage,
+    absoluteDeadlineMs = coordinatorDeadlineMs,
+  ) => (
+    operations.verifyRuntimeAuthority
+      ? runBoundedCoordinatorStageWithinDeadline({
+          operation: () => verifyRuntimeAuthorityImplementation(authorityPath),
+          label: stage,
+          deadlineMs: absoluteDeadlineMs,
+          deadlineNow,
+          maximumTimeoutMs: WATCH_PRODUCTION_RUNTIME_AUTHORITY_VERIFICATION_TIMEOUT_MS,
+        })
+      : runCoordinatorChildStage({
+          stage,
+          stageLabel: stage,
+          payload: { authorityPath, workspaceRoot: repoRoot },
+          coordinatorDeadlineMs: absoluteDeadlineMs,
+          maximumTimeoutMs: WATCH_PRODUCTION_RUNTIME_AUTHORITY_VERIFICATION_TIMEOUT_MS,
+          deadlineNow,
+          signal,
+        })
+  );
+  const frozenRuntime = await verifyRuntimeAuthority(
+    runtimeAuthority,
+    'runtime-authority-initial-verification',
+  );
+  const runtimeAuthorityRoot = path.dirname(frozenRuntime.authorityPath);
+  const coordinatorPublicKeyPem = fs.readFileSync(resolveAuthorityPath(
+    runtimeAuthorityRoot,
+    frozenRuntime.authority.coordinatorSigning.publicKeyAuthority.path,
+    'frozen coordinator public key',
+  ), 'utf8');
+  const coordinatorPrivateKeyPem = fs.readFileSync(resolveAuthorityPath(
+    runtimeAuthorityRoot,
+    frozenRuntime.authority.coordinatorSigning.privateKeyAuthority.path,
+    'frozen coordinator private key',
+  ), 'utf8');
+  if (
+    coordinatorKeyIdForPublicKey(coordinatorPublicKeyPem)
+      !== frozenRuntime.authority.coordinatorSigning.keyId
+    || crypto.createPublicKey(coordinatorPrivateKeyPem)
+      .export({ type: 'spki', format: 'pem' }).toString() !== coordinatorPublicKeyPem
+  ) throw new Error('frozen runtime coordinator signing key pair is inconsistent');
+  const signingKeys = {
+    publicKeyPem: coordinatorPublicKeyPem,
+    privateKeyPem: coordinatorPrivateKeyPem,
+  };
   transitionCoordinatorState('runtime-verified', {
     runtimeAuthorityDigest: frozenRuntime.authority.authorityDigest,
     releaseId: frozenRuntime.authority.releaseId,
   });
-  const buildRuntimeAuthority = operations.buildRuntimeAuthority
+  const buildRuntimeAuthorityImplementation = operations.buildRuntimeAuthority
     ?? (async () => {
-      const verified = await verifyRuntimeAuthority(frozenRuntime.authorityPath);
+      const verified = await verifyRuntimeAuthority(
+        frozenRuntime.authorityPath,
+        'runtime-authority-build-verification',
+      );
       return verified.authority.runtimeBinaryHashes;
     });
-  const captureAuthorityImplementationHashes = operations.captureAuthorityImplementationHashes
-    ?? (async () => currentAuthorityImplementationHashes({ workspaceRoot: repoRoot }));
-  const captureShardImplementationHashes = operations.captureShardImplementationHashes
-    ?? (async () => currentShardOrchestrationImplementationHashes({ workspaceRoot: repoRoot }));
-  const runProviderPreflight = operations.runProviderPreflight ?? (async ({
+  const buildRuntimeAuthority = (context) => runBoundedCoordinatorStage(
+    () => buildRuntimeAuthorityImplementation(context),
+    'production runtime build/verification seam',
+    WATCH_PRODUCTION_RUNTIME_AUTHORITY_VERIFICATION_TIMEOUT_MS,
+  );
+  const captureAuthorityImplementationHashesImplementation =
+    operations.captureAuthorityImplementationHashes
+      ?? (async () => currentAuthorityImplementationHashes({ workspaceRoot: repoRoot }));
+  const captureAuthorityImplementationHashes = () => runBoundedCoordinatorStage(
+    captureAuthorityImplementationHashesImplementation,
+    'production authority implementation inventory capture',
+    WATCH_PRODUCTION_AUTHORITY_INVENTORY_CAPTURE_TIMEOUT_MS,
+  );
+  const captureShardImplementationHashesImplementation =
+    operations.captureShardImplementationHashes
+      ?? (async () => currentShardOrchestrationImplementationHashes({ workspaceRoot: repoRoot }));
+  const captureShardImplementationHashes = () => runBoundedCoordinatorStage(
+    captureShardImplementationHashesImplementation,
+    'production shard implementation inventory capture',
+    WATCH_PRODUCTION_AUTHORITY_INVENTORY_CAPTURE_TIMEOUT_MS,
+  );
+  const runProviderPreflightImplementation = operations.runProviderPreflight ?? (async ({
     provenance,
     grant,
     grantPath,
@@ -1684,29 +3623,26 @@ async function runProductionCoordinatorCore({
       `${new Date().toISOString().replace(/[-:.TZ]/gu, '')}-${executionId}`,
     );
     transitionCoordinatorState('preflight-authorized', {
-      providerCalls: 1,
+      providerCalls: 0,
       providerId,
       preflightOutputDirectory: outputDirectory,
     });
-    const preflight = await runManagedProviderPreflight({
-      executablePath: path.join(repoRoot, 'target', 'release', 'omni-desktop-shell.exe'),
-      outputDirectory,
-      executionId,
-      providerId,
-      signal,
-      environment: {
-        ...strictRuntimeEnvironment(process.env),
-        OMNI_RELEASE_EVIDENCE_SCENARIO: 'E2E-PROVIDER-PROBE',
-        OMNI_RELEASE_EVIDENCE_OUTPUT_DIRECTORY: outputDirectory,
-        OMNI_RELEASE_EVIDENCE_HEAD_COMMIT: provenance.headCommit,
-        OMNI_RELEASE_EVIDENCE_PROVIDER_ID: providerId,
-        OMNI_PROVIDER_PREFLIGHT_EXECUTION_ID: executionId,
-        OMNI_LOG_LEVEL: 'debug',
-        [PROVIDER_PREFLIGHT_GRANT_PATH_ENV]: grantPath,
-        [PROVIDER_PREFLIGHT_RESERVATION_DIRECTORY_ENV]: leaseReservationDirectory,
-        [PROVIDER_PREFLIGHT_AUTHORIZATION_DIGEST_ENV]: authorizationDigest,
-      },
-    });
+    const preflightTransport = (operations.createProviderPreflightTransport
+      ? await operations.createProviderPreflightTransport({ config, executor: config.preflightExecutor, executionId, grant })
+      : createSshProviderPreflightTransport({
+          config,
+          executor: config.preflightExecutor,
+          executionId,
+          authorizationRoot: path.dirname(grantPath),
+          localEvidenceDirectory: outputDirectory,
+          signingKeys,
+          runtimeBinaryHashes: frozenRuntime.authority.runtimeBinaryHashes,
+          onProviderCallStarted: () => transitionCoordinatorState('preflight-running', {
+            providerCalls: 1,
+            providerId,
+          }),
+        }));
+    const preflight = await preflightTransport.dispatch({ grant, authorizationDigest, signal });
     transitionCoordinatorState('preflight-terminal', {
       providerCalls: 1,
       providerId,
@@ -1715,14 +3651,29 @@ async function runProductionCoordinatorCore({
     });
     return {
       providerId,
-      operation: 'text-translation-preflight',
-      inputMode: 'text-only',
+      operation: PROVIDER_PREFLIGHT_OPERATION,
+      inputMode: PROVIDER_PREFLIGHT_INPUT_MODE,
+      providerInputMode: PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE,
+      responseMode: PROVIDER_PREFLIGHT_RESPONSE_MODE,
+      terminalEvent: PROVIDER_PREFLIGHT_TERMINAL_EVENT,
+      lifecycleBudget: structuredClone(PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET),
+      evidenceOutcome: preflight.fields.evidenceOutcome,
+      firstServerEvent: structuredClone(preflight.fields.firstServerEvent),
+      sessionAuthority: structuredClone(preflight.fields.sessionAuthority),
+      rawTrace: structuredClone(preflight.fields.rawTrace),
       providerInvocationCount: 1,
+      executor: structuredClone(grant.executor),
+      networkHealth: structuredClone(preflight.networkHealth),
       status: 'completed',
       externalAudioSamples: 0,
       evidenceDirectory: preflight.outputDirectory,
     };
   });
+  const runProviderPreflight = (context) => runBoundedCoordinatorStage(
+    () => runProviderPreflightImplementation(context),
+    'production provider preflight',
+    deriveWatchProductionProviderPreflightBudgetMs(),
+  );
   let readinessPreparation = null;
   const runZeroProviderWorkerReadiness = async (context) => {
     const implementation = operations.runZeroProviderWorkerReadiness ?? (async ({
@@ -1731,6 +3682,7 @@ async function runProductionCoordinatorCore({
       generatedAt: readinessGeneratedAt,
       provenance,
       runtimeBinaryHashes,
+      authorityImplementationHashes,
       shardOrchestrationImplementationHashes,
       workers,
       assignments,
@@ -1745,18 +3697,13 @@ async function runProductionCoordinatorCore({
       });
       const requestPath = path.join(executionRoot, 'worker-readiness-request.json');
       atomicWriteJson(requestPath, workerReadinessRequest);
-      const readinessPlan = {
+      const readinessPlan = createProductionWorkerReadinessTransportPlan({
         executionId: readinessExecutionId,
         provenance,
-        authority: {
-          runtimeBinaryHashes: workerReadinessRequest.runtimeBinaryHashes,
-          runtimeBundleDigest: workerReadinessRequest.runtimeBundleDigest,
-          shardOrchestrationImplementationHashes,
-        },
-        workers: workerReadinessRequest.workers,
-        cells: workerReadinessRequest.assignments,
-        planDigest: workerReadinessRequest.requestDigest,
-      };
+        authorityImplementationHashes,
+        shardOrchestrationImplementationHashes,
+        workerReadinessRequest,
+      });
       const readinessTransport = createSshProductionTransport({
         config,
         plan: readinessPlan,
@@ -1764,10 +3711,9 @@ async function runProductionCoordinatorCore({
         leasePaths: [],
         coordinatorExecutionRoot: executionRoot,
       });
-      const completed = [];
-      for (const worker of readinessPlan.workers) {
-        completed.push(await readinessTransport.prepareWorker({ worker }));
-      }
+      const completed = await Promise.all(
+        readinessPlan.workers.map((worker) => readinessTransport.prepareWorker({ worker })),
+      );
       const readinessAuthorityRoot = path.join(executionRoot, 'worker-readiness');
       return {
         workerReadinessRequest,
@@ -1787,70 +3733,77 @@ async function runProductionCoordinatorCore({
         }),
       };
     });
-    readinessPreparation = await implementation(context);
+    readinessPreparation = await runBoundedCoordinatorStage(
+      () => implementation(context),
+      'production initial worker readiness',
+      deriveWatchProductionInitialWorkerReadinessBudgetMs(),
+    );
     transitionCoordinatorState('worker-ready', {
       workerCount: readinessPreparation?.workers?.length ?? 0,
       providerCalls: 0,
     });
     return readinessPreparation;
   };
-  const obtainLocalIsolationAuthority = operations.obtainLocalIsolationAuthority ?? (async ({
-    provenance,
-    runtimeBinaryHashes,
-  }) => {
-    const manifestPath = resolveLocalIsolationAuthorityPath(localIsolationAuthority, { workspaceRoot: repoRoot });
-    verifyLocalIsolationManifest({
-      manifestPath,
-      workspaceRoot: repoRoot,
+  const obtainLocalIsolationAuthorityImplementation =
+    operations.obtainLocalIsolationAuthority ?? (async ({
       provenance,
       runtimeBinaryHashes,
-      runtimeAuthorityPath: frozenRuntime.authorityPath,
+    }) => {
+      const manifestPath = resolveLocalIsolationAuthorityPath(localIsolationAuthority, { workspaceRoot: repoRoot });
+      verifyProductionLocalIsolationManifest({
+        manifestPath,
+        workers: productionWorkers,
+        assignments: productionAssignments,
+        workspaceRoot: repoRoot,
+        provenance,
+        runtimeBinaryHashes,
+        runtimeAuthorityPath: frozenRuntime.authorityPath,
+      });
+      transitionCoordinatorState('worker-ready', {
+        providerCalls: 0,
+      });
+      const relative = path.relative(repoRoot, manifestPath).split(path.sep).join('/');
+      return {
+        ...fileAuthorityEntry(manifestPath, relative),
+        manifestPath: relative,
+        providerCalls: 0,
+        runtimeAuthorityDigest: frozenRuntime.authority.authorityDigest,
+      };
     });
-    const networkHealthPath = path.join(
-      coordinatorOutputRoot,
-      `${executionId}.provider-network-health.json`,
-    );
-    await (operations.runProviderNetworkHealth ?? runProviderNetworkHealth)({
+  const obtainLocalIsolationAuthority = (context) => runBoundedCoordinatorStage(
+    () => obtainLocalIsolationAuthorityImplementation(context),
+    'production local isolation and network health',
+    WATCH_PRODUCTION_LOCAL_ISOLATION_VERIFICATION_TIMEOUT_MS
+      + deriveWatchProductionNetworkHealthBudgetMs(),
+  );
+  const prepareCoordinatorExecutionImplementation =
+    operations.prepareCoordinatorExecution ?? prepareCoordinatorExecution;
+  const preparation = await runBoundedCoordinatorStage(() => (
+    prepareCoordinatorExecutionImplementation({
+      outputRoot: coordinatorOutputRoot,
       executionId,
-      providerId: 'dashscope',
-      outputPath: networkHealthPath,
-    });
-    transitionCoordinatorState('worker-ready', {
-      providerCalls: 0,
-      networkHealthPath,
-      networkHealthVerified: true,
-    });
-    const relative = path.relative(repoRoot, manifestPath).split(path.sep).join('/');
-    return {
-      ...fileAuthorityEntry(manifestPath, relative),
-      manifestPath: relative,
-      providerCalls: 0,
-      runtimeAuthorityDigest: frozenRuntime.authority.authorityDigest,
-      networkHealth: fileAuthorityEntry(
-        networkHealthPath,
-        path.relative(repoRoot, networkHealthPath).split(path.sep).join('/'),
-      ),
-    };
-  });
-  const preparation = await (operations.prepareCoordinatorExecution ?? prepareCoordinatorExecution)({
-    outputRoot: coordinatorOutputRoot,
-    executionId,
-    workers: productionWorkers,
-    assignments: productionAssignments,
-    generatedAt,
-    expiresAt: new Date(generatedAt.getTime() + 6 * 60 * 60 * 1_000),
-    captureProvenance,
-    buildRuntimeAuthority,
-    captureAuthorityImplementationHashes,
-    captureShardImplementationHashes,
-    runZeroProviderWorkerReadiness,
-    runProviderPreflight,
-    obtainLocalIsolationAuthority,
-    minimumRemainingExecutionMs: (
-      productionWaveCount * PRODUCTION_REMOTE_CELL_TIMEOUT_MS
-      + PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS
-    ),
-  });
+      workers: productionWorkers,
+      assignments: productionAssignments,
+      preflightExecutorWorkerId: config.preflightExecutor.workerId,
+      generatedAt,
+      expiresAt: new Date(generatedAt.getTime() + 6 * 60 * 60 * 1_000),
+      captureProvenance,
+      buildRuntimeAuthority,
+      captureAuthorityImplementationHashes,
+      captureShardImplementationHashes,
+      runZeroProviderWorkerReadiness,
+      runProviderPreflight,
+      obtainLocalIsolationAuthority,
+      minimumRemainingExecutionMs: deriveWatchPostReadinessExecutionBudgetMs({
+        cells: LIVE_LLM_CELLS,
+        workerCount: productionWorkers.length,
+      }),
+      signingKeys,
+    })
+  ), 'production pre-paid coordinator preparation',
+  deriveWatchProductionCoordinatorPreparationBudgetMs({
+    workerCount: productionWorkers.length,
+  }));
   transitionCoordinatorState('plan-published', {
     planDigest: preparation.plan.planDigest,
     providerCalls: 1,
@@ -1870,8 +3823,15 @@ async function runProductionCoordinatorCore({
         coordinatorExecutionRoot: preparation.executionRoot,
         reusePreparedWorkers: true,
       });
+  assertProductionCoordinatorWaveBudget({
+    coordinatorDeadlineMs,
+    currentTimeMs: deadlineNow(),
+    cells: preparation.plan.cells,
+    workerCount: preparation.plan.workers.length,
+  });
   transitionCoordinatorState('waves-running', { providerCalls: 1 });
-  const waveOutcome = await (operations.runCoordinatorWaves ?? runCoordinatorWaves)({
+  const waveOutcome = await runProductionWavesPreservingFailure({ executionRoot: preparation.executionRoot,
+    plan: preparation.plan, run: () => (operations.runCoordinatorWaves ?? runCoordinatorWaves)({
     plan: preparation.plan,
     leases: preparation.leases,
     executionRoot: preparation.executionRoot,
@@ -1889,114 +3849,124 @@ async function runProductionCoordinatorCore({
     },
     classifyFailure: productionCellFailureDisposition,
     now,
-  });
+    firstWaveStaggerMs: COORDINATOR_FIRST_WAVE_STAGGER_MS,
+  }) });
   const failureSummary = aggregateProductionCellFailures({ plan: preparation.plan, waveOutcome });
   const failureFingerprints = failureSummary.failures;
   const failureFingerprintPath = path.join(preparation.executionRoot, 'failure-fingerprints.json');
   atomicWriteJson(failureFingerprintPath, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-production-failure-fingerprints',
     generatedAt: now().toISOString(),
     executionId: preparation.plan.executionId,
     collectAllCompleted: true,
     ...failureSummary,
   });
-  const shards = await Promise.all(preparation.plan.workers.map((worker) => transport.collectWorker({
-    worker,
-    leases: preparation.leases,
-    results: waveOutcome.results,
-    generatedAt: now(),
-  })));
+  const shards = await collectProductionWorkers({ preparation, transport, waveOutcome, now });
   transitionCoordinatorState('evidence-collected', {
     startedCellIds: waveOutcome.startedCellIds,
     completedCellIds: waveOutcome.completedCellIds,
     collectedFailureCount: failureFingerprints.length,
     failureFingerprintPath,
   });
-  const aggregation = (operations.writeCoordinatorAggregate ?? writeCoordinatorAggregate)({
-    outputRoot: preparation.executionRoot,
+  const finalStagingPayload = {
+    evidenceOutputRoot,
     executionRoot: preparation.executionRoot,
     plan: preparation.plan,
     leases: preparation.leases,
     shards,
-    generatedAt: now(),
-  });
-  const staged = (operations.stageShardMatrixIntegration ?? stageShardMatrixIntegration)({
-    evidenceRoot: evidenceOutputRoot,
-    executionRootName: `shards-${preparation.plan.executionId}`,
     planPath: preparation.planPath,
     leasePaths: preparation.leasePaths,
-    coordinatorAggregatePath: aggregation.aggregatePath,
-    shards,
-    collectedMatrixIntegration: aggregation.matrixIntegration,
-  });
-  const stagedFailureFingerprintPath = path.join(staged.finalExecutionRoot, 'failure-fingerprints.json');
-  fs.copyFileSync(failureFingerprintPath, stagedFailureFingerprintPath, fs.constants.COPYFILE_EXCL);
-  const failureFingerprintAuthority = fileAuthorityEntry(
-    stagedFailureFingerprintPath,
-    relativeChildPath(evidenceOutputRoot, stagedFailureFingerprintPath, 'staged failure fingerprints'),
-  );
-  const assertBudget = operations.assertCellExternalProviderBudget ?? assertCellExternalProviderBudget;
-  const rawBudgets = staged.runDirectories.map((runDirectory, index) => assertBudget(
-    runDirectory,
-    {
-      cellId: LIVE_LLM_CELLS[index].cellId,
-      modelId: LIVE_LLM_CELLS[index].modelId,
-      feedbackLoopPrevention: LIVE_LLM_CELLS[index].feedbackLoopPrevention,
-      sessionCeilingSeconds: LIVE_LLM_CELLS[index].durationSeconds,
-    },
-  ));
-  const matrixBudget = (operations.writeMatrixExternalProviderBudget ?? writeMatrixExternalProviderBudget)(evidenceOutputRoot, rawBudgets, {
-    fileName: `watch-mode-external-provider-budget-${preparation.plan.executionId}.json`,
-  });
-  const budgetAuthority = fileAuthorityEntry(matrixBudget.filePath, path.basename(matrixBudget.filePath));
-  const externalProviderBudget = {
-    ...matrixBudget.ledger,
-    ledgerPath: budgetAuthority.path,
-    ledgerBytes: budgetAuthority.bytes,
-    ledgerSha256: budgetAuthority.sha256,
-  };
-  const deviceProfiles = productionDeviceProfiles(preparation.plan);
-  const manifestResult = (operations.writeMatrixRunManifest ?? writeMatrixRunManifest)({
-    outputRoot: evidenceOutputRoot,
-    modelList: DEFAULT_MODELS,
-    feedbackModeList: DEFAULT_FEEDBACK_MODES,
-    deviceProfiles,
-    runDirectories: staged.runDirectories,
-    strict: true,
-    now: now(),
-    provenance: preparation.plan.provenance,
-    authorityRuntimeBinaryHashes: preparation.plan.authority.runtimeBinaryHashes,
-    releaseCells: LIVE_LLM_CELLS,
-    localIsolationAuthority: preparation.plan.localIsolationAuthority,
-    externalProviderBudget,
+    failureFingerprintPath,
     failureSummary,
-    failureFingerprintAuthority,
-    shardExecution: staged.shardExecution,
-    matrixIntegration: staged.matrixIntegration,
+    generatedAt: now().toISOString(),
+  };
+  // Staging, both runtime-authority checks, the strict verifier, and
+  // publication are one serial post-final phase. Their outer budget reserves
+  // 2 x authority verification plus one shared evidence envelope; no child is
+  // allowed to restart that allowance after an earlier stage consumed it.
+  const postFinalDeadlineMs = Math.min(
+    coordinatorDeadlineMs,
+    deadlineNow() + deriveWatchProductionFinalEvidenceBudgetMs(),
+  );
+  const finalStagingOverrides = [
+    operations.writeCoordinatorAggregate,
+    operations.stageShardMatrixIntegration,
+    operations.assertCellExternalProviderBudget,
+    operations.writeMatrixExternalProviderBudget,
+    operations.writeMatrixRunManifest,
+  ].some((candidate) => typeof candidate === 'function');
+  const {
+    staged,
+    externalProviderBudget,
+    manifestResult,
+  } = finalStagingOverrides
+    ? await runBoundedCoordinatorStageWithinDeadline({
+        operation: () => performFinalEvidenceStaging(finalStagingPayload, operations),
+        label: 'final-evidence-staging',
+        deadlineMs: postFinalDeadlineMs,
+        deadlineNow,
+        maximumTimeoutMs: WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
+      })
+    : await runCoordinatorChildStage({
+        stage: 'final-evidence-staging',
+        stageLabel: 'final-evidence-staging',
+        payload: finalStagingPayload,
+        coordinatorDeadlineMs: postFinalDeadlineMs,
+        maximumTimeoutMs: WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
+        deadlineNow,
+        signal,
+      });
+  transitionCoordinatorState('evidence-staged', {
+    manifestPath: manifestResult.manifestPath,
+    completedCellIds: waveOutcome.completedCellIds,
   });
-  const runtimeBeforeVerifier = await verifyRuntimeAuthority(frozenRuntime.authorityPath);
+  assertProductionCellsPassedForCanonicalVerification({
+    failureSummary,
+    manifestPath: manifestResult.manifestPath,
+    startedCellIds: waveOutcome.startedCellIds,
+    completedCellIds: waveOutcome.completedCellIds,
+  });
+  const runtimeBeforeVerifier = await verifyRuntimeAuthority(
+    frozenRuntime.authorityPath,
+    'runtime-authority-before-verifier',
+    postFinalDeadlineMs,
+  );
   if (runtimeBeforeVerifier.authority.authorityDigest !== frozenRuntime.authority.authorityDigest) {
     throw new Error('runtime authority changed before strict evidence verification');
   }
+  const remainingVerifierDeadlineMs = Math.ceil(postFinalDeadlineMs - deadlineNow());
+  if (remainingVerifierDeadlineMs <= 0) {
+    throw new Error('strict-evidence-verifier shared post-final evidence deadline expired before child launch');
+  }
   const verifyResult = operations.runVerifier
-    ? await operations.runVerifier({ manifestPath: manifestResult.manifestPath, evidenceOutputRoot })
-    : spawnSync(
-        process.execPath,
-        buildVerifyArgv(
+    ? await runBoundedCoordinatorStageWithinDeadline({
+        operation: () => operations.runVerifier({
+          manifestPath: manifestResult.manifestPath,
           evidenceOutputRoot,
-          DEFAULT_MODELS,
-          DEFAULT_FEEDBACK_MODES,
-          SUPPORTED_DEVICE_CLASSES,
-          manifestResult.manifestPath,
-          { strict: true },
+        }),
+        label: 'strict-evidence-verifier',
+        deadlineMs: postFinalDeadlineMs,
+        deadlineNow,
+        maximumTimeoutMs: WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
+      })
+    : await runProductionEvidenceVerifier({
+        evidenceOutputRoot,
+        manifestPath: manifestResult.manifestPath,
+        timeoutMs: Math.min(
+          WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
+          remainingVerifierDeadlineMs,
         ),
-        { cwd: repoRoot, stdio: 'inherit', windowsHide: true },
-      );
+        signal,
+      });
   if (Number(verifyResult?.status ?? verifyResult?.exitCode ?? 1) !== 0) {
     throw new Error('production sharded strict evidence verification failed; canonical manifest was not published');
   }
-  const runtimeAfterVerifier = await verifyRuntimeAuthority(frozenRuntime.authorityPath);
+  const runtimeAfterVerifier = await verifyRuntimeAuthority(
+    frozenRuntime.authorityPath,
+    'runtime-authority-after-verifier',
+    postFinalDeadlineMs,
+  );
   if (runtimeAfterVerifier.authority.authorityDigest !== frozenRuntime.authority.authorityDigest) {
     throw new Error('runtime authority changed during strict evidence verification');
   }
@@ -2004,13 +3974,30 @@ async function runProductionCoordinatorCore({
     manifestPath: manifestResult.manifestPath,
     completedCellIds: waveOutcome.completedCellIds,
   });
-  const published = (operations.publishSuccessfulStrictMatrixManifest ?? publishSuccessfulStrictMatrixManifest)({
-    outputRoot: evidenceOutputRoot,
+  const publicationPayload = {
+    evidenceOutputRoot,
     manifestPath: manifestResult.manifestPath,
-    verifiedAt: now(),
+    verifiedAt: now().toISOString(),
     currentProvenance: preparation.plan.provenance,
     currentRuntimeBinaryHashes: preparation.plan.authority.runtimeBinaryHashes,
-  });
+  };
+  const published = operations.publishSuccessfulStrictMatrixManifest
+    ? await runBoundedCoordinatorStageWithinDeadline({
+        operation: () => performCanonicalManifestPublication(publicationPayload, operations),
+        label: 'canonical-manifest-publication',
+        deadlineMs: postFinalDeadlineMs,
+        deadlineNow,
+        maximumTimeoutMs: WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
+      })
+    : await runCoordinatorChildStage({
+        stage: 'canonical-manifest-publication',
+        stageLabel: 'canonical-manifest-publication',
+        payload: publicationPayload,
+        coordinatorDeadlineMs: postFinalDeadlineMs,
+        maximumTimeoutMs: WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
+        deadlineNow,
+        signal,
+      });
   transitionCoordinatorState('published', {
     manifestPath: published.canonicalPath,
     completedCellIds: waveOutcome.completedCellIds,
@@ -2030,6 +4017,8 @@ async function runProductionCoordinatorCore({
 }
 
 export async function runProductionCoordinator(options) {
+  const deadlineNow = options.deadlineNow ?? Date.now;
+  const coordinatorStartedAtMs = deadlineNow();
   const executionId = options.executionId ?? `watch-shard-${crypto.randomUUID()}`;
   const outputRoot = path.resolve(
     options.coordinatorOutputRoot ?? path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-live-coordinator'),
@@ -2061,12 +4050,15 @@ export async function runProductionCoordinator(options) {
   if (options.signal?.aborted) forwardAbort();
   else options.signal?.addEventListener('abort', forwardAbort, { once: true });
   const coordinatorTimeoutMs = options.coordinatorTimeoutMs ?? PRODUCTION_COORDINATOR_TIMEOUT_MS;
+  const coordinatorDeadlineMs = coordinatorStartedAtMs + coordinatorTimeoutMs;
   let timeoutId;
   try {
     const core = runProductionCoordinatorCore({
       ...options,
       executionId,
       signal: coordinatorController.signal,
+      coordinatorDeadlineMs,
+      deadlineNow,
       operations: { ...options.operations, transitionCoordinatorState: transition },
     });
     const timeout = new Promise((_, reject) => {
@@ -2074,7 +4066,7 @@ export async function runProductionCoordinator(options) {
         const error = new Error(`production coordinator timed out after ${coordinatorTimeoutMs}ms`);
         coordinatorController.abort(error);
         reject(error);
-      }, coordinatorTimeoutMs);
+      }, Math.max(0, coordinatorDeadlineMs - deadlineNow()));
       timeoutId.unref?.();
     });
     return await Promise.race([core, timeout]);
@@ -2086,14 +4078,22 @@ export async function runProductionCoordinator(options) {
       cleanupErrors,
       startedCellIds: error.startedCellIds ?? current.startedCellIds,
       completedCellIds: error.completedCellIds ?? current.completedCellIds,
-      providerCalls: Math.max(current.providerCalls, error.failurePath ? 1 : 0),
+      providerCalls: Math.max(current.providerCalls, Number(error.providerCalls ?? 0)),
+      networkHealthPath: error.networkHealthPath ?? current.networkHealthPath ?? null,
       failureAuthorityPath: error.failurePath ?? null,
+      failureCollectionPath: error.failureCollectionPath ?? null,
     });
     transition('cleanup-running', { primaryError, cleanupErrors });
     try {
       if (typeof options.operations?.cleanupOwnedResources === 'function') {
         const result = await options.operations.cleanupOwnedResources({ executionId, state: structuredClone(current) });
         if (Array.isArray(result?.cleanupErrors)) cleanupErrors.push(...result.cleanupErrors);
+        if (result?.passed !== true
+          || (result.status !== undefined && !['completed', 'cleanup-completed'].includes(result.status))
+          || result.taskCleanupPassed === false || result.processCleanup?.passed === false) {
+          cleanupErrors.push({ code: 'coordinator.cleanup.unconfirmed',
+            message: 'Owned resource cleanup did not return a positive completion receipt.' });
+        }
       }
     } catch (cleanupError) {
       cleanupErrors.push({
@@ -2126,34 +4126,67 @@ export function parseProductionCoordinatorCliArgs(argv) {
   });
 }
 
+async function readCoordinatorChildRequest() {
+  const chunks = [];
+  let bytes = 0;
+  for await (const chunk of process.stdin) {
+    const buffer = Buffer.from(chunk);
+    bytes += buffer.length;
+    if (bytes > 64 * 1024 * 1024) {
+      throw new Error('internal coordinator child request exceeds 64 MiB');
+    }
+    chunks.push(buffer);
+  }
+  const request = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  if (request?.schemaVersion !== 1 || !String(request?.stage ?? '').trim()) {
+    throw new Error('internal coordinator child request is malformed');
+  }
+  return request;
+}
+
 if (isMain(import.meta.url)) {
-  const controller = new AbortController();
-  const abort = (eventName) => controller.abort(new Error(`coordinator interrupted by ${eventName}`));
-  const onSigint = () => abort('SIGINT');
-  const onSigterm = () => abort('SIGTERM');
-  process.once('SIGINT', onSigint);
-  process.once('SIGTERM', onSigterm);
-  try {
-    const options = parseProductionCoordinatorCliArgs(process.argv.slice(2));
-    if (!options.workersConfig) throw new Error('--workers-config is required');
-    if (!options.runtimeAuthority) throw new Error('--runtime-authority is required');
-    if (!options.localIsolationAuthority) throw new Error('--local-isolation-authority is required');
-    if (options.executionId && !SAFE_ID.test(options.executionId)) throw new Error('--execution-id is not portable');
-    const result = await runProductionCoordinator({
-      workerConfig: path.resolve(repoRoot, options.workersConfig),
-      runtimeAuthority: path.resolve(repoRoot, options.runtimeAuthority),
-      localIsolationAuthority: options.localIsolationAuthority,
-      coordinatorOutputRoot: path.resolve(repoRoot, options.coordinatorOutputRoot),
-      evidenceOutputRoot: path.resolve(repoRoot, options.evidenceOutputRoot),
-      ...(options.executionId ? { executionId: options.executionId } : {}),
-      signal: controller.signal,
-    });
-    console.log(result.canonicalRunManifest);
-  } catch (error) {
-    console.error(error.message);
-    process.exitCode = 1;
-  } finally {
-    process.removeListener('SIGINT', onSigint);
-    process.removeListener('SIGTERM', onSigterm);
+  if (process.argv[2] === COORDINATOR_CHILD_STAGE_FLAG) {
+    const requestedStage = process.argv[3];
+    try {
+      const request = await readCoordinatorChildRequest();
+      if (request.stage !== requestedStage) {
+        throw new Error('internal coordinator child stage argument does not match its request');
+      }
+      const result = await executeCoordinatorChildStage(request.stage, request.payload ?? {});
+      process.stdout.write(`${COORDINATOR_CHILD_RESULT_PREFIX}${JSON.stringify(result)}\n`);
+    } catch (error) {
+      console.error(`${requestedStage ?? 'unknown-stage'}: ${error.message}`);
+      process.exitCode = 1;
+    }
+  } else {
+    const controller = new AbortController();
+    const abort = (eventName) => controller.abort(new Error(`coordinator interrupted by ${eventName}`));
+    const onSigint = () => abort('SIGINT');
+    const onSigterm = () => abort('SIGTERM');
+    process.once('SIGINT', onSigint);
+    process.once('SIGTERM', onSigterm);
+    try {
+      const options = parseProductionCoordinatorCliArgs(process.argv.slice(2));
+      if (!options.workersConfig) throw new Error('--workers-config is required');
+      if (!options.runtimeAuthority) throw new Error('--runtime-authority is required');
+      if (!options.localIsolationAuthority) throw new Error('--local-isolation-authority is required');
+      if (options.executionId && !SAFE_ID.test(options.executionId)) throw new Error('--execution-id is not portable');
+      const result = await runProductionCoordinator({
+        workerConfig: path.resolve(repoRoot, options.workersConfig),
+        runtimeAuthority: path.resolve(repoRoot, options.runtimeAuthority),
+        localIsolationAuthority: options.localIsolationAuthority,
+        coordinatorOutputRoot: path.resolve(repoRoot, options.coordinatorOutputRoot),
+        evidenceOutputRoot: path.resolve(repoRoot, options.evidenceOutputRoot),
+        ...(options.executionId ? { executionId: options.executionId } : {}),
+        signal: controller.signal,
+      });
+      console.log(result.canonicalRunManifest);
+    } catch (error) {
+      console.error(error.message);
+      process.exitCode = 1;
+    } finally {
+      process.removeListener('SIGINT', onSigint);
+      process.removeListener('SIGTERM', onSigterm);
+    }
   }
 }

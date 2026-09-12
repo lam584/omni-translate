@@ -1,7 +1,16 @@
 export function textAfterMarker(text, marker) {
   if (!text || !marker) return text ?? '';
-  const index = text.indexOf(marker);
-  return index >= 0 ? text.slice(index) : '';
+  const markerLine = String(marker).trim();
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim() === markerLine);
+  if (start < 0) {
+    const embedded = text.indexOf(marker);
+    return embedded >= 0 ? text.slice(embedded) : '';
+  }
+  const next = lines.findIndex((line, index) => index > start
+    && /^watch_mode_diagnostic\.run_id=\S+$/.test(line.trim())
+    && line.trim() !== markerLine);
+  return lines.slice(start, next >= 0 ? next : undefined).join('\n');
 }
 
 export function textAfterLocalTimestamp(text, localTimestamp) {
@@ -47,22 +56,40 @@ function decodeLoggedText(value) {
   try { return JSON.parse(`"${value}"`); } catch { return value; }
 }
 
+function cueIdFromLine(line) {
+  return line.match(/\bcue_id=([A-Za-z0-9._:-]+)/)?.[1]
+    ?? line.match(/"cueId"\s*:\s*"([^"]+)"/)?.[1]
+    ?? line.match(/\bcueId=([A-Za-z0-9._:-]+)/)?.[1]
+    ?? null;
+}
+
 export function parseRecentSubtitleText(appLogText) {
-  const values = [];
-  for (const pattern of [/translated="((?:\\.|[^"\\])*)"/g, /"translatedText"\s*:\s*"((?:\\.|[^"\\])*)"/g]) {
-    for (const match of appLogText.matchAll(pattern)) {
-      const decoded = decodeLoggedText(match[1]);
-      if (decoded.length >= 2) values.push(decoded);
-    }
+  const values = new Map();
+  for (const line of appLogText.split(/\r?\n/)) {
+    const match = line.match(/translated="((?:\\.|[^"\\])*)"/)
+      ?? line.match(/"translatedText"\s*:\s*"((?:\\.|[^"\\])*)"/);
+    if (!match) continue;
+    const decoded = decodeLoggedText(match[1]);
+    if (decoded.length < 2) continue;
+    const cueId = cueIdFromLine(line);
+    values.set(cueId ? `cue:${cueId}` : `text:${decoded}`, decoded);
   }
-  return values.slice(-12).join('\n');
+  return [...values.values()].join('\n');
 }
 
 export function parseRecentFinalSegmentTranslationText(appLogText) {
   const values = [];
+  const seen = new Set();
   for (const match of appLogText.matchAll(/^[^\r\n]*rank=(?:Final|Replacement|Forced)[^\r\n]*translated="((?:\\.|[^"\\])*)"/gm)) {
     const decoded = decodeLoggedText(match[1]);
-    if (decoded.length >= 2) values.push(decoded);
+    if (decoded.length < 2) continue;
+    const line = match[0];
+    const cueId = cueIdFromLine(line);
+    const sequence = line.match(/\bseq=(\d+)/)?.[1];
+    const identity = cueId && sequence ? `${cueId}:${sequence}` : `${cueId ?? ''}:${decoded}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    values.push(decoded);
   }
-  return values.slice(-12).join('\n');
+  return values.join('\n');
 }

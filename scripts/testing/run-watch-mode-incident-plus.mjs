@@ -6,6 +6,10 @@ import { spawn } from 'node:child_process';
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { currentGitProvenance } from './git-provenance.mjs';
 import {
+  authorizeModelProtocolInvocation,
+  loadModelProtocolRegistry,
+} from './model-protocol-profile-contract.mjs';
+import {
   buildStrictRuntimeAuthority,
   runStrictProviderPreflight,
   strictRuntimeEnvironment,
@@ -197,6 +201,20 @@ export function prepareCurrentIncidentPlusExecution({
   captureIncidentImplementationHashes = () => currentIncidentPlusImplementationHashes({ workspaceRoot: repoRoot }),
   environment = process.env,
 }) {
+  const protocolRegistry = loadModelProtocolRegistry(repoRoot);
+  const protocolAuthority = authorizeModelProtocolInvocation({
+    exactModelId: 'qwen3.5-omni-plus-realtime',
+    operation: 'native_translate',
+    transport: 'websocket',
+    region: 'cn-beijing',
+    endpointHost: 'dashscope.aliyuncs.com',
+    declaredRegistryVersion: protocolRegistry.registryVersion,
+  }, protocolRegistry);
+  if (!protocolAuthority.ok) {
+    throw new Error(
+      `incident Plus protocol authorization failed before runtime build or Provider dispatch: ${protocolAuthority.errorCode}`,
+    );
+  }
   const coordinatorKeyId = coordinatorKeyIdForPublicKey(signingKeys.publicKeyPem);
   const runtimeBinaryHashes = buildRuntimeAuthority({
     environment: {
@@ -362,7 +380,7 @@ function compatibilityTransportPlan(plan) {
     // The production readiness helper needs one digest binding its temporary
     // control receipt.  The actual Plus readiness request remains per-worker
     // and is validated separately below; it is never substituted into the
-    // strict eight-cell plan or result schema.
+    // strict four-cell plan or result schema.
     workerReadinessRequest: { requestDigest: plan.planDigest },
   };
 }

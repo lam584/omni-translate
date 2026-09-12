@@ -1,6 +1,7 @@
 mod protocol;
 mod config;
 mod audio;
+mod bailian_contract;
 mod reporting;
 mod dashscope;
 mod runner;

@@ -2,8 +2,16 @@ use super::connection_coordinator::{
     is_idle_preconnect_session, is_released_empty_audio_commit_error, provider_error_code, provider_error_message,
 };
 use super::session_errors::is_provider_idle_timeout_error;
+use super::protocol::{
+    flush_arbitration_expired_deferred_empty_vad, flush_expired_deferred_empty_vad,
+};
 use super::*;
 use crate::audio::glossary::GlossaryContext;
+use crate::audio::bailian_protocol::LiveTranslateServerMutation;
+use crate::provider::model_protocol_profile::{
+    admit_model_protocol_event, ModelProtocolEventAdmissionRequest,
+    ModelProtocolEventDirection, ModelProtocolFrameKind,
+};
 
 #[path = "socket_event_processor/manual_response.rs"]
 mod manual_response;
@@ -21,19 +29,444 @@ pub(super) use state::{OmniSocketEventContext, OmniSocketEventState, OmniSocketP
 
 pub(super) struct OmniSocketEventProcessor;
 
+fn bailian_provider(provider: &ProviderDraftInput) -> bool {
+    provider.kind == "dashscope"
+}
+
+fn admit_bailian_server_event(
+    provider: &ProviderDraftInput,
+    event_diagnostics: &mut OmniEventDiagnostics,
+    event: &Value,
+    received_frame_kind: ModelProtocolFrameKind,
+) -> Result<LiveTranslateServerMutation, String> {
+    let event_type = crate::audio::realtime_ws::server_event_type(event, "(unknown)");
+    if !bailian_provider(provider) {
+        return Ok(LiveTranslateServerMutation {
+            response_completed: event_type == "response.done",
+            response_terminal_status: (event_type == "response.done")
+                .then(|| "completed".to_string()),
+            ..Default::default()
+        });
+    }
+    #[cfg(test)]
+    if is_explicit_legacy_omni_reducer_fixture(provider) {
+        // This exact sentinel exists only in test builds so legacy reducer
+        // replays can exercise the reducer core without granting a production
+        // connection or mutation authority. Any sentinel field change closes it.
+        return Ok(LiveTranslateServerMutation {
+            response_completed: event_type == "response.done",
+            response_terminal_status: (event_type == "response.done")
+                .then(|| "completed".to_string()),
+            ..Default::default()
+        });
+    }
+    let authority = crate::audio::events::authorize_bailian_native_translate(provider)?;
+    let logical_frame_kind = if received_frame_kind == ModelProtocolFrameKind::Json
+        && authority
+            .server_json_base64_event_types
+            .iter()
+            .any(|candidate| candidate == event_type)
+    {
+        ModelProtocolFrameKind::JsonBase64
+    } else {
+        received_frame_kind
+    };
+    let result = if received_frame_kind == ModelProtocolFrameKind::Json {
+        event_diagnostics
+            .livetranslate_server_state
+            .admit(&authority, event)
+    } else {
+        admit_model_protocol_event(
+            &authority,
+            ModelProtocolEventAdmissionRequest {
+                direction: ModelProtocolEventDirection::Server,
+                event_type,
+                frame_kind: logical_frame_kind,
+            },
+        )
+        .map(|_| LiveTranslateServerMutation::default())
+        .map_err(|error| error.code().to_string())
+    };
+    result.map_err(|error| {
+        format!(
+            "unexpected_event: {error} profileId={} profileVersion={} wireDialect={} eventType={event_type}",
+            authority.profile_id, authority.profile_version, authority.wire_dialect,
+        )
+    })
+}
+
+fn record_admitted_strict_response_terminal(
+    store: &AudioStateStore,
+    direction: &str,
+    event_type: &str,
+    response_id: &str,
+    response_completed: bool,
+    response_terminal_status: Option<&str>,
+) -> Result<(), String> {
+    if direction != "inbound" {
+        return Ok(());
+    }
+    match event_type {
+        "response.audio.done" => store.record_strict_watch_response_audio_done(response_id),
+        "response.done" if response_completed => {
+            store.record_strict_watch_response_done(response_id)
+        }
+        "response.done" => {
+            let status = response_terminal_status.ok_or_else(|| {
+                "model_protocol.payload_invalid: response.done lacks typed terminal status"
+                    .to_string()
+            })?;
+            store.record_strict_watch_response_failed(response_id, status)
+        }
+        _ => Ok(()),
+    }
+}
+
+fn track_response_lifecycle_for_server_event(
+    event_diagnostics: &mut OmniEventDiagnostics,
+    provider: &ProviderDraftInput,
+    event_type: &str,
+    event: &Value,
+) {
+    match event_type {
+        "response.created" => event_diagnostics
+            .begin_native_response_lifecycle(native_response_id_from_event(event)),
+        response_event
+            if response_event.starts_with("response.") && response_event != "response.done" =>
+        {
+            event_diagnostics.note_native_response_progress(native_response_id_from_event(event));
+        }
+        "input_audio_buffer.speech_stopped"
+            if !crate::audio::events::is_livetranslate_route_model(
+                provider,
+                &provider.model,
+            ) =>
+        {
+            event_diagnostics.begin_native_response_lifecycle(None);
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+fn is_explicit_legacy_omni_reducer_fixture(provider: &ProviderDraftInput) -> bool {
+    provider.template_id == "t"
+        && provider.provider_id == "p"
+        && provider.kind == "dashscope"
+        && provider.template_realtime_protocol.is_none()
+        && provider.realtime_protocol.as_deref() == Some("dashscope-omni")
+        && provider.display_name == "P"
+        && provider.model == "qwen3.5-omni-plus-realtime"
+        && provider.base_url == "wss://example.invalid"
+        && provider.transport == "websocket"
+        && provider.auth_ref.kind == "header"
+        && provider.auth_ref.reference == "ref"
+        && provider.auth_ref.header_name == "Authorization"
+        && provider.auth_ref.scheme == "Bearer"
+        && provider.region.is_none()
+        && provider.stream_enabled
+        && provider.timeout_ms == 1_000
+        && provider.system_prompt_template.is_empty()
+        && provider.temperature == 0.2
+        && provider.max_output_tokens == 256
+        && provider.response_modalities == ["text"]
+        && provider.custom_headers.is_empty()
+        && provider.scene_model_assignments.is_empty()
+        && provider.local_model_capability_registry.is_empty()
+        && provider.model_catalog_cache.models.is_empty()
+}
+
+#[cfg(test)]
+mod legacy_reducer_fixture_authority_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn fixture() -> ProviderDraftInput {
+        serde_json::from_value(json!({
+            "templateId":"t", "providerId":"p", "kind":"dashscope", "realtimeProtocol":"dashscope-omni", "displayName":"P",
+            "model":"qwen3.5-omni-plus-realtime", "baseUrl":"wss://example.invalid",
+            "transport":"websocket", "authRef":{"kind":"header","reference":"ref","headerName":"Authorization","scheme":"Bearer"},
+            "region":null, "streamEnabled":true, "timeoutMs":1000, "systemPromptTemplate":""
+        }))
+        .unwrap()
+    }
+
+    fn livetranslate_provider() -> ProviderDraftInput {
+        serde_json::from_value(json!({
+            "templateId":"template-dashscope-realtime", "providerId":"lt", "kind":"dashscope",
+            "displayName":"LT", "model":"qwen3.5-livetranslate-flash-realtime",
+            "baseUrl":"https://dashscope.aliyuncs.com/api/v1", "transport":"websocket",
+            "authRef":{"kind":"header","reference":"synthetic","headerName":"Authorization","scheme":"Bearer"},
+            "region":"cn-beijing", "streamEnabled":true, "timeoutMs":1000, "systemPromptTemplate":""
+        }))
+        .unwrap()
+    }
+
+    fn strict_terminal_store(response_id: &str) -> AudioStateStore {
+        let store = AudioStateStore::new();
+        store
+            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
+            .unwrap();
+        store.record_strict_watch_test_session_updated().unwrap();
+        store.record_strict_watch_provider_append(480).unwrap();
+        store.record_strict_watch_provider_input_closed().unwrap();
+        store.record_strict_watch_session_finish_sent().unwrap();
+        store
+            .record_strict_watch_renderer_cue_submitted("cue-1", response_id)
+            .unwrap();
+        store
+            .record_strict_watch_renderer_ack(
+                "cue-1",
+                "bridge-translation-status-ack",
+                "receipt-1",
+            )
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn legacy_reducer_sentinel_is_test_only_and_every_field_is_identity_bound() {
+        let fixture = fixture();
+        assert!(is_explicit_legacy_omni_reducer_fixture(&fixture));
+        let mut changed = fixture.clone();
+        changed.auth_ref.reference = "changed".to_string();
+        assert!(!is_explicit_legacy_omni_reducer_fixture(&changed));
+        assert!(admit_bailian_server_event(
+            &changed,
+            &mut OmniEventDiagnostics::default(),
+            &json!({"type":"session.created"}),
+            ModelProtocolFrameKind::Json,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn production_boundary_rejects_unknown_authority_before_reducer_mutation() {
+        let mut provider = livetranslate_provider();
+        provider.model = "unknown-paid-voice-model".to_string();
+        let mut diagnostics = OmniEventDiagnostics::default();
+        assert!(admit_bailian_server_event(
+            &provider,
+            &mut diagnostics,
+            &json!({"type":"session.created","session":{"id":"poison"}}),
+            ModelProtocolFrameKind::Json,
+        )
+        .is_err());
+
+        let provider = livetranslate_provider();
+        let authority = crate::audio::events::authorize_bailian_native_translate(&provider)
+            .expect("exact LiveTranslate provider must authorize");
+        diagnostics
+            .livetranslate_server_state
+            .record_client_session_update(
+                &authority,
+                &json!({
+                    "type":"session.update",
+                    "session":{
+                        "modalities":["text"],
+                        "input_audio_format":"pcm",
+                        "sample_rate":16000,
+                        "turn_detection":null,
+                        "input_audio_transcription":{
+                            "model":"qwen3-asr-flash-realtime",
+                            "language":"en"
+                        },
+                        "translation":{"language":"zh"}
+                    }
+                }),
+            )
+            .expect("production client session.update must bind before the server echo");
+        assert!(admit_bailian_server_event(
+            &provider,
+            &mut diagnostics,
+            &json!({
+                "event_id":"event-session-created",
+                "type":"session.created",
+                "session":{
+                    "id":"real",
+                    "object":"realtime.session",
+                    "model":"qwen3.5-livetranslate-flash-realtime"
+                }
+            }),
+            ModelProtocolFrameKind::Json,
+        )
+        .is_ok());
+        assert!(admit_bailian_server_event(
+            &provider,
+            &mut diagnostics,
+            &json!({
+                "event_id":"event-session-updated",
+                "type":"session.updated",
+                "session":{
+                    "id":"real",
+                    "object":"realtime.session",
+                    "model":"qwen3.5-livetranslate-flash-realtime",
+                    "modalities":["text"],
+                    "input_audio_format":"pcm",
+                    "sample_rate":16000,
+                    "input_audio_transcription":{
+                        "model":"qwen3-asr-flash-realtime",
+                        "language":"en"
+                    },
+                    "translation":{"language":"zh"}
+                }
+            }),
+            ModelProtocolFrameKind::Json,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn production_strict_terminal_records_only_completed_response_done() {
+        let failed_store = strict_terminal_store("response-failed");
+        record_admitted_strict_response_terminal(
+            &failed_store,
+            "inbound",
+            "response.audio.done",
+            "response-failed",
+            false,
+            None,
+        )
+        .unwrap();
+        record_admitted_strict_response_terminal(
+            &failed_store,
+            "inbound",
+            "response.done",
+            "response-failed",
+            false,
+            Some("failed"),
+        )
+        .unwrap();
+        assert!(
+            failed_store
+                .record_strict_watch_session_finished_received()
+                .expect_err("failed response revoked the only completed response terminal")
+                .contains("completed response terminal")
+        );
+        assert!(!failed_store.strict_watch_session_finished_received().unwrap());
+        assert!(
+            failed_store
+                .strict_watch_terminal_lifecycle_snapshot()
+                .expect_err("failed response must revoke its earlier audio terminal")
+                .contains("response-failed:failed")
+        );
+
+        let completed_store = strict_terminal_store("response-completed");
+        record_admitted_strict_response_terminal(
+            &completed_store,
+            "inbound",
+            "response.done",
+            "response-completed",
+            true,
+            Some("completed"),
+        )
+        .unwrap();
+        completed_store
+            .record_strict_watch_session_finished_received()
+            .unwrap();
+        assert_eq!(
+            completed_store
+                .strict_watch_terminal_lifecycle_snapshot()
+                .expect("completed response owns strict terminal authority")
+                .last_response_terminal
+                .response_id,
+            "response-completed"
+        );
+    }
+
+    fn action_after_completed_response_and_late_speech_stopped(
+        provider: &ProviderDraftInput,
+    ) -> ResponseStallAction {
+        let mut diagnostics = OmniEventDiagnostics::default();
+        track_response_lifecycle_for_server_event(
+            &mut diagnostics,
+            provider,
+            "response.created",
+            &json!({
+                "type": "response.created",
+                "response": { "id": "response-completed" }
+            }),
+        );
+        track_response_lifecycle_for_server_event(
+            &mut diagnostics,
+            provider,
+            "response.audio.delta",
+            &json!({
+                "type": "response.audio.delta",
+                "response_id": "response-completed"
+            }),
+        );
+        diagnostics.complete_native_response_owner();
+        track_response_lifecycle_for_server_event(
+            &mut diagnostics,
+            provider,
+            "input_audio_buffer.speech_stopped",
+            &json!({
+                "type": "input_audio_buffer.speech_stopped",
+                "item_id": "input-completed"
+            }),
+        );
+        diagnostics.native_response_stall_action(
+            std::time::Instant::now() + std::time::Duration::from_secs(45),
+            provider.timeout_ms,
+            false,
+        )
+    }
+
+    #[test]
+    fn livetranslate_late_speech_stopped_does_not_restart_completed_response_lifecycle() {
+        assert_eq!(
+            action_after_completed_response_and_late_speech_stopped(&livetranslate_provider()),
+            ResponseStallAction::None
+        );
+    }
+
+    #[test]
+    fn omni_speech_stopped_still_starts_first_response_deadline() {
+        assert_eq!(
+            action_after_completed_response_and_late_speech_stopped(&fixture()),
+            ResponseStallAction::Reconnect
+        );
+    }
+
+    #[test]
+    fn livetranslate_real_response_owner_still_enforces_first_output_deadline() {
+        let provider = livetranslate_provider();
+        let mut diagnostics = OmniEventDiagnostics::default();
+        track_response_lifecycle_for_server_event(
+            &mut diagnostics,
+            &provider,
+            "response.created",
+            &json!({
+                "type": "response.created",
+                "response": { "id": "response-stalled" }
+            }),
+        );
+        assert_eq!(
+            diagnostics.native_response_stall_action(
+                std::time::Instant::now() + std::time::Duration::from_secs(45),
+                provider.timeout_ms,
+                false,
+            ),
+            ResponseStallAction::Reconnect
+        );
+    }
+}
+
 #[cfg(test)]
 #[path = "socket_event_processor/empty_commit_tests.rs"]
 mod empty_commit_tests;
 
 impl OmniSocketEventProcessor {
     pub(super) fn poll<C: RealtimeSocketConnector, R: tauri::Runtime>(
-        state: OmniSocketEventState<C::Socket, R>,
+        state: OmniSocketEventState<C::Socket>,
+        trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
         context: OmniSocketEventContext<'_, R>,
         connector: &C,
-    ) -> Result<OmniSocketPollResult<C::Socket, R>, String> {
+    ) -> Result<OmniSocketPollResult<C::Socket>, String> {
         let OmniSocketEventState {
             mut socket,
-            mut trace_call,
             mut reconnect_count,
             mut pending_audio_buffer,
             mut active_voice,
@@ -94,6 +527,7 @@ impl OmniSocketEventProcessor {
         } = context;
         event_diagnostics.set_response_ledger_generation(session_generation);
         let mut socket_reconnected = false;
+        let mut reconnected_session_update = None;
         let mut stop_worker = false;
         // Every poll exit repackages the same 21 worker-state fields into an
         // OmniSocketPollResult; a local macro keeps that field list in one place.
@@ -103,7 +537,6 @@ impl OmniSocketEventProcessor {
                 Ok(OmniSocketPollResult {
                     state: OmniSocketEventState {
                         socket,
-                        trace_call,
                         reconnect_count,
                         pending_audio_buffer,
                         active_voice,
@@ -135,6 +568,7 @@ impl OmniSocketEventProcessor {
                     },
                     skip_tick: $skip,
                     socket_reconnected,
+                    reconnected_session_update,
                     stop_worker,
                 })
             };
@@ -142,23 +576,81 @@ impl OmniSocketEventProcessor {
         match socket.read_message() {
             Ok(msg) => match msg {
         Message::Text(text) => {
-            if let Ok(evt) = serde_json::from_str::<Value>(&text) {
-                let event_type = crate::audio::realtime_ws::server_event_type(&evt, "(unknown)");
-                trace_call.record_ws_recv(event_type, evt.clone());
-                match event_type {
-                    "response.created" => event_diagnostics.begin_native_response_lifecycle(
-                        native_response_id_from_event(&evt),
-                    ),
-                    response_event
-                        if response_event.starts_with("response.")
-                            && response_event != "response.done" =>
-                    {
-                        event_diagnostics.note_native_response_progress(
-                            native_response_id_from_event(&evt),
-                        );
-                    }
-                    _ => {}
+            let mut evt = match serde_json::from_str::<Value>(&text) {
+                Ok(event) => event,
+                Err(error) => {
+                    let failure = format!(
+                        "model_protocol.payload_invalid: server Text frame is not valid JSON: {error}"
+                    );
+                    trace_call.record_ws_recv(
+                        "malformed_json",
+                        serde_json::json!({
+                            "rawText": text.to_string(),
+                            "parseError": error.to_string(),
+                        }),
+                    );
+                    let _ = diag_log(
+                        app,
+                        "omni",
+                        "error",
+                        format!("{failure} raw={text}"),
+                    );
+                    trace_call.error(failure.clone());
+                    return Err(failure);
                 }
+            };
+                let event_type = crate::audio::realtime_ws::server_event_type(&evt, "(unknown)").to_string();
+                let prioritize_deferred_successor = event_type == "input_audio_buffer.speech_started"
+                    && event_diagnostics.can_prioritize_deferred_empty_vad_successor(
+                        evt["audio_start_ms"].as_u64(),
+                    );
+                if !prioritize_deferred_successor {
+                    flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
+                }
+                let mutation = match admit_bailian_server_event(
+                    provider,
+                    &mut event_diagnostics,
+                    &evt,
+                    ModelProtocolFrameKind::Json,
+                ) {
+                    Ok(mutation) => mutation,
+                    Err(error) => {
+                        // A raw frame that merely resembles a contiguous
+                        // speech_started event has no authority to suppress
+                        // an expired terminal. Admission must succeed before
+                        // the narrow dispatch grace can affect ordering.
+                        flush_expired_deferred_empty_vad(
+                            &app,
+                            store,
+                            &mut event_diagnostics,
+                        );
+                        return Err(error);
+                    }
+                };
+                if let Some(session_updated) = mutation.session_updated.as_ref() {
+                    store.record_strict_watch_session_updated_received(
+                        &session_updated.session_identity_sha256,
+                        &session_updated.sent_session_config_sha256,
+                        &session_updated.echoed_session_config_sha256,
+                    )?;
+                }
+                let response_completed = mutation.response_completed;
+                let response_terminal_status = mutation.response_terminal_status.clone();
+                if let Some(normalized_text) = mutation.normalized_text {
+                    evt["text"] = Value::String(normalized_text);
+                    evt["stash"] = Value::String(String::new());
+                }
+                if let Some(completed_text) = mutation.completed_response_text {
+                    pending_translated_text = completed_text;
+                }
+                let event_type = event_type.as_str();
+                trace_call.record_ws_recv(event_type, evt.clone());
+                track_response_lifecycle_for_server_event(
+                    &mut event_diagnostics,
+                    provider,
+                    event_type,
+                    &evt,
+                );
                 match event_type {
                     "session.created" | "session.updated" => {
                         let readiness = OmniEventProcessor::process_session_ready(
@@ -171,6 +663,10 @@ impl OmniSocketEventProcessor {
                             &direction,
                             session_generation,
                             &session_started_at,
+                            !crate::audio::events::is_livetranslate_route_model(
+                                provider,
+                                &provider.model,
+                            ),
                             event_type,
                             &evt,
                                     pre_session_audio_queue_len,
@@ -330,7 +826,7 @@ impl OmniSocketEventProcessor {
                                     ManualResponseDecision::Create => {
                                         manual_response_requested = send_manual_response_create(
                                             &mut socket,
-                                            &mut trace_call,
+                                            trace_call,
                                             &mut event_diagnostics,
                                             ManualResponseCreateContext {
                                                 app,
@@ -563,6 +1059,7 @@ impl OmniSocketEventProcessor {
                     "response.audio.done" => {
                         let audio_response_id = native_response_id_from_event(&evt)
                             .or(pending_audio_response_id.as_deref());
+                        let terminal_response_id = audio_response_id.unwrap_or("").to_string();
                         event_diagnostics.claim_native_response_owner_for_event(
                             &evt,
                             current_cue_id.as_deref(),
@@ -603,11 +1100,19 @@ impl OmniSocketEventProcessor {
                         pending_audio_stream_chunk_index = output.pending_audio_stream_chunk_index;
                         pending_audio_stream_created_at_ms = output.pending_audio_stream_created_at_ms;
                         pending_audio_stream_aborted = output.pending_audio_stream_aborted;
+                        record_admitted_strict_response_terminal(
+                            store,
+                            &direction,
+                            event_type,
+                            &terminal_response_id,
+                            response_completed,
+                            response_terminal_status.as_deref(),
+                        )?;
                     }
                     "input_audio_buffer.speech_stopped" => {
-                        event_diagnostics.begin_native_response_lifecycle(None);
                         last_vad_event_time = SystemTime::now();
                         vad_event_count += 1;
+                        event_diagnostics.current_vad_audio_end_ms = evt["audio_end_ms"].as_u64();
                         if let Some(cue_id) = current_cue_id.clone() {
                             // Subtitle translation still has a native response
                             // stream whose output must remain attached to the
@@ -658,11 +1163,15 @@ impl OmniSocketEventProcessor {
                         );
                     }
                     "response.done" => {
+                        let terminal_response_id = native_response_id_from_event(&evt)
+                            .unwrap_or("")
+                            .to_string();
                         handle_response_done(
                             &app,
                             store,
-                            &mut trace_call,
+                            trace_call,
                             &direction,
+                            source_language,
                             &mut current_cue_id,
                             &mut pending_source_text,
                             &mut pending_translated_text,
@@ -684,6 +1193,14 @@ impl OmniSocketEventProcessor {
                             "",
                             "",
                         );
+                        record_admitted_strict_response_terminal(
+                            store,
+                            &direction,
+                            event_type,
+                            &terminal_response_id,
+                            response_completed,
+                            response_terminal_status.as_deref(),
+                        )?;
                         if audio_mode.uses_manual_commit() && manual_response_pending {
                             manual_response_pending = false;
                             manual_response_requested = false;
@@ -710,7 +1227,38 @@ impl OmniSocketEventProcessor {
                             );
                         }
                     }
+                    // The shutdown wrapper marks an authoritative
+                    // `session.finished` before this processor receives it.
+                    // Return the accumulated state immediately so the worker
+                    // can accept that terminal acknowledgement instead of
+                    // running response-stall recovery against a socket the
+                    // provider is now entitled to close.
+                    "session.finished" => return poll_result!(false),
                     "error" => {
+                        if crate::audio::events::authorize_bailian_native_translate(provider).is_ok()
+                        {
+                            let provider_error_code = provider_error_code(&evt);
+                            let provider_error_message = provider_error_message(&evt);
+                            store.watch_session_report.record_provider_error(
+                                current_cue_id.as_deref(),
+                                &direction,
+                                "dashscope-native-realtime",
+                                provider_error_code,
+                                provider_error_message,
+                                &text,
+                            );
+                            let failure = format!(
+                                "model_protocol.provider_error: authorized LiveTranslate server error code={provider_error_code} message={provider_error_message}"
+                            );
+                            let _ = diag_log(
+                                app,
+                                "omni",
+                                "error",
+                                format!("{failure} raw={text}"),
+                            );
+                            trace_call.error(failure.clone());
+                            return Err(failure);
+                        }
                         if is_idle_preconnect_session(
                             store,
                             direction,
@@ -778,6 +1326,7 @@ impl OmniSocketEventProcessor {
                                         active_voice,
                                         voice_fallback_applied,
                                         socket_reconnected: false,
+                                        reconnected_session_update: None,
                                     },
                                     connector,
                                     &app,
@@ -790,7 +1339,7 @@ impl OmniSocketEventProcessor {
                                     &target_language,
                                     buffer_size,
                                     provider_input_budget,
-                                    &mut trace_call,
+                                    trace_call,
                                     &evt,
                                     &text,
                             )?;
@@ -800,22 +1349,17 @@ impl OmniSocketEventProcessor {
                             active_voice = reconnect_state.active_voice;
                             voice_fallback_applied = reconnect_state.voice_fallback_applied;
                             socket_reconnected = reconnect_state.socket_reconnected;
+                            reconnected_session_update =
+                                reconnect_state.reconnected_session_update;
                         }
                     }
                     other => {
                         OmniEventProcessor::log_unknown_event(&app, other, &text);
                     }
                 }
-            } else {
-                let _ = diag_log(
-                    &app,
-                    "omni",
-                    "warning",
-                    format!("[EVENT] JSON 瑙ｆ瀽澶辫触: {text}"),
-                );
-            }
         }
         Message::Close(_) => {
+            flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
             let reconnect_state = OmniConnectionCoordinator::reconnect_after_close(
                 OmniReconnectState {
                     socket,
@@ -824,6 +1368,7 @@ impl OmniSocketEventProcessor {
                     active_voice,
                     voice_fallback_applied,
                     socket_reconnected: false,
+                    reconnected_session_update: None,
                 },
                 connector,
                 &app,
@@ -843,11 +1388,33 @@ impl OmniSocketEventProcessor {
             active_voice = reconnect_state.active_voice;
             voice_fallback_applied = reconnect_state.voice_fallback_applied;
             socket_reconnected = reconnect_state.socket_reconnected;
+            reconnected_session_update = reconnect_state.reconnected_session_update;
             return poll_result!(true);
         }
-        _ => {}
+        Message::Binary(_) => {
+            flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
+            admit_bailian_server_event(
+                provider,
+                &mut event_diagnostics,
+                &serde_json::json!({"type":"binary.audio"}),
+                ModelProtocolFrameKind::Binary,
+            )?;
+        }
+        _ => {
+            flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
+        }
             },
             Err(error) => {
+        // An idle read is not proof that a server boundary will not become
+        // readable on the next scheduling turn. Preserve only the dedicated
+        // hard arbitration window here. Successful non-speech frames still
+        // flush at the ordinary deadline above and therefore cannot starve
+        // the terminal.
+        flush_arbitration_expired_deferred_empty_vad(
+            &app,
+            store,
+            &mut event_diagnostics,
+        );
         let reconnect_state = OmniConnectionCoordinator::recover_read_error(
             OmniReconnectState {
                 socket,
@@ -856,6 +1423,7 @@ impl OmniSocketEventProcessor {
                 active_voice,
                 voice_fallback_applied,
                 socket_reconnected: false,
+                reconnected_session_update: None,
             },
             connector,
             &app,
@@ -876,9 +1444,16 @@ impl OmniSocketEventProcessor {
         active_voice = reconnect_state.active_voice;
         voice_fallback_applied = reconnect_state.voice_fallback_applied;
         socket_reconnected = reconnect_state.socket_reconnected;
+        reconnected_session_update = reconnect_state.reconnected_session_update;
         return poll_result!(true);
             }
         }
+
+        // Give the provider event already returned by read_message priority
+        // over the local empty-VAD expiry. In particular, speech_started may
+        // consume a same-continuity, equal-boundary deferred fragment before
+        // this fallback terminalizes anything still pending.
+        flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
 
         let stall = maintain_response_lifecycle(
             ResponseStallReconnectState {
@@ -888,7 +1463,7 @@ impl OmniSocketEventProcessor {
                 active_voice,
                 voice_fallback_applied,
             },
-            &mut trace_call,
+            trace_call,
             &mut event_diagnostics,
             ResponseStallContext {
                 app,
@@ -918,6 +1493,7 @@ impl OmniSocketEventProcessor {
         voice_fallback_applied = stall.state.voice_fallback_applied;
         if stall.socket_reconnected {
             socket_reconnected = true;
+            reconnected_session_update = stall.reconnected_session_update;
             return poll_result!(true);
         }
 

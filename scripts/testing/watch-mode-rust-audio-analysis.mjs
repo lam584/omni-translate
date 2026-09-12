@@ -109,3 +109,42 @@ export function matchTranslatedLoopbackWithRust({
   }
   return parsed;
 }
+
+export function matchTranslatedLoopbackBatchWithRust({
+  recordingPath,
+  requests,
+  workspaceRoot = path.resolve('.'),
+}) {
+  if (!Array.isArray(requests) || requests.length === 0) {
+    throw new Error('Rust translated loopback batch requires at least one request');
+  }
+  const executable = ensureRustAudioAnalyzer({ workspaceRoot });
+  const result = spawnSync(executable, [
+    'audio', 'translated-loopback-batch',
+    '--recorded', path.resolve(recordingPath),
+    '--format', 'pcm16le',
+    '--sample-rate', '16000',
+  ], {
+    cwd: workspaceRoot,
+    encoding: 'utf8',
+    windowsHide: true,
+    input: JSON.stringify(requests.map((request) => ({
+      ...request,
+      referencePath: path.resolve(request.referencePath),
+    }))),
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    throw new Error(`Rust translated loopback batch analysis failed: ${result.stderr || result.stdout}`);
+  }
+  const parsed = JSON.parse(result.stdout.trim());
+  if (
+    parsed.schemaVersion !== 'omni-audio-analysis/v1'
+    || parsed.profile !== 'translated-loopback-v1'
+    || parsed.operation !== 'translated-loopback-batch'
+    || !Array.isArray(parsed.results)
+  ) {
+    throw new Error(`Rust translated loopback batch analysis returned an unexpected schema/profile: ${result.stdout}`);
+  }
+  return new Map(parsed.results.map((entry) => [entry.requestId, entry.metrics]));
+}

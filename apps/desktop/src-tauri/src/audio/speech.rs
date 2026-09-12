@@ -33,12 +33,24 @@ const PLAYBACK_START_DEADLINE_MS: u64 = 4_000;
 mod playback_engine;
 mod aec_live_scenario;
 mod speaker_render_event;
+mod output_device;
+mod output_attempt;
+mod endpoint_recovery;
 
 use self::aec_live_scenario::{
-    active_aec_live_scenario_assignment, AecLiveScenarioRender,
+    active_aec_live_scenario_assignments, finish_aec_live_scenario_assignments,
+    AecLiveScenarioRender,
 };
 use self::playback_engine::{SpeechPlaybackEngine, SpeechPlaybackResult, SynthesisOutput};
 pub(crate) use self::speaker_render_event::SpeakerRenderEvent;
+use self::output_device::resolve_wasapi_render_device;
+use self::output_attempt::run_wasapi_render_attempt;
+pub(crate) use self::endpoint_recovery::{
+    play_to_speaker, retry_play_to_speaker_after_endpoint_ready,
+    wait_for_exact_speaker_endpoint_ready,
+};
+#[cfg(test)]
+use self::output_device::normalized_device_name;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TranslationAudioSource {
@@ -328,11 +340,13 @@ mod tests {
         ProviderDraftInput {
             template_id: "template".to_string(),
             provider_id: "provider".to_string(),
+            manifest_provider_id: None,
             kind: "openai-compatible".to_string(),
             template_realtime_protocol: None,
             realtime_protocol: None,
             display_name: "Provider".to_string(),
             model: "tts-model".to_string(),
+            deployment_id: None,
             base_url: "http://127.0.0.1:1".to_string(),
             transport: "http".to_string(),
             auth_ref: crate::provider::contracts::ProviderAuthRefInput {
@@ -350,6 +364,7 @@ mod tests {
             response_modalities: vec!["text".to_string()],
             custom_headers: vec![],
             scene_model_assignments: vec![],
+            model_protocol_bindings: vec![],
             local_model_capability_registry: vec![],
             model_catalog_cache: Default::default(),
         }
@@ -1224,8 +1239,8 @@ mod tests {
     }
 
     #[test]
-    fn speech_config_prefers_explicit_text_to_speech_model() {
-        let config = SpeechConfig::from_value(&json!({
+    fn speech_config_rejects_unregistered_explicit_text_to_speech_model() {
+        let result = SpeechConfig::from_value(&json!({
           "providers": [
             speech_provider_value("template-main", "provider-main", "openai-compatible", "Main Provider", "main-model", "http://main.test", "http"),
             speech_provider_value("template-linked", "provider-linked", "dashscope", "Linked Provider", "linked-default", "http://linked.test", "websocket")
@@ -1255,16 +1270,19 @@ mod tests {
               "mixControl": {}
             }
           }
-        }))
-        .expect("speech config should parse");
+        }));
+        let error = match result {
+            Ok(_) => panic!("an unregistered DashScope TTS model must fail before connect"),
+            Err(error) => error,
+        };
 
-        assert_eq!(config.provider.provider_id, "provider-linked");
-        assert_eq!(config.provider.model, "tts-model");
+        assert!(error.contains("tts-model"), "{error}");
+        assert!(error.contains("model_protocol.model_not_registered"), "{error}");
     }
 
     #[test]
-    fn secondary_tts_prefers_inbound_secondary_audio_model() {
-        let config = SpeechConfig::from_value(&json!({
+    fn secondary_tts_rejects_unregistered_inbound_secondary_audio_model() {
+        let result = SpeechConfig::from_value(&json!({
           "providers": [
             speech_provider_value("template-default", "provider-default", "openai-compatible", "Default Provider", "default-model", "http://default.test", "http"),
             speech_provider_value("template-secondary", "provider-secondary", "dashscope", "Secondary Provider", "old-model", "http://secondary.test", "websocket")
@@ -1280,17 +1298,19 @@ mod tests {
           "speech": {
             "translationAudioSource": "subtitle-tts"
           }
-        }))
-        .expect("speech config should parse");
+        }));
+        let error = match result {
+            Ok(_) => panic!("an unregistered secondary TTS model must fail before connect"),
+            Err(error) => error,
+        };
 
-        assert!(config.secondary_segment_tts_enabled);
-        assert_eq!(config.provider.provider_id, "provider-secondary");
-        assert_eq!(config.provider.model, "secondary-tts");
+        assert!(error.contains("secondary-tts"), "{error}");
+        assert!(error.contains("model_protocol.model_not_registered"), "{error}");
     }
 
     #[test]
-    fn secondary_tts_skips_livetranslate_and_uses_bare_tts_model() {
-        let config = SpeechConfig::from_value(&json!({
+    fn secondary_tts_rejects_livetranslate_and_omni_as_tts_before_connect() {
+        let result = SpeechConfig::from_value(&json!({
           "providers": [
             {
               "templateId": "template-dashscope-realtime",
@@ -1319,12 +1339,13 @@ mod tests {
             "translationAudioSource": "subtitle-tts",
             "textToSpeechModelId": "qwen3.5-omni-plus-realtime"
           }
-        }))
-        .expect("speech config should parse");
+        }));
+        let error = match result {
+            Ok(_) => panic!("neither LiveTranslate nor Omni is a TTS product profile"),
+            Err(error) => error,
+        };
 
-        assert!(config.secondary_segment_tts_enabled);
-        assert_eq!(config.provider.provider_id, "provider-dashscope");
-        assert_eq!(config.provider.model, "qwen3.5-omni-plus-realtime");
+        assert!(error.contains("model_protocol.operation_not_supported"));
     }
 
     #[test]

@@ -67,7 +67,6 @@ function Save-WatchModeRunArtifacts {
     $_.id -eq "transcribe-and-compare-physical-output-content"
   } | Select-Object -Last 1)
   if (
-    $Context.audioRoute -ne "echo-cancel" -and
     $physicalContentStep -and
     $physicalContentStep.data -and
     $physicalContentStep.data.skipped
@@ -106,6 +105,7 @@ function Save-WatchModeRunArtifacts {
     physicalPlaybackDevice = 'physical-playback-device.json'
     playback = 'playback.json'
     watchSessionReport = 'watch-session-report.json'
+    incrementalCueEvidence = 'watch-incremental-cues.jsonl'
     sourceMediaTranscript = 'source-media-transcript.json'
     physicalOutputSttRaw = 'physical-output-stt.raw.json'
     physicalOutputContentRaw = 'physical-output-content.raw.json'
@@ -139,9 +139,43 @@ function Write-StrictPaidCellBudget {
   $WatchModelId = [string]$Context.request.model.id
   $FeedbackLoopPrevention = [string]$Context.request.feedbackMode
   $SubtitleTranslationMode = [string]$Context.request.model.subtitleTranslationMode
-  $WatchAutoStopAfterSeconds = [int]$Context.request.timeouts.sessionSeconds
   $providerAuthorityMode = [string]$Context.request.authorityMode
   $budgetScript = Join-Path $workspaceRoot "scripts/testing/watch-mode-external-provider-budget.mjs"
+  $scopedAppLogPath = Join-Path $OutputDirectory 'app.log'
+  $scopedLog = Copy-WatchModeAppLog -SourcePath (Get-WatchModeDesktopAppLogPath) `
+    -DestinationPath $scopedAppLogPath -RunMarker $RunMarker
+  if ($scopedLog) { $AppLogPath = $scopedAppLogPath }
+  elseif ([string]::IsNullOrWhiteSpace($AppLogPath) -or -not (Test-Path -LiteralPath $AppLogPath -PathType Leaf)) {
+    $AppLogPath = $scopedAppLogPath
+    if (-not $scopedLog) {
+      [System.IO.File]::WriteAllText($AppLogPath, "$RunMarker`n", [System.Text.UTF8Encoding]::new($false))
+    }
+  }
+  $sendBoundaryLedgerPath = Join-Path $OutputDirectory 'provider-input-budget-ledger.json'
+  if (-not (Test-Path -LiteralPath $sendBoundaryLedgerPath -PathType Leaf)) {
+    $leaseId = [string]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID
+    if ([string]::IsNullOrWhiteSpace($leaseId)) {
+      throw 'strict paid pre-provider terminal requires the coordinator-issued Provider input lease id'
+    }
+    $terminalArguments = @(
+      $budgetScript,
+      '--run-directory', $OutputDirectory,
+      '--app-log', $AppLogPath,
+      '--run-marker', $RunMarker,
+      '--cell-id', $MatrixCellId,
+      '--model-id', $WatchModelId,
+      '--feedback-mode', $FeedbackLoopPrevention,
+      '--translation-mode', $SubtitleTranslationMode,
+      '--input-ceiling-samples', "$env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES",
+      '--authority-mode', $providerAuthorityMode,
+      '--write-pre-provider-terminal', 'true',
+      '--lease-id', $leaseId
+    )
+    $terminalOutput = @(& node @terminalArguments 2>&1 | ForEach-Object { "$_" })
+    if ($LASTEXITCODE -ne 0) {
+      throw "strict paid pre-provider terminal creation failed: $($terminalOutput -join ' ')"
+    }
+  }
   $arguments = @(
     $budgetScript,
     "--run-directory", $OutputDirectory,
@@ -151,7 +185,7 @@ function Write-StrictPaidCellBudget {
     "--model-id", $WatchModelId,
     "--feedback-mode", $FeedbackLoopPrevention,
     "--translation-mode", $SubtitleTranslationMode,
-    "--session-ceiling-seconds", "$WatchAutoStopAfterSeconds",
+    "--input-ceiling-samples", "$env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES",
     "--authority-mode", $providerAuthorityMode
   )
   $output = @(& node @arguments 2>&1 | ForEach-Object { "$_" })
@@ -181,10 +215,7 @@ function Write-LocalSmokeProviderSessionAuthority {
   $sourcePath = Join-Path $OutputDirectory "source-media-transcript.json"
   $physicalPath = Join-Path $OutputDirectory "physical-output-content.raw.json"
   $authorityPath = Join-Path $OutputDirectory "smoke-provider-session-authority.json"
-  $requiredPaths = @($leasePath, $ledgerPath)
-  if ($FeedbackLoopPrevention -ne "echo-cancel") {
-    $requiredPaths += @($sourcePath, $physicalPath)
-  }
+  $requiredPaths = @($leasePath, $ledgerPath, $sourcePath, $physicalPath)
   foreach ($requiredPath in $requiredPaths) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
       throw "local smoke provider-session authority input is missing: $requiredPath"
@@ -240,12 +271,10 @@ function Write-LocalSmokeProviderSessionAuthority {
   if ($ledger.budgetExceeded -ne $false -or $ledger.finalized -ne $true) { $violations += "smoke Provider ledger is not a finalized in-budget session" }
   if ([string]$ledger.terminalReason -cne "worker-completed") { $violations += "smoke Provider worker did not reach its normal completion terminal" }
   if ([string]$ledger.model -cne $WatchModelId -or [string]$ledger.protocol -cne $WatchRealtimeProtocol) { $violations += "smoke Provider model/protocol mismatch" }
-  if ($FeedbackLoopPrevention -ne "echo-cancel") {
-    $sourceHasZeroCallFields = $source.PSObject.Properties.Name -contains "remoteProviderCalls" -and $source.PSObject.Properties.Name -contains "externalAudioSeconds"
-    $physicalHasZeroCallFields = $physical.PSObject.Properties.Name -contains "remoteProviderCalls" -and $physical.PSObject.Properties.Name -contains "externalAudioSeconds"
-    if ($source.schemaVersion -ne 2 -or $source.authorityMode -cne "canonical-fixture-local-v2" -or -not $sourceHasZeroCallFields -or $source.passed -ne $true -or [long]$source.remoteProviderCalls -ne 0 -or [double]$source.externalAudioSeconds -ne 0) { $violations += "canonical source authority used or required an auxiliary Provider" }
-    if ($physical.schemaVersion -ne 1 -or $physical.authorityMode -cne "local-pcm-cue-playback-v1" -or -not $physicalHasZeroCallFields -or $physical.passed -ne $true -or [long]$physical.remoteProviderCalls -ne 0 -or [double]$physical.externalAudioSeconds -ne 0) { $violations += "physical-output authority used or required an auxiliary Provider" }
-  }
+  $sourceHasZeroCallFields = $source.PSObject.Properties.Name -contains "remoteProviderCalls" -and $source.PSObject.Properties.Name -contains "externalAudioSeconds"
+  $physicalHasZeroCallFields = $physical.PSObject.Properties.Name -contains "remoteProviderCalls" -and $physical.PSObject.Properties.Name -contains "externalAudioSeconds"
+  if ($source.schemaVersion -ne 2 -or $source.authorityMode -cne "canonical-fixture-local-v2" -or -not $sourceHasZeroCallFields -or $source.passed -ne $true -or [long]$source.remoteProviderCalls -ne 0 -or [double]$source.externalAudioSeconds -ne 0) { $violations += "canonical source authority used or required an auxiliary Provider" }
+  if ($physical.schemaVersion -ne 1 -or $physical.authorityMode -cne "local-pcm-cue-playback-v1" -or -not $physicalHasZeroCallFields -or $physical.passed -ne $true -or [long]$physical.remoteProviderCalls -ne 0 -or [double]$physical.externalAudioSeconds -ne 0) { $violations += "physical-output authority used or required an auxiliary Provider" }
   $authority = [ordered]@{
     schemaVersion = 1
     artifactKind = "watch-mode-smoke-provider-session-authority"

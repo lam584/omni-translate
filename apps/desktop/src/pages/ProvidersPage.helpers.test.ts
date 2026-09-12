@@ -222,6 +222,31 @@ describe('ProvidersPage helpers', () => {
 
       expect(patch.probe?.checkedAt).toBe(PENDING_PROBE_CHECKED_AT);
       expect(patch.probe?.profileId.endsWith('-pending')).toBe(true);
+      expect(patch).not.toHaveProperty('templateRealtimeProtocol');
+    });
+
+    it('keeps manifest scenes empty when no compatible preset can authorize a fallback', () => {
+      const template = structuredClone(defaultProviderTemplate);
+      template.manifestProviderId = 'fixture-provider';
+      template.presetModels = [];
+
+      const patch = buildProviderDraftPatchFromTemplate(
+        structuredClone(appConfigDraftMock.providers[0]),
+        template,
+      );
+      expect(patch.sceneModelAssignments?.every((assignment) => assignment.modelIds.length === 0)).toBe(true);
+      expect(patch.sceneModelAssignments?.map((assignment) => assignment.scenario)).toContain('watch');
+      expect(patch.sceneModelAssignments?.map((assignment) => assignment.scenario)).toContain('subtitle-translate');
+
+      const preassigned = structuredClone(deepseekTemplate);
+      preassigned.manifestProviderId = 'fixture-provider';
+      const assignedPatch = buildProviderDraftPatchFromTemplate(
+        structuredClone(appConfigDraftMock.providers[0]),
+        preassigned,
+      );
+      expect(assignedPatch.sceneModelAssignments?.find(
+        (assignment) => assignment.scenario === 'subtitle-translate',
+      )?.modelIds.length).toBeGreaterThan(0);
     });
   });
 });

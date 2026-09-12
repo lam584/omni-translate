@@ -14,6 +14,9 @@ use super::{
     wait_for_frontend_ipc_ready, write_report_atomic,
 };
 use crate::audio::state::AudioStateStore;
+use crate::audio::state::BridgeSourceFrameIdentity;
+use crate::audio::state::TranslationPlaybackQuiescenceSnapshot;
+use crate::bridge::state::BridgeStateStore;
 
 fn strict_watch_environment(name: &str) -> Option<String> {
     match name {
@@ -75,6 +78,115 @@ fn diagnostic_feedback_mode_accepts_all_three_routes_and_rejects_typos() {
     assert!(parse_feedback_loop_prevention(Some("process-loopback"))
         .unwrap_err()
         .contains("Unsupported"));
+}
+
+#[test]
+fn midpoint_restart_requires_every_translated_playback_owner_to_be_idle() {
+    let idle = TranslationPlaybackQuiescenceSnapshot::default();
+    assert!(super::process_exclusion_restart_is_quiescent(false, idle));
+    assert!(!super::process_exclusion_restart_is_quiescent(true, idle));
+
+    for busy in [
+        TranslationPlaybackQuiescenceSnapshot {
+            pending_native_audio: true,
+            ..idle
+        },
+        TranslationPlaybackQuiescenceSnapshot {
+            queued_commands: 1,
+            ..idle
+        },
+        TranslationPlaybackQuiescenceSnapshot {
+            active_commands: 1,
+            ..idle
+        },
+        TranslationPlaybackQuiescenceSnapshot {
+            pending_audio_frames: Some(1),
+            ..idle
+        },
+        TranslationPlaybackQuiescenceSnapshot {
+            pending_playback_submissions: 1,
+            ..idle
+        },
+        TranslationPlaybackQuiescenceSnapshot {
+            pending_bridge_acks: 1,
+            ..idle
+        },
+        TranslationPlaybackQuiescenceSnapshot {
+            active_bridge_cues: 1,
+            ..idle
+        },
+        TranslationPlaybackQuiescenceSnapshot {
+            restart_barrier: true,
+            ..idle
+        },
+    ] {
+        assert!(!super::process_exclusion_restart_is_quiescent(false, busy));
+    }
+}
+
+#[test]
+fn process_restart_freezes_old_frame_baseline_at_identity_revocation() {
+    fn old_frame(read_timestamp_ms: u64) -> BridgeSourceFrameIdentity {
+        BridgeSourceFrameIdentity {
+            bridge_process_id: 42,
+            bridge_instance_id: "instance-old".to_string(),
+            session_id: "session-old".to_string(),
+            source_generation: 7,
+            source_generation_token: "instance-old:session-old:7".to_string(),
+            frame_timestamp_ms: read_timestamp_ms.saturating_sub(1),
+            read_timestamp_ms,
+        }
+    }
+
+    // Deterministic counterexample for the former check-then-act order: two
+    // frames accepted after sampling but before token revocation were counted
+    // as post-restart leakage even though both preceded the restart trigger.
+    let legacy_audio = AudioStateStore::new();
+    legacy_audio.record_bridge_source_frame_accepted(old_frame(100));
+    let legacy_baseline = legacy_audio
+        .bridge_source_runtime_evidence()
+        .accepted_for_instance("instance-old");
+    legacy_audio.record_bridge_source_frame_accepted(old_frame(101));
+    legacy_audio.record_bridge_source_frame_accepted(old_frame(102));
+    let legacy_false_positive = legacy_audio
+        .bridge_source_runtime_evidence()
+        .accepted_for_instance("instance-old")
+        .saturating_sub(legacy_baseline);
+    assert_eq!(legacy_false_positive, 2);
+
+    let bridge = BridgeStateStore::new();
+    bridge.update_snapshot(|current| {
+        current.bridge_process_id = Some(42);
+        current.bridge_instance_id = Some("instance-old".to_string());
+        current.session_id = Some("session-old".to_string());
+        current.source_generation = 7;
+        current.source_generation_token =
+            Some("instance-old:session-old:7".to_string());
+    });
+    let audio = AudioStateStore::new();
+    for timestamp in [100, 101, 102] {
+        audio.record_bridge_source_frame_accepted(old_frame(timestamp));
+    }
+
+    let frozen = super::process_exclusion_restart::revoke_process_exclusion_source_and_freeze_baseline(
+        &bridge,
+        &audio,
+        42,
+        "instance-old",
+        "session-old",
+        7,
+    )
+    .expect("matching producer identity should be revoked");
+    assert_eq!(frozen, 3);
+    assert_eq!(bridge.snapshot().source_generation_token, None);
+
+    // Delayed pipe frames now cross the rejection side of the fence. They do
+    // not change the accepted baseline used by oldFramesAfterRestart.
+    audio.record_bridge_source_frame_rejected(old_frame(103));
+    audio.record_bridge_source_frame_rejected(old_frame(104));
+    let after = audio.bridge_source_runtime_evidence();
+    assert_eq!(after.accepted_for_instance("instance-old") - frozen, 0);
+    assert_eq!(after.rejected_for_instance_since("instance-old", 103), 2);
 }
 
 #[test]
@@ -279,7 +391,7 @@ fn diagnostic_report_writer_replaces_the_target_with_complete_json() {
 }
 
 #[test]
-fn explicit_dashscope_protocol_binds_model_to_dashscope_provider() {
+fn explicit_dashscope_protocol_rejects_manifest_only_adapter_before_mutation() {
     let model = "qwen3.5-omni-plus-realtime";
     let mut config = json!({
         "providers": [
@@ -297,24 +409,12 @@ fn explicit_dashscope_protocol_binds_model_to_dashscope_provider() {
         ]
     });
 
-    let effective = configure_watch_realtime_provider(&mut config, model, "dashscope-omni")
-        .expect("DashScope provider should be selected");
+    let before = config.clone();
+    let error = configure_watch_realtime_provider(&mut config, model, "dashscope-omni")
+        .expect_err("manifest-only Omni adapter must not receive Watch connection authority");
 
-    assert_eq!(
-        effective,
-        "template-dashscope-realtime::qwen3.5-omni-plus-realtime"
-    );
-    assert_eq!(config["providers"][0]["kind"], "openai-compatible");
-    assert_eq!(config["providers"][1]["model"], model);
-    assert_eq!(
-        config["providers"][1]["localModelCapabilityRegistry"][0]["realtimeProtocol"],
-        "dashscope-omni"
-    );
-    assert_eq!(
-        config["providers"][1]["localModelCapabilityRegistry"][0]
-            ["interactionCapabilities"],
-        json!(["manual_commit", "streaming"])
-    );
+    assert!(error.contains("model_protocol.adapter_unavailable"));
+    assert_eq!(config, before);
 }
 
 #[test]
@@ -329,24 +429,24 @@ fn strict_paid_provider_selection_cannot_be_hijacked_by_an_earlier_dashscope_pro
 
     let effective = configure_watch_realtime_provider_with_environment(
         &mut config,
-        "qwen3.5-omni-flash-realtime",
-        "dashscope-omni",
+        "qwen3.5-livetranslate-flash-realtime",
+        "dashscope-livetranslate",
         strict_watch_environment,
     )
     .expect("strict provider authority should select the exact provider id");
 
     assert_eq!(
         effective,
-        "template-dashscope-realtime::qwen3.5-omni-flash-realtime"
+        "template-dashscope-realtime::qwen3.5-livetranslate-flash-realtime"
     );
     assert_eq!(config["providers"][0]["providerId"], "provider-dashscope");
     assert_eq!(
         config["providers"][0]["model"],
-        "qwen3.5-omni-flash-realtime"
+        "qwen3.5-livetranslate-flash-realtime"
     );
     assert_eq!(
         config["providers"][0]["realtimeProtocol"],
-        "dashscope-omni"
+        "dashscope-livetranslate"
     );
     assert_eq!(
         config["providers"][1]["providerId"],
@@ -360,7 +460,21 @@ fn strict_paid_provider_selection_cannot_be_hijacked_by_an_earlier_dashscope_pro
     )
     .expect("downstream route resolution should preserve the authorized provider");
     assert_eq!(resolved.provider_id, "provider-dashscope");
-    assert_eq!(resolved.model, "qwen3.5-omni-flash-realtime");
+    assert_eq!(resolved.model, "qwen3.5-livetranslate-flash-realtime");
+    let declaration = &config["providers"][0]["localModelCapabilityRegistry"][0];
+    assert_eq!(
+        declaration["registryVersion"],
+        "bailian-model-protocol-registry/v1"
+    );
+    assert_eq!(
+        declaration["profileId"],
+        "bailian.livetranslate.realtime.ws"
+    );
+    assert_eq!(declaration["profileVersion"], 1);
+    let profile = crate::audio::events::resolve_realtime_profile(&resolved, &resolved.model);
+    assert_eq!(profile.source.as_str(), "manifest");
+    assert!(profile.preconnect_allowed);
+    assert!(profile.model_protocol_error.is_none());
 }
 
 #[test]
@@ -371,8 +485,8 @@ fn strict_paid_provider_selection_fails_when_the_expected_provider_is_missing() 
 
     let error = configure_watch_realtime_provider_with_environment(
         &mut config,
-        "qwen3.5-omni-flash-realtime",
-        "dashscope-omni",
+        "qwen3.5-livetranslate-flash-realtime",
+        "dashscope-livetranslate",
         strict_watch_environment,
     )
     .expect_err("strict provider authority must fail before selecting an alternate provider");
@@ -398,8 +512,8 @@ fn strict_paid_provider_selection_requires_the_fixed_expected_provider_input() {
 
         let error = configure_watch_realtime_provider_with_environment(
             &mut config,
-            "qwen3.5-omni-flash-realtime",
-            "dashscope-omni",
+            "qwen3.5-livetranslate-flash-realtime",
+            "dashscope-livetranslate",
             |name| match name {
                 "OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY" => Some("1".to_string()),
                 "OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID" => {
@@ -411,6 +525,36 @@ fn strict_paid_provider_selection_requires_the_fixed_expected_provider_input() {
         .expect_err("strict provider authority must require the fixed expected provider input");
 
         assert!(error.contains(expected_error), "unexpected error: {error}");
+        assert_eq!(config, before);
+    }
+}
+
+#[test]
+fn strict_paid_provider_selection_rejects_non_release_model_or_protocol() {
+    for (model_id, realtime_protocol) in [
+        ("qwen3.5-omni-flash-realtime", "dashscope-omni"),
+        (
+            "qwen3.5-livetranslate-flash-realtime",
+            "dashscope-omni",
+        ),
+    ] {
+        let mut config = default_watch_config();
+        let before = config.clone();
+
+        let error = configure_watch_realtime_provider_with_environment(
+            &mut config,
+            model_id,
+            realtime_protocol,
+            strict_watch_environment,
+        )
+        .expect_err("strict provider authority must reject non-release identities");
+
+        assert!(
+            error.contains(
+                "requires model=qwen3.5-livetranslate-flash-realtime protocol=dashscope-livetranslate"
+            ),
+            "unexpected error: {error}"
+        );
         assert_eq!(config, before);
     }
 }
@@ -435,8 +579,8 @@ fn strict_paid_provider_selection_rejects_kind_and_template_mismatches() {
 
         let error = configure_watch_realtime_provider_with_environment(
             &mut config,
-            "qwen3.5-omni-flash-realtime",
-            "dashscope-omni",
+            "qwen3.5-livetranslate-flash-realtime",
+            "dashscope-livetranslate",
             strict_watch_environment,
         )
         .expect_err("strict provider authority must reject identity metadata mismatches");
@@ -447,7 +591,7 @@ fn strict_paid_provider_selection_rejects_kind_and_template_mismatches() {
 }
 
 #[test]
-fn non_strict_provider_selection_keeps_legacy_first_compatible_behavior() {
+fn non_strict_provider_selection_still_rejects_manifest_only_adapter() {
     let mut config = default_watch_config();
     let exact = config["providers"][0].clone();
     let mut alternate = exact.clone();
@@ -455,27 +599,17 @@ fn non_strict_provider_selection_keeps_legacy_first_compatible_behavior() {
     alternate["model"] = json!("alternate-stale-model");
     config["providers"] = json!([alternate, exact]);
 
-    let effective = configure_watch_realtime_provider_with_environment(
+    let before = config.clone();
+    let error = configure_watch_realtime_provider_with_environment(
         &mut config,
         "qwen3.5-omni-flash-realtime",
         "dashscope-omni",
         |_| None,
     )
-    .expect("ordinary diagnostics should retain compatibility selection");
+    .expect_err("ordinary diagnostics must not bypass manifest adapter status");
 
-    assert_eq!(
-        effective,
-        "template-dashscope-realtime::qwen3.5-omni-flash-realtime"
-    );
-    assert_eq!(
-        config["providers"][0]["providerId"],
-        "provider-dashscope-alternate"
-    );
-    assert_eq!(
-        config["providers"][0]["model"],
-        "qwen3.5-omni-flash-realtime"
-    );
-    assert_eq!(config["providers"][1]["providerId"], "provider-dashscope");
+    assert!(error.contains("model_protocol.adapter_unavailable"));
+    assert_eq!(config, before);
 }
 
 #[test]
@@ -490,8 +624,8 @@ fn explicit_protocol_fails_when_matching_provider_is_missing() {
 
     let error = configure_watch_realtime_provider(
         &mut config,
-        "qwen3.5-omni-plus-realtime",
-        "dashscope-omni",
+        "qwen3.5-livetranslate-flash-realtime",
+        "dashscope-livetranslate",
     )
     .expect_err("missing DashScope provider should fail autostart config");
 

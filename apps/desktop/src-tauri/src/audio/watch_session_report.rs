@@ -5,15 +5,18 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use super::contracts::{
-    OverlayRenderReceiptRuntime, SubtitleDisplaySegmentRuntime, SubtitleTranslationStateRuntime,
-    WatchCueComparisonRuntime, WatchIssueRuntime, WatchSessionReportRuntime,
-    WatchSessionReportSummaryRuntime, WatchTimelineEventRuntime,
+    ModelProtocolProfileIdentityRuntime, OverlayRenderReceiptRuntime,
+    SubtitleDisplaySegmentRuntime, SubtitleTranslationStateRuntime, WatchCueComparisonRuntime,
+    WatchIssueRuntime, WatchSessionReportRuntime, WatchSessionReportSummaryRuntime,
+    WatchTimelineEventRuntime,
 };
 use super::time_utils::{ms_marker, unix_ms};
 
 mod lifecycle;
+mod incremental_evidence;
 mod model_recording;
 mod snapshot;
+use incremental_evidence::IncrementalEvidenceWriter;
 use snapshot::{build_snapshot, correlation_text, empty_cue, sanitize_error, truncate_chars};
 #[cfg(test)]
 use snapshot::normalize_comparison_text;
@@ -35,6 +38,7 @@ fn is_internal_status_cue(cue_id: &str) -> bool {
 
 pub(crate) struct WatchSessionReportStore {
     inner: Mutex<Option<WatchSession>>,
+    incremental_evidence: IncrementalEvidenceWriter,
 }
 
 struct WatchSession {
@@ -43,6 +47,7 @@ struct WatchSession {
     route_mode: String,
     provider_id: String,
     model: String,
+    model_protocol_profile_identity: Option<ModelProtocolProfileIdentityRuntime>,
     started_at: String,
     started_unix_ms: u64,
     started_instant: Instant,
@@ -172,6 +177,69 @@ impl WatchSession {
         self.dropped_event_count = self.dropped_event_count.saturating_add(1);
     }
 
+    fn inherit_latest_equivalent_final_receipt(&mut self, cue_index: usize) {
+        let cue = &self.cues[cue_index];
+        if cue.translation_state != Some(SubtitleTranslationStateRuntime::Final)
+            || cue.published_text.is_empty()
+            || cue.source_text.is_empty()
+            || cue.rendered_first_at_ms.is_some()
+        {
+            return;
+        }
+
+        let source_signature = correlation_text(&cue.source_text);
+        let published_signature = correlation_text(&cue.published_text);
+        let cue_id = cue.cue_id.clone();
+        let latest_render = self
+            .cues
+            .iter()
+            .enumerate()
+            .flat_map(|(owner_index, owner)| {
+                owner
+                    .events
+                    .iter()
+                    .filter(|event| owner.cue_id == cue_id && event.stage == "render")
+                    .map(move |event| (owner_index, event))
+            })
+            .max_by_key(|(_, event)| {
+                event
+                    .event_id
+                    .strip_prefix("watch-event-")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0)
+            });
+        let Some((owner_index, render_event)) = latest_render else {
+            return;
+        };
+        // `record_overlay_receipt` preserves renderer `committed` authority as
+        // `final_event`; only a committed, currently-visible receipt can prove
+        // that the equivalent final revision was rendered.
+        if render_event.visible != Some(true)
+            || !render_event.final_event
+            || correlation_text(&render_event.text) != published_signature
+        {
+            return;
+        }
+
+        let donor = &self.cues[owner_index];
+        if correlation_text(&donor.rendered_source_text) != source_signature
+            || correlation_text(&donor.rendered_text) != published_signature
+        {
+            return;
+        }
+        let inherited = (
+            donor.rendered_source_text.clone(),
+            donor.rendered_text.clone(),
+            donor.rendered_first_at_ms,
+            donor.rendered_final_at_ms,
+        );
+        let cue = &mut self.cues[cue_index];
+        cue.rendered_source_text = inherited.0;
+        cue.rendered_text = inherited.1;
+        cue.rendered_first_at_ms = inherited.2;
+        cue.rendered_final_at_ms = inherited.3;
+    }
+
     fn push_session_event(&mut self, event: WatchTimelineEventRuntime) {
         if self.events.len() >= MAX_SESSION_EVENTS {
             let protected_incoming = event.final_event || event.stage == "error";
@@ -252,6 +320,36 @@ impl WatchSession {
 }
 
 impl WatchSessionReportStore {
+    fn emit_incremental_cue(&self, session: &WatchSession, cue_index: usize, stage: &str) {
+        self.incremental_evidence.emit_cue(
+            &session.session_id,
+            session.next_event_id,
+            stage,
+            &session.cues[cue_index],
+        );
+    }
+
+    pub(crate) fn discard_ignored_short_vad_fragment_cue(&self, cue_id: &str) {
+        let mut guard = self.inner.lock().expect("watch session report poisoned");
+        let Some(session) = guard.as_mut() else {
+            return;
+        };
+        let removed_revisions = session
+            .cues
+            .iter()
+            .filter(|cue| cue.cue_id == cue_id)
+            .map(|cue| cue.revision)
+            .collect::<Vec<_>>();
+        session.cues.retain(|cue| cue.cue_id != cue_id);
+        for revision in removed_revisions {
+            session
+                .adopted_segments
+                .remove(&WatchSession::cue_revision_key(cue_id, revision));
+        }
+    }
+}
+
+impl WatchSessionReportStore {
 
     pub(crate) fn stage_manual_audio_origin(&self, started_at_ms: u64) {
         let mut guard = self.inner.lock().expect("watch session report poisoned");
@@ -291,6 +389,7 @@ impl WatchSessionReportStore {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn record_publish(
         &self,
         cue_id: &str,
@@ -374,6 +473,10 @@ impl WatchSessionReportStore {
             None,
         );
         session.push_cue_event(index, event);
+        if final_event {
+            session.inherit_latest_equivalent_final_receipt(index);
+            self.emit_incremental_cue(session, index, "publish-final");
+        }
     }
 
     pub(crate) fn record_overlay_receipt(&self, receipt: OverlayRenderReceiptRuntime) {
@@ -417,18 +520,38 @@ impl WatchSessionReportStore {
         // current publish and retained publish events, then attach a genuine
         // content mismatch to the latest revision of the same logical cue so
         // the report preserves the rendered evidence instead of inventing an
-        // unmatched-receipt failure.
+        // unmatched-receipt failure. Source identity must win when present:
+        // adjacent source revisions can legitimately publish identical text,
+        // and a delayed receipt from the older revision must not move the
+        // newer revision's first-render timestamp backwards.
         let rendered_signature = correlation_text(&receipt.translated_text);
-        let content_match = session.cues.iter().rposition(|cue| {
-            cue.cue_id == receipt.cue_id
-                && !rendered_signature.is_empty()
-                && (correlation_text(&cue.published_text) == rendered_signature
+        let source_signature = correlation_text(&receipt.source_text);
+        let published_before_receipt = |cue: &WatchCueComparisonRuntime| {
+            !rendered_signature.is_empty()
+                && ((correlation_text(&cue.published_text) == rendered_signature
+                    && cue.published_first_at_ms.is_some_and(|published| published <= elapsed))
                     || cue.events.iter().any(|event| {
                         event.stage == "publish"
+                            && event.elapsed_ms <= elapsed
                             && correlation_text(&event.text) == rendered_signature
                     }))
+        };
+        let source_match = (!source_signature.is_empty()).then(|| {
+            session.cues.iter().rposition(|cue| {
+                cue.cue_id == receipt.cue_id
+                    && published_before_receipt(cue)
+                    && (correlation_text(&cue.source_text) == source_signature
+                        || cue.events.iter().any(|event| {
+                            event.stage == "source"
+                                && correlation_text(&event.text) == source_signature
+                        }))
+            })
+        }).flatten();
+        let content_match = session.cues.iter().rposition(|cue| {
+            cue.cue_id == receipt.cue_id
+                && published_before_receipt(cue)
         });
-        let cue_match = content_match.or_else(|| {
+        let cue_match = source_match.or(content_match).or_else(|| {
             session
                 .cues
                 .iter()
@@ -498,6 +621,9 @@ impl WatchSessionReportStore {
             None,
         );
         session.push_cue_event(index, event);
+        if receipt.committed && receipt.visible {
+            self.emit_incremental_cue(session, index, "render-final");
+        }
     }
 
     pub(crate) fn record_milestone_with_detail(&self, name: &str, detail: Option<String>) {

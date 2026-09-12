@@ -92,10 +92,83 @@ export type ProviderModelCatalogCache = {
   models: ProviderModelCatalogCacheItem[];
 };
 
+export type ProviderModelProtocolOperation =
+  | 'native_translate'
+  | 'dialogue'
+  | 'asr'
+  | 'tts'
+  | 'file_translate'
+  | 'voice_clone';
+
+export type ProviderModelProtocolTransport = 'websocket' | 'webrtc' | 'aoq' | 'http' | 'sse';
+
+export type ProviderModelWireDialect =
+  | 'bailian-livetranslate-session-ws-v1'
+  | 'bailian-omni-realtime-ws-v1'
+  | 'bailian-qwen-audio-chat-realtime-ws-v1'
+  | 'bailian-qwen-asr-session-ws-v1'
+  | 'bailian-qwen-audio-asr-task-ws-v1'
+  | 'bailian-fun-asr-task-ws-v1'
+  | 'bailian-paraformer-task-ws-v1'
+  | 'bailian-gummy-task-ws-v1'
+  | 'bailian-speech-synthesizer-duplex-task-ws-v1'
+  | 'bailian-sambert-one-shot-task-ws-v1'
+  | 'bailian-qwen-tts-session-ws-v1'
+  | 'bailian-multimodal-dialog-task-ws-v1';
+
+export type ProviderModelProtocolFraming =
+  | 'json-base64'
+  | 'json-events'
+  | 'binary'
+  | 'json-events-and-binary'
+  | 'http-body'
+  | 'sse'
+  | 'none';
+
+export type ProviderModelProtocolTerminalLifecycle =
+  | 'session.finish->session.finished'
+  | 'owner-close-after-response-drain'
+  | 'finish-task->task-finished'
+  | 'task-finished-after-one-shot'
+  | 'Stop->Stopped'
+  | 'http-response-complete'
+  | 'sse-[DONE]';
+
+export type ProviderModelProtocolProfileDeclaration = {
+  registryVersion: string;
+  profileId: string;
+  profileVersion: number;
+  product: string;
+  operations: ProviderModelProtocolOperation[];
+  transport: ProviderModelProtocolTransport;
+  endpointFamily: string;
+  endpointPath: string;
+  wireDialect: ProviderModelWireDialect;
+  inputFraming: ProviderModelProtocolFraming;
+  outputFraming: ProviderModelProtocolFraming;
+  terminalLifecycle: ProviderModelProtocolTerminalLifecycle;
+  adapterStatus: 'enabled' | 'manifest-only';
+};
+
 export type ProviderModelCapabilityRegistryEntry = {
   id: string;
   modelId: string;
   capabilities: ProviderCapability[];
+  /**
+   * Versioned Bailian protocol-profile declaration copied from the official
+   * manifest. Local capability rows remain advisory; these fields are only
+   * identity assertions checked by the manifest authorizer before connection.
+   */
+  registryVersion?: string;
+  profileId?: string;
+  profileVersion?: number;
+  /**
+   * Read-only manifest projection for UI and persisted diagnostics. It cannot
+   * grant a connection: runtime authority is still rehydrated from the exact
+   * registry/profile/version identity and validated before transport access.
+   */
+  modelProtocolProfile?: ProviderModelProtocolProfileDeclaration;
+  /** @deprecated Legacy UI metadata; never protocol authority for DashScope. */
   realtimeProtocol?: RealtimeProtocol;
   realtimeAudioMode?: RealtimeAudioMode;
   interactionCapabilities?: ProviderInteractionCapability[];
@@ -107,6 +180,11 @@ export type ProviderModelCapabilityRegistryEntry = {
 
 export type RealtimeAudioMode = 'manual' | 'server_vad' | 'semantic_vad' | 'gemini_auto_activity' | 'gemini_manual_activity';
 
+/**
+ * Legacy route projection for existing UI/runtime contracts. Bailian task,
+ * TTS, and dialogue products are identified by versioned manifest profiles;
+ * they must not be added here as a substitute for an executable pipeline.
+ */
 export type RealtimeProtocol =
   | 'dashscope-omni'
   | 'dashscope-livetranslate'
@@ -129,6 +207,16 @@ export type ProviderSceneModelAssignment = {
   modelIds: string[];
 };
 
+export type ProviderModelProtocolBinding = {
+  modelId: string;
+  operation: string;
+  profileOwnerProviderId: string;
+  manifestVersion: number;
+  profileId: string;
+  profileVersion: number;
+  authProfileId?: string;
+};
+
 export type ProviderResponseModality = 'text' | 'audio';
 
 export type ProviderDraft = {
@@ -136,14 +224,18 @@ export type ProviderDraft = {
   templateVersion: string;
   templateSource: ProviderTemplateSource;
   providerId: string;
+  /** Canonical module owner; derived from the immutable template identity. */
+  manifestProviderId?: string;
   kind: ProviderKind;
-  /** Protocol declared by the selected template. */
+  /** @deprecated Legacy template hint; never protocol authority for DashScope. */
   templateRealtimeProtocol?: RealtimeProtocol;
-  /** Provider-level default used when a model has no exact registry entry. */
+  /** @deprecated Legacy provider hint; never protocol authority for DashScope. */
   realtimeProtocol?: RealtimeProtocol;
   displayName: string;
   mode: ProviderMode;
   model: string;
+  /** Azure-style opaque deployment alias, separate from the catalog model. */
+  deploymentId?: string;
   baseUrl: string;
   transport: ProviderTransport;
   authRef: ProviderAuthRef;
@@ -156,6 +248,7 @@ export type ProviderDraft = {
   responseModalities: ProviderResponseModality[];
   customHeaders: ProviderCustomHeaderDraft[];
   sceneModelAssignments: ProviderSceneModelAssignment[];
+  modelProtocolBindings?: ProviderModelProtocolBinding[];
   localModelCapabilityRegistry: ProviderModelCapabilityRegistryEntry[];
   modelCatalogCache: ProviderModelCatalogCache;
   probe: ProviderProbeSnapshot;

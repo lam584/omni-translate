@@ -4,6 +4,7 @@ impl WatchSessionReportStore {
     pub(crate) fn new() -> Self {
         Self {
             inner: Mutex::new(None),
+            incremental_evidence: IncrementalEvidenceWriter::from_environment(),
         }
     }
 
@@ -32,6 +33,7 @@ impl WatchSessionReportStore {
             route_mode: "watch".to_string(),
             provider_id: provider_id.to_string(),
             model: model.to_string(),
+            model_protocol_profile_identity: None,
             started_at: ms_marker(now),
             started_unix_ms: now,
             started_instant: Instant::now(),
@@ -62,6 +64,43 @@ impl WatchSessionReportStore {
             session.push_session_event(event);
         }
         session_id
+    }
+
+    pub(crate) fn bind_authorized_model_protocol_profile(
+        &self,
+        authority: &crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile,
+    ) -> Result<(), String> {
+        self.bind_model_protocol_profile_identity(ModelProtocolProfileIdentityRuntime::from(
+            authority,
+        ))
+    }
+
+    pub(super) fn bind_model_protocol_profile_identity(
+        &self,
+        identity: ModelProtocolProfileIdentityRuntime,
+    ) -> Result<(), String> {
+        let mut guard = self.inner.lock().expect("watch session report poisoned");
+        let session = guard.as_mut().ok_or_else(|| {
+            "model_protocol.authorization_identity_mismatch: Watch report session is missing"
+                .to_string()
+        })?;
+        if !session.model.trim().is_empty() && session.model != identity.exact_model_id {
+            return Err(format!(
+                "model_protocol.authorization_identity_mismatch: Watch report model '{}' does not match authorized exactModelId '{}'",
+                session.model, identity.exact_model_id
+            ));
+        }
+        if let Some(existing) = session.model_protocol_profile_identity.as_ref() {
+            if existing != &identity {
+                return Err(
+                    "model_protocol.authorization_identity_mismatch: Watch report protocol identity changed during one session"
+                        .to_string(),
+                );
+            }
+            return Ok(());
+        }
+        session.model_protocol_profile_identity = Some(identity);
+        Ok(())
     }
 
     pub(crate) fn session_id(&self) -> Option<String> {
@@ -97,6 +136,9 @@ impl WatchSessionReportStore {
             None,
         );
         session.push_session_event(event);
+        let session_id = session.session_id.clone();
+        drop(guard);
+        self.incremental_evidence.finish(&session_id);
     }
 
     pub(crate) fn clear(&self) {
@@ -175,6 +217,7 @@ impl WatchSessionReportStore {
         session.push_session_event(event);
     }
 
+    #[cfg(test)]
     pub(crate) fn record_source(
         &self,
         cue_id: &str,
@@ -221,9 +264,13 @@ impl WatchSessionReportStore {
         if translation_state.is_some() {
             cue.translation_state = translation_state;
         }
+        // The source stage begins when the accepted cue event arrives, even
+        // when server VAD has not produced non-empty ASR text yet. Native
+        // realtime model output can legitimately race the first transcript;
+        // retain the earlier source event as the causal stage anchor.
+        cue.source_at_ms.get_or_insert(elapsed);
         if !text.is_empty() {
             cue.source_text = text.to_string();
-            cue.source_at_ms.get_or_insert(elapsed);
             if final_event {
                 cue.source_stable_at_ms.get_or_insert(elapsed);
             }

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omni-translate.local/contracts/provider-wire-fixture.schema.json",
+  "title": "Omni Translate sanitized provider wire fixture",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "id",
+    "providerId",
+    "protocolProfileId",
+    "protocolProfileVersion",
+    "kind",
+    "provenance",
+    "scenario",
+    "data"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "../../../contracts/provider-wire-fixture.schema.json"
+    },
+    "schemaVersion": {
+      "const": "provider-wire-fixture/v1"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "providerId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9.-]*$"
+    },
+    "protocolProfileId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9.-]*$"
+    },
+    "protocolProfileVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "kind": {
+      "enum": ["wire", "probe", "smoke", "error"]
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceDocumentationIds", "capturedFromLive", "sanitized"],
+      "properties": {
+        "sourceDocumentationIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9.-]*$"
+          }
+        },
+        "capturedFromLive": { "type": "boolean" },
+        "sanitized": { "const": true },
+        "evidencePath": {
+          "type": "string",
+          "pattern": "^artifacts/"
+        },
+        "notes": { "type": "string" }
+      }
+    },
+    "scenario": {
+      "type": "string",
+      "minLength": 1
+    },
+    "data": {
+      "type": "object",
+      "description": "Provider-owned, sanitized request/response/events or decoded binary structure.",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+      },
+      "additionalProperties": true
+    }
+  }
+}

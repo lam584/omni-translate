@@ -139,6 +139,13 @@ pub(crate) trait EchoCancellerEngine: Send {
     fn stats(&self) -> EchoCancellerEngineStats;
 }
 
+#[cfg(test)]
+pub(crate) fn create_echo_canceller_for_test(
+    engine: Box<dyn EchoCancellerEngine>,
+) -> Result<ProductionEchoCanceller, String> {
+    ProductionEchoCanceller::from_verified_aec3_engine_for_test(engine)
+}
+
 /// Format/frame adapter around WebRTC AEC3. Provider-native render formats are
 /// normalized to 48 kHz stereo and both directions are delivered as exact,
 /// strictly continuous 10 ms frames.

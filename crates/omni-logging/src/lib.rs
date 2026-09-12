@@ -16,6 +16,7 @@
 //! - [`panic_hook::install`]: a global panic hook writing one single-line
 //!   record to the main log plus the full backtrace to a `panic.log`.
 
+mod directory_lock;
 pub mod level;
 pub mod logger;
 pub mod panic_hook;
@@ -23,6 +24,7 @@ pub mod pipeline;
 pub mod timestamp;
 
 pub use level::LogLevel;
+pub use directory_lock::{lock_log_directory, LogDirectoryGuard, LOG_DIRECTORY_LOCK_FILE};
 pub use logger::Logger;
 pub use pipeline::LogPipeline;
 
@@ -30,6 +32,19 @@ pub use pipeline::LogPipeline;
 pub(crate) mod test_support {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Validate the resolved target before recursively deleting test artifacts.
+    pub(crate) fn remove_temp_dir(root: &std::path::Path) -> std::io::Result<()> {
+        let temp = std::fs::canonicalize(std::env::temp_dir())?;
+        let target = std::fs::canonicalize(root)?;
+        if !target.is_absolute() || target == temp || !target.starts_with(&temp) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "test cleanup target must resolve strictly inside the temporary directory",
+            ));
+        }
+        std::fs::remove_dir_all(target)
+    }
 
     /// Build a unique temp directory path shared by the crate test modules.
     /// `component` distinguishes the caller (e.g. `logger`, `pipeline`).

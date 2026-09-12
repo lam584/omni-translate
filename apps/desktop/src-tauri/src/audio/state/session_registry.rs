@@ -5,8 +5,23 @@ use std::sync::{Mutex, MutexGuard};
 use super::AudioRouteHandle;
 use crate::audio::stt::SttHandle;
 
+pub(crate) struct RouteInputCompletionRequest {
+    pub(crate) ack_tx: std::sync::mpsc::Sender<Result<RouteInputCompletionEvidence, String>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RouteInputCompletionEvidence {
+    pub(crate) observed_at_unix_ms: u64,
+    pub(crate) provider_input_closed_source_sequence: u64,
+    pub(crate) provider_sender_released: bool,
+    pub(crate) status_consumer_retained: bool,
+    pub(crate) padded_tail_bytes: usize,
+}
+
 pub(super) struct SessionRegistry {
     sessions: Mutex<HashMap<String, AudioRouteHandle>>,
+    route_input_completion_senders:
+        Mutex<HashMap<String, std::sync::mpsc::Sender<RouteInputCompletionRequest>>>,
     stt_handles: Mutex<HashMap<String, SttHandle>>,
     inbound_pipeline_lock: Mutex<()>,
     /// Linearizes generation changes with late-worker error commits. Route
@@ -25,6 +40,7 @@ impl SessionRegistry {
     pub(super) fn new() -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
+            route_input_completion_senders: Mutex::new(HashMap::new()),
             stt_handles: Mutex::new(HashMap::new()),
             inbound_pipeline_lock: Mutex::new(()),
             inbound_route_authority: Mutex::new(()),
@@ -65,5 +81,26 @@ impl SessionRegistry {
 
     pub(super) fn take(&self, direction: &str) -> Option<AudioRouteHandle> {
         self.sessions.lock().expect("audio sessions poisoned").remove(direction)
+    }
+
+    pub(super) fn store_route_input_completion_sender(
+        &self,
+        direction: &str,
+        sender: std::sync::mpsc::Sender<RouteInputCompletionRequest>,
+    ) {
+        self.route_input_completion_senders
+            .lock()
+            .expect("route input completion senders poisoned")
+            .insert(direction.to_string(), sender);
+    }
+
+    pub(super) fn take_route_input_completion_sender(
+        &self,
+        direction: &str,
+    ) -> Option<std::sync::mpsc::Sender<RouteInputCompletionRequest>> {
+        self.route_input_completion_senders
+            .lock()
+            .expect("route input completion senders poisoned")
+            .remove(direction)
     }
 }

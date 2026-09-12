@@ -23,9 +23,23 @@ fn collect_device_fallback_ids(direction: &str, spec: &RouteSpec) -> Result<Vec<
         .and_then(|device| device.get_id().ok())
         .unwrap_or_default();
     let mut ids = collect_render_device_ids(&enumerator).unwrap_or_default();
-    if !ids.is_empty() && ids[0] != default_id {
-        ids.retain(|id| id != &default_id);
-        ids.insert(0, default_id);
+    if !spec.requested_device_id.is_empty() {
+        ids.retain(|id| !same_windows_audio_device_id(id, &spec.requested_device_id));
+        ids.insert(0, spec.requested_device_id.clone());
+    }
+    if !default_id.is_empty()
+        && !same_windows_audio_device_id(&default_id, &spec.requested_device_id)
+    {
+        ids.retain(|id| !same_windows_audio_device_id(id, &default_id));
+        let default_position = usize::from(!spec.requested_device_id.is_empty());
+        ids.insert(default_position, default_id);
+    }
+    if std::env::var("OMNI_RELEASE_EVIDENCE_SCENARIO")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+        && !spec.requested_device_id.is_empty()
+    {
+        ids.truncate(1);
     }
     Ok(ids)
 }

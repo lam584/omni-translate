@@ -130,6 +130,7 @@ import {
 import {
   assertProductionCoordinatorWaveBudget,
   assertSafeCollectionArchiveEntries,
+  collectRemoteDirectoryArchive,
   PRODUCTION_WORKER_CONFIG_KIND,
   PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
   PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS,
@@ -191,6 +192,144 @@ test('collection archive inventory remains inside the immutable worker root', ()
     ['vm167/a', 'vm167/a'],
     ['vm169/shard-manifest.json'],
   ]) assert.throws(() => assertSafeCollectionArchiveEntries(entries, 'vm167'));
+});
+
+test('remote directory collection validates a hash-authorized archive before atomic publication', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-cell-archive-'));
+  const finalDirectory = path.join(root, 'validation-shards', 'vm167', 'runs', 'c04');
+  const archiveBytes = Buffer.from('authorized-cell-archive');
+  const sha256 = crypto.createHash('sha256').update(archiveBytes).digest('hex');
+  const remoteDirectory = 'E:\\omni-shards\\execution\\vm167\\runs\\c04';
+  const remoteArchivePath = `${remoteDirectory}.collection-lease-test.tar`;
+  const remoteCalls = [];
+  let validationObservedFinal = null;
+  try {
+    const result = await collectRemoteDirectoryArchive({
+      worker: { workerId: 'vm167' }, remoteDirectory, localDirectory: finalDirectory,
+      remoteArchivePath, timeoutMs: 30_000, nonce: 'fixture',
+      executeRemote: async (_worker, body, payload) => {
+        remoteCalls.push({ body, payload });
+        if (remoteCalls.length === 1) {
+          return { exitCode: 0, stdout: JSON.stringify({ path: remoteArchivePath, bytes: archiveBytes.length, sha256 }), stderr: '' };
+        }
+        return { exitCode: 0, stdout: JSON.stringify({ removed: true }), stderr: '' };
+      },
+      downloadFile: async (_worker, remotePath, localPath) => {
+        assert.equal(remotePath, remoteArchivePath);
+        assert.equal(fs.existsSync(finalDirectory), false);
+        fs.writeFileSync(localPath, archiveBytes);
+      },
+      runLocalProcess: async (_executable, args) => {
+        if (args[0] === '-tf') return { exitCode: 0, signal: null, stdout: 'c04/\nc04/shard-cell-result.json\n', stderr: '' };
+        if (args[0] === '-tvf') return { exitCode: 0, signal: null, stdout: 'd c04/\n- c04/shard-cell-result.json\n', stderr: '' };
+        assert.equal(args[0], '-xf');
+        const extractRoot = args[args.indexOf('-C') + 1];
+        const staged = path.join(extractRoot, 'c04');
+        fs.mkdirSync(staged);
+        fs.writeFileSync(path.join(staged, 'shard-cell-result.json'), '{"fixture":true}\n');
+        return { exitCode: 0, signal: null, stdout: '', stderr: '' };
+      },
+      validateExtracted: async (staged) => {
+        validationObservedFinal = fs.existsSync(finalDirectory);
+        assert.equal(path.basename(staged), 'c04');
+        assert.equal(fs.existsSync(path.join(staged, 'shard-cell-result.json')), true);
+      },
+    });
+    assert.equal(validationObservedFinal, false);
+    assert.equal(result.localDirectory, finalDirectory);
+    assert.equal(fs.existsSync(path.join(finalDirectory, 'shard-cell-result.json')), true);
+    assert.equal(remoteCalls.length, 2);
+    assert.equal(remoteCalls[1].payload.archivePath, remoteArchivePath);
+    assert.deepEqual(
+      fs.readdirSync(path.dirname(finalDirectory)).filter((name) => name.startsWith('.incoming-')),
+      [],
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('remote directory collection keeps validated publication successful when staging parent cleanup fails', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-cell-archive-cleanup-warning-'));
+  const finalDirectory = path.join(root, 'validation-shards', 'vm167', 'runs', 'c04');
+  const archiveBytes = Buffer.from('valid-cell-archive');
+  const sha256 = crypto.createHash('sha256').update(archiveBytes).digest('hex');
+  const remoteDirectory = 'E:\\omni-shards\\execution\\vm167\\runs\\c04';
+  const remoteArchivePath = `${remoteDirectory}.collection-lease-test.tar`;
+  let remoteCalls = 0;
+  try {
+    const result = await collectRemoteDirectoryArchive({
+      worker: { workerId: 'vm167' }, remoteDirectory, localDirectory: finalDirectory,
+      remoteArchivePath, timeoutMs: 30_000, nonce: 'fixture-cleanup-warning',
+      executeRemote: async () => {
+        remoteCalls += 1;
+        return remoteCalls === 1
+          ? { exitCode: 0, stdout: JSON.stringify({ path: remoteArchivePath, bytes: archiveBytes.length, sha256 }), stderr: '' }
+          : { exitCode: 0, stdout: JSON.stringify({ removed: true }), stderr: '' };
+      },
+      downloadFile: async (_worker, _remotePath, localPath) => fs.writeFileSync(localPath, archiveBytes),
+      runLocalProcess: async (_executable, args) => {
+        if (args[0] === '-tf') return { exitCode: 0, signal: null, stdout: 'c04/\nc04/shard-cell-result.json\n', stderr: '' };
+        if (args[0] === '-tvf') return { exitCode: 0, signal: null, stdout: 'd c04/\n- c04/shard-cell-result.json\n', stderr: '' };
+        const extractRoot = args[args.indexOf('-C') + 1];
+        fs.mkdirSync(path.join(extractRoot, 'c04'));
+        fs.writeFileSync(path.join(extractRoot, 'c04', 'shard-cell-result.json'), '{}\n');
+        return { exitCode: 0, signal: null, stdout: '', stderr: '' };
+      },
+      validateExtracted: async (staged) => {
+        fs.writeFileSync(path.join(path.dirname(staged), 'cleanup-blocker.txt'), 'retain diagnostic\n');
+      },
+    });
+    assert.equal(result.localDirectory, finalDirectory);
+    assert.equal(fs.existsSync(path.join(finalDirectory, 'shard-cell-result.json')), true);
+    assert.equal(remoteCalls, 2);
+    assert.equal(
+      fs.readdirSync(path.dirname(finalDirectory)).some((name) => name.startsWith('.incoming-')),
+      true,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('remote directory collection never publishes validation-shards when staged validation fails', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-cell-archive-reject-'));
+  const finalDirectory = path.join(root, 'validation-shards', 'vm167', 'runs', 'c04');
+  const archiveBytes = Buffer.from('invalid-cell-archive');
+  const sha256 = crypto.createHash('sha256').update(archiveBytes).digest('hex');
+  const remoteDirectory = 'E:\\omni-shards\\execution\\vm167\\runs\\c04';
+  const remoteArchivePath = `${remoteDirectory}.collection-lease-test.tar`;
+  let remoteCalls = 0;
+  try {
+    await assert.rejects(collectRemoteDirectoryArchive({
+      worker: { workerId: 'vm167' }, remoteDirectory, localDirectory: finalDirectory,
+      remoteArchivePath, timeoutMs: 30_000, nonce: 'fixture-reject',
+      executeRemote: async () => {
+        remoteCalls += 1;
+        return remoteCalls === 1
+          ? { exitCode: 0, stdout: JSON.stringify({ path: remoteArchivePath, bytes: archiveBytes.length, sha256 }), stderr: '' }
+          : { exitCode: 0, stdout: JSON.stringify({ removed: true }), stderr: '' };
+      },
+      downloadFile: async (_worker, _remotePath, localPath) => fs.writeFileSync(localPath, archiveBytes),
+      runLocalProcess: async (_executable, args) => {
+        if (args[0] === '-tf') return { exitCode: 0, signal: null, stdout: 'c04/\nc04/shard-cell-result.json\n', stderr: '' };
+        if (args[0] === '-tvf') return { exitCode: 0, signal: null, stdout: 'd c04/\n- c04/shard-cell-result.json\n', stderr: '' };
+        const extractRoot = args[args.indexOf('-C') + 1];
+        fs.mkdirSync(path.join(extractRoot, 'c04'));
+        fs.writeFileSync(path.join(extractRoot, 'c04', 'shard-cell-result.json'), '{}\n');
+        return { exitCode: 0, signal: null, stdout: '', stderr: '' };
+      },
+      validateExtracted: async () => { throw new Error('fixture manifest mismatch'); },
+    }), /fixture manifest mismatch/u);
+    assert.equal(fs.existsSync(finalDirectory), false);
+    assert.equal(remoteCalls, 2);
+    assert.equal(
+      fs.readdirSync(path.dirname(finalDirectory)).some((name) => name.startsWith('.incoming-')),
+      true,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 

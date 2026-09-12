@@ -295,6 +295,133 @@ export function assertSafeCollectionArchiveEntries(entries, expectedRootName) {
   }
 }
 
+export async function collectRemoteDirectoryArchive({
+  worker, remoteDirectory, localDirectory, remoteArchivePath, timeoutMs,
+  executeRemote, downloadFile, runLocalProcess, validateExtracted,
+  now = Date.now,
+  nonce = `${process.pid}-${crypto.randomBytes(5).toString('hex')}`,
+}) {
+  if (!worker?.workerId || typeof executeRemote !== 'function' || typeof downloadFile !== 'function'
+      || typeof runLocalProcess !== 'function' || typeof validateExtracted !== 'function'
+      || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('remote archive collection requires complete bounded transport inputs');
+  }
+  const remoteRoot = path.win32.resolve(String(remoteDirectory ?? ''));
+  const remoteArchive = path.win32.resolve(String(remoteArchivePath ?? ''));
+  const finalDirectory = path.resolve(String(localDirectory ?? ''));
+  const expectedRootName = path.win32.basename(remoteRoot);
+  if (!remoteRoot || !remoteArchive || !finalDirectory || !/^[^\\/]+$/u.test(expectedRootName)) {
+    throw new Error('remote archive collection paths are invalid');
+  }
+  if (fs.existsSync(finalDirectory)) {
+    throw new Error(`refusing to overwrite collected directory ${finalDirectory}`);
+  }
+  const localParent = path.dirname(finalDirectory);
+  fs.mkdirSync(localParent, { recursive: true });
+  const temporaryParent = path.join(localParent, `.incoming-${path.basename(finalDirectory)}-${nonce}`);
+  fs.mkdirSync(temporaryParent, { recursive: false });
+  const localArchivePath = path.join(temporaryParent, `${expectedRootName}.collection.tar`);
+  const deadlineMs = now() + timeoutMs;
+  const remainingMs = (stage) => {
+    const remaining = Math.ceil(deadlineMs - now());
+    if (remaining <= 0) throw new Error(`collection deadline expired before ${stage}`);
+    return remaining;
+  };
+  let published = false;
+  try {
+    const archive = parseRemoteJson(await executeRemote(worker, `
+$remoteRoot = [IO.Path]::GetFullPath([string]$payload.remoteRoot).TrimEnd('\\')
+$archivePath = [IO.Path]::GetFullPath([string]$payload.archivePath)
+if (-not (Test-Path -LiteralPath $remoteRoot -PathType Container)) { throw 'collection root is missing' }
+$rootItem = Get-Item -LiteralPath $remoteRoot -Force -ErrorAction Stop
+if ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'collection root is a reparse point' }
+$reparse = @(Get-ChildItem -LiteralPath $remoteRoot -Recurse -Force | Where-Object {
+  ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+})
+if ($reparse.Count -ne 0) { throw 'collection root contains a reparse point' }
+if (Test-Path -LiteralPath $archivePath) { throw 'collection archive already exists' }
+$systemTar = Join-Path $env:SystemRoot 'System32\\tar.exe'
+if (-not (Test-Path -LiteralPath $systemTar -PathType Leaf)) { throw 'native system tar is missing' }
+$parent = Split-Path -Parent $remoteRoot
+$leaf = Split-Path -Leaf $remoteRoot
+& $systemTar -cf $archivePath -C $parent $leaf
+if ($LASTEXITCODE -ne 0) { throw 'collection archive creation failed' }
+$item = Get-Item -LiteralPath $archivePath
+$hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+[ordered]@{ path = $archivePath; bytes = [int64]$item.Length; sha256 = $hash } | ConvertTo-Json -Compress
+`, { remoteRoot, archivePath: remoteArchive }, {
+      timeoutMs: remainingMs('remote archive creation'),
+    }), `worker ${worker.workerId} collection archive`);
+    if (String(archive.path).toLowerCase() !== remoteArchive.toLowerCase()
+        || !Number.isSafeInteger(Number(archive.bytes)) || Number(archive.bytes) <= 0
+        || !/^[a-f0-9]{64}$/u.test(String(archive.sha256))) {
+      throw new Error(`worker ${worker.workerId} returned invalid collection archive authority`);
+    }
+    await downloadFile(worker, remoteArchive, localArchivePath, {
+      timeoutMs: remainingMs('archive download'),
+    });
+    const localArchive = fileAuthorityEntry(localArchivePath, path.basename(localArchivePath));
+    if (localArchive.bytes !== Number(archive.bytes) || localArchive.sha256 !== archive.sha256) {
+      throw new Error(`worker ${worker.workerId} collection archive hash mismatch`);
+    }
+    const systemRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
+    const systemTar = path.join(systemRoot, 'System32', 'tar.exe');
+    const listing = await runLocalProcess(systemTar, ['-tf', localArchivePath], {
+      timeoutMs: remainingMs('archive inventory listing'),
+    });
+    ensureSuccessful(listing, `collection archive listing for ${worker.workerId}`);
+    const entries = String(listing.stdout ?? '').split(/\r?\n/u).filter(Boolean);
+    assertSafeCollectionArchiveEntries(entries, expectedRootName);
+    const verboseListing = await runLocalProcess(systemTar, ['-tvf', localArchivePath], {
+      timeoutMs: remainingMs('archive type listing'),
+    });
+    ensureSuccessful(verboseListing, `collection archive type listing for ${worker.workerId}`);
+    const unsafeTypes = String(verboseListing.stdout ?? '').split(/\r?\n/u).filter(Boolean)
+      .filter((entry) => !entry.startsWith('-') && !entry.startsWith('d'));
+    if (unsafeTypes.length > 0) {
+      throw new Error(`worker ${worker.workerId} collection archive contains non-file entries`);
+    }
+    const extracted = await runLocalProcess(systemTar, ['-xf', localArchivePath, '-C', temporaryParent], {
+      timeoutMs: remainingMs('archive extraction'),
+    });
+    ensureSuccessful(extracted, `collection archive extraction for ${worker.workerId}`);
+    fs.rmSync(localArchivePath, { force: true });
+    const downloaded = fs.readdirSync(temporaryParent, { withFileTypes: true });
+    if (downloaded.length !== 1 || !downloaded[0].isDirectory() || downloaded[0].isSymbolicLink()
+        || downloaded[0].name !== expectedRootName) {
+      throw new Error(`worker ${worker.workerId} collection did not contain exactly the expected directory`);
+    }
+    const downloadedRoot = path.join(temporaryParent, downloaded[0].name);
+    await validateExtracted(downloadedRoot);
+    fs.renameSync(downloadedRoot, finalDirectory);
+    published = true;
+    try {
+      fs.rmdirSync(temporaryParent);
+    } catch {
+      // Publication is the authority boundary. Best-effort removal of the now
+      // non-authoritative staging parent must not turn a validated result into
+      // a collection failure or make recovery refuse the already-published result.
+    }
+    return { localDirectory: finalDirectory, archiveAuthority: archive };
+  } finally {
+    try {
+      await executeRemote(worker, `
+$archivePath = [string]$payload.archivePath
+Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+[ordered]@{ removed = -not (Test-Path -LiteralPath $archivePath) } | ConvertTo-Json -Compress
+`, { archivePath: remoteArchive }, {
+        timeoutMs: Math.max(1, Math.min(30_000, Math.ceil(deadlineMs - now()))),
+      });
+    } catch {
+      // Preserve the immutable remote source and local staging. A later
+      // zero-Provider recovery can distinguish packaging from transport.
+    }
+    if (!published && fs.existsSync(finalDirectory)) {
+      throw new Error('remote archive collection published an unvalidated final directory');
+    }
+  }
+}
+
 export function assertProductionCoordinatorWaveBudget({
   coordinatorDeadlineMs,
   currentTimeMs,
@@ -2875,9 +3002,32 @@ ConvertTo-Json -InputObject @($entries) -Depth 4 -Compress
     const validationRoot = validationRoots.get(worker.workerId);
     const localRunDirectory = path.join(validationRoot, ...runRelative.split(path.win32.sep));
     if (fs.existsSync(localRunDirectory)) throw new Error(`refusing to overwrite validation result for ${cell.cellId}`);
-    await downloadTree(worker, remoteRunDirectory, path.dirname(localRunDirectory), {
-      timeoutMs: PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
-    });
+    if (isCoordinatorLocalWorker(worker)) {
+      await downloadTree(worker, remoteRunDirectory, path.dirname(localRunDirectory), {
+        timeoutMs: PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
+      });
+    } else {
+      await collectRemoteDirectoryArchive({
+        worker,
+        remoteDirectory: remoteRunDirectory,
+        localDirectory: localRunDirectory,
+        remoteArchivePath: `${remoteRunDirectory}.collection-${lease.leaseId}.tar`,
+        timeoutMs: PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
+        executeRemote: runRemote,
+        downloadFile,
+        runLocalProcess: runProcess,
+        now: deadlineNow,
+        validateExtracted: async (stagedRunDirectory) => {
+          validateShardCellResult({
+            resultPath: path.join(stagedRunDirectory, SHARD_CELL_RESULT_FILE),
+            plan,
+            lease,
+            shardRoot: validationRoot,
+            now: new Date(),
+          });
+        },
+      });
+    }
     const localResultPath = path.join(localRunDirectory, SHARD_CELL_RESULT_FILE);
     const validated = validateShardCellResult({
       resultPath: localResultPath,
@@ -3053,107 +3203,27 @@ if ($manifestPath -cne [IO.Path]::GetFullPath([string]$payload.expectedManifestP
     const collectionParent = path.join(coordinatorExecutionRoot, 'collected-shards');
     const finalShardRoot = path.join(collectionParent, planWorker.workerId);
     if (fs.existsSync(finalShardRoot)) throw new Error(`refusing to overwrite collected shard ${planWorker.workerId}`);
-    fs.mkdirSync(collectionParent, { recursive: true });
-    const temporaryParent = path.join(
-      collectionParent,
-      `.incoming-${planWorker.workerId}-${process.pid}-${crypto.randomBytes(5).toString('hex')}`,
-    );
-    fs.mkdirSync(temporaryParent, { recursive: false });
     const remoteArchivePath = `${remoteRoot}.collection.tar`;
-    const localArchivePath = path.join(temporaryParent, `${planWorker.workerId}.collection.tar`);
-    const collectionDeadlineMs = deadlineNow() + WATCH_PRODUCTION_SHARD_COLLECTION_TIMEOUT_MS;
-    const collectionRemainingMs = (stage) => {
-      const remainingMs = Math.ceil(collectionDeadlineMs - deadlineNow());
-      if (remainingMs <= 0) throw new Error(`collection deadline expired before ${stage}`);
-      return remainingMs;
-    };
-    try {
-      const archive = parseRemoteJson(await runRemote(worker, `
-$remoteRoot = [string]$payload.remoteRoot
-$archivePath = [string]$payload.archivePath
-if (-not (Test-Path -LiteralPath $remoteRoot -PathType Container)) { throw 'collection root is missing' }
-if (Test-Path -LiteralPath $archivePath) { throw 'collection archive already exists' }
-$rootItem = Get-Item -LiteralPath $remoteRoot -Force
-if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'collection root is a reparse point' }
-$reparse = @(Get-ChildItem -LiteralPath $remoteRoot -Recurse -Force | Where-Object {
-  ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
-})
-if ($reparse.Count -ne 0) { throw 'collection root contains a reparse point' }
-$systemTar = Join-Path $env:SystemRoot 'System32\\tar.exe'
-if (-not (Test-Path -LiteralPath $systemTar -PathType Leaf)) { throw 'native system tar is missing' }
-$parent = Split-Path -Parent $remoteRoot
-$leaf = Split-Path -Leaf $remoteRoot
-& $systemTar -cf $archivePath -C $parent $leaf
-if ($LASTEXITCODE -ne 0) { throw 'collection archive creation failed' }
-$item = Get-Item -LiteralPath $archivePath
-$hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-[ordered]@{ path = $archivePath; bytes = [int64]$item.Length; sha256 = $hash } | ConvertTo-Json -Compress
-`, { remoteRoot, archivePath: remoteArchivePath }, {
-        timeoutMs: collectionRemainingMs('remote archive creation'),
-      }), `worker ${planWorker.workerId} collection archive`);
-      if (String(archive.path).toLowerCase() !== remoteArchivePath.toLowerCase()
-          || !Number.isSafeInteger(Number(archive.bytes)) || Number(archive.bytes) <= 0
-          || !/^[a-f0-9]{64}$/u.test(String(archive.sha256))) {
-        throw new Error(`worker ${planWorker.workerId} returned invalid collection archive authority`);
-      }
-      await downloadFile(worker, remoteArchivePath, localArchivePath, {
-        timeoutMs: collectionRemainingMs('archive download'),
-      });
-      const localArchive = fileAuthorityEntry(localArchivePath, path.basename(localArchivePath));
-      if (localArchive.bytes !== Number(archive.bytes) || localArchive.sha256 !== archive.sha256) {
-        throw new Error(`worker ${planWorker.workerId} collection archive hash mismatch`);
-      }
-      const systemRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
-      const systemTar = path.join(systemRoot, 'System32', 'tar.exe');
-      const listing = await runProcess(systemTar, ['-tf', localArchivePath], {
-        timeoutMs: collectionRemainingMs('archive inventory listing'),
-      });
-      ensureSuccessful(listing, `collection archive listing for ${planWorker.workerId}`);
-      const entries = String(listing.stdout ?? '').split(/\r?\n/u).filter(Boolean);
-      assertSafeCollectionArchiveEntries(entries, path.win32.basename(remoteRoot));
-      const verboseListing = await runProcess(systemTar, ['-tvf', localArchivePath], {
-        timeoutMs: collectionRemainingMs('archive type listing'),
-      });
-      ensureSuccessful(verboseListing, `collection archive type listing for ${planWorker.workerId}`);
-      const unsafeTypes = String(verboseListing.stdout ?? '').split(/\r?\n/u).filter(Boolean)
-        .filter((entry) => !entry.startsWith('-') && !entry.startsWith('d'));
-      if (unsafeTypes.length > 0) {
-        throw new Error(`worker ${planWorker.workerId} collection archive contains non-file entries`);
-      }
-      const extracted = await runProcess(systemTar, ['-xf', localArchivePath, '-C', temporaryParent], {
-        timeoutMs: collectionRemainingMs('archive extraction'),
-      });
-      ensureSuccessful(extracted, `collection archive extraction for ${planWorker.workerId}`);
-      fs.rmSync(localArchivePath, { force: true });
-    } finally {
-      try {
-        await runRemote(worker, `
-$archivePath = [string]$payload.archivePath
-Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
-[ordered]@{ removed = -not (Test-Path -LiteralPath $archivePath) } | ConvertTo-Json -Compress
-`, { archivePath: remoteArchivePath }, {
-          timeoutMs: Math.max(1, Math.min(30_000, Math.ceil(collectionDeadlineMs - deadlineNow()))),
+    await collectRemoteDirectoryArchive({
+      worker,
+      remoteDirectory: remoteRoot,
+      localDirectory: finalShardRoot,
+      remoteArchivePath,
+      timeoutMs: WATCH_PRODUCTION_SHARD_COLLECTION_TIMEOUT_MS,
+      executeRemote: runRemote,
+      downloadFile,
+      runLocalProcess: runProcess,
+      now: deadlineNow,
+      validateExtracted: async (downloadedRoot) => {
+        validateShardManifest({
+          manifestPath: path.join(downloadedRoot, 'shard-manifest.json'),
+          shardRoot: downloadedRoot,
+          plan,
+          leases,
+          now: generatedAt,
         });
-      } catch {
-        // Keep the immutable worker root and any local partial archive so a
-        // later zero-Provider recovery can distinguish packaging/download.
-      }
-    }
-    const downloaded = fs.readdirSync(temporaryParent, { withFileTypes: true });
-    if (downloaded.length !== 1 || !downloaded[0].isDirectory() || downloaded[0].isSymbolicLink()) {
-      throw new Error(`worker ${planWorker.workerId} recovery did not contain exactly one shard directory`);
-    }
-    const downloadedRoot = path.join(temporaryParent, downloaded[0].name);
-    const manifestPath = path.join(downloadedRoot, 'shard-manifest.json');
-    validateShardManifest({
-      manifestPath,
-      shardRoot: downloadedRoot,
-      plan,
-      leases,
-      now: generatedAt,
+      },
     });
-    fs.renameSync(downloadedRoot, finalShardRoot);
-    fs.rmdirSync(temporaryParent);
     return {
       workerId: planWorker.workerId,
       shardRoot: finalShardRoot,

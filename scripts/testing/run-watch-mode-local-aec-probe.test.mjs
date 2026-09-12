@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
 import { repoRoot } from '../lib/testing-common.mjs';
 import { AUTHORITY_RUNTIME_BINARY_FILES } from './watch-mode-evidence-authority.mjs';
 import { LOCAL_ISOLATION_DISTRIBUTION_KIND } from './watch-mode-local-isolation-distributed.mjs';
@@ -233,11 +234,22 @@ function fixtureExecute(_script, { outputDirectory, request, requestPath, runtim
   const requestDigest = hash(fs.readFileSync(requestPath));
   const desktop = 'WinSta0\\ProbeDesktop'; const ownerSid = 'S-1-5-21-1';
   const nodeProcess = { pid: 42, parentPid: 7, startedAt: '2026-09-12T00:00:00.000Z', imagePath: process.execPath, imageSha256: hash(fs.readFileSync(process.execPath)) };
+  const nodeDesktopAuthorityPath = path.join(outputDirectory, 'node-desktop-identity.json');
+  json(nodeDesktopAuthorityPath, { schemaVersion: 1, artifactKind: 'watch-mode-process-desktop-identity',
+    executionId: request.executionId, planDigest: runtime.distributionDigest, leaseId: request.executionId, leaseDigest: requestDigest,
+    cellId: 'local-aec-probe', workerId: 'vmfixture', vmIdentityDigest: runtime.distributionDigest, desktop, sessionId: 1,
+    ownerSid, reporterParentPid: nodeProcess.pid, parentProcess: { pid: nodeProcess.pid, startedAt: nodeProcess.startedAt,
+      imagePath: nodeProcess.imagePath, imageSha256: nodeProcess.imageSha256 } });
+  json(path.join(outputDirectory, 'desktop-environment-audit.json'), { schemaVersion: 1,
+    artifactKind: 'watch-mode-local-aec-desktop-environment-audit', credentialLikeCount: 0,
+    retainedNames: ['SystemRoot','OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST','OMNI_WATCH_MODE_AEC_DIAGNOSTIC_TAP_DIRECTORY'],
+    injectedNames: ['OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST','OMNI_WATCH_MODE_AEC_DIAGNOSTIC_TAP_DIRECTORY'] });
   const binding = { executionId: request.executionId, planDigest: runtime.distributionDigest, leaseId: request.executionId,
     leaseDigest: requestDigest, cellId: 'local-aec-probe', workerId: 'vmfixture', vmIdentityDigest: runtime.distributionDigest };
   json(commandPath, binding);
   json(launchPath, { schemaVersion: 2, artifactKind: 'watch-mode-interactive-shard-launch-authority', ...binding,
-    sessionId: 1, desktop, nodeDesktop: desktop, ownerSid, taskProcess: { pid: 7 }, nodeProcess });
+    sessionId: 1, desktop, nodeDesktop: desktop, nodeDesktopAuthorityPath,
+    nodeDesktopAuthoritySha256: hash(fs.readFileSync(nodeDesktopAuthorityPath)), ownerSid, taskProcess: { pid: 7 }, nodeProcess });
   json(processAuthorityPath, { schemaVersion: 2, artifactKind: 'watch-mode-interactive-process-authority', ...binding, passed: true,
     errors: [], executionExitCode: 0, expectedSessionId: 1, expectedOwnerSid: ownerSid, rootProcessId: 42, processCount: 1,
     processes: [{ ...nodeProcess, role: 'shard-node', sessionId: 1, ownerSid }] });
@@ -298,6 +310,9 @@ test('interactive custody rejects failed collectors and every authority binding 
     (r) => { const a = JSON.parse(fs.readFileSync(r.processAuthorityPath, 'utf8')); a.artifactKind = 'wrong'; json(r.processAuthorityPath, a); },
     (r) => { const a = JSON.parse(fs.readFileSync(r.processAuthorityPath, 'utf8')); a.leaseDigest = '0'.repeat(64); json(r.processAuthorityPath, a); },
     (r) => { const a = JSON.parse(fs.readFileSync(r.processAuthorityPath, 'utf8')); a.processes[0].imageSha256 = '0'.repeat(64); json(r.processAuthorityPath, a); },
+    (r) => { const a = JSON.parse(fs.readFileSync(r.launchPath, 'utf8')); a.nodeDesktopAuthoritySha256 = '0'.repeat(64); json(r.launchPath, a); },
+    (r) => { const a = JSON.parse(fs.readFileSync(JSON.parse(fs.readFileSync(r.launchPath, 'utf8')).nodeDesktopAuthorityPath, 'utf8')); a.desktop = 'Other\\Desktop'; json(JSON.parse(fs.readFileSync(r.launchPath, 'utf8')).nodeDesktopAuthorityPath, a); },
+    (r) => { const file = path.join(path.dirname(path.dirname(path.dirname(r.commandPath))), 'desktop-environment-audit.json'); const a = JSON.parse(fs.readFileSync(file, 'utf8')); a.credentialLikeCount = 1; json(file, a); },
   ];
   for (const mutate of mutations) {
     const root = temporary(t); const options = probeOptions(root, runtimeFixture(root));
@@ -309,7 +324,9 @@ test('interactive custody rejects failed collectors and every authority binding 
 test('interactive launcher derives task and Node desktop identities instead of hard-coding WinSta0 Default', () => {
   const source = fs.readFileSync(path.join(repoRoot, 'scripts/testing/run-watch-mode-interactive-task.ps1'), 'utf8');
   assert.match(source, /Get-OmniCurrentDesktopIdentity/u);
-  assert.match(source, /Get-OmniProcessDesktopIdentity \$node\.Id/u);
+  assert.doesNotMatch(source, /Get-OmniProcessDesktopIdentity|ForThread/u);
+  assert.match(source, /nodeDesktopAuthorityPath/u);
+  assert.match(source, /watch-mode-process-desktop-identity/u);
   assert.match(source, /nodeDesktop = \$nodeDesktop/u);
   assert.doesNotMatch(source, /desktop = 'WinSta0\\Default'/u);
 });
@@ -334,8 +351,35 @@ test('interactive Desktop executor keeps Provider isolation and native finalizer
   assert.match(script, /SetEnvironmentVariable\(\$variable.Name,\$null,'Process'\)/u);
   assert.match(script, /OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST='E:\\probe''s/u);
   assert.match(script, /OmniInteractiveFinalizerJob\]::Run/u);
-  for (const name of ['DASHSCOPE_API_KEY','OMNI_TEST_DASHSCOPE_API_KEY','OPENAI_API_KEY','GEMINI_API_KEY']) assert.match(script, /credentialPattern/u, name);
+  assert.match(script, /\$allowed=@\('SystemRoot'/u);
+  assert.match(script, /credentialLikeCount=\$credentialNames.Count/u);
+  assert.doesNotMatch(script, /DASHSCOPE|OPENAI|PRIVATE_GATEWAY|CUSTOM_PROVIDER/u);
   assert.doesNotMatch(script, /taskkill|Stop-Process|Start-Process/u);
+});
+
+test('desktop reporter runs as a real Node child and reports its inherited station and desktop', (t) => {
+  const root = temporary(t); const output = path.join(root, 'identity with spaces.json');
+  const reporter = path.join(repoRoot, 'scripts/testing/report-watch-mode-desktop-identity.ps1');
+  const result = spawnSync('powershell.exe', ['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',reporter,
+    '-ExpectedParentProcessId',String(process.pid),'-OutputPath',output,'-ExecutionId','exec','-PlanDigest','a'.repeat(64),
+    '-LeaseId','lease','-LeaseDigest','b'.repeat(64),'-CellId','cell','-WorkerId','worker','-VmIdentityDigest','c'.repeat(64)], { encoding: 'utf8', windowsHide: true });
+  assert.equal(result.status, 0, result.stderr); const receipt = JSON.parse(fs.readFileSync(output, 'utf8').replace(/^\uFEFF/u, ''));
+  assert.equal(receipt.reporterParentPid, process.pid); assert.equal(receipt.parentProcess.pid, process.pid);
+  assert.match(receipt.desktop, /^[^\\]+\\[^\\]+$/u); assert.equal(receipt.parentProcess.imageSha256, hash(fs.readFileSync(process.execPath)));
+  const rejected = spawnSync('powershell.exe', ['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',reporter,
+    '-ExpectedParentProcessId','4','-OutputPath',path.join(root,'rejected.json'),'-ExecutionId','exec','-PlanDigest','a'.repeat(64),
+    '-LeaseId','lease','-LeaseDigest','b'.repeat(64),'-CellId','cell','-WorkerId','worker','-VmIdentityDigest','c'.repeat(64)], { encoding: 'utf8', windowsHide: true });
+  assert.notEqual(rejected.status, 0);
+});
+
+test('minimal Desktop environment removes generic and provider credential names in a real child', () => {
+  const allowed = ['SystemRoot','windir','SystemDrive','ComSpec','PATH','PATHEXT','TEMP','TMP','USERPROFILE','HOMEDRIVE','HOMEPATH','APPDATA','LOCALAPPDATA','PROGRAMDATA','PROGRAMFILES','PROGRAMFILES(X86)','PROGRAMW6432','COMMONPROGRAMFILES','COMMONPROGRAMFILES(X86)','COMMONPROGRAMW6432','USERNAME','USERDOMAIN','COMPUTERNAME','SESSIONNAME','PROCESSOR_ARCHITECTURE','NUMBER_OF_PROCESSORS'];
+  const command = `$allowed=@(${allowed.map((x)=>`'${x}'`).join(',')}); foreach($v in @(Get-ChildItem Env:)){if($allowed -cnotcontains $v.Name){[Environment]::SetEnvironmentVariable($v.Name,$null,'Process')}}; Get-ChildItem Env: | ForEach-Object {$_.Name} | ConvertTo-Json -Compress`;
+  const env = { ...process.env, API_KEY:'x', PRIVATE_GATEWAY_API_KEY:'x', CUSTOM_PROVIDER_API_KEY:'x', DASHSCOPE_API_KEY:'x', OMNI_TEST_DASHSCOPE_API_KEY:'x' };
+  const result = spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(command,'utf16le').toString('base64')],{encoding:'utf8',env,windowsHide:true});
+  assert.equal(result.status,0,result.stderr); const names = JSON.parse(result.stdout.trim());
+  for (const name of ['API_KEY','PRIVATE_GATEWAY_API_KEY','CUSTOM_PROVIDER_API_KEY','DASHSCOPE_API_KEY','OMNI_TEST_DASHSCOPE_API_KEY']) assert.ok(!names.includes(name), name);
+  assert.ok(names.some((name)=>name.toLowerCase()==='systemroot'));
 });
 test('unsupported but hash-valid runtime is rejected before any normal launch', async (t) => {
   const root = temporary(t);

@@ -5,12 +5,10 @@ param(
   [ValidatePattern('^[a-f0-9]{64}$')]
   [string]$ExpectedRequestSha256
 )
-
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.IO.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.WatchMode.InteractiveDesktopIdentity.psm1') -Force
-
 function Invoke-Utf8JsonProcess {
   param(
     [Parameter(Mandatory = $true)][string]$FilePath,
@@ -38,7 +36,6 @@ function Invoke-Utf8JsonProcess {
     throw "$FailureContext returned invalid UTF-8 JSON: $($_.Exception.Message)"
   }
 }
-
 function Get-ProcessIdentity {
   param([Parameter(Mandatory = $true)][int]$ProcessId)
   $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
@@ -60,7 +57,6 @@ function Get-ProcessIdentity {
     ownerSid = [string]$ownerSid.Sid
   }
 }
-
 if (-not ('OmniCredentialStatus.NativeMethods' -as [type])) {
   Add-Type -TypeDefinition @'
 namespace OmniCredentialStatus {
@@ -361,14 +357,17 @@ $node = Start-Process -FilePath ([string]$request.nodeExecutable) `
   -RedirectStandardError ([string]$request.stderrPath) `
   -WindowStyle Hidden `
   -PassThru
-# Retain the native handle before redirected PS5.1 Start-Process loses exit status.
 $nodeHandle = $node.Handle
-$nodeIdentity = Get-ProcessIdentity $node.Id; $nodeDesktop = Get-OmniProcessDesktopIdentity $node.Id
-if ($nodeDesktop -cne $common.desktop) { Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue; throw 'interactive Node desktop differs from task desktop' }
-if ($nodeIdentity.sessionId -ne $activeConsoleSessionId -or $nodeIdentity.ownerSid -cne $windowsIdentity.User.Value) {
-  Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue
-  throw 'interactive shard Node did not inherit the console session identity'
+$nodeIdentity = Get-ProcessIdentity $node.Id
+if ($nodeIdentity.sessionId -ne $activeConsoleSessionId -or $nodeIdentity.ownerSid -cne $windowsIdentity.User.Value) { Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue; throw 'interactive shard Node did not inherit the console session identity' }
+$desktopReceipt = $null
+if ($request.mode -eq 'local-aec-probe') {
+  $limit=[DateTime]::UtcNow.AddSeconds(15); while(-not (Test-Path -LiteralPath ([string]$request.nodeDesktopAuthorityPath) -PathType Leaf) -and [DateTime]::UtcNow -lt $limit -and -not $node.HasExited){Start-Sleep -Milliseconds 50}
+  if(-not (Test-Path -LiteralPath ([string]$request.nodeDesktopAuthorityPath) -PathType Leaf)){Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue; throw 'target Node desktop identity receipt is missing'}
+  $desktopReceipt=Get-Content -LiteralPath ([string]$request.nodeDesktopAuthorityPath) -Raw -Encoding UTF8 | ConvertFrom-Json
+  $parent=$desktopReceipt.parentProcess; if($desktopReceipt.schemaVersion -ne 1 -or $desktopReceipt.artifactKind -cne 'watch-mode-process-desktop-identity' -or $desktopReceipt.executionId -cne $common.executionId -or $desktopReceipt.planDigest -cne $request.planDigest -or $desktopReceipt.leaseId -cne $request.leaseId -or $desktopReceipt.leaseDigest -cne $request.leaseDigest -or $desktopReceipt.cellId -cne $request.cellId -or $desktopReceipt.workerId -cne $common.workerId -or $desktopReceipt.vmIdentityDigest -cne $common.vmIdentityDigest -or $desktopReceipt.reporterParentPid -ne $node.Id -or $parent.pid -ne $nodeIdentity.pid -or $parent.startedAt -cne $nodeIdentity.startedAt -or ([IO.Path]::GetFullPath([string]$parent.imagePath)) -cne ([IO.Path]::GetFullPath([string]$nodeIdentity.imagePath)) -or $parent.imageSha256 -cne $nodeIdentity.imageSha256 -or $desktopReceipt.sessionId -ne $activeConsoleSessionId -or $desktopReceipt.ownerSid -cne $windowsIdentity.User.Value -or $desktopReceipt.desktop -cne $common.desktop){Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue; throw 'target Node desktop identity receipt does not match interactive authority'}
 }
+$nodeDesktop = if($desktopReceipt){[string]$desktopReceipt.desktop}else{[string]$common.desktop}
 $launch = [ordered]@{
   schemaVersion = 2
   artifactKind = 'watch-mode-interactive-shard-launch-authority'
@@ -387,6 +386,8 @@ $launch = [ordered]@{
   sessionId = $common.sessionId
   desktop = $common.desktop
   nodeDesktop = $nodeDesktop
+  nodeDesktopAuthorityPath = if($desktopReceipt){[string]$request.nodeDesktopAuthorityPath}else{$null}
+  nodeDesktopAuthoritySha256 = if($desktopReceipt){Get-OmniSha256 -LiteralPath ([string]$request.nodeDesktopAuthorityPath)}else{$null}
   taskName = $common.taskName
   taskProcess = $common.taskProcess
   explorerProcess = $common.explorerProcess

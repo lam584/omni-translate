@@ -238,6 +238,7 @@ export function collectLocalIsolationDistributionFiles({ workspaceRoot, runtimeB
     }
     scripts.add(path.resolve(workspaceRoot, 'scripts/installer/virtual-speaker-device.ps1'));
     scripts.add(path.resolve(workspaceRoot, 'scripts/testing/run-watch-mode-interactive-task.ps1'));
+    scripts.add(path.resolve(workspaceRoot, 'scripts/testing/report-watch-mode-desktop-identity.ps1'));
     scripts.add(path.resolve(workspaceRoot, 'scripts/testing/collect-watch-mode-interactive-process-authority.ps1'));
   }
   // The release plan evaluates model identities during module bootstrap. Its

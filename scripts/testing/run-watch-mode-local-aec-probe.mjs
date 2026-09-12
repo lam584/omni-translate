@@ -11,14 +11,15 @@ import { checkWatchDiskSpace } from './watch-mode-disk-lifecycle.mjs';
 
 const hash = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const quote = (value) => `'${String(value).replaceAll("'", "''")}'`;
-export const PROVIDER_CREDENTIAL_ENV_PATTERN = '.*(?:DASHSCOPE|QWEN|OPENAI|AZURE|GOOGLE|GEMINI|ANTHROPIC|TENCENT|VOLCENGINE|ZHIPU).*(?:API_KEY|ACCESS_KEY|SECRET|TOKEN|CREDENTIAL).*|.*(?:API_KEY|ACCESS_KEY|SECRET|TOKEN|CREDENTIAL).*(?:DASHSCOPE|QWEN|OPENAI|AZURE|GOOGLE|GEMINI|ANTHROPIC|TENCENT|VOLCENGINE|ZHIPU).*';
-export const isProviderCredentialEnvironmentName = (name) => new RegExp(`^(?:${PROVIDER_CREDENTIAL_ENV_PATTERN})$`, 'iu').test(name);
+export const LOCAL_AEC_DESKTOP_ENV_ALLOWLIST = Object.freeze(['SystemRoot','windir','SystemDrive','ComSpec','PATH','PATHEXT','TEMP','TMP','USERPROFILE','HOMEDRIVE','HOMEPATH','APPDATA','LOCALAPPDATA','PROGRAMDATA','PROGRAMFILES','PROGRAMFILES(X86)','PROGRAMW6432','COMMONPROGRAMFILES','COMMONPROGRAMFILES(X86)','COMMONPROGRAMW6432','USERNAME','USERDOMAIN','COMPUTERNAME','SESSIONNAME','PROCESSOR_ARCHITECTURE','NUMBER_OF_PROCESSORS']);
+export const isProviderCredentialEnvironmentName = (name) => /(?:API_KEY|ACCESS_KEY|SECRET|TOKEN|CREDENTIAL)/iu.test(name);
 const writeJson = (name, value) => fs.writeFileSync(name, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
 export const AEC_PROBE_JOB_HELPER = 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveFinalizer.psm1';
 export const AEC_PROBE_INTERACTIVE_FILES = Object.freeze([
   'scripts/testing/lib/powershell/Omni.Testing.IO.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.Process.psm1',
   'scripts/testing/run-watch-mode-interactive-task.ps1',
+  'scripts/testing/report-watch-mode-desktop-identity.ps1',
   'scripts/testing/collect-watch-mode-interactive-process-authority.ps1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveLocalAec.psm1',
@@ -86,6 +87,7 @@ export function localAecProbePowerShell({ runtime, outputDirectory, requestPath,
   const schedulerModule = file('scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1');
   const launcher = file('scripts/testing/run-watch-mode-interactive-task.ps1');
   const collector = file('scripts/testing/collect-watch-mode-interactive-process-authority.ps1');
+  const desktopReporter = file('scripts/testing/report-watch-mode-desktop-identity.ps1');
   const runner = file('scripts/testing/run-watch-mode-local-aec-probe.mjs');
   const helper = file(AEC_PROBE_JOB_HELPER);
   const timeoutMs = Math.max(1, Date.parse(deadlineUtc) - Date.now());
@@ -112,7 +114,8 @@ $payload=[ordered]@{
  probeRequestPath=${quote(requestPath)}; probeRequestSha256=(Get-FileHash -LiteralPath ${quote(requestPath)} -Algorithm SHA256).Hash.ToLowerInvariant()
  outputDirectory=${quote(outputDirectory)}; desktopExecutable=${quote(runtime.executable)}
  desktopExecutableSha256=${quote(runtime.executableSha256)}; finalizerHelperPath=${quote(helper.path)}
- finalizerHelperSha256=${quote(helper.sha256)}
+ finalizerHelperSha256=${quote(helper.sha256)}; desktopIdentityReporterPath=${quote(desktopReporter.path)}
+ desktopIdentityReporterSha256=${quote(desktopReporter.sha256)}; nodeDesktopAuthorityPath=(Join-Path ${quote(outputDirectory)} 'node-desktop-identity.json')
 }
 $payloadBase64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($payload|ConvertTo-Json -Depth 20 -Compress)))
 $context=Resolve-OmniInteractiveTaskRequest -PayloadBase64 $payloadBase64
@@ -128,11 +131,15 @@ $OutputEncoding=[System.Text.Encoding]::UTF8
 $helper=${quote(helperPath)}
 if((Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash.ToLowerInvariant() -cne ${quote(helperSha256)}) {throw 'process-custody helper changed after preflight'}
 Import-Module $helper -Force
-foreach($variable in @(Get-ChildItem Env: | Where-Object {$_.Name -match '^OMNI_WATCH_MODE_|^OMNI_RELEASE_EVIDENCE_'})) { [Environment]::SetEnvironmentVariable($variable.Name,$null,'Process') }
-$credentialPattern='(?i)^(?:(DASHSCOPE|QWEN|OPENAI|AZURE|GOOGLE|GEMINI|ANTHROPIC|TENCENT|VOLCENGINE|ZHIPU).*(API_KEY|ACCESS_KEY|SECRET|TOKEN|CREDENTIAL)|(API_KEY|ACCESS_KEY|SECRET|TOKEN|CREDENTIAL).*(DASHSCOPE|QWEN|OPENAI|AZURE|GOOGLE|GEMINI|ANTHROPIC|TENCENT|VOLCENGINE|ZHIPU))$'
-foreach($variable in @(Get-ChildItem Env: | Where-Object {$_.Name -match $credentialPattern})) { [Environment]::SetEnvironmentVariable($variable.Name,$null,'Process') }
+$allowed=@(${LOCAL_AEC_DESKTOP_ENV_ALLOWLIST.map(quote).join(',')})
+foreach($variable in @(Get-ChildItem Env:)) { if($allowed -cnotcontains $variable.Name) { [Environment]::SetEnvironmentVariable($variable.Name,$null,'Process') } }
 $env:OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST=${quote(requestPath)}
 $env:OMNI_WATCH_MODE_AEC_DIAGNOSTIC_TAP_DIRECTORY=${quote(outputDirectory)}
+$credentialNames=@(Get-ChildItem Env: | Where-Object {$_.Name -match '(?i)(API_KEY|ACCESS_KEY|SECRET|TOKEN|CREDENTIAL)' } | ForEach-Object {$_.Name})
+$audit=[ordered]@{schemaVersion=1;artifactKind='watch-mode-local-aec-desktop-environment-audit';credentialLikeCount=$credentialNames.Count;retainedNames=@(Get-ChildItem Env: | ForEach-Object {$_.Name} | Sort-Object);injectedNames=@('OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST','OMNI_WATCH_MODE_AEC_DIAGNOSTIC_TAP_DIRECTORY')}
+$auditBytes=[Text.UTF8Encoding]::new($false).GetBytes(($audit | ConvertTo-Json -Depth 4))
+$auditStream=[IO.File]::Open(${quote(path.join(outputDirectory, 'desktop-environment-audit.json'))},[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read); try{$auditStream.Write($auditBytes,0,$auditBytes.Length);$auditStream.Flush()}finally{$auditStream.Dispose()}
+if($credentialNames.Count -ne 0) {throw 'credential-like environment survived local AEC desktop scrub'}
 $exe=${quote(executable)}
 if((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne ${quote(executableSha256)}) {throw 'desktop bytes changed after preflight'}
 $result=[OmniInteractiveFinalizerJob]::Run($exe,'',${quote(runtimeRoot)},[DateTime]::Parse(${quote(deadlineUtc)}).ToUniversalTime())
@@ -146,6 +153,17 @@ export function executeInteractiveLocalAecRequest(commandPath) {
   const requestBytes = fs.readFileSync(command.probeRequestPath);
   if (hash(requestBytes) !== command.probeRequestSha256) throw new Error('interactive local AEC request hash mismatch');
   const request = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(requestBytes));
+  if (hash(fs.readFileSync(command.desktopIdentityReporterPath)) !== command.desktopIdentityReporterSha256) throw new Error('desktop identity reporter hash mismatch');
+  const reporter = spawnSync('powershell.exe', ['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',command.desktopIdentityReporterPath,
+    '-ExpectedParentProcessId',String(process.pid),'-OutputPath',command.nodeDesktopAuthorityPath,
+    '-ExecutionId',command.executionId,'-PlanDigest',command.planDigest,'-LeaseId',command.leaseId,'-LeaseDigest',command.leaseDigest,
+    '-CellId',command.cellId,'-WorkerId',command.workerId,'-VmIdentityDigest',command.vmIdentityDigest],
+    { windowsHide: true, encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024, env: windowsPowerShellEnvironment() });
+  if (reporter.error || reporter.status !== 0) throw new Error(reporter.error?.message ?? reporter.stderr ?? 'desktop identity reporter failed');
+  const desktopReceipt = JSON.parse(fs.readFileSync(command.nodeDesktopAuthorityPath, 'utf8').replace(/^\uFEFF/u, ''));
+  if (desktopReceipt.schemaVersion !== 1 || desktopReceipt.artifactKind !== 'watch-mode-process-desktop-identity'
+      || desktopReceipt.reporterParentPid !== process.pid || desktopReceipt.parentProcess?.pid !== process.pid || !desktopReceipt.desktop
+      || ['executionId','planDigest','leaseId','leaseDigest','cellId','workerId','vmIdentityDigest'].some((name) => desktopReceipt[name] !== command[name])) throw new Error('desktop identity receipt is invalid');
   const script = localAecProbeDesktopPowerShell({ executable: command.desktopExecutable, executableSha256: command.desktopExecutableSha256,
     runtimeRoot: command.workspaceRoot, outputDirectory: command.outputDirectory, requestPath: command.probeRequestPath,
     deadlineUtc: request.deadlineUtc, helperPath: command.finalizerHelperPath, helperSha256: command.finalizerHelperSha256 });
@@ -172,6 +190,12 @@ function verifyInteractiveCustody(result, outputDirectory, executionId, expected
   const authority = JSON.parse(fs.readFileSync(result.processAuthorityPath, 'utf8'));
   const launch = JSON.parse(fs.readFileSync(result.launchPath, 'utf8'));
   const cleanup = JSON.parse(fs.readFileSync(path.join(path.dirname(result.commandPath), 'cleanup.scheduler.json'), 'utf8'));
+  const outputRoot = path.resolve(outputDirectory);
+  const isWithinOutput = (file) => { const relative = path.relative(outputRoot, path.resolve(file)); return relative && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative); };
+  const environmentAuditPath = path.join(outputDirectory, 'desktop-environment-audit.json');
+  if (!isWithinOutput(launch.nodeDesktopAuthorityPath) || !isWithinOutput(environmentAuditPath)) throw new Error('interactive authority artifact escaped output root');
+  const desktopAuthority = JSON.parse(fs.readFileSync(launch.nodeDesktopAuthorityPath, 'utf8').replace(/^\uFEFF/u, ''));
+  const environmentAudit = JSON.parse(fs.readFileSync(environmentAuditPath, 'utf8').replace(/^\uFEFF/u, ''));
   const binding = { executionId, planDigest: expectedPlanDigest, leaseId: executionId, leaseDigest: expectedRequestDigest,
     cellId: 'local-aec-probe', workerId: terminal.workerId, vmIdentityDigest: terminal.vmIdentityDigest };
   const matches = (value) => Object.entries(binding).every(([name, expected]) => value?.[name] === expected);
@@ -181,13 +205,20 @@ function verifyInteractiveCustody(result, outputDirectory, executionId, expected
       && fs.realpathSync.native(entry.imagePath).toLowerCase() === path.resolve(entry.imagePath).toLowerCase()
       && hash(fs.readFileSync(entry.imagePath)) === entry.imageSha256; } catch { return false; }
   };
-  const paths = [result.commandPath,result.launchPath,result.processAuthorityPath,result.terminalPath,result.taskTerminalPath];
-  const outputRoot = path.resolve(outputDirectory);
-  const isWithinOutput = (file) => { const relative = path.relative(outputRoot, path.resolve(file)); return relative && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative); };
+  const paths = [result.commandPath,result.launchPath,result.processAuthorityPath,result.terminalPath,result.taskTerminalPath,launch.nodeDesktopAuthorityPath,environmentAuditPath];
   if (launch.schemaVersion !== 2 || launch.artifactKind !== 'watch-mode-interactive-shard-launch-authority'
       || authority.schemaVersion !== 2 || authority.artifactKind !== 'watch-mode-interactive-process-authority'
       || !matches(launch) || !matches(authority) || !matches(terminal) || !matches(taskTerminal)
       || launch.sessionId !== 1 || launch.nodeDesktop !== launch.desktop || !launch.desktop || !launch.ownerSid?.startsWith('S-1-')
+      || desktopAuthority.schemaVersion !== 1 || desktopAuthority.artifactKind !== 'watch-mode-process-desktop-identity' || !matches(desktopAuthority)
+      || hash(fs.readFileSync(launch.nodeDesktopAuthorityPath)) !== launch.nodeDesktopAuthoritySha256
+      || desktopAuthority.reporterParentPid !== launch.nodeProcess?.pid || desktopAuthority.parentProcess?.pid !== launch.nodeProcess?.pid
+      || desktopAuthority.parentProcess.startedAt !== launch.nodeProcess.startedAt
+      || path.resolve(desktopAuthority.parentProcess.imagePath).toLowerCase() !== path.resolve(launch.nodeProcess.imagePath).toLowerCase()
+      || desktopAuthority.parentProcess.imageSha256 !== launch.nodeProcess.imageSha256 || desktopAuthority.sessionId !== launch.sessionId
+      || desktopAuthority.ownerSid !== launch.ownerSid || desktopAuthority.desktop !== launch.desktop
+      || environmentAudit.schemaVersion !== 1 || environmentAudit.artifactKind !== 'watch-mode-local-aec-desktop-environment-audit'
+      || environmentAudit.credentialLikeCount !== 0 || environmentAudit.retainedNames?.some(isProviderCredentialEnvironmentName)
       || authority.passed !== true || authority.errors?.length !== 0 || authority.executionExitCode !== 0
       || authority.expectedSessionId !== launch.sessionId || authority.expectedOwnerSid !== launch.ownerSid
       || authority.rootProcessId !== launch.nodeProcess?.pid || authority.processCount !== authority.processes?.length

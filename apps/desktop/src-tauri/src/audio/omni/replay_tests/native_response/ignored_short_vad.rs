@@ -116,6 +116,13 @@ fn contiguous_empty_vad_steps(next_start_ms: Option<u64>) -> Vec<ScriptStep> {
 }
 
 fn nonempty_micro_fragment_empty_translation_steps(source_text: &str) -> Vec<ScriptStep> {
+    nonempty_script_anomaly_empty_translation_steps(source_text, 160)
+}
+
+fn nonempty_script_anomaly_empty_translation_steps(
+    source_text: &str,
+    duration_ms: u64,
+) -> Vec<ScriptStep> {
     vec![
         ScriptStep::Event(json!({
             "type": "input_audio_buffer.speech_started",
@@ -130,7 +137,7 @@ fn nonempty_micro_fragment_empty_translation_steps(source_text: &str) -> Vec<Scr
         ScriptStep::Event(json!({
             "type": "input_audio_buffer.speech_stopped",
             "item_id": "item-nonempty-micro-fragment",
-            "audio_end_ms": 78680
+            "audio_end_ms": 78520 + duration_ms
         })),
         ScriptStep::Event(json!({
             "type": "response.done",
@@ -179,6 +186,118 @@ fn replay_nonempty_160ms_fragment_waits_for_same_continuity_equal_boundary_succe
         !report_has_native_empty_response(&harness),
         "the formal 160ms/source=对。/0ms-gap/24ms-successor split must be absorbed"
     );
+}
+
+#[test]
+fn replay_nonempty_400ms_script_anomaly_waits_for_same_continuity_equal_boundary_successor() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    harness.store().watch_session_report.begin_or_reuse(
+        "dashscope",
+        "qwen-audio-3.0-realtime-plus",
+    );
+    let mut slice = WorkerSlice::new();
+    let mut socket = ScriptedRealtimeSocket::new(
+        nonempty_script_anomaly_empty_translation_steps("这。", 400),
+        harness.shared.clone(),
+    );
+    for _ in 0..4 { socket = harness.tick(socket, &mut slice); }
+    assert!(!report_has_native_empty_response(&harness));
+    socket = ScriptedRealtimeSocket::new(vec![ScriptStep::Event(json!({
+        "type": "input_audio_buffer.speech_started",
+        "item_id": "item-400ms-continuation",
+        "audio_start_ms": 78920
+    }))], harness.shared.clone());
+    let _socket = harness.tick(socket, &mut slice);
+    assert!(!report_has_native_empty_response(&harness));
+    assert!(!harness.store().snapshot().subtitle_overlay.recent_cues.iter().any(|cue| {
+        cue.source_text == "这。"
+    }));
+}
+
+#[test]
+fn replay_nonempty_400ms_script_anomaly_without_successor_still_fails() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    harness.store().watch_session_report.begin_or_reuse(
+        "dashscope",
+        "qwen-audio-3.0-realtime-plus",
+    );
+    let mut slice = WorkerSlice::new();
+    let mut socket = ScriptedRealtimeSocket::new(
+        nonempty_script_anomaly_empty_translation_steps("这。", 400),
+        harness.shared.clone(),
+    );
+    for _ in 0..4 { socket = harness.tick(socket, &mut slice); }
+    std::thread::sleep(std::time::Duration::from_millis(205));
+    socket = ScriptedRealtimeSocket::new(vec![ScriptStep::Idle], harness.shared.clone());
+    let _socket = harness.tick(socket, &mut slice);
+    assert!(report_has_native_empty_response(&harness));
+}
+
+#[test]
+fn replay_nonempty_400ms_script_anomaly_different_continuity_still_fails() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    harness.store().watch_session_report.begin_or_reuse(
+        "dashscope",
+        "qwen-audio-3.0-realtime-plus",
+    );
+    let mut slice = WorkerSlice::new();
+    let mut socket = ScriptedRealtimeSocket::new(
+        nonempty_script_anomaly_empty_translation_steps("这。", 400),
+        harness.shared.clone(),
+    );
+    for _ in 0..4 { socket = harness.tick(socket, &mut slice); }
+    slice.event_diagnostics.last_asr_completed_at_ms = None;
+    socket = ScriptedRealtimeSocket::new(vec![ScriptStep::Event(json!({
+        "type": "input_audio_buffer.speech_started",
+        "item_id": "item-400ms-new-continuity",
+        "audio_start_ms": 78920
+    }))], harness.shared.clone());
+    let _socket = harness.tick(socket, &mut slice);
+    assert!(report_has_native_empty_response(&harness));
+}
+
+#[test]
+fn replay_nonempty_400ms_script_anomaly_overlapping_successor_still_fails() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    harness.store().watch_session_report.begin_or_reuse(
+        "dashscope",
+        "qwen-audio-3.0-realtime-plus",
+    );
+    let mut slice = WorkerSlice::new();
+    let mut socket = ScriptedRealtimeSocket::new(
+        nonempty_script_anomaly_empty_translation_steps("这。", 400),
+        harness.shared.clone(),
+    );
+    for _ in 0..4 { socket = harness.tick(socket, &mut slice); }
+    socket = ScriptedRealtimeSocket::new(vec![ScriptStep::Event(json!({
+        "type": "input_audio_buffer.speech_started",
+        "item_id": "item-400ms-overlap",
+        "audio_start_ms": 78919
+    }))], harness.shared.clone());
+    let _socket = harness.tick(socket, &mut slice);
+    assert!(report_has_native_empty_response(&harness));
+}
+
+#[test]
+fn replay_nonempty_400ms_script_anomaly_successor_beyond_gap_still_fails() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    harness.store().watch_session_report.begin_or_reuse(
+        "dashscope",
+        "qwen-audio-3.0-realtime-plus",
+    );
+    let mut slice = WorkerSlice::new();
+    let mut socket = ScriptedRealtimeSocket::new(
+        nonempty_script_anomaly_empty_translation_steps("这。", 400),
+        harness.shared.clone(),
+    );
+    for _ in 0..4 { socket = harness.tick(socket, &mut slice); }
+    socket = ScriptedRealtimeSocket::new(vec![ScriptStep::Event(json!({
+        "type": "input_audio_buffer.speech_started",
+        "item_id": "item-400ms-distant",
+        "audio_start_ms": 79001
+    }))], harness.shared.clone());
+    let _socket = harness.tick(socket, &mut slice);
+    assert!(report_has_native_empty_response(&harness));
 }
 
 #[test]

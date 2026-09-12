@@ -1142,13 +1142,13 @@ fn terminalize_native_response_without_output<R: tauri::Runtime>(
 }
 
 const SHORT_SERVER_VAD_FRAGMENT_MAX_MS: u64 = 100;
-// A provider may split a continuous boundary into a tiny ASR token with no
-// translation, as observed in the formal c02 trace (160ms, source "对。").
-// Keep this separate from the generic short-VAD drop: a non-empty source is
-// never discarded on duration alone and must win the existing bounded,
-// forward-only, same-continuity successor arbitration.
-const NONEMPTY_EMPTY_TRANSLATION_MICRO_FRAGMENT_MAX_MS: u64 = 160;
-const NONEMPTY_EMPTY_TRANSLATION_MICRO_FRAGMENT_MAX_CHARS: usize = 4;
+// A provider may split a continuous English boundary into a short ASR token
+// written entirely in another script and return no translation for that
+// response. Duration alone is not authoritative here: formal c02 traces have
+// observed both 160ms and 400ms fragments. Such a token is only a deferred
+// candidate and is discarded later solely when a bounded, forward-only,
+// same-continuity successor proves that it was a split boundary.
+const NONEMPTY_EMPTY_TRANSLATION_SCRIPT_ANOMALY_MAX_CHARS: usize = 4;
 const CONTIGUOUS_EMPTY_VAD_DEFER_MS: u64 = 120;
 // The c02 production trace observed an admitted successor 54ms after the
 // ordinary terminal deadline. Keep a separate, hard-bounded arbitration
@@ -1170,10 +1170,9 @@ pub(super) fn is_ignored_short_server_vad(duration_ms: Option<u64>) -> bool {
     duration_ms.is_some_and(|duration_ms| duration_ms <= SHORT_SERVER_VAD_FRAGMENT_MAX_MS)
 }
 
-fn is_nonempty_empty_translation_micro_fragment(
+fn is_nonempty_empty_translation_script_anomaly(
     source_language: &str,
     source_text: &str,
-    duration_ms: Option<u64>,
 ) -> bool {
     let source_text = source_text.trim();
     let source_language_is_english = source_language
@@ -1186,10 +1185,8 @@ fn is_nonempty_empty_translation_micro_fragment(
     source_language_is_english
         && contains_han
         && !source_text.chars().any(|character| character.is_ascii_alphabetic())
-        && source_text.chars().count() <= NONEMPTY_EMPTY_TRANSLATION_MICRO_FRAGMENT_MAX_CHARS
-        && duration_ms.is_some_and(|duration_ms| {
-            duration_ms <= NONEMPTY_EMPTY_TRANSLATION_MICRO_FRAGMENT_MAX_MS
-        })
+        && source_text.chars().count()
+            <= NONEMPTY_EMPTY_TRANSLATION_SCRIPT_ANOMALY_MAX_CHARS
 }
 
 impl OmniEventDiagnostics {
@@ -1539,11 +1536,11 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
         } else if final_output_allowed
             && event_diagnostics.native_response_vad_duration_ms().is_some()
             && (response_source_text.trim().is_empty()
-                || is_nonempty_empty_translation_micro_fragment(
-                    source_language,
-                    &response_source_text,
-                    event_diagnostics.native_response_vad_duration_ms(),
-                ))
+                || (response_metadata.status == "completed"
+                    && is_nonempty_empty_translation_script_anomaly(
+                        source_language,
+                        &response_source_text,
+                    )))
             && event_diagnostics.defer_empty_vad_terminal(
                 cue_id.clone(),
                 response_source_text.clone(),

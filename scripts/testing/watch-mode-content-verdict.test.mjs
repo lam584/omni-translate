@@ -242,8 +242,8 @@ test('layered content accepts formatting, segmentation, synonyms, and Chinese/Ar
 test('retained facts accept scoped temperature units and common schedule wording', () => {
   const outputText = [
     '室外温度从21摄氏度降至零下4度，但所有传感器均保持在线运行。',
-    '他要求团队向support@example.com发送邮件，如果行程有变。',
-    '它能区分十五和五十，或十三和三十吗？',
+    '他要求团队如果日程安排有变，就向support@example.com发送邮件。',
+    '它能区分15和50，或者13和30吗？',
   ].join('');
   const selectedFacts = retainedFacts.filter((fact) => [
     'temperature.range',
@@ -253,6 +253,40 @@ test('retained facts accept scoped temperature units and common schedule wording
   ].includes(fact.id));
   const result = evaluateLayeredWatchContent({ referenceText: 'audited fixture', outputText, facts: selectedFacts });
   assert.equal(result.status, 'passed');
+});
+
+test('audited schedule-arrangement and Arabic contrast wording remain fact-local', () => {
+  for (const [factId, outputText, expectedMatch] of [
+    ['shipment.condition', '如果日程安排有变，就发送电子邮件至 support@example.com 寻求支持。', '如果日程安排有变'],
+    ['numeric.contrast-pairs', '它能区分15和50，或者13和30吗？', '区分15和50或者13和30'],
+  ]) {
+    const fact = retainedFacts.find(({ id }) => id === factId);
+    const result = evaluateLayeredWatchContent({ referenceText: 'audited fixture', outputText, facts: [fact] });
+    assert.equal(result.status, 'passed');
+    assert.deepEqual(result.dimensions.facts[0].matchedExpected, [expectedMatch]);
+  }
+});
+
+test('new audited variants retain condition polarity and numeric pair relations', () => {
+  for (const [factId, outputTexts] of [
+    ['shipment.condition', [
+      '如果货物安排有变，就发送电子邮件至support@example.com。',
+      '如果日程安排没有变化，就发送电子邮件至support@example.com。',
+      '请发送电子邮件至support@example.com寻求支持。',
+    ]],
+    ['numeric.contrast-pairs', [
+      '它能区分15和50，或者13和31吗？',
+      '它能区分15和30，或者13和50吗？',
+      '它能区分15和50，或者13？从30开始。',
+    ]],
+  ]) {
+    const fact = retainedFacts.find(({ id }) => id === factId);
+    for (const outputText of outputTexts) {
+      const result = evaluateLayeredWatchContent({ referenceText: 'audited fixture', outputText, facts: [fact] });
+      assert.equal(result.status, 'failed', outputText);
+      assert.equal(result.dimensions.facts[0].status, 'failed');
+    }
+  }
 });
 
 test('retained facts reject sensor substitution and a broken thirteen-to-thirty relation', () => {

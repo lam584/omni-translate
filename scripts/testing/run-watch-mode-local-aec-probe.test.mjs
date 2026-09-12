@@ -8,7 +8,7 @@ import { repoRoot } from '../lib/testing-common.mjs';
 import { AUTHORITY_RUNTIME_BINARY_FILES } from './watch-mode-evidence-authority.mjs';
 import { LOCAL_ISOLATION_DISTRIBUTION_KIND } from './watch-mode-local-isolation-distributed.mjs';
 import { AEC_TAP_FILES, verifyAecTapEvidence } from './watch-mode-aec-tap-evidence.mjs';
-import { AEC_PROBE_CAPABILITY_ID, AEC_PROBE_JOB_HELPER, localAecProbePowerShell, parseLocalAecProbeArgs, runLocalAecProbe, verifyLocalAecProbeRuntime } from './run-watch-mode-local-aec-probe.mjs';
+import { AEC_PROBE_CAPABILITY_ID, AEC_PROBE_INTERACTIVE_FILES, AEC_PROBE_JOB_HELPER, isProviderCredentialEnvironmentName, localAecProbeDesktopPowerShell, localAecProbePowerShell, parseLocalAecProbeArgs, runLocalAecProbe, verifyLocalAecProbeRuntime } from './run-watch-mode-local-aec-probe.mjs';
 
 const hash = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const canonicalize = (value) => Array.isArray(value) ? value.map(canonicalize)
@@ -36,10 +36,12 @@ function runtimeFixture(root, desktopBytes = Buffer.from(`fixture-not-executable
     fs.writeFileSync(file, bytes);
     return { path: name, bytes: bytes.length, sha256: hash(bytes) };
   });
-  const helperBytes = fs.readFileSync(path.join(repoRoot, AEC_PROBE_JOB_HELPER));
-  fs.mkdirSync(path.dirname(path.join(root, AEC_PROBE_JOB_HELPER)), { recursive: true });
-  fs.writeFileSync(path.join(root, AEC_PROBE_JOB_HELPER), helperBytes);
-  files.push({ path: AEC_PROBE_JOB_HELPER, bytes: helperBytes.length, sha256: hash(helperBytes) });
+  for (const name of AEC_PROBE_INTERACTIVE_FILES) {
+    const bytes = fs.readFileSync(path.join(repoRoot, name));
+    fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true });
+    fs.writeFileSync(path.join(root, name), bytes);
+    files.push({ path: name, bytes: bytes.length, sha256: hash(bytes) });
+  }
   const core = { schemaVersion: 1, artifactKind: LOCAL_ISOLATION_DISTRIBUTION_KIND, files };
   return sealRuntime(root, core);
 }
@@ -196,7 +198,7 @@ function probeOptions(root, manifest) {
   return { runtimeRoot: root, distributionDigest: manifest.distributionDigest, outputParent: root,
     renderPcmPath: pcm, physicalDeviceId: endpoint, workspaceRoot: repoRoot, timeoutSeconds: 30 };
 }
-function fixtureExecute(_script, { outputDirectory, request }) {
+function fixtureExecute(_script, { outputDirectory, request, requestPath, runtime }) {
   const sourcePcmFrames = fs.statSync(request.renderPcmPath).size / 2;
   const renderedFrames = (sourcePcmFrames + 16_000) * 3;
   const events = eventsFixture();
@@ -221,7 +223,31 @@ function fixtureExecute(_script, { outputDirectory, request }) {
       framesCaptured: 960, captureState: 'idle', streamBound: false, lastError: null, lastErrorCode: null },
     providerCalls: 0, releaseEligible: false, recognitionSenderAttached: false,
     sourcePcmSha256: request.renderPcmSha256, tap });
-  return { exitCode: 0, ownedJobExited: true };
+  const authorityRoot = path.join(outputDirectory, 'interactive', request.executionId);
+  fs.mkdirSync(authorityRoot, { recursive: true });
+  const commandPath = path.join(authorityRoot, 'command.json');
+  const launchPath = path.join(authorityRoot, 'launch.json');
+  const processAuthorityPath = path.join(authorityRoot, 'process-authority.json');
+  const terminalPath = path.join(authorityRoot, 'terminal.json');
+  const taskTerminalPath = path.join(authorityRoot, 'task-terminal.json');
+  const requestDigest = hash(fs.readFileSync(requestPath));
+  const desktop = 'WinSta0\\ProbeDesktop'; const ownerSid = 'S-1-5-21-1';
+  const nodeProcess = { pid: 42, parentPid: 7, startedAt: '2026-09-12T00:00:00.000Z', imagePath: process.execPath, imageSha256: hash(fs.readFileSync(process.execPath)) };
+  const binding = { executionId: request.executionId, planDigest: runtime.distributionDigest, leaseId: request.executionId,
+    leaseDigest: requestDigest, cellId: 'local-aec-probe', workerId: 'vmfixture', vmIdentityDigest: runtime.distributionDigest };
+  json(commandPath, binding);
+  json(launchPath, { schemaVersion: 2, artifactKind: 'watch-mode-interactive-shard-launch-authority', ...binding,
+    sessionId: 1, desktop, nodeDesktop: desktop, ownerSid, taskProcess: { pid: 7 }, nodeProcess });
+  json(processAuthorityPath, { schemaVersion: 2, artifactKind: 'watch-mode-interactive-process-authority', ...binding, passed: true,
+    errors: [], executionExitCode: 0, expectedSessionId: 1, expectedOwnerSid: ownerSid, rootProcessId: 42, processCount: 1,
+    processes: [{ ...nodeProcess, role: 'shard-node', sessionId: 1, ownerSid }] });
+  const terminal = { schemaVersion: 2, artifactKind: 'watch-mode-interactive-task-terminal', ...binding, mode: 'local-aec-probe',
+    exitCode: 0, processAuthorityExitCode: 0, workerId: binding.workerId, vmIdentityDigest: binding.vmIdentityDigest };
+  const taskTerminal = { schemaVersion: 2, artifactKind: 'watch-mode-interactive-scheduled-task-terminal', ...binding,
+    lastTaskResult: 0, logonType: 'InteractiveToken' };
+  json(terminalPath, terminal); json(taskTerminalPath, taskTerminal);
+  json(path.join(authorityRoot, 'cleanup.scheduler.json'), { passed: true, taskCleanupPassed: true, processCleanup: { passed: true } });
+  return { commandPath, launchPath, processAuthorityPath, terminalPath, taskTerminalPath, terminal, taskTerminal };
 }
 test('runner binds stimulus, fresh execution, process custody and complete tap without authorizing release', async (t) => {
   const root = temporary(t);
@@ -239,7 +265,7 @@ test('runner always preserves failure JSON, including unknown custody, missing t
   for (const [execute, expectedCalls, expectedAccounting, expectedCustody] of [
     [() => { throw new Error('launcher failed'); }, null, 'unknown', false],
     [() => ({ exitCode: 0, ownedJobExited: false }), null, 'unknown', false],
-    [(s, c) => { fixtureExecute(s, c); fs.appendFileSync(path.join(c.outputDirectory, AEC_TAP_FILES.post), 'tail'); return { exitCode: 0, ownedJobExited: true }; },
+    [(s, c) => { const result = fixtureExecute(s, c); fs.appendFileSync(path.join(c.outputDirectory, AEC_TAP_FILES.post), 'tail'); return result; },
       0, 'unverified-producer-report', true],
   ]) {
     await assert.rejects(runLocalAecProbe(options, { execute }), (error) => {
@@ -253,30 +279,63 @@ test('runner always preserves failure JSON, including unknown custody, missing t
   }
   await assert.rejects(runLocalAecProbe({ ...options, physicalDeviceId: 'default' }), /exact physical/u);
 });
-test('launcher scrubs normal/paid diagnostics and uses an owned bounded job, never a PID cleanup', () => {
-  const script = localAecProbePowerShell({ runtime: { executable: 'E:\\runtime\\shell.exe', executableSha256: 'a'.repeat(64), root: 'E:\\runtime' },
-    outputDirectory: 'E:\\probe', requestPath: "E:\\probe's\\request.json", deadlineUtc: '2026-09-12T00:00:30Z', workspaceRoot: repoRoot });
+test('controller uses the existing InteractiveToken request and scheduler contracts', (t) => {
+  const root = temporary(t);
+  const runtime = verifyLocalAecProbeRuntime(root, runtimeFixture(root).distributionDigest);
+  const script = localAecProbePowerShell({ runtime, outputDirectory: 'E:\\probe', requestPath: "E:\\probe's\\request.json",
+    deadlineUtc: new Date(Date.now() + 30_000).toISOString(), workspaceRoot: root, executionId: 'local-aec-fixture' });
+  assert.match(script, /mode='local-aec-probe'/u);
+  assert.match(script, /Resolve-OmniInteractiveTaskRequest/u);
+  assert.match(script, /Invoke-OmniInteractiveScheduledTask/u);
+  assert.match(script, /requireSeparateControlPlane=\$true/u);
+  assert.match(script, /expectedVmUuidBios/u);
+  assert.match(fs.readFileSync(path.join(root, 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1'), 'utf8'), /LogonType Interactive/u);
+  assert.doesNotMatch(script, /OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST/u);
+});
+test('interactive custody rejects failed collectors and every authority binding substitution', async (t) => {
+  const mutations = [
+    (r) => { r.terminal.processAuthorityExitCode = 1; },
+    (r) => { const a = JSON.parse(fs.readFileSync(r.processAuthorityPath, 'utf8')); a.artifactKind = 'wrong'; json(r.processAuthorityPath, a); },
+    (r) => { const a = JSON.parse(fs.readFileSync(r.processAuthorityPath, 'utf8')); a.leaseDigest = '0'.repeat(64); json(r.processAuthorityPath, a); },
+    (r) => { const a = JSON.parse(fs.readFileSync(r.processAuthorityPath, 'utf8')); a.processes[0].imageSha256 = '0'.repeat(64); json(r.processAuthorityPath, a); },
+  ];
+  for (const mutate of mutations) {
+    const root = temporary(t); const options = probeOptions(root, runtimeFixture(root));
+    await assert.rejects(runLocalAecProbe(options, { execute: (script, context) => { const result = fixtureExecute(script, context); mutate(result); return result; } }),
+      /terminal is incomplete|identity, descendant authority, or cleanup is incomplete/u);
+  }
+});
+
+test('interactive launcher derives task and Node desktop identities instead of hard-coding WinSta0 Default', () => {
+  const source = fs.readFileSync(path.join(repoRoot, 'scripts/testing/run-watch-mode-interactive-task.ps1'), 'utf8');
+  assert.match(source, /Get-OmniCurrentDesktopIdentity/u);
+  assert.match(source, /Get-OmniProcessDesktopIdentity \$node\.Id/u);
+  assert.match(source, /nodeDesktop = \$nodeDesktop/u);
+  assert.doesNotMatch(source, /desktop = 'WinSta0\\Default'/u);
+});
+
+test('Provider credential environment inventory is removed without matching benign runtime variables', () => {
+  for (const name of ['DASHSCOPE_API_KEY','OMNI_TEST_DASHSCOPE_API_KEY','OPENAI_API_KEY','AZURE_OPENAI_ACCESS_TOKEN','GEMINI_API_KEY','GOOGLE_CREDENTIAL_TOKEN','TENCENT_SECRET_KEY','VOLCENGINE_ACCESS_KEY','ZHIPU_API_KEY']) {
+    assert.equal(isProviderCredentialEnvironmentName(name), true, name);
+  }
+  for (const name of ['PATH','USERPROFILE','OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST','TENCENT_READ_TIMEOUT_MS']) assert.equal(isProviderCredentialEnvironmentName(name), false, name);
+});
+
+test('local AEC interactive argv quotes runner and request paths containing spaces', () => {
+  const source = fs.readFileSync(path.join(repoRoot, 'scripts/testing/run-watch-mode-interactive-task.ps1'), 'utf8');
+  assert.ok(source.includes(`('\"' + [string]$request.shardRunnerPath + '\"')`));
+  assert.ok(source.includes(`('\"' + $resolvedRequestPath + '\"')`));
+});
+
+test('interactive Desktop executor keeps Provider isolation and native finalizer custody', () => {
+  const script = localAecProbeDesktopPowerShell({ executable: 'E:\\runtime\\shell.exe', executableSha256: 'a'.repeat(64),
+    runtimeRoot: 'E:\\runtime', outputDirectory: 'E:\\probe', requestPath: "E:\\probe's\\request.json",
+    deadlineUtc: '2026-09-12T00:00:30Z', helperPath: 'E:\\runtime\\finalizer.psm1', helperSha256: 'b'.repeat(64) });
   assert.match(script, /SetEnvironmentVariable\(\$variable.Name,\$null,'Process'\)/u);
   assert.match(script, /OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST='E:\\probe''s/u);
   assert.match(script, /OmniInteractiveFinalizerJob\]::Run/u);
+  for (const name of ['DASHSCOPE_API_KEY','OMNI_TEST_DASHSCOPE_API_KEY','OPENAI_API_KEY','GEMINI_API_KEY']) assert.match(script, /credentialPattern/u, name);
   assert.doesNotMatch(script, /taskkill|Stop-Process|Start-Process/u);
-});
-test('zero-Provider native job integration cannot turn clean process exit into fabricated AEC evidence', { skip: process.platform !== 'win32', timeout: 45_000 }, async (t) => {
-  const root = temporary(t);
-  // Node (stdin=NUL), not Desktop: exercise the real suspended launch, native
-  // job, output drain and PowerShell sanitizer without audio or Provider I/O.
-  // The overlay is synthetic test capability evidence for a Node stand-in,
-  // never a signed runtime or an authorization for real Desktop/Provider I/O.
-  const options = probeOptions(root, runtimeFixture(root, Buffer.concat([fs.readFileSync(process.execPath), Buffer.from(AEC_PROBE_CAPABILITY_ID)])));
-  await assert.rejects(runLocalAecProbe(options), (error) => {
-    const receipt = JSON.parse(fs.readFileSync(path.join(error.outputDirectory, 'result.json'), 'utf8'));
-    assert.equal(receipt.status, 'failed');
-    assert.equal(receipt.ownedJobExited, true, receipt.failure);
-    assert.equal(receipt.providerCalls, null);
-    assert.equal(receipt.providerAccounting, 'unknown');
-    assert.match(receipt.failure, /local-aec-probe-result.json/u);
-    return true;
-  });
 });
 test('unsupported but hash-valid runtime is rejected before any normal launch', async (t) => {
   const root = temporary(t);

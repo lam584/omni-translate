@@ -136,7 +136,11 @@ function Invoke-OmniInteractiveScheduledTask {
       terminalSha256 = Get-OmniSha256 -LiteralPath $terminalPath
       completedAt = [DateTime]::UtcNow.ToString('o')
     }
-    if ($mode -in @('shard-cell', 'incident-plus-cell')) {
+    if ($mode -in @('shard-cell', 'incident-plus-cell', 'local-aec-probe')) {
+      $taskTerminal['leaseId'] = $cellFields.leaseId
+      $taskTerminal['leaseDigest'] = $cellFields.leaseDigest
+      $taskTerminal['cellId'] = $cellFields.cellId
+    } elseif ($mode -eq 'local-aec-probe') {
       $taskTerminal['leaseId'] = $cellFields.leaseId
       $taskTerminal['leaseDigest'] = $cellFields.leaseDigest
       $taskTerminal['cellId'] = $cellFields.cellId
@@ -202,7 +206,7 @@ function Invoke-OmniInteractiveScheduledTask {
     $primaryError = $_
   } finally {
     if ($registered) {
-      if ($mode -in @('shard-cell', 'incident-plus-cell')) {
+      if ($mode -in @('shard-cell', 'incident-plus-cell', 'local-aec-probe')) {
         $cleanupReceipt = [ordered]@{
           schemaVersion = 1; artifactKind = 'watch-mode-interactive-scheduler-cleanup'
           executionId = [string]$command.executionId; leaseId = [string]$command.leaseId

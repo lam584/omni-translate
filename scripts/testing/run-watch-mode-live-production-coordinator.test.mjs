@@ -2176,7 +2176,7 @@ test('interactive control projects readiness and paid-cell fields only inside th
     'lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1',
   ].map((relativePath) => fs.readFileSync(path.join(repoRoot, 'scripts/testing', relativePath), 'utf8')).join('\n');
-  assert.match(control, /\$mode -notin @\('endpoint-readiness', 'shard-cell', 'incident-plus-cell'\)/);
+  assert.match(control, /\$mode -notin @\('endpoint-readiness', 'shard-cell', 'incident-plus-cell', 'local-aec-probe'\)/);
   const commandStart = control.indexOf('$command = [ordered]@{');
   const commandEnd = control.indexOf('Write-OmniImmutableJson -LiteralPath $commandPath -Value $command');
   assert.ok(commandStart >= 0 && commandEnd > commandStart);
@@ -2686,7 +2686,7 @@ test('paid scheduler cleanup gates success output and preserves primary failures
   const finallyStart = source.search(/\} finally \{\r?\n    if \(\$registered\)/);
   assert.ok(finallyStart > 0);
   const finalization = source.slice(finallyStart);
-  const paid = finalization.slice(finalization.indexOf("if ($mode -in @('shard-cell', 'incident-plus-cell'))"), finalization.indexOf('} else {'));
+  const paid = finalization.slice(finalization.indexOf("if ($mode -in @('shard-cell', 'incident-plus-cell', 'local-aec-probe'))"), finalization.indexOf('} else {'));
   assert.match(paid, /status = 'cleanup-incomplete'/);
   assert.match(paid, /Stop-OmniInteractiveOwnedProcesses[\s\S]*?-ExpectedBinding \$command/);
   assert.ok(paid.indexOf('Stop-OmniInteractiveOwnedProcesses') < paid.indexOf('Stop-ScheduledTask'));

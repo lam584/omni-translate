@@ -9,6 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.IO.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.WatchMode.InteractiveDesktopIdentity.psm1') -Force
 
 function Invoke-Utf8JsonProcess {
   param(
@@ -228,6 +229,7 @@ if ($actualUuid -cne ([string]$request.expectedVmUuidBios).ToLowerInvariant()) {
   throw 'interactive task VM BIOS UUID does not match the signed worker'
 }
 
+$taskDesktop = Get-OmniCurrentDesktopIdentity; if ([string]::IsNullOrWhiteSpace($taskDesktop)) { throw 'interactive task desktop identity is unavailable' }
 $common = [ordered]@{
   schemaVersion = 2
   executionId = [string]$request.executionId
@@ -239,7 +241,7 @@ $common = [ordered]@{
   user = $currentUser
   ownerSid = $windowsIdentity.User.Value
   sessionId = $activeConsoleSessionId
-  desktop = 'WinSta0\Default'
+  desktop = $taskDesktop
   taskProcess = $currentIdentity
   explorerProcess = $explorerIdentity
 }
@@ -323,28 +325,23 @@ if ($request.mode -eq 'endpoint-readiness') {
   exit 0
 }
 
-if ($request.mode -notin @('shard-cell', 'incident-plus-cell')) { throw 'interactive task mode is unsupported' }
-if ((Get-OmniSha256 -LiteralPath ([string]$request.nodeExecutable)) -cne [string]$request.nodeSha256) {
+if ($request.mode -notin @('shard-cell', 'incident-plus-cell', 'local-aec-probe')) { throw 'interactive task mode is unsupported' }; if ((Get-OmniSha256 -LiteralPath ([string]$request.nodeExecutable)) -cne [string]$request.nodeSha256) {
   throw 'interactive task Node executable hash mismatch'
-}
-if ((Get-OmniSha256 -LiteralPath ([string]$request.shardRunnerPath)) -cne [string]$request.shardRunnerSha256) {
+}; if ((Get-OmniSha256 -LiteralPath ([string]$request.shardRunnerPath)) -cne [string]$request.shardRunnerSha256) {
   throw 'interactive task shard runner hash mismatch'
 }
-$env:OMNI_SHARD_ZERO_PROVIDER_READINESS_PATH = [string]$request.readinessPath
-$env:OMNI_SHARD_INTERACTIVE_COMMAND_PATH = $resolvedRequestPath
-$env:OMNI_SHARD_INTERACTIVE_LAUNCH_AUTHORITY_PATH = [string]$request.launchPath
-$env:OMNI_SHARD_INTERACTIVE_PROCESS_AUTHORITY_PATH = [string]$request.processAuthorityPath
-$env:OMNI_SHARD_INTERACTIVE_TERMINAL_PATH = [string]$request.terminalPath
-$env:OMNI_SHARD_INTERACTIVE_TASK_TERMINAL_PATH = [string]$request.taskTerminalPath
-$env:OMNI_SHARD_INTERACTIVE_RELEASE_PATH = [string]$request.releasePath
-$env:OMNI_SHARD_INTERACTIVE_EXECUTION_RECEIPT_PATH = [string]$request.executionReceiptPath
-$arguments = @(
-  [string]$request.shardRunnerPath,
-  '--plan', [string]$request.planPath,
-  '--lease', [string]$request.leasePath,
-  '--worker-id', [string]$request.workerId,
-  '--vm-uuid-bios', [string]$request.expectedVmUuidBios
-)
+if ($request.mode -eq 'local-aec-probe') { $arguments = @(('"' + [string]$request.shardRunnerPath + '"'), '--execute-interactive-request', ('"' + $resolvedRequestPath + '"')) } else {
+  $env:OMNI_SHARD_ZERO_PROVIDER_READINESS_PATH = [string]$request.readinessPath
+  $env:OMNI_SHARD_INTERACTIVE_COMMAND_PATH = $resolvedRequestPath
+  $env:OMNI_SHARD_INTERACTIVE_LAUNCH_AUTHORITY_PATH = [string]$request.launchPath
+  $env:OMNI_SHARD_INTERACTIVE_PROCESS_AUTHORITY_PATH = [string]$request.processAuthorityPath
+  $env:OMNI_SHARD_INTERACTIVE_TERMINAL_PATH = [string]$request.terminalPath
+  $env:OMNI_SHARD_INTERACTIVE_TASK_TERMINAL_PATH = [string]$request.taskTerminalPath
+  $env:OMNI_SHARD_INTERACTIVE_RELEASE_PATH = [string]$request.releasePath
+  $env:OMNI_SHARD_INTERACTIVE_EXECUTION_RECEIPT_PATH = [string]$request.executionReceiptPath
+  $arguments = @([string]$request.shardRunnerPath, '--plan', [string]$request.planPath, '--lease', [string]$request.leasePath,
+    '--worker-id', [string]$request.workerId, '--vm-uuid-bios', [string]$request.expectedVmUuidBios)
+}
 if ($request.mode -eq 'incident-plus-cell') {
   $arguments += @(
     '--execution-root', [string]$request.shardRoot,
@@ -354,7 +351,7 @@ if ($request.mode -eq 'incident-plus-cell') {
   if ($request.PSObject.Properties['driverReadinessPath'] -and -not [string]::IsNullOrWhiteSpace([string]$request.driverReadinessPath)) {
     $arguments += @('--driver-readiness-receipt', [string]$request.driverReadinessPath)
   }
-} else {
+} elseif ($request.mode -eq 'shard-cell') {
   $arguments += @('--shard-root', [string]$request.shardRoot)
 }
 $node = Start-Process -FilePath ([string]$request.nodeExecutable) `
@@ -366,7 +363,8 @@ $node = Start-Process -FilePath ([string]$request.nodeExecutable) `
   -PassThru
 # Retain the native handle before redirected PS5.1 Start-Process loses exit status.
 $nodeHandle = $node.Handle
-$nodeIdentity = Get-ProcessIdentity $node.Id
+$nodeIdentity = Get-ProcessIdentity $node.Id; $nodeDesktop = Get-OmniProcessDesktopIdentity $node.Id
+if ($nodeDesktop -cne $common.desktop) { Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue; throw 'interactive Node desktop differs from task desktop' }
 if ($nodeIdentity.sessionId -ne $activeConsoleSessionId -or $nodeIdentity.ownerSid -cne $windowsIdentity.User.Value) {
   Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue
   throw 'interactive shard Node did not inherit the console session identity'
@@ -388,6 +386,7 @@ $launch = [ordered]@{
   ownerSid = $common.ownerSid
   sessionId = $common.sessionId
   desktop = $common.desktop
+  nodeDesktop = $nodeDesktop
   taskName = $common.taskName
   taskProcess = $common.taskProcess
   explorerProcess = $common.explorerProcess

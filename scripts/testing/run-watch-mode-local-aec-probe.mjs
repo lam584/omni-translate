@@ -11,8 +11,23 @@ import { checkWatchDiskSpace } from './watch-mode-disk-lifecycle.mjs';
 
 const hash = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const quote = (value) => `'${String(value).replaceAll("'", "''")}'`;
+export const PROVIDER_CREDENTIAL_ENV_PATTERN = '.*(?:DASHSCOPE|QWEN|OPENAI|AZURE|GOOGLE|GEMINI|ANTHROPIC|TENCENT|VOLCENGINE|ZHIPU).*(?:API_KEY|ACCESS_KEY|SECRET|TOKEN|CREDENTIAL).*|.*(?:API_KEY|ACCESS_KEY|SECRET|TOKEN|CREDENTIAL).*(?:DASHSCOPE|QWEN|OPENAI|AZURE|GOOGLE|GEMINI|ANTHROPIC|TENCENT|VOLCENGINE|ZHIPU).*';
+export const isProviderCredentialEnvironmentName = (name) => new RegExp(`^(?:${PROVIDER_CREDENTIAL_ENV_PATTERN})$`, 'iu').test(name);
 const writeJson = (name, value) => fs.writeFileSync(name, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
 export const AEC_PROBE_JOB_HELPER = 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveFinalizer.psm1';
+export const AEC_PROBE_INTERACTIVE_FILES = Object.freeze([
+  'scripts/testing/lib/powershell/Omni.Testing.IO.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.Process.psm1',
+  'scripts/testing/run-watch-mode-interactive-task.ps1',
+  'scripts/testing/collect-watch-mode-interactive-process-authority.ps1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveLocalAec.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveDesktopIdentity.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1',
+  AEC_PROBE_JOB_HELPER,
+  'scripts/testing/run-watch-mode-local-aec-probe.mjs',
+]);
 // Compiled into the opt-in startup implementation and its producer receipt.
 // This is a non-executing version guard, not a substitute for selecting the
 // trusted signed distribution digest. NEVER run an old EXE to query support:
@@ -55,33 +70,138 @@ export function verifyLocalAecProbeRuntime(runtimeRoot, expectedDistributionDige
   if (!fs.readFileSync(path.join(root, desktop.path)).includes(Buffer.from(AEC_PROBE_CAPABILITY_ID))) {
     throw new Error('selected Desktop lacks the compiled zero-Provider local-AEC capability; refusing normal launch');
   }
-  const helper = manifest.files.find((file) => file.path === AEC_PROBE_JOB_HELPER);
-  if (!helper) throw new Error('selected runtime does not freeze the local AEC process-custody helper');
+  const interactiveFiles = Object.fromEntries(AEC_PROBE_INTERACTIVE_FILES.map((name) => {
+    const entry = manifest.files.find((file) => file.path === name);
+    if (!entry) throw new Error(`selected runtime does not freeze interactive probe dependency: ${name}`);
+    return [name, { path: path.join(root, ...name.split('/')), sha256: entry.sha256 }];
+  }));
   return { root, executable: path.join(root, desktop.path), executableSha256: desktop.sha256,
-    helperSha256: helper.sha256, probeCapabilityId: AEC_PROBE_CAPABILITY_ID,
-    distributionDigest: manifest.distributionDigest };
+    helperSha256: interactiveFiles[AEC_PROBE_JOB_HELPER].sha256, interactiveFiles,
+    probeCapabilityId: AEC_PROBE_CAPABILITY_ID, distributionDigest: manifest.distributionDigest };
 }
 
-export function localAecProbePowerShell({ runtime, outputDirectory, requestPath, deadlineUtc, workspaceRoot }) {
+export function localAecProbePowerShell({ runtime, outputDirectory, requestPath, deadlineUtc, workspaceRoot, executionId }) {
+  const file = (name) => runtime.interactiveFiles[name];
+  const requestModule = file('scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1');
+  const schedulerModule = file('scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1');
+  const launcher = file('scripts/testing/run-watch-mode-interactive-task.ps1');
+  const collector = file('scripts/testing/collect-watch-mode-interactive-process-authority.ps1');
+  const runner = file('scripts/testing/run-watch-mode-local-aec-probe.mjs');
+  const helper = file(AEC_PROBE_JOB_HELPER);
+  const timeoutMs = Math.max(1, Date.parse(deadlineUtc) - Date.now());
   return `$ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 [Console]::OutputEncoding=[System.Text.Encoding]::UTF8
 $OutputEncoding=[System.Text.Encoding]::UTF8
-$helper=${quote(path.join(workspaceRoot, AEC_PROBE_JOB_HELPER))}
-if((Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash.ToLowerInvariant() -cne ${quote(runtime.helperSha256)}) {throw 'process-custody helper changed after preflight'}
-Import-Module $helper -Force
-# This generic native job launches suspended, owns all descendants, and closes
-# its kill-on-close handle on every exit. No PID/name-based cleanup is used.
-foreach($variable in @(Get-ChildItem Env: | Where-Object {$_.Name -match '^OMNI_WATCH_MODE_|^OMNI_RELEASE_EVIDENCE_'})) {
-  [Environment]::SetEnvironmentVariable($variable.Name,$null,'Process')
+$workspace=${quote(workspaceRoot)}
+$requestModule=${quote(requestModule.path)}
+$schedulerModule=${quote(schedulerModule.path)}
+if((Get-FileHash -LiteralPath $requestModule -Algorithm SHA256).Hash.ToLowerInvariant() -cne ${quote(requestModule.sha256)}) {throw 'interactive request module changed after preflight'}
+if((Get-FileHash -LiteralPath $schedulerModule -Algorithm SHA256).Hash.ToLowerInvariant() -cne ${quote(schedulerModule.sha256)}) {throw 'interactive scheduler module changed after preflight'}
+Import-Module $requestModule -Force
+Import-Module $schedulerModule -Force
+$identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+$payload=[ordered]@{
+ schemaVersion=1; artifactKind='watch-mode-interactive-task-request'; mode='local-aec-probe'
+ workspaceRoot=$workspace; remoteRoot=${quote(outputDirectory)}; executionId=${quote(executionId)}
+ planDigest=${quote(runtime.distributionDigest)}; workerId=$env:COMPUTERNAME.ToLowerInvariant()
+ vmIdentityDigest=${quote(runtime.distributionDigest)}; expectedVmUuidBios=[string](Get-CimInstance Win32_ComputerSystemProduct).UUID
+ user=$identity.Name.Split('\\')[-1]; timeoutMs=${timeoutMs}; expectedCredentialReference='none'
+ requireSeparateControlPlane=$true; launcherSha256=${quote(launcher.sha256)}
+ processAuthorityCollectorSha256=${quote(collector.sha256)}; shardRunnerSha256=${quote(runner.sha256)}
+ probeRequestPath=${quote(requestPath)}; probeRequestSha256=(Get-FileHash -LiteralPath ${quote(requestPath)} -Algorithm SHA256).Hash.ToLowerInvariant()
+ outputDirectory=${quote(outputDirectory)}; desktopExecutable=${quote(runtime.executable)}
+ desktopExecutableSha256=${quote(runtime.executableSha256)}; finalizerHelperPath=${quote(helper.path)}
+ finalizerHelperSha256=${quote(helper.sha256)}
 }
+$payloadBase64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($payload|ConvertTo-Json -Depth 20 -Compress)))
+$context=Resolve-OmniInteractiveTaskRequest -PayloadBase64 $payloadBase64
+Invoke-OmniInteractiveScheduledTask -Context $context
+`;
+}
+
+export function localAecProbeDesktopPowerShell({ executable, executableSha256, runtimeRoot, outputDirectory, requestPath, deadlineUtc, helperPath, helperSha256 }) {
+  return `$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+[Console]::OutputEncoding=[System.Text.Encoding]::UTF8
+$OutputEncoding=[System.Text.Encoding]::UTF8
+$helper=${quote(helperPath)}
+if((Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash.ToLowerInvariant() -cne ${quote(helperSha256)}) {throw 'process-custody helper changed after preflight'}
+Import-Module $helper -Force
+foreach($variable in @(Get-ChildItem Env: | Where-Object {$_.Name -match '^OMNI_WATCH_MODE_|^OMNI_RELEASE_EVIDENCE_'})) { [Environment]::SetEnvironmentVariable($variable.Name,$null,'Process') }
+$credentialPattern='(?i)^(?:(DASHSCOPE|QWEN|OPENAI|AZURE|GOOGLE|GEMINI|ANTHROPIC|TENCENT|VOLCENGINE|ZHIPU).*(API_KEY|ACCESS_KEY|SECRET|TOKEN|CREDENTIAL)|(API_KEY|ACCESS_KEY|SECRET|TOKEN|CREDENTIAL).*(DASHSCOPE|QWEN|OPENAI|AZURE|GOOGLE|GEMINI|ANTHROPIC|TENCENT|VOLCENGINE|ZHIPU))$'
+foreach($variable in @(Get-ChildItem Env: | Where-Object {$_.Name -match $credentialPattern})) { [Environment]::SetEnvironmentVariable($variable.Name,$null,'Process') }
 $env:OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST=${quote(requestPath)}
 $env:OMNI_WATCH_MODE_AEC_DIAGNOSTIC_TAP_DIRECTORY=${quote(outputDirectory)}
-$exe=${quote(runtime.executable)}
-if((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne ${quote(runtime.executableSha256)}) {throw 'desktop bytes changed after preflight'}
-$result=[OmniInteractiveFinalizerJob]::Run($exe,'',${quote(runtime.root)},[DateTime]::Parse(${quote(deadlineUtc)}).ToUniversalTime())
+$exe=${quote(executable)}
+if((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne ${quote(executableSha256)}) {throw 'desktop bytes changed after preflight'}
+$result=[OmniInteractiveFinalizerJob]::Run($exe,'',${quote(runtimeRoot)},[DateTime]::Parse(${quote(deadlineUtc)}).ToUniversalTime())
 [pscustomobject]@{exitCode=$result.ExitCode;stdout=$result.Stdout;stderr=$result.Stderr;ownedJobExited=$true} | ConvertTo-Json -Depth 4 -Compress
 `;
+}
+
+export function executeInteractiveLocalAecRequest(commandPath) {
+  const command = JSON.parse(fs.readFileSync(commandPath, 'utf8'));
+  if (command.mode !== 'local-aec-probe' || command.cellId !== 'local-aec-probe') throw new Error('invalid interactive local AEC command');
+  const requestBytes = fs.readFileSync(command.probeRequestPath);
+  if (hash(requestBytes) !== command.probeRequestSha256) throw new Error('interactive local AEC request hash mismatch');
+  const request = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(requestBytes));
+  const script = localAecProbeDesktopPowerShell({ executable: command.desktopExecutable, executableSha256: command.desktopExecutableSha256,
+    runtimeRoot: command.workspaceRoot, outputDirectory: command.outputDirectory, requestPath: command.probeRequestPath,
+    deadlineUtc: request.deadlineUtc, helperPath: command.finalizerHelperPath, helperSha256: command.finalizerHelperSha256 });
+  const result = spawnSync('powershell.exe', ['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],
+    { windowsHide: true, encoding: 'utf8', timeout: Math.max(1, Date.parse(request.deadlineUtc) - Date.now()) + 12_000, maxBuffer: 8 * 1024 * 1024, env: windowsPowerShellEnvironment() });
+  if (result.error || result.status !== 0) throw new Error(result.error?.message ?? result.stderr ?? 'interactive Desktop probe failed');
+  const parsed = JSON.parse(result.stdout.trim());
+  fs.writeFileSync(path.join(command.outputDirectory, 'owned-launch-result.json'), JSON.stringify(parsed, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
+  if (parsed.exitCode !== 0 || parsed.ownedJobExited !== true) throw new Error('interactive Desktop descendants did not exit');
+  const executionReceipt = { schemaVersion: 1, artifactKind: 'watch-mode-interactive-local-aec-execution',
+    executionId: command.executionId, planDigest: command.planDigest, leaseId: command.leaseId, leaseDigest: command.leaseDigest,
+    cellId: command.cellId, workerId: command.workerId, vmIdentityDigest: command.vmIdentityDigest, exitCode: 0, completedAt: new Date().toISOString() };
+  fs.writeFileSync(command.executionReceiptPath, JSON.stringify(executionReceipt, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
+  return parsed;
+}
+
+function verifyInteractiveCustody(result, outputDirectory, executionId, expectedPlanDigest, expectedRequestDigest) {
+  const terminal = result?.terminal; const taskTerminal = result?.taskTerminal;
+  if (terminal?.schemaVersion !== 2 || terminal.artifactKind !== 'watch-mode-interactive-task-terminal'
+      || terminal.mode !== 'local-aec-probe' || terminal.executionId !== executionId || terminal.exitCode !== 0
+      || terminal.processAuthorityExitCode !== 0 || taskTerminal?.schemaVersion !== 2
+      || taskTerminal.artifactKind !== 'watch-mode-interactive-scheduled-task-terminal'
+      || taskTerminal.lastTaskResult !== 0 || taskTerminal.logonType !== 'InteractiveToken') throw new Error('interactive task terminal is incomplete');
+  const authority = JSON.parse(fs.readFileSync(result.processAuthorityPath, 'utf8'));
+  const launch = JSON.parse(fs.readFileSync(result.launchPath, 'utf8'));
+  const cleanup = JSON.parse(fs.readFileSync(path.join(path.dirname(result.commandPath), 'cleanup.scheduler.json'), 'utf8'));
+  const binding = { executionId, planDigest: expectedPlanDigest, leaseId: executionId, leaseDigest: expectedRequestDigest,
+    cellId: 'local-aec-probe', workerId: terminal.workerId, vmIdentityDigest: terminal.vmIdentityDigest };
+  const matches = (value) => Object.entries(binding).every(([name, expected]) => value?.[name] === expected);
+  const root = authority.processes?.find((entry) => entry.pid === authority.rootProcessId);
+  const imageMatches = (entry) => {
+    try { const stat = fs.lstatSync(entry.imagePath); return stat.isFile() && !stat.isSymbolicLink()
+      && fs.realpathSync.native(entry.imagePath).toLowerCase() === path.resolve(entry.imagePath).toLowerCase()
+      && hash(fs.readFileSync(entry.imagePath)) === entry.imageSha256; } catch { return false; }
+  };
+  const paths = [result.commandPath,result.launchPath,result.processAuthorityPath,result.terminalPath,result.taskTerminalPath];
+  const outputRoot = path.resolve(outputDirectory);
+  const isWithinOutput = (file) => { const relative = path.relative(outputRoot, path.resolve(file)); return relative && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative); };
+  if (launch.schemaVersion !== 2 || launch.artifactKind !== 'watch-mode-interactive-shard-launch-authority'
+      || authority.schemaVersion !== 2 || authority.artifactKind !== 'watch-mode-interactive-process-authority'
+      || !matches(launch) || !matches(authority) || !matches(terminal) || !matches(taskTerminal)
+      || launch.sessionId !== 1 || launch.nodeDesktop !== launch.desktop || !launch.desktop || !launch.ownerSid?.startsWith('S-1-')
+      || authority.passed !== true || authority.errors?.length !== 0 || authority.executionExitCode !== 0
+      || authority.expectedSessionId !== launch.sessionId || authority.expectedOwnerSid !== launch.ownerSid
+      || authority.rootProcessId !== launch.nodeProcess?.pid || authority.processCount !== authority.processes?.length
+      || !root || root.role !== 'shard-node' || root.startedAt !== launch.nodeProcess.startedAt
+      || root.parentPid !== launch.nodeProcess.parentPid || root.parentPid !== launch.taskProcess?.pid
+      || path.resolve(root.imagePath).toLowerCase() !== path.resolve(launch.nodeProcess.imagePath).toLowerCase()
+      || root.imageSha256 !== launch.nodeProcess.imageSha256 || root.sessionId !== launch.sessionId || root.ownerSid !== launch.ownerSid
+      || authority.processes.some((entry) => entry.sessionId !== launch.sessionId || entry.ownerSid !== launch.ownerSid
+        || !path.isAbsolute(entry.imagePath) || !/^[a-f0-9]{64}$/u.test(entry.imageSha256) || !imageMatches(entry))
+      || paths.some((file) => !isWithinOutput(file))
+      || cleanup.passed !== true || cleanup.taskCleanupPassed !== true || cleanup.processCleanup?.passed !== true) {
+    throw new Error('interactive task identity, descendant authority, or cleanup is incomplete');
+  }
+  return { launch, authority, cleanup };
 }
 
 function verifyOperationReceipt(probe, request, tap, sourceFrames) {
@@ -129,6 +249,7 @@ export async function runLocalAecProbe(options, dependencies = {}) {
     startedAt: new Date().toISOString(), status: 'failed', releaseEligible: false, providerCalls: 0,
     ownedJobExited: false };
   let nativeResult = null;
+  let custodyConfirmed = false;
   let launchAttempted = false;
   let probe = null;
   try {
@@ -143,7 +264,7 @@ export async function runLocalAecProbe(options, dependencies = {}) {
     const renderPcmPath = fs.realpathSync.native(options.renderPcmPath);
     const bytes = fs.readFileSync(renderPcmPath);
     if (!bytes.length || bytes.length % 2 || bytes.length > 16_000 * 2 * 180) throw new Error('invalid bounded s16le/16k/mono stimulus');
-    const request = { schemaVersion: 1, executionId, outputDirectory, renderPcmPath,
+    const request = { schemaVersion: 1, executionId, outputDirectory, renderPcmPath, deadlineUtc: new Date(deadline).toISOString(),
       renderPcmSha256: hash(bytes), physicalDeviceId: options.physicalDeviceId };
     const requestPath = path.join(outputDirectory, 'request.json');
     writeJson(requestPath, request);
@@ -155,7 +276,7 @@ export async function runLocalAecProbe(options, dependencies = {}) {
       throw new Error('process-custody helper differs from the selected distribution');
     }
     const script = localAecProbePowerShell({ runtime, outputDirectory, requestPath,
-      deadlineUtc: new Date(deadline).toISOString(), workspaceRoot });
+      deadlineUtc: new Date(deadline).toISOString(), workspaceRoot, executionId });
     fs.writeFileSync(path.join(outputDirectory, 'launch.ps1'), script, { encoding: 'utf8', flag: 'wx' });
     const execute = dependencies.execute ?? ((source) => {
       if (process.platform !== 'win32') throw new Error('local AEC hardware probe requires Windows');
@@ -169,9 +290,10 @@ export async function runLocalAecProbe(options, dependencies = {}) {
       return JSON.parse(result.stdout.trim());
     });
     launchAttempted = true;
-    nativeResult = await execute(script, { outputDirectory, request, deadline });
-    writeJson(path.join(outputDirectory, 'owned-launch-result.json'), nativeResult ?? null);
-    if (nativeResult?.exitCode !== 0 || nativeResult?.ownedJobExited !== true) throw new Error('local probe process/descendant cleanup not confirmed');
+    nativeResult = await execute(script, { outputDirectory, request, requestPath, runtime, deadline });
+    writeJson(path.join(outputDirectory, 'interactive-scheduler-result.json'), nativeResult ?? null);
+    const interactiveCustody = verifyInteractiveCustody(nativeResult, outputDirectory, executionId, runtime.distributionDigest, hash(fs.readFileSync(requestPath)));
+    custodyConfirmed = true;
     probe = readProbeReceipt(outputDirectory);
     if (probe.schemaVersion !== 1 || probe.artifactKind !== 'watch-mode-local-aec-probe'
         || probe.executionId !== executionId || probe.status !== 'completed'
@@ -182,7 +304,7 @@ export async function runLocalAecProbe(options, dependencies = {}) {
     }
     const tapIntegrity = verifyAecTapEvidence(outputDirectory, probe.tap);
     verifyOperationReceipt(probe, request, tapIntegrity, bytes.length / 2);
-    const result = { ...base, status: 'completed', completedAt: new Date().toISOString(), ownedJobExited: true,
+    const result = { ...base, status: 'completed', completedAt: new Date().toISOString(), ownedJobExited: true, interactiveCustody,
       providerAccounting: 'supported-probe-reported-zero',
       outputDirectory, probe, tapIntegrity, distributionDigest: runtime.distributionDigest };
     writeJson(path.join(outputDirectory, 'result.json'), result);
@@ -202,7 +324,7 @@ export async function runLocalAecProbe(options, dependencies = {}) {
       providerAccounting: !launchAttempted ? 'not-launched' : reportedCalls === null ? 'unknown' : 'unverified-producer-report',
       observedProducerAccounting: probe ? { executionId: probe.executionId, providerCalls: probe.providerCalls ?? null } : null,
       producerReadError,
-      ownedJobExited: nativeResult?.ownedJobExited === true, failure: error.message });
+      ownedJobExited: custodyConfirmed, failure: error.message });
     error.outputDirectory = outputDirectory;
     throw error;
   }
@@ -226,6 +348,9 @@ export function parseLocalAecProbeArgs(argv) {
 }
 
 if (isMain(import.meta.url)) {
-  try { console.log(JSON.stringify(await runLocalAecProbe(parseLocalAecProbeArgs(process.argv.slice(2))))); }
+  try {
+    if (process.argv[2] === '--execute-interactive-request') console.log(JSON.stringify(executeInteractiveLocalAecRequest(process.argv[3])));
+    else console.log(JSON.stringify(await runLocalAecProbe(parseLocalAecProbeArgs(process.argv.slice(2)))));
+  }
   catch (error) { console.error(`${error.message}; output=${error.outputDirectory ?? 'not-created'}`); process.exitCode = 1; }
 }

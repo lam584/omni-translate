@@ -302,8 +302,10 @@ pub(super) fn configure_watch_realtime_provider_with_environment(
     let registry = provider["localModelCapabilityRegistry"]
         .as_array_mut()
         .expect("registry was initialized as an array");
+    const WATCH_DIAGNOSTIC_REGISTRY_ENTRY_ID: &str = "watch-diagnostic-explicit-protocol";
     registry.retain(|entry| {
-        entry.get("modelId").and_then(Value::as_str) != Some(resolved_model_id)
+        entry.get("id").and_then(Value::as_str) != Some(WATCH_DIAGNOSTIC_REGISTRY_ENTRY_ID)
+            && entry.get("modelId").and_then(Value::as_str) != Some(resolved_model_id)
     });
     let capabilities = if matches!(realtime_protocol, "dashscope-asr" | "openai-transcription") {
         vec!["speech-to-text"]
@@ -321,7 +323,7 @@ pub(super) fn configure_watch_realtime_provider_with_environment(
         vec!["streaming", "auto_vad"]
     };
     let mut registry_entry = json!({
-            "id": "watch-diagnostic-explicit-protocol",
+            "id": WATCH_DIAGNOSTIC_REGISTRY_ENTRY_ID,
             "modelId": resolved_model_id,
             "capabilities": capabilities,
             "realtimeProtocol": realtime_protocol,

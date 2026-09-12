@@ -297,7 +297,7 @@ export function assertSafeCollectionArchiveEntries(entries, expectedRootName) {
 
 export async function collectRemoteDirectoryArchive({
   worker, remoteDirectory, localDirectory, remoteArchivePath, timeoutMs,
-  executeRemote, downloadFile, runLocalProcess, validateExtracted,
+  executeRemote, downloadFile, runLocalProcess, validateExtracted, stagedRelativePath = '',
   now = Date.now,
   nonce = `${process.pid}-${crypto.randomBytes(5).toString('hex')}`,
 }) {
@@ -310,7 +310,9 @@ export async function collectRemoteDirectoryArchive({
   const remoteArchive = path.win32.resolve(String(remoteArchivePath ?? ''));
   const finalDirectory = path.resolve(String(localDirectory ?? ''));
   const expectedRootName = path.win32.basename(remoteRoot);
-  if (!remoteRoot || !remoteArchive || !finalDirectory || !/^[^\\/]+$/u.test(expectedRootName)) {
+  const stagedRelative = String(stagedRelativePath || expectedRootName).replaceAll('\\', '/');
+  if (!remoteRoot || !remoteArchive || !finalDirectory || !/^[^\\/]+$/u.test(expectedRootName)
+      || path.posix.isAbsolute(stagedRelative) || stagedRelative.split('/').some((part) => !part || part === '..' || part.includes(':'))) {
     throw new Error('remote archive collection paths are invalid');
   }
   if (fs.existsSync(finalDirectory)) {
@@ -392,10 +394,20 @@ $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerI
       throw new Error(`worker ${worker.workerId} collection did not contain exactly the expected directory`);
     }
     const downloadedRoot = path.join(temporaryParent, downloaded[0].name);
-    await validateExtracted(downloadedRoot);
-    fs.renameSync(downloadedRoot, finalDirectory);
+    const stagedRoot = path.join(temporaryParent, ...stagedRelative.split('/'));
+    if (path.resolve(stagedRoot) !== path.resolve(downloadedRoot)) {
+      fs.mkdirSync(path.dirname(stagedRoot), { recursive: true });
+      fs.renameSync(downloadedRoot, stagedRoot);
+    }
+    await validateExtracted(stagedRoot, temporaryParent);
+    fs.renameSync(stagedRoot, finalDirectory);
     published = true;
     try {
+      let cleanupDirectory = path.dirname(stagedRoot);
+      while (cleanupDirectory.startsWith(`${temporaryParent}${path.sep}`)) {
+        fs.rmdirSync(cleanupDirectory);
+        cleanupDirectory = path.dirname(cleanupDirectory);
+      }
       fs.rmdirSync(temporaryParent);
     } catch {
       // Publication is the authority boundary. Best-effort removal of the now
@@ -3012,17 +3024,18 @@ ConvertTo-Json -InputObject @($entries) -Depth 4 -Compress
         remoteDirectory: remoteRunDirectory,
         localDirectory: localRunDirectory,
         remoteArchivePath: `${remoteRunDirectory}.collection-${lease.leaseId}.tar`,
+        stagedRelativePath: runRelative.split(path.win32.sep).join('/'),
         timeoutMs: PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
         executeRemote: runRemote,
         downloadFile,
         runLocalProcess: runProcess,
         now: deadlineNow,
-        validateExtracted: async (stagedRunDirectory) => {
+        validateExtracted: async (stagedRunDirectory, stagedShardRoot) => {
           validateShardCellResult({
             resultPath: path.join(stagedRunDirectory, SHARD_CELL_RESULT_FILE),
             plan,
             lease,
-            shardRoot: validationRoot,
+            shardRoot: stagedShardRoot,
             now: new Date(),
           });
         },

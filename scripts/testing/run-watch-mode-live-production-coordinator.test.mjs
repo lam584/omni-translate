@@ -206,7 +206,7 @@ test('remote directory collection validates a hash-authorized archive before ato
   try {
     const result = await collectRemoteDirectoryArchive({
       worker: { workerId: 'vm167' }, remoteDirectory, localDirectory: finalDirectory,
-      remoteArchivePath, timeoutMs: 30_000, nonce: 'fixture',
+      remoteArchivePath, timeoutMs: 30_000, nonce: 'fixture', stagedRelativePath: 'runs/c04',
       executeRemote: async (_worker, body, payload) => {
         remoteCalls.push({ body, payload });
         if (remoteCalls.length === 1) {
@@ -229,8 +229,9 @@ test('remote directory collection validates a hash-authorized archive before ato
         fs.writeFileSync(path.join(staged, 'shard-cell-result.json'), '{"fixture":true}\n');
         return { exitCode: 0, signal: null, stdout: '', stderr: '' };
       },
-      validateExtracted: async (staged) => {
+      validateExtracted: async (staged, stagedShardRoot) => {
         validationObservedFinal = fs.existsSync(finalDirectory);
+        assert.equal(path.relative(stagedShardRoot, staged).replaceAll('\\', '/'), 'runs/c04');
         assert.equal(path.basename(staged), 'c04');
         assert.equal(fs.existsSync(path.join(staged, 'shard-cell-result.json')), true);
       },

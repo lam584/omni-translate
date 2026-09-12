@@ -71,6 +71,8 @@ pub(super) struct AecDelayEstimate {
     pub(super) previous_packet_qpc_100ns: Option<u64>,
     pub(super) current_packet_qpc_100ns: u64,
     pub(super) packet_qpc_delta_100ns: Option<i128>,
+    pub(super) observed_packet_qpc_100ns: u64,
+    pub(super) queue_head_qpc_clamped: bool,
     pub(super) source: &'static str,
 }
 
@@ -127,10 +129,26 @@ impl AecDelayEstimator {
 
     pub(super) fn observe_capture(
         &mut self,
-        observation: CaptureClockObservation,
+        mut observation: CaptureClockObservation,
     ) -> AecDelayEstimate {
         let previous_device_frame_index = self.last_device_frame_index;
         let previous_packet_qpc_100ns = self.last_packet_qpc_100ns;
+        let observed_packet_qpc_100ns = observation.packet_qpc_100ns;
+        // The queue-head producer derives QPC by subtracting the residual queue
+        // duration from each packet timestamp. Re-observing the same queue-head
+        // frame may therefore produce a different QPC even though no capture
+        // frame was consumed. The frame position owns advancement: pin the
+        // timestamp for an unchanged frame. A frame regression, or a QPC that
+        // does not advance while frames do, remains a hard dual-clock contract
+        // violation and is handled fail-closed below.
+        let queue_head_qpc_clamped = !observation.timestamp_error
+            && previous_device_frame_index == Some(observation.device_frame_index)
+            && previous_packet_qpc_100ns
+                .is_some_and(|previous| observation.packet_qpc_100ns != previous);
+        if queue_head_qpc_clamped {
+            observation.packet_qpc_100ns = previous_packet_qpc_100ns
+                .expect("same-frame QPC clamp requires a previous timestamp");
+        }
         let device_frame_delta = previous_device_frame_index
             .map(|previous| i128::from(observation.device_frame_index) - i128::from(previous));
         let packet_qpc_delta_100ns = previous_packet_qpc_100ns
@@ -310,6 +328,8 @@ impl AecDelayEstimator {
             previous_packet_qpc_100ns,
             current_packet_qpc_100ns: observation.packet_qpc_100ns,
             packet_qpc_delta_100ns,
+            observed_packet_qpc_100ns,
+            queue_head_qpc_clamped,
             source: "wasapi-capture-qpc+capture-padding-validated+render-submit-position+same-client-reference-lead",
         }
     }
@@ -332,7 +352,8 @@ impl AecDelayEstimator {
             return None;
         };
         if observation.device_frame_index < previous_index
-            || observation.packet_qpc_100ns < previous_qpc
+            || (observation.device_frame_index > previous_index
+                && observation.packet_qpc_100ns <= previous_qpc)
         {
             return Some(CaptureClockDiscontinuity::Regression);
         }
@@ -793,6 +814,95 @@ mod tests {
         assert!(!next.aec_reset_required);
     }
 
+    #[test]
+    fn same_queue_head_frame_pins_recomputed_qpc_without_reset() {
+        for (observed_qpc, expected_clamped) in [
+            (657_000_000_000, true),
+            (657_007_957_755, false),
+            (657_008_500_000, true),
+        ] {
+            let mut estimator = AecDelayEstimator::new(48_000, 2);
+            let _ = estimator.observe_capture(observation(
+                20_448,
+                657_007_957_755,
+                657_008_000_000,
+                0,
+            ));
+            let estimate = estimator.observe_capture(observation(
+                20_448,
+                observed_qpc,
+                657_009_000_000,
+                0,
+            ));
+
+            assert!(!estimate.delay_reset_required);
+            assert!(!estimate.aec_reset_required);
+            assert_eq!(estimate.aec_reset_reason, None);
+            assert_eq!(estimate.device_frame_delta, Some(0));
+            assert_eq!(estimate.observed_packet_qpc_100ns, observed_qpc);
+            assert_eq!(estimate.current_packet_qpc_100ns, 657_007_957_755);
+            assert_eq!(estimate.packet_qpc_delta_100ns, Some(0));
+            assert_eq!(estimate.queue_head_qpc_clamped, expected_clamped);
+            assert_eq!(estimator.reset_count(), 0);
+        }
+    }
+
+    #[test]
+    fn advancing_frame_with_nonadvancing_qpc_fails_closed() {
+        for current_qpc in [657_007_957_754, 657_007_957_755] {
+            let mut estimator = AecDelayEstimator::new(48_000, 2);
+            let _ = estimator.observe_capture(observation(
+                20_448,
+                657_007_957_755,
+                657_008_000_000,
+                0,
+            ));
+            let estimate = estimator.observe_capture(observation(
+                21_408,
+                current_qpc,
+                657_008_300_000,
+                0,
+            ));
+
+            assert!(estimate.delay_reset_required);
+            assert!(estimate.aec_reset_required);
+            assert_eq!(
+                estimate.aec_reset_reason,
+                Some("wasapi-capture-clock-regression")
+            );
+            assert_eq!(estimate.device_frame_delta, Some(960));
+            assert!(estimate.packet_qpc_delta_100ns.is_some_and(|delta| delta <= 0));
+            assert!(!estimate.queue_head_qpc_clamped);
+        }
+    }
+
+    #[test]
+    fn regressed_frame_is_a_hard_reset_for_every_qpc_direction() {
+        for current_qpc in [657_007_957_754, 657_007_957_755, 657_007_957_756] {
+            let mut estimator = AecDelayEstimator::new(48_000, 2);
+            let _ = estimator.observe_capture(observation(
+                20_448,
+                657_007_957_755,
+                657_008_000_000,
+                0,
+            ));
+            let estimate = estimator.observe_capture(observation(
+                20_447,
+                current_qpc,
+                657_008_100_000,
+                0,
+            ));
+
+            assert!(estimate.delay_reset_required);
+            assert!(estimate.aec_reset_required);
+            assert_eq!(
+                estimate.aec_reset_reason,
+                Some("wasapi-capture-clock-regression")
+            );
+            assert_eq!(estimate.device_frame_delta, Some(-1));
+            assert!(!estimate.queue_head_qpc_clamped);
+        }
+    }
     #[test]
     fn monotonic_capture_clock_regression_resets_aec_filter() {
         let mut estimator = AecDelayEstimator::new(48_000, 2);

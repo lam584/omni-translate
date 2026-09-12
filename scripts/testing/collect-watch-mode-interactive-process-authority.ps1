@@ -199,7 +199,7 @@ try {
   }
   $executionExitCode = [int]$executionReceipt.exitCode
 } catch { [void]$errors.Add((Format-CollectionError $_)) }
-$requiredRoles = if ($Mode -eq 'local-aec-probe') { @('shard-node') } else { @('shard-node', 'cell-powershell') }
+[string[]]$requiredRoles = if ($Mode -eq 'local-aec-probe') { @('shard-node') } else { @('shard-node', 'cell-powershell') }
 if ($executionExitCode -eq 0) {
   $requiredRoles += if ($Mode -eq 'local-aec-probe') { @('desktop') } else { @('desktop', 'bridge') }
   if ($RequireRecorder) { $requiredRoles += 'recorder' }

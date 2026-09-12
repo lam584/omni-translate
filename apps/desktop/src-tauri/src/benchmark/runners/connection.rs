@@ -14,6 +14,8 @@ pub(super) fn authorize_bailian_model_operation_for_benchmark_invocation(
     Option<crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile>,
     String,
 > {
+    // Recheck on the worker as well, before the optional provider draft branch.
+    crate::watch_mode_diagnostic::local_aec_probe::ensure_provider_work_allowed()?;
     let inspected_profiles =
         crate::provider::model_protocol_profile::lookup_model_protocol_profiles_for_inspection(
             model,
@@ -178,6 +180,29 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn local_probe_blocks_benchmark_without_provider_draft_before_factory() {
+        crate::watch_mode_diagnostic::local_aec_probe::test_provider_entry_opt_ins(
+            concat!(module_path!(), "::local_probe_blocks_benchmark_without_provider_draft_before_factory")
+                .strip_prefix(concat!(env!("CARGO_CRATE_NAME"), "::")).unwrap(),
+            |requested| {
+                let mut factory_calls = 0;
+                for kind in ["openai-compatible", "gemini", "dashscope"] {
+                    let admission = authorize_bailian_model_operation_for_benchmark_invocation(
+                        "unregistered-benchmark-model", kind, None, None, None, None,
+                    ).map(|_| { factory_calls += 1; });
+                    if !requested {
+                        admission.unwrap();
+                        assert_eq!(factory_calls, 1, "non-Bailian draftless admission must be unchanged");
+                        break;
+                    }
+                    assert!(admission.unwrap_err().contains("forbidden during the local AEC probe"));
+                    assert_eq!(factory_calls, 0, "no decoder, progress worker or connector may be created");
+                }
+            },
+        );
+    }
 
     fn connector_config(
         model: &str,

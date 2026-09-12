@@ -49,6 +49,41 @@ const MAX_ECHO_RENDER_REFERENCE_LEAD_FRAMES: u64 =
     crate::audio::echo_cancel::TARGET_SAMPLE_RATE_HZ as u64;
 
 impl AudioStateStore {
+    pub(crate) fn aec_diagnostic_tap_enabled(&self) -> bool {
+        self.aec_diagnostic_tap.enabled()
+    }
+
+    /// The coordinator must first stop/join capture and render producers. Fence
+    /// the last native operation before closing tap admission; neither this
+    /// fence nor writer I/O may turn the caller's timeout into an unbounded wait.
+    pub(crate) fn finish_aec_diagnostic_tap(
+        &self,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
+        let started = Instant::now();
+        while self.aec_diagnostic_tap.enabled() {
+            match self.echo_canceller.try_lock() {
+                Ok(_guard) => {
+                    self.aec_diagnostic_tap.close_admission();
+                    break;
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    self.aec_diagnostic_tap.abort("echo canceller poisoned during tap finish");
+                    break;
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    let remaining = timeout.saturating_sub(started.elapsed());
+                    if remaining.is_zero() {
+                        self.aec_diagnostic_tap.abort("native AEC operation did not quiesce before finish timeout");
+                        break;
+                    }
+                    std::thread::sleep(remaining.min(Duration::from_millis(1)));
+                }
+            }
+        }
+        self.aec_diagnostic_tap.finish(timeout.saturating_sub(started.elapsed()))
+    }
+
     pub(crate) fn push_echo_reference_at(
         &self,
         render_session_id: u64,
@@ -86,24 +121,28 @@ impl AudioStateStore {
                     .saturating_sub(played)
                     .saturating_add(u64::from(physical_prefix_offset_frames))
                     .min(MAX_ECHO_RENDER_REFERENCE_LEAD_FRAMES) as u32;
-            if let Some(canceller) = self
-                .echo_canceller
+            let mut canceller_guard = self.echo_canceller
                 .lock()
-                .expect("echo canceller poisoned")
-                .as_mut()
-            {
-                canceller.push_render_at(samples, sample_rate_hz, channel_count, render_time)?;
+                .expect("echo canceller poisoned");
+            if let Some(canceller) = canceller_guard.as_mut() {
+                canceller.push_render_at(samples, sample_rate_hz, channel_count, render_time)
+                    .inspect_err(|error| self.aec_diagnostic_tap.abort(error))?;
+                // Native processing, generation/sequence assignment and enqueue
+                // share this guard with capture/reset. No timestamp work when off.
+                if self.aec_diagnostic_tap.enabled() {
+                    self.aec_diagnostic_tap.record_render(
+                        samples,
+                        sample_rate_hz,
+                        channel_count,
+                        crate::audio::engine::aec_timing::qpc_now_100ns(),
+                        clock.discontinuity_count,
+                        render_session_id,
+                        submitted_frames,
+                        endpoint_padding_frames,
+                    );
+                }
             }
-            self.aec_diagnostic_tap.record_render(
-                samples,
-                sample_rate_hz,
-                channel_count,
-                crate::audio::engine::aec_timing::qpc_now_100ns(),
-                clock.discontinuity_count,
-                render_session_id,
-                submitted_frames,
-                endpoint_padding_frames,
-            );
+            drop(canceller_guard);
             let (_, _, _, _, last_player_position, last_submitted_frames) = clock
                 .active_render_sessions
                 .get_mut(&render_session_id)
@@ -273,20 +312,25 @@ impl AudioStateStore {
         delay_samples: usize,
         metadata: Option<AecCaptureFrameMetadata>,
     ) -> Result<EchoCancellationResult, String> {
-        let result = self
-            .echo_canceller
+        let mut canceller_guard = self.echo_canceller
             .lock()
-            .expect("echo canceller poisoned")
-            .as_mut()
+            .expect("echo canceller poisoned");
+        let result = canceller_guard.as_mut()
             .ok_or_else(|| {
                 "WebRTC AEC3 production engine is not active; capture cannot be processed"
                     .to_string()
             })
-            .and_then(|canceller| canceller.process_capture(captured, delay_samples))?;
+            .and_then(|canceller| canceller.process_capture(captured, delay_samples))
+            .inspect_err(|error| self.aec_diagnostic_tap.abort(error))?;
         if let Some(metadata) = metadata {
             self.aec_diagnostic_tap
                 .record_capture(captured, &result.samples, metadata);
+        } else if self.aec_diagnostic_tap.enabled() {
+            self.aec_diagnostic_tap.abort("AEC capture processed without packet metadata");
         }
+        // Keep native processing and tap admission in one total order, also
+        // shared by reset/render and the bounded finalization fence.
+        drop(canceller_guard);
         Ok(result)
     }
 
@@ -309,7 +353,7 @@ impl AudioStateStore {
             "WebRTC AEC3 production engine is not active; reset is unavailable"
                 .to_string()
         })?;
-        canceller.reset()?;
+        canceller.reset().inspect_err(|error| self.aec_diagnostic_tap.abort(error))?;
         self.aec_diagnostic_tap
             .record_reset(reason, observed_qpc_100ns, continuity_id);
         Ok(())
@@ -331,11 +375,130 @@ impl AudioStateStore {
             .as_ref()
             .map(ProductionEchoCanceller::stats)
     }
-    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TraceEngine(Arc<Mutex<Vec<&'static str>>>);
+
+    impl crate::audio::echo_cancel::EchoCancellerEngine for TraceEngine {
+        fn push_render_10ms(&mut self, _: &[f32], _: Instant) -> Result<(), String> {
+            self.0.lock().unwrap().push("render-reference");
+            std::thread::yield_now();
+            Ok(())
+        }
+        fn process_capture_10ms(&mut self, frame: &[f32], _: usize, _: Instant) -> Result<EchoCancellationResult, String> {
+            self.0.lock().unwrap().push("capture");
+            std::thread::yield_now();
+            Ok(EchoCancellationResult { samples: frame.to_vec() })
+        }
+        fn reset(&mut self) -> Result<(), String> {
+            self.0.lock().unwrap().push("reset");
+            std::thread::yield_now();
+            Ok(())
+        }
+        fn stats(&self) -> EchoCancellerEngineStats {
+            <ResetCountingEngine as crate::audio::echo_cancel::EchoCancellerEngine>::stats(&ResetCountingEngine { reset_count: 0 })
+        }
+    }
+
+    #[test]
+    fn native_reset_render_capture_and_tap_share_one_total_order() {
+        let directory = std::env::temp_dir().join(format!("aec-order-{}", uuid::Uuid::new_v4()));
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let mut store = AudioStateStore::new();
+        store.aec_diagnostic_tap = AecDiagnosticTap::start(&directory).unwrap();
+        *store.echo_canceller.lock().unwrap() = Some(crate::audio::echo_cancel::create_echo_canceller_for_test(Box::new(TraceEngine(trace.clone()))).unwrap());
+        publish_session_start(&store, 1, "endpoint", 1);
+        publish_stream_start(&store, 1, "endpoint", 1);
+        let store = Arc::new(store);
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut workers = Vec::new();
+        for lane in 0..3 {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                for index in 0..4 {
+                    barrier.wait();
+                    match lane {
+                        0 => store.reset_echo_canceller_with_diagnostic("test-reset", Some(10), 0).unwrap(),
+                        1 => publish_reference_frame(&store, 1, (index + 1) * 480, (index + 1) * 480).unwrap(),
+                        _ => { store.process_echo_capture_with_metadata(&[0.0; 960], 0, Some(AecCaptureFrameMetadata {
+                            packet_device_frame_index: index * 480, packet_qpc_100ns: index * 100_000,
+                            queue_head_device_frame_index: index * 480, queue_head_qpc_100ns: index * 100_000,
+                            observed_qpc_100ns: Some(index * 100_000 + 1), continuity_id: 0, delay_samples: 0,
+                            timestamp_error: false, data_discontinuity: false, queue_head_clock_valid: true,
+                        })).unwrap(); }
+                    }
+                }
+            }));
+        }
+        for worker in workers { worker.join().unwrap(); }
+        let terminal = store.finish_aec_diagnostic_tap(Duration::from_secs(2)).unwrap();
+        assert_eq!(terminal["writtenEvents"], 12);
+        let rows: Vec<serde_json::Value> = std::fs::read_to_string(directory.join("aec-frame-metadata.jsonl")).unwrap()
+            .lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        let trace = trace.lock().unwrap();
+        assert_eq!(trace.len(), rows.len());
+        let mut generation = 0;
+        for (index, (native, row)) in trace.iter().zip(&rows).enumerate() {
+            if *native == "reset" { generation += 1; }
+            assert_eq!(row["kind"], *native);
+            assert_eq!(row["sequence"], index);
+            assert_eq!(row["resetGeneration"], generation);
+        }
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn finish_budget_includes_native_mutex_and_timeout_cannot_later_turn_successful() {
+        let directory = std::env::temp_dir().join(format!("aec-fence-{}", uuid::Uuid::new_v4()));
+        let mut store = AudioStateStore::new();
+        store.aec_diagnostic_tap = AecDiagnosticTap::start(&directory).unwrap();
+        let store = Arc::new(store);
+        let guard = store.echo_canceller.lock().unwrap();
+        let other = store.clone();
+        let started = Instant::now();
+        let result = std::thread::spawn(move || other.finish_aec_diagnostic_tap(Duration::from_millis(20))).join().unwrap();
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(2), "finish blocked on native mutex");
+        drop(guard);
+        let error = store.finish_aec_diagnostic_tap(Duration::from_secs(2)).unwrap_err();
+        assert!(error.contains("native AEC operation did not quiesce"));
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn native_error_fails_tap_instead_of_committing_a_silent_hole() {
+        let directory = std::env::temp_dir().join(format!("aec-native-error-{}", uuid::Uuid::new_v4()));
+        let mut store = AudioStateStore::new();
+        store.aec_diagnostic_tap = AecDiagnosticTap::start(&directory).unwrap();
+        *store.echo_canceller.lock().unwrap() = Some(crate::audio::echo_cancel::create_echo_canceller_for_test(Box::new(RejectingRenderEngine)).unwrap());
+        publish_session_start(&store, 1, "endpoint", 1);
+        publish_stream_start(&store, 1, "endpoint", 1);
+        assert!(publish_reference_frame(&store, 1, 480, 480).is_err());
+        let error = store.finish_aec_diagnostic_tap(Duration::from_secs(2)).unwrap_err();
+        assert!(error.contains("deterministic render admission failure"));
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn missing_packet_metadata_fails_aec_trace_without_changing_native_output() {
+        let directory = std::env::temp_dir().join(format!("aec-metadata-{}", uuid::Uuid::new_v4()));
+        let mut store = AudioStateStore::new();
+        store.aec_diagnostic_tap = AecDiagnosticTap::start(&directory).unwrap();
+        *store.echo_canceller.lock().unwrap() = Some(crate::audio::echo_cancel::create_echo_canceller_for_test(Box::new(ResetCountingEngine { reset_count: 0 })).unwrap());
+        let output = store.process_echo_capture(&[0.25; 960], 0).unwrap();
+        assert_eq!(output.samples, vec![0.25; 960]);
+        assert!(store.finish_aec_diagnostic_tap(Duration::from_secs(2)).unwrap_err().contains("without packet metadata"));
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     struct ResetCountingEngine {
         reset_count: u64,

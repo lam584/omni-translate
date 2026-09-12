@@ -33,10 +33,12 @@ impl<'a> AudioSessionSupervisor<'a> {
     }
 
     pub(crate) fn start_speech(&self, config: Value) -> Result<AudioRuntimeSnapshot, String> {
+        crate::watch_mode_diagnostic::local_aec_probe::ensure_provider_work_allowed()?;
         speech::start_dispatch(self.app.clone(), self.state, config)
     }
 
     pub(crate) fn start_translation(&self, config: Value) -> Result<AudioRuntimeSnapshot, String> {
+        crate::watch_mode_diagnostic::local_aec_probe::ensure_provider_work_allowed()?;
         translate::start_translate(self.app.clone(), self.state, config)
     }
 }

@@ -1,3 +1,7 @@
+#[path = "workers/capture_diagnostics.rs"]
+mod capture_diagnostics;
+use capture_diagnostics::{aec_tap_chunk_metadata, aec_tap_queue_clock_valid};
+
 const ECHO_CANCEL_RESET_DIAGNOSTIC_LEVEL: &str = "warning";
 
 fn run_route_worker(
@@ -77,6 +81,14 @@ fn run_capture_loop(
         init_elapsed: _,
     } = initialized;
 
+    if crate::watch_mode_diagnostic::local_aec_probe::enabled() {
+        // Production initialization can try other devices. Reject any fallback
+        // BEFORE starting capture, for cold and pre-warmed routes alike.
+        if !spec.echo_cancel_enabled() || stt_sender.is_some() || effective_device_id != spec.requested_device_id {
+            return Err("local AEC probe requires exact-endpoint echo-cancel capture without recognition".into());
+        }
+    }
+
     let mut sample_queue: VecDeque<u8> = VecDeque::with_capacity(
         100 * desired_format.get_blockalign() as usize * (1024 + 2 * buffer_frame_count as usize),
     );
@@ -91,37 +103,9 @@ fn run_capture_loop(
     emit_audio_snapshot(&app, store)?;
 
     if spec.echo_cancel_enabled() {
-        store.reset_echo_canceller_with_diagnostic("route-start", qpc_now_100ns(), 0)?;
-        diag_log_detail(
-            &app,
-            "audio",
-            "info",
-            "event=echo_cancel_reset",
-            format!(
-                "direction={} reason=route-start device={} captureFormat=48000-f32-stereo resetCovers=device-switch,route-restart,format-change",
-                direction, effective_device_id,
-            ),
-        );
-        let gate = crate::audio::echo_cancel::webrtc_aec3_build_gate();
-        let stats = store.echo_canceller_stats().ok_or_else(|| {
-            "WebRTC AEC3 production engine disappeared before capture startup".to_string()
-        })?;
-        diag_log_detail(
-            &app,
-            "audio",
-            "info",
-            "event=echo_cancel_backend",
-            format!(
-                "backend={} frameMs=10 renderSubmitFormat=48000-f32-stereo renderClock=wasapi-submit-position endpointRenderPadding=same-client-get-current-padding webRtcAec3Ready={} msvcBuildVerified={} linkedBackendPresent={} fixtureVerified={} dependency=\"{}\" reason=\"{}\"",
-                stats.backend,
-                gate.ready,
-                gate.msvc_build_verified,
-                gate.linked_backend_present,
-                gate.fixture_verified,
-                gate.dependency,
-                gate.reason,
-            ),
-        );
+        let tap_qpc = if store.aec_diagnostic_tap_enabled() { qpc_now_100ns() } else { None };
+        store.reset_echo_canceller_with_diagnostic("route-start", tap_qpc, 0)?;
+        capture_diagnostics::log_route_start(&app, store, direction, &effective_device_id)?;
     }
 
     let mut echo_diagnostics = EchoCancelDiagnostics::new();
@@ -142,6 +126,7 @@ fn run_capture_loop(
     let mut inbound_wait_logged = false;
     let mut aec_delay_estimator = AecDelayEstimator::new(SAMPLE_RATE_HZ as u32, CHANNEL_COUNT);
     let mut current_aec_delay_samples = 0_usize;
+    let mut tap_queued_clock_valid = true;
     let mut last_delay_diagnostic_at: Option<Instant> = None;
     let capture_result = (|| -> Result<(), String> {
       loop {
@@ -227,14 +212,30 @@ fn run_capture_loop(
                 timestamp_error: buffer_info.flags.timestamp_error,
             });
             current_aec_delay_samples = estimate.delay_samples;
-            capture_tap_clock = Some((
-                buffer_info.index,
-                buffer_info.timestamp,
-                queue_head_device_frame_index,
-                queue_head_qpc_100ns,
-                observed_qpc_100ns,
-                render_clock.discontinuity_count,
-            ));
+            if store.aec_diagnostic_tap_enabled() {
+                tap_queued_clock_valid = aec_tap_queue_clock_valid(
+                    tap_queued_clock_valid,
+                    queued_bytes_before_read,
+                    buffer_info.flags.data_discontinuity,
+                    buffer_info.flags.timestamp_error,
+                );
+                // Saturating subtraction in the production estimator is not a
+                // valid evidence clock when the packet precedes queued data.
+                tap_queued_clock_valid &= buffer_info.index >= queued_capture_frames as u64
+                    && buffer_info.timestamp >= (queued_capture_frames as u64).saturating_mul(10_000_000) / SAMPLE_RATE_HZ as u64;
+                capture_tap_clock = Some(AecCaptureFrameMetadata {
+                    packet_device_frame_index: buffer_info.index,
+                    packet_qpc_100ns: buffer_info.timestamp,
+                    queue_head_device_frame_index,
+                    queue_head_qpc_100ns,
+                    observed_qpc_100ns,
+                    continuity_id: render_clock.discontinuity_count,
+                    delay_samples: current_aec_delay_samples,
+                    timestamp_error: buffer_info.flags.timestamp_error,
+                    data_discontinuity: buffer_info.flags.data_discontinuity,
+                    queue_head_clock_valid: tap_queued_clock_valid,
+                });
+            }
             if estimate.aec_reset_required {
                 // This capture worker is the sole reset owner. Render
                 // producers only publish a monotonic discontinuity identity;
@@ -286,29 +287,7 @@ fn run_capture_loop(
                 .map(|last| last.elapsed() >= Duration::from_secs(5))
                 .unwrap_or(true)
             {
-                diag_log_detail(
-                    &app,
-                    "audio",
-                    "info",
-                    "event=echo_cancel_delay",
-                    format!(
-                        "direction={} delayMs={:.1} delaySamples={} packetAgeMs={:?} capturePaddingFrames={:?} renderClock=wasapi-submit-position renderPlayerPositionMs={:?} renderClockAgeMs={:?} renderSubmittedFrames={:?} endpointRenderPaddingFrames={:?} renderReferenceLeadFrames={:?} effectiveRenderReferenceLeadFrames={:?} renderDiscontinuities={} lastRenderDiscontinuity={:?} source={}",
-                        direction,
-                        estimate.delay_ms,
-                        estimate.delay_samples,
-                        estimate.packet_age_ms,
-                        estimate.capture_padding_frames,
-                        render_clock.player_position.map(|position| position.as_millis()),
-                        estimate.render_clock_age_ms,
-                        estimate.render_submitted_frames,
-                        estimate.render_endpoint_padding_frames,
-                        estimate.render_reference_lead_frames,
-                        estimate.effective_render_reference_lead_frames,
-                        render_clock.discontinuity_count,
-                        render_clock.last_discontinuity_reason,
-                        estimate.source,
-                    ),
-                );
+                capture_diagnostics::log_delay(&app, direction, &estimate, &render_clock);
                 last_delay_diagnostic_at = Some(Instant::now());
             }
         }
@@ -324,31 +303,7 @@ fn run_capture_loop(
                         .saturating_mul(CHUNK_FRAMES)
                         .saturating_mul(CHANNEL_COUNT),
                 );
-                let tap_metadata = capture_tap_clock.map(
-                    |(
-                        packet_device_frame_index,
-                        packet_qpc_100ns,
-                        queue_head_device_frame_index,
-                        queue_head_qpc_100ns,
-                        observed_qpc_100ns,
-                        continuity_id,
-                    )| {
-                        let frame_offset = chunk_index.saturating_mul(CHUNK_FRAMES) as u64;
-                        let qpc_offset_100ns = frame_offset.saturating_mul(10_000_000)
-                            / SAMPLE_RATE_HZ as u64;
-                        AecCaptureFrameMetadata {
-                            packet_device_frame_index,
-                            packet_qpc_100ns,
-                            queue_head_device_frame_index: queue_head_device_frame_index
-                                .saturating_add(frame_offset),
-                            queue_head_qpc_100ns: queue_head_qpc_100ns
-                                .saturating_add(qpc_offset_100ns),
-                            observed_qpc_100ns,
-                            continuity_id,
-                            delay_samples,
-                        }
-                    },
-                );
+                let tap_metadata = capture_tap_clock.map(|metadata| aec_tap_chunk_metadata(metadata, chunk_index, delay_samples));
                 let cancellation = store.process_echo_capture_with_metadata(
                     &f32_chunk,
                     delay_samples,
@@ -955,5 +910,45 @@ mod placeholder_cue_tests {
             capture_queue_head_clock(9_600, 2_000_000, 480 * 8, 8, 48_000),
             (9_120, 1_900_000, 480)
         );
+    }
+}
+
+#[cfg(test)]
+mod aec_tap_clock_tests {
+    use super::{aec_tap_queue_clock_valid, aec_tap_chunk_metadata, AecCaptureFrameMetadata};
+
+    #[test]
+    fn invalid_packet_clock_is_never_rehabilitated_by_queued_byte_arithmetic() {
+        assert!(!aec_tap_queue_clock_valid(true, 0, false, true));
+        assert!(!aec_tap_queue_clock_valid(true, 480 * 8, false, true));
+        assert!(!aec_tap_queue_clock_valid(true, 480 * 8, true, false));
+        assert!(!aec_tap_queue_clock_valid(false, 240 * 8, false, false));
+        assert!(aec_tap_queue_clock_valid(false, 0, false, false));
+        assert!(aec_tap_queue_clock_valid(true, 0, true, false));
+        assert!(aec_tap_queue_clock_valid(true, 480 * 8, false, false));
+    }
+
+    #[test]
+    fn chunk_clock_offsets_never_rewrite_the_actual_packet_clocks_or_flags() {
+        let packet = AecCaptureFrameMetadata {
+            packet_device_frame_index: 9_600, packet_qpc_100ns: 2_000_000,
+            queue_head_device_frame_index: 9_120, queue_head_qpc_100ns: 1_900_000,
+            observed_qpc_100ns: Some(2_100_000), continuity_id: 42, delay_samples: 1920,
+            timestamp_error: true, data_discontinuity: true, queue_head_clock_valid: false,
+        };
+        let chunk = aec_tap_chunk_metadata(packet, 2, 0);
+        assert_eq!(chunk.packet_device_frame_index, packet.packet_device_frame_index);
+        assert_eq!(chunk.packet_qpc_100ns, packet.packet_qpc_100ns);
+        assert_eq!(chunk.queue_head_device_frame_index, 11_040);
+        assert_eq!(chunk.queue_head_qpc_100ns, 2_300_000);
+        assert_eq!(chunk.observed_qpc_100ns, packet.observed_qpc_100ns);
+        assert_eq!(chunk.continuity_id, 42);
+        assert_eq!(chunk.delay_samples, 0);
+        assert!(chunk.timestamp_error && chunk.data_discontinuity);
+        assert!(!chunk.queue_head_clock_valid);
+        let overflow = aec_tap_chunk_metadata(AecCaptureFrameMetadata {
+            queue_head_device_frame_index: u64::MAX, queue_head_clock_valid: true, ..packet
+        }, 1, 0);
+        assert!(!overflow.queue_head_clock_valid);
     }
 }

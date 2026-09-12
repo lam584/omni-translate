@@ -24,6 +24,7 @@ pub(crate) async fn run_model_benchmark(
     auth_scheme: Option<String>,
     provider: Option<crate::provider::contracts::ProviderDraftInput>,
 ) -> Result<String, String> {
+    crate::watch_mode_diagnostic::local_aec_probe::ensure_provider_work_allowed()?;
     tauri::async_runtime::spawn_blocking(move || {
         let requested_provider_kind = provider_kind
             .as_deref()

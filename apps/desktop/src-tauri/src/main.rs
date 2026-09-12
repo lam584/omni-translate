@@ -519,8 +519,10 @@ fn main() {
             // not touch the Watch/overlay chain until the renderer has called
             // `debug_ipc_ping`; that proof can only arrive after setup returns
             // and the main WebView IPC channel is usable.
-            watch_mode_diagnostic::schedule_after_ipc(app, &IPC_PING_RECEIVED);
-            release_evidence_diagnostic::schedule_after_ipc(app, &IPC_PING_RECEIVED);
+            if !watch_mode_diagnostic::local_aec_probe::schedule_after_ipc(app, &IPC_PING_RECEIVED) {
+                watch_mode_diagnostic::schedule_after_ipc(app, &IPC_PING_RECEIVED);
+                release_evidence_diagnostic::schedule_after_ipc(app, &IPC_PING_RECEIVED);
+            }
 
             Ok(())
         })

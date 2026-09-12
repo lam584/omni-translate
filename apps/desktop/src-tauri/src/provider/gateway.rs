@@ -89,6 +89,8 @@ pub(crate) fn authorize_bailian_model_operation_before_provider_access(
     Option<crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile>,
     ProviderRuntimeError,
 > {
+    crate::watch_mode_diagnostic::local_aec_probe::ensure_provider_work_allowed()
+        .map_err(|error| ProviderRuntimeError::new("request.invalid", error))?;
     let profiles = crate::provider::model_protocol_profile::lookup_model_protocol_profiles_for_inspection(
         exact_model_id,
     )
@@ -256,6 +258,15 @@ impl ProviderGateway {
     }
 
     pub(crate) fn fetch_models(&self, provider: ProviderDraftInput) -> ProviderModelCatalogRuntime {
+        if let Err(error) = crate::watch_mode_diagnostic::local_aec_probe::ensure_provider_work_allowed() {
+            return ProviderModelCatalogRuntime {
+                provider_id: provider.provider_id,
+                endpoint: String::new(),
+                fetched_at: crate::shared::time::now_unix_seconds_marker(),
+                models: Vec::new(),
+                error: Some(ProviderRuntimeError::new("request.invalid", error)),
+            };
+        }
         self.model_catalog.fetch(provider)
     }
 
@@ -594,6 +605,66 @@ mod tests {
             None,
             "video-realtime-cn",
         )
+    }
+
+    #[test]
+    fn local_probe_blocks_shared_provider_entries_before_factory_or_transport() {
+        crate::watch_mode_diagnostic::local_aec_probe::test_provider_entry_opt_ins(
+            concat!(module_path!(), "::local_probe_blocks_shared_provider_entries_before_factory_or_transport")
+                .strip_prefix(concat!(env!("CARGO_CRATE_NAME"), "::")).unwrap(),
+            |requested| {
+                // Even a regression must not contact a real endpoint. The
+                // malformed URL fails locally if an adapter is ever reached.
+                let provider = openai_provider("not a URL".into());
+                let mut factory_calls = 0;
+                let authority = authorize_bailian_model_operation_before_provider_access(
+                    &provider, &provider.model, "native_translate",
+                ).map(|_| { factory_calls += 1; });
+                if !requested {
+                    authority.unwrap();
+                    assert_eq!(factory_calls, 1, "ordinary provider admission remains available");
+                    return;
+                }
+                let assert_denied = |error: ProviderRuntimeError| {
+                    assert_eq!(error.code, "request.invalid");
+                    assert!(error.message.contains("forbidden during the local AEC probe"));
+                };
+                assert_eq!(factory_calls, 0, "opt-in must deny before creating a provider");
+                assert_denied(authority.unwrap_err());
+                let gateway = ProviderGateway::new();
+                let catalog = gateway.fetch_models(provider.clone());
+                assert_eq!(catalog.provider_id, provider.provider_id);
+                assert!(catalog.endpoint.is_empty() && catalog.models.is_empty());
+                assert_denied(catalog.error.unwrap());
+
+                let smoke = gateway.execute_smoke(provider.clone(), "hello".into(), "en".into(), "zh".into());
+                assert_eq!(smoke.status, "failed");
+                assert_eq!(smoke.connection_attempts, 0);
+                assert_eq!(smoke.connection_count, 0);
+                assert!(!smoke.connection_opened && !smoke.connection_closed && !smoke.stream_observed);
+                assert!(smoke.connection_owner.is_none() && smoke.connection_generation.is_none());
+                assert!(smoke.transcript.is_empty() && smoke.event_log.is_empty());
+                assert!(smoke.input_tokens.is_none() && smoke.output_tokens.is_none() && smoke.audio_seconds.is_none());
+                assert_denied(smoke.error.unwrap());
+                for probe in [gateway.probe(provider.clone()), gateway.probe_strict_livetranslate(provider.clone())] {
+                    assert_eq!(probe.verdict, "unavailable");
+                    assert_eq!(probe.connection_attempts, 0);
+                    assert_eq!(probe.connection_count, 0);
+                    assert!(!probe.connection_opened && !probe.connection_closed && !probe.stream_supported);
+                    assert!(probe.connection_owner.is_none() && probe.connection_generation.is_none());
+                    assert_denied(probe.error.unwrap());
+                }
+                let mut delta_calls = 0;
+                assert_denied(gateway.translate_text_streaming_traced_with_glossary(
+                    provider.clone(), "hello".into(), "en".into(), "zh".into(), None, None,
+                    |_| { delta_calls += 1; Ok(()) },
+                ).unwrap_err());
+                assert_eq!(delta_calls, 0);
+                assert_denied(gateway.synthesize_realtime_audio(
+                    provider, "hello".into(), "zh".into(), "unused".into(),
+                ).unwrap_err());
+            },
+        );
     }
 
     fn dashscope_provider(base_url: String) -> ProviderDraftInput {

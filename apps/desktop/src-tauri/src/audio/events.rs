@@ -333,6 +333,7 @@ pub(crate) fn prewarm_capture_routes(
     app: AppHandle,
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
+    crate::watch_mode_diagnostic::local_aec_probe::ensure_provider_work_allowed()?;
     let state = app.state::<AudioStateStore>();
     let snapshot = state.snapshot();
     state.warmer().prewarm(&app, "inbound", &config);

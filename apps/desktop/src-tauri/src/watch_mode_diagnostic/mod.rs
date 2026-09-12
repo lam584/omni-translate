@@ -1,4 +1,5 @@
 mod config;
+pub(crate) mod local_aec_probe;
 mod playback_drain;
 mod provider_terminal_observer;
 mod process_exclusion_restart;
@@ -372,7 +373,7 @@ fn process_exclusion_restart_after_ms() -> Result<Option<u64>, String> {
 }
 
 pub(crate) fn autostart_enabled() -> bool {
-    env_flag_enabled("OMNI_WATCH_MODE_AUTOSTART")
+    env_flag_enabled("OMNI_WATCH_MODE_AUTOSTART") || local_aec_probe::enabled()
 }
 
 /// A diagnostic route creates and reveals the overlay itself. Running the

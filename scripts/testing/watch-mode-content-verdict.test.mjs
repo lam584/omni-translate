@@ -267,6 +267,29 @@ test('audited schedule-arrangement and Arabic contrast wording remain fact-local
   }
 });
 
+test('audited contrast-pair question accepts 还是 without weakening numeric facts', () => {
+  const fact = retainedFacts.find(({ id }) => id === 'numeric.contrast-pairs');
+  for (const [outputText, expectedMatch] of [
+    ['它能区分十五和五十，还是十三和三十？', '区分十五和五十还是十三和三十'],
+    ['它能区分15和50，还是13和30？', '区分15和50还是13和30'],
+  ]) {
+    const result = evaluateLayeredWatchContent({ referenceText: 'audited fixture', outputText, facts: [fact] });
+    assert.equal(result.status, 'passed', outputText);
+    assert.deepEqual(result.dimensions.facts[0].matchedExpected, [expectedMatch]);
+  }
+
+  for (const outputText of [
+    '它能区分十五和五十？',
+    '它能区分十五和五十，还是十三和二十？',
+    '它能区分五十和十五，还是十三和三十？',
+    '它能区分十五和十三，还是五十和三十？',
+  ]) {
+    const result = evaluateLayeredWatchContent({ referenceText: 'audited fixture', outputText, facts: [fact] });
+    assert.equal(result.status, 'failed', outputText);
+    assert.equal(result.dimensions.facts[0].status, 'failed');
+  }
+});
+
 test('new audited variants retain condition polarity and numeric pair relations', () => {
   for (const [factId, outputTexts] of [
     ['shipment.condition', [

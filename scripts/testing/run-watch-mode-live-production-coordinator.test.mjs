@@ -2234,6 +2234,8 @@ test('production coordinator verifies a prebuilt runtime and never rebuilds it',
   );
   assert.match(source, /verifyStrictRuntimeAuthority/);
   assert.doesNotMatch(source, /buildStrictRuntimeAuthority/);
+  assert.match(source, /\$workerExitCode = \[int\]\$worker\.ExitCode[\s\S]*?\$worker\.Dispose\(\)[\s\S]*?\$exitCode = \$workerExitCode/);
+  assert.match(source, /try \{ \[IO\.File\]::AppendAllText\([^\n]+\) \} catch \{ \}/);
   const remoteWorker = fs.readFileSync(
     path.join(repoRoot, 'scripts/testing/run-watch-mode-provider-preflight-worker.mjs'),
     'utf8',

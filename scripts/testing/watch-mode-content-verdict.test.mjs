@@ -325,6 +325,36 @@ test('audited contrast-pair question accepts 还是 without weakening numeric fa
   }
 });
 
+test('r96 retained English number words preserve typed contrast-pair facts', () => {
+  const fact = retainedFacts.find(({ id }) => id === 'numeric.contrast-pairs');
+  const retained = '它能否区分“fifteen”和“fifty”，或“thirteen”和“thirty”？';
+  const accepted = evaluateLayeredWatchContent({
+    referenceText: 'audited fixture',
+    outputText: retained,
+    facts: [fact],
+  });
+  assert.equal(accepted.status, 'passed');
+  assert.ok(accepted.dimensions.facts[0].matchedExpected.length > 0);
+  assert.equal(
+    normalizeWatchContentText(retained),
+    '它能否区分fifteen和fifty或thirteen和thirty',
+    'fact-local number normalization must not erase the independent target-language signal',
+  );
+
+  for (const replaced of [
+    '它能否区分“fifteen”和“forty”，或“thirteen”和“thirty”？',
+    '它能否区分“fifteen”和“fifty”，或“fourteen”和“thirty”？',
+    '它能否区分“fifty”和“fifteen”，或“thirteen”和“thirty”？',
+  ]) {
+    const rejected = evaluateLayeredWatchContent({
+      referenceText: 'audited fixture',
+      outputText: replaced,
+      facts: [fact],
+    });
+    assert.equal(rejected.status, 'failed', replaced);
+    assert.equal(rejected.dimensions.facts[0].status, 'failed');
+  }
+});
 test('new audited variants retain condition polarity and numeric pair relations', () => {
   for (const [factId, outputTexts] of [
     ['shipment.condition', [

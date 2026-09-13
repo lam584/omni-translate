@@ -136,6 +136,19 @@ export function canonicalizeWatchContentCues(cues) {
   return [...latestByCue.values(), ...anonymous].sort((left, right) => left.order - right.order);
 }
 
+const TYPED_ENGLISH_NUMBER_WORDS = new Map([
+  ['thirteen', '13'], ['fifteen', '15'], ['thirty', '30'], ['fifty', '50'],
+]);
+
+function normalizeTypedFactText(value, category) {
+  let normalized = String(value ?? '').normalize('NFKC').toLowerCase();
+  if (category === 'number-unit') {
+    normalized = normalized.replace(/\b(?:thirteen|fifteen|thirty|fifty)\b/gu, (word) => (
+      TYPED_ENGLISH_NUMBER_WORDS.get(word) ?? word
+    ));
+  }
+  return normalizeWatchContentText(normalized);
+}
 function containsTypedAlternative(text, alternative, category = 'semantic') {
   const raw = String(text ?? '').normalize('NFKC').toLowerCase();
   const candidate = String(alternative ?? '').normalize('NFKC').toLowerCase();
@@ -149,8 +162,14 @@ function containsTypedAlternative(text, alternative, category = 'semantic') {
     return (raw.match(/(?<![\d.])\d+(?:\.\d+)+(?![\d.])/gu) ?? [])
       .includes(expectedVersion);
   }
-  const normalized = normalizeWatchContentText(raw);
-  const normalizedCandidate = normalizeWatchContentText(candidate);
+  const hasTypedEnglishNumber = category === 'number-unit'
+    && /\b(?:thirteen|fifteen|thirty|fifty)\b/u.test(`${raw} ${candidate}`);
+  let normalized = hasTypedEnglishNumber
+    ? normalizeTypedFactText(raw, category) : normalizeWatchContentText(raw);
+  let normalizedCandidate = hasTypedEnglishNumber
+    ? normalizeTypedFactText(candidate, category) : normalizeWatchContentText(candidate);
+  if (hasTypedEnglishNumber && /\d/u.test(normalizedCandidate)) normalized = normalizeChineseTens(normalized);
+  if (hasTypedEnglishNumber && /\d/u.test(normalized)) normalizedCandidate = normalizeChineseTens(normalizedCandidate);
   const offset = normalized.indexOf(normalizedCandidate);
   if (offset < 0) return false;
   if (/^\d/u.test(normalizedCandidate) && /\d/u.test(normalized[offset - 1] ?? '')) return false;

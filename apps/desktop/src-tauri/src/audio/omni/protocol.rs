@@ -510,6 +510,7 @@ struct DeferredEmptyVadTerminal {
     audio_end_ms: u64,
     continuity_id: u64,
     nonempty_micro_fragment: bool,
+    cross_continuity_zero_gap_eligible: bool,
     expires_at: Instant,
     successor_arbitration_deadline: Instant,
 }
@@ -1199,6 +1200,7 @@ impl OmniEventDiagnostics {
         response_metadata: ResponseDoneMetadata,
         st_flag: &str,
         nonempty_micro_fragment: bool,
+        cross_continuity_zero_gap_eligible: bool,
     ) -> bool {
         let (Some(input_item_id), Some(audio_end_ms), Some(continuity_id)) = (
             self.native_response_item_id.clone(),
@@ -1219,6 +1221,7 @@ impl OmniEventDiagnostics {
             audio_end_ms,
             continuity_id,
             nonempty_micro_fragment,
+            cross_continuity_zero_gap_eligible,
             expires_at,
             successor_arbitration_deadline: expires_at
                 + Duration::from_millis(CONTIGUOUS_EMPTY_VAD_SUCCESSOR_ARBITRATION_MS),
@@ -1236,7 +1239,17 @@ impl OmniEventDiagnostics {
         });
         let same_continuity = self.source_continuity_active
             && self.source_continuity_id == pending.continuity_id;
-        Some((pending, contiguous && same_continuity))
+        // Cross-continuity absorption is intentionally narrower than the
+        // same-continuity server-boundary tolerance: only a terminal proven
+        // source-empty/translation-empty completed response may cross an exact
+        // forward zero-gap boundary.
+        let exact_zero_gap_cross_continuity = !same_continuity
+            && pending.cross_continuity_zero_gap_eligible
+            && successor_audio_start_ms == Some(pending.audio_end_ms);
+        Some((
+            pending,
+            (contiguous && same_continuity) || exact_zero_gap_cross_continuity,
+        ))
     }
 
     pub(super) fn can_prioritize_deferred_empty_vad_successor(
@@ -1549,6 +1562,10 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
                 response_metadata.clone(),
                 st_flag,
                 !response_source_text.trim().is_empty(),
+                *transcription_completed_flag
+                    && response_source_text.trim().is_empty()
+                    && translated_text.trim().is_empty()
+                    && response_metadata.status == "completed",
             )
         {
             let _ = diag_log(app, "omni", "info", format!(

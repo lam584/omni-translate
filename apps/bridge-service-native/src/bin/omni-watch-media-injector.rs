@@ -34,6 +34,10 @@ mod injector {
     const BYTES_PER_FRAME: usize = TARGET_CHANNELS * BYTES_PER_SAMPLE;
     const RENDER_STALL_TIMEOUT: Duration = Duration::from_secs(15);
     const RENDER_ABSOLUTE_EXTRA_TIMEOUT: Duration = Duration::from_secs(120);
+    // Injector-only scheduling tolerance. r92 observed a 114 ms processing spike; 250 ms
+    // covers more than twice that measured delay without changing any other render consumer.
+    const INJECTOR_EVENT_BUFFER_DURATION_HNS: i64 = 2_500_000;
+    const HUNDRED_NANOSECONDS_PER_SECOND: u64 = 10_000_000;
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -56,6 +60,7 @@ mod injector {
         pub restart_quiet_window_seconds: f64,
         pub postroll_silence_frames: usize,
         pub postroll_silence_seconds: f64,
+        pub buffer_frames: usize,
         pub prefill_frames: usize,
         pub render_wake_count: usize,
         pub max_render_wake_interval_ms: u128,
@@ -84,6 +89,7 @@ mod injector {
                 restart_quiet_window_seconds: 0.0,
                 postroll_silence_frames: 0,
                 postroll_silence_seconds: 0.0,
+                buffer_frames: 0,
                 prefill_frames: 0,
                 render_wake_count: 0,
                 max_render_wake_interval_ms: 0,
@@ -178,29 +184,38 @@ mod injector {
         audio_client: AudioClient,
         render_client: AudioRenderClient,
         event_handle: Handle,
+        buffer_frames: usize,
     }
 
     impl MediaRender {
         fn open_event_driven_unstarted(
             device: &Device,
             format: &WaveFormat,
+            render_sample_rate_hz: u32,
         ) -> Result<Self, String> {
             let mut audio_client = device
                 .get_iaudioclient()
                 .map_err(|error| format!("activate-audio-client: {}", error_text(error)))?;
-            let (_, minimum_period) = audio_client
-                .get_device_period()
-                .map_err(|error| format!("query-device-period: {}", error_text(error)))?;
             audio_client
                 .initialize_client(
                     format,
                     &Direction::Render,
                     &StreamMode::EventsShared {
                         autoconvert: true,
-                        buffer_duration_hns: minimum_period,
+                        buffer_duration_hns: INJECTOR_EVENT_BUFFER_DURATION_HNS,
                     },
                 )
                 .map_err(|error| format!("initialize-event-render: {}", error_text(error)))?;
+            let buffer_frames = audio_client
+                .get_buffer_size()
+                .map_err(|error| format!("query-event-render-buffer: {}", error_text(error)))?
+                as usize;
+            let required_buffer_frames = injector_event_buffer_frames(render_sample_rate_hz);
+            if buffer_frames < required_buffer_frames {
+                return Err(format!(
+                    "event render buffer is below injector scheduling tolerance: bufferFrames={buffer_frames} requiredBufferFrames={required_buffer_frames} renderSampleRateHz={render_sample_rate_hz} bufferDurationHns={INJECTOR_EVENT_BUFFER_DURATION_HNS}"
+                ));
+            }
             let event_handle = audio_client
                 .set_get_eventhandle()
                 .map_err(|error| format!("create-render-event: {}", error_text(error)))?;
@@ -211,6 +226,7 @@ mod injector {
                 audio_client,
                 render_client,
                 event_handle,
+                buffer_frames,
             })
         }
 
@@ -307,6 +323,7 @@ mod injector {
                 restart_quiet_window_seconds: restart_quiet_window_frames as f64 / 16_000.0,
                 postroll_silence_frames: 0,
                 postroll_silence_seconds: 0.0,
+                buffer_frames: 0,
                 prefill_frames: 0,
                 render_wake_count: 0,
                 max_render_wake_interval_ms: 0,
@@ -381,7 +398,8 @@ mod injector {
             TARGET_CHANNELS,
             None,
         );
-        let mut render = MediaRender::open_event_driven_unstarted(&device, &format)?;
+        let mut render =
+            MediaRender::open_event_driven_unstarted(&device, &format, render_sample_rate_hz)?;
         let total_frames = render_samples.len() / TARGET_CHANNELS;
         let mut pending = VecDeque::from(render_samples);
         let mut pacing_authority = RenderPacingAuthority::default();
@@ -486,6 +504,7 @@ mod injector {
             postroll_silence_frames,
             postroll_silence_seconds: postroll_silence_frames as f64
                 / render_sample_rate_hz as f64,
+            buffer_frames: render.buffer_frames,
             prefill_frames: pacing_authority.prefill_frames,
             render_wake_count: pacing_authority.wake_count,
             max_render_wake_interval_ms: pacing_authority.max_wake_interval_ms,
@@ -644,6 +663,15 @@ mod injector {
             Some(requested) => requested.eq_ignore_ascii_case(actual_endpoint_id),
             None => actual_endpoint_name.contains(requested_endpoint_name),
         }
+    }
+
+    fn injector_event_buffer_frames(render_sample_rate_hz: u32) -> usize {
+        let numerator = u64::from(render_sample_rate_hz)
+            .saturating_mul(INJECTOR_EVENT_BUFFER_DURATION_HNS as u64);
+        numerator
+            .div_ceil(HUNDRED_NANOSECONDS_PER_SECOND)
+            .try_into()
+            .unwrap_or(usize::MAX)
     }
 
     fn render_has_stalled(last_progress_at: Instant, observed_at: Instant) -> bool {

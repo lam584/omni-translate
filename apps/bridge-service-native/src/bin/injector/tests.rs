@@ -108,12 +108,75 @@
     }
 
     #[test]
+    fn injector_event_buffer_is_fixed_to_the_audited_250ms_tolerance() {
+        assert_eq!(INJECTOR_EVENT_BUFFER_DURATION_HNS, 250 * 10_000);
+        assert_eq!(injector_event_buffer_frames(48_000), 12_000);
+        assert_eq!(injector_event_buffer_frames(44_100), 11_025);
+    }
+
+    #[test]
+    fn failed_result_reports_buffer_frames_telemetry() {
+        let json = serde_json::to_value(InjectorResult::failed("failure".to_string())).unwrap();
+        assert_eq!(json["bufferFrames"], 0);
+    }
+
+    #[test]
     fn pacing_authority_requires_prefill_before_start() {
         let mut authority = RenderPacingAuthority::default();
         authority.record_prefill(480, 480).unwrap();
         authority.record_started();
         assert_eq!(authority.prefill_frames, 480);
         assert_eq!(authority.zero_padding_underrun_count, 0);
+    }
+
+    #[test]
+    fn injector_buffer_tolerates_observed_30ms_and_114ms_scheduler_delays() {
+        let sample_rate_hz = 48_000_usize;
+        let buffer_frames = injector_event_buffer_frames(sample_rate_hz as u32);
+        for delay_ms in [30_usize, 114] {
+            let consumed_frames = sample_rate_hz * delay_ms / 1_000;
+            let padding_frames = buffer_frames.saturating_sub(consumed_frames);
+            assert!(padding_frames > 0, "delay {delay_ms} ms exhausted buffer");
+
+            let mut authority = RenderPacingAuthority::default();
+            authority
+                .record_prefill(buffer_frames, buffer_frames)
+                .unwrap();
+            authority.record_started();
+            authority
+                .observe_refill_wake(
+                    padding_frames,
+                    buffer_frames + 1,
+                    Duration::from_millis(delay_ms as u64),
+                )
+                .unwrap();
+            assert_eq!(authority.zero_padding_underrun_count, 0);
+        }
+    }
+
+    #[test]
+    fn injector_buffer_still_fails_closed_after_scheduler_delay_exceeds_capacity() {
+        let sample_rate_hz = 48_000_usize;
+        let buffer_frames = injector_event_buffer_frames(sample_rate_hz as u32);
+        let delay_ms = 251_usize;
+        let consumed_frames = sample_rate_hz * delay_ms / 1_000;
+        let padding_frames = buffer_frames.saturating_sub(consumed_frames);
+        assert_eq!(padding_frames, 0);
+
+        let mut authority = RenderPacingAuthority::default();
+        authority
+            .record_prefill(buffer_frames, buffer_frames)
+            .unwrap();
+        authority.record_started();
+        let error = authority
+            .observe_refill_wake(
+                padding_frames,
+                buffer_frames + 1,
+                Duration::from_millis(delay_ms as u64),
+            )
+            .unwrap_err();
+        assert!(error.contains("render underrun"));
+        assert_eq!(authority.zero_padding_underrun_count, 1);
     }
 
     #[test]

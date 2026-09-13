@@ -361,7 +361,15 @@ impl HistoryStateStore {
 
     fn queue_cue(&self, cue: &SubtitleCueRuntime) -> Result<String, String> {
         let mut inner = self.inner.lock().map_err(|_| "history state poisoned".to_string())?;
-        let state = available_state_mut(&mut inner)?;
+        let Some(state) = inner.as_mut() else {
+            return Err("字幕历史尚未初始化".to_string());
+        };
+        // History is auxiliary to the realtime route. Initialization or a prior
+        // deterministic corruption failure already emitted the authoritative
+        // diagnostic, so the cue hot path must remain a no-op for this session.
+        if state.unavailable_reason.is_some() {
+            return Ok(String::new());
+        }
         if !state.archive_policy.enabled {
             return Ok(String::new());
         }
@@ -404,7 +412,10 @@ impl HistoryStateStore {
 
     fn begin_session(&self, archive_policy: HistoryArchivePolicy) -> Result<Option<String>, String> {
         let mut inner = self.inner.lock().map_err(|_| "history state poisoned".to_string())?;
-        let state = available_state_mut(&mut inner)?;
+        let state = inner.as_mut().ok_or_else(|| "字幕历史尚未初始化".to_string())?;
+        if state.unavailable_reason.is_some() {
+            return Ok(None);
+        }
         if let Some(session_id) = state.active_session_id.clone() {
             return Ok(Some(session_id));
         }
@@ -855,7 +866,7 @@ fn flush_pending_cues(
     }
     let mut batch = pending.values().cloned().collect::<Vec<_>>();
     batch.sort_by_key(|cue| cue.updated_at_ms);
-    worker_repository_result(state, |repository| {
+    let result = worker_repository_result(state, |repository| {
         let writes = batch
             .iter()
             .map(|queued| CueWrite {
@@ -883,7 +894,48 @@ fn flush_pending_cues(
         repository.upsert_cues_batch(&writes, unix_ms())?;
         pending.clear();
         Ok(())
-    })
+    });
+    if result.is_err() && history_persistence_disabled(state) {
+        pending.clear();
+    }
+    result
+}
+
+fn is_unrecoverable_database_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("database disk image is malformed")
+        || normalized.contains("file is not a database")
+        || normalized.contains("database corruption")
+}
+
+fn disable_history_after_unrecoverable_error(
+    state: &Arc<Mutex<Option<HistoryState>>>,
+    error: &str,
+) -> bool {
+    if !is_unrecoverable_database_error(error) {
+        return false;
+    }
+    let Ok(mut state) = state.lock() else {
+        return false;
+    };
+    let Some(state) = state.as_mut() else {
+        return false;
+    };
+    if state.unavailable_reason.is_some() {
+        return false;
+    }
+    state.unavailable_reason = Some(error.to_string());
+    state.repository = None;
+    state.active_session_id = None;
+    true
+}
+
+fn history_persistence_disabled(state: &Arc<Mutex<Option<HistoryState>>>) -> bool {
+    state
+        .lock()
+        .ok()
+        .and_then(|state| state.as_ref().map(|state| state.unavailable_reason.is_some()))
+        .unwrap_or(false)
 }
 
 fn worker_repository_result<T>(
@@ -895,7 +947,17 @@ fn worker_repository_result<T>(
         let state = state.as_ref().ok_or_else(|| "字幕历史尚未初始化".to_string())?;
         repository(state)?
     };
-    operation(&repository)
+    match operation(&repository) {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            if disable_history_after_unrecoverable_error(state, &error) {
+                log::warn!(
+                    "[omni][history] persistence disabled after unrecoverable database failure; realtime translation continues: {error}"
+                );
+            }
+            Err(error)
+        }
+    }
 }
 
 fn with_worker_repository(
@@ -903,7 +965,9 @@ fn with_worker_repository(
     operation: impl FnOnce(&HistoryRepository) -> Result<(), String>,
 ) {
     if let Err(error) = worker_repository_result(state, operation) {
-        log::warn!("[omni][history] archive worker mutation failed: {error}");
+        if !history_persistence_disabled(state) {
+            log::warn!("[omni][history] archive worker mutation failed: {error}");
+        }
     }
 }
 
@@ -1223,6 +1287,57 @@ mod tests {
     }
 
     #[test]
+    fn unrecoverable_database_errors_are_narrowly_classified() {
+        assert!(is_unrecoverable_database_error("database disk image is malformed"));
+        assert!(is_unrecoverable_database_error("SQLite: file is not a database"));
+        assert!(is_unrecoverable_database_error("database corruption detected"));
+        assert!(!is_unrecoverable_database_error("database is locked"));
+        assert!(!is_unrecoverable_database_error("disk I/O error"));
+    }
+
+    #[test]
+    fn first_unrecoverable_worker_failure_disables_persistence_without_deleting_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("subtitle-history.db");
+        let repository = Arc::new(
+            HistoryRepository::initialize(
+                database_path.clone(),
+                crypto::HistoryCipher::for_test([49; 32]),
+            )
+            .unwrap(),
+        );
+        let state = Arc::new(Mutex::new(Some(HistoryState {
+            database_path: database_path.clone(),
+            history_dir: directory.path().to_path_buf(),
+            repository: Some(repository),
+            unavailable_reason: None,
+            active_session_id: Some("session-corrupt".to_string()),
+            archive_policy: HistoryArchivePolicy::default(),
+        })));
+
+        let error = worker_repository_result(&state, |_| {
+            Err::<(), _>("database disk image is malformed".to_string())
+        })
+        .unwrap_err();
+        assert_eq!(error, "database disk image is malformed");
+        assert!(database_path.exists(), "the user database must not be deleted");
+
+        let locked = state.lock().unwrap();
+        let disabled = locked.as_ref().unwrap();
+        assert!(disabled.repository.is_none());
+        assert!(disabled.active_session_id.is_none());
+        assert_eq!(
+            disabled.unavailable_reason.as_deref(),
+            Some("database disk image is malformed")
+        );
+        drop(locked);
+
+        let second = worker_repository_result(&state, |_| Ok::<(), String>(()))
+            .expect_err("disabled persistence must not retry database I/O");
+        assert!(second.contains("database disk image is malformed"));
+    }
+
+    #[test]
     fn unavailable_archive_can_only_recover_by_clearing_then_writes_encrypted_cues() {
         let directory = tempfile::tempdir().unwrap();
         let old_repository = HistoryRepository::initialize(
@@ -1258,7 +1373,11 @@ mod tests {
             Some("字幕历史密钥缺失".to_string()),
         );
         assert!(store.list_sessions(None, 25).is_err());
-        assert!(store.queue_cue(&cue("blocked-cue")).is_err());
+        assert!(store.queue_cue(&cue("blocked-cue")).unwrap().is_empty());
+        assert!(store
+            .begin_session(HistoryArchivePolicy::default())
+            .unwrap()
+            .is_none());
 
         store
             .recover_unavailable_with_cipher_for_test(crypto::HistoryCipher::for_test([47; 32]))

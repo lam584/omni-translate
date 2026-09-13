@@ -214,18 +214,11 @@ fn run_capture_loop(
             });
             current_aec_delay_samples = estimate.delay_samples;
             if store.aec_diagnostic_tap_enabled() {
-                // Saturating frame/QPC subtraction is not an authoritative
-                // anchor. Fail the whole packet closed until a later packet can
-                // be fully back-propagated across the remaining queue.
+                // Saturating subtraction cannot provide an authoritative anchor.
                 let anchor_arithmetic_valid = buffer_info.index >= queued_capture_frames as u64
                     && buffer_info.timestamp >= (queued_capture_frames as u64).saturating_mul(10_000_000) / SAMPLE_RATE_HZ as u64;
-                tap_queue_clock.observe_packet(
-                    queued_bytes_before_read,
-                    sample_queue.len(),
-                    buffer_info.flags.data_discontinuity,
-                    buffer_info.flags.timestamp_error,
-                    anchor_arithmetic_valid,
-                );
+                tap_queue_clock.observe_packet(queued_bytes_before_read, sample_queue.len(),
+                    buffer_info.flags.data_discontinuity, buffer_info.flags.timestamp_error, anchor_arithmetic_valid);
                 capture_tap_clock = Some(AecCaptureFrameMetadata {
                     packet_device_frame_index: buffer_info.index,
                     packet_qpc_100ns: buffer_info.timestamp,

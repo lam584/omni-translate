@@ -61,6 +61,10 @@ fn run_route_worker(
 /// Runs the capture loop for an already-initialized WASAPI route. Shared by the
 /// cold-start worker and the pre-warmed route activation path so there is a
 /// single owner of `start_stream` plus the flow-health capture loop.
+fn capture_event_wait_required(next_packet_size: Option<u32>) -> bool {
+    next_packet_size.is_none()
+}
+
 fn run_capture_loop(
     app: AppHandle,
     store: &AudioStateStore,
@@ -345,7 +349,13 @@ fn run_capture_loop(
             )?;
         }
 
-        let _ = event_handle.wait_for_event(500);
+        // GetBuffer returns one packet. Drain packets already available for this
+        // wake before waiting for another event, otherwise scheduler pressure can
+        // leave a backlog until WASAPI reports DATA_DISCONTINUITY.
+        let next_packet_size = capture_client.get_next_packet_size().map_err_str()?;
+        if capture_event_wait_required(next_packet_size) {
+            let _ = event_handle.wait_for_event(500);
+        }
       }
       Ok(())
     })();
@@ -886,6 +896,14 @@ mod placeholder_cue_tests {
     use super::{
         active_render_delay_frames, capture_queue_head_clock, should_push_placeholder_cue,
     };
+
+    #[test]
+    fn capture_backlog_is_drained_before_waiting_for_another_event() {
+        let queued_packet_sizes = [Some(960), Some(480), None];
+        let wait_decisions = queued_packet_sizes.map(super::capture_event_wait_required);
+
+        assert_eq!(wait_decisions, [false, false, true]);
+    }
 
     #[test]
     fn outbound_without_sender_shows_placeholder_but_with_sender_does_not() {

@@ -16,6 +16,7 @@ import {
   assertMatrixExternalProviderBudget,
   buildCellExternalProviderBudget,
   buildMatrixExternalProviderBudget,
+  buildProviderInputCompletionEvidence,
   isAbsoluteEvidencePathForFixedFile,
   reserveStrictPaidCellInputSamples,
   replayProviderInputPrefilter,
@@ -274,6 +275,16 @@ function createRunDirectory({
     finalized: true,
     terminalReason: 'worker-completed',
   };
+  fs.writeFileSync(path.join(runDirectory, 'input-complete.json'), JSON.stringify({
+    schemaVersion: 1,
+    artifactKind: 'watch-mode-input-complete',
+    runMarker: MARKER,
+    cellId: CELL_ID,
+    leaseId: identity.leaseId,
+    mediaPlaybackCompletedAtUnixMs: new Date(2026, 7, 13, 1, 2, 5, 0).getTime(),
+    signaledAtUnixMs: new Date(2026, 7, 13, 1, 2, 5, 100).getTime(),
+    completedAtUnixMs: new Date(2026, 7, 13, 1, 2, 5, 200).getTime(),
+  }), 'utf8');
   fs.writeFileSync(
     path.join(runDirectory, 'provider-input-budget-ledger.json'),
     `${JSON.stringify(finalized)}\n`,
@@ -1026,4 +1037,80 @@ test('matrix ledger binds four cells, actual samples, and zero auxiliary calls',
   const duplicateLeaseRejected = buildMatrixExternalProviderBudget(duplicateLease);
   assert.equal(duplicateLeaseRejected.passed, false);
   assert.match(duplicateLeaseRejected.violations.join('; '), /duplicate provider leaseId/);
+});
+
+
+test('provider input completion fails closed when the first ceiling precedes media completion', () => {
+  const runDirectory = createRunDirectory({ extraLog: '2026-08-13 01:02:04.500 [WARN] [omni] - - [AUDIO] strict provider input ceiling reached cleanly before append: nextSamples=320 shutdownRequested=false discardedQueuedChunks=0 inputDisconnected=false' });
+  try {
+    const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
+    assert.equal(budget.passed, false);
+    assert.equal(budget.providerInputCompletion.status, 'failed');
+    assert.equal(budget.providerInputCompletion.stableErrorCode, 'watch.provider-input-truncated');
+    assert.equal(budget.providerInputCompletion.ceilingBeforeMediaCompletion, true);
+  } finally { fs.rmSync(runDirectory, { recursive: true, force: true }); }
+});
+
+test('provider input completion accepts a ceiling at or after media completion', () => {
+  for (const timestamp of ['01:02:05.000', '01:02:05.001']) {
+    const runDirectory = createRunDirectory({ extraLog: `2026-08-13 ${timestamp} [WARN] [omni] - - [AUDIO] strict provider input ceiling reached cleanly before append: nextSamples=320` });
+    try {
+      const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
+      assert.equal(budget.providerInputCompletion.status, 'passed', budget.violations.join('; '));
+    } finally { fs.rmSync(runDirectory, { recursive: true, force: true }); }
+  }
+});
+
+test('provider input completion rejects malformed ceiling timestamps and missing input-complete authority', () => {
+  for (const mutate of [
+    (runDirectory) => fs.appendFileSync(path.join(runDirectory, 'app.log'), '\nnot-a-time [AUDIO] strict provider input ceiling reached cleanly before append: nextSamples=320', 'utf8'),
+    (runDirectory) => {
+      fs.appendFileSync(path.join(runDirectory, 'app.log'), '\n2026-08-13 01:02:04.500 [AUDIO] strict provider input ceiling reached cleanly before append: nextSamples=320', 'utf8');
+      fs.rmSync(path.join(runDirectory, 'input-complete.json'));
+    },
+  ]) {
+    const runDirectory = createRunDirectory();
+    try {
+      mutate(runDirectory);
+      const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
+      assert.equal(budget.passed, false);
+      assert.equal(budget.providerInputCompletion.status, 'inconclusive');
+      assert.equal(budget.providerInputCompletion.stableErrorCode, 'watch.provider-input-truncated');
+    } finally { fs.rmSync(runDirectory, { recursive: true, force: true }); }
+  }
+});
+
+test('provider input completion is marker scoped and preserves earliest duplicate ceiling observation', () => {
+  const runDirectory = createRunDirectory({ extraLog: [
+    '2026-08-13 01:02:06.500 [WARN] [omni] - - [AUDIO] strict provider input ceiling reached cleanly before append: nextSamples=320',
+    '2026-08-13 01:02:05.500 [WARN] [omni] - - [AUDIO] strict provider input ceiling reached cleanly before append: nextSamples=320',
+  ].join('\n') });
+  try {
+    fs.writeFileSync(path.join(runDirectory, 'app.log'), [
+      '2026-08-13 00:00:00.000 [AUDIO] strict provider input ceiling reached cleanly before append: nextSamples=320',
+      fs.readFileSync(path.join(runDirectory, 'app.log'), 'utf8'),
+    ].join('\n'), 'utf8');
+    const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
+    assert.equal(budget.providerInputCompletion.status, 'passed');
+    assert.equal(budget.providerInputCompletion.observationCount, 2);
+    assert.equal(budget.providerInputCompletion.firstCeilingObservedAtUnixMs, new Date(2026, 7, 13, 1, 2, 5, 500).getTime());
+  } finally { fs.rmSync(runDirectory, { recursive: true, force: true }); }
+});
+
+
+test('provider input completion does not pass rejected chunks when the ceiling log is truncated', () => {
+  const evidence = buildProviderInputCompletionEvidence({
+    scopedLog: '',
+    inputComplete: {
+      schemaVersion: 1,
+      artifactKind: 'watch-mode-input-complete',
+      mediaPlaybackCompletedAtUnixMs: 1000,
+      signaledAtUnixMs: 1001,
+      completedAtUnixMs: 1002,
+    },
+    rejectedChunks: 1,
+  });
+  assert.equal(evidence.status, 'inconclusive');
+  assert.equal(evidence.passed, false);
+  assert.equal(evidence.stableErrorCode, 'watch.provider-input-truncated');
 });

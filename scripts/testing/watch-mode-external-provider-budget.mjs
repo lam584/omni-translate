@@ -604,10 +604,67 @@ function scopedRunLog(appLogText, runMarker) {
   return appLogText.slice(markerIndex);
 }
 
+const PROVIDER_INPUT_CEILING_PATTERN = /strict provider input ceiling reached cleanly before append:/i;
+
 function providerEvidenceLines(scopedLog) {
   return scopedLog.split(/\r?\n/).filter((line) => (
-    /input_audio_buffer\.append\.summary|\[CONNECT\]|watch_mode\.omni_session_config|watch_mode\.omni_(?:reconnect|retry)|\[RECONNECT\]|\[LLM_CALL\]|speech\.segment_tts_requested|subtitle-translate/i.test(line)
+    /input_audio_buffer\.append\.summary|\[CONNECT\]|watch_mode\.omni_session_config|watch_mode\.omni_(?:reconnect|retry)|\[RECONNECT\]|\[LLM_CALL\]|speech\.segment_tts_requested|subtitle-translate|strict provider input ceiling reached cleanly before append:/i.test(line)
   ));
+}
+
+function parseLocalLogTimestampUnixMs(line) {
+  const match = String(line).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(?=\s)/u);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second, fraction = '0'] = match;
+  const value = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second), Number(fraction.padEnd(3, '0'))).getTime();
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+export function buildProviderInputCompletionEvidence({ scopedLog, inputComplete, rejectedChunks }) {
+  const ceilingLines = String(scopedLog ?? '').split(/\r?\n/u).filter((line) => PROVIDER_INPUT_CEILING_PATTERN.test(line));
+  const observations = ceilingLines.map((line) => ({ observedAtUnixMs: parseLocalLogTimestampUnixMs(line) }));
+  const validTimes = observations.map((entry) => entry.observedAtUnixMs).filter(Number.isSafeInteger);
+  const malformedObservationCount = observations.length - validTimes.length;
+  const mediaPlaybackCompletedAtUnixMs = Number(inputComplete?.mediaPlaybackCompletedAtUnixMs);
+  const identityValid = inputComplete?.schemaVersion === 1 && inputComplete?.artifactKind === 'watch-mode-input-complete';
+  const timestampsValid = Number.isSafeInteger(mediaPlaybackCompletedAtUnixMs)
+    && mediaPlaybackCompletedAtUnixMs > 0
+    && Number.isSafeInteger(Number(inputComplete?.signaledAtUnixMs))
+    && Number(inputComplete.signaledAtUnixMs) >= mediaPlaybackCompletedAtUnixMs
+    && Number.isSafeInteger(Number(inputComplete?.completedAtUnixMs))
+    && Number(inputComplete.completedAtUnixMs) >= Number(inputComplete.signaledAtUnixMs);
+  const firstCeilingObservedAtUnixMs = validTimes.length > 0 ? Math.min(...validTimes) : null;
+  const ceilingBeforeMediaCompletion = Number.isSafeInteger(firstCeilingObservedAtUnixMs)
+    && timestampsValid && firstCeilingObservedAtUnixMs < mediaPlaybackCompletedAtUnixMs;
+  let status = 'passed';
+  let reason = null;
+  if (observations.length === 0 && Number(rejectedChunks) === 0) {
+    status = 'passed';
+  } else if (!identityValid || !timestampsValid) {
+    status = 'inconclusive';
+    reason = 'provider input completion authority is missing or invalid';
+  } else if (malformedObservationCount > 0) {
+    status = 'inconclusive';
+    reason = 'provider input ceiling observation timestamp is missing or invalid';
+  } else if (Number(rejectedChunks) > 0 && observations.length === 0) {
+    status = 'inconclusive';
+    reason = 'provider input ceiling evidence is missing despite rejected input chunks';
+  } else if (ceilingBeforeMediaCompletion) {
+    status = 'failed';
+    reason = 'provider input was truncated before signed media playback completed';
+  }
+  return {
+    status,
+    passed: status === 'passed',
+    stableErrorCode: status === 'passed' ? null : 'watch.provider-input-truncated',
+    lifecyclePhase: status === 'passed' ? null : 'provider-input',
+    reason,
+    observationCount: observations.length,
+    malformedObservationCount,
+    firstCeilingObservedAtUnixMs,
+    mediaPlaybackCompletedAtUnixMs: timestampsValid ? mediaPlaybackCompletedAtUnixMs : null,
+    ceilingBeforeMediaCompletion,
+  };
 }
 
 function countMatches(text, pattern) {
@@ -790,6 +847,13 @@ export function buildCellExternalProviderBudget({
   }
   const tracedInput = actualProviderInputSamplesFromLog(scopedLog);
   violations.push(...tracedInput.violations);
+  let inputComplete = null;
+  try {
+    inputComplete = readJson(path.join(resolvedRunDirectory, 'input-complete.json'), 'input-complete authority');
+    if (inputComplete.runMarker !== runMarker || inputComplete.cellId !== normalizedCellId) {
+      throw new Error('input-complete authority identity mismatch');
+    }
+  } catch {}
   let sendBoundaryAuthority = null;
   try {
     sendBoundaryAuthority = validateSendBoundaryAuthority({
@@ -882,6 +946,15 @@ export function buildCellExternalProviderBudget({
     } catch {}
   }
 
+  const providerInputCompletion = buildProviderInputCompletionEvidence({
+    scopedLog,
+    inputComplete,
+    rejectedChunks: providerInputReplay?.decisions?.budgetRejectedChunks ?? 0,
+  });
+  if (providerInputCompletion.status !== 'passed') {
+    violations.push(`${providerInputCompletion.stableErrorCode}: ${providerInputCompletion.reason}`);
+  }
+
   const actualInputSeconds = roundedSeconds(authoritativeInputSamples);
   return {
     schemaVersion: EXTERNAL_PROVIDER_BUDGET_SCHEMA_VERSION,
@@ -909,6 +982,7 @@ export function buildCellExternalProviderBudget({
     actualProviderInputSeconds: actualInputSeconds,
     providerInputPcm: providerPcm,
     providerInputReplay,
+    providerInputCompletion,
     providerTrace: {
       audioAppendSummaryCount: tracedInput.summaryCount,
       evidenceLineCount: evidenceLines.length,

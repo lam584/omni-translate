@@ -1150,6 +1150,10 @@ const SHORT_SERVER_VAD_FRAGMENT_MAX_MS: u64 = 100;
 // candidate and is discarded later solely when a bounded, forward-only,
 // same-continuity successor proves that it was a split boundary.
 const NONEMPTY_EMPTY_TRANSLATION_SCRIPT_ANOMALY_MAX_CHARS: usize = 4;
+// r96 retained a 380ms standalone "Okay." segment. Keep this separate from
+// the generic 100ms short-fragment rule and hard-bound it so a longer turn
+// misrecognized as an acknowledgement remains fail-closed.
+const IGNORABLE_DISCOURSE_ACK_MAX_MS: u64 = 500;
 const CONTIGUOUS_EMPTY_VAD_DEFER_MS: u64 = 120;
 // The c02 production trace observed an admitted successor 54ms after the
 // ordinary terminal deadline. Keep a separate, hard-bounded arbitration
@@ -1188,6 +1192,28 @@ fn is_nonempty_empty_translation_script_anomaly(
         && !source_text.chars().any(|character| character.is_ascii_alphabetic())
         && source_text.chars().count()
             <= NONEMPTY_EMPTY_TRANSLATION_SCRIPT_ANOMALY_MAX_CHARS
+}
+
+/// Closed-set policy for a completed native response that omitted only a
+/// non-semantic discourse acknowledgement. Exact membership is the safety
+/// proof: do not replace this with a short-text or "no obvious facts" heuristic,
+/// because that would also swallow numbers, entities, negation, or conditions.
+pub(super) fn is_ignorable_completed_discourse_omission(
+    source_language: &str,
+    source_text: &str,
+    source_final: bool,
+    response_status: &str,
+    vad_duration_ms: Option<u64>,
+) -> bool {
+    let source_language_is_english = source_language
+        .split(['-', '_'])
+        .next()
+        .is_some_and(|language| language.eq_ignore_ascii_case("en"));
+    source_language_is_english
+        && source_final
+        && response_status == "completed"
+        && vad_duration_ms.is_some_and(|duration_ms| duration_ms <= IGNORABLE_DISCOURSE_ACK_MAX_MS)
+        && source_text.trim().eq_ignore_ascii_case("Okay.")
 }
 
 impl OmniEventDiagnostics {
@@ -1529,9 +1555,10 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
             ),
         );
     } else {
-        let short_vad_duration_ms = final_output_allowed
+        let native_vad_duration_ms = final_output_allowed
             .then(|| event_diagnostics.native_response_vad_duration_ms())
-            .flatten()
+            .flatten();
+        let short_vad_duration_ms = native_vad_duration_ms
             .filter(|duration_ms| is_ignored_short_server_vad(Some(*duration_ms)));
         if let Some(duration_ms) = short_vad_duration_ms {
             event_diagnostics.register_ignored_native_response_owner();
@@ -1544,6 +1571,38 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
                     "[EVENT] response.done → SHORT_VAD_EMPTY_DROPPED{st_flag} cue_id={cue_id} durationMs={duration_ms} responseId={} responseStatus={} diagnostic=native-empty-response-short-vad-dropped",
                     response_metadata.response_id,
                     response_metadata.status,
+                ),
+            );
+        } else if final_output_allowed
+            && response_cue_exists
+            && is_ignorable_completed_discourse_omission(
+                source_language,
+                &response_source_text,
+                store.subtitle_source_is_final(&cue_id),
+                &response_metadata.status,
+                native_vad_duration_ms,
+            )
+        {
+            event_diagnostics.register_ignored_native_response_owner();
+            store.watch_session_report.record_ignorable_discourse_omission(
+                &cue_id,
+                "dashscope-native-realtime",
+                &response_source_text,
+                &response_metadata.response_id,
+                &response_metadata.status,
+                native_vad_duration_ms.expect("classifier requires VAD duration"),
+            );
+            store.discard_ignorable_discourse_cue(&cue_id);
+            let _ = diag_log(
+                app,
+                "omni",
+                "info",
+                format!(
+                    "[EVENT] response.done → NATIVE_DISCOURSE_OMISSION_IGNORED{st_flag} cue_id={cue_id} responseId={} responseStatus={} durationMs={} source=\"{}\" diagnostic=ignorable-discourse-omission",
+                    response_metadata.response_id,
+                    response_metadata.status,
+                    native_vad_duration_ms.expect("classifier requires VAD duration"),
+                    response_source_text,
                 ),
             );
         } else if final_output_allowed
@@ -1796,6 +1855,65 @@ mod response_text_tests {
 
         assert!(!metadata.allows_final_output(true));
         assert!(metadata.allows_final_output(false));
+    }
+
+    #[test]
+    fn discourse_omission_classifier_is_an_exact_fact_free_closed_set() {
+        assert!(is_ignorable_completed_discourse_omission(
+            "en",
+            "Okay.",
+            true,
+            "completed",
+            Some(380),
+        ));
+        assert!(is_ignorable_completed_discourse_omission(
+            "en-US",
+            "  okay.  ",
+            true,
+            "completed",
+            Some(500),
+        ));
+        assert!(!is_ignorable_completed_discourse_omission(
+            "en", "Okay.", false, "completed", Some(380),
+        ));
+        assert!(!is_ignorable_completed_discourse_omission(
+            "en", "Okay.", true, "failed", Some(380),
+        ));
+        assert!(!is_ignorable_completed_discourse_omission(
+            "en", "Okay.", true, "completed", None,
+        ));
+        assert!(!is_ignorable_completed_discourse_omission(
+            "en", "Okay.", true, "completed", Some(501),
+        ));
+
+        for protected_or_ambiguous in [
+            "Okay",
+            "Okay?",
+            "\"Okay.\"",
+            "Okay, Maya.",
+            "Okay, 842 miles.",
+            "Okay, version 3.6.2.",
+            "Okay, not now.",
+            "Okay, if the schedule changes.",
+        ] {
+            assert!(
+                !is_ignorable_completed_discourse_omission(
+                    "en",
+                    protected_or_ambiguous,
+                    true,
+                    "completed",
+                    Some(380),
+                ),
+                "must remain fail-closed: {protected_or_ambiguous}"
+            );
+        }
+        assert!(!is_ignorable_completed_discourse_omission(
+            "zh-CN",
+            "Okay.",
+            true,
+            "completed",
+            Some(380),
+        ));
     }
 
     #[test]

@@ -3,6 +3,7 @@ use super::*;
 mod audio_playback;
 mod fifo_ownership;
 mod ignored_short_vad;
+mod ignorable_discourse_omission;
 
 /// Native server-VAD providers may begin the next speech window just before
 /// the prior turn's output and ASR final arrive. The response used to commit a

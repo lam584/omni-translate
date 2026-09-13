@@ -341,6 +341,47 @@ impl WatchSessionReportStore {
         );
     }
 
+    pub(crate) fn record_ignorable_discourse_omission(
+        &self,
+        cue_id: &str,
+        translation_path: &str,
+        source_text: &str,
+        response_id: &str,
+        response_status: &str,
+        vad_duration_ms: u64,
+    ) {
+        let mut guard = self.inner.lock().expect("watch session report poisoned");
+        let Some(session) = guard.as_mut() else {
+            return;
+        };
+        let elapsed = session.elapsed_ms();
+        let detail = sanitize_error(&format!(
+            "classification=ignorable-discourse-omission cueId={cue_id} path={translation_path} responseId={response_id} responseStatus={response_status} vadDurationMs={vad_duration_ms}"
+        ));
+        let event = session.event(
+            "model",
+            "ignorable-discourse-omission",
+            elapsed,
+            source_text,
+            Some(detail),
+            true,
+            true,
+            None,
+            None,
+            None,
+        );
+        session.push_session_event(event);
+        session.push_issue_once(WatchIssueRuntime {
+            category: "model".to_string(),
+            code: "ignorable-discourse-omission".to_string(),
+            severity: "warning".to_string(),
+            message: "已封定的非语义话语确认在 completed 响应中没有可用译文；按显式闭集忽略，未放宽其他非空源 cue。".to_string(),
+            cue_id: Some(cue_id.to_string()),
+            elapsed_ms: Some(elapsed),
+            occurrence_count: 1,
+        });
+    }
+
     /// Records the original provider error at the narrow parsing boundary.
     /// A provider can emit an error after `response.done`, when the active cue
     /// has already been released. In that case the error still belongs to the

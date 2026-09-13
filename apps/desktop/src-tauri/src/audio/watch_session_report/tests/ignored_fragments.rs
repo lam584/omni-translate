@@ -12,7 +12,7 @@ fn ignored_short_vad_cleanup_removes_all_target_revisions_and_keeps_neighbors() 
     store.record_source("short", "inbound", "changed source", true);
     store.record_source("keep-after", "inbound", "after", true);
 
-    store.discard_ignored_short_vad_fragment_cue("short");
+    store.discard_ignored_provider_cue("short");
 
     let report = store.snapshot().expect("report");
     assert_eq!(

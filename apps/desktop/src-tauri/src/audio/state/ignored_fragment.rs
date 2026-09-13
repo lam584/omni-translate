@@ -1,11 +1,10 @@
 use super::*;
 
 impl AudioStateStore {
-    /// Removes only the provider-owned cue proven to be an ignored short-VAD
-    /// fragment. Unlike ordinary cancellation cleanup, this may remove a
-    /// source-final cue because response ownership and duration were already
-    /// established before this API is called.
-    pub(crate) fn discard_ignored_short_vad_fragment_cue(&self, cue_id: &str) {
+    /// Removes only a provider-owned cue after a narrow classifier has proven
+    /// that retaining it would fabricate content rather than preserve speech.
+    /// Unlike ordinary cancellation cleanup, this may remove a source-final cue.
+    fn discard_ignored_provider_cue(&self, cue_id: &str) {
         self.deferred_subtitle_translation_cues.remove(cue_id);
         self.source_final_cues.remove(cue_id);
         self.subtitles.update(|overlay| {
@@ -15,9 +14,16 @@ impl AudioStateStore {
             }
             trim_recent_subtitle_cues(overlay);
         });
-        self.watch_session_report
-            .discard_ignored_short_vad_fragment_cue(cue_id);
+        self.watch_session_report.discard_ignored_provider_cue(cue_id);
         self.history.discard_cue(cue_id);
+    }
+
+    pub(crate) fn discard_ignored_short_vad_fragment_cue(&self, cue_id: &str) {
+        self.discard_ignored_provider_cue(cue_id);
+    }
+
+    pub(crate) fn discard_ignorable_discourse_cue(&self, cue_id: &str) {
+        self.discard_ignored_provider_cue(cue_id);
     }
 }
 

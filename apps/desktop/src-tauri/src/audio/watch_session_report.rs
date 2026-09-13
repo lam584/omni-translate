@@ -329,7 +329,7 @@ impl WatchSessionReportStore {
         );
     }
 
-    pub(crate) fn discard_ignored_short_vad_fragment_cue(&self, cue_id: &str) {
+    pub(crate) fn discard_ignored_provider_cue(&self, cue_id: &str) {
         let mut guard = self.inner.lock().expect("watch session report poisoned");
         let Some(session) = guard.as_mut() else {
             return;

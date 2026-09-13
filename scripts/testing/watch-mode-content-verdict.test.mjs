@@ -267,6 +267,32 @@ test('audited schedule-arrangement and Arabic contrast wording remain fact-local
   }
 });
 
+test('audited shipment condition accepts 在行程有变时 without weakening the condition fact', () => {
+  const fact = retainedFacts.find(({ id }) => id === 'shipment.condition');
+  const accepted = evaluateLayeredWatchContent({
+    referenceText: 'He asked the team to email support@example.com if the schedule changed.',
+    outputText: '他要求团队在行程有变时，发送电子邮件至 support@example.com 联系支持团队。',
+    facts: [fact],
+  });
+  assert.equal(accepted.status, 'passed');
+  assert.deepEqual(accepted.dimensions.facts[0].matchedExpected, ['在行程有变时']);
+
+  for (const outputText of [
+    '他要求团队如果出现问题，就发送电子邮件至 support@example.com。',
+    '他要求团队即使行程没有变化，也发送电子邮件至 support@example.com。',
+    '他要求团队发送电子邮件至 support@example.com。',
+    '他要求团队在货物有变时，发送电子邮件至 support@example.com。',
+  ]) {
+    const rejected = evaluateLayeredWatchContent({
+      referenceText: 'He asked the team to email support@example.com if the schedule changed.',
+      outputText,
+      facts: [fact],
+    });
+    assert.equal(rejected.status, 'failed', outputText);
+    assert.equal(rejected.dimensions.facts[0].status, 'failed');
+  }
+});
+
 test('audited contrast-pair question accepts 还是 without weakening numeric facts', () => {
   const fact = retainedFacts.find(({ id }) => id === 'numeric.contrast-pairs');
   for (const [outputText, expectedMatch] of [

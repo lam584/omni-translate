@@ -8,16 +8,46 @@ use crate::audio::state::{AecCaptureFrameMetadata, AudioStateStore, EchoRenderCl
 use super::aec_timing::AecDelayEstimate;
 use super::{CHUNK_FRAMES, SAMPLE_RATE_HZ};
 
-pub(super) fn aec_tap_queue_clock_valid(
-    previous_valid: bool,
-    queued_bytes_before_read: usize,
-    data_discontinuity: bool,
-    timestamp_error: bool,
-) -> bool {
-    // A new packet cannot re-date old queued bytes across a clock discontinuity.
-    // Conservatively invalidate residual bytes until the queue has emptied.
-    !timestamp_error
-        && (queued_bytes_before_read == 0 || (previous_valid && !data_discontinuity))
+#[derive(Debug, Default)]
+pub(super) struct AecTapQueueClock {
+    invalid_prefix_bytes: usize,
+    packet_clock_valid: bool,
+}
+
+impl AecTapQueueClock {
+    pub(super) fn observe_packet(
+        &mut self,
+        queued_bytes_before_read: usize,
+        queued_bytes_after_read: usize,
+        data_discontinuity: bool,
+        timestamp_error: bool,
+        anchor_arithmetic_valid: bool,
+    ) {
+        if timestamp_error || !anchor_arithmetic_valid {
+            // This packet cannot provide a safe queue-head anchor. Invalidate
+            // every byte currently queued and require a later packet whose
+            // frame/QPC can be fully back-propagated across the remaining queue.
+            self.invalid_prefix_bytes = queued_bytes_after_read;
+            self.packet_clock_valid = false;
+            return;
+        }
+
+        // A discontinuous packet can anchor its own bytes, but cannot re-date
+        // the older prefix. Track that byte boundary so validity recovers after
+        // the prefix drains even when a continuously-fed queue never empties.
+        if data_discontinuity {
+            self.invalid_prefix_bytes = self.invalid_prefix_bytes.max(queued_bytes_before_read);
+        }
+        self.packet_clock_valid = true;
+    }
+
+    pub(super) fn next_chunk_valid(&self) -> bool {
+        self.packet_clock_valid && self.invalid_prefix_bytes == 0
+    }
+
+    pub(super) fn consume_bytes(&mut self, bytes: usize) {
+        self.invalid_prefix_bytes = self.invalid_prefix_bytes.saturating_sub(bytes);
+    }
 }
 
 pub(super) fn aec_tap_chunk_metadata(

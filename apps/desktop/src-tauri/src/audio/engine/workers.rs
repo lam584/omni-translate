@@ -2,7 +2,7 @@
 mod capture_diagnostics;
 #[path = "workers/capture_route.rs"]
 mod capture_route;
-use capture_diagnostics::{aec_tap_chunk_metadata, aec_tap_queue_clock_valid};
+use capture_diagnostics::{aec_tap_chunk_metadata, AecTapQueueClock};
 
 const ECHO_CANCEL_RESET_DIAGNOSTIC_LEVEL: &str = "warning";
 
@@ -126,7 +126,7 @@ fn run_capture_loop(
     let mut inbound_wait_logged = false;
     let mut aec_delay_estimator = AecDelayEstimator::new(SAMPLE_RATE_HZ as u32, CHANNEL_COUNT);
     let mut current_aec_delay_samples = 0_usize;
-    let mut tap_queued_clock_valid = true;
+    let mut tap_queue_clock = AecTapQueueClock::default();
     let mut last_delay_diagnostic_at: Option<Instant> = None;
     let capture_result = (|| -> Result<(), String> {
       loop {
@@ -214,16 +214,18 @@ fn run_capture_loop(
             });
             current_aec_delay_samples = estimate.delay_samples;
             if store.aec_diagnostic_tap_enabled() {
-                tap_queued_clock_valid = aec_tap_queue_clock_valid(
-                    tap_queued_clock_valid,
+                // Saturating frame/QPC subtraction is not an authoritative
+                // anchor. Fail the whole packet closed until a later packet can
+                // be fully back-propagated across the remaining queue.
+                let anchor_arithmetic_valid = buffer_info.index >= queued_capture_frames as u64
+                    && buffer_info.timestamp >= (queued_capture_frames as u64).saturating_mul(10_000_000) / SAMPLE_RATE_HZ as u64;
+                tap_queue_clock.observe_packet(
                     queued_bytes_before_read,
+                    sample_queue.len(),
                     buffer_info.flags.data_discontinuity,
                     buffer_info.flags.timestamp_error,
+                    anchor_arithmetic_valid,
                 );
-                // Saturating subtraction in the production estimator is not a
-                // valid evidence clock when the packet precedes queued data.
-                tap_queued_clock_valid &= buffer_info.index >= queued_capture_frames as u64
-                    && buffer_info.timestamp >= (queued_capture_frames as u64).saturating_mul(10_000_000) / SAMPLE_RATE_HZ as u64;
                 capture_tap_clock = Some(AecCaptureFrameMetadata {
                     packet_device_frame_index: buffer_info.index,
                     packet_qpc_100ns: buffer_info.timestamp,
@@ -234,7 +236,7 @@ fn run_capture_loop(
                     delay_samples: current_aec_delay_samples,
                     timestamp_error: buffer_info.flags.timestamp_error,
                     data_discontinuity: buffer_info.flags.data_discontinuity,
-                    queue_head_clock_valid: tap_queued_clock_valid,
+                    queue_head_clock_valid: true,
                 });
             }
             if estimate.aec_reset_required {
@@ -312,7 +314,12 @@ fn run_capture_loop(
                         .saturating_mul(CHUNK_FRAMES)
                         .saturating_mul(CHANNEL_COUNT),
                 );
-                let tap_metadata = capture_tap_clock.map(|metadata| aec_tap_chunk_metadata(metadata, chunk_index, delay_samples));
+                let tap_metadata = capture_tap_clock.map(|metadata| {
+                    let mut metadata = aec_tap_chunk_metadata(metadata, chunk_index, delay_samples);
+                    metadata.queue_head_clock_valid &= tap_queue_clock.next_chunk_valid();
+                    tap_queue_clock.consume_bytes(chunk_len);
+                    metadata
+                });
                 let cancellation = store.process_echo_capture_with_metadata(
                     &f32_chunk,
                     delay_samples,
@@ -938,17 +945,74 @@ mod placeholder_cue_tests {
 
 #[cfg(test)]
 mod aec_tap_clock_tests {
-    use super::{aec_tap_queue_clock_valid, aec_tap_chunk_metadata, AecCaptureFrameMetadata};
+    use super::{aec_tap_chunk_metadata, AecCaptureFrameMetadata, AecTapQueueClock, CHUNK_FRAMES};
+
+    const BLOCK_ALIGN: usize = 8;
+    const CHUNK_BYTES: usize = CHUNK_FRAMES * BLOCK_ALIGN;
 
     #[test]
-    fn invalid_packet_clock_is_never_rehabilitated_by_queued_byte_arithmetic() {
-        assert!(!aec_tap_queue_clock_valid(true, 0, false, true));
-        assert!(!aec_tap_queue_clock_valid(true, 480 * 8, false, true));
-        assert!(!aec_tap_queue_clock_valid(true, 480 * 8, true, false));
-        assert!(!aec_tap_queue_clock_valid(false, 240 * 8, false, false));
-        assert!(aec_tap_queue_clock_valid(false, 0, false, false));
-        assert!(aec_tap_queue_clock_valid(true, 0, true, false));
-        assert!(aec_tap_queue_clock_valid(true, 480 * 8, false, false));
+    fn discontinuity_prefix_recovers_inside_a_large_packet_without_queue_empty() {
+        let residual = CHUNK_BYTES / 4;
+        let mut clock = AecTapQueueClock::default();
+
+        clock.observe_packet(residual, residual + 2 * CHUNK_BYTES, true, false, true);
+        assert!(!clock.next_chunk_valid());
+        clock.consume_bytes(CHUNK_BYTES);
+        assert!(clock.next_chunk_valid());
+        clock.consume_bytes(CHUNK_BYTES);
+
+        clock.observe_packet(residual, residual + CHUNK_BYTES, false, false, true);
+        assert!(clock.next_chunk_valid());
+    }
+
+    #[test]
+    fn timestamp_error_remains_invalid_across_packets_until_its_residual_drains() {
+        let residual = CHUNK_BYTES / 4;
+        let mut clock = AecTapQueueClock::default();
+
+        clock.observe_packet(residual, residual + CHUNK_BYTES, false, true, false);
+        assert!(!clock.next_chunk_valid());
+        clock.consume_bytes(CHUNK_BYTES);
+
+        clock.observe_packet(residual, residual + CHUNK_BYTES, false, false, true);
+        assert!(!clock.next_chunk_valid());
+        clock.consume_bytes(CHUNK_BYTES);
+
+        clock.observe_packet(residual, residual + CHUNK_BYTES, false, false, true);
+        assert!(clock.next_chunk_valid());
+    }
+
+    #[test]
+    fn anchor_arithmetic_failure_invalidates_the_whole_packet_until_a_new_anchor() {
+        let mut clock = AecTapQueueClock::default();
+
+        clock.observe_packet(CHUNK_BYTES, 3 * CHUNK_BYTES, false, false, false);
+        for _ in 0..3 {
+            assert!(!clock.next_chunk_valid());
+            clock.consume_bytes(CHUNK_BYTES);
+        }
+        // Draining bytes alone cannot rehabilitate an underflowed/overflowed
+        // anchor; a later fully reconstructable packet is required.
+        assert!(!clock.next_chunk_valid());
+        clock.observe_packet(0, CHUNK_BYTES, false, false, true);
+        assert!(clock.next_chunk_valid());
+    }
+
+    #[test]
+    fn a_second_discontinuity_extends_only_the_current_invalid_prefix() {
+        let residual = CHUNK_BYTES / 2;
+        let mut clock = AecTapQueueClock::default();
+
+        clock.observe_packet(residual, residual + 2 * CHUNK_BYTES, true, false, true);
+        assert!(!clock.next_chunk_valid());
+        clock.consume_bytes(CHUNK_BYTES);
+        assert!(clock.next_chunk_valid());
+
+        clock.observe_packet(residual, residual + CHUNK_BYTES, true, false, true);
+        assert!(!clock.next_chunk_valid());
+        clock.consume_bytes(CHUNK_BYTES);
+        clock.observe_packet(residual, residual + CHUNK_BYTES, false, false, true);
+        assert!(clock.next_chunk_valid());
     }
 
     #[test]

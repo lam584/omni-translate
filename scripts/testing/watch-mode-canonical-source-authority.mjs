@@ -580,27 +580,34 @@ function pcmBufferToSamples(bytes) {
   return samples;
 }
 
-export function validateRunCanonicalSourceAuthority(options = {}) {
+export function collectRunCanonicalSourceAuthority(options = {}) {
   const sourceAuthority = validateCanonicalSourceAuthority(options);
   const physicalSourceWaveform = buildPhysicalSourceWaveformAuthority(options);
-  if (!physicalSourceWaveform.passed) {
-    throw new Error(`physical original-source waveform authority failed: ${physicalSourceWaveform.violations.join('; ')}`);
-  }
   return {
     schemaVersion: CANONICAL_SOURCE_AUTHORITY_SCHEMA_VERSION,
     artifactKind: 'watch-mode-canonical-source-and-physical-authority',
-    passed: true,
+    passed: physicalSourceWaveform.passed,
     remoteProviderCalls: 0,
     externalAudioSeconds: 0,
     sourceAuthority,
     physicalSourceWaveform,
+    ...(physicalSourceWaveform.passed ? {} : {
+      error: `physical original-source waveform authority failed: ${physicalSourceWaveform.violations.join('; ')}`,
+    }),
   };
+}
+
+export function validateRunCanonicalSourceAuthority(options = {}) {
+  const authority = collectRunCanonicalSourceAuthority(options);
+  if (!authority.passed) throw new Error(authority.error);
+  return authority;
 }
 
 function parseCliArgs(argv) {
   const values = {};
   let referenceOnly = false;
   let sourceOnly = false;
+  let preserveFailureEvidence = false;
   for (let index = 0; index < argv.length; index += 1) {
     const key = argv[index];
     if (key === '--reference-only') {
@@ -611,7 +618,18 @@ function parseCliArgs(argv) {
       sourceOnly = true;
       continue;
     }
-    if (key !== '--run-directory' && key !== '--workspace-root') throw new Error(`unknown argument: ${key}`);
+    if (key === '--preserve-failure-evidence') {
+      preserveFailureEvidence = true;
+      continue;
+    }
+    if (key === '--no-build') {
+      values['no-build'] = true;
+      continue;
+    }
+    if (key !== '--run-directory' && key !== '--workspace-root'
+        && key !== '--release-executable-path' && key !== '--release-executable-sha256') {
+      throw new Error(`unknown argument: ${key}`);
+    }
     const value = argv[index + 1];
     if (!value || value.startsWith('--')) throw new Error(`${key} requires a value`);
     values[key.slice(2)] = value;
@@ -619,11 +637,18 @@ function parseCliArgs(argv) {
   }
   if (!values['run-directory']) throw new Error('--run-directory is required');
   if (referenceOnly && sourceOnly) throw new Error('--reference-only and --source-only are mutually exclusive');
+  if (preserveFailureEvidence && (referenceOnly || sourceOnly)) {
+    throw new Error('--preserve-failure-evidence is available only for combined authority');
+  }
   return {
     runDirectory: values['run-directory'],
     ...(values['workspace-root'] ? { workspaceRoot: values['workspace-root'] } : {}),
+    ...(values['release-executable-path'] ? { releaseExecutablePath: values['release-executable-path'] } : {}),
+    ...(values['release-executable-sha256'] ? { releaseExecutableSha256: values['release-executable-sha256'] } : {}),
+    noBuild: values['no-build'] === true,
     referenceOnly,
     sourceOnly,
+    preserveFailureEvidence,
   };
 }
 
@@ -668,7 +693,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       ? validateCanonicalReferencePcm(options)
       : options.sourceOnly
         ? validateCanonicalSourceAuthority(options)
-        : validateRunCanonicalSourceAuthority(options);
+        : options.preserveFailureEvidence
+          ? collectRunCanonicalSourceAuthority(options)
+          : validateRunCanonicalSourceAuthority(options);
     console.log(JSON.stringify(result));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

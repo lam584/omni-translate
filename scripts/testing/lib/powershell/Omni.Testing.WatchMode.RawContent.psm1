@@ -139,14 +139,14 @@ function Get-LocalPhysicalOutputContentAuthority {
     16000 $sourceWindowSeconds
   $canonicalSourceAndPhysical = if ($sourceWindow) {
     try {
-      Invoke-CanonicalSourceAuthorityNode $OutputDirectory "Combined" $workspaceRoot
+      Invoke-CanonicalSourceAuthorityNode $OutputDirectory "CombinedEvidence" $workspaceRoot
     } catch {
       [pscustomobject]@{ passed = $false; error = $_.Exception.Message }
     }
   } else {
     [pscustomobject]@{ passed = $false; error = "physical output source window was not created" }
   }
-  $originalSimilarity = if ($canonicalSourceAndPhysical.passed -and $canonicalSourceAndPhysical.physicalSourceWaveform) {
+  $originalSimilarity = if ($canonicalSourceAndPhysical.physicalSourceWaveform) {
     $canonicalSourceAndPhysical.physicalSourceWaveform
   } else {
     [pscustomobject]@{ passed = $false; error = [string]$canonicalSourceAndPhysical.error }

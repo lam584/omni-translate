@@ -11,10 +11,23 @@ import test from 'node:test';
 import {
   classifyWatchModeRun,
   normalizeSteps,
+  parseAppLog,
   parseBridgeLog,
   renderMarkdownReport,
   writeReport,
 } from './watch-mode-report.mjs';
+
+test('keeps SQLite configuration persistence failures out of Provider runtime evidence', () => {
+  const storageFailure = '2026-09-13 08:17:16.228 [ERROR] [storage] - - 保存配置草稿失败。 | providers.count=1 error=UNIQUE constraint failed: provider_model_capabilities.provider_key, provider_model_capabilities.entry_id, provider_model_capabilities.capability';
+  const parsed = parseAppLog(storageFailure);
+  const report = classify({ appLogText: [healthyAppLog, storageFailure].join('\n') });
+
+  assert.deepEqual(parsed.providerErrorLines, []);
+  assert.deepEqual(parsed.errorLines, [storageFailure]);
+  assert.equal(report.layers.provider.status, 'passed');
+  assert.deepEqual(report.diagnostics.evidence.providerErrors, []);
+  assert(report.diagnostics.evidence.appErrors.includes(storageFailure));
+});
 
 test('report rejects legacy or missing step schemas instead of migrating them', () => {
   assert.throws(

@@ -191,6 +191,12 @@ function isBenignCredentialLifecycleLine(line) {
 
 function isNonProviderLifecycleLine(line) {
   const text = String(line ?? '');
+  // Relational configuration persistence is a local storage concern. Keep the
+  // line in appErrors, but do not let field names such as providers.count or
+  // provider_model_capabilities satisfy the broad Provider error matcher.
+  if (/\[storage\].*(?:保存配置草稿失败|provider_model_capabilities.*(?:unique constraint failed|constraint failed))/i.test(text)) {
+    return true;
+  }
   // Audio endpoint resolution belongs to the local audio/infrastructure layer.
   // In particular, release-evidence runs deliberately forbid default endpoint
   // fallback; that failure must never be relabelled as a Provider failure just

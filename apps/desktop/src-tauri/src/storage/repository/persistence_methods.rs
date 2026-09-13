@@ -198,11 +198,18 @@ impl ConfigRepository {
             .get("localModelCapabilityRegistry")
             .and_then(Value::as_array)
         {
+            let mut inserted_capabilities = HashSet::new();
             for (position, entry) in entries.iter().enumerate() {
                 let entry_id =
                     string_at(entry, "/id").unwrap_or_else(|| format!("capability-{position}"));
+                let mut capability_position = 0_i64;
                 if let Some(capabilities) = entry.get("capabilities").and_then(Value::as_array) {
-                    insert_each_capability_str(capabilities, |capability, capability_position| {
+                    for capability in capabilities.iter().filter_map(Value::as_str) {
+                        if !inserted_capabilities
+                            .insert((entry_id.clone(), capability.to_string()))
+                        {
+                            continue;
+                        }
                         connection
                             .execute(
                                 "INSERT INTO provider_model_capabilities (provider_key, entry_id, model_id, capability, position)
@@ -216,8 +223,8 @@ impl ConfigRepository {
                                 ],
                             )
                             .map_err_str()?;
-                        Ok(())
-                    })?;
+                        capability_position += 1;
+                    }
                 }
             }
         }

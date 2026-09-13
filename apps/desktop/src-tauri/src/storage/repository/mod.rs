@@ -901,6 +901,40 @@ mod tests {
     }
 
     #[test]
+    fn save_config_is_idempotent_for_repeated_provider_capability_entries() {
+        let (_temp_dir, repository) = initialized_repository();
+        let mut config = default_config_value().expect("default config should parse");
+        config["providers"][0]["localModelCapabilityRegistry"] = json!([
+            {
+                "id": "repeated-entry",
+                "modelId": "qwen-repeated-test",
+                "capabilities": ["speech-to-text", "speech-to-speech"]
+            },
+            {
+                "id": "repeated-entry",
+                "modelId": "qwen-repeated-test",
+                "capabilities": ["speech-to-text", "speech-to-speech"]
+            }
+        ]);
+
+        repository
+            .save_config(&config)
+            .expect("repeated registry entries should persist idempotently");
+
+        let connection = repository
+            .open_connection()
+            .expect("connection should open");
+        let capability_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM provider_model_capabilities WHERE entry_id = 'repeated-entry'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("registry capability count should read");
+        assert_eq!(capability_count, 2);
+    }
+
+    #[test]
     fn saves_audio_route_outputs_and_preferences() {
         let (_temp_dir, repository) = test_repository();
         repository

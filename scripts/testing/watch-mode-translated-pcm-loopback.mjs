@@ -12,6 +12,63 @@ export const TRANSLATED_PCM_JOURNAL_FILE = 'translated-cue-pcm-authority.jsonl';
 export const LOOPBACK_SAMPLE_RATE_HZ = 16_000;
 export const MIN_COMPLETE_MATCHED_CUES = 2;
 const LOOPBACK_ANCHOR_BOUNDARY_JITTER_SAMPLES = 1;
+const ACOUSTIC_EQUIVALENCE_WAVEFORM_CORRELATION = 0.96;
+const ACOUSTIC_EQUIVALENCE_DERIVATIVE_CORRELATION = 0.95;
+
+function normalizedCorrelation(left, right) {
+  if (left.length !== right.length || left.length === 0) return 0;
+  let leftSquareSum = 0;
+  let rightSquareSum = 0;
+  let dotProduct = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    leftSquareSum += left[index] * left[index];
+    rightSquareSum += right[index] * right[index];
+    dotProduct += left[index] * right[index];
+  }
+  if (leftSquareSum === 0 || rightSquareSum === 0) return 0;
+  return Math.abs(dotProduct / Math.sqrt(leftSquareSum * rightSquareSum));
+}
+
+function resamplePcmWindowForIdentity(bytes, sampleOffset, sampleCount, sampleRateHz, channelCount) {
+  const frameCount = sampleCount / channelCount;
+  const mono = new Float64Array(frameCount);
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    let sum = 0;
+    for (let channel = 0; channel < channelCount; channel += 1) {
+      sum += bytes.readInt16LE((sampleOffset + frame * channelCount + channel) * 2) / 32768;
+    }
+    mono[frame] = sum / channelCount;
+  }
+  const outputLength = Math.max(1, Math.floor(frameCount * LOOPBACK_SAMPLE_RATE_HZ / sampleRateHz));
+  const output = new Float64Array(outputLength);
+  for (let index = 0; index < outputLength; index += 1) {
+    const source = index * sampleRateHz / LOOPBACK_SAMPLE_RATE_HZ;
+    const left = Math.min(mono.length - 1, Math.floor(source));
+    const right = Math.min(mono.length - 1, left + 1);
+    output[index] = mono[left] + (mono[right] - mono[left]) * (source - left);
+  }
+  return output;
+}
+
+function acousticIdentityMetrics(left, right) {
+  if (left.length !== right.length || left.length < 2) return { waveform: 0, derivative: 0 };
+  const leftDerivative = new Float64Array(left.length - 1);
+  const rightDerivative = new Float64Array(right.length - 1);
+  for (let index = 1; index < left.length; index += 1) {
+    leftDerivative[index - 1] = left[index] - left[index - 1];
+    rightDerivative[index - 1] = right[index] - right[index - 1];
+  }
+  return {
+    waveform: normalizedCorrelation(left, right),
+    derivative: normalizedCorrelation(leftDerivative, rightDerivative),
+  };
+}
+
+function candidatesAreAcousticallyEquivalent(left, right) {
+  const metrics = acousticIdentityMetrics(left.identitySamples, right.identitySamples);
+  return metrics.waveform >= ACOUSTIC_EQUIVALENCE_WAVEFORM_CORRELATION
+    && metrics.derivative >= ACOUSTIC_EQUIVALENCE_DERIVATIVE_CORRELATION;
+}
 
 export function translatedLoopbackAnchorsAreOrdered(anchorMatches) {
   return anchorMatches.every((entry, index) => (
@@ -361,6 +418,13 @@ function selectHighEnergyAnchors(cue) {
       candidates: highEnergyCandidates.map((candidate) => ({
         frameOffset: candidate.frameOffset,
         rms: rounded(candidate.rms),
+        identitySamples: resamplePcmWindowForIdentity(
+          cue.pcmBytes,
+          candidate.sampleOffset,
+          candidate.sampleCount,
+          sampleRateHz,
+          channelCount,
+        ),
         reference: {
           referencePath: cue.pcmPath,
           referenceSampleRateHz: sampleRateHz,
@@ -800,7 +864,15 @@ export function buildTranslatedPcmLoopbackAuthority({
         );
         const requestId = `diagonal-${requestSequence += 1}`;
         diagonalRequests.push({ requestId, ...candidate.reference, expectedStartSamples: expectedStart });
-        return { requestId, anchor, anchorIndex, candidate, expectedStart, wrongRequestIds: [] };
+        return {
+          requestId,
+          anchor,
+          anchorIndex,
+          candidate,
+          expectedStart,
+          wrongRequestIds: [],
+          equivalentWrongCandidateCount: 0,
+        };
       })
     ));
     cueContexts.push({ cueId, cue, referenceSet, anchorTasks });
@@ -827,6 +899,14 @@ export function buildTranslatedPcmLoopbackAuthority({
             : task.anchorIndex / (context.referenceSet.anchors.length - 1);
           const wrongAnchor = otherSet.anchors[Math.round(relativeIndex * (otherSet.anchors.length - 1))];
           for (const wrongCandidate of wrongAnchor.candidates) {
+            // Acoustically equivalent retained PCM cannot identify which cue was
+            // rendered. Keep lifecycle, timing, correlation, capture, and anchor
+            // ordering gates, but do not treat an equivalent reference as a
+            // competing wrong-cue identity.
+            if (candidatesAreAcousticallyEquivalent(task.candidate, wrongCandidate)) {
+              task.equivalentWrongCandidateCount += 1;
+              continue;
+            }
             const requestId = `wrong-${requestSequence += 1}`;
             task.wrongRequestIds.push(requestId);
             wrongRequests.push({
@@ -886,6 +966,7 @@ export function buildTranslatedPcmLoopbackAuthority({
           referenceRms: task.candidate.rms,
           expectedPlaybackStartSeconds: rounded(task.expectedStart / LOOPBACK_SAMPLE_RATE_HZ),
           strongestWrongAnchorScore: rounded(strongestWrongAnchorScore),
+          equivalentWrongCandidateCount: task.equivalentWrongCandidateCount,
           identityMargin: rounded(identityMargin),
           ...diagonal,
           captureAuthorityPassed: captureAuthorityIntersections.length === 0,
@@ -1055,6 +1136,8 @@ export function buildTranslatedPcmLoopbackAuthority({
       derivativeMedianCorrelation: 0.24,
       derivativeMinimumCorrelation: 0.14,
       minimumWrongCueMargin: 0.08,
+      acousticEquivalenceWaveformCorrelation: ACOUSTIC_EQUIVALENCE_WAVEFORM_CORRELATION,
+      acousticEquivalenceDerivativeCorrelation: ACOUSTIC_EQUIVALENCE_DERIVATIVE_CORRELATION,
       maximumAbsoluteTimingErrorSeconds: 0.65,
       searchRadiusSeconds: 1.5,
     },

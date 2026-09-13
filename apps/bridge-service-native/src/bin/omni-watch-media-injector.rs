@@ -20,16 +20,14 @@ fn main() {
 
 #[cfg(windows)]
 mod injector {
-    use omni_bridge_service::probe_support::open_render_stream;
     use rodio::Source;
     use serde::Serialize;
     use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
-    use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use wasapi::{
         initialize_mta, AudioClient, AudioRenderClient, Device, DeviceEnumerator, Direction,
-        SampleType, WaveFormat,
+        Handle, SampleType, StreamMode, WaveFormat,
     };
 
     const TARGET_CHANNELS: usize = 2;
@@ -59,6 +57,10 @@ mod injector {
         pub restart_quiet_window_seconds: f64,
         pub postroll_silence_frames: usize,
         pub postroll_silence_seconds: f64,
+        pub prefill_frames: usize,
+        pub render_wake_count: usize,
+        pub max_render_wake_interval_ms: u128,
+        pub zero_padding_underrun_count: usize,
         pub detail: Option<String>,
     }
 
@@ -83,6 +85,10 @@ mod injector {
                 restart_quiet_window_seconds: 0.0,
                 postroll_silence_frames: 0,
                 postroll_silence_seconds: 0.0,
+                prefill_frames: 0,
+                render_wake_count: 0,
+                max_render_wake_interval_ms: 0,
+                zero_padding_underrun_count: 0,
                 detail: Some(detail),
             }
         }
@@ -107,18 +113,113 @@ mod injector {
         source_channels: usize,
     }
 
+    #[derive(Default)]
+    struct RenderPacingAuthority {
+        prefill_frames: usize,
+        submitted_frames: usize,
+        wake_count: usize,
+        max_wake_interval_ms: u128,
+        zero_padding_underrun_count: usize,
+        started: bool,
+    }
+
+    impl RenderPacingAuthority {
+        fn record_prefill(
+            &mut self,
+            written_frames: usize,
+            padding_frames: usize,
+        ) -> Result<(), String> {
+            if written_frames == 0 || padding_frames != written_frames {
+                return Err(format!(
+                    "render prefill was not authoritative: writtenFrames={written_frames} paddingFrames={padding_frames}"
+                ));
+            }
+            self.prefill_frames = written_frames;
+            self.submitted_frames = written_frames;
+            Ok(())
+        }
+
+        fn record_started(&mut self) {
+            self.started = true;
+        }
+
+        fn observe_refill_wake(
+            &mut self,
+            padding_frames: usize,
+            total_frames: usize,
+            wake_interval: Duration,
+        ) -> Result<(), String> {
+            self.wake_count += 1;
+            self.max_wake_interval_ms = self
+                .max_wake_interval_ms
+                .max(wake_interval.as_millis());
+            if self.started && padding_frames == 0 && self.submitted_frames < total_frames {
+                self.zero_padding_underrun_count += 1;
+                return Err(format!(
+                    "render underrun before submission completed: submittedFrames={} totalFrames={total_frames} wakeIntervalMilliseconds={} zeroPaddingUnderrunCount={}",
+                    self.submitted_frames,
+                    wake_interval.as_millis(),
+                    self.zero_padding_underrun_count,
+                ));
+            }
+            Ok(())
+        }
+
+        fn record_write(&mut self, written_frames: usize) {
+            self.submitted_frames += written_frames;
+        }
+    }
+
     struct MediaRender {
         audio_client: AudioClient,
         render_client: AudioRenderClient,
+        event_handle: Handle,
     }
 
     impl MediaRender {
-        fn start(device: &Device, format: &WaveFormat) -> Result<Self, String> {
-            let (audio_client, render_client) = open_render_stream(device, format)?;
+        fn open_event_driven_unstarted(
+            device: &Device,
+            format: &WaveFormat,
+        ) -> Result<Self, String> {
+            let mut audio_client = device
+                .get_iaudioclient()
+                .map_err(|error| format!("activate-audio-client: {}", error_text(error)))?;
+            let (_, minimum_period) = audio_client
+                .get_device_period()
+                .map_err(|error| format!("query-device-period: {}", error_text(error)))?;
+            audio_client
+                .initialize_client(
+                    format,
+                    &Direction::Render,
+                    &StreamMode::EventsShared {
+                        autoconvert: true,
+                        buffer_duration_hns: minimum_period,
+                    },
+                )
+                .map_err(|error| format!("initialize-event-render: {}", error_text(error)))?;
+            let event_handle = audio_client
+                .set_get_eventhandle()
+                .map_err(|error| format!("create-render-event: {}", error_text(error)))?;
+            let render_client = audio_client
+                .get_audiorenderclient()
+                .map_err(|error| format!("get-render-client: {}", error_text(error)))?;
             Ok(Self {
                 audio_client,
                 render_client,
+                event_handle,
             })
+        }
+
+        fn start(&self) -> Result<(), String> {
+            self.audio_client
+                .start_stream()
+                .map_err(|error| format!("start-render-stream: {}", error_text(error)))
+        }
+
+        fn wait_for_refill(&self) -> Result<(), String> {
+            self.event_handle
+                .wait_for_event(1_000)
+                .map_err(|error| format!("render event wait failed: {}", error_text(error)))
         }
 
         fn write_available(&mut self, pending: &mut VecDeque<f32>) -> Result<usize, String> {
@@ -202,6 +303,10 @@ mod injector {
                 restart_quiet_window_seconds: restart_quiet_window_frames as f64 / 16_000.0,
                 postroll_silence_frames: 0,
                 postroll_silence_seconds: 0.0,
+                prefill_frames: 0,
+                render_wake_count: 0,
+                max_render_wake_interval_ms: 0,
+                zero_padding_underrun_count: 0,
                 detail: Some("reference-only; no render endpoint opened".to_string()),
             });
         }
@@ -272,24 +377,55 @@ mod injector {
             TARGET_CHANNELS,
             None,
         );
-        let mut render = MediaRender::start(&device, &format)?;
+        let mut render = MediaRender::open_event_driven_unstarted(&device, &format)?;
         let total_frames = render_samples.len() / TARGET_CHANNELS;
         let mut pending = VecDeque::from(render_samples);
+        let mut pacing_authority = RenderPacingAuthority::default();
+        let prefill_frames = render.write_available(&mut pending).map_err(|error| {
+            format!("media prefill WASAPI failure: totalFrames={total_frames} detail={error}")
+        })?;
+        let prefill_padding_frames = render.current_padding_frames().map_err(|error| {
+            format!("media prefill padding query failed: writtenFrames={prefill_frames} detail={error}")
+        })?;
+        pacing_authority.record_prefill(prefill_frames, prefill_padding_frames)?;
+        render.start()?;
+        pacing_authority.record_started();
+
         let render_started_at = Instant::now();
         let render_absolute_timeout =
             render_absolute_timeout(total_frames, render_sample_rate_hz);
         let mut last_progress_at = render_started_at;
-        let mut rendered_frames = 0usize;
+        let mut last_wake_at = render_started_at;
+        let mut rendered_frames = prefill_frames;
         while !pending.is_empty() {
+            render.wait_for_refill().map_err(|error| {
+                format!(
+                    "media refill wait failure: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} wakeCount={} maxWakeIntervalMilliseconds={} detail={error}",
+                    total_frames.saturating_sub(rendered_frames),
+                    pacing_authority.wake_count,
+                    pacing_authority.max_wake_interval_ms,
+                )
+            })?;
+            let observed_at = Instant::now();
+            let padding_frames = render.current_padding_frames().map_err(|error| {
+                format!("media refill padding query failed: submittedFrames={rendered_frames} totalFrames={total_frames} detail={error}")
+            })?;
+            pacing_authority.observe_refill_wake(
+                padding_frames,
+                total_frames,
+                observed_at.saturating_duration_since(last_wake_at),
+            )?;
+            last_wake_at = observed_at;
+
             let written_frames = render.write_available(&mut pending).map_err(|error| {
                 format!(
                     "media submission WASAPI failure: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} detail={error}",
                     total_frames.saturating_sub(rendered_frames),
                 )
             })?;
-            let observed_at = Instant::now();
             if written_frames > 0 {
                 rendered_frames += written_frames;
+                pacing_authority.record_write(written_frames);
                 last_progress_at = observed_at;
             } else if render_has_stalled(last_progress_at, observed_at) {
                 return Err(format!(
@@ -316,7 +452,6 @@ mod injector {
                     render_absolute_timeout.as_millis(),
                 ));
             }
-            thread::sleep(Duration::from_millis(2));
         }
         wait_for_render_drain(
             &render,
@@ -347,6 +482,10 @@ mod injector {
             postroll_silence_frames,
             postroll_silence_seconds: postroll_silence_frames as f64
                 / render_sample_rate_hz as f64,
+            prefill_frames: pacing_authority.prefill_frames,
+            render_wake_count: pacing_authority.wake_count,
+            max_render_wake_interval_ms: pacing_authority.max_wake_interval_ms,
+            zero_padding_underrun_count: pacing_authority.zero_padding_underrun_count,
             detail: None,
         })
     }
@@ -552,7 +691,9 @@ mod injector {
         }
         let mut last_progress_at = initial_observed_at;
         while padding_frames > 0 {
-            thread::sleep(Duration::from_millis(2));
+            render.wait_for_refill().map_err(|error| {
+                format!("media drain event wait failed: submittedFrames={submitted_frames} paddingFrames={padding_frames} renderSampleRateHz={render_sample_rate_hz} detail={error}")
+            })?;
             let next_padding_frames = render.current_padding_frames().map_err(|error| {
                 format!(
                     "media drain WASAPI failure: submittedFrames={submitted_frames} lastPaddingFrames={padding_frames} renderSampleRateHz={render_sample_rate_hz} detail={error}"
@@ -879,6 +1020,41 @@ mod injector {
             assert!(insert_silence(&mut rendered, 2, 2, 2.0, 1.0)
                 .unwrap_err()
                 .contains("outside media"));
+        }
+
+        #[test]
+        fn pacing_authority_requires_prefill_before_start() {
+            let mut authority = RenderPacingAuthority::default();
+            authority.record_prefill(480, 480).unwrap();
+            authority.record_started();
+            assert_eq!(authority.prefill_frames, 480);
+            assert_eq!(authority.zero_padding_underrun_count, 0);
+        }
+
+        #[test]
+        fn pacing_authority_fails_closed_when_padding_reaches_zero_before_submission_finishes() {
+            let mut authority = RenderPacingAuthority::default();
+            authority.record_prefill(480, 480).unwrap();
+            authority.record_started();
+            let error = authority
+                .observe_refill_wake(0, 960, Duration::from_millis(12))
+                .unwrap_err();
+            assert!(error.contains("render underrun"));
+            assert_eq!(authority.zero_padding_underrun_count, 1);
+        }
+
+        #[test]
+        fn pacing_authority_accepts_event_driven_progress_with_nonzero_padding() {
+            let mut authority = RenderPacingAuthority::default();
+            authority.record_prefill(480, 480).unwrap();
+            authority.record_started();
+            authority
+                .observe_refill_wake(240, 960, Duration::from_millis(5))
+                .unwrap();
+            authority.record_write(240);
+            assert_eq!(authority.wake_count, 1);
+            assert_eq!(authority.max_wake_interval_ms, 5);
+            assert_eq!(authority.submitted_frames, 720);
         }
 
         #[test]

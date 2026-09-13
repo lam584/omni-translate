@@ -116,11 +116,13 @@ impl AudioStateStore {
             let reference_frames = samples.len() / usize::from(channel_count.max(1));
             let played = submitted_frames.saturating_sub(u64::from(endpoint_padding_frames));
             let reference_start = submitted_frames.saturating_sub(reference_frames as u64);
-            let reference_lead_frames =
-                reference_start
-                    .saturating_sub(played)
-                    .saturating_add(u64::from(physical_prefix_offset_frames))
-                    .min(MAX_ECHO_RENDER_REFERENCE_LEAD_FRAMES) as u32;
+            // submitted_frames is the physical timeline. Prefix-aware render
+            // pacing publishes a reference only after its corresponding
+            // physical prefix, so reference_start already includes that prefix.
+            // Adding it again would double-count the diagnostic delay.
+            let reference_lead_frames = reference_start
+                .saturating_sub(played)
+                .min(MAX_ECHO_RENDER_REFERENCE_LEAD_FRAMES) as u32;
             let mut canceller_guard = self.echo_canceller
                 .lock()
                 .expect("echo canceller poisoned");
@@ -937,37 +939,30 @@ mod tests {
     }
 
     #[test]
-    fn actual_physical_prefix_is_added_to_the_reference_lead_and_bounded() {
-        for (physical_prefix_offset_frames, expected_lead_frames) in [
-            (0, 0),
-            (3_840, 3_840),
-            (7_680, 7_680),
-            (u32::MAX, 48_000),
-        ] {
-            let store = AudioStateStore::new();
-            let observed_at = Instant::now();
-            publish_session_start(&store, 41, "endpoint-a", 7);
-            publish_stream_start(&store, 41, "endpoint-a", 7);
-            store
-                .push_echo_reference_at(
-                    41,
-                    &vec![0.0; 480 * 2],
-                    crate::audio::echo_cancel::TARGET_SAMPLE_RATE_HZ,
-                    crate::audio::echo_cancel::TARGET_CHANNEL_COUNT as u16,
-                    Duration::ZERO,
-                    480,
-                    480,
-                    physical_prefix_offset_frames,
-                    observed_at,
-                )
-                .expect("record delayed render reference");
+    fn physical_prefix_is_already_accounted_for_by_the_physical_submit_position() {
+        let store = AudioStateStore::new();
+        let observed_at = Instant::now();
+        publish_session_start(&store, 41, "endpoint-a", 7);
+        publish_stream_start(&store, 41, "endpoint-a", 7);
+        // The first 480-frame reference follows a 3,840-frame physical prefix.
+        // With all 4,320 submitted frames still padded, its physical start is
+        // 3,840 frames ahead. The prefix must not be added a second time.
+        store
+            .push_echo_reference_at(
+                41,
+                &vec![0.0; 480 * 2],
+                crate::audio::echo_cancel::TARGET_SAMPLE_RATE_HZ,
+                crate::audio::echo_cancel::TARGET_CHANNEL_COUNT as u16,
+                Duration::ZERO,
+                4_320,
+                4_320,
+                3_840,
+                observed_at,
+            )
+            .expect("record delayed render reference");
 
-            let clock = store.echo_render_clock_snapshot();
-            assert_eq!(
-                clock.reference_lead_frames,
-                Some(expected_lead_frames)
-            );
-        }
+        let clock = store.echo_render_clock_snapshot();
+        assert_eq!(clock.reference_lead_frames, Some(3_840));
     }
 }
 

@@ -591,7 +591,7 @@ test('default-endpoint playback materializes reference PCM without opening a ren
     'exit /b 0',
   ].join('\r\n'));
   try {
-    const command = `${extractedMediaReferenceFunctions()} ` +
+    const command = `${extractedMediaReferenceFunctions()} function global:Get-FileHash { [pscustomobject]@{ Hash = '0000000000000000000000000000000000000000000000000000000000000000' } }; ` +
       `$path = Write-TestMediaReferencePcm ${quotePowerShell(mediaPath)} ${quotePowerShell(tempRoot)} ${quotePowerShell(path.resolve('.'))} 0 ${quotePowerShell(fakeInjector)}; ` +
       `[pscustomobject]@{ path = $path; bytes = (Get-Item -LiteralPath $path).Length } | ConvertTo-Json -Compress`;
     const result = runPowerShell(['-Command', command]);
@@ -607,6 +607,80 @@ test('default-endpoint playback materializes reference PCM without opening a ren
   }
 });
 
+test('WASAPI playback preserves injector render cadence diagnostics', { skip: !isWindows }, () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-playback-result-'));
+  const mediaPath = path.join(tempRoot, 'source.wav');
+  const fakeInjector = path.join(tempRoot, 'fake-injector.cmd');
+  fs.writeFileSync(mediaPath, 'fixture');
+  fs.writeFileSync(fakeInjector, [
+    '@echo off',
+    'echo {"passed":true,"endpointId":"endpoint-1","mediaPath":"source.wav","processId":4321,"startedAtMs":10,"finishedAtMs":20,"renderedFrames":48000,"renderedSeconds":1,"renderSampleRateHz":48000,"bufferFrames":960,"prefillFrames":480,"renderWakeCount":51,"maxRenderWakeIntervalMs":22.5,"zeroPaddingUnderrunCount":3}',
+    'exit /b 0',
+  ].join('\r\n'));
+  try {
+    const command = `${extractedMediaReferenceFunctions()} function global:Get-FileHash { [pscustomobject]@{ Hash = '0000000000000000000000000000000000000000000000000000000000000000' } }; ` +
+      `$result = Start-TestMediaPlayback -PathToMedia ${quotePowerShell(mediaPath)} -PlaybackEndpointId 'endpoint-1' -OutputDirectory ${quotePowerShell(tempRoot)} -WorkspaceRoot ${quotePowerShell(path.resolve('.'))} -PlaybackSeconds 0 -InjectorExecutablePath ${quotePowerShell(fakeInjector)}; ` +
+      '$result | ConvertTo-Json -Depth 12 -Compress';
+    const result = runPowerShell(['-Command', command]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const playback = JSON.parse(result.stdout.trim());
+    assert.deepEqual({
+      bufferFrames: playback.bufferFrames,
+      prefillFrames: playback.prefillFrames,
+      renderWakeCount: playback.renderWakeCount,
+      maxRenderWakeIntervalMs: playback.maxRenderWakeIntervalMs,
+      zeroPaddingUnderrunCount: playback.zeroPaddingUnderrunCount,
+    }, {
+      bufferFrames: 960,
+      prefillFrames: 480,
+      renderWakeCount: 51,
+      maxRenderWakeIntervalMs: 22.5,
+      zeroPaddingUnderrunCount: 3,
+    });
+    assert.equal(playback.passed, true);
+    assert.equal(playback.injectorExitCode, 0);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('WASAPI playback failure retains structured injector evidence', { skip: !isWindows }, () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-playback-failure-'));
+  const mediaPath = path.join(tempRoot, 'source.wav');
+  const fakeInjector = path.join(tempRoot, 'fake-injector.cmd');
+  fs.writeFileSync(mediaPath, 'fixture');
+  fs.writeFileSync(fakeInjector, [
+    '@echo off',
+    'echo {"passed":false,"detail":"render cadence failed","endpointId":"endpoint-2","processId":9876,"bufferFrames":1440,"prefillFrames":720,"renderWakeCount":9,"maxRenderWakeIntervalMs":81.25,"zeroPaddingUnderrunCount":4}',
+    'exit /b 7',
+  ].join('\r\n'));
+  try {
+    const command = `${extractedMediaReferenceFunctions()} function global:Get-FileHash { [pscustomobject]@{ Hash = '0000000000000000000000000000000000000000000000000000000000000000' } }; ` +
+      `try { Start-TestMediaPlayback -PathToMedia ${quotePowerShell(mediaPath)} -PlaybackEndpointId 'endpoint-2' -OutputDirectory ${quotePowerShell(tempRoot)} -WorkspaceRoot ${quotePowerShell(path.resolve('.'))} -PlaybackSeconds 0 -InjectorExecutablePath ${quotePowerShell(fakeInjector)} | Out-Null; exit 2 } catch { Write-Error $_.Exception.Message; exit 0 }`;
+    const result = runPowerShell(['-Command', command]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stderr, /ExitCode=7/u);
+    const playback = readJsonArtifact(path.join(tempRoot, 'playback.json'));
+    assert.equal(playback.passed, false);
+    assert.equal(playback.injectorExitCode, 7);
+    assert.equal(playback.injectorResult.detail, 'render cadence failed');
+    assert.deepEqual({
+      bufferFrames: playback.bufferFrames,
+      prefillFrames: playback.prefillFrames,
+      renderWakeCount: playback.renderWakeCount,
+      maxRenderWakeIntervalMs: playback.maxRenderWakeIntervalMs,
+      zeroPaddingUnderrunCount: playback.zeroPaddingUnderrunCount,
+    }, {
+      bufferFrames: 1440,
+      prefillFrames: 720,
+      renderWakeCount: 9,
+      maxRenderWakeIntervalMs: 81.25,
+      zeroPaddingUnderrunCount: 4,
+    });
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
 test('strict paid provider selection ignores a preceding alternate and rejects forged canonical identity', { skip: !isWindows }, () => {
   const providers = [{
     providerId: 'provider-alternate',

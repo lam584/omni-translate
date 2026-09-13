@@ -115,15 +115,42 @@
     }
 
     #[test]
-    fn failed_result_reports_buffer_frames_telemetry() {
-        let json = serde_json::to_value(InjectorResult::failed("failure".to_string())).unwrap();
-        assert_eq!(json["bufferFrames"], 0);
+    fn actual_event_buffer_must_cover_the_requested_scheduler_tolerance() {
+        validate_injector_event_buffer_frames(12_000, 48_000).unwrap();
+        validate_injector_event_buffer_frames(12_001, 48_000).unwrap();
+        let error = validate_injector_event_buffer_frames(11_999, 48_000).unwrap_err();
+        assert!(error.contains("bufferFrames=11999"));
+        assert!(error.contains("requiredBufferFrames=12000"));
+        assert!(validate_injector_event_buffer_frames(12_000, 0).is_err());
+    }
+
+    #[test]
+    fn failed_result_preserves_known_render_telemetry() {
+        let mut authority = RenderPacingAuthority::default();
+        authority
+            .record_prefill(12_000, 12_000, 12_000, 6_183_136)
+            .unwrap();
+        authority.record_started();
+        let detail = authority
+            .observe_refill_wake(0, 6_183_136, Duration::from_millis(251))
+            .unwrap_err();
+        let failure = InjectorError::with_render(detail, 12_000, 12_000, &authority);
+        let json = serde_json::to_value(InjectorResult::failed(failure)).unwrap();
+        assert_eq!(json["bufferFrames"], 12_000);
+        assert_eq!(json["prefillFrames"], 12_000);
+        assert_eq!(json["renderWakeCount"], 1);
+        assert_eq!(json["maxRenderWakeIntervalMs"], 251);
+        assert_eq!(json["zeroPaddingUnderrunCount"], 1);
+        assert!(json["detail"]
+            .as_str()
+            .unwrap()
+            .contains("render underrun"));
     }
 
     #[test]
     fn pacing_authority_requires_prefill_before_start() {
         let mut authority = RenderPacingAuthority::default();
-        authority.record_prefill(480, 480).unwrap();
+        authority.record_prefill(480, 480, 480, 960).unwrap();
         authority.record_started();
         assert_eq!(authority.prefill_frames, 480);
         assert_eq!(authority.zero_padding_underrun_count, 0);
@@ -140,7 +167,12 @@
 
             let mut authority = RenderPacingAuthority::default();
             authority
-                .record_prefill(buffer_frames, buffer_frames)
+                .record_prefill(
+                    buffer_frames,
+                    buffer_frames,
+                    buffer_frames,
+                    buffer_frames + 1,
+                )
                 .unwrap();
             authority.record_started();
             authority
@@ -165,7 +197,12 @@
 
         let mut authority = RenderPacingAuthority::default();
         authority
-            .record_prefill(buffer_frames, buffer_frames)
+            .record_prefill(
+                buffer_frames,
+                buffer_frames,
+                buffer_frames,
+                buffer_frames + 1,
+            )
             .unwrap();
         authority.record_started();
         let error = authority
@@ -180,9 +217,30 @@
     }
 
     #[test]
+    fn prefill_requires_the_entire_actual_buffer_for_long_media() {
+        let mut authority = RenderPacingAuthority::default();
+        let error = authority
+            .record_prefill(480, 480, 12_000, 6_183_136)
+            .unwrap_err();
+        assert!(error.contains("expectedPrefillFrames=12000"));
+        assert!(error.contains("writtenFrames=480"));
+        assert_eq!(authority.prefill_frames, 0);
+    }
+
+    #[test]
+    fn prefill_accepts_all_short_media_when_it_is_smaller_than_the_buffer() {
+        let mut authority = RenderPacingAuthority::default();
+        authority
+            .record_prefill(6_000, 6_000, 12_000, 6_000)
+            .unwrap();
+        assert_eq!(authority.prefill_frames, 6_000);
+        assert_eq!(authority.submitted_frames, 6_000);
+    }
+
+    #[test]
     fn pacing_authority_fails_closed_when_padding_reaches_zero_before_submission_finishes() {
         let mut authority = RenderPacingAuthority::default();
-        authority.record_prefill(480, 480).unwrap();
+        authority.record_prefill(480, 480, 480, 960).unwrap();
         authority.record_started();
         let error = authority
             .observe_refill_wake(0, 960, Duration::from_millis(12))
@@ -194,7 +252,7 @@
     #[test]
     fn pacing_authority_accepts_event_driven_progress_with_nonzero_padding() {
         let mut authority = RenderPacingAuthority::default();
-        authority.record_prefill(480, 480).unwrap();
+        authority.record_prefill(480, 480, 480, 960).unwrap();
         authority.record_started();
         authority
             .observe_refill_wake(240, 960, Duration::from_millis(5))

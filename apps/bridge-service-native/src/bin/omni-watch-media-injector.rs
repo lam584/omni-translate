@@ -68,8 +68,52 @@ mod injector {
         pub detail: Option<String>,
     }
 
+    pub(super) struct InjectorError {
+        detail: String,
+        buffer_frames: usize,
+        prefill_frames: usize,
+        render_wake_count: usize,
+        max_render_wake_interval_ms: u128,
+        zero_padding_underrun_count: usize,
+    }
+
+    impl InjectorError {
+        fn with_buffer(detail: String, buffer_frames: usize) -> Self {
+            Self { buffer_frames, ..detail.into() }
+        }
+
+        fn with_render(
+            detail: String,
+            buffer_frames: usize,
+            observed_prefill_frames: usize,
+            pacing: &RenderPacingAuthority,
+        ) -> Self {
+            Self {
+                detail,
+                buffer_frames,
+                prefill_frames: pacing.prefill_frames.max(observed_prefill_frames),
+                render_wake_count: pacing.wake_count,
+                max_render_wake_interval_ms: pacing.max_wake_interval_ms,
+                zero_padding_underrun_count: pacing.zero_padding_underrun_count,
+            }
+        }
+    }
+
+    impl From<String> for InjectorError {
+        fn from(detail: String) -> Self {
+            Self {
+                detail,
+                buffer_frames: 0,
+                prefill_frames: 0,
+                render_wake_count: 0,
+                max_render_wake_interval_ms: 0,
+                zero_padding_underrun_count: 0,
+            }
+        }
+    }
+
     impl InjectorResult {
-        pub(super) fn failed(detail: String) -> Self {
+        pub(super) fn failed(error: InjectorError) -> Self {
             Self {
                 passed: false,
                 media_path: String::new(),
@@ -89,12 +133,12 @@ mod injector {
                 restart_quiet_window_seconds: 0.0,
                 postroll_silence_frames: 0,
                 postroll_silence_seconds: 0.0,
-                buffer_frames: 0,
-                prefill_frames: 0,
-                render_wake_count: 0,
-                max_render_wake_interval_ms: 0,
-                zero_padding_underrun_count: 0,
-                detail: Some(detail),
+                buffer_frames: error.buffer_frames,
+                prefill_frames: error.prefill_frames,
+                render_wake_count: error.render_wake_count,
+                max_render_wake_interval_ms: error.max_render_wake_interval_ms,
+                zero_padding_underrun_count: error.zero_padding_underrun_count,
+                detail: Some(error.detail),
             }
         }
     }
@@ -138,10 +182,16 @@ mod injector {
             &mut self,
             written_frames: usize,
             padding_frames: usize,
+            buffer_frames: usize,
+            total_frames: usize,
         ) -> Result<(), String> {
-            if written_frames == 0 || padding_frames != written_frames {
+            let expected_prefill_frames = buffer_frames.min(total_frames);
+            if expected_prefill_frames == 0
+                || written_frames != expected_prefill_frames
+                || padding_frames != expected_prefill_frames
+            {
                 return Err(format!(
-                    "render prefill was not authoritative: writtenFrames={written_frames} paddingFrames={padding_frames}"
+                    "render prefill was not authoritative: bufferFrames={buffer_frames} totalFrames={total_frames} expectedPrefillFrames={expected_prefill_frames} writtenFrames={written_frames} paddingFrames={padding_frames}"
                 ));
             }
             self.prefill_frames = written_frames;
@@ -192,7 +242,7 @@ mod injector {
             device: &Device,
             format: &WaveFormat,
             render_sample_rate_hz: u32,
-        ) -> Result<Self, String> {
+        ) -> Result<Self, InjectorError> {
             let mut audio_client = device
                 .get_iaudioclient()
                 .map_err(|error| format!("activate-audio-client: {}", error_text(error)))?;
@@ -210,18 +260,20 @@ mod injector {
                 .get_buffer_size()
                 .map_err(|error| format!("query-event-render-buffer: {}", error_text(error)))?
                 as usize;
-            let required_buffer_frames = injector_event_buffer_frames(render_sample_rate_hz);
-            if buffer_frames < required_buffer_frames {
-                return Err(format!(
-                    "event render buffer is below injector scheduling tolerance: bufferFrames={buffer_frames} requiredBufferFrames={required_buffer_frames} renderSampleRateHz={render_sample_rate_hz} bufferDurationHns={INJECTOR_EVENT_BUFFER_DURATION_HNS}"
-                ));
-            }
-            let event_handle = audio_client
-                .set_get_eventhandle()
-                .map_err(|error| format!("create-render-event: {}", error_text(error)))?;
-            let render_client = audio_client
-                .get_audiorenderclient()
-                .map_err(|error| format!("get-render-client: {}", error_text(error)))?;
+            validate_injector_event_buffer_frames(buffer_frames, render_sample_rate_hz)
+                .map_err(|detail| InjectorError::with_buffer(detail, buffer_frames))?;
+            let event_handle = audio_client.set_get_eventhandle().map_err(|error| {
+                InjectorError::with_buffer(
+                    format!("create-render-event: {}", error_text(error)),
+                    buffer_frames,
+                )
+            })?;
+            let render_client = audio_client.get_audiorenderclient().map_err(|error| {
+                InjectorError::with_buffer(
+                    format!("get-render-client: {}", error_text(error)),
+                    buffer_frames,
+                )
+            })?;
             Ok(Self {
                 audio_client,
                 render_client,
@@ -276,7 +328,7 @@ mod injector {
         }
     }
 
-    pub(super) fn run() -> Result<InjectorResult, String> {
+    pub(super) fn run() -> Result<InjectorResult, InjectorError> {
         let started_at_ms = unix_ms();
         let args = parse_args()?;
         let decoded = decode_media(&args.media_path)?;
@@ -284,7 +336,8 @@ mod injector {
             return Err(format!(
                 "media decoded to zero samples: {}",
                 args.media_path.display()
-            ));
+            )
+            .into());
         }
         if args.reference_only {
             let reference_path = args.reference_pcm16k_mono_path.as_ref().ok_or_else(|| {
@@ -400,116 +453,129 @@ mod injector {
         );
         let mut render =
             MediaRender::open_event_driven_unstarted(&device, &format, render_sample_rate_hz)?;
+        let buffer_frames = render.buffer_frames;
         let total_frames = render_samples.len() / TARGET_CHANNELS;
         let mut pending = VecDeque::from(render_samples);
         let mut pacing_authority = RenderPacingAuthority::default();
-        let prefill_frames = render.write_available(&mut pending).map_err(|error| {
-            format!("media prefill WASAPI failure: totalFrames={total_frames} detail={error}")
-        })?;
-        let prefill_padding_frames = render.current_padding_frames().map_err(|error| {
-            format!("media prefill padding query failed: writtenFrames={prefill_frames} detail={error}")
-        })?;
-        pacing_authority.record_prefill(prefill_frames, prefill_padding_frames)?;
-        render.start()?;
-        pacing_authority.record_started();
-
-        let render_started_at = Instant::now();
-        let render_absolute_timeout =
-            render_absolute_timeout(total_frames, render_sample_rate_hz);
-        let mut last_progress_at = render_started_at;
-        let mut last_wake_at = render_started_at;
-        let mut rendered_frames = prefill_frames;
-        while !pending.is_empty() {
-            render.wait_for_refill().map_err(|error| {
-                format!(
-                    "media refill wait failure: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} wakeCount={} maxWakeIntervalMilliseconds={} detail={error}",
-                    total_frames.saturating_sub(rendered_frames),
-                    pacing_authority.wake_count,
-                    pacing_authority.max_wake_interval_ms,
-                )
+        let mut observed_prefill_frames = 0;
+        let result = (|| -> Result<InjectorResult, String> {
+            observed_prefill_frames = render.write_available(&mut pending).map_err(|error| {
+                format!("media prefill WASAPI failure: totalFrames={total_frames} detail={error}")
             })?;
-            let observed_at = Instant::now();
-            let padding_frames = render.current_padding_frames().map_err(|error| {
-                format!("media refill padding query failed: submittedFrames={rendered_frames} totalFrames={total_frames} detail={error}")
+            let prefill_padding_frames = render.current_padding_frames().map_err(|error| {
+                format!("media prefill padding query failed: writtenFrames={observed_prefill_frames} detail={error}")
             })?;
-            pacing_authority.observe_refill_wake(
-                padding_frames,
+            pacing_authority.record_prefill(
+                observed_prefill_frames,
+                prefill_padding_frames,
+                buffer_frames,
                 total_frames,
-                observed_at.saturating_duration_since(last_wake_at),
             )?;
-            last_wake_at = observed_at;
+            render.start()?;
+            pacing_authority.record_started();
 
-            let written_frames = render.write_available(&mut pending).map_err(|error| {
-                format!(
-                    "media submission WASAPI failure: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} detail={error}",
-                    total_frames.saturating_sub(rendered_frames),
-                )
-            })?;
-            if written_frames > 0 {
-                rendered_frames += written_frames;
-                pacing_authority.record_write(written_frames);
-                last_progress_at = observed_at;
-            } else if render_has_stalled(last_progress_at, observed_at) {
-                return Err(format!(
-                    "stalled submitting media: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} sourceSampleRateHz={} renderSampleRateHz={render_sample_rate_hz} noProgressMilliseconds={}",
-                    total_frames.saturating_sub(rendered_frames),
-                    decoded.source_sample_rate_hz,
-                    observed_at
-                        .saturating_duration_since(last_progress_at)
-                        .as_millis(),
-                ));
+            let render_started_at = Instant::now();
+            let render_absolute_timeout =
+                render_absolute_timeout(total_frames, render_sample_rate_hz);
+            let mut last_progress_at = render_started_at;
+            let mut last_wake_at = render_started_at;
+            let mut rendered_frames = observed_prefill_frames;
+            while !pending.is_empty() {
+                render.wait_for_refill().map_err(|error| {
+                    format!(
+                        "media refill wait failure: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} wakeCount={} maxWakeIntervalMilliseconds={} detail={error}",
+                        total_frames.saturating_sub(rendered_frames),
+                        pacing_authority.wake_count,
+                        pacing_authority.max_wake_interval_ms,
+                    )
+                })?;
+                let observed_at = Instant::now();
+                let padding_frames = render.current_padding_frames().map_err(|error| {
+                    format!("media refill padding query failed: submittedFrames={rendered_frames} totalFrames={total_frames} detail={error}")
+                })?;
+                pacing_authority.observe_refill_wake(
+                    padding_frames,
+                    total_frames,
+                    observed_at.saturating_duration_since(last_wake_at),
+                )?;
+                last_wake_at = observed_at;
+
+                let written_frames = render.write_available(&mut pending).map_err(|error| {
+                    format!(
+                        "media submission WASAPI failure: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} detail={error}",
+                        total_frames.saturating_sub(rendered_frames),
+                    )
+                })?;
+                if written_frames > 0 {
+                    rendered_frames += written_frames;
+                    pacing_authority.record_write(written_frames);
+                    last_progress_at = observed_at;
+                } else if render_has_stalled(last_progress_at, observed_at) {
+                    return Err(format!(
+                        "stalled submitting media: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} sourceSampleRateHz={} renderSampleRateHz={render_sample_rate_hz} noProgressMilliseconds={}",
+                        total_frames.saturating_sub(rendered_frames),
+                        decoded.source_sample_rate_hz,
+                        observed_at.saturating_duration_since(last_progress_at).as_millis(),
+                    ));
+                }
+                if render_absolute_timeout_expired(
+                    render_started_at,
+                    observed_at,
+                    render_absolute_timeout,
+                ) {
+                    return Err(format!(
+                        "media submission exceeded absolute safety limit: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} sourceSampleRateHz={} renderSampleRateHz={render_sample_rate_hz} elapsedMilliseconds={} absoluteLimitMilliseconds={}",
+                        total_frames.saturating_sub(rendered_frames),
+                        decoded.source_sample_rate_hz,
+                        observed_at.saturating_duration_since(render_started_at).as_millis(),
+                        render_absolute_timeout.as_millis(),
+                    ));
+                }
             }
-            if render_absolute_timeout_expired(
+            wait_for_render_drain(
+                &render,
+                total_frames,
+                render_sample_rate_hz,
                 render_started_at,
-                observed_at,
                 render_absolute_timeout,
-            ) {
-                return Err(format!(
-                    "media submission exceeded absolute safety limit: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} sourceSampleRateHz={} renderSampleRateHz={render_sample_rate_hz} elapsedMilliseconds={} absoluteLimitMilliseconds={}",
-                    total_frames.saturating_sub(rendered_frames),
-                    decoded.source_sample_rate_hz,
-                    observed_at
-                        .saturating_duration_since(render_started_at)
-                        .as_millis(),
-                    render_absolute_timeout.as_millis(),
-                ));
-            }
-        }
-        wait_for_render_drain(
-            &render,
-            total_frames,
-            render_sample_rate_hz,
-            render_started_at,
-            render_absolute_timeout,
-        )?;
+            )?;
 
-        Ok(InjectorResult {
-            passed: true,
-            media_path: args.media_path.display().to_string(),
-            endpoint_id,
-            endpoint_name,
-            process_id: std::process::id(),
-            started_at_ms,
-            finished_at_ms: unix_ms(),
-            source_sample_rate_hz: decoded.source_sample_rate_hz,
-            source_channels: decoded.source_channels,
-            render_sample_rate_hz,
-            source_gain_db: args.source_gain_db,
-            rendered_frames: media_frames,
-            rendered_seconds: media_frames as f64 / render_sample_rate_hz as f64,
-            restart_quiet_window_after_seconds: args.restart_quiet_window_after_seconds,
-            restart_quiet_window_frames,
-            restart_quiet_window_seconds: restart_quiet_window_frames as f64
-                / render_sample_rate_hz as f64,
-            postroll_silence_frames,
-            postroll_silence_seconds: postroll_silence_frames as f64
-                / render_sample_rate_hz as f64,
-            buffer_frames: render.buffer_frames,
-            prefill_frames: pacing_authority.prefill_frames,
-            render_wake_count: pacing_authority.wake_count,
-            max_render_wake_interval_ms: pacing_authority.max_wake_interval_ms,
-            zero_padding_underrun_count: pacing_authority.zero_padding_underrun_count,
-            detail: None,
+            Ok(InjectorResult {
+                passed: true,
+                media_path: args.media_path.display().to_string(),
+                endpoint_id,
+                endpoint_name,
+                process_id: std::process::id(),
+                started_at_ms,
+                finished_at_ms: unix_ms(),
+                source_sample_rate_hz: decoded.source_sample_rate_hz,
+                source_channels: decoded.source_channels,
+                render_sample_rate_hz,
+                source_gain_db: args.source_gain_db,
+                rendered_frames: media_frames,
+                rendered_seconds: media_frames as f64 / render_sample_rate_hz as f64,
+                restart_quiet_window_after_seconds: args.restart_quiet_window_after_seconds,
+                restart_quiet_window_frames,
+                restart_quiet_window_seconds: restart_quiet_window_frames as f64
+                    / render_sample_rate_hz as f64,
+                postroll_silence_frames,
+                postroll_silence_seconds: postroll_silence_frames as f64
+                    / render_sample_rate_hz as f64,
+                buffer_frames,
+                prefill_frames: pacing_authority.prefill_frames,
+                render_wake_count: pacing_authority.wake_count,
+                max_render_wake_interval_ms: pacing_authority.max_wake_interval_ms,
+                zero_padding_underrun_count: pacing_authority.zero_padding_underrun_count,
+                detail: None,
+            })
+        })();
+        result.map_err(|detail| {
+            InjectorError::with_render(
+                detail,
+                buffer_frames,
+                observed_prefill_frames,
+                &pacing_authority,
+            )
         })
     }
 
@@ -672,6 +738,24 @@ mod injector {
             .div_ceil(HUNDRED_NANOSECONDS_PER_SECOND)
             .try_into()
             .unwrap_or(usize::MAX)
+    }
+
+    fn validate_injector_event_buffer_frames(
+        buffer_frames: usize,
+        render_sample_rate_hz: u32,
+    ) -> Result<(), String> {
+        if render_sample_rate_hz == 0 {
+            return Err(
+                "event render buffer cannot be validated with a zero render sample rate".to_string(),
+            );
+        }
+        let required_buffer_frames = injector_event_buffer_frames(render_sample_rate_hz);
+        if buffer_frames < required_buffer_frames {
+            return Err(format!(
+                "event render buffer is below injector scheduling tolerance: bufferFrames={buffer_frames} requiredBufferFrames={required_buffer_frames} renderSampleRateHz={render_sample_rate_hz} bufferDurationHns={INJECTOR_EVENT_BUFFER_DURATION_HNS}"
+            ));
+        }
+        Ok(())
     }
 
     fn render_has_stalled(last_progress_at: Instant, observed_at: Instant) -> bool {

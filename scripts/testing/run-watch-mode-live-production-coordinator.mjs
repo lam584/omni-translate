@@ -9,7 +9,7 @@ import zlib from 'node:zlib';
 
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { currentGitProvenance } from './git-provenance.mjs';
-import { checkWatchDiskSpace, writeWatchDiskReceipt, WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME } from './watch-mode-disk-lifecycle.mjs';
+import { checkWatchDiskSpace, verifyWatchDiskSpaceReceipt, writeWatchDiskReceipt, WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME } from './watch-mode-disk-lifecycle.mjs';
 import { recordWatchHistoryReport } from './watch-mode-history-reports.mjs';
 import {
   DEFAULT_FEEDBACK_MODES,
@@ -1168,13 +1168,11 @@ export async function checkProductionWorkerDisks({ config, executionId, phase, r
       { timeoutMs: 20000, environment: windowsPowerShellEnvironment() });
     ensureSuccessful(result, `worker ${worker.workerId} ${phase} disk check`);
     const receipt = JSON.parse(String(result.stdout).trim().replace(/^\uFEFF/u, ''));
-    if (receipt.mode !== 'check-only' || receipt.verdict !== 'passed' || receipt.minimumFloorSatisfied !== true
-      || !Array.isArray(receipt.volumes) || ['c:\\', 'e:\\'].some((volume) => !receipt.volumes.some((entry) =>
-        String(entry.samplePath).toLowerCase() === volume && entry.passed === true
-        && Number.isFinite(entry.observedFreeBytes) && entry.observedFreeBytes >= WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME))) {
-      throw new Error(`worker ${worker.workerId} did not prove the C/E 3 GiB floor`);
+    try {
+      return verifyWatchDiskSpaceReceipt(receipt);
+    } catch (error) {
+      throw new Error(`worker ${worker.workerId} did not prove the C/E 3 GiB floor: ${error.message}`);
     }
-    return receipt;
   }));
   const settled = await Promise.allSettled([local, ...workers]);
   const receipt = { schemaVersion: 1, artifactKind: 'watch-mode-production-disk-check', executionId, phase,

@@ -30,6 +30,9 @@
             "72.5千瓦时",
             "72.5kWh"
           ]
+        ],
+        "commaContinuationPrefixes": [
+          "额定"
         ]
       }
     },

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { checkFourWorkerDiskFleet, checkWatchDiskSpace, WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME as floor,
+import { checkWatchDiskSpace, verifyWatchDiskSpaceReceipt, WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME as floor,
   runWatchDiskLifecycle, runDefaultLocalWatchDiskLifecycle, parseWatchDiskLifecycleArgs,
   verifiedWatchPath } from './watch-mode-disk-lifecycle.mjs';
 
@@ -83,49 +83,13 @@ test('relative roots, duplicate roots and generic apply are rejected', (t) => {
 });
 
 
-test('four-worker barrier checks explicit C/E receipts and remains check-only', async (t) => {
-  const root = fixture(t);
-  const hosts = ['vm171', 'vm167', 'vm169', 'vm131'].map((workerId) => ({
-    workerId, requiredVolumePaths: ['C:\\', 'E:\\'],
-  }));
-  const inspected = [];
-  const receipt = await checkFourWorkerDiskFleet({ hosts, receiptPath: path.join(root, 'fleet.json'),
-    now: () => new Date('2026-09-14T00:00:00.000Z'), inspectHost: async (host) => {
-      inspected.push(host.workerId);
-      return { mode: 'check-only', verdict: 'passed', minimumFloorSatisfied: true,
-        volumes: host.requiredVolumePaths.map((samplePath) => ({ samplePath,
-          observedFreeBytes: floor, passed: true, error: null })) };
-    } });
-  assert.deepEqual(inspected.sort(), hosts.map((host) => host.workerId).sort());
-  assert.equal(receipt.verdict, 'passed');
-  assert.equal(receipt.hosts.length, 4);
-  assert.deepEqual(receipt.deletedDirectories, []);
-  assert.equal(receipt.releasedBytes, 0);
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'fleet.json'), 'utf8')), receipt);
-});
-
-test('four-worker barrier fails closed for a missing floor and never rotates history', async (t) => {
-  const root = fixture(t);
-  const sentinel = path.join(root, 'formal-authority');
-  fs.mkdirSync(sentinel); fs.writeFileSync(path.join(sentinel, 'authority.json'), 'retain');
-  const hosts = ['vm171', 'vm167', 'vm169', 'vm131'].map((workerId) => ({
-    workerId, requiredVolumePaths: ['C:\\', 'E:\\'],
-  }));
-  await assert.rejects(checkFourWorkerDiskFleet({ hosts, inspectHost: async (host) => ({
-    mode: 'check-only', verdict: 'passed', minimumFloorSatisfied: true,
-    volumes: host.requiredVolumePaths.map((samplePath) => ({ samplePath,
-      observedFreeBytes: host.workerId === 'vm131' && samplePath === 'E:\\' ? floor - 1 : floor,
-      passed: !(host.workerId === 'vm131' && samplePath === 'E:\\'), error: null })),
-  }) }), (error) => error.code === 'watch.disk-space.insufficient'
-    && error.receipt.hosts.find((host) => host.workerId === 'vm131').status === 'failed');
-  assert.equal(fs.readFileSync(path.join(sentinel, 'authority.json'), 'utf8'), 'retain');
-});
-
-test('four-worker barrier rejects inferred, duplicate, or partial host declarations', async () => {
-  const valid = ['vm171', 'vm167', 'vm169', 'vm131'].map((workerId) => ({
-    workerId, requiredVolumePaths: ['C:\\', 'E:\\'],
-  }));
-  await assert.rejects(checkFourWorkerDiskFleet({ hosts: valid.slice(0, 3), inspectHost: async () => ({}) }), /exactly four/u);
-  await assert.rejects(checkFourWorkerDiskFleet({ hosts: valid.map((host, index) => index === 3 ? { ...host, workerId: 'vm171' } : host), inspectHost: async () => ({}) }), /unique/u);
-  await assert.rejects(checkFourWorkerDiskFleet({ hosts: valid.map((host, index) => index === 3 ? { ...host, requiredVolumePaths: ['E:\\'] } : host), inspectHost: async () => ({}) }), /explicitly require C/u);
+test('receipt verifier requires exactly one passing C/E measurement at the floor', () => {
+  const receipt = { mode: 'check-only', verdict: 'passed', minimumFloorSatisfied: true,
+    volumes: ['C:\\', 'E:\\'].map((samplePath) => ({ samplePath, observedFreeBytes: floor, passed: true })) };
+  assert.equal(verifyWatchDiskSpaceReceipt(receipt), receipt);
+  assert.throws(() => verifyWatchDiskSpaceReceipt({ ...receipt,
+    volumes: [...receipt.volumes, receipt.volumes[0]] }), /C:\\ 3 GiB floor/u);
+  assert.throws(() => verifyWatchDiskSpaceReceipt({ ...receipt,
+    volumes: receipt.volumes.map((entry) => entry.samplePath === 'E:\\'
+      ? { ...entry, observedFreeBytes: floor - 1, passed: false } : entry) }), /E:\\ 3 GiB floor/u);
 });

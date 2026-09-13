@@ -183,18 +183,32 @@ function includesAny(text, alternatives, category) {
     .some((alternative) => containsTypedAlternative(text, alternative, category));
 }
 
-function splitWatchContentRelationPropositions(value) {
-  return String(value ?? '')
+function relationClauses(outputText, relation) {
+  const clauses = splitWatchContentClauses(outputText);
+  const prefixes = (Array.isArray(relation?.commaContinuationPrefixes)
+    ? relation.commaContinuationPrefixes : [])
+    .map((value) => normalizeWatchContentText(value))
+    .filter(Boolean);
+  if (prefixes.length === 0) return clauses;
+  const commaParts = String(outputText ?? '')
     .normalize('NFKC')
     .replace(/(?<=\d)\.(?=\d)/gu, '\uE000')
-    .split(/[。！？；!?;?.\r\n]+/u)
+    .split(/[，,]/u)
     .map((part) => normalizeWatchContentText(part.replace(/\uE000/gu, '')))
     .filter((part) => part.length >= 2);
+  const auditedContinuations = [];
+  for (let index = 0; index + 1 < commaParts.length; index += 1) {
+    if (prefixes.some((prefix) => commaParts[index + 1].startsWith(prefix))) {
+      auditedContinuations.push(commaParts[index] + commaParts[index + 1]);
+    }
+  }
+  return [...clauses, ...auditedContinuations];
 }
+
 function matchesRelation(outputText, relation) {
   const groups = Array.isArray(relation?.groups) ? relation.groups : [];
   if (groups.length === 0) return true;
-  const clauses = splitWatchContentRelationPropositions(outputText);
+  const clauses = relationClauses(outputText, relation);
   const width = Math.max(1, Math.min(3, Number(relation.windowClauses ?? 1)));
   return clauses.some((_clause, index) => {
     const window = clauses.slice(index, index + width).join('');

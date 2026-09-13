@@ -431,6 +431,7 @@ test('scoped fact relations accept a comma-separated subject and predicate', () 
       relation: {
         category: 'number-unit',
         windowClauses: 1,
+        commaContinuationPrefixes: ['额定'],
         groups: [['太阳能电池'], ['72.5千瓦时', '72.5kWh']],
       },
     }],
@@ -439,6 +440,21 @@ test('scoped fact relations accept a comma-separated subject and predicate', () 
   assert.ok(result.dimensions.facts.some((fact) => fact.factId === 'prototype.capacity-relation'
     && fact.status === 'passed' && fact.relationMatched === true));
 });
+test('scoped fact relations reject comma-separated unrelated subjects', () => {
+  const result = evaluateLayeredWatchContent({
+    referenceText: 'audited fixture',
+    outputText: '太阳能电池已经损坏，另一台设备额定容量为72.5千瓦时。',
+    facts: [{
+      id: 'prototype.capacity-relation', category: 'number-unit', accepted: ['72.5千瓦时'],
+      relation: { category: 'number-unit', windowClauses: 1,
+        commaContinuationPrefixes: ['额定'],
+        groups: [['太阳能电池'], ['72.5千瓦时', '72.5kWh']] },
+    }],
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.dimensions.facts[0].relationMatched, false);
+});
+
 test('scoped fact relations reject correct tokens attached to unrelated propositions', () => {
   const result = evaluateLayeredWatchContent({
     referenceText: 'audited fixture',

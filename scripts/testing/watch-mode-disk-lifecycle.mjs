@@ -10,7 +10,6 @@ export const WATCH_DISK_LOCAL_HISTORY_NAMES = Object.freeze([
   'watch-mode-strict-runtime',
 ]);
 
-export const WATCH_DISK_PRODUCTION_WORKER_COUNT = 4;
 
 const volumeKey = (value) => String(value).replaceAll('/', '\\').toLowerCase();
 
@@ -27,46 +26,6 @@ export function verifyWatchDiskSpaceReceipt(receipt, { requiredVolumePaths = ['C
         || matches[0].observedFreeBytes < WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME) {
       throw new Error(`host did not prove the ${samplePath} 3 GiB floor`);
     }
-  }
-  return receipt;
-}
-
-/**
- * Four-worker startup/distribution barrier. Transport is caller-owned and
- * read-only: this function never infers roots, rotates history, or deletes.
- */
-export async function checkFourWorkerDiskFleet({ hosts, inspectHost, receiptPath = null,
-  now = () => new Date() } = {}) {
-  if (!Array.isArray(hosts) || hosts.length !== WATCH_DISK_PRODUCTION_WORKER_COUNT
-      || typeof inspectHost !== 'function') {
-    throw new Error('exactly four explicit hosts and an inspectHost function are required');
-  }
-  const ids = hosts.map((host) => host?.workerId);
-  if (ids.some((id) => typeof id !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,127}$/iu.test(id))
-      || new Set(ids.map((id) => id.toLowerCase())).size !== ids.length) {
-    throw new Error('four disk hosts require unique bounded worker identities');
-  }
-  for (const host of hosts) {
-    if (!Array.isArray(host.requiredVolumePaths) || host.requiredVolumePaths.length !== 2
-        || new Set(host.requiredVolumePaths.map(volumeKey)).size !== 2
-        || !['c:\\', 'e:\\'].every((volume) => host.requiredVolumePaths.map(volumeKey).includes(volume))) {
-      throw new Error(`worker ${host.workerId} must explicitly require C:\\ and E:\\`);
-    }
-  }
-  const settled = await Promise.allSettled(hosts.map(async (host) => verifyWatchDiskSpaceReceipt(
-    await inspectHost(host), { requiredVolumePaths: host.requiredVolumePaths },
-  )));
-  const passed = settled.every((entry) => entry.status === 'fulfilled');
-  const receipt = { schemaVersion: 1, artifactKind: 'watch-mode-four-worker-disk-check',
-    generatedAt: now().toISOString(), mode: 'check-only', verdict: passed ? 'passed' : 'failed',
-    minimumFloorSatisfied: passed, deletedDirectories: [], releasedBytes: 0,
-    hosts: settled.map((entry, index) => ({ workerId: hosts[index].workerId,
-      ...(entry.status === 'fulfilled' ? { status: 'passed', receipt: entry.value }
-        : { status: 'failed', error: entry.reason.message }) })) };
-  writeWatchDiskReceipt(receiptPath, receipt);
-  if (!passed) {
-    const error = new Error('four-worker disk floor is not met; no start or distribution is allowed');
-    error.code = 'watch.disk-space.insufficient'; error.receipt = receipt; throw error;
   }
   return receipt;
 }

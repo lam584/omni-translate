@@ -183,10 +183,18 @@ function includesAny(text, alternatives, category) {
     .some((alternative) => containsTypedAlternative(text, alternative, category));
 }
 
+function splitWatchContentRelationPropositions(value) {
+  return String(value ?? '')
+    .normalize('NFKC')
+    .replace(/(?<=\d)\.(?=\d)/gu, '\uE000')
+    .split(/[。！？；!?;?.\r\n]+/u)
+    .map((part) => normalizeWatchContentText(part.replace(/\uE000/gu, '')))
+    .filter((part) => part.length >= 2);
+}
 function matchesRelation(outputText, relation) {
   const groups = Array.isArray(relation?.groups) ? relation.groups : [];
   if (groups.length === 0) return true;
-  const clauses = splitWatchContentClauses(outputText);
+  const clauses = splitWatchContentRelationPropositions(outputText);
   const width = Math.max(1, Math.min(3, Number(relation.windowClauses ?? 1)));
   return clauses.some((_clause, index) => {
     const window = clauses.slice(index, index + width).join('');

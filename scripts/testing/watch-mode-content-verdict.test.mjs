@@ -420,6 +420,25 @@ test('typed fact matching does not collide with longer numbers or version sequen
   assert.equal(result.status, 'passed');
 });
 
+test('scoped fact relations accept a comma-separated subject and predicate', () => {
+  const result = evaluateLayeredWatchContent({
+    referenceText: 'a solar battery rated at 72.5 kilowatt-hours',
+    outputText: '一种太阳能电池，额定功率为72.5千瓦时；',
+    facts: [{
+      id: 'prototype.capacity-relation',
+      category: 'number-unit',
+      accepted: ['72.5千瓦时'],
+      relation: {
+        category: 'number-unit',
+        windowClauses: 1,
+        groups: [['太阳能电池'], ['72.5千瓦时', '72.5kWh']],
+      },
+    }],
+  });
+  assert.equal(result.status, 'passed');
+  assert.ok(result.dimensions.facts.some((fact) => fact.factId === 'prototype.capacity-relation'
+    && fact.status === 'passed' && fact.relationMatched === true));
+});
 test('scoped fact relations reject correct tokens attached to unrelated propositions', () => {
   const result = evaluateLayeredWatchContent({
     referenceText: 'audited fixture',

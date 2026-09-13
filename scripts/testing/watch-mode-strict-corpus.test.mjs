@@ -16,6 +16,11 @@ test('strict paid corpus keeps version and latency requirements without a compos
     normalize(source) === 'reduced average response time from 920 milliseconds to 315 milliseconds'
   ));
 
+  assert.deepEqual(STRICT_EN_ZH_CORPUS['if the schedule changed'], '如果日程发生变化');
+  assert.deepEqual(
+    STRICT_EN_ZH_CORPUS['He asked the team to email support at example dot com if the schedule changed.'],
+    '他请团队在日程发生变化时发送邮件至support@example.com。',
+  );
   assert.deepEqual(version, ['Version 3.6.2', '3.6.2版本']);
   assert.deepEqual(latency, [
     'reduced average response time from 920 milliseconds to 315 milliseconds',

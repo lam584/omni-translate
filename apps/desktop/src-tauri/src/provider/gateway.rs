@@ -1605,6 +1605,7 @@ mod tests {
                     "CPU usage dropped by 18 percent.": "CPU使用率下降了18%。",
                     "Daniel replied that shipment A-17 would leave at 6:30 p.m.": "Daniel回答说，A-17号货物将于下午6点30分出发。",
                     "Does it preserve a quoted answer?": "它能否保留引用的回答？",
+                    "He asked the team to email support at example dot com if the schedule changed.": "他请团队在日程发生变化时发送邮件至support@example.com。",
                     "Is the system accurate when a speaker asks a question?": "当说话者提出问题时，系统是否准确？",
                     "Mars": "火星",
                     "Please record each sentence clearly": "请清楚记录每个句子",

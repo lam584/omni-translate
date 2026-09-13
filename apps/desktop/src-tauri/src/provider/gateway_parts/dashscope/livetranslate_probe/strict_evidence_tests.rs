@@ -57,6 +57,7 @@ fn zero_input_probe_plan_is_admitted_and_bound_by_the_production_client_adapter(
             "five hundred million dollars": "五亿美元",
             "flying cars": "飞行汽车",
             "forty-eight hours": "48小时",
+            "if the schedule changed": "如果日程发生变化",
             "light bulb": "灯泡",
             "one billion": "十亿",
             "proper names": "专有名称",

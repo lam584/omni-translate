@@ -1615,6 +1615,7 @@ mod tests {
                     "five hundred million dollars": "五亿美元",
                     "flying cars": "飞行汽车",
                     "forty-eight hours": "48小时",
+                    "if the schedule changed": "如果日程发生变化",
                     "light bulb": "灯泡",
                     "one billion": "十亿",
                     "proper names": "专有名称",

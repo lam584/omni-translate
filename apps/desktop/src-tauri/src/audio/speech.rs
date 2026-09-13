@@ -36,6 +36,7 @@ mod speaker_render_event;
 mod output_device;
 mod output_attempt;
 mod endpoint_recovery;
+mod render_submit_tracker;
 
 use self::aec_live_scenario::{
     active_aec_live_scenario_assignments, finish_aec_live_scenario_assignments,

@@ -1,5 +1,7 @@
 #[path = "workers/capture_diagnostics.rs"]
 mod capture_diagnostics;
+#[path = "workers/capture_route.rs"]
+mod capture_route;
 use capture_diagnostics::{aec_tap_chunk_metadata, aec_tap_queue_clock_valid};
 
 const ECHO_CANCEL_RESET_DIAGNOSTIC_LEVEL: &str = "warning";
@@ -84,15 +86,9 @@ fn run_capture_loop(
         desired_format,
         init_elapsed: _,
     } = initialized;
-
-    if crate::watch_mode_diagnostic::local_aec_probe::enabled() {
-        // Production initialization can try other devices. Reject any fallback
-        // BEFORE starting capture, for cold and pre-warmed routes alike.
-        if !spec.echo_cancel_enabled() || stt_sender.is_some() || effective_device_id != spec.requested_device_id {
-            return Err("local AEC probe requires exact-endpoint echo-cancel capture without recognition".into());
-        }
-    }
-
+    capture_route::ensure_local_aec_probe_capture_route(
+        &spec, stt_sender.is_some(), &effective_device_id,
+    )?;
     let mut sample_queue: VecDeque<u8> = VecDeque::with_capacity(
         100 * desired_format.get_blockalign() as usize * (1024 + 2 * buffer_frame_count as usize),
     );

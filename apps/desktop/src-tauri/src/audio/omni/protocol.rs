@@ -2708,6 +2708,7 @@ fn watch_release_livetranslate_corpus(
                 "five hundred million dollars": "五亿美元",
                 "flying cars": "飞行汽车",
                 "forty-eight hours": "48小时",
+                "if the schedule changed": "如果日程发生变化",
                 "light bulb": "灯泡",
                 "one billion": "十亿",
                 "proper names": "专有名称",
@@ -3081,6 +3082,7 @@ mod response_control_tests {
                 "five hundred million dollars": "五亿美元",
                 "flying cars": "飞行汽车",
                 "forty-eight hours": "48小时",
+                "if the schedule changed": "如果日程发生变化",
                 "light bulb": "灯泡",
                 "one billion": "十亿",
                 "proper names": "专有名称",
@@ -3098,6 +3100,9 @@ mod response_control_tests {
             OmniOutputMode::TextOnly,
         );
         apply_watch_release_livetranslate_corpus(&mut zh_to_en, true, "zh-CN", "en-US");
+        assert!(zh_to_en
+            .pointer("/session/translation/corpus/phrases/if the schedule changed")
+            .is_none());
         assert_eq!(
             zh_to_en.pointer("/session/translation/corpus/phrases"),
             Some(&json!({
@@ -3122,6 +3127,53 @@ mod response_control_tests {
         );
         apply_watch_release_livetranslate_corpus(&mut omni, false, "en", "zh");
         assert!(omni.pointer("/session/translation/corpus").is_none());
+    }
+
+    #[test]
+    fn strict_schedule_corpus_requires_an_exact_session_echo() {
+        let authority = crate::audio::bailian_protocol::livetranslate_test_authority();
+        let mut update = build_omni_session_update_with_dialect(
+            true,
+            "",
+            "",
+            RealtimeAudioMode::ServerVad,
+            "en",
+            "zh",
+            OmniOutputMode::TextOnly,
+        );
+        apply_watch_release_livetranslate_corpus(&mut update, true, "en", "zh");
+
+        let session_created = json!({
+            "event_id": "event-created-schedule-corpus",
+            "type": "session.created",
+            "session": {
+                "id": "schedule-corpus-session",
+                "object": "realtime.session",
+                "model": "qwen3.5-livetranslate-flash-realtime"
+            }
+        });
+        let mut echoed_session = update["session"].clone();
+        echoed_session["id"] = json!("schedule-corpus-session");
+        echoed_session["object"] = json!("realtime.session");
+        echoed_session["model"] = json!("qwen3.5-livetranslate-flash-realtime");
+        let session_updated = json!({
+            "event_id": "event-updated-schedule-corpus",
+            "type": "session.updated",
+            "session": echoed_session
+        });
+
+        let mut state = crate::audio::bailian_protocol::LiveTranslateServerState::default();
+        state.record_client_session_update(&authority, &update).unwrap();
+        state.admit(&authority, &session_created).unwrap();
+        let evidence = state
+            .admit(&authority, &session_updated)
+            .unwrap()
+            .session_updated
+            .expect("exact session.updated corpus evidence");
+        assert_eq!(
+            evidence.sent_session_config_sha256,
+            evidence.echoed_session_config_sha256
+        );
     }
 }
 

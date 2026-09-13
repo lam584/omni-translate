@@ -1981,6 +1981,7 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
     'invoke-watch-mode-interactive-task.ps1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
+    'lib/powershell/Omni.Testing.WatchMode.InteractiveCustody.psm1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1',
   ].map((relativePath) => fs.readFileSync(path.join(repoRoot, 'scripts/testing', relativePath), 'utf8')).join('\n');
   assert.match(control, /expectedCredentialReference = \[string\]\$payload\.expectedCredentialReference/);
@@ -1995,7 +1996,10 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
   assert.match(control, /@\(\$taskStateBeforeInfo, \$taskStateAfterInfo\)/);
   assert.match(control, /if \(\$taskIsActive\) \{ \$successfulTaskExitObservedAt = \$null \}/);
   assert.match(control, /\.State -in @\('Running', 'Queued'\)/);
-  assert.match(control, /\$lastTaskResult -ne 0/);
+  assert.match(control, /Get-OmniInteractiveScheduledTaskExitDecision/);
+  assert.match(control, /ProcessProperty 'taskProcess'/);
+  assert.match(control, /ProcessProperty 'nodeProcess'/);
+  assert.match(control, /action -eq 'wait-for-terminal-authority'/);
   assert.match(control, /\$terminalVisibilityGraceMilliseconds = 5000/);
   assert.match(control, /completed successfully without publishing terminal authority after the visibility grace period/);
   assert.match(control, /interactive task exited before terminal authority/);
@@ -2258,6 +2262,7 @@ test('interactive control projects readiness and paid-cell fields only inside th
     'invoke-watch-mode-interactive-task.ps1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
+    'lib/powershell/Omni.Testing.WatchMode.InteractiveCustody.psm1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1',
   ].map((relativePath) => fs.readFileSync(path.join(repoRoot, 'scripts/testing', relativePath), 'utf8')).join('\n');
   assert.match(control, /\$mode -notin @\('endpoint-readiness', 'shard-cell', 'incident-plus-cell', 'local-aec-probe'\)/);

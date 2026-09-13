@@ -377,6 +377,42 @@ test('controller uses the existing InteractiveToken request and scheduler contra
   assert.match(fs.readFileSync(path.join(root, 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1'), 'utf8'), /LogonType Interactive/u);
   assert.doesNotMatch(script, /OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST/u);
 });
+test('a nonzero scheduled-task result is not terminal while an exact launch-bound task or producer process is current', { skip: process.platform !== 'win32' }, (t) => {
+  const root = temporary(t);
+  const launchPath = path.join(root, 'launch.json');
+  const modulePath = path.join(repoRoot, 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1');
+  const ps = (value) => `'${value.replaceAll("'", "''")}'`;
+  const command = [
+    "$ErrorActionPreference='Stop'",
+    `Import-Module ${ps(modulePath)} -Force`,
+    '$cim=Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop',
+    '$ownerSid=Invoke-CimMethod -InputObject $cim -MethodName GetOwnerSid -ErrorAction Stop',
+    '$process=Get-Process -Id $PID -ErrorAction Stop',
+    '$sha=[Security.Cryptography.SHA256]::Create(); try{$imageSha256=[BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes([string]$cim.ExecutablePath))).Replace("-","").ToLowerInvariant()}finally{$sha.Dispose()}',
+    '$identity=[ordered]@{pid=$PID;sessionId=[int]$cim.SessionId;imagePath=[IO.Path]::GetFullPath([string]$cim.ExecutablePath);imageSha256=$imageSha256;startedAt=$process.StartTime.ToUniversalTime().ToString("o");ownerSid=[string]$ownerSid.Sid}',
+    `$nodeIdentity=$identity|ConvertTo-Json -Depth 5|ConvertFrom-Json; $launch=[ordered]@{schemaVersion=2;artifactKind='watch-mode-interactive-shard-launch-authority';taskProcess=$identity;nodeProcess=$nodeIdentity}; $launch|ConvertTo-Json -Depth 5|Set-Content -LiteralPath ${ps(launchPath)} -Encoding UTF8`,
+    '$module=Get-Module Omni.Testing.WatchMode.InteractiveScheduler',
+    `$current=& $module { param($path) Get-OmniInteractiveScheduledTaskExitDecision -LaunchPath $path -LastTaskResult 1 } ${ps(launchPath)}`,
+    '$launch.taskProcess.startedAt="2000-01-01T00:00:00.0000000Z"; $launch|ConvertTo-Json -Depth 5|Set-Content -LiteralPath ' + ps(launchPath) + ' -Encoding UTF8',
+    `$producerCurrent=& $module { param($path) Get-OmniInteractiveScheduledTaskExitDecision -LaunchPath $path -LastTaskResult 1 } ${ps(launchPath)}`,
+    '$launch.nodeProcess.startedAt="2000-01-01T00:00:00.0000000Z"; $launch|ConvertTo-Json -Depth 5|Set-Content -LiteralPath ' + ps(launchPath) + ' -Encoding UTF8',
+    `$mismatch=& $module { param($path) Get-OmniInteractiveScheduledTaskExitDecision -LaunchPath $path -LastTaskResult 1 } ${ps(launchPath)}`,
+    '[ordered]@{current=$current;producerCurrent=$producerCurrent;mismatch=$mismatch}|ConvertTo-Json -Depth 5 -Compress',
+  ].join('; ');
+  const result = spawnSync('powershell.exe', ['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',command], {
+    encoding: 'utf8', windowsHide: true,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const observed = JSON.parse(result.stdout.trim());
+  assert.equal(observed.current.action, 'wait-for-terminal-authority');
+  assert.equal(observed.current.taskProcessState, 'current');
+  assert.equal(observed.producerCurrent.action, 'wait-for-terminal-authority');
+  assert.equal(observed.producerCurrent.taskProcessState, 'mismatch');
+  assert.equal(observed.producerCurrent.nodeProcessState, 'current');
+  assert.equal(observed.mismatch.action, 'fail-task-result');
+  assert.equal(observed.mismatch.taskProcessState, 'mismatch');
+  assert.equal(observed.mismatch.nodeProcessState, 'mismatch');
+});
 test('interactive custody rejects failed collectors and every authority binding substitution', async (t) => {
   const mutations = [
     (r) => { r.terminal.processAuthorityExitCode = 1; },

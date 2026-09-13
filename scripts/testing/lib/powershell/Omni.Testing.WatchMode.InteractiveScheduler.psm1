@@ -2,6 +2,7 @@
 
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Process.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.IO.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.InteractiveCustody.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.InteractiveCleanup.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.InteractiveFinalizer.psm1') -Force
 
@@ -36,7 +37,6 @@ function Stop-GuardedNode {
     # A stale or malformed receipt must never authorize an unguarded process kill.
   }
 }
-
 
 function Invoke-OmniInteractiveScheduledTask {
   param([Parameter(Mandatory = $true)]$Context)
@@ -99,10 +99,16 @@ function Invoke-OmniInteractiveScheduledTask {
         -not (Test-Path -LiteralPath $terminalPath -PathType Leaf)
       ) {
         $lastTaskResult = [int]$taskInfo.LastTaskResult
-        if ($lastTaskResult -ne 0) {
+        $exitDecision = Get-OmniInteractiveScheduledTaskExitDecision -LaunchPath $launchPath -LastTaskResult $lastTaskResult
+        if ($exitDecision.action -eq 'wait-for-terminal-authority') {
+          # Task Scheduler state and LastTaskResult are not terminal while an
+          # exact launch-bound task or producer process generation is running.
+          # This only delays failure within the existing absolute deadline;
+          # terminal and final scheduler result checks remain mandatory.
+          $successfulTaskExitObservedAt = $null
+        } elseif ($exitDecision.action -eq 'fail-task-result') {
           throw "interactive task exited before terminal authority (LastTaskResult=$lastTaskResult)"
-        }
-        if ($null -eq $successfulTaskExitObservedAt) {
+        } elseif ($null -eq $successfulTaskExitObservedAt) {
           $successfulTaskExitObservedAt = [DateTime]::UtcNow
         } elseif (([DateTime]::UtcNow - $successfulTaskExitObservedAt).TotalMilliseconds -ge $terminalVisibilityGraceMilliseconds) {
           throw 'interactive task completed successfully without publishing terminal authority after the visibility grace period'

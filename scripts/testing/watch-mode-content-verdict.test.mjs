@@ -277,6 +277,14 @@ test('audited shipment condition accepts 在行程有变时 without weakening th
   assert.equal(accepted.status, 'passed');
   assert.deepEqual(accepted.dimensions.facts[0].matchedExpected, ['在行程有变时']);
 
+  const scheduleProblem = evaluateLayeredWatchContent({
+    referenceText: 'He asked the team to email support@example.com if the schedule changed.',
+    outputText: '他要求团队如果日程安排有问题，就发送电子邮件至 support@example.com 寻求支持。',
+    facts: [fact],
+  });
+  assert.equal(scheduleProblem.status, 'passed');
+  assert.deepEqual(scheduleProblem.dimensions.facts[0].matchedExpected, ['如果日程安排有问题']);
+
   for (const outputText of [
     '他要求团队如果出现问题，就发送电子邮件至 support@example.com。',
     '他要求团队即使行程没有变化，也发送电子邮件至 support@example.com。',
@@ -298,6 +306,7 @@ test('audited contrast-pair question accepts 还是 without weakening numeric fa
   for (const [outputText, expectedMatch] of [
     ['它能区分十五和五十，还是十三和三十？', '区分十五和五十还是十三和三十'],
     ['它能区分15和50，还是13和30？', '区分15和50还是13和30'],
+    ['它能区分十五和五十吗，或者十三和三十？', '区分十五和五十吗或者十三和三十'],
   ]) {
     const result = evaluateLayeredWatchContent({ referenceText: 'audited fixture', outputText, facts: [fact] });
     assert.equal(result.status, 'passed', outputText);

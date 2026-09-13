@@ -15,6 +15,7 @@ import {
   currentAuthorityImplementationHashes,
   fileAuthorityEntry,
   requiredCellArtifactPaths,
+  sameAuthorityInventory,
   sha256File,
   STRICT_MATRIX_ARTIFACT_KIND,
   STRICT_MATRIX_SCHEMA_VERSION,
@@ -114,6 +115,13 @@ import {
 } from './verify-watch-mode-evidence.mjs';
 
 const AUTHORITY_FIXTURE_SESSION_DURATION_MS = 180_000;
+
+test('authority inventory comparison ignores serialization order but not content', () => {
+  const first = { path: 'target/release/a.exe', bytes: 10, sha256: 'a'.repeat(64) };
+  const second = { path: 'drivers/package/b.sys', bytes: 20, sha256: 'b'.repeat(64) };
+  assert.equal(sameAuthorityInventory([first, second], [second, first]), true);
+  assert.equal(sameAuthorityInventory([first, second], [second, { ...first, bytes: 11 }]), false);
+});
 
 test('strict canonical verifier rejects a staged failed cell before reading completed-only receipts', () => {
   const evidenceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-failed-canonical-verifier-'));

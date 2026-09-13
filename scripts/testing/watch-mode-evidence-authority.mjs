@@ -349,11 +349,17 @@ export function writeCellAuthorityReceipt({
 }
 
 export function sameAuthorityInventory(recorded, current) {
-  if (!Array.isArray(recorded) || recorded.length !== current.length) return false;
-  return recorded.every((entry, index) => (
-    entry?.path === current[index].path
-    && entry?.bytes === current[index].bytes
-    && entry?.sha256 === current[index].sha256
+  if (!Array.isArray(recorded) || !Array.isArray(current) || recorded.length !== current.length) {
+    return false;
+  }
+  const sorted = (entries) => [...entries].sort((left, right) =>
+    String(left?.path ?? '').localeCompare(String(right?.path ?? '')));
+  const recordedSorted = sorted(recorded);
+  const currentSorted = sorted(current);
+  return recordedSorted.every((entry, index) => (
+    entry?.path === currentSorted[index]?.path
+    && entry?.bytes === currentSorted[index]?.bytes
+    && entry?.sha256 === currentSorted[index]?.sha256
   ));
 }
 

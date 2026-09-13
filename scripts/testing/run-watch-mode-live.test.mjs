@@ -659,7 +659,7 @@ test('WASAPI playback failure retains structured injector evidence', { skip: !is
       `try { Start-TestMediaPlayback -PathToMedia ${quotePowerShell(mediaPath)} -PlaybackEndpointId 'endpoint-2' -OutputDirectory ${quotePowerShell(tempRoot)} -WorkspaceRoot ${quotePowerShell(path.resolve('.'))} -PlaybackSeconds 0 -InjectorExecutablePath ${quotePowerShell(fakeInjector)} | Out-Null; exit 2 } catch { Write-Error $_.Exception.Message; exit 0 }`;
     const result = runPowerShell(['-Command', command]);
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stderr, /ExitCode=7/u);
+    assert.match(result.stderr.replace(/\r?\n/gu, ''), /ExitCode=7/u);
     const playback = readJsonArtifact(path.join(tempRoot, 'playback.json'));
     assert.equal(playback.passed, false);
     assert.equal(playback.injectorExitCode, 7);

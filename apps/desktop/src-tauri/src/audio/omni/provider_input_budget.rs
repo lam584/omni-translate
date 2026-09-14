@@ -13,6 +13,10 @@ use crate::audio::contracts::ModelProtocolProfileIdentityRuntime;
 
 #[path = "provider_input_budget/environment.rs"]
 mod environment;
+#[path = "provider_input_budget/strict_media_end_authority.rs"]
+mod strict_media_end_authority;
+
+pub(super) use strict_media_end_authority::StrictMediaEndAuthority;
 
 // Absolute ceiling shared with the separately signed 180-second incident
 // replay authority. Formal LiveTranslate release cells always receive the
@@ -117,6 +121,7 @@ struct EnabledProviderInputBudget {
     model: String,
     protocol: String,
     model_protocol_profile_identity: ModelProtocolProfileIdentityRuntime,
+    strict_media_end_authority: Option<StrictMediaEndAuthority>,
     max_samples: u64,
     total_attempted_samples: AtomicU64,
     append_attempts: AtomicU64,
@@ -173,6 +178,19 @@ impl ProviderInputBudget {
                 .load(Ordering::SeqCst)
                 .checked_add(sample_count)
                 .is_some_and(|next| next <= budget.max_samples)
+        })
+    }
+
+    pub(super) fn strict_media_end_authority(
+        &self,
+        session_generation: u64,
+    ) -> Option<StrictMediaEndAuthority> {
+        self.enabled.as_ref().and_then(|budget| {
+            budget
+                .strict_media_end_authority
+                .as_ref()
+                .filter(|authority| authority.session_generation == session_generation)
+                .cloned()
         })
     }
 
@@ -320,6 +338,69 @@ impl ProviderInputBudget {
                 EXPECTED_ENDPOINT_HOST_ENV => Some(STRICT_ENDPOINT_HOST.to_string()),
                 EXPECTED_CREDENTIAL_REFERENCE_ENV => {
                     Some(STRICT_CREDENTIAL_REFERENCE.to_string())
+                }
+                _ => None,
+            },
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn strict_with_media_end_for_test(
+        provider: &ProviderDraftInput,
+        ledger_path: &Path,
+        authoritative_reference_frames: u64,
+        input_sample_rate_hz: u32,
+        media_sha256: &str,
+    ) -> Result<Self, String> {
+        let ledger_path = ledger_path.to_string_lossy().into_owned();
+        let pcm_path = format!("{ledger_path}.pcm");
+        let authority = crate::audio::events::authorize_bailian_native_translate(provider)?;
+        let identity_json = serde_json::to_string(
+            &ModelProtocolProfileIdentityRuntime::from(&authority),
+        )
+        .map_err(|error| format!("test protocol identity serialize failed: {error}"))?;
+        Self::from_environment(
+            provider,
+            "inbound",
+            1,
+            &provider.model,
+            STRICT_LIVETRANSLATE_PROTOCOL,
+            |name| match name {
+                MAX_SAMPLES_ENV => Some(STRICT_ORDINARY_CELL_MAX_SAMPLES.to_string()),
+                LEDGER_PATH_ENV => Some(ledger_path.clone()),
+                CELL_ID_ENV => Some(format!(
+                    "pairwise-live::{STRICT_LIVETRANSLATE_MODEL}::echo-cancel::default-speaker"
+                )),
+                LEASE_ID_ENV => Some("strict-media-end-lease".to_string()),
+                AUTOSTART_ENV => Some("1".to_string()),
+                RUN_MARKER_ENV => Some("strict-media-end-run".to_string()),
+                PCM_PATH_ENV => Some(pcm_path.clone()),
+                MODEL_ENV => Some(STRICT_LIVETRANSLATE_MODEL.to_string()),
+                PROTOCOL_ENV => Some(STRICT_LIVETRANSLATE_PROTOCOL.to_string()),
+                MODEL_PROTOCOL_PROFILE_IDENTITY_ENV => Some(identity_json.clone()),
+                STRICT_PAID_AUTHORITY_ENV => Some("1".to_string()),
+                EXPECTED_PROVIDER_ID_ENV => Some(STRICT_PROVIDER_ID.to_string()),
+                EXPECTED_TEMPLATE_ID_ENV => Some(STRICT_TEMPLATE_ID.to_string()),
+                EXPECTED_PROVIDER_KIND_ENV => Some(STRICT_PROVIDER_KIND.to_string()),
+                EXPECTED_ENDPOINT_HOST_ENV => Some(STRICT_ENDPOINT_HOST.to_string()),
+                EXPECTED_CREDENTIAL_REFERENCE_ENV => {
+                    Some(STRICT_CREDENTIAL_REFERENCE.to_string())
+                }
+                strict_media_end_authority::AUTHORITATIVE_REFERENCE_FRAMES_ENV => {
+                    Some(authoritative_reference_frames.to_string())
+                }
+                strict_media_end_authority::INPUT_SAMPLE_RATE_HZ_ENV => {
+                    Some(input_sample_rate_hz.to_string())
+                }
+                strict_media_end_authority::MEDIA_SHA256_ENV => Some(media_sha256.to_string()),
+                strict_media_end_authority::AUTHORITY_RUN_MARKER_ENV => {
+                    Some("strict-media-end-run".to_string())
+                }
+                strict_media_end_authority::AUTHORITY_CELL_ID_ENV => Some(format!(
+                    "pairwise-live::{STRICT_LIVETRANSLATE_MODEL}::echo-cancel::default-speaker"
+                )),
+                strict_media_end_authority::AUTHORITY_LEASE_ID_ENV => {
+                    Some("strict-media-end-lease".to_string())
                 }
                 _ => None,
             },
@@ -1048,6 +1129,23 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn strict_media_end_authority_is_bound_to_session_generation() {
+        let directory = tempdir().expect("tempdir");
+        let provider = ProviderInputBudget::strict_provider_for_test();
+        let budget = ProviderInputBudget::strict_with_media_end_for_test(
+            &provider,
+            &directory.path().join("strict-media-end-ledger.json"),
+            2_013_045,
+            16_000,
+            "cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f",
+        )
+        .expect("strict media-end authority");
+
+        assert!(budget.strict_media_end_authority(1).is_some());
+        assert!(budget.strict_media_end_authority(2).is_none());
     }
 
     #[test]

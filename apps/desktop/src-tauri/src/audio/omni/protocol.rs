@@ -2,6 +2,7 @@ use super::*;
 use super::realtime_socket::ReconnectedRealtimeSocket;
 
 use crate::audio::glossary::GlossaryContext;
+use crate::audio::omni::provider_input_budget::StrictMediaEndAuthority;
 use crate::audio::realtime_ws;
 
 pub(super) fn set_socket_write_timeout(socket: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>) {
@@ -256,6 +257,7 @@ pub(super) struct OmniEventDiagnostics {
     completed_native_response_owners: VecDeque<NativeResponseOwner>,
     ignored_native_response_owners: VecDeque<IgnoredNativeResponseOwner>,
     deferred_empty_vad_terminal: Option<DeferredEmptyVadTerminal>,
+    strict_media_end_authority: Option<StrictMediaEndAuthority>,
     response_ledger: ResponseLedger,
     response_lifecycle: ResponseLifecycle,
     pub(super) last_asr_delta_text: String,
@@ -286,6 +288,13 @@ pub(super) struct OmniEventDiagnostics {
 impl OmniEventDiagnostics {
     pub(super) fn set_response_ledger_generation(&mut self, session_generation: u64) {
         self.response_ledger.set_generation(session_generation);
+    }
+
+    pub(super) fn set_strict_media_end_authority(
+        &mut self,
+        authority: Option<StrictMediaEndAuthority>,
+    ) {
+        self.strict_media_end_authority = authority;
     }
 
     pub(super) fn begin_native_response_lifecycle(&mut self, response_id: Option<&str>) {
@@ -507,6 +516,7 @@ struct DeferredEmptyVadTerminal {
     response_cue_exists: bool,
     response_metadata: ResponseDoneMetadata,
     st_flag: String,
+    audio_start_ms: u64,
     audio_end_ms: u64,
     continuity_id: u64,
     nonempty_micro_fragment: bool,
@@ -1228,8 +1238,14 @@ impl OmniEventDiagnostics {
         nonempty_micro_fragment: bool,
         cross_continuity_zero_gap_eligible: bool,
     ) -> bool {
-        let (Some(input_item_id), Some(audio_end_ms), Some(continuity_id)) = (
+        let (
+            Some(input_item_id),
+            Some(audio_start_ms),
+            Some(audio_end_ms),
+            Some(continuity_id),
+        ) = (
             self.native_response_item_id.clone(),
+            self.native_response_audio_start_ms,
             self.native_response_audio_end_ms,
             self.native_response_continuity_id,
         ) else {
@@ -1244,6 +1260,7 @@ impl OmniEventDiagnostics {
             response_cue_exists,
             response_metadata,
             st_flag: st_flag.to_string(),
+            audio_start_ms,
             audio_end_ms,
             continuity_id,
             nonempty_micro_fragment,
@@ -1291,6 +1308,27 @@ impl OmniEventDiagnostics {
         contiguous && Instant::now() <= pending.successor_arbitration_deadline
     }
 
+    pub(super) fn deferred_empty_vad_matches_asr_owner(
+        &self,
+        event_type: &str,
+        input_item_id: Option<&str>,
+    ) -> bool {
+        if !matches!(
+            event_type,
+            "conversation.item.input_audio_transcription.delta"
+                | "conversation.item.input_audio_transcription.text"
+                | "conversation.item.input_audio_transcription.completed"
+        ) {
+            return false;
+        }
+        let Some(input_item_id) = input_item_id.filter(|item_id| !item_id.trim().is_empty()) else {
+            return false;
+        };
+        self.deferred_empty_vad_terminal
+            .as_ref()
+            .is_some_and(|pending| pending.input_item_id == input_item_id)
+    }
+
     fn take_expired_deferred_empty_vad(&mut self) -> Option<DeferredEmptyVadTerminal> {
         self.deferred_empty_vad_terminal
             .as_ref()
@@ -1317,6 +1355,7 @@ impl OmniEventDiagnostics {
 fn terminalize_deferred_empty_vad<R: tauri::Runtime>(
     app: &AppHandle<R>,
     store: &AudioStateStore,
+    event_diagnostics: &mut OmniEventDiagnostics,
     pending: &DeferredEmptyVadTerminal,
 ) {
     // ASR final may arrive during the bounded split-classification window.
@@ -1336,6 +1375,61 @@ fn terminalize_deferred_empty_vad<R: tauri::Runtime>(
         .as_ref()
         .map(|cue| cue.translated_text.as_str())
         .unwrap_or(&pending.translated_text);
+    let strict_tail_authority = event_diagnostics.strict_media_end_authority.clone();
+    if pending.response_metadata.status == "completed"
+        && pending.response_cue_exists
+        && latest_cue.is_some()
+        && store.subtitle_source_is_final(&pending.cue_id)
+        && pending.source_text.trim().is_empty()
+        && response_source_text.trim().is_empty()
+        && pending.translated_text.trim().is_empty()
+        && translated_text.trim().is_empty()
+        && strict_tail_authority.as_ref().is_some_and(|authority| {
+            authority.authenticates_post_reference_start(pending.audio_start_ms)
+        })
+    {
+        let authority = strict_tail_authority.expect("checked strict media-end authority");
+        let media_end_ms = authority.media_end_ms();
+        store.watch_session_report.record_strict_media_end_empty_tail_omission(
+            &pending.cue_id,
+            &pending.response_metadata.response_id,
+            &pending.response_metadata.status,
+            pending.audio_start_ms,
+            media_end_ms,
+            authority.authoritative_reference_frames,
+            authority.input_sample_rate_hz,
+            &authority.media_sha256,
+            &authority.run_marker,
+            &authority.cell_id,
+            &authority.lease_id,
+            authority.provider_input_max_samples,
+            authority.session_generation,
+        );
+        store.discard_ignorable_discourse_cue(&pending.cue_id);
+        let _ = diag_log(
+            app,
+            "omni",
+            "info",
+            format!(
+                "[EVENT] response.done → STRICT_POST_REFERENCE_EMPTY_RESPONSE_IGNORED{} cue_id={} responseId={} responseStatus={} audioStartMs={} mediaEndMs={} authoritativeReferenceFrames={} inputSampleRateHz={} mediaSha256={} runMarker={} cellId={} leaseId={} providerInputMaxSamples={} sessionGeneration={} diagnostic=strict-post-reference-empty-response-omission",
+                pending.st_flag,
+                pending.cue_id,
+                pending.response_metadata.response_id,
+                pending.response_metadata.status,
+                pending.audio_start_ms,
+                media_end_ms,
+                authority.authoritative_reference_frames,
+                authority.input_sample_rate_hz,
+                authority.media_sha256,
+                authority.run_marker,
+                authority.cell_id,
+                authority.lease_id,
+                authority.provider_input_max_samples,
+                authority.session_generation,
+            ),
+        );
+        return;
+    }
     terminalize_native_response_without_output(
         app,
         store,
@@ -1386,7 +1480,7 @@ pub(super) fn resolve_deferred_empty_vad_on_speech_started<R: tauri::Runtime>(
             pending.nonempty_micro_fragment,
         ));
     } else {
-        terminalize_deferred_empty_vad(app, store, &pending);
+        terminalize_deferred_empty_vad(app, store, event_diagnostics, &pending);
     }
 }
 
@@ -1396,7 +1490,7 @@ pub(super) fn flush_expired_deferred_empty_vad<R: tauri::Runtime>(
     event_diagnostics: &mut OmniEventDiagnostics,
 ) {
     if let Some(pending) = event_diagnostics.take_expired_deferred_empty_vad() {
-        terminalize_deferred_empty_vad(app, store, &pending);
+        terminalize_deferred_empty_vad(app, store, event_diagnostics, &pending);
     }
 }
 
@@ -1406,7 +1500,7 @@ pub(super) fn flush_arbitration_expired_deferred_empty_vad<R: tauri::Runtime>(
     event_diagnostics: &mut OmniEventDiagnostics,
 ) {
     if let Some(pending) = event_diagnostics.take_arbitration_expired_deferred_empty_vad() {
-        terminalize_deferred_empty_vad(app, store, &pending);
+        terminalize_deferred_empty_vad(app, store, event_diagnostics, &pending);
     }
 }
 
@@ -1431,7 +1525,7 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
     glossary: &GlossaryContext,
 ) {
     if let Some(previous_pending) = event_diagnostics.take_deferred_empty_vad() {
-        terminalize_deferred_empty_vad(app, store, &previous_pending);
+        terminalize_deferred_empty_vad(app, store, event_diagnostics, &previous_pending);
     }
     let response_metadata = ResponseDoneMetadata::from_event(response_event);
     let final_output_allowed = response_metadata.allows_final_output(require_completed_status);

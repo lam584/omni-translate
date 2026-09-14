@@ -307,6 +307,21 @@ test('worker request carries only its signed paid cell and never contains build/
     request.environment.OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES,
     String(cell.maxExternalAudioSamples),
   );
+  assert.deepEqual({
+    frames: request.environment.OMNI_WATCH_MODE_AUTHORITATIVE_TRANSFORMED_REFERENCE_FRAMES,
+    sampleRate: request.environment.OMNI_WATCH_MODE_INPUT_SAMPLE_RATE_HZ,
+    mediaSha256: request.environment.OMNI_WATCH_MODE_MEDIA_SHA256,
+    runMarker: request.environment.OMNI_WATCH_MODE_MEDIA_AUTHORITY_RUN_MARKER,
+    cellId: request.environment.OMNI_WATCH_MODE_MEDIA_AUTHORITY_CELL_ID,
+    leaseId: request.environment.OMNI_WATCH_MODE_MEDIA_AUTHORITY_LEASE_ID,
+  }, {
+    frames: String(cell.authoritativeTransformedReferenceFrames),
+    sampleRate: String(cell.inputSampleRateHz),
+    mediaSha256: cell.mediaSha256,
+    runMarker: request.runnerOptions.runMarker,
+    cellId: cell.cellId,
+    leaseId: lease.leaseId,
+  });
   assert.equal(request.runnerOptions.strictPaidAuthority, true);
   assert.equal(request.runnerOptions.matrixCellId, cell.cellId);
   assert.equal(request.runnerOptions.subtitleTranslationMode, 'native');

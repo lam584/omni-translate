@@ -1948,3 +1948,39 @@ test('matrix runner defaults to the exact release model and preserves explicit d
     'E:\\artifacts\\watch-mode-current-manifest.json',
   );
 });
+
+test('strict desktop lifecycle forwards only complete request-bound media-end authority', { skip: !isWindows }, () => {
+  const modulePath = path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.DesktopLifecycle.psm1');
+  const sha = 'c'.repeat(64);
+  const request = {
+    media: { sha256: sha, authoritativeTransformedReferenceFrames: 2013045, inputSampleRateHz: 16000 },
+    matrix: { runMarker: 'run-1', cellId: 'c03', leaseId: 'lease-3' },
+  };
+  const environment = {
+    OMNI_WATCH_MODE_AUTHORITATIVE_TRANSFORMED_REFERENCE_FRAMES: '2013045',
+    OMNI_WATCH_MODE_INPUT_SAMPLE_RATE_HZ: '16000',
+    OMNI_WATCH_MODE_MEDIA_SHA256: sha,
+    OMNI_WATCH_MODE_MEDIA_AUTHORITY_RUN_MARKER: 'run-1',
+    OMNI_WATCH_MODE_MEDIA_AUTHORITY_CELL_ID: 'c03',
+    OMNI_WATCH_MODE_MEDIA_AUTHORITY_LEASE_ID: 'lease-3',
+  };
+  const invoke = (envValue, runMarker = 'run-1') => runPowerShell(['-Command',
+    `$m=Import-Module ${quotePowerShell(modulePath)} -Force -PassThru; `
+      + `$request=${quotePowerShell(JSON.stringify(request))}|ConvertFrom-Json; `
+      + `$rawPrevious=${quotePowerShell(JSON.stringify(envValue))}|ConvertFrom-Json; $previous=@{}; $rawPrevious.psobject.Properties|ForEach-Object { $previous[$_.Name]=$_.Value }; `
+      + `Resolve-StrictWatchModeMediaEndAuthority -Request $request -PreviousEnvironment $previous -RunMarker ${quotePowerShell(runMarker)} -CellId 'c03' -LeaseId 'lease-3' | ConvertTo-Json -Compress`,
+  ]);
+  const passed = invoke(environment);
+  assert.equal(passed.status, 0, passed.stderr || passed.stdout);
+  assert.deepEqual(JSON.parse(passed.stdout), environment);
+
+  for (const key of Object.keys(environment)) {
+    const missing = { ...environment };
+    delete missing[key];
+    const result = invoke(missing);
+    assert.notEqual(result.status, 0, key);
+  }
+  const mismatched = invoke(environment, 'run-other');
+  assert.notEqual(mismatched.status, 0);
+  assert.match(mismatched.stderr, /identity does not match/);
+});

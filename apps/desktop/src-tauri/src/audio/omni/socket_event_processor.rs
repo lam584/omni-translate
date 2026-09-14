@@ -550,6 +550,9 @@ impl OmniSocketEventProcessor {
             echo_guard_enabled,
         } = context;
         event_diagnostics.set_response_ledger_generation(session_generation);
+        event_diagnostics.set_strict_media_end_authority(
+            provider_input_budget.strict_media_end_authority(session_generation),
+        );
         let mut socket_reconnected = false;
         let mut reconnected_session_update = None;
         let mut stop_worker = false;
@@ -620,6 +623,7 @@ impl OmniSocketEventProcessor {
                         format!("{failure} raw={text}"),
                     );
                     trace_call.error(failure.clone());
+                    flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
                     return Err(failure);
                 }
             };
@@ -628,7 +632,19 @@ impl OmniSocketEventProcessor {
                     && event_diagnostics.can_prioritize_deferred_empty_vad_successor(
                         evt["audio_start_ms"].as_u64(),
                     );
-                if !prioritize_deferred_successor {
+                let deferred_asr_candidate = bailian_provider(provider)
+                    && matches!(
+                        event_type.as_str(),
+                        "conversation.item.input_audio_transcription.delta"
+                            | "conversation.item.input_audio_transcription.text"
+                            | "conversation.item.input_audio_transcription.completed"
+                    );
+                let deferred_asr_owner_matches = deferred_asr_candidate
+                    && event_diagnostics.deferred_empty_vad_matches_asr_owner(
+                        event_type.as_str(),
+                        evt["item_id"].as_str(),
+                    );
+                if !prioritize_deferred_successor && !deferred_asr_owner_matches {
                     flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
                 }
                 let mutation = match admit_bailian_server_event(
@@ -639,10 +655,10 @@ impl OmniSocketEventProcessor {
                 ) {
                     Ok(mutation) => mutation,
                     Err(error) => {
-                        // A raw frame that merely resembles a contiguous
-                        // speech_started event has no authority to suppress
-                        // an expired terminal. Admission must succeed before
-                        // the narrow dispatch grace can affect ordering.
+                        // A raw frame that merely resembles a contiguous speech start
+                        // or matching ASR owner has no authority to suppress an
+                        // expired terminal. Typed admission must succeed before
+                        // the narrow dispatch ordering can affect expiry.
                         flush_expired_deferred_empty_vad(
                             &app,
                             store,
@@ -651,6 +667,11 @@ impl OmniSocketEventProcessor {
                         return Err(error);
                     }
                 };
+                // Admission has now succeeded. A readable ASR frame may
+                // dispatch ahead of local expiry only when its raw identity
+                // already matched the exact deferred input item above. The
+                // common post-dispatch flush below still runs immediately, so
+                // this ordering grants no extra time.
                 if let Some(session_updated) = mutation.session_updated.as_ref() {
                     store.record_strict_watch_session_updated_received(
                         &session_updated.session_identity_sha256,

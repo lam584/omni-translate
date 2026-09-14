@@ -73,6 +73,13 @@ export function validateWatchModeRunRequest(input) {
   request.media = object(request.media, 'media');
   request.media.path = nonEmpty(request.media.path, 'media.path');
   request.media.playbackSeconds = integer(request.media.playbackSeconds, 'media.playbackSeconds', 0, 7200);
+  request.media.sha256 = nonEmpty(request.media.sha256, 'media.sha256', { optional: true });
+  request.media.authoritativeTransformedReferenceFrames = request.media.authoritativeTransformedReferenceFrames == null
+    ? null
+    : integer(request.media.authoritativeTransformedReferenceFrames, 'media.authoritativeTransformedReferenceFrames', 1, Number.MAX_SAFE_INTEGER);
+  request.media.inputSampleRateHz = request.media.inputSampleRateHz == null
+    ? null
+    : integer(request.media.inputSampleRateHz, 'media.inputSampleRateHz', 1, 384000);
   request.physicalDevice = object(request.physicalDevice, 'physicalDevice');
   request.physicalDevice.id = nonEmpty(request.physicalDevice.id, 'physicalDevice.id');
   request.physicalDevice.class = enumValue(request.physicalDevice.class, enums.deviceClass, 'physicalDevice.class');
@@ -144,6 +151,10 @@ export function validateWatchModeRunRequest(input) {
   request.paths.runtimeRoot = nonEmpty(request.paths.runtimeRoot, 'paths.runtimeRoot');
   request.paths.inputComplete = nonEmpty(request.paths.inputComplete, 'paths.inputComplete', { optional: true });
   request.paths.terminalAuthority = nonEmpty(request.paths.terminalAuthority, 'paths.terminalAuthority', { optional: true });
+  request.matrix = object(request.matrix ?? {}, 'matrix');
+  request.matrix.cellId = nonEmpty(request.matrix.cellId, 'matrix.cellId', { optional: true });
+  request.matrix.leaseId = nonEmpty(request.matrix.leaseId, 'matrix.leaseId', { optional: true });
+  request.matrix.runMarker = nonEmpty(request.matrix.runMarker, 'matrix.runMarker', { optional: true });
 
   if (request.feedbackMode === 'virtual-driver' && request.driverPolicy === 'not-applicable') {
     throw new Error('virtual-driver requires driverPolicy probe-only or repair-if-needed');
@@ -169,6 +180,12 @@ export function validateWatchModeRunRequest(input) {
       || request.model.protocol !== 'dashscope-livetranslate'
       || !request.paths.inputComplete
       || !request.paths.terminalAuthority
+      || !request.media.sha256
+      || !request.media.authoritativeTransformedReferenceFrames
+      || !request.media.inputSampleRateHz
+      || !request.matrix.cellId
+      || !request.matrix.leaseId
+      || !request.matrix.runMarker
       || request.timeouts.processExclusionRestartAfterSeconds !== expectedRestartAfterSeconds
       || request.timeouts.processExclusionRestartQuietSeconds !== expectedRestartQuietSeconds
     ) {
@@ -215,7 +232,13 @@ export function buildLiveWatchModeRunRequest(options, {
       subtitleModelId: options.subtitleTranslationModelId ?? null,
       secondaryAudioModelId: options.inboundSecondaryAudioModelId ?? null,
     },
-    media: { path: options.mediaPath, playbackSeconds: Number(options.playbackSeconds) },
+    media: {
+      path: options.mediaPath,
+      playbackSeconds: Number(options.playbackSeconds),
+      sha256: options.mediaSha256 ?? null,
+      authoritativeTransformedReferenceFrames: options.authoritativeTransformedReferenceFrames ?? null,
+      inputSampleRateHz: options.inputSampleRateHz ?? null,
+    },
     physicalDevice: {
       id: options.physicalPlaybackDeviceId,
       class: options.physicalPlaybackDeviceClass,
@@ -254,6 +277,10 @@ export function buildLiveWatchModeRunRequest(options, {
       inputComplete: options.inputCompletePath ?? null,
       terminalAuthority: options.terminalAuthorityPath ?? null,
     },
-    matrix: { cellId: options.matrixCellId ?? options.cellId ?? null, leaseId: null },
+    matrix: {
+      cellId: options.matrixCellId ?? options.cellId ?? null,
+      leaseId: options.leaseId ?? null,
+      runMarker: options.runMarker ?? null,
+    },
   });
 }

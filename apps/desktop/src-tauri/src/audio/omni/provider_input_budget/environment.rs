@@ -382,6 +382,15 @@ impl ProviderInputBudget {
     );
     }
     }
+    let strict_media_end_authority = StrictMediaEndAuthority::from_environment(
+        &read_env,
+        strict_paid_authority,
+        &run_marker,
+        &cell_id,
+        &lease_id,
+        max_samples,
+        session_generation,
+    )?;
     let final_ledger = OpenOptions::new()
     .write(true)
     .create_new(true)
@@ -428,6 +437,7 @@ impl ProviderInputBudget {
     model: model.to_string(),
     protocol: protocol.to_string(),
     model_protocol_profile_identity,
+    strict_media_end_authority,
     max_samples,
     total_attempted_samples: AtomicU64::new(0),
     append_attempts: AtomicU64::new(0),

@@ -81,7 +81,7 @@ function New-WatchModeExecutionContext {
     desktopAutoStopAfterSeconds = [int]$Context.lifecycle.cellHardWatchdogSeconds
     providerAuthorityMode = [string]$Request.authorityMode
     outputDir = $outputDir
-    runMarker = "watch_mode_diagnostic.run_id=$([System.Guid]::NewGuid().ToString('N'))"
+    runMarker = if ($strictPaidAuthority) { [string]$Request.matrix.runMarker } else { "watch_mode_diagnostic.run_id=$([System.Guid]::NewGuid().ToString('N'))" }
     startedAtLocal = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
   }
 }

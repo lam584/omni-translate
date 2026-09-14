@@ -715,6 +715,21 @@ function writeRawBridgeFailureAuthority(runDirectory, cell) {
   return writeRawReportAuthority(runDirectory, cell, { bridgeDroppedFrameCount: 1 });
 }
 
+function resignAuthority(value, digestField, privateKeyPem) {
+  const candidate = structuredClone(value);
+  const signature = candidate.signature;
+  delete candidate.signature;
+  delete candidate[digestField];
+  candidate[digestField] = sha256Canonical(candidate);
+  candidate.signature = {
+    ...signature,
+    valueBase64: crypto.sign(
+      null, Buffer.from(canonicalJson(candidate), 'utf8'), privateKeyPem,
+    ).toString('base64'),
+  };
+  return candidate;
+}
+
 test('shard orchestration inventory is independent from local/matrix implementation authority', () => {
   assert.deepEqual(SHARD_ORCHESTRATION_IMPLEMENTATION_FILES, [
     'scripts/testing/watch-mode-four-worker-plan.mjs',
@@ -765,7 +780,11 @@ test('signed plan and leases bind exact four cells, serial waves, identities and
     SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
   );
   for (const lease of fixture.leases) {
-    assert.equal(verifyCellLease(lease, fixture.plan, { now: fixture.now }).cellId, lease.cellId);
+    const cell = verifyCellLease(lease, fixture.plan, { now: fixture.now });
+    assert.equal(cell.cellId, lease.cellId);
+    assert.equal(lease.authoritativeTransformedReferenceFrames, cell.authoritativeTransformedReferenceFrames);
+    assert.equal(lease.inputSampleRateHz, cell.inputSampleRateHz);
+    assert.equal(lease.mediaSha256, cell.mediaSha256);
   }
   assert.equal(
     fixture.plan.authority.runtimeBundleDigest,
@@ -790,6 +809,36 @@ test('signed plan and leases bind exact four cells, serial waves, identities and
   const tamperedLease = structuredClone(fixture.leases[0]);
   tamperedLease.maxExternalAudioSamples += 1;
   assert.throws(() => verifyCellLease(tamperedLease, fixture.plan, { now: fixture.now }), /digest mismatch/);
+
+  const tamperedMediaLease = structuredClone(fixture.leases[0]);
+  tamperedMediaLease.mediaSha256 = 'f'.repeat(64);
+  assert.throws(() => verifyCellLease(tamperedMediaLease, fixture.plan, { now: fixture.now }), /digest mismatch/);
+
+  const signedNonCanonicalPlanSource = structuredClone(fixture.plan);
+  signedNonCanonicalPlanSource.cells[0].mediaSha256 = 'f'.repeat(64);
+  const signedNonCanonicalPlan = resignAuthority(
+    signedNonCanonicalPlanSource, 'planDigest', fixture.signingKeys.privateKeyPem,
+  );
+  assert.throws(
+    () => verifySignedExecutionPlan(signedNonCanonicalPlan, { now: fixture.now }),
+    /does not match the fixed paid release cell/,
+  );
+
+  for (const mutate of [
+    (lease) => { lease.mediaSha256 = 'f'.repeat(64); },
+    (lease) => { lease.authoritativeTransformedReferenceFrames += 1; },
+    (lease) => { lease.inputSampleRateHz = 8_000; },
+  ]) {
+    const mismatchedLeaseSource = structuredClone(fixture.leases[0]);
+    mutate(mismatchedLeaseSource);
+    const mismatchedLease = resignAuthority(
+      mismatchedLeaseSource, 'leaseDigest', fixture.signingKeys.privateKeyPem,
+    );
+    assert.throws(
+      () => verifyCellLease(mismatchedLease, fixture.plan, { now: fixture.now }),
+      /does not match the execution plan/,
+    );
+  }
 
   assert.throws(
     () => verifySignedExecutionPlan(fixture.plan, {

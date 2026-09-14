@@ -174,6 +174,7 @@ function writePrefilterFixture(runDirectory, samples, amplitude = 0.25) {
   const replay = replayProviderInputPrefilter({
     filePath: path.join(runDirectory, PROVIDER_INPUT_PREFILTER_FILE),
     maxSamples: inputCeilingSamplesForMode('process-exclusion'),
+    modelProtocolProfileIdentity: MODEL_PROTOCOL_PROFILE_IDENTITY,
   });
   fs.writeFileSync(
     path.join(runDirectory, 'provider-input-16k-mono.pcm'),
@@ -571,7 +572,7 @@ test('stable evidence ids remain distinct across calls', () => {
   });
 });
 
-test('prefilter replay reproduces f32 resampling, RMS gating, and exactly 40 silence-grace chunks', () => {
+test('prefilter replay reproduces f32 resampling and preserves the LiveTranslate timeline after first audible chunk', () => {
   const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-prefilter-replay-'));
   try {
     const chunks = [0, 0.25, ...Array(41).fill(0)].map((amplitude) => {
@@ -586,19 +587,23 @@ test('prefilter replay reproduces f32 resampling, RMS gating, and exactly 40 sil
     });
     const filePath = path.join(runDirectory, PROVIDER_INPUT_PREFILTER_FILE);
     fs.writeFileSync(filePath, Buffer.concat([PROVIDER_INPUT_PREFILTER_MAGIC, ...chunks]));
-    const replay = replayProviderInputPrefilter({ filePath, maxSamples: 100_000 });
+    const replay = replayProviderInputPrefilter({
+      filePath,
+      maxSamples: 100_000,
+      modelProtocolProfileIdentity: MODEL_PROTOCOL_PROFILE_IDENTITY,
+    });
     assert.equal(replay.authority.rawInput.chunkCount, 43);
     assert.deepEqual(replay.authority.decisions, {
       audibleChunks: 1,
       silenceGraceChunks: 40,
-      skippedSilenceChunks: 2,
+      skippedSilenceChunks: 1,
       emptyResampleChunks: 0,
       budgetRejectedChunks: 0,
-      acceptedChunks: 41,
-      acceptedSamples: 13_120,
+      acceptedChunks: 42,
+      acceptedSamples: 13_440,
     });
     assert.equal(replay.expectedProviderPcm.readInt16LE(0), 8191);
-    assert.equal(replay.expectedProviderPcm.length, 13_120 * 2);
+    assert.equal(replay.expectedProviderPcm.length, 13_440 * 2);
   } finally {
     fs.rmSync(runDirectory, { recursive: true, force: true });
   }

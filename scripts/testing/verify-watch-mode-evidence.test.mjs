@@ -1362,6 +1362,7 @@ function writeAuthorityRawCell(root, directoryName, {
     replayProviderInputPrefilter({
       filePath: providerPrefilterPath,
       maxSamples: 2_877_045,
+      modelProtocolProfileIdentity: deriveWatchModelProtocolIdentity('qwen3.5-livetranslate-flash-realtime'),
     }).expectedProviderPcm,
   );
   for (const relativePath of requiredCellArtifactPaths(feedbackLoopPrevention)) {

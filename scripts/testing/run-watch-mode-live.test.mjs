@@ -238,7 +238,11 @@ test('paid failure budget is rebuilt from the final marker-scoped app log saved 
     );
     fs.writeFileSync(
       path.join(runDirectory, 'provider-input-16k-mono.pcm'),
-      replayProviderInputPrefilter({ filePath: prefilterPath, maxSamples }).expectedProviderPcm,
+      replayProviderInputPrefilter({
+        filePath: prefilterPath,
+        maxSamples,
+        modelProtocolProfileIdentity: deriveWatchModelProtocolIdentity('qwen3.5-livetranslate-flash-realtime'),
+      }).expectedProviderPcm,
     );
 
     const identity = {

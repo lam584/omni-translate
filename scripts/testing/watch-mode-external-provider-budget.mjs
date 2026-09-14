@@ -19,6 +19,9 @@ export const PROVIDER_SEND_BOUNDARY_JOURNAL_FILE = `${PROVIDER_SEND_BOUNDARY_LED
 export const PROVIDER_BUDGET_LEASE_FILE = 'provider-input-budget-lease.json';
 export const PROVIDER_INPUT_PREFILTER_FILE = 'provider-input-prefilter-48k-stereo.f32le.frames';
 export const PROVIDER_INPUT_PREFILTER_MAGIC = Buffer.from('OMNIPR01', 'ascii');
+export const PROVIDER_INPUT_FORWARDING_POLICY_VERSION = 2;
+export const LIVETRANSLATE_TIMELINE_ADAPTER_ID = 'desktop-livetranslate-session-v1';
+export const LEGACY_FINITE_SILENCE_GRACE_POLICY_ID = 'finite-silence-grace-v1';
 export const PHYSICAL_OUTPUT_RECORDING_PCM_FILE = 'physical-output-recording-16k-mono.pcm';
 export const PHYSICAL_OUTPUT_SOURCE_WINDOW_PCM_FILE =
   'physical-output-recording-source-window-16k-mono.pcm';
@@ -141,10 +144,30 @@ export function readProviderInputPrefilterFrames(filePath) {
   return { bytes, frames };
 }
 
-export function replayProviderInputPrefilter({ filePath, maxSamples }) {
+export function replayProviderInputPrefilter({
+  filePath,
+  maxSamples,
+  modelProtocolProfileIdentity = null,
+  legacyPolicyId = null,
+}) {
   const ceiling = Number(maxSamples);
   if (!Number.isSafeInteger(ceiling) || ceiling <= 0) {
     throw new Error('provider prefilter replay requires a positive safe-integer sample ceiling');
+  }
+  const exactModelId = String(modelProtocolProfileIdentity?.exactModelId ?? '').trim();
+  let authorizedIdentity = null;
+  let preserveLiveTranslateTimeline = false;
+  if (exactModelId) {
+    authorizedIdentity = deriveWatchModelProtocolIdentity(exactModelId);
+    assertWatchModelProtocolIdentity(
+      modelProtocolProfileIdentity,
+      authorizedIdentity,
+      'provider prefilter replay model protocol profile identity',
+    );
+    preserveLiveTranslateTimeline =
+      authorizedIdentity.adapterId === LIVETRANSLATE_TIMELINE_ADAPTER_ID;
+  } else if (legacyPolicyId !== LEGACY_FINITE_SILENCE_GRACE_POLICY_ID) {
+    throw new Error('provider prefilter replay requires an authorized model protocol identity or exact legacy policy');
   }
   const { bytes, frames } = readProviderInputPrefilterFrames(filePath);
   const accepted = [];
@@ -164,9 +187,11 @@ export function replayProviderInputPrefilter({ filePath, maxSamples }) {
     }
     const rms = pcm16ChunkRmsLikeRust(pcm);
     if (rms < 0.002) {
-      if (hasSentAudibleAudio && silenceGraceChunksSent < 40) {
-        silenceGraceChunksSent += 1;
-        silenceGraceChunks += 1;
+      if (hasSentAudibleAudio && (preserveLiveTranslateTimeline || silenceGraceChunksSent < 40)) {
+        if (silenceGraceChunksSent < 40) {
+          silenceGraceChunksSent += 1;
+          silenceGraceChunks += 1;
+        }
       } else {
         skippedSilenceChunks += 1;
         continue;
@@ -201,6 +226,10 @@ export function replayProviderInputPrefilter({ filePath, maxSamples }) {
         providerFormat: 'pcm-s16le-16000-mono',
         resample: 'three-frame-f32-average-v1',
         minimumChunkRms: 0.002,
+        policyVersion: PROVIDER_INPUT_FORWARDING_POLICY_VERSION,
+        ...(authorizedIdentity ? { modelProtocolProfileIdentity: authorizedIdentity } : {}),
+        ...(legacyPolicyId ? { legacyPolicyId } : {}),
+        preserveLiveTranslateTimeline,
         silenceGraceChunks: 40,
         maxSamples: ceiling,
       },
@@ -827,6 +856,7 @@ export function buildCellExternalProviderBudget({
     const replay = replayProviderInputPrefilter({
       filePath: path.join(resolvedRunDirectory, PROVIDER_INPUT_PREFILTER_FILE),
       maxSamples: resolvedInputCeilingSamples,
+      modelProtocolProfileIdentity,
     });
     providerInputReplay = replay.authority;
     if (!providerPcmBytes?.equals(replay.expectedProviderPcm)) {

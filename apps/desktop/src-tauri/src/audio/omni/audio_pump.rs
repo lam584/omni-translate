@@ -19,6 +19,16 @@ fn audio_pump_should_yield(chunks_sent_this_tick: usize) -> bool {
     chunks_sent_this_tick >= OMNI_AUDIO_PUMP_MAX_CHUNKS_PER_TICK
 }
 
+fn should_forward_low_rms_chunk(
+    has_sent_audible_audio: bool,
+    silence_grace_chunks_sent: u32,
+    preserve_livetranslate_timeline: bool,
+) -> bool {
+    has_sent_audible_audio
+        && (preserve_livetranslate_timeline
+            || silence_grace_chunks_sent < OMNI_ASR_SILENCE_GRACE_CHUNKS)
+}
+
 #[derive(Debug, Default)]
 pub(super) struct ProviderAudioPacer {
     anchor: Option<Instant>,
@@ -371,6 +381,8 @@ impl OmniAudioPump {
         let mut socket_reconnected = false;
         let mut reconnected_session_update = None;
         let mut pre_session_chunks_drained_this_tick = 0usize;
+        let preserve_livetranslate_timeline =
+            crate::audio::events::is_livetranslate_route_model(provider, &provider.model);
         loop {
             let raw_chunk = if provider_input_is_writable(session_ready_for_audio, defer_audio_until_response_done) {
                 if let Some(chunk) = pre_session_audio_queue.pop_front() {
@@ -432,10 +444,14 @@ impl OmniAudioPump {
             let chunk_rms = asr_chunk_rms(&asr_chunk);
             total_input_chunks += 1;
             if chunk_rms < OMNI_ASR_MIN_CHUNK_RMS {
-                if has_sent_audible_audio
-                    && silence_grace_chunks_sent < OMNI_ASR_SILENCE_GRACE_CHUNKS
-                {
-                    silence_grace_chunks_sent += 1;
+                if should_forward_low_rms_chunk(
+                    has_sent_audible_audio,
+                    silence_grace_chunks_sent,
+                    preserve_livetranslate_timeline,
+                ) {
+                    if silence_grace_chunks_sent < OMNI_ASR_SILENCE_GRACE_CHUNKS {
+                        silence_grace_chunks_sent += 1;
+                    }
                 } else {
                     silence_chunks_skipped = silence_chunks_skipped.saturating_add(1);
                     if silence_chunks_skipped == 1 || silence_chunks_skipped.is_multiple_of(250) {
@@ -759,6 +775,22 @@ mod tests {
         assert!(!provider_input_is_writable(false, false));
         assert!(provider_input_is_writable(true, true));
         assert!(provider_input_is_writable(true, false));
+    }
+
+    #[test]
+    fn livetranslate_preserves_low_rms_chunks_after_first_audible_input() {
+        assert!(!should_forward_low_rms_chunk(false, 0, true));
+        assert!(should_forward_low_rms_chunk(true, 0, true));
+        assert!(should_forward_low_rms_chunk(
+            true,
+            OMNI_ASR_SILENCE_GRACE_CHUNKS,
+            true,
+        ));
+        assert!(!should_forward_low_rms_chunk(
+            true,
+            OMNI_ASR_SILENCE_GRACE_CHUNKS,
+            false,
+        ));
     }
 
     #[test]

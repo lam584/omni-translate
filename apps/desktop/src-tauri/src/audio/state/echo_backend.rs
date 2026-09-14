@@ -101,7 +101,7 @@ impl AudioStateStore {
                 .echo_render_clock
                 .lock()
                 .expect("echo render clock poisoned");
-            let Some((_, _, _, true, last_player_position, last_submitted_frames)) =
+            let Some((_, _, owner_generation, true, last_player_position, last_submitted_frames)) =
                 clock.active_render_sessions.get(&render_session_id)
             else {
                 clock.discontinuity_count = clock.discontinuity_count.saturating_add(1);
@@ -139,6 +139,11 @@ impl AudioStateStore {
                         crate::audio::engine::aec_timing::qpc_now_100ns(),
                         clock.discontinuity_count,
                         render_session_id,
+                        *owner_generation,
+                        physical_prefix_offset_frames,
+                        reference_start,
+                        submitted_frames,
+                        played,
                         submitted_frames,
                         endpoint_padding_frames,
                     );
@@ -450,6 +455,18 @@ mod tests {
             assert_eq!(row["kind"], *native);
             assert_eq!(row["sequence"], index);
             assert_eq!(row["resetGeneration"], generation);
+            if *native == "render-reference" {
+                assert_eq!(row["schemaVersion"], 3);
+                assert_eq!(row["renderSessionId"], 1);
+                assert_eq!(row["ownerGeneration"], 1);
+                assert_eq!(row["physicalPrefixOffsetFrames"], 0);
+                assert_eq!(row["referenceEndFrame"], row["submittedFrames"]);
+                assert_eq!(row["referenceEndFrame"].as_u64().unwrap()
+                    - row["referenceStartFrame"].as_u64().unwrap(), 480);
+                assert_eq!(row["playedFrames"].as_u64().unwrap(),
+                    row["submittedFrames"].as_u64().unwrap()
+                        - row["endpointPaddingFrames"].as_u64().unwrap());
+            }
         }
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();

@@ -41,6 +41,11 @@ enum TapEvent {
         qpc_100ns: Option<u64>,
         continuity_id: u64,
         render_session_id: u64,
+        owner_generation: u64,
+        physical_prefix_offset_frames: u32,
+        reference_start_frame: u64,
+        reference_end_frame: u64,
+        played_frames: u64,
         submitted_frames: u64,
         endpoint_padding_frames: u32,
         sample_rate_hz: u32,
@@ -278,6 +283,11 @@ impl AecDiagnosticTap {
         qpc_100ns: Option<u64>,
         continuity_id: u64,
         render_session_id: u64,
+        owner_generation: u64,
+        physical_prefix_offset_frames: u32,
+        reference_start_frame: u64,
+        reference_end_frame: u64,
+        played_frames: u64,
         submitted_frames: u64,
         endpoint_padding_frames: u32,
     ) {
@@ -286,8 +296,9 @@ impl AecDiagnosticTap {
         Self::send(live, TapEvent::Render {
             sequence: live.shared.sequence.fetch_add(1, Ordering::Relaxed),
             reset_generation: live.shared.reset_generation.load(Ordering::Acquire),
-            qpc_100ns, continuity_id, render_session_id, submitted_frames,
-            endpoint_padding_frames, sample_rate_hz, channel_count,
+            qpc_100ns, continuity_id, render_session_id, owner_generation,
+            physical_prefix_offset_frames, reference_start_frame, reference_end_frame,
+            played_frames, submitted_frames, endpoint_padding_frames, sample_rate_hz, channel_count,
             samples: samples.to_vec(),
         });
     }
@@ -456,7 +467,7 @@ fn write_event(files: &mut EvidenceFiles, event: TapEvent, counts: &mut WrittenC
         return Err(io::Error::new(io::ErrorKind::InvalidData, "AEC tap sequence/reset generation is not contiguous"));
     }
     let (sequence, value) = match event {
-        TapEvent::Render { sequence, reset_generation, qpc_100ns, continuity_id, render_session_id, submitted_frames, endpoint_padding_frames, sample_rate_hz, channel_count, samples } => {
+        TapEvent::Render { sequence, reset_generation, qpc_100ns, continuity_id, render_session_id, owner_generation, physical_prefix_offset_frames, reference_start_frame, reference_end_frame, played_frames, submitted_frames, endpoint_padding_frames, sample_rate_hz, channel_count, samples } => {
             if sample_rate_hz != 48_000 || channel_count != 2 || samples.is_empty() || samples.len() % 2 != 0 {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "render tap requires 48000 Hz stereo, frame-aligned PCM"));
             }
@@ -464,7 +475,7 @@ fn write_event(files: &mut EvidenceFiles, event: TapEvent, counts: &mut WrittenC
             write_f32(&mut files.render.writer, &samples)?;
             counts.render_samples += samples.len() as u64;
             counts.render_events += 1;
-            (sequence, json!({"schemaVersion":2,"kind":"render-reference","sequence":sequence,"qpc100ns":qpc_100ns,"continuityId":continuity_id,"resetGeneration":reset_generation,"renderSessionId":render_session_id,"submittedFrames":submitted_frames,"endpointPaddingFrames":endpoint_padding_frames,"sampleRateHz":sample_rate_hz,"channelCount":channel_count,"sampleOffset":offset,"sampleCount":samples.len()}))
+            (sequence, json!({"schemaVersion":3,"kind":"render-reference","sequence":sequence,"qpc100ns":qpc_100ns,"continuityId":continuity_id,"resetGeneration":reset_generation,"renderSessionId":render_session_id,"ownerGeneration":owner_generation,"physicalPrefixOffsetFrames":physical_prefix_offset_frames,"referenceStartFrame":reference_start_frame,"referenceEndFrame":reference_end_frame,"playedFrames":played_frames,"submittedFrames":submitted_frames,"endpointPaddingFrames":endpoint_padding_frames,"sampleRateHz":sample_rate_hz,"channelCount":channel_count,"sampleOffset":offset,"sampleCount":samples.len()}))
         }
         TapEvent::Capture { sequence, reset_generation, metadata: frame, pre, post } => {
             if pre.is_empty() || pre.len() != post.len() || pre.len() % 2 != 0 {
@@ -478,11 +489,11 @@ fn write_event(files: &mut EvidenceFiles, event: TapEvent, counts: &mut WrittenC
             counts.post_samples += post.len() as u64;
             counts.capture_events += 1;
             if frame.timestamp_error || !frame.queue_head_clock_valid { counts.invalid_clock_events += 1; }
-            (sequence, json!({"schemaVersion":2,"kind":"capture","sequence":sequence,"packetDeviceFrameIndex":(!frame.timestamp_error).then_some(frame.packet_device_frame_index),"packetQpc100ns":(!frame.timestamp_error).then_some(frame.packet_qpc_100ns),"rawPacketDeviceFrameIndex":frame.packet_device_frame_index,"rawPacketQpc100ns":frame.packet_qpc_100ns,"queueHeadDeviceFrameIndex":frame.queue_head_clock_valid.then_some(frame.queue_head_device_frame_index),"queueHeadQpc100ns":frame.queue_head_clock_valid.then_some(frame.queue_head_qpc_100ns),"timestampError":frame.timestamp_error,"dataDiscontinuity":frame.data_discontinuity,"queueHeadClockValid":frame.queue_head_clock_valid,"observedQpc100ns":frame.observed_qpc_100ns,"continuityId":frame.continuity_id,"resetGeneration":reset_generation,"delaySamples":frame.delay_samples,"sampleRateHz":48000,"channelCount":2,"preSampleOffset":pre_offset,"preSampleCount":pre.len(),"postSampleOffset":post_offset,"postSampleCount":post.len()}))
+            (sequence, json!({"schemaVersion":3,"kind":"capture","sequence":sequence,"packetDeviceFrameIndex":(!frame.timestamp_error).then_some(frame.packet_device_frame_index),"packetQpc100ns":(!frame.timestamp_error).then_some(frame.packet_qpc_100ns),"rawPacketDeviceFrameIndex":frame.packet_device_frame_index,"rawPacketQpc100ns":frame.packet_qpc_100ns,"queueHeadDeviceFrameIndex":frame.queue_head_clock_valid.then_some(frame.queue_head_device_frame_index),"queueHeadQpc100ns":frame.queue_head_clock_valid.then_some(frame.queue_head_qpc_100ns),"timestampError":frame.timestamp_error,"dataDiscontinuity":frame.data_discontinuity,"queueHeadClockValid":frame.queue_head_clock_valid,"observedQpc100ns":frame.observed_qpc_100ns,"continuityId":frame.continuity_id,"resetGeneration":reset_generation,"delaySamples":frame.delay_samples,"sampleRateHz":48000,"channelCount":2,"preSampleOffset":pre_offset,"preSampleCount":pre.len(),"postSampleOffset":post_offset,"postSampleCount":post.len()}))
         }
         TapEvent::Reset { sequence, reset_generation, qpc_100ns, continuity_id, reason } => {
             counts.reset_events += 1;
-            (sequence, json!({"schemaVersion":2,"kind":"reset","sequence":sequence,"qpc100ns":qpc_100ns,"continuityId":continuity_id,"resetGeneration":reset_generation,"reason":reason}))
+            (sequence, json!({"schemaVersion":3,"kind":"reset","sequence":sequence,"qpc100ns":qpc_100ns,"continuityId":continuity_id,"resetGeneration":reset_generation,"reason":reason}))
         }
     };
     serde_json::to_writer(&mut files.metadata.writer, &value)?;
@@ -610,9 +621,9 @@ mod tests {
         let dir = Directory::new();
         let tap = AecDiagnosticTap::start(&dir.0).unwrap();
         tap.record_reset("route-start", Some(10), 0);
-        tap.record_render(&[0.25, -0.25], 48_000, 2, Some(20), 7, 1, 1, 1);
+        tap.record_render(&[0.25, -0.25], 48_000, 2, Some(20), 7, 1, 9, 4, 4, 5, 4, 5, 1);
         tap.record_capture(&[0.5, -0.5], &[0.0, 0.0], metadata());
-        tap.record_render(&[0.25; 4], 48_000, 2, Some(30), 7, 1, 3, 1);
+        tap.record_render(&[0.25; 4], 48_000, 2, Some(30), 7, 1, 9, 4, 5, 7, 6, 7, 1);
         tap.record_capture(&[0.5; 4], &[0.0; 4], metadata());
         let result = tap.finish(Duration::from_secs(2)).unwrap();
         assert_eq!(result["countsFinal"], true);
@@ -640,6 +651,15 @@ mod tests {
         }
         assert_eq!(rows[1]["sampleOffset"], 0);
         assert_eq!(rows[1]["sampleCount"], 2);
+        assert_eq!(rows[1]["schemaVersion"], 3);
+        assert_eq!(rows[1]["renderSessionId"], 1);
+        assert_eq!(rows[1]["ownerGeneration"], 9);
+        assert_eq!(rows[1]["physicalPrefixOffsetFrames"], 4);
+        assert_eq!(rows[1]["referenceStartFrame"], 4);
+        assert_eq!(rows[1]["referenceEndFrame"], 5);
+        assert_eq!(rows[1]["playedFrames"], 4);
+        assert_eq!(rows[3]["referenceStartFrame"], 5);
+        assert_eq!(rows[3]["referenceEndFrame"], 7);
         assert_eq!(rows[2]["preSampleOffset"], 0);
         assert_eq!(rows[2]["postSampleCount"], 2);
         assert_eq!(rows[3]["sampleOffset"], 2);
@@ -743,8 +763,9 @@ mod tests {
             let (sender, receiver) = mpsc::channel();
             sender.send(TapEvent::Render {
                 sequence: if out_of_order { 1 } else { 0 }, reset_generation: 0,
-                qpc_100ns: None, continuity_id: 0, render_session_id: 1, submitted_frames: 1,
-                endpoint_padding_frames: 1, sample_rate_hz: 48_000, channel_count: 2,
+                qpc_100ns: None, continuity_id: 0, render_session_id: 1, owner_generation: 1,
+                physical_prefix_offset_frames: 0, reference_start_frame: 0, reference_end_frame: 1,
+                played_frames: 0, submitted_frames: 1, endpoint_padding_frames: 1, sample_rate_hz: 48_000, channel_count: 2,
                 samples: if out_of_order { vec![0.0; 2] } else { vec![0.0] },
             }).unwrap();
             shared.close();
@@ -758,7 +779,7 @@ mod tests {
         let tap = AecDiagnosticTap::from_optional_directory(None);
         assert!(!tap.enabled());
         assert!(tap.live.is_none());
-        tap.record_render(&[0.0; 2], 48_000, 2, None, 0, 1, 1, 1);
+        tap.record_render(&[0.0; 2], 48_000, 2, None, 0, 1, 1, 0, 0, 1, 0, 1, 1);
         tap.record_capture(&[0.0; 2], &[0.0; 2], metadata());
         tap.record_reset("disabled", None, 0);
         let result: Value = serde_json::from_str(&tap.finish(Duration::ZERO).unwrap_err()).unwrap();

@@ -83,9 +83,10 @@ export function verifyAecTapEvidence(outputDirectory, embeddedTerminal) {
   let sequence = 0;
   let resetGeneration = 0;
   let invalidClockEvents = 0;
+  const renderDomains = new Map();
   for (const line of text.slice(0, -1).split('\n')) {
     const event = JSON.parse(line);
-    requireEvidence(event.schemaVersion === 2 && event.sequence === sequence
+    requireEvidence(event.schemaVersion === 3 && event.sequence === sequence
       && integer(event.resetGeneration) && integer(event.continuityId), `sequence/schema at ${sequence}`);
     if (event.kind === 'reset') resetGeneration += 1;
     requireEvidence(event.resetGeneration === resetGeneration, `reset ownership at ${sequence}`);
@@ -95,8 +96,25 @@ export function verifyAecTapEvidence(outputDirectory, embeddedTerminal) {
         && event.sampleOffset === samples.render && integer(event.sampleCount)
         && event.sampleCount > 0 && event.sampleCount % 2 === 0, 'render sample span');
       requireEvidence(event.qpc100ns === null || integer(event.qpc100ns), 'render clock');
-      requireEvidence(integer(event.renderSessionId) && integer(event.submittedFrames)
-        && integer(event.endpointPaddingFrames), 'render ownership/clock metadata');
+      const frameCount = event.sampleCount / event.channelCount;
+      requireEvidence(integer(event.renderSessionId) && integer(event.ownerGeneration)
+        && integer(event.physicalPrefixOffsetFrames) && integer(event.referenceStartFrame)
+        && integer(event.referenceEndFrame) && integer(event.playedFrames)
+        && integer(event.submittedFrames) && integer(event.endpointPaddingFrames),
+      'render ownership/clock metadata');
+      requireEvidence(event.endpointPaddingFrames <= event.submittedFrames
+        && event.playedFrames === event.submittedFrames - event.endpointPaddingFrames,
+      'render played/submitted/padding relation');
+      requireEvidence(event.referenceEndFrame === event.submittedFrames
+        && event.referenceEndFrame >= event.referenceStartFrame
+        && event.referenceEndFrame - event.referenceStartFrame === frameCount
+        && event.referenceStartFrame >= event.physicalPrefixOffsetFrames,
+      'render physical reference span');
+      const domain = `${event.renderSessionId}:${event.ownerGeneration}`;
+      const previousEnd = renderDomains.get(domain);
+      requireEvidence(previousEnd === undefined || event.referenceStartFrame === previousEnd,
+        'render reference gap/overlap');
+      renderDomains.set(domain, event.referenceEndFrame);
       samples.render += event.sampleCount;
       counts.render += 1;
     } else if (event.kind === 'capture') {

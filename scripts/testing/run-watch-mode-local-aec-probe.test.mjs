@@ -55,15 +55,16 @@ function sealRuntime(root, manifest) {
 }
 function eventsFixture() {
   return [
-    { schemaVersion: 2, kind: 'render-reference', sequence: 0, resetGeneration: 0, continuityId: 1,
-      qpc100ns: 10000, renderSessionId: 1, submittedFrames: 1, endpointPaddingFrames: 0,
+    { schemaVersion: 3, kind: 'render-reference', sequence: 0, resetGeneration: 0, continuityId: 1,
+      qpc100ns: 10000, renderSessionId: 1, ownerGeneration: 1, physicalPrefixOffsetFrames: 0,
+      referenceStartFrame: 0, referenceEndFrame: 1, playedFrames: 1, submittedFrames: 1, endpointPaddingFrames: 0,
       sampleRateHz: 48000, channelCount: 2, sampleOffset: 0, sampleCount: 2 },
-    { schemaVersion: 2, kind: 'capture', sequence: 1, resetGeneration: 0, continuityId: 1,
+    { schemaVersion: 3, kind: 'capture', sequence: 1, resetGeneration: 0, continuityId: 1,
       packetDeviceFrameIndex: 5, packetQpc100ns: 10100, rawPacketDeviceFrameIndex: 5, rawPacketQpc100ns: 10100,
       queueHeadDeviceFrameIndex: 5, queueHeadQpc100ns: 10100, timestampError: false,
       dataDiscontinuity: false, queueHeadClockValid: true, observedQpc100ns: 10200, delaySamples: 0,
       sampleRateHz: 48000, channelCount: 2, preSampleOffset: 0, preSampleCount: 2, postSampleOffset: 0, postSampleCount: 2 },
-    { schemaVersion: 2, kind: 'reset', sequence: 2, resetGeneration: 1, continuityId: 2,
+    { schemaVersion: 3, kind: 'reset', sequence: 2, resetGeneration: 1, continuityId: 2,
       qpc100ns: 10300, reason: 'diagnostic-fixture' },
   ];
 }
@@ -74,11 +75,17 @@ function sealTap(root, events = eventsFixture(), sampleCounts = { render: 2, pre
     fs.writeFileSync(path.join(root, name), bytes);
     return [lane, { name, byteLength: bytes.length, sha256: hash(bytes), flushed: true, synced: true, unwrittenBufferedBytes: 0 }];
   }));
+  const eventCounts = {
+    render: events.filter((e) => e.kind === 'render-reference').length,
+    capture: events.filter((e) => e.kind === 'capture').length,
+    reset: events.filter((e) => e.kind === 'reset').length,
+  };
+  const lastSequence = events.length - 1;
   const terminal = { schemaVersion: 2, kind: 'terminal', status: 'complete', complete: true, countsFinal: true,
-    attemptedEvents: 3, acceptedEvents: 3, writtenEvents: 3, droppedEvents: 0,
-    eventCounts: { render: 1, capture: 1, reset: 1 }, sampleCounts,
+    attemptedEvents: events.length, acceptedEvents: events.length, writtenEvents: events.length, droppedEvents: 0,
+    eventCounts, sampleCounts,
     invalidClockEvents: events.filter((e) => e.kind === 'capture' && (e.timestampError || !e.queueHeadClockValid)).length,
-    lastWrittenSequence: 2, lastAttemptedSequence: 2, resetGeneration: 1,
+    lastWrittenSequence: lastSequence, lastAttemptedSequence: lastSequence, resetGeneration: eventCounts.reset,
     files, errors: [], hashAlgorithm: 'sha256', terminalFile: 'aec-terminal.json' };
   json(path.join(root, 'aec-terminal.json'), terminal);
   return terminal;
@@ -165,6 +172,11 @@ for (const [label, change] of [
   ['out of order', (e) => { [e[0], e[1]] = [e[1], e[0]]; }],
   ['uncovered PCM span', (e) => { e[1].preSampleOffset = 2; }],
   ['half stereo frame', (e) => { e[0].sampleCount = 1; }],
+  ['missing render owner generation', (e) => { delete e[0].ownerGeneration; }],
+  ['forged physical prefix', (e) => { e[0].physicalPrefixOffsetFrames = 2; }],
+  ['forged reference start', (e) => { e[0].referenceStartFrame = 1; }],
+  ['forged reference end', (e) => { e[0].referenceEndFrame = 2; }],
+  ['forged played frames', (e) => { e[0].playedFrames = 0; }],
   ['clock promoted despite timestamp error', (e) => { e[1].timestampError = true; }],
   ['clock raw value mismatch', (e) => { e[1].rawPacketQpc100ns += 1; }],
   ['reset generation jump', (e) => { e[1].resetGeneration = 123; }],
@@ -177,6 +189,17 @@ for (const [label, change] of [
     assert.throws(() => verifyAecTapEvidence(root, terminal), /AEC tap evidence invalid/u);
   });
 }
+test('metadata rejects an inter-frame render gap within one session owner domain', (t) => {
+  const root = temporary(t);
+  const events = eventsFixture();
+  events.splice(1, 0, { ...events[0], sequence: 1, qpc100ns: 10050, sampleOffset: 2,
+    referenceStartFrame: 2, referenceEndFrame: 3, playedFrames: 3, submittedFrames: 3 });
+  events[2].sequence = 2;
+  events[3].sequence = 3;
+  const terminal = sealTap(root, events, { render: 4, pre: 2, post: 2 });
+  assert.throws(() => verifyAecTapEvidence(root, terminal), /render reference gap[/]overlap/u);
+});
+
 test('half UTF8, a truncated last line, uncommitted terminal, and a swapped receipt cannot complete', (t) => {
   const root = temporary(t);
   let terminal = sealTap(root);
@@ -203,7 +226,8 @@ function fixtureExecute(_script, { outputDirectory, request, requestPath, runtim
   const sourcePcmFrames = fs.statSync(request.renderPcmPath).size / 2;
   const renderedFrames = (sourcePcmFrames + 16_000) * 3;
   const events = eventsFixture();
-  Object.assign(events[0], { sampleCount: renderedFrames * 2, submittedFrames: renderedFrames });
+  Object.assign(events[0], { sampleCount: renderedFrames * 2, referenceEndFrame: renderedFrames,
+    playedFrames: renderedFrames, submittedFrames: renderedFrames });
   Object.assign(events[1], { preSampleCount: 1920, postSampleCount: 1920 });
   const tap = sealTap(outputDirectory, events, { render: renderedFrames * 2, pre: 1920, post: 1920 });
   json(path.join(outputDirectory, 'local-aec-probe-result.json'), { schemaVersion: 1,

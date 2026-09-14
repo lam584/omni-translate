@@ -2246,9 +2246,11 @@ function stableFailureIdentity({ failureLayer, failureReason, diagnostics, layer
         ?? null,
       bridgeInstanceId: restart.newBridgeInstanceId ?? null,
       ownerGenerationTransition: {
-        before: Number.isSafeInteger(Number(restart.oldPlaybackOwnerGeneration))
+        before: restart.oldPlaybackOwnerGeneration != null
+          && Number.isSafeInteger(Number(restart.oldPlaybackOwnerGeneration))
           ? Number(restart.oldPlaybackOwnerGeneration) : null,
-        after: Number.isSafeInteger(Number(restart.newPlaybackOwnerGeneration))
+        after: restart.newPlaybackOwnerGeneration != null
+          && Number.isSafeInteger(Number(restart.newPlaybackOwnerGeneration))
           ? Number(restart.newPlaybackOwnerGeneration) : null,
       },
       nativeResponseCancellation,

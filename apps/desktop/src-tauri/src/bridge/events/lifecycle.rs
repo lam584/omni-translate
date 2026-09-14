@@ -1,15 +1,29 @@
-fn stop_existing_process(state: &BridgeStateStore) {
+fn stop_existing_process(
+    snapshot: &BridgeRuntimeSnapshot,
+    state: &BridgeStateStore,
+) -> Result<(), String> {
     if let Some(mut process) = state.take_process() {
+        let authority =
+            ManagedBridgePidAuthority::claim(&snapshot.runtime_root, process.child.id())?;
         let _ = process.child.kill();
-        let _ = process.child.wait();
+        if let Err(error) = process.child.wait() {
+            if let Some(authority) = authority {
+                authority.restore()?;
+            }
+            return Err(format!("bridge.managed-process-wait-failed: {error}"));
+        }
+        if let Some(authority) = authority {
+            authority.release()?;
+        }
     }
+    Ok(())
 }
 
 fn cleanup_existing_bridge_process(
     snapshot: &BridgeRuntimeSnapshot,
     state: &BridgeStateStore,
 ) -> Result<(), String> {
-    stop_existing_process(state);
+    stop_existing_process(snapshot, state)?;
     let _ = BridgeIpcClient::new(snapshot).stop();
     thread::sleep(Duration::from_millis(150));
     BridgeProcessSupervisor::new(snapshot).terminate_stale()

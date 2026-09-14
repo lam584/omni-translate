@@ -27,7 +27,7 @@ use super::contracts::{
 use super::installer::{apply_driver_probe, probe_driver, run_elevated_driver_operation};
 use super::ipc::{
     apply_process_loopback_probe, apply_query, bridge_cli_path, BridgeIpcClient,
-    BridgeProcessSupervisor,
+    BridgeProcessSupervisor, ManagedBridgePidAuthority,
 };
 use super::state::BridgeStateStore;
 

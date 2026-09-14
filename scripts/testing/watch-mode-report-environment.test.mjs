@@ -221,6 +221,22 @@ test('process-exclusion restart owner failure has a stable authority fingerprint
   });
 });
 
+test('missing restart owner generations remain null instead of coercing to zero', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'process-exclusion',
+    bridge: healthyProcessExclusionBridge,
+    driver: null,
+    wasapi: null,
+    physicalOutput: healthyProcessExclusionFingerprint,
+    appLogText: 'event=process_exclusion_restart_summary status=failed stage=restart error=bridge.stale-process-query-failed',
+  });
+
+  assert.deepEqual(report.failureContext.ownerGenerationTransition, {
+    before: null,
+    after: null,
+  });
+});
+
 test('process-exclusion restart rejects duplicate terminal summaries', () => {
   const report = classify({
     feedbackLoopPrevention: 'process-exclusion',

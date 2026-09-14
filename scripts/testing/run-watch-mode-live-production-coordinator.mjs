@@ -10,7 +10,7 @@ import zlib from 'node:zlib';
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { currentGitProvenance } from './git-provenance.mjs';
 import { checkWatchDiskSpace, verifyWatchDiskSpaceReceipt, writeWatchDiskReceipt, WATCH_DISK_MIN_FREE_BYTES_PER_VOLUME } from './watch-mode-disk-lifecycle.mjs';
-import { recordWatchHistoryReport } from './watch-mode-history-reports.mjs';
+import { previewWatchHistoryReport, recordWatchHistoryReport, WATCH_HISTORY_REPORTS_PER_WORKER } from './watch-mode-history-reports.mjs';
 import {
   DEFAULT_FEEDBACK_MODES,
   DEFAULT_MODELS,
@@ -1192,7 +1192,7 @@ export async function checkProductionWorkerDisks({ config, executionId, phase, r
 /** Archive only bounded diagnostic summaries; signed raw evidence is untouched. */
 export async function recordProductionWorkerHistories({ config, executionId, outcome, summary,
   receiptDirectory, completedAt = new Date().toISOString(), runProcess = runChildProcess,
-  recordLocal = recordWatchHistoryReport } = {}) {
+  previewLocal = previewWatchHistoryReport, recordLocal = recordWatchHistoryReport } = {}) {
   if (!SAFE_ID.test(executionId) || !['success', 'fail'].includes(outcome)
     || !Array.isArray(config?.workers) || config.workers.length < 1 || config.workers.length > 4
     || Buffer.byteLength(JSON.stringify(summary ?? null)) > 2048) throw new Error('invalid bounded history context');
@@ -1203,9 +1203,12 @@ export async function recordProductionWorkerHistories({ config, executionId, out
       historyRoot: workerPath.join(worker.guestExecutionRoot, 'artifacts', 'retained-reports', worker.workerId),
       auditRoot: workerPath.join(worker.workspaceRoot, 'artifacts', 'testing', 'watch-history-audit'),
       report: { originalRefs: [], summary: { ...summary, evidenceClass: 'diagnostic-summary-only', rawEvidenceRetired: false } } };
+    let preview;
     let receipt;
-    if (worker.transport.kind === 'local') receipt = await recordLocal(input);
-    else {
+    if (worker.transport.kind === 'local') {
+      preview = await previewLocal(input);
+      receipt = await recordLocal(input);
+    } else {
       // Verify the small implementation closure before import, even when build
       // preparation failed before source synchronization. JSON travels on stdin,
       // never as script text or an unbounded Windows command-line argument.
@@ -1217,20 +1220,35 @@ export async function recordProductionWorkerHistories({ config, executionId, out
         const expected = crypto.createHash('sha256').update(fs.readFileSync(path.join(repoRoot, relative))).digest('hex');
         return `if((Get-FileHash -LiteralPath ${quote(path.win32.join(worker.workspaceRoot, relative))} -Algorithm SHA256).Hash.ToLowerInvariant() -ne '${expected}'){throw 'history implementation hash mismatch'}`;
       }).join('; ');
-      const code = "const fs=await import('node:fs');const u=await import('node:url');const m=await import(u.pathToFileURL(process.argv[1]).href);const b=fs.readFileSync(0);if(b.length>16384)throw Error('history input bound');const r=m.recordWatchHistoryReport(JSON.parse(b.toString('utf8')));console.log(JSON.stringify(r));";
+      const code = "const fs=await import('node:fs');const u=await import('node:url');const m=await import(u.pathToFileURL(process.argv[1]).href);const b=fs.readFileSync(0);if(b.length>16384)throw Error('history input bound');const i=JSON.parse(b.toString('utf8'));const p=m.previewWatchHistoryReport(i);if(p.mode!=='dry-run'||p.verdict!=='passed'||p.mutationCount!==0||p.deletionAuthorized!==false)throw Error('history dry-run failed');const r=m.recordWatchHistoryReport(i);console.log(JSON.stringify({preview:p,receipt:r}));";
       const body = `$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Text.UTF8Encoding]::new($false); ${checks}; & node.exe --input-type=module -e ${quote(code)} ${quote(path.win32.join(worker.workspaceRoot, files[0]))}; if($LASTEXITCODE -ne 0){throw 'history recording failed'}`;
       const command = ['powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(body, 'utf16le').toString('base64')];
       const result = await runProcess(config.sshExecutable, [...sshBaseArgs(worker), `${worker.user}@${worker.host}`, ...command],
         { timeoutMs: 30000, input: JSON.stringify(input), environment: windowsPowerShellEnvironment() });
       ensureSuccessful(result, `worker ${worker.workerId} history retention`);
       if (Buffer.byteLength(String(result.stdout)) > 65536) throw new Error('history response bound exceeded');
-      receipt = JSON.parse(String(result.stdout).trim().replace(/^\uFEFF/u, ''));
+      const response = JSON.parse(String(result.stdout).trim().replace(/^\uFEFF/u, ''));
+      preview = response.preview;
+      receipt = response.receipt;
+    }
+    const canonicalWorkerPath = (value) => workerPath.resolve(value).toLowerCase();
+    if (preview?.artifactKind !== 'watch-history-report-dry-run' || preview.mode !== 'dry-run'
+      || preview.verdict !== 'passed' || preview.releaseEvidence !== false || preview.deletionAuthorized !== false
+      || preview.mutationCount !== 0 || preview.cleanupScope !== 'owned-report-files-only'
+      || preview.retentionPerWorker !== WATCH_HISTORY_REPORTS_PER_WORKER
+      || preview.workerId !== worker.workerId || preview.executionId !== executionId
+      || canonicalWorkerPath(preview.historyRoot ?? '') !== canonicalWorkerPath(input.historyRoot)
+      || canonicalWorkerPath(preview.auditRoot ?? '') !== canonicalWorkerPath(input.auditRoot)
+      || !Array.isArray(preview.wouldRetire)
+      || preview.wouldRetire.some((entry) => !Array.isArray(entry.files)
+        || entry.files.slice().sort().join(',') !== 'manifest.json,report.json')) {
+      throw Object.assign(new Error(`worker ${worker.workerId} history dry-run is incomplete`), { receipt: preview });
     }
     if (receipt?.verdict !== 'success' || receipt.ok !== true || receipt.archived !== true || receipt.releaseEvidence !== false
       || receipt.executionId !== executionId || receipt.workerId !== worker.workerId
       || typeof receipt.reportRetained !== 'boolean' || !receipt.reportPath || !receipt.auditOutcomePath
       || !receipt.auditArchivePath) throw Object.assign(new Error(`worker ${worker.workerId} history is incomplete`), { receipt });
-    return { ...receipt, availableReportPath: receipt.reportRetained ? receipt.reportPath : null };
+    return { ...receipt, dryRun: preview, availableReportPath: receipt.reportRetained ? receipt.reportPath : null };
   }));
   const receipt = { schemaVersion: 1, artifactKind: 'watch-mode-four-worker-history-receipt', executionId, completedAt,
     verdict: results.every((result) => result.status === 'fulfilled') ? 'passed' : 'failed',

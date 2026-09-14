@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { recordWatchHistoryReport, WATCH_HISTORY_REPORT_MAX_BYTES } from './watch-mode-history-reports.mjs';
+import { previewWatchHistoryReport, recordWatchHistoryReport, WATCH_HISTORY_REPORT_MAX_BYTES } from './watch-mode-history-reports.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const json = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -41,6 +41,47 @@ function entries(root) {
     .map((item) => ({ id: item.name, dir: path.join(root, item.name),
       report: json(path.join(root, item.name, 'report.json')) }));
 }
+
+function previewInput(f, n, options = {}) {
+  return { ...f, workerId: 'host-a', executionId: `run-${n}`, completedAt: completed(n),
+    outcome: n % 2 ? 'success' : 'fail',
+    report: { originalRefs: [{ ref: 'opaque://signed-report', sha256: hash('untouched evidence') }],
+      summary: { message: 'lightweight summary', attempt: n } }, ...options };
+}
+
+test('dry-run is mutation-free, validates owned roots and predicts only the 31st lightweight report cleanup', (t) => {
+  const f = fixture(t);
+  const absent = previewWatchHistoryReport(previewInput(f, 1));
+  assert.equal(absent.mode, 'dry-run');
+  assert.equal(absent.rootState, 'absent');
+  assert.equal(absent.mutationCount, 0);
+  assert.equal(absent.deletionAuthorized, false);
+  assert.deepEqual(absent.wouldRetire, []);
+  assert.equal(fs.existsSync(f.historyRoot), false);
+  assert.equal(fs.existsSync(f.auditRoot), false);
+  for (let n = 1; n <= 30; n += 1) assert.equal(f.record(n).ok, true);
+  const before = fs.readdirSync(f.historyRoot).sort();
+  const preview = previewWatchHistoryReport(previewInput(f, 31));
+  assert.equal(preview.rootState, 'owned');
+  assert.equal(preview.cleanupScope, 'owned-report-files-only');
+  assert.equal(preview.retentionPerWorker, 30);
+  assert.equal(preview.retainedByWorker['host-a'], 30);
+  assert.deepEqual(preview.wouldRetire.map((entry) => ({ executionId: entry.executionId, files: entry.files })),
+    [{ executionId: 'run-1', files: ['manifest.json', 'report.json'] }]);
+  assert.deepEqual(fs.readdirSync(f.historyRoot).sort(), before, 'dry-run must not create, remove, or rename entries');
+  assert.equal(f.record(31).cleanup.deleted[0].executionId, 'run-1');
+});
+
+test('dry-run rejects a mismatched audit root without changing the owned report tree', (t) => {
+  const f = fixture(t);
+  const recorded = f.record(1);
+  const before = fs.readFileSync(recorded.reportPath);
+  const wrongAudit = path.join(f.base, 'other-audit');
+  assert.throws(() => previewWatchHistoryReport(previewInput(f, 2, { auditRoot: wrongAudit })),
+    /missing fixed audit ownership|ownership.*mismatch/u);
+  assert.equal(fs.existsSync(wrongAudit), false);
+  assert.deepEqual(fs.readFileSync(recorded.reportPath), before);
+});
 
 test('four worker identities each retain the newest 30 success/fail terminal reports at 31 and 32', (t) => {
   const hosts = [];

@@ -3265,19 +3265,24 @@ test('four-host lightweight history is collect-all, stdin-only and separate from
     knownHostsFile: 'pins', hostKeyAlias: workerId, identityFile: 'key',
   })) };
   const seen = [];
+  const preview = (input) => ({ artifactKind: 'watch-history-report-dry-run', mode: 'dry-run', verdict: 'passed',
+    releaseEvidence: false, deletionAuthorized: false, mutationCount: 0, cleanupScope: 'owned-report-files-only',
+    retentionPerWorker: 30, workerId: input.workerId, executionId: input.executionId,
+    historyRoot: input.historyRoot, auditRoot: input.auditRoot, wouldRetire: [] });
   const successful = (input) => ({ verdict: 'success', workerId: input.workerId, executionId: input.executionId,
     ok: true, archived: true, releaseEvidence: false,
     reportRetained: true, reportPath: 'report.json', auditOutcomePath: 'audit.json', auditArchivePath: 'archive.json', rawEvidenceRetired: false });
   const options = { config, executionId: 'history-fixture', outcome: 'fail', summary: { marker: '不可信文本; $(do-not-execute)' },
-    receiptDirectory: root, recordLocal: (input) => { seen.push(input); return successful(input); },
+    receiptDirectory: root, previewLocal: (input) => preview(input), recordLocal: (input) => { seen.push(input); return successful(input); },
     runProcess: async (exe, args, settings) => {
       assert.equal(exe, 'fake-ssh.exe'); assert.equal(settings.timeoutMs, 30000);
       const script = Buffer.from(args.at(-1), 'base64').toString('utf16le');
       assert.ok(script.includes('Get-FileHash')); assert.ok(script.includes('fs.readFileSync(0)'));
+      assert.ok(script.indexOf('previewWatchHistoryReport') < script.indexOf('recordWatchHistoryReport'));
       assert.ok(!script.includes('do-not-execute'));
       const input = JSON.parse(settings.input); seen.push(input);
       if (input.workerId === 'vm167') throw new Error('archive unavailable');
-      return { exitCode: 0, stdout: JSON.stringify(successful(input)), stderr: '' };
+      return { exitCode: 0, stdout: JSON.stringify({ preview: preview(input), receipt: successful(input) }), stderr: '' };
     } };
   await assert.rejects(recordProductionWorkerHistories(options), (error) => {
     assert.equal(error.code, 'watch.history.failed');
@@ -3304,6 +3309,9 @@ test('automatic history transport consumes the real owned-report API without tou
   assert.equal(result.verdict, 'passed');
   const worker = result.workers[0].receipt;
   assert.equal(worker.releaseEvidence, false);
+  assert.equal(worker.dryRun.mode, 'dry-run');
+  assert.equal(worker.dryRun.mutationCount, 0);
+  assert.equal(worker.dryRun.deletionAuthorized, false);
   assert.equal(worker.counts.retained, 1);
   assert.ok(fs.existsSync(worker.reportPath)); assert.ok(fs.existsSync(worker.auditOutcomePath));
   assert.equal(fs.readFileSync(raw, 'utf8'), 'signed-original');
@@ -3333,6 +3341,8 @@ test('remote history command passes UTF-8 stdin through real PowerShell to the o
       return { exitCode: native.status, stdout: native.stdout, stderr: native.stderr };
     } });
   assert.equal(result.verdict, 'passed');
+  assert.equal(result.workers[0].receipt.dryRun.mode, 'dry-run');
+  assert.equal(result.workers[0].receipt.dryRun.mutationCount, 0);
   const report = JSON.parse(fs.readFileSync(result.workers[0].receipt.reportPath, 'utf8'));
   assert.equal(report.summary.text, summary.text);
 });

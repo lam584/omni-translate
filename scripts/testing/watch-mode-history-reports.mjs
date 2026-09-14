@@ -245,6 +245,68 @@ function prepareRoots(historyRoot, auditRoot) {
     } };
 }
 
+function inspectRootsReadOnly(historyRoot, auditRoot) {
+  historyRoot = location(historyRoot);
+  auditRoot = location(auditRoot);
+  requireThat(!rootsOverlap(historyRoot, auditRoot) && !rootsOverlap(auditRoot, historyRoot), 'history/audit roots must be disjoint');
+  const historyPresent = Boolean(statIfPresent(historyRoot));
+  const auditPresent = Boolean(statIfPresent(auditRoot));
+  if (historyPresent) verifiedWatchPath(historyRoot);
+  if (auditPresent) verifiedWatchPath(auditRoot);
+  const historyMarkerPath = path.join(historyRoot, HISTORY_MARKER);
+  const auditMarkerPath = path.join(auditRoot, AUDIT_MARKER);
+  const historyMarkerPresent = historyPresent && Boolean(statIfPresent(historyMarkerPath));
+  const auditMarkerPresent = auditPresent && Boolean(statIfPresent(auditMarkerPath));
+  if (historyPresent && !historyMarkerPresent) {
+    requireThat(fs.readdirSync(historyRoot).length === 0, `refusing to adopt nonempty unowned root: ${historyRoot}`);
+  }
+  if (auditPresent && !auditMarkerPresent) {
+    requireThat(fs.readdirSync(auditRoot).length === 0, `refusing to adopt nonempty unowned root: ${auditRoot}`);
+  }
+  requireThat(!historyMarkerPresent || auditMarkerPresent, 'missing fixed audit ownership; manual recovery required');
+  if (!historyMarkerPresent) {
+    if (auditMarkerPresent) {
+      const stored = readJson(auditMarkerPath, 8192);
+      const value = stored.value;
+      requireThat(value.hostId === os.hostname() && key(value.auditRoot ?? '') === key(auditRoot)
+        && typeof value.auditId === 'string' && UUID.test(value.auditId), 'audit root ownership/path mismatch');
+      requireThat(stored.bytes.equals(jsonBytes({ ...base('watch-history-audit-root'), hostId: value.hostId,
+        auditRoot, auditId: value.auditId, role: 'audit' })), 'invalid root ownership manifest');
+    }
+    return { historyRoot, auditRoot, hostId: os.hostname(), rootId: null, context: null,
+      rootState: historyPresent ? 'empty-unowned' : 'absent' };
+  }
+  const history = readJson(historyMarkerPath, 8192);
+  const audit = readJson(auditMarkerPath, 8192);
+  const stored = history.value;
+  const auditValue = audit.value;
+  requireThat(stored.hostId === os.hostname() && auditValue.hostId === stored.hostId
+    && typeof stored.rootId === 'string' && UUID.test(stored.rootId)
+    && typeof stored.auditId === 'string' && UUID.test(stored.auditId) && auditValue.auditId === stored.auditId
+    && key(stored.historyRoot ?? '') === key(historyRoot) && key(stored.auditRoot ?? '') === key(auditRoot)
+    && key(auditValue.auditRoot ?? '') === key(auditRoot), 'history root ownership or fixed audit binding mismatch');
+  const historyValue = { ...base('watch-history-root'), rootId: stored.rootId, hostId: stored.hostId,
+    historyRoot, auditRoot, auditId: stored.auditId, role: 'history' };
+  const auditExpected = { ...base('watch-history-audit-root'), hostId: stored.hostId,
+    auditRoot, auditId: stored.auditId, role: 'audit' };
+  requireThat(history.bytes.equals(jsonBytes(historyValue)) && audit.bytes.equals(jsonBytes(auditExpected)),
+    'invalid root ownership manifest');
+  const directories = [historyRoot, auditRoot].map((root) => ({ root, stamp: directoryStamp(root) }));
+  const markers = [{ target: historyMarkerPath, digest: history.digest, stamp: history.stamp },
+    { target: auditMarkerPath, digest: audit.digest, stamp: audit.stamp }];
+  const context = { historyRoot, auditRoot, rootId: stored.rootId, hostId: stored.hostId,
+    guard() {
+      for (const item of directories) directoryStamp(item.root, item.stamp);
+      for (const item of markers) {
+        const live = readJson(item.target, 8192);
+        requireThat(live.digest === item.digest && live.stamp === item.stamp, 'root ownership changed during operation');
+      }
+    } };
+  context.guard();
+  requireThat(!statIfPresent(path.join(historyRoot, LOCK)), 'history lock is present; dry-run cannot prove a stable cleanup snapshot');
+  return { historyRoot, auditRoot, hostId: stored.hostId, rootId: stored.rootId, context, rootState: 'owned' };
+}
+
 function identity(value) {
   requireThat(typeof value === 'string' && /^[a-z0-9][a-z0-9._-]{0,127}$/iu.test(value), 'invalid worker/execution/protected identity');
   return value;
@@ -348,6 +410,53 @@ function entryRef(entry) {
   return { entryId: entry.entryId, workerId: entry.workerId, executionId: entry.executionId, completedAt: entry.completedAt };
 }
 
+function cleanupCandidates(entries, protectedIds) {
+  const groups = new Map();
+  for (const entry of entries) {
+    if (!groups.has(entry.workerId)) groups.set(entry.workerId, []);
+    groups.get(entry.workerId).push(entry);
+  }
+  const candidates = [];
+  for (const group of groups.values()) {
+    group.sort((a, b) => Date.parse(b.completedAt) - Date.parse(a.completedAt)
+      || (a.entryId < b.entryId ? -1 : a.entryId > b.entryId ? 1 : 0));
+    candidates.push(...group.slice(WATCH_HISTORY_REPORTS_PER_WORKER)
+      .filter((entry) => !protectedIds.has(entry.entryId) && !protectedIds.has(entry.executionId)));
+  }
+  return candidates.sort((a, b) => Date.parse(a.completedAt) - Date.parse(b.completedAt)
+    || a.entryId.localeCompare(b.entryId, 'en'));
+}
+
+/** Read-only cleanup preview. It never initializes roots, writes receipts, or authorizes deletion. */
+export function previewWatchHistoryReport(options = {}) {
+  const pins = options.protectedIds ?? [];
+  requireThat(Array.isArray(pins) && pins.length <= 1024, 'protectedIds must be a bounded array');
+  const protectedIds = new Set(pins.map(identity));
+  const roots = inspectRootsReadOnly(options.historyRoot, options.auditRoot);
+  const validationContext = roots.context ?? { rootId: '00000000-0000-0000-0000-000000000000', hostId: roots.hostId };
+  const prospective = entryPayload(validationContext, options);
+  const snapshot = roots.context ? scan(roots.context, protectedIds) : { valid: [], pinned: [] };
+  const existing = snapshot.valid.find((entry) => entry.entryId === prospective.entryId);
+  if (existing) {
+    requireThat(existing.reportSha256 === prospective.reportSha256 && existing.manifestSha256 === prospective.manifestSha256,
+      'immutable execution conflict');
+  }
+  const projected = existing ? snapshot.valid : [...snapshot.valid, prospective];
+  const candidates = cleanupCandidates(projected, protectedIds);
+  const retainedByWorker = {};
+  for (const entry of projected.filter((entry) => !candidates.some((candidate) => candidate.entryId === entry.entryId))) {
+    retainedByWorker[entry.workerId] = (retainedByWorker[entry.workerId] ?? 0) + 1;
+  }
+  return { schemaVersion: 1, artifactKind: 'watch-history-report-dry-run', mode: 'dry-run', verdict: 'passed',
+    releaseEvidence: false, deletionAuthorized: false, mutationCount: 0, cleanupScope: 'owned-report-files-only',
+    historyRoot: roots.historyRoot, auditRoot: roots.auditRoot, rootState: roots.rootState, rootId: roots.rootId,
+    hostId: roots.hostId, workerId: prospective.workerId, executionId: prospective.executionId, entryId: prospective.entryId,
+    wouldArchive: !existing, retentionPerWorker: WATCH_HISTORY_REPORTS_PER_WORKER, retainedByWorker,
+    wouldRetire: candidates.map((entry) => ({ ...entryRef(entry), files: [...FILES] })),
+    unknownEntries: snapshot.pinned.filter((entry) => entry.status === 'unknown').map((entry) => ({ entryId: entry.entryId, status: entry.status })),
+  };
+}
+
 function assertRemaining(context, entry, remaining) {
   context.guard();
   const dir = child(context, entry.entryId);
@@ -363,19 +472,7 @@ function assertRemaining(context, entry, remaining) {
 
 function cleanup(context, protectedIds, result) {
   let snapshot = scan(context, protectedIds);
-  const groups = new Map();
-  for (const entry of snapshot.valid) {
-    if (!groups.has(entry.workerId)) groups.set(entry.workerId, []);
-    groups.get(entry.workerId).push(entry);
-  }
-  const candidates = [];
-  for (const group of groups.values()) {
-    group.sort((a, b) => Date.parse(b.completedAt) - Date.parse(a.completedAt)
-      || (a.entryId < b.entryId ? -1 : a.entryId > b.entryId ? 1 : 0));
-    candidates.push(...group.slice(WATCH_HISTORY_REPORTS_PER_WORKER)
-      .filter((entry) => !protectedIds.has(entry.entryId) && !protectedIds.has(entry.executionId)));
-  }
-  candidates.sort((a, b) => Date.parse(a.completedAt) - Date.parse(b.completedAt) || a.entryId.localeCompare(b.entryId, 'en'));
+  const candidates = cleanupCandidates(snapshot.valid, protectedIds);
   for (const entry of candidates) {
     const ref = entryRef(entry);
     const prefix = path.join(context.auditRoot, `${result.operationId}-cleanup-${entry.entryId}`);

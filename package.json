@@ -115,7 +115,8 @@
     "quality:gate:auto": "node ./scripts/testing/run-quality-gate-auto.mjs",
     "quality:gate:release": "node ./scripts/testing/run-quality-gate.mjs",
     "dev:desktop:fast": "npm run dev:tauri:fast --workspace @omni/desktop",
-    "perf:startup-readiness:fast": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/testing/measure-startup-readiness.ps1 -UseFastDev"
+    "perf:startup-readiness:fast": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/testing/measure-startup-readiness.ps1 -UseFastDev",
+    "test:watch-mode-aec-retained-correlation": "node --test ./scripts/testing/watch-mode-retained-pcm-correlation.test.mjs"
   },
   "devDependencies": {
     "ajv": "^8.17.1"

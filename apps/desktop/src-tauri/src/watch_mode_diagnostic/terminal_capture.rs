@@ -418,10 +418,16 @@ async fn run_evidence_driven_capture(
         ));
     };
     recorder.push(
-        "mediaPlaybackCompleted",
+        if marker.disposition == "completed" {
+            "mediaPlaybackCompleted"
+        } else {
+            "mediaPlaybackFailed"
+        },
         media_playback_completed_at_unix_ms,
         json!({
             "authority": "runner-input-complete-marker",
+            "disposition": marker.disposition,
+            "failureReason": marker.failure_reason,
             "authoritativeTransformedReferenceFrames": marker.authoritative_transformed_reference_frames,
             "boundedCaptureGraceFrames": marker.bounded_capture_grace_frames,
             "maxExternalAudioSamples": marker.max_external_audio_samples,
@@ -435,6 +441,7 @@ async fn run_evidence_driven_capture(
             "markerCompletedAtUnixMs": marker.completed_at_unix_ms,
         }),
     );
+    let runner_failure = marker.failure_reason.clone();
     let provider_app = app.clone();
     let (provider_result_tx, provider_result_rx) = std::sync::mpsc::sync_channel(1);
     let provider_task = tauri::async_runtime::spawn_blocking(move || {
@@ -674,7 +681,21 @@ async fn run_evidence_driven_capture(
             "sha256": report_receipt.sha256,
         }),
     );
-    Ok(recorder)
+    finish_capture_for_runner_disposition(recorder, runner_failure)
+}
+
+pub(super) fn finish_capture_for_runner_disposition(
+    recorder: TerminalAuthorityRecorder,
+    runner_failure: Option<String>,
+) -> Result<TerminalAuthorityRecorder, StrictCaptureFailure> {
+    match runner_failure {
+        Some(reason) => Err(strict_capture_failure(
+            recorder,
+            "runner-input-failed",
+            format!("runner declared input failed/incomplete after graceful Provider drain: {reason}"),
+        )),
+        None => Ok(recorder),
+    }
 }
 
 async fn await_provider_owner_after_playback_drain(

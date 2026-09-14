@@ -43,6 +43,10 @@ pub(super) struct InputCompleteMarker {
     pub(super) lease_id: String,
     pub(super) completed_at_unix_ms: u64,
     pub(super) signaled_at_unix_ms: u64,
+    #[serde(default = "default_input_complete_disposition")]
+    pub(super) disposition: String,
+    #[serde(default)]
+    pub(super) failure_reason: Option<String>,
     #[serde(default)]
     pub(super) authoritative_transformed_reference_frames: Option<u64>,
     #[serde(default)]
@@ -51,6 +55,10 @@ pub(super) struct InputCompleteMarker {
     pub(super) media_playback_completed_at_unix_ms: Option<u64>,
     #[serde(default)]
     pub(super) max_external_audio_samples: Option<u64>,
+}
+
+fn default_input_complete_disposition() -> String {
+    "completed".to_string()
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -915,7 +915,8 @@ function extractedLiveScenarioEnvironmentFunctions() {
 }
 
 function extractedRunnerPolicyFunctions() {
-  return `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.Runner.psm1'))} -Force -DisableNameChecking; `;
+  return `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.Runner.psm1'))} -Force -DisableNameChecking; ` +
+    `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.InputCompletion.psm1'))} -Force -DisableNameChecking; `;
 }
 
 test('run-watch-mode-live.ps1 parses without PowerShell syntax errors', { skip: !isWindows }, () => {
@@ -1156,8 +1157,63 @@ test('input-complete marker is request-path bound, atomically published, and cre
   assert.equal(result.secondFailed, true);
   assert.equal(result.unchanged, true);
   assert.equal(result.marker.signaledAtUnixMs, result.marker.completedAtUnixMs);
+  assert.equal(result.marker.disposition, 'completed');
+  assert.equal(result.marker.authoritativeTransformedReferenceFrames, 2);
+  assert.equal(result.marker.boundedCaptureGraceFrames, 2);
   assert.equal(result.marker.runMarker, 'run-1');
   assert.equal(fs.readdirSync(root).some((name) => name.endsWith('.tmp')), false);
+});
+
+test('failed playback marker preserves failed-incomplete disposition for graceful Provider drain', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-input-failed-'));
+  const referencePath = path.join(root, 'reference.pcm');
+  const markerPath = path.join(root, 'input-complete.json');
+  fs.writeFileSync(referencePath, Buffer.from([1, 0, 2, 0]));
+  fs.writeFileSync(path.join(root, 'playback.json'), JSON.stringify({
+    passed: false,
+    finishedAtMs: 2000,
+    referencePcmPath: referencePath,
+    injectorResult: { detail: 'render underrun' },
+  }), 'utf8');
+  const probe = runPowerShell([
+    '-Command',
+    extractedRunnerPolicyFunctions() +
+      `$env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES = '4'; ` +
+      `Write-WatchModeFailedInputCompleteMarker -Path ${quotePowerShell(markerPath)} ` +
+        `-RunMarker 'run-1' -CellId 'cell-1' -LeaseId 'lease-1' ` +
+        `-OutputDirectory ${quotePowerShell(root)} -FailureReason 'render underrun' | Out-Null; ` +
+      `Get-Content -LiteralPath ${quotePowerShell(markerPath)} -Raw`,
+  ]);
+
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+  const marker = readJsonArtifact(markerPath);
+  assert.equal(marker.disposition, 'failed-incomplete');
+  assert.equal(marker.schemaVersion, 2);
+  assert.equal(marker.failureReason, 'render underrun');
+  assert.equal(marker.mediaPlaybackCompletedAtUnixMs, 2000);
+  assert.equal(marker.authoritativeTransformedReferenceFrames, undefined);
+  assert.equal(marker.boundedCaptureGraceFrames, undefined);
+});
+
+test('failed-input terminal recognition accepts only the exact failed exit contract', { skip: !isWindows }, () => {
+  const uuid = '12345678-1234-1234-1234-123456789abc';
+  const prefix = 'custodied Watch desktop terminal failed:';
+  const valid = `${prefix} exitCode=1 terminalErrorCode=runner-input-failed terminalError=render underrun pid=42 launchId=${uuid}`;
+  const variants = [
+    valid,
+    valid.replace('exitCode=1', 'exitCode=0'),
+    valid.replace('runner-input-failed', 'provider-finish-timeout'),
+    `${valid} secondaryFailure=cleanup`,
+    valid.replace(uuid, 'not-a-uuid'),
+  ];
+  const probe = runPowerShell([
+    '-Command',
+    extractedRunnerPolicyFunctions() +
+      `$messages = ConvertFrom-Json ${quotePowerShell(JSON.stringify(variants))}; ` +
+      `$messages | ForEach-Object { Test-WatchModeExpectedFailedInputTerminalError -Message $_ } | ConvertTo-Json -Compress`,
+  ]);
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+  assert.deepEqual(JSON.parse(probe.stdout.trim().split(/\r?\n/u).at(-1)), [true, false, false, false, false]);
 });
 
 test('strict execution context rejects signed terminal paths outside their canonical directory', { skip: !isWindows }, () => {

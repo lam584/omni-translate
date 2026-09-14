@@ -34,6 +34,8 @@ use self::terminal_capture::{
     start_diagnostic_audio_route, wait_for_process_exclusion_source,
 };
 #[cfg(test)]
+use self::terminal_capture::finish_capture_for_runner_disposition;
+#[cfg(test)]
 use self::playback_drain::{
     local_playback_drain_authority, local_playback_drain_estimate,
 };
@@ -295,12 +297,6 @@ fn parse_input_complete_marker(
             marker.artifact_kind
         ));
     }
-    if marker.schema_version != 1 {
-        return Err(format!(
-            "schemaVersion mismatch: expected 1, observed {}",
-            marker.schema_version
-        ));
-    }
     for (field, observed, required) in [
         ("runMarker", marker.run_marker.as_str(), expected.run_marker.as_str()),
         ("cellId", marker.cell_id.as_str(), expected.cell_id.as_str()),
@@ -325,6 +321,19 @@ fn parse_input_complete_marker(
             "input-complete marker timestamps do not preserve media -> signal -> completion order"
                 .to_string(),
         );
+    }
+    match (marker.schema_version, marker.disposition.as_str()) {
+        (1, "completed") if marker.failure_reason.is_none() => {}
+        (2, "failed-incomplete")
+            if marker
+                .failure_reason
+                .as_deref()
+                .is_some_and(|reason| !reason.trim().is_empty()) => {}
+        (1, "completed") => return Err("completed input marker must not contain failureReason".to_string()),
+        (2, "failed-incomplete") => return Err("failed-incomplete input marker requires failureReason".to_string()),
+        (schema, disposition) => return Err(format!(
+            "unsupported input-complete schema/disposition: schemaVersion={schema} disposition={disposition}"
+        )),
     }
     Ok(marker)
 }

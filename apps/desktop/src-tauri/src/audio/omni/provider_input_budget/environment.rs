@@ -404,7 +404,11 @@ impl ProviderInputBudget {
     let budget = Self {
     enabled: Some(EnabledProviderInputBudget {
     final_ledger: Mutex::new(final_ledger),
-    journal: Mutex::new(journal),
+    journal: Mutex::new(ProviderInputBudgetJournal {
+        file: journal,
+        next_sequence: 1,
+        last_occurred_at_ms: 0,
+    }),
     cell_id,
     lease_id,
     run_marker,
@@ -430,7 +434,6 @@ impl ProviderInputBudget {
     send_failures: AtomicU64::new(0),
     initial_connect_attempts: AtomicU64::new(0),
     reconnect_count: AtomicU64::new(0),
-    sequence: AtomicU64::new(0),
     budget_exceeded: AtomicBool::new(false),
     finalized: AtomicBool::new(false),
     terminal_reason: Mutex::new(None),

@@ -88,9 +88,16 @@ pub(super) struct ProviderInputBudget {
 }
 
 #[derive(Debug)]
+struct ProviderInputBudgetJournal {
+    file: File,
+    next_sequence: u64,
+    last_occurred_at_ms: u128,
+}
+
+#[derive(Debug)]
 struct EnabledProviderInputBudget {
     final_ledger: Mutex<File>,
-    journal: Mutex<File>,
+    journal: Mutex<ProviderInputBudgetJournal>,
     cell_id: String,
     lease_id: String,
     run_marker: String,
@@ -116,7 +123,6 @@ struct EnabledProviderInputBudget {
     send_failures: AtomicU64,
     initial_connect_attempts: AtomicU64,
     reconnect_count: AtomicU64,
-    sequence: AtomicU64,
     budget_exceeded: AtomicBool,
     finalized: AtomicBool,
     terminal_reason: Mutex<Option<String>>,
@@ -469,7 +475,23 @@ impl EnabledProviderInputBudget {
         attempted_samples: Option<u64>,
         finalized: bool,
     ) -> Result<(), String> {
-        let sequence = self.sequence.fetch_add(1, Ordering::SeqCst) + 1;
+        self.write_event_at(event, attempted_samples, finalized, now_unix_ms())
+    }
+
+    fn write_event_at(
+        &self,
+        event: &str,
+        attempted_samples: Option<u64>,
+        finalized: bool,
+        observed_wall_clock_ms: u128,
+    ) -> Result<(), String> {
+        let mut journal = self
+            .journal
+            .lock()
+            .map_err(|_| "strict provider input budget journal lock was poisoned".to_string())?;
+        let sequence = journal.next_sequence;
+        journal.next_sequence = journal.next_sequence.saturating_add(1);
+        let occurred_at_ms = observed_wall_clock_ms.max(journal.last_occurred_at_ms);
         let terminal_reason = self
             .terminal_reason
             .lock()
@@ -485,7 +507,7 @@ impl EnabledProviderInputBudget {
             "artifactKind": artifact_kind,
             "event": event,
             "sequence": sequence,
-            "occurredAtMs": now_unix_ms(),
+            "occurredAtMs": occurred_at_ms,
             "cellId": self.cell_id,
             "leaseId": self.lease_id,
             "runMarker": self.run_marker,
@@ -518,16 +540,14 @@ impl EnabledProviderInputBudget {
             "finalized": finalized,
             "terminalReason": terminal_reason,
         });
-        let mut journal = self
-            .journal
-            .lock()
-            .map_err(|_| "strict provider input budget journal lock was poisoned".to_string())?;
-        serde_json::to_writer(&mut *journal, &record)
+        serde_json::to_writer(&mut journal.file, &record)
             .map_err(|error| format!("strict provider input budget journal serialize failed: {error}"))?;
         journal
+            .file
             .write_all(b"\n")
-            .and_then(|_| journal.flush())
+            .and_then(|_| journal.file.flush())
             .map_err(|error| format!("strict provider input budget journal write failed: {error}"))?;
+        journal.last_occurred_at_ms = occurred_at_ms;
         drop(journal);
         // The final ledger is the primary authority and must remain a single,
         // strictly parseable JSON snapshot even while the worker is live. The
@@ -950,7 +970,11 @@ mod tests {
         let environment = enabled_environment(&path, "10");
         let budget = budget_from_map(&environment).expect("budget");
         let enabled = budget.enabled.as_ref().expect("enabled budget");
-        let sequence_before_finalization = enabled.sequence.load(Ordering::SeqCst);
+        let sequence_before_finalization = enabled
+            .journal
+            .lock()
+            .expect("journal lock")
+            .next_sequence;
 
         let _ = std::panic::catch_unwind(|| {
             let _journal = enabled.journal.lock().expect("journal lock");
@@ -965,14 +989,22 @@ mod tests {
         assert!(error.contains("journal lock was poisoned"));
         assert!(enabled.finalized.load(Ordering::SeqCst));
         assert_eq!(
-            enabled.sequence.load(Ordering::SeqCst),
-            sequence_before_finalization + 1,
+            enabled
+                .journal
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .next_sequence,
+            sequence_before_finalization,
         );
 
         budget.finalize("worker-drop").expect("cleanup observes the closed gate");
         assert_eq!(
-            enabled.sequence.load(Ordering::SeqCst),
-            sequence_before_finalization + 1,
+            enabled
+                .journal
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .next_sequence,
+            sequence_before_finalization,
             "cleanup must not attempt a second terminal journal append",
         );
     }
@@ -1472,6 +1504,72 @@ mod tests {
         let live = final_record(&ledger_path);
         assert_eq!(live["totalAttemptedSamples"], 2);
         assert_eq!(live["appendAttempts"], 1);
+    }
+
+    #[test]
+    fn journal_clamps_wall_clock_rollback_without_dropping_event() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("ledger.json");
+        let environment = enabled_environment(&path, "10");
+        let budget = budget_from_map(&environment).expect("budget");
+        let enabled = budget.enabled.as_ref().expect("enabled budget");
+        let prior_time = enabled
+            .journal
+            .lock()
+            .expect("journal lock")
+            .last_occurred_at_ms;
+
+        enabled
+            .write_event_at("clock_rollback", None, false, prior_time.saturating_sub(1_068))
+            .expect("rollback event");
+
+        let journal = journal_records(&path);
+        assert_eq!(journal.len(), 2);
+        assert_eq!(journal[0]["sequence"], 1);
+        assert_eq!(journal[1]["sequence"], 2);
+        assert_eq!(journal[1]["event"], "clock_rollback");
+        assert_eq!(journal[1]["occurredAtMs"], journal[0]["occurredAtMs"]);
+    }
+
+    #[test]
+    fn concurrent_journal_writes_are_linearized_with_sequence_and_time() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("ledger.json");
+        let environment = enabled_environment(&path, "100");
+        let budget = Arc::new(budget_from_map(&environment).expect("budget"));
+        let barrier = Arc::new(Barrier::new(9));
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let budget = Arc::clone(&budget);
+            let barrier = Arc::clone(&barrier);
+            workers.push(thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..16 {
+                    budget
+                        .write_event("concurrent", None, false)
+                        .expect("journal event");
+                }
+            }));
+        }
+        barrier.wait();
+        for worker in workers {
+            worker.join().expect("worker");
+        }
+
+        let journal = journal_records(&path);
+        assert_eq!(journal.len(), 1 + 8 * 16);
+        for (index, entry) in journal.iter().enumerate() {
+            assert_eq!(entry["sequence"], (index + 1) as u64);
+            if index > 0 {
+                assert!(
+                    entry["occurredAtMs"].as_u64()
+                        >= journal[index - 1]["occurredAtMs"].as_u64()
+                );
+            }
+        }
     }
 
     #[test]

@@ -29,6 +29,30 @@ pub(super) use state::{OmniSocketEventContext, OmniSocketEventState, OmniSocketP
 
 pub(super) struct OmniSocketEventProcessor;
 
+fn skip_tick_after_read_error(error: &tungstenite::Error) -> bool {
+    !is_retryable_read_poll_error(error)
+}
+
+#[cfg(test)]
+mod read_poll_scheduling_tests {
+    use super::*;
+
+    #[test]
+    fn idle_poll_preserves_pacing_while_fatal_error_skips_tick() {
+        let idle = tungstenite::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "idle",
+        ));
+        assert!(!skip_tick_after_read_error(&idle));
+
+        let fatal = tungstenite::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "fatal",
+        ));
+        assert!(skip_tick_after_read_error(&fatal));
+    }
+}
+
 fn bailian_provider(provider: &ProviderDraftInput) -> bool {
     provider.kind == "dashscope"
 }
@@ -1415,6 +1439,7 @@ impl OmniSocketEventProcessor {
             store,
             &mut event_diagnostics,
         );
+        let skip_tick = skip_tick_after_read_error(&error);
         let reconnect_state = OmniConnectionCoordinator::recover_read_error(
             OmniReconnectState {
                 socket,
@@ -1445,7 +1470,7 @@ impl OmniSocketEventProcessor {
         voice_fallback_applied = reconnect_state.voice_fallback_applied;
         socket_reconnected = reconnect_state.socket_reconnected;
         reconnected_session_update = reconnect_state.reconnected_session_update;
-        return poll_result!(true);
+        return poll_result!(skip_tick);
             }
         }
 

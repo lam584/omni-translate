@@ -368,13 +368,10 @@ impl OmniConnectionCoordinator {
         error: tungstenite::Error,
         provider_input_budget: &ProviderInputBudget,
     ) -> Result<OmniReconnectState<C::Socket>, String> {
-        let err_str = error.to_string();
-        if err_str.contains("timed out")
-            || err_str.contains("WouldBlock")
-            || err_str.contains("10060")
-        {
+        if is_retryable_read_poll_error(&error) {
             return Ok(state);
         }
+        let err_str = error.to_string();
         store.watch_session_report.record_session_issue(
             "model",
             "provider-websocket-read-failed",

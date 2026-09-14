@@ -82,7 +82,7 @@ mod realtime_socket;
 mod response_lifecycle;
 mod response_ledger;
 pub(crate) use self::realtime_socket::{
-    RealtimeSocket, RealtimeSocketConnector, TungsteniteConnector,
+    is_retryable_read_poll_error, RealtimeSocket, RealtimeSocketConnector, TungsteniteConnector,
 };
 pub(crate) mod session_errors;
 #[cfg(test)]

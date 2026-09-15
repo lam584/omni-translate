@@ -21,6 +21,9 @@ impl AudioStateStore {
             echo_canceller: Mutex::new(None),
             aec_diagnostic_tap: AecDiagnosticTap::from_env(),
             echo_render_clock: Mutex::new(EchoRenderClock::default()),
+            echo_reference_matcher: Mutex::new(
+                crate::audio::speech::CaptureClockReferenceMatcher::default(),
+            ),
             speaker_playback_last_active_at: Mutex::new(None),
             deferred_subtitle_translation_cues: DeferredTranslationStore::new(),
             active_omni_speech_config: Mutex::new(None),

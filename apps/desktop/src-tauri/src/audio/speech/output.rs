@@ -743,6 +743,7 @@ where
                 .map_err(|error| error.to_string())
         })?;
         let observed_at = Instant::now();
+        let submitted_qpc_100ns = crate::audio::engine::aec_timing::qpc_now_100ns();
         let endpoint_padding_frames = audio_client
             .get_current_padding()
             .map_err(|error| error.to_string())?;
@@ -757,6 +758,7 @@ where
                 SPEAKER_CHANNEL_COUNT,
                 audio_frames_to_duration(window.played_frames),
                 window.submitted_frames,
+                submitted_qpc_100ns,
                 window.endpoint_padding_frames,
                 physical_prefix_offset_frames,
                 observed_at,
@@ -1062,6 +1064,7 @@ mod render_reference_pacer_tests {
             SPEAKER_CHANNEL_COUNT,
             Duration::from_millis(10),
             480,
+            Some(100_000),
             480,
             0,
             Instant::now(),

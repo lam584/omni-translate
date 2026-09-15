@@ -37,6 +37,7 @@ mod output_device;
 mod output_attempt;
 mod endpoint_recovery;
 mod render_submit_tracker;
+mod reference_rate_matcher;
 
 use self::aec_live_scenario::{
     active_aec_live_scenario_assignments, finish_aec_live_scenario_assignments,
@@ -44,6 +45,7 @@ use self::aec_live_scenario::{
 };
 use self::playback_engine::{SpeechPlaybackEngine, SpeechPlaybackResult, SynthesisOutput};
 pub(crate) use self::speaker_render_event::SpeakerRenderEvent;
+pub(crate) use self::reference_rate_matcher::CaptureClockReferenceMatcher;
 use self::output_device::resolve_wasapi_render_device;
 use self::output_attempt::run_wasapi_render_attempt;
 pub(crate) use self::endpoint_recovery::{

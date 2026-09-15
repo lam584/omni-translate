@@ -15,6 +15,7 @@ pub(crate) enum SpeakerRenderEvent<'a> {
         channel_count: u16,
         player_position: Duration,
         submitted_frames: u64,
+        submitted_qpc_100ns: Option<u64>,
         endpoint_padding_frames: u32,
         /// Physical silence inserted before this cue's first audible sample.
         /// It comes from the device-bound PCM, not diagnostics.

@@ -31,15 +31,19 @@ impl ProductionEchoCanceller {
             .push_render(samples, sample_rate_hz, channel_count)
     }
 
-    pub(crate) fn push_render_at(
+    pub(crate) fn process_capture_10ms_with_reference(
         &mut self,
-        samples: &[f32],
-        sample_rate_hz: u32,
-        channel_count: u16,
-        render_time: Instant,
-    ) -> Result<(), String> {
-        self.engine
-            .push_render_at(samples, sample_rate_hz, channel_count, render_time)
+        render: Option<&[f32]>,
+        captured: &[f32],
+        delay_samples: usize,
+        capture_time: Instant,
+    ) -> Result<EchoCancellationResult, String> {
+        self.engine.process_capture_10ms_with_reference(
+            render,
+            captured,
+            delay_samples,
+            capture_time,
+        )
     }
 
     pub(crate) fn process_capture(

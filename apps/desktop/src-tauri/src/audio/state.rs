@@ -144,6 +144,7 @@ pub(crate) struct AudioStateStore {
     echo_canceller: Mutex<Option<ProductionEchoCanceller>>,
     aec_diagnostic_tap: AecDiagnosticTap,
     echo_render_clock: Mutex<EchoRenderClock>,
+    echo_reference_matcher: Mutex<crate::audio::speech::CaptureClockReferenceMatcher>,
     /// Monotonic timestamp of the most recent observed speaker playback. The
     /// ASR completion can arrive just after the playback worker flips back to
     /// waiting, so the echo gate needs a bounded post-playback tail context.

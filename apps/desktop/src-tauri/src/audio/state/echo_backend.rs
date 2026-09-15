@@ -92,6 +92,7 @@ impl AudioStateStore {
         channel_count: u16,
         player_position: Duration,
         submitted_frames: u64,
+        submitted_qpc_100ns: Option<u64>,
         endpoint_padding_frames: u32,
         physical_prefix_offset_frames: u32,
         render_time: Instant,
@@ -123,20 +124,29 @@ impl AudioStateStore {
             let reference_lead_frames = reference_start
                 .saturating_sub(played)
                 .min(MAX_ECHO_RENDER_REFERENCE_LEAD_FRAMES) as u32;
-            let mut canceller_guard = self.echo_canceller
+            let canceller_guard = self
+                .echo_canceller
                 .lock()
                 .expect("echo canceller poisoned");
-            if let Some(canceller) = canceller_guard.as_mut() {
-                canceller.push_render_at(samples, sample_rate_hz, channel_count, render_time)
+            if canceller_guard.is_some() {
+                self.echo_reference_matcher
+                    .lock()
+                    .expect("echo reference matcher poisoned")
+                    .enqueue_committed(
+                        render_session_id,
+                        submitted_frames,
+                        submitted_qpc_100ns,
+                        samples,
+                    )
                     .inspect_err(|error| self.aec_diagnostic_tap.abort(error))?;
-                // Native processing, generation/sequence assignment and enqueue
-                // share this guard with capture/reset. No timestamp work when off.
+                // Only physically committed samples enter the matcher. Native
+                // reverse-stream delivery is paired with capture later.
                 if self.aec_diagnostic_tap.enabled() {
                     self.aec_diagnostic_tap.record_render(
                         samples,
                         sample_rate_hz,
                         channel_count,
-                        crate::audio::engine::aec_timing::qpc_now_100ns(),
+                        submitted_qpc_100ns,
                         clock.discontinuity_count,
                         render_session_id,
                         *owner_generation,
@@ -319,16 +329,50 @@ impl AudioStateStore {
         delay_samples: usize,
         metadata: Option<AecCaptureFrameMetadata>,
     ) -> Result<EchoCancellationResult, String> {
+        const AEC_FRAME_SAMPLES: usize = 480 * 2;
+        let render_epoch = self
+            .echo_render_clock
+            .lock()
+            .expect("echo render clock poisoned")
+            .render_timeline_epoch;
         let mut canceller_guard = self.echo_canceller
             .lock()
             .expect("echo canceller poisoned");
-        let result = canceller_guard.as_mut()
-            .ok_or_else(|| {
-                "WebRTC AEC3 production engine is not active; capture cannot be processed"
-                    .to_string()
-            })
-            .and_then(|canceller| canceller.process_capture(captured, delay_samples))
-            .inspect_err(|error| self.aec_diagnostic_tap.abort(error))?;
+        let canceller = canceller_guard.as_mut().ok_or_else(|| {
+            "WebRTC AEC3 production engine is not active; capture cannot be processed".to_string()
+        })?;
+        let mut processed = Vec::with_capacity(captured.len());
+        for (index, frame) in captured.chunks_exact(AEC_FRAME_SAMPLES).enumerate() {
+            let matched = if let (Some(epoch), Some(frame_metadata)) = (render_epoch, metadata) {
+                let mut matcher = self
+                    .echo_reference_matcher
+                    .lock()
+                    .expect("echo reference matcher poisoned");
+                matcher.observe_capture_clock(
+                    epoch,
+                    frame_metadata.continuity_id,
+                    frame_metadata.queue_head_device_frame_index
+                        .saturating_add(index as u64 * 480),
+                    frame_metadata.queue_head_qpc_100ns
+                        .saturating_add(index as u64 * 100_000),
+                    frame_metadata.queue_head_clock_valid
+                        && !frame_metadata.timestamp_error
+                        && !frame_metadata.data_discontinuity,
+                );
+                matcher.take_10ms(epoch)
+            } else {
+                None
+            };
+            let result = canceller.process_capture_10ms_with_reference(
+                matched.as_deref(),
+                frame,
+                delay_samples.saturating_sub(index * AEC_FRAME_SAMPLES),
+                Instant::now(),
+            ).inspect_err(|error| self.aec_diagnostic_tap.abort(error))?;
+            processed.extend_from_slice(&result.samples);
+        }
+        processed.extend_from_slice(&captured[processed.len()..]);
+        let result = EchoCancellationResult { samples: processed };
         if let Some(metadata) = metadata {
             self.aec_diagnostic_tap
                 .record_capture(captured, &result.samples, metadata);
@@ -361,6 +405,10 @@ impl AudioStateStore {
                 .to_string()
         })?;
         canceller.reset().inspect_err(|error| self.aec_diagnostic_tap.abort(error))?;
+        self.echo_reference_matcher
+            .lock()
+            .expect("echo reference matcher poisoned")
+            .discard_buffered();
         self.aec_diagnostic_tap
             .record_reset(reason, observed_qpc_100ns, continuity_id);
         Ok(())
@@ -448,14 +496,14 @@ mod tests {
         let rows: Vec<serde_json::Value> = std::fs::read_to_string(directory.join("aec-frame-metadata.jsonl")).unwrap()
             .lines().map(|line| serde_json::from_str(line).unwrap()).collect();
         let trace = trace.lock().unwrap();
-        assert_eq!(trace.len(), rows.len());
         let mut generation = 0;
-        for (index, (native, row)) in trace.iter().zip(&rows).enumerate() {
-            if *native == "reset" { generation += 1; }
-            assert_eq!(row["kind"], *native);
+        let native_pairs = trace.windows(2).filter(|pair| pair[0] == "render-reference").collect::<Vec<_>>();
+        assert!(native_pairs.iter().all(|pair| pair[1] == "capture"));
+        for (index, row) in rows.iter().enumerate() {
+            if row["kind"] == "reset" { generation += 1; }
             assert_eq!(row["sequence"], index);
             assert_eq!(row["resetGeneration"], generation);
-            if *native == "render-reference" {
+            if row["kind"] == "render-reference" {
                 assert_eq!(row["schemaVersion"], 3);
                 assert_eq!(row["renderSessionId"], 1);
                 assert_eq!(row["ownerGeneration"], 1);
@@ -470,6 +518,71 @@ mod tests {
         }
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn native_sequence_with_tap(enabled: bool) -> Vec<&'static str> {
+        let directory = std::env::temp_dir().join(format!(
+            "aec-tap-sequence-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let mut store = AudioStateStore::new();
+        if enabled {
+            store.aec_diagnostic_tap = AecDiagnosticTap::start(&directory).unwrap();
+        }
+        *store.echo_canceller.lock().unwrap() = Some(
+            crate::audio::echo_cancel::create_echo_canceller_for_test(Box::new(TraceEngine(
+                trace.clone(),
+            )))
+            .unwrap(),
+        );
+        publish_session_start(&store, 72, "endpoint", 4);
+        publish_stream_start(&store, 72, "endpoint", 4);
+        publish_reference_frame(&store, 72, 480, 480).unwrap();
+        publish_reference_frame(&store, 72, 960, 960).unwrap();
+        store
+            .process_echo_capture_with_metadata(
+                &[0.0; 960],
+                0,
+                Some(AecCaptureFrameMetadata {
+                    packet_device_frame_index: 480,
+                    packet_qpc_100ns: 100_000,
+                    queue_head_device_frame_index: 480,
+                    queue_head_qpc_100ns: 100_000,
+                    observed_qpc_100ns: Some(100_001),
+                    continuity_id: 72,
+                    delay_samples: 0,
+                    timestamp_error: false,
+                    data_discontinuity: false,
+                    queue_head_clock_valid: true,
+                }),
+            )
+            .unwrap();
+        if enabled {
+            store.finish_aec_diagnostic_tap(Duration::from_secs(2)).unwrap();
+        }
+        let sequence = trace.lock().unwrap().clone();
+        drop(store);
+        if enabled {
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+        sequence
+    }
+
+    #[test]
+    fn diagnostic_tap_does_not_change_native_pairing_sequence() {
+        let tap_off = native_sequence_with_tap(false);
+        let tap_on = native_sequence_with_tap(true);
+        assert_eq!(tap_off, vec!["render-reference", "capture"]);
+        assert_eq!(tap_on, tap_off);
+        assert_eq!(
+            tap_on
+                .chunks_exact(2)
+                .filter(|pair| pair[0] == "render-reference" && pair[1] == "capture")
+                .count(),
+            1,
+            "every committed reference consumed by capture must form one strict native pair",
+        );
     }
 
     #[test]
@@ -499,7 +612,19 @@ mod tests {
         *store.echo_canceller.lock().unwrap() = Some(crate::audio::echo_cancel::create_echo_canceller_for_test(Box::new(RejectingRenderEngine)).unwrap());
         publish_session_start(&store, 1, "endpoint", 1);
         publish_stream_start(&store, 1, "endpoint", 1);
-        assert!(publish_reference_frame(&store, 1, 480, 480).is_err());
+        publish_reference_frame(&store, 1, 480, 480).unwrap();
+        publish_reference_frame(&store, 1, 960, 960).unwrap();
+        let error = store.process_echo_capture_with_metadata(&[0.0; 960], 0, Some(AecCaptureFrameMetadata {
+            packet_device_frame_index: 480, packet_qpc_100ns: 100_000,
+            queue_head_device_frame_index: 480, queue_head_qpc_100ns: 100_000,
+            observed_qpc_100ns: Some(100_001), continuity_id: 1, delay_samples: 0,
+            timestamp_error: false, data_discontinuity: false, queue_head_clock_valid: true,
+        }));
+        let error = match error {
+            Ok(_) => panic!("capture-paced render admission must fail"),
+            Err(error) => error,
+        };
+        assert!(error.contains("deterministic render admission failure"));
         let error = store.finish_aec_diagnostic_tap(Duration::from_secs(2)).unwrap_err();
         assert!(error.contains("deterministic render admission failure"));
         drop(store);
@@ -663,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn rejected_reference_admission_does_not_publish_partial_clock_state() {
+    fn capture_paced_render_error_is_not_hidden_and_physical_clock_remains_committed() {
         let store = AudioStateStore::new();
         publish_session_start(&store, 61, "endpoint-a", 7);
         publish_stream_start(&store, 61, "endpoint-a", 7);
@@ -671,23 +796,24 @@ mod tests {
             RejectingRenderEngine,
         ))
         .expect("install rejecting AEC3 backend");
-        *store
-            .echo_canceller
-            .lock()
-            .expect("echo canceller poisoned") = Some(canceller);
-        let before = store.echo_render_clock_snapshot();
-
-        let error = publish_reference_frame(&store, 61, 480, 480)
-            .expect_err("render admission must fail");
-
+        *store.echo_canceller.lock().expect("echo canceller poisoned") = Some(canceller);
+        publish_reference_frame(&store, 61, 480, 480).unwrap();
+        publish_reference_frame(&store, 61, 960, 960).unwrap();
+        let committed = store.echo_render_clock_snapshot();
+        let error = store.process_echo_capture_with_metadata(&[0.0; 960], 0, Some(AecCaptureFrameMetadata {
+            packet_device_frame_index: 480, packet_qpc_100ns: 100_000,
+            queue_head_device_frame_index: 480, queue_head_qpc_100ns: 100_000,
+            observed_qpc_100ns: Some(100_001), continuity_id: 1, delay_samples: 0,
+            timestamp_error: false, data_discontinuity: false, queue_head_clock_valid: true,
+        }));
+        let error = match error {
+            Ok(_) => panic!("capture-paced render admission must fail"),
+            Err(error) => error,
+        };
         assert!(error.contains("deterministic render admission failure"));
         let after = store.echo_render_clock_snapshot();
-        assert_eq!(after.player_position, before.player_position);
-        assert_eq!(after.submitted_frames, before.submitted_frames);
-        assert_eq!(after.endpoint_padding_frames, before.endpoint_padding_frames);
-        assert_eq!(after.reference_lead_frames, before.reference_lead_frames);
-        assert_eq!(after.timeline_epoch, before.timeline_epoch);
-        assert_eq!(after.discontinuity_count, before.discontinuity_count);
+        assert_eq!(after.submitted_frames, committed.submitted_frames);
+        assert_eq!(after.timeline_epoch, committed.timeline_epoch);
     }
 
     fn publish_session_start(
@@ -802,6 +928,7 @@ mod tests {
             crate::audio::echo_cancel::TARGET_CHANNEL_COUNT as u16,
             Duration::from_secs_f64(player_position_frames as f64 / 48_000.0),
             submitted_frames,
+            Some(submitted_frames.saturating_mul(100_000) / 480),
             480,
             0,
             Instant::now(),
@@ -944,6 +1071,7 @@ mod tests {
                 crate::audio::echo_cancel::TARGET_CHANNEL_COUNT as u16,
                 Duration::from_secs_f64(120.0 / 48_000.0),
                 960,
+                Some(200_000),
                 840,
                 0,
                 observed_at,
@@ -972,6 +1100,7 @@ mod tests {
                 crate::audio::echo_cancel::TARGET_CHANNEL_COUNT as u16,
                 Duration::ZERO,
                 4_320,
+                Some(900_000),
                 4_320,
                 3_840,
                 observed_at,

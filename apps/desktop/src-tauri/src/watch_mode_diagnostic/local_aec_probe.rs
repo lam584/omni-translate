@@ -227,9 +227,9 @@ fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut Value) -> Re
                     store.mark_echo_render_discontinuity(reason, observed_at)
                 }
                 SpeakerRenderEvent::Frame { render_session_id, samples, sample_rate_hz, channel_count,
-                    player_position, submitted_frames, endpoint_padding_frames, physical_prefix_offset_frames, observed_at } =>
+                    player_position, submitted_frames, submitted_qpc_100ns, endpoint_padding_frames, physical_prefix_offset_frames, observed_at } =>
                     store.push_echo_reference_at(render_session_id, samples, sample_rate_hz, channel_count,
-                        player_position, submitted_frames, endpoint_padding_frames, physical_prefix_offset_frames, observed_at),
+                        player_position, submitted_frames, submitted_qpc_100ns, endpoint_padding_frames, physical_prefix_offset_frames, observed_at),
                 SpeakerRenderEvent::AecLiveScenarioStage { .. } => Err("paid live scenario is forbidden in local AEC probe".to_string()),
             }
         })?;

@@ -161,7 +161,7 @@ fn run_capture_loop(
         let buffer_info = capture_client
             .read_from_device_to_deque(&mut sample_queue)
             .map_err_str()?;
-        let mut capture_tap_clock = None;
+        let mut capture_clock_metadata = None;
         if spec.echo_cancel_enabled()
             && (sample_queue.len() >= chunk_len
                 || buffer_info.flags.data_discontinuity
@@ -213,25 +213,24 @@ fn run_capture_loop(
                 timestamp_error: buffer_info.flags.timestamp_error,
             });
             current_aec_delay_samples = estimate.delay_samples;
-            if store.aec_diagnostic_tap_enabled() {
-                // Saturating subtraction cannot provide an authoritative anchor.
-                let anchor_arithmetic_valid = buffer_info.index >= queued_capture_frames as u64
-                    && buffer_info.timestamp >= (queued_capture_frames as u64).saturating_mul(10_000_000) / SAMPLE_RATE_HZ as u64;
-                tap_queue_clock.observe_packet(queued_bytes_before_read, sample_queue.len(),
-                    buffer_info.flags.data_discontinuity, buffer_info.flags.timestamp_error, anchor_arithmetic_valid);
-                capture_tap_clock = Some(AecCaptureFrameMetadata {
-                    packet_device_frame_index: buffer_info.index,
-                    packet_qpc_100ns: buffer_info.timestamp,
-                    queue_head_device_frame_index,
-                    queue_head_qpc_100ns,
-                    observed_qpc_100ns,
-                    continuity_id: render_clock.discontinuity_count,
-                    delay_samples: current_aec_delay_samples,
-                    timestamp_error: buffer_info.flags.timestamp_error,
-                    data_discontinuity: buffer_info.flags.data_discontinuity,
-                    queue_head_clock_valid: true,
-                });
-            }
+            // Capture-clock ownership is a production AEC input, independent of the tap.
+            let anchor_arithmetic_valid = buffer_info.index >= queued_capture_frames as u64
+                && buffer_info.timestamp >= (queued_capture_frames as u64).saturating_mul(10_000_000) / SAMPLE_RATE_HZ as u64;
+            tap_queue_clock.observe_packet(queued_bytes_before_read, sample_queue.len(),
+                buffer_info.flags.data_discontinuity, buffer_info.flags.timestamp_error,
+                anchor_arithmetic_valid);
+            capture_clock_metadata = Some(AecCaptureFrameMetadata {
+                packet_device_frame_index: buffer_info.index,
+                packet_qpc_100ns: buffer_info.timestamp,
+                queue_head_device_frame_index,
+                queue_head_qpc_100ns,
+                observed_qpc_100ns,
+                continuity_id: render_clock.discontinuity_count,
+                delay_samples: current_aec_delay_samples,
+                timestamp_error: buffer_info.flags.timestamp_error,
+                data_discontinuity: buffer_info.flags.data_discontinuity,
+                queue_head_clock_valid: true,
+            });
             if estimate.aec_reset_required {
                 // This capture worker is the sole reset owner. Render
                 // producers only publish a monotonic discontinuity identity;
@@ -307,7 +306,7 @@ fn run_capture_loop(
                         .saturating_mul(CHUNK_FRAMES)
                         .saturating_mul(CHANNEL_COUNT),
                 );
-                let tap_metadata = capture_tap_clock.map(|metadata| {
+                let capture_metadata = capture_clock_metadata.map(|metadata| {
                     let mut metadata = aec_tap_chunk_metadata(metadata, chunk_index, delay_samples);
                     metadata.queue_head_clock_valid &= tap_queue_clock.next_chunk_valid();
                     tap_queue_clock.consume_bytes(chunk_len);
@@ -316,7 +315,7 @@ fn run_capture_loop(
                 let cancellation = store.process_echo_capture_with_metadata(
                     &f32_chunk,
                     delay_samples,
-                    tap_metadata,
+                    capture_metadata,
                 )?;
                 // AEC3 output is the capture stream. Playback state is logged
                 // only as context and cannot delete a capture block.

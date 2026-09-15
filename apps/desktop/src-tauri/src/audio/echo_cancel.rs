@@ -204,6 +204,26 @@ impl EchoCanceller {
         self.push_render_at(samples, sample_rate_hz, channel_count, render_time)
     }
 
+    fn process_capture_10ms_with_reference(
+        &mut self,
+        render: Option<&[f32]>,
+        captured: &[f32],
+        delay_samples: usize,
+        capture_time: Instant,
+    ) -> Result<EchoCancellationResult, String> {
+        if captured.len() != AEC_FRAME_SAMPLES {
+            return Err("paired AEC processing requires one 10 ms capture frame".into());
+        }
+        if let Some(render) = render {
+            if render.len() != AEC_FRAME_SAMPLES {
+                return Err("paired AEC processing requires one 10 ms render frame".into());
+            }
+            self.engine.push_render_10ms(render, capture_time)?;
+        }
+        self.engine
+            .process_capture_10ms(captured, delay_samples, capture_time)
+    }
+
     pub(crate) fn process_capture(
         &mut self,
         captured: &[f32],

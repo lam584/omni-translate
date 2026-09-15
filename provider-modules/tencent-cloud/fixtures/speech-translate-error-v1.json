@@ -1,0 +1,21 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "tencent-speech-translate-error-v1",
+  "providerId": "tencent-cloud",
+  "protocolProfileId": "tencent-cloud.speech-translate.ws-v1",
+  "protocolProfileVersion": 1,
+  "kind": "error",
+  "provenance": {
+    "sourceDocumentationIds": ["speech-translate-api"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Official error code with synthetic message context."
+  },
+  "scenario": "Client sends no audio for more than fifteen seconds",
+  "data": {
+    "serverTextFrame": { "code": 6008, "message": "client sent no audio data within the allowed interval", "voice_id": "fixture-voice" },
+    "terminal": true,
+    "retryRequiresNewVoiceId": true
+  }
+}

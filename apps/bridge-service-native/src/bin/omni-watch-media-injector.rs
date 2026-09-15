@@ -20,21 +20,24 @@ fn main() {
 
 #[cfg(windows)]
 mod injector {
-    use omni_bridge_service::probe_support::open_render_stream;
-    use rodio::Source;
     use serde::Serialize;
     use std::collections::VecDeque;
-    use std::path::{Path, PathBuf};
-    use std::thread;
+    use std::path::PathBuf;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use wasapi::{
         initialize_mta, AudioClient, AudioRenderClient, Device, DeviceEnumerator, Direction,
-        SampleType, WaveFormat,
+        Handle, SampleType, StreamMode, WaveFormat,
     };
 
     const TARGET_CHANNELS: usize = 2;
     const BYTES_PER_SAMPLE: usize = std::mem::size_of::<f32>();
     const BYTES_PER_FRAME: usize = TARGET_CHANNELS * BYTES_PER_SAMPLE;
+    const RENDER_STALL_TIMEOUT: Duration = Duration::from_secs(15);
+    const RENDER_ABSOLUTE_EXTRA_TIMEOUT: Duration = Duration::from_secs(120);
+    // Injector-only scheduling tolerance. r92 observed a 114 ms processing spike; 250 ms
+    // covers more than twice that measured delay without changing any other render consumer.
+    const INJECTOR_EVENT_BUFFER_DURATION_HNS: i64 = 2_500_000;
+    const HUNDRED_NANOSECONDS_PER_SECOND: u64 = 10_000_000;
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -49,13 +52,68 @@ mod injector {
         pub source_sample_rate_hz: u32,
         pub source_channels: usize,
         pub render_sample_rate_hz: u32,
+        pub source_gain_db: f32,
         pub rendered_frames: usize,
         pub rendered_seconds: f64,
+        pub restart_quiet_window_after_seconds: f64,
+        pub restart_quiet_window_frames: usize,
+        pub restart_quiet_window_seconds: f64,
+        pub postroll_silence_frames: usize,
+        pub postroll_silence_seconds: f64,
+        pub buffer_frames: usize,
+        pub prefill_frames: usize,
+        pub render_wake_count: usize,
+        pub max_render_wake_interval_ms: u128,
+        pub zero_padding_underrun_count: usize,
         pub detail: Option<String>,
     }
 
+    pub(super) struct InjectorError {
+        detail: String,
+        buffer_frames: usize,
+        prefill_frames: usize,
+        render_wake_count: usize,
+        max_render_wake_interval_ms: u128,
+        zero_padding_underrun_count: usize,
+    }
+
+    impl InjectorError {
+        fn with_buffer(detail: String, buffer_frames: usize) -> Self {
+            Self { buffer_frames, ..detail.into() }
+        }
+
+        fn with_render(
+            detail: String,
+            buffer_frames: usize,
+            observed_prefill_frames: usize,
+            pacing: &RenderPacingAuthority,
+        ) -> Self {
+            Self {
+                detail,
+                buffer_frames,
+                prefill_frames: pacing.prefill_frames.max(observed_prefill_frames),
+                render_wake_count: pacing.wake_count,
+                max_render_wake_interval_ms: pacing.max_wake_interval_ms,
+                zero_padding_underrun_count: pacing.zero_padding_underrun_count,
+            }
+        }
+    }
+
+    impl From<String> for InjectorError {
+        fn from(detail: String) -> Self {
+            Self {
+                detail,
+                buffer_frames: 0,
+                prefill_frames: 0,
+                render_wake_count: 0,
+                max_render_wake_interval_ms: 0,
+                zero_padding_underrun_count: 0,
+            }
+        }
+    }
+
     impl InjectorResult {
-        pub(super) fn failed(detail: String) -> Self {
+        pub(super) fn failed(error: InjectorError) -> Self {
             Self {
                 passed: false,
                 media_path: String::new(),
@@ -67,9 +125,20 @@ mod injector {
                 source_sample_rate_hz: 0,
                 source_channels: 0,
                 render_sample_rate_hz: 0,
+                source_gain_db: 0.0,
                 rendered_frames: 0,
                 rendered_seconds: 0.0,
-                detail: Some(detail),
+                restart_quiet_window_after_seconds: 0.0,
+                restart_quiet_window_frames: 0,
+                restart_quiet_window_seconds: 0.0,
+                postroll_silence_frames: 0,
+                postroll_silence_seconds: 0.0,
+                buffer_frames: error.buffer_frames,
+                prefill_frames: error.prefill_frames,
+                render_wake_count: error.render_wake_count,
+                max_render_wake_interval_ms: error.max_render_wake_interval_ms,
+                zero_padding_underrun_count: error.zero_padding_underrun_count,
+                detail: Some(error.detail),
             }
         }
     }
@@ -81,7 +150,22 @@ mod injector {
         max_seconds: Option<f64>,
         reference_pcm16k_mono_path: Option<PathBuf>,
         reference_only: bool,
+        source_gain_db: f32,
+        restart_quiet_window_after_seconds: f64,
+        restart_quiet_window_seconds: f64,
+        postroll_silence_seconds: f64,
     }
+
+    #[path = "decode.rs"]
+    mod decode;
+    #[path = "media.rs"]
+    mod media;
+
+    use decode::decode_media;
+    use media::{
+        append_postroll_silence, apply_gain_db, insert_silence, resample_to_16k_mono,
+        resample_to_render_stereo, write_pcm16le,
+    };
 
     struct DecodedAudio {
         samples: Vec<f32>,
@@ -89,18 +173,131 @@ mod injector {
         source_channels: usize,
     }
 
+    #[derive(Default)]
+    struct RenderPacingAuthority {
+        prefill_frames: usize,
+        submitted_frames: usize,
+        wake_count: usize,
+        max_wake_interval_ms: u128,
+        zero_padding_underrun_count: usize,
+        started: bool,
+    }
+
+    impl RenderPacingAuthority {
+        fn record_prefill(
+            &mut self,
+            written_frames: usize,
+            padding_frames: usize,
+            buffer_frames: usize,
+            total_frames: usize,
+        ) -> Result<(), String> {
+            let expected_prefill_frames = buffer_frames.min(total_frames);
+            if expected_prefill_frames == 0
+                || written_frames != expected_prefill_frames
+                || padding_frames != expected_prefill_frames
+            {
+                return Err(format!(
+                    "render prefill was not authoritative: bufferFrames={buffer_frames} totalFrames={total_frames} expectedPrefillFrames={expected_prefill_frames} writtenFrames={written_frames} paddingFrames={padding_frames}"
+                ));
+            }
+            self.prefill_frames = written_frames;
+            self.submitted_frames = written_frames;
+            Ok(())
+        }
+
+        fn record_started(&mut self) {
+            self.started = true;
+        }
+
+        fn observe_refill_wake(
+            &mut self,
+            padding_frames: usize,
+            total_frames: usize,
+            wake_interval: Duration,
+        ) -> Result<(), String> {
+            self.wake_count += 1;
+            self.max_wake_interval_ms = self
+                .max_wake_interval_ms
+                .max(wake_interval.as_millis());
+            if self.started && padding_frames == 0 && self.submitted_frames < total_frames {
+                self.zero_padding_underrun_count += 1;
+                return Err(format!(
+                    "render underrun before submission completed: submittedFrames={} totalFrames={total_frames} wakeIntervalMilliseconds={} zeroPaddingUnderrunCount={}",
+                    self.submitted_frames,
+                    wake_interval.as_millis(),
+                    self.zero_padding_underrun_count,
+                ));
+            }
+            Ok(())
+        }
+
+        fn record_write(&mut self, written_frames: usize) {
+            self.submitted_frames += written_frames;
+        }
+    }
+
     struct MediaRender {
         audio_client: AudioClient,
         render_client: AudioRenderClient,
+        event_handle: Handle,
+        buffer_frames: usize,
     }
 
     impl MediaRender {
-        fn start(device: &Device, format: &WaveFormat) -> Result<Self, String> {
-            let (audio_client, render_client) = open_render_stream(device, format)?;
+        fn open_event_driven_unstarted(
+            device: &Device,
+            format: &WaveFormat,
+            render_sample_rate_hz: u32,
+        ) -> Result<Self, InjectorError> {
+            let mut audio_client = device
+                .get_iaudioclient()
+                .map_err(|error| format!("activate-audio-client: {}", error_text(error)))?;
+            audio_client
+                .initialize_client(
+                    format,
+                    &Direction::Render,
+                    &StreamMode::EventsShared {
+                        autoconvert: true,
+                        buffer_duration_hns: INJECTOR_EVENT_BUFFER_DURATION_HNS,
+                    },
+                )
+                .map_err(|error| format!("initialize-event-render: {}", error_text(error)))?;
+            let buffer_frames = audio_client
+                .get_buffer_size()
+                .map_err(|error| format!("query-event-render-buffer: {}", error_text(error)))?
+                as usize;
+            validate_injector_event_buffer_frames(buffer_frames, render_sample_rate_hz)
+                .map_err(|detail| InjectorError::with_buffer(detail, buffer_frames))?;
+            let event_handle = audio_client.set_get_eventhandle().map_err(|error| {
+                InjectorError::with_buffer(
+                    format!("create-render-event: {}", error_text(error)),
+                    buffer_frames,
+                )
+            })?;
+            let render_client = audio_client.get_audiorenderclient().map_err(|error| {
+                InjectorError::with_buffer(
+                    format!("get-render-client: {}", error_text(error)),
+                    buffer_frames,
+                )
+            })?;
             Ok(Self {
                 audio_client,
                 render_client,
+                event_handle,
+                buffer_frames,
             })
+        }
+
+        fn start(&self) -> Result<(), String> {
+            self.audio_client
+                .start_stream()
+                .map_err(|error| format!("start-render-stream: {}", error_text(error)))
+        }
+
+        fn wait_for_refill(&self) -> Result<(), String> {
+            self.event_handle
+                .wait_for_event(1_000)
+                .map_err(|error| format!("render event wait failed: {}", error_text(error)))
         }
 
         fn write_available(&mut self, pending: &mut VecDeque<f32>) -> Result<usize, String> {
@@ -122,6 +319,13 @@ mod injector {
                 .map_err(error_text)?;
             Ok(frames)
         }
+
+        fn current_padding_frames(&self) -> Result<usize, String> {
+            self.audio_client
+                .get_current_padding()
+                .map(|frames| frames as usize)
+                .map_err(error_text)
+        }
     }
 
     impl Drop for MediaRender {
@@ -130,7 +334,7 @@ mod injector {
         }
     }
 
-    pub(super) fn run() -> Result<InjectorResult, String> {
+    pub(super) fn run() -> Result<InjectorResult, InjectorError> {
         let started_at_ms = unix_ms();
         let args = parse_args()?;
         let decoded = decode_media(&args.media_path)?;
@@ -138,18 +342,26 @@ mod injector {
             return Err(format!(
                 "media decoded to zero samples: {}",
                 args.media_path.display()
-            ));
+            )
+            .into());
         }
         if args.reference_only {
             let reference_path = args.reference_pcm16k_mono_path.as_ref().ok_or_else(|| {
                 "--reference-only requires --reference-pcm16k-mono-path <path>".to_string()
             })?;
-            let reference_samples = resample_to_16k_mono(
+            let mut reference_samples = resample_to_16k_mono(
                 &decoded.samples,
                 decoded.source_sample_rate_hz,
                 decoded.source_channels,
                 args.max_seconds,
             );
+            let restart_quiet_window_frames = insert_silence(
+                &mut reference_samples,
+                1,
+                16_000,
+                args.restart_quiet_window_after_seconds,
+                args.restart_quiet_window_seconds,
+            )?;
             write_pcm16le(reference_path, &reference_samples)?;
             return Ok(InjectorResult {
                 passed: true,
@@ -162,8 +374,19 @@ mod injector {
                 source_sample_rate_hz: decoded.source_sample_rate_hz,
                 source_channels: decoded.source_channels,
                 render_sample_rate_hz: 0,
+                source_gain_db: args.source_gain_db,
                 rendered_frames: 0,
                 rendered_seconds: 0.0,
+                restart_quiet_window_after_seconds: args.restart_quiet_window_after_seconds,
+                restart_quiet_window_frames,
+                restart_quiet_window_seconds: restart_quiet_window_frames as f64 / 16_000.0,
+                postroll_silence_frames: 0,
+                postroll_silence_seconds: 0.0,
+                buffer_frames: 0,
+                prefill_frames: 0,
+                render_wake_count: 0,
+                max_render_wake_interval_ms: 0,
+                zero_padding_underrun_count: 0,
                 detail: Some("reference-only; no render endpoint opened".to_string()),
             });
         }
@@ -182,28 +405,49 @@ mod injector {
             .map_err(error_text)?
             .get_samplespersec()
             .max(1);
-        let target_samples = resample_to_render_stereo(
+        let mut target_samples = resample_to_render_stereo(
             &decoded.samples,
             decoded.source_sample_rate_hz,
             decoded.source_channels,
             render_sample_rate_hz,
         );
+        apply_gain_db(&mut target_samples, args.source_gain_db);
         let max_samples = args.max_seconds.map(|seconds| {
             (seconds.max(0.1) * render_sample_rate_hz as f64) as usize * TARGET_CHANNELS
         });
-        let target_samples = match max_samples {
+        let mut target_samples = match max_samples {
             Some(limit) => target_samples.into_iter().take(limit).collect::<Vec<_>>(),
             None => target_samples,
         };
+        let restart_quiet_window_frames = insert_silence(
+            &mut target_samples,
+            TARGET_CHANNELS,
+            render_sample_rate_hz,
+            args.restart_quiet_window_after_seconds,
+            args.restart_quiet_window_seconds,
+        )?;
         if let Some(path) = args.reference_pcm16k_mono_path.as_ref() {
-            let reference_samples = resample_to_16k_mono(
+            let mut reference_samples = resample_to_16k_mono(
                 &decoded.samples,
                 decoded.source_sample_rate_hz,
                 decoded.source_channels,
                 args.max_seconds,
             );
+            insert_silence(
+                &mut reference_samples,
+                1,
+                16_000,
+                args.restart_quiet_window_after_seconds,
+                args.restart_quiet_window_seconds,
+            )?;
             write_pcm16le(path, &reference_samples)?;
         }
+
+        let media_frames = target_samples.len() / TARGET_CHANNELS;
+        let postroll_silence_frames =
+            (args.postroll_silence_seconds * render_sample_rate_hz as f64).round() as usize;
+        let mut render_samples = target_samples;
+        append_postroll_silence(&mut render_samples, postroll_silence_frames);
 
         let format = WaveFormat::new(
             32,
@@ -213,38 +457,131 @@ mod injector {
             TARGET_CHANNELS,
             None,
         );
-        let mut render = MediaRender::start(&device, &format)?;
-        let total_frames = target_samples.len() / TARGET_CHANNELS;
-        let mut pending = VecDeque::from(target_samples);
-        let started = Instant::now();
-        let timeout = render_timeout(total_frames, render_sample_rate_hz);
-        let mut rendered_frames = 0usize;
-        while !pending.is_empty() {
-            rendered_frames += render.write_available(&mut pending)?;
-            if started.elapsed() > timeout {
-                return Err(format!(
-                    "timed out rendering media: renderedFrames={rendered_frames} totalFrames={total_frames} sourceSampleRateHz={} renderSampleRateHz={render_sample_rate_hz}",
-                    decoded.source_sample_rate_hz,
-                ));
-            }
-            thread::sleep(Duration::from_millis(2));
-        }
-        thread::sleep(Duration::from_millis(300));
+        let mut render =
+            MediaRender::open_event_driven_unstarted(&device, &format, render_sample_rate_hz)?;
+        let buffer_frames = render.buffer_frames;
+        let total_frames = render_samples.len() / TARGET_CHANNELS;
+        let mut pending = VecDeque::from(render_samples);
+        let mut pacing_authority = RenderPacingAuthority::default();
+        let mut observed_prefill_frames = 0;
+        let result = (|| -> Result<InjectorResult, String> {
+            observed_prefill_frames = render.write_available(&mut pending).map_err(|error| {
+                format!("media prefill WASAPI failure: totalFrames={total_frames} detail={error}")
+            })?;
+            let prefill_padding_frames = render.current_padding_frames().map_err(|error| {
+                format!("media prefill padding query failed: writtenFrames={observed_prefill_frames} detail={error}")
+            })?;
+            pacing_authority.record_prefill(
+                observed_prefill_frames,
+                prefill_padding_frames,
+                buffer_frames,
+                total_frames,
+            )?;
+            render.start()?;
+            pacing_authority.record_started();
 
-        Ok(InjectorResult {
-            passed: true,
-            media_path: args.media_path.display().to_string(),
-            endpoint_id,
-            endpoint_name,
-            process_id: std::process::id(),
-            started_at_ms,
-            finished_at_ms: unix_ms(),
-            source_sample_rate_hz: decoded.source_sample_rate_hz,
-            source_channels: decoded.source_channels,
-            render_sample_rate_hz,
-            rendered_frames,
-            rendered_seconds: rendered_frames as f64 / render_sample_rate_hz as f64,
-            detail: None,
+            let render_started_at = Instant::now();
+            let render_absolute_timeout =
+                render_absolute_timeout(total_frames, render_sample_rate_hz);
+            let mut last_progress_at = render_started_at;
+            let mut last_wake_at = render_started_at;
+            let mut rendered_frames = observed_prefill_frames;
+            while !pending.is_empty() {
+                render.wait_for_refill().map_err(|error| {
+                    format!(
+                        "media refill wait failure: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} wakeCount={} maxWakeIntervalMilliseconds={} detail={error}",
+                        total_frames.saturating_sub(rendered_frames),
+                        pacing_authority.wake_count,
+                        pacing_authority.max_wake_interval_ms,
+                    )
+                })?;
+                let observed_at = Instant::now();
+                let padding_frames = render.current_padding_frames().map_err(|error| {
+                    format!("media refill padding query failed: submittedFrames={rendered_frames} totalFrames={total_frames} detail={error}")
+                })?;
+                pacing_authority.observe_refill_wake(
+                    padding_frames,
+                    total_frames,
+                    observed_at.saturating_duration_since(last_wake_at),
+                )?;
+                last_wake_at = observed_at;
+
+                let written_frames = render.write_available(&mut pending).map_err(|error| {
+                    format!(
+                        "media submission WASAPI failure: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} detail={error}",
+                        total_frames.saturating_sub(rendered_frames),
+                    )
+                })?;
+                if written_frames > 0 {
+                    rendered_frames += written_frames;
+                    pacing_authority.record_write(written_frames);
+                    last_progress_at = observed_at;
+                } else if render_has_stalled(last_progress_at, observed_at) {
+                    return Err(format!(
+                        "stalled submitting media: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} sourceSampleRateHz={} renderSampleRateHz={render_sample_rate_hz} noProgressMilliseconds={}",
+                        total_frames.saturating_sub(rendered_frames),
+                        decoded.source_sample_rate_hz,
+                        observed_at.saturating_duration_since(last_progress_at).as_millis(),
+                    ));
+                }
+                if render_absolute_timeout_expired(
+                    render_started_at,
+                    observed_at,
+                    render_absolute_timeout,
+                ) {
+                    return Err(format!(
+                        "media submission exceeded absolute safety limit: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} sourceSampleRateHz={} renderSampleRateHz={render_sample_rate_hz} elapsedMilliseconds={} absoluteLimitMilliseconds={}",
+                        total_frames.saturating_sub(rendered_frames),
+                        decoded.source_sample_rate_hz,
+                        observed_at.saturating_duration_since(render_started_at).as_millis(),
+                        render_absolute_timeout.as_millis(),
+                    ));
+                }
+            }
+            wait_for_render_drain(
+                &render,
+                total_frames,
+                render_sample_rate_hz,
+                render_started_at,
+                render_absolute_timeout,
+            )?;
+
+            Ok(InjectorResult {
+                passed: true,
+                media_path: args.media_path.display().to_string(),
+                endpoint_id,
+                endpoint_name,
+                process_id: std::process::id(),
+                started_at_ms,
+                finished_at_ms: unix_ms(),
+                source_sample_rate_hz: decoded.source_sample_rate_hz,
+                source_channels: decoded.source_channels,
+                render_sample_rate_hz,
+                source_gain_db: args.source_gain_db,
+                rendered_frames: media_frames,
+                rendered_seconds: media_frames as f64 / render_sample_rate_hz as f64,
+                restart_quiet_window_after_seconds: args.restart_quiet_window_after_seconds,
+                restart_quiet_window_frames,
+                restart_quiet_window_seconds: restart_quiet_window_frames as f64
+                    / render_sample_rate_hz as f64,
+                postroll_silence_frames,
+                postroll_silence_seconds: postroll_silence_frames as f64
+                    / render_sample_rate_hz as f64,
+                buffer_frames,
+                prefill_frames: pacing_authority.prefill_frames,
+                render_wake_count: pacing_authority.wake_count,
+                max_render_wake_interval_ms: pacing_authority.max_wake_interval_ms,
+                zero_padding_underrun_count: pacing_authority.zero_padding_underrun_count,
+                detail: None,
+            })
+        })();
+        result.map_err(|detail| {
+            InjectorError::with_render(
+                detail,
+                buffer_frames,
+                observed_prefill_frames,
+                &pacing_authority,
+            )
         })
     }
 
@@ -255,6 +592,10 @@ mod injector {
         let mut max_seconds = None;
         let mut reference_pcm16k_mono_path = None;
         let mut reference_only = false;
+        let mut source_gain_db = 0.0_f32;
+        let mut restart_quiet_window_after_seconds = 0.0_f64;
+        let mut restart_quiet_window_seconds = 0.0_f64;
+        let mut postroll_silence_seconds = 0.0_f64;
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -268,6 +609,41 @@ mod injector {
                     )?))
                 }
                 "--reference-only" => reference_only = true,
+                "--gain-db" => {
+                    let raw = next_arg(&mut args, "--gain-db")?;
+                    source_gain_db = raw
+                        .parse::<f32>()
+                        .map_err(|error| format!("invalid --gain-db '{raw}': {error}"))?;
+                    if !source_gain_db.is_finite() || !(-60.0..=0.0).contains(&source_gain_db) {
+                        return Err("--gain-db must be finite and between -60 and 0".to_string());
+                    }
+                }
+                "--restart-quiet-window-after-seconds" => {
+                    let raw = next_arg(&mut args, "--restart-quiet-window-after-seconds")?;
+                    restart_quiet_window_after_seconds = raw.parse::<f64>().map_err(|error| {
+                        format!("invalid --restart-quiet-window-after-seconds '{raw}': {error}")
+                    })?;
+                }
+                "--restart-quiet-window-seconds" => {
+                    let raw = next_arg(&mut args, "--restart-quiet-window-seconds")?;
+                    restart_quiet_window_seconds = raw.parse::<f64>().map_err(|error| {
+                        format!("invalid --restart-quiet-window-seconds '{raw}': {error}")
+                    })?;
+                }
+                "--postroll-silence-seconds" => {
+                    let raw = next_arg(&mut args, "--postroll-silence-seconds")?;
+                    postroll_silence_seconds = raw.parse::<f64>().map_err(|error| {
+                        format!("invalid --postroll-silence-seconds '{raw}': {error}")
+                    })?;
+                    if !postroll_silence_seconds.is_finite()
+                        || !(0.0..=10.0).contains(&postroll_silence_seconds)
+                    {
+                        return Err(
+                            "--postroll-silence-seconds must be finite and between 0 and 10"
+                                .to_string(),
+                        );
+                    }
+                }
                 "--max-seconds" => {
                     let raw = next_arg(&mut args, "--max-seconds")?;
                     max_seconds = Some(
@@ -277,11 +653,22 @@ mod injector {
                 }
                 "--help" | "-h" => {
                     return Err(
-                        "Usage: omni-watch-media-injector --media <wav-or-mp3> [--endpoint-id <id>] [--endpoint-name <name>] [--max-seconds <seconds>] [--reference-pcm16k-mono-path <path>] [--reference-only]".to_string(),
+                        "Usage: omni-watch-media-injector --media <wav-or-mp3> [--endpoint-id <id>] [--endpoint-name <name>] [--max-seconds <seconds>] [--gain-db <-60..0>] [--restart-quiet-window-after-seconds <seconds> --restart-quiet-window-seconds <1..90>] [--postroll-silence-seconds <0..10>] [--reference-pcm16k-mono-path <path>] [--reference-only]".to_string(),
                     );
                 }
                 other => return Err(format!("unknown argument: {other}")),
             }
+        }
+        let restart_window_disabled = restart_quiet_window_after_seconds == 0.0
+            && restart_quiet_window_seconds == 0.0;
+        let restart_window_valid = restart_quiet_window_after_seconds.is_finite()
+            && restart_quiet_window_seconds.is_finite()
+            && restart_quiet_window_after_seconds >= 1.0
+            && restart_quiet_window_after_seconds <= 7_200.0
+            && restart_quiet_window_seconds >= 1.0
+            && restart_quiet_window_seconds <= 90.0;
+        if !restart_window_disabled && !restart_window_valid {
+            return Err("restart quiet window requires a finite after-seconds in 1..7200 and duration in 1..90".to_string());
         }
         Ok(Args {
             media_path: media_path.ok_or_else(|| "--media <mp3> is required".to_string())?,
@@ -290,6 +677,10 @@ mod injector {
             max_seconds,
             reference_pcm16k_mono_path,
             reference_only,
+            source_gain_db,
+            restart_quiet_window_after_seconds,
+            restart_quiet_window_seconds,
+            postroll_silence_seconds,
         })
     }
 
@@ -346,329 +737,121 @@ mod injector {
         }
     }
 
-    fn render_timeout(total_frames: usize, render_sample_rate_hz: u32) -> Duration {
-        let media_seconds = total_frames as f64 / render_sample_rate_hz.max(1) as f64;
-        // A shared-mode WASAPI endpoint may expose nominal 48 kHz while its
-        // virtual/hardware clock drains a little slower. A fixed eight-second
-        // allowance truncated the tail of the 125.8 s canonical Watch source
-        // on a real VM. Keep the timeout bounded, but scale its scheduling
-        // allowance for long media so a current stream is not mistaken for a
-        // stalled endpoint.
-        let scheduling_allowance_seconds = (media_seconds * 0.15).clamp(15.0, 30.0);
-        Duration::from_secs_f64(media_seconds + scheduling_allowance_seconds)
+    fn injector_event_buffer_frames(render_sample_rate_hz: u32) -> usize {
+        let numerator = u64::from(render_sample_rate_hz)
+            .saturating_mul(INJECTOR_EVENT_BUFFER_DURATION_HNS as u64);
+        numerator
+            .div_ceil(HUNDRED_NANOSECONDS_PER_SECOND)
+            .try_into()
+            .unwrap_or(usize::MAX)
     }
 
-    fn decode_media(path: &Path) -> Result<DecodedAudio, String> {
-        let bytes = std::fs::read(path)
-            .map_err(|error| format!("failed to read media '{}': {error}", path.display()))?;
-        if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
-            return decode_wav_pcm(path, &bytes);
+    fn validate_injector_event_buffer_frames(
+        buffer_frames: usize,
+        render_sample_rate_hz: u32,
+    ) -> Result<(), String> {
+        if render_sample_rate_hz == 0 {
+            return Err(
+                "event render buffer cannot be validated with a zero render sample rate".to_string(),
+            );
         }
-        decode_mp3(path)
+        let required_buffer_frames = injector_event_buffer_frames(render_sample_rate_hz);
+        if buffer_frames < required_buffer_frames {
+            return Err(format!(
+                "event render buffer is below injector scheduling tolerance: bufferFrames={buffer_frames} requiredBufferFrames={required_buffer_frames} renderSampleRateHz={render_sample_rate_hz} bufferDurationHns={INJECTOR_EVENT_BUFFER_DURATION_HNS}"
+            ));
+        }
+        Ok(())
     }
 
-    fn decode_wav_pcm(path: &Path, bytes: &[u8]) -> Result<DecodedAudio, String> {
-        let mut cursor = 12usize;
-        let mut format_chunk = None;
-        let mut data_chunk = None;
-        while cursor + 8 <= bytes.len() {
-            let chunk_id = &bytes[cursor..cursor + 4];
-            let chunk_size = u32::from_le_bytes(
-                bytes[cursor + 4..cursor + 8]
-                    .try_into()
-                    .expect("WAV chunk size is four bytes"),
-            ) as usize;
-            let chunk_start = cursor + 8;
-            let chunk_end = chunk_start
-                .checked_add(chunk_size)
-                .ok_or_else(|| format!("WAV chunk size overflows '{}': {chunk_size}", path.display()))?;
-            if chunk_end > bytes.len() {
+    fn render_has_stalled(last_progress_at: Instant, observed_at: Instant) -> bool {
+        observed_at.saturating_duration_since(last_progress_at) > RENDER_STALL_TIMEOUT
+    }
+
+    fn render_absolute_timeout(total_frames: usize, render_sample_rate_hz: u32) -> Duration {
+        let media_duration = Duration::from_secs_f64(
+            total_frames as f64 / render_sample_rate_hz.max(1) as f64,
+        );
+        media_duration
+            .saturating_mul(2)
+            .max(media_duration.saturating_add(RENDER_ABSOLUTE_EXTRA_TIMEOUT))
+    }
+
+    fn render_absolute_timeout_expired(
+        started_at: Instant,
+        observed_at: Instant,
+        timeout: Duration,
+    ) -> bool {
+        observed_at.saturating_duration_since(started_at) > timeout
+    }
+
+    fn wait_for_render_drain(
+        render: &MediaRender,
+        submitted_frames: usize,
+        render_sample_rate_hz: u32,
+        render_started_at: Instant,
+        render_absolute_timeout: Duration,
+    ) -> Result<(), String> {
+        let mut padding_frames = render.current_padding_frames().map_err(|error| {
+            format!(
+                "media drain WASAPI failure: submittedFrames={submitted_frames} lastPaddingFrames=unknown renderSampleRateHz={render_sample_rate_hz} detail={error}"
+            )
+        })?;
+        let initial_observed_at = Instant::now();
+        if render_absolute_timeout_expired(
+            render_started_at,
+            initial_observed_at,
+            render_absolute_timeout,
+        ) {
+            return Err(format!(
+                "media drain exceeded absolute safety limit: submittedFrames={submitted_frames} paddingFrames={padding_frames} renderSampleRateHz={render_sample_rate_hz} elapsedMilliseconds={} absoluteLimitMilliseconds={}",
+                initial_observed_at
+                    .saturating_duration_since(render_started_at)
+                    .as_millis(),
+                render_absolute_timeout.as_millis(),
+            ));
+        }
+        let mut last_progress_at = initial_observed_at;
+        while padding_frames > 0 {
+            render.wait_for_refill().map_err(|error| {
+                format!("media drain event wait failed: submittedFrames={submitted_frames} paddingFrames={padding_frames} renderSampleRateHz={render_sample_rate_hz} detail={error}")
+            })?;
+            let next_padding_frames = render.current_padding_frames().map_err(|error| {
+                format!(
+                    "media drain WASAPI failure: submittedFrames={submitted_frames} lastPaddingFrames={padding_frames} renderSampleRateHz={render_sample_rate_hz} detail={error}"
+                )
+            })?;
+            let observed_at = Instant::now();
+            if render_absolute_timeout_expired(
+                render_started_at,
+                observed_at,
+                render_absolute_timeout,
+            ) {
                 return Err(format!(
-                    "WAV chunk exceeds file '{}': end={chunk_end} length={}",
-                    path.display(),
-                    bytes.len()
+                    "media drain exceeded absolute safety limit: submittedFrames={submitted_frames} paddingFrames={next_padding_frames} renderSampleRateHz={render_sample_rate_hz} elapsedMilliseconds={} absoluteLimitMilliseconds={}",
+                    observed_at
+                        .saturating_duration_since(render_started_at)
+                        .as_millis(),
+                    render_absolute_timeout.as_millis(),
+                ));
+            } else if next_padding_frames < padding_frames {
+                last_progress_at = observed_at;
+            } else if render_has_stalled(last_progress_at, observed_at) {
+                return Err(format!(
+                    "stalled draining media: submittedFrames={submitted_frames} paddingFrames={next_padding_frames} renderSampleRateHz={render_sample_rate_hz} noProgressMilliseconds={}",
+                    observed_at
+                        .saturating_duration_since(last_progress_at)
+                        .as_millis(),
                 ));
             }
-            match chunk_id {
-                b"fmt " => format_chunk = Some(&bytes[chunk_start..chunk_end]),
-                b"data" => data_chunk = Some(&bytes[chunk_start..chunk_end]),
-                _ => {}
-            }
-            cursor = chunk_end + (chunk_size & 1);
+            padding_frames = next_padding_frames;
         }
-
-        let format = format_chunk
-            .ok_or_else(|| format!("WAV media has no fmt chunk: {}", path.display()))?;
-        if format.len() < 16 {
-            return Err(format!(
-                "WAV fmt chunk is too short for '{}': {} bytes",
-                path.display(),
-                format.len()
-            ));
-        }
-        let audio_format = u16::from_le_bytes([format[0], format[1]]);
-        let channels = u16::from_le_bytes([format[2], format[3]]) as usize;
-        let sample_rate = u32::from_le_bytes([format[4], format[5], format[6], format[7]]);
-        let block_align = u16::from_le_bytes([format[12], format[13]]) as usize;
-        let bits_per_sample = u16::from_le_bytes([format[14], format[15]]);
-        if channels == 0 || sample_rate == 0 || bits_per_sample == 0 {
-            return Err(format!(
-                "WAV fmt chunk has invalid audio parameters for '{}': channels={channels} sampleRate={sample_rate} bits={bits_per_sample}",
-                path.display()
-            ));
-        }
-        if audio_format != 1 && audio_format != 3 {
-            return Err(format!(
-                "WAV media '{}' uses unsupported audio format {audio_format}; expected PCM (1) or IEEE float (3)",
-                path.display()
-            ));
-        }
-        let bytes_per_sample = (bits_per_sample as usize).div_ceil(8);
-        let expected_block_align = channels
-            .checked_mul(bytes_per_sample)
-            .ok_or_else(|| format!("WAV block alignment overflows '{}': channels={channels}", path.display()))?;
-        if block_align != expected_block_align {
-            return Err(format!(
-                "WAV block alignment mismatch for '{}': declared={block_align} expected={expected_block_align}",
-                path.display()
-            ));
-        }
-        let data = data_chunk
-            .ok_or_else(|| format!("WAV media has no data chunk: {}", path.display()))?;
-        if data.len() % block_align != 0 {
-            return Err(format!(
-                "WAV data is not frame-aligned for '{}': bytes={} blockAlign={block_align}",
-                path.display(),
-                data.len()
-            ));
-        }
-
-        let mut samples = Vec::with_capacity(data.len() / bytes_per_sample);
-        for sample in data.chunks_exact(bytes_per_sample) {
-            let value = match (audio_format, bits_per_sample) {
-                (1, 8) => (sample[0] as f32 - 128.0) / 128.0,
-                (1, 16) => i16::from_le_bytes([sample[0], sample[1]]) as f32 / 32_768.0,
-                (1, 24) => {
-                    let raw = (sample[0] as i32)
-                        | ((sample[1] as i32) << 8)
-                        | ((sample[2] as i32) << 16);
-                    let signed = if raw & 0x0080_0000 != 0 {
-                        raw | !0x00ff_ffff
-                    } else {
-                        raw
-                    };
-                    signed as f32 / 8_388_608.0
-                }
-                (1, 32) => {
-                    i32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]) as f32
-                        / 2_147_483_648.0
-                }
-                (3, 32) => f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]),
-                (3, 64) => f64::from_le_bytes([
-                    sample[0], sample[1], sample[2], sample[3], sample[4], sample[5], sample[6],
-                    sample[7],
-                ]) as f32,
-                _ => {
-                    return Err(format!(
-                        "WAV media '{}' uses unsupported sample format={audio_format} bits={bits_per_sample}",
-                        path.display()
-                    ));
-                }
-            };
-            if !value.is_finite() {
-                return Err(format!("WAV media '{}' contains a non-finite sample", path.display()));
-            }
-            samples.push(value.clamp(-1.0, 1.0));
-        }
-        Ok(DecodedAudio {
-            samples,
-            source_sample_rate_hz: sample_rate,
-            source_channels: channels,
-        })
-    }
-
-    fn decode_mp3(path: &Path) -> Result<DecodedAudio, String> {
-        let file = std::fs::File::open(path)
-            .map_err(|error| format!("failed to open media '{}': {error}", path.display()))?;
-        let decoder = rodio::Decoder::try_from(file)
-            .map_err(|error| format!("failed to decode media '{}': {error}", path.display()))?;
-        let source_sample_rate_hz = decoder.sample_rate().get();
-        let source_channels = decoder.channels().get() as usize;
-        let samples = decoder.collect::<Vec<f32>>();
-        Ok(DecodedAudio {
-            samples,
-            source_sample_rate_hz,
-            source_channels,
-        })
+        Ok(())
     }
 
     #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn decodes_pcm16_wav_instead_of_treating_it_as_mp3() {
-            let directory = tempfile::tempdir().expect("tempdir");
-            let path = directory.path().join("sample.wav");
-            let pcm = [-32_768i16, -16_384, 0, 16_384, 32_767];
-            let data_len = (pcm.len() * 2) as u32;
-            let mut wav = Vec::new();
-            wav.extend_from_slice(b"RIFF");
-            wav.extend_from_slice(&(36u32 + data_len).to_le_bytes());
-            wav.extend_from_slice(b"WAVEfmt ");
-            wav.extend_from_slice(&16u32.to_le_bytes());
-            wav.extend_from_slice(&1u16.to_le_bytes());
-            wav.extend_from_slice(&1u16.to_le_bytes());
-            wav.extend_from_slice(&24_000u32.to_le_bytes());
-            wav.extend_from_slice(&48_000u32.to_le_bytes());
-            wav.extend_from_slice(&2u16.to_le_bytes());
-            wav.extend_from_slice(&16u16.to_le_bytes());
-            wav.extend_from_slice(b"data");
-            wav.extend_from_slice(&data_len.to_le_bytes());
-            for sample in pcm {
-                wav.extend_from_slice(&sample.to_le_bytes());
-            }
-            std::fs::write(&path, wav).expect("write WAV");
-
-            let decoded = decode_media(&path).expect("decode WAV");
-            assert_eq!(decoded.source_sample_rate_hz, 24_000);
-            assert_eq!(decoded.source_channels, 1);
-            assert_eq!(decoded.samples.len(), pcm.len());
-            assert!((decoded.samples[0] + 1.0).abs() < 0.0001);
-            assert!(decoded.samples[2].abs() < 0.0001);
-            assert!((decoded.samples[4] - 0.9999695).abs() < 0.0001);
-        }
-
-        #[test]
-        fn explicit_endpoint_id_never_falls_back_to_virtual_speaker_name() {
-            assert!(render_device_matches_request(
-                Some("{physical-endpoint}"),
-                "{physical-endpoint}",
-                "Speakers (High Definition Audio Device)",
-                "Omni Translate Virtual Speaker",
-            ));
-            assert!(render_device_matches_request(
-                Some("{0.0.0.00000000}.{0FA47289-698C-4F9B-BBB2-6775530CE776}"),
-                "{0.0.0.00000000}.{0fa47289-698c-4f9b-bbb2-6775530ce776}",
-                "Speakers (Omni Translate Virtual Speaker)",
-                "Omni Translate Virtual Speaker",
-            ));
-            assert!(!render_device_matches_request(
-                Some("{physical-endpoint}"),
-                "{virtual-endpoint}",
-                "Omni Translate Virtual Speaker",
-                "Omni Translate Virtual Speaker",
-            ));
-            assert!(render_device_matches_request(
-                None,
-                "{virtual-endpoint}",
-                "Omni Translate Virtual Speaker",
-                "Omni Translate Virtual Speaker",
-            ));
-        }
-
-        #[test]
-        fn render_resampling_preserves_duration_across_endpoint_clocks() {
-            let source = vec![0.25_f32; 24_000];
-            let rendered_16k = resample_to_render_stereo(&source, 24_000, 1, 16_000);
-            let rendered_48k = resample_to_render_stereo(&source, 24_000, 1, 48_000);
-            assert_eq!(rendered_16k.len(), 16_000 * TARGET_CHANNELS);
-            assert_eq!(rendered_48k.len(), 48_000 * TARGET_CHANNELS);
-        }
-
-        #[test]
-        fn long_media_timeout_allows_slow_shared_mode_clock_without_becoming_unbounded() {
-            let canonical = render_timeout(6_039_136, 48_000).as_secs_f64();
-            assert!(canonical > 144.0 && canonical < 145.0);
-            assert_eq!(render_timeout(48_000, 48_000), Duration::from_secs(16));
-            assert_eq!(render_timeout(48_000 * 600, 48_000), Duration::from_secs(630));
-        }
-    }
-
-    fn resample_to_render_stereo(
-        samples: &[f32],
-        sample_rate_hz: u32,
-        channels: usize,
-        render_sample_rate_hz: u32,
-    ) -> Vec<f32> {
-        if samples.is_empty() {
-            return Vec::new();
-        }
-        let channels = channels.max(1);
-        let source_frames = samples.len() / channels;
-        let target_frames = source_frames.saturating_mul(render_sample_rate_hz.max(1) as usize)
-            / sample_rate_hz.max(1) as usize;
-        let ratio = sample_rate_hz.max(1) as f64 / render_sample_rate_hz.max(1) as f64;
-        let mut output = Vec::with_capacity(target_frames * TARGET_CHANNELS);
-        for target_index in 0..target_frames {
-            let source_index = ((target_index as f64) * ratio).floor() as usize;
-            let source_index = source_index.min(source_frames.saturating_sub(1));
-            let frame_start = source_index * channels;
-            let left = samples[frame_start].clamp(-1.0, 1.0);
-            let right = if channels > 1 {
-                samples[frame_start + 1].clamp(-1.0, 1.0)
-            } else {
-                left
-            };
-            output.push(left);
-            output.push(right);
-        }
-        output
-    }
-
-    fn resample_to_16k_mono(
-        samples: &[f32],
-        sample_rate_hz: u32,
-        channels: usize,
-        max_seconds: Option<f64>,
-    ) -> Vec<i16> {
-        if samples.is_empty() {
-            return Vec::new();
-        }
-        let channels = channels.max(1);
-        let source_frames = samples.len() / channels;
-        let target_rate = 16_000usize;
-        let mut target_frames =
-            source_frames.saturating_mul(target_rate) / sample_rate_hz.max(1) as usize;
-        if let Some(seconds) = max_seconds {
-            target_frames = target_frames.min((seconds.max(0.1) * target_rate as f64) as usize);
-        }
-        let ratio = sample_rate_hz.max(1) as f64 / target_rate as f64;
-        let mut output = Vec::with_capacity(target_frames);
-        for target_index in 0..target_frames {
-            let source_index = ((target_index as f64) * ratio).floor() as usize;
-            let source_index = source_index.min(source_frames.saturating_sub(1));
-            let frame_start = source_index * channels;
-            let mut sum = 0.0f32;
-            for channel in 0..channels {
-                sum += samples[frame_start + channel].clamp(-1.0, 1.0);
-            }
-            let mono = (sum / channels as f32).clamp(-1.0, 1.0);
-            output.push((mono * i16::MAX as f32) as i16);
-        }
-        output
-    }
-
-    fn write_pcm16le(path: &PathBuf, samples: &[i16]) -> Result<(), String> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                format!(
-                    "failed to create reference PCM directory '{}': {error}",
-                    parent.display()
-                )
-            })?;
-        }
-        let mut bytes = Vec::with_capacity(samples.len() * 2);
-        for sample in samples {
-            bytes.extend_from_slice(&sample.to_le_bytes());
-        }
-        std::fs::write(path, bytes).map_err(|error| {
-            format!(
-                "failed to write reference PCM '{}': {error}",
-                path.display()
-            )
-        })
-    }
+    #[path = "tests.rs"]
+    mod tests;
 
     fn error_text(error: impl std::fmt::Display) -> String {
         error.to_string()

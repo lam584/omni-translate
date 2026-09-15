@@ -153,6 +153,11 @@ fn public_translation_contract_round_trips_cue_timing_and_terminal_status() {
         status_id: "bridge-status-public-42".to_string(),
         request_id: "status-42".to_string(),
         session_id: "session-42".to_string(),
+        bridge_instance_id: "bridge-instance-42".to_string(),
+        source_generation: 42,
+        source_generation_token: "bridge-instance-42:session-42:42".to_string(),
+        playback_owner_generation: 84,
+        physical_playback_device_id: "physical-endpoint-42".to_string(),
         cue_id: "cue-subtitle-42".to_string(),
         playback_status: TranslationPlaybackStatusKind::RouteFailed,
         reason: "queue-overflow".to_string(),
@@ -173,8 +178,13 @@ fn public_translation_contract_round_trips_cue_timing_and_terminal_status() {
 
     let status_ack = TranslationPlaybackStatusAck {
         event_type: "bridge.translation.status.ack".to_string(),
-        status_id: decoded_status.status_id,
-        session_id: decoded_status.session_id,
+        status_id: decoded_status.status_id.clone(),
+        session_id: decoded_status.session_id.clone(),
+        bridge_instance_id: decoded_status.bridge_instance_id.clone(),
+        source_generation: decoded_status.source_generation,
+        source_generation_token: decoded_status.source_generation_token.clone(),
+        playback_owner_generation: decoded_status.playback_owner_generation,
+        physical_playback_device_id: decoded_status.physical_playback_device_id.clone(),
     };
     let ack_wire = serde_json::to_value(&status_ack).unwrap();
     assert_eq!(ack_wire["type"], "bridge.translation.status.ack");

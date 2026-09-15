@@ -252,6 +252,10 @@ pub(crate) struct DesktopPlaybackPermit {
 }
 
 impl DesktopPlaybackPermit {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub(crate) fn ensure_active(&self) -> Result<(), String> {
         let state = self.ownership.lock_state();
         self.validate(&state)

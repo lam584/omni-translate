@@ -1,0 +1,1207 @@
+{
+  "$schema": "../../contracts/provider-manifest.schema.json",
+  "schemaVersion": "provider-manifest/v1",
+  "manifestVersion": 1,
+  "checkedAt": "2026-08-31",
+  "provider": {
+    "id": "zhipu-glm",
+    "displayName": "Zhipu GLM",
+    "templateId": "template-zhipu-glm",
+    "kind": "multi-api",
+    "source": "official",
+    "description": "Zhipu GLM OpenAI-compatible text, native Realtime, ASR, TTS, and voice-clone contract profiles.",
+    "defaultModelId": "glm-realtime-flash",
+    "defaultApiFamilyId": "zhipu-glm.realtime-v4",
+    "defaultCredentialId": "zhipu-glm.api-key",
+    "notes": "The native GLM-Realtime WebSocket contract is intentionally separate from the OpenAI-compatible HTTP chat-completions family."
+  },
+  "documentation": [
+    {
+      "id": "zhipu-glm.model-overview",
+      "title": "Zhipu model overview",
+      "url": "https://docs.bigmodel.cn/cn/guide/start/model-overview",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "zhipu-glm.openai-compatibility",
+      "title": "OpenAI API compatibility",
+      "url": "https://docs.bigmodel.cn/cn/guide/develop/openai/introduction",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "zhipu-glm.realtime-guide",
+      "title": "GLM-Realtime guide",
+      "url": "https://docs.bigmodel.cn/cn/guide/models/sound-and-video/glm-realtime",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "zhipu-glm.realtime-asyncapi",
+      "title": "GLM-Realtime AsyncAPI reference",
+      "url": "https://docs.bigmodel.cn/cn/asyncapi/realtime",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "zhipu-glm.realtime-sdk",
+      "title": "Official GLM-Realtime low-level SDK",
+      "url": "https://github.com/MetaGLM/glm-realtime-sdk",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "zhipu-glm.realtime-llm-reference",
+      "title": "Official repository GLM-Realtime reference for LLMs",
+      "url": "https://github.com/MetaGLM/glm-realtime-sdk/blob/main/GLM-Realtime-doc-for-llm.md",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "zhipu-glm.asr-guide",
+      "title": "GLM-ASR-2512 guide",
+      "url": "https://docs.bigmodel.cn/cn/guide/models/sound-and-video/glm-asr-2512",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "zhipu-glm.asr-reference",
+      "title": "Speech-to-text API reference",
+      "url": "https://docs.bigmodel.cn/api-reference/%E6%A8%A1%E5%9E%8B-api/%E8%AF%AD%E9%9F%B3%E8%BD%AC%E6%96%87%E6%9C%AC",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "zhipu-glm.tts-guide",
+      "title": "GLM-TTS guide",
+      "url": "https://docs.bigmodel.cn/cn/guide/models/sound-and-video/glm-tts",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "zhipu-glm.tts-reference",
+      "title": "Text-to-speech API reference",
+      "url": "https://docs.bigmodel.cn/api-reference/%E6%A8%A1%E5%9E%8B-api/%E6%96%87%E6%9C%AC%E8%BD%AC%E8%AF%AD%E9%9F%B3",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "zhipu-glm.voice-clone-guide",
+      "title": "GLM-TTS-Clone guide",
+      "url": "https://docs.bigmodel.cn/cn/guide/models/sound-and-video/glm-tts-clone",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "zhipu-glm.voice-clone-reference",
+      "title": "Voice-clone API reference",
+      "url": "https://docs.bigmodel.cn/api-reference/%E6%A8%A1%E5%9E%8B-api/%E9%9F%B3%E8%89%B2%E5%A4%8D%E5%88%BB",
+      "checkedAt": "2026-08-31"
+    }
+  ],
+  "credentials": [
+    {
+      "id": "zhipu-glm.api-key",
+      "reference": "credential://provider/zhipu-glm/default",
+      "fields": [
+        {
+          "id": "api-key",
+          "label": "Zhipu API key",
+          "secret": true,
+          "required": true,
+          "format": "{id}.{secret}"
+        }
+      ]
+    }
+  ],
+  "authProfiles": [
+    {
+      "id": "zhipu-glm.bearer-api-key",
+      "type": "bearer",
+      "credentialId": "zhipu-glm.api-key",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "source": "credential",
+          "credentialFieldId": "api-key",
+          "scheme": "Bearer",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "zhipu-glm.realtime-jwt",
+      "type": "bearer",
+      "credentialId": "zhipu-glm.api-key",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "source": "derived",
+          "derivation": "Split {id}.{secret}; sign an HS256 JWT with header alg=HS256 and sign_type=SIGN, payload api_key=id, exp=Unix-seconds-now plus TTL seconds, and timestamp=Unix-milliseconds-now; send the result with the Bearer scheme.",
+          "scheme": "Bearer",
+          "required": true
+        }
+      ],
+      "signing": {
+        "algorithm": "hmac-sha256",
+        "canonicalization": "JWT compact serialization: base64url(header JSON) + '.' + base64url(payload JSON), signed with the secret portion of the API key. exp uses Unix seconds; timestamp uses Unix milliseconds.",
+        "signatureEncoding": "base64url",
+        "signatureParameterName": "Authorization",
+        "signedParameterNames": [
+          "header.alg",
+          "header.sign_type",
+          "payload.api_key",
+          "payload.exp",
+          "payload.timestamp"
+        ]
+      },
+      "credentialBootstrap": {
+        "kind": "jwt-derivation",
+        "description": "A trusted component derives the short-lived JWT from the id and secret portions of the API key. Both the direct API key and the JWT are documented as Authorization Bearer values; browsers still cannot add the required native WebSocket header directly.",
+        "documentationIds": [
+          "zhipu-glm.realtime-guide",
+          "zhipu-glm.realtime-llm-reference",
+          "zhipu-glm.realtime-sdk"
+        ]
+      }
+    }
+  ],
+  "transports": [
+    {
+      "id": "zhipu-glm.http-json",
+      "kind": "http",
+      "requestFraming": "json",
+      "responseFraming": "json",
+      "requestEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      },
+      "responseEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      }
+    },
+    {
+      "id": "zhipu-glm.sse-json",
+      "kind": "sse",
+      "requestFraming": "json",
+      "responseFraming": "sse",
+      "requestEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      },
+      "responseEnvelope": {
+        "kind": "provider-defined",
+        "id": "zhipu-glm.sse-event",
+        "byteOrder": "not-applicable",
+        "description": "Server-Sent Event data containing a provider JSON object or the explicit [DONE] marker."
+      }
+    },
+    {
+      "id": "zhipu-glm.sse-multipart",
+      "kind": "sse",
+      "requestFraming": "multipart",
+      "responseFraming": "sse",
+      "requestEnvelope": {
+        "kind": "provider-defined",
+        "id": "zhipu-glm.multipart-form",
+        "byteOrder": "not-applicable",
+        "description": "multipart/form-data containing a file or base64 audio field plus model and streaming controls."
+      },
+      "responseEnvelope": {
+        "kind": "provider-defined",
+        "id": "zhipu-glm.sse-event",
+        "byteOrder": "not-applicable",
+        "description": "Server-Sent Event data containing transcription JSON and the [DONE] marker."
+      }
+    },
+    {
+      "id": "zhipu-glm.websocket-json",
+      "kind": "websocket",
+      "requestFraming": "json",
+      "responseFraming": "json",
+      "requestEnvelope": {
+        "kind": "provider-defined",
+        "id": "zhipu-glm.realtime-client-event",
+        "byteOrder": "not-applicable",
+        "description": "Native GLM-Realtime JSON event selected by its type field. Audio and video bytes are base64 strings inside JSON."
+      },
+      "responseEnvelope": {
+        "kind": "provider-defined",
+        "id": "zhipu-glm.realtime-server-event",
+        "byteOrder": "not-applicable",
+        "description": "Native GLM-Realtime JSON event selected by its type field; this is not the OpenAI Realtime event contract."
+      }
+    }
+  ],
+  "audioProfiles": [
+    {
+      "id": "zhipu-glm.realtime-audio",
+      "input": {
+        "required": true,
+        "formats": [
+          "wav",
+          "pcm-s16le-16000",
+          "pcm-s16le-24000"
+        ],
+        "sampleRatesHz": [
+          16000,
+          24000
+        ],
+        "channels": [
+          1
+        ],
+        "bitDepths": [
+          16
+        ],
+        "endianness": [
+          "little-endian"
+        ],
+        "chunkDurationMs": {
+          "recommended": 100
+        }
+      },
+      "output": {
+        "required": true,
+        "formats": [
+          "pcm-s16le"
+        ],
+        "sampleRatesHz": [
+          24000
+        ],
+        "channels": [
+          1
+        ],
+        "bitDepths": [
+          16
+        ],
+        "endianness": [
+          "little-endian"
+        ]
+      }
+    },
+    {
+      "id": "zhipu-glm.realtime-transcription-audio",
+      "input": {
+        "required": true,
+        "formats": [
+          "wav",
+          "pcm-s16le-16000",
+          "pcm-s16le-24000"
+        ],
+        "sampleRatesHz": [
+          16000,
+          24000
+        ],
+        "channels": [
+          1
+        ],
+        "bitDepths": [
+          16
+        ],
+        "endianness": [
+          "little-endian"
+        ],
+        "chunkDurationMs": {
+          "recommended": 100
+        }
+      },
+      "output": {
+        "required": false,
+        "formats": [],
+        "sampleRatesHz": [],
+        "channels": []
+      }
+    },
+    {
+      "id": "zhipu-glm.asr-file-audio",
+      "input": {
+        "required": true,
+        "formats": [
+          "wav",
+          "mp3"
+        ],
+        "sampleRatesHz": [],
+        "channels": []
+      },
+      "output": {
+        "required": false,
+        "formats": [],
+        "sampleRatesHz": [],
+        "channels": []
+      }
+    },
+    {
+      "id": "zhipu-glm.tts-pcm24k",
+      "input": {
+        "required": false,
+        "formats": [],
+        "sampleRatesHz": [],
+        "channels": []
+      },
+      "output": {
+        "required": true,
+        "formats": [
+          "pcm-s16le"
+        ],
+        "sampleRatesHz": [
+          24000
+        ],
+        "channels": [
+          1
+        ],
+        "bitDepths": [
+          16
+        ],
+        "endianness": [
+          "little-endian"
+        ]
+      }
+    },
+    {
+      "id": "zhipu-glm.voice-clone-reference",
+      "input": {
+        "required": true,
+        "formats": [
+          "provider-file-id"
+        ],
+        "sampleRatesHz": [],
+        "channels": []
+      },
+      "output": {
+        "required": true,
+        "formats": [
+          "provider-file-id"
+        ],
+        "sampleRatesHz": [],
+        "channels": []
+      }
+    }
+  ],
+  "lifecycleProfiles": [
+    {
+      "id": "zhipu-glm.openai-chat-stream",
+      "handshake": [],
+      "clientEvents": [
+        "chat.completions.create"
+      ],
+      "serverEvents": [
+        "chat.completion.chunk",
+        "data.done"
+      ],
+      "vadModes": [
+        "none"
+      ],
+      "terminal": "A finish_reason in a final chunk or the SSE data marker [DONE] terminates the request.",
+      "reuse": "sequential-tasks",
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "zhipu-glm.realtime-conversation",
+      "handshake": [
+        "session.created",
+        "session.update",
+        "session.updated"
+      ],
+      "clientEvents": [
+        "session.update",
+        "input_audio_buffer.append",
+        "input_audio_buffer.append_video_frame",
+        "input_audio_buffer.commit",
+        "input_audio_buffer.clear",
+        "conversation.item.create",
+        "conversation.item.delete",
+        "conversation.item.retrieve",
+        "response.create",
+        "response.cancel"
+      ],
+      "serverEvents": [
+        "session.created",
+        "session.updated",
+        "conversation.item.created",
+        "conversation.item.deleted",
+        "conversation.item.retrieved",
+        "conversation.item.input_audio_transcription.completed",
+        "conversation.item.input_audio_transcription.failed",
+        "input_audio_buffer.committed",
+        "input_audio_buffer.cleared",
+        "input_audio_buffer.speech_started",
+        "input_audio_buffer.speech_stopped",
+        "response.created",
+        "response.output_item.added",
+        "response.output_item.done",
+        "response.content_part.added",
+        "response.content_part.done",
+        "response.text.delta",
+        "response.text.done",
+        "response.audio.delta",
+        "response.audio.done",
+        "response.audio_transcript.delta",
+        "response.audio_transcript.done",
+        "response.function_call_arguments.delta",
+        "response.function_call_arguments.done",
+        "response.cancelled",
+        "response.done",
+        "rate_limits.updated",
+        "heartbeat",
+        "error"
+      ],
+      "vadModes": [
+        "manual",
+        "server-vad"
+      ],
+      "terminal": "response.done is always emitted regardless of outcome. Consumers must inspect response.status, including completed and cancelled; response.cancelled is an acknowledgement, not the universal terminal event.",
+      "reuse": "multi-turn",
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "zhipu-glm.realtime-transcription",
+      "handshake": [
+        "session.created",
+        "transcription_session.update",
+        "transcription.session.updated-or-transcription_session.updated"
+      ],
+      "clientEvents": [
+        "transcription_session.update",
+        "input_audio_buffer.append",
+        "input_audio_buffer.commit",
+        "input_audio_buffer.clear"
+      ],
+      "serverEvents": [
+        "transcription.session.updated",
+        "transcription_session.updated",
+        "conversation.item.input_audio_transcription.completed",
+        "conversation.item.input_audio_transcription.failed",
+        "input_audio_buffer.committed",
+        "input_audio_buffer.cleared",
+        "input_audio_buffer.speech_started",
+        "input_audio_buffer.speech_stopped",
+        "heartbeat",
+        "error"
+      ],
+      "vadModes": [
+        "manual",
+        "server-vad"
+      ],
+      "terminal": "Each input item becomes final at conversation.item.input_audio_transcription.completed or fails at the corresponding failed event; transcription completion is asynchronous relative to model-response events.",
+      "reuse": "multi-turn",
+      "textDeltaSemantics": "not-applicable"
+    },
+    {
+      "id": "zhipu-glm.asr-stream",
+      "handshake": [],
+      "clientEvents": [
+        "audio.transcriptions.create"
+      ],
+      "serverEvents": [
+        "audio.transcription.chunk",
+        "data.done"
+      ],
+      "vadModes": [
+        "none"
+      ],
+      "terminal": "The multipart HTTP/SSE request terminates at data: [DONE].",
+      "reuse": "single-request",
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "zhipu-glm.tts-stream",
+      "handshake": [],
+      "clientEvents": [
+        "audio.speech.create"
+      ],
+      "serverEvents": [
+        "audio.speech.chunk",
+        "audio.speech.stop"
+      ],
+      "vadModes": [
+        "none"
+      ],
+      "terminal": "A streamed choice whose finish_reason is stop is terminal; streaming supports PCM output, not WAV framing.",
+      "reuse": "single-request",
+      "textDeltaSemantics": "not-applicable"
+    },
+    {
+      "id": "zhipu-glm.voice-clone-single",
+      "handshake": [],
+      "clientEvents": [
+        "voice.clone.create"
+      ],
+      "serverEvents": [
+        "voice.clone.response"
+      ],
+      "vadModes": [
+        "none"
+      ],
+      "terminal": "The HTTP JSON response containing the cloned voice identifier and preview file identifier is terminal.",
+      "reuse": "single-request",
+      "textDeltaSemantics": "not-applicable"
+    }
+  ],
+  "apiFamilies": [
+    {
+      "id": "zhipu-glm.openai-chat-v4",
+      "displayName": "Zhipu OpenAI-compatible chat completions v4",
+      "baseUrlTemplate": "https://open.bigmodel.cn/api/paas/v4",
+      "endpointTemplate": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": "v4",
+      "transportId": "zhipu-glm.sse-json",
+      "authProfileIds": [
+        "zhipu-glm.bearer-api-key"
+      ],
+      "defaultAuthProfileId": "zhipu-glm.bearer-api-key",
+      "maturity": "unspecified",
+      "documentationIds": [
+        "zhipu-glm.openai-compatibility",
+        "zhipu-glm.model-overview"
+      ]
+    },
+    {
+      "id": "zhipu-glm.realtime-v4",
+      "displayName": "Native GLM-Realtime v4",
+      "baseUrlTemplate": "wss://open.bigmodel.cn/api/paas/v4",
+      "endpointTemplate": "wss://open.bigmodel.cn/api/paas/v4/realtime",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": "v4",
+      "transportId": "zhipu-glm.websocket-json",
+      "authProfileIds": [
+        "zhipu-glm.bearer-api-key",
+        "zhipu-glm.realtime-jwt"
+      ],
+      "defaultAuthProfileId": "zhipu-glm.bearer-api-key",
+      "maturity": "unspecified",
+      "documentationIds": [
+        "zhipu-glm.realtime-guide",
+        "zhipu-glm.realtime-asyncapi",
+        "zhipu-glm.realtime-sdk"
+      ]
+    },
+    {
+      "id": "zhipu-glm.asr-v4",
+      "displayName": "Zhipu audio transcription v4",
+      "baseUrlTemplate": "https://open.bigmodel.cn/api/paas/v4",
+      "endpointTemplate": "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": "v4",
+      "transportId": "zhipu-glm.sse-multipart",
+      "authProfileIds": [
+        "zhipu-glm.bearer-api-key"
+      ],
+      "defaultAuthProfileId": "zhipu-glm.bearer-api-key",
+      "maturity": "unspecified",
+      "documentationIds": [
+        "zhipu-glm.asr-guide",
+        "zhipu-glm.asr-reference"
+      ]
+    },
+    {
+      "id": "zhipu-glm.tts-v4",
+      "displayName": "Zhipu text-to-speech v4",
+      "baseUrlTemplate": "https://open.bigmodel.cn/api/paas/v4",
+      "endpointTemplate": "https://open.bigmodel.cn/api/paas/v4/audio/speech",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": "v4",
+      "transportId": "zhipu-glm.sse-json",
+      "authProfileIds": [
+        "zhipu-glm.bearer-api-key"
+      ],
+      "defaultAuthProfileId": "zhipu-glm.bearer-api-key",
+      "maturity": "unspecified",
+      "documentationIds": [
+        "zhipu-glm.tts-guide",
+        "zhipu-glm.tts-reference"
+      ]
+    },
+    {
+      "id": "zhipu-glm.voice-clone-v4",
+      "displayName": "Zhipu voice clone v4",
+      "baseUrlTemplate": "https://open.bigmodel.cn/api/paas/v4",
+      "endpointTemplate": "https://open.bigmodel.cn/api/paas/v4/voice/clone",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": "v4",
+      "transportId": "zhipu-glm.http-json",
+      "authProfileIds": [
+        "zhipu-glm.bearer-api-key"
+      ],
+      "defaultAuthProfileId": "zhipu-glm.bearer-api-key",
+      "maturity": "unspecified",
+      "documentationIds": [
+        "zhipu-glm.voice-clone-guide",
+        "zhipu-glm.voice-clone-reference"
+      ]
+    }
+  ],
+  "protocolProfiles": [
+    {
+      "id": "zhipu-glm.openai-chat",
+      "version": 1,
+      "apiFamilyId": "zhipu-glm.openai-chat-v4",
+      "transportId": "zhipu-glm.sse-json",
+      "authProfileIds": [
+        "zhipu-glm.bearer-api-key"
+      ],
+      "defaultAuthProfileId": "zhipu-glm.bearer-api-key",
+      "lifecycleProfileId": "zhipu-glm.openai-chat-stream",
+      "operations": [
+        "text",
+        "text-translation"
+      ],
+      "capabilities": [
+        "text-generation",
+        "text-translation"
+      ],
+      "maturity": "unspecified",
+      "adapter": {
+        "id": "openai-compatible-http",
+        "status": "enabled",
+        "verification": "fixture-only",
+        "reason": "Only the generic HTTP/SSE envelope is represented by a sanitized documentation-derived fixture; no provider call was made."
+      },
+      "documentationIds": [
+        "zhipu-glm.openai-compatibility"
+      ],
+      "fixtureIds": [
+        "zhipu-glm.openai-chat-stream"
+      ],
+      "notes": "This compatibility profile applies only to HTTP chat completions and must never be selected for glm-realtime-* models."
+    },
+    {
+      "id": "zhipu-glm.realtime-conversation",
+      "version": 1,
+      "apiFamilyId": "zhipu-glm.realtime-v4",
+      "transportId": "zhipu-glm.websocket-json",
+      "authProfileIds": [
+        "zhipu-glm.bearer-api-key",
+        "zhipu-glm.realtime-jwt"
+      ],
+      "defaultAuthProfileId": "zhipu-glm.bearer-api-key",
+      "audioProfileId": "zhipu-glm.realtime-audio",
+      "lifecycleProfileId": "zhipu-glm.realtime-conversation",
+      "operations": [
+        "realtime-conversation"
+      ],
+      "capabilities": [
+        "speech-to-text",
+        "text-to-speech",
+        "speech-to-speech"
+      ],
+      "maturity": "unspecified",
+      "adapter": {
+        "id": "glm-realtime-v4",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "The existing runtime path assumes an OpenAI-Realtime-like dialect; it has not implemented and fixture-tested the complete native GLM event, VAD, terminal, and transcript contract."
+      },
+      "documentationIds": [
+        "zhipu-glm.realtime-guide",
+        "zhipu-glm.realtime-asyncapi",
+        "zhipu-glm.realtime-sdk"
+      ],
+      "fixtureIds": [
+        "zhipu-glm.realtime-auth",
+        "zhipu-glm.realtime-session-handshake",
+        "zhipu-glm.realtime-audio-vad",
+        "zhipu-glm.realtime-terminal",
+        "zhipu-glm.realtime-output-transcript"
+      ],
+      "notes": "Native GLM-Realtime happens to use some similarly named events but is not declared OpenAI Realtime compatible."
+    },
+    {
+      "id": "zhipu-glm.realtime-translation",
+      "version": 1,
+      "apiFamilyId": "zhipu-glm.realtime-v4",
+      "transportId": "zhipu-glm.websocket-json",
+      "authProfileIds": [
+        "zhipu-glm.bearer-api-key",
+        "zhipu-glm.realtime-jwt"
+      ],
+      "defaultAuthProfileId": "zhipu-glm.bearer-api-key",
+      "audioProfileId": "zhipu-glm.realtime-audio",
+      "lifecycleProfileId": "zhipu-glm.realtime-conversation",
+      "operations": [
+        "realtime-translation"
+      ],
+      "capabilities": [
+        "speech-to-text",
+        "text-to-speech",
+        "speech-to-speech",
+        "speech-translation"
+      ],
+      "maturity": "unspecified",
+      "adapter": {
+        "id": "glm-realtime-translation-v4",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "Realtime translation is a documented use case, but there is no implemented provider-owned translation mode with validated prompt, transcript authority, and output lifecycle."
+      },
+      "documentationIds": [
+        "zhipu-glm.realtime-guide"
+      ],
+      "fixtureIds": [
+        "zhipu-glm.realtime-translation-session"
+      ],
+      "notes": "This is a consumer mode over the native Realtime conversation contract, not a separate OpenAI-compatible endpoint."
+    },
+    {
+      "id": "zhipu-glm.realtime-transcription",
+      "version": 1,
+      "apiFamilyId": "zhipu-glm.realtime-v4",
+      "transportId": "zhipu-glm.websocket-json",
+      "authProfileIds": [
+        "zhipu-glm.bearer-api-key",
+        "zhipu-glm.realtime-jwt"
+      ],
+      "defaultAuthProfileId": "zhipu-glm.bearer-api-key",
+      "audioProfileId": "zhipu-glm.realtime-transcription-audio",
+      "lifecycleProfileId": "zhipu-glm.realtime-transcription",
+      "operations": [
+        "realtime-transcription"
+      ],
+      "capabilities": [
+        "speech-to-text",
+        "realtime-transcription"
+      ],
+      "maturity": "unspecified",
+      "adapter": {
+        "id": "glm-realtime-transcription-v4",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "No runtime consumer handles transcription_session.update, asynchronous input transcription completion, and the documented acknowledgement spelling discrepancy."
+      },
+      "documentationIds": [
+        "zhipu-glm.realtime-guide",
+        "zhipu-glm.realtime-asyncapi"
+      ],
+      "fixtureIds": [
+        "zhipu-glm.realtime-transcription"
+      ]
+    },
+    {
+      "id": "zhipu-glm.asr",
+      "version": 1,
+      "apiFamilyId": "zhipu-glm.asr-v4",
+      "transportId": "zhipu-glm.sse-multipart",
+      "authProfileIds": [
+        "zhipu-glm.bearer-api-key"
+      ],
+      "defaultAuthProfileId": "zhipu-glm.bearer-api-key",
+      "audioProfileId": "zhipu-glm.asr-file-audio",
+      "lifecycleProfileId": "zhipu-glm.asr-stream",
+      "operations": [
+        "asr"
+      ],
+      "capabilities": [
+        "speech-to-text",
+        "file-transcription"
+      ],
+      "maturity": "unspecified",
+      "adapter": {
+        "id": "glm-asr-v4",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "The multipart/SSE audio-transcription surface has no provider-owned runtime adapter."
+      },
+      "documentationIds": [
+        "zhipu-glm.asr-guide",
+        "zhipu-glm.asr-reference"
+      ],
+      "fixtureIds": [
+        "zhipu-glm.asr-stream"
+      ]
+    },
+    {
+      "id": "zhipu-glm.tts",
+      "version": 1,
+      "apiFamilyId": "zhipu-glm.tts-v4",
+      "transportId": "zhipu-glm.sse-json",
+      "authProfileIds": [
+        "zhipu-glm.bearer-api-key"
+      ],
+      "defaultAuthProfileId": "zhipu-glm.bearer-api-key",
+      "audioProfileId": "zhipu-glm.tts-pcm24k",
+      "lifecycleProfileId": "zhipu-glm.tts-stream",
+      "operations": [
+        "tts"
+      ],
+      "capabilities": [
+        "text-to-speech"
+      ],
+      "maturity": "unspecified",
+      "adapter": {
+        "id": "glm-tts-v4",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "The base64/hex PCM SSE stream has no provider-owned runtime adapter."
+      },
+      "documentationIds": [
+        "zhipu-glm.tts-guide",
+        "zhipu-glm.tts-reference"
+      ],
+      "fixtureIds": [
+        "zhipu-glm.tts-stream"
+      ]
+    },
+    {
+      "id": "zhipu-glm.voice-clone",
+      "version": 1,
+      "apiFamilyId": "zhipu-glm.voice-clone-v4",
+      "transportId": "zhipu-glm.http-json",
+      "authProfileIds": [
+        "zhipu-glm.bearer-api-key"
+      ],
+      "defaultAuthProfileId": "zhipu-glm.bearer-api-key",
+      "audioProfileId": "zhipu-glm.voice-clone-reference",
+      "lifecycleProfileId": "zhipu-glm.voice-clone-single",
+      "operations": [
+        "voice-clone"
+      ],
+      "capabilities": [
+        "voice-clone"
+      ],
+      "maturity": "unspecified",
+      "adapter": {
+        "id": "glm-voice-clone-v4",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "The file-id-based voice clone workflow has no provider-owned runtime adapter."
+      },
+      "documentationIds": [
+        "zhipu-glm.voice-clone-guide",
+        "zhipu-glm.voice-clone-reference"
+      ],
+      "fixtureIds": [
+        "zhipu-glm.voice-clone"
+      ]
+    }
+  ],
+  "models": [
+    {
+      "id": "glm-realtime-flash",
+      "displayName": "GLM-Realtime-Flash",
+      "capabilities": [
+        "speech-to-text",
+        "text-to-speech",
+        "speech-to-speech",
+        "speech-translation",
+        "realtime-transcription"
+      ],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "realtime-conversation",
+          "protocolProfileId": "zhipu-glm.realtime-conversation",
+          "protocolProfileVersion": 1
+        },
+        {
+          "operation": "realtime-translation",
+          "protocolProfileId": "zhipu-glm.realtime-translation",
+          "protocolProfileVersion": 1
+        },
+        {
+          "operation": "realtime-transcription",
+          "protocolProfileId": "zhipu-glm.realtime-transcription",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": [
+        "zhipu-glm.realtime-guide",
+        "zhipu-glm.model-overview"
+      ]
+    },
+    {
+      "id": "glm-realtime-air",
+      "displayName": "GLM-Realtime-Air",
+      "capabilities": [
+        "speech-to-text",
+        "text-to-speech",
+        "speech-to-speech",
+        "speech-translation",
+        "realtime-transcription"
+      ],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "realtime-conversation",
+          "protocolProfileId": "zhipu-glm.realtime-conversation",
+          "protocolProfileVersion": 1
+        },
+        {
+          "operation": "realtime-translation",
+          "protocolProfileId": "zhipu-glm.realtime-translation",
+          "protocolProfileVersion": 1
+        },
+        {
+          "operation": "realtime-transcription",
+          "protocolProfileId": "zhipu-glm.realtime-transcription",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": [
+        "zhipu-glm.realtime-guide",
+        "zhipu-glm.model-overview"
+      ]
+    },
+    {
+      "id": "glm-5.3-flash",
+      "displayName": "GLM-5.3-Flash",
+      "capabilities": [
+        "text-generation",
+        "text-translation"
+      ],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "text",
+          "protocolProfileId": "zhipu-glm.openai-chat",
+          "protocolProfileVersion": 1
+        },
+        {
+          "operation": "text-translation",
+          "protocolProfileId": "zhipu-glm.openai-chat",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": [
+        "zhipu-glm.model-overview",
+        "zhipu-glm.openai-compatibility"
+      ]
+    },
+    {
+      "id": "glm-asr-2512",
+      "displayName": "GLM-ASR-2512",
+      "capabilities": [
+        "speech-to-text",
+        "file-transcription"
+      ],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "asr",
+          "protocolProfileId": "zhipu-glm.asr",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": [
+        "zhipu-glm.asr-guide",
+        "zhipu-glm.asr-reference"
+      ]
+    },
+    {
+      "id": "glm-tts",
+      "displayName": "GLM-TTS",
+      "capabilities": [
+        "text-to-speech"
+      ],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "tts",
+          "protocolProfileId": "zhipu-glm.tts",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": [
+        "zhipu-glm.tts-guide",
+        "zhipu-glm.tts-reference"
+      ]
+    },
+    {
+      "id": "glm-tts-clone",
+      "displayName": "GLM-TTS-Clone",
+      "capabilities": [
+        "voice-clone"
+      ],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "voice-clone",
+          "protocolProfileId": "zhipu-glm.voice-clone",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": [
+        "zhipu-glm.voice-clone-guide",
+        "zhipu-glm.voice-clone-reference"
+      ]
+    }
+  ],
+  "probes": [
+    {
+      "id": "zhipu-glm.probe-openai-chat-envelope",
+      "protocolProfileId": "zhipu-glm.openai-chat",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "zhipu-glm.openai-chat-stream",
+      "notes": "Offline assertion of the HTTP chat endpoint, Bearer key, SSE chunks, and [DONE]."
+    },
+    {
+      "id": "zhipu-glm.probe-realtime-auth",
+      "protocolProfileId": "zhipu-glm.realtime-conversation",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "zhipu-glm.realtime-auth",
+      "notes": "No JWT was generated and no WebSocket was opened."
+    },
+    {
+      "id": "zhipu-glm.probe-realtime-handshake",
+      "protocolProfileId": "zhipu-glm.realtime-conversation",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "zhipu-glm.realtime-session-handshake"
+    },
+    {
+      "id": "zhipu-glm.probe-realtime-translation",
+      "protocolProfileId": "zhipu-glm.realtime-translation",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "zhipu-glm.realtime-translation-session"
+    },
+    {
+      "id": "zhipu-glm.probe-realtime-transcription",
+      "protocolProfileId": "zhipu-glm.realtime-transcription",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "zhipu-glm.realtime-transcription"
+    },
+    {
+      "id": "zhipu-glm.probe-asr-stream",
+      "protocolProfileId": "zhipu-glm.asr",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "zhipu-glm.asr-stream"
+    },
+    {
+      "id": "zhipu-glm.probe-tts-stream",
+      "protocolProfileId": "zhipu-glm.tts",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "zhipu-glm.tts-stream"
+    }
+  ],
+  "smokes": [
+    {
+      "id": "zhipu-glm.smoke-realtime-audio-vad",
+      "protocolProfileId": "zhipu-glm.realtime-conversation",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "zhipu-glm.realtime-audio-vad"
+    },
+    {
+      "id": "zhipu-glm.smoke-realtime-terminal",
+      "protocolProfileId": "zhipu-glm.realtime-conversation",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "zhipu-glm.realtime-terminal"
+    },
+    {
+      "id": "zhipu-glm.smoke-realtime-transcript-advisory",
+      "protocolProfileId": "zhipu-glm.realtime-conversation",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "zhipu-glm.realtime-output-transcript"
+    },
+    {
+      "id": "zhipu-glm.smoke-voice-clone",
+      "protocolProfileId": "zhipu-glm.voice-clone",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "zhipu-glm.voice-clone"
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "zhipu-glm.openai-chat-stream",
+      "path": "provider-modules/zhipu-glm/fixtures/openai-chat-stream.json",
+      "kind": "wire",
+      "sourceDocumentationIds": [
+        "zhipu-glm.openai-compatibility"
+      ]
+    },
+    {
+      "id": "zhipu-glm.realtime-auth",
+      "path": "provider-modules/zhipu-glm/fixtures/realtime-auth.json",
+      "kind": "probe",
+      "sourceDocumentationIds": [
+        "zhipu-glm.realtime-guide",
+        "zhipu-glm.realtime-llm-reference",
+        "zhipu-glm.realtime-sdk"
+      ]
+    },
+    {
+      "id": "zhipu-glm.realtime-session-handshake",
+      "path": "provider-modules/zhipu-glm/fixtures/realtime-session-handshake.json",
+      "kind": "wire",
+      "sourceDocumentationIds": [
+        "zhipu-glm.realtime-guide",
+        "zhipu-glm.realtime-asyncapi"
+      ]
+    },
+    {
+      "id": "zhipu-glm.realtime-audio-vad",
+      "path": "provider-modules/zhipu-glm/fixtures/realtime-audio-vad.json",
+      "kind": "smoke",
+      "sourceDocumentationIds": [
+        "zhipu-glm.realtime-guide"
+      ]
+    },
+    {
+      "id": "zhipu-glm.realtime-terminal",
+      "path": "provider-modules/zhipu-glm/fixtures/realtime-terminal.json",
+      "kind": "smoke",
+      "sourceDocumentationIds": [
+        "zhipu-glm.realtime-guide",
+        "zhipu-glm.realtime-llm-reference"
+      ]
+    },
+    {
+      "id": "zhipu-glm.realtime-output-transcript",
+      "path": "provider-modules/zhipu-glm/fixtures/realtime-output-transcript.json",
+      "kind": "smoke",
+      "sourceDocumentationIds": [
+        "zhipu-glm.realtime-guide"
+      ]
+    },
+    {
+      "id": "zhipu-glm.realtime-translation-session",
+      "path": "provider-modules/zhipu-glm/fixtures/realtime-translation-session.json",
+      "kind": "wire",
+      "sourceDocumentationIds": [
+        "zhipu-glm.realtime-guide"
+      ]
+    },
+    {
+      "id": "zhipu-glm.realtime-transcription",
+      "path": "provider-modules/zhipu-glm/fixtures/realtime-transcription.json",
+      "kind": "wire",
+      "sourceDocumentationIds": [
+        "zhipu-glm.realtime-guide",
+        "zhipu-glm.realtime-asyncapi"
+      ]
+    },
+    {
+      "id": "zhipu-glm.asr-stream",
+      "path": "provider-modules/zhipu-glm/fixtures/asr-stream.json",
+      "kind": "wire",
+      "sourceDocumentationIds": [
+        "zhipu-glm.asr-guide",
+        "zhipu-glm.asr-reference"
+      ]
+    },
+    {
+      "id": "zhipu-glm.tts-stream",
+      "path": "provider-modules/zhipu-glm/fixtures/tts-stream.json",
+      "kind": "wire",
+      "sourceDocumentationIds": [
+        "zhipu-glm.tts-guide",
+        "zhipu-glm.tts-reference"
+      ]
+    },
+    {
+      "id": "zhipu-glm.voice-clone",
+      "path": "provider-modules/zhipu-glm/fixtures/voice-clone.json",
+      "kind": "wire",
+      "sourceDocumentationIds": [
+        "zhipu-glm.voice-clone-guide",
+        "zhipu-glm.voice-clone-reference"
+      ]
+    }
+  ]
+}

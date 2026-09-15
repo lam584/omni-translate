@@ -14,6 +14,11 @@ pub(super) enum BridgeSourceEnvelope {
     TranslationStatus {
         status_id: String,
         session_id: String,
+        bridge_instance_id: String,
+        source_generation: u64,
+        source_generation_token: String,
+        playback_owner_generation: u64,
+        physical_playback_device_id: String,
         cue_id: String,
         status: String,
         reason: String,
@@ -57,6 +62,15 @@ pub(super) fn bridge_source_identity_disposition(
             current.session_id.as_deref().unwrap_or("none"),
             identity.session_id,
         ));
+    }
+    // A controlled restart revokes the whole producer incarnation by clearing
+    // its token before terminating the sidecar. The same process can reconnect
+    // its source pipe and mint a higher generation, so generation monotonicity
+    // alone must never restore an explicitly revoked incarnation.
+    if current.source_generation_token.is_none() {
+        return BridgeSourceIdentityDisposition::Reject(
+            "bridge-source-incarnation-revoked".to_string(),
+        );
     }
     let expected_token = format!(
         "{}:{}:{}",
@@ -140,6 +154,7 @@ impl BridgeTranslationStatusDisposition {
     }
 }
 
+#[cfg(test)]
 pub(super) fn bridge_translation_status_disposition(
     store: &AudioStateStore,
     active_session_id: Option<&str>,
@@ -151,6 +166,20 @@ pub(super) fn bridge_translation_status_disposition(
     }
     if active_session_id != Some(event_session_id) {
         return BridgeTranslationStatusDisposition::SessionMismatch;
+    }
+    BridgeTranslationStatusDisposition::Apply
+}
+
+pub(super) fn bridge_translation_status_disposition_for_authority(
+    store: &AudioStateStore,
+    status_id: &str,
+    authority_matches: bool,
+) -> BridgeTranslationStatusDisposition {
+    if !authority_matches {
+        return BridgeTranslationStatusDisposition::SessionMismatch;
+    }
+    if !store.accept_bridge_translation_status_once(status_id) {
+        return BridgeTranslationStatusDisposition::DuplicateReplay;
     }
     BridgeTranslationStatusDisposition::Apply
 }
@@ -234,12 +263,17 @@ pub(super) fn record_bridge_translation_status(
 pub(super) fn write_bridge_translation_status_ack(
     source_pipe: &mut impl Write,
     status_id: &str,
-    session_id: &str,
+    authority: &crate::audio::state::TranslationPlaybackAuthority,
 ) -> Result<(), String> {
     let ack = omni_bridge_protocol::TranslationPlaybackStatusAck {
         event_type: "bridge.translation.status.ack".to_string(),
         status_id: status_id.to_string(),
-        session_id: session_id.to_string(),
+        session_id: authority.session_id.clone(),
+        bridge_instance_id: authority.bridge_instance_id.clone(),
+        source_generation: authority.source_generation,
+        source_generation_token: authority.source_generation_token.clone(),
+        playback_owner_generation: authority.playback_owner_generation,
+        physical_playback_device_id: authority.physical_playback_device_id.clone(),
     };
     let header = serde_json::to_vec(&ack).map_err_str()?;
     source_pipe
@@ -278,6 +312,11 @@ pub(super) fn read_bridge_source_payload(
         return Ok(BridgeSourceEnvelope::TranslationStatus {
             status_id: status.status_id,
             session_id: status.session_id,
+            bridge_instance_id: status.bridge_instance_id,
+            source_generation: status.source_generation,
+            source_generation_token: status.source_generation_token,
+            playback_owner_generation: status.playback_owner_generation,
+            physical_playback_device_id: status.physical_playback_device_id,
             cue_id: status.cue_id,
             status: status.playback_status.as_str().to_string(),
             reason: status.reason,

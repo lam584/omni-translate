@@ -10,6 +10,12 @@ export const CANONICAL_SOURCE_AUTHORITY_MODE = 'canonical-fixture-local-v2';
 export const PHYSICAL_SOURCE_WAVEFORM_AUTHORITY_MODE = 'canonical-source-signed-waveform-v1';
 export const CANONICAL_SOURCE_SAMPLE_RATE_HZ = 16_000;
 
+const restartQuietWindow = Object.freeze({
+  afterSeconds: 90,
+  durationSeconds: 45,
+  insertedSamples: 45 * CANONICAL_SOURCE_SAMPLE_RATE_HZ,
+});
+
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const defaultWorkspaceRoot = path.resolve(moduleDirectory, '..', '..');
 const fixtureDirectoryRelative = 'scripts/testing/fixtures';
@@ -205,6 +211,49 @@ export function buildCanonicalReferencePcm({ workspaceRoot = defaultWorkspaceRoo
   return pcm16WaveToInjectorReference(fs.readFileSync(paths.media));
 }
 
+function canonicalReferencePcmAuthority(referenceBytes, fixture) {
+  const insertionOffsetBytes = restartQuietWindow.afterSeconds * CANONICAL_SOURCE_SAMPLE_RATE_HZ * 2;
+  const insertedSilenceBytes = restartQuietWindow.insertedSamples * 2;
+  if (insertionOffsetBytes >= fixture.referencePcm.buffer.length) {
+    throw new Error('canonical PCM is too short for the fixed restart quiet window');
+  }
+  const quietWindowVariant = Buffer.concat([
+    fixture.referencePcm.buffer.subarray(0, insertionOffsetBytes),
+    Buffer.alloc(insertedSilenceBytes),
+    fixture.referencePcm.buffer.subarray(insertionOffsetBytes),
+  ]);
+  let transformation;
+  if (referenceBytes.equals(fixture.referencePcm.buffer)) {
+    transformation = {
+      transformation: 'none',
+      restartQuietWindowAfterSeconds: 0,
+      restartQuietWindowSeconds: 0,
+      insertedSilenceSamples: 0,
+    };
+  } else if (referenceBytes.equals(quietWindowVariant)) {
+    transformation = {
+      transformation: 'restart-quiet-window-v1',
+      restartQuietWindowAfterSeconds: restartQuietWindow.afterSeconds,
+      restartQuietWindowSeconds: restartQuietWindow.durationSeconds,
+      insertedSilenceSamples: restartQuietWindow.insertedSamples,
+    };
+  } else {
+    throw new Error(
+      'run canonical reference PCM is neither the byte-for-byte injector reconstruction nor its exact 90s/45s restart quiet-window variant',
+    );
+  }
+  return {
+    path: referencePcmName,
+    bytes: referenceBytes.length,
+    samples: referenceBytes.length / 2,
+    sampleRateHz: fixture.referencePcm.sampleRateHz,
+    channels: fixture.referencePcm.channels,
+    durationSeconds: Number((referenceBytes.length / 2 / CANONICAL_SOURCE_SAMPLE_RATE_HZ).toFixed(6)),
+    sha256: sha256Buffer(referenceBytes),
+    ...transformation,
+  };
+}
+
 export function loadCanonicalFixtureAuthority({ workspaceRoot = defaultWorkspaceRoot } = {}) {
   const paths = fixturePaths(workspaceRoot);
   for (const [key, filePath] of Object.entries(paths)) regularFile(filePath, `canonical ${key}`);
@@ -299,9 +348,7 @@ export function validateCanonicalSourceAuthority({
   const referenceStat = regularFile(referencePath, 'run canonical reference PCM');
   if (referenceStat.size % 2 !== 0) throw new Error('run canonical reference PCM has an odd byte length');
   const referenceBytes = fs.readFileSync(referencePath);
-  if (!referenceBytes.equals(fixture.referencePcm.buffer)) {
-    throw new Error('run canonical reference PCM is not byte-for-byte the injector reconstruction');
-  }
+  const referencePcm = canonicalReferencePcmAuthority(referenceBytes, fixture);
   const authority = sourceAuthority ?? readJson(path.join(runRoot, sourceAuthorityName), 'canonical source authority');
   if (
     authority.schemaVersion !== CANONICAL_SOURCE_AUTHORITY_SCHEMA_VERSION
@@ -334,15 +381,7 @@ export function validateCanonicalSourceAuthority({
     bytes: fixture.translationText.bytes,
     sha256: fixture.translationText.sha256,
   }, 'canonical translationText');
-  exactObject(authority.referencePcm, {
-    path: referencePcmName,
-    bytes: fixture.referencePcm.bytes,
-    samples: fixture.referencePcm.samples,
-    sampleRateHz: fixture.referencePcm.sampleRateHz,
-    channels: fixture.referencePcm.channels,
-    durationSeconds: Number(fixture.referencePcm.durationSeconds.toFixed(6)),
-    sha256: fixture.referencePcm.sha256,
-  }, 'canonical referencePcm');
+  exactObject(authority.referencePcm, referencePcm, 'canonical referencePcm');
   exactObject(authority.fixture, fixture.fixture, 'canonical fixture');
 
   return {
@@ -365,13 +404,7 @@ export function validateCanonicalSourceAuthority({
     sourceText: { path: canonicalRelativePaths.sourceText, bytes: fixture.sourceText.bytes, sha256: fixture.sourceText.sha256 },
     translationText: { path: canonicalRelativePaths.translationText, bytes: fixture.translationText.bytes, sha256: fixture.translationText.sha256 },
     referencePcm: {
-      path: referencePcmName,
-      bytes: fixture.referencePcm.bytes,
-      samples: fixture.referencePcm.samples,
-      sampleRateHz: fixture.referencePcm.sampleRateHz,
-      channels: fixture.referencePcm.channels,
-      durationSeconds: Number(fixture.referencePcm.durationSeconds.toFixed(6)),
-      sha256: fixture.referencePcm.sha256,
+      ...referencePcm,
       byteForByteInjectorReconstruction: true,
     },
     fixture: fixture.fixture,
@@ -395,6 +428,11 @@ export function buildPhysicalSourceWaveformAuthority({
   sourceWindowPath,
   physicalRecordingPcmPath,
   wrongReferencePcmPaths,
+  workspaceRoot = defaultWorkspaceRoot,
+  releaseExecutablePath,
+  releaseExecutableSha256,
+  noBuild = false,
+  deadlineUtcMs,
 } = {}) {
   if (!runDirectory && (!referencePcmPath || !sourceWindowPath)) {
     throw new Error('runDirectory or explicit reference/source-window paths are required');
@@ -434,7 +472,11 @@ export function buildPhysicalSourceWaveformAuthority({
     sampleRateHz: CANONICAL_SOURCE_SAMPLE_RATE_HZ,
     profile: 'canonical-waveform-v1',
     wrongReferencePaths: wrongReferencePcmPaths ?? [],
-    workspaceRoot: defaultWorkspaceRoot,
+    workspaceRoot,
+    releaseExecutablePath,
+    releaseExecutableSha256,
+    noBuild,
+    deadlineUtcMs,
   });
   const candidateAuthorities = rustMetrics.candidates.map((entry) => ({
     ...entry,
@@ -538,27 +580,34 @@ function pcmBufferToSamples(bytes) {
   return samples;
 }
 
-export function validateRunCanonicalSourceAuthority(options = {}) {
+export function collectRunCanonicalSourceAuthority(options = {}) {
   const sourceAuthority = validateCanonicalSourceAuthority(options);
   const physicalSourceWaveform = buildPhysicalSourceWaveformAuthority(options);
-  if (!physicalSourceWaveform.passed) {
-    throw new Error(`physical original-source waveform authority failed: ${physicalSourceWaveform.violations.join('; ')}`);
-  }
   return {
     schemaVersion: CANONICAL_SOURCE_AUTHORITY_SCHEMA_VERSION,
     artifactKind: 'watch-mode-canonical-source-and-physical-authority',
-    passed: true,
+    passed: physicalSourceWaveform.passed,
     remoteProviderCalls: 0,
     externalAudioSeconds: 0,
     sourceAuthority,
     physicalSourceWaveform,
+    ...(physicalSourceWaveform.passed ? {} : {
+      error: `physical original-source waveform authority failed: ${physicalSourceWaveform.violations.join('; ')}`,
+    }),
   };
+}
+
+export function validateRunCanonicalSourceAuthority(options = {}) {
+  const authority = collectRunCanonicalSourceAuthority(options);
+  if (!authority.passed) throw new Error(authority.error);
+  return authority;
 }
 
 function parseCliArgs(argv) {
   const values = {};
   let referenceOnly = false;
   let sourceOnly = false;
+  let preserveFailureEvidence = false;
   for (let index = 0; index < argv.length; index += 1) {
     const key = argv[index];
     if (key === '--reference-only') {
@@ -569,7 +618,18 @@ function parseCliArgs(argv) {
       sourceOnly = true;
       continue;
     }
-    if (key !== '--run-directory' && key !== '--workspace-root') throw new Error(`unknown argument: ${key}`);
+    if (key === '--preserve-failure-evidence') {
+      preserveFailureEvidence = true;
+      continue;
+    }
+    if (key === '--no-build') {
+      values['no-build'] = true;
+      continue;
+    }
+    if (key !== '--run-directory' && key !== '--workspace-root'
+        && key !== '--release-executable-path' && key !== '--release-executable-sha256') {
+      throw new Error(`unknown argument: ${key}`);
+    }
     const value = argv[index + 1];
     if (!value || value.startsWith('--')) throw new Error(`${key} requires a value`);
     values[key.slice(2)] = value;
@@ -577,11 +637,18 @@ function parseCliArgs(argv) {
   }
   if (!values['run-directory']) throw new Error('--run-directory is required');
   if (referenceOnly && sourceOnly) throw new Error('--reference-only and --source-only are mutually exclusive');
+  if (preserveFailureEvidence && (referenceOnly || sourceOnly)) {
+    throw new Error('--preserve-failure-evidence is available only for combined authority');
+  }
   return {
     runDirectory: values['run-directory'],
     ...(values['workspace-root'] ? { workspaceRoot: values['workspace-root'] } : {}),
+    ...(values['release-executable-path'] ? { releaseExecutablePath: values['release-executable-path'] } : {}),
+    ...(values['release-executable-sha256'] ? { releaseExecutableSha256: values['release-executable-sha256'] } : {}),
+    noBuild: values['no-build'] === true,
     referenceOnly,
     sourceOnly,
+    preserveFailureEvidence,
   };
 }
 
@@ -594,9 +661,8 @@ export function validateCanonicalReferencePcm({
   const referencePath = path.join(path.resolve(runDirectory), referencePcmName);
   const bytes = fs.readFileSync(referencePath);
   regularFile(referencePath, 'run canonical reference PCM');
-  if (!bytes.equals(fixture.referencePcm.buffer)) {
-    throw new Error('run canonical reference PCM is not byte-for-byte the injector reconstruction');
-  }
+  if (bytes.length % 2 !== 0) throw new Error('run canonical reference PCM has an odd byte length');
+  const referencePcm = canonicalReferencePcmAuthority(bytes, fixture);
   return {
     schemaVersion: CANONICAL_SOURCE_AUTHORITY_SCHEMA_VERSION,
     artifactKind: 'watch-mode-canonical-reference-pcm-validation',
@@ -615,15 +681,7 @@ export function validateCanonicalReferencePcm({
     translation: fixture.translationText.text,
     sourceText: { path: canonicalRelativePaths.sourceText, bytes: fixture.sourceText.bytes, sha256: fixture.sourceText.sha256 },
     translationText: { path: canonicalRelativePaths.translationText, bytes: fixture.translationText.bytes, sha256: fixture.translationText.sha256 },
-    referencePcm: {
-      path: referencePcmName,
-      bytes: fixture.referencePcm.bytes,
-      samples: fixture.referencePcm.samples,
-      sampleRateHz: fixture.referencePcm.sampleRateHz,
-      channels: fixture.referencePcm.channels,
-      durationSeconds: Number(fixture.referencePcm.durationSeconds.toFixed(6)),
-      sha256: fixture.referencePcm.sha256,
-    },
+    referencePcm,
     fixture: fixture.fixture,
   };
 }
@@ -635,7 +693,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       ? validateCanonicalReferencePcm(options)
       : options.sourceOnly
         ? validateCanonicalSourceAuthority(options)
-        : validateRunCanonicalSourceAuthority(options);
+        : options.preserveFailureEvidence
+          ? collectRunCanonicalSourceAuthority(options)
+          : validateRunCanonicalSourceAuthority(options);
     console.log(JSON.stringify(result));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

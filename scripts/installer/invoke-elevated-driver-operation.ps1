@@ -1,5 +1,5 @@
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('install', 'uninstall', 'reinstall')][string]$Action,
+  [Parameter(Mandatory = $true)][ValidateSet('install', 'uninstall', 'reinstall', 'probe')][string]$Action,
   [Parameter(Mandatory = $true)][string]$OperationId,
   [Parameter(Mandatory = $true)][string]$ResultPath,
   [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
@@ -9,6 +9,7 @@ param(
   [Parameter(Mandatory = $true)][string]$BridgeVersion,
   [Parameter(Mandatory = $true)][string]$TargetDeviceId,
   [string]$VirtualRenderDeviceId = 'omni-virtual-speaker-default',
+  [string]$PhysicalPlaybackDeviceId = '',
   [long]$RequestProcessId = 0,
   [ValidateSet('already-elevated', 'uac-runas', 'unknown')][string]$ElevationMode = 'unknown',
   [string]$ReadinessResultPath = '',
@@ -56,13 +57,18 @@ try {
     'install' { 'install-development-driver.ps1' }
     'uninstall' { 'uninstall-development-driver.ps1' }
     'reinstall' { 'repair-driver.ps1' }
+    'probe' { $null }
   }
   if ($InstallChannel -eq 'release') {
     # Fail closed on the stable package before any install, repair, or uninstall
     # action is allowed to mutate PnP/DriverStore/runtime state.
     & (Join-Path $PSScriptRoot 'install-development-driver.ps1') @common -ValidatePackageOnly *> $logPath
   }
-  if ($Action -eq 'reinstall') {
+  if ($Action -eq 'probe') {
+    if ([string]::IsNullOrWhiteSpace($ReadinessResultPath) -or [string]::IsNullOrWhiteSpace($VirtualMicEvidenceOutputDirectory)) {
+      throw 'elevated driver probe requires readiness and evidence paths'
+    }
+  } elseif ($Action -eq 'reinstall') {
     & (Join-Path $PSScriptRoot $script) @common -Action 'rollback-driver' *> $logPath
   } else {
     & (Join-Path $PSScriptRoot $script) @common *> $logPath
@@ -76,7 +82,14 @@ try {
       -not $evidencePath.StartsWith($runtimePrefix, [System.StringComparison]::OrdinalIgnoreCase)
     ) { throw 'elevated driver readiness evidence paths must stay inside RuntimeRoot' }
     $testScript = Join-Path $PSScriptRoot 'test-development-driver.ps1'
-    $testOutput = @(& $testScript -WorkspaceRoot $WorkspaceRoot -VirtualMicEvidenceOutputDirectory $evidencePath)
+    $testArguments = @{
+      WorkspaceRoot = $WorkspaceRoot
+      VirtualMicEvidenceOutputDirectory = $evidencePath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PhysicalPlaybackDeviceId)) {
+      $testArguments.PhysicalPlaybackDeviceId = $PhysicalPlaybackDeviceId
+    }
+    $testOutput = @(& $testScript @testArguments)
     $readiness = $testOutput | Where-Object { $_ -and $_.PSObject.Properties['InstalledDriverAuthority'] } | Select-Object -Last 1
     if (-not $readiness -or -not $readiness.InstalledDriverAuthority) {
       throw 'elevated driver readiness did not return installed driver authority'

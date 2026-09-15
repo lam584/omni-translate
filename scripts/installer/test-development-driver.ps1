@@ -2,6 +2,7 @@ param(
   [string]$ExpectedEndpointName = 'Omni Translate Virtual Speaker',
   [string]$ExpectedCaptureEndpointName = 'Omni Translate Virtual Microphone',
   [string]$WorkspaceRoot = (Join-Path $PSScriptRoot '..\..'),
+  [string]$PhysicalPlaybackDeviceId = '',
   [string]$VirtualMicEvidenceOutputDirectory = ''
 )
 
@@ -241,7 +242,14 @@ if ([string]::IsNullOrWhiteSpace($VirtualMicEvidenceOutputDirectory)) {
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
   $VirtualMicEvidenceOutputDirectory = Join-Path $workspacePath "artifacts\testing\manual-e2e\virtual-mic-capture-$stamp"
 }
-$targetCaptureProbe = Invoke-OmniVirtualMicTargetCaptureProbe $WorkspaceRoot $VirtualMicEvidenceOutputDirectory
+$targetCaptureArguments = @{
+  WorkspaceRoot = $WorkspaceRoot
+  OutputDirectory = $VirtualMicEvidenceOutputDirectory
+}
+if (-not [string]::IsNullOrWhiteSpace($PhysicalPlaybackDeviceId)) {
+  $targetCaptureArguments.PhysicalPlaybackDeviceId = $PhysicalPlaybackDeviceId
+}
+$targetCaptureProbe = Invoke-OmniVirtualMicTargetCaptureProbe @targetCaptureArguments
 [pscustomobject]@{
   Endpoint = $endpoint.FriendlyName
   CaptureEndpoint = $captureEndpoint.FriendlyName

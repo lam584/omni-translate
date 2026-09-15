@@ -1,8 +1,14 @@
 import crypto from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import process from 'node:process';
+
+import { requireVcpkgTool } from './run-aec3-msvc-gate-tool-locator.mjs';
+import {
+  assertPinnedVcpkgWebRtcPort,
+  verifyAec3OfficialSourceProvenance,
+} from './verify-aec3-official-source-provenance.mjs';
 
 const BASELINE = 'ea1a7396b05637a53bf23c078647ecc0edee4b80';
 const TRIPLET = 'x64-windows-static-md';
@@ -26,6 +32,11 @@ const downloadsRoot = resolve(
 const temporaryRoot = resolve(
   process.env.OMNI_AEC3_TEMP_ROOT ?? join(workspace, 'artifacts', 'tmp', 'aec3-msvc'),
 );
+
+// This check is deliberately independent of runtime telemetry and executes
+// before toolchain/network work. A local class or factory with an "official"
+// label cannot satisfy exact upstream source hashes.
+verifyAec3OfficialSourceProvenance(workspace);
 
 if (process.platform !== 'win32' || process.arch !== 'x64') {
   throw new Error('AEC3 MSVC gate requires Windows x64');
@@ -83,22 +94,6 @@ function successful(command, args) {
     encoding: 'utf8',
   });
   return !result.error && result.status === 0;
-}
-
-function findExecutable(root, fileName) {
-  if (!existsSync(root)) return null;
-  const pending = [root];
-  while (pending.length > 0) {
-    const directory = pending.pop();
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const candidate = join(directory, entry.name);
-      if (entry.isDirectory()) pending.push(candidate);
-      if (entry.isFile() && entry.name.toLowerCase() === fileName.toLowerCase()) {
-        return candidate;
-      }
-    }
-  }
-  return null;
 }
 
 function loadMsvcEnvironment() {
@@ -180,6 +175,11 @@ const actualBaseline = output('git', ['-C', vcpkgRoot, 'rev-parse', 'HEAD']);
 if (actualBaseline !== BASELINE) {
   throw new Error(`vcpkg baseline mismatch: expected=${BASELINE} actual=${actualBaseline}`);
 }
+assertPinnedVcpkgWebRtcPort({
+  baseline: actualBaseline,
+  portTree: output('git', ['-C', vcpkgRoot, 'rev-parse', 'HEAD:ports/webrtc']),
+  portfile: readFileSync(join(vcpkgRoot, 'ports', 'webrtc', 'portfile.cmake'), 'utf8'),
+});
 
 const vcpkgExecutable = join(vcpkgRoot, 'vcpkg.exe');
 if (!assertPinnedVcpkgTool(vcpkgExecutable)) {
@@ -208,26 +208,9 @@ runWithRetries(vcpkgExecutable, [
   `--x-install-root=${installedRoot}`,
 ], { env: vcpkgInstallEnvironment });
 
-function requireVcpkgTool(toolName, fileName) {
-  const toolsRoot = join(downloadsRoot, 'tools');
-  let executable = findExecutable(toolsRoot, fileName);
-  if (!executable) {
-    // A restored installed-tree cache can make `vcpkg install` a no-op while
-    // the downloads/tools cache is absent. Fetch build tools explicitly so a
-    // clean VM and a partially restored CI cache have identical behavior.
-    run(vcpkgExecutable, ['fetch', toolName, '--x-stderr-status'], {
-      env: { ...process.env, VCPKG_DOWNLOADS: downloadsRoot },
-    });
-    executable = findExecutable(toolsRoot, fileName);
-  }
-  if (!executable) {
-    throw new Error(`vcpkg did not acquire ${fileName} under ${downloadsRoot}`);
-  }
-  return executable;
-}
-
-const cmake = requireVcpkgTool('cmake', 'cmake.exe');
-const ninja = requireVcpkgTool('ninja', 'ninja.exe');
+const toolOptions = { vcpkgExecutable, workspace, env: vcpkgInstallEnvironment };
+const cmake = requireVcpkgTool({ ...toolOptions, toolName: 'cmake', fileName: 'cmake.exe' });
+const ninja = requireVcpkgTool({ ...toolOptions, toolName: 'ninja', fileName: 'ninja.exe' });
 const msvcEnvironment = loadMsvcEnvironment();
 const buildEnvironment = {
   ...msvcEnvironment,

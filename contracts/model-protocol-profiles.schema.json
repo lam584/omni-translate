@@ -1,0 +1,449 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omni-translate.local/contracts/model-protocol-profiles.schema.json",
+  "title": "Omni Translate Bailian model protocol profile registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "registryVersion",
+    "checkedAt",
+    "endpointHostPolicies",
+    "dialects",
+    "profiles"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "const": "./model-protocol-profiles.schema.json" },
+    "schemaVersion": { "type": "string", "const": "model-protocol-profiles/v1" },
+    "registryVersion": { "type": "string", "pattern": "^bailian-model-protocol-registry/v[1-9][0-9]*$" },
+    "checkedAt": { "type": "string", "format": "date" },
+    "endpointHostPolicies": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/endpointHostPolicy" }
+    },
+    "dialects": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/dialect" }
+    },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/profile" }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "checkedAt"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "pattern": "^https://help\\.aliyun\\.com/zh/model-studio/"
+        },
+        "checkedAt": { "type": "string", "format": "date" }
+      }
+    },
+    "audioDirection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "codecs", "sampleRatesHz", "channels"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "codecs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "sampleRatesHz": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1 }
+        },
+        "channels": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1, "maximum": 8 }
+        }
+      }
+    },
+    "sampleRateConstraint": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "valuesHz"],
+          "properties": {
+            "kind": { "const": "allow-list" },
+            "valuesHz": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "any-positive-integer" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "not-applicable" }
+          }
+        }
+      ]
+    },
+    "profileAudioDirection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "codecs", "sampleRateConstraint", "channels"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "codecs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "sampleRateConstraint": { "$ref": "#/$defs/sampleRateConstraint" },
+        "channels": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1, "maximum": 8 }
+        }
+      }
+    },
+    "profileAudio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "output"],
+      "properties": {
+        "input": { "$ref": "#/$defs/profileAudioDirection" },
+        "output": { "$ref": "#/$defs/profileAudioDirection" }
+      }
+    },
+    "endpointHostRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostFamilyId", "hostPattern", "workspaceScoped"],
+      "properties": {
+        "hostFamilyId": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+        "hostPattern": {
+          "type": "string",
+          "pattern": "^(?:(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,}|\\*\\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,})$"
+        },
+        "workspaceScoped": { "type": "boolean" }
+      }
+    },
+    "endpointHostPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["region", "allowedHostFamilies", "sources"],
+      "properties": {
+        "region": { "enum": ["cn-beijing", "ap-southeast-1"] },
+        "allowedHostFamilies": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/endpointHostRule" }
+        },
+        "sources": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/source" } }
+      }
+    },
+    "connectionReuse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "successBoundaryEvent",
+        "nextStartEvent",
+        "freshIdentityKeys",
+        "failureBehavior",
+        "idleTimeoutSeconds"
+      ],
+      "properties": {
+        "successBoundaryEvent": { "type": "string", "minLength": 1 },
+        "nextStartEvent": { "type": "string", "minLength": 1 },
+        "freshIdentityKeys": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "failureBehavior": { "const": "connection-closes-no-reuse" },
+        "idleTimeoutSeconds": { "type": ["integer", "null"], "minimum": 1 }
+      }
+    },
+    "eventEnvelopeSide": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outerEventField", "innerEventField"],
+      "properties": {
+        "outerEventField": { "type": "string", "minLength": 1 },
+        "innerEventField": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "eventEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["client", "server"],
+      "properties": {
+        "client": { "$ref": "#/$defs/eventEnvelopeSide" },
+        "server": { "$ref": "#/$defs/eventEnvelopeSide" }
+      }
+    },
+    "eventPredicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outerEventType", "innerEventType"],
+      "properties": {
+        "outerEventType": { "type": "string", "minLength": 1 },
+        "innerEventType": { "type": ["string", "null"], "minLength": 1 },
+        "fieldPath": { "type": "string", "minLength": 1 },
+        "equals": { "type": ["string", "number", "boolean"] }
+      }
+    },
+    "terminalEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["client", "server"],
+      "properties": {
+        "client": { "$ref": "#/$defs/eventPredicate" },
+        "server": { "$ref": "#/$defs/eventPredicate" }
+      }
+    },
+    "textEventSemantic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eventType", "updateMode", "identityKeys", "previewFields", "finalEventType"],
+      "properties": {
+        "eventType": { "type": "string", "minLength": 1 },
+        "updateMode": {
+          "enum": ["replaceable-snapshot", "append-delta", "sentence-identity-replacement"]
+        },
+        "identityKeys": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "previewFields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "finalEventType": { "type": "string", "minLength": 1 }
+      }
+    },
+    "dialect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dialectId",
+        "dialectVersion",
+        "transport",
+        "endpointFamily",
+        "endpointPath",
+        "modelPlacement",
+        "inputFraming",
+        "outputFraming",
+        "handshake",
+        "turnControl",
+        "previewSemantics",
+        "textEventSemantics",
+        "commitSemantics",
+        "responseTrigger",
+        "terminalLifecycle",
+        "reusePolicy",
+        "regionPolicy",
+        "audioInput",
+        "audioOutput",
+        "clientEventTypes",
+        "serverEventTypes",
+        "clientJsonBase64EventTypes",
+        "clientBinaryEventTypes",
+        "serverJsonBase64EventTypes",
+        "serverBinaryEventTypes",
+        "forbiddenClientEventTypes",
+        "forbiddenServerEventTypes",
+        "wireFixture",
+        "sources"
+      ],
+      "properties": {
+        "dialectId": { "type": "string", "pattern": "^bailian-[a-z0-9-]+-v[1-9][0-9]*$" },
+        "dialectVersion": { "type": "integer", "minimum": 1 },
+        "transport": { "enum": ["websocket", "webrtc", "aoq", "http", "sse"] },
+        "endpointFamily": { "type": "string", "minLength": 1 },
+        "endpointPath": { "type": "string", "pattern": "^/" },
+        "modelPlacement": { "enum": ["query", "payload", "path", "none"] },
+        "inputFraming": {
+          "enum": ["json-base64", "json-events", "binary", "json-events-and-binary", "http-body", "none"]
+        },
+        "outputFraming": {
+          "enum": ["json-base64", "json-events", "binary", "json-events-and-binary", "http-body", "sse", "none"]
+        },
+        "handshake": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "turnControl": { "type": "string", "minLength": 1 },
+        "previewSemantics": {
+          "enum": ["replaceable-snapshot", "append-delta", "mixed-by-event", "sentence-identity-replacement", "none"]
+        },
+        "textEventSemantics": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/textEventSemantic" }
+        },
+        "commitSemantics": { "type": "string", "minLength": 1 },
+        "responseTrigger": { "type": "string", "minLength": 1 },
+        "terminalLifecycle": {
+          "enum": [
+            "session.finish->session.finished",
+            "owner-close-after-response-drain",
+            "finish-task->task-finished",
+            "task-finished-after-one-shot",
+            "Stop->Stopped",
+            "http-response-complete",
+            "sse-[DONE]"
+          ]
+        },
+        "reusePolicy": {
+          "enum": [
+            "single-session",
+            "multi-turn-session",
+            "sequential-tasks-after-terminal",
+            "single-task",
+            "single-request"
+          ]
+        },
+        "connectionReuse": { "$ref": "#/$defs/connectionReuse" },
+        "regionPolicy": { "const": "region-key-endpoint-model-must-match" },
+        "audioInput": { "$ref": "#/$defs/audioDirection" },
+        "audioOutput": { "$ref": "#/$defs/audioDirection" },
+        "clientEventTypes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "serverEventTypes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "clientJsonBase64EventTypes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "clientBinaryEventTypes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "serverJsonBase64EventTypes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "serverBinaryEventTypes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "clientInnerEventTypes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "serverInnerEventTypes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "eventEnvelope": { "$ref": "#/$defs/eventEnvelope" },
+        "mediaSendGate": { "$ref": "#/$defs/eventPredicate" },
+        "terminalEnvelope": { "$ref": "#/$defs/terminalEnvelope" },
+        "forbiddenClientEventTypes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "forbiddenServerEventTypes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "wireFixture": {
+          "type": "string",
+          "pattern": "^apps/desktop/src-tauri/fixtures/model-protocol/[a-z0-9-]+\\.json$"
+        },
+        "sources": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/source" } }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profileId",
+        "profileVersion",
+        "product",
+        "exactModelIds",
+        "operations",
+        "dialectId",
+        "regions",
+        "adapter",
+        "legacy",
+        "sources"
+      ],
+      "properties": {
+        "profileId": { "type": "string", "pattern": "^bailian\\.[a-z0-9.-]+$" },
+        "profileVersion": { "type": "integer", "minimum": 1 },
+        "product": { "type": "string", "minLength": 1 },
+        "exactModelIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+          }
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["native_translate", "dialogue", "asr", "tts", "file_translate", "voice_clone"]
+          }
+        },
+        "dialectId": { "type": "string", "minLength": 1 },
+        "regions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["cn-beijing", "ap-southeast-1"] }
+        },
+        "adapter": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "adapterId", "reason"],
+          "properties": {
+            "status": { "enum": ["enabled", "manifest-only"] },
+            "adapterId": { "type": ["string", "null"] },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        },
+        "legacy": { "type": "boolean" },
+        "modelAudio": { "$ref": "#/$defs/profileAudio" },
+        "sources": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/source" } }
+      }
+    }
+  }
+}

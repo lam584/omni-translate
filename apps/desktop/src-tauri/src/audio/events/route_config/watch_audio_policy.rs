@@ -16,15 +16,15 @@ fn should_serialize_qwen_audio_watch_turns(
     direction: &str,
     config: &Value,
     profile: &ResolvedRealtimeProfile,
-    model: &str,
 ) -> bool {
     direction == "inbound"
         && super::super::configured_route_mode(config) == "watch"
         && profile.protocol_dialect == Some(RealtimeProtocol::DashscopeOmni)
-        && model
-            .trim()
-            .to_ascii_lowercase()
-            .starts_with("qwen-audio-3.0-realtime")
+        && profile.model_protocol_authority.as_ref().is_some_and(|authority| {
+            authority.profile_id == "bailian.qwen-audio-chat.realtime.ws"
+                && authority.profile_version == 1
+                && authority.wire_dialect == "bailian-qwen-audio-chat-realtime-ws-v1"
+        })
 }
 
 pub(super) fn resolve_route_audio_mode(
@@ -35,7 +35,7 @@ pub(super) fn resolve_route_audio_mode(
     legacy_vad_bypass: bool,
 ) -> (String, Option<String>) {
     if legacy_vad_bypass
-        || should_serialize_qwen_audio_watch_turns(direction, config, profile, &provider.model)
+        || should_serialize_qwen_audio_watch_turns(direction, config, profile)
     {
         return ("manual".to_string(), None);
     }
@@ -50,21 +50,11 @@ pub(super) fn resolve_route_audio_mode(
     if !continuous_watch || profile.realtime_audio_mode != "manual" {
         return (profile.realtime_audio_mode.clone(), None);
     }
-    let registry_entry = super::selected_registry_entry(provider, &provider.model);
-    let supports_auto_vad = registry_entry
-        .map(|entry| {
-            entry
-                .interaction_capabilities
-                .iter()
-                .any(|capability| capability == "auto_vad")
-        })
-        .unwrap_or_else(|| {
-            provider
-                .model
-                .trim()
-                .to_ascii_lowercase()
-                .starts_with("qwen3.5-omni-")
-        });
+    let supports_auto_vad = profile.model_protocol_authority.as_ref().is_some_and(|authority| {
+        authority.profile_id == "bailian.omni.realtime.ws"
+            && authority.profile_version == 1
+            && authority.wire_dialect == "bailian-omni-realtime-ws-v1"
+    });
     if supports_auto_vad {
         return ("semantic_vad".to_string(), None);
     }

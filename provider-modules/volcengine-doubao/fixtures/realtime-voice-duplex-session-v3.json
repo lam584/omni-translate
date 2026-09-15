@@ -1,0 +1,36 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "volc-realtime-voice-duplex-session-v3",
+  "providerId": "volcengine-doubao",
+  "protocolProfileId": "volcengine-doubao.realtime-voice-v3.seeduplex-1-2-6-1",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["realtime-voice-current"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic JSON Text-frame lifecycle; Base64 audio is illustrative."
+  },
+  "scenario": "Seeduplex 3.0 creates a session, commits one input turn, streams output, and closes",
+  "data": {
+    "authContract": { "profileId": "volc-realtime-voice-api-key", "parameters": [{ "location": "header", "name": "X-Api-Key", "value": "fixture-key-redacted" }] },
+    "audioContract": { "encoding": "pcm_s16le_base64", "sampleRateHz": 16000, "bitDepth": 16, "channels": 1 },
+    "connect": { "url": "wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue", "headers": { "X-Api-Key": "fixture-key-redacted" } },
+    "frameType": "websocket-text-json",
+    "events": [
+      { "direction": "client", "json": { "type": "session.create", "session": { "model": "1.2.6.1", "input_audio_format": "pcm", "output_audio_format": "pcm" } } },
+      { "direction": "server", "json": { "type": "session.created", "session": { "id": "session_fixture", "model": "1.2.6.1" } } },
+      { "direction": "client", "json": { "type": "input_audio_buffer.append", "audio": "AAECAw==" }, "audio": { "sampleRateHz": 16000, "encoding": "pcm-s16le", "durationMs": 20 } },
+      { "direction": "client", "json": { "type": "input_audio_buffer.commit" } },
+      { "direction": "server", "json": { "type": "asr.delta", "delta": "你" } },
+      { "direction": "server", "json": { "type": "asr.completed", "transcript": "你好" } },
+      { "direction": "server", "json": { "type": "response.text.delta", "delta": "你好" } },
+      { "direction": "server", "json": { "type": "response.audio.delta", "delta": "AAECAw==" } },
+      { "direction": "server", "json": { "type": "response.audio.done" }, "semantics": "output-audio turn boundary" },
+      { "direction": "server", "json": { "type": "response.done" }, "semantics": "response turn boundary, not full session terminal" },
+      { "direction": "client", "json": { "type": "session.close" } },
+      { "direction": "server", "json": { "type": "session.closed" }, "semantics": "full session terminal" }
+    ]
+  }
+}

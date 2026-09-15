@@ -22,12 +22,7 @@ function New-OmniWatchModeContext {
   if ([string]::IsNullOrWhiteSpace($localAppData)) {
     throw 'LocalApplicationData is unavailable for the release desktop log.'
   }
-  $providerInputSeconds = [int]$Request.timeouts.sessionSeconds
-  $localContentAuthorityEnabled = @('strict-paid', 'incident-replay-plus', 'local-canonical-smoke') -contains [string]$Request.authorityMode
-  $desktopAutoStopSeconds = $providerInputSeconds
-  if ($localContentAuthorityEnabled) {
-    $desktopAutoStopSeconds += [int]$Request.timeouts.postPlaybackSeconds
-  }
+  $sessionWatchdogSeconds = [int]$Request.timeouts.sessionSeconds
 
   return [pscustomobject]@{
     schemaVersion = 'watch-mode-run-context/v2'
@@ -49,8 +44,15 @@ function New-OmniWatchModeContext {
     }
     timeouts = $Request.timeouts
     lifecycle = [pscustomobject]@{
-      providerInputSeconds = $providerInputSeconds
-      desktopAutoStopSeconds = $desktopAutoStopSeconds
+      sessionWatchdogSeconds = $sessionWatchdogSeconds
+      inputCompletionWatchdogSeconds = [int]$Request.timeouts.inputCompletionWatchdogSeconds
+      processExclusionRestartAfterSeconds = [int]$Request.timeouts.processExclusionRestartAfterSeconds
+      processExclusionRestartQuietSeconds = [int]$Request.timeouts.processExclusionRestartQuietSeconds
+      providerFinishTimeoutSeconds = [int]$Request.timeouts.providerFinishTimeoutSeconds
+      localPlaybackDrainTimeoutSeconds = [int]$Request.timeouts.localPlaybackDrainTimeoutSeconds
+      reportWriteTimeoutSeconds = [int]$Request.timeouts.reportWriteTimeoutSeconds
+      cellHardWatchdogSeconds = [int]$Request.timeouts.cellHardWatchdogSeconds
+      physicalRecorderTailSeconds = [int]$Request.timeouts.physicalRecorderTailSeconds
     }
     media = $Request.media
     model = $Request.model

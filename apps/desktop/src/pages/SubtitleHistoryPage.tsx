@@ -53,6 +53,10 @@ export default function SubtitleHistoryPage() {
   const [error, setError] = useState<string | null>(null);
   const [playbackKey, setPlaybackKey] = useState<string | null>(null);
 
+  const showHistoryError = useCallback((caught: unknown) => {
+    setError(describeError(caught));
+  }, []);
+
   const locale = i18n.resolvedLanguage ?? i18n.language ?? 'en';
   const selectedSessionId = selectedSession?.id ?? null;
 
@@ -74,11 +78,11 @@ export default function SubtitleHistoryPage() {
       setSessionCursor(page.nextCursor);
       setStats(nextStats);
     } catch (caught) {
-      setError(describeError(caught));
+      showHistoryError(caught);
     } finally {
       setLoading(false);
     }
-  }, [desktopApi]);
+  }, [desktopApi, showHistoryError]);
 
   const loadCues = useCallback(async (sessionId: string, cursor?: string, append = false) => {
     setLoading(true);
@@ -88,15 +92,15 @@ export default function SubtitleHistoryPage() {
       setCues((current) => append ? appendUnique(current, page.items) : page.items);
       setCueCursor(page.nextCursor);
     } catch (caught) {
-      setError(describeError(caught));
+      showHistoryError(caught);
     } finally {
       setLoading(false);
     }
-  }, [desktopApi]);
+  }, [desktopApi, showHistoryError]);
 
   useEffect(() => {
-    queueMicrotask(() => void loadSessions());
-  }, [loadSessions]);
+    queueMicrotask(() => void loadSessions().catch(showHistoryError));
+  }, [loadSessions, showHistoryError]);
 
   useEffect(() => {
     if (!desktopApi.capabilities.hasNativeShell) return undefined;
@@ -105,8 +109,8 @@ export default function SubtitleHistoryPage() {
     void subscribeHistoryEvents({
       enabled: desktopApi.capabilities.hasNativeShell,
       onChanged: () => {
-        void loadSessions();
-        if (selectedSessionId) void loadCues(selectedSessionId);
+        void loadSessions().catch(showHistoryError);
+        if (selectedSessionId) void loadCues(selectedSessionId).catch(showHistoryError);
       },
       onPlayback: (event) => {
         if (event.status === 'started') {
@@ -117,19 +121,19 @@ export default function SubtitleHistoryPage() {
         }
       },
     }).then((nextUnlisten) => disposed ? nextUnlisten() : (unlisten = nextUnlisten))
-      .catch((caught) => setError(describeError(caught)));
+      .catch(showHistoryError);
     return () => {
       disposed = true;
       unlisten?.();
     };
-  }, [desktopApi, loadCues, loadSessions, selectedSessionId]);
+  }, [desktopApi, loadCues, loadSessions, selectedSessionId, showHistoryError]);
 
   const openSession = useCallback((session: HistorySessionSummary) => {
     setSelectedSession(session);
     setCues([]);
     setCueCursor(null);
-    void loadCues(session.id);
-  }, [loadCues]);
+    void loadCues(session.id).catch(showHistoryError);
+  }, [loadCues, showHistoryError]);
 
   const deleteSession = useCallback(async (session: HistorySessionSummary) => {
     if (!window.confirm(t('history.deleteConfirm'))) return;
@@ -145,9 +149,9 @@ export default function SubtitleHistoryPage() {
         setStats(await desktopApi.history.getStats());
       }
     } catch (caught) {
-      setError(describeError(caught));
+      showHistoryError(caught);
     }
-  }, [desktopApi, selectedSessionId, t]);
+  }, [desktopApi, selectedSessionId, showHistoryError, t]);
 
   const clearHistory = useCallback(async () => {
     if (!window.confirm(t('history.clearConfirm'))) return;
@@ -158,9 +162,9 @@ export default function SubtitleHistoryPage() {
       setCueCursor(null);
       await loadSessions();
     } catch (caught) {
-      setError(describeError(caught));
+      showHistoryError(caught);
     }
-  }, [desktopApi, loadSessions, t]);
+  }, [desktopApi, loadSessions, showHistoryError, t]);
 
   const play = useCallback(async (cue: HistoryCue, track: HistoryAudioTrack) => {
     if (!selectedSessionId || routeActive) return;
@@ -174,9 +178,9 @@ export default function SubtitleHistoryPage() {
       await desktopApi.history.playCueAudio(selectedSessionId, cue.cueId, track);
       setPlaybackKey(key);
     } catch (caught) {
-      setError(describeError(caught));
+      showHistoryError(caught);
     }
-  }, [desktopApi, playbackKey, routeActive, selectedSessionId]);
+  }, [desktopApi, playbackKey, routeActive, selectedSessionId, showHistoryError]);
 
   const summary = useMemo(() => [
     { label: t('history.sessions'), value: stats.sessionCount.toLocaleString(locale) },
@@ -196,10 +200,10 @@ export default function SubtitleHistoryPage() {
           {summary.map((item) => <div key={item.label}><strong>{item.value}</strong><span>{item.label}</span></div>)}
         </div>
         <div className="subtitle-history-actions">
-          <button className="icon-button" disabled={loading} onClick={() => void loadSessions()} type="button">
+          <button className="icon-button" disabled={loading} onClick={() => void loadSessions().catch(showHistoryError)} type="button">
             <AppIcon name="refresh" size={14} /> {t('history.refresh')}
           </button>
-          <button className="icon-button" disabled={loading || sessions.every((session) => session.endedAtMs === null)} onClick={() => void clearHistory()} type="button">
+          <button className="icon-button" disabled={loading || sessions.every((session) => session.endedAtMs === null)} onClick={() => void clearHistory().catch(showHistoryError)} type="button">
             <AppIcon name="trash" size={14} /> {t('history.clear')}
           </button>
         </div>
@@ -220,14 +224,14 @@ export default function SubtitleHistoryPage() {
                     <span>{t('history.sessionMeta', { cues: session.cueCount, size: formatBytes(session.audioBytes) })}</span>
                     <small>{session.endedAtMs === null ? t('history.active') : session.status}</small>
                   </button>
-                  <button aria-label={t('history.delete')} className="icon-button" disabled={session.endedAtMs === null} onClick={() => void deleteSession(session)} type="button">
+                  <button aria-label={t('history.delete')} className="icon-button" disabled={session.endedAtMs === null} onClick={() => void deleteSession(session).catch(showHistoryError)} type="button">
                     <AppIcon name="trash" size={14} />
                   </button>
                 </article>
               ))}
             </div>
           )}
-          {sessionCursor ? <button className="subtitle-history-more" disabled={loading} onClick={() => void loadSessions(sessionCursor, true)} type="button">{t('history.loadMoreSessions')}</button> : null}
+          {sessionCursor ? <button className="subtitle-history-more" disabled={loading} onClick={() => void loadSessions(sessionCursor, true).catch(showHistoryError)} type="button">{t('history.loadMoreSessions')}</button> : null}
         </section>
 
         <section className="content-card subtitle-history-cues" aria-label={t('history.cueList')}>
@@ -239,16 +243,16 @@ export default function SubtitleHistoryPage() {
               <p className="subtitle-history-source">{cue.sourceText}</p>
               <p className="subtitle-history-translation">{cue.translatedText || t('history.translationUnavailable')}</p>
               <div className="subtitle-history-playback-actions">
-                <button disabled={routeActive || !cue.sourceAudioAvailable} onClick={() => void play(cue, 'source')} type="button">
+                <button disabled={routeActive || !cue.sourceAudioAvailable} onClick={() => void play(cue, 'source').catch(showHistoryError)} type="button">
                   <AppIcon name={playbackKey === `${cue.cueId}:source` ? 'stop' : 'play'} size={13} /> {t('history.playSource')}
                 </button>
-                <button disabled={routeActive || !cue.translatedAudioAvailable} onClick={() => void play(cue, 'translated')} type="button">
+                <button disabled={routeActive || !cue.translatedAudioAvailable} onClick={() => void play(cue, 'translated').catch(showHistoryError)} type="button">
                   <AppIcon name={playbackKey === `${cue.cueId}:translated` ? 'stop' : 'play'} size={13} /> {t('history.playTranslated')}
                 </button>
               </div>
             </article>
           ))}
-          {cueCursor && selectedSession ? <button className="subtitle-history-more" disabled={loading} onClick={() => void loadCues(selectedSession.id, cueCursor, true)} type="button">{t('history.loadMoreCues')}</button> : null}
+          {cueCursor && selectedSession ? <button className="subtitle-history-more" disabled={loading} onClick={() => void loadCues(selectedSession.id, cueCursor, true).catch(showHistoryError)} type="button">{t('history.loadMoreCues')}</button> : null}
         </section>
       </div>
     </main>

@@ -10,6 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::audio::read_audio_samples;
+use crate::bailian_contract::authorize_enabled_livetranslate;
 use crate::config::Config;
 use crate::credential;
 use crate::manifest::{self, ManifestEntry};
@@ -253,14 +254,24 @@ fn run_single_model(
     // 解析协议
     let protocol = parse_protocol_str(&entry.protocol)?;
 
-    // 解析 API key
-    let api_key = resolve_api_key(&entry.env_fallback, &entry.credential_ref)?;
-
-    // 判断 manual 模式
     let manual = matches!(
         entry.audio_mode.as_str(),
         "manual" | "gemini_manual_activity"
     );
+    if protocol.is_dashscope_family() {
+        if protocol != BenchmarkProtocol::DashscopeLiveTranslate || manual {
+            return Err(
+                "model_protocol.not_authorized: manifest entry is not the enabled LiveTranslate server_vad adapter"
+                    .to_string(),
+            );
+        }
+        authorize_enabled_livetranslate(&entry.model_id, &entry.base_url)?;
+    }
+
+    // 解析 API key
+    let api_key = resolve_api_key(&entry.env_fallback, &entry.credential_ref)?;
+
+    // 判断 manual 模式
 
     // 构建 Config
     let config = Config {
@@ -348,5 +359,48 @@ fn resolve_api_key(env_var: &str, credential_ref: &str) -> Result<String, String
         Err(cred_err) => Err(format!(
             "无法获取 API Key: 环境变量 {env_var} 未设置，Credential Manager 读取失败: {cred_err}"
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dashscope_entry(model_id: &str, protocol: &str, audio_mode: &str) -> ManifestEntry {
+        ManifestEntry {
+            model_id: model_id.to_string(),
+            provider: "dashscope".to_string(),
+            protocol: protocol.to_string(),
+            audio_mode: audio_mode.to_string(),
+            base_url: "wss://dashscope.aliyuncs.com/api-ws/v1/realtime".to_string(),
+            credential_ref: "credential://must-not-be-read".to_string(),
+            env_fallback: "OMNI_TEST_CREDENTIAL_MUST_NOT_BE_READ".to_string(),
+            auth_header: "Authorization".to_string(),
+            auth_scheme: "Bearer".to_string(),
+            voice: "Ethan".to_string(),
+            target_language: "zh".to_string(),
+            source_language: "en".to_string(),
+        }
+    }
+
+    #[test]
+    fn manifest_only_and_omni_entries_fail_before_credentials_or_provider_calls() {
+        for entry in [
+            dashscope_entry(
+                "qwen3.5-livetranslate-flash-realtime-2026-05-19",
+                "dashscope-livetranslate",
+                "server_vad",
+            ),
+            dashscope_entry(
+                "qwen3.5-omni-plus-realtime",
+                "dashscope-omni",
+                "manual",
+            ),
+        ] {
+            let error = run_single_model(&entry, &[], 0.0)
+                .expect_err("unauthorized manifest entry must fail closed");
+            assert!(error.contains("model_protocol.not_authorized"), "{error}");
+            assert!(!error.contains("Credential"), "authority must run first");
+        }
     }
 }

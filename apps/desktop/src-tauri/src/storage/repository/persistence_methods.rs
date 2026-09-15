@@ -1,5 +1,6 @@
 use rusqlite::{params, Connection};
 use serde_json::Value;
+use std::collections::HashSet;
 
 use crate::common::MapErrToString;
 
@@ -14,9 +15,14 @@ fn insert_each_capability_str<F>(capabilities: &[Value], mut insert: F) -> Resul
 where
     F: FnMut(&str, i64) -> Result<(), String>,
 {
-    for (position, capability) in capabilities.iter().enumerate() {
+    let mut inserted = HashSet::new();
+    let mut position = 0_i64;
+    for capability in capabilities {
         if let Some(capability) = capability.as_str() {
-            insert(capability, position as i64)?;
+            if inserted.insert(capability) {
+                insert(capability, position)?;
+                position += 1;
+            }
         }
     }
     Ok(())
@@ -192,11 +198,18 @@ impl ConfigRepository {
             .get("localModelCapabilityRegistry")
             .and_then(Value::as_array)
         {
+            let mut inserted_capabilities = HashSet::new();
             for (position, entry) in entries.iter().enumerate() {
                 let entry_id =
                     string_at(entry, "/id").unwrap_or_else(|| format!("capability-{position}"));
+                let mut capability_position = 0_i64;
                 if let Some(capabilities) = entry.get("capabilities").and_then(Value::as_array) {
-                    insert_each_capability_str(capabilities, |capability, capability_position| {
+                    for capability in capabilities.iter().filter_map(Value::as_str) {
+                        if !inserted_capabilities
+                            .insert((entry_id.clone(), capability.to_string()))
+                        {
+                            continue;
+                        }
                         connection
                             .execute(
                                 "INSERT INTO provider_model_capabilities (provider_key, entry_id, model_id, capability, position)
@@ -210,8 +223,8 @@ impl ConfigRepository {
                                 ],
                             )
                             .map_err_str()?;
-                        Ok(())
-                    })?;
+                        capability_position += 1;
+                    }
                 }
             }
         }

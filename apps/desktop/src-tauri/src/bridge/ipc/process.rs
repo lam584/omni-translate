@@ -10,26 +10,67 @@ pub(crate) fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+fn relocated_workspace_root(exe_path: &Path) -> Option<PathBuf> {
+    let profile_dir = exe_path.parent()?;
+    let profile = profile_dir.file_name()?.to_string_lossy();
+    if !profile.eq_ignore_ascii_case("release") && !profile.eq_ignore_ascii_case("debug") {
+        return None;
+    }
+    let target_dir = profile_dir.parent()?;
+    if !target_dir
+        .file_name()?
+        .to_string_lossy()
+        .eq_ignore_ascii_case("target")
+    {
+        return None;
+    }
+    Some(target_dir.parent()?.to_path_buf())
+}
+
+fn is_trusted_workspace_asset_root(candidate: &Path) -> bool {
+    candidate.join("package.json").is_file()
+        && candidate
+            .join("scripts")
+            .join("installer")
+            .join("probe-development-driver.ps1")
+            .is_file()
+        && candidate
+            .join("scripts")
+            .join("installer")
+            .join("stop-stale-bridge-service.ps1")
+            .is_file()
+        && candidate
+            .join("scripts")
+            .join("installer")
+            .join("request-elevated-driver-operation.ps1")
+            .is_file()
+}
+
 /// Root that carries `scripts/installer` and the driver package: the dev
 /// checkout when it exists, otherwise the resources bundled next to the
 /// installed executable (declared in tauri.conf.json `bundle.resources`).
 pub(crate) fn assets_root() -> PathBuf {
     let dev_root = workspace_root();
-    if dev_root.join("scripts").join("installer").is_dir() {
-        return dev_root;
-    }
-
     if let Ok(exe_path) = std::env::current_exe() {
+        if exe_path.starts_with(&dev_root)
+            && dev_root.join("scripts").join("installer").is_dir()
+        {
+            return dev_root;
+        }
         if let Some(exe_dir) = exe_path.parent() {
             // Tauri bundles place resources next to the executable; the release
             // installer layout keeps the executable in a `desktop/` subdirectory
             // one level below the assets.
-            for candidate in &[
+            let mut candidates = vec![
                 exe_dir.join("resources"),
                 exe_dir.to_path_buf(),
                 exe_dir.parent().unwrap_or(exe_dir).to_path_buf(),
-            ] {
-                if candidate.join("scripts").join("installer").is_dir() {
+            ];
+            if let Some(runtime_workspace) = relocated_workspace_root(&exe_path) {
+                candidates.push(runtime_workspace);
+            }
+            for candidate in candidates {
+                if is_trusted_workspace_asset_root(&candidate) {
                     return candidate.clone();
                 }
             }
@@ -76,13 +117,6 @@ fn installed_bridge_cli_candidates(exe_dir: &Path) -> [PathBuf; 4] {
 
 pub(crate) fn bridge_cli_path() -> PathBuf {
     let [preferred_path, legacy_path] = bridge_cli_release_candidates();
-    if preferred_path.exists() {
-        return preferred_path;
-    }
-    if legacy_path.exists() {
-        return legacy_path;
-    }
-
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             for candidate in &installed_bridge_cli_candidates(exe_dir) {
@@ -91,6 +125,13 @@ pub(crate) fn bridge_cli_path() -> PathBuf {
                 }
             }
         }
+    }
+
+    if preferred_path.exists() {
+        return preferred_path;
+    }
+    if legacy_path.exists() {
+        return legacy_path;
     }
 
     preferred_path
@@ -131,6 +172,42 @@ fn parse_bridge_pid(raw: &str) -> Result<u32, String> {
     raw.trim()
         .parse::<u32>()
         .map_err(|error| format!("bridge.stale-pid-invalid: {error}"))
+}
+
+pub(crate) struct ManagedBridgePidAuthority {
+    path: PathBuf,
+    claimed_path: PathBuf,
+}
+
+impl ManagedBridgePidAuthority {
+    pub(crate) fn claim(runtime_root: &str, managed_pid: u32) -> Result<Option<Self>, String> {
+        let path = bridge_pid_path(runtime_root);
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.to_string()),
+        };
+        if parse_bridge_pid(&raw)? != managed_pid {
+            return Ok(None);
+        }
+        let claimed_path = path.with_extension(format!("pid.managed-stop-{managed_pid}"));
+        fs::rename(&path, &claimed_path)
+            .map_err(|error| format!("bridge.managed-pid-authority-claim-failed: {error}"))?;
+        Ok(Some(Self { path, claimed_path }))
+    }
+
+    pub(crate) fn release(self) -> Result<(), String> {
+        fs::remove_file(&self.claimed_path)
+            .map_err(|error| format!("bridge.managed-pid-authority-release-failed: {error}"))
+    }
+
+    pub(crate) fn restore(self) -> Result<(), String> {
+        if self.path.exists() {
+            return Err("bridge.managed-pid-authority-restore-conflict".to_string());
+        }
+        fs::rename(&self.claimed_path, &self.path)
+            .map_err(|error| format!("bridge.managed-pid-authority-restore-failed: {error}"))
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]

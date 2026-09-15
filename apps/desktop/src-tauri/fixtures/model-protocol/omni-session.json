@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "model-protocol-wire-fixture/v1",
+  "dialectId": "bailian-omni-realtime-ws-v1",
+  "checkedAt": "2026-08-30",
+  "sanitized": true,
+  "sources": [
+    { "url": "https://help.aliyun.com/zh/model-studio/realtime", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/client-events", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/server-events", "checkedAt": "2026-08-30" }
+  ],
+  "sequence": [
+    { "direction": "server", "frameKind": "json", "eventType": "session.created" },
+    { "direction": "client", "frameKind": "json", "eventType": "session.update" },
+    { "direction": "server", "frameKind": "json", "eventType": "session.updated" },
+    { "direction": "client", "frameKind": "json-base64", "eventType": "input_audio_buffer.append" },
+    { "direction": "client", "frameKind": "json", "eventType": "input_audio_buffer.commit" },
+    { "direction": "client", "frameKind": "json", "eventType": "response.create" },
+    { "direction": "server", "frameKind": "json", "eventType": "response.text.delta", "payload": { "delta": "hello" } },
+    { "direction": "server", "frameKind": "json", "eventType": "response.text.done" },
+    { "direction": "server", "frameKind": "json", "eventType": "response.done" }
+  ],
+  "expect": {
+    "responseDoneIsSessionTerminal": false,
+    "terminalOrder": ["response.done", "owner-close-after-response-drain"],
+    "forbiddenEvents": ["response.text.text", "session.finished"]
+  }
+}

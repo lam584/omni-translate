@@ -11,7 +11,7 @@ export const appConfigDraftMock: AppConfigDraft = {
     kind: 'dashscope',
     displayName: '阿里云百炼 API',
     mode: 'template',
-    model: 'qwen3.5-omni-plus-realtime',
+    model: 'qwen3.5-livetranslate-flash-realtime',
     baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
     transport: 'websocket',
     authRef: {
@@ -35,7 +35,7 @@ export const appConfigDraftMock: AppConfigDraft = {
       },
       {
         scenario: 'game',
-        modelIds: ['qwen3.5-omni-plus-realtime'],
+        modelIds: ['qwen3.5-livetranslate-flash-realtime'],
       },
       {
         scenario: 'voice-room',
@@ -177,8 +177,8 @@ export const appConfigDraftMock: AppConfigDraft = {
     },
     supportProfileId: 'support-watch-system-audio',
     inboundVoiceModelId: 'qwen3.5-livetranslate-flash-realtime',
-    outboundVoiceModelId: 'qwen3.5-omni-plus-realtime',
-    textToSpeechModelId: 'qwen3.5-omni-plus-realtime',
+    outboundVoiceModelId: 'qwen3.5-livetranslate-flash-realtime',
+    textToSpeechModelId: '',
     subtitleTranslationMode: 'native',
     subtitleTranslationModelId: '',
     inboundSecondaryAudioModelId: '',
@@ -253,7 +253,7 @@ export const appConfigDraftMock: AppConfigDraft = {
     enabled: true,
     targetLanguage: 'zh-CN',
     voicePresetId: 'voice-cn-neutral',
-    textToSpeechModelId: 'qwen3.5-omni-plus-realtime',
+    textToSpeechModelId: '',
     voice: 'Ethan',
     outputTarget: 'virtual-mic',
     localPlaybackEnabled: true,

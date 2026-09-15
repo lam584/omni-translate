@@ -34,11 +34,11 @@ fn set_speaker_playback(harness: &ReplayHarness, context: &str) {
     }
 }
 
-/// Regression authority for the 14 `echo-suppressed` events in the Plus
-/// Watch incident.  This crosses the real manual gate, cue ownership, output
-/// publication and completion handling instead of only testing the content
-/// classification helper.  Playback state is exercised as diagnostic context
-/// in both its active and four-second post-playback forms.
+/// Regression replay for the 14 historically suppressed source finals. The
+/// source/cue path remains live, but this legacy Omni profile is manifest-only:
+/// every attempted response.create must fail closed. Pure decision/state tests
+/// retain the echo and duplicate-final product semantics without fabricating a
+/// production connection authority.
 #[test]
 fn replay_historical_echo_suppression_shapes_publish_every_non_empty_final_once() {
     let fixture: Value = serde_json::from_str(ECHO_SUPPRESSION_INCIDENT_REPLAY)
@@ -59,7 +59,6 @@ fn replay_historical_echo_suppression_shapes_publish_every_non_empty_final_once(
     let mut slice = WorkerSlice::new();
     let mut previous_offset = 0;
     let mut reasons = std::collections::BTreeSet::new();
-    let mut processed_count = 0;
 
     for event in events {
         let offset_ms = event["offsetMs"].as_u64().expect("ordered offset");
@@ -69,10 +68,9 @@ fn replay_historical_echo_suppression_shapes_publish_every_non_empty_final_once(
         let reason = event["historicalReason"].as_str().expect("historical reason");
         let playback_context = event["playbackContext"].as_str().expect("playback context");
         let source = event["source"].as_str().expect("non-empty source");
-        let translation = event["translation"].as_str().expect("translation");
+        assert!(!event["translation"].as_str().unwrap_or_default().is_empty());
         assert!(!source.trim().is_empty());
         reasons.insert(reason);
-        processed_count += 1;
         set_speaker_playback(&harness, playback_context);
 
         // This is the exact gate state after a committed one-second manual
@@ -86,53 +84,18 @@ fn replay_historical_echo_suppression_shapes_publish_every_non_empty_final_once(
         slice.audio_samples_since_commit = MANUAL_COMMIT_MIN_AUDIO_SAMPLES;
         slice.manual_turn_started_at = Some(backdated(MANUAL_COMMIT_INTERVAL_SECS));
         let socket = ScriptedRealtimeSocket::new(
-            vec![
-                ScriptStep::Event(json!({
-                    "type": "conversation.item.input_audio_transcription.completed",
-                    "item_id": item_id,
-                    "transcript": source,
-                })),
-                ScriptStep::Event(json!({
-                    "type": "conversation.item.input_audio_transcription.completed",
-                    "item_id": item_id,
-                    "transcript": source,
-                })),
-                ScriptStep::Event(json!({
-                    "type": "response.created",
-                    "response": { "id": format!("response-{item_id}") },
-                })),
-                ScriptStep::Event(json!({
-                    "type": "response.text.delta",
-                    "response_id": format!("response-{item_id}"),
-                    "delta": translation,
-                })),
-                ScriptStep::Event(json!({
-                    "type": "response.text.done",
-                    "response_id": format!("response-{item_id}"),
-                    "text": translation,
-                })),
-                ScriptStep::Event(json!({
-                    "type": "response.done",
-                    "response": { "id": format!("response-{item_id}"), "status": "completed" },
-                })),
-            ],
+            vec![ScriptStep::Event(json!({
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": item_id,
+                "transcript": source,
+            }))],
             harness.shared.clone(),
         );
 
-        let socket = harness.tick(socket, &mut slice);
-        assert_eq!(response_create_count(&harness), processed_count);
-        assert!(slice.manual_response_requested, "non-empty final must claim one response");
-        let socket = harness.tick(socket, &mut slice);
-        assert_eq!(
-            response_create_count(&harness),
-            processed_count,
-            "duplicate completed event must not create a second response",
-        );
-        let socket = harness.tick(socket, &mut slice);
-        let socket = harness.tick(socket, &mut slice);
-        let socket = harness.tick(socket, &mut slice);
         let _socket = harness.tick(socket, &mut slice);
-        assert!(!slice.manual_response_pending, "response.done must release this item");
+        assert_eq!(response_create_count(&harness), 0);
+        assert!(!slice.manual_response_requested);
+        assert!(!slice.manual_response_pending);
     }
 
     assert_eq!(
@@ -146,7 +109,6 @@ fn replay_historical_echo_suppression_shapes_publish_every_non_empty_final_once(
     let snapshot = harness.store().snapshot();
     for event in events {
         let source = event["source"].as_str().unwrap();
-        let translation = event["translation"].as_str().unwrap();
         let matching = snapshot
             .subtitle_overlay
             .recent_cues
@@ -156,8 +118,8 @@ fn replay_historical_echo_suppression_shapes_publish_every_non_empty_final_once(
         assert_eq!(matching.len(), 1, "source must retain one cue: {source:?}");
         let cue = matching[0];
         assert!(cue.committed, "cue must be published: {source:?}");
-        assert!(cue.translation_committed, "translation must be final: {source:?}");
-        assert_eq!(cue.translated_text, translation);
+        assert!(!cue.translation_committed, "no unauthorized response may become final: {source:?}");
+        assert!(cue.translated_text.is_empty());
     }
 
     let report = harness

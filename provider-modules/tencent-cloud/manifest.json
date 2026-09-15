@@ -1,0 +1,715 @@
+{
+  "$schema": "../../contracts/provider-manifest.schema.json",
+  "schemaVersion": "provider-manifest/v1",
+  "manifestVersion": 1,
+  "checkedAt": "2026-08-31",
+  "provider": {
+    "id": "tencent-cloud",
+    "displayName": "Tencent Cloud",
+    "templateId": "template-tencent-speech",
+    "kind": "tencent-cloud",
+    "source": "official",
+    "description": "Tencent Cloud speech translation, ASR, STS, and TTS products with explicit versioned protocol bindings.",
+    "defaultModelId": "hunyuan-translation-lite",
+    "defaultApiFamilyId": "tencent-speech-translate",
+    "defaultCredentialId": "tencent-speech-credentials",
+    "notes": "The classic speech_translate WebSocket and the newer MPS STS WebSocket are unrelated protocol profiles. No profile in this manifest is live-verified."
+  },
+  "documentation": [
+    {
+      "id": "speech-translate-api",
+      "title": "Realtime speech translation WebSocket API",
+      "url": "https://cloud.tencent.com/document/api/1093/127565",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "speech-translate-product",
+      "title": "Realtime speech translation WebSocket product documentation",
+      "url": "https://cloud.tencent.com/document/product/1093/127565",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "speech-translate-example",
+      "title": "Simultaneous interpretation with realtime speech translation",
+      "url": "https://cloud.tencent.com/document/product/1093/130882",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "asr-websocket",
+      "title": "Realtime speech recognition WebSocket",
+      "url": "https://cloud.tencent.com/document/api/1093/48982",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "asr-api-overview",
+      "title": "Speech recognition API overview",
+      "url": "https://cloud.tencent.com/document/product/1093/134682",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "asr-formal-product",
+      "title": "Speech recognition formal release",
+      "url": "https://cloud.tencent.com/document/product/1093/35682",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "hy-asr-preview",
+      "title": "Hunyuan ASR preview",
+      "url": "https://cloud.tencent.com/document/product/1093/135476",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "tts-stream-wsv2",
+      "title": "Streaming text speech synthesis WebSocket V2",
+      "url": "https://cloud.tencent.com/document/api/1073/108595",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "tts-stream-ws",
+      "title": "Realtime speech synthesis WebSocket V1",
+      "url": "https://cloud.tencent.com/document/api/1073/94308",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "tts-api-overview",
+      "title": "Text to speech API overview",
+      "url": "https://cloud.tencent.com/document/product/1073/127845",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "tts-text-to-voice",
+      "title": "Basic TextToVoice API",
+      "url": "https://cloud.tencent.com/document/api/1073/37995",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "tts-long-text",
+      "title": "Long text speech synthesis request",
+      "url": "https://cloud.tencent.com/document/api/1073/57373",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "sts-websocket",
+      "title": "WebSocket STS realtime conversation and simultaneous translation",
+      "url": "https://cloud.tencent.com/document/product/862/135068",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "speech-sdk-overview",
+      "title": "Tencent Cloud speech SDK overview",
+      "url": "https://cloud.tencent.com/document/product/1093/52554",
+      "checkedAt": "2026-08-31"
+    }
+  ],
+  "credentials": [
+    {
+      "id": "tencent-speech-credentials",
+      "reference": "credential://provider/tencent-cloud/speech",
+      "fields": [
+        { "id": "appid", "label": "AppID", "secret": false, "required": true, "format": "decimal account application id" },
+        { "id": "secret-id", "label": "SecretID", "secret": true, "required": true, "format": "Tencent Cloud CAM SecretID" },
+        { "id": "secret-key", "label": "SecretKey", "secret": true, "required": true, "format": "Tencent Cloud CAM SecretKey" }
+      ]
+    },
+    {
+      "id": "tencent-cloudapi-credentials",
+      "reference": "credential://provider/tencent-cloud/cloudapi",
+      "fields": [
+        { "id": "secret-id", "label": "SecretID", "secret": true, "required": true, "format": "Tencent Cloud CAM SecretID" },
+        { "id": "secret-key", "label": "SecretKey", "secret": true, "required": true, "format": "Tencent Cloud CAM SecretKey" },
+        { "id": "security-token", "label": "Temporary security token", "secret": true, "required": false, "format": "X-TC-Token value for temporary credentials" }
+      ]
+    }
+  ],
+  "authProfiles": [
+    {
+      "id": "speech-translate-hmac-sha1-query",
+      "type": "hmac-sha1-query",
+      "credentialId": "tencent-speech-credentials",
+      "parameters": [
+        { "location": "path", "name": "appid", "source": "credential", "credentialFieldId": "appid", "required": true },
+        { "location": "query", "name": "secretid", "source": "credential", "credentialFieldId": "secret-id", "required": true },
+        { "location": "query", "name": "timestamp", "source": "derived", "derivation": "current Unix timestamp in seconds", "required": true },
+        { "location": "query", "name": "expired", "source": "derived", "derivation": "timestamp plus configured TTL, less than 90 days", "required": true },
+        { "location": "query", "name": "nonce", "source": "derived", "derivation": "random positive integer of at most ten digits", "required": true },
+        { "location": "query", "name": "voice_id", "source": "derived", "derivation": "new UUID for every WebSocket connection", "required": true },
+        { "location": "query", "name": "signature", "source": "derived", "derivation": "URL-encoded Base64 HMAC-SHA1 signature", "required": true }
+      ],
+      "signing": {
+        "algorithm": "hmac-sha1",
+        "canonicalization": "Sort every query parameter except signature by key, join as key=value with ampersands, prefix as asr.cloud.tencent.com/asr/speech_translate/{appid}?, omit wss://, HMAC with SecretKey, Base64 encode, then URL encode the signature.",
+        "signatureEncoding": "base64",
+        "signatureParameterName": "signature",
+        "signedParameterNames": ["expired", "nonce", "secretid", "source", "target", "timestamp", "trans_model", "voice_format", "voice_id"]
+      }
+    },
+    {
+      "id": "asr-v2-hmac-sha1-query",
+      "type": "hmac-sha1-query",
+      "credentialId": "tencent-speech-credentials",
+      "parameters": [
+        { "location": "path", "name": "appid", "source": "credential", "credentialFieldId": "appid", "required": true },
+        { "location": "query", "name": "secretid", "source": "credential", "credentialFieldId": "secret-id", "required": true },
+        { "location": "query", "name": "timestamp", "source": "derived", "derivation": "current Unix timestamp in seconds", "required": true },
+        { "location": "query", "name": "expired", "source": "derived", "derivation": "signature expiry timestamp", "required": true },
+        { "location": "query", "name": "nonce", "source": "derived", "derivation": "random positive integer", "required": true },
+        { "location": "query", "name": "voice_id", "source": "derived", "derivation": "new UUID for every WebSocket connection", "required": true },
+        { "location": "query", "name": "signature", "source": "derived", "derivation": "URL-encoded Base64 HMAC-SHA1 signature", "required": true }
+      ],
+      "signing": {
+        "algorithm": "hmac-sha1",
+        "canonicalization": "Tencent realtime ASR v2 sorted URL query signing over asr.cloud.tencent.com/asr/v2/{appid}; exclude signature and the wss:// prefix.",
+        "signatureEncoding": "base64",
+        "signatureParameterName": "signature"
+      }
+    },
+    {
+      "id": "sts-tc3-sha256-query",
+      "type": "hmac-sha256-query",
+      "credentialId": "tencent-speech-credentials",
+      "parameters": [
+        { "location": "path", "name": "appid", "source": "credential", "credentialFieldId": "appid", "required": true },
+        { "location": "query", "name": "secretId", "source": "credential", "credentialFieldId": "secret-id", "required": true },
+        { "location": "query", "name": "timeStamp", "source": "derived", "derivation": "current Unix timestamp in seconds", "required": true },
+        { "location": "query", "name": "expired", "source": "derived", "derivation": "signature expiry timestamp later than timeStamp", "required": true },
+        { "location": "query", "name": "nonce", "source": "derived", "derivation": "one-time anti-replay string", "required": true },
+        { "location": "header", "name": "content-type", "source": "static", "staticValue": "application/json; charset=utf-8", "required": true },
+        { "location": "header", "name": "host", "source": "static", "staticValue": "mps.cloud.tencent.com", "required": true },
+        { "location": "query", "name": "signature", "source": "derived", "derivation": "hex CAM-style HMAC-SHA256 signature", "required": true }
+      ],
+      "signing": {
+        "algorithm": "hmac-sha256",
+        "canonicalization": "Tencent CAM/TC3-style chain over POST, /sts/v1/{appid}, the sorted URL-encoded query excluding signature, canonical content-type and host headers, signed headers content-type;host, and SHA256 of an empty payload.",
+        "signatureEncoding": "hex",
+        "signatureParameterName": "signature",
+        "signedParameterNames": ["content-type", "host", "secretId", "timeStamp", "expired", "nonce", "mode", "voice", "inputFormat", "inputSampleRate", "outputFormat", "outputSampleRate", "lang", "dstLang"]
+      }
+    },
+    {
+      "id": "tts-ws-v1-hmac-sha1-query",
+      "type": "hmac-sha1-query",
+      "credentialId": "tencent-speech-credentials",
+      "parameters": [
+        { "location": "query", "name": "Action", "source": "static", "staticValue": "TextToStreamAudioWS", "required": true },
+        { "location": "query", "name": "AppId", "source": "credential", "credentialFieldId": "appid", "required": true },
+        { "location": "query", "name": "SecretId", "source": "credential", "credentialFieldId": "secret-id", "required": true },
+        { "location": "query", "name": "Timestamp", "source": "derived", "derivation": "current Unix timestamp in seconds", "required": true },
+        { "location": "query", "name": "Expired", "source": "derived", "derivation": "signature expiry timestamp", "required": true },
+        { "location": "query", "name": "SessionId", "source": "derived", "derivation": "new UUID per WebSocket connection", "required": true },
+        { "location": "query", "name": "Signature", "source": "derived", "derivation": "URL-encoded Base64 HMAC-SHA1 signature", "required": true }
+      ],
+      "signing": {
+        "algorithm": "hmac-sha1",
+        "canonicalization": "Sort every query parameter except Signature and prefix the query with GETtts.cloud.tencent.com/stream_ws before HMAC-SHA1; Base64 and URL encode the result.",
+        "signatureEncoding": "base64",
+        "signatureParameterName": "Signature"
+      }
+    },
+    {
+      "id": "tts-wsv2-hmac-sha1-query",
+      "type": "hmac-sha1-query",
+      "credentialId": "tencent-speech-credentials",
+      "parameters": [
+        { "location": "query", "name": "Action", "source": "static", "staticValue": "TextToStreamAudioWSv2", "required": true },
+        { "location": "query", "name": "AppId", "source": "credential", "credentialFieldId": "appid", "required": true },
+        { "location": "query", "name": "SecretId", "source": "credential", "credentialFieldId": "secret-id", "required": true },
+        { "location": "query", "name": "Timestamp", "source": "derived", "derivation": "current Unix timestamp in seconds", "required": true },
+        { "location": "query", "name": "Expired", "source": "derived", "derivation": "signature expiry timestamp", "required": true },
+        { "location": "query", "name": "SessionId", "source": "derived", "derivation": "new UUID per WebSocket connection", "required": true },
+        { "location": "query", "name": "Signature", "source": "derived", "derivation": "URL-encoded Base64 HMAC-SHA1 signature", "required": true }
+      ],
+      "signing": {
+        "algorithm": "hmac-sha1",
+        "canonicalization": "Sort every query parameter except Signature and prefix the query with GETtts.cloud.tencent.com/stream_wsv2 before HMAC-SHA1; Base64 and URL encode the result.",
+        "signatureEncoding": "base64",
+        "signatureParameterName": "Signature"
+      }
+    },
+    {
+      "id": "cloudapi-tc3-header",
+      "type": "hmac-sha256-header",
+      "credentialId": "tencent-cloudapi-credentials",
+      "parameters": [
+        { "location": "header", "name": "Authorization", "source": "derived", "derivation": "TC3-HMAC-SHA256 Credential, SignedHeaders, and Signature value", "scheme": "TC3-HMAC-SHA256", "required": true },
+        { "location": "header", "name": "Content-Type", "source": "static", "staticValue": "application/json; charset=utf-8", "required": true },
+        { "location": "header", "name": "Host", "source": "static", "staticValue": "tts.tencentcloudapi.com", "required": true },
+        { "location": "header", "name": "X-TC-Action", "source": "derived", "derivation": "operation action from the selected API family", "required": true },
+        { "location": "header", "name": "X-TC-Version", "source": "static", "staticValue": "2019-08-23", "required": true },
+        { "location": "header", "name": "X-TC-Timestamp", "source": "derived", "derivation": "current Unix timestamp in seconds", "required": true },
+        { "location": "header", "name": "X-TC-Region", "source": "derived", "derivation": "configured Tencent Cloud region when the operation uses one", "required": false },
+        { "location": "header", "name": "X-TC-Token", "source": "credential", "credentialFieldId": "security-token", "required": false }
+      ],
+      "signing": {
+        "algorithm": "hmac-sha256",
+        "canonicalization": "TC3-HMAC-SHA256 canonical request and date/service/tc3_request credential scope with content-type and host as mandatory signed headers.",
+        "signatureEncoding": "hex",
+        "signatureParameterName": "Authorization",
+        "signedParameterNames": ["content-type", "host"]
+      }
+    }
+  ],
+  "transports": [
+    {
+      "id": "tencent-ws-json-raw-binary",
+      "kind": "websocket",
+      "requestFraming": "json-and-binary",
+      "responseFraming": "json-and-binary",
+      "requestEnvelope": { "kind": "none", "byteOrder": "not-applicable", "description": "WebSocket Text JSON control frames and naked WebSocket Binary audio frames." },
+      "responseEnvelope": { "kind": "none", "byteOrder": "not-applicable", "description": "WebSocket Text JSON events and naked WebSocket Binary audio frames." }
+    },
+    {
+      "id": "tencent-ws-query-raw-binary",
+      "kind": "websocket",
+      "requestFraming": "none",
+      "responseFraming": "json-and-binary",
+      "requestEnvelope": { "kind": "none", "byteOrder": "not-applicable", "description": "All request text and synthesis options are carried by the signed WebSocket Upgrade URL." },
+      "responseEnvelope": { "kind": "none", "byteOrder": "not-applicable", "description": "Naked audio Binary frames plus Text JSON state frames." }
+    },
+    {
+      "id": "tencent-ws-json-out-raw-binary",
+      "kind": "websocket",
+      "requestFraming": "json",
+      "responseFraming": "json-and-binary",
+      "requestEnvelope": { "kind": "none", "byteOrder": "not-applicable", "description": "ACTION control records are WebSocket Text JSON frames." },
+      "responseEnvelope": { "kind": "none", "byteOrder": "not-applicable", "description": "Naked audio Binary frames plus Text JSON state and subtitle frames." }
+    },
+    {
+      "id": "tencent-http-json-base64",
+      "kind": "http",
+      "requestFraming": "json",
+      "responseFraming": "json-base64",
+      "requestEnvelope": { "kind": "none", "byteOrder": "not-applicable", "description": "HTTPS JSON request body." },
+      "responseEnvelope": { "kind": "none", "byteOrder": "not-applicable", "description": "HTTPS JSON response with Base64 audio or asynchronous task metadata." }
+    }
+  ],
+  "audioProfiles": [
+    {
+      "id": "tencent-speech-translate-audio",
+      "input": { "required": true, "formats": ["pcm-s16le", "wav-pcm-s16le"], "sampleRatesHz": [16000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian"], "chunkDurationMs": { "recommended": 200 } },
+      "output": { "required": false, "formats": ["pcm-s16le", "mp3"], "sampleRatesHz": [16000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian", "not-applicable"] }
+    },
+    {
+      "id": "tencent-asr-v2-audio",
+      "input": { "required": true, "formats": ["pcm-s16le", "wav-pcm-s16le", "opus", "speex", "silk", "mp3", "m4a", "aac"], "sampleRatesHz": [8000, 16000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian", "not-applicable"], "chunkDurationMs": { "recommended": 200 } },
+      "output": { "required": false, "formats": [], "sampleRatesHz": [], "channels": [] }
+    },
+    {
+      "id": "tencent-sts-audio",
+      "input": { "required": true, "formats": ["pcm-s16le"], "sampleRatesHz": [8000, 16000, 24000, 32000, 48000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian"], "chunkDurationMs": { "minimum": 20, "maximum": 100, "recommended": 20 } },
+      "output": { "required": true, "formats": ["pcm-s16le", "mp3", "wav", "flac", "opus", "ulaw", "alaw"], "sampleRatesHz": [8000, 16000, 24000, 32000, 48000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian", "not-applicable"] }
+    },
+    {
+      "id": "tencent-tts-ws-v1-audio",
+      "input": { "required": false, "formats": [], "sampleRatesHz": [], "channels": [] },
+      "output": { "required": true, "formats": ["pcm-s16le", "mp3"], "sampleRatesHz": [8000, 16000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian", "not-applicable"] }
+    },
+    {
+      "id": "tencent-tts-wsv2-audio",
+      "input": { "required": false, "formats": [], "sampleRatesHz": [], "channels": [] },
+      "output": { "required": true, "formats": ["pcm-s16le", "mp3"], "sampleRatesHz": [8000, 16000, 24000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian", "not-applicable"] }
+    },
+    {
+      "id": "tencent-tts-cloudapi-audio",
+      "input": { "required": false, "formats": [], "sampleRatesHz": [], "channels": [] },
+      "output": { "required": true, "formats": ["wav-pcm-s16le", "mp3", "pcm-s16le"], "sampleRatesHz": [8000, 16000, 24000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian", "not-applicable"] }
+    },
+    {
+      "id": "tencent-tts-long-text-audio",
+      "input": { "required": false, "formats": [], "sampleRatesHz": [], "channels": [] },
+      "output": { "required": true, "formats": ["mp3", "wav-pcm-s16le", "pcm-s16le"], "sampleRatesHz": [8000, 16000], "channels": [1], "bitDepths": [16], "endianness": ["little-endian", "not-applicable"] }
+    }
+  ],
+  "lifecycleProfiles": [
+    {
+      "id": "tencent-speech-translate-lifecycle",
+      "handshake": ["websocket.upgrade.accepted"],
+      "clientEvents": ["audio.binary", "end.text-json"],
+      "serverEvents": ["result.text-json", "error.text-json", "tts.audio.binary", "final.text-json"],
+      "vadModes": ["server-vad"],
+      "terminal": "After client type=end, final=1 ends text translation; when optional TTS is requested final=2 is the complete terminal. Socket close and errors also terminate the connection.",
+      "reuse": "single-session",
+      "idleTimeoutSeconds": 15,
+      "textDeltaSemantics": "replaceable-snapshot"
+    },
+    {
+      "id": "tencent-asr-v2-lifecycle",
+      "handshake": ["websocket.upgrade.accepted"],
+      "clientEvents": ["audio.binary", "end.text-json"],
+      "serverEvents": ["slice-type-0", "slice-type-1", "slice-type-2", "final", "error"],
+      "vadModes": ["server-vad"],
+      "terminal": "Top-level final=1 or an error/close terminates the recognition stream; slice_type=2 is a stable slice, not the whole connection terminal.",
+      "reuse": "single-session",
+      "idleTimeoutSeconds": 15,
+      "textDeltaSemantics": "replaceable-snapshot"
+    },
+    {
+      "id": "tencent-sts-lifecycle",
+      "handshake": ["Handshake.Code=0"],
+      "clientEvents": ["audio.binary", "Finish.text-json"],
+      "serverEvents": ["Handshake", "AsrResult", "LLMResult", "tts.audio.binary", "ProcessEof"],
+      "vadModes": ["server-vad"],
+      "terminal": "Client sends Finish and stops audio; ProcessEof with Code=0 followed by server close is the normal session terminal. A zero-length TTS Binary frame is only an optional sentence boundary.",
+      "reuse": "single-session",
+      "idleTimeoutSeconds": 30,
+      "textDeltaSemantics": "mixed"
+    },
+    {
+      "id": "tencent-tts-ws-v1-lifecycle",
+      "handshake": ["websocket.upgrade.accepted"],
+      "clientEvents": [],
+      "serverEvents": ["audio.binary", "subtitle.text-json", "final.text-json", "error.text-json"],
+      "vadModes": ["none"],
+      "terminal": "The server emits final=1 after all audio; the client then closes the WebSocket.",
+      "reuse": "single-request",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "not-applicable"
+    },
+    {
+      "id": "tencent-tts-wsv2-lifecycle",
+      "handshake": ["ready=1"],
+      "clientEvents": ["ACTION_SYNTHESIS", "ACTION_COMPLETE", "ACTION_RESET"],
+      "serverEvents": ["audio.binary", "subtitle.text-json", "heartbeat=1", "final=1", "error"],
+      "vadModes": ["none"],
+      "terminal": "ACTION_COMPLETE drains queued synthesis; final=1 indicates all text is synthesized and the client closes. Ten minutes without text causes a drain and server close.",
+      "reuse": "sequential-tasks",
+      "idleTimeoutSeconds": 600,
+      "textDeltaSemantics": "not-applicable"
+    },
+    {
+      "id": "tencent-cloudapi-sync-lifecycle",
+      "handshake": [],
+      "clientEvents": ["https.request"],
+      "serverEvents": ["https.response", "https.error"],
+      "vadModes": ["none"],
+      "terminal": "A successful HTTPS response containing the Base64 audio is the request terminal.",
+      "reuse": "single-request",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "not-applicable"
+    },
+    {
+      "id": "tencent-cloudapi-async-lifecycle",
+      "handshake": [],
+      "clientEvents": ["CreateTtsTask.request"],
+      "serverEvents": ["CreateTtsTask.accepted", "CreateTtsTask.error"],
+      "vadModes": ["none"],
+      "terminal": "CreateTtsTask success only accepts the asynchronous task. Synthesis completion requires the separate result-query API and must not be inferred from HTTP 200.",
+      "reuse": "single-request",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "not-applicable"
+    }
+  ],
+  "apiFamilies": [
+    {
+      "id": "tencent-speech-translate",
+      "displayName": "Tencent realtime speech translation",
+      "baseUrlTemplate": "wss://asr.cloud.tencent.com",
+      "endpointTemplate": "/asr/speech_translate/{appid}",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": "speech-translate-v1",
+      "transportId": "tencent-ws-json-raw-binary",
+      "authProfileIds": ["speech-translate-hmac-sha1-query"],
+      "defaultAuthProfileId": "speech-translate-hmac-sha1-query",
+      "maturity": "unspecified",
+      "documentationIds": ["speech-translate-api", "speech-translate-product", "speech-translate-example", "speech-sdk-overview"]
+    },
+    {
+      "id": "tencent-asr-v2",
+      "displayName": "Tencent realtime ASR WebSocket v2",
+      "baseUrlTemplate": "wss://asr.cloud.tencent.com",
+      "endpointTemplate": "/asr/v2/{appid}",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": "asr-v2",
+      "transportId": "tencent-ws-json-raw-binary",
+      "authProfileIds": ["asr-v2-hmac-sha1-query"],
+      "defaultAuthProfileId": "asr-v2-hmac-sha1-query",
+      "maturity": "ga",
+      "documentationIds": ["asr-websocket", "asr-api-overview", "asr-formal-product"]
+    },
+    {
+      "id": "tencent-sts",
+      "displayName": "Tencent MPS WebSocket STS",
+      "baseUrlTemplate": "wss://mps.cloud.tencent.com",
+      "endpointTemplate": "/sts/v1/{appid}",
+      "endpointStatus": "verified",
+      "modelAddressing": "none",
+      "apiVersion": "sts-v1",
+      "transportId": "tencent-ws-json-raw-binary",
+      "authProfileIds": ["sts-tc3-sha256-query"],
+      "defaultAuthProfileId": "sts-tc3-sha256-query",
+      "maturity": "unspecified",
+      "documentationIds": ["sts-websocket"]
+    },
+    {
+      "id": "tencent-tts-ws-v1",
+      "displayName": "Tencent realtime TTS WebSocket V1",
+      "baseUrlTemplate": "wss://tts.cloud.tencent.com",
+      "endpointTemplate": "/stream_ws",
+      "endpointStatus": "verified",
+      "modelAddressing": "none",
+      "apiVersion": "TextToStreamAudioWS",
+      "transportId": "tencent-ws-query-raw-binary",
+      "authProfileIds": ["tts-ws-v1-hmac-sha1-query"],
+      "defaultAuthProfileId": "tts-ws-v1-hmac-sha1-query",
+      "maturity": "unspecified",
+      "documentationIds": ["tts-stream-ws", "tts-api-overview"]
+    },
+    {
+      "id": "tencent-tts-wsv2",
+      "displayName": "Tencent streaming-text TTS WebSocket V2",
+      "baseUrlTemplate": "wss://tts.cloud.tencent.com",
+      "endpointTemplate": "/stream_wsv2",
+      "endpointStatus": "verified",
+      "modelAddressing": "none",
+      "apiVersion": "TextToStreamAudioWSv2",
+      "transportId": "tencent-ws-json-out-raw-binary",
+      "authProfileIds": ["tts-wsv2-hmac-sha1-query"],
+      "defaultAuthProfileId": "tts-wsv2-hmac-sha1-query",
+      "maturity": "unspecified",
+      "documentationIds": ["tts-stream-wsv2", "tts-api-overview"]
+    },
+    {
+      "id": "tencent-tts-cloudapi-sync",
+      "displayName": "Tencent Cloud API TextToVoice",
+      "baseUrlTemplate": "https://tts.tencentcloudapi.com",
+      "endpointTemplate": "/",
+      "endpointStatus": "verified",
+      "modelAddressing": "none",
+      "apiVersion": "2019-08-23",
+      "transportId": "tencent-http-json-base64",
+      "authProfileIds": ["cloudapi-tc3-header"],
+      "defaultAuthProfileId": "cloudapi-tc3-header",
+      "maturity": "unspecified",
+      "documentationIds": ["tts-text-to-voice", "tts-api-overview"]
+    },
+    {
+      "id": "tencent-tts-cloudapi-long-text",
+      "displayName": "Tencent Cloud API long-text TTS task",
+      "baseUrlTemplate": "https://tts.tencentcloudapi.com",
+      "endpointTemplate": "/",
+      "endpointStatus": "verified",
+      "modelAddressing": "none",
+      "apiVersion": "2019-08-23",
+      "transportId": "tencent-http-json-base64",
+      "authProfileIds": ["cloudapi-tc3-header"],
+      "defaultAuthProfileId": "cloudapi-tc3-header",
+      "maturity": "unspecified",
+      "documentationIds": ["tts-long-text", "tts-api-overview"]
+    }
+  ],
+  "protocolProfiles": [
+    {
+      "id": "tencent-cloud.speech-translate.ws-v1",
+      "version": 1,
+      "apiFamilyId": "tencent-speech-translate",
+      "transportId": "tencent-ws-json-raw-binary",
+      "authProfileIds": ["speech-translate-hmac-sha1-query"],
+      "defaultAuthProfileId": "speech-translate-hmac-sha1-query",
+      "audioProfileId": "tencent-speech-translate-audio",
+      "lifecycleProfileId": "tencent-speech-translate-lifecycle",
+      "operations": ["realtime-translation"],
+      "capabilities": ["speech-translation", "realtime-transcription", "text-translation"],
+      "maturity": "unspecified",
+      "adapter": { "id": "tencent-speech-translate-adapter", "status": "enabled", "verification": "fixture-only", "reason": "Existing Rust adapter and synthetic official-contract fixtures; no retained real-provider evidence." },
+      "documentationIds": ["speech-translate-api", "speech-translate-product"],
+      "fixtureIds": ["tencent-speech-translate-signature-v1", "tencent-speech-translate-session-v1", "tencent-speech-translate-error-v1"],
+      "legacyProtocolIds": ["template-tencent-speech", "tencent-speech-translate"],
+      "notes": "Interim source_text and target_text values are replaceable current-sentence snapshots. Route selection must use this binding, never a hunyuan-translation model-name prefix."
+    },
+    {
+      "id": "tencent-cloud.asr.ws-v2",
+      "version": 1,
+      "apiFamilyId": "tencent-asr-v2",
+      "transportId": "tencent-ws-json-raw-binary",
+      "authProfileIds": ["asr-v2-hmac-sha1-query"],
+      "defaultAuthProfileId": "asr-v2-hmac-sha1-query",
+      "audioProfileId": "tencent-asr-v2-audio",
+      "lifecycleProfileId": "tencent-asr-v2-lifecycle",
+      "operations": ["realtime-transcription"],
+      "capabilities": ["speech-to-text", "realtime-transcription"],
+      "maturity": "ga",
+      "adapter": { "id": "tencent-asr-v2-adapter", "status": "disabled", "verification": "not-implemented", "reason": "No repository adapter exists for the ASR v2 wire contract." },
+      "documentationIds": ["asr-websocket", "asr-api-overview"],
+      "fixtureIds": ["tencent-asr-ws-v2-session-v1"]
+    },
+    {
+      "id": "tencent-cloud.sts.ws-v1.simul",
+      "version": 1,
+      "apiFamilyId": "tencent-sts",
+      "transportId": "tencent-ws-json-raw-binary",
+      "authProfileIds": ["sts-tc3-sha256-query"],
+      "defaultAuthProfileId": "sts-tc3-sha256-query",
+      "audioProfileId": "tencent-sts-audio",
+      "lifecycleProfileId": "tencent-sts-lifecycle",
+      "operations": ["realtime-translation"],
+      "capabilities": ["speech-translation", "speech-to-speech", "realtime-transcription", "text-to-speech"],
+      "maturity": "unspecified",
+      "adapter": { "id": "tencent-sts-simul-adapter", "status": "disabled", "verification": "not-implemented", "reason": "Classic speech_translate is not wire-compatible with STS." },
+      "documentationIds": ["sts-websocket"],
+      "fixtureIds": ["tencent-sts-signature-v1", "tencent-sts-simul-session-v1", "tencent-sts-error-v1"],
+      "notes": "The connection fixes mode=simul. dstLang is required. Negotiated HandshakeResult audio fields override the documentation page's internally inconsistent output-codec lists."
+    },
+    {
+      "id": "tencent-cloud.sts.ws-v1.llm",
+      "version": 1,
+      "apiFamilyId": "tencent-sts",
+      "transportId": "tencent-ws-json-raw-binary",
+      "authProfileIds": ["sts-tc3-sha256-query"],
+      "defaultAuthProfileId": "sts-tc3-sha256-query",
+      "audioProfileId": "tencent-sts-audio",
+      "lifecycleProfileId": "tencent-sts-lifecycle",
+      "operations": ["realtime-conversation"],
+      "capabilities": ["speech-to-speech", "realtime-transcription", "text-generation", "text-to-speech"],
+      "maturity": "unspecified",
+      "adapter": { "id": "tencent-sts-llm-adapter", "status": "disabled", "verification": "not-implemented", "reason": "No STS runtime adapter exists." },
+      "documentationIds": ["sts-websocket"],
+      "fixtureIds": ["tencent-sts-llm-session-v1"],
+      "notes": "Custom LLM hookup is ticket-gated and is a server-to-customer OpenAI-compatible callback, not the client WebSocket transport."
+    },
+    {
+      "id": "tencent-cloud.tts.stream-ws-v1",
+      "version": 1,
+      "apiFamilyId": "tencent-tts-ws-v1",
+      "transportId": "tencent-ws-query-raw-binary",
+      "authProfileIds": ["tts-ws-v1-hmac-sha1-query"],
+      "defaultAuthProfileId": "tts-ws-v1-hmac-sha1-query",
+      "audioProfileId": "tencent-tts-ws-v1-audio",
+      "lifecycleProfileId": "tencent-tts-ws-v1-lifecycle",
+      "operations": ["tts"],
+      "capabilities": ["text-to-speech"],
+      "maturity": "unspecified",
+      "adapter": { "id": "tencent-tts-stream-ws-v1-adapter", "status": "disabled", "verification": "not-implemented", "reason": "No repository adapter exists." },
+      "documentationIds": ["tts-stream-ws", "tts-api-overview"],
+      "fixtureIds": ["tencent-tts-stream-ws-v1-session-v1"]
+    },
+    {
+      "id": "tencent-cloud.tts.stream-wsv2-v1",
+      "version": 1,
+      "apiFamilyId": "tencent-tts-wsv2",
+      "transportId": "tencent-ws-json-out-raw-binary",
+      "authProfileIds": ["tts-wsv2-hmac-sha1-query"],
+      "defaultAuthProfileId": "tts-wsv2-hmac-sha1-query",
+      "audioProfileId": "tencent-tts-wsv2-audio",
+      "lifecycleProfileId": "tencent-tts-wsv2-lifecycle",
+      "operations": ["tts"],
+      "capabilities": ["text-to-speech"],
+      "maturity": "unspecified",
+      "adapter": { "id": "tencent-tts-stream-wsv2-adapter", "status": "disabled", "verification": "not-implemented", "reason": "No repository adapter exists." },
+      "documentationIds": ["tts-stream-wsv2", "tts-api-overview"],
+      "fixtureIds": ["tencent-tts-stream-wsv2-session-v1"]
+    },
+    {
+      "id": "tencent-cloud.tts.text-to-voice-2019-08-23",
+      "version": 1,
+      "apiFamilyId": "tencent-tts-cloudapi-sync",
+      "transportId": "tencent-http-json-base64",
+      "authProfileIds": ["cloudapi-tc3-header"],
+      "defaultAuthProfileId": "cloudapi-tc3-header",
+      "audioProfileId": "tencent-tts-cloudapi-audio",
+      "lifecycleProfileId": "tencent-cloudapi-sync-lifecycle",
+      "operations": ["tts"],
+      "capabilities": ["text-to-speech"],
+      "maturity": "unspecified",
+      "adapter": { "id": "tencent-tts-cloudapi-sync-adapter", "status": "disabled", "verification": "not-implemented", "reason": "No repository adapter exists." },
+      "documentationIds": ["tts-text-to-voice", "tts-api-overview"],
+      "fixtureIds": ["tencent-tts-cloudapi-text-to-voice-v1"]
+    },
+    {
+      "id": "tencent-cloud.tts.long-text-2019-08-23",
+      "version": 1,
+      "apiFamilyId": "tencent-tts-cloudapi-long-text",
+      "transportId": "tencent-http-json-base64",
+      "authProfileIds": ["cloudapi-tc3-header"],
+      "defaultAuthProfileId": "cloudapi-tc3-header",
+      "audioProfileId": "tencent-tts-long-text-audio",
+      "lifecycleProfileId": "tencent-cloudapi-async-lifecycle",
+      "operations": ["tts"],
+      "capabilities": ["text-to-speech"],
+      "maturity": "unspecified",
+      "adapter": { "id": "tencent-tts-cloudapi-long-text-adapter", "status": "disabled", "verification": "not-implemented", "reason": "The repository lacks both task creation and result-query adapters." },
+      "documentationIds": ["tts-long-text", "tts-api-overview"],
+      "fixtureIds": ["tencent-tts-cloudapi-long-text-v1"],
+      "notes": "The fixture ends at task acceptance. A future profile must model the documented result query before claiming audio completion."
+    }
+  ],
+  "models": [
+    {
+      "id": "hunyuan-translation-lite",
+      "displayName": "Hunyuan Translation Lite",
+      "capabilities": ["speech-translation", "realtime-transcription", "text-translation"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        { "operation": "realtime-translation", "protocolProfileId": "tencent-cloud.speech-translate.ws-v1", "protocolProfileVersion": 1 }
+      ],
+      "documentationIds": ["speech-translate-api", "speech-translate-product"],
+      "availability": "Published trans_model value for the classic realtime speech translation API."
+    },
+    {
+      "id": "hunyuan-translation",
+      "displayName": "Hunyuan Translation",
+      "capabilities": ["speech-translation", "realtime-transcription", "text-translation"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        { "operation": "realtime-translation", "protocolProfileId": "tencent-cloud.speech-translate.ws-v1", "protocolProfileVersion": 1 }
+      ],
+      "documentationIds": ["speech-translate-api", "speech-translate-product"],
+      "availability": "Published trans_model value for the classic realtime speech translation API."
+    },
+    {
+      "id": "16k_zh_en",
+      "displayName": "Tencent realtime ASR 16k Chinese-English",
+      "capabilities": ["speech-to-text", "realtime-transcription"],
+      "maturity": "ga",
+      "protocolBindings": [
+        { "operation": "realtime-transcription", "protocolProfileId": "tencent-cloud.asr.ws-v2", "protocolProfileVersion": 1 }
+      ],
+      "documentationIds": ["asr-websocket", "asr-formal-product"]
+    },
+    {
+      "id": "Hy-ASR-3.0-preview",
+      "displayName": "Hunyuan ASR 3.0 Preview",
+      "capabilities": ["speech-to-text", "realtime-transcription"],
+      "maturity": "preview",
+      "protocolBindings": [
+        { "operation": "realtime-transcription", "protocolProfileId": "tencent-cloud.asr.ws-v2", "protocolProfileVersion": 1 }
+      ],
+      "documentationIds": ["asr-websocket", "hy-asr-preview"],
+      "availability": "Internal preview for experience only; up to 60 seconds, 16 kHz mono PCM, with multiple standard ASR features unavailable."
+    }
+  ],
+  "probes": [
+    { "id": "tencent-speech-translate-signature-probe", "protocolProfileId": "tencent-cloud.speech-translate.ws-v1", "protocolProfileVersion": 1, "verification": "fixture-only", "fixtureId": "tencent-speech-translate-signature-v1", "notes": "Local deterministic canonicalization and signature vector only." },
+    { "id": "tencent-asr-v2-fixture-probe", "protocolProfileId": "tencent-cloud.asr.ws-v2", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "tencent-asr-ws-v2-session-v1" },
+    { "id": "tencent-sts-simul-fixture-probe", "protocolProfileId": "tencent-cloud.sts.ws-v1.simul", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "tencent-sts-signature-v1" },
+    { "id": "tencent-sts-llm-fixture-probe", "protocolProfileId": "tencent-cloud.sts.ws-v1.llm", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "tencent-sts-llm-session-v1" },
+    { "id": "tencent-tts-ws-v1-fixture-probe", "protocolProfileId": "tencent-cloud.tts.stream-ws-v1", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "tencent-tts-stream-ws-v1-session-v1" },
+    { "id": "tencent-tts-wsv2-fixture-probe", "protocolProfileId": "tencent-cloud.tts.stream-wsv2-v1", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "tencent-tts-stream-wsv2-session-v1" },
+    { "id": "tencent-tts-sync-fixture-probe", "protocolProfileId": "tencent-cloud.tts.text-to-voice-2019-08-23", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "tencent-tts-cloudapi-text-to-voice-v1" },
+    { "id": "tencent-tts-long-text-fixture-probe", "protocolProfileId": "tencent-cloud.tts.long-text-2019-08-23", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "tencent-tts-cloudapi-long-text-v1" }
+  ],
+  "smokes": [
+    { "id": "tencent-speech-translate-fixture-smoke", "protocolProfileId": "tencent-cloud.speech-translate.ws-v1", "protocolProfileVersion": 1, "verification": "fixture-only", "fixtureId": "tencent-speech-translate-session-v1", "notes": "Offline lifecycle replay; performs no network I/O." },
+    { "id": "tencent-asr-v2-fixture-smoke", "protocolProfileId": "tencent-cloud.asr.ws-v2", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "tencent-asr-ws-v2-session-v1" },
+    { "id": "tencent-sts-simul-fixture-smoke", "protocolProfileId": "tencent-cloud.sts.ws-v1.simul", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "tencent-sts-simul-session-v1" },
+    { "id": "tencent-sts-llm-fixture-smoke", "protocolProfileId": "tencent-cloud.sts.ws-v1.llm", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "tencent-sts-llm-session-v1" },
+    { "id": "tencent-tts-ws-v1-fixture-smoke", "protocolProfileId": "tencent-cloud.tts.stream-ws-v1", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "tencent-tts-stream-ws-v1-session-v1" },
+    { "id": "tencent-tts-wsv2-fixture-smoke", "protocolProfileId": "tencent-cloud.tts.stream-wsv2-v1", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "tencent-tts-stream-wsv2-session-v1" },
+    { "id": "tencent-tts-sync-fixture-smoke", "protocolProfileId": "tencent-cloud.tts.text-to-voice-2019-08-23", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "tencent-tts-cloudapi-text-to-voice-v1" },
+    { "id": "tencent-tts-long-text-fixture-smoke", "protocolProfileId": "tencent-cloud.tts.long-text-2019-08-23", "protocolProfileVersion": 1, "verification": "not-implemented", "fixtureId": "tencent-tts-cloudapi-long-text-v1" }
+  ],
+  "fixtures": [
+    { "id": "tencent-speech-translate-signature-v1", "path": "provider-modules/tencent-cloud/fixtures/speech-translate-signature-v1.json", "kind": "probe", "sourceDocumentationIds": ["speech-translate-api", "speech-translate-product"] },
+    { "id": "tencent-speech-translate-session-v1", "path": "provider-modules/tencent-cloud/fixtures/speech-translate-session-v1.json", "kind": "wire", "sourceDocumentationIds": ["speech-translate-api", "speech-translate-product"] },
+    { "id": "tencent-speech-translate-error-v1", "path": "provider-modules/tencent-cloud/fixtures/speech-translate-error-v1.json", "kind": "error", "sourceDocumentationIds": ["speech-translate-api"] },
+    { "id": "tencent-asr-ws-v2-session-v1", "path": "provider-modules/tencent-cloud/fixtures/asr-ws-v2-session-v1.json", "kind": "wire", "sourceDocumentationIds": ["asr-websocket"] },
+    { "id": "tencent-sts-signature-v1", "path": "provider-modules/tencent-cloud/fixtures/sts-signature-v1.json", "kind": "probe", "sourceDocumentationIds": ["sts-websocket"] },
+    { "id": "tencent-sts-simul-session-v1", "path": "provider-modules/tencent-cloud/fixtures/sts-simul-session-v1.json", "kind": "wire", "sourceDocumentationIds": ["sts-websocket"] },
+    { "id": "tencent-sts-llm-session-v1", "path": "provider-modules/tencent-cloud/fixtures/sts-llm-session-v1.json", "kind": "wire", "sourceDocumentationIds": ["sts-websocket"] },
+    { "id": "tencent-sts-error-v1", "path": "provider-modules/tencent-cloud/fixtures/sts-error-v1.json", "kind": "error", "sourceDocumentationIds": ["sts-websocket"] },
+    { "id": "tencent-tts-stream-ws-v1-session-v1", "path": "provider-modules/tencent-cloud/fixtures/tts-stream-ws-v1-session-v1.json", "kind": "wire", "sourceDocumentationIds": ["tts-stream-ws"] },
+    { "id": "tencent-tts-stream-wsv2-session-v1", "path": "provider-modules/tencent-cloud/fixtures/tts-stream-wsv2-session-v1.json", "kind": "wire", "sourceDocumentationIds": ["tts-stream-wsv2"] },
+    { "id": "tencent-tts-cloudapi-text-to-voice-v1", "path": "provider-modules/tencent-cloud/fixtures/tts-cloudapi-text-to-voice-v1.json", "kind": "wire", "sourceDocumentationIds": ["tts-text-to-voice"] },
+    { "id": "tencent-tts-cloudapi-long-text-v1", "path": "provider-modules/tencent-cloud/fixtures/tts-cloudapi-long-text-v1.json", "kind": "wire", "sourceDocumentationIds": ["tts-long-text"] }
+  ]
+}

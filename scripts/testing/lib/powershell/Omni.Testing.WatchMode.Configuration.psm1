@@ -105,9 +105,6 @@ function Get-PhysicalOutputContentSkipReason {
     [string]$FeedbackMode,
     [bool]$SkipContentStt
   )
-  if ($FeedbackMode -eq "echo-cancel") {
-    return "echo-cancel Watch capture does not require the virtual-driver physical-output content recorder"
-  }
   if ($SkipContentStt) {
     return "SkipPhysicalOutputContentStt was provided"
   }

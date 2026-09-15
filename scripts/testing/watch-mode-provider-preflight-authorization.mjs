@@ -3,6 +3,10 @@ import path from 'node:path';
 
 import { LIVE_LLM_CELLS, RELEASE_MODELS } from './watch-mode-balanced-release-plan.mjs';
 import {
+  assertWatchModelProtocolIdentity,
+  deriveWatchModelProtocolIdentity,
+} from './watch-mode-model-protocol-authority.mjs';
+import {
   SHARD_ALLOWED_WORKER_COUNTS,
   SHARD_AUTHORITY_SCHEMA_VERSION,
   SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
@@ -36,6 +40,8 @@ export const PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_KIND =
   'watch-mode-provider-preflight-consumption-claim';
 export const PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_FILE =
   'provider-preflight-consumption-claim.json';
+export const PROVIDER_PREFLIGHT_DISPATCH_CLAIM_FILE =
+  'provider-preflight-dispatch-claim.json';
 export const PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE =
   'target/release/omni-desktop-shell.exe';
 
@@ -48,9 +54,12 @@ export const PROVIDER_PREFLIGHT_AUTHORIZATION_DIGEST_ENV =
 
 export const PROVIDER_PREFLIGHT_PROVIDER_ID = 'provider-dashscope';
 export const PROVIDER_PREFLIGHT_MODEL = RELEASE_MODELS[0];
-export const PROVIDER_PREFLIGHT_PROTOCOL = 'dashscope-omni';
-export const PROVIDER_PREFLIGHT_OPERATION = 'text-translation-preflight';
-export const PROVIDER_PREFLIGHT_INPUT_MODE = 'text-only';
+export const PROVIDER_PREFLIGHT_PROTOCOL = 'dashscope-livetranslate';
+export const PROVIDER_PREFLIGHT_OPERATION = 'livetranslate-session-lifecycle-preflight';
+export const PROVIDER_PREFLIGHT_INPUT_MODE = 'none';
+export const PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE = 'none';
+export const PROVIDER_PREFLIGHT_RESPONSE_MODE = 'text-only';
+export const PROVIDER_PREFLIGHT_TERMINAL_EVENT = 'session.finished';
 export const PROVIDER_PREFLIGHT_INVOCATION_COUNT = 1;
 export const PROVIDER_PREFLIGHT_EXTERNAL_AUDIO_SAMPLES = 0;
 export const PROVIDER_PREFLIGHT_SYSTEM_PROMPT_TEMPLATE = 'game-live-translation-cn';
@@ -58,8 +67,10 @@ export const PROVIDER_PREFLIGHT_RESPONSE_MODALITIES = Object.freeze(['text']);
 export const PROVIDER_PREFLIGHT_CUSTOM_HEADERS = Object.freeze([]);
 export const PROVIDER_PREFLIGHT_TIMEOUT_MS = 12_000;
 export const PROVIDER_PREFLIGHT_TEMPERATURE = 0.2;
-export const PROVIDER_PREFLIGHT_MAX_INPUT_TOKENS = 4_096;
-export const PROVIDER_PREFLIGHT_MAX_OUTPUT_TOKENS = 256;
+export const PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET = Object.freeze({
+  firstServerEventLatencyMs: 1_200,
+  socketEventTimeoutMs: 12_000,
+});
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const EXECUTION_ID = /^[a-z0-9][a-z0-9._-]{7,127}$/i;
@@ -72,11 +83,10 @@ export const providerPreflightReservationFileName = (cell, cellIndex = cell.cell
   `${String(Number(cellIndex) + 1).padStart(2, '0')}-${safeCellId(cell.cellId)}.json`
 );
 
-const protocolForModel = (modelId) => (
-  modelId === 'qwen3.5-livetranslate-flash-realtime'
-    ? 'dashscope-livetranslate'
-    : 'dashscope-omni'
-);
+const protocolForModel = (modelId) => {
+  if (modelId === 'qwen3.5-livetranslate-flash-realtime') return 'dashscope-livetranslate';
+  throw new Error(`formal provider preflight rejected unapproved model ${modelId}`);
+};
 
 function isoMs(value, label) {
   const timestamp = Date.parse(String(value ?? ''));
@@ -111,6 +121,9 @@ function assertCleanProvenance(provenance) {
 function normalizedGrantWorkers(workers) {
   return workers.map((worker) => ({
     workerId: worker.workerId,
+    ...(worker.transportAuthority
+      ? { transportAuthority: structuredClone(worker.transportAuthority) }
+      : {}),
     ...(String(worker.interactiveUser ?? '').trim()
       ? { interactiveUser: String(worker.interactiveUser).trim() }
       : {}),
@@ -127,13 +140,14 @@ function grantCells(assignments) {
     providerId: PROVIDER_PREFLIGHT_PROVIDER_ID,
     modelId: cell.modelId,
     protocol: protocolForModel(cell.modelId),
+    modelProtocolProfileIdentity: structuredClone(cell.modelProtocolProfileIdentity),
     feedbackLoopPrevention: cell.feedbackLoopPrevention,
     deviceClass: cell.deviceClass,
     workerId: assignments[cellIndex].workerId,
     waveIndex: assignments[cellIndex].waveIndex,
     deviceProfileInstanceId: assignments[cellIndex].deviceProfileInstanceId,
     leaseId: assignments[cellIndex].leaseId,
-    maxExternalAudioSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+    maxExternalAudioSamples: cell.maxExternalAudioSamples,
   }));
 }
 
@@ -160,10 +174,15 @@ export function providerPreflightAuthorizationConsumption({ grant, leaseReservat
     model: grant.authorization.model,
     protocol: grant.authorization.protocol,
     operation: grant.authorization.operation,
+    modelProtocolProfileIdentity: structuredClone(grant.authorization.modelProtocolProfileIdentity),
     inputMode: grant.authorization.inputMode,
+    providerInputMode: grant.authorization.providerInputMode,
+    responseMode: grant.authorization.responseMode,
+    terminalEvent: grant.authorization.terminalEvent,
     invocationCount: grant.authorization.invocationCount,
     externalAudioSamples: grant.authorization.externalAudioSamples,
-    tokenBudget: structuredClone(grant.authorization.tokenBudget),
+    lifecycleBudget: structuredClone(grant.authorization.lifecycleBudget),
+    executor: structuredClone(grant.executor),
     leaseReservations: leaseReservations.map((reservation, index) => ({
       cellIndex: index,
       cellId: reservation.cellId,
@@ -171,6 +190,7 @@ export function providerPreflightAuthorizationConsumption({ grant, leaseReservat
       waveIndex: reservation.waveIndex,
       leaseId: reservation.leaseId,
       maxExternalAudioSamples: reservation.maxExternalAudioSamples,
+      modelProtocolProfileIdentity: structuredClone(reservation.modelProtocolProfileIdentity),
       digest: reservation.digest,
       issuedAt: reservation.issuedAt,
     })),
@@ -227,12 +247,20 @@ export function validateProviderPreflightConsumptionClaim({
   const executableAuthority = grant.runtimeBinaryHashes.find(
     (entry) => entry.path === PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE,
   );
-  const expectedExecutablePath = path.resolve(
+  const localExecutablePath = path.resolve(
     workspaceRoot,
     ...PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE.split('/'),
   );
+  const executorWorkspaceRoot = String(grant.executor?.workspaceRoot ?? '').trim();
+  if (!executorWorkspaceRoot) {
+    throw new Error('provider preflight grant executor workspace root is not signed');
+  }
+  const expectedExecutablePath = path.resolve(
+    executorWorkspaceRoot,
+    ...PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE.split('/'),
+  );
   const executableFile = fileAuthorityEntry(
-    expectedExecutablePath,
+    localExecutablePath,
     PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE,
   );
   if (
@@ -278,10 +306,11 @@ export function createProviderPreflightGrant({
   workerReadinessAuthorities,
   workers,
   assignments,
+  preflightExecutorWorkerId,
   signingKeys,
 }) {
   if (!Array.isArray(assignments) || assignments.length !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error('provider preflight grant requires all eight paid assignments');
+    throw new Error(`provider preflight grant requires all ${SHARD_MATRIX_CELL_COUNT} paid assignments`);
   }
   const cells = grantCells(assignments);
   if (
@@ -289,7 +318,20 @@ export function createProviderPreflightGrant({
     || cells.some((cell) => !String(cell.leaseId ?? '').trim())
     || cells.reduce((sum, cell) => sum + cell.maxExternalAudioSamples, 0)
       !== SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES
-  ) throw new Error('provider preflight grant requires eight unique fixed-budget lease IDs');
+  ) throw new Error(`provider preflight grant requires ${SHARD_MATRIX_CELL_COUNT} unique fixed-budget lease IDs`);
+  const normalizedWorkers = normalizedGrantWorkers(workers);
+  if (normalizedWorkers.length === 4 && !preflightExecutorWorkerId) {
+    throw new Error('four-worker provider preflight grant requires an explicit executor');
+  }
+  const selectedExecutorWorkerId = preflightExecutorWorkerId ?? normalizedWorkers[0]?.workerId;
+  const executorWorker = normalizedWorkers.find((worker) => worker.workerId === selectedExecutorWorkerId);
+  const executorWorkspaceRoot = String(
+    workers.find((worker) => worker.workerId === selectedExecutorWorkerId)?.workspaceRoot ?? '',
+  ).trim();
+  const executorReadiness = workerReadinessAuthorities.find((entry) => entry.workerId === selectedExecutorWorkerId);
+  if (!executorWorker || !executorReadiness) {
+    throw new Error('provider preflight grant requires its fixed ready executor');
+  }
   const core = {
     schemaVersion: SHARD_AUTHORITY_SCHEMA_VERSION,
     artifactKind: PROVIDER_PREFLIGHT_GRANT_KIND,
@@ -305,7 +347,17 @@ export function createProviderPreflightGrant({
     workerReadinessRequest: structuredClone(workerReadinessRequest),
     workerReadinessRequestAuthority: structuredClone(workerReadinessRequestAuthority),
     workerReadinessAuthorities: structuredClone(workerReadinessAuthorities),
-    workers: normalizedGrantWorkers(workers),
+    workers: normalizedWorkers,
+    executor: {
+      workerId: executorWorker.workerId,
+      workspaceRoot: executorWorkspaceRoot,
+      transportAuthority: structuredClone(executorWorker.transportAuthority),
+      interactiveUser: executorWorker.interactiveUser,
+      vmIdentity: structuredClone(executorWorker.vmIdentity),
+      vmIdentityDigest: executorWorker.vmIdentityDigest,
+      runtimeBundleDigest: authorityInventoryDigest(runtimeBinaryHashes),
+      readinessAuthority: structuredClone(executorReadiness),
+    },
     cells,
     budget: {
       inputSampleRateHz: 16_000,
@@ -320,6 +372,9 @@ export function createProviderPreflightGrant({
       protocol: PROVIDER_PREFLIGHT_PROTOCOL,
       operation: PROVIDER_PREFLIGHT_OPERATION,
       inputMode: PROVIDER_PREFLIGHT_INPUT_MODE,
+      providerInputMode: PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE,
+      responseMode: PROVIDER_PREFLIGHT_RESPONSE_MODE,
+      terminalEvent: PROVIDER_PREFLIGHT_TERMINAL_EVENT,
       invocationCount: PROVIDER_PREFLIGHT_INVOCATION_COUNT,
       externalAudioSamples: PROVIDER_PREFLIGHT_EXTERNAL_AUDIO_SAMPLES,
       systemPromptTemplate: PROVIDER_PREFLIGHT_SYSTEM_PROMPT_TEMPLATE,
@@ -327,10 +382,10 @@ export function createProviderPreflightGrant({
       customHeaders: [...PROVIDER_PREFLIGHT_CUSTOM_HEADERS],
       timeoutMs: PROVIDER_PREFLIGHT_TIMEOUT_MS,
       temperature: PROVIDER_PREFLIGHT_TEMPERATURE,
-      tokenBudget: {
-        maxInputTokens: PROVIDER_PREFLIGHT_MAX_INPUT_TOKENS,
-        maxOutputTokens: PROVIDER_PREFLIGHT_MAX_OUTPUT_TOKENS,
-      },
+      lifecycleBudget: structuredClone(PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET),
+      modelProtocolProfileIdentity: structuredClone(
+        deriveWatchModelProtocolIdentity(PROVIDER_PREFLIGHT_MODEL),
+      ),
     },
     coordinator: { publicKeyPem: signingKeys.publicKeyPem },
   };
@@ -395,8 +450,22 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
       `provider preflight worker ${index} readiness authority`,
     );
   });
+  const executorWorker = grant.workers.find((worker) => worker.workerId === grant.executor?.workerId);
+  const executorReadiness = grant.workerReadinessAuthorities.find(
+    (entry) => entry.workerId === grant.executor?.workerId,
+  );
+  if (!executorWorker
+    || !String(grant.executor.workspaceRoot ?? '').trim()
+    || canonicalJson(grant.executor.transportAuthority) !== canonicalJson(executorWorker.transportAuthority)
+    || grant.executor.interactiveUser !== executorWorker.interactiveUser
+    || canonicalJson(grant.executor.vmIdentity) !== canonicalJson(executorWorker.vmIdentity)
+    || grant.executor.vmIdentityDigest !== executorWorker.vmIdentityDigest
+    || grant.executor.runtimeBundleDigest !== grant.runtimeBundleDigest
+    || canonicalJson(grant.executor.readinessAuthority) !== canonicalJson(executorReadiness)) {
+    throw new Error('provider preflight grant executor is not bound to its signed configured identity/readiness/runtime');
+  }
   if (!Array.isArray(grant.cells) || grant.cells.length !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error('provider preflight grant requires the exact eight paid cells');
+    throw new Error(`provider preflight grant requires the exact ${SHARD_MATRIX_CELL_COUNT} paid cells`);
   }
   const workerIds = new Set(grant.workers.map((worker) => worker.workerId));
   const slots = new Set();
@@ -409,11 +478,20 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
       providerId: PROVIDER_PREFLIGHT_PROVIDER_ID,
       modelId: approved.modelId,
       protocol: protocolForModel(approved.modelId),
+      modelProtocolProfileIdentity: approved.modelProtocolProfileIdentity,
       feedbackLoopPrevention: approved.feedbackLoopPrevention,
       deviceClass: approved.deviceClass,
     };
     for (const [key, value] of Object.entries(expectedCell)) {
-      if (cell?.[key] !== value) throw new Error(`provider preflight grant cell ${index} ${key} mismatch`);
+      if (key === 'modelProtocolProfileIdentity') {
+        assertWatchModelProtocolIdentity(
+          cell?.[key],
+          value,
+          `provider preflight grant cell ${index} model protocol profile identity`,
+        );
+      } else if (cell?.[key] !== value) {
+        throw new Error(`provider preflight grant cell ${index} ${key} mismatch`);
+      }
     }
     if (
       !workerIds.has(cell.workerId)
@@ -421,7 +499,7 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
       || !String(cell.leaseId ?? '').trim()
       || !Number.isInteger(Number(cell.waveIndex))
       || Number(cell.waveIndex) < 0
-      || Number(cell.maxExternalAudioSamples) !== SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES
+      || Number(cell.maxExternalAudioSamples) !== Number(approved.maxExternalAudioSamples)
     ) throw new Error(`provider preflight grant cell ${index} assignment/budget is invalid`);
     if (slots.has(`${cell.workerId}::${cell.waveIndex}`)) {
       throw new Error(`provider preflight grant worker ${cell.workerId} has duplicate wave slot`);
@@ -441,6 +519,9 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
     || grant.authorization?.protocol !== PROVIDER_PREFLIGHT_PROTOCOL
     || grant.authorization?.operation !== PROVIDER_PREFLIGHT_OPERATION
     || grant.authorization?.inputMode !== PROVIDER_PREFLIGHT_INPUT_MODE
+    || grant.authorization?.providerInputMode !== PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE
+    || grant.authorization?.responseMode !== PROVIDER_PREFLIGHT_RESPONSE_MODE
+    || grant.authorization?.terminalEvent !== PROVIDER_PREFLIGHT_TERMINAL_EVENT
     || grant.authorization?.invocationCount !== PROVIDER_PREFLIGHT_INVOCATION_COUNT
     || grant.authorization?.externalAudioSamples !== PROVIDER_PREFLIGHT_EXTERNAL_AUDIO_SAMPLES
     || grant.authorization?.systemPromptTemplate !== PROVIDER_PREFLIGHT_SYSTEM_PROMPT_TEMPLATE
@@ -450,9 +531,14 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
       !== canonicalJson(PROVIDER_PREFLIGHT_CUSTOM_HEADERS)
     || grant.authorization?.timeoutMs !== PROVIDER_PREFLIGHT_TIMEOUT_MS
     || grant.authorization?.temperature !== PROVIDER_PREFLIGHT_TEMPERATURE
-    || grant.authorization?.tokenBudget?.maxInputTokens !== PROVIDER_PREFLIGHT_MAX_INPUT_TOKENS
-    || grant.authorization?.tokenBudget?.maxOutputTokens !== PROVIDER_PREFLIGHT_MAX_OUTPUT_TOKENS
-  ) throw new Error('provider preflight grant is not the fixed text-only/24-minute authorization');
+    || canonicalJson(grant.authorization?.lifecycleBudget)
+      !== canonicalJson(PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET)
+  ) throw new Error('provider preflight grant is not the fixed zero-audio LiveTranslate lifecycle authorization');
+  assertWatchModelProtocolIdentity(
+    grant.authorization?.modelProtocolProfileIdentity,
+    deriveWatchModelProtocolIdentity(PROVIDER_PREFLIGHT_MODEL),
+    'provider preflight grant authorization model protocol profile identity',
+  );
   if (expected.executionId && grant.executionId !== expected.executionId) {
     throw new Error('provider preflight grant executionId mismatch');
   }
@@ -490,6 +576,7 @@ export function createProviderPreflightLeaseReservations({ grant, issuedAt, sign
     waveIndex: cell.waveIndex,
     leaseId: cell.leaseId,
     maxExternalAudioSamples: cell.maxExternalAudioSamples,
+    modelProtocolProfileIdentity: structuredClone(cell.modelProtocolProfileIdentity),
     reclaimPolicy: 'never-within-execution',
     retryPolicy: 'new-execution-required',
     coordinator: { publicKeyPem: signingKeys.publicKeyPem },
@@ -500,7 +587,7 @@ export function createProviderPreflightLeaseReservations({ grant, issuedAt, sign
 export function verifyProviderPreflightLeaseReservations(reservations, grant) {
   verifyProviderPreflightGrant(grant);
   if (!Array.isArray(reservations) || reservations.length !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error('provider preflight requires exactly eight signed lease reservations');
+    throw new Error(`provider preflight requires exactly ${SHARD_MATRIX_CELL_COUNT} signed lease reservations`);
   }
   const grantAt = isoMs(grant.generatedAt, 'provider preflight grant generatedAt');
   const expiresAt = isoMs(grant.expiresAt, 'provider preflight grant expiresAt');
@@ -522,13 +609,18 @@ export function verifyProviderPreflightLeaseReservations(reservations, grant) {
       || reservation.workerId !== cell.workerId
       || Number(reservation.waveIndex) !== Number(cell.waveIndex)
       || reservation.leaseId !== cell.leaseId
-      || Number(reservation.maxExternalAudioSamples) !== SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES
+      || Number(reservation.maxExternalAudioSamples) !== Number(cell.maxExternalAudioSamples)
       || reservation.expiresAt !== grant.expiresAt
       || issuedAt <= grantAt
       || issuedAt >= expiresAt
       || reservation.reclaimPolicy !== 'never-within-execution'
       || reservation.retryPolicy !== 'new-execution-required'
     ) throw new Error(`provider preflight lease reservation ${index} does not match its grant cell`);
+    assertWatchModelProtocolIdentity(
+      reservation.modelProtocolProfileIdentity,
+      cell.modelProtocolProfileIdentity,
+      `provider preflight lease reservation ${index} model protocol profile identity`,
+    );
   });
   return reservations;
 }
@@ -565,7 +657,7 @@ export function loadProviderPreflightAuthorizationPackage({
   if (
     entries.some((entry) => !entry.isFile() || entry.isSymbolicLink())
     || canonicalJson(entries.map((entry) => entry.name).sort()) !== canonicalJson([...expectedFiles].sort())
-  ) throw new Error('provider preflight reservation directory is not the exact eight-file set');
+  ) throw new Error(`provider preflight reservation directory is not the exact ${SHARD_MATRIX_CELL_COUNT}-file set`);
   const leaseReservations = expectedFiles.map((fileName, index) => readRegularJson(
     path.join(resolvedReservationDirectory, fileName),
     `provider preflight reservation ${index}`,
@@ -585,6 +677,9 @@ export function loadProviderPreflightAuthorizationPackage({
       cellIndex: index,
       cellId: grant.cells[index].cellId,
       leaseId: grant.cells[index].leaseId,
+      modelProtocolProfileIdentity: structuredClone(
+        leaseReservations[index].modelProtocolProfileIdentity,
+      ),
       digest: leaseReservations[index].digest,
       ...fileAuthorityEntry(
         path.join(resolvedReservationDirectory, fileName),
@@ -592,6 +687,43 @@ export function loadProviderPreflightAuthorizationPackage({
       ),
     })),
   };
+}
+
+export function claimProviderPreflightDispatchAuthorization({
+  grantPath,
+  reservationDirectory,
+  expectedAuthorizationDigest,
+  claimedAt = new Date(),
+}) {
+  const authorization = loadProviderPreflightAuthorizationPackage({
+    grantPath,
+    reservationDirectory,
+    expectedAuthorizationDigest,
+  });
+  const authorizationRoot = path.dirname(path.resolve(grantPath));
+  const claimPath = path.join(path.dirname(authorizationRoot), `${path.basename(authorizationRoot)}.${PROVIDER_PREFLIGHT_DISPATCH_CLAIM_FILE}`);
+  const claim = {
+    schemaVersion: SHARD_AUTHORITY_SCHEMA_VERSION,
+    artifactKind: 'watch-mode-provider-preflight-dispatch-claim',
+    executionId: authorization.grant.executionId,
+    grantDigest: authorization.grant.digest,
+    authorizationDigest: authorization.authorizationDigest,
+    executor: structuredClone(authorization.grant.executor),
+    claimedAt: claimedAt instanceof Date ? claimedAt.toISOString() : String(claimedAt),
+    retryPolicy: 'new-execution-required',
+  };
+  let handle;
+  try {
+    handle = fs.openSync(claimPath, 'wx', 0o600);
+    fs.writeFileSync(handle, `${canonicalJson(claim)}\n`, 'utf8');
+    fs.fsyncSync(handle);
+  } catch (error) {
+    if (error?.code === 'EEXIST') throw new Error('provider preflight authorization was already consumed');
+    throw error;
+  } finally {
+    if (handle !== undefined) fs.closeSync(handle);
+  }
+  return { claimed: true, claimPath, authorization };
 }
 
 export function validateProviderPreflightAuthorizationAuthorities({
@@ -609,7 +741,7 @@ export function validateProviderPreflightAuthorizationAuthorities({
   );
   if (!Array.isArray(leaseReservationAuthorities)
     || leaseReservationAuthorities.length !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error('provider preflight reservation authority inventory must contain eight entries');
+    throw new Error(`provider preflight reservation authority inventory must contain ${SHARD_MATRIX_CELL_COUNT} entries`);
   }
   leaseReservationAuthorities.forEach((entry, index) => validateFileAuthorityEntry(
     root,
@@ -636,23 +768,30 @@ export function createProviderPreflightCompletion({
   signingKeys,
 }) {
   const consumption = providerPreflightAuthorizationConsumption({ grant, leaseReservations });
+  assertWatchModelProtocolIdentity(
+    preflightAuthority.modelProtocolProfileIdentity,
+    consumption.modelProtocolProfileIdentity,
+    'provider preflight raw authority model protocol profile identity',
+  );
   if (
     preflightAuthority.providerId !== consumption.providerId
     || preflightAuthority.model !== consumption.model
     || preflightAuthority.protocol !== consumption.protocol
     || preflightAuthority.operation !== consumption.operation
     || preflightAuthority.inputMode !== consumption.inputMode
+    || preflightAuthority.providerInputMode !== consumption.providerInputMode
+    || preflightAuthority.responseMode !== consumption.responseMode
+    || preflightAuthority.terminalEvent !== consumption.terminalEvent
     || preflightAuthority.invocationCount !== consumption.invocationCount
     || preflightAuthority.externalAudioSamples !== consumption.externalAudioSamples
-    || canonicalJson(preflightAuthority.tokenBudget) !== canonicalJson(consumption.tokenBudget)
-    || typeof preflightAuthority.inputTokens !== 'number'
-    || !Number.isSafeInteger(preflightAuthority.inputTokens)
-    || preflightAuthority.inputTokens < 0
-    || preflightAuthority.inputTokens > consumption.tokenBudget.maxInputTokens
-    || typeof preflightAuthority.outputTokens !== 'number'
-    || !Number.isSafeInteger(preflightAuthority.outputTokens)
-    || preflightAuthority.outputTokens < 0
-    || preflightAuthority.outputTokens > consumption.tokenBudget.maxOutputTokens
+    || canonicalJson(preflightAuthority.lifecycleBudget)
+      !== canonicalJson(consumption.lifecycleBudget)
+    || preflightAuthority.evidenceOutcome !== 'livetranslate-session-finished'
+    || preflightAuthority.firstServerEvent?.type !== 'session.created'
+    || !Number.isSafeInteger(preflightAuthority.firstServerEvent?.monotonicMs)
+    || preflightAuthority.firstServerEvent.monotonicMs < 0
+    || preflightAuthority.firstServerEvent.monotonicMs
+      > consumption.lifecycleBudget.firstServerEventLatencyMs
     || (preflightAuthority.audioSeconds != null
       && (typeof preflightAuthority.audioSeconds !== 'number'
         || preflightAuthority.audioSeconds !== 0))
@@ -660,6 +799,7 @@ export function createProviderPreflightCompletion({
     || preflightAuthority.executionId !== consumption.executionId
     || preflightAuthority.grantDigest !== consumption.grantDigest
     || preflightAuthority.authorizationDigest !== consumption.authorizationDigest
+    || canonicalJson(preflightAuthority.executor) !== canonicalJson(consumption.executor)
     || canonicalJson(preflightAuthority.leaseReservationDigests)
       !== canonicalJson(consumption.leaseReservationDigests)
     || preflightAuthority.consumptionClaim?.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
@@ -686,6 +826,7 @@ export function createProviderPreflightCompletion({
     grantDigest: grant.digest,
     leaseReservationDigests: leaseReservations.map((reservation) => reservation.digest),
     authorizationDigest: consumption.authorizationDigest,
+    modelProtocolProfileIdentity: structuredClone(consumption.modelProtocolProfileIdentity),
     consumptionClaim: structuredClone(preflightAuthority.consumptionClaim),
     preflightAuthority: structuredClone(preflightAuthority),
     coordinator: { publicKeyPem: signingKeys.publicKeyPem },
@@ -698,6 +839,16 @@ export function verifyProviderPreflightCompletion(completion, grant, leaseReserv
     completion,
     grant.coordinator.publicKeyPem,
     'provider preflight completion',
+  );
+  assertWatchModelProtocolIdentity(
+    completion.modelProtocolProfileIdentity,
+    consumption.modelProtocolProfileIdentity,
+    'provider preflight completion model protocol profile identity',
+  );
+  assertWatchModelProtocolIdentity(
+    completion.preflightAuthority?.modelProtocolProfileIdentity,
+    consumption.modelProtocolProfileIdentity,
+    'provider preflight completion raw authority model protocol profile identity',
   );
   if (
     completion.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
@@ -712,18 +863,19 @@ export function verifyProviderPreflightCompletion(completion, grant, leaseReserv
     || completion.preflightAuthority?.protocol !== consumption.protocol
     || completion.preflightAuthority?.operation !== consumption.operation
     || completion.preflightAuthority?.inputMode !== consumption.inputMode
+    || completion.preflightAuthority?.providerInputMode !== consumption.providerInputMode
+    || completion.preflightAuthority?.responseMode !== consumption.responseMode
+    || completion.preflightAuthority?.terminalEvent !== consumption.terminalEvent
     || completion.preflightAuthority?.invocationCount !== consumption.invocationCount
     || completion.preflightAuthority?.externalAudioSamples !== consumption.externalAudioSamples
-    || canonicalJson(completion.preflightAuthority?.tokenBudget)
-      !== canonicalJson(consumption.tokenBudget)
-    || typeof completion.preflightAuthority?.inputTokens !== 'number'
-    || !Number.isSafeInteger(completion.preflightAuthority.inputTokens)
-    || completion.preflightAuthority.inputTokens < 0
-    || completion.preflightAuthority.inputTokens > consumption.tokenBudget.maxInputTokens
-    || typeof completion.preflightAuthority?.outputTokens !== 'number'
-    || !Number.isSafeInteger(completion.preflightAuthority.outputTokens)
-    || completion.preflightAuthority.outputTokens < 0
-    || completion.preflightAuthority.outputTokens > consumption.tokenBudget.maxOutputTokens
+    || canonicalJson(completion.preflightAuthority?.lifecycleBudget)
+      !== canonicalJson(consumption.lifecycleBudget)
+    || completion.preflightAuthority?.evidenceOutcome !== 'livetranslate-session-finished'
+    || completion.preflightAuthority?.firstServerEvent?.type !== 'session.created'
+    || !Number.isSafeInteger(completion.preflightAuthority?.firstServerEvent?.monotonicMs)
+    || completion.preflightAuthority.firstServerEvent.monotonicMs < 0
+    || completion.preflightAuthority.firstServerEvent.monotonicMs
+      > consumption.lifecycleBudget.firstServerEventLatencyMs
     || (completion.preflightAuthority?.audioSeconds != null
       && (typeof completion.preflightAuthority.audioSeconds !== 'number'
         || completion.preflightAuthority.audioSeconds !== 0))
@@ -731,6 +883,7 @@ export function verifyProviderPreflightCompletion(completion, grant, leaseReserv
     || completion.preflightAuthority?.executionId !== consumption.executionId
     || completion.preflightAuthority?.grantDigest !== consumption.grantDigest
     || completion.preflightAuthority?.authorizationDigest !== consumption.authorizationDigest
+    || canonicalJson(completion.preflightAuthority?.executor) !== canonicalJson(consumption.executor)
     || canonicalJson(completion.preflightAuthority?.leaseReservationDigests)
       !== canonicalJson(consumption.leaseReservationDigests)
     || canonicalJson(completion.consumptionClaim)

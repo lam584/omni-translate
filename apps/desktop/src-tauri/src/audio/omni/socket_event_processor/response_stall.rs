@@ -31,6 +31,24 @@ pub(super) struct ResponseStallContext<'a, R: tauri::Runtime> {
 pub(super) struct ResponseStallPoll<S> {
     pub(super) state: ResponseStallReconnectState<S>,
     pub(super) socket_reconnected: bool,
+    pub(super) reconnected_session_update: Option<Value>,
+}
+#[derive(Debug, PartialEq, Eq)]
+enum ResponseStallRecoveryAction {
+    Reconnect,
+    Terminate(String),
+}
+
+fn response_stall_recovery_action(strict_paid_authority: bool) -> ResponseStallRecoveryAction {
+    if strict_paid_authority {
+        return ResponseStallRecoveryAction::Terminate(
+            super::super::session_errors::with_error_markers(
+                "native-response-stalled: realtime model response timed out; strict paid authority terminated the session before connector network access",
+                super::super::session_errors::SessionErrorCode::ProviderInternal,
+            ),
+        );
+    }
+    ResponseStallRecoveryAction::Reconnect
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -60,6 +78,7 @@ where
         ResponseStallAction::None => Ok(ResponseStallPoll {
             state,
             socket_reconnected: false,
+            reconnected_session_update: None,
         }),
         ResponseStallAction::Cancel { response_id } => {
             send_single_omni_cancel(
@@ -72,7 +91,24 @@ where
             )
         }
         ResponseStallAction::Reconnect => {
-            reconnect_stalled_response(state, event_diagnostics, context, connector)
+            match response_stall_recovery_action(
+                context
+                    .provider_input_budget
+                    .strict_paid_authority_enabled(),
+            ) {
+                ResponseStallRecoveryAction::Reconnect => {
+                    reconnect_stalled_response(state, event_diagnostics, context, connector)
+                }
+                ResponseStallRecoveryAction::Terminate(error) => {
+                    terminalize_stalled_cue(
+                        event_diagnostics,
+                        &context,
+                        "实时模型响应超时，严格付费会话已终止且未重连。",
+                        "terminalize_session",
+                    );
+                    Err(error)
+                }
+            }
         }
     }
 }
@@ -122,6 +158,7 @@ where
     Ok(ResponseStallPoll {
         state,
         socket_reconnected: false,
+        reconnected_session_update: None,
     })
 }
 
@@ -135,7 +172,12 @@ where
     C: RealtimeSocketConnector,
     R: tauri::Runtime,
 {
-    terminalize_stalled_cue(event_diagnostics, &context);
+    terminalize_stalled_cue(
+        event_diagnostics,
+        &context,
+        "实时模型响应超时，连接已重建。",
+        "terminalize_and_reconnect",
+    );
     let reconnect = OmniConnectionCoordinator::reconnect_after_close(
         OmniReconnectState {
             socket: state.socket,
@@ -144,6 +186,7 @@ where
             active_voice: state.active_voice,
             voice_fallback_applied: state.voice_fallback_applied,
             socket_reconnected: false,
+            reconnected_session_update: None,
         },
         connector,
         context.app,
@@ -166,12 +209,15 @@ where
             voice_fallback_applied: reconnect.voice_fallback_applied,
         },
         socket_reconnected: true,
+        reconnected_session_update: reconnect.reconnected_session_update,
     })
 }
 
 fn terminalize_stalled_cue<R: tauri::Runtime>(
     event_diagnostics: &OmniEventDiagnostics,
     context: &ResponseStallContext<'_, R>,
+    evidence_message: &str,
+    diagnostic_action: &str,
 ) {
     let cue_id = event_diagnostics
         .native_response_cue_id
@@ -208,20 +254,47 @@ fn terminalize_stalled_cue<R: tauri::Runtime>(
                 .unwrap_or_else(unix_ms),
         );
     }
-    context.store.watch_session_report.record_model_error_for_cue(
-        cue_id,
-        "dashscope-native-realtime",
-        "native-response-stalled",
-        "实时模型响应超时，连接已重建。",
-        false,
-        None,
-    );
+    context
+        .store
+        .watch_session_report
+        .record_model_error_for_cue(
+            cue_id,
+            "dashscope-native-realtime",
+            "native-response-stalled",
+            evidence_message,
+            false,
+            None,
+        );
     let _ = diag_log(
         context.app,
         "omni",
         "error",
         format!(
-            "event=response_stall action=terminalize_and_reconnect cueId={cue_id}"
+            "event=response_stall action={diagnostic_action} reason=native-response-stalled cueId={cue_id}"
         ),
     );
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strict_paid_response_stall_terminates_without_socket_close_reconnect_attribution() {
+        let action = response_stall_recovery_action(true);
+        let ResponseStallRecoveryAction::Terminate(error) = action else {
+            panic!("strict paid response stall must terminate the session");
+        };
+        assert!(error.contains("native-response-stalled"));
+        assert!(error.contains("session.provider-internal"));
+        assert!(!error.contains("socket-close"));
+        assert!(!error.contains("reconnect"));
+    }
+
+    #[test]
+    fn ordinary_response_stall_preserves_reconnect_behavior() {
+        assert_eq!(
+            response_stall_recovery_action(false),
+            ResponseStallRecoveryAction::Reconnect
+        );
+    }
 }

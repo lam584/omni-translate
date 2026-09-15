@@ -10,6 +10,7 @@
 use std::net::TcpStream;
 
 use tauri::AppHandle;
+use serde_json::Value;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::Message;
 
@@ -25,9 +26,73 @@ pub(crate) trait RealtimeSocket {
 
 pub(crate) type TungsteniteSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
 
+pub(crate) fn is_retryable_read_poll_error(error: &tungstenite::Error) -> bool {
+    matches!(
+        error,
+        tungstenite::Error::Io(io_error)
+            if matches!(
+                io_error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            )
+    )
+}
+
+/// Execute one Provider read while the underlying stream is temporarily pollable.
+///
+/// Restoring blocking mode is part of the read transaction. If restoration
+/// fails after a frame was consumed, the frame is deliberately not returned to
+/// the event processor: the socket mode is unknown, so treating the event as
+/// processed could allow a later blocking-contract write on an unsafe stream.
+/// Returning the restoration error forces the existing fatal/fail-closed path.
+fn read_with_temporary_nonblocking<S, T>(
+    socket: &mut S,
+    set_mode: impl Fn(&mut S, bool) -> std::io::Result<()>,
+    read: impl FnOnce(&mut S) -> Result<T, tungstenite::Error>,
+) -> Result<T, tungstenite::Error> {
+    set_mode(socket, true).map_err(tungstenite::Error::Io)?;
+    let read_result = read(socket);
+    set_mode(socket, false).map_err(tungstenite::Error::Io)?;
+    read_result
+}
+
+#[cfg(test)]
+mod temporary_nonblocking_read_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct FakeSocket { consumed: bool }
+
+    #[test]
+    fn consumed_event_is_not_returned_when_blocking_restore_fails() {
+        let mut socket = FakeSocket::default();
+        let result = read_with_temporary_nonblocking(
+            &mut socket,
+            |_socket, nonblocking| {
+                if nonblocking { Ok(()) } else {
+                    Err(std::io::Error::new(std::io::ErrorKind::Other, "restore failed"))
+                }
+            },
+            |socket| { socket.consumed = true; Ok("consumed event") },
+        );
+        assert!(socket.consumed, "fixture must consume the event first");
+        assert!(matches!(result, Err(tungstenite::Error::Io(ref error)) if error.to_string() == "restore failed"));
+    }
+}
+
+/// Replacement socket plus the exact `session.update` value admitted and
+/// written to that socket. The value is provenance, not a rebuild hint.
+pub(crate) struct ReconnectedRealtimeSocket<S> {
+    pub(crate) socket: S,
+    pub(crate) session_update: Value,
+}
+
 impl RealtimeSocket for TungsteniteSocket {
     fn read_message(&mut self) -> Result<Message, tungstenite::Error> {
-        self.read()
+        read_with_temporary_nonblocking(
+            self,
+            crate::audio::realtime_ws::set_socket_nonblocking_mode,
+            |socket| socket.read(),
+        )
     }
 
     fn send_message(&mut self, message: Message) -> Result<(), tungstenite::Error> {
@@ -51,7 +116,7 @@ pub(crate) trait RealtimeSocketConnector {
         output_mode: OmniOutputMode,
         source_language: &str,
         target_language: &str,
-    ) -> Result<Self::Socket, String>;
+    ) -> Result<ReconnectedRealtimeSocket<Self::Socket>, String>;
 }
 
 /// Production connector: real WebSocket connect + session.update replay.
@@ -70,7 +135,7 @@ impl RealtimeSocketConnector for TungsteniteConnector {
         output_mode: OmniOutputMode,
         source_language: &str,
         target_language: &str,
-    ) -> Result<Self::Socket, String> {
+    ) -> Result<ReconnectedRealtimeSocket<Self::Socket>, String> {
         reconnect_socket(
             app,
             provider,
@@ -92,6 +157,7 @@ pub(crate) mod scripted {
     use serde_json::Value;
 
     use super::*;
+    use crate::audio::omni::build_omni_session_update_for_provider_with_output_mode;
 
     /// One step of a scripted realtime session, consumed per `read_message`.
     #[derive(Clone, Debug)]
@@ -168,22 +234,41 @@ pub(crate) mod scripted {
         fn reconnect<R: tauri::Runtime>(
             &self,
             _app: &AppHandle<R>,
-            _provider: &ProviderDraftInput,
-            _voice: &str,
-            _instructions: &str,
-            _audio_mode: RealtimeAudioMode,
-            _output_mode: OmniOutputMode,
-            _source_language: &str,
-            _target_language: &str,
-        ) -> Result<Self::Socket, String> {
+            provider: &ProviderDraftInput,
+            voice: &str,
+            instructions: &str,
+            audio_mode: RealtimeAudioMode,
+            output_mode: OmniOutputMode,
+            source_language: &str,
+            target_language: &str,
+        ) -> Result<ReconnectedRealtimeSocket<Self::Socket>, String> {
+            let session_update = build_omni_session_update_for_provider_with_output_mode(
+                provider,
+                voice,
+                instructions,
+                audio_mode,
+                source_language,
+                target_language,
+                output_mode,
+            );
+            if crate::audio::events::is_livetranslate_route_model(provider, &provider.model) {
+                crate::audio::bailian_protocol::admit_livetranslate_client_event_for_provider(
+                    provider,
+                    &session_update,
+                )?;
+            }
             let mut shared = self.shared.lock().expect("scripted state");
             shared.reconnect_count += 1;
             let script = shared
                 .reconnect_scripts
                 .pop_front()
                 .ok_or_else(|| "scripted connector has no further sessions".to_string())?;
+            shared.sent.push(session_update.clone());
             drop(shared);
-            Ok(ScriptedRealtimeSocket::new(script, self.shared.clone()))
+            Ok(ReconnectedRealtimeSocket {
+                socket: ScriptedRealtimeSocket::new(script, self.shared.clone()),
+                session_update,
+            })
         }
     }
 }

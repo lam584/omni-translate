@@ -3,7 +3,10 @@
 // preconnect, fallback), app-layer subtitle evidence, subtitle queue ordering
 // gates, the echo-cancel feedback variant and runner-failure attribution.
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { renderMarkdownReport } from './watch-mode-report.mjs';
 import {
@@ -27,6 +30,21 @@ test('classifies healthy watch-mode evidence as passed', () => {
   assert.equal(report.verdict, 'passed');
   assert.equal(report.failureLayer, null);
   assert.equal(report.suspectFiles.length, 0);
+});
+
+test('accepts frozen driver readiness projection without legacy tone counters', () => {
+  const readiness = {
+    InstalledDriverAuthority: {
+      installedServiceState: 'Running',
+      installedSysSignatureStatus: 'Valid',
+      packageCatalogSignatureStatus: 'Valid',
+    },
+    WasapiEndpointId: '{0.0.0.00000000}.{virtual-speaker}',
+    providerCalls: 0,
+  };
+  const report = classify({ driver: readiness, wasapi: readiness });
+  assert.equal(report.layers.driver.status, 'passed');
+  assert.equal(report.layers.wasapi.status, 'passed');
 });
 
 test('requires a saved Watch report with a complete visible three-stage cue', () => {
@@ -137,6 +155,161 @@ test('does not fail a fully rendered cue whose retry error was recovered by a fi
       }],
     },
   });
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.failureLayer, null);
+});
+
+test('preserves physical playback queue overflow identity and the incomplete cue authority', () => {
+  const report = classify({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      issues: [
+        {
+          category: 'model',
+          code: 'native-response-cancelled',
+          severity: 'warning',
+          message: '实时响应被取消：status=cancelled reason=turn_detected responseId=resp-cancelled',
+          occurrenceCount: 2,
+        },
+        {
+          category: 'output',
+          code: 'bridge-translation-write-failed',
+          severity: 'error',
+          message: 'bridge.queue-overflow: physical translation stream cannot start while a complete cue is queued or playing',
+          cueId: null,
+        },
+      ],
+      cues: [
+        ...healthyWatchSessionReport.cues,
+        {
+          ...healthyWatchSessionReport.cues[0],
+          cueId: 'cue-cancelled-before-queue-overflow',
+          translationState: 'error',
+          comparisonStatus: 'different',
+          llmText: '模型已经产生了候选译文。',
+          publishedText: '[翻译失败] 实时响应被后续语音打断。',
+          renderedText: '[翻译失败] 实时响应被后续语音打断。',
+          issues: [{
+            category: 'publish',
+            code: 'translation-terminal-error',
+            severity: 'error',
+          }],
+        },
+      ],
+    },
+    physicalOutputContent: {
+      ...healthyPhysicalOutputContent,
+      passed: false,
+      translatedSpeech: {
+        passed: false,
+        queuedSegments: 25,
+        playedSegments: 25,
+        playbackAuthority: {
+          passed: false,
+          queuedCueCount: 25,
+          startedCueCount: 25,
+          completedCueCount: 24,
+          invalidCues: [{
+            cueId: 'cue-stale-dropped',
+            queuedCount: 1,
+            startedCount: 1,
+            completedCount: 0,
+            ordered: false,
+          }],
+          detail: 'every complete native cue must have exactly one ordered queued, started, and completed physical playback event',
+        },
+        acousticAuthority: {
+          passed: false,
+          violations: [
+            'cue cue-stale-dropped does not have exactly one ordered timestamped queued/started/completed lifecycle',
+          ],
+        },
+      },
+    },
+  });
+
+  assert.equal(report.failureLayer, 'app');
+  assert.equal(report.stableErrorCode, 'bridge.queue-overflow');
+  assert.equal(report.lifecyclePhase, 'physical-playback-queue');
+  assert.deepEqual(report.failureContext.nativeResponseCancellation, {
+    reason: 'turn_detected',
+    occurrenceCount: 2,
+    failedCueCount: 1,
+  });
+  assert.match(report.layers.physicalOutputContent.reason, /cue-stale-dropped/);
+  assert.match(report.layers.physicalOutputContent.reason, /completedCueCount=24/);
+  assert.doesNotMatch(report.layers.physicalOutputContent.reason, /was not written to physical output/);
+});
+
+test('does not label an unrelated Bridge queue error as a physical playback queue overflow', () => {
+  const report = classify({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      issues: [{
+        category: 'bridge',
+        code: 'bridge-source-write-failed',
+        severity: 'error',
+        message: 'bridge.queue-overflow: source capture queue is full',
+      }],
+    },
+  });
+
+  assert.equal(report.failureLayer, 'app');
+  assert.equal(report.stableErrorCode, 'watch.app.failed');
+  assert.equal(report.lifecyclePhase, 'application-runtime');
+});
+
+test('identifies turn-detected native response terminals at the active-response phase', () => {
+  const report = classify({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      issues: [{
+        category: 'model',
+        code: 'native-response-cancelled',
+        severity: 'warning',
+        message: '实时响应被取消：status=cancelled reason=turn_detected responseId=resp-cancelled',
+        occurrenceCount: 3,
+      }],
+      cues: [{
+        ...healthyWatchSessionReport.cues[0],
+        translationState: 'error',
+        comparisonStatus: 'different',
+        llmText: '模型已经产生了候选译文。',
+        publishedText: '[翻译失败] 实时响应被后续语音打断。',
+        renderedText: '[翻译失败] 实时响应被后续语音打断。',
+        issues: [{
+          category: 'publish',
+          code: 'translation-terminal-error',
+          severity: 'error',
+        }],
+      }],
+    },
+  });
+
+  assert.equal(report.failureLayer, 'app');
+  assert.equal(report.stableErrorCode, 'watch.native-response-turn-cancelled');
+  assert.equal(report.lifecyclePhase, 'active-response');
+  assert.deepEqual(report.failureContext.nativeResponseCancellation, {
+    reason: 'turn_detected',
+    occurrenceCount: 3,
+    failedCueCount: 1,
+  });
+});
+
+test('keeps an uncorrelated native cancellation warning non-blocking', () => {
+  const report = classify({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      issues: [{
+        category: 'model',
+        code: 'native-response-cancelled',
+        severity: 'warning',
+        message: '实时响应被取消：status=cancelled reason=turn_detected responseId=resp-warning-only',
+        occurrenceCount: 1,
+      }],
+    },
+  });
+
   assert.equal(report.verdict, 'passed');
   assert.equal(report.failureLayer, null);
 });
@@ -391,6 +564,18 @@ test('echo-cancel records runtime ERLE without applying the pure-echo fixture th
   assert.equal(report.layers.aec.data.maxErleDb, 14.9);
 });
 
+test('echo-cancel missing residual telemetry has a stable AEC evidence fingerprint', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replaceAll(/ residualEchoLikelihood=[^ ]+/g, ''),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.equal(report.stableErrorCode, 'aec.residual-echo-likelihood-unavailable');
+  assert.equal(report.lifecyclePhase, 'aec-evidence');
+});
+
 test('echo-cancel requires the build-time native pure-echo fixture gate', () => {
   const report = classify({
     feedbackLoopPrevention: 'echo-cancel',
@@ -468,6 +653,95 @@ test('echo-cancel surfaces native stats read failures instead of treating them a
   assert.match(report.failureReason, /failed to read native AEC3 statistics 2 times/i);
 });
 
+test('echo-cancel rejects native reset counter growth without a matching explicit reset event', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replace(
+      'capture10msFrames=100 processedCapture10msFrames=100 resetCount=1',
+      'capture10msFrames=100 processedCapture10msFrames=100 resetCount=2',
+    ),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /reset counter.*explicit reset event/i);
+});
+
+test('echo-cancel rejects a terminal reset counter that regresses below a periodic native counter', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replace(
+      'direction=inbound final=false backend=webrtc-aec3 render10msFrames=50 capture10msFrames=50 processedCapture10msFrames=50 resetCount=1',
+      'direction=inbound final=false backend=webrtc-aec3 render10msFrames=50 capture10msFrames=50 processedCapture10msFrames=50 resetCount=2',
+    ),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /terminalResetCount=1 maxResetCount=2 explicitResetEvents=1/);
+});
+
+test('echo-cancel accepts resets after the last periodic summary when the terminal native summary covers them', () => {
+  const lines = healthyAppLog.split('\n');
+  const terminalIndex = lines.findIndex((line) => (
+    line.includes('event=echo_cancel_summary') && line.includes('final=true')
+  ));
+  const [terminalSummary] = lines.splice(terminalIndex, 1);
+  lines.push(
+    'event=echo_cancel_reset | direction=inbound reason=wasapi-render-session-start estimatorResetCount=1 sid=0198testsid',
+    'event=echo_cancel_reset | direction=inbound reason=wasapi-render-underrun estimatorResetCount=2 sid=0198testsid',
+    terminalSummary.replace('resetCount=1', 'resetCount=3'),
+  );
+
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: lines.join('\n'),
+  });
+
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.layers.aec.data.maxResetCount, 3);
+  assert.equal(report.layers.aec.data.terminalResetCount, 3);
+  assert.equal(report.layers.aec.data.explicitResetEventCount, 3);
+});
+
+test('echo-cancel rejects a stale periodic summary when no terminal native summary was emitted', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replace('direction=inbound final=true', 'direction=inbound final=false'),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /exactly one terminal native AEC3 summary/i);
+});
+
+test('echo-cancel keeps an earlier runner failure primary when terminal AEC evidence is absent', () => {
+  const runnerFailure = 'desktop shell exited before evidence finalization';
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    failure: { message: runnerFailure },
+    appLogText: healthyAppLog.replace('direction=inbound final=true', 'direction=inbound final=false'),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'app');
+  assert.equal(report.failureReason, runnerFailure);
+  assert.match(report.layers.aec.reason, /exactly one terminal native AEC3 summary/i);
+});
+
+test('echo-cancel keeps an earlier app failure primary when terminal AEC evidence is absent', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    app: { ...healthyApp, routeState: 'failed' },
+    appLogText: healthyAppLog.replace('direction=inbound final=true', 'direction=inbound final=false'),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'app');
+  assert.equal(report.failureReason, 'routeState is failed');
+  assert.match(report.layers.aec.reason, /exactly one terminal native AEC3 summary/i);
+});
+
 test('echo-cancel requires numeric double-talk frame telemetry from the linked backend', () => {
   const report = classify({
     feedbackLoopPrevention: 'echo-cancel',
@@ -506,6 +780,111 @@ test('echo-cancel live report requires every expected source segment to survive 
   assert.equal(report.failureLayer, 'aec');
   assert.match(report.failureReason, /accept every expected reference-media subtitle segment/i);
   assert.equal(report.layers.aec.data.liveScenario.expectedSubtitles.acceptanceRate < 1, true);
+});
+
+test('echo-cancel accepts completed rendered translation when accepted source metadata is corrupt', () => {
+  const renderedReference = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'watch-mode-en-original.zh-CN.txt'),
+    'utf8',
+  ).trim();
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [{
+        ...healthyWatchSessionReport.cues[0],
+        sourceText: 'corrupt source metadata',
+        llmText: renderedReference,
+        publishedText: renderedReference,
+        renderedText: renderedReference,
+      }],
+    },
+  });
+
+  assert.equal(report.layers.aec.data.liveScenario.expectedSubtitles.acceptedSegmentCount, 6);
+  assert.equal(report.layers.aec.data.liveScenario.expectedSubtitles.acceptanceRate, 1);
+  assert.equal(
+    report.layers.aec.data.liveScenario.expectedSubtitles.segments[1].acceptedEvidence,
+    'rendered-translation',
+  );
+});
+
+test('echo-cancel does not borrow translation from an unrendered cue', () => {
+  const renderedReference = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'watch-mode-en-original.zh-CN.txt'),
+    'utf8',
+  ).trim();
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [{
+        ...healthyWatchSessionReport.cues[0],
+        sourceText: 'corrupt source metadata',
+        renderedText: renderedReference,
+        comparisonStatus: 'not-rendered',
+        renderedFirstAtMs: null,
+      }],
+    },
+  });
+
+  assert.equal(
+    report.layers.aec.data.liveScenario.expectedSubtitles.acceptedSegmentCount
+      < report.layers.aec.data.liveScenario.expectedSubtitles.expectedSegmentCount,
+    true,
+  );
+});
+
+test('echo-cancel segment recall cannot borrow a shuffled token bag from unrelated cues', () => {
+  const sourceTokens = healthyWatchSessionReport.cues[0].sourceText
+    .normalize('NFKC')
+    .toLowerCase()
+    .match(/[a-z0-9]+/g);
+  const splitCues = [0, 1].map((parity) => ({
+    ...healthyWatchSessionReport.cues[0],
+    cueId: `cue-shuffled-${parity + 1}`,
+    sourceText: sourceTokens.filter((_, index) => index % 2 === parity).join(' '),
+  }));
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      summary: {
+        ...healthyWatchSessionReport.summary,
+        cueCount: splitCues.length,
+        completeCueCount: splitCues.length,
+        visibleRenderCueCount: splitCues.length,
+      },
+      cues: splitCues,
+    },
+  });
+
+  assert.equal(
+    report.layers.aec.data.liveScenario.expectedSubtitles.acceptedSegmentCount
+      < report.layers.aec.data.liveScenario.expectedSubtitles.expectedSegmentCount,
+    true,
+  );
+});
+
+test('echo-cancel segment recall treats spoken numeric forms as equivalent source content', () => {
+  const spokenNumericSource = healthyWatchSessionReport.cues[0].sourceText
+    .replace('72.5 kilowatt-hours', 'seventy-two point five kilowatt-hours')
+    .replace('21 degrees Celsius', 'twenty-one degrees Celsius')
+    .replace('minus 4', 'minus four');
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [{
+        ...healthyWatchSessionReport.cues[0],
+        sourceText: spokenNumericSource,
+      }],
+    },
+  });
+
+  const engineeringSegment = report.layers.aec.data.liveScenario.expectedSubtitles.segments[2];
+  assert.equal(engineeringSegment.tokenRecall, 1);
+  assert.equal(engineeringSegment.accepted, true);
 });
 
 test('echo-cancel live report rejects a static delay metric despite staged render requests', () => {

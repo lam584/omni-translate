@@ -80,7 +80,7 @@ export function assemblePerformanceBaseline({
   }
   if (!fs.existsSync(manifestPath)) {
     throw new Error(
-      `canonical strict matrix manifest is missing: ${manifestPath}; run npm run test:watch-mode-live:matrix first`,
+      `canonical strict matrix manifest is missing: ${manifestPath}; run npm run test:watch-mode-live:production-coordinator first`,
     );
   }
 
@@ -127,11 +127,15 @@ export function assemblePerformanceBaseline({
       }
       const reportPath = path.join(runDirectory, 'report.json');
       const metricsPath = path.join(runDirectory, 'system-metrics.json');
+      const terminalPath = path.join(runDirectory, 'evidence-driven-terminal.json');
       if (!fs.existsSync(reportPath)) throw new Error(`Watch report is missing: ${reportPath}`);
       if (!fs.existsSync(metricsPath)) {
         throw new Error(
           `raw system metrics are missing: ${metricsPath}; re-run the strict matrix with the metrics collector`,
         );
+      }
+      if (!fs.existsSync(terminalPath)) {
+        throw new Error(`evidence-driven terminal authority is missing: ${terminalPath}`);
       }
       if (seenCells.has(cellKey)) throw new Error(`canonical matrix contains duplicate cell ${cellKey}`);
       seenCells.add(cellKey);
@@ -141,6 +145,13 @@ export function assemblePerformanceBaseline({
         sourcePath: reportPath,
         targetRelativePath: path.join(cellDirectory, 'report.json'),
         role: 'watch-mode-report',
+        cellKey,
+      }));
+      sourceArtifacts.push(addCopiedArtifact({
+        stagingRoot,
+        sourcePath: terminalPath,
+        targetRelativePath: path.join(cellDirectory, 'evidence-driven-terminal.json'),
+        role: 'evidence-driven-terminal',
         cellKey,
       }));
       sourceArtifacts.push(addCopiedArtifact({
@@ -200,7 +211,7 @@ export function assemblePerformanceBaseline({
       verdict: thresholdFailures.length === 0 ? 'PASS' : 'FAIL',
       provenance,
       environment: 'Windows production desktop shell; canonical budget-balanced release validation plan',
-      scenario: 'Provider p95 + subtitle commit p95 + subtitle TTS playback + process-tree resource stability',
+      scenario: 'Provider p95 + subtitle commit p95 + subtitle TTS playback + process-tree resources + evidence-driven terminal coverage',
       thresholds: { ...PERFORMANCE_THRESHOLDS },
       measurements: source.measurements,
       sourceEvidence: {
@@ -211,7 +222,7 @@ export function assemblePerformanceBaseline({
       notes: [
         'Measurements were independently assembled from archived canonical Watch reports and raw system-metrics samples.',
         'CPU is the worst per-cell process-tree p95; memory is the matrix-wide process-tree peak.',
-        'Stability duration is the shortest verified Watch session across the two 4m45s model-stability cells.',
+        'Terminal coverage is recomputed from receipt-bound evidence-driven terminal artifacts for every paid release cell.',
       ],
     };
     const resolvedOutputRoot = ensureDir(path.resolve(workspaceRoot, outputRoot));

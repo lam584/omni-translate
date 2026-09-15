@@ -5,12 +5,10 @@ param(
   [ValidatePattern('^[a-f0-9]{64}$')]
   [string]$ExpectedRequestSha256
 )
-
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-
 Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.IO.psm1') -Force
-
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.WatchMode.InteractiveDesktopIdentity.psm1') -Force
 function Invoke-Utf8JsonProcess {
   param(
     [Parameter(Mandatory = $true)][string]$FilePath,
@@ -38,7 +36,6 @@ function Invoke-Utf8JsonProcess {
     throw "$FailureContext returned invalid UTF-8 JSON: $($_.Exception.Message)"
   }
 }
-
 function Get-ProcessIdentity {
   param([Parameter(Mandatory = $true)][int]$ProcessId)
   $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
@@ -60,7 +57,6 @@ function Get-ProcessIdentity {
     ownerSid = [string]$ownerSid.Sid
   }
 }
-
 if (-not ('OmniCredentialStatus.NativeMethods' -as [type])) {
   Add-Type -TypeDefinition @'
 namespace OmniCredentialStatus {
@@ -229,6 +225,7 @@ if ($actualUuid -cne ([string]$request.expectedVmUuidBios).ToLowerInvariant()) {
   throw 'interactive task VM BIOS UUID does not match the signed worker'
 }
 
+$taskDesktop = Get-OmniCurrentDesktopIdentity; if ([string]::IsNullOrWhiteSpace($taskDesktop)) { throw 'interactive task desktop identity is unavailable' }
 $common = [ordered]@{
   schemaVersion = 2
   executionId = [string]$request.executionId
@@ -240,7 +237,7 @@ $common = [ordered]@{
   user = $currentUser
   ownerSid = $windowsIdentity.User.Value
   sessionId = $activeConsoleSessionId
-  desktop = 'WinSta0\Default'
+  desktop = $taskDesktop
   taskProcess = $currentIdentity
   explorerProcess = $explorerIdentity
 }
@@ -324,28 +321,23 @@ if ($request.mode -eq 'endpoint-readiness') {
   exit 0
 }
 
-if ($request.mode -notin @('shard-cell', 'incident-plus-cell')) { throw 'interactive task mode is unsupported' }
-if ((Get-OmniSha256 -LiteralPath ([string]$request.nodeExecutable)) -cne [string]$request.nodeSha256) {
+if ($request.mode -notin @('shard-cell', 'incident-plus-cell', 'local-aec-probe')) { throw 'interactive task mode is unsupported' }; if ((Get-OmniSha256 -LiteralPath ([string]$request.nodeExecutable)) -cne [string]$request.nodeSha256) {
   throw 'interactive task Node executable hash mismatch'
-}
-if ((Get-OmniSha256 -LiteralPath ([string]$request.shardRunnerPath)) -cne [string]$request.shardRunnerSha256) {
+}; if ((Get-OmniSha256 -LiteralPath ([string]$request.shardRunnerPath)) -cne [string]$request.shardRunnerSha256) {
   throw 'interactive task shard runner hash mismatch'
 }
-$env:OMNI_SHARD_ZERO_PROVIDER_READINESS_PATH = [string]$request.readinessPath
-$env:OMNI_SHARD_INTERACTIVE_COMMAND_PATH = $resolvedRequestPath
-$env:OMNI_SHARD_INTERACTIVE_LAUNCH_AUTHORITY_PATH = [string]$request.launchPath
-$env:OMNI_SHARD_INTERACTIVE_PROCESS_AUTHORITY_PATH = [string]$request.processAuthorityPath
-$env:OMNI_SHARD_INTERACTIVE_TERMINAL_PATH = [string]$request.terminalPath
-$env:OMNI_SHARD_INTERACTIVE_TASK_TERMINAL_PATH = [string]$request.taskTerminalPath
-$env:OMNI_SHARD_INTERACTIVE_RELEASE_PATH = [string]$request.releasePath
-$env:OMNI_SHARD_INTERACTIVE_EXECUTION_RECEIPT_PATH = [string]$request.executionReceiptPath
-$arguments = @(
-  [string]$request.shardRunnerPath,
-  '--plan', [string]$request.planPath,
-  '--lease', [string]$request.leasePath,
-  '--worker-id', [string]$request.workerId,
-  '--vm-uuid-bios', [string]$request.expectedVmUuidBios
-)
+if ($request.mode -eq 'local-aec-probe') { $arguments = @(('"' + [string]$request.shardRunnerPath + '"'), '--execute-interactive-request', ('"' + $resolvedRequestPath + '"')) } else {
+  $env:OMNI_SHARD_ZERO_PROVIDER_READINESS_PATH = [string]$request.readinessPath
+  $env:OMNI_SHARD_INTERACTIVE_COMMAND_PATH = $resolvedRequestPath
+  $env:OMNI_SHARD_INTERACTIVE_LAUNCH_AUTHORITY_PATH = [string]$request.launchPath
+  $env:OMNI_SHARD_INTERACTIVE_PROCESS_AUTHORITY_PATH = [string]$request.processAuthorityPath
+  $env:OMNI_SHARD_INTERACTIVE_TERMINAL_PATH = [string]$request.terminalPath
+  $env:OMNI_SHARD_INTERACTIVE_TASK_TERMINAL_PATH = [string]$request.taskTerminalPath
+  $env:OMNI_SHARD_INTERACTIVE_RELEASE_PATH = [string]$request.releasePath
+  $env:OMNI_SHARD_INTERACTIVE_EXECUTION_RECEIPT_PATH = [string]$request.executionReceiptPath
+  $arguments = @([string]$request.shardRunnerPath, '--plan', [string]$request.planPath, '--lease', [string]$request.leasePath,
+    '--worker-id', [string]$request.workerId, '--vm-uuid-bios', [string]$request.expectedVmUuidBios)
+}
 if ($request.mode -eq 'incident-plus-cell') {
   $arguments += @(
     '--execution-root', [string]$request.shardRoot,
@@ -355,7 +347,7 @@ if ($request.mode -eq 'incident-plus-cell') {
   if ($request.PSObject.Properties['driverReadinessPath'] -and -not [string]::IsNullOrWhiteSpace([string]$request.driverReadinessPath)) {
     $arguments += @('--driver-readiness-receipt', [string]$request.driverReadinessPath)
   }
-} else {
+} elseif ($request.mode -eq 'shard-cell') {
   $arguments += @('--shard-root', [string]$request.shardRoot)
 }
 $node = Start-Process -FilePath ([string]$request.nodeExecutable) `
@@ -365,11 +357,17 @@ $node = Start-Process -FilePath ([string]$request.nodeExecutable) `
   -RedirectStandardError ([string]$request.stderrPath) `
   -WindowStyle Hidden `
   -PassThru
+$nodeHandle = $node.Handle
 $nodeIdentity = Get-ProcessIdentity $node.Id
-if ($nodeIdentity.sessionId -ne $activeConsoleSessionId -or $nodeIdentity.ownerSid -cne $windowsIdentity.User.Value) {
-  Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue
-  throw 'interactive shard Node did not inherit the console session identity'
+if ($nodeIdentity.sessionId -ne $activeConsoleSessionId -or $nodeIdentity.ownerSid -cne $windowsIdentity.User.Value) { Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue; throw 'interactive shard Node did not inherit the console session identity' }
+$desktopReceipt = $null
+if ($request.mode -eq 'local-aec-probe') {
+  $limit=[DateTime]::UtcNow.AddSeconds(15); while(-not (Test-Path -LiteralPath ([string]$request.nodeDesktopAuthorityPath) -PathType Leaf) -and [DateTime]::UtcNow -lt $limit -and -not $node.HasExited){Start-Sleep -Milliseconds 50}
+  if(-not (Test-Path -LiteralPath ([string]$request.nodeDesktopAuthorityPath) -PathType Leaf)){Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue; throw 'target Node desktop identity receipt is missing'}
+  $desktopReceipt=Get-Content -LiteralPath ([string]$request.nodeDesktopAuthorityPath) -Raw -Encoding UTF8 | ConvertFrom-Json
+  $parent=$desktopReceipt.parentProcess; if($desktopReceipt.schemaVersion -ne 1 -or $desktopReceipt.artifactKind -cne 'watch-mode-process-desktop-identity' -or $desktopReceipt.executionId -cne $common.executionId -or $desktopReceipt.planDigest -cne $request.planDigest -or $desktopReceipt.leaseId -cne $request.leaseId -or $desktopReceipt.leaseDigest -cne $request.leaseDigest -or $desktopReceipt.cellId -cne $request.cellId -or $desktopReceipt.workerId -cne $common.workerId -or $desktopReceipt.vmIdentityDigest -cne $common.vmIdentityDigest -or $desktopReceipt.reporterParentPid -ne $node.Id -or $parent.pid -ne $nodeIdentity.pid -or $parent.startedAt -cne $nodeIdentity.startedAt -or ([IO.Path]::GetFullPath([string]$parent.imagePath)) -cne ([IO.Path]::GetFullPath([string]$nodeIdentity.imagePath)) -or $parent.imageSha256 -cne $nodeIdentity.imageSha256 -or $desktopReceipt.sessionId -ne $activeConsoleSessionId -or $desktopReceipt.ownerSid -cne $windowsIdentity.User.Value -or $desktopReceipt.desktop -cne $common.desktop){Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue; throw 'target Node desktop identity receipt does not match interactive authority'}
 }
+$nodeDesktop = if($desktopReceipt){[string]$desktopReceipt.desktop}else{[string]$common.desktop}
 $launch = [ordered]@{
   schemaVersion = 2
   artifactKind = 'watch-mode-interactive-shard-launch-authority'
@@ -387,6 +385,9 @@ $launch = [ordered]@{
   ownerSid = $common.ownerSid
   sessionId = $common.sessionId
   desktop = $common.desktop
+  nodeDesktop = $nodeDesktop
+  nodeDesktopAuthorityPath = if($desktopReceipt){[string]$request.nodeDesktopAuthorityPath}else{$null}
+  nodeDesktopAuthoritySha256 = if($desktopReceipt){Get-OmniSha256 -LiteralPath ([string]$request.nodeDesktopAuthorityPath)}else{$null}
   taskName = $common.taskName
   taskProcess = $common.taskProcess
   explorerProcess = $common.explorerProcess
@@ -426,7 +427,9 @@ $traceArguments = @(
     '-LeaseDigest', [string]$request.leaseDigest,
     '-CellId', ('"' + [string]$request.cellId + '"'),
     '-WorkerId', ('"' + [string]$request.workerId + '"'),
-    '-VmIdentityDigest', [string]$request.vmIdentityDigest
+    '-VmIdentityDigest', [string]$request.vmIdentityDigest,
+    '-ExecutionReceiptPath', ('"' + [string]$request.executionReceiptPath + '"'),
+    '-Mode', ('"' + [string]$request.mode + '"')
   )
 if ([bool]$request.requireRecorder) { $traceArguments += '-RequireRecorder' }
 $trace = Start-Process -FilePath 'powershell.exe' `
@@ -434,10 +437,12 @@ $trace = Start-Process -FilePath 'powershell.exe' `
   -WindowStyle Hidden `
   -PassThru
 $node.WaitForExit()
+if ($null -eq $node.ExitCode) { throw 'interactive shard Node exit code is unavailable' }
+$nodeExitCode = [int]$node.ExitCode
 $trace.WaitForExit(30000) | Out-Null
 if (-not $trace.HasExited) { Stop-Process -Id $trace.Id -Force -ErrorAction SilentlyContinue }
 $executionReceiptObserved = $false
-if ($node.ExitCode -eq 0 -and (Test-Path -LiteralPath ([string]$request.executionReceiptPath) -PathType Leaf)) {
+if ($nodeExitCode -eq 0 -and (Test-Path -LiteralPath ([string]$request.executionReceiptPath) -PathType Leaf)) {
   $executionReceiptObserved = $true
 }
 $terminal = [ordered]@{
@@ -457,11 +462,11 @@ $terminal = [ordered]@{
   ownerSid = $common.ownerSid
   nodePid = $node.Id
   nodeStartedAt = $nodeIdentity.startedAt
-  exitCode = $node.ExitCode
+  exitCode = $nodeExitCode
   processAuthorityExitCode = if ($trace.HasExited) { $trace.ExitCode } else { -1 }
   executionReceiptPath = ('interactive/' + [string]$request.leaseId + '/execution.json')
   executionReceiptObserved = $executionReceiptObserved
   completedAt = [DateTime]::UtcNow.ToString('o')
 }
 Write-OmniImmutableJson -LiteralPath ([string]$request.terminalPath) -Value $terminal
-exit $node.ExitCode
+exit $nodeExitCode

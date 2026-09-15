@@ -5,6 +5,7 @@ import { providerTemplates } from '../../mocks/provider-templates';
 import type { ProviderModelRuntime } from '../../schema/provider-runtime';
 import { useAppStore } from '../../stores/app-store';
 import { customProviderTemplateToDraft } from '../../utils/custom-provider-templates';
+import { customProviderProtocolProfileOptions } from '../../provider-manifest/custom-profile-options';
 import type { ProviderTemplateCatalogEntry } from '../../utils/provider-template-catalog';
 import { registerDomHarness } from '../../test-utils/component-test-harness';
 import { providersPageHelpers } from './providersPageHelpers';
@@ -21,9 +22,23 @@ describe('provider editor controllers', () => {
 
   it('updates custom templates and covers every template-application branch', async () => {
     const activeProvider = structuredClone(appConfigDraftMock.providers[0]!);
-    const customTemplate = { ...structuredClone(providerTemplates[0]!), id: 'custom-template', source: 'custom' as const };
+    const customTemplate = {
+      ...structuredClone(providerTemplates[0]!),
+      id: 'template-custom-fixture',
+      source: 'custom' as const,
+      manifestProviderId: undefined,
+      defaultDraft: {
+        ...structuredClone(providerTemplates[0]!.defaultDraft),
+        manifestProviderId: undefined,
+      },
+    };
     const activeDraft = customProviderTemplateToDraft(customTemplate);
-    const providerDraft = { ...providersPageHelpers.providerDraftToCustomProviderTemplateDraft(activeProvider), displayName: 'Changed' };
+    const providerDraft = {
+      ...providersPageHelpers.providerDraftToCustomProviderTemplateDraft(activeProvider),
+      displayName: 'Changed',
+      kind: 'openai-compatible' as const,
+      protocolProfileKey: customProviderProtocolProfileOptions('openai-compatible')[0]!.key,
+    };
     const entries: ProviderTemplateCatalogEntry[] = providerTemplates.slice(0, 2).map((template, order) => ({ template, enabled: true, hidden: false, order }));
     let api!: ReturnType<typeof useProviderEditorController>;
     const setDragging = vi.fn(); const setPreferences = vi.fn(); const setCustomTemplates = vi.fn();

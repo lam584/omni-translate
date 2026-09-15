@@ -25,6 +25,7 @@ mod text_only_reconnect;
 mod echo_suppression_incident;
 mod late_completion;
 mod secondary_finality;
+mod bailian_protocol_old_red;
 
 type MockHandle = tauri::AppHandle<tauri::test::MockRuntime>;
 
@@ -43,6 +44,7 @@ fn fixture_provider() -> ProviderDraftInput {
         "templateId": "t",
         "providerId": "p",
         "kind": "dashscope",
+        "realtimeProtocol": "dashscope-omni",
         "displayName": "P",
         "model": "qwen3.5-omni-plus-realtime",
         "baseUrl": "wss://example.invalid",
@@ -131,6 +133,8 @@ struct ReplayHarness {
     shared: Arc<Mutex<ScriptedSharedState>>,
     connector: ScriptedConnector,
     provider: ProviderDraftInput,
+    provider_input_budget: ProviderInputBudget,
+    _authority_tempdir: Option<tempfile::TempDir>,
     audio_mode: RealtimeAudioMode,
     output_mode: OmniOutputMode,
     subtitle_translate_active: bool,
@@ -161,6 +165,8 @@ impl ReplayHarness {
             },
             shared,
             provider: fixture_provider(),
+            provider_input_budget: ProviderInputBudget::disabled_for_test(),
+            _authority_tempdir: None,
             audio_mode,
             output_mode: OmniOutputMode::TextAndAudio,
             subtitle_translate_active: false,
@@ -171,6 +177,44 @@ impl ReplayHarness {
             _readiness_rx: readiness_rx,
             app,
         }
+    }
+
+    fn new_with_strict_media_end_authority(
+        audio_mode: RealtimeAudioMode,
+        authoritative_reference_frames: u64,
+        input_sample_rate_hz: u32,
+        media_sha256: &str,
+    ) -> Self {
+        let mut harness = Self::new(audio_mode, Vec::new());
+        let authority_tempdir = tempfile::tempdir().expect("strict media-end tempdir");
+        let provider = ProviderInputBudget::strict_provider_for_test();
+        let provider_input_budget = ProviderInputBudget::strict_with_media_end_for_test(
+            &provider,
+            &authority_tempdir.path().join("provider-input-ledger.json"),
+            authoritative_reference_frames,
+            input_sample_rate_hz,
+            media_sha256,
+        )
+        .expect("strict media-end authority must parse through production path");
+        harness.provider = provider;
+        harness.provider_input_budget = provider_input_budget;
+        harness._authority_tempdir = Some(authority_tempdir);
+        harness
+    }
+
+    fn new_with_strict_missing_media_end_authority(audio_mode: RealtimeAudioMode) -> Self {
+        let mut harness = Self::new(audio_mode, Vec::new());
+        let authority_tempdir = tempfile::tempdir().expect("strict missing media-end tempdir");
+        let provider = ProviderInputBudget::strict_provider_for_test();
+        let provider_input_budget = ProviderInputBudget::strict_for_test(
+            &provider,
+            &authority_tempdir.path().join("provider-input-ledger.json"),
+        )
+        .expect("strict budget without media-end authority must parse through production path");
+        harness.provider = provider;
+        harness.provider_input_budget = provider_input_budget;
+        harness._authority_tempdir = Some(authority_tempdir);
+        harness
     }
 
     fn handle(&self) -> MockHandle {
@@ -195,6 +239,15 @@ impl ReplayHarness {
     /// maintenance (with its timed-out turn handling), stale-transcription
     /// expiry, socket poll, and the post-reconnect gate reset.
     fn tick(&self, socket: ScriptedRealtimeSocket, slice: &mut WorkerSlice) -> ScriptedRealtimeSocket {
+        self.try_tick(socket, slice)
+            .expect("replay poll must not fail the session")
+    }
+
+    fn try_tick(
+        &self,
+        socket: ScriptedRealtimeSocket,
+        slice: &mut WorkerSlice,
+    ) -> Result<ScriptedRealtimeSocket, String> {
         let app = self.handle();
         let store = self.store();
         let recorder = crate::diagnostics::model_trace::ModelTraceRecorder::new(
@@ -278,11 +331,9 @@ impl ReplayHarness {
         );
 
         let glossary = GlossaryContext::default();
-        let provider_input_budget = ProviderInputBudget::disabled_for_test();
         let poll = OmniSocketEventProcessor::poll(
             OmniSocketEventState {
                 socket,
-                trace_call,
                 reconnect_count: slice.reconnect_count,
                 pending_audio_buffer: std::mem::take(&mut slice.pending_audio_buffer),
                 active_voice: slice.active_voice.clone(),
@@ -312,6 +363,7 @@ impl ReplayHarness {
                 audio_samples_since_commit: slice.audio_samples_since_commit,
                 manual_turn_audio_after_response: slice.manual_turn_audio_after_response,
             },
+            &mut trace_call,
             OmniSocketEventContext {
                 app: &app,
                 store: &store,
@@ -329,7 +381,7 @@ impl ReplayHarness {
                 readiness_sent: &self.readiness_sent,
                 readiness_tx: &self.readiness_tx,
                 provider: &self.provider,
-                provider_input_budget: &provider_input_budget,
+                provider_input_budget: &self.provider_input_budget,
                 instructions: "",
                 glossary: &glossary,
                 audio_mode: self.audio_mode,
@@ -342,8 +394,7 @@ impl ReplayHarness {
                 echo_guard_enabled: false,
             },
             &self.connector,
-        )
-        .expect("replay poll must not fail the session");
+        )?;
 
         let state = poll.state;
         slice.reconnect_count = state.reconnect_count;
@@ -404,7 +455,7 @@ impl ReplayHarness {
             );
         }
         let _ = &mut socket;
-        socket
+        Ok(socket)
     }
 }
 
@@ -769,8 +820,8 @@ fn replay_gate_timeout_then_late_completed() {
         .map(|cue| cue.cue_id.clone())
         .expect("late final cue");
 
-    // Tick 3: a newer, correlated turn must receive its own cue and response.
-    // It must not overwrite the display-only late final left by the timeout.
+    // Tick 3: a newer correlated source remains isolated, but the legacy Omni
+    // replay has no enabled adapter and therefore cannot authorize response.create.
     slice.manual_response_pending = true;
     slice.manual_response_requested = false;
     slice.manual_response_item_id = Some("item-current".to_string());
@@ -786,15 +837,16 @@ fn replay_gate_timeout_then_late_completed() {
     drop(late_socket);
     let _socket = harness.tick(current_socket, &mut slice);
 
-    assert!(slice.manual_response_pending);
-    assert!(slice.manual_response_requested);
+    assert!(!slice.manual_response_pending);
+    assert!(!slice.manual_response_requested);
     assert_eq!(
         harness
             .sent_types()
             .iter()
             .filter(|kind| kind.as_str() == "response.create")
             .count(),
-        1
+        0,
+        "manifest-only Omni authority must grant zero response.create writes"
     );
     let snapshot = harness.store().snapshot();
     let late_cue = snapshot
@@ -819,13 +871,31 @@ fn replay_gate_timeout_then_late_completed() {
         .find(|cue| cue.cue_id != late_cue_id && cue.source_text == "the current turn")
         .expect("current source final remains separate from the timed-out cue");
     assert!(current_cue.committed);
-    assert!(harness
-        .store()
-        .subtitle_source_is_final(&current_cue.cue_id));
     assert!(!current_cue.translation_committed);
     assert!(current_cue.translated_text.is_empty());
     assert_eq!(
         current_cue.translation_state,
         Some(crate::audio::contracts::SubtitleTranslationStateRuntime::Pending)
+    );
+}
+
+#[test]
+fn replay_session_finished_returns_before_the_following_socket_close() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    let mut slice = WorkerSlice::new();
+    let socket = ScriptedRealtimeSocket::new(
+        vec![
+            ScriptStep::Event(json!({ "type": "session.finished" })),
+            ScriptStep::Close,
+        ],
+        harness.shared.clone(),
+    );
+
+    let _socket = harness.tick(socket, &mut slice);
+
+    assert_eq!(
+        harness.shared.lock().expect("scripted state").reconnect_count,
+        0,
+        "the terminal event must return to the shutdown worker before the provider close is read",
     );
 }

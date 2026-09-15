@@ -167,6 +167,13 @@ async function selectValue(element: HTMLSelectElement, value: string) {
   });
 }
 
+async function selectFirstCustomProviderProfile(container: HTMLElement) {
+  const select = container.querySelector<HTMLSelectElement>('.provider-modal select');
+  const profileKey = select?.options[1]?.value;
+  expect(profileKey?.length).toBeGreaterThan(0);
+  await selectValue(select!, profileKey!);
+}
+
 async function inputTextarea(element: HTMLTextAreaElement, value: string) {
   const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
 
@@ -472,7 +479,9 @@ describe('ProvidersPage', () => {
 
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'OpenRouter Custom');
-    await inputText(modalInput(container, 1), 'https://openrouter.ai/api/v1');
+    await inputText(modalInput(container, 1), 'custom-model');
+    await inputText(modalInput(container, 2), 'https://openrouter.ai/api/v1');
+    await selectFirstCustomProviderProfile(container);
     await click(buttonByText(container, '创建平台'));
 
     const created = useAppStore.getState().configDraft.providers.find(
@@ -487,7 +496,9 @@ describe('ProvidersPage', () => {
 
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'Editable Custom');
-    await inputText(modalInput(container, 1), 'https://editable.example/v1');
+    await inputText(modalInput(container, 1), 'custom-model');
+    await inputText(modalInput(container, 2), 'https://editable.example/v1');
+    await selectFirstCustomProviderProfile(container);
     await click(buttonByText(container, '创建平台'));
 
     await click(buttonContainingText(container, '高级设置'));
@@ -504,12 +515,16 @@ describe('ProvidersPage', () => {
 
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'First Custom');
-    await inputText(modalInput(container, 1), 'https://first.example/v1');
+    await inputText(modalInput(container, 1), 'first-custom-model');
+    await inputText(modalInput(container, 2), 'https://first.example/v1');
+    await selectFirstCustomProviderProfile(container);
     await click(buttonByText(container, '创建平台'));
 
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'Second Custom');
-    await inputText(modalInput(container, 1), 'https://second.example/v1');
+    await inputText(modalInput(container, 1), 'second-custom-model');
+    await inputText(modalInput(container, 2), 'https://second.example/v1');
+    await selectFirstCustomProviderProfile(container);
     await click(buttonByText(container, '创建平台'));
 
     await click(buttonContainingText(container, '高级设置'));
@@ -646,7 +661,9 @@ describe('ProvidersPage', () => {
     await renderPage();
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'Temporary Custom');
-    await inputText(modalInput(container, 1), 'https://custom.example/v1');
+    await inputText(modalInput(container, 1), 'custom-model');
+    await inputText(modalInput(container, 2), 'https://custom.example/v1');
+    await selectFirstCustomProviderProfile(container);
     await click(buttonByText(container, '创建平台'));
 
     const customTemplateId = useAppStore.getState().configDraft.activeProviderTemplateId;
@@ -659,11 +676,34 @@ describe('ProvidersPage', () => {
     );
   });
 
+  it('keeps an active custom provider when deleting it cannot be persisted', async () => {
+    await renderPage();
+    await click(addPlatformButton(container));
+    await inputText(modalInput(container, 0), 'Undeletable Custom');
+    await inputText(modalInput(container, 1), 'custom-model');
+    await inputText(modalInput(container, 2), 'https://custom.example/v1');
+    await selectFirstCustomProviderProfile(container);
+    await click(buttonByText(container, '创建平台'));
+    const customTemplateId = useAppStore.getState().configDraft.activeProviderTemplateId;
+
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('storage denied');
+    });
+    await click(deleteActiveProviderButton(container));
+    expect(useAppStore.getState().configDraft.activeProviderTemplateId).toBe(customTemplateId);
+    expect(useAppStore.getState().configDraft.providers.some(
+      (provider) => provider.templateId === customTemplateId,
+    )).toBe(true);
+    setItem.mockRestore();
+  });
+
   it('keeps the only visible custom provider when every fallback template is hidden', async () => {
     await renderPage();
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'Only Visible Custom');
-    await inputText(modalInput(container, 1), 'https://only-visible.example/v1');
+    await inputText(modalInput(container, 1), 'custom-model');
+    await inputText(modalInput(container, 2), 'https://only-visible.example/v1');
+    await selectFirstCustomProviderProfile(container);
     await click(buttonByText(container, '创建平台'));
     const customTemplateId = useAppStore.getState().configDraft.activeProviderTemplateId;
     window.localStorage.setItem('omni.providerTemplateCatalogPrefs', JSON.stringify(providerTemplates.map((template, order) => ({
@@ -835,15 +875,13 @@ describe('ProvidersPage', () => {
     const dialog = container.querySelector<HTMLElement>('.provider-modal')!;
     const selects = dialog.querySelectorAll<HTMLSelectElement>('select');
 
-    await selectValue(selects[0], 'dashscope');
-    await selectValue(selects[1], 'http');
-    await inputText(dialog.querySelector<HTMLInputElement>('input[placeholder="Authorization"]')!, 'X-DashScope-Key');
-    await selectValue(selects[2], 'api-key');
+    await selectValue(selects[1], 'dashscope');
     await inputText(dialog.querySelector<HTMLInputElement>('input[placeholder="cn-beijing"]')!, 'cn-shanghai');
     await inputText(dialog.querySelector<HTMLInputElement>('input[type="number"]')!, '23000');
 
     expect(dialog.querySelector<HTMLInputElement>('input[placeholder="cn-beijing"]')?.value).toBe('cn-shanghai');
-    await selectValue(selects[0], 'openai-compatible');
+    await selectValue(selects[1], 'openai-compatible');
+    await selectFirstCustomProviderProfile(container);
     await click(Array.from(dialog.querySelectorAll<HTMLButtonElement>('.provider-modal-actions button')).at(0));
     expect(container.querySelector('.provider-modal')).toBeNull();
   });
@@ -1117,16 +1155,49 @@ describe('ProvidersPage', () => {
     expect(modelCatalogDialog(container)).toBeNull();
   });
 
-  it('validates missing custom provider name and base URL', async () => {
+  it('validates every required custom provider authority field before persistence', async () => {
     await renderPage();
     await click(addPlatformButton(container));
     await click(buttonByText(container, '创建平台'));
     expect(container.textContent).toContain('平台名称不能为空');
 
     await inputText(modalInput(container, 0), 'Incomplete Provider');
-    await inputText(modalInput(container, 1), '');
+    await inputText(modalInput(container, 2), '');
     await click(buttonByText(container, '创建平台'));
     expect(container.textContent).toContain('接口地址不能为空');
+
+    await inputText(modalInput(container, 2), 'https://custom.example/v1');
+    await click(buttonByText(container, '创建平台'));
+    expect(container.textContent).toContain('必须填写模型 ID');
+
+    await inputText(modalInput(container, 1), 'custom-model');
+    const profileSelect = container.querySelector<HTMLSelectElement>('.provider-modal select')!;
+    await selectValue(profileSelect, '');
+    await click(buttonByText(container, '创建平台'));
+    expect(container.textContent).toContain('必须显式选择版本化 Protocol Profile');
+  });
+
+  it('surfaces corrupt custom-provider storage without discarding the original bytes', async () => {
+    window.localStorage.setItem('omni.customProviderTemplates', '{broken-json');
+    await renderPage();
+    expect(container.textContent).toContain('自定义提供商数据无法读取');
+    expect(window.localStorage.getItem('omni.customProviderTemplates')).toBe('{broken-json');
+  });
+
+  it('keeps a complete custom provider draft open when local persistence fails', async () => {
+    await renderPage();
+    await click(addPlatformButton(container));
+    await inputText(modalInput(container, 0), 'Persistence Failure');
+    await inputText(modalInput(container, 1), 'custom-model');
+    await inputText(modalInput(container, 2), 'https://custom.example/v1');
+    await selectFirstCustomProviderProfile(container);
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('storage denied');
+    });
+    await click(buttonByText(container, '创建平台'));
+    expect(container.querySelector('.provider-modal')).not.toBeNull();
+    expect(container.textContent).toContain('自定义提供商保存失败');
+    setItem.mockRestore();
   });
 
   it('edits DashScope region, zero-value fallbacks and closes advanced settings through the backdrop', async () => {
@@ -1560,7 +1631,7 @@ describe('ProvidersPage', () => {
 
     const registryEntry = useAppStore.getState().configDraft.providers[0].localModelCapabilityRegistry.find((item) => item.modelId === 'interaction-model');
     expect(registryEntry?.realtimeAudioMode).toBe('gemini_auto_activity');
-    expect(registryEntry?.interactionCapabilities ?? []).not.toContain('auto_vad');
+    expect(registryEntry?.interactionCapabilities).toEqual([]);
 
     await click(dialog.querySelectorAll<HTMLButtonElement>('.provider-model-toolbar .provider-header-icon')[0]);
     const helpDialog = Array.from(container.querySelectorAll<HTMLElement>('.provider-advanced-modal')).find((item) =>

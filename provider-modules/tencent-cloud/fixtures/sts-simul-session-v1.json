@@ -1,0 +1,30 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "tencent-sts-simul-session-v1",
+  "providerId": "tencent-cloud",
+  "protocolProfileId": "tencent-cloud.sts.ws-v1.simul",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["sts-websocket"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic mode=simul lifecycle from official examples."
+  },
+  "scenario": "Successful STS simultaneous translation session through ProcessEof",
+  "data": {
+    "audioContract": { "encoding": "pcm_s16le", "sampleRateHz": 16000, "bitDepth": 16, "channels": 1 },
+    "connectParameters": { "mode": "simul", "lang": "zh", "dstLang": "en", "voice": "fixture-voice-type", "inputFormat": "pcm", "inputSampleRate": 16000, "outputFormat": "pcm", "outputSampleRate": 16000 },
+    "events": [
+      { "direction": "server", "frameType": "text", "json": { "NotificationType": "Handshake", "TaskId": "fixture-task", "HandshakeResult": { "Code": 0, "Message": "success", "Format": "pcm", "SampleRate": 16000, "Channels": 1, "BitDepth": 16, "InputFormat": "pcm", "InputSampleRate": 16000 } } },
+      { "direction": "client", "frameType": "binary", "payloadOmitted": true, "encoding": "pcm-s16le", "durationMs": 20 },
+      { "direction": "server", "frameType": "text", "json": { "NotificationType": "AsrResult", "TaskId": "fixture-task", "AsrResult": { "Text": "你好", "SteadyState": false, "SentenceId": 1 } }, "semantics": "replaceable snapshot" },
+      { "direction": "server", "frameType": "text", "json": { "NotificationType": "AsrResult", "TaskId": "fixture-task", "AsrResult": { "Text": "你好。", "SteadyState": true, "SentenceId": 1, "StartPtsTime": 0.2, "EndPtsTime": 0.8 } }, "semantics": "stable snapshot" },
+      { "direction": "server", "frameType": "text", "json": { "NotificationType": "LLMResult", "TaskId": "fixture-task", "LLMResult": { "Text": "Hello.", "Finished": false, "SentenceId": 1 } }, "semantics": "append delta" },
+      { "direction": "server", "frameType": "binary", "payloadBase64": "AAECAw==", "semantics": "illustrative sanitized TTS bytes" },
+      { "direction": "client", "frameType": "text", "json": { "Command": "Finish" } },
+      { "direction": "server", "type": "ProcessEof", "terminal": true, "frameType": "text", "json": { "NotificationType": "ProcessEof", "TaskId": "fixture-task", "ProcessEofInfo": { "Code": 0, "Message": "finish" } }, "semantics": "session terminal" }
+    ]
+  }
+}

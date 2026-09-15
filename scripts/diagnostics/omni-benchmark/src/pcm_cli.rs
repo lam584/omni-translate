@@ -1,6 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{collections::HashMap, io::Read, path::{Path, PathBuf}};
 
-use omni_benchmark_core::pcm::{analyze_canonical_waveform, analyze_pcm, analyze_pcm_fingerprint, analyze_translated_loopback, compare_pcm, compare_signed_pcm};
+use omni_benchmark_core::pcm::{analyze_canonical_waveform, analyze_pcm, analyze_pcm_fingerprint, analyze_translated_loopback, analyze_translated_loopback_in_radius, compare_pcm, compare_signed_pcm, TranslatedLoopbackMetrics};
+use serde::{Deserialize, Serialize};
 
 const PROFILE: &str = "watch-physical-output/v1";
 const FINGERPRINT_PROFILE: &str = "fingerprint-components-v1";
@@ -14,6 +15,38 @@ enum AudioCommand {
         sample_rate_hz: Option<u32>, reference_sample_rate_hz: Option<u32>, reference_channels: Option<usize>,
         reference_offset_samples: usize, reference_sample_count: Option<usize>, expected_start_samples: Option<i64>, profile: String,
     },
+    TranslatedLoopbackBatch { recorded: PathBuf, format: String, sample_rate_hz: Option<u32> },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TranslatedLoopbackBatchRequest {
+    request_id: String,
+    reference_path: PathBuf,
+    reference_sample_rate_hz: u32,
+    reference_channels: usize,
+    #[serde(default)]
+    reference_offset_samples: usize,
+    reference_sample_count: Option<usize>,
+    expected_start_samples: i64,
+    search_radius_samples: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TranslatedLoopbackBatchResult {
+    request_id: String,
+    metrics: TranslatedLoopbackMetrics,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TranslatedLoopbackBatchOutput {
+    schema_version: &'static str,
+    profile: &'static str,
+    operation: &'static str,
+    input_format: &'static str,
+    results: Vec<TranslatedLoopbackBatchResult>,
 }
 
 fn next_value(args: &mut impl Iterator<Item = String>, name: &str) -> Result<String, String> {
@@ -87,6 +120,11 @@ fn parse(arguments: &[String]) -> Result<AudioCommand, String> {
             sample_rate_hz,
             profile,
         }),
+        "translated-loopback-batch" => Ok(AudioCommand::TranslatedLoopbackBatch {
+            recorded: recorded.ok_or_else(|| "audio translated-loopback-batch requires --recorded".to_string())?,
+            format,
+            sample_rate_hz,
+        }),
         _ => Err(format!("unknown audio operation: {operation}")),
     }
 }
@@ -150,6 +188,48 @@ pub(crate) fn try_run(arguments: &[String]) -> Option<Result<(), String>> {
     if arguments.first().map(String::as_str) != Some("audio") { return None; }
     Some((|| {
         let command = parse(&arguments[1..])?;
+        if let AudioCommand::TranslatedLoopbackBatch { recorded, format, sample_rate_hz } = &command {
+            let (recording, recorded_rate, detected) = read_audio(recorded, format, *sample_rate_hz)?;
+            if recorded_rate != 16_000 { return Err("translated loopback recording must be 16 kHz".to_string()); }
+            let mut input = String::new();
+            std::io::stdin().read_to_string(&mut input)
+                .map_err(|error| format!("failed to read translated loopback batch stdin: {error}"))?;
+            let requests: Vec<TranslatedLoopbackBatchRequest> = serde_json::from_str(&input)
+                .map_err(|error| format!("invalid translated loopback batch JSON: {error}"))?;
+            if requests.is_empty() { return Err("translated loopback batch requires at least one request".to_string()); }
+            let mut references = HashMap::<PathBuf, Vec<i16>>::new();
+            let mut results = Vec::with_capacity(requests.len());
+            for request in requests {
+                if !references.contains_key(&request.reference_path) {
+                    let bytes = std::fs::read(&request.reference_path)
+                        .map_err(|error| format!("failed to read audio '{}': {error}", request.reference_path.display()))?;
+                    references.insert(request.reference_path.clone(), read_pcm16le(&bytes));
+                }
+                let all_reference = references.get(&request.reference_path).expect("reference inserted above");
+                let end = request.reference_sample_count
+                    .map(|count| request.reference_offset_samples.saturating_add(count))
+                    .unwrap_or(all_reference.len());
+                let reference = all_reference.get(request.reference_offset_samples..end)
+                    .ok_or_else(|| format!("translated reference sample range is outside '{}'", request.reference_path.display()))?;
+                let metrics = analyze_translated_loopback_in_radius(
+                    reference,
+                    request.reference_channels,
+                    request.reference_sample_rate_hz,
+                    &recording,
+                    request.expected_start_samples,
+                    request.search_radius_samples.unwrap_or(24_000),
+                )?;
+                results.push(TranslatedLoopbackBatchResult { request_id: request.request_id, metrics });
+            }
+            println!("{}", serde_json::to_string(&TranslatedLoopbackBatchOutput {
+                schema_version: "omni-audio-analysis/v1",
+                profile: "translated-loopback-v1",
+                operation: "translated-loopback-batch",
+                input_format: detected,
+                results,
+            }).map_err(|error| format!("failed to serialize translated loopback batch: {error}"))?);
+            return Ok(());
+        }
         let (value, operation, input_format, profile) = match command {
             AudioCommand::Analyze { input, format, sample_rate_hz, profile, frequencies } => {
                 let (samples, rate, detected) = read_audio(&input, &format, sample_rate_hz)?;
@@ -196,6 +276,7 @@ pub(crate) fn try_run(arguments: &[String]) -> Option<Result<(), String>> {
                 (value, "compare", detected, profile)
                 }
             }
+            AudioCommand::TranslatedLoopbackBatch { .. } => unreachable!("batch handled above"),
         };
         let mut value = value.map_err(|error| format!("failed to serialize audio result: {error}"))?;
         let object = value
@@ -218,6 +299,7 @@ mod tests {
         assert!(parse(&["analyze".into()]).unwrap_err().contains("--input"));
         assert!(parse(&["compare".into()]).unwrap_err().contains("--reference"));
         assert!(parse(&["analyze".into(), "--input".into(), "a.pcm".into(), "--profile".into(), "old".into()]).is_err());
+        assert!(parse(&["translated-loopback-batch".into()]).unwrap_err().contains("--recorded"));
     }
 
     #[test]

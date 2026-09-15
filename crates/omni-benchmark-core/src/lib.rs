@@ -217,7 +217,11 @@ pub fn wait_session_ready(mut read: impl FnMut() -> SessionRead) -> Result<(), S
                 let event: Value = serde_json::from_str(&text)
                     .map_err(|error| format!("JSON error during session setup: {error}"))?;
                 match event["type"].as_str().unwrap_or("?") {
-                    "session.created" | "session.updated" => return Ok(()),
+                    // Both supported realtime families send session.created as
+                    // transport identity before applying the client's update.
+                    // Audio may cross the send boundary only after the echoed
+                    // session.updated acknowledgement.
+                    "session.updated" => return Ok(()),
                     "error" => return Err(format!("server error: {}", event["error"])),
                     _ => {}
                 }
@@ -342,12 +346,14 @@ mod tests {
     }
 
     #[test]
-    fn session_waiter_accepts_session_created_as_ready() {
-        let result = wait_session_ready(|| {
-            SessionRead::Text(r#"{"type":"session.created"}"#.to_string())
-        });
+    fn session_waiter_keeps_input_closed_after_session_created() {
+        let mut events = vec![
+            SessionRead::Closed,
+            SessionRead::Text(r#"{"type":"session.created"}"#.to_string()),
+        ];
+        let result = wait_session_ready(|| events.pop().unwrap());
 
-        assert_eq!(result, Ok(()));
+        assert_eq!(result, Err("server closed before session was ready".to_string()));
     }
 
     #[test]

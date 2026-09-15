@@ -186,6 +186,7 @@ pub(crate) enum TranslationEnqueueResult {
 }
 
 impl TranslationEnqueueResult {
+    #[cfg(test)]
     pub(crate) fn enqueued(self) -> bool {
         self == Self::Enqueued
     }
@@ -260,6 +261,7 @@ impl TranslationScheduler {
         });
     }
 
+    #[cfg(test)]
     pub(crate) fn enqueue(&mut self, job: TranslationJob) -> bool {
         self.enqueue_with_result(job).enqueued()
     }

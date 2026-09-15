@@ -1,0 +1,29 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "volc-seed-asr-concurrent-auth-v3",
+  "providerId": "volcengine-doubao",
+  "protocolProfileId": "volcengine-doubao.seed-asr-v3.async.asr2-concurrent",
+  "protocolProfileVersion": 1,
+  "kind": "probe",
+  "provenance": {
+    "sourceDocumentationIds": ["seed-asr-bidirectional"],
+    "capturedFromLive": false,
+    "sanitized": true
+  },
+  "scenario": "ASR 2.0 concurrent billing is selected by an explicit resource header",
+  "data": {
+    "url": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
+    "requiredHeaders": { "X-Api-Key": "fixture-key-redacted", "X-Api-Resource-Id": "volc.seedasr.sauc.concurrent", "X-Api-Request-Id": "00000000-0000-4000-8000-000000000002", "X-Api-Sequence": "-1" },
+    "authContract": { "profileId": "volc-seed-asr-asr2-concurrent-headers", "parameters": [
+      { "location": "header", "name": "X-Api-Key", "value": "fixture-key-redacted" }, { "location": "header", "name": "X-Api-Resource-Id", "value": "volc.seedasr.sauc.concurrent" },
+      { "location": "header", "name": "X-Api-Request-Id", "value": "00000000-0000-4000-8000-000000000002" }, { "location": "header", "name": "X-Api-Sequence", "value": "-1" }
+    ] },
+    "audioContract": { "encoding": "pcm_s16le", "sampleRateHz": 16000, "bitDepth": 16, "channels": 1 },
+    "audio": { "payloadOmitted": true, "reason": "sanitized-binary-fixture" },
+    "clientEvents": [{ "type": "full-client-request" }, { "type": "audio-only" }, { "type": "last-audio" }],
+    "serverEvents": [{ "type": "full-server-response" }, { "type": "last-package", "terminal": true }],
+    "requestModelName": "bigmodel",
+    "selectionRule": "profile-and-resource-header-not-model-name"
+  }
+}

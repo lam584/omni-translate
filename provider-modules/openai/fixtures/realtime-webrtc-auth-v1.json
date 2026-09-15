@@ -1,0 +1,50 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "openai.fixture.realtime-webrtc-auth.v1",
+  "providerId": "openai",
+  "protocolProfileId": "openai.realtime.conversation.webrtc.ga",
+  "protocolProfileVersion": 1,
+  "kind": "probe",
+  "provenance": {
+    "sourceDocumentationIds": ["openai.docs.realtime-webrtc"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived ephemeral credential and SDP call sequence."
+  },
+  "scenario": "Exchange a server API key for a short-lived browser credential before WebRTC setup",
+  "data": {
+  "endpointStatus": "verified",
+  "networkAuthorized": false,
+  "authorizationReason": "Fixture-only documentation replay; network access is not authorized.",
+  "authContract": {
+    "profileId": "openai.auth.realtime-ephemeral-bearer",
+    "parameters": [{ "location": "header", "name": "Authorization", "value": "Bearer <short-lived-client-secret>" }]
+  },
+  "audioContract": { "profileId": "openai.audio.realtime-pcm16-24k-mono", "encoding": "pcm16", "sampleRateHz": 24000, "channels": 1 },
+  "clientEvents": [{ "type": "session.update", "audio": "<base64-pcm16-24khz-mono>" }],
+  "serverEvents": [{ "type": "session.created" }, { "type": "response.done", "terminal": true, "status": "completed" }],
+  "ephemeralCredentialFlow": {
+    "bootstrap": {
+      "method": "POST",
+      "url": "https://api.openai.com/v1/realtime/client_secrets",
+      "headers": {
+        "Authorization": "Bearer <openai-api-key>"
+      }
+    },
+    "connect": {
+      "method": "POST",
+      "url": "https://api.openai.com/v1/realtime/calls",
+      "contentType": "application/sdp",
+      "headers": {
+        "Authorization": "Bearer <short-lived-client-secret>"
+      },
+      "body": "<sanitized-sdp-offer>"
+    }
+  },
+  "channels": {
+    "audio": "WebRTC media track",
+    "events": "JSON over data channel"
+  }
+  }
+}

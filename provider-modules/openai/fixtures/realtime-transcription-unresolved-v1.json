@@ -1,0 +1,73 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "openai.fixture.realtime-transcription-unresolved.v1",
+  "providerId": "openai",
+  "protocolProfileId": "openai.realtime.transcription.websocket.unresolved",
+  "protocolProfileVersion": 1,
+  "kind": "probe",
+  "provenance": {
+    "sourceDocumentationIds": ["openai.docs.realtime-transcription", "openai.docs.model-live-transcribe"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Records the unresolved connection endpoint and the documented session/event shape without authorizing a connection."
+  },
+  "scenario": "Fail closed when the realtime transcription WebSocket URL is not established by current official documentation",
+  "data": {
+  "endpointStatus": "unresolved",
+  "networkAuthorized": false,
+  "failClosedReason": "No current official WebSocket connection URL is established.",
+  "authContract": {
+    "profileId": "openai.auth.bearer-header",
+    "parameters": [{ "location": "header", "name": "Authorization", "value": "Bearer <openai-api-key-not-sent>" }]
+  },
+  "endpointEvidence": {
+    "modelPageEndpoint": "v1/realtime/transcription_sessions",
+    "websocketConnectionUrl": null,
+    "endpointStatus": "unresolved",
+    "forbiddenFallbackUrl": "wss://api.openai.com/v1/realtime?intent=transcription"
+  },
+  "authorizationDecision": {
+    "adapterStatus": "disabled",
+    "networkIoAllowed": false,
+    "reason": "The current official guide does not establish the WebSocket connection URL."
+  },
+  "documentedSessionShape": {
+    "type": "session.update",
+    "session": {
+      "type": "transcription",
+      "audio": {
+        "input": {
+          "format": {
+            "type": "audio/pcm",
+            "rate": 24000
+          },
+          "transcription": {
+            "model": "gpt-live-transcribe",
+            "delay": "low",
+            "languages": ["en", "zh"]
+          },
+          "turn_detection": null
+        }
+      }
+    }
+  },
+  "documentedEvents": [
+    {
+      "type": "input_audio_buffer.append",
+      "audio": "<base64-pcm16-24khz-mono>"
+    },
+    {
+      "type": "input_audio_buffer.commit"
+    },
+    {
+      "type": "conversation.item.input_audio_transcription.delta",
+      "delta": "partial "
+    },
+    {
+      "type": "conversation.item.input_audio_transcription.completed",
+      "transcript": "completed transcript"
+    }
+  ]
+  }
+}

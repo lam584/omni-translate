@@ -12,6 +12,7 @@
 #include "api/audio/audio_processing.h"
 #include "api/audio/audio_processing_statistics.h"
 #include "api/audio/builtin_audio_processing_builder.h"
+#include "api/audio/echo_detector_creator.h"
 #include "api/environment/environment_factory.h"
 
 namespace {
@@ -89,8 +90,9 @@ void* omni_webrtc_aec3_create() {
   config.echo_canceller.enabled = true;
   config.echo_canceller.export_linear_aec_output = false;
 
-  auto apm = webrtc::BuiltinAudioProcessingBuilder(config).Build(
-      webrtc::CreateEnvironment());
+  webrtc::BuiltinAudioProcessingBuilder builder(config);
+  builder.SetEchoDetector(webrtc::CreateEchoDetector());
+  auto apm = builder.Build(webrtc::CreateEnvironment());
   if (!apm || apm->Initialize() != webrtc::AudioProcessing::kNoError) {
     return nullptr;
   }

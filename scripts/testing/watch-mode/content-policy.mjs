@@ -55,7 +55,9 @@ export function derivePhysicalOutputContent(collected, { speechSegmentation } = 
     && mixedOutput.passed;
   return {
     ...normalized,
-    collectorPassed: collected.passed ?? null,
+    collectorPassed: Object.hasOwn(collected, 'collectorPassed')
+      ? collected.collectorPassed
+      : collected.passed ?? null,
     passed: acquisitionPassed && contentConsistency.passed,
     contentConsistency,
     verdictSource: 'watch-mode-content-verdict/v2',

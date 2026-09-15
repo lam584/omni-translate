@@ -21,6 +21,7 @@ export function collectReportInput(inputDir, mode = 'live', options = {}) {
     speechSegmentation: snapshots.speechSegmentation,
     deviceEvidence: snapshots.deviceEvidence,
     watchSessionReport: snapshots.watchSessionReport,
+    runtimeStatus: snapshots.runtimeStatus,
     playback: snapshots.playback,
     systemMetrics: snapshots.systemMetrics ?? null,
     failure: collection.primaryError,
@@ -35,6 +36,7 @@ export function collectReportInput(inputDir, mode = 'live', options = {}) {
       physicalOutputContentRaw: paths.physicalOutputContentRaw,
       diagnosticsBundle: snapshots.diagnosticsBundle ?? null,
       watchSessionReport: paths.watchSessionReport,
+      runtimeStatus: paths.runtimeStatus,
       systemMetrics: paths.systemMetrics,
     },
   };

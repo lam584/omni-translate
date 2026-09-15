@@ -1,5 +1,7 @@
 // Control-plane command handling and capability/state serialization.
 
+include!("control/shutdown.rs");
+
 fn handle_control(
     command: Value,
     state: &Arc<Mutex<BridgeState>>,
@@ -7,6 +9,26 @@ fn handle_control(
     playback_control_tx: &mpsc::Sender<PlaybackControlCommand>,
     translation_queue: &Arc<Mutex<TranslationPlaybackQueue>>,
     runtime_root: &Path,
+) -> Value {
+    handle_control_with_driver_evidence(
+        command,
+        state,
+        playback_tx,
+        playback_control_tx,
+        translation_queue,
+        runtime_root,
+        |root| (read_install_state(root), driver_control_device_available()),
+    )
+}
+
+fn handle_control_with_driver_evidence(
+    command: Value,
+    state: &Arc<Mutex<BridgeState>>,
+    playback_tx: &mpsc::SyncSender<PlaybackCommand>,
+    playback_control_tx: &mpsc::Sender<PlaybackControlCommand>,
+    translation_queue: &Arc<Mutex<TranslationPlaybackQueue>>,
+    runtime_root: &Path,
+    driver_evidence: impl FnOnce(&Path) -> (Option<DriverInstallState>, bool),
 ) -> Value {
     let request_id = command["requestId"].as_str().unwrap_or_default();
     match command["type"].as_str().unwrap_or_default() {
@@ -86,9 +108,7 @@ fn handle_control(
             );
             let (install_state, control_device_available) =
                 if requested_capture_mode == SourceCaptureMode::VirtualDriver {
-                    let install_state = read_install_state(runtime_root);
-                    let control_device_available = driver_control_device_available();
-                    (install_state, control_device_available)
+                    driver_evidence(runtime_root)
                 } else {
                     (None, false)
                 };
@@ -98,10 +118,13 @@ fn handle_control(
             let virtual_mic_capability =
                 virtual_mic_output_requested.then(probe_virtual_mic_output);
             let mut current = state.lock().unwrap();
+            current.init_epoch = current.init_epoch.wrapping_add(1);
+            let init_epoch = current.init_epoch;
             let capture_mode_changed = current.source_capture_mode != requested_capture_mode;
             let session_changed = current.session_id != requested_session_id;
             let virtual_mic_output_changed =
                 current.virtual_mic_output_requested != virtual_mic_output_requested;
+            let reset_physical_stream_ledger = capture_mode_changed || session_changed;
             if capture_mode_changed || session_changed || virtual_mic_output_changed {
                 if let Err(error) = stop_virtual_mic_session() {
                     service_log(
@@ -114,7 +137,7 @@ fn handle_control(
                     );
                 }
                 current.virtual_mic_session_active = false;
-                current.reset_translation_cue_ledgers();
+                current.virtual_mic_cue_ledger.reset();
             }
             current.virtual_mic_output_requested = virtual_mic_output_requested;
             current.process_loopback_supported = process_loopback_supported;
@@ -249,7 +272,27 @@ fn handle_control(
             } else {
                 None
             };
-            let mut current = if requested_capture_mode == SourceCaptureMode::ProcessExclusion {
+            let accepted_translation_work = !current
+                .physical_translation_stream_ledger
+                .active_cue_ids()
+                .is_empty()
+                || {
+                    let queue = translation_queue.lock().unwrap();
+                    queue.active.is_some() || !queue.pending.is_empty()
+                };
+            if accepted_translation_work {
+                request_playback_stop(
+                    &mut current,
+                    translation_queue,
+                    playback_control_tx,
+                    reconfiguration_reason.unwrap_or("bridge-init-owner-change"),
+                    None,
+                );
+            } else if reset_physical_stream_ledger {
+                current.physical_translation_stream_ledger.reset();
+            }
+            let physical_playback_required = current.translation_playback_enabled;
+            let mut current = if physical_playback_required {
                 current.physical_playback_status = "rebinding".to_string();
                 current.resolved_physical_playback_device_id.clear();
                 current.bridge_state = "starting".to_string();
@@ -257,7 +300,9 @@ fn handle_control(
                 let requested_endpoint = current.physical_playback_device_id.clone();
                 let next_owner_generation = unix_ms()
                     .max(previous_playback_owner_generation.saturating_add(1))
-                    .max(current.playback_owner_generation.saturating_add(1));
+                    .max(current.playback_owner_generation.saturating_add(1))
+                    .max(current.playback_owner_reservation.saturating_add(1));
+                current.playback_owner_reservation = next_owner_generation;
                 drop(current);
 
                 let (response_tx, response_rx) = mpsc::sync_channel(1);
@@ -273,6 +318,14 @@ fn handle_control(
                             .map_err(|error| format!("physical playback rebind timed out: {error}"))?
                     });
                 let mut current = state.lock().unwrap();
+                if current.init_epoch != init_epoch {
+                    return bridge_error(
+                        request_id,
+                        "bridge.timeout",
+                        "bridge.init completion was superseded by a newer init owner",
+                        &current,
+                    );
+                }
                 match rebind_result {
                     Ok(resolved_endpoint) => {
                         current.resolved_physical_playback_device_id = resolved_endpoint.clone();
@@ -313,7 +366,7 @@ fn handle_control(
             } else {
                 current.physical_playback_status = "uninitialized".to_string();
                 current.resolved_physical_playback_device_id.clear();
-                if let Some(reason) = reconfiguration_reason {
+                if let Some(reason) = reconfiguration_reason.filter(|_| !accepted_translation_work) {
                     request_playback_stop(
                         &mut current,
                         translation_queue,
@@ -329,7 +382,7 @@ fn handle_control(
                 &current.driver_health,
                 current.process_loopback_status,
             );
-            let playback_ready = requested_capture_mode != SourceCaptureMode::ProcessExclusion
+            let playback_ready = !physical_playback_required
                 || current.physical_playback_status == "ready";
             let route_ready = capture_ready && playback_ready;
             current.bridge_state = if route_ready { "running" } else { "degraded" }.to_string();
@@ -338,34 +391,13 @@ fn handle_control(
         }
         "bridge.state.query" => state_snapshot(request_id, &state.lock().unwrap()),
         "bridge.source.flush" => flush_source_capture(request_id, state, playback_tx),
-        "bridge.shutdown" => {
-            if let Err(error) = stop_virtual_mic_session() {
-                service_log(
-                    LogLevel::Warning,
-                    request_id,
-                    &format!(
-                        "event=virtual_mic_session_stop status=failed reason=bridge-shutdown errorCode={} detail={}",
-                        error.code, error.detail,
-                    ),
-                );
-            }
-            let mut current = state.lock().unwrap();
-            current.virtual_mic_session_active = false;
-            current.reset_translation_cue_ledgers();
-            current.session_id = None;
-            current.bridge_state = "stopped".to_string();
-            current.lifecycle_state = "stopped".to_string();
-            current.physical_playback_status = "uninitialized".to_string();
-            current.resolved_physical_playback_device_id.clear();
-            request_playback_stop(
-                &mut current,
-                translation_queue,
-                playback_control_tx,
-                "bridge-shutdown",
-                None,
-            );
-            state_snapshot(request_id, &current)
-        }
+        "bridge.shutdown" => handle_bridge_shutdown(
+            request_id,
+            state,
+            playback_control_tx,
+            translation_queue,
+            PROCESS_LOOPBACK_SHUTDOWN_TIMEOUT,
+        ),
         _ => bridge_error(
             request_id,
             "bridge.timeout",
@@ -386,8 +418,31 @@ fn flush_source_capture(
     current.source_pending_bytes = 0;
     current.source_pacer_queued_frames = 0;
     current.monitor_source_queued_frames = 0;
-    let _ = playback_tx.send(PlaybackCommand::FlushSource);
-    state_snapshot(request_id, &current)
+    drop(current);
+    let (applied_tx, applied_rx) = mpsc::sync_channel(1);
+    if let Err(error) = playback_tx.send(PlaybackCommand::FlushSource {
+        applied_tx: Some(applied_tx),
+    }) {
+        let mut current = state.lock().unwrap();
+        current.last_error_code = Some("bridge.source-flush-failed".to_string());
+        return bridge_error(
+            request_id,
+            "bridge.source-flush-failed",
+            &format!("source playback boundary consumer disconnected: {error}"),
+            &current,
+        );
+    }
+    if let Err(error) = applied_rx.recv() {
+        let mut current = state.lock().unwrap();
+        current.last_error_code = Some("bridge.source-flush-failed".to_string());
+        return bridge_error(
+            request_id,
+            "bridge.source-flush-failed",
+            &format!("source playback boundary was not applied: {error}"),
+            &current,
+        );
+    }
+    state_snapshot(request_id, &state.lock().unwrap())
 }
 
 fn read_install_state(runtime_root: &Path) -> Option<DriverInstallState> {
@@ -746,6 +801,11 @@ fn state_snapshot(request_id: &str, state: &BridgeState) -> Value {
         "processLoopbackMinimumWindowsBuild": PROCESS_LOOPBACK_MINIMUM_WINDOWS_BUILD,
         "excludedProcessId": state.excluded_process_id,
         "processLoopbackFailureDetail": state.process_loopback_failure_detail,
+        "processLoopbackShutdownRequestedGeneration": state.process_loopback_shutdown_requested_generation,
+        "processLoopbackTerminalGeneration": state.process_loopback_terminal_generation,
+        "processLoopbackTerminalStatus": state.process_loopback_terminal_status,
+        "processLoopbackTerminalTimestampMs": state.process_loopback_terminal_timestamp_ms,
+        "processLoopbackTerminalDetail": state.process_loopback_terminal_detail,
         "captureLifecycleState": state.source_worker_phase,
         "captureRestartCount": state.capture_restart_count,
         "capturePacketCount": state.capture_packet_count,

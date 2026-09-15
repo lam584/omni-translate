@@ -5,12 +5,14 @@ import path from 'node:path';
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
 import {
+  assertWatchModelProtocolIdentity,
+  deriveWatchModelProtocolIdentity,
+} from './watch-mode-model-protocol-authority.mjs';
+import {
   SHARD_AUTHORITY_SCHEMA_VERSION,
-  SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
   SHARD_EXECUTION_PLAN_FILE,
   SHARD_MATRIX_CELL_COUNT,
   SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
-  SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SECONDS,
   atomicWriteJson,
   canonicalJson,
   coordinatorKeyIdForPublicKey,
@@ -34,6 +36,12 @@ import {
   PROVIDER_PREFLIGHT_LEASE_RESERVATION_DIRECTORY,
   PROVIDER_PREFLIGHT_LEASE_RESERVATION_KIND as COORDINATOR_PREFLIGHT_LEASE_RESERVATION_KIND,
   PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_FILE,
+  PROVIDER_PREFLIGHT_INPUT_MODE,
+  PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET,
+  PROVIDER_PREFLIGHT_OPERATION,
+  PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE,
+  PROVIDER_PREFLIGHT_RESPONSE_MODE,
+  PROVIDER_PREFLIGHT_TERMINAL_EVENT,
   createProviderPreflightCompletion,
   createProviderPreflightGrant,
   createProviderPreflightLeaseReservations,
@@ -71,28 +79,17 @@ export const COORDINATOR_WAVE_COMPLETION_KIND = 'watch-mode-shard-wave-completio
 export const COORDINATOR_AGGREGATE_KIND = 'watch-mode-paid-shard-coordinator-aggregate';
 export const COORDINATOR_AGGREGATE_FILE = 'coordinator-aggregate.json';
 export const COORDINATOR_PREFLIGHT_AUTHORIZATION_DIRECTORY_SUFFIX = '.preflight-authorization';
+export const COORDINATOR_FIRST_WAVE_STAGGER_MS = 7_000;
 
-const DEFAULT_CELL_PLACEMENT = Object.freeze([
-  Object.freeze({ workerIndex: 0, waveIndex: 0 }),
-  Object.freeze({ workerIndex: 1, waveIndex: 0 }),
-  Object.freeze({ workerIndex: 2, waveIndex: 0 }),
-  Object.freeze({ workerIndex: 1, waveIndex: 1 }),
-  Object.freeze({ workerIndex: 0, waveIndex: 1 }),
-  Object.freeze({ workerIndex: 1, waveIndex: 2 }),
-  Object.freeze({ workerIndex: 0, waveIndex: 2 }),
-  Object.freeze({ workerIndex: 2, waveIndex: 1 }),
-]);
-
-const TWO_WORKER_CELL_PLACEMENT = Object.freeze([
-  Object.freeze({ capability: 'default-only', waveIndex: 0 }),
-  Object.freeze({ capability: 'usb', waveIndex: 0 }),
-  Object.freeze({ capability: 'default-only', waveIndex: 1 }),
-  Object.freeze({ capability: 'usb', waveIndex: 1 }),
-  Object.freeze({ capability: 'usb', waveIndex: 2 }),
-  Object.freeze({ capability: 'usb', waveIndex: 3 }),
-  Object.freeze({ capability: 'default-only', waveIndex: 2 }),
-  Object.freeze({ capability: 'default-only', waveIndex: 3 }),
-]);
+function abortableDelay(delayMs, signal) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, delayMs);
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new Error('staggered dispatch aborted'));
+    }, { once: true });
+  });
+}
 
 const safeCellId = (cellId) => String(cellId).replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '');
 const EXECUTION_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{7,127}$/i;
@@ -149,9 +146,42 @@ export function defaultSingleWorkerAssignments(workers) {
   });
 }
 
-// Transitional source-level alias only. It does not enable multi-worker
-// placement or evidence compatibility; all current plans require one worker.
+// Compatibility export for existing offline authority fixtures. Production
+// call sites use the single-worker name and accept no multi-worker placement.
 export const defaultThreeVmAssignments = defaultSingleWorkerAssignments;
+
+export function fixedThreeWorkerAssignments(workers) {
+  if (!Array.isArray(workers) || workers.length !== 3) {
+    throw new Error('fixed three-worker placement requires exactly three workers');
+  }
+  const byId = new Map(workers.map((worker) => [worker.workerId, worker]));
+  const placement = [
+    [0, 'vm171', 0], [1, 'vm169', 0], [2, 'vm169', 1], [3, 'vm167', 0],
+  ];
+  return placement.map(([cellIndex, workerId, waveIndex]) => {
+    const cell = LIVE_LLM_CELLS[cellIndex];
+    const worker = byId.get(workerId);
+    if (!cell || !worker) throw new Error(`fixed three-worker placement requires worker ${workerId} for c0${cellIndex + 1}`);
+    const profiles = worker.deviceProfileInstances?.filter((profile) => profile.deviceClass === cell.deviceClass) ?? [];
+    if (profiles.length !== 1) throw new Error(`worker ${workerId} must have exactly one ${cell.deviceClass} profile for ${cell.cellId}`);
+    return { cellId: cell.cellId, workerId, waveIndex, deviceProfileInstanceId: profiles[0].instanceId };
+  });
+}
+
+export function defaultTwoWorkerAssignments(workers) {
+  if (!Array.isArray(workers) || workers.length !== 2) {
+    throw new Error('two-worker placement requires exactly two workers');
+  }
+  const placement = [
+    [workers[0], 0], [workers[1], 0], [workers[1], 1], [workers[0], 1],
+  ];
+  return LIVE_LLM_CELLS.map((cell, index) => {
+    const [worker, waveIndex] = placement[index];
+    const profiles = worker.deviceProfileInstances?.filter((profile) => profile.deviceClass === cell.deviceClass) ?? [];
+    if (profiles.length !== 1) throw new Error(`worker ${worker.workerId} must have exactly one ${cell.deviceClass} profile for ${cell.cellId}`);
+    return { cellId: cell.cellId, workerId: worker.workerId, waveIndex, deviceProfileInstanceId: profiles[0].instanceId };
+  });
+}
 
 function assertPreflightOutcome(outcome) {
   if (
@@ -159,11 +189,21 @@ function assertPreflightOutcome(outcome) {
     || outcome.status !== 'completed'
     || !String(outcome.providerId ?? '').trim()
     || !String(outcome.evidenceDirectory ?? '').trim()
-    || outcome.operation !== 'text-translation-preflight'
-    || outcome.inputMode !== 'text-only'
+    || outcome.operation !== PROVIDER_PREFLIGHT_OPERATION
+    || outcome.inputMode !== PROVIDER_PREFLIGHT_INPUT_MODE
+    || outcome.providerInputMode !== PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE
+    || outcome.responseMode !== PROVIDER_PREFLIGHT_RESPONSE_MODE
+    || outcome.terminalEvent !== PROVIDER_PREFLIGHT_TERMINAL_EVENT
+    || canonicalJson(outcome.lifecycleBudget) !== canonicalJson(PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET)
+    || outcome.evidenceOutcome !== 'livetranslate-session-finished'
+    || outcome.firstServerEvent?.type !== 'session.created'
+    || !Number.isSafeInteger(outcome.firstServerEvent?.monotonicMs)
+    || outcome.firstServerEvent.monotonicMs < 0
+    || outcome.firstServerEvent.monotonicMs
+      > PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET.firstServerEventLatencyMs
     || Number(outcome.providerInvocationCount) !== 1
     || Number(outcome.externalAudioSamples) !== 0
-  ) throw new Error('coordinator provider preflight must be one completed text-only invocation with bound evidence');
+  ) throw new Error('coordinator provider preflight must be one completed zero-input LiveTranslate lifecycle with bound evidence');
   return outcome;
 }
 
@@ -244,15 +284,32 @@ export function writeCoordinatorProviderPreflightReceipt({
     || Math.min(...evidenceTimes.map((value) => Date.parse(String(value)))) <= authorizationPublishedAt
   ) throw new Error('provider preflight raw evidence did not start after signed authorization publication');
   const summary = validation.summary;
-  const inputTokens = summary.inputTokens;
-  const outputTokens = summary.outputTokens;
+  const modelProtocolProfileIdentity = deriveWatchModelProtocolIdentity(summary.model);
+  assertWatchModelProtocolIdentity(
+    expectedAuthorization?.modelProtocolProfileIdentity,
+    modelProtocolProfileIdentity,
+    'coordinator signed preflight authorization model protocol profile identity',
+  );
   const audioSeconds = summary.audioSeconds == null ? null : summary.audioSeconds;
-  const tokenBudget = expectedAuthorization?.tokenBudget;
+  const lifecycleBudget = expectedAuthorization?.lifecycleBudget;
   if (
     summary.providerId !== checked.providerId
     || !String(summary.model ?? '').trim()
-    || summary.operation !== 'text-translation-preflight'
-    || summary.inputMode !== 'text-only'
+    || summary.operation !== PROVIDER_PREFLIGHT_OPERATION
+    || summary.inputMode !== PROVIDER_PREFLIGHT_INPUT_MODE
+    || summary.providerInputMode !== PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE
+    || summary.responseMode !== PROVIDER_PREFLIGHT_RESPONSE_MODE
+    || summary.terminalEvent !== PROVIDER_PREFLIGHT_TERMINAL_EVENT
+    || canonicalJson(summary.lifecycleBudget) !== canonicalJson(lifecycleBudget)
+    || canonicalJson(lifecycleBudget) !== canonicalJson(PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET)
+    || summary.evidenceOutcome !== 'livetranslate-session-finished'
+    || summary.firstServerEvent?.type !== 'session.created'
+    || !Number.isSafeInteger(summary.firstServerEvent?.monotonicMs)
+    || summary.firstServerEvent.monotonicMs < 0
+    || summary.firstServerEvent.monotonicMs
+      > PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET.firstServerEventLatencyMs
+    || !summary.sessionAuthority
+    || !summary.rawTrace
     || Number(summary.externalAudioSamples) !== 0
     || Number(summary.providerInvocationCount) !== 1
     || summary.protocol !== expectedAuthorization?.protocol
@@ -263,18 +320,11 @@ export function writeCoordinatorProviderPreflightReceipt({
       !== canonicalJson(expectedAuthorization?.consumptionClaim)
     || canonicalJson(summary.leaseReservationDigests)
       !== canonicalJson(expectedAuthorization?.leaseReservationDigests)
-    || Number(tokenBudget?.maxInputTokens) !== 4_096
-    || Number(tokenBudget?.maxOutputTokens) !== 256
-    || typeof inputTokens !== 'number'
-    || typeof outputTokens !== 'number'
-    || !Number.isSafeInteger(inputTokens)
-    || inputTokens < 0
-    || inputTokens > Number(tokenBudget.maxInputTokens)
-    || !Number.isSafeInteger(outputTokens)
-    || outputTokens < 0
-    || outputTokens > Number(tokenBudget.maxOutputTokens)
+    || canonicalJson(summary.executor) !== canonicalJson(expectedAuthorization?.executor)
+    || summary.inputTokens != null
+    || summary.outputTokens != null
     || (audioSeconds !== null && (typeof audioSeconds !== 'number' || audioSeconds !== 0))
-  ) throw new Error('coordinator provider preflight summary is not one text-only zero-audio invocation');
+  ) throw new Error('coordinator provider preflight summary is not one zero-input LiveTranslate lifecycle');
   const evidenceRoot = path.join(
     path.resolve(executionRoot),
     ...COORDINATOR_PROVIDER_PREFLIGHT_EVIDENCE_ROOT.split('/'),
@@ -293,11 +343,17 @@ export function writeCoordinatorProviderPreflightReceipt({
     protocol: summary.protocol,
     invocationCount: summary.providerInvocationCount,
     operation: summary.operation,
+    modelProtocolProfileIdentity: structuredClone(modelProtocolProfileIdentity),
     inputMode: summary.inputMode,
+    providerInputMode: summary.providerInputMode,
+    responseMode: summary.responseMode,
+    terminalEvent: summary.terminalEvent,
     externalAudioSamples: summary.externalAudioSamples,
-    tokenBudget: structuredClone(tokenBudget),
-    inputTokens,
-    outputTokens,
+    lifecycleBudget: structuredClone(lifecycleBudget),
+    evidenceOutcome: summary.evidenceOutcome,
+    firstServerEvent: structuredClone(summary.firstServerEvent),
+    sessionAuthority: structuredClone(summary.sessionAuthority),
+    rawTrace: structuredClone(summary.rawTrace),
     audioSeconds,
     rawEvidenceRoot: COORDINATOR_PROVIDER_PREFLIGHT_EVIDENCE_ROOT,
     entryCount: entries.length,
@@ -307,6 +363,7 @@ export function writeCoordinatorProviderPreflightReceipt({
     leaseReservationDigests: structuredClone(expectedAuthorization.leaseReservationDigests),
     authorizationDigest: expectedAuthorization.authorizationDigest,
     consumptionClaim: structuredClone(expectedAuthorization.consumptionClaim),
+    executor: structuredClone(expectedAuthorization.executor),
   };
   const inventoryPath = path.join(
     path.resolve(executionRoot),
@@ -327,12 +384,18 @@ export function writeCoordinatorProviderPreflightReceipt({
     model: summary.model,
     protocol: summary.protocol,
     operation: summary.operation,
+    modelProtocolProfileIdentity: structuredClone(modelProtocolProfileIdentity),
     inputMode: summary.inputMode,
+    providerInputMode: summary.providerInputMode,
+    responseMode: summary.responseMode,
+    terminalEvent: summary.terminalEvent,
     status: checked.status,
     externalAudioSamples: summary.externalAudioSamples,
-    tokenBudget: structuredClone(tokenBudget),
-    inputTokens,
-    outputTokens,
+    lifecycleBudget: structuredClone(lifecycleBudget),
+    evidenceOutcome: summary.evidenceOutcome,
+    firstServerEvent: structuredClone(summary.firstServerEvent),
+    sessionAuthority: structuredClone(summary.sessionAuthority),
+    rawTrace: structuredClone(summary.rawTrace),
     audioSeconds,
     evidenceAuthority,
     scenarioId: 'E2E-PROVIDER-PROBE',
@@ -343,6 +406,7 @@ export function writeCoordinatorProviderPreflightReceipt({
     leaseReservationDigests: structuredClone(expectedAuthorization.leaseReservationDigests),
     authorizationDigest: expectedAuthorization.authorizationDigest,
     consumptionClaim: structuredClone(expectedAuthorization.consumptionClaim),
+    executor: structuredClone(expectedAuthorization.executor),
   };
   const receiptPath = path.join(path.resolve(executionRoot), COORDINATOR_PROVIDER_PREFLIGHT_FILE);
   atomicWriteJson(receiptPath, receipt);
@@ -356,12 +420,18 @@ export function writeCoordinatorProviderPreflightReceipt({
       model: summary.model,
       protocol: summary.protocol,
       operation: summary.operation,
+      modelProtocolProfileIdentity: structuredClone(modelProtocolProfileIdentity),
       inputMode: summary.inputMode,
+      providerInputMode: summary.providerInputMode,
+      responseMode: summary.responseMode,
+      terminalEvent: summary.terminalEvent,
       status: 'completed',
       externalAudioSamples: summary.externalAudioSamples,
-      tokenBudget: structuredClone(tokenBudget),
-      inputTokens,
-      outputTokens,
+      lifecycleBudget: structuredClone(lifecycleBudget),
+      evidenceOutcome: summary.evidenceOutcome,
+      firstServerEvent: structuredClone(summary.firstServerEvent),
+      sessionAuthority: structuredClone(summary.sessionAuthority),
+      rawTrace: structuredClone(summary.rawTrace),
       audioSeconds,
       invocationCount: summary.providerInvocationCount,
       scenarioId: receipt.scenarioId,
@@ -373,6 +443,7 @@ export function writeCoordinatorProviderPreflightReceipt({
       leaseReservationDigests: structuredClone(receipt.leaseReservationDigests),
       authorizationDigest: receipt.authorizationDigest,
       consumptionClaim: structuredClone(receipt.consumptionClaim),
+      executor: structuredClone(receipt.executor),
       generatedAt: receipt.generatedAt,
     },
   };
@@ -404,7 +475,8 @@ export async function prepareCoordinatorExecution({
   workspaceRoot = repoRoot,
   executionId = `watch-shard-${crypto.randomUUID()}`,
   workers,
-  assignments = defaultThreeVmAssignments(workers),
+  assignments = defaultSingleWorkerAssignments(workers),
+  preflightExecutorWorkerId,
   generatedAt = new Date(),
   expiresAt = new Date(generatedAt.getTime() + 86_400_000),
   now = () => new Date(),
@@ -538,6 +610,7 @@ export async function prepareCoordinatorExecution({
       workerReadinessAuthorities: workerReadiness.workers,
       workers,
       assignments: assignmentWithLeases,
+      preflightExecutorWorkerId,
       signingKeys,
     });
     verifyProviderPreflightGrant(preflightGrant);
@@ -627,7 +700,8 @@ export async function prepareCoordinatorExecution({
         fs.constants.COPYFILE_EXCL,
       );
     }
-    // Exactly one coordinator text preflight. It must never be delegated to a shard.
+    // Exactly one signed text preflight. Its executor is bound by the grant and
+    // is not a paid shard dispatch; failures require a new execution.
     const preflightOutcome = await runProviderPreflight({
       executionId,
       provenance: startProvenance,
@@ -709,7 +783,14 @@ export async function prepareCoordinatorExecution({
         grantDigest: preflightGrant.digest,
         leaseReservationDigests: leaseReservations.map((reservation) => reservation.digest),
         authorizationDigest: authorizationPackage.authorizationDigest,
-        tokenBudget: structuredClone(expectedConsumedPreflightAuthorization.tokenBudget),
+        modelProtocolProfileIdentity: structuredClone(
+          expectedConsumedPreflightAuthorization.modelProtocolProfileIdentity,
+        ),
+        inputMode: expectedConsumedPreflightAuthorization.inputMode,
+        providerInputMode: expectedConsumedPreflightAuthorization.providerInputMode,
+        responseMode: expectedConsumedPreflightAuthorization.responseMode,
+        terminalEvent: expectedConsumedPreflightAuthorization.terminalEvent,
+        lifecycleBudget: structuredClone(expectedConsumedPreflightAuthorization.lifecycleBudget),
         consumptionClaim: consumptionClaim.projection,
       },
       providerPreflightCompletion: {
@@ -717,9 +798,18 @@ export async function prepareCoordinatorExecution({
         digest: preflightCompletion.digest,
         grantDigest: preflightGrant.digest,
         authorizationDigest: authorizationPackage.authorizationDigest,
-        tokenBudget: structuredClone(preflightReceipt.authority.tokenBudget),
-        inputTokens: preflightReceipt.authority.inputTokens,
-        outputTokens: preflightReceipt.authority.outputTokens,
+        modelProtocolProfileIdentity: structuredClone(
+          preflightReceipt.authority.modelProtocolProfileIdentity,
+        ),
+        inputMode: preflightReceipt.authority.inputMode,
+        providerInputMode: preflightReceipt.authority.providerInputMode,
+        responseMode: preflightReceipt.authority.responseMode,
+        terminalEvent: preflightReceipt.authority.terminalEvent,
+        lifecycleBudget: structuredClone(preflightReceipt.authority.lifecycleBudget),
+        evidenceOutcome: preflightReceipt.authority.evidenceOutcome,
+        firstServerEvent: structuredClone(preflightReceipt.authority.firstServerEvent),
+        sessionAuthority: structuredClone(preflightReceipt.authority.sessionAuthority),
+        rawTrace: structuredClone(preflightReceipt.authority.rawTrace),
         audioSeconds: preflightReceipt.authority.audioSeconds,
         consumptionClaim: consumptionClaim.projection,
       },
@@ -732,9 +822,11 @@ export async function prepareCoordinatorExecution({
     if (
       leases.length !== SHARD_MATRIX_CELL_COUNT
       || new Set(leases.map((lease) => lease.leaseId)).size !== SHARD_MATRIX_CELL_COUNT
-      || leases.some((lease) => Number(lease.maxExternalAudioSamples) !== SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES)
+      || leases.some((lease, index) => (
+        Number(lease.maxExternalAudioSamples) !== Number(plan.cells[index].maxExternalAudioSamples)
+      ))
       || leases.reduce((sum, lease) => sum + Number(lease.maxExternalAudioSamples), 0) !== SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES
-    ) throw new Error('coordinator did not allocate the exact eight disjoint paid-cell leases');
+    ) throw new Error(`coordinator did not allocate the exact ${SHARD_MATRIX_CELL_COUNT} disjoint paid-cell leases`);
     const planPath = path.join(stagingRoot, SHARD_EXECUTION_PLAN_FILE);
     atomicWriteJson(planPath, plan);
     const leaseDirectory = path.join(stagingRoot, 'leases');
@@ -746,7 +838,7 @@ export async function prepareCoordinatorExecution({
       atomicWriteJson(leasePath, lease);
       return leasePath;
     });
-    // Publishing the directory last makes plan + all eight leases visible as
+    // Publishing the directory last makes the plan and every lease visible as
     // one immutable allocation. A crash cannot expose a partial grant set.
     fs.renameSync(stagingRoot, finalExecutionRoot);
     const finalPlanPath = path.join(finalExecutionRoot, SHARD_EXECUTION_PLAN_FILE);
@@ -777,7 +869,7 @@ export async function prepareCoordinatorExecution({
 }
 
 export class CoordinatorWaveFailure extends Error {
-  constructor({ waveIndex, cellId, cause, startedCellIds, completedCellIds, partialResults }) {
+  constructor({ waveIndex, cellId, cause, startedCellIds, completedCellIds, partialResults, cleanupErrors = [], failedCellEvidence = [] }) {
     super(`strict paid shard wave ${waveIndex} failed at ${cellId}: ${cause?.message ?? cause}`);
     this.name = 'CoordinatorWaveFailure';
     this.waveIndex = waveIndex;
@@ -786,7 +878,38 @@ export class CoordinatorWaveFailure extends Error {
     this.startedCellIds = startedCellIds;
     this.completedCellIds = completedCellIds;
     this.partialResults = partialResults;
+    this.cleanupErrors = cleanupErrors;
+    this.failedCellEvidence = failedCellEvidence;
   }
+}
+
+async function collectRejectedCellEvidence(cell, error, failedCellEvidence) {
+  if (typeof error.collectFailureEvidence === 'function') {
+    try { await error.collectFailureEvidence(); }
+    catch { error.failureEvidenceErrors = [{ code: 'watch.collection.failed-cell-unavailable' }]; }
+  }
+  failedCellEvidence.push({ cellId: cell.cellId, workerId: cell.workerId,
+    evidence: error.failureEvidence ?? null, errors: error.failureEvidenceErrors ?? [],
+  });
+}
+
+function coordinatorCleanupErrors(targets, settlements) {
+  return settlements.flatMap((settlement, index) => {
+    const receipt = settlement.status === 'fulfilled' ? settlement.value : null;
+    // A resolved transport call (including a void adapter) is not a cleanup
+    // receipt. Unknown or contradictory confirmation must remain incomplete.
+    if (receipt?.passed === true
+      && (receipt.status === undefined || ['completed', 'cleanup-completed'].includes(receipt.status))
+      && receipt.taskCleanupPassed !== false
+      && receipt.processCleanup?.passed !== false
+      && !(receipt.cleanupErrors?.length > 0)) return [];
+    return [{
+      code: 'coordinator.cleanup.cell-failed',
+      workerId: targets[index].cell.workerId,
+      cellId: targets[index].cell.cellId,
+      message: 'Worker cancellation did not confirm owned-process cleanup.',
+    }];
+  });
 }
 
 function assertExactLeaseSet(plan, leases, now) {
@@ -801,7 +924,7 @@ function assertExactLeaseSet(plan, leases, now) {
   }
   if (plan.cells.some((cell) => !byId.has(cell.leaseId))) throw new Error('coordinator lease set is incomplete');
   const reserved = [...byId.values()].reduce((sum, entry) => sum + Number(entry.lease.maxExternalAudioSamples), 0);
-  if (reserved !== SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES) throw new Error('coordinator lease set is not the exact 1440-second allocation');
+  if (reserved !== SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES) throw new Error('coordinator lease set is not the exact mode-derived allocation');
   return byId;
 }
 
@@ -885,8 +1008,13 @@ export async function runCoordinatorWaves({
   onWaveCompleted = async () => {},
   classifyFailure = () => 'stop',
   now = () => new Date(),
+  firstWaveStaggerMs = 0,
+  wait = abortableDelay,
 }) {
   if (typeof dispatchCell !== 'function') throw new Error('coordinator requires a dispatchCell adapter');
+  if (!Number.isSafeInteger(firstWaveStaggerMs) || firstWaveStaggerMs < 0 || typeof wait !== 'function') {
+    throw new Error('coordinator first-wave stagger requires a non-negative integer delay and wait adapter');
+  }
   if (!String(executionRoot ?? '').trim()) throw new Error('coordinator requires a durable executionRoot for dispatch claims');
   assertCoordinatorExecutionRoot({ executionRoot, plan });
   verifySignedExecutionPlan(plan, { now: now() });
@@ -896,23 +1024,35 @@ export async function runCoordinatorWaves({
   const readinessFailure = readiness.find((entry) => entry.status === 'rejected');
   if (readinessFailure) throw new Error(`worker readiness failed before paid dispatch: ${readinessFailure.reason?.message ?? readinessFailure.reason}`);
 
+  if (plan.workers.length > 1) {
+    return runCoordinatorWorkerPipelines({
+      plan, leaseById, executionRoot, dispatchCell, cancelCell, validateCompletedCell,
+      onWaveCompleted, classifyFailure, now, firstWaveStaggerMs, wait,
+    });
+  }
+
   const started = new Set();
   const completed = new Set();
   const results = new Map();
   const waveCompletions = [];
   const collectedFailures = [];
+  const failedCellEvidence = [];
   for (const wave of plan.waves) {
     const waveCells = wave.cellIds.map((cellId) => plan.cells.find((cell) => cell.cellId === cellId));
     let firstFailure = null;
     const controllers = new Map(waveCells.map((cell) => [cell.cellId, new AbortController()]));
     const cancellationPromises = [];
+    const cancellationTargets = [];
     const failWave = (cell, error) => {
       if (firstFailure) return;
       firstFailure = { cell, error };
+      for (const controller of controllers.values()) controller.abort(error);
       for (const peer of waveCells) {
-        if (peer.cellId === cell.cellId || completed.has(peer.cellId)) continue;
-        controllers.get(peer.cellId).abort(error);
-        cancellationPromises.push(Promise.resolve(cancelCell({
+        // Rejection of dispatch/finalization does not prove that its own guest
+        // process exited. Never cancel an unstarted or completed cell instead.
+        if (!started.has(peer.cellId) || completed.has(peer.cellId)) continue;
+        cancellationTargets.push({ cell: peer });
+        cancellationPromises.push(Promise.resolve().then(() => cancelCell({
           plan,
           waveIndex: wave.waveIndex,
           cell: peer,
@@ -921,10 +1061,14 @@ export async function runCoordinatorWaves({
         })));
       }
     };
-    const tasks = waveCells.map(async (cell) => {
+    const tasks = waveCells.map(async (cell, waveCellIndex) => {
       if (started.has(cell.cellId)) throw new Error(`coordinator attempted to redispatch ${cell.cellId}`);
       const lease = leaseById.get(cell.leaseId).lease;
       try {
+        if (wave.waveIndex === 0 && waveCellIndex > 0 && firstWaveStaggerMs > 0) {
+          await wait(firstWaveStaggerMs * waveCellIndex, controllers.get(cell.cellId).signal);
+        }
+        if (controllers.get(cell.cellId).signal.aborted) throw controllers.get(cell.cellId).signal.reason;
         claimCoordinatorCellDispatch({ executionRoot, plan, lease, cell, claimedAt: now() });
         started.add(cell.cellId);
         const outcome = await dispatchCell({
@@ -961,11 +1105,13 @@ export async function runCoordinatorWaves({
         return validated;
       } catch (error) {
         failWave(cell, error);
+        await Promise.allSettled(cancellationPromises);
+        await collectRejectedCellEvidence(cell, error, failedCellEvidence);
         throw error;
       }
     });
     const settled = await Promise.allSettled(tasks);
-    await Promise.allSettled(cancellationPromises);
+    const cleanupErrors = coordinatorCleanupErrors(cancellationTargets, await Promise.allSettled(cancellationPromises));
     if (firstFailure || settled.some((entry) => entry.status === 'rejected')) {
       const failedIndex = settled.findIndex((entry) => entry.status === 'rejected');
       const failure = firstFailure ?? {
@@ -979,6 +1125,8 @@ export async function runCoordinatorWaves({
         startedCellIds: [...started],
         completedCellIds: [...completed],
         partialResults: new Map(results),
+        cleanupErrors,
+        failedCellEvidence,
       });
     }
     waveCompletions.push(completeCoordinatorWave({
@@ -1003,6 +1151,105 @@ export async function runCoordinatorWaves({
     startedCellIds: [...started],
     completedCellIds: [...completed],
   };
+}
+
+async function runCoordinatorWorkerPipelines({
+  plan, leaseById, executionRoot, dispatchCell, cancelCell, validateCompletedCell,
+  onWaveCompleted, classifyFailure, now, firstWaveStaggerMs, wait,
+}) {
+  const started = new Set();
+  const completed = new Set();
+  const results = new Map();
+  const collectedFailures = [];
+  const controllers = new Map(plan.cells.map((cell) => [cell.cellId, new AbortController()]));
+  const active = new Map();
+  let safetyFailure = null;
+  const cleanupErrors = [];
+  const failedCellEvidence = [];
+  const waveZeroOrder = plan.waves[0].cellIds;
+  // verifySignedExecutionPlan has already checked the four-worker placement,
+  // exact signed schedule and signature before readiness or any paid dispatch.
+  // Offsets share one origin; neither worker iteration order nor the legacy
+  // production 7-second stagger may change the signed 0/3/6/9-second schedule.
+  const fourWorkerDispatchOriginMs = plan.workers.length === 4 ? now().getTime() : null;
+  const cellsByWorker = new Map(plan.workers.map((worker) => [worker.workerId, []]));
+  for (const cell of plan.cells) cellsByWorker.get(cell.workerId).push(cell);
+  for (const cells of cellsByWorker.values()) cells.sort((left, right) => left.waveIndex - right.waveIndex || left.cellIndex - right.cellIndex);
+
+  const stopAll = async (failedCell, error) => {
+    if (safetyFailure) return;
+    safetyFailure = { cell: failedCell, error };
+    const targets = [...active.values()];
+    // Fence every pipeline before awaiting remote cleanup: a staggered or next-wave
+    // cell must not start while another worker is being cancelled.
+    for (const controller of controllers.values()) controller.abort(error);
+    const cancellations = await Promise.allSettled(targets.map(({ cell, lease }) =>
+      Promise.resolve().then(() => cancelCell({ plan, waveIndex: cell.waveIndex, cell, lease, reason: error }))));
+    cleanupErrors.push(...coordinatorCleanupErrors(targets, cancellations));
+  };
+
+  const orderedPipelines = [...cellsByWorker.values()];
+  if (fourWorkerDispatchOriginMs !== null) {
+    const order = new Map(plan.dispatchSchedule.map((entry, index) => [entry.workerId, index]));
+    orderedPipelines.sort((left, right) => order.get(left[0].workerId) - order.get(right[0].workerId));
+  }
+  const pipelines = orderedPipelines.map(async (cells) => {
+    const first = cells[0];
+    const staggerIndex = waveZeroOrder.indexOf(first.cellId);
+    const startDelayMs = fourWorkerDispatchOriginMs === null
+      ? firstWaveStaggerMs * staggerIndex
+      : Math.max(0, fourWorkerDispatchOriginMs + plan.dispatchSchedule.find((entry) => (
+        entry.cellId === first.cellId && entry.workerId === first.workerId
+      )).startOffsetMs - now().getTime());
+    if (startDelayMs > 0) {
+      await wait(startDelayMs, controllers.get(first.cellId).signal);
+    }
+    for (const cell of cells) {
+      const controller = controllers.get(cell.cellId);
+      if (controller.signal.aborted) throw controller.signal.reason;
+      const lease = leaseById.get(cell.leaseId).lease;
+      claimCoordinatorCellDispatch({ executionRoot, plan, lease, cell, claimedAt: now() });
+      started.add(cell.cellId);
+      active.set(cell.workerId, { cell, lease });
+      let outcome;
+      try {
+        outcome = await dispatchCell({ plan, waveIndex: cell.waveIndex, cell, lease, signal: controller.signal });
+        try {
+          results.set(cell.cellId, await validateCompletedCell({ plan, cell, lease, outcome }));
+        } catch (error) {
+          if (classifyFailure({ plan, cell, lease, outcome, error }) !== 'collect'
+            || !/^[a-f0-9]{64}$/iu.test(String(outcome?.result?.resultDigest ?? ''))) {
+            await stopAll(cell, error);
+            throw error;
+          }
+          results.set(cell.cellId, outcome);
+          collectedFailures.push({ cellId: cell.cellId, cellIndex: cell.cellIndex, waveIndex: cell.waveIndex, error: error.message, outcome });
+        }
+        completed.add(cell.cellId);
+      } catch (error) {
+        await stopAll(cell, error);
+        await collectRejectedCellEvidence(cell, error, failedCellEvidence);
+        throw error;
+      } finally {
+        active.delete(cell.workerId);
+      }
+    }
+  });
+  const settled = await Promise.allSettled(pipelines);
+  if (safetyFailure || settled.some((entry) => entry.status === 'rejected')) {
+    const failure = safetyFailure ?? { cell: plan.cells.find((cell) => !completed.has(cell.cellId)), error: settled.find((entry) => entry.status === 'rejected').reason };
+    throw new CoordinatorWaveFailure({
+      waveIndex: failure.cell?.waveIndex ?? 0, cellId: failure.cell?.cellId ?? 'unknown', cause: failure.error,
+      startedCellIds: [...started], completedCellIds: [...completed], partialResults: new Map(results),
+      cleanupErrors, failedCellEvidence,
+    });
+  }
+  const waveCompletions = [];
+  for (const wave of plan.waves) {
+    waveCompletions.push(completeCoordinatorWave({ executionRoot, plan, wave, results, completedAt: now() }));
+    await onWaveCompleted({ plan, waveIndex: wave.waveIndex, cellIds: [...wave.cellIds], results: new Map(wave.cellIds.map((cellId) => [cellId, results.get(cellId)])) });
+  }
+  return { results, waveCompletions, collectedFailures, startedCellIds: [...started], completedCellIds: [...completed] };
 }
 
 export function validateCoordinatorExecutionAuthority({
@@ -1044,6 +1291,21 @@ export function validateCoordinatorExecutionAuthority({
       cellId: cell.cellId,
       ...fileAuthorityEntry(claimPath, `dispatch-claims/${cell.leaseId}.json`),
     });
+  }
+  if (plan.workers.length > 1 && resultByCell) {
+    for (const worker of plan.workers) {
+      const workerCells = plan.cells.filter((cell) => cell.workerId === worker.workerId)
+        .sort((left, right) => left.waveIndex - right.waveIndex || left.cellIndex - right.cellIndex);
+      for (let index = 1; index < workerCells.length; index += 1) {
+        const prior = workerCells[index - 1];
+        const next = workerCells[index];
+        const priorCompletedAt = Date.parse(resultByCell.get(prior.cellId)?.result?.generatedAt);
+        const nextClaimedAt = Date.parse(claims.get(next.cellId)?.claimedAt);
+        if (!Number.isFinite(priorCompletedAt) || nextClaimedAt < priorCompletedAt) {
+          throw new Error(`coordinator worker ${worker.workerId} dispatched ${next.cellId} before ${prior.cellId} completed`);
+        }
+      }
+    }
   }
   const completionDirectory = path.join(root, 'wave-completions');
   const completionFiles = fs.readdirSync(completionDirectory).filter((entry) => entry.endsWith('.json')).sort();
@@ -1087,9 +1349,9 @@ export function validateCoordinatorExecutionAuthority({
         throw new Error(`coordinator wave ${wave.waveIndex} completed before cell ${cellId} was dispatched`);
       }
     }
-    const nextWave = plan.waves[wave.waveIndex + 1];
-    if (nextWave) {
-      for (const nextCellId of nextWave.cellIds) {
+    if (plan.workers.length === 1) {
+      const nextWave = plan.waves[wave.waveIndex + 1];
+      for (const nextCellId of nextWave?.cellIds ?? []) {
         if (Date.parse(claims.get(nextCellId).claimedAt) < completedAt) {
           throw new Error(`coordinator dispatched wave ${nextWave.waveIndex} before wave ${wave.waveIndex} completed`);
         }
@@ -1173,8 +1435,20 @@ export function collectCoordinatorAggregation({
       cellId: cell.cellId,
       tier: cell.tier,
       providerMode: cell.providerMode,
-      durationSeconds: cell.durationSeconds,
+      inputCompletionWatchdogSeconds: cell.inputCompletionWatchdogSeconds,
+      processExclusionRestartAfterSeconds: cell.processExclusionRestartAfterSeconds,
+      processExclusionRestartQuietSeconds: cell.processExclusionRestartQuietSeconds,
+      providerFinishTimeoutSeconds: cell.providerFinishTimeoutSeconds,
+      localPlaybackDrainTimeoutSeconds: cell.localPlaybackDrainTimeoutSeconds,
+      reportWriteTimeoutSeconds: cell.reportWriteTimeoutSeconds,
+      cellHardWatchdogSeconds: cell.cellHardWatchdogSeconds,
+      authoritativeTransformedReferenceFrames: cell.authoritativeTransformedReferenceFrames,
+      boundedCaptureGraceFrames: cell.boundedCaptureGraceFrames,
+      maxExternalAudioSamples: cell.maxExternalAudioSamples,
+      auxiliaryExternalAudioSeconds: cell.auxiliaryExternalAudioSeconds,
+      subtitleTranslationMode: cell.subtitleTranslationMode,
       modelId: cell.modelId,
+      modelProtocolProfileIdentity: structuredClone(cell.modelProtocolProfileIdentity),
       feedbackLoopPrevention: cell.feedbackLoopPrevention,
       deviceClass: cell.deviceClass,
       deviceProfileId: cell.deviceProfileInstance.profileId,
@@ -1190,6 +1464,7 @@ export function collectCoordinatorAggregation({
         failureLayer: binding.result.failureLayer,
         stableErrorCode: binding.result.stableErrorCode,
         lifecyclePhase: binding.result.lifecyclePhase,
+        failureContext: structuredClone(binding.result.failureContext),
       } : {}),
       runDirectory: binding.result.runDirectory,
       actualExternalAudioSamples: binding.result.usageAuthority.actualExternalAudioSamples,
@@ -1208,7 +1483,10 @@ export function collectCoordinatorAggregation({
     0,
   );
   if (actualExternalAudioSamples <= 0 || actualExternalAudioSamples > SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES) {
-    throw new Error('coordinator aggregate external audio usage is outside the approved 1440-second budget');
+    throw new Error(
+      `coordinator aggregate external audio usage is outside the approved `
+      + `${SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES}-sample mode-derived budget`,
+    );
   }
   const executionAuthority = validateCoordinatorExecutionAuthority({
     executionRoot,
@@ -1233,7 +1511,7 @@ export function collectCoordinatorAggregation({
       allocationMode: 'immutable-disjoint-cell-leases',
       reservedExternalAudioSamples: SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
       actualExternalAudioSamples,
-      maxExternalAudioSeconds: SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SECONDS,
+      inputSampleRateHz: 16_000,
       cellLeaseCount: SHARD_MATRIX_CELL_COUNT,
       auxiliaryExternalAudioSamples: 0,
       preflightExternalAudioSamples: 0,

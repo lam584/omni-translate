@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "model-protocol-wire-fixture/v1",
+  "dialectId": "bailian-qwen-tts-session-ws-v1",
+  "checkedAt": "2026-08-30",
+  "sanitized": true,
+  "sources": [
+    { "url": "https://help.aliyun.com/zh/model-studio/interactive-process-of-qwen-tts-realtime-synthesis", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/qwen-tts-realtime-client-events", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/qwen-tts-realtime-server-events", "checkedAt": "2026-08-30" }
+  ],
+  "sequence": [
+    { "direction": "server", "frameKind": "json", "eventType": "session.created" },
+    { "direction": "client", "frameKind": "json", "eventType": "session.update" },
+    { "direction": "server", "frameKind": "json", "eventType": "session.updated" },
+    { "direction": "client", "frameKind": "json", "eventType": "input_text_buffer.append", "payload": { "text": "hello" } },
+    { "direction": "client", "frameKind": "json", "eventType": "input_text_buffer.commit" },
+    { "direction": "server", "frameKind": "json-base64", "eventType": "response.audio.delta" },
+    { "direction": "server", "frameKind": "json", "eventType": "response.audio.done" },
+    { "direction": "server", "frameKind": "json", "eventType": "response.done" },
+    { "direction": "client", "frameKind": "json", "eventType": "session.finish" },
+    { "direction": "server", "frameKind": "json", "eventType": "session.finished" }
+  ],
+  "expect": {
+    "textInputEvent": "input_text_buffer.append",
+    "audioFrameKind": "json-base64",
+    "terminalOrder": ["session.finish", "session.finished"],
+    "forbiddenEvents": ["conversation.item.create", "continue-task"]
+  }
+}

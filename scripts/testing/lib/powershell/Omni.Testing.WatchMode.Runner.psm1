@@ -22,6 +22,7 @@ Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.PlatformOperation
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.EvidenceCollection.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.ExecutionContext.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.RunLifecycle.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.InputCompletion.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.PreDesktopPhase.psm1') -Force -DisableNameChecking
 function Invoke-Step {
   param(
@@ -39,7 +40,20 @@ function Invoke-Step {
   }
   return $step
 }
-
+function Get-WatchModeRestartQuietWindow {
+  param(
+    [Parameter(Mandatory = $true)][ValidateSet('virtual-driver', 'process-exclusion', 'echo-cancel')][string]$FeedbackMode,
+    [Parameter(Mandatory = $true)] [ValidateRange(30, 7200)] [int]$ProviderInputSeconds,
+    [bool]$StrictPaidAuthority,
+    [ValidateRange(0, 7200)] [int]$RestartAfterSeconds = 90,
+    [ValidateRange(0, 7200)] [int]$RestartQuietSeconds = 45
+  )
+  $enabled = $StrictPaidAuthority -and $FeedbackMode -eq 'process-exclusion'
+  return [pscustomobject]@{
+    afterSeconds = if ($enabled) { $RestartAfterSeconds } else { 0 }
+    durationSeconds = if ($enabled) { $RestartQuietSeconds } else { 0 }
+  }
+}
 function Invoke-WatchModeRun {
   param(
     [Parameter(Mandatory = $true)]$Context,
@@ -50,7 +64,6 @@ function Invoke-WatchModeRun {
   foreach ($property in $execution.PSObject.Properties) {
     Set-Variable -Name $property.Name -Value $property.Value -Scope Local
   }
-  
   if ($DryRun) {
     Invoke-WatchModeFixtureRun -Context $runContext -Request $request -OutputDirectory $outputDir
     return
@@ -118,7 +131,9 @@ function Invoke-WatchModeRun {
           -PolicySkipReason $physicalOutputContentSkipReason
       } else {
         Invoke-Step -State $state "start physical output content recording" -Phase recording {
-          Start-PhysicalOutputContentRecorder $outputDir $resolvedPhysicalDeviceId $workspaceRoot $PlaybackSeconds $PostPlaybackWaitSeconds
+          Start-PhysicalOutputContentRecorder $outputDir $resolvedPhysicalDeviceId $workspaceRoot `
+            $CellHardWatchdogSeconds $PhysicalRecorderTailSeconds $TerminalAuthorityPath `
+            $runMarker $MatrixCellId ([string]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID)
         } -ContinueOnError
       }
       if ($physicalOutputRecorderStep.status -eq 'passed' -and -not $physicalOutputContentSkipReason) {
@@ -134,22 +149,72 @@ function Invoke-WatchModeRun {
                 Start-TestMediaPlaybackViaDefaultEndpoint $MediaPath $watchPlaybackEndpointId $outputDir $workspaceRoot $PlaybackSeconds
             } -ContinueOnError
           } else {
-              $playbackStep = Invoke-Step -State $state "play watch-mode media" -Phase playback { Start-TestMediaPlayback $MediaPath $watchPlaybackEndpointId $outputDir $workspaceRoot $PlaybackSeconds } -ContinueOnError
+              $restartQuietWindow = Get-WatchModeRestartQuietWindow `
+                -FeedbackMode $FeedbackLoopPrevention `
+                -ProviderInputSeconds $WatchAutoStopAfterSeconds `
+                -StrictPaidAuthority $StrictPaidAuthority `
+                -RestartAfterSeconds ([int]$runContext.lifecycle.processExclusionRestartAfterSeconds) `
+                -RestartQuietSeconds ([int]$runContext.lifecycle.processExclusionRestartQuietSeconds)
+              $playbackStep = Invoke-Step -State $state "play watch-mode media" -Phase playback {
+                Start-TestMediaPlayback $MediaPath $watchPlaybackEndpointId $outputDir $workspaceRoot $PlaybackSeconds `
+                  -RestartQuietWindowAfterSeconds ([int]$restartQuietWindow.afterSeconds) `
+                  -RestartQuietWindowSeconds ([int]$restartQuietWindow.durationSeconds)
+              } -ContinueOnError
+          }
+          if ($StrictPaidAuthority) {
+            if ($playbackStep.status -ne 'passed') {
+              Invoke-Step -State $state "signal identity-bound failed input completion" -Phase playback {
+                Write-WatchModeFailedInputCompleteMarker -Path $InputCompletePath -RunMarker $runMarker `
+                  -CellId $MatrixCellId -LeaseId ([string]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID) `
+                  -OutputDirectory $outputDir -FailureReason ([string]$playbackStep.error.message)
+              } | Out-Null
+              $failedReportPath = Join-Path $outputDir 'watch-session-report.json'
+              $failedReportDeadlineUtc = Get-WatchSessionReportDeadlineUtc `
+                -LaunchedAtUtc ([DateTime]$desktopProcess.data.launchedAtUtc) `
+                -ReadyTimeoutSeconds $SessionReadyTimeoutSeconds `
+                -AutoStopAfterSeconds $CellHardWatchdogSeconds `
+                -CompletionGraceSeconds 30
+              try {
+                Wait-WatchSessionReportAndDesktopExit -Path $failedReportPath `
+                  -ProcessLease $desktopProcess.data.processLease -DeadlineUtc $failedReportDeadlineUtc `
+                  -TerminalAuthorityPath $TerminalAuthorityPath -RunMarker $runMarker -CellId $MatrixCellId `
+                  -LeaseId ([string]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID) `
+                  -SourceHeadCommit ([string]$env:OMNI_WATCH_MODE_SOURCE_HEAD_COMMIT) `
+                  -RuntimeBundleDigest ([string]$env:OMNI_WATCH_MODE_RUNTIME_BUNDLE_DIGEST) | Out-Null
+                throw 'failed input unexpectedly produced a successful terminal authority'
+              } catch {
+                if (-not (Test-WatchModeExpectedFailedInputTerminalError -Message $_.Exception.Message)) { throw }
+              }
+              throw "input-complete cannot be signaled because media playback failed"
+            }
+            Invoke-Step -State $state "signal identity-bound input completion" -Phase playback {
+              Write-WatchModeInputCompleteMarker -Path $InputCompletePath -RunMarker $runMarker `
+                -CellId $MatrixCellId -LeaseId ([string]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID) `
+                -Playback $playbackStep.data
+            } | Out-Null
           }
           $requiredWatchReportPath = Join-Path $outputDir "watch-session-report.json"
           $reportDeadlineUtc = Get-WatchSessionReportDeadlineUtc `
             -LaunchedAtUtc ([DateTime]$desktopProcess.data.launchedAtUtc) `
             -ReadyTimeoutSeconds $SessionReadyTimeoutSeconds `
-            -AutoStopAfterSeconds $desktopAutoStopAfterSeconds
-          $reportWaitStep = Invoke-Step -State $state "wait for same-process Watch report and desktop exit" -Phase reportWait {
-            Wait-WatchSessionReportAndDesktopExit `
-              -Path $requiredWatchReportPath `
-              -ProcessId ([int]$desktopProcess.data.pid) `
-              -DeadlineUtc $reportDeadlineUtc
-          } -ContinueOnError
-          if ($reportWaitStep.status -ne 'passed') {
-            throw "same-process Watch report capture failed: $($reportWaitStep.error.message)"
+            -AutoStopAfterSeconds $CellHardWatchdogSeconds `
+            -CompletionGraceSeconds 30
+          $reportWaitArguments = @{
+            Path = $requiredWatchReportPath
+            ProcessLease = $desktopProcess.data.processLease
+            DeadlineUtc = $reportDeadlineUtc
           }
+          if ($StrictPaidAuthority) {
+            $reportWaitArguments.TerminalAuthorityPath = $TerminalAuthorityPath
+            $reportWaitArguments.RunMarker = $runMarker
+            $reportWaitArguments.CellId = $MatrixCellId
+            $reportWaitArguments.LeaseId = [string]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID
+            $reportWaitArguments.SourceHeadCommit = [string]$env:OMNI_WATCH_MODE_SOURCE_HEAD_COMMIT
+            $reportWaitArguments.RuntimeBundleDigest = [string]$env:OMNI_WATCH_MODE_RUNTIME_BUNDLE_DIGEST
+          }
+          $reportWaitStep = Invoke-Step -State $state "wait for same-process Watch report and desktop exit" -Phase reportWait {
+            Wait-WatchSessionReportAndDesktopExit @reportWaitArguments
+          } -ContinueOnError
           $scopedAppLogPath = Join-Path $outputDir 'app.log'
           $savedAppLogPath = Copy-WatchModeAppLog -SourcePath ([string]$runContext.paths.appLogPath) `
             -DestinationPath $scopedAppLogPath -RunMarker $runMarker
@@ -175,7 +240,7 @@ function Invoke-WatchModeRun {
               -PolicySkipReason $physicalOutputContentSkipReason
           } else {
             Invoke-Step -State $state "complete physical output content recording" -Phase recording {
-              Complete-PhysicalOutputContentRecorder $physicalOutputRecorder $workspaceRoot
+              Complete-PhysicalOutputContentRecorder $physicalOutputRecorder $workspaceRoot -TerminalSucceeded
             } -ContinueOnError
           }
           $physicalOutputContentStep = if ($physicalOutputContentSkipReason) {
@@ -216,10 +281,10 @@ function Invoke-WatchModeRun {
     if ($systemMetricsStep.status -eq 'failed') {
       throw "desktop system metrics evidence failed: $($systemMetricsStep.error.message)"
     }
-    Assert-WatchSessionReportFile $requiredWatchReportPath | Out-Null
     if ($reportWaitStep -and $reportWaitStep.status -ne 'passed') {
       throw "same-process Watch report did not complete within the desktop launch deadline: $($reportWaitStep.error.message)"
     }
+    Assert-WatchSessionReportFile $requiredWatchReportPath | Out-Null
   
     if ($LocalCanonicalContentAuthority) {
       $localSessionAuthorityStep = Invoke-Step -State $state "validate local smoke Provider session authority" -Phase artifactSave {
@@ -253,13 +318,37 @@ function Invoke-WatchModeRun {
       'recording', 'playback', 'reportWait', 'contentCapture', 'artifactSave'
     )
   } finally {
+    if ($physicalOutputRecorder -and -not $physicalOutputRecordingStep) {
+      $recorderCleanupStep = Invoke-Step -State $state "stop physical output recorder after failed run" -Phase cleanup {
+        Complete-WatchModePhysicalRecorderAfterRun $physicalOutputRecorder $workspaceRoot $TerminalAuthorityPath
+      } -ContinueOnError
+      if ($recorderCleanupStep.status -ne 'passed' -and -not $runException) {
+        $runException = [System.Management.Automation.RuntimeException]::new(
+          "physical output recorder failure cleanup failed: $($recorderCleanupStep.error.message)"
+        )
+      }
+    }
     Stop-WatchModeRunResources -State $state -Context $runContext -DesktopProcess $desktopProcess `
       -WorkspaceRoot $workspaceRoot -RuntimeRoot $RuntimeRoot -DesktopEnvironmentState $desktopEnvState
+
+    # The paid-cell ledger is terminal evidence, not a success-only artifact.
+    # Generate it even when an earlier phase failed so the coordinator can
+    # prove the consumed Provider budget and finish collect-all aggregation.
+    $strictBudgetPath = Join-Path $outputDir 'external-provider-budget.json'
+    if ($paidAuthorityEnabled -and -not (Test-Path -LiteralPath $strictBudgetPath -PathType Leaf)) {
+      $terminalBudgetStep = Invoke-Step -State $state "finalize strict paid external provider budget" -Phase artifactSave {
+        Write-StrictPaidCellBudget $outputDir $appLogBeforePlayback $runMarker $runContext
+      } -ContinueOnError
+      if ($terminalBudgetStep.status -ne 'passed' -and -not $runException) {
+        $runException = [System.Management.Automation.RuntimeException]::new(
+          "strict paid-cell provider budget finalization failed: $($terminalBudgetStep.error.message)"
+        )
+      }
+    }
   }
   Save-WatchModeRunArtifacts -OutputDirectory $outputDir -PlaybackStep $playbackStep `
     -RunMarker $runMarker -StartedAtLocal $startedAtLocal -Context $runContext -Request $request -State $state
   Write-Output $outputDir
   if ($runException) { throw $runException }
 }
-
-Export-ModuleMember -Function 'Invoke-WatchModeRun'
+Export-ModuleMember -Function @('Invoke-WatchModeRun', 'Get-WatchModeRestartQuietWindow')

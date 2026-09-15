@@ -1,0 +1,61 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "zhipu-glm.realtime-auth",
+  "providerId": "zhipu-glm",
+  "protocolProfileId": "zhipu-glm.realtime-conversation",
+  "protocolProfileVersion": 1,
+  "kind": "probe",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "zhipu-glm.realtime-guide",
+      "zhipu-glm.realtime-llm-reference",
+      "zhipu-glm.realtime-sdk"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "No JWT was generated and no provider connection was attempted."
+  },
+  "scenario": "GLM-Realtime server API-key auth and client JWT derivation",
+  "data": {
+    "connection": {
+      "url": "wss://open.bigmodel.cn/api/paas/v4/realtime",
+      "modelLocation": "session.update.session.model",
+      "queryParameters": []
+    },
+    "authContract": {
+      "profileId": "zhipu-glm.bearer-api-key",
+      "parameters": [
+        { "location": "header", "name": "Authorization", "value": "Bearer <redacted-id>.<redacted-secret>" }
+      ]
+    },
+    "serverCredentialOption": {
+      "storedCredentialFormat": "{id}.{secret}",
+      "headers": {
+        "Authorization": "Bearer <redacted-id>.<redacted-secret>"
+      }
+    },
+    "clientJwtOption": {
+      "jwtHeader": {
+        "alg": "HS256",
+        "sign_type": "SIGN"
+      },
+      "jwtPayload": {
+        "api_key": "<redacted-id>",
+        "exp": "<unix-seconds-now-plus-ttl-seconds>",
+        "timestamp": "<unix-milliseconds-now>"
+      },
+      "signature": "HMAC-SHA256 with <redacted-secret>, compact JWT base64url encoding",
+      "headers": {
+        "Authorization": "Bearer <redacted-derived-jwt>"
+      }
+    },
+    "assertions": [
+      "Both documented credential forms use the Authorization header and Bearer scheme",
+      "exp is in seconds while timestamp is in milliseconds",
+      "The browser WebSocket API cannot attach this required header directly",
+      "The native endpoint has no model query parameter"
+    ],
+    "implementationStatus": "disabled/not-implemented"
+  }
+}

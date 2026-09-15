@@ -1,0 +1,85 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "zhipu-glm.tts-stream",
+  "providerId": "zhipu-glm",
+  "protocolProfileId": "zhipu-glm.tts",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "zhipu-glm.tts-guide",
+      "zhipu-glm.tts-reference"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic GLM-TTS SSE response; AAAAAA== is inert PCM silence."
+  },
+  "scenario": "GLM-TTS streams base64 PCM audio and terminates with finish_reason stop",
+  "data": {
+    "request": {
+      "event": "audio.speech.create",
+      "method": "POST",
+      "url": "https://open.bigmodel.cn/api/paas/v4/audio/speech",
+      "headers": {
+        "Authorization": "Bearer <redacted-zhipu-api-key>",
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "model": "glm-tts",
+        "input": "Read the supplied sanitized text.",
+        "voice": "female",
+        "response_format": "pcm",
+        "encode_format": "base64",
+        "stream": true
+      }
+    },
+    "authContract": {
+      "profileId": "zhipu-glm.bearer-api-key",
+      "parameters": [
+        { "location": "header", "name": "Authorization", "value": "Bearer <redacted-zhipu-api-key>" }
+      ]
+    },
+    "responseFrames": [
+      {
+        "type": "audio.speech.chunk",
+        "data": {
+          "model": "glm-tts",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "return_sample_rate": 24000,
+                "content": "AAAAAA=="
+              },
+              "finish_reason": null
+            }
+          ]
+        }
+      },
+      {
+        "type": "audio.speech.stop",
+        "terminal": true,
+        "data": {
+          "model": "glm-tts",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {},
+              "finish_reason": "stop"
+            }
+          ]
+        }
+      }
+    ],
+    "audioContract": {
+      "output": "PCM signed 16-bit little-endian, mono, 24000 Hz",
+      "encoding": "base64",
+      "fixtureAudio": "AAAAAA== is inert synthetic silence"
+    },
+    "audio": { "encoding": "base64", "data": "AAAAAA==" },
+    "terminal": "finish_reason=stop",
+    "implementationStatus": "disabled/not-implemented"
+  }
+}

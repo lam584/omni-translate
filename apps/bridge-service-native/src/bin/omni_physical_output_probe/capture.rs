@@ -16,21 +16,11 @@
         }
 
         fn collect_available(&self, metrics: &mut CaptureMetrics) -> Result<(), String> {
-            for_each_capture_packet(&self.capture_client, BYTES_PER_FRAME, |packet, _silent| {
-                if packet.is_empty() {
-                    metrics.silent_packets += 1;
-                    return;
-                }
-                for chunk in packet.chunks_exact(4) {
-                    let value = f32::from_le_bytes(chunk.try_into().unwrap());
-                    if value.is_finite() {
-                        metrics.samples.push(value);
-                        metrics.peak = metrics.peak.max(value.abs());
-                    } else {
-                        metrics.invalid_samples += 1;
-                    }
-                }
-            })
+            for_each_capture_packet_with_info(
+                &self.capture_client,
+                BYTES_PER_FRAME,
+                |packet, info| metrics.append_capture_packet(packet, info),
+            )
         }
     }
 
@@ -40,21 +30,577 @@
         }
     }
 
-    #[derive(Default)]
+    const RECORDER_CAPTURE_BUFFER_HEADROOM_HNS: i64 = 10_000_000;
+    const RECORDER_CAPTURE_EVENT_WAIT_MS: u32 = 50;
+
+    fn recorder_capture_buffer_duration_hns(
+        default_period_hns: i64,
+        minimum_period_hns: i64,
+    ) -> i64 {
+        RECORDER_CAPTURE_BUFFER_HEADROOM_HNS
+            .max(default_period_hns)
+            .max(minimum_period_hns)
+    }
+
+    struct RecorderLoopbackCapture {
+        audio_client: AudioClient,
+        capture_client: AudioCaptureClient,
+        event_handle: Handle,
+    }
+
+    impl RecorderLoopbackCapture {
+        fn start(device: &Device) -> Result<Self, String> {
+            let format = WaveFormat::new(32, 32, &SampleType::Float, SAMPLE_RATE, CHANNELS, None);
+            let mut audio_client = device
+                .get_iaudioclient()
+                .map_err(|error| format!("activate-recorder-audio-client: {error}"))?;
+            let (default_period_hns, minimum_period_hns) = audio_client
+                .get_device_period()
+                .map_err(|error| format!("query-recorder-device-period: {error}"))?;
+            let buffer_duration_hns = recorder_capture_buffer_duration_hns(
+                default_period_hns,
+                minimum_period_hns,
+            );
+            audio_client
+                .initialize_client(
+                    &format,
+                    &Direction::Capture,
+                    &StreamMode::EventsShared {
+                        autoconvert: true,
+                        buffer_duration_hns,
+                    },
+                )
+                .map_err(|error| format!("initialize-recorder-event-capture: {error}"))?;
+            let event_handle = audio_client
+                .set_get_eventhandle()
+                .map_err(|error| format!("register-recorder-capture-event: {error}"))?;
+            let capture_client = audio_client
+                .get_audiocaptureclient()
+                .map_err(|error| format!("get-recorder-capture-client: {error}"))?;
+            audio_client
+                .start_stream()
+                .map_err(|error| format!("start-recorder-capture-stream: {error}"))?;
+            Ok(Self {
+                audio_client,
+                capture_client,
+                event_handle,
+            })
+        }
+
+        fn wait_and_collect_available(&self, metrics: &mut CaptureMetrics) -> Result<(), String> {
+            match self
+                .event_handle
+                .wait_for_event(RECORDER_CAPTURE_EVENT_WAIT_MS)
+            {
+                Ok(()) | Err(WasapiError::EventTimeout) => {}
+                Err(error) => return Err(format!("wait-for-recorder-capture-event: {error}")),
+            }
+            for_each_capture_packet_with_info(
+                &self.capture_client,
+                BYTES_PER_FRAME,
+                |packet, info| metrics.append_capture_packet(packet, info),
+            )
+        }
+
+        fn collect_available(&self, metrics: &mut CaptureMetrics) -> Result<(), String> {
+            for_each_capture_packet_with_info(
+                &self.capture_client,
+                BYTES_PER_FRAME,
+                |packet, info| metrics.append_capture_packet(packet, info),
+            )
+        }
+    }
+
+    impl Drop for RecorderLoopbackCapture {
+        fn drop(&mut self) {
+            let _ = self.audio_client.stop_stream();
+        }
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CaptureGapAuthority {
+        output_start_frame: usize,
+        frame_count: u64,
+        expected_device_position_frames: u64,
+        observed_device_position_frames: u64,
+        qpc_position_100ns: u64,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CaptureUnreliableWindowAuthority {
+        output_start_frame: usize,
+        frame_count: u64,
+        packet_index: usize,
+        device_position_frames: u64,
+        qpc_position_100ns: u64,
+        reason: &'static str,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct CaptureTimelineAuthority {
+        schema_version: u32,
+        authority_mode: &'static str,
+        sample_zero_epoch_ms: Option<u64>,
+        sample_zero_time_authority: &'static str,
+        sample_rate_hz: u32,
+        channel_count: usize,
+        passed: bool,
+        packet_count: usize,
+        output_frame_count: usize,
+        max_output_frame_count: usize,
+        first_device_position_frames: Option<u64>,
+        last_device_position_frames: Option<u64>,
+        end_device_position_frames_exclusive: Option<u64>,
+        first_qpc_position_100ns: Option<u64>,
+        last_qpc_position_100ns: Option<u64>,
+        data_discontinuity_packet_count: usize,
+        timestamp_error_packet_count: usize,
+        qpc_regression_packet_count: usize,
+        overlap_packet_count: usize,
+        total_gap_frames: u64,
+        total_unreliable_frames: u64,
+        gaps: Vec<CaptureGapAuthority>,
+        unreliable_windows: Vec<CaptureUnreliableWindowAuthority>,
+        violations: Vec<String>,
+    }
+
+    const MAX_CAPTURE_GAP_FRAMES: u64 = SAMPLE_RATE as u64 * 5;
+    const DEFAULT_MAX_CAPTURE_OUTPUT_FRAMES: usize = SAMPLE_RATE * 60;
+    const HUNDRED_NS_PER_SECOND: u128 = 10_000_000;
+    const HUNDRED_NS_PER_MILLISECOND: u128 = 10_000;
+    const MAX_QPC_EPOCH_CALIBRATION_SPAN_100NS: u64 = 50_000;
+    const MAX_QPC_MAPPING_DISTANCE_100NS: u64 = 5 * 60 * 10_000_000;
+
+    #[derive(Clone, Copy, Debug)]
+    struct QpcEpochCalibration {
+        qpc_position_100ns: u64,
+        epoch_position_100ns: u128,
+        uncertainty_100ns: u64,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn QueryPerformanceCounter(performance_count: *mut i64) -> i32;
+        fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
+    }
+
+    fn system_time_epoch_100ns(now: SystemTime) -> Result<u128, String> {
+        Ok(now
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| format!("system clock precedes Unix epoch: {error}"))?
+            .as_nanos()
+            / 100)
+    }
+
+    fn qpc_ticks_to_100ns(ticks: i64, frequency: i64) -> Result<u64, String> {
+        if ticks < 0 || frequency <= 0 {
+            return Err(format!(
+                "invalid performance counter calibration: ticks={ticks} frequency={frequency}"
+            ));
+        }
+        let scaled = (ticks as u128)
+            .checked_mul(HUNDRED_NS_PER_SECOND)
+            .ok_or_else(|| "performance counter conversion overflowed".to_string())?
+            / frequency as u128;
+        u64::try_from(scaled)
+            .map_err(|_| "performance counter position exceeds u64".to_string())
+    }
+
+    fn calibrate_qpc_to_epoch() -> Result<QpcEpochCalibration, String> {
+        let epoch_before = system_time_epoch_100ns(SystemTime::now())?;
+        let mut ticks = 0i64;
+        let mut frequency = 0i64;
+        // SAFETY: Windows writes one signed 64-bit value to each valid out pointer.
+        if unsafe { QueryPerformanceCounter(&mut ticks) } == 0
+            || unsafe { QueryPerformanceFrequency(&mut frequency) } == 0
+        {
+            return Err("Windows performance counter calibration failed".to_string());
+        }
+        let epoch_after = system_time_epoch_100ns(SystemTime::now())?;
+        let span = epoch_after.checked_sub(epoch_before).ok_or_else(|| {
+            "system clock moved backward during QPC/epoch calibration".to_string()
+        })?;
+        let span_u64 = u64::try_from(span)
+            .map_err(|_| "QPC/epoch calibration span exceeds u64".to_string())?;
+        if span_u64 > MAX_QPC_EPOCH_CALIBRATION_SPAN_100NS {
+            return Err(format!(
+                "QPC/epoch calibration span {span_u64} exceeded {} (100ns units)",
+                MAX_QPC_EPOCH_CALIBRATION_SPAN_100NS
+            ));
+        }
+        let midpoint = epoch_before
+            .checked_add(span / 2)
+            .ok_or_else(|| "QPC/epoch calibration midpoint overflowed".to_string())?;
+        Ok(QpcEpochCalibration {
+            qpc_position_100ns: qpc_ticks_to_100ns(ticks, frequency)?,
+            epoch_position_100ns: midpoint,
+            uncertainty_100ns: span_u64.saturating_add(1) / 2,
+        })
+    }
+
+    fn map_qpc_to_epoch_ms(
+        packet_qpc_position_100ns: u64,
+        calibration: QpcEpochCalibration,
+    ) -> Result<u64, String> {
+        if calibration.uncertainty_100ns > MAX_QPC_EPOCH_CALIBRATION_SPAN_100NS / 2 {
+            return Err("QPC/epoch calibration uncertainty is not trustworthy".to_string());
+        }
+        let distance = packet_qpc_position_100ns.abs_diff(calibration.qpc_position_100ns);
+        if distance > MAX_QPC_MAPPING_DISTANCE_100NS {
+            return Err(format!(
+                "packet QPC is {distance} (100ns units) from calibration, exceeding {}",
+                MAX_QPC_MAPPING_DISTANCE_100NS
+            ));
+        }
+        let epoch_100ns = if packet_qpc_position_100ns >= calibration.qpc_position_100ns {
+            calibration
+                .epoch_position_100ns
+                .checked_add(u128::from(distance))
+        } else {
+            calibration
+                .epoch_position_100ns
+                .checked_sub(u128::from(distance))
+        }
+        .ok_or_else(|| "packet QPC to epoch mapping overflowed".to_string())?;
+        let epoch_ms = epoch_100ns / HUNDRED_NS_PER_MILLISECOND;
+        u64::try_from(epoch_ms).map_err(|_| "sample-zero epoch exceeds u64".to_string())
+    }
+
     struct CaptureMetrics {
         samples: Vec<f32>,
+        pcm_chunks: Vec<Vec<f32>>,
         peak: f32,
         silent_packets: usize,
         invalid_samples: usize,
+        capture_packet_count: usize,
+        first_device_position_frames: Option<u64>,
+        last_device_position_frames: Option<u64>,
+        first_qpc_position_100ns: Option<u64>,
+        sample_zero_epoch_ms: Option<u64>,
+        qpc_epoch_calibration: Result<QpcEpochCalibration, String>,
+        sample_zero_mapping_attempted: bool,
+        last_qpc_position_100ns: Option<u64>,
+        next_device_position_frames: Option<u64>,
+        data_discontinuity_packet_count: usize,
+        timestamp_error_packet_count: usize,
+        qpc_regression_packet_count: usize,
+        overlap_packet_count: usize,
+        total_gap_frames: u64,
+        total_unreliable_frames: u64,
+        capture_gaps: Vec<CaptureGapAuthority>,
+        capture_unreliable_windows: Vec<CaptureUnreliableWindowAuthority>,
+        capture_timeline_violations: Vec<String>,
+        max_output_frames: usize,
+    }
+
+    impl Default for CaptureMetrics {
+        fn default() -> Self {
+            Self {
+                samples: Vec::new(),
+                pcm_chunks: Vec::new(),
+                peak: 0.0,
+                silent_packets: 0,
+                invalid_samples: 0,
+                capture_packet_count: 0,
+                first_device_position_frames: None,
+                last_device_position_frames: None,
+                first_qpc_position_100ns: None,
+                sample_zero_epoch_ms: None,
+                qpc_epoch_calibration: calibrate_qpc_to_epoch(),
+                sample_zero_mapping_attempted: false,
+                last_qpc_position_100ns: None,
+                next_device_position_frames: None,
+                data_discontinuity_packet_count: 0,
+                timestamp_error_packet_count: 0,
+                qpc_regression_packet_count: 0,
+                overlap_packet_count: 0,
+                total_gap_frames: 0,
+                total_unreliable_frames: 0,
+                capture_gaps: Vec::new(),
+                capture_unreliable_windows: Vec::new(),
+                capture_timeline_violations: Vec::new(),
+                max_output_frames: 0,
+            }
+        }
     }
 
     impl CaptureMetrics {
+        fn try_with_max_output_frames(max_output_frames: usize) -> Result<Self, String> {
+            let sample_capacity = max_output_frames.checked_mul(CHANNELS).ok_or_else(|| {
+                format!(
+                    "physical output recorder sample capacity overflowed: frames={max_output_frames} channels={CHANNELS}"
+                )
+            })?;
+            let mut samples = Vec::new();
+            samples.try_reserve_exact(sample_capacity).map_err(|error| {
+                format!(
+                    "reserve physical output recorder sample capacity ({sample_capacity} samples): {error}"
+                )
+            })?;
+            Ok(Self {
+                samples,
+                max_output_frames,
+                ..Self::default()
+            })
+        }
+
+        fn output_frame_budget(&self) -> usize {
+            if self.max_output_frames == 0 {
+                DEFAULT_MAX_CAPTURE_OUTPUT_FRAMES
+            } else {
+                self.max_output_frames
+            }
+        }
+
+        fn append_capture_packet(&mut self, payload: &[u8], info: CapturePacketInfo) {
+            self.capture_packet_count += 1;
+            let prior_qpc_position_100ns = self.last_qpc_position_100ns;
+            self.first_device_position_frames
+                .get_or_insert(info.device_position_frames);
+            self.first_qpc_position_100ns
+                .get_or_insert(info.qpc_position_100ns);
+            self.last_device_position_frames = Some(info.device_position_frames);
+            self.last_qpc_position_100ns = Some(info.qpc_position_100ns);
+            if info.data_discontinuity {
+                self.data_discontinuity_packet_count += 1;
+            }
+            if info.timestamp_error {
+                self.timestamp_error_packet_count += 1;
+                self.capture_timeline_violations.push(format!(
+                    "WASAPI capture packet {} has an invalid QPC timestamp",
+                    self.capture_packet_count
+                ));
+            }
+            if !self.sample_zero_mapping_attempted {
+                self.sample_zero_mapping_attempted = true;
+                if info.timestamp_error {
+                    self.capture_timeline_violations.push(
+                        "sample-zero cannot use a packet with an invalid QPC timestamp".to_string(),
+                    );
+                } else {
+                    match self
+                        .qpc_epoch_calibration
+                        .as_ref()
+                        .map_err(Clone::clone)
+                        .and_then(|calibration| {
+                            map_qpc_to_epoch_ms(info.qpc_position_100ns, *calibration)
+                        })
+                    {
+                        Ok(epoch_ms) => self.sample_zero_epoch_ms = Some(epoch_ms),
+                        Err(error) => self.capture_timeline_violations.push(format!(
+                            "sample-zero QPC/epoch authority is unavailable: {error}"
+                        )),
+                    }
+                }
+            }
+            if prior_qpc_position_100ns.is_some_and(|prior| info.qpc_position_100ns < prior) {
+                self.qpc_regression_packet_count += 1;
+                self.capture_timeline_violations.push(format!(
+                    "WASAPI capture QPC position moved backward at packet {}: previous {}, observed {}",
+                    self.capture_packet_count,
+                    prior_qpc_position_100ns.unwrap_or_default(),
+                    info.qpc_position_100ns
+                ));
+            }
+            let Some(expected_payload_bytes) = usize::try_from(info.frames)
+                .ok()
+                .and_then(|frames| frames.checked_mul(BYTES_PER_FRAME))
+            else {
+                self.capture_timeline_violations.push(format!(
+                    "WASAPI capture packet {} frame count {} cannot be represented safely",
+                    self.capture_packet_count, info.frames
+                ));
+                return;
+            };
+            if payload.len() != expected_payload_bytes {
+                self.capture_timeline_violations.push(format!(
+                    "WASAPI capture packet {} byte length {} does not match {} frame(s)",
+                    self.capture_packet_count,
+                    payload.len(),
+                    info.frames
+                ));
+                return;
+            }
+            let Some(packet_end_device_position) = info
+                .device_position_frames
+                .checked_add(u64::from(info.frames))
+            else {
+                self.capture_timeline_violations.push(format!(
+                    "WASAPI capture device position overflowed at packet {}: position {}, frames {}",
+                    self.capture_packet_count, info.device_position_frames, info.frames
+                ));
+                return;
+            };
+
+            let expected = self
+                .next_device_position_frames
+                .unwrap_or(info.device_position_frames);
+            let overlap_frames = expected.saturating_sub(info.device_position_frames);
+            let frames_to_skip = overlap_frames.min(u64::from(info.frames)) as usize;
+            let append_frames = info.frames as usize - frames_to_skip;
+            let gap_frames = info.device_position_frames.saturating_sub(expected);
+            if gap_frames > MAX_CAPTURE_GAP_FRAMES {
+                self.capture_timeline_violations.push(format!(
+                    "WASAPI capture device-position gap at packet {} is {} frame(s), exceeding the fail-closed zero-fill limit of {} frame(s)",
+                    self.capture_packet_count, gap_frames, MAX_CAPTURE_GAP_FRAMES
+                ));
+                return;
+            }
+            let Some(gap_frame_count) = usize::try_from(gap_frames).ok() else {
+                self.capture_timeline_violations.push(format!(
+                    "WASAPI capture device-position gap at packet {} cannot be represented safely: {} frame(s)",
+                    self.capture_packet_count, gap_frames
+                ));
+                return;
+            };
+            let Some(projected_output_frames) = self
+                .frames()
+                .checked_add(gap_frame_count)
+                .and_then(|frames| frames.checked_add(append_frames))
+            else {
+                self.capture_timeline_violations.push(format!(
+                    "WASAPI capture output frame count overflowed at packet {}",
+                    self.capture_packet_count
+                ));
+                return;
+            };
+            if projected_output_frames > self.output_frame_budget() {
+                self.capture_timeline_violations.push(format!(
+                    "WASAPI capture packet {} would exceed the recorder output budget: projected {} frame(s), maximum {} frame(s)",
+                    self.capture_packet_count,
+                    projected_output_frames,
+                    self.output_frame_budget()
+                ));
+                return;
+            }
+            let Some(samples_to_reserve) = gap_frame_count
+                .checked_add(append_frames)
+                .and_then(|frames| frames.checked_mul(CHANNELS))
+            else {
+                self.capture_timeline_violations.push(format!(
+                    "WASAPI capture packet {} sample count cannot be represented safely",
+                    self.capture_packet_count
+                ));
+                return;
+            };
+            let unreliable_frame_count = if info.data_discontinuity {
+                let Ok(append_frames) = u64::try_from(append_frames) else {
+                    self.capture_timeline_violations.push(format!(
+                        "WASAPI capture packet {} unreliable frame count cannot be represented safely",
+                        self.capture_packet_count
+                    ));
+                    return;
+                };
+                Some(append_frames)
+            } else {
+                None
+            };
+            let projected_unreliable_frames =
+                if let Some(unreliable_frame_count) = unreliable_frame_count {
+                    let Some(projected) = self
+                        .total_unreliable_frames
+                        .checked_add(unreliable_frame_count)
+                    else {
+                        self.capture_timeline_violations.push(format!(
+                            "WASAPI capture total unreliable frame count overflowed at packet {}",
+                            self.capture_packet_count
+                        ));
+                        return;
+                    };
+                    Some(projected)
+                } else {
+                    None
+                };
+            if self.samples.len().checked_add(samples_to_reserve).is_none()
+                || self.samples.try_reserve_exact(samples_to_reserve).is_err()
+            {
+                self.capture_timeline_violations.push(format!(
+                    "WASAPI capture packet {} cannot be stored within recorder memory limits",
+                    self.capture_packet_count
+                ));
+                return;
+            }
+            if info.device_position_frames > expected {
+                let Some(total_gap_frames) = self.total_gap_frames.checked_add(gap_frames) else {
+                    self.capture_timeline_violations.push(format!(
+                        "WASAPI capture total device-position gap overflowed at packet {}",
+                        self.capture_packet_count
+                    ));
+                    return;
+                };
+                let output_start_frame = self.frames();
+                self.samples
+                    .extend(std::iter::repeat(0.0).take(gap_frame_count * CHANNELS));
+                self.total_gap_frames = total_gap_frames;
+                self.capture_gaps.push(CaptureGapAuthority {
+                    output_start_frame,
+                    frame_count: gap_frames,
+                    expected_device_position_frames: expected,
+                    observed_device_position_frames: info.device_position_frames,
+                    qpc_position_100ns: info.qpc_position_100ns,
+                });
+            } else if info.device_position_frames < expected {
+                self.overlap_packet_count += 1;
+                self.capture_timeline_violations.push(format!(
+                    "WASAPI capture device position moved backward or overlapped at packet {}: expected {}, observed {}",
+                    self.capture_packet_count, expected, info.device_position_frames
+                ));
+            }
+
+            let bytes_to_skip = frames_to_skip * BYTES_PER_FRAME;
+            if let (Some(projected_unreliable_frames), Some(unreliable_frame_count)) =
+                (projected_unreliable_frames, unreliable_frame_count)
+            {
+                let output_start_frame = self.frames();
+                self.samples
+                    .extend(std::iter::repeat(0.0).take(append_frames * CHANNELS));
+                self.total_unreliable_frames = projected_unreliable_frames;
+                self.capture_unreliable_windows
+                    .push(CaptureUnreliableWindowAuthority {
+                        output_start_frame,
+                        frame_count: unreliable_frame_count,
+                        packet_index: self.capture_packet_count,
+                        device_position_frames: info.device_position_frames + frames_to_skip as u64,
+                        qpc_position_100ns: info.qpc_position_100ns,
+                        reason: "data-discontinuity",
+                    });
+            } else {
+                self.append_float32le(&payload[bytes_to_skip..]);
+            }
+            self.next_device_position_frames =
+                Some(expected.max(packet_end_device_position));
+            if info.silent {
+                self.silent_packets += 1;
+            }
+        }
+
+        fn append_float32le(&mut self, payload: &[u8]) {
+            for chunk in payload.chunks_exact(4) {
+                let value = f32::from_le_bytes(chunk.try_into().unwrap());
+                if value.is_finite() {
+                    self.samples.push(value);
+                    self.peak = self.peak.max(value.abs());
+                } else {
+                    self.invalid_samples += 1;
+                    self.samples.push(0.0);
+                }
+            }
+        }
+
         fn append_pcm16le(&mut self, payload: &[u8]) {
+            let mut pcm_chunk = Vec::with_capacity(payload.len() / 2);
             for chunk in payload.chunks_exact(2) {
                 let value = i16::from_le_bytes(chunk.try_into().unwrap()) as f32
                     / i16::MAX as f32;
                 self.samples.push(value);
+                pcm_chunk.push(value);
                 self.peak = self.peak.max(value.abs());
+            }
+            if !pcm_chunk.is_empty() {
+                self.pcm_chunks.push(pcm_chunk);
             }
         }
 
@@ -73,5 +619,340 @@
                 .sum::<f64>();
             (sum / self.samples.len() as f64).sqrt() as f32
         }
+
+        fn capture_timeline_authority(&self) -> CaptureTimelineAuthority {
+            CaptureTimelineAuthority {
+                schema_version: 4,
+                authority_mode: "wasapi-device-position-qpc-epoch-calibrated-v4",
+                sample_zero_epoch_ms: self.sample_zero_epoch_ms,
+                sample_zero_time_authority: "first-capture-packet-qpc-epoch-calibration-v2",
+                sample_rate_hz: SAMPLE_RATE as u32,
+                channel_count: CHANNELS,
+                passed: self.capture_timeline_violations.is_empty()
+                    && self.sample_zero_epoch_ms.is_some(),
+                packet_count: self.capture_packet_count,
+                output_frame_count: self.frames(),
+                max_output_frame_count: self.output_frame_budget(),
+                first_device_position_frames: self.first_device_position_frames,
+                last_device_position_frames: self.last_device_position_frames,
+                end_device_position_frames_exclusive: self.next_device_position_frames,
+                first_qpc_position_100ns: self.first_qpc_position_100ns,
+                last_qpc_position_100ns: self.last_qpc_position_100ns,
+                data_discontinuity_packet_count: self.data_discontinuity_packet_count,
+                timestamp_error_packet_count: self.timestamp_error_packet_count,
+                qpc_regression_packet_count: self.qpc_regression_packet_count,
+                overlap_packet_count: self.overlap_packet_count,
+                total_gap_frames: self.total_gap_frames,
+                total_unreliable_frames: self.total_unreliable_frames,
+                gaps: self.capture_gaps.clone(),
+                unreliable_windows: self.capture_unreliable_windows.clone(),
+                violations: self.capture_timeline_violations.clone(),
+            }
+        }
     }
 
+    #[cfg(test)]
+    mod capture_timeline_tests {
+        use super::*;
+
+        #[test]
+        fn recorder_capture_buffer_keeps_one_second_of_scheduler_headroom() {
+            assert_eq!(
+                recorder_capture_buffer_duration_hns(100_000, 30_000),
+                RECORDER_CAPTURE_BUFFER_HEADROOM_HNS
+            );
+            assert_eq!(
+                recorder_capture_buffer_duration_hns(20_000_000, 30_000),
+                20_000_000
+            );
+            assert_eq!(
+                recorder_capture_buffer_duration_hns(100_000, 20_000_000),
+                20_000_000
+            );
+        }
+
+        #[test]
+        fn recorder_capture_preallocates_its_bounded_output_without_growth() {
+            let frame_budget = 48_000;
+            let metrics = CaptureMetrics::try_with_max_output_frames(frame_budget).unwrap();
+            assert_eq!(metrics.output_frame_budget(), frame_budget);
+            assert!(metrics.samples.capacity() >= frame_budget * CHANNELS);
+        }
+
+        #[test]
+        fn recorder_capture_rejects_an_unrepresentable_sample_capacity() {
+            let error = match CaptureMetrics::try_with_max_output_frames(usize::MAX) {
+                Ok(_) => panic!("unrepresentable recorder capacity must fail"),
+                Err(error) => error,
+            };
+            assert!(error.contains("sample capacity overflowed"));
+        }
+
+        fn float_payload(frames: u32, value: f32) -> Vec<u8> {
+            (0..frames as usize * CHANNELS)
+                .flat_map(|_| value.to_le_bytes())
+                .collect()
+        }
+
+        fn packet(frames: u32, position: u64) -> CapturePacketInfo {
+            CapturePacketInfo {
+                frames,
+                device_position_frames: position,
+                qpc_position_100ns: position * 100,
+                data_discontinuity: false,
+                silent: false,
+                timestamp_error: false,
+            }
+        }
+
+        fn metrics_with_calibration(calibration: QpcEpochCalibration) -> CaptureMetrics {
+            CaptureMetrics {
+                qpc_epoch_calibration: Ok(calibration),
+                ..CaptureMetrics::default()
+            }
+        }
+
+        fn calibrated_metrics() -> CaptureMetrics {
+            metrics_with_calibration(QpcEpochCalibration {
+                qpc_position_100ns: 10_000,
+                epoch_position_100ns: 1_700_000_000_000u128 * HUNDRED_NS_PER_MILLISECOND,
+                uncertainty_100ns: 10,
+            })
+        }
+
+        #[test]
+        fn sample_zero_uses_packet_qpc_and_is_invariant_to_collection_delay() {
+            let packet_qpc = 8_000_000u64;
+            let epoch = 1_700_000_000_000u128 * HUNDRED_NS_PER_MILLISECOND;
+            let immediate = map_qpc_to_epoch_ms(
+                packet_qpc,
+                QpcEpochCalibration {
+                    qpc_position_100ns: packet_qpc,
+                    epoch_position_100ns: epoch,
+                    uncertainty_100ns: 5,
+                },
+            )
+            .unwrap();
+            let delayed = map_qpc_to_epoch_ms(
+                packet_qpc,
+                QpcEpochCalibration {
+                    qpc_position_100ns: packet_qpc + 10_000_000,
+                    epoch_position_100ns: epoch + 10_000_000,
+                    uncertainty_100ns: 5,
+                },
+            )
+            .unwrap();
+
+            assert_eq!(immediate, 1_700_000_000_000);
+            assert_eq!(delayed, immediate, "one second of collection delay must cancel out");
+        }
+
+        #[test]
+        fn sample_zero_rejects_untrusted_calibration_and_arithmetic_overflow() {
+            let untrusted = map_qpc_to_epoch_ms(
+                100,
+                QpcEpochCalibration {
+                    qpc_position_100ns: 100,
+                    epoch_position_100ns: 1_000_000,
+                    uncertainty_100ns: MAX_QPC_EPOCH_CALIBRATION_SPAN_100NS,
+                },
+            );
+            assert!(untrusted.unwrap_err().contains("not trustworthy"));
+
+            let overflow = map_qpc_to_epoch_ms(
+                101,
+                QpcEpochCalibration {
+                    qpc_position_100ns: 100,
+                    epoch_position_100ns: u128::MAX,
+                    uncertainty_100ns: 0,
+                },
+            );
+            assert!(overflow.unwrap_err().contains("overflowed"));
+        }
+
+        #[test]
+        fn first_bad_timestamp_fails_closed_and_cannot_be_replaced_by_a_later_packet() {
+            let mut metrics = calibrated_metrics();
+            let mut first = packet(2, 100);
+            first.timestamp_error = true;
+            metrics.append_capture_packet(&float_payload(2, 0.25), first);
+            metrics.append_capture_packet(&float_payload(2, 0.5), packet(2, 102));
+
+            let authority = metrics.capture_timeline_authority();
+            assert!(!authority.passed);
+            assert_eq!(authority.sample_zero_epoch_ms, None);
+            assert!(authority
+                .violations
+                .iter()
+                .any(|violation| violation.contains("sample-zero cannot use")));
+        }
+
+        #[test]
+        fn unavailable_calibration_fails_closed() {
+            let mut metrics = calibrated_metrics();
+            metrics.qpc_epoch_calibration = Err("synthetic calibration failure".to_string());
+            metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
+
+            let authority = metrics.capture_timeline_authority();
+            assert!(!authority.passed);
+            assert_eq!(authority.sample_zero_epoch_ms, None);
+            assert!(authority
+                .violations
+                .iter()
+                .any(|violation| violation.contains("synthetic calibration failure")));
+        }
+
+        #[test]
+        fn capture_timeline_inserts_a_device_position_gap_without_compressing_time() {
+            let mut metrics = calibrated_metrics();
+            metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
+            let mut second = packet(2, 104);
+            second.data_discontinuity = true;
+            metrics.append_capture_packet(&float_payload(2, 0.5), second);
+
+            assert_eq!(metrics.frames(), 6);
+            assert_eq!(&metrics.samples[4..8], &[0.0; 4]);
+            let authority = metrics.capture_timeline_authority();
+            assert!(authority.sample_zero_epoch_ms.is_some());
+            assert_eq!(
+                authority.sample_zero_time_authority,
+                "first-capture-packet-qpc-epoch-calibration-v2"
+            );
+            assert_eq!(authority.schema_version, 4);
+            assert_eq!(
+                authority.authority_mode,
+                "wasapi-device-position-qpc-epoch-calibrated-v4"
+            );
+            assert!(authority.passed);
+            assert_eq!(authority.total_gap_frames, 2);
+            assert_eq!(authority.output_frame_count, 6);
+            assert_eq!(authority.end_device_position_frames_exclusive, Some(106));
+            assert_eq!(authority.gaps.len(), 1);
+            assert_eq!(authority.gaps[0].output_start_frame, 2);
+            assert_eq!(authority.gaps[0].expected_device_position_frames, 102);
+            assert_eq!(authority.gaps[0].observed_device_position_frames, 104);
+            assert_eq!(authority.total_unreliable_frames, 2);
+            assert_eq!(authority.unreliable_windows.len(), 1);
+            assert_eq!(authority.unreliable_windows[0].output_start_frame, 4);
+            assert_eq!(authority.unreliable_windows[0].frame_count, 2);
+            assert_eq!(authority.unreliable_windows[0].packet_index, 2);
+            assert_eq!(&metrics.samples[8..12], &[0.0; 4]);
+        }
+
+        #[test]
+        fn capture_timeline_rejects_overlap_and_trims_duplicate_frames() {
+            let mut metrics = calibrated_metrics();
+            metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
+            metrics.append_capture_packet(&float_payload(2, 0.5), packet(2, 101));
+
+            assert_eq!(metrics.frames(), 3);
+            let authority = metrics.capture_timeline_authority();
+            assert!(!authority.passed);
+            assert_eq!(authority.overlap_packet_count, 1);
+            assert!(authority.violations[0].contains("moved backward or overlapped"));
+        }
+
+        #[test]
+        fn capture_timeline_keeps_discontinuity_window_but_rejects_bad_qpc() {
+            let mut metrics = calibrated_metrics();
+            metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
+            let mut second = packet(2, 102);
+            second.data_discontinuity = true;
+            second.timestamp_error = true;
+            second.qpc_position_100ns = 9_000;
+            metrics.append_capture_packet(&float_payload(2, 0.5), second);
+
+            let authority = metrics.capture_timeline_authority();
+            assert!(!authority.passed);
+            assert_eq!(authority.data_discontinuity_packet_count, 1);
+            assert_eq!(authority.timestamp_error_packet_count, 1);
+            assert_eq!(authority.qpc_regression_packet_count, 1);
+            assert_eq!(authority.violations.len(), 2);
+            assert_eq!(authority.unreliable_windows.len(), 1);
+            assert_eq!(authority.unreliable_windows[0].packet_index, 2);
+            assert_eq!(&metrics.samples[4..8], &[0.0; 4]);
+        }
+
+        #[test]
+        fn capture_timeline_rejects_huge_device_position_gap_without_allocating() {
+            let mut metrics = calibrated_metrics();
+            metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
+            let frames_before_gap = metrics.frames();
+            let capacity_before_gap = metrics.samples.capacity();
+            let second = packet(2, 102 + MAX_CAPTURE_GAP_FRAMES + 1);
+            metrics.append_capture_packet(&float_payload(2, 0.5), second);
+
+            assert_eq!(metrics.frames(), frames_before_gap);
+            assert_eq!(metrics.samples.capacity(), capacity_before_gap);
+            let authority = metrics.capture_timeline_authority();
+            assert!(!authority.passed);
+            assert_eq!(authority.total_gap_frames, 0);
+            assert!(authority.gaps.is_empty());
+            assert!(authority.violations[0].contains("fail-closed zero-fill limit"));
+        }
+
+        #[test]
+        fn capture_timeline_rejects_repeated_bounded_gaps_at_total_output_budget() {
+            let budget = MAX_CAPTURE_GAP_FRAMES as usize + 4;
+            let mut metrics = calibrated_metrics();
+            metrics.max_output_frames = budget;
+            metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
+            let mut second = packet(2, 102 + MAX_CAPTURE_GAP_FRAMES);
+            second.data_discontinuity = true;
+            metrics.append_capture_packet(&float_payload(2, 0.5), second);
+            assert_eq!(metrics.frames(), budget);
+            let capacity_before_rejected_gap = metrics.samples.capacity();
+
+            let mut third = packet(
+                2,
+                second.device_position_frames + 2 + MAX_CAPTURE_GAP_FRAMES,
+            );
+            third.data_discontinuity = true;
+            metrics.append_capture_packet(&float_payload(2, 0.75), third);
+
+            assert_eq!(metrics.frames(), budget);
+            assert_eq!(metrics.samples.capacity(), capacity_before_rejected_gap);
+            let authority = metrics.capture_timeline_authority();
+            assert!(!authority.passed);
+            assert_eq!(authority.total_gap_frames, MAX_CAPTURE_GAP_FRAMES);
+            assert_eq!(authority.gaps.len(), 1);
+            assert!(authority
+                .violations
+                .iter()
+                .any(|violation| violation.contains("recorder output budget")));
+        }
+
+        #[test]
+        fn capture_timeline_preserves_unflagged_device_position_gap_as_independent_authority() {
+            let mut metrics = calibrated_metrics();
+            metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
+            metrics.append_capture_packet(&float_payload(2, 0.5), packet(2, 104));
+
+            assert_eq!(metrics.frames(), 6, "known device positions still preserve time");
+            let authority = metrics.capture_timeline_authority();
+            assert!(authority.passed);
+            assert_eq!(authority.total_gap_frames, 2);
+            assert_eq!(authority.gaps.len(), 1);
+            assert!(authority.unreliable_windows.is_empty());
+            assert!(authority.violations.is_empty());
+        }
+
+        #[test]
+        fn capture_timeline_zero_fills_discontinuity_without_a_numeric_gap() {
+            let mut metrics = calibrated_metrics();
+            metrics.append_capture_packet(&float_payload(2, 0.25), packet(2, 100));
+            let mut second = packet(2, 102);
+            second.data_discontinuity = true;
+            metrics.append_capture_packet(&float_payload(2, 0.5), second);
+
+            let authority = metrics.capture_timeline_authority();
+            assert!(authority.passed);
+            assert!(authority.gaps.is_empty());
+            assert_eq!(authority.data_discontinuity_packet_count, 1);
+            assert_eq!(authority.total_unreliable_frames, 2);
+            assert_eq!(authority.unreliable_windows.len(), 1);
+            assert_eq!(authority.unreliable_windows[0].output_start_frame, 2);
+            assert_eq!(authority.unreliable_windows[0].device_position_frames, 102);
+            assert_eq!(&metrics.samples[4..8], &[0.0; 4]);
+        }
+    }

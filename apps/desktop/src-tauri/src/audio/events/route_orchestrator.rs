@@ -156,6 +156,7 @@ pub(crate) async fn start_audio_route(
     direction: String,
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
+    crate::watch_mode_diagnostic::local_aec_probe::ensure_provider_work_allowed()?;
     let bridge_snapshot = app.state::<crate::bridge::state::BridgeStateStore>().snapshot();
     if let Some(error) = isolated_outbound_capability_error(&direction, &config, &bridge_snapshot) {
         let _ = append_diagnostics_log(
@@ -629,6 +630,7 @@ pub(crate) fn start_audio_route_inner(
     direction: String,
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
+    crate::watch_mode_diagnostic::local_aec_probe::ensure_provider_work_allowed()?;
     let bridge_snapshot = app.state::<crate::bridge::state::BridgeStateStore>().snapshot();
     if let Some(error) = isolated_outbound_capability_error(&direction, &config, &bridge_snapshot) {
         let _ = append_diagnostics_log(
@@ -668,6 +670,7 @@ fn start_recognized_route_locked(
     direction: &str,
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
+    crate::watch_mode_diagnostic::local_aec_probe::ensure_provider_work_allowed()?;
     let direction = direction.to_string();
         let keep_omni = state.has_omni_sender(&direction);
         stop_existing_route_pipeline(&app, &state, &direction, keep_omni)?;
@@ -736,6 +739,11 @@ fn start_recognized_route_locked(
                     &plan.provider.provider_id,
                     &plan.provider.model,
                 );
+                if let Some(authority) = plan.model_protocol_authority.as_ref() {
+                    state
+                        .watch_session_report
+                        .bind_authorized_model_protocol_profile(authority)?;
+                }
             }
             if let Some(error) = plan.configuration_error.clone() {
                 return Err(error);

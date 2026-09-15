@@ -1,0 +1,88 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "google-gemini.live-transcription-interim-final",
+  "providerId": "google-gemini",
+  "protocolProfileId": "google-gemini.live-transcription",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "google-gemini.live-transcription"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic interim/final transcript sequence from the dedicated Live transcription guide."
+  },
+  "scenario": "Gemini Live transcription replaces interim text and commits only final text",
+  "data": {
+    "connection": {
+      "url": "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+      "headers": { "x-goog-api-key": "<redacted-google-api-key>" }
+    },
+    "authContract": {
+      "profileId": "google-gemini.api-key-header",
+      "parameters": [
+        { "location": "header", "name": "x-goog-api-key", "value": "<redacted-google-api-key>" }
+      ]
+    },
+    "clientMessages": [
+      {
+        "setup": {
+          "model": "models/gemini-3.5-transcribe-live",
+          "generationConfig": {
+            "responseModalities": [
+              "TEXT"
+            ]
+          },
+          "inputAudioTranscription": {
+            "languageCodes": []
+          }
+        }
+      },
+      {
+        "realtimeInput": {
+          "audio": {
+            "mimeType": "audio/pcm;rate=16000",
+            "data": "AAAAAA=="
+          }
+        }
+      }
+    ],
+    "serverMessages": [
+      {
+        "serverContent": {
+          "interimInputTranscription": {
+            "text": "<sanitized-interim-v1>"
+          }
+        }
+      },
+      {
+        "serverContent": {
+          "interimInputTranscription": {
+            "text": "<sanitized-interim-v2-replaces-v1>"
+          }
+        }
+      },
+      {
+        "serverContent": {
+          "inputTranscription": {
+            "text": "<sanitized-final-transcript>"
+          }
+        }
+      },
+      {
+        "serverContent": { "turnComplete": true }
+      }
+    ],
+    "audioContract": {
+      "input": "PCM signed 16-bit little-endian, mono, 16000 Hz",
+      "recommendedChunkDurationMs": 100,
+      "fixtureAudio": "AAAAAA== is inert synthetic silence"
+    },
+    "assertions": [
+      "interimInputTranscription is replaceable, not append-only history",
+      "inputTranscription is the finalized segment"
+    ]
+  }
+}

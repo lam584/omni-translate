@@ -110,7 +110,10 @@ mod probe {
     const TONE_AMPLITUDE: f32 = 0.2;
     const IDLE_DURATION_MS: u64 = 700;
     const TONE_DURATION_MS: u64 = 1_200;
-    const SETTLE_DURATION_MS: u64 = 350;
+    const RENDER_DRAIN_SAMPLE_MS: u64 = 100;
+    const RENDER_DRAIN_TIMEOUT_MS: u64 = 2_000;
+    const RENDER_DRAIN_SILENT_WINDOWS: usize = 2;
+    const VIRTUAL_MIC_SETTLE_DURATION_MS: u64 = 350;
     const MAX_IDLE_PEAK: f32 = 0.002;
     const MIN_TONE_RMS: f32 = 0.03;
     const MIN_TONE_COMPONENT: f32 = 0.03;
@@ -238,6 +241,51 @@ mod probe {
         }
     }
 
+    fn render_tail_window_is_silent(window: &CaptureMetrics) -> bool {
+        window.frames() > 0 && window.invalid_samples == 0 && window.peak <= MAX_IDLE_PEAK
+    }
+
+    fn wait_for_render_tail_to_drain(capture: &LoopbackCapture) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_millis(RENDER_DRAIN_TIMEOUT_MS);
+        let mut consecutive_silent_windows = 0usize;
+        while Instant::now() < deadline {
+            let window = collect_for(
+                capture,
+                Duration::from_millis(RENDER_DRAIN_SAMPLE_MS),
+            )?;
+            if render_tail_window_is_silent(&window) {
+                consecutive_silent_windows += 1;
+                if consecutive_silent_windows >= RENDER_DRAIN_SILENT_WINDOWS {
+                    return Ok(());
+                }
+            } else {
+                consecutive_silent_windows = 0;
+            }
+        }
+        Err(format!(
+            "virtual speaker render tail did not drain below {:.6} within {}ms",
+            MAX_IDLE_PEAK, RENDER_DRAIN_TIMEOUT_MS
+        ))
+    }
+
+    #[cfg(test)]
+    mod render_drain_tests {
+        use super::*;
+
+        #[test]
+        fn drain_window_requires_frames_and_rejects_tone_or_invalid_samples() {
+            assert!(!render_tail_window_is_silent(&CaptureMetrics::default()));
+            let mut silent = CaptureMetrics::default();
+            silent.push_packet(&[0; BYTES_PER_FRAME], false);
+            assert!(render_tail_window_is_silent(&silent));
+            silent.peak = MAX_IDLE_PEAK * 2.0;
+            assert!(!render_tail_window_is_silent(&silent));
+            silent.peak = 0.0;
+            silent.invalid_samples = 1;
+            assert!(!render_tail_window_is_silent(&silent));
+        }
+    }
+
     #[derive(Default)]
     struct VirtualMicCaptureMetrics {
         mono_samples: Vec<f32>,
@@ -276,7 +324,8 @@ mod probe {
 
     impl LoopbackCapture {
         fn start(device: &Device, format: &WaveFormat) -> Result<Self, String> {
-            let (audio_client, capture_client) = open_capture_stream(device, format)?;
+            let (audio_client, capture_client) = open_capture_stream(device, format)
+                .map_err(|error| format!("virtual-speaker-loopback-open: {error}"))?;
             Ok(Self {
                 audio_client,
                 capture_client,
@@ -303,7 +352,8 @@ mod probe {
 
     impl VirtualMicCapture {
         fn start(device: &Device, format: &WaveFormat) -> Result<Self, String> {
-            let (audio_client, capture_client) = open_capture_stream(device, format)?;
+            let (audio_client, capture_client) = open_capture_stream(device, format)
+                .map_err(|error| format!("virtual-microphone-capture-open: {error}"))?;
             Ok(Self {
                 audio_client,
                 capture_client,
@@ -387,7 +437,8 @@ mod probe {
 
     impl ToneRender {
         fn start(device: &Device, format: &WaveFormat) -> Result<Self, String> {
-            let (audio_client, render_client) = open_render_stream(device, format)?;
+            let (audio_client, render_client) = open_render_stream(device, format)
+                .map_err(|error| format!("virtual-speaker-render-open: {error}"))?;
             Ok(Self {
                 audio_client,
                 render_client,
@@ -486,7 +537,7 @@ mod probe {
         drop(render);
         let status_after_tone = query_driver_status()?;
 
-        let _ = collect_for(&capture, Duration::from_millis(SETTLE_DURATION_MS))?;
+        wait_for_render_tail_to_drain(&capture)?;
         let post_tone_idle = collect_for(&capture, Duration::from_millis(IDLE_DURATION_MS))?;
         reset_driver_ring()?;
         let idle_frequency_hz = estimate_dominant_frequency(&idle.mono_samples);
@@ -655,7 +706,10 @@ mod probe {
             Duration::from_millis(TONE_DURATION_MS),
         )?;
         injector.end()?;
-        let _ = collect_virtual_mic_for(&capture, Duration::from_millis(SETTLE_DURATION_MS))?;
+        let _ = collect_virtual_mic_for(
+            &capture,
+            Duration::from_millis(VIRTUAL_MIC_SETTLE_DURATION_MS),
+        )?;
         let post_tone_idle =
             collect_virtual_mic_for(&capture, Duration::from_millis(IDLE_DURATION_MS))?;
         let after = query_driver_status()?;

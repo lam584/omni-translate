@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
   SHARD_EXECUTION_PLAN_FILE,
+  SHARD_MATRIX_CELL_COUNT,
   SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
   createWorkerReadinessRequest,
   createSignedExecutionPlan,
@@ -16,20 +17,65 @@ import {
   sha256Canonical,
   verifyCellLease,
   verifySignedExecutionPlan,
+  signCoordinatorAuthority,
 } from './watch-mode-shard-authority.mjs';
+import { validateProductionWorkerConfig, PRODUCTION_WORKER_CONFIG_KIND, productionCellFailureDisposition, observeOwnedCellCompletion, runProductionWavesPreservingFailure } from './run-watch-mode-live-production-coordinator.mjs';
+import { verifyStrictShardProviderPreflightAuthorization } from './verify-watch-mode-evidence.mjs';
 import {
   COORDINATOR_PROVIDER_PREFLIGHT_FILE,
   CoordinatorWaveFailure,
   collectCoordinatorAggregation,
-  defaultThreeVmAssignments,
+  defaultSingleWorkerAssignments,
+  fixedThreeWorkerAssignments,
   prepareCoordinatorExecution,
   runCoordinatorWaves,
   validateCoordinatorAggregate,
   validateCoordinatorExecutionAuthority,
 } from './run-watch-mode-live-coordinator.mjs';
+import {
+  PROVIDER_PREFLIGHT_MODEL,
+  PROVIDER_PREFLIGHT_PROTOCOL,
+  claimProviderPreflightDispatchAuthorization,
+  verifyProviderPreflightGrant,
+} from './watch-mode-provider-preflight-authorization.mjs';
+import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { fixedFourWorkerAssignments } from './watch-mode-four-worker-plan.mjs';
 
 const SHA_A = 'a'.repeat(64);
 const SHA_B = 'b'.repeat(64);
+const MODEL_PROTOCOL_PROFILE_IDENTITY = LIVE_LLM_CELLS[0].modelProtocolProfileIdentity;
+const PREFLIGHT_LIFECYCLE_AUTHORITY = Object.freeze({
+  providerId: 'provider-dashscope',
+  model: 'qwen3.5-livetranslate-flash-realtime',
+  protocol: 'dashscope-livetranslate',
+  operation: 'livetranslate-session-lifecycle-preflight',
+  modelProtocolProfileIdentity: MODEL_PROTOCOL_PROFILE_IDENTITY,
+  inputMode: 'none',
+  providerInputMode: 'none',
+  responseMode: 'text-only',
+  terminalEvent: 'session.finished',
+  status: 'completed',
+  externalAudioSamples: 0,
+  invocationCount: 1,
+  lifecycleBudget: {
+    firstServerEventLatencyMs: 1_200,
+    socketEventTimeoutMs: 12_000,
+  },
+  evidenceOutcome: 'livetranslate-session-finished',
+  firstServerEvent: { type: 'session.created', monotonicMs: 606 },
+  sessionAuthority: {
+    sessionIdentitySha256: SHA_A,
+    serverModel: 'qwen3.5-livetranslate-flash-realtime',
+    echoedSessionConfigSha256: SHA_B,
+  },
+  rawTrace: {
+    path: 'raw/provider-websocket-trace.jsonl',
+    bytes: 256,
+    sha256: SHA_A,
+    eventCount: 6,
+  },
+  audioSeconds: null,
+});
 const PROVENANCE = Object.freeze({
   schemaVersion: 1,
   source: 'git',
@@ -81,13 +127,14 @@ function writeReadinessFixture(context, mutateReceipt = () => {}) {
       };
       const generatedAt = new Date(requestedAt + 100).toISOString();
       const receipt = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         artifactKind: 'watch-mode-production-worker-zero-provider-readiness',
         generatedAt,
         executionId: context.executionId,
         readinessRequestDigest: workerReadinessRequest.requestDigest,
         workerId: worker.workerId,
         vmIdentityDigest: worker.vmIdentityDigest,
+        ...(worker.transportAuthority ? { transportAuthority: structuredClone(worker.transportAuthority) } : {}),
         runtimeBundleDigest: workerReadinessRequest.runtimeBundleDigest,
         providerCalls: 0,
         driverRequired: worker.driverRequired,
@@ -132,6 +179,7 @@ function writeReadinessFixture(context, mutateReceipt = () => {}) {
       return {
         workerId: worker.workerId,
         providerCalls: 0,
+        driverRequired: worker.driverRequired,
         ...fileAuthorityEntry(receiptPath, `worker-readiness/${worker.workerId}.json`),
       };
     }),
@@ -142,6 +190,7 @@ function workers() {
   return [
     {
       workerId: 'vm1', vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-1' },
+      workspaceRoot: 'E:\\worker',
       deviceProfileInstances: [{
         instanceId: 'vm1-default', profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
         physicalPlaybackDeviceId: 'default', expectedPhysicalPlaybackDeviceName: '',
@@ -150,11 +199,10 @@ function workers() {
   ];
 }
 
-function signedFixture() {
+function signedFixture(workerList = workers()) {
   const now = new Date();
   const generatedAt = new Date(now.getTime() - 1_000);
   const keys = generateCoordinatorSigningKeyPair();
-  const workerList = workers();
   const plan = createSignedExecutionPlan({
     executionId: 'watch-shard-coordinator-test',
     generatedAt,
@@ -166,12 +214,11 @@ function signedFixture() {
     localIsolationAuthority: { path: 'local.json', bytes: 10, sha256: SHA_A, providerCalls: 0 },
     providerPreflightAuthority: {
        path: 'preflight.json', bytes: 10, sha256: SHA_B, providerId: 'provider-dashscope',
-       operation: 'text-translation-preflight', status: 'completed', externalAudioSamples: 0, invocationCount: 1,
-       tokenBudget: { maxInputTokens: 4_096, maxOutputTokens: 256 },
-       inputTokens: 64, outputTokens: 12, audioSeconds: null,
+       ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
      },
     workers: workerList,
-    assignments: defaultThreeVmAssignments(workerList),
+    assignments: workerList.length === 4 ? fixedFourWorkerAssignments(workerList)
+      : workerList.length === 3 ? fixedThreeWorkerAssignments(workerList) : defaultSingleWorkerAssignments(workerList),
     ...keys,
   });
   return {
@@ -182,10 +229,206 @@ function signedFixture() {
   };
 }
 
+test('multi-worker safety failure fences pending dispatch before cleanup and retains cleanup failures', { timeout: 10000 }, async () => {
+  const workerList = ['vm171', 'vm167', 'vm169'].map((workerId) => ({
+    ...workers()[0], workerId,
+    vmIdentity: { provider: 'vmware', uuidBios: `uuid-${workerId}` },
+    transportAuthority: { kind: 'local' },
+    deviceProfileInstances: [{
+      instanceId: `${workerId}-default`, profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
+      physicalPlaybackDeviceId: `{${workerId}}`, expectedPhysicalPlaybackDeviceName: `speaker-${workerId}`,
+    }],
+  }));
+  const { plan, leases, now } = signedFixture(workerList);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-cancel-fence-'));
+  let releaseWait;
+  const waitBarrier = new Promise((resolve) => { releaseWait = resolve; });
+  const pendingSignals = [];
+  const dispatched = [];
+  const cancelled = [];
+  try {
+    fs.writeFileSync(path.join(root, SHARD_EXECUTION_PLAN_FILE), JSON.stringify(plan));
+    await assert.rejects(runCoordinatorWaves({
+      plan, leases, executionRoot: root, now: () => now, firstWaveStaggerMs: 7000,
+      wait: async (_delay, signal) => { pendingSignals.push(signal); await waitBarrier; },
+      dispatchCell: async ({ cell }) => { dispatched.push(cell.cellId); throw new Error('fixture dispatch failed'); },
+      cancelCell: ({ cell }) => {
+        cancelled.push(cell.cellId);
+        assert.equal(pendingSignals.length, 2);
+        assert.ok(pendingSignals.every((signal) => signal.aborted), 'all pending pipelines are fenced before cancellation');
+        releaseWait();
+        throw new Error('fixture cleanup failed');
+      },
+    }), (error) => {
+      assert.ok(error instanceof CoordinatorWaveFailure);
+      assert.equal(error.cause.message, 'fixture dispatch failed');
+      assert.equal(error.cleanupErrors.length, 1);
+      assert.equal(error.cleanupErrors[0].code, 'coordinator.cleanup.cell-failed');
+      assert.equal(error.cleanupErrors[0].cellId, dispatched[0]);
+      return true;
+    });
+    assert.equal(dispatched.length, 1, 'neither staggered peers nor c03 may start');
+    assert.deepEqual(cancelled, dispatched, 'the failed worker also needs an owned-process cleanup attempt');
+  } finally {
+    releaseWait();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const [failureLabel, failureMessage] of [
+  ['c02 finalizer rejection', 'interactive cell guest finalizer failed: exitCode=1 | provider input budget ledger is not a strict terminal success'],
+  ['actual budget violation', 'provider budget exceeded'],
+  ['connection safety violation', 'provider extra connection rejected'],
+]) {
+test(`${failureLabel} retains late c04 evidence and unconfirmed cleanup`, { timeout: 10000 }, async () => {
+  const workerList = ['vm171', 'vm167', 'vm169'].map((workerId) => ({
+    ...workers()[0], workerId,
+    vmIdentity: { provider: 'vmware', uuidBios: `uuid-${workerId}` },
+    transportAuthority: { kind: 'local' },
+    deviceProfileInstances: [{
+      instanceId: `${workerId}-default`, profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
+      physicalPlaybackDeviceId: `{${workerId}}`, expectedPhysicalPlaybackDeviceName: `speaker-${workerId}`,
+    }],
+  }));
+  const { plan, leases, now } = signedFixture(workerList);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-late-c04-'));
+  const c02 = LIVE_LLM_CELLS[1].cellId;
+  const c04 = LIVE_LLM_CELLS[3].cellId;
+  // This ambiguous finalizer error is not proof of an overrun, nor proof of safety.
+  const primary = new Error(failureMessage);
+  const signals = new Map();
+  let releaseDispatch;
+  const allDispatched = new Promise((resolve) => { releaseDispatch = resolve; });
+  let releaseLate;
+  const cleanupAttempted = new Promise((resolve) => { releaseLate = resolve; });
+  const cancelled = [];
+  primary.collectFailureEvidence = async () => {
+    assert.equal(cancelled.length, 3, 'safety stop must precede failed-finalizer collection');
+    primary.failureEvidence = { manifestPath: 'fixture-diagnostics-only.json' };
+  };
+  try {
+    fs.writeFileSync(path.join(root, SHARD_EXECUTION_PLAN_FILE), JSON.stringify(plan));
+    await assert.rejects(runProductionWavesPreservingFailure({ executionRoot: root, plan, run: () => runCoordinatorWaves({
+      plan, leases, executionRoot: root, now: () => now,
+      classifyFailure: productionCellFailureDisposition,
+      dispatchCell: async ({ cell, signal }) => {
+        signals.set(cell.cellId, signal);
+        if (signals.size === 3) releaseDispatch();
+        await allDispatched;
+        if (cell.cellId === c02) throw primary;
+        return observeOwnedCellCompletion({ signal, timeoutMs: 1_000, execute: async ({ signal: observerSignal }) => {
+          assert.equal(observerSignal, undefined);
+          await cleanupAttempted;
+          // A cancel request does not prove that an already-started worker stopped.
+          return { result: { verdict: 'passed', resultDigest: SHA_A } };
+        } });
+      },
+      cancelCell: async ({ cell }) => {
+        assert.ok([...signals.values()].every((signal) => signal.aborted));
+        cancelled.push(cell.cellId);
+        releaseLate();
+        return cell.cellId === c04
+          ? { passed: false, status: 'cleanup-incomplete', processCleanup: { passed: false, status: 'authority-invalid' } }
+          : { passed: true };
+      },
+    }) }), (error) => {
+      assert.ok(error instanceof CoordinatorWaveFailure);
+      assert.equal(error.cause, primary);
+      assert.equal(error.partialResults.get(c04)?.result.verdict, 'passed');
+      assert.ok(error.completedCellIds.includes(c04));
+      assert.ok(!error.completedCellIds.includes(c02));
+      assert.equal(error.cleanupErrors.length, 1);
+      assert.equal(error.cleanupErrors[0].cellId, c04);
+      const manifest = JSON.parse(fs.readFileSync(error.failureCollectionPath, 'utf8'));
+      assert.equal(manifest.validatedResults.find((entry) => entry.cellId === c04).verdict, 'passed');
+      assert.equal(manifest.failedCellEvidence.find((entry) => entry.cellId === c02).evidence.manifestPath,
+        'fixture-diagnostics-only.json');
+      return true;
+    });
+    assert.equal(signals.has(LIVE_LLM_CELLS[2].cellId), false, 'unproven safety must fence c03');
+    assert.deepEqual(new Set(cancelled), new Set(plan.waves[0].cellIds));
+  } finally {
+    releaseDispatch();
+    releaseLate();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+}
+
+test('verified ordinary failed outcomes remain collect-all rather than stopAll', async () => {
+  const { plan, leases, now } = signedFixture();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-collect-failed-'));
+  const c02 = LIVE_LLM_CELLS[1].cellId;
+  const dispatched = [];
+  try {
+    fs.writeFileSync(path.join(root, SHARD_EXECUTION_PLAN_FILE), JSON.stringify(plan));
+    const result = await runCoordinatorWaves({
+      plan, leases, executionRoot: root, now: () => now,
+      classifyFailure: productionCellFailureDisposition,
+      dispatchCell: async ({ cell }) => {
+        dispatched.push(cell.cellId);
+        return { result: {
+          verdict: cell.cellId === c02 ? 'failed' : 'passed',
+          resultDigest: SHA_A,
+          stableErrorCode: cell.cellId === c02 ? 'provider.session-finished-timeout' : null,
+        } };
+      },
+      cancelCell: () => assert.fail('ordinary completed outcome must not cancel peers'),
+    });
+    assert.deepEqual(dispatched, plan.cells.map((cell) => cell.cellId));
+    assert.equal(result.completedCellIds.length, 4);
+    assert.equal(result.collectedFailures.length, 1);
+    assert.equal(result.collectedFailures[0].cellId, c02);
+    assert.equal(result.results.get(c02).result.verdict, 'failed');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const [label, receipt] of [
+  ['missing receipt', undefined],
+  ['negative receipt', { passed: false, status: 'authority-invalid' }],
+  ['contradictory receipt', { passed: true, status: 'cleanup-incomplete' }],
+  ['failed process cleanup', { passed: true, processCleanup: { passed: false } }],
+  ['failed task cleanup', { passed: true, taskCleanupPassed: false }],
+  ['reported cleanup errors', { passed: true, cleanupErrors: [{ code: 'fixture-error' }] }],
+  ['synchronous cleanup exception', new Error('cleanup fixture exception')],
+  ['confirmed receipt', { passed: true, status: 'cleanup-completed' }],
+]) {
+  test(`serial safety failure cleans the failed dispatch and retains ${label}`, async () => {
+    const { plan, leases, now } = signedFixture();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-serial-cleanup-'));
+    const cancelled = [];
+    try {
+      fs.writeFileSync(path.join(root, SHARD_EXECUTION_PLAN_FILE), JSON.stringify(plan));
+      await assert.rejects(runCoordinatorWaves({
+        plan, leases, executionRoot: root, now: () => now,
+        dispatchCell: async () => { throw new Error('provider budget exceeded'); },
+        cancelCell: ({ cell }) => {
+          cancelled.push(cell.cellId);
+          if (receipt instanceof Error) throw receipt;
+          return receipt;
+        },
+      }), (error) => {
+        assert.equal(error.cause.message, 'provider budget exceeded');
+        assert.equal(error.cleanupErrors.length, label === 'confirmed receipt' ? 0 : 1);
+        assert.deepEqual(error.startedCellIds, [plan.cells[0].cellId]);
+        return true;
+      });
+      assert.deepEqual(cancelled, [plan.cells[0].cellId]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
 test('single-machine placement assigns every paid cell to one distinct serial wave', () => {
   const workerList = workers();
-  const assignments = defaultThreeVmAssignments(workerList);
-  assert.deepEqual(assignments.map((entry) => entry.waveIndex), [0, 1, 2, 3, 4, 5, 6, 7]);
+  const assignments = defaultSingleWorkerAssignments(workerList);
+  assert.deepEqual(
+    assignments.map((entry) => entry.waveIndex),
+    Array.from({ length: SHARD_MATRIX_CELL_COUNT }, (_, index) => index),
+  );
   assert.ok(assignments.every((entry) => entry.workerId === 'vm1'));
   assert.equal(
     new Set(assignments.map((entry) => `${entry.workerId}:${entry.waveIndex}`)).size,
@@ -194,12 +437,157 @@ test('single-machine placement assigns every paid cell to one distinct serial wa
 });
 
 test('single-machine placement rejects additional workers', () => {
-  assert.throws(() => defaultThreeVmAssignments([...workers(), {
+  assert.throws(() => defaultSingleWorkerAssignments([...workers(), {
     ...workers()[0], workerId: 'vm4', vmIdentity: { provider: 'vmware', uuidBios: 'vm-four' },
   }]), /exactly one local worker/);
 });
 
-test('coordinator prepares build/preflight/local once and atomically publishes exactly eight signed leases', async () => {
+test('fixed three-worker placement runs c01/c02/c04 in wave zero and c03 on vm169 in wave one', () => {
+  const profile = (workerId) => ({
+    instanceId: `${workerId}-default`, profileId: 'vmware-hda-default',
+    deviceClass: 'default-speaker', physicalPlaybackDeviceId: `{${workerId}}`,
+    expectedPhysicalPlaybackDeviceName: `speaker-${workerId}`,
+  });
+  const workerList = ['vm171', 'vm167', 'vm169'].map((workerId) => ({
+    workerId, deviceProfileInstances: [profile(workerId)],
+  }));
+  assert.deepEqual(fixedThreeWorkerAssignments(workerList).map((entry) => [
+    LIVE_LLM_CELLS.findIndex((cell) => cell.cellId === entry.cellId) + 1, entry.workerId, entry.waveIndex,
+  ]), [
+    [1, 'vm171', 0], [2, 'vm169', 0], [3, 'vm169', 1], [4, 'vm167', 0],
+  ]);
+});
+
+test('coordinator staggers only first-wave dispatches and keeps later waves dependency-bound', async () => {
+  const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-coordinator-stagger-'));
+  try {
+    const profile = (workerId) => ({
+      instanceId: `${workerId}-default`, profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
+      physicalPlaybackDeviceId: `{${workerId}}`, expectedPhysicalPlaybackDeviceName: `speaker-${workerId}`,
+    });
+    const workerList = ['vm171', 'vm167', 'vm169'].map((workerId) => ({
+      workerId, vmIdentity: { provider: 'vmware', uuidBios: `uuid-${workerId}` },
+      transportAuthority: { kind: 'local' },
+      deviceProfileInstances: [profile(workerId)],
+    }));
+    const keys = generateCoordinatorSigningKeyPair();
+    const now = new Date();
+    const plan = createSignedExecutionPlan({
+      executionId: 'watch-shard-stagger-test', generatedAt: now,
+      expiresAt: new Date(now.getTime() + 3_600_000), provenance: PROVENANCE,
+      authorityImplementationHashes: inventory('matrix', SHA_A), runtimeBinaryHashes: runtimeInventory(),
+      shardOrchestrationImplementationHashes: inventory('shard', SHA_A),
+      localIsolationAuthority: { path: 'local.json', bytes: 10, sha256: SHA_A, providerCalls: 0 },
+      providerPreflightAuthority: { path: 'preflight.json', bytes: 10, sha256: SHA_B, ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY) },
+      workers: workerList, assignments: fixedThreeWorkerAssignments(workerList), ...keys,
+    });
+    const leases = issueCellLeases(plan, keys.privateKeyPem, { issuedAt: now });
+    fs.mkdirSync(outputRoot, { recursive: true });
+    fs.writeFileSync(path.join(outputRoot, SHARD_EXECUTION_PLAN_FILE), `${JSON.stringify(plan)}\n`);
+    const delays = [];
+    const dispatched = [];
+    let releaseSlowPeers;
+    const slowPeers = new Promise((resolve) => { releaseSlowPeers = resolve; });
+    let resolveC03;
+    const c03Started = new Promise((resolve) => { resolveC03 = resolve; });
+    const execution = runCoordinatorWaves({
+      plan, leases, executionRoot: outputRoot, firstWaveStaggerMs: 7_000,
+      wait: async (delayMs) => { delays.push(delayMs); },
+      dispatchCell: async ({ cell }) => {
+        dispatched.push(cell.cellId);
+        if ([0, 3].includes(cell.cellIndex)) await slowPeers;
+        if (cell.cellIndex === 2) resolveC03();
+        return { result: { verdict: 'passed', resultDigest: sha256Canonical({ cellId: cell.cellId }), generatedAt: new Date(now.getTime() + 500).toISOString() } };
+      },
+      now: () => new Date(now.getTime() + 1_000),
+    });
+    await c03Started;
+    assert.equal(dispatched.includes(LIVE_LLM_CELLS[2].cellId), true, 'c03 starts after c02 without waiting for other workers');
+    releaseSlowPeers();
+    const outcome = await execution;
+    assert.doesNotThrow(() => validateCoordinatorExecutionAuthority({
+      executionRoot: outputRoot, plan, leases, resultByCell: outcome.results,
+    }));
+    const c02 = LIVE_LLM_CELLS[1].cellId;
+    outcome.results.get(c02).result.generatedAt = new Date(now.getTime() + 60_000).toISOString();
+    assert.throws(() => validateCoordinatorExecutionAuthority({
+      executionRoot: outputRoot, plan, leases, resultByCell: outcome.results,
+    }), /worker vm169 dispatched .* before .* completed/u);
+    assert.deepEqual(delays.sort((left, right) => left - right), [7_000, 14_000]);
+  } finally {
+    fs.rmSync(outputRoot, { recursive: true, force: true });
+  }
+});
+
+for (const [firstWaveStaggerMs, synchronousAdvanceMs] of [[0, 0], [7_000, 0], [7_000, 6_500]]) {
+  test(`four-worker signed offsets override legacy ${firstWaveStaggerMs}ms stagger with ${synchronousAdvanceMs}ms synchronous clock advance`, async () => {
+    // Deliberately different from both canonical cell order and dispatch order.
+    const workerList = (synchronousAdvanceMs ? ['vm171', 'vm169', 'vm131', 'vm167'] : ['vm131', 'vm169', 'vm167', 'vm171']).map((workerId) => ({
+      ...workers()[0], workerId,
+      vmIdentity: { provider: 'vmware', uuidBios: `uuid-${workerId}` },
+      transportAuthority: { kind: 'local' },
+      deviceProfileInstances: [{
+        instanceId: `${workerId}-default`, profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
+        physicalPlaybackDeviceId: `{${workerId}}`, expectedPhysicalPlaybackDeviceName: `speaker-${workerId}`,
+      }],
+    }));
+    const { plan, leases, now } = signedFixture(workerList);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-four-clock-'));
+    let clockMs = 0;
+    const timers = [];
+    const dispatches = [];
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    let execution;
+    try {
+      fs.writeFileSync(path.join(root, SHARD_EXECUTION_PLAN_FILE), JSON.stringify(plan));
+      execution = runCoordinatorWaves({
+        plan, leases, executionRoot: root, firstWaveStaggerMs,
+        now: () => new Date(now.getTime() + clockMs),
+        wait: (delayMs, signal) => new Promise((resolve, reject) => {
+          timers.push({ due: clockMs + delayMs, resolve });
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+        dispatchCell: async ({ cell }) => {
+          dispatches.push([cell.cellIndex + 1, cell.workerId, clockMs]);
+          if (cell.cellIndex === 0) clockMs += synchronousAdvanceMs;
+          return { result: { verdict: 'passed', resultDigest: SHA_A } };
+        },
+      });
+      await flush();
+      assert.deepEqual([...dispatches], synchronousAdvanceMs
+        ? [[1, 'vm171', 0], [4, 'vm167', 6_500], [2, 'vm169', 6_500]] : [[1, 'vm171', 0]]);
+      for (const deadline of (synchronousAdvanceMs ? [8_999, 9_000] : [2_999, 3_000, 5_999, 6_000, 8_999, 9_000])) {
+        clockMs = deadline;
+        for (const timer of timers.filter((entry) => entry.due <= clockMs)) timer.resolve();
+        await flush();
+        const expected = [[1, 'vm171', 0], [4, 'vm167', Math.max(3_000, synchronousAdvanceMs)],
+          [2, 'vm169', Math.max(6_000, synchronousAdvanceMs)], [3, 'vm131', 9_000]];
+        assert.deepEqual(dispatches, expected.filter((entry) => entry[2] <= clockMs));
+      }
+      assert.equal((await execution).completedCellIds.length, 4);
+      for (const mutation of ['offset', 'worker', 'missing']) {
+        const tampered = structuredClone(plan);
+        if (mutation === 'offset') tampered.dispatchSchedule[1].startOffsetMs = 7_000;
+        if (mutation === 'worker') tampered.dispatchSchedule[1].workerId = 'vm169';
+        if (mutation === 'missing') delete tampered.dispatchSchedule;
+        fs.writeFileSync(path.join(root, SHARD_EXECUTION_PLAN_FILE), JSON.stringify(tampered));
+        let readinessCalls = 0;
+        await assert.rejects(runCoordinatorWaves({
+          plan: tampered, leases, executionRoot: root, now: () => now,
+          assertWorkerReady: async () => { readinessCalls += 1; },
+          dispatchCell: async () => assert.fail('tampered signed schedule must never dispatch'),
+        }));
+        assert.equal(readinessCalls, 0, 'schedule authentication precedes readiness and paid dispatch');
+      }
+    } finally {
+      for (const timer of timers) timer.resolve();
+      await execution?.catch(() => {});
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test('production three-worker local/SSH pins survive readiness, grant, signed plan, and final authorization verification', async () => {
   const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-coordinator-prepare-'));
   try {
     const preflightEvidenceDirectory = path.join(outputRoot, 'preflight-raw');
@@ -215,13 +603,37 @@ test('coordinator prepares build/preflight/local once and atomically publishes e
       preflight: 0,
       local: 0,
     };
-    const generatedAt = new Date();
+    const config = validateProductionWorkerConfig({
+      schemaVersion: 3, artifactKind: PRODUCTION_WORKER_CONFIG_KIND,
+      providerPreflightExecutor: { workerId: 'vm169' },
+      workers: ['vm171', 'vm167', 'vm169'].map((workerId, index) => {
+        fs.writeFileSync(path.join(outputRoot, `${workerId}-key`), 'fixture-only-private-key');
+        fs.writeFileSync(path.join(outputRoot, `${workerId}-hosts`), `${workerId} ssh-ed25519 ${Buffer.from(`fixture-host-key-${index}`).toString('base64')}\n`);
+        return {
+          workerId, user: 'VMUser', workspaceRoot: 'E:\\worker', guestExecutionRoot: 'E:\\shards',
+          transport: index === 0 ? { kind: 'local' } : { kind: 'ssh', host: `192.0.2.${index}`, port: 22, identityFile: `${workerId}-key`, knownHostsFile: `${workerId}-hosts`, hostKeyAlias: workerId },
+          vmIdentity: { provider: 'vmware', uuidBios: `564d0000-0000-0000-0000-00000000000${index}` },
+          deviceProfileInstances: [{ instanceId: `${workerId}-default`, profileId: `${workerId}-speaker`, deviceClass: 'default-speaker', physicalPlaybackDeviceId: `{${workerId}}`, expectedPhysicalPlaybackDeviceName: `Speaker ${workerId}` }],
+        };
+      }),
+    }, { configDirectory: outputRoot });
+    const productionWorkers = config.workers.map(({ workerId, user, workspaceRoot, vmIdentity, deviceProfileInstances, transport }) => ({
+      workerId, interactiveUser: user, workspaceRoot, vmIdentity, deviceProfileInstances,
+      transportAuthority: transport.kind === 'local' ? { kind: 'local' } : {
+        kind: 'ssh', hostKeyAlias: transport.hostKeyAlias, hostKeyAlgorithm: transport.hostKeyAlgorithm, hostKeySha256: transport.hostKeySha256,
+      },
+    }));
+    const generatedAt = new Date(Date.now() - 1000);
     const runtimeAuthority = runtimeInventoryWithDesktop(outputRoot);
+    const resultSigningKeys = generateCoordinatorSigningKeyPair();
     const result = await prepareCoordinatorExecution({
       outputRoot,
       workspaceRoot: outputRoot,
       executionId: 'watch-shard-atomic-test',
-      workers: workers(),
+      workers: productionWorkers,
+      assignments: config.assignments,
+      preflightExecutorWorkerId: config.preflightExecutor.workerId,
+      signingKeys: resultSigningKeys,
       generatedAt,
       expiresAt: new Date(generatedAt.getTime() + 3_600_000),
       captureProvenance: async () => { calls.provenance += 1; return PROVENANCE; },
@@ -245,13 +657,34 @@ test('coordinator prepares build/preflight/local once and atomically publishes e
         authorizationDigest,
       }) => {
         calls.preflight += 1;
+        assert.deepEqual(grant.workers.map((worker) => worker.transportAuthority), productionWorkers.map((worker) => worker.transportAuthority));
+        assert.equal(JSON.stringify(grant.workers).includes('identityFile'), false);
+        for (const mutation of ['drop', 'change-pin']) {
+          const { digest: _digest, signature: _signature, ...core } = structuredClone(grant);
+          if (mutation === 'drop') delete core.workers[1].transportAuthority;
+          else core.workers[1].transportAuthority.hostKeySha256 = `SHA256:${'a'.repeat(43)}`;
+          const tampered = signCoordinatorAuthority(core, resultSigningKeys.privateKeyPem, resultSigningKeys.publicKeyPem);
+          assert.throws(() => verifyProviderPreflightGrant(tampered), /worker\/profile inventory mismatch|transport authority/);
+        }
         assert.equal(calls.local, 1, 'local authority must precede provider authorization');
         assert.equal(fs.existsSync(grantPath), true, 'signed grant must be published before provider connect');
-        assert.equal(fs.readdirSync(leaseReservationDirectory).length, 8);
-        assert.equal(new Set(grant.cells.map((cell) => cell.leaseId)).size, 8);
+        assert.equal(fs.readdirSync(leaseReservationDirectory).length, SHARD_MATRIX_CELL_COUNT);
+        assert.equal(new Set(grant.cells.map((cell) => cell.leaseId)).size, SHARD_MATRIX_CELL_COUNT);
+        assert.deepEqual(
+          grant.authorization.modelProtocolProfileIdentity,
+          MODEL_PROTOCOL_PROFILE_IDENTITY,
+        );
+        assert.ok(grant.cells.every((cell) => (
+          JSON.stringify(cell.modelProtocolProfileIdentity)
+            === JSON.stringify(MODEL_PROTOCOL_PROFILE_IDENTITY)
+        )));
+        assert.ok(authorization.leaseReservations.every((reservation) => (
+          JSON.stringify(reservation.modelProtocolProfileIdentity)
+            === JSON.stringify(MODEL_PROTOCOL_PROFILE_IDENTITY)
+        )));
         const desktop = runtimeAuthority.find((entry) => entry.path === 'target/release/omni-desktop-shell.exe');
         fs.writeFileSync(path.join(path.dirname(grantPath), 'provider-preflight-consumption-claim.json'), `${JSON.stringify({
-          schemaVersion: 2,
+          schemaVersion: 3,
           artifactKind: 'watch-mode-provider-preflight-consumption-claim',
           executionId: grant.executionId,
           grantDigest: grant.digest,
@@ -259,19 +692,16 @@ test('coordinator prepares build/preflight/local once and atomically publishes e
           coordinatorKeyId: grant.signature.keyId,
           claimedAt: new Date(Math.max(...authorization.reservationIssuedAts.map(Date.parse)) + 1).toISOString(),
           desktopProcessId: 4242,
-          desktopExecutablePath: path.join(outputRoot, 'target', 'release', 'omni-desktop-shell.exe'),
+          desktopExecutablePath: path.join(grant.executor.workspaceRoot, 'target', 'release', 'omni-desktop-shell.exe'),
           desktopExecutableRelativePath: 'target/release/omni-desktop-shell.exe',
           desktopExecutableBytes: desktop.bytes,
           desktopExecutableSha256: desktop.sha256,
           retryPolicy: 'new-execution-required',
         }, null, 2)}\n`, 'utf8');
         return {
-          providerId: 'provider-dashscope',
-          operation: 'text-translation-preflight',
-          inputMode: 'text-only',
-          providerInvocationCount: 1,
-          status: 'completed',
-          externalAudioSamples: 0,
+          ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
+          providerInvocationCount: PREFLIGHT_LIFECYCLE_AUTHORITY.invocationCount,
+          executor: structuredClone(authorization.executor),
           evidenceDirectory: preflightEvidenceDirectory,
         };
       },
@@ -285,25 +715,35 @@ test('coordinator prepares build/preflight/local once and atomically publishes e
           Math.max(...expectedAuthorization.reservationIssuedAts.map(Date.parse)) + 1,
         ).toISOString()],
         summary: {
-          providerId: 'provider-dashscope',
-          model: 'qwen3.5-omni-flash-realtime',
-          protocol: 'dashscope-omni',
-          operation: 'text-translation-preflight',
-          inputMode: 'text-only',
-          externalAudioSamples: 0,
-          providerInvocationCount: 1,
+          ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
+          providerInvocationCount: PREFLIGHT_LIFECYCLE_AUTHORITY.invocationCount,
           executionId: expectedAuthorization.executionId,
           grantDigest: expectedAuthorization.grantDigest,
           leaseReservationDigests: expectedAuthorization.leaseReservationDigests,
           authorizationDigest: expectedAuthorization.authorizationDigest,
           consumptionClaim: expectedAuthorization.consumptionClaim,
-          tokenBudget: expectedAuthorization.tokenBudget,
-          inputTokens: 64,
-          outputTokens: 12,
-          audioSeconds: null,
+          executor: structuredClone(expectedAuthorization.executor),
+          lifecycleBudget: structuredClone(expectedAuthorization.lifecycleBudget),
         },
       }),
     });
+    const authorizationRoot = path.join(outputRoot, 'watch-shard-atomic-test.preflight-authorization');
+    const grantPath = path.join(authorizationRoot, 'provider-preflight-grant.json');
+    const reservationDirectory = path.join(authorizationRoot, 'provider-preflight-lease-reservations');
+    const dispatchGrant = JSON.parse(fs.readFileSync(grantPath, 'utf8'));
+    const attempts = await Promise.allSettled([1, 2].map(() => Promise.resolve().then(() => (
+      claimProviderPreflightDispatchAuthorization({
+        grantPath,
+        reservationDirectory,
+      })
+    ))));
+    assert.equal(attempts.filter((entry) => entry.status === 'fulfilled').length, 1);
+    assert.equal(attempts.filter((entry) => entry.status === 'rejected').length, 1);
+    assert.match(attempts.find((entry) => entry.status === 'rejected').reason.message, /already consumed/);
+    const dispatchClaimPath = path.join(outputRoot, 'watch-shard-atomic-test.preflight-authorization.provider-preflight-dispatch-claim.json');
+    const dispatchClaim = JSON.parse(fs.readFileSync(dispatchClaimPath, 'utf8'));
+    assert.equal(dispatchClaim.grantDigest, dispatchGrant.digest);
+    assert.equal(dispatchClaim.executor.workerId, 'vm169');
     assert.deepEqual(calls, {
       provenance: 3,
       build: 1,
@@ -314,27 +754,56 @@ test('coordinator prepares build/preflight/local once and atomically publishes e
       local: 1,
     });
     assert.equal(path.basename(result.planPath), SHARD_EXECUTION_PLAN_FILE);
-    assert.equal(result.leasePaths.length, 8);
+    assert.equal(result.leasePaths.length, SHARD_MATRIX_CELL_COUNT);
     assert.deepEqual(
       result.leases.map((lease) => lease.leaseId),
       result.plan.cells.map((cell) => cell.leaseId),
     );
     assert.ok(result.leasePaths.every((leasePath) => fs.existsSync(leasePath)));
-    assert.equal(new Set(result.leases.map((lease) => lease.leaseId)).size, 8);
+    assert.equal(new Set(result.leases.map((lease) => lease.leaseId)).size, SHARD_MATRIX_CELL_COUNT);
     assert.equal(
       result.leases.reduce((sum, lease) => sum + lease.maxExternalAudioSamples, 0),
       SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
     );
     assert.equal(verifySignedExecutionPlan(result.plan).planDigest, result.plan.planDigest);
+    const grant = JSON.parse(fs.readFileSync(path.join(result.executionRoot, 'provider-preflight-grant.json'), 'utf8'));
+    const projection = {
+      providerPreflightGrant: result.plan.providerPreflightGrant,
+      providerPreflightLeaseReservations: result.plan.providerPreflightLeaseReservations.map(({ cellIndex: _cellIndex, ...entry }) => entry),
+      providerPreflightAuthorization: result.plan.providerPreflightAuthorization,
+      providerPreflightCompletion: result.plan.providerPreflightCompletion,
+      workerReadinessRequest: fileAuthorityEntry(path.join(result.executionRoot, 'worker-readiness-request.json'), 'worker-readiness-request.json'),
+      workerReadiness: grant.workerReadinessAuthorities,
+    };
+    const finalOptions = {
+      plan: result.plan, executionRoot: result.executionRoot, executionRootRelative: '', evidenceRoot: outputRoot, workspaceRoot: outputRoot,
+      shardExecution: projection, matrixIntegration: projection, currentImplementationHashes: inventory('matrix', SHA_A),
+      currentRuntimeBinaryHashes: runtimeAuthority, currentShardImplementationHashes: inventory('shard', SHA_A), validationAt: new Date(),
+    };
+    const verifiedAuthorization = verifyStrictShardProviderPreflightAuthorization(finalOptions);
+    assert.deepEqual(verifiedAuthorization.grant.workers.map((worker) => worker.transportAuthority), productionWorkers.map((worker) => worker.transportAuthority));
+    for (const mutation of ['drop', 'change-pin']) {
+      const tamperedPlan = structuredClone(result.plan);
+      if (mutation === 'drop') delete tamperedPlan.workers[1].transportAuthority;
+      else tamperedPlan.workers[1].transportAuthority.hostKeySha256 = `SHA256:${'b'.repeat(43)}`;
+      assert.throws(() => verifyStrictShardProviderPreflightAuthorization({ ...finalOptions, plan: tamperedPlan }), /grant workers/);
+    }
     for (const lease of result.leases) verifyCellLease(lease, result.plan);
     const preflight = JSON.parse(fs.readFileSync(
       path.join(result.executionRoot, COORDINATOR_PROVIDER_PREFLIGHT_FILE),
       'utf8',
     ));
     assert.equal(preflight.invocationCount, 1);
-    assert.equal(preflight.operation, 'text-translation-preflight');
-    assert.equal(preflight.inputMode, 'text-only');
-    assert.equal(preflight.model, 'qwen3.5-omni-flash-realtime');
+    assert.equal(preflight.operation, 'livetranslate-session-lifecycle-preflight');
+    assert.equal(preflight.inputMode, 'none');
+    assert.equal(preflight.providerInputMode, 'none');
+    assert.equal(preflight.responseMode, 'text-only');
+    assert.equal(preflight.terminalEvent, 'session.finished');
+    assert.equal(preflight.model, PROVIDER_PREFLIGHT_MODEL);
+    assert.deepEqual(
+      preflight.modelProtocolProfileIdentity,
+      MODEL_PROTOCOL_PROFILE_IDENTITY,
+    );
     assert.equal(preflight.externalAudioSamples, 0);
     const publishedText = fs.readdirSync(result.executionRoot, { recursive: true, encoding: 'utf8' })
       .filter((entry) => entry.endsWith('.json'))
@@ -513,7 +982,7 @@ test('coordinator fully validates staged driver and credential readiness before 
   }
 });
 
-test('coordinator completes eight bounded serial waves without redispatch or local retries', async () => {
+test('coordinator completes every bounded serial wave without redispatch or local retries', async () => {
   const value = signedFixture();
   const executionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-coordinator-waves-'));
   fs.writeFileSync(path.join(executionRoot, SHARD_EXECUTION_PLAN_FILE), `${JSON.stringify(value.plan)}\n`, 'utf8');
@@ -534,19 +1003,23 @@ test('coordinator completes eight bounded serial waves without redispatch or loc
       onWaveCompleted: async ({ waveIndex }) => { completedWaves.push(waveIndex); },
     });
     assert.deepEqual(ready.sort(), ['vm1']);
-    assert.equal(dispatches.length, 8);
-    assert.equal(new Set(dispatches.map((entry) => entry.cellId)).size, 8);
-    assert.equal(new Set(dispatches.map((entry) => entry.leaseId)).size, 8);
-    assert.deepEqual(dispatches.map((entry) => entry.waveIndex), [0, 1, 2, 3, 4, 5, 6, 7]);
-    assert.deepEqual(completedWaves, [0, 1, 2, 3, 4, 5, 6, 7]);
-    assert.equal(outcome.completedCellIds.length, 8);
-    assert.equal(fs.readdirSync(path.join(executionRoot, 'dispatch-claims')).length, 8);
+    assert.equal(dispatches.length, SHARD_MATRIX_CELL_COUNT);
+    assert.equal(new Set(dispatches.map((entry) => entry.cellId)).size, SHARD_MATRIX_CELL_COUNT);
+    assert.equal(new Set(dispatches.map((entry) => entry.leaseId)).size, SHARD_MATRIX_CELL_COUNT);
+    const expectedWaves = Array.from({ length: SHARD_MATRIX_CELL_COUNT }, (_, index) => index);
+    assert.deepEqual(dispatches.map((entry) => entry.waveIndex), expectedWaves);
+    assert.deepEqual(completedWaves, expectedWaves);
+    assert.equal(outcome.completedCellIds.length, SHARD_MATRIX_CELL_COUNT);
+    assert.equal(
+      fs.readdirSync(path.join(executionRoot, 'dispatch-claims')).length,
+      SHARD_MATRIX_CELL_COUNT,
+    );
   } finally {
     fs.rmSync(executionRoot, { recursive: true, force: true });
   }
 });
 
-test('wave failure cancels active peers and never dispatches a later paid wave', async () => {
+test('serial wave failure cancels its own unfinished dispatch and never dispatches a later paid wave', async () => {
   const value = signedFixture();
   const executionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-coordinator-fail-'));
   fs.writeFileSync(path.join(executionRoot, SHARD_EXECUTION_PLAN_FILE), `${JSON.stringify(value.plan)}\n`, 'utf8');
@@ -582,7 +1055,7 @@ test('wave failure cancels active peers and never dispatches a later paid wave',
     assert.deepEqual(started.slice(0, 1), value.plan.waves[0].cellIds);
     assert.ok(value.plan.waves[1].cellIds.every((cellId) => started.includes(cellId)));
     assert.equal(value.plan.waves[2].cellIds.some((cellId) => started.includes(cellId)), false);
-    assert.equal(cancelled.length, 0);
+    assert.deepEqual(cancelled, [failingCellId], 'only the started, unfinished cell requires cleanup');
   } finally {
     fs.rmSync(executionRoot, { recursive: true, force: true });
   }
@@ -753,7 +1226,7 @@ test('coordinator aggregate canonicalizes arrival order and binds every cell to 
         const cell = value.plan.cells.find((entry) => entry.cellId === cellId);
         const lease = value.leases.find((entry) => entry.leaseId === cell.leaseId);
         const claim = {
-          schemaVersion: 2,
+          schemaVersion: 3,
           artifactKind: 'watch-mode-shard-dispatch-claim',
           claimedAt: new Date(timestamp).toISOString(),
           executionId: value.plan.executionId,
@@ -780,7 +1253,7 @@ test('coordinator aggregate canonicalizes arrival order and binds every cell to 
         };
       });
       const core = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         artifactKind: 'watch-mode-shard-wave-completion',
         completedAt: new Date(timestamp).toISOString(),
         executionId: value.plan.executionId,
@@ -808,10 +1281,13 @@ test('coordinator aggregate canonicalizes arrival order and binds every cell to 
       result.aggregate.cells.map((cell) => cell.cellId),
       value.plan.cells.map((cell) => cell.cellId),
     );
-    assert.equal(new Set(result.aggregate.cells.map((cell) => cell.leaseId)).size, 8);
+    assert.equal(
+      new Set(result.aggregate.cells.map((cell) => cell.leaseId)).size,
+      SHARD_MATRIX_CELL_COUNT,
+    );
     assert.equal(result.aggregate.budget.reservedExternalAudioSamples, SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES);
     assert.equal(result.aggregate.budget.preflightExternalAudioSamples, 0);
-    assert.equal(result.matrixIntegration.cells.length, 8);
+    assert.equal(result.matrixIntegration.cells.length, SHARD_MATRIX_CELL_COUNT);
     assert.ok(result.matrixIntegration.cells.every((cell) => path.isAbsolute(cell.sourceRunDirectory)));
     assert.equal(validateCoordinatorAggregate(result.aggregate), result.aggregate);
   } finally {

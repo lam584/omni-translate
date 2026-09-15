@@ -216,6 +216,7 @@ describe('provider catalog components', () => {
       streamEnabled: true,
       timeoutMs: 15000,
       systemPromptTemplate: 'video-realtime-cn',
+      protocolProfileKey: '',
     };
     const setDraft = vi.fn((value: SetStateAction<CustomProviderTemplateDraft>) =>
       typeof value === 'function' ? value(draft) : value);
@@ -233,7 +234,10 @@ describe('provider catalog components', () => {
     ));
 
     expect(container.querySelector('.provider-inline-alert')?.textContent).toContain('missing key');
-    await change(container.querySelectorAll<HTMLSelectElement>('select')[0], 'openrouter');
+    const kindSelect = Array.from(container.querySelectorAll<HTMLSelectElement>('select'))
+      .find((select) => select.value === 'dashscope');
+    expect(kindSelect?.value).toBe('dashscope');
+    await change(kindSelect!, 'openrouter');
     expect(onKindChange).toHaveBeenCalledWith('openrouter');
     await change(container.querySelector<HTMLInputElement>('input[placeholder="cn-beijing"]')!, 'us-east-1');
     // 区域输入的更新器在变更事件内执行（setDraft 桩同步调用），产出仅替换 region 的草稿。
@@ -340,6 +344,7 @@ describe('provider catalog components', () => {
       displayName: 'Custom', kind: 'openai-compatible' as const, baseUrl: 'https://example.test', model: 'm',
       transport: 'http' as const, authReference: 'credential://custom', authHeaderName: 'Authorization',
       authScheme: 'none' as const, region: '', streamEnabled: false, timeoutMs: 1000, systemPromptTemplate: '',
+      protocolProfileKey: '',
     };
     const setDraft = vi.fn((value: SetStateAction<CustomProviderTemplateDraft>) =>
       typeof value === 'function' ? value(draft) : value);

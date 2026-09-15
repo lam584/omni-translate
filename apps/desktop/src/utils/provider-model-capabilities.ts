@@ -1,6 +1,13 @@
-import type { ProviderScenario, ProviderModelCapabilityRegistryEntry, RealtimeAudioMode } from '../schema/config';
+import type {
+  ProviderModelCapabilityRegistryEntry,
+  ProviderModelProtocolProfileDeclaration,
+  ProviderModelWireDialect,
+  ProviderScenario,
+  RealtimeAudioMode,
+} from '../schema/config';
 import type { ProviderCapability, ProviderInteractionCapability } from '../schema/provider-contract';
 import type { ProviderModelRuntime } from '../schema/provider-runtime';
+import { MODEL_PROTOCOL_REGISTRY, lookupModelProtocolProfiles } from '../model-protocol/profile-registry';
 
 export const providerCapabilityOrder: ProviderCapability[] = ['speech-to-text', 'text-to-speech', 'speech-to-speech', 'text-generation'];
 
@@ -322,7 +329,7 @@ const seedRegistryEntries: SeedRegistryEntry[] = [
     source: 'official',
   },
   { id: 'seed-qwen3-livetranslate-flash-realtime-2025-09-22', modelId: 'qwen3-livetranslate-flash-realtime-2025-09-22', capabilities: ['speech-to-text', 'speech-to-speech'], realtimeProtocol: 'dashscope-livetranslate', realtimeAudioMode: 'server_vad', interactionCapabilities: ['auto_vad', 'streaming'], releasedAt: '2025-09-22', source: 'official' },
-  { id: 'seed-qwen-audio-3.0-realtime-plus', modelId: 'qwen-audio-3.0-realtime-plus', capabilities: ['speech-to-text', 'speech-to-speech'], realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'server_vad', interactionCapabilities: ['auto_vad', 'streaming'], source: 'official' },
+  { id: 'seed-qwen-audio-3.0-realtime-plus', modelId: 'qwen-audio-3.0-realtime-plus', capabilities: ['speech-to-speech'], realtimeAudioMode: 'server_vad', interactionCapabilities: ['auto_vad', 'streaming'], source: 'official' },
   { id: 'seed-qwen3-livetranslate-flash', modelId: 'qwen3-livetranslate-flash', capabilities: ['speech-to-text', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], source: 'official' },
   { id: 'seed-qwen3-livetranslate-flash-2025-12-01', modelId: 'qwen3-livetranslate-flash-2025-12-01', capabilities: ['speech-to-text', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], releasedAt: '2025-12-01', source: 'official' },
   { id: 'seed-qwen3.5-omni-plus-realtime', modelId: 'qwen3.5-omni-plus-realtime', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'semantic_vad', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2026-03-29', source: 'official' },
@@ -391,19 +398,57 @@ export function createProviderModelCapabilityRegistryEntry(
     id: `registry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     modelId,
     capabilities: normalizeProviderCapabilityList(capabilities),
-    realtimeAudioMode: realtimeAudioMode ?? inferRealtimeAudioModeFromModelName(modelId),
+    realtimeAudioMode: realtimeAudioMode ?? 'server_vad',
     interactionCapabilities: normalizeProviderInteractionCapabilityList(
-      interactionCapabilities ?? inferInteractionCapabilitiesFromModelName(modelId, undefined, realtimeAudioMode),
+      interactionCapabilities ?? (realtimeAudioMode === 'manual'
+        ? ['manual_commit', 'push_to_talk']
+        : ['auto_vad']),
     ),
     source: 'manual',
+  };
+}
+
+function manifestDeclarationForSeed(
+  modelId: string,
+): Partial<Pick<
+  ProviderModelCapabilityRegistryEntry,
+  'registryVersion' | 'profileId' | 'profileVersion' | 'modelProtocolProfile'
+>> {
+  const profiles = lookupModelProtocolProfiles(modelId);
+  if (profiles.length !== 1) return {};
+  const profile = profiles[0];
+  const dialect = MODEL_PROTOCOL_REGISTRY.dialects.find((candidate) =>
+    candidate.dialectId === profile.dialectId);
+  if (!dialect) return {};
+  const modelProtocolProfile: ProviderModelProtocolProfileDeclaration = {
+    registryVersion: MODEL_PROTOCOL_REGISTRY.registryVersion,
+    profileId: profile.profileId,
+    profileVersion: profile.profileVersion,
+    product: profile.product,
+    operations: [...profile.operations],
+    transport: dialect.transport,
+    endpointFamily: dialect.endpointFamily,
+    endpointPath: dialect.endpointPath,
+    wireDialect: dialect.dialectId as ProviderModelWireDialect,
+    inputFraming: dialect.inputFraming,
+    outputFraming: dialect.outputFraming,
+    terminalLifecycle: dialect.terminalLifecycle,
+    adapterStatus: profile.adapter.status,
+  };
+  return {
+    registryVersion: MODEL_PROTOCOL_REGISTRY.registryVersion,
+    profileId: profile.profileId,
+    profileVersion: profile.profileVersion,
+    modelProtocolProfile,
   };
 }
 
 export function createDefaultLocalModelCapabilityRegistry(): ProviderModelCapabilityRegistryEntry[] {
   return seedRegistryEntries.map((entry) => ({
     ...entry,
+    ...manifestDeclarationForSeed(entry.modelId),
     capabilities: normalizeProviderCapabilityList(entry.capabilities),
-    realtimeAudioMode: entry.realtimeAudioMode ?? inferRealtimeAudioModeFromModelName(entry.modelId),
+    realtimeAudioMode: entry.realtimeAudioMode ?? 'server_vad',
     interactionCapabilities: normalizeProviderInteractionCapabilityList(
       entry.interactionCapabilities,
     ),
@@ -493,62 +538,6 @@ export function formatProviderInteractionCapabilityShortLabel(capability: Provid
   return labels[capability];
 }
 
-export function inferRealtimeAudioModeFromModelName(modelId: string, displayName?: string): RealtimeAudioMode {
-  const haystack = `${modelId} ${displayName ?? ''}`.toLowerCase();
-
-  if (haystack.includes('gemini') && (haystack.includes('live') || haystack.includes('native-audio') || haystack.includes('realtime'))) {
-    return 'gemini_auto_activity';
-  }
-
-  if (haystack.includes('livetranslate')) return 'server_vad';
-  if (haystack.includes('omni') && haystack.includes('realtime')) return 'manual';
-  if ((haystack.includes('gpt') || haystack.includes('openai')) && haystack.includes('realtime')) return 'server_vad';
-  if (haystack.includes('asr') && haystack.includes('realtime')) return 'server_vad';
-
-  return 'server_vad';
-}
-
-export function inferInteractionCapabilitiesFromModelName(
-  modelId: string,
-  displayName?: string,
-  realtimeAudioMode?: RealtimeAudioMode,
-): ProviderInteractionCapability[] {
-  const haystack = `${modelId} ${displayName ?? ''}`.toLowerCase();
-  const capabilities: ProviderInteractionCapability[] = [];
-  const add = (...items: ProviderInteractionCapability[]) => {
-    capabilities.push(...items);
-  };
-
-  if (haystack.includes('ollama') || haystack.includes('lmstudio') || haystack.includes('lm studio')) add('text_only_backend');
-  if (haystack.includes('openrouter/')) add('chunked_http_audio');
-  if (haystack.includes('nvidia/') || haystack.includes('parakeet') || haystack.includes('magpie')) add('pipeline_asr_mt_tts');
-  if (haystack.includes('realtime') || haystack.includes('live') || haystack.includes('native-audio') || haystack.includes('gpt-audio')) add('streaming');
-  if (haystack.includes('livetranslate')) add('auto_vad');
-  if ((haystack.includes('omni') || haystack.includes('gpt-realtime') || haystack.includes('asr')) && haystack.includes('realtime')) {
-    add('auto_vad', 'manual_commit', 'push_to_talk');
-  }
-  if (haystack.includes('semantic_vad')) add('auto_vad');
-  if (haystack.includes('gemini') && (haystack.includes('live') || haystack.includes('native-audio') || haystack.includes('realtime'))) {
-    add('auto_vad', 'client_activity', 'push_to_talk');
-  }
-  if (haystack.includes('tts') && haystack.includes('realtime')) add('server_commit_tts', 'commit_tts');
-  if (
-    haystack.includes('filetrans') ||
-    haystack.includes('transcribe') ||
-    haystack.includes('whisper') ||
-    haystack.includes('audio') ||
-    (haystack.includes('tts') && !haystack.includes('realtime'))
-  ) {
-    add('chunked_http_audio');
-  }
-  if (realtimeAudioMode === 'manual') add('manual_commit', 'push_to_talk');
-  if (realtimeAudioMode === 'server_vad' || realtimeAudioMode === 'semantic_vad') add('auto_vad');
-  if (realtimeAudioMode === 'gemini_auto_activity') add('auto_vad', 'client_activity');
-  if (realtimeAudioMode === 'gemini_manual_activity') add('client_activity', 'push_to_talk');
-
-  return normalizeProviderInteractionCapabilityList(capabilities);
-}
-
 export function formatProviderCapabilityLabel(capability: ProviderCapability) {
   if (capability === 'speech-to-text') return 'Speech to text';
   if (capability === 'text-to-speech') return 'Text to speech';
@@ -602,41 +591,6 @@ export function mapUpstreamCapabilitiesToScenarios(capabilities: Array<string | 
   return normalizeProviderCapabilityList(normalized);
 }
 
-export function inferProviderCapabilitiesFromModelName(modelId: string, displayName?: string) {
-  const haystack = `${modelId} ${displayName ?? ''}`.toLowerCase();
-  const normalized: ProviderCapability[] = [];
-
-  if (/((^|[-_/])asr([-_/]|$))|fun-asr|sensevoice|paraformer|gummy|transcribe|whisper|parakeet|chirp|voxtral/.test(haystack)) {
-    normalized.push('speech-to-text');
-  }
-
-  if (/((^|[-_/])tts([-_/]|$))|cosyvoice|sambert|speech-\d|gpt-audio|magpie/.test(haystack)) {
-    normalized.push('text-to-speech');
-  }
-
-  if (haystack.includes('livetranslate')) {
-    normalized.push('speech-to-text', 'speech-to-speech');
-  }
-
-  if (haystack.includes('omni')) {
-    normalized.push('speech-to-text', 'text-to-speech', 'speech-to-speech');
-  }
-
-  if (haystack.includes('gpt-realtime') || (haystack.includes('gemini') && (haystack.includes('live') || haystack.includes('native-audio')))) {
-    normalized.push('speech-to-text', 'text-to-speech', 'speech-to-speech');
-  }
-
-  if (haystack.includes('gpt-audio')) {
-    normalized.push('speech-to-speech');
-  }
-
-  if (/((^|[-_/])(qwen|gpt|deepseek|claude|gemini|glm|llama|mistral|yi|nemotron)([-_/]|$))|chat|completions|local-model|ollama|lmstudio/.test(haystack) && normalized.length === 0) {
-    normalized.push('text-generation');
-  }
-
-  return normalizeProviderCapabilityList(normalized);
-}
-
 export function resolveLocalRegistryEntry(
   modelId: string,
   registry: ProviderModelCapabilityRegistryEntry[],
@@ -656,19 +610,23 @@ export function resolveLocalRegistryCapabilities(
 export function resolveInteractionCapabilities(
   modelId: string,
   registry: ProviderModelCapabilityRegistryEntry[],
-  displayName?: string,
+  _displayName?: string,
 ): ProviderInteractionCapability[] {
   const match = resolveLocalRegistryEntry(modelId, registry);
   if (match?.interactionCapabilities && match.interactionCapabilities.length > 0) {
     return normalizeProviderInteractionCapabilityList(match.interactionCapabilities);
   }
-  return inferInteractionCapabilitiesFromModelName(modelId, displayName, match?.realtimeAudioMode);
+  if (match?.realtimeAudioMode === 'manual') return ['manual_commit', 'push_to_talk'];
+  if (match?.realtimeAudioMode === 'gemini_auto_activity') return ['auto_vad', 'client_activity'];
+  if (match?.realtimeAudioMode === 'gemini_manual_activity') return ['client_activity', 'push_to_talk'];
+  if (match?.realtimeAudioMode === 'server_vad' || match?.realtimeAudioMode === 'semantic_vad') return ['auto_vad'];
+  return [];
 }
 
 export function resolveRealtimeAudioMode(
   modelId: string,
   registry: ProviderModelCapabilityRegistryEntry[],
-  displayName?: string,
+  _displayName?: string,
 ): RealtimeAudioMode {
   const match = resolveLocalRegistryEntry(modelId, registry);
 
@@ -676,12 +634,12 @@ export function resolveRealtimeAudioMode(
     return match.realtimeAudioMode;
   }
 
-  const interactions = match?.interactionCapabilities ?? inferInteractionCapabilitiesFromModelName(modelId, displayName);
+  const interactions = match?.interactionCapabilities ?? [];
   if (interactions.includes('client_activity')) return 'gemini_auto_activity';
   if (interactions.includes('manual_commit')) return 'manual';
   if (interactions.includes('auto_vad')) return 'server_vad';
 
-  return inferRealtimeAudioModeFromModelName(modelId, displayName);
+  return 'server_vad';
 }
 
 export function resolveProviderModelCapabilities(
@@ -692,12 +650,6 @@ export function resolveProviderModelCapabilities(
 
   if (local && local.length > 0) {
     return local;
-  }
-
-  const inferred = inferProviderCapabilitiesFromModelName(model.id, model.displayName);
-
-  if (inferred.length > 0) {
-    return inferred;
   }
 
   return mapUpstreamCapabilitiesToScenarios(model.capabilities);

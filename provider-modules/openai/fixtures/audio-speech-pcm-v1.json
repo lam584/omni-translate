@@ -1,0 +1,52 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "openai.fixture.audio-speech-pcm.v1",
+  "providerId": "openai",
+  "protocolProfileId": "openai.audio.speech.pcm.current",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["openai.docs.text-to-speech"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived raw PCM response metadata; payload bytes are placeholders."
+  },
+  "scenario": "Request raw 24 kHz mono PCM speech and stream sanitized binary chunks",
+  "data": {
+  "endpointStatus": "verified",
+  "networkAuthorized": false,
+  "authorizationReason": "Fixture-only documentation replay; network access is not authorized.",
+  "authContract": {
+    "profileId": "openai.auth.bearer-header",
+    "parameters": [{ "location": "header", "name": "Authorization", "value": "Bearer <openai-api-key>" }]
+  },
+  "audioContract": { "profileId": "openai.audio.tts-pcm16-24k-mono", "encoding": "pcm16", "sampleRateHz": 24000, "channels": 1 },
+  "request": {
+    "type": "http.request",
+    "method": "POST",
+    "url": "https://api.openai.com/v1/audio/speech",
+    "headers": {
+      "Authorization": "Bearer <openai-api-key>",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "model": "gpt-4o-mini-tts",
+      "voice": "alloy",
+      "input": "sanitized text",
+      "response_format": "pcm"
+    }
+  },
+  "response": {
+    "type": "http.response",
+    "terminal": true,
+    "audio": "<base64-sanitized-pcm-chunk>",
+    "contentType": "audio/pcm",
+    "sampleRateHz": 24000,
+    "channels": 1,
+    "bitDepth": 16,
+    "endianness": "little-endian",
+    "chunks": ["<base64-sanitized-pcm-chunk>"]
+  }
+  }
+}

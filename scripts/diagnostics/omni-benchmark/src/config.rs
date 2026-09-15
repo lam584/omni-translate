@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::bailian_contract::authorize_enabled_livetranslate;
 use crate::protocol::BenchmarkProtocol;
 
 // ──────────────────────────────── Constants ────────────────────────────────
@@ -232,6 +233,17 @@ fn parse_single_args(args: &[String]) -> Result<Config, String> {
         }
     }
 
+    let final_base_url = base_url.unwrap_or_else(|| protocol.default_base_url().to_string());
+    if protocol.is_dashscope_family() {
+        if protocol != BenchmarkProtocol::DashscopeLiveTranslate || manual {
+            return Err(
+                "model_protocol.not_authorized: only the enabled LiveTranslate server_vad adapter is supported"
+                    .to_string(),
+            );
+        }
+        authorize_enabled_livetranslate(&model, &final_base_url)?;
+    }
+
     // 解析 API key：CLI > 环境变量 > Credential Manager
     let env_var = protocol.default_env_var();
     let env_key = std::env::var(env_var).unwrap_or_default();
@@ -255,7 +267,6 @@ fn parse_single_args(args: &[String]) -> Result<Config, String> {
         return Err(format!("audio file not found: {}", audio_path.display()));
     }
 
-    let final_base_url = base_url.unwrap_or_else(|| protocol.default_base_url().to_string());
     let final_auth_header = auth_header_name.unwrap_or_else(|| protocol.default_auth_header().to_string());
     let final_auth_scheme = auth_scheme.unwrap_or_else(|| protocol.default_auth_scheme().to_string());
 
@@ -297,4 +308,38 @@ fn next_val(args: &mut impl Iterator<Item = String>, name: &str) -> Result<Strin
     args.next()
         .filter(|v| !v.trim().is_empty())
         .ok_or_else(|| format!("{name} requires a value"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dashscope_authority_fails_before_credentials_or_audio_are_resolved() {
+        for args in [
+            vec![
+                "--protocol".to_string(),
+                "dashscope-omni".to_string(),
+            ],
+            vec![
+                "--protocol".to_string(),
+                "dashscope-livetranslate".to_string(),
+                "--model".to_string(),
+                "qwen3.5-livetranslate-flash-realtime-2026-05-19".to_string(),
+            ],
+            vec![
+                "--protocol".to_string(),
+                "dashscope-livetranslate".to_string(),
+                "--model".to_string(),
+                "unknown-livetranslate-looking-model".to_string(),
+            ],
+        ] {
+            let error = match parse_single_args(&args) {
+                Ok(_) => panic!("unsupported profile must fail closed"),
+                Err(error) => error,
+            };
+            assert!(error.contains("model_protocol.not_authorized"), "{error}");
+            assert!(!error.contains("API key"), "authority must run before credentials");
+        }
+    }
 }

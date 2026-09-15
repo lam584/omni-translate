@@ -210,12 +210,12 @@ test('frame geometry matches the bridge source chunk constant', () => {
   );
 });
 
-test('bridge source ring absorbs event-mode startup pre-roll without changing loopback latency', () => {
+test('bridge source ring absorbs one second of event-mode clock skew', () => {
   const { sampleRateHz, channelCount, bytesPerSample, chunkBytes } = contract.frameGeometry;
   const { maxBufferedMilliseconds } = contract.bridgeSourceGeometry;
   const maxBufferedBytes =
     (sampleRateHz * channelCount * bytesPerSample * maxBufferedMilliseconds) / 1000;
-  assert.equal(maxBufferedBytes, 96000);
+  assert.equal(maxBufferedBytes, 192000);
   assert.ok(driverRing.includes(`#define OMNI_BRIDGE_MAX_BUFFERED_BYTES ${maxBufferedBytes}`));
   assert.ok(driverRing.includes('#define OMNI_LOOPBACK_RING_CAPACITY 19200'));
   assert.ok(portableRing.includes(`kDefaultMaxBuffered = ${maxBufferedBytes}`));

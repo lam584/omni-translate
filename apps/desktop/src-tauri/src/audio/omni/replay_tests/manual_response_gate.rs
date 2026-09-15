@@ -1,10 +1,11 @@
 use super::*;
 
-/// A long committed item can take more than thirty seconds to finish ASR while
-/// still emitting correlated deltas. That active provider work must keep the
-/// gate alive so its complete source reaches response.create.
+/// The legacy replay provider is manifest-only. Even a correlated ASR final
+/// must fail closed instead of granting the Omni-only response.create write.
+/// The pure manual-gate tests in connection_coordinator retain the product
+/// transition for a future enabled Omni adapter.
 #[test]
-fn replay_matching_asr_progress_extends_the_manual_response_gate() {
+fn replay_matching_asr_progress_cannot_bypass_manifest_only_response_authority() {
     let harness = ReplayHarness::new(RealtimeAudioMode::Manual, Vec::new());
     let mut slice = WorkerSlice::new();
     slice.manual_response_pending = true;
@@ -28,9 +29,9 @@ fn replay_matching_asr_progress_extends_the_manual_response_gate() {
     );
     let _socket = harness.tick(socket, &mut slice);
 
-    assert!(slice.manual_response_pending);
-    assert!(slice.manual_response_requested);
-    assert_eq!(response_create_count(&harness), 1);
+    assert!(!slice.manual_response_pending);
+    assert!(!slice.manual_response_requested);
+    assert_eq!(response_create_count(&harness), 0);
     assert_no_next_commit(&harness);
     let snapshot = harness.store().snapshot();
     let completed_cue = snapshot
@@ -40,9 +41,6 @@ fn replay_matching_asr_progress_extends_the_manual_response_gate() {
         .find(|cue| cue.source_text == "the complete middle translation source")
         .expect("completed source cue");
     assert!(completed_cue.committed, "Provider ASR completed owns source finality");
-    assert!(harness
-        .store()
-        .subtitle_source_is_final(&completed_cue.cue_id));
     assert!(!completed_cue.translation_committed);
     assert!(completed_cue.translated_text.is_empty());
     assert_eq!(
@@ -70,11 +68,12 @@ fn replay_unrelated_asr_progress_does_not_extend_the_manual_response_gate() {
     assert_eq!(response_create_count(&harness), 0);
 }
 
-/// A completed transcription starts the model response but must not release
-/// the next manual commit until response.done. The production Flash ordering
-/// previously overlapped response.create calls and ended in InternalError.
+/// A manifest-only Omni profile cannot start this socket state machine. This
+/// replay proves the first paid client mutation is rejected; duplicate-final
+/// serialization and response.done release remain covered by the pure gate
+/// and response state-machine tests without fabricating connection authority.
 #[test]
-fn replay_manual_gate_serializes_response_create_until_response_done() {
+fn replay_manifest_only_omni_response_create_fails_closed() {
     let harness = ReplayHarness::new(RealtimeAudioMode::Manual, Vec::new());
     let mut slice = WorkerSlice::new();
     slice.manual_response_pending = true;
@@ -106,55 +105,11 @@ fn replay_manual_gate_serializes_response_create_until_response_done() {
         harness.shared.clone(),
     );
 
-    let socket = harness.tick(socket, &mut slice);
-    assert!(slice.manual_response_pending);
-    assert!(slice.manual_response_requested);
-    assert_eq!(response_create_count(&harness), 1);
-    assert_no_next_commit(&harness);
-
-    let socket = harness.tick(socket, &mut slice);
-    assert!(slice.manual_response_pending);
-    assert!(slice.manual_response_requested);
-    assert_eq!(response_create_count(&harness), 1, "replayed final must not create a second response");
-
-    let socket = harness.tick(socket, &mut slice);
-    assert!(slice.manual_response_pending, "a text delta must not release the gate");
-    assert_no_next_commit(&harness);
-
-    let socket = harness.tick(socket, &mut slice);
-    assert!(slice.manual_response_pending, "response.text.done must wait for response.done");
-    assert_eq!(slice.pending_translated_text, "当前译文");
-    assert_no_next_commit(&harness);
-
-    let socket = harness.tick(socket, &mut slice);
-    assert!(!slice.manual_response_pending, "response.done releases the next manual turn");
-    assert!(!slice.manual_response_requested);
-    assert!(
-        slice.sent_audio_since_commit,
-        "response.done must preserve audible PCM already accepted into the next provider buffer",
-    );
-    assert!(slice.manual_turn_audio_after_response);
-    assert_eq!(slice.audio_samples_since_commit, MANUAL_COMMIT_MIN_AUDIO_SAMPLES);
-    let socket = harness.tick(socket, &mut slice);
-    assert_no_next_commit(&harness);
-    assert!(
-        slice.sent_audio_since_commit,
-        "the response-release settle window must retain the next provider buffer"
-    );
-    slice.manual_response_released_at = Some(
-        SystemTime::now()
-            .checked_sub(Duration::from_millis(300))
-            .expect("settle timestamp"),
-    );
     let _socket = harness.tick(socket, &mut slice);
-    assert_eq!(
-        harness.sent_types().iter().filter(|kind| kind.as_str() == "input_audio_buffer.commit").count(),
-        1,
-        "response.done must release one commit for PCM retained by the provider during the response",
-    );
-    assert!(slice.manual_response_pending, "the retained turn now awaits its correlated ASR final");
-    assert!(!slice.sent_audio_since_commit);
-    assert_eq!(slice.audio_samples_since_commit, 0);
+    assert!(!slice.manual_response_pending);
+    assert!(!slice.manual_response_requested);
+    assert_eq!(response_create_count(&harness), 0);
+    assert_no_next_commit(&harness);
 }
 
 fn response_create_count(harness: &ReplayHarness) -> usize {

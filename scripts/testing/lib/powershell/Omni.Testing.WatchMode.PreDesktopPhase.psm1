@@ -2,6 +2,7 @@
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.IO.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Process.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Windows.Elevation.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.Windows.Audio.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.AudioCapture.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Bridge.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Configuration.psm1') -Force -DisableNameChecking
@@ -95,7 +96,7 @@ function Invoke-WatchModePreDesktopPhase {
       } else {
         Invoke-PreDesktopStep -State $state "bridge source frame probe" -Phase bridgeProbe {
           Invoke-BridgeSourceProbe -OutputDirectory $outputDir -FeedbackMode $FeedbackLoopPrevention `
-            -WorkspaceRoot $workspaceRoot
+            -PhysicalPlaybackDeviceId $PhysicalPlaybackDeviceId -WorkspaceRoot $workspaceRoot
         } -ContinueOnError
       }
       if ($bridgeSourceProbe.status -eq 'passed') {
@@ -117,6 +118,7 @@ function Invoke-WatchModePreDesktopPhase {
           Invoke-VirtualDriverMediaSourcePreflight `
             -OutputDirectory $outputDir `
             -VirtualRenderEndpointId ([string]$driverProbe.data.WasapiEndpointId) `
+            -PhysicalPlaybackDeviceId $PhysicalPlaybackDeviceId `
             -PathToMedia $MediaPath `
             -WorkspaceRoot $workspaceRoot
         } -ContinueOnError

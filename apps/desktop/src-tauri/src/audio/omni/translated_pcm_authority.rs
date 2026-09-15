@@ -16,7 +16,9 @@ const CELL_ID_ENV: &str = "OMNI_WATCH_MODE_CELL_ID";
 const LEASE_ID_ENV: &str = "OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID";
 const RUN_MARKER_ENV: &str = "OMNI_WATCH_MODE_RUN_MARKER";
 const AUTOSTART_ENV: &str = "OMNI_WATCH_MODE_AUTOSTART";
-const MAX_PROVIDER_INPUT_SAMPLES: u64 = 180 * 16_000;
+// Absolute cross-authority bound; formal release cells supply a lower exact
+// mode-derived lease (2,173,045 or 2,877,045 samples).
+const MAX_PROVIDER_INPUT_AUTHORITY_SAMPLES: u64 = 2_880_000;
 const MAX_TRANSLATED_PCM_SAMPLES: usize = 240 * 48_000;
 const AUTHORITY_KIND: &str = "watch-mode-translated-cue-pcm-authority";
 
@@ -25,6 +27,7 @@ const AUTHORITY_KIND: &str = "watch-mode-translated-cue-pcm-authority";
 pub(super) struct AcceptedTranslatedCue {
     sequence: u64,
     cue_id: String,
+    response_id: String,
     request_ids: Vec<String>,
     sample_rate_hz: u32,
     channel_count: u16,
@@ -38,9 +41,45 @@ pub(super) struct AcceptedTranslatedCue {
     chunks: Vec<AcceptedTranslatedChunk>,
     created_at_ms: u64,
     completed_at_ms: u64,
-    bridge_instance_id: String,
-    playback_owner_generation: u64,
-    physical_playback_device_id: String,
+    #[serde(flatten)]
+    renderer: AcceptedTranslatedRenderer,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "rendererKind")]
+enum AcceptedTranslatedRenderer {
+    #[serde(rename = "bridge-physical-playback")]
+    BridgePhysicalPlayback {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(rename = "bridgeInstanceId")]
+        bridge_instance_id: String,
+        #[serde(rename = "sourceGeneration")]
+        source_generation: u64,
+        #[serde(rename = "sourceGenerationToken")]
+        source_generation_token: String,
+        #[serde(rename = "playbackOwnerGeneration")]
+        playback_owner_generation: u64,
+        #[serde(rename = "physicalPlaybackDeviceId")]
+        physical_playback_device_id: String,
+    },
+    #[serde(rename = "desktop-speaker")]
+    DesktopSpeaker {
+        #[serde(rename = "rendererInstanceId")]
+        renderer_instance_id: String,
+        #[serde(rename = "rendererOwnerGeneration")]
+        renderer_owner_generation: u64,
+        #[serde(rename = "renderAttemptId")]
+        render_attempt_id: String,
+        #[serde(rename = "physicalPlaybackDeviceId")]
+        physical_playback_device_id: String,
+        #[serde(rename = "playedFrames")]
+        played_frames: u64,
+        #[serde(rename = "playedSampleRateHz")]
+        played_sample_rate_hz: u32,
+        #[serde(rename = "playedChannelCount")]
+        played_channel_count: u16,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -56,6 +95,7 @@ struct AcceptedTranslatedChunk {
 #[derive(Debug)]
 struct PendingTranslatedStream {
     cue_id: String,
+    response_id: String,
     request_ids: Vec<String>,
     sample_rate_hz: u32,
     channel_count: u16,
@@ -64,9 +104,7 @@ struct PendingTranslatedStream {
     chunks: Vec<AcceptedTranslatedChunk>,
     next_chunk_index: u32,
     created_at_ms: u64,
-    bridge_instance_id: String,
-    playback_owner_generation: u64,
-    physical_playback_device_id: String,
+    renderer: AcceptedTranslatedRenderer,
 }
 
 #[derive(Debug)]
@@ -119,7 +157,7 @@ impl TranslatedPcmAuthority {
         Self { enabled: None }
     }
 
-    fn from_environment(
+    pub(super) fn from_environment(
         direction: &str,
         session_generation: u64,
         model: &str,
@@ -142,10 +180,10 @@ impl TranslatedPcmAuthority {
             .parse::<u64>()
             .map_err(|error| format!("{MAX_SAMPLES_ENV} must be an integer: {error}"))?;
         if max_provider_input_samples == 0
-            || max_provider_input_samples > MAX_PROVIDER_INPUT_SAMPLES
+            || max_provider_input_samples > MAX_PROVIDER_INPUT_AUTHORITY_SAMPLES
         {
             return Err(format!(
-                "{MAX_SAMPLES_ENV} must be within 1..={MAX_PROVIDER_INPUT_SAMPLES}"
+                "{MAX_SAMPLES_ENV} must be within 1..={MAX_PROVIDER_INPUT_AUTHORITY_SAMPLES}"
             ));
         }
         let cell_id = required(CELL_ID_ENV, read_env(CELL_ID_ENV))?;
@@ -226,29 +264,86 @@ impl TranslatedPcmAuthority {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn accept_complete_cue(
+    pub(super) fn accept_complete_bridge_cue(
         &mut self,
         cue_id: &str,
+        response_id: &str,
         request_id: &str,
         samples: &[i16],
         sample_rate_hz: u32,
         channel_count: u16,
         accepted_frames: u64,
         created_at_ms: u64,
-        bridge_instance_id: &str,
-        playback_owner_generation: u64,
-        physical_playback_device_id: &str,
+        owner: &crate::bridge::ipc::BridgeTranslationSinkOwner,
+    ) -> Result<(), String> {
+        self.accept_complete_cue_for_renderer(
+            "bridge_write_accepted",
+            cue_id,
+            response_id,
+            request_id,
+            samples,
+            sample_rate_hz,
+            channel_count,
+            accepted_frames,
+            created_at_ms,
+            bridge_renderer(owner),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn accept_complete_speaker_cue(
+        &mut self,
+        cue_id: &str,
+        response_id: &str,
+        request_id: &str,
+        samples: &[i16],
+        sample_rate_hz: u32,
+        channel_count: u16,
+        accepted_frames: u64,
+        created_at_ms: u64,
+        receipt: &crate::audio::speech::SpeakerPlaybackReceipt,
+        render_attempt_id: &str,
+    ) -> Result<(), String> {
+        self.accept_complete_cue_for_renderer(
+            "desktop_speaker_played",
+            cue_id,
+            response_id,
+            request_id,
+            samples,
+            sample_rate_hz,
+            channel_count,
+            accepted_frames,
+            created_at_ms,
+            speaker_renderer(receipt, render_attempt_id),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn accept_complete_cue_for_renderer(
+        &mut self,
+        accepted_event: &str,
+        cue_id: &str,
+        response_id: &str,
+        request_id: &str,
+        samples: &[i16],
+        sample_rate_hz: u32,
+        channel_count: u16,
+        accepted_frames: u64,
+        created_at_ms: u64,
+        renderer: AcceptedTranslatedRenderer,
     ) -> Result<(), String> {
         let Some(enabled) = self.enabled.as_mut() else {
             return Ok(());
         };
         validate_accepted_pcm(
             cue_id,
+            response_id,
             samples,
             sample_rate_hz,
             channel_count,
             accepted_frames,
         )?;
+        validate_renderer(&renderer)?;
         if enabled.active_streams.contains_key(cue_id)
             || enabled.accepted_cue_ids.contains(cue_id)
         {
@@ -259,6 +354,7 @@ impl TranslatedPcmAuthority {
         let record = persist_accepted_cue(
             enabled,
             cue_id,
+            response_id,
             vec![request_id.to_string()],
             samples,
             sample_rate_hz,
@@ -273,11 +369,9 @@ impl TranslatedPcmAuthority {
                 accepted_at_ms: now_unix_ms(),
             }],
             created_at_ms,
-            bridge_instance_id,
-            playback_owner_generation,
-            physical_playback_device_id,
+            renderer,
         )?;
-        self.write_event("bridge_write_accepted", Some(&record))?;
+        self.write_event(accepted_event, Some(&record))?;
         self.write_summary()
     }
 
@@ -285,6 +379,7 @@ impl TranslatedPcmAuthority {
     pub(super) fn accept_stream_write(
         &mut self,
         cue_id: &str,
+        response_id: &str,
         request_id: &str,
         samples: &[i16],
         sample_rate_hz: u32,
@@ -293,14 +388,14 @@ impl TranslatedPcmAuthority {
         chunk_index: u32,
         stream_state: omni_bridge_protocol::TranslationStreamState,
         created_at_ms: u64,
-        bridge_instance_id: &str,
-        playback_owner_generation: u64,
-        physical_playback_device_id: &str,
+        owner: &crate::bridge::ipc::BridgeTranslationSinkOwner,
     ) -> Result<(), String> {
         let Some(enabled) = self.enabled.as_mut() else {
             return Ok(());
         };
         use omni_bridge_protocol::TranslationStreamState;
+        let renderer = bridge_renderer(owner);
+        validate_renderer(&renderer)?;
         match stream_state {
             TranslationStreamState::Start => {
                 if chunk_index != 0
@@ -313,6 +408,7 @@ impl TranslatedPcmAuthority {
                 }
                 validate_accepted_pcm(
                     cue_id,
+                    response_id,
                     samples,
                     sample_rate_hz,
                     channel_count,
@@ -322,6 +418,7 @@ impl TranslatedPcmAuthority {
                     cue_id.to_string(),
                     PendingTranslatedStream {
                         cue_id: cue_id.to_string(),
+                        response_id: response_id.to_string(),
                         request_ids: vec![request_id.to_string()],
                         sample_rate_hz,
                         channel_count,
@@ -336,9 +433,7 @@ impl TranslatedPcmAuthority {
                         }],
                         next_chunk_index: 1,
                         created_at_ms,
-                        bridge_instance_id: bridge_instance_id.to_string(),
-                        playback_owner_generation,
-                        physical_playback_device_id: physical_playback_device_id.to_string(),
+                        renderer,
                     },
                 );
                 self.write_summary()
@@ -346,6 +441,7 @@ impl TranslatedPcmAuthority {
             TranslationStreamState::Chunk => {
                 validate_accepted_pcm(
                     cue_id,
+                    response_id,
                     samples,
                     sample_rate_hz,
                     channel_count,
@@ -359,9 +455,8 @@ impl TranslatedPcmAuthority {
                     sample_rate_hz,
                     channel_count,
                     chunk_index,
-                    bridge_instance_id,
-                    playback_owner_generation,
-                    physical_playback_device_id,
+                    response_id,
+                    &renderer,
                 )?;
                 let next_len = pending.samples.len().saturating_add(samples.len());
                 if next_len > MAX_TRANSLATED_PCM_SAMPLES {
@@ -399,9 +494,8 @@ impl TranslatedPcmAuthority {
                     sample_rate_hz,
                     channel_count,
                     chunk_index,
-                    bridge_instance_id,
-                    playback_owner_generation,
-                    physical_playback_device_id,
+                    response_id,
+                    &renderer,
                 )?;
                 let pending = enabled
                     .active_streams
@@ -412,6 +506,7 @@ impl TranslatedPcmAuthority {
                 let record = persist_accepted_cue(
                     enabled,
                     &pending.cue_id,
+                    &pending.response_id,
                     request_ids,
                     &pending.samples,
                     pending.sample_rate_hz,
@@ -420,9 +515,7 @@ impl TranslatedPcmAuthority {
                     pending.next_chunk_index,
                     pending.chunks,
                     pending.created_at_ms,
-                    &pending.bridge_instance_id,
-                    pending.playback_owner_generation,
-                    &pending.physical_playback_device_id,
+                    pending.renderer,
                 )?;
                 self.write_event("bridge_write_accepted", Some(&record))?;
                 self.write_summary()
@@ -487,7 +580,7 @@ impl TranslatedPcmAuthority {
         };
         enabled.sequence = enabled.sequence.saturating_add(1);
         let record = json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "artifactKind": AUTHORITY_KIND,
             "event": event,
             "sequence": enabled.sequence,
@@ -525,7 +618,7 @@ impl TranslatedPcmAuthority {
             .map(|cue| cue.bytes as u64)
             .sum::<u64>();
         let summary = json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "artifactKind": AUTHORITY_KIND,
             "cellId": enabled.cell_id,
             "leaseId": enabled.lease_id,
@@ -577,13 +670,17 @@ fn create_new_file(path: &Path) -> Result<File, String> {
 
 fn validate_accepted_pcm(
     cue_id: &str,
+    response_id: &str,
     samples: &[i16],
     sample_rate_hz: u32,
     channel_count: u16,
     accepted_frames: u64,
 ) -> Result<(), String> {
-    if cue_id.trim().is_empty() || samples.is_empty() {
-        return Err("translated PCM authority requires cueId and non-empty PCM".to_string());
+    if cue_id.trim().is_empty() || response_id.trim().is_empty() || samples.is_empty() {
+        return Err(
+            "translated PCM authority requires cueId, responseId, and non-empty PCM"
+                .to_string(),
+        );
     }
     if sample_rate_hz == 0 || channel_count != 1 {
         return Err(
@@ -606,16 +703,14 @@ fn validate_stream_identity(
     sample_rate_hz: u32,
     channel_count: u16,
     chunk_index: u32,
-    bridge_instance_id: &str,
-    playback_owner_generation: u64,
-    physical_playback_device_id: &str,
+    response_id: &str,
+    renderer: &AcceptedTranslatedRenderer,
 ) -> Result<(), String> {
     if pending.sample_rate_hz != sample_rate_hz
         || pending.channel_count != channel_count
         || pending.next_chunk_index != chunk_index
-        || pending.bridge_instance_id != bridge_instance_id
-        || pending.playback_owner_generation != playback_owner_generation
-        || pending.physical_playback_device_id != physical_playback_device_id
+        || pending.response_id != response_id
+        || &pending.renderer != renderer
     {
         return Err(format!(
             "translated PCM authority stream sequence mismatch: cueId={} expectedChunk={} actualChunk={chunk_index}",
@@ -629,6 +724,7 @@ fn validate_stream_identity(
 fn persist_accepted_cue(
     enabled: &mut EnabledTranslatedPcmAuthority,
     cue_id: &str,
+    response_id: &str,
     request_ids: Vec<String>,
     samples: &[i16],
     sample_rate_hz: u32,
@@ -637,9 +733,7 @@ fn persist_accepted_cue(
     chunk_count: u32,
     chunks: Vec<AcceptedTranslatedChunk>,
     created_at_ms: u64,
-    bridge_instance_id: &str,
-    playback_owner_generation: u64,
-    physical_playback_device_id: &str,
+    renderer: AcceptedTranslatedRenderer,
 ) -> Result<AcceptedTranslatedCue, String> {
     if enabled.accepted_cue_ids.contains(cue_id) {
         return Err(format!(
@@ -662,6 +756,7 @@ fn persist_accepted_cue(
     let record = AcceptedTranslatedCue {
         sequence: cue_sequence as u64,
         cue_id: cue_id.to_string(),
+        response_id: response_id.to_string(),
         request_ids,
         sample_rate_hz,
         channel_count,
@@ -675,13 +770,98 @@ fn persist_accepted_cue(
         chunks,
         created_at_ms,
         completed_at_ms: now_unix_ms(),
-        bridge_instance_id: bridge_instance_id.to_string(),
-        playback_owner_generation,
-        physical_playback_device_id: physical_playback_device_id.to_string(),
+        renderer,
     };
     enabled.accepted_cue_ids.insert(cue_id.to_string());
     enabled.accepted_cues.push(record.clone());
     Ok(record)
+}
+
+fn bridge_renderer(
+    owner: &crate::bridge::ipc::BridgeTranslationSinkOwner,
+) -> AcceptedTranslatedRenderer {
+    AcceptedTranslatedRenderer::BridgePhysicalPlayback {
+        session_id: owner.session_id().to_string(),
+        bridge_instance_id: owner.bridge_instance_id().to_string(),
+        source_generation: owner.source_generation(),
+        source_generation_token: owner.source_generation_token().to_string(),
+        playback_owner_generation: owner.playback_owner_generation(),
+        physical_playback_device_id: owner.physical_playback_device_id().to_string(),
+    }
+}
+
+fn speaker_renderer(
+    receipt: &crate::audio::speech::SpeakerPlaybackReceipt,
+    render_attempt_id: &str,
+) -> AcceptedTranslatedRenderer {
+    AcceptedTranslatedRenderer::DesktopSpeaker {
+        renderer_instance_id: receipt.renderer_instance_id.clone(),
+        renderer_owner_generation: receipt.renderer_owner_generation,
+        render_attempt_id: render_attempt_id.to_string(),
+        physical_playback_device_id: receipt.physical_playback_device_id.clone(),
+        played_frames: receipt.rendered_frames,
+        played_sample_rate_hz: receipt.output_sample_rate_hz,
+        played_channel_count: receipt.output_channel_count,
+    }
+}
+
+fn validate_renderer(renderer: &AcceptedTranslatedRenderer) -> Result<(), String> {
+    let is_default_alias = |value: &str| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "default" | "speaker-default" | "system-output-default"
+        )
+    };
+    match renderer {
+        AcceptedTranslatedRenderer::BridgePhysicalPlayback {
+            session_id,
+            bridge_instance_id,
+            source_generation,
+            source_generation_token,
+            playback_owner_generation,
+            physical_playback_device_id,
+        } => {
+            let expected_token = format!(
+                "{bridge_instance_id}:{session_id}:{source_generation}"
+            );
+            if session_id.trim().is_empty()
+                || bridge_instance_id.trim().is_empty()
+                || *source_generation == 0
+                || source_generation_token != &expected_token
+                || *playback_owner_generation == 0
+                || is_default_alias(physical_playback_device_id)
+            {
+                return Err(
+                    "translated PCM authority Bridge renderer identity is incomplete"
+                        .to_string(),
+                );
+            }
+        }
+        AcceptedTranslatedRenderer::DesktopSpeaker {
+            renderer_instance_id,
+            renderer_owner_generation,
+            render_attempt_id,
+            physical_playback_device_id,
+            played_frames,
+            played_sample_rate_hz,
+            played_channel_count,
+        } => {
+            if renderer_instance_id.trim().is_empty()
+                || *renderer_owner_generation == 0
+                || render_attempt_id.trim().is_empty()
+                || is_default_alias(physical_playback_device_id)
+                || *played_frames == 0
+                || *played_sample_rate_hz == 0
+                || *played_channel_count == 0
+            {
+                return Err(
+                    "translated PCM authority Desktop speaker receipt is incomplete"
+                        .to_string(),
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn now_unix_ms() -> u64 {
@@ -717,11 +897,25 @@ mod tests {
         TranslatedPcmAuthority::from_environment(
             "inbound",
             7,
-            "qwen3.5-omni-flash-realtime",
-            "dashscope-omni",
+            "qwen3.5-livetranslate-flash-realtime",
+            "dashscope-livetranslate",
             |name| env.get(name).cloned(),
         )
         .expect("authority")
+    }
+
+    fn bridge_owner() -> crate::bridge::ipc::BridgeTranslationSinkOwner {
+        let mut snapshot = crate::bridge::contracts::BridgeRuntimeSnapshot::default();
+        snapshot.session_id = Some("session-1".to_string());
+        snapshot.bridge_instance_id = Some("bridge-instance-1".to_string());
+        snapshot.source_generation = 3;
+        snapshot.source_generation_token =
+            Some("bridge-instance-1:session-1:3".to_string());
+        snapshot.playback_owner_generation = 17;
+        snapshot.physical_playback_status = "ready".to_string();
+        snapshot.resolved_physical_playback_device_id = "{hda-endpoint}".to_string();
+        crate::bridge::ipc::BridgeTranslationSinkOwner::from_snapshot(&snapshot)
+            .expect("complete Bridge owner")
     }
 
     #[test]
@@ -746,10 +940,18 @@ mod tests {
         let root = tempdir().expect("tempdir");
         let mut authority = create_authority(root.path());
         let samples = vec![100_i16, -200, 300, -400];
+        let owner = bridge_owner();
         authority
-            .accept_complete_cue(
-                "cue-1", "request-1", &samples, 24_000, 1, 4, 11,
-                "bridge-instance-1", 17, "{hda-endpoint}",
+            .accept_complete_bridge_cue(
+                "cue-1",
+                "response-1",
+                "request-1",
+                &samples,
+                24_000,
+                1,
+                4,
+                11,
+                &owner,
             )
             .expect("accepted cue");
         authority.finalize("test-completed").expect("finalize");
@@ -760,8 +962,15 @@ mod tests {
                 .expect("summary"),
         )
         .expect("summary JSON");
+        assert_eq!(summary["schemaVersion"], 2);
         assert_eq!(summary["cueCount"], 1);
         assert_eq!(summary["acceptedCues"][0]["cueId"], "cue-1");
+        assert_eq!(summary["acceptedCues"][0]["responseId"], "response-1");
+        assert_eq!(
+            summary["acceptedCues"][0]["rendererKind"],
+            "bridge-physical-playback"
+        );
+        assert_eq!(summary["acceptedCues"][0]["sessionId"], "session-1");
         assert_eq!(summary["acceptedCues"][0]["acceptedFrames"], 4);
         assert_eq!(summary["acceptedCues"][0]["bridgeInstanceId"], "bridge-instance-1");
         assert_eq!(summary["acceptedCues"][0]["playbackOwnerGeneration"], 17);
@@ -783,9 +992,11 @@ mod tests {
     fn accepted_stream_is_aggregated_only_after_ordered_end() {
         let root = tempdir().expect("tempdir");
         let mut authority = create_authority(root.path());
+        let owner = bridge_owner();
         authority
             .accept_stream_write(
                 "cue-stream",
+                "response-stream",
                 "request-start",
                 &[1, 2],
                 24_000,
@@ -794,14 +1005,13 @@ mod tests {
                 0,
                 TranslationStreamState::Start,
                 12,
-                "bridge-instance-1",
-                17,
-                "{hda-endpoint}",
+                &owner,
             )
             .expect("start");
         authority
             .accept_stream_write(
                 "cue-stream",
+                "response-stream",
                 "request-chunk",
                 &[3, 4, 5],
                 24_000,
@@ -810,14 +1020,13 @@ mod tests {
                 1,
                 TranslationStreamState::Chunk,
                 12,
-                "bridge-instance-1",
-                17,
-                "{hda-endpoint}",
+                &owner,
             )
             .expect("chunk");
         let error = authority
             .accept_stream_write(
                 "cue-stream",
+                "response-stream",
                 "request-bad-end",
                 &[],
                 24_000,
@@ -826,15 +1035,14 @@ mod tests {
                 3,
                 TranslationStreamState::End,
                 12,
-                "bridge-instance-1",
-                17,
-                "{hda-endpoint}",
+                &owner,
             )
             .expect_err("out-of-order end");
         assert!(error.contains("sequence mismatch"));
         authority
             .accept_stream_write(
                 "cue-stream",
+                "response-stream",
                 "request-end",
                 &[],
                 24_000,
@@ -843,9 +1051,7 @@ mod tests {
                 2,
                 TranslationStreamState::End,
                 12,
-                "bridge-instance-1",
-                17,
-                "{hda-endpoint}",
+                &owner,
             )
             .expect("end");
         authority.finalize("test-completed").expect("finalize");
@@ -870,25 +1076,66 @@ mod tests {
     fn duplicate_cue_and_partial_ack_are_rejected() {
         let root = tempdir().expect("tempdir");
         let mut authority = create_authority(root.path());
+        let owner = bridge_owner();
         authority
-            .accept_complete_cue(
-                "cue", "request", &[1, 2], 24_000, 1, 2, 1,
-                "bridge-instance-1", 17, "{hda-endpoint}",
+            .accept_complete_bridge_cue(
+                "cue", "response", "request", &[1, 2], 24_000, 1, 2, 1, &owner,
             )
             .expect("first cue");
         assert!(authority
-            .accept_complete_cue(
-                "cue", "request-2", &[1, 2], 24_000, 1, 2, 1,
-                "bridge-instance-1", 17, "{hda-endpoint}",
+            .accept_complete_bridge_cue(
+                "cue", "response", "request-2", &[1, 2], 24_000, 1, 2, 1, &owner,
             )
             .expect_err("duplicate")
             .contains("duplicate"));
         assert!(authority
-            .accept_complete_cue(
-                "cue-2", "request-3", &[1, 2], 24_000, 1, 1, 1,
-                "bridge-instance-1", 17, "{hda-endpoint}",
+            .accept_complete_bridge_cue(
+                "cue-2", "response-2", "request-3", &[1, 2], 24_000, 1, 1, 1, &owner,
             )
             .expect_err("partial ack")
             .contains("mismatch"));
+    }
+
+    #[test]
+    fn completed_desktop_speaker_cue_records_played_owner_without_bridge_fields() {
+        let root = tempdir().expect("tempdir");
+        let mut authority = create_authority(root.path());
+        let receipt = crate::audio::speech::SpeakerPlaybackReceipt {
+            rendered_frames: 8,
+            output_sample_rate_hz: 48_000,
+            output_channel_count: 2,
+            physical_playback_device_id: "{speaker-endpoint}".to_string(),
+            renderer_instance_id: "desktop-process-42".to_string(),
+            renderer_owner_generation: 9,
+        };
+        authority
+            .accept_complete_speaker_cue(
+                "cue-speaker",
+                "response-speaker",
+                "desktop-process-42:9:cue-speaker:12",
+                &[10, -10, 20, -20],
+                24_000,
+                1,
+                4,
+                12,
+                &receipt,
+                "desktop-process-42:9:cue-speaker:12",
+            )
+            .expect("speaker cue");
+        authority.finalize("test-completed").expect("finalize");
+        let summary: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                root.path()
+                    .join("authority/translated-cue-pcm-summary.json"),
+            )
+            .expect("summary"),
+        )
+        .expect("summary JSON");
+        let cue = &summary["acceptedCues"][0];
+        assert_eq!(cue["rendererKind"], "desktop-speaker");
+        assert_eq!(cue["responseId"], "response-speaker");
+        assert_eq!(cue["physicalPlaybackDeviceId"], "{speaker-endpoint}");
+        assert_eq!(cue["playedFrames"], 8);
+        assert!(cue.get("bridgeInstanceId").is_none());
     }
 }

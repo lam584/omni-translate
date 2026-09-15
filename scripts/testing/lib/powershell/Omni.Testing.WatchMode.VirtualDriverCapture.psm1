@@ -10,6 +10,7 @@ function Invoke-VirtualDriverMediaSourcePreflight {
   param(
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
     [Parameter(Mandatory = $true)][string]$VirtualRenderEndpointId,
+    [Parameter(Mandatory = $true)][string]$PhysicalPlaybackDeviceId,
     [Parameter(Mandatory = $true)][string]$PathToMedia,
     [Parameter(Mandatory = $true)][string]$WorkspaceRoot
   )
@@ -95,7 +96,7 @@ function Invoke-VirtualDriverMediaSourcePreflight {
     Start-Sleep -Milliseconds 600
     $phase = "init"
     $sessionId = "watch-mode-media-preflight-$PID"
-    $init = Write-NamedPipeJsonLine $pipeName (New-BridgeSourceProbeInitPayload "virtual-driver" $sessionId)
+    $init = Write-NamedPipeJsonLine $pipeName (New-BridgeSourceProbeInitPayload "virtual-driver" $sessionId $PhysicalPlaybackDeviceId)
     $phase = "render_media"
     $injectorProcess = Start-Process -FilePath $injectorExe `
       -ArgumentList @("--media", (Resolve-Path -LiteralPath $PathToMedia).Path, "--endpoint-id", $VirtualRenderEndpointId, "--max-seconds", "5") `

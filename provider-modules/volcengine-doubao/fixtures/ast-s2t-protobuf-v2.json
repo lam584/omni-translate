@@ -1,0 +1,34 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "volc-ast-s2t-protobuf-v2",
+  "providerId": "volcengine-doubao",
+  "protocolProfileId": "volcengine-doubao.ast-v2.s2t",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["ast-v2-api"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Decoded protobuf events only. The official .proto is the byte-generation authority; no fabricated serialized bytes are included."
+  },
+  "scenario": "AST S2T session confirms naked protobuf framing and subtitle lifecycle",
+  "data": {
+    "authContract": { "profileId": "volc-ast-current-headers", "parameters": [{ "location": "header", "name": "X-Api-Key", "value": "fixture-key-redacted" }, { "location": "header", "name": "X-Api-Resource-Id", "value": "volc.service_type.10053" }] },
+    "audioContract": { "encoding": "pcm_s16le", "sampleRateHz": 16000, "bitDepth": 16, "channels": 1 },
+    "audio": { "payloadOmitted": true, "reason": "protobuf-bytes-not-fabricated" },
+    "clientEvents": [{ "type": "TaskRequest=200" }, { "type": "FinishSession=102" }],
+    "serverEvents": [{ "type": "translated-subtitle=653-655" }, { "type": "SessionFinished=152", "terminal": true }],
+    "connect": { "url": "wss://openspeech.bytedance.com/api/v4/ast/v2/translate", "headers": { "X-Api-Key": "fixture-key-redacted", "X-Api-Resource-Id": "volc.service_type.10053" } },
+    "websocketBinaryFrame": { "encoding": "protobuf", "vendorEnvelope": "none", "sendOperation": "TranslateRequest.SerializeToString", "receiveOperation": "TranslateResponse.ParseFromString" },
+    "events": [
+      { "direction": "client", "event": 100, "name": "StartSession", "decoded": { "mode": "s2t", "source_language": "zh", "target_language": "en" } },
+      { "direction": "server", "event": 150, "name": "SessionStarted" },
+      { "direction": "client", "event": 200, "name": "TaskRequest", "decoded": { "audio": "omitted-pcm-s16le", "duration_ms": 80 } },
+      { "direction": "server", "event": 651, "name": "SourceSubtitleResponse", "decoded": { "text": "你好" } },
+      { "direction": "server", "event": 654, "name": "TranslatedSubtitleResponse", "decoded": { "text": "Hello" } },
+      { "direction": "client", "event": 102, "name": "FinishSession" },
+      { "direction": "server", "event": 152, "name": "SessionFinished", "semantics": "session terminal" }
+    ]
+  }
+}

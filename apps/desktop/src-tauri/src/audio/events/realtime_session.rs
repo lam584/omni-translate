@@ -471,6 +471,7 @@ pub(crate) async fn preconnect_omni_realtime(
     app: AppHandle,
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
+    crate::watch_mode_diagnostic::local_aec_probe::ensure_provider_work_allowed()?;
     let app_for_task = app.clone();
     let mut task = tauri::async_runtime::spawn_blocking(move || {
         let app_for_state = app_for_task.clone();
@@ -515,6 +516,7 @@ pub(crate) fn preconnect_omni_realtime_inner(
     state: &AudioStateStore,
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
+    crate::watch_mode_diagnostic::local_aec_probe::ensure_provider_work_allowed()?;
     let _pipeline_guard = state.lock_inbound_pipeline();
     if release_evidence_blocks_background_preconnect(release_evidence_scenario().as_deref()) {
         let snapshot = state.snapshot();
@@ -599,6 +601,11 @@ pub(crate) fn preconnect_omni_realtime_inner(
             &plan.provider.provider_id,
             &plan.provider.model,
         );
+        if let Some(authority) = plan.model_protocol_authority.as_ref() {
+            state
+                .watch_session_report
+                .bind_authorized_model_protocol_profile(authority)?;
+        }
     }
     let st_active = plan.session_reuse_key.subtitle_translate_active;
     if state

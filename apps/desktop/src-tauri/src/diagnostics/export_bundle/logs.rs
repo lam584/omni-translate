@@ -51,27 +51,12 @@ pub(super) fn export_logs(
     warnings: &mut Vec<String>,
     payload_files: &mut Vec<PayloadFileRecord>,
 ) -> Result<(Vec<LogFileSummary>, LogTotals), String> {
-    let candidates = collect_log_candidates(logs_dir, bridge_runtime_root, warnings);
+    let captured = capture_log_candidates(logs_dir, bridge_runtime_root, warnings, |_| {})?;
     let mut summaries = Vec::new();
     let mut totals = LogTotals::default();
     let mut used_output_paths = BTreeSet::new();
 
-    for candidate in candidates {
-        let raw = match fs::read(&candidate.path) {
-            Ok(raw) => raw,
-            Err(error) => {
-                warnings.push(format!(
-                    "Failed to read {} log `{}`: {error}",
-                    candidate.source,
-                    candidate
-                        .path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("unknown")
-                ));
-                continue;
-            }
-        };
+    for (candidate, raw) in captured {
         let valid_utf8 = std::str::from_utf8(&raw).is_ok();
         let original_text = String::from_utf8_lossy(&raw).into_owned();
         if !valid_utf8 {
@@ -139,6 +124,45 @@ pub(super) fn export_logs(
         warnings.push("No diagnostic log files were available for export.".to_string());
     }
     Ok((summaries, totals))
+}
+
+fn capture_log_candidates(
+    logs_dir: &Path,
+    bridge_runtime_root: &Path,
+    warnings: &mut Vec<String>,
+    mut after_read: impl FnMut(&Path),
+) -> Result<Vec<(LogCandidate, Vec<u8>)>, String> {
+    // Lock canonical directories in stable order, including aliases only once.
+    // The cooperating writer uses this boundary only for rotation. Appends can
+    // continue, but no path can change log generation while raw bytes are read.
+    let mut roots = BTreeMap::new();
+    for root in [logs_dir, bridge_runtime_root] {
+        if root.as_os_str().is_empty() || !root.exists() {
+            continue;
+        }
+        let canonical = fs::canonicalize(root)
+            .map_err(|error| format!("Failed to resolve log snapshot root: {error}"))?;
+        let key = if cfg!(windows) { canonical.to_string_lossy().to_ascii_lowercase() }
+            else { canonical.to_string_lossy().to_string() };
+        roots.insert(key, canonical);
+    }
+    let guards = roots.values().map(|root| omni_logging::lock_log_directory(root)
+        .map_err(|error| format!("Failed to lock log snapshot root: {error}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let candidates = collect_log_candidates(logs_dir, bridge_runtime_root, warnings);
+    let mut captured = Vec::new();
+    for candidate in candidates {
+        match fs::read(&candidate.path) {
+            Ok(raw) => {
+                after_read(&candidate.path);
+                captured.push((candidate, raw));
+            }
+            Err(error) => warnings.push(format!("Failed to read log `{}`: {error}", candidate.path.display())),
+        }
+    }
+    // Redaction and output I/O happen only after releasing the rotation guards.
+    drop(guards);
+    Ok(captured)
 }
 
 fn collect_log_candidates(
@@ -352,5 +376,49 @@ fn parse_level_category(line: &str) -> Option<(String, String)> {
 fn merge_stats(target: &mut BTreeMap<String, u64>, source: &BTreeMap<String, u64>) {
     for (key, count) in source {
         *target.entry(key.clone()).or_insert(0) += count;
+    }
+}
+
+#[cfg(test)]
+mod rotation_snapshot_tests {
+    use super::capture_log_candidates;
+    use std::fs::{self, OpenOptions, TryLockError};
+
+    #[test]
+    fn export_snapshot_does_not_mix_rotated_generations() {
+        let root = crate::diagnostics::test_support::temp_dir("export", "rotation-snapshot");
+        fs::create_dir_all(&root).unwrap();
+        for (name, text) in [("app.log", "A invocation-marker\n"), ("app.1.log", "B\n"),
+            ("app.2.log", "C\n"), ("app.3.log", "D\n")] {
+            fs::write(root.join(name), text).unwrap();
+        }
+        let rotate = || {
+            for index in (1..=3).rev() {
+                let old = if index == 1 { root.join("app.log") }
+                    else { root.join(format!("app.{}.log", index - 1)) };
+                fs::rename(old, root.join(format!("app.{index}.log"))).unwrap();
+            }
+            fs::write(root.join("app.log"), "N\n").unwrap();
+        };
+        let mut blocked = false;
+        let captured = capture_log_candidates(&root, &root, &mut Vec::new(), |file| {
+            if file.file_name().unwrap() == "app.2.log" {
+                let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false)
+                    .open(root.join(omni_logging::LOG_DIRECTORY_LOCK_FILE)).unwrap();
+                match lock.try_lock() {
+                    Ok(()) => rotate(),
+                    Err(TryLockError::WouldBlock) => blocked = true,
+                    Err(error) => panic!("unexpected snapshot lock failure: {error}"),
+                }
+            }
+        }).unwrap();
+        let contents: Vec<_> = captured.iter().map(|(_, raw)| String::from_utf8_lossy(raw).to_string()).collect();
+        assert_eq!(contents, ["B\n", "C\n", "D\n", "A invocation-marker\n"]);
+        assert!(blocked, "rotation must wait until raw capture finishes");
+        rotate();
+        assert_eq!(fs::read_to_string(root.join("app.1.log")).unwrap(), "A invocation-marker\n");
+        assert!(root.is_absolute() && root.starts_with(std::env::temp_dir())
+            && root != std::env::temp_dir());
+        fs::remove_dir_all(root).unwrap();
     }
 }

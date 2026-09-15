@@ -87,6 +87,27 @@ test('bridge selectors pin the same friendly-name isolation contract', () => {
   );
 });
 
+test('audio device ACL admits Windows Audio without restoring broad device access', () => {
+  const inx = readRepoText(
+    'drivers',
+    'windows-virtual-mic',
+    'sysvad',
+    'TabletAudioSample',
+    'ComponentizedAudioSample.inx',
+  );
+  const securityLine = inx.match(/^HKR,,Security,,"([^"]+)"$/m)?.[1] ?? '';
+  assert.match(securityLine, /\(A;;GA;;;SY\)/, 'LocalSystem must retain full access');
+  assert.match(securityLine, /\(A;;GRGWGX;;;BA\)/, 'administrators must retain device access');
+  assert.match(securityLine, /\(A;;GRGWGX;;;IU\)/, 'interactive clients must retain device access');
+  assert.match(
+    securityLine,
+    /\(A;;GRGWGX;;;LS\)/,
+    'Windows Audio runs as LocalService and must be able to open the audio device',
+  );
+  assert.doesNotMatch(securityLine, /;;;WD\)/, 'Everyone access must remain removed');
+  assert.doesNotMatch(securityLine, /;;;RC\)/, 'Restricted Code access must remain removed');
+});
+
 test('SYSVAD package registers a selectable virtual microphone capture endpoint', () => {
   const miniPairs = readRepoText(
     'drivers',

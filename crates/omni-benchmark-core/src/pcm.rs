@@ -543,6 +543,27 @@ fn translated_median(mut values: Vec<f64>) -> f64 {
 }
 
 pub fn analyze_translated_loopback(reference_interleaved: &[i16], channels: usize, source_rate_hz: u32, recording: &[i16], expected_start: i64) -> Result<TranslatedLoopbackMetrics, String> {
+    analyze_translated_loopback_in_radius(
+        reference_interleaved,
+        channels,
+        source_rate_hz,
+        recording,
+        expected_start,
+        24_000,
+    )
+}
+
+pub fn analyze_translated_loopback_in_radius(
+    reference_interleaved: &[i16],
+    channels: usize,
+    source_rate_hz: u32,
+    recording: &[i16],
+    expected_start: i64,
+    search_radius_samples: i64,
+) -> Result<TranslatedLoopbackMetrics, String> {
+    if search_radius_samples < 0 {
+        return Err("translated loopback search radius cannot be negative".to_string());
+    }
     let reference = render_bridge_reference_to_loopback(reference_interleaved, channels, source_rate_hz)?;
     let segment_length = reference.len().min(11_200);
     if segment_length < 6_400 { return Err("translated cue is shorter than 400 ms".to_string()); }
@@ -568,7 +589,7 @@ pub fn analyze_translated_loopback(reference_interleaved: &[i16], channels: usiz
         let derivative_minimum = raw.iter().map(|entry| entry.3).fold(f64::INFINITY, f64::min);
         Some((lag, polarity, waveform_median, derivative_median, waveform_minimum, derivative_minimum, waveform_median.min(derivative_median), raw))
     };
-    let radius = 24_000_i64;
+    let radius = search_radius_samples;
     let prefilter_length = segment_length.min(3_200);
     let prefilter_start = starts[0];
     let mut candidates: Vec<(i64, f64)> = Vec::new();
@@ -585,7 +606,9 @@ pub fn analyze_translated_loopback(reference_interleaved: &[i16], channels: usiz
     }
     let mut best = candidates.into_iter().filter_map(|entry| evaluate(entry.0)).max_by(|left, right| left.6.total_cmp(&right.6))
         .ok_or_else(|| "no complete physical search window".to_string())?;
-    for lag in best.0 - 2..=best.0 + 2 {
+    let refine_start = (best.0 - 2).max(-radius);
+    let refine_end = (best.0 + 2).min(radius);
+    for lag in refine_start..=refine_end {
         if let Some(candidate) = evaluate(lag) { if candidate.6 > best.6 { best = candidate; } }
     }
     let timing = best.0 as f64 / 16_000.0;
@@ -761,6 +784,40 @@ mod tests {
         assert_eq!(result.global_lag_samples, 5);
         assert!(result.waveform_median > 0.99);
         assert!(result.derivative_median > 0.99);
+
+        let fixed_window = analyze_translated_loopback_in_radius(
+            &reference,
+            1,
+            16_000,
+            &recording,
+            8_000,
+            0,
+        )
+        .unwrap();
+        assert_eq!(fixed_window.global_lag_samples, 0);
+        assert!(fixed_window.score < result.score);
+        let adjacent_window = analyze_translated_loopback_in_radius(
+            &reference,
+            1,
+            16_000,
+            &recording,
+            8_004,
+            0,
+        )
+        .unwrap();
+        assert_eq!(adjacent_window.global_lag_samples, 0);
+        assert_eq!(adjacent_window.matched_start_sample, 8_004);
+        assert!(adjacent_window.score < result.score);
+        assert!(analyze_translated_loopback_in_radius(
+            &reference,
+            1,
+            16_000,
+            &recording,
+            8_000,
+            -1,
+        )
+        .unwrap_err()
+        .contains("cannot be negative"));
     }
 
     #[test]

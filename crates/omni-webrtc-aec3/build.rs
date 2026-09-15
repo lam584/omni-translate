@@ -11,6 +11,7 @@ fn main() {
     println!("cargo:rerun-if-changed=ffi/omni_webrtc_aec3.h");
     println!("cargo:rerun-if-changed=ffi/omni_webrtc_aec3.cc");
     println!("cargo:rerun-if-changed=ffi/omni_webrtc_aec3_fixture.cc");
+    println!("cargo:rerun-if-changed=ffi/upstream/webrtc");
     println!("cargo:rerun-if-env-changed=VCPKG_ROOT");
     println!("cargo:rerun-if-env-changed=VCPKG_INSTALLED_ROOT");
     println!("cargo:rerun-if-env-changed=CMAKE");

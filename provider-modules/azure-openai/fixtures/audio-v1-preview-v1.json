@@ -1,0 +1,58 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "azure-openai.fixture.audio-v1-preview.v1",
+  "providerId": "azure-openai",
+  "protocolProfileId": "azure-openai.audio.transcription.v1-preview",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["azure-openai.docs.audio-v1-preview"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived v1 preview transcription request; payloads and credentials are placeholders."
+  },
+  "scenario": "Stream transcription through the Azure OpenAI v1 preview Audio endpoint",
+  "data": {
+    "endpointStatus": "verified",
+    "networkAuthorized": false,
+    "authorizationReason": "Fixture-only documentation replay; network access is not authorized.",
+    "authContract": {
+      "profileId": "azure-openai.auth.entra-bearer",
+      "parameters": [{ "location": "header", "name": "Authorization", "value": "Bearer <entra-access-token>" }]
+    },
+    "audioContract": { "profileId": "azure-openai.audio.file-transcription-input", "container": "wav", "payloadKind": "multipart-file" },
+    "request": {
+      "type": "http.multipart.request",
+      "audio": "<sanitized-wav-file-bytes>",
+      "method": "POST",
+      "url": "https://sanitized-resource.openai.azure.com/openai/v1/audio/transcriptions?api-version=preview",
+      "headers": {
+        "Authorization": "Bearer <entra-access-token>",
+        "Content-Type": "multipart/form-data; boundary=<sanitized-boundary>"
+      },
+      "fields": {
+        "model": "watch-transcribe-prod",
+        "file": "<sanitized-audio-file>",
+        "stream": true
+      }
+    },
+    "responseEvents": [
+      {
+        "event": "transcript.text.delta",
+        "data": {
+          "type": "transcript.text.delta",
+          "delta": "partial "
+        }
+      },
+      {
+        "event": "transcript.text.done",
+        "data": {
+          "type": "transcript.text.done",
+          "text": "sanitized transcript"
+        }
+      }
+    ],
+    "invariant": "The deployment id is carried in the model field; this profile never uses the deployment-path endpoint."
+  }
+}

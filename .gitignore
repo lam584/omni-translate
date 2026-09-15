@@ -125,3 +125,7 @@ drivers/windows-virtual-mic/sysvad/TabletAudioSample/x64/
 # =============================================================================
 scripts/testing/llm-integration.config.json
 scripts/testing/fixtures/watch-mode-live/
+
+# Codex may materialize repository-local skill caches while a long-running
+# strict cell is active. Keep those host-local files outside Git provenance.
+/.agents/

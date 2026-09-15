@@ -1,0 +1,35 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "volc-tts-unidirectional-event-frame-v3",
+  "providerId": "volcengine-doubao",
+  "protocolProfileId": "volcengine-doubao.tts-v3.unidirectional.seed-tts-2-0",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["tts-v3-unidirectional"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Decoded event-envelope structure from the official V3 documentation and attached demo."
+  },
+  "scenario": "TTS V3 unidirectional request streams one sentence and finishes the session",
+  "data": {
+    "authContract": { "profileId": "volc-tts-v3-seed-tts-headers", "parameters": [
+      { "location": "header", "name": "X-Api-Key", "value": "fixture-key-redacted" }, { "location": "header", "name": "X-Api-Resource-Id", "value": "seed-tts-2.0" },
+      { "location": "header", "name": "X-Api-Request-Id", "value": "00000000-0000-4000-8000-000000000003" }
+    ] },
+    "audioContract": { "encoding": "pcm_s16le", "sampleRateHz": 16000, "bitDepth": 16, "channels": 1 },
+    "audio": { "payloadOmitted": true, "reason": "sanitized-event-envelope" },
+    "clientEvents": [{ "type": "one-shot-synthesis-request", "text": "fixture text" }],
+    "serverEvents": [{ "type": "TTSResponse" }, { "type": "SessionFinished", "terminal": true }],
+    "connect": { "url": "wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream", "headers": { "X-Api-Key": "fixture-key-redacted", "X-Api-Resource-Id": "seed-tts-2.0", "X-Api-Request-Id": "00000000-0000-4000-8000-000000000003" } },
+    "envelope": { "byteOrder": "big-endian", "layout": ["4-byte-nibble-header", "int32-event-when-WithEvent", "length-prefixed-identifiers-as-applicable", "optional-sequence", "uint32-payload-size", "payload"], "id": "volc-tts-event-envelope-v3" },
+    "events": [
+      { "direction": "client", "name": "SynthesisRequest", "decodedPayload": { "user": { "uid": "fixture-user" }, "req_params": { "text": "fixture text", "speaker": "fixture-speaker", "audio_params": { "format": "pcm", "sample_rate": 16000 } } } },
+      { "direction": "server", "name": "TTSSentenceStart" },
+      { "direction": "server", "name": "TTSResponse", "messageType": "AudioOnlyServer", "audioPayloadOmitted": true },
+      { "direction": "server", "name": "TTSSentenceEnd" },
+      { "direction": "server", "name": "SessionFinished", "semantics": "session terminal" }
+    ]
+  }
+}

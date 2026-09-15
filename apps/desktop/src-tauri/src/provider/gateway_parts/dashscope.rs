@@ -1,19 +1,32 @@
-use std::time::Instant;
+use std::collections::HashSet;
+use std::net::TcpStream;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
-use super::super::contracts::{ProviderDraftInput, ProviderRuntimeError, ProviderSmokeResult};
-use super::routing::{build_messages, build_translation_system_prompt_with_glossary};
+use super::super::contracts::{
+    ProviderDraftInput, ProviderErrorFrameEvidence, ProviderFirstServerEventEvidence,
+    ProviderProbeWireEvidence, ProviderRuntimeError, ProviderSessionAuthorityEvidence,
+    ProviderSmokeResult,
+    ProviderStreamEventRecord, ProviderWebSocketCloseEvidence, ProviderWebSocketTraceEntry,
+};
+use super::routing::build_messages;
 use super::shared::{
     finish_websocket_result, impl_provider_adapter_execute, new_streaming_smoke_result,
-    push_response_completed, push_translation_completed, push_usage_event,
-    record_translation_delta, record_usage_update, DeltaCallback, ProviderCallContext,
+    push_response_completed, push_translation_completed, record_translation_delta,
+    record_usage_update, DeltaCallback, ProviderCallContext,
 };
 use super::transport::{
-    join_url, normalize_dashscope_compatible_base_url, normalize_transport_error,
-    parse_dashscope_error, read_json_frame, send_json_frame, ProviderHttpClient, WebSocketFrame,
-    WebSocketTransport,
+    apply_websocket_timeouts, join_url, normalize_dashscope_compatible_base_url,
+    normalize_transport_error, parse_dashscope_error, read_json_frame, remaining_before,
+    resolve_websocket_timeout, send_json_frame, to_websocket_url, ProviderHttpClient,
+    WebSocketFrame, WebSocketTransport,
 };
+
+#[path = "dashscope/livetranslate_probe.rs"]
+mod livetranslate_probe;
+use livetranslate_probe::execute_livetranslate_session_probe;
 
 /// Stateful protocol boundary for DashScope HTTP and realtime WebSocket calls.
 #[derive(Clone, Debug, Default)]
@@ -31,6 +44,46 @@ pub(super) fn execute(
     }
 
     let provider = context.provider;
+    let voice_profiles = crate::provider::model_protocol_profile::lookup_model_protocol_profiles_for_inspection(
+        &provider.model,
+    )
+    .map_err(|error| {
+        ProviderRuntimeError::new(
+            "request.invalid",
+            format!("{}: unable to inspect Bailian HTTP model authority", error.code()),
+        )
+    })?;
+    if !voice_profiles.is_empty() {
+        crate::audio::events::authorize_bailian_model_operation(
+            provider,
+            &provider.model,
+            "text_generation",
+        )
+        .map_err(|error| ProviderRuntimeError::new("request.invalid", error))?;
+        return Err(ProviderRuntimeError::new(
+            "request.invalid",
+            "model_protocol.operation_not_supported: Bailian voice profiles cannot use the compatible-mode chat/completions endpoint",
+        ));
+    }
+    let text_generation_authorized = provider
+        .local_model_capability_registry
+        .iter()
+        .any(|entry| {
+            entry.model_id == provider.model
+                && entry
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == "text-generation")
+        });
+    if !text_generation_authorized {
+        return Err(ProviderRuntimeError::new(
+            "request.invalid",
+            format!(
+                "model_protocol.model_not_registered: DashScope HTTP model '{}' lacks an exact text-generation registry declaration",
+                provider.model
+            ),
+        ));
+    }
     let compatible_base_url = normalize_dashscope_compatible_base_url(&provider.base_url);
     let endpoint = join_url(&compatible_base_url, "chat/completions")?;
     log::info!(
@@ -92,7 +145,8 @@ fn execute_websocket(
         return execute_realtime_websocket(context, on_delta);
     }
 
-    let (mut socket, websocket_timeout) = WebSocketTransport::default().connect_provider(provider)?;
+    let (mut socket, websocket_timeout) =
+        WebSocketTransport::default().connect_provider(provider, "native_translate")?;
     let payload = json!({
       "request_id": context.request_id,
       "model": provider.model,
@@ -135,7 +189,8 @@ fn execute_websocket(
                     break;
                 }
             }
-            WebSocketFrame::Closed => break,
+            WebSocketFrame::Closed(_) => break,
+            WebSocketFrame::Binary => {}
             WebSocketFrame::Ignored => {}
         }
     }
@@ -148,131 +203,21 @@ fn execute_websocket(
 
 fn execute_realtime_websocket(
     context: &ProviderCallContext<'_>,
-    on_delta: DeltaCallback<'_>,
+    _on_delta: DeltaCallback<'_>,
 ) -> Result<ProviderSmokeResult, ProviderRuntimeError> {
     let provider = context.provider;
-    let (mut socket, websocket_timeout) = WebSocketTransport::default().connect_provider(provider)?;
-
-    let safe_id = context.request_id.replace(':', "_").replace('-', "_");
-    let instructions = build_translation_system_prompt_with_glossary(
-        provider,
-        context.source_language,
-        context.target_language,
-        context.glossary_prompt,
-    );
-
     let realtime_profile =
         crate::audio::events::resolve_realtime_profile(provider, &provider.model);
-    let audio_mode = crate::audio::omni::RealtimeAudioMode::from_config_value(
-        Some(&realtime_profile.realtime_audio_mode),
-        &provider.model,
-    )
-    .map_err(|error| ProviderRuntimeError::new("request.invalid", error))?;
-    // Provider smoke/probe only needs translated text. Requesting audio causes
-    // DashScope to emit response.audio_transcript.* instead of response.text.*
-    // and spends output-audio capacity that the probe discards.
-    let mut session_update = crate::audio::omni::build_omni_session_update_for_provider_with_output_mode(
-        provider,
-        "",
-        &instructions,
-        audio_mode,
-        context.source_language,
-        context.target_language,
-        crate::audio::omni::OmniOutputMode::TextOnly,
-    );
-    session_update["event_id"] = json!(format!("evt_{}_session", safe_id));
-    send_json_frame(
-        &mut socket,
-        &session_update,
-        "DashScope Realtime session.update 发送失败",
-    )?;
-
-    let mut item_create = crate::audio::omni::build_dashscope_text_item(context.source_text);
-    item_create["event_id"] = json!(format!("evt_{}_item", safe_id));
-    send_json_frame(
-        &mut socket,
-        &item_create,
-        "DashScope Realtime conversation.item.create 发送失败",
-    )?;
-
-    if let Some(mut response_create) = realtime_profile
-        .protocol_dialect
-        .and_then(crate::audio::omni::build_dashscope_response_create_for_protocol)
+    if context.livetranslate_session_probe
+        && realtime_profile.protocol_dialect
+            == Some(crate::audio::events::RealtimeProtocol::DashscopeLivetranslate)
     {
-        response_create["event_id"] = json!(format!("evt_{}_resp", safe_id));
-        send_json_frame(
-            &mut socket,
-            &response_create,
-            "DashScope Realtime response.create 发送失败",
-        )?;
+        return execute_livetranslate_session_probe(context);
     }
-
-    let started = Instant::now();
-    let mut result = new_streaming_smoke_result(
-        context,
-        "websocket",
-        format!("{} Realtime WebSocket 会话已建立。", provider.display_name),
-    );
-
-    loop {
-        match read_json_frame(
-            &mut socket,
-            websocket_timeout,
-            "无法解析 DashScope Realtime WebSocket 响应",
-        )? {
-            WebSocketFrame::Json(value) => {
-                let event_type = crate::audio::realtime_ws::server_event_type(&value, "");
-
-                if matches!(
-                    event_type,
-                    "response.text.delta"
-                        | "response.text.text"
-                        | "response.audio_transcript.delta"
-                        | "response.audio_transcript.text"
-                ) {
-                    if let Some(delta) = crate::audio::realtime_ws::server_text_delta(&value) {
-                        record_translation_delta(
-                            &mut result,
-                            &started,
-                            delta,
-                            format!("收到 DashScope Realtime 增量文本: {}", delta),
-                            on_delta,
-                        )?;
-                    }
-                }
-
-                if matches!(
-                    event_type,
-                    "response.text.done" | "response.audio_transcript.done"
-                ) {
-                    if let Some(text) = crate::audio::realtime_ws::server_text_delta(&value) {
-                        result.transcript = text.to_string();
-                    }
-                }
-
-                if event_type == "response.done" {
-                    if let Some(usage) = value.pointer("/response/usage") {
-                        result.input_tokens =
-                            usage.pointer("/input_tokens").and_then(Value::as_u64);
-                        result.output_tokens =
-                            usage.pointer("/output_tokens").and_then(Value::as_u64);
-                        let input = result.input_tokens.unwrap_or(0);
-                        let output = result.output_tokens.unwrap_or(0);
-                        push_usage_event(&mut result, input, output);
-                    }
-                    push_translation_completed(&mut result, "DashScope Realtime 响应已完成。");
-                    break;
-                }
-            }
-            WebSocketFrame::Closed => break,
-            WebSocketFrame::Ignored => {}
-        }
-    }
-
-    finish_websocket_result(
-        result,
-        "DashScope Realtime WebSocket completed without translation text.",
-    )
+    Err(ProviderRuntimeError::new(
+        "request.invalid",
+        "model_protocol.operation_not_supported: LiveTranslate accepts audio/image input and requires session.finish -> session.finished; the text translation gateway cannot create a conforming session",
+    ))
 }
 
 fn extract_dashscope_text(value: &Value) -> Result<String, ProviderRuntimeError> {

@@ -217,6 +217,10 @@ describe('RealTimeSessionPage one-click launch', () => {
 
     configDraft.providers[0].status = 'draft';
     configDraft.speech.enabled = false;
+    // Keep route-orchestration scenarios on the one DashScope profile whose
+    // desktop adapter is executable in the protocol manifest. Individual
+    // fail-closed tests override this selection deliberately.
+    configDraft.devices.outboundVoiceModelId = 'qwen3.5-livetranslate-flash-realtime';
     configDraft.devices.subtitleTranslationMode = 'secondary';
     configDraft.devices.subtitleTranslationModelId = 'template-dashscope-realtime::qwen3.6-flash-2026-04-16';
     runtimeSnapshot.bridgeStatus = 'tauri-shell';
@@ -464,6 +468,37 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(fake.commandCalls('start_audio_route')).toHaveLength(0);
     expect(fake.sessionActionCalls('startSpeech')).toHaveLength(0);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('选择适用于当前场景的语音模型');
+  });
+
+  it('rejects an unknown DashScope model before preconnect or audio route startup despite legacy protocol hints', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        devices: {
+          ...state.configDraft.devices,
+          inboundVoiceModelId: 'future-unknown-voice-model-2099',
+        },
+        providers: state.configDraft.providers.map((provider) =>
+          provider.templateId === 'template-dashscope-realtime'
+            ? {
+                ...provider,
+                templateRealtimeProtocol: 'dashscope-omni' as const,
+                realtimeProtocol: 'dashscope-omni' as const,
+              }
+            : provider,
+        ),
+      },
+    }));
+
+    await renderPage();
+    await clickAndSettle(container.querySelector<HTMLButtonElement>('.provider-list button'));
+
+    expect(issued).toContain('resolveRealtimeProfile');
+    expect(fake.sessionActionCalls('preconnect')).toHaveLength(0);
+    expect(fake.commandCalls('start_audio_route')).toHaveLength(0);
+    expect(bridgeLifecycleCalls()).toHaveLength(0);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('model_protocol.model_not_registered');
   });
 
   it('disables both scene launches while any audio chain is active', async () => {
@@ -809,7 +844,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(fake.commandCalls('toggle_subtitle_overlay')).toHaveLength(0);
   });
 
-  it('starts speech dispatch for Omni watch mode when device translated speech output is enabled', async () => {
+  it('starts speech dispatch for LiveTranslate watch mode when device translated speech output is enabled', async () => {
     await renderPage();
 
     await act(async () => {
@@ -853,7 +888,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(useAppStore.getState().audioRuntimeSnapshot.speech.dispatchState).toBe('waiting-subtitle');
   });
 
-  it('starts speech dispatch for Omni watch mode when secondary translation speech is enabled', async () => {
+  it('starts speech dispatch for LiveTranslate watch mode when secondary translation speech is enabled', async () => {
     await renderPage();
 
     await act(async () => {

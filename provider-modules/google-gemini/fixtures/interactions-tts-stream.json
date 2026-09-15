@@ -1,0 +1,89 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "google-gemini.interactions-tts-stream",
+  "providerId": "google-gemini",
+  "protocolProfileId": "google-gemini.interactions-tts",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "google-gemini.speech-generation",
+      "google-gemini.interactions-reference"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic SSE sequence documenting the Interactions TTS lifecycle."
+  },
+  "scenario": "Gemini Interactions API streams generated speech as base64 audio deltas",
+  "data": {
+    "request": {
+      "event": "interactions.create.stream",
+      "method": "POST",
+      "url": "https://generativelanguage.googleapis.com/v1beta/interactions?alt=sse",
+      "headers": {
+        "x-goog-api-key": "<redacted-google-api-key>",
+        "Api-Revision": "2026-05-20",
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "model": "gemini-3.1-flash-tts-preview",
+        "input": "Read the supplied sanitized text.",
+        "stream": true
+      }
+    },
+    "authContract": {
+      "profileId": "google-gemini.api-key-header",
+      "parameters": [
+        { "location": "header", "name": "x-goog-api-key", "value": "<redacted-google-api-key>" }
+      ]
+    },
+    "responseFrames": [
+      {
+        "event": "interaction.created",
+        "data": {
+          "type": "interaction.created"
+        }
+      },
+      {
+        "event": "step.start",
+        "data": {
+          "type": "step.start"
+        }
+      },
+      {
+        "event": "step.delta",
+        "data": {
+          "type": "step.delta",
+          "delta": {
+            "type": "audio",
+            "data": "AAAAAA=="
+          }
+        }
+      },
+      {
+        "event": "step.stop",
+        "data": {
+          "type": "step.stop"
+        }
+      },
+      {
+        "event": "interaction.completed",
+        "data": {
+          "type": "interaction.completed"
+        }
+      },
+      {
+        "data": "[DONE]"
+      }
+    ],
+    "audioContract": {
+      "output": "PCM signed 16-bit little-endian, mono, 24000 Hz",
+      "encoding": "base64",
+      "fixtureAudio": "AAAAAA== is synthetic silence"
+    },
+    "audio": { "encoding": "base64", "data": "AAAAAA==" },
+    "terminal": "interaction.completed is semantic completion; [DONE] closes the SSE stream.",
+    "implementationStatus": "disabled/not-implemented"
+  }
+}

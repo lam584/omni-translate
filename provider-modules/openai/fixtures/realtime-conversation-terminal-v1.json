@@ -1,0 +1,76 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "openai.fixture.realtime-conversation-terminal.v1",
+  "providerId": "openai",
+  "protocolProfileId": "openai.realtime.conversation.websocket.ga",
+  "protocolProfileVersion": 1,
+  "kind": "error",
+  "provenance": {
+    "sourceDocumentationIds": ["openai.docs.realtime"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic terminal variants derived from the documented response status contract."
+  },
+  "scenario": "Classify every response.done terminal status without treating non-completed outcomes as success",
+  "data": {
+  "endpointStatus": "verified",
+  "networkAuthorized": false,
+  "authorizationReason": "Fixture-only documentation replay; network access is not authorized.",
+  "rule": "response.done is terminal for one Response; only status=completed is success",
+  "events": [
+    {
+      "type": "response.done",
+      "response": {
+        "id": "resp_completed",
+        "status": "completed",
+        "output": []
+      },
+      "expectedOutcome": "success"
+    },
+    {
+      "type": "response.done",
+      "response": {
+        "id": "resp_cancelled",
+        "status": "cancelled",
+        "status_details": {
+          "type": "cancelled",
+          "reason": "client_cancelled"
+        },
+        "output": []
+      },
+      "expectedOutcome": "cancelled"
+    },
+    {
+      "type": "response.done",
+      "response": {
+        "id": "resp_failed",
+        "status": "failed",
+        "status_details": {
+          "type": "failed",
+          "error": {
+            "type": "invalid_request_error",
+            "code": "invalid_request",
+            "message": "<sanitized-error-message>"
+          }
+        },
+        "output": []
+      },
+      "expectedOutcome": "failed"
+    },
+    {
+      "type": "response.done",
+      "response": {
+        "id": "resp_incomplete",
+        "status": "incomplete",
+        "status_details": {
+          "type": "incomplete",
+          "reason": "max_output_tokens"
+        },
+        "output": []
+      },
+      "expectedOutcome": "incomplete"
+    }
+  ]
+  }
+}

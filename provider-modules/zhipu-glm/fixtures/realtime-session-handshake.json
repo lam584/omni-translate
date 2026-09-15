@@ -1,0 +1,68 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "zhipu-glm.realtime-session-handshake",
+  "providerId": "zhipu-glm",
+  "protocolProfileId": "zhipu-glm.realtime-conversation",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "zhipu-glm.realtime-guide",
+      "zhipu-glm.realtime-asyncapi"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic native GLM-Realtime handshake."
+  },
+  "scenario": "Native GLM-Realtime session creation and configuration acknowledgement",
+  "data": {
+    "serverMessages": [
+      {
+        "type": "session.created",
+        "event_id": "<sanitized-server-event-id>",
+        "session": {
+          "id": "<sanitized-session-id>",
+          "object": "realtime.session"
+        }
+      }
+    ],
+    "clientMessages": [
+      {
+        "type": "session.update",
+        "event_id": "<sanitized-client-event-id>",
+        "client_timestamp": 0,
+        "session": {
+          "model": "glm-realtime-flash",
+          "modalities": [
+            "text",
+            "audio"
+          ],
+          "voice": "tongtong",
+          "input_audio_format": "pcm16",
+          "output_audio_format": "pcm",
+          "turn_detection": {
+            "type": "server_vad"
+          }
+        }
+      }
+    ],
+    "acknowledgements": [
+      {
+        "type": "session.updated",
+        "event_id": "<sanitized-server-event-id>",
+        "session": {
+          "model": "glm-realtime-flash",
+          "input_audio_format": "pcm16",
+          "output_audio_format": "pcm"
+        }
+      },
+      {
+        "type": "heartbeat",
+        "event_id": "<sanitized-server-event-id>"
+      }
+    ],
+    "ordering": "The server creates the session, the client updates it, and session.updated acknowledges the active configuration. Heartbeat is also emitted around create/update and then approximately every 30 seconds.",
+    "implementationStatus": "disabled/not-implemented"
+  }
+}

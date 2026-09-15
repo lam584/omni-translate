@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { validateModelProtocolRegistry } from './model-protocol-profile-contract.mjs';
 import { verifyConfigPaths } from './verify-config-paths.mjs';
 
 const rootDir = process.cwd();
@@ -11,6 +12,10 @@ const legacyBridgePackage = ['@omni', legacyBridgeName].join('/');
 const legacyCoverageStep = ['legacy-node', 'bridge'].join('-');
 
 const failures = [];
+
+for (const failure of validateModelProtocolRegistry({ workspaceRoot: rootDir })) {
+  failures.push(`Bailian model protocol registry: ${failure}`);
+}
 
 function fail(message) {
   failures.push(message);

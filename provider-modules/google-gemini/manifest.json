@@ -1,0 +1,1259 @@
+{
+  "$schema": "../../contracts/provider-manifest.schema.json",
+  "schemaVersion": "provider-manifest/v1",
+  "manifestVersion": 1,
+  "checkedAt": "2026-08-31",
+  "provider": {
+    "id": "google-gemini",
+    "displayName": "Google Gemini",
+    "templateId": "template-gemini",
+    "kind": "multi-api",
+    "source": "official",
+    "description": "Google Gemini text, Interactions, and native Live API contract profiles.",
+    "defaultModelId": "gemini-2.5-flash",
+    "defaultApiFamilyId": "google-gemini.openai-chat-v1beta",
+    "defaultCredentialId": "google-gemini.api-key",
+    "notes": "The OpenAI-compatible HTTP family and native Gemini Live WebSocket family are intentionally separate."
+  },
+  "documentation": [
+    {
+      "id": "google-gemini.api-reference",
+      "title": "Gemini API reference",
+      "url": "https://ai.google.dev/api",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "google-gemini.models",
+      "title": "Gemini models",
+      "url": "https://ai.google.dev/gemini-api/docs/models",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "google-gemini.api-keys",
+      "title": "Using Gemini API keys",
+      "url": "https://ai.google.dev/gemini-api/docs/api-key",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "google-gemini.oauth",
+      "title": "Authentication with OAuth quickstart",
+      "url": "https://ai.google.dev/gemini-api/docs/oauth",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "google-gemini.openai-compatibility",
+      "title": "OpenAI compatibility",
+      "url": "https://ai.google.dev/gemini-api/docs/openai",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "google-gemini.live-overview",
+      "title": "Gemini Live API overview",
+      "url": "https://ai.google.dev/gemini-api/docs/live-api",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "google-gemini.live-websocket",
+      "title": "Get started with Gemini Live API using WebSockets",
+      "url": "https://ai.google.dev/gemini-api/docs/live-api/get-started-websocket",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "google-gemini.live-reference",
+      "title": "Live API WebSockets API reference",
+      "url": "https://ai.google.dev/api/live",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "google-gemini.live-best-practices",
+      "title": "Gemini Live API best practices",
+      "url": "https://ai.google.dev/gemini-api/docs/live-api/best-practices",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "google-gemini.live-translation",
+      "title": "Live translation with Gemini Live API",
+      "url": "https://ai.google.dev/gemini-api/docs/live-api/live-translate",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "google-gemini.live-transcription",
+      "title": "Live transcription with Gemini Live API",
+      "url": "https://ai.google.dev/gemini-api/docs/live-api/live-transcribe",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "google-gemini.ephemeral-tokens",
+      "title": "Gemini Live API ephemeral tokens",
+      "url": "https://ai.google.dev/gemini-api/docs/live-api/ephemeral-tokens",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "google-gemini.audio-transcription",
+      "title": "Gemini audio transcription",
+      "url": "https://ai.google.dev/gemini-api/docs/transcribe",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "google-gemini.speech-generation",
+      "title": "Gemini text-to-speech generation",
+      "url": "https://ai.google.dev/gemini-api/docs/speech-generation",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "google-gemini.interactions-reference",
+      "title": "Gemini Interactions API reference",
+      "url": "https://ai.google.dev/api/interactions-api",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "google-gemini.live-capabilities",
+      "title": "Live API capabilities guide",
+      "url": "https://ai.google.dev/gemini-api/docs/live-api/capabilities",
+      "checkedAt": "2026-09-01"
+    },
+    {
+      "id": "google-gemini.audio-understanding",
+      "title": "Audio understanding",
+      "url": "https://ai.google.dev/gemini-api/docs/audio",
+      "checkedAt": "2026-09-01"
+    }
+  ],
+  "credentials": [
+    {
+      "id": "google-gemini.api-key",
+      "reference": "credential://provider/gemini/default",
+      "fields": [
+        {
+          "id": "api-key",
+          "label": "Gemini API key",
+          "secret": true,
+          "required": true,
+          "format": "Google AI Studio standard or authorization API key; authorization keys are preferred"
+        }
+      ]
+    },
+    {
+      "id": "google-gemini.oauth-client",
+      "reference": "credential://provider/gemini/oauth2",
+      "fields": [
+        {
+          "id": "client-id",
+          "label": "OAuth client ID",
+          "secret": false,
+          "required": false,
+          "format": "Google OAuth 2.0 desktop client ID when not using ADC"
+        },
+        {
+          "id": "client-secret",
+          "label": "OAuth client secret",
+          "secret": true,
+          "required": false,
+          "format": "Google OAuth 2.0 desktop client secret when not using ADC"
+        },
+        {
+          "id": "project-id",
+          "label": "Google Cloud project ID",
+          "secret": false,
+          "required": true,
+          "format": "Project billed through x-goog-user-project"
+        },
+        {
+          "id": "refresh-token",
+          "label": "OAuth refresh token",
+          "secret": true,
+          "required": false,
+          "format": "Optional cached user authorization token"
+        }
+      ]
+    }
+  ],
+  "authProfiles": [
+    {
+      "id": "google-gemini.api-key-header",
+      "type": "api-key",
+      "credentialId": "google-gemini.api-key",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "x-goog-api-key",
+          "source": "credential",
+          "credentialFieldId": "api-key",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "google-gemini.api-key-query",
+      "type": "query-key",
+      "credentialId": "google-gemini.api-key",
+      "parameters": [
+        {
+          "location": "query",
+          "name": "key",
+          "source": "credential",
+          "credentialFieldId": "api-key",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "google-gemini.openai-bearer",
+      "type": "bearer",
+      "credentialId": "google-gemini.api-key",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "source": "credential",
+          "credentialFieldId": "api-key",
+          "scheme": "Bearer",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "google-gemini.oauth2-bearer",
+      "type": "bearer",
+      "credentialId": "google-gemini.oauth-client",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "source": "derived",
+          "derivation": "Acquire or refresh an OAuth 2.0 access token from Google Application Default Credentials or the configured desktop client.",
+          "scheme": "Bearer",
+          "required": true
+        },
+        {
+          "location": "header",
+          "name": "x-goog-user-project",
+          "source": "credential",
+          "credentialFieldId": "project-id",
+          "required": true
+        }
+      ],
+      "credentialBootstrap": {
+        "kind": "oauth2",
+        "scope": "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/generative-language.retriever",
+        "description": "OAuth is documented for the Gemini REST API. The reviewed raw Live WebSocket guide does not establish OAuth as a Live authentication profile.",
+        "documentationIds": [
+          "google-gemini.oauth"
+        ]
+      }
+    },
+    {
+      "id": "google-gemini.ephemeral-query",
+      "type": "token",
+      "credentialId": "google-gemini.api-key",
+      "parameters": [
+        {
+          "location": "query",
+          "name": "access_token",
+          "source": "derived",
+          "derivation": "Use the name returned by POST /v1beta/auth_tokens and connect to BidiGenerateContentConstrained.",
+          "required": true
+        }
+      ],
+      "credentialBootstrap": {
+        "kind": "ephemeral-token-exchange",
+        "endpointTemplate": "https://generativelanguage.googleapis.com/v1beta/auth_tokens",
+        "description": "A trusted backend exchanges the long-lived API key for a constrained short-lived Live API token.",
+        "documentationIds": [
+          "google-gemini.ephemeral-tokens",
+          "google-gemini.live-reference"
+        ]
+      }
+    },
+    {
+      "id": "google-gemini.ephemeral-token-header",
+      "type": "token",
+      "credentialId": "google-gemini.api-key",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "source": "derived",
+          "derivation": "Use the name returned by POST /v1beta/auth_tokens and connect to BidiGenerateContentConstrained.",
+          "scheme": "Token",
+          "required": true
+        }
+      ],
+      "credentialBootstrap": {
+        "kind": "ephemeral-token-exchange",
+        "endpointTemplate": "https://generativelanguage.googleapis.com/v1beta/auth_tokens",
+        "description": "The constrained token may be sent in Authorization with the Token scheme; it is not a Bearer token.",
+        "documentationIds": [
+          "google-gemini.ephemeral-tokens",
+          "google-gemini.live-reference"
+        ]
+      }
+    }
+  ],
+  "transports": [
+    {
+      "id": "google-gemini.http-json",
+      "kind": "http",
+      "requestFraming": "json",
+      "responseFraming": "json",
+      "requestEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      },
+      "responseEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      }
+    },
+    {
+      "id": "google-gemini.sse-json",
+      "kind": "sse",
+      "requestFraming": "json",
+      "responseFraming": "sse",
+      "requestEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      },
+      "responseEnvelope": {
+        "kind": "provider-defined",
+        "id": "google-gemini.sse-event",
+        "byteOrder": "not-applicable",
+        "description": "Server-Sent Events whose data payload is a provider JSON event or an explicit terminal marker."
+      }
+    },
+    {
+      "id": "google-gemini.live-websocket-json",
+      "kind": "websocket",
+      "requestFraming": "json",
+      "responseFraming": "json",
+      "requestEnvelope": {
+        "kind": "provider-defined",
+        "id": "google-gemini.bidi-client-message",
+        "byteOrder": "not-applicable",
+        "description": "BidiGenerateContentClientMessage JSON union: setup, clientContent, realtimeInput, or toolResponse."
+      },
+      "responseEnvelope": {
+        "kind": "provider-defined",
+        "id": "google-gemini.bidi-server-message",
+        "byteOrder": "not-applicable",
+        "description": "BidiGenerateContentServerMessage JSON union including setupComplete, serverContent, tool, resumption, and goAway events."
+      }
+    }
+  ],
+  "audioProfiles": [
+    {
+      "id": "google-gemini.live-pcm16-audio",
+      "input": {
+        "required": true,
+        "formats": [
+          "pcm-s16le"
+        ],
+        "sampleRatesHz": [
+          16000
+        ],
+        "channels": [
+          1
+        ],
+        "bitDepths": [
+          16
+        ],
+        "endianness": [
+          "little-endian"
+        ],
+        "chunkDurationMs": {
+          "minimum": 20,
+          "maximum": 100,
+          "recommended": 100
+        }
+      },
+      "output": {
+        "required": true,
+        "formats": [
+          "pcm-s16le"
+        ],
+        "sampleRatesHz": [
+          24000
+        ],
+        "channels": [
+          1
+        ],
+        "bitDepths": [
+          16
+        ],
+        "endianness": [
+          "little-endian"
+        ]
+      }
+    },
+    {
+      "id": "google-gemini.live-pcm16-text",
+      "input": {
+        "required": true,
+        "formats": [
+          "pcm-s16le"
+        ],
+        "sampleRatesHz": [
+          16000
+        ],
+        "channels": [
+          1
+        ],
+        "bitDepths": [
+          16
+        ],
+        "endianness": [
+          "little-endian"
+        ],
+        "chunkDurationMs": {
+          "recommended": 100
+        }
+      },
+      "output": {
+        "required": false,
+        "formats": [],
+        "sampleRatesHz": [],
+        "channels": []
+      }
+    },
+    {
+      "id": "google-gemini.interactions-audio-uri-text",
+      "input": {
+        "required": true,
+        "formats": [
+          "audio-uri-with-mime-type"
+        ],
+        "sampleRatesHz": [],
+        "channels": []
+      },
+      "output": {
+        "required": false,
+        "formats": [],
+        "sampleRatesHz": [],
+        "channels": []
+      }
+    },
+    {
+      "id": "google-gemini.interactions-tts-pcm24k",
+      "input": {
+        "required": false,
+        "formats": [],
+        "sampleRatesHz": [],
+        "channels": []
+      },
+      "output": {
+        "required": true,
+        "formats": [
+          "pcm-s16le",
+          "audio-l16"
+        ],
+        "sampleRatesHz": [
+          24000
+        ],
+        "channels": [
+          1
+        ],
+        "bitDepths": [
+          16
+        ],
+        "endianness": [
+          "little-endian"
+        ]
+      }
+    }
+  ],
+  "lifecycleProfiles": [
+    {
+      "id": "google-gemini.openai-chat-stream",
+      "handshake": [],
+      "clientEvents": [
+        "chat.completions.create"
+      ],
+      "serverEvents": [
+        "chat.completion.chunk",
+        "data.done"
+      ],
+      "vadModes": [
+        "none"
+      ],
+      "terminal": "A chunk finish_reason or the SSE data marker [DONE] terminates one request.",
+      "reuse": "sequential-tasks",
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "google-gemini.live-agent",
+      "handshake": [
+        "setup",
+        "setupComplete"
+      ],
+      "clientEvents": [
+        "clientContent",
+        "realtimeInput.audio",
+        "realtimeInput.activityStart",
+        "realtimeInput.activityEnd",
+        "realtimeInput.audioStreamEnd",
+        "toolResponse"
+      ],
+      "serverEvents": [
+        "setupComplete",
+        "serverContent.modelTurn",
+        "serverContent.inputTranscription",
+        "serverContent.outputTranscription",
+        "serverContent.generationComplete",
+        "serverContent.interrupted",
+        "serverContent.turnComplete",
+        "toolCall",
+        "toolCallCancellation",
+        "sessionResumptionUpdate",
+        "goAway"
+      ],
+      "vadModes": [
+        "server-vad",
+        "client-activity",
+        "manual"
+      ],
+      "terminal": "Normal generation emits generationComplete before turnComplete. An interrupted generation emits interrupted then turnComplete and omits generationComplete; turnComplete closes the turn.",
+      "reuse": "multi-turn",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "google-gemini.live-translation",
+      "handshake": [
+        "setup.translationConfig",
+        "setupComplete"
+      ],
+      "clientEvents": [
+        "realtimeInput.audio",
+        "realtimeInput.audioStreamEnd"
+      ],
+      "serverEvents": [
+        "serverContent.inputTranscription",
+        "serverContent.outputTranscription",
+        "serverContent.modelTurn.audio",
+        "serverContent.generationComplete",
+        "serverContent.interrupted",
+        "serverContent.turnComplete",
+        "goAway",
+        "sessionResumptionUpdate"
+      ],
+      "vadModes": [
+        "server-vad",
+        "manual"
+      ],
+      "terminal": "turnComplete closes each translated audio turn; interrupted replaces generationComplete on interrupted turns.",
+      "reuse": "multi-turn",
+      "textDeltaSemantics": "mixed"
+    },
+    {
+      "id": "google-gemini.live-transcription",
+      "handshake": [
+        "setup",
+        "setupComplete"
+      ],
+      "clientEvents": [
+        "realtimeInput.audio",
+        "realtimeInput.audioStreamEnd",
+        "realtimeInput.activityStart",
+        "realtimeInput.activityEnd"
+      ],
+      "serverEvents": [
+        "serverContent.interimInputTranscription",
+        "serverContent.inputTranscription",
+        "serverContent.turnComplete",
+        "goAway",
+        "sessionResumptionUpdate"
+      ],
+      "vadModes": [
+        "server-vad",
+        "client-activity",
+        "manual"
+      ],
+      "terminal": "inputTranscription is the finalized segment; interimInputTranscription is replaceable and must not be appended as final history.",
+      "reuse": "multi-turn",
+      "textDeltaSemantics": "mixed"
+    },
+    {
+      "id": "google-gemini.interactions-single",
+      "handshake": [],
+      "clientEvents": [
+        "interactions.create"
+      ],
+      "serverEvents": [
+        "interaction"
+      ],
+      "vadModes": [
+        "none"
+      ],
+      "terminal": "The HTTP interaction response is terminal when its status is completed or failed.",
+      "reuse": "single-request",
+      "textDeltaSemantics": "not-applicable"
+    },
+    {
+      "id": "google-gemini.interactions-stream",
+      "handshake": [],
+      "clientEvents": [
+        "interactions.create.stream"
+      ],
+      "serverEvents": [
+        "interaction.created",
+        "step.start",
+        "step.delta",
+        "step.stop",
+        "interaction.completed",
+        "done"
+      ],
+      "vadModes": [
+        "none"
+      ],
+      "terminal": "interaction.completed is the semantic terminal event and the SSE stream then emits data: [DONE].",
+      "reuse": "single-request",
+      "textDeltaSemantics": "append-delta"
+    }
+  ],
+  "apiFamilies": [
+    {
+      "id": "google-gemini.openai-chat-v1beta",
+      "displayName": "Gemini OpenAI-compatible Chat Completions",
+      "baseUrlTemplate": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "endpointTemplate": "/chat/completions",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": "v1beta",
+      "transportId": "google-gemini.sse-json",
+      "authProfileIds": [
+        "google-gemini.openai-bearer"
+      ],
+      "defaultAuthProfileId": "google-gemini.openai-bearer",
+      "maturity": "unspecified",
+      "documentationIds": [
+        "google-gemini.openai-compatibility",
+        "google-gemini.api-keys"
+      ]
+    },
+    {
+      "id": "google-gemini.live-v1beta",
+      "displayName": "Gemini Live BidiGenerateContent",
+      "baseUrlTemplate": "wss://generativelanguage.googleapis.com",
+      "endpointTemplate": "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": "v1beta",
+      "transportId": "google-gemini.live-websocket-json",
+      "authProfileIds": [
+        "google-gemini.api-key-header",
+        "google-gemini.api-key-query"
+      ],
+      "defaultAuthProfileId": "google-gemini.api-key-header",
+      "maturity": "preview",
+      "documentationIds": [
+        "google-gemini.live-websocket",
+        "google-gemini.live-reference",
+        "google-gemini.live-capabilities",
+        "google-gemini.api-reference"
+      ]
+    },
+    {
+      "id": "google-gemini.live-constrained-v1beta",
+      "displayName": "Gemini Live constrained ephemeral-token endpoint",
+      "baseUrlTemplate": "wss://generativelanguage.googleapis.com",
+      "endpointTemplate": "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": "v1beta",
+      "transportId": "google-gemini.live-websocket-json",
+      "authProfileIds": [
+        "google-gemini.ephemeral-query",
+        "google-gemini.ephemeral-token-header"
+      ],
+      "defaultAuthProfileId": "google-gemini.ephemeral-query",
+      "maturity": "preview",
+      "documentationIds": [
+        "google-gemini.ephemeral-tokens",
+        "google-gemini.live-reference"
+      ]
+    },
+    {
+      "id": "google-gemini.interactions-v1beta",
+      "displayName": "Gemini Interactions API",
+      "baseUrlTemplate": "https://generativelanguage.googleapis.com",
+      "endpointTemplate": "/v1beta/interactions",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": "v1beta",
+      "transportId": "google-gemini.http-json",
+      "authProfileIds": [
+        "google-gemini.api-key-header",
+        "google-gemini.oauth2-bearer"
+      ],
+      "defaultAuthProfileId": "google-gemini.api-key-header",
+      "maturity": "unspecified",
+      "documentationIds": [
+        "google-gemini.interactions-reference",
+        "google-gemini.audio-transcription",
+        "google-gemini.audio-understanding",
+        "google-gemini.speech-generation"
+      ]
+    },
+    {
+      "id": "google-gemini.interactions-stream-v1beta",
+      "displayName": "Gemini streaming Interactions API",
+      "baseUrlTemplate": "https://generativelanguage.googleapis.com",
+      "endpointTemplate": "/v1beta/interactions",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": "v1beta",
+      "transportId": "google-gemini.sse-json",
+      "authProfileIds": [
+        "google-gemini.api-key-header",
+        "google-gemini.oauth2-bearer"
+      ],
+      "defaultAuthProfileId": "google-gemini.api-key-header",
+      "maturity": "preview",
+      "documentationIds": [
+        "google-gemini.interactions-reference",
+        "google-gemini.speech-generation"
+      ]
+    }
+  ],
+  "protocolProfiles": [
+    {
+      "id": "google-gemini.openai-chat",
+      "version": 1,
+      "apiFamilyId": "google-gemini.openai-chat-v1beta",
+      "transportId": "google-gemini.sse-json",
+      "authProfileIds": [
+        "google-gemini.openai-bearer"
+      ],
+      "defaultAuthProfileId": "google-gemini.openai-bearer",
+      "lifecycleProfileId": "google-gemini.openai-chat-stream",
+      "operations": [
+        "text",
+        "text-translation"
+      ],
+      "capabilities": [
+        "text-generation",
+        "text-translation"
+      ],
+      "maturity": "unspecified",
+      "adapter": {
+        "id": "openai-compatible-http",
+        "status": "enabled",
+        "verification": "fixture-only",
+        "reason": "The generic HTTP adapter shape is covered only by sanitized official-document fixtures; no provider call was made."
+      },
+      "documentationIds": [
+        "google-gemini.openai-compatibility"
+      ],
+      "fixtureIds": [
+        "google-gemini.openai-chat-stream"
+      ],
+      "notes": "This profile is HTTP/SSE only and grants no authority to connect to Gemini Live."
+    },
+    {
+      "id": "google-gemini.live-agent",
+      "version": 1,
+      "apiFamilyId": "google-gemini.live-v1beta",
+      "transportId": "google-gemini.live-websocket-json",
+      "authProfileIds": [
+        "google-gemini.api-key-header",
+        "google-gemini.api-key-query"
+      ],
+      "defaultAuthProfileId": "google-gemini.api-key-header",
+      "audioProfileId": "google-gemini.live-pcm16-audio",
+      "lifecycleProfileId": "google-gemini.live-agent",
+      "operations": [
+        "realtime-conversation"
+      ],
+      "capabilities": [
+        "speech-to-text",
+        "text-to-speech",
+        "speech-to-speech"
+      ],
+      "maturity": "preview",
+      "adapter": {
+        "id": "gemini-live",
+        "status": "enabled",
+        "verification": "fixture-only",
+        "reason": "A native BidiGenerateContent adapter exists, but this task retained no live-provider evidence."
+      },
+      "documentationIds": [
+        "google-gemini.live-overview",
+        "google-gemini.live-websocket",
+        "google-gemini.live-reference",
+        "google-gemini.live-capabilities",
+        "google-gemini.live-best-practices"
+      ],
+      "fixtureIds": [
+        "google-gemini.live-setup",
+        "google-gemini.live-terminal-normal",
+        "google-gemini.live-terminal-interrupted"
+      ],
+      "legacyProtocolIds": [
+        "gemini-live"
+      ]
+    },
+    {
+      "id": "google-gemini.live-agent-ephemeral",
+      "version": 1,
+      "apiFamilyId": "google-gemini.live-constrained-v1beta",
+      "transportId": "google-gemini.live-websocket-json",
+      "authProfileIds": [
+        "google-gemini.ephemeral-query",
+        "google-gemini.ephemeral-token-header"
+      ],
+      "defaultAuthProfileId": "google-gemini.ephemeral-query",
+      "audioProfileId": "google-gemini.live-pcm16-audio",
+      "lifecycleProfileId": "google-gemini.live-agent",
+      "operations": [
+        "realtime-conversation"
+      ],
+      "capabilities": [
+        "speech-to-text",
+        "text-to-speech",
+        "speech-to-speech"
+      ],
+      "maturity": "preview",
+      "adapter": {
+        "id": "gemini-live-ephemeral",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "The current adapter does not provision constrained ephemeral tokens or select BidiGenerateContentConstrained."
+      },
+      "documentationIds": [
+        "google-gemini.ephemeral-tokens",
+        "google-gemini.live-reference"
+      ],
+      "fixtureIds": [
+        "google-gemini.live-ephemeral-auth"
+      ]
+    },
+    {
+      "id": "google-gemini.live-translation",
+      "version": 1,
+      "apiFamilyId": "google-gemini.live-v1beta",
+      "transportId": "google-gemini.live-websocket-json",
+      "authProfileIds": [
+        "google-gemini.api-key-header",
+        "google-gemini.api-key-query"
+      ],
+      "defaultAuthProfileId": "google-gemini.api-key-query",
+      "audioProfileId": "google-gemini.live-pcm16-audio",
+      "lifecycleProfileId": "google-gemini.live-translation",
+      "operations": [
+        "realtime-translation"
+      ],
+      "capabilities": [
+        "speech-to-speech",
+        "speech-translation"
+      ],
+      "maturity": "preview",
+      "adapter": {
+        "id": "gemini-live-translation",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "The existing generic Live setup uses TEXT plus a system instruction and does not implement AUDIO translationConfig semantics."
+      },
+      "documentationIds": [
+        "google-gemini.live-translation",
+        "google-gemini.live-reference"
+      ],
+      "fixtureIds": [
+        "google-gemini.live-translation-setup"
+      ]
+    },
+    {
+      "id": "google-gemini.live-transcription",
+      "version": 1,
+      "apiFamilyId": "google-gemini.live-v1beta",
+      "transportId": "google-gemini.live-websocket-json",
+      "authProfileIds": [
+        "google-gemini.api-key-header",
+        "google-gemini.api-key-query"
+      ],
+      "defaultAuthProfileId": "google-gemini.api-key-query",
+      "audioProfileId": "google-gemini.live-pcm16-text",
+      "lifecycleProfileId": "google-gemini.live-transcription",
+      "operations": [
+        "realtime-transcription"
+      ],
+      "capabilities": [
+        "speech-to-text",
+        "realtime-transcription"
+      ],
+      "maturity": "preview",
+      "adapter": {
+        "id": "gemini-live-transcription",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "The current consumer does not implement interimInputTranscription replaceable-snapshot semantics."
+      },
+      "documentationIds": [
+        "google-gemini.live-transcription",
+        "google-gemini.live-reference"
+      ],
+      "fixtureIds": [
+        "google-gemini.live-transcription-interim-final"
+      ]
+    },
+    {
+      "id": "google-gemini.interactions-transcription",
+      "version": 1,
+      "apiFamilyId": "google-gemini.interactions-v1beta",
+      "transportId": "google-gemini.http-json",
+      "authProfileIds": [
+        "google-gemini.api-key-header",
+        "google-gemini.oauth2-bearer"
+      ],
+      "defaultAuthProfileId": "google-gemini.api-key-header",
+      "audioProfileId": "google-gemini.interactions-audio-uri-text",
+      "lifecycleProfileId": "google-gemini.interactions-single",
+      "operations": [
+        "asr"
+      ],
+      "capabilities": [
+        "speech-to-text",
+        "file-transcription"
+      ],
+      "maturity": "unspecified",
+      "adapter": {
+        "id": "gemini-interactions-transcription",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "No provider-owned Interactions transcription adapter is wired into the runtime."
+      },
+      "documentationIds": [
+        "google-gemini.audio-transcription",
+        "google-gemini.audio-understanding",
+        "google-gemini.interactions-reference"
+      ],
+      "fixtureIds": [
+        "google-gemini.interactions-transcription"
+      ]
+    },
+    {
+      "id": "google-gemini.interactions-tts",
+      "version": 1,
+      "apiFamilyId": "google-gemini.interactions-stream-v1beta",
+      "transportId": "google-gemini.sse-json",
+      "authProfileIds": [
+        "google-gemini.api-key-header",
+        "google-gemini.oauth2-bearer"
+      ],
+      "defaultAuthProfileId": "google-gemini.api-key-header",
+      "audioProfileId": "google-gemini.interactions-tts-pcm24k",
+      "lifecycleProfileId": "google-gemini.interactions-stream",
+      "operations": [
+        "tts"
+      ],
+      "capabilities": [
+        "text-to-speech"
+      ],
+      "maturity": "preview",
+      "adapter": {
+        "id": "gemini-interactions-tts",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "No provider-owned Interactions audio-delta adapter is wired into the runtime."
+      },
+      "documentationIds": [
+        "google-gemini.speech-generation",
+        "google-gemini.interactions-reference"
+      ],
+      "fixtureIds": [
+        "google-gemini.interactions-tts-stream"
+      ]
+    }
+  ],
+  "models": [
+    {
+      "id": "gemini-2.5-flash",
+      "displayName": "Gemini 2.5 Flash",
+      "capabilities": [
+        "text-generation",
+        "text-translation"
+      ],
+      "maturity": "ga",
+      "protocolBindings": [
+        {
+          "operation": "text",
+          "protocolProfileId": "google-gemini.openai-chat",
+          "protocolProfileVersion": 1
+        },
+        {
+          "operation": "text-translation",
+          "protocolProfileId": "google-gemini.openai-chat",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": [
+        "google-gemini.models",
+        "google-gemini.openai-compatibility"
+      ]
+    },
+    {
+      "id": "gemini-3.1-flash-live-preview",
+      "displayName": "Gemini 3.1 Flash Live Preview",
+      "capabilities": [
+        "speech-to-text",
+        "text-to-speech",
+        "speech-to-speech"
+      ],
+      "maturity": "preview",
+      "protocolBindings": [
+        {
+          "operation": "realtime-conversation",
+          "protocolProfileId": "google-gemini.live-agent",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": [
+        "google-gemini.models",
+        "google-gemini.live-overview"
+      ]
+    },
+    {
+      "id": "gemini-2.5-flash-native-audio-preview-12-2025",
+      "displayName": "Gemini 2.5 Flash Native Audio Preview 12-2025",
+      "capabilities": [
+        "speech-to-text",
+        "text-to-speech",
+        "speech-to-speech"
+      ],
+      "maturity": "preview",
+      "protocolBindings": [
+        {
+          "operation": "realtime-conversation",
+          "protocolProfileId": "google-gemini.live-agent",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": [
+        "google-gemini.models",
+        "google-gemini.live-overview"
+      ]
+    },
+    {
+      "id": "gemini-3.5-live-translate-preview",
+      "displayName": "Gemini 3.5 Live Translate Preview",
+      "capabilities": [
+        "speech-to-speech",
+        "speech-translation"
+      ],
+      "maturity": "preview",
+      "protocolBindings": [
+        {
+          "operation": "realtime-translation",
+          "protocolProfileId": "google-gemini.live-translation",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": [
+        "google-gemini.models",
+        "google-gemini.live-translation"
+      ]
+    },
+    {
+      "id": "gemini-3.5-transcribe-live",
+      "displayName": "Gemini 3.5 Transcribe Live",
+      "capabilities": [
+        "speech-to-text",
+        "realtime-transcription"
+      ],
+      "maturity": "ga",
+      "protocolBindings": [
+        {
+          "operation": "realtime-transcription",
+          "protocolProfileId": "google-gemini.live-transcription",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": [
+        "google-gemini.models",
+        "google-gemini.live-transcription"
+      ],
+      "availability": "Stable model served through the Preview Live API family."
+    },
+    {
+      "id": "gemini-3.5-transcribe",
+      "displayName": "Gemini 3.5 Transcribe",
+      "capabilities": [
+        "speech-to-text",
+        "file-transcription"
+      ],
+      "maturity": "ga",
+      "protocolBindings": [
+        {
+          "operation": "asr",
+          "protocolProfileId": "google-gemini.interactions-transcription",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": [
+        "google-gemini.models",
+        "google-gemini.audio-transcription"
+      ]
+    },
+    {
+      "id": "gemini-3.1-flash-tts-preview",
+      "displayName": "Gemini 3.1 Flash TTS Preview",
+      "capabilities": [
+        "text-to-speech"
+      ],
+      "maturity": "preview",
+      "protocolBindings": [
+        {
+          "operation": "tts",
+          "protocolProfileId": "google-gemini.interactions-tts",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": [
+        "google-gemini.models",
+        "google-gemini.speech-generation"
+      ]
+    }
+  ],
+  "probes": [
+    {
+      "id": "google-gemini.probe-openai-chat-envelope",
+      "protocolProfileId": "google-gemini.openai-chat",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "google-gemini.openai-chat-stream",
+      "notes": "Offline assertion of endpoint, Bearer auth, SSE chunks, and terminal marker."
+    },
+    {
+      "id": "google-gemini.probe-live-setup",
+      "protocolProfileId": "google-gemini.live-agent",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "google-gemini.live-setup",
+      "notes": "Offline assertion that setup is first and setupComplete gates audio sending."
+    },
+    {
+      "id": "google-gemini.probe-live-translation-setup",
+      "protocolProfileId": "google-gemini.live-translation",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "google-gemini.live-translation-setup",
+      "notes": "The contract fixture exists, but no runtime probe may connect until a specialized adapter exists."
+    },
+    {
+      "id": "google-gemini.probe-live-transcription-semantics",
+      "protocolProfileId": "google-gemini.live-transcription",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "google-gemini.live-transcription-interim-final"
+    },
+    {
+      "id": "google-gemini.probe-ephemeral-auth",
+      "protocolProfileId": "google-gemini.live-agent-ephemeral",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "google-gemini.live-ephemeral-auth"
+    }
+  ],
+  "smokes": [
+    {
+      "id": "google-gemini.smoke-live-normal-turn",
+      "protocolProfileId": "google-gemini.live-agent",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "google-gemini.live-terminal-normal",
+      "notes": "Sanitized replay only; no Provider network call."
+    },
+    {
+      "id": "google-gemini.smoke-live-interrupted-turn",
+      "protocolProfileId": "google-gemini.live-agent",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "google-gemini.live-terminal-interrupted",
+      "notes": "Confirms interrupted turns do not require generationComplete."
+    },
+    {
+      "id": "google-gemini.smoke-interactions-tts",
+      "protocolProfileId": "google-gemini.interactions-tts",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "google-gemini.interactions-tts-stream"
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "google-gemini.openai-chat-stream",
+      "path": "provider-modules/google-gemini/fixtures/openai-chat-stream.json",
+      "kind": "wire",
+      "sourceDocumentationIds": [
+        "google-gemini.openai-compatibility"
+      ]
+    },
+    {
+      "id": "google-gemini.live-setup",
+      "path": "provider-modules/google-gemini/fixtures/live-setup.json",
+      "kind": "wire",
+      "sourceDocumentationIds": [
+        "google-gemini.live-websocket",
+        "google-gemini.live-reference"
+      ]
+    },
+    {
+      "id": "google-gemini.live-terminal-normal",
+      "path": "provider-modules/google-gemini/fixtures/live-terminal-normal.json",
+      "kind": "smoke",
+      "sourceDocumentationIds": [
+        "google-gemini.live-reference"
+      ]
+    },
+    {
+      "id": "google-gemini.live-terminal-interrupted",
+      "path": "provider-modules/google-gemini/fixtures/live-terminal-interrupted.json",
+      "kind": "smoke",
+      "sourceDocumentationIds": [
+        "google-gemini.live-reference"
+      ]
+    },
+    {
+      "id": "google-gemini.live-translation-setup",
+      "path": "provider-modules/google-gemini/fixtures/live-translation-setup.json",
+      "kind": "wire",
+      "sourceDocumentationIds": [
+        "google-gemini.live-translation"
+      ]
+    },
+    {
+      "id": "google-gemini.live-transcription-interim-final",
+      "path": "provider-modules/google-gemini/fixtures/live-transcription-interim-final.json",
+      "kind": "wire",
+      "sourceDocumentationIds": [
+        "google-gemini.live-transcription"
+      ]
+    },
+    {
+      "id": "google-gemini.live-ephemeral-auth",
+      "path": "provider-modules/google-gemini/fixtures/live-ephemeral-auth.json",
+      "kind": "probe",
+      "sourceDocumentationIds": [
+        "google-gemini.ephemeral-tokens",
+        "google-gemini.live-reference"
+      ]
+    },
+    {
+      "id": "google-gemini.interactions-transcription",
+      "path": "provider-modules/google-gemini/fixtures/interactions-transcription.json",
+      "kind": "wire",
+      "sourceDocumentationIds": [
+        "google-gemini.audio-transcription",
+        "google-gemini.interactions-reference"
+      ]
+    },
+    {
+      "id": "google-gemini.interactions-tts-stream",
+      "path": "provider-modules/google-gemini/fixtures/interactions-tts-stream.json",
+      "kind": "wire",
+      "sourceDocumentationIds": [
+        "google-gemini.speech-generation",
+        "google-gemini.interactions-reference"
+      ]
+    }
+  ]
+}

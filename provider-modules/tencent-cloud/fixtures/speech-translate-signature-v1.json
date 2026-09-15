@@ -1,0 +1,50 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "tencent-speech-translate-signature-v1",
+  "providerId": "tencent-cloud",
+  "protocolProfileId": "tencent-cloud.speech-translate.ws-v1",
+  "protocolProfileVersion": 1,
+  "kind": "probe",
+  "provenance": {
+    "sourceDocumentationIds": ["speech-translate-api", "speech-translate-product"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Deterministic synthetic credential vector. No value is a usable Tencent Cloud credential."
+  },
+  "scenario": "Canonical query ordering, HMAC-SHA1 Base64 encoding, and final URL encoding",
+  "data": {
+    "connectionUrl": "wss://asr.cloud.tencent.com/asr/speech_translate/1250000000?expired=1700003600&nonce=42&secretid=AKIDEXAMPLE&source=en&target=zh&timestamp=1700000000&trans_model=hunyuan-translation&voice_format=1&voice_id=00000000-0000-4000-8000-000000000001&signature=UYjG9DYZqjWR19oWpYUyjn7ozcc%3D",
+    "authContract": {
+      "profileId": "speech-translate-hmac-sha1-query",
+      "parameters": [
+        { "location": "path", "name": "appid", "value": "1250000000" },
+        { "location": "query", "name": "secretid", "value": "AKIDEXAMPLE" },
+        { "location": "query", "name": "timestamp", "value": "1700000000" },
+        { "location": "query", "name": "expired", "value": "1700003600" },
+        { "location": "query", "name": "nonce", "value": "42" },
+        { "location": "query", "name": "voice_id", "value": "00000000-0000-4000-8000-000000000001" },
+        { "location": "query", "name": "signature", "value": "UYjG9DYZqjWR19oWpYUyjn7ozcc%3D" }
+      ]
+    },
+    "credential": {
+      "appid": "1250000000",
+      "secretId": "AKIDEXAMPLE",
+      "secretKey": "fixture-secret-not-a-real-key"
+    },
+    "unsignedQuery": {
+      "secretid": "AKIDEXAMPLE",
+      "timestamp": "1700000000",
+      "expired": "1700003600",
+      "nonce": "42",
+      "voice_id": "00000000-0000-4000-8000-000000000001",
+      "voice_format": "1",
+      "source": "en",
+      "target": "zh",
+      "trans_model": "hunyuan-translation"
+    },
+    "canonical": "asr.cloud.tencent.com/asr/speech_translate/1250000000?expired=1700003600&nonce=42&secretid=AKIDEXAMPLE&source=en&target=zh&timestamp=1700000000&trans_model=hunyuan-translation&voice_format=1&voice_id=00000000-0000-4000-8000-000000000001",
+    "signatureBase64": "UYjG9DYZqjWR19oWpYUyjn7ozcc=",
+    "signatureUrlEncoded": "UYjG9DYZqjWR19oWpYUyjn7ozcc%3D"
+  }
+}

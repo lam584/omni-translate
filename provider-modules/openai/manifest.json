@@ -1,0 +1,1266 @@
+{
+  "$schema": "../../contracts/provider-manifest.schema.json",
+  "schemaVersion": "provider-manifest/v1",
+  "manifestVersion": 3,
+  "checkedAt": "2026-08-31",
+  "provider": {
+    "id": "openai",
+    "displayName": "OpenAI API",
+    "templateId": "template-openai-compatible-realtime",
+    "kind": "openai",
+    "source": "official",
+    "description": "OpenAI text, Realtime, realtime translation, realtime transcription, and Audio API contracts used by Omni Translate.",
+    "defaultModelId": "gpt-4o",
+    "defaultApiFamilyId": "openai.api.chat-completions.sse",
+    "defaultCredentialId": "openai.credential.api-key",
+    "notes": "Protocol selection is exact and versioned. The realtime transcription connection endpoint remains unresolved and cannot authorize network I/O."
+  },
+  "documentation": [
+    {
+      "id": "openai.docs.chat",
+      "title": "Chat Completions API",
+      "url": "https://developers.openai.com/api/reference/resources/chat",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "openai.docs.realtime",
+      "title": "Realtime API",
+      "url": "https://developers.openai.com/api/docs/guides/realtime",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "openai.docs.realtime-websocket",
+      "title": "Realtime API with WebSocket",
+      "url": "https://developers.openai.com/api/docs/guides/realtime-websocket",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "openai.docs.realtime-webrtc",
+      "title": "Realtime API with WebRTC",
+      "url": "https://developers.openai.com/api/docs/guides/realtime-webrtc",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "openai.docs.realtime-translation",
+      "title": "Realtime translation",
+      "url": "https://developers.openai.com/api/docs/guides/realtime-translation",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "openai.docs.translation-client-events",
+      "title": "Realtime translation client events",
+      "url": "https://developers.openai.com/api/reference/resources/realtime/translation-client-events",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "openai.docs.translation-server-events",
+      "title": "Realtime translation server events",
+      "url": "https://developers.openai.com/api/reference/resources/realtime/translation-server-events",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "openai.docs.realtime-transcription",
+      "title": "Realtime transcription",
+      "url": "https://developers.openai.com/api/docs/guides/realtime-transcription",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "openai.docs.speech-to-text",
+      "title": "Speech to text",
+      "url": "https://developers.openai.com/api/docs/guides/speech-to-text",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "openai.docs.text-to-speech",
+      "title": "Text to speech",
+      "url": "https://developers.openai.com/api/docs/guides/text-to-speech",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "openai.docs.models",
+      "title": "OpenAI model catalog",
+      "url": "https://developers.openai.com/api/docs/models",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "openai.docs.model-realtime-2.1",
+      "title": "GPT-Realtime-2.1 model",
+      "url": "https://developers.openai.com/api/docs/models/gpt-realtime-2.1",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "openai.docs.model-realtime-translate",
+      "title": "GPT-Realtime-Translate model",
+      "url": "https://developers.openai.com/api/docs/models/gpt-realtime-translate",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "openai.docs.model-live-transcribe",
+      "title": "GPT-Live-Transcribe model",
+      "url": "https://developers.openai.com/api/docs/models/gpt-live-transcribe",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "openai.docs.model-realtime-whisper",
+      "title": "GPT-Realtime-Whisper model",
+      "url": "https://developers.openai.com/api/docs/models/gpt-realtime-whisper",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "openai.docs.model-transcribe",
+      "title": "GPT-Transcribe model",
+      "url": "https://developers.openai.com/api/docs/models/gpt-transcribe",
+      "checkedAt": "2026-08-31"
+    },
+    {
+      "id": "openai.docs.realtime-reference-legacy-entry",
+      "title": "Realtime API reference legacy entry (redirects to Developers reference)",
+      "url": "https://platform.openai.com/docs/api-reference/realtime",
+      "checkedAt": "2026-09-01"
+    },
+    {
+      "id": "openai.docs.audio-reference-legacy-entry",
+      "title": "Audio API reference legacy entry (redirects to Developers reference)",
+      "url": "https://platform.openai.com/docs/api-reference/audio",
+      "checkedAt": "2026-09-01"
+    },
+    {
+      "id": "openai.docs.authentication-legacy-entry",
+      "title": "API authentication legacy entry (redirects to Developers overview)",
+      "url": "https://platform.openai.com/docs/api-reference/authentication",
+      "checkedAt": "2026-09-01"
+    }
+  ],
+  "credentials": [
+    {
+      "id": "openai.credential.api-key",
+      "reference": "credential://provider/openai/default",
+      "fields": [
+        {
+          "id": "api-key",
+          "label": "OpenAI API key",
+          "secret": true,
+          "required": true,
+          "format": "OpenAI API key"
+        },
+        {
+          "id": "organization-id",
+          "label": "OpenAI organization id",
+          "secret": false,
+          "required": false,
+          "format": "org-*"
+        },
+        {
+          "id": "project-id",
+          "label": "OpenAI project id",
+          "secret": false,
+          "required": false,
+          "format": "proj_*"
+        }
+      ]
+    },
+    {
+      "id": "openai.credential.realtime-client-secret",
+      "reference": "credential://provider/openai/realtime-client-secret",
+      "fields": [
+        {
+          "id": "client-secret",
+          "label": "Short-lived Realtime client secret",
+          "secret": true,
+          "required": true,
+          "format": "ephemeral bearer token"
+        }
+      ]
+    }
+  ],
+  "authProfiles": [
+    {
+      "id": "openai.auth.bearer-header",
+      "type": "bearer",
+      "credentialId": "openai.credential.api-key",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "source": "credential",
+          "credentialFieldId": "api-key",
+          "scheme": "Bearer",
+          "required": true
+        },
+        {
+          "location": "header",
+          "name": "OpenAI-Organization",
+          "source": "credential",
+          "credentialFieldId": "organization-id",
+          "required": false
+        },
+        {
+          "location": "header",
+          "name": "OpenAI-Project",
+          "source": "credential",
+          "credentialFieldId": "project-id",
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "openai.auth.realtime-ephemeral-bearer",
+      "type": "bearer",
+      "credentialId": "openai.credential.realtime-client-secret",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "source": "credential",
+          "credentialFieldId": "client-secret",
+          "scheme": "Bearer",
+          "required": true
+        }
+      ],
+      "credentialBootstrap": {
+        "kind": "ephemeral-token-exchange",
+        "endpointTemplate": "https://api.openai.com/v1/realtime/client_secrets",
+        "description": "A trusted backend exchanges its standard API key for a short-lived client secret before a browser establishes WebRTC.",
+        "documentationIds": [
+          "openai.docs.realtime-webrtc"
+        ]
+      }
+    },
+    {
+      "id": "openai.auth.translation-ephemeral-bearer",
+      "type": "bearer",
+      "credentialId": "openai.credential.realtime-client-secret",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "source": "credential",
+          "credentialFieldId": "client-secret",
+          "scheme": "Bearer",
+          "required": true
+        }
+      ],
+      "credentialBootstrap": {
+        "kind": "ephemeral-token-exchange",
+        "endpointTemplate": "https://api.openai.com/v1/realtime/translations/client_secrets",
+        "description": "A trusted backend exchanges its standard API key for a short-lived translation client secret.",
+        "documentationIds": [
+          "openai.docs.realtime-translation"
+        ]
+      }
+    }
+  ],
+  "transports": [
+    {
+      "id": "openai.transport.http-json-sse",
+      "kind": "sse",
+      "requestFraming": "json",
+      "responseFraming": "sse",
+      "requestEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      },
+      "responseEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      }
+    },
+    {
+      "id": "openai.transport.websocket-json-base64",
+      "kind": "websocket",
+      "requestFraming": "json-base64",
+      "responseFraming": "json-base64",
+      "requestEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      },
+      "responseEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      }
+    },
+    {
+      "id": "openai.transport.webrtc-sdp-datachannel",
+      "kind": "webrtc",
+      "requestFraming": "sdp",
+      "responseFraming": "sdp",
+      "requestEnvelope": {
+        "kind": "provider-defined",
+        "id": "openai.webrtc.offer",
+        "byteOrder": "not-applicable",
+        "description": "SDP offer establishes a media track plus a JSON event data channel."
+      },
+      "responseEnvelope": {
+        "kind": "provider-defined",
+        "id": "openai.webrtc.answer",
+        "byteOrder": "not-applicable",
+        "description": "SDP answer establishes a media track plus a JSON event data channel."
+      }
+    },
+    {
+      "id": "openai.transport.http-multipart-json",
+      "kind": "http",
+      "requestFraming": "multipart",
+      "responseFraming": "json",
+      "requestEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      },
+      "responseEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      }
+    },
+    {
+      "id": "openai.transport.http-multipart-sse",
+      "kind": "sse",
+      "requestFraming": "multipart",
+      "responseFraming": "sse",
+      "requestEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      },
+      "responseEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      }
+    },
+    {
+      "id": "openai.transport.http-json-audio",
+      "kind": "http",
+      "requestFraming": "json",
+      "responseFraming": "audio",
+      "requestEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      },
+      "responseEnvelope": {
+        "kind": "none",
+        "byteOrder": "not-applicable"
+      }
+    }
+  ],
+  "audioProfiles": [
+    {
+      "id": "openai.audio.realtime-pcm16-24k-mono",
+      "input": {
+        "required": true,
+        "formats": ["pcm16"],
+        "sampleRatesHz": [24000],
+        "channels": [1],
+        "bitDepths": [16],
+        "endianness": ["little-endian"]
+      },
+      "output": {
+        "required": false,
+        "formats": ["pcm16"],
+        "sampleRatesHz": [24000],
+        "channels": [1],
+        "bitDepths": [16],
+        "endianness": ["little-endian"]
+      }
+    },
+    {
+      "id": "openai.audio.translation-pcm16-24k-mono",
+      "input": {
+        "required": true,
+        "formats": ["pcm16"],
+        "sampleRatesHz": [24000],
+        "channels": [1],
+        "bitDepths": [16],
+        "endianness": ["little-endian"],
+        "chunkDurationMs": {
+          "recommended": 200
+        }
+      },
+      "output": {
+        "required": true,
+        "formats": ["pcm16"],
+        "sampleRatesHz": [24000],
+        "channels": [1],
+        "bitDepths": [16],
+        "endianness": ["little-endian"]
+      }
+    },
+    {
+      "id": "openai.audio.transcription-pcm16-24k-mono",
+      "input": {
+        "required": true,
+        "formats": ["pcm16"],
+        "sampleRatesHz": [24000],
+        "channels": [1],
+        "bitDepths": [16],
+        "endianness": ["little-endian"]
+      },
+      "output": {
+        "required": false,
+        "formats": [],
+        "sampleRatesHz": [],
+        "channels": []
+      }
+    },
+    {
+      "id": "openai.audio.file-transcription-input",
+      "input": {
+        "required": true,
+        "formats": ["mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm"],
+        "sampleRatesHz": [],
+        "channels": []
+      },
+      "output": {
+        "required": false,
+        "formats": [],
+        "sampleRatesHz": [],
+        "channels": []
+      }
+    },
+    {
+      "id": "openai.audio.tts-pcm16-24k-mono",
+      "input": {
+        "required": false,
+        "formats": [],
+        "sampleRatesHz": [],
+        "channels": []
+      },
+      "output": {
+        "required": true,
+        "formats": ["pcm16"],
+        "sampleRatesHz": [24000],
+        "channels": [1],
+        "bitDepths": [16],
+        "endianness": ["little-endian"]
+      }
+    }
+  ],
+  "lifecycleProfiles": [
+    {
+      "id": "openai.lifecycle.chat-completions-sse",
+      "handshake": ["http.request", "http.response.open"],
+      "clientEvents": ["chat.completion.request"],
+      "serverEvents": ["chat.completion.chunk", "data:[DONE]", "http.error"],
+      "vadModes": ["none"],
+      "terminal": "A streamed Chat Completions request ends at data: [DONE] or an HTTP/transport error; finish_reason terminates a choice but does not replace the stream terminator.",
+      "reuse": "single-request",
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "openai.lifecycle.realtime-conversation",
+      "handshake": ["session.created", "session.update", "session.updated"],
+      "clientEvents": [
+        "session.update",
+        "input_audio_buffer.append",
+        "input_audio_buffer.commit",
+        "input_audio_buffer.clear",
+        "response.create",
+        "response.cancel"
+      ],
+      "serverEvents": [
+        "session.created",
+        "session.updated",
+        "input_audio_buffer.speech_started",
+        "input_audio_buffer.speech_stopped",
+        "input_audio_buffer.committed",
+        "conversation.item.input_audio_transcription.delta",
+        "conversation.item.input_audio_transcription.completed",
+        "response.output_text.delta",
+        "response.output_text.done",
+        "response.output_audio.delta",
+        "response.output_audio.done",
+        "response.output_audio_transcript.delta",
+        "response.output_audio_transcript.done",
+        "response.done",
+        "error"
+      ],
+      "vadModes": ["manual", "server-vad", "semantic-vad"],
+      "terminal": "response.done terminates one Response only; status must be completed before success. cancelled, failed, and incomplete are non-success outcomes and the session can remain reusable.",
+      "reuse": "multi-turn",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "openai.lifecycle.realtime-translation",
+      "handshake": ["session.created", "session.update", "session.updated"],
+      "clientEvents": [
+        "session.update",
+        "session.input_audio_buffer.append",
+        "session.close"
+      ],
+      "serverEvents": [
+        "session.created",
+        "session.updated",
+        "session.input_transcript.delta",
+        "session.output_transcript.delta",
+        "session.output_audio.delta",
+        "error",
+        "session.closed"
+      ],
+      "vadModes": ["none"],
+      "terminal": "The client sends session.close, stops appending audio, continues reading until session.closed, and only then closes the WebSocket. Recoverable error events do not terminate the session.",
+      "reuse": "single-session",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "openai.lifecycle.realtime-transcription",
+      "handshake": ["session.created", "session.update", "session.updated"],
+      "clientEvents": [
+        "session.update",
+        "input_audio_buffer.append",
+        "input_audio_buffer.commit",
+        "input_audio_buffer.clear"
+      ],
+      "serverEvents": [
+        "session.created",
+        "session.updated",
+        "conversation.item.input_audio_transcription.delta",
+        "conversation.item.input_audio_transcription.completed",
+        "conversation.item.input_audio_transcription.failed",
+        "error"
+      ],
+      "vadModes": ["manual", "server-vad", "semantic-vad"],
+      "terminal": "conversation.item.input_audio_transcription.completed or .failed terminates one committed item; connection closure terminates the session.",
+      "reuse": "sequential-tasks",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "openai.lifecycle.realtime-transcription-whisper-manual",
+      "handshake": ["session.created", "session.update", "session.updated"],
+      "clientEvents": [
+        "session.update",
+        "input_audio_buffer.append",
+        "input_audio_buffer.commit",
+        "input_audio_buffer.clear"
+      ],
+      "serverEvents": [
+        "session.created",
+        "session.updated",
+        "conversation.item.input_audio_transcription.delta",
+        "conversation.item.input_audio_transcription.completed",
+        "conversation.item.input_audio_transcription.failed",
+        "error"
+      ],
+      "vadModes": ["manual"],
+      "terminal": "GPT-Realtime-Whisper requires turn_detection null; each explicit commit ends with transcription completed or failed.",
+      "reuse": "sequential-tasks",
+      "idleTimeoutSeconds": null,
+      "textDeltaSemantics": "append-delta"
+    },
+    {
+      "id": "openai.lifecycle.http-single-request",
+      "handshake": ["http.request"],
+      "clientEvents": ["http.request"],
+      "serverEvents": ["http.response", "http.error"],
+      "vadModes": ["none"],
+      "terminal": "The HTTP response body or an HTTP error terminates the request.",
+      "reuse": "single-request",
+      "textDeltaSemantics": "not-applicable"
+    },
+    {
+      "id": "openai.lifecycle.transcription-sse",
+      "handshake": ["http.request", "http.response.open"],
+      "clientEvents": ["http.multipart.request"],
+      "serverEvents": ["transcript.text.delta", "transcript.text.done", "http.error"],
+      "vadModes": ["none"],
+      "terminal": "transcript.text.done or an HTTP/SSE error terminates the streamed file transcription request.",
+      "reuse": "single-request",
+      "textDeltaSemantics": "append-delta"
+    }
+  ],
+  "apiFamilies": [
+    {
+      "id": "openai.api.chat-completions.sse",
+      "displayName": "OpenAI Chat Completions streaming HTTP",
+      "baseUrlTemplate": "https://api.openai.com/v1",
+      "endpointTemplate": "/chat/completions",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": null,
+      "transportId": "openai.transport.http-json-sse",
+      "authProfileIds": ["openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.bearer-header",
+      "maturity": "ga",
+      "documentationIds": ["openai.docs.chat", "openai.docs.models", "openai.docs.authentication-legacy-entry"]
+    },
+    {
+      "id": "openai.api.realtime-conversation.websocket",
+      "displayName": "OpenAI Realtime conversation WebSocket",
+      "baseUrlTemplate": "wss://api.openai.com/v1",
+      "endpointTemplate": "/realtime?model={modelId}",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": null,
+      "transportId": "openai.transport.websocket-json-base64",
+      "authProfileIds": ["openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.bearer-header",
+      "maturity": "ga",
+      "documentationIds": ["openai.docs.realtime", "openai.docs.realtime-websocket", "openai.docs.realtime-reference-legacy-entry", "openai.docs.authentication-legacy-entry"]
+    },
+    {
+      "id": "openai.api.realtime-translation.websocket",
+      "displayName": "OpenAI Realtime translation WebSocket",
+      "baseUrlTemplate": "wss://api.openai.com/v1",
+      "endpointTemplate": "/realtime/translations?model={modelId}",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": null,
+      "transportId": "openai.transport.websocket-json-base64",
+      "authProfileIds": ["openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.bearer-header",
+      "maturity": "unspecified",
+      "documentationIds": ["openai.docs.realtime-translation"]
+    },
+    {
+      "id": "openai.api.realtime-transcription.websocket",
+      "displayName": "OpenAI Realtime transcription connection",
+      "baseUrlTemplate": "wss://api.openai.com/v1",
+      "endpointTemplate": null,
+      "endpointStatus": "unresolved",
+      "modelAddressing": "model-id",
+      "apiVersion": null,
+      "transportId": "openai.transport.websocket-json-base64",
+      "authProfileIds": ["openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.bearer-header",
+      "maturity": "unspecified",
+      "documentationIds": ["openai.docs.realtime-transcription", "openai.docs.model-live-transcribe"]
+    },
+    {
+      "id": "openai.api.realtime-conversation.webrtc",
+      "displayName": "OpenAI Realtime conversation WebRTC calls",
+      "baseUrlTemplate": "https://api.openai.com/v1",
+      "endpointTemplate": "/realtime/calls",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": null,
+      "transportId": "openai.transport.webrtc-sdp-datachannel",
+      "authProfileIds": ["openai.auth.realtime-ephemeral-bearer", "openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.realtime-ephemeral-bearer",
+      "maturity": "ga",
+      "documentationIds": ["openai.docs.realtime-webrtc"]
+    },
+    {
+      "id": "openai.api.audio-transcription.http",
+      "displayName": "OpenAI Audio transcription HTTP",
+      "baseUrlTemplate": "https://api.openai.com/v1",
+      "endpointTemplate": "/audio/transcriptions",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": null,
+      "transportId": "openai.transport.http-multipart-json",
+      "authProfileIds": ["openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.bearer-header",
+      "maturity": "unspecified",
+      "documentationIds": ["openai.docs.speech-to-text", "openai.docs.audio-reference-legacy-entry", "openai.docs.authentication-legacy-entry"]
+    },
+    {
+      "id": "openai.api.audio-transcription.sse",
+      "displayName": "OpenAI Audio transcription SSE",
+      "baseUrlTemplate": "https://api.openai.com/v1",
+      "endpointTemplate": "/audio/transcriptions",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": null,
+      "transportId": "openai.transport.http-multipart-sse",
+      "authProfileIds": ["openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.bearer-header",
+      "maturity": "unspecified",
+      "documentationIds": ["openai.docs.speech-to-text", "openai.docs.audio-reference-legacy-entry", "openai.docs.authentication-legacy-entry"]
+    },
+    {
+      "id": "openai.api.audio-speech.http",
+      "displayName": "OpenAI Audio speech HTTP",
+      "baseUrlTemplate": "https://api.openai.com/v1",
+      "endpointTemplate": "/audio/speech",
+      "endpointStatus": "verified",
+      "modelAddressing": "model-id",
+      "apiVersion": null,
+      "transportId": "openai.transport.http-json-audio",
+      "authProfileIds": ["openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.bearer-header",
+      "maturity": "unspecified",
+      "documentationIds": ["openai.docs.text-to-speech", "openai.docs.audio-reference-legacy-entry", "openai.docs.authentication-legacy-entry"]
+    }
+  ],
+  "protocolProfiles": [
+    {
+      "id": "openai.chat-completions.sse.ga",
+      "version": 1,
+      "apiFamilyId": "openai.api.chat-completions.sse",
+      "transportId": "openai.transport.http-json-sse",
+      "authProfileIds": ["openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.bearer-header",
+      "lifecycleProfileId": "openai.lifecycle.chat-completions-sse",
+      "operations": ["text", "text-translation"],
+      "capabilities": ["text-generation", "text-translation"],
+      "maturity": "ga",
+      "adapter": {
+        "id": "openai-compatible-http",
+        "status": "enabled",
+        "verification": "fixture-only",
+        "reason": "The existing desktop gateway implements streaming Chat Completions; this refactor did not call OpenAI."
+      },
+      "documentationIds": ["openai.docs.chat", "openai.docs.models"],
+      "fixtureIds": ["openai.fixture.chat-completions-sse.v1"],
+      "legacyProtocolIds": ["openai-compatible-chat"],
+      "customProviderPolicy": "explicit-profile",
+      "customEndpointPolicy": "absolute-secure-url-no-userinfo"
+    },
+    {
+      "id": "openai.realtime.conversation.websocket.ga",
+      "version": 1,
+      "apiFamilyId": "openai.api.realtime-conversation.websocket",
+      "transportId": "openai.transport.websocket-json-base64",
+      "authProfileIds": ["openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.bearer-header",
+      "audioProfileId": "openai.audio.realtime-pcm16-24k-mono",
+      "lifecycleProfileId": "openai.lifecycle.realtime-conversation",
+      "operations": ["realtime-conversation"],
+      "capabilities": ["speech-to-text", "speech-to-speech"],
+      "maturity": "ga",
+      "adapter": {
+        "id": "openai-realtime-websocket",
+        "status": "enabled",
+        "verification": "fixture-only",
+        "reason": "The existing adapter implements the GA nested session shape and canonical conversation events, but no real Provider call was authorized for this refactor."
+      },
+      "documentationIds": ["openai.docs.realtime", "openai.docs.realtime-websocket"],
+      "fixtureIds": [
+        "openai.fixture.realtime-conversation-wire.v1",
+        "openai.fixture.realtime-conversation-terminal.v1"
+      ],
+      "legacyProtocolIds": ["openai-conversation"],
+      "customProviderPolicy": "explicit-profile",
+      "customEndpointPolicy": "absolute-secure-url-no-userinfo"
+    },
+    {
+      "id": "openai.realtime.translation.websocket.current",
+      "version": 1,
+      "apiFamilyId": "openai.api.realtime-translation.websocket",
+      "transportId": "openai.transport.websocket-json-base64",
+      "authProfileIds": ["openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.bearer-header",
+      "audioProfileId": "openai.audio.translation-pcm16-24k-mono",
+      "lifecycleProfileId": "openai.lifecycle.realtime-translation",
+      "operations": ["realtime-translation"],
+      "capabilities": ["speech-to-text", "speech-to-speech", "speech-translation"],
+      "maturity": "unspecified",
+      "adapter": {
+        "id": "openai-realtime-websocket",
+        "status": "disabled",
+        "verification": "fixture-only",
+        "reason": "The current runtime sends unsupported translation format fields and bypasses session.created/session.updated readiness."
+      },
+      "documentationIds": [
+        "openai.docs.realtime-translation",
+        "openai.docs.translation-client-events",
+        "openai.docs.translation-server-events"
+      ],
+      "fixtureIds": ["openai.fixture.realtime-translation-wire.v1"],
+      "legacyProtocolIds": ["openai-translation"]
+    },
+    {
+      "id": "openai.realtime.transcription.websocket.unresolved",
+      "version": 1,
+      "apiFamilyId": "openai.api.realtime-transcription.websocket",
+      "transportId": "openai.transport.websocket-json-base64",
+      "authProfileIds": ["openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.bearer-header",
+      "audioProfileId": "openai.audio.transcription-pcm16-24k-mono",
+      "lifecycleProfileId": "openai.lifecycle.realtime-transcription",
+      "operations": ["realtime-transcription"],
+      "capabilities": ["speech-to-text", "realtime-transcription"],
+      "maturity": "unspecified",
+      "adapter": {
+        "id": "openai-realtime-websocket",
+        "status": "disabled",
+        "verification": "fixture-only",
+        "reason": "Official model pages name v1/realtime/transcription_sessions, while the current guide does not establish the WebSocket connection URL. Network I/O must fail closed."
+      },
+      "documentationIds": ["openai.docs.realtime-transcription", "openai.docs.model-live-transcribe"],
+      "fixtureIds": ["openai.fixture.realtime-transcription-unresolved.v1"],
+      "legacyProtocolIds": ["openai-transcription"]
+    },
+    {
+      "id": "openai.realtime.transcription-whisper.websocket.unresolved",
+      "version": 1,
+      "apiFamilyId": "openai.api.realtime-transcription.websocket",
+      "transportId": "openai.transport.websocket-json-base64",
+      "authProfileIds": ["openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.bearer-header",
+      "audioProfileId": "openai.audio.transcription-pcm16-24k-mono",
+      "lifecycleProfileId": "openai.lifecycle.realtime-transcription-whisper-manual",
+      "operations": ["realtime-transcription"],
+      "capabilities": ["speech-to-text", "realtime-transcription"],
+      "maturity": "unspecified",
+      "adapter": {
+        "id": "openai-realtime-websocket",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "The connection endpoint is unresolved and GPT-Realtime-Whisper requires manual turn detection."
+      },
+      "documentationIds": ["openai.docs.realtime-transcription", "openai.docs.model-realtime-whisper"],
+      "fixtureIds": ["openai.fixture.realtime-transcription-whisper-unresolved.v1"],
+      "legacyProtocolIds": ["openai-transcription-whisper-manual"]
+    },
+    {
+      "id": "openai.realtime.conversation.webrtc.ga",
+      "version": 1,
+      "apiFamilyId": "openai.api.realtime-conversation.webrtc",
+      "transportId": "openai.transport.webrtc-sdp-datachannel",
+      "authProfileIds": ["openai.auth.realtime-ephemeral-bearer", "openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.realtime-ephemeral-bearer",
+      "audioProfileId": "openai.audio.realtime-pcm16-24k-mono",
+      "lifecycleProfileId": "openai.lifecycle.realtime-conversation",
+      "operations": ["realtime-conversation"],
+      "capabilities": ["speech-to-text", "speech-to-speech"],
+      "maturity": "ga",
+      "adapter": {
+        "id": "openai-realtime-webrtc",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "The desktop runtime has no WebRTC transport adapter."
+      },
+      "documentationIds": ["openai.docs.realtime-webrtc"],
+      "fixtureIds": ["openai.fixture.realtime-webrtc-auth.v1"]
+    },
+    {
+      "id": "openai.audio.transcription.http.current",
+      "version": 1,
+      "apiFamilyId": "openai.api.audio-transcription.http",
+      "transportId": "openai.transport.http-multipart-json",
+      "authProfileIds": ["openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.bearer-header",
+      "audioProfileId": "openai.audio.file-transcription-input",
+      "lifecycleProfileId": "openai.lifecycle.http-single-request",
+      "operations": ["asr"],
+      "capabilities": ["speech-to-text", "file-transcription"],
+      "maturity": "unspecified",
+      "adapter": {
+        "id": "openai-audio-transcription-http",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "The current OpenAI HTTP gateway only implements chat/completions."
+      },
+      "documentationIds": ["openai.docs.speech-to-text"],
+      "fixtureIds": ["openai.fixture.audio-transcription-http.v1"]
+    },
+    {
+      "id": "openai.audio.transcription.sse.current",
+      "version": 1,
+      "apiFamilyId": "openai.api.audio-transcription.sse",
+      "transportId": "openai.transport.http-multipart-sse",
+      "authProfileIds": ["openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.bearer-header",
+      "audioProfileId": "openai.audio.file-transcription-input",
+      "lifecycleProfileId": "openai.lifecycle.transcription-sse",
+      "operations": ["asr"],
+      "capabilities": ["speech-to-text", "file-transcription"],
+      "maturity": "unspecified",
+      "adapter": {
+        "id": "openai-audio-transcription-sse",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "No multipart Audio API or transcript SSE adapter exists in the current runtime."
+      },
+      "documentationIds": ["openai.docs.speech-to-text"],
+      "fixtureIds": ["openai.fixture.audio-transcription-sse.v1"]
+    },
+    {
+      "id": "openai.audio.speech.pcm.current",
+      "version": 1,
+      "apiFamilyId": "openai.api.audio-speech.http",
+      "transportId": "openai.transport.http-json-audio",
+      "authProfileIds": ["openai.auth.bearer-header"],
+      "defaultAuthProfileId": "openai.auth.bearer-header",
+      "audioProfileId": "openai.audio.tts-pcm16-24k-mono",
+      "lifecycleProfileId": "openai.lifecycle.http-single-request",
+      "operations": ["tts"],
+      "capabilities": ["text-to-speech"],
+      "maturity": "unspecified",
+      "adapter": {
+        "id": "openai-audio-speech-http",
+        "status": "disabled",
+        "verification": "not-implemented",
+        "reason": "No OpenAI Audio speech adapter exists in the current runtime."
+      },
+      "documentationIds": ["openai.docs.text-to-speech"],
+      "fixtureIds": ["openai.fixture.audio-speech-pcm.v1"]
+    }
+  ],
+  "models": [
+    {
+      "id": "gpt-4o",
+      "displayName": "GPT-4o",
+      "capabilities": ["text-generation", "text-translation"],
+      "maturity": "ga",
+      "protocolBindings": [
+        {
+          "operation": "text-translation",
+          "protocolProfileId": "openai.chat-completions.sse.ga",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["openai.docs.models", "openai.docs.chat"]
+    },
+    {
+      "id": "gpt-4.1",
+      "displayName": "GPT-4.1",
+      "capabilities": ["text-generation", "text-translation"],
+      "maturity": "ga",
+      "protocolBindings": [
+        {
+          "operation": "text-translation",
+          "protocolProfileId": "openai.chat-completions.sse.ga",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["openai.docs.models", "openai.docs.chat"]
+    },
+    {
+      "id": "gpt-4o-mini",
+      "displayName": "GPT-4o Mini",
+      "capabilities": ["text-generation", "text-translation"],
+      "maturity": "ga",
+      "protocolBindings": [
+        {
+          "operation": "text-translation",
+          "protocolProfileId": "openai.chat-completions.sse.ga",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["openai.docs.models", "openai.docs.chat"]
+    },
+    {
+      "id": "gpt-4-turbo",
+      "displayName": "GPT-4 Turbo",
+      "capabilities": ["text-generation", "text-translation"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "text-translation",
+          "protocolProfileId": "openai.chat-completions.sse.ga",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["openai.docs.models", "openai.docs.chat"]
+    },
+    {
+      "id": "gpt-realtime-2.1",
+      "displayName": "GPT-Realtime-2.1",
+      "capabilities": ["speech-to-text", "speech-to-speech"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "realtime-conversation",
+          "protocolProfileId": "openai.realtime.conversation.websocket.ga",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["openai.docs.model-realtime-2.1"]
+    },
+    {
+      "id": "gpt-realtime-2.1-mini",
+      "displayName": "GPT-Realtime-2.1 Mini",
+      "capabilities": ["speech-to-text", "speech-to-speech"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "realtime-conversation",
+          "protocolProfileId": "openai.realtime.conversation.websocket.ga",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["openai.docs.models"]
+    },
+    {
+      "id": "gpt-realtime",
+      "displayName": "GPT-Realtime",
+      "capabilities": ["speech-to-text", "speech-to-speech"],
+      "maturity": "ga",
+      "protocolBindings": [
+        {
+          "operation": "realtime-conversation",
+          "protocolProfileId": "openai.realtime.conversation.websocket.ga",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["openai.docs.models"]
+    },
+    {
+      "id": "gpt-realtime-translate",
+      "displayName": "GPT-Realtime-Translate",
+      "capabilities": ["speech-to-text", "speech-to-speech", "speech-translation"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "realtime-translation",
+          "protocolProfileId": "openai.realtime.translation.websocket.current",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["openai.docs.model-realtime-translate", "openai.docs.realtime-translation"]
+    },
+    {
+      "id": "gpt-live-transcribe",
+      "displayName": "GPT-Live-Transcribe",
+      "capabilities": ["speech-to-text", "realtime-transcription"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "realtime-transcription",
+          "protocolProfileId": "openai.realtime.transcription.websocket.unresolved",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["openai.docs.model-live-transcribe", "openai.docs.realtime-transcription"]
+    },
+    {
+      "id": "gpt-realtime-whisper",
+      "displayName": "GPT-Realtime-Whisper",
+      "capabilities": ["speech-to-text", "realtime-transcription"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "realtime-transcription",
+          "protocolProfileId": "openai.realtime.transcription-whisper.websocket.unresolved",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["openai.docs.model-realtime-whisper", "openai.docs.realtime-transcription"]
+    },
+    {
+      "id": "gpt-transcribe",
+      "displayName": "GPT-Transcribe",
+      "capabilities": ["speech-to-text", "file-transcription"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "asr",
+          "protocolProfileId": "openai.audio.transcription.sse.current",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["openai.docs.model-transcribe", "openai.docs.speech-to-text"]
+    },
+    {
+      "id": "gpt-4o-mini-tts",
+      "displayName": "GPT-4o Mini TTS",
+      "capabilities": ["text-to-speech"],
+      "maturity": "unspecified",
+      "protocolBindings": [
+        {
+          "operation": "tts",
+          "protocolProfileId": "openai.audio.speech.pcm.current",
+          "protocolProfileVersion": 1
+        }
+      ],
+      "documentationIds": ["openai.docs.text-to-speech", "openai.docs.models"],
+      "availability": "The current model catalog and text-to-speech guide must be rechecked together before this disabled adapter is enabled."
+    }
+  ],
+  "probes": [
+    {
+      "id": "openai.probe.chat-completions-sse.v1",
+      "protocolProfileId": "openai.chat-completions.sse.ga",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "openai.fixture.chat-completions-sse.v1",
+      "notes": "Validates endpoint, bearer placement, request model field, delta semantics, and [DONE] without network I/O."
+    },
+    {
+      "id": "openai.probe.realtime-conversation.v1",
+      "protocolProfileId": "openai.realtime.conversation.websocket.ga",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "openai.fixture.realtime-conversation-wire.v1",
+      "notes": "Validates the GA URL, bearer placement, absence of OpenAI-Beta, session handshake, and canonical event names without network I/O."
+    },
+    {
+      "id": "openai.probe.realtime-translation.v1",
+      "protocolProfileId": "openai.realtime.translation.websocket.current",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "openai.fixture.realtime-translation-wire.v1",
+      "notes": "Validates the restricted session.update shape and session.close to session.closed terminal sequence."
+    },
+    {
+      "id": "openai.probe.realtime-transcription-unresolved.v1",
+      "protocolProfileId": "openai.realtime.transcription.websocket.unresolved",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "openai.fixture.realtime-transcription-unresolved.v1",
+      "notes": "Asserts that endpointStatus remains unresolved and connectionUrl remains null."
+    },
+    {
+      "id": "openai.probe.realtime-transcription-whisper-unresolved.v1",
+      "protocolProfileId": "openai.realtime.transcription-whisper.websocket.unresolved",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "openai.fixture.realtime-transcription-whisper-unresolved.v1",
+      "notes": "Asserts that the Whisper-specific manual-turn contract remains explicit while its connection endpoint is unresolved."
+    },
+    {
+      "id": "openai.probe.realtime-webrtc-auth.v1",
+      "protocolProfileId": "openai.realtime.conversation.webrtc.ga",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "openai.fixture.realtime-webrtc-auth.v1"
+    },
+    {
+      "id": "openai.probe.audio-transcription-sse.v1",
+      "protocolProfileId": "openai.audio.transcription.sse.current",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "openai.fixture.audio-transcription-sse.v1"
+    },
+    {
+      "id": "openai.probe.audio-transcription-http.v1",
+      "protocolProfileId": "openai.audio.transcription.http.current",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "openai.fixture.audio-transcription-http.v1"
+    },
+    {
+      "id": "openai.probe.audio-speech-pcm.v1",
+      "protocolProfileId": "openai.audio.speech.pcm.current",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "openai.fixture.audio-speech-pcm.v1"
+    }
+  ],
+  "smokes": [
+    {
+      "id": "openai.smoke.chat-completions-sse.v1",
+      "protocolProfileId": "openai.chat-completions.sse.ga",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "openai.fixture.chat-completions-sse.v1",
+      "notes": "Fixture replay only; no OpenAI request was made."
+    },
+    {
+      "id": "openai.smoke.realtime-conversation-fixture.v1",
+      "protocolProfileId": "openai.realtime.conversation.websocket.ga",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "openai.fixture.realtime-conversation-terminal.v1",
+      "notes": "Replays all response.done outcome classes; it does not call OpenAI."
+    },
+    {
+      "id": "openai.smoke.realtime-translation.v1",
+      "protocolProfileId": "openai.realtime.translation.websocket.current",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "openai.fixture.realtime-translation-wire.v1"
+    },
+    {
+      "id": "openai.smoke.realtime-transcription.v1",
+      "protocolProfileId": "openai.realtime.transcription.websocket.unresolved",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "openai.fixture.realtime-transcription-unresolved.v1"
+    },
+    {
+      "id": "openai.smoke.realtime-transcription-whisper.v1",
+      "protocolProfileId": "openai.realtime.transcription-whisper.websocket.unresolved",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "openai.fixture.realtime-transcription-whisper-unresolved.v1",
+      "notes": "Fixture replay only; no OpenAI request was made."
+    },
+    {
+      "id": "openai.smoke.realtime-webrtc.v1",
+      "protocolProfileId": "openai.realtime.conversation.webrtc.ga",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "openai.fixture.realtime-webrtc-auth.v1"
+    },
+    {
+      "id": "openai.smoke.audio-transcription.v1",
+      "protocolProfileId": "openai.audio.transcription.sse.current",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "openai.fixture.audio-transcription-sse.v1"
+    },
+    {
+      "id": "openai.smoke.audio-transcription-http.v1",
+      "protocolProfileId": "openai.audio.transcription.http.current",
+      "protocolProfileVersion": 1,
+      "verification": "fixture-only",
+      "fixtureId": "openai.fixture.audio-transcription-http.v1",
+      "notes": "Fixture replay only; no OpenAI request was made."
+    },
+    {
+      "id": "openai.smoke.audio-speech.v1",
+      "protocolProfileId": "openai.audio.speech.pcm.current",
+      "protocolProfileVersion": 1,
+      "verification": "not-implemented",
+      "fixtureId": "openai.fixture.audio-speech-pcm.v1"
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "openai.fixture.chat-completions-sse.v1",
+      "path": "provider-modules/openai/fixtures/chat-completions-sse-v1.json",
+      "kind": "wire",
+      "sourceDocumentationIds": ["openai.docs.chat", "openai.docs.models"]
+    },
+    {
+      "id": "openai.fixture.realtime-conversation-wire.v1",
+      "path": "provider-modules/openai/fixtures/realtime-conversation-wire-v1.json",
+      "kind": "wire",
+      "sourceDocumentationIds": ["openai.docs.realtime", "openai.docs.realtime-websocket"]
+    },
+    {
+      "id": "openai.fixture.realtime-conversation-terminal.v1",
+      "path": "provider-modules/openai/fixtures/realtime-conversation-terminal-v1.json",
+      "kind": "error",
+      "sourceDocumentationIds": ["openai.docs.realtime"]
+    },
+    {
+      "id": "openai.fixture.realtime-translation-wire.v1",
+      "path": "provider-modules/openai/fixtures/realtime-translation-wire-v1.json",
+      "kind": "wire",
+      "sourceDocumentationIds": [
+        "openai.docs.realtime-translation",
+        "openai.docs.translation-client-events",
+        "openai.docs.translation-server-events"
+      ]
+    },
+    {
+      "id": "openai.fixture.realtime-transcription-unresolved.v1",
+      "path": "provider-modules/openai/fixtures/realtime-transcription-unresolved-v1.json",
+      "kind": "probe",
+      "sourceDocumentationIds": ["openai.docs.realtime-transcription", "openai.docs.model-live-transcribe"]
+    },
+    {
+      "id": "openai.fixture.realtime-transcription-whisper-unresolved.v1",
+      "path": "provider-modules/openai/fixtures/realtime-transcription-whisper-unresolved-v1.json",
+      "kind": "probe",
+      "sourceDocumentationIds": ["openai.docs.realtime-transcription", "openai.docs.model-realtime-whisper"]
+    },
+    {
+      "id": "openai.fixture.realtime-webrtc-auth.v1",
+      "path": "provider-modules/openai/fixtures/realtime-webrtc-auth-v1.json",
+      "kind": "probe",
+      "sourceDocumentationIds": ["openai.docs.realtime-webrtc"]
+    },
+    {
+      "id": "openai.fixture.audio-transcription-sse.v1",
+      "path": "provider-modules/openai/fixtures/audio-transcription-sse-v1.json",
+      "kind": "wire",
+      "sourceDocumentationIds": ["openai.docs.speech-to-text", "openai.docs.model-transcribe"]
+    },
+    {
+      "id": "openai.fixture.audio-transcription-http.v1",
+      "path": "provider-modules/openai/fixtures/audio-transcription-http-v1.json",
+      "kind": "wire",
+      "sourceDocumentationIds": ["openai.docs.speech-to-text", "openai.docs.model-transcribe"]
+    },
+    {
+      "id": "openai.fixture.audio-speech-pcm.v1",
+      "path": "provider-modules/openai/fixtures/audio-speech-pcm-v1.json",
+      "kind": "wire",
+      "sourceDocumentationIds": ["openai.docs.text-to-speech"]
+    }
+  ]
+}

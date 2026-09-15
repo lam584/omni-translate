@@ -45,7 +45,13 @@ sourceGeneration?: number,
  * source generation. It lets diagnostics prove that recovery did not
  * merely reconnect to the previous producer.
  */
-sourceGenerationToken?: string, cueId?: string, createdAtMs?: number, estimatedDurationMs?: number,
+sourceGenerationToken?: string,
+/**
+ * Concrete physical render endpoint bound to this write. Translation
+ * frames must echo the endpoint returned by Bridge initialization; a
+ * default-device alias is not an authority identity.
+ */
+physicalPlaybackDeviceId?: string, cueId?: string, createdAtMs?: number, estimatedDurationMs?: number,
 /**
  * Zero-based chunk position within one cue. Virtual-microphone frames
  * require both chunk fields so cue terminal events never depend on a
@@ -77,8 +83,14 @@ export type TranslationPlaybackStatusEvent = { type: 'bridge.translation.status'
  * idempotency and acknowledge this exact status before the Bridge may
  * remove it from the delivery outbox.
  */
-statusId: string, requestId: string, sessionId: string, cueId: string, playbackStatus: TranslationPlaybackStatusKind, reason: string, errorCode?: string, timestampMs: number, };
+statusId: string, requestId: string, sessionId: string, bridgeInstanceId: string, sourceGeneration: number, sourceGenerationToken: string, playbackOwnerGeneration: number, physicalPlaybackDeviceId: string, cueId: string, playbackStatus: TranslationPlaybackStatusKind, reason: string, errorCode?: string, timestampMs: number, };
 
-export type TranslationPlaybackStatusAck = { type: 'bridge.translation.status.ack', statusId: string, sessionId: string, };
+export type TranslationPlaybackStatusAck = { type: 'bridge.translation.status.ack', statusId: string, sessionId: string, bridgeInstanceId: string, sourceGeneration: number, sourceGenerationToken: string, playbackOwnerGeneration: number, physicalPlaybackDeviceId: string, };
 
-export type AudioFrameAck = { type: 'bridge.source.ack' | 'bridge.translation.ack' | 'bridge.translation.nack', requestId: string, frameId: string, acceptedFrames: number, playbackFramesWritten: number, errorCode?: string, message?: string, };
+export type AudioFrameAck = { type: 'bridge.source.ack' | 'bridge.translation.ack' | 'bridge.translation.nack', requestId: string, frameId: string,
+/**
+ * Full write authority echoed from the accepted or rejected frame. These
+ * fields are intentionally required on decode so a legacy ACK cannot be
+ * rebound to a new Bridge owner that reused request/frame identifiers.
+ */
+sessionId: string, bridgeInstanceId: string, sourceGeneration: number, sourceGenerationToken: string, playbackOwnerGeneration: number, physicalPlaybackDeviceId: string, acceptedFrames: number, playbackFramesWritten: number, errorCode?: string, message?: string, };

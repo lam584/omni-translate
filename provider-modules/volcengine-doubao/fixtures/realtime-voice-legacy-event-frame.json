@@ -1,0 +1,29 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "volc-realtime-voice-legacy-event-frame",
+  "providerId": "volcengine-doubao",
+  "protocolProfileId": "volcengine-doubao.realtime-voice-v3.legacy-events",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["realtime-voice-legacy"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Structural migration fixture only. It must never be selected for the current 1.2.6.1 JSON protocol."
+  },
+  "scenario": "Historical realtime voice uses an event-oriented binary envelope",
+  "data": {
+    "endpointStatus": "deprecated",
+    "networkAuthorized": false,
+    "authContract": { "profileId": "volc-realtime-voice-legacy-headers", "parameters": [
+      { "location": "header", "name": "X-Api-App-Id", "value": "fixture-app-id" }, { "location": "header", "name": "X-Api-Access-Key", "value": "fixture-access-key-redacted" },
+      { "location": "header", "name": "X-Api-Resource-Id", "value": "volc.speech.dialog" }
+    ] },
+    "endpoint": "wss://openspeech.bytedance.com/api/v3/realtime/dialogue",
+    "models": ["1.2.1.1", "2.2.0.0"],
+    "frame": { "websocketType": "binary", "layout": ["4-byte-nibble-header", "event-fields", "payload-length", "payload"], "byteOrder": "big-endian", "currentProtocolCompatible": false },
+    "migrationOnly": true,
+    "serverEvidence": "intentionally absent; deprecated profile is fail-closed and not network-authorized"
+  }
+}

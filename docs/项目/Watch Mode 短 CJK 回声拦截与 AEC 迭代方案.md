@@ -391,7 +391,7 @@ npm run test:watch-mode-report
 
 本轮有 `3` 次 `native-playback-queue-expired` 警告（最长排队 `5373 ms`），它们不表示 AEC 或字幕失败，已作为后续播放队列调度优化项保留。
 
-`npm run test:watch-mode-evidence:strict` 是发布前的预算平衡矩阵门禁，只读取最近一次成功 strict matrix 原子发布的 canonical manifest：6 个 5 分钟零 LLM 本地隔离格覆盖三路线与两类已验证物理端点（默认扬声器、独立 USB），6 个 3 分钟 live 配对格覆盖两个模型/三路线，并让每条路线跨两个端点类得到覆盖，另有两个 3 分钟模型稳定格。蓝牙在本轮仅作可选诊断，不能由 USB 伪装。8 个付费 live 格的单格外部音频上限为 3 分钟，矩阵总上限固定为 24 分钟；单独验证 `echo-cancel` 不能替代完整发布矩阵。
+`npm run test:watch-mode-evidence:strict` 是发布前的预算平衡矩阵门禁，只读取最近一次成功 strict matrix 原子发布的 canonical manifest：3 个 5 分钟零 LLM 本地隔离格覆盖默认扬声器上的三路线；正式 paid authority 只允许精确模型 `qwen3.5-livetranslate-flash-realtime`，由 3 个三路线 pairwise-live 格和 1 个 process-exclusion model-stability 格组成。Provider 费用 authority 不使用统一 session 秒数：virtual-driver/echo-cancel 分别限制为 2,173,045 个 16 kHz 样本，process-exclusion 为 2,877,045 个样本，矩阵总上限 10,100,180 样本。正常终态由 10 个生产 owner raw stages 证明；失败路径的 cell hard watchdog 按模式为 235/280 秒。单独验证 `echo-cancel` 不能替代完整发布矩阵。其他模型和端点仍可显式用于非正式诊断，但不能进入 release authority。
 
 如果改动跨进程协议或配置契约，还需按仓库核心边界规则执行对应的 contracts 和 bridge 验证。
 
@@ -442,9 +442,9 @@ npm run test:watch-mode-report
 
 `qwen3.5-omni-plus-realtime` 的三格事故专项是独立签名 authority：process-exclusion/default-speaker、virtual-driver/USB、echo-cancel/default-speaker 各 180 秒，合计最多 8,640,000 个 16 kHz 输入样本。它只证明这次事故在 Plus 与三种反馈治理路径中未复现，并且每次 text-only preflight 都绑定三份 lease、消费 claim、当前二进制哈希和原始预检证据。
 
-专项计划必须在本轮 coordinator 公钥 ID 已编入 Desktop release binary 后才写入磁盘；随后只允许由签名 lease、当前 commit/runtime hash、Plus zero-provider readiness 和受控 Session 1 `incident-plus-cell` 入口共同启动。它使用 `IncidentReplayAuthority`，不会设置或借用 strict 八格的 `StrictPaidAuthority`。virtual-driver 格另行消费同一零 Provider 检查产生的驱动兼容性 receipt，只用于把已验证的驱动身份交给 limited session；它不能替代专项自己的 Plus readiness receipt。
+专项计划必须在本轮 coordinator 公钥 ID 已编入 Desktop release binary 后才写入磁盘；随后只允许由签名 lease、当前 commit/runtime hash、Plus zero-provider readiness 和受控 Session 1 `incident-plus-cell` 入口共同启动。它使用 `IncidentReplayAuthority`，不会设置或借用 strict 四格的 `StrictPaidAuthority`。virtual-driver 格另行消费同一零 Provider 检查产生的驱动兼容性 receipt，只用于把已验证的驱动身份交给 limited session；它不能替代专项自己的 Plus readiness receipt。
 
-严格发布矩阵仍固定为两个 release 模型、六个 pairwise-live 格和两个 model-stability 格，共八格。Plus 专项不能替代、扩充或改变其 `LIVE_LLM_CELLS`、签名计划、预算或 verifier；只有 Plus 专项先全部通过，才允许开始固定八格矩阵。
+严格发布矩阵固定为精确 LiveTranslate 模型的三个 pairwise-live 格和一个 process-exclusion model-stability 格，共四格。Plus 专项不能替代、扩充或改变其 `LIVE_LLM_CELLS`、签名计划、预算或 verifier；只有 Plus 专项先全部通过，才允许开始固定四格矩阵。
 
 ### 15.4 2026-08-16 首轮 Plus 失败反查与当前行为
 

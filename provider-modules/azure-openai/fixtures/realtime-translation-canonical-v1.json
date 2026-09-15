@@ -1,0 +1,80 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "azure-openai.fixture.realtime-translation-canonical.v1",
+  "providerId": "azure-openai",
+  "protocolProfileId": "azure-openai.realtime.translation.websocket.ga",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": ["azure-openai.docs.realtime", "azure-openai.docs.realtime-reference"],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Canonical session.* contract retained separately from a conflicting Microsoft Learn response.text.* sample."
+  },
+  "scenario": "Use Azure deployment addressing with the canonical continuous translation session lifecycle",
+  "data": {
+    "endpointStatus": "verified",
+    "networkAuthorized": false,
+    "authorizationReason": "Fixture-only documentation replay; network access is not authorized.",
+    "authContract": {
+      "profileId": "azure-openai.auth.api-key-header",
+      "parameters": [{ "location": "header", "name": "api-key", "value": "<azure-openai-api-key>" }]
+    },
+    "audioContract": { "profileId": "azure-openai.audio.translation-pcm16-24k-mono", "encoding": "pcm16", "sampleRateHz": 24000, "channels": 1 },
+    "connection": {
+      "url": "wss://sanitized-resource.openai.azure.com/openai/v1/realtime/translations?model=watch-translate-prod",
+      "headers": {
+        "api-key": "<azure-openai-api-key>"
+      }
+    },
+    "clientEvents": [
+      {
+        "type": "session.update",
+        "session": {
+          "audio": {
+            "output": {
+              "language": "zh"
+            }
+          }
+        }
+      },
+      {
+        "type": "session.input_audio_buffer.append",
+        "audio": "<base64-pcm16-24khz-mono>"
+      },
+      {
+        "type": "session.close"
+      }
+    ],
+    "serverEvents": [
+      {
+        "type": "session.created"
+      },
+      {
+        "type": "session.updated"
+      },
+      {
+        "type": "session.output_transcript.delta",
+        "delta": "translated "
+      },
+      {
+        "type": "session.output_audio.delta",
+        "delta": "<base64-pcm16-24khz-mono>",
+        "sample_rate": 24000,
+        "channels": 1,
+        "format": "pcm16"
+      },
+      {
+        "type": "session.closed",
+        "terminal": true
+      }
+    ],
+    "documentationConflict": {
+      "sampleEventNames": ["response.text.delta", "response.text.done"],
+      "sampleTextField": "text",
+      "canonicalProfileAcceptsSampleAliases": false,
+      "decision": "Keep the sample aliases out of the GA profile until retained Azure wire evidence establishes a distinct compatibility profile."
+    }
+  }
+}

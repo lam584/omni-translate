@@ -43,13 +43,16 @@ import {
 
 const workers = [{ workerId: 'vm3', deviceClasses: ['default-speaker'] }];
 
-test('smoke plan locks the 3 + 3 + 8 single-device coverage and full-media durations', () => {
+test('smoke plan locks the 3 + 3 + 4 single-device coverage and full-media durations', () => {
   const plan = createWatchModeSmokePlan({ executionId: 'smoke-plan-test' });
   assert.equal(smokePlanFailure(plan), null);
   assert.equal(SMOKE_LOCAL_CELLS.length, 3);
   assert.equal(SMOKE_PLUS_CELLS.length, 3);
-  assert.equal(SMOKE_RELEASE_CELLS.length, 8);
-  assert.equal(plan.cells.length, 14);
+  assert.equal(SMOKE_RELEASE_CELLS.length, 4);
+  assert.equal(
+    plan.cells.length,
+    SMOKE_LOCAL_CELLS.length + SMOKE_PLUS_CELLS.length + SMOKE_RELEASE_CELLS.length,
+  );
   assert.equal(plan.totalBudgetSeconds, WATCH_MODE_SMOKE_BUDGET_SECONDS);
   assert.equal(plan.artifactKind, WATCH_MODE_SMOKE_ARTIFACT_KIND);
   assert.equal(plan.smokeOnly, true);
@@ -62,14 +65,17 @@ test('smoke plan locks the 3 + 3 + 8 single-device coverage and full-media durat
 test('smoke assignments execute all cells serially on VM3', () => {
   const plan = createWatchModeSmokePlan({ executionId: 'smoke-assignment-test' });
   const assignments = createSmokeAssignments(plan.cells, workers);
-  assert.equal(assignments.length, 14);
-  assert.equal(new Set(assignments.map((entry) => entry.cellId)).size, 14);
+  assert.equal(assignments.length, plan.cells.length);
+  assert.equal(new Set(assignments.map((entry) => entry.cellId)).size, plan.cells.length);
   assert.deepEqual(new Set(assignments.map((entry) => entry.workerId)), new Set(['vm3']));
   for (const waveIndex of new Set(assignments.map((entry) => entry.waveIndex))) {
     const wave = assignments.filter((entry) => entry.waveIndex === waveIndex);
     assert.equal(new Set(wave.map((entry) => entry.workerId)).size, wave.length);
   }
-  assert.deepEqual(assignments.map((entry) => entry.waveIndex), Array.from({ length: 14 }, (_, index) => index));
+  assert.deepEqual(
+    assignments.map((entry) => entry.waveIndex),
+    Array.from({ length: plan.cells.length }, (_, index) => index),
+  );
   assert.throws(() => createSmokeAssignments(plan.cells, []), /exactly one worker/);
 });
 
@@ -91,17 +97,19 @@ test('smoke retains partial failures, does not retry, and writes a non-authorita
         };
       },
     });
-    assert.equal(calls.length, 14);
-    assert.equal(new Set(calls).size, 14);
+    const planCellCount = SMOKE_LOCAL_CELLS.length + SMOKE_PLUS_CELLS.length + SMOKE_RELEASE_CELLS.length;
+    const paidCellCount = SMOKE_PLUS_CELLS.length + SMOKE_RELEASE_CELLS.length;
+    assert.equal(calls.length, planCellCount);
+    assert.equal(new Set(calls).size, planCellCount);
     assert.equal(result.manifest.passed, false);
     assert.equal(result.manifest.blocksAuthoritativeRun, true);
     assert.equal(result.manifest.outcomes.filter((entry) => entry.status === 'failed').length, 1);
     assert.equal(result.manifest.artifactKind, WATCH_MODE_SMOKE_ARTIFACT_KIND);
     assert.equal(result.manifest.smokeOnly, true);
-    assert.equal(result.manifest.selection.reason, 'full 14-cell VM3 smoke');
+    assert.equal(result.manifest.selection.reason, `full ${planCellCount}-cell VM3 smoke`);
     assert.equal(result.manifest.selection.stopOnFirstFailure, false);
-    assert.equal(result.manifest.providerCalls, 11);
-    assert.equal(result.manifest.dispatch.startedCount, 14);
+    assert.equal(result.manifest.providerCalls, paidCellCount);
+    assert.equal(result.manifest.dispatch.startedCount, planCellCount);
     assert.deepEqual(result.manifest.dispatch.duplicateCellIds, []);
     assert.throws(() => readRunManifest(result.manifestPath), /smoke manifest is non-authoritative/);
   } finally {
@@ -881,6 +889,7 @@ test('smoke adapter classifies provider 50002 cue evidence as external even when
 
 test('Windows timebox terminates its owned child process tree', { skip: process.platform !== 'win32' }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-timebox-'));
+  let passed = false;
   try {
     const outcomePath = path.join(root, 'outcome.json');
     const payload = Buffer.from(JSON.stringify({
@@ -898,8 +907,18 @@ test('Windows timebox terminates its owned child process tree', { skip: process.
       '-StderrPath', path.join(root, 'stderr.log'),
       '-OutcomePath', outcomePath,
       '-PollIntervalMs', '50',
-    ], { encoding: 'utf8', timeout: 10_000, windowsHide: true });
-    assert.equal(result.status, 124);
+    // Windows PowerShell can spend several seconds loading CIM while the host
+    // is under concurrent test/build pressure. The wrapper still enforces its
+    // own 500 ms child deadline; this outer bound only prevents the harness
+    // from killing the wrapper while it is closing redirected handles.
+    ], { encoding: 'utf8', timeout: 30_000, windowsHide: true });
+    const diagnostics = {
+      status: result.status, signal: result.signal, error: result.error?.message ?? null,
+      stdout: result.stdout, stderr: result.stderr,
+      outcome: fs.existsSync(outcomePath) ? fs.readFileSync(outcomePath, 'utf8') : null,
+    };
+    fs.writeFileSync(path.join(root, 'wrapper-result.json'), JSON.stringify(diagnostics, null, 2), 'utf8');
+    assert.equal(result.status, 124, JSON.stringify(diagnostics));
     assert.equal(result.error, undefined);
     const outcome = JSON.parse(fs.readFileSync(outcomePath, 'utf8'));
     assert.equal(outcome.reason, 'timeout');
@@ -908,7 +927,16 @@ test('Windows timebox terminates its owned child process tree', { skip: process.
     assert.equal(outcome.trigger, null);
     assert.equal(outcome.minimumCFreeBytes, null);
     assert.deepEqual(outcome.samples, []);
+    passed = true;
   } finally {
+    if (!passed) {
+      // The VM3 harness removes its temporary root even on failure. Preserve
+      // diagnostic evidence outside that root before its cleanup runs.
+      const evidenceRoot = path.resolve('artifacts/testing/timebox-failures', path.basename(root));
+      fs.mkdirSync(path.dirname(evidenceRoot), { recursive: true });
+      fs.cpSync(root, evidenceRoot, { recursive: true, errorOnExist: true, force: false });
+      console.error('timebox failure evidence: ' + evidenceRoot);
+    }
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

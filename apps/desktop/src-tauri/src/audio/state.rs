@@ -1,7 +1,9 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::BTreeMap;
 use std::sync::{mpsc::Sender, Arc, Mutex, MutexGuard, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+pub(crate) use super::aec_diagnostic_tap::AecCaptureFrameMetadata;
+use super::aec_diagnostic_tap::AecDiagnosticTap;
 use super::contracts::{
     AudioDeviceRuntime, AudioRuntimeSnapshot, EchoCaptureDiagnosticsRuntime,
     SpeechRuntimeSnapshot,
@@ -25,11 +27,17 @@ mod cue_lifecycle;
 mod report_publish;
 mod deferred_translation;
 mod echo_backend;
+pub(crate) use echo_backend::EchoRenderBoundary;
+mod ignored_fragment;
 mod source_finality;
 mod source_publish;
 mod translation_lifecycle;
+mod playback_quiescence;
+mod watch_terminal_lifecycle;
 
 use self::source_finality::SourceFinalityStore;
+mod bridge_translation_receipts;
+use bridge_translation_receipts::BridgeTranslationStatusReceipts;
 mod bridge_source_evidence;
 mod omni_sessions;
 mod omni_session_lifecycle;
@@ -48,11 +56,17 @@ use cue_lifecycle::{
 use deferred_translation::DeferredTranslationStore;
 use audio_cache::AudioCacheStore;
 use omni_sessions::OmniSessionStore;
+pub(crate) use session_registry::{RouteInputCompletionEvidence, RouteInputCompletionRequest};
 use session_registry::SessionRegistry;
 use metrics::AudioMetricsStore;
 use route_state::route_mut;
 use route_state::{clear_session_start_if_idle, reset_route_to_idle};
 use subtitle_store::SubtitleStore;
+pub(crate) use playback_quiescence::{
+    TranslationPlaybackAuthority, TranslationPlaybackQuiescence,
+    TranslationPlaybackQuiescenceSnapshot,
+};
+pub(crate) use watch_terminal_lifecycle::StrictWatchTerminalLifecycleSnapshot;
 use translation_lifecycle::cue_revision;
 pub(crate) struct AudioRouteHandle {
     pub stop_tx: Sender<()>,
@@ -74,43 +88,24 @@ struct EchoRenderClock {
     last_observed_at: Option<Instant>,
     discontinuity_count: u64,
     last_discontinuity_reason: Option<&'static str>,
+    render_authority_endpoint_id: Option<String>,
+    render_authority_renderer_instance_id: Option<String>,
+    render_authority_owner_generation: Option<u64>,
+    render_timeline_epoch: Option<u64>,
+    active_render_sessions: BTreeMap<u64, (String, String, u64, bool, Option<Duration>, Option<u64>)>,
 }
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct EchoRenderClockSnapshot {
     pub(crate) player_position: Option<Duration>,
     pub(crate) submitted_frames: Option<u64>,
     pub(crate) endpoint_padding_frames: Option<u32>,
     pub(crate) reference_lead_frames: Option<u32>,
+    pub(crate) timeline_epoch: Option<u64>,
     pub(crate) last_observed_at: Option<Instant>,
     pub(crate) discontinuity_count: u64,
     pub(crate) last_discontinuity_reason: Option<&'static str>,
 }
 
-const BRIDGE_TRANSLATION_STATUS_RECEIPT_CAPACITY: usize = 4_096;
-
-#[derive(Default)]
-struct BridgeTranslationStatusReceipts {
-    order: VecDeque<String>,
-    ids: HashSet<String>,
-}
-
-impl BridgeTranslationStatusReceipts {
-    fn insert(&mut self, status_id: &str) -> bool {
-        if status_id.trim().is_empty() || self.ids.contains(status_id) {
-            return false;
-        }
-        let status_id = status_id.to_string();
-        self.ids.insert(status_id.clone());
-        self.order.push_back(status_id);
-        while self.order.len() > BRIDGE_TRANSLATION_STATUS_RECEIPT_CAPACITY {
-            if let Some(expired) = self.order.pop_front() {
-                self.ids.remove(&expired);
-            }
-        }
-        true
-    }
-}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum OmniSessionLifecycle {
     Starting,
@@ -147,7 +142,9 @@ pub(crate) struct AudioStateStore {
     /// Active public AEC backend. This slot can only be populated through the
     /// verified WebRTC AEC3 factory.
     echo_canceller: Mutex<Option<ProductionEchoCanceller>>,
+    aec_diagnostic_tap: AecDiagnosticTap,
     echo_render_clock: Mutex<EchoRenderClock>,
+    echo_reference_matcher: Mutex<crate::audio::speech::CaptureClockReferenceMatcher>,
     /// Monotonic timestamp of the most recent observed speaker playback. The
     /// ASR completion can arrive just after the playback worker flips back to
     /// waiting, so the echo gate needs a bounded post-playback tail context.
@@ -175,6 +172,8 @@ pub(crate) struct AudioStateStore {
     /// front event, so entries older than this bounded window cannot still be
     /// awaiting replay when they are evicted.
     bridge_translation_status_receipts: Mutex<BridgeTranslationStatusReceipts>,
+    translation_playback_quiescence: Arc<TranslationPlaybackQuiescence>,
+    strict_watch_terminal_lifecycle: watch_terminal_lifecycle::StrictWatchTerminalLifecycle,
     bridge_source_runtime_evidence: Mutex<BridgeSourceRuntimeEvidence>,
     /// Monotonically increasing snapshot sequence number. Incremented on every
     /// `snapshot()` call so the frontend can discard stale out-of-order events.
@@ -754,6 +753,12 @@ impl AudioStateStore {
         self.inbound_speaker_playback_context(Duration::ZERO).0
     }
 
+    pub(crate) fn translation_playback_quiescence(
+        &self,
+    ) -> Arc<TranslationPlaybackQuiescence> {
+        self.translation_playback_quiescence.clone()
+    }
+
     pub(crate) fn inbound_speaker_playback_context(
         &self,
         recent_window: Duration,
@@ -854,6 +859,23 @@ impl AudioStateStore {
 
     pub(crate) fn take_session(&self, direction: &str) -> Option<AudioRouteHandle> {
         self.session_registry.take(direction)
+    }
+
+    pub(crate) fn store_route_input_completion_sender(
+        &self,
+        direction: &str,
+        sender: Sender<RouteInputCompletionRequest>,
+    ) {
+        self.session_registry
+            .store_route_input_completion_sender(direction, sender);
+    }
+
+    pub(crate) fn take_route_input_completion_sender(
+        &self,
+        direction: &str,
+    ) -> Option<Sender<RouteInputCompletionRequest>> {
+        self.session_registry
+            .take_route_input_completion_sender(direction)
     }
 }
 
@@ -1437,6 +1459,68 @@ mod tests {
     }
 
     #[test]
+    fn restart_quiescence_holds_until_bridge_ack_guard_is_released() {
+        let store = AudioStateStore::new();
+        let quiescence = store.translation_playback_quiescence();
+        assert!(quiescence.snapshot().is_quiescent());
+        {
+            let _ack = quiescence.begin_bridge_ack();
+            assert_eq!(quiescence.snapshot().pending_bridge_acks, 1);
+            assert!(!quiescence.snapshot().is_quiescent());
+        }
+        assert!(quiescence.snapshot().is_quiescent());
+    }
+
+    #[test]
+    fn bridge_playback_status_holds_restart_quiescence_through_physical_completion() {
+        let store = AudioStateStore::new();
+        let quiescence = store.translation_playback_quiescence();
+        quiescence.observe_bridge_playback_status("cue-a", "queued");
+        quiescence.observe_bridge_playback_status("cue-a", "started");
+        assert_eq!(quiescence.snapshot().active_bridge_cues, 1);
+        assert!(!quiescence.snapshot().is_quiescent());
+
+        quiescence.observe_bridge_playback_status("cue-a", "completed");
+        assert_eq!(quiescence.snapshot().active_bridge_cues, 0);
+        assert!(quiescence.snapshot().is_quiescent());
+    }
+
+    #[test]
+    fn accepted_bridge_cue_cannot_expose_a_false_quiet_gap_before_status_delivery() {
+        let store = AudioStateStore::new();
+        let quiescence = store.translation_playback_quiescence();
+        quiescence.expect_bridge_playback_cue("cue-accepted");
+        assert_eq!(quiescence.snapshot().active_bridge_cues, 1);
+        assert!(!quiescence.snapshot().is_quiescent());
+
+        let ack_guard = quiescence.begin_bridge_ack();
+        quiescence.observe_bridge_playback_status("cue-accepted", "completed");
+        let before_ack_flush = quiescence.snapshot();
+        assert_eq!(before_ack_flush.active_bridge_cues, 0);
+        assert_eq!(before_ack_flush.pending_bridge_acks, 1);
+        assert!(!before_ack_flush.is_quiescent());
+
+        drop(ack_guard);
+        assert!(quiescence.snapshot().is_quiescent());
+    }
+
+    #[test]
+    fn restart_barrier_is_acquired_only_from_idle_and_released_by_its_guard() {
+        let store = AudioStateStore::new();
+        let quiescence = store.translation_playback_quiescence();
+        let barrier = quiescence
+            .try_begin_restart_barrier()
+            .expect("idle playback should acquire the restart barrier");
+        assert!(quiescence.snapshot().restart_barrier);
+        assert!(quiescence.try_begin_restart_barrier().is_none());
+        drop(barrier);
+        assert!(!quiescence.snapshot().restart_barrier);
+
+        quiescence.observe_bridge_playback_status("cue-b", "started");
+        assert!(quiescence.try_begin_restart_barrier().is_none());
+    }
+
+    #[test]
     fn inbound_speaker_playback_context_keeps_a_bounded_post_playback_tail() {
         let store = AudioStateStore::new();
         store.update_speech(|speech| {
@@ -1671,41 +1755,6 @@ mod tests {
             ),
             None
         );
-    }
-
-    #[test]
-    fn bridge_translation_status_receipts_are_idempotent_across_route_workers() {
-        let store = AudioStateStore::new();
-
-        assert!(store.accept_bridge_translation_status_once("bridge-status-1"));
-        // The receipt is retained before the source-pipe ACK is attempted. If
-        // that write fails and Bridge replays after reconnect, side effects
-        // remain suppressed and only the ACK is retried.
-        assert!(!store.accept_bridge_translation_status_once("bridge-status-1"));
-        assert!(store.accept_bridge_translation_status_once("bridge-status-2"));
-        assert!(!store.accept_bridge_translation_status_once(""));
-    }
-
-    #[test]
-    fn bridge_translation_status_receipts_have_a_bounded_fifo_window() {
-        let store = AudioStateStore::new();
-        for index in 0..=BRIDGE_TRANSLATION_STATUS_RECEIPT_CAPACITY {
-            assert!(store.accept_bridge_translation_status_once(&format!(
-                "bridge-status-{index}"
-            )));
-        }
-
-        let receipts = store
-            .bridge_translation_status_receipts
-            .lock()
-            .expect("receipt store");
-        assert_eq!(receipts.ids.len(), BRIDGE_TRANSLATION_STATUS_RECEIPT_CAPACITY);
-        assert_eq!(receipts.order.len(), BRIDGE_TRANSLATION_STATUS_RECEIPT_CAPACITY);
-        assert!(!receipts.ids.contains("bridge-status-0"));
-        assert!(receipts.ids.contains(&format!(
-            "bridge-status-{}",
-            BRIDGE_TRANSLATION_STATUS_RECEIPT_CAPACITY
-        )));
     }
 
     #[test]

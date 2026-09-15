@@ -9,20 +9,23 @@ use tungstenite::client::IntoClientRequest;
 use tungstenite::{connect, Message};
 use url::Url;
 
-use super::diagnostics::diag_log;
-use super::engine::emit_audio_snapshot;
-use super::glossary::GlossaryContext;
-use super::omni::{OmniHandle, RealtimeAudioMode};
-use super::realtime_cue::commit_realtime_cue;
-use super::pcm_resample::{
+use crate::audio::diagnostics::diag_log;
+use crate::audio::engine::emit_audio_snapshot;
+use crate::audio::glossary::GlossaryContext;
+use crate::audio::omni::{OmniHandle, RealtimeAudioMode};
+use crate::audio::realtime_cue::commit_realtime_cue;
+use crate::audio::pcm_resample::{
     base64_encode_pcm16, pcm16_chunk_rms, resample_capture_to_mono_i16, SilenceGate,
 };
-use super::realtime_ws::{self, attempt_backoff_delay};
-use super::state::AudioStateStore;
-use super::time_utils::unix_ms;
+use crate::audio::realtime_ws::{self, attempt_backoff_delay};
+use crate::audio::state::AudioStateStore;
+use crate::audio::time_utils::unix_ms;
 use crate::diagnostics::model_trace::{ModelTraceCall, ModelTraceContext, ModelTraceRecorder};
 use crate::provider::contracts::ProviderDraftInput;
-use crate::provider::gateway_parts::auth::{apply_ws_auth, apply_ws_custom_headers};
+use crate::provider::provider_manifest::authorize_realtime_provider;
+use crate::provider::gateway_parts::auth::{
+    apply_ws_auth, apply_ws_custom_headers_with_policy,
+};
 
 const OPENAI_READ_TIMEOUT_MS: u64 = 200;
 const OPENAI_WRITE_TIMEOUT_SECS: u64 = 10;
@@ -71,17 +74,10 @@ pub(crate) fn resolve_dialect(model: &str) -> OpenAiRealtimeDialect {
     }
 }
 
-fn resolve_provider_dialect(provider: &ProviderDraftInput) -> Result<OpenAiRealtimeDialect, String> {
-    let protocol = super::events::resolve_realtime_profile(provider, &provider.model)
-        .protocol_dialect
-        .ok_or_else(|| format!("provider '{}' has no realtime protocol", provider.provider_id))?;
-    dialect_from_protocol(protocol)
-}
-
 pub(crate) fn dialect_from_protocol(
-    protocol: super::events::RealtimeProtocol,
+    protocol: crate::audio::events::RealtimeProtocol,
 ) -> Result<OpenAiRealtimeDialect, String> {
-    use super::events::RealtimeProtocol;
+    use crate::audio::events::RealtimeProtocol;
 
     match protocol {
         RealtimeProtocol::OpenAiConversation => Ok(OpenAiRealtimeDialect::Conversation),
@@ -361,10 +357,17 @@ pub(crate) fn audio_append_event(dialect: OpenAiRealtimeDialect, audio_b64: &str
     json!({ "type": event_type, "audio": audio_b64 })
 }
 
-/// Uses the transcription-session handshake (`session.created`/`updated`)?
-/// The translation endpoint has no documented handshake event.
+/// Uses a session-update acknowledgement before audio can be sent?
+/// The translation endpoint has no documented ready handshake event.
 fn dialect_has_ready_handshake(dialect: OpenAiRealtimeDialect) -> bool {
     dialect != OpenAiRealtimeDialect::Translation
+}
+
+fn server_event_confirms_session_update(
+    dialect: OpenAiRealtimeDialect,
+    event_type: &str,
+) -> bool {
+    dialect_has_ready_handshake(dialect) && event_type == "session.updated"
 }
 
 fn uses_timed_manual_commit(
@@ -413,12 +416,71 @@ fn should_commit_translation_cue(idle_ms: u64, source_text: &str) -> bool {
 }
 
 fn extract_text_delta(evt: &Value) -> Option<&str> {
-    super::realtime_ws::server_text_delta(evt)
+    crate::audio::realtime_ws::server_text_delta(evt)
 }
 
 /// Response payloads carry text under both "text" and "transcript" keys.
 fn response_done_text(evt: &Value) -> String {
     realtime_ws::collect_text_fields(evt.pointer("/response").unwrap_or(evt), true)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponseDoneStatus {
+    Completed,
+    Cancelled,
+    Failed,
+    Incomplete,
+    Invalid,
+}
+
+impl ResponseDoneStatus {
+    fn from_event(evt: &Value) -> Self {
+        match evt.pointer("/response/status").and_then(Value::as_str) {
+            Some("completed") => Self::Completed,
+            Some("cancelled") => Self::Cancelled,
+            Some("failed") => Self::Failed,
+            Some("incomplete") => Self::Incomplete,
+            _ => Self::Invalid,
+        }
+    }
+
+    fn error_code(self) -> &'static str {
+        match self {
+            Self::Completed => "provider.response_completed",
+            Self::Cancelled => "provider.response_cancelled",
+            Self::Failed => "provider.response_failed",
+            Self::Incomplete => "provider.response_incomplete",
+            Self::Invalid => "provider.response_invalid_status",
+        }
+    }
+}
+
+fn response_done_error_message(evt: &Value, status: ResponseDoneStatus) -> String {
+    let status_label = evt
+        .pointer("/response/status")
+        .and_then(Value::as_str)
+        .unwrap_or("missing");
+    let detail = evt
+        .pointer("/response/status_details/error/message")
+        .or_else(|| evt.pointer("/response/status_details/reason"))
+        .or_else(|| evt.pointer("/response/status_details/type"))
+        .and_then(Value::as_str)
+        .unwrap_or("no provider detail");
+    format!(
+        "OpenAI response.done was not successful: status={status_label}; classification={status:?}; detail={detail}"
+    )
+}
+
+fn transcription_failed_error(evt: &Value) -> (&str, &str) {
+    let message = evt
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("OpenAI realtime transcription failed");
+    let code = evt
+        .pointer("/error/code")
+        .and_then(Value::as_str)
+        .unwrap_or("provider.transcription_failed");
+    (code, message)
 }
 
 type OpenAiSocket = realtime_ws::WsSocket;
@@ -434,7 +496,8 @@ fn connect_openai_socket(
         .map_err(|error| format!("failed to create OpenAI realtime request: {error}"))?;
     apply_ws_auth(provider, request.headers_mut())
         .map_err(|error| format!("failed to apply OpenAI realtime auth: {}", error.message))?;
-    apply_ws_custom_headers(provider, request.headers_mut()).map_err(|error| {
+    apply_ws_custom_headers_with_policy(provider, request.headers_mut(), &["OpenAI-Beta"])
+        .map_err(|error| {
         format!(
             "failed to apply OpenAI realtime custom headers: {}",
             error.message
@@ -458,7 +521,45 @@ struct CueState {
     cue_id: Option<String>,
     source_text: String,
     output_text: String,
+    input_item_id: Option<String>,
+    input_content_index: Option<u64>,
+    response_id: Option<String>,
+    output_item_id: Option<String>,
+    abandoned_input_item_ids: VecDeque<String>,
+    abandoned_response_ids: VecDeque<String>,
     last_delta_at: Instant,
+}
+
+const ABANDONED_OWNER_HISTORY_LIMIT: usize = 32;
+
+fn event_input_item_id(evt: &Value) -> Option<&str> {
+    evt.get("item_id").and_then(Value::as_str)
+}
+
+fn event_response_id(evt: &Value) -> Option<&str> {
+    evt.get("response_id")
+        .and_then(Value::as_str)
+        .or_else(|| evt.pointer("/response/id").and_then(Value::as_str))
+}
+
+fn event_output_item_id(evt: &Value) -> Option<&str> {
+    evt.get("item_id").and_then(Value::as_str)
+}
+
+fn event_content_index(evt: &Value) -> Option<u64> {
+    evt.get("content_index").and_then(Value::as_u64)
+}
+
+fn remember_abandoned(queue: &mut VecDeque<String>, owner: Option<String>) {
+    let Some(owner) = owner else {
+        return;
+    };
+    if queue.back() != Some(&owner) {
+        queue.push_back(owner);
+    }
+    while queue.len() > ABANDONED_OWNER_HISTORY_LIMIT {
+        queue.pop_front();
+    }
 }
 
 impl CueState {
@@ -469,6 +570,12 @@ impl CueState {
             cue_id: None,
             source_text: String::new(),
             output_text: String::new(),
+            input_item_id: None,
+            input_content_index: None,
+            response_id: None,
+            output_item_id: None,
+            abandoned_input_item_ids: VecDeque::new(),
+            abandoned_response_ids: VecDeque::new(),
             last_delta_at: Instant::now(),
         }
     }
@@ -485,6 +592,96 @@ impl CueState {
         self.cue_id = None;
         self.source_text.clear();
         self.output_text.clear();
+        self.input_item_id = None;
+        self.input_content_index = None;
+        self.response_id = None;
+        self.output_item_id = None;
+    }
+
+    fn abandon_and_reset(&mut self) {
+        remember_abandoned(
+            &mut self.abandoned_input_item_ids,
+            self.input_item_id.take(),
+        );
+        remember_abandoned(&mut self.abandoned_response_ids, self.response_id.take());
+        self.reset();
+    }
+
+    fn begin_input_item(&mut self, item_id: Option<&str>, content_index: Option<u64>) {
+        self.abandon_and_reset();
+        self.input_item_id = item_id.map(str::to_string);
+        self.input_content_index = content_index;
+    }
+
+    fn matches_or_binds_input(&mut self, evt: &Value) -> bool {
+        let item_id = event_input_item_id(evt);
+        if let Some(item_id) = item_id {
+            if self
+                .abandoned_input_item_ids
+                .iter()
+                .any(|abandoned| abandoned == item_id)
+            {
+                return false;
+            }
+            match self.input_item_id.as_deref() {
+                Some(owner) if owner != item_id => return false,
+                None => self.input_item_id = Some(item_id.to_string()),
+                _ => {}
+            }
+        }
+        let content_index = event_content_index(evt);
+        match (self.input_content_index, content_index) {
+            (Some(owner), Some(index)) if owner != index => false,
+            (None, Some(index)) => {
+                self.input_content_index = Some(index);
+                true
+            }
+            _ => true,
+        }
+    }
+
+    fn bind_response(&mut self, evt: &Value) -> bool {
+        let Some(response_id) = event_response_id(evt) else {
+            return self.response_id.is_none();
+        };
+        if self
+            .abandoned_response_ids
+            .iter()
+            .any(|abandoned| abandoned == response_id)
+        {
+            return false;
+        }
+        match self.response_id.as_deref() {
+            Some(owner) => owner == response_id,
+            None => {
+                self.response_id = Some(response_id.to_string());
+                true
+            }
+        }
+    }
+
+    fn matches_response_terminal(&self, evt: &Value) -> bool {
+        match (self.response_id.as_deref(), event_response_id(evt)) {
+            (Some(owner), Some(response_id)) => owner == response_id,
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    fn matches_or_binds_output(&mut self, evt: &Value) -> bool {
+        if !self.bind_response(evt) {
+            return false;
+        }
+        let Some(item_id) = event_output_item_id(evt) else {
+            return true;
+        };
+        match self.output_item_id.as_deref() {
+            Some(owner) => owner == item_id,
+            None => {
+                self.output_item_id = Some(item_id.to_string());
+                true
+            }
+        }
     }
 
     fn is_open(&self) -> bool {
@@ -528,13 +725,34 @@ pub(crate) fn start_openai_realtime(
     subtitle_translate_active: bool,
     glossary: GlossaryContext,
 ) -> Result<(mpsc::Sender<Vec<u8>>, OmniHandle), String> {
+    let authority = authorize_realtime_provider(&provider)?
+        .ok_or_else(|| format!("provider '{}' has no manifest-authorized realtime profile", provider.provider_id))?;
+    if !matches!(
+        authority.adapter_id.as_str(),
+        "openai-realtime-websocket" | "azure-openai-realtime-websocket"
+    ) {
+        return Err(format!(
+            "provider_manifest.adapter_mismatch: OpenAI worker cannot execute adapter '{}'",
+            authority.adapter_id
+        ));
+    }
+    let dialect = match authority.operation.as_str() {
+        "realtime-conversation" => OpenAiRealtimeDialect::Conversation,
+        "realtime-translation" => OpenAiRealtimeDialect::Translation,
+        "realtime-transcription" => OpenAiRealtimeDialect::Transcription,
+        operation => return Err(format!(
+            "provider_manifest.operation_unsupported: OpenAI worker cannot execute '{operation}'"
+        )),
+    };
+    let mut wire_provider = authority.provider_for_connection(&provider);
+    wire_provider.model = authority.wire_model_id().to_string();
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
 
     let stt_epoch = store.begin_stt_session_epoch();
     store.set_stt_connected(false, 0);
     let app_handle = app.clone();
-    let model = provider.model.clone();
+    let model = wire_provider.model.clone();
     let join_handle = thread::Builder::new()
         .name("openai-realtime".to_string())
         .spawn(move || {
@@ -543,7 +761,8 @@ pub(crate) fn start_openai_realtime(
                 app_handle.clone(),
                 &audio_state,
                 stt_epoch,
-                provider,
+                wire_provider,
+                dialect,
                 direction,
                 instructions,
                 audio_mode,
@@ -614,6 +833,7 @@ fn run_openai_worker(
     store: &AudioStateStore,
     stt_epoch: u64,
     provider: ProviderDraftInput,
+    dialect: OpenAiRealtimeDialect,
     direction: String,
     instructions: String,
     audio_mode: RealtimeAudioMode,
@@ -623,7 +843,6 @@ fn run_openai_worker(
     audio_rx: mpsc::Receiver<Vec<u8>>,
     stop_rx: mpsc::Receiver<()>,
 ) -> Result<(), String> {
-    let dialect = resolve_provider_dialect(&provider)?;
     let session_update = build_session_update(
         dialect,
         &provider.model,
@@ -801,7 +1020,7 @@ fn run_openai_worker(
                 let Ok(evt) = serde_json::from_str::<Value>(&text) else {
                     continue;
                 };
-                let event_type = super::realtime_ws::server_event_type(&evt, "(unknown)");
+                let event_type = crate::audio::realtime_ws::server_event_type(&evt, "(unknown)");
                 trace_call.record_ws_recv(event_type, evt.clone());
                 handle_server_event(
                     &app,
@@ -911,15 +1130,19 @@ fn handle_server_event(
 ) {
     match event_type {
         "session.created" | "session.updated" => {
-            if !session.session_ready {
+            if !session.session_ready
+                && server_event_confirms_session_update(dialect, event_type)
+            {
                 session.session_ready = true;
                 let _ = store.set_stt_connected_if_current(stt_epoch, true, buffer_size);
                 let _ = emit_audio_snapshot(app, store);
             }
-            *reconnect_retries = 0;
+            if session.session_ready {
+                *reconnect_retries = 0;
+            }
         }
         "input_audio_buffer.speech_started" => {
-            cue.reset();
+            cue.begin_input_item(event_input_item_id(evt), event_content_index(evt));
             let id = cue.ensure_cue_id();
             store.update_or_push_stt_cue(&id, "", false);
             let _ = emit_audio_snapshot(app, store);
@@ -927,11 +1150,17 @@ fn handle_server_event(
         // Source transcript (conversation + transcription sessions).
         "conversation.item.input_audio_transcription.delta"
         | "conversation.item.input_audio_transcription.text" => {
+            if !cue.matches_or_binds_input(evt) {
+                return;
+            }
             if let Some(delta) = extract_text_delta(evt) {
                 push_source_delta(app, store, cue, delta);
             }
         }
         "conversation.item.input_audio_transcription.completed" => {
+            if !cue.matches_or_binds_input(evt) {
+                return;
+            }
             if let Some(text) = extract_text_delta(evt) {
                 if !text.trim().is_empty() {
                     cue.source_text = text.to_string();
@@ -948,12 +1177,37 @@ fn handle_server_event(
                 let _ = emit_audio_snapshot(app, store);
             }
         }
+        "conversation.item.input_audio_transcription.failed" => {
+            if !cue.matches_or_binds_input(evt) {
+                return;
+            }
+            let (code, message) = transcription_failed_error(evt);
+            trace_call.error(message);
+            if let Some(cue_id) = cue.cue_id.as_deref() {
+                store.watch_session_report.record_model_error_for_cue(
+                    cue_id,
+                    "openai-realtime",
+                    code,
+                    message,
+                    true,
+                    None,
+                );
+                store.discard_uncommitted_subtitle_cue(cue_id);
+                let _ = emit_audio_snapshot(app, store);
+            }
+            let _ = diag_log(app, "openai-realtime", "error", message.to_string());
+            // The item failed terminally, but the session remains reusable.
+            cue.reset();
+        }
         // Translated text (conversation sessions; GA + beta + flat-compat
         // event names — GLM emits response.text.delta).
         "response.output_audio_transcript.delta"
         | "response.output_text.delta"
         | "response.audio_transcript.delta"
         | "response.text.delta" => {
+            if !cue.matches_or_binds_output(evt) {
+                return;
+            }
             if let Some(delta) = extract_text_delta(evt) {
                 let id = cue.ensure_cue_id();
                 store.watch_session_report.record_model_delta_for_cue(
@@ -972,23 +1226,52 @@ fn handle_server_event(
         | "response.output_text.done"
         | "response.audio_transcript.done"
         | "response.text.done" => {
+            if !cue.matches_or_binds_output(evt) {
+                return;
+            }
             if let Some(text) = extract_text_delta(evt) {
                 if !text.trim().is_empty() {
                     cue.output_text = text.to_string();
                 }
                 let id = cue.ensure_cue_id();
-                store.watch_session_report.record_model_final_for_cue(
-                    &id,
-                    "openai-realtime",
-                    &cue.output_text,
-                    true,
-                    None,
-                    None,
-                );
+                // This event finalizes an output item, not the response. Keep
+                // it visible as a partial until response.done proves that the
+                // whole response completed successfully.
                 publish_output_translation(app, store, cue, &id);
             }
         }
+        "response.created" => {
+            // Bind the response identity before any output arrives. If a new
+            // speech turn interrupts it, the owner is retained in the
+            // abandoned set so late deltas cannot attach to the new cue.
+            let _ = cue.bind_response(evt);
+        }
         "response.done" => {
+            if !cue.matches_response_terminal(evt) {
+                return;
+            }
+            let status = ResponseDoneStatus::from_event(evt);
+            if status != ResponseDoneStatus::Completed {
+                let message = response_done_error_message(evt, status);
+                trace_call.error(&message);
+                if let Some(cue_id) = cue.cue_id.as_deref() {
+                    store.watch_session_report.record_model_error_for_cue(
+                        cue_id,
+                        "openai-realtime",
+                        status.error_code(),
+                        &message,
+                        true,
+                        None,
+                    );
+                    store.discard_uncommitted_subtitle_cue(cue_id);
+                    let _ = emit_audio_snapshot(app, store);
+                }
+                let _ = diag_log(app, "openai-realtime", "error", message);
+                // A terminal failure must not leak partial output into the
+                // next response or be committed later as a success.
+                cue.reset();
+                return;
+            }
             let done_text = response_done_text(evt);
             if !done_text.trim().is_empty() && cue.output_text.trim().is_empty() {
                 cue.output_text = done_text;
@@ -1090,6 +1373,10 @@ fn try_reconnect(
             Ok(new_session) => {
                 *session = new_session;
                 if session.session_ready {
+                    // Translation sessions have no ready acknowledgement;
+                    // successful upgrade + session.update is their terminal
+                    // reconnect signal.
+                    *reconnect_retries = 0;
                     let _ = store.set_stt_connected_if_current(stt_epoch, true, 0);
                     let _ = emit_audio_snapshot(app, store);
                 }
@@ -1146,7 +1433,7 @@ fn shutdown_session(
                         let Ok(evt) = serde_json::from_str::<Value>(&text) else {
                             continue;
                         };
-                        let event_type = super::realtime_ws::server_event_type(&evt, "(unknown)");
+                        let event_type = crate::audio::realtime_ws::server_event_type(&evt, "(unknown)");
                         trace_call.record_ws_recv(event_type, evt.clone());
                         match event_type {
                             "session.closed" => break,
@@ -1509,6 +1796,187 @@ mod tests {
             RealtimeAudioMode::ServerVad,
             "gpt-realtime-2.1"
         ));
+    }
+
+    #[test]
+    fn session_created_does_not_acknowledge_session_update() {
+        for dialect in [
+            OpenAiRealtimeDialect::Conversation,
+            OpenAiRealtimeDialect::Transcription,
+            OpenAiRealtimeDialect::FlatCompat,
+        ] {
+            assert!(!server_event_confirms_session_update(
+                dialect,
+                "session.created"
+            ));
+            assert!(server_event_confirms_session_update(
+                dialect,
+                "session.updated"
+            ));
+        }
+        assert!(!server_event_confirms_session_update(
+            OpenAiRealtimeDialect::Translation,
+            "session.updated"
+        ));
+    }
+
+    #[test]
+    fn response_done_requires_explicit_completed_status() {
+        assert_eq!(
+            ResponseDoneStatus::from_event(&json!({
+                "response": { "status": "completed" }
+            })),
+            ResponseDoneStatus::Completed
+        );
+        assert_eq!(
+            ResponseDoneStatus::from_event(&json!({
+                "response": { "status": "cancelled" }
+            })),
+            ResponseDoneStatus::Cancelled
+        );
+        assert_eq!(
+            ResponseDoneStatus::from_event(&json!({
+                "response": { "status": "failed" }
+            })),
+            ResponseDoneStatus::Failed
+        );
+        assert_eq!(
+            ResponseDoneStatus::from_event(&json!({
+                "response": { "status": "incomplete" }
+            })),
+            ResponseDoneStatus::Incomplete
+        );
+        assert_eq!(
+            ResponseDoneStatus::from_event(&json!({ "response": {} })),
+            ResponseDoneStatus::Invalid
+        );
+        assert_eq!(
+            ResponseDoneStatus::from_event(&json!({
+                "response": { "status": "in_progress" }
+            })),
+            ResponseDoneStatus::Invalid
+        );
+    }
+
+    #[test]
+    fn response_done_failure_preserves_provider_detail() {
+        let evt = json!({
+            "response": {
+                "status": "failed",
+                "status_details": {
+                    "error": { "message": "quota exhausted" }
+                }
+            }
+        });
+        let message = response_done_error_message(&evt, ResponseDoneStatus::Failed);
+        assert!(message.contains("status=failed"));
+        assert!(message.contains("quota exhausted"));
+        assert_eq!(
+            ResponseDoneStatus::Failed.error_code(),
+            "provider.response_failed"
+        );
+    }
+
+    #[test]
+    fn openai_terminal_fixture_replays_through_runtime_classifier() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../../provider-modules/openai/fixtures/realtime-conversation-terminal-v1.json"
+        ))
+        .expect("OpenAI terminal fixture JSON");
+        let events = fixture
+            .pointer("/data/events")
+            .and_then(Value::as_array)
+            .expect("terminal event vector");
+        let expected = [
+            ResponseDoneStatus::Completed,
+            ResponseDoneStatus::Cancelled,
+            ResponseDoneStatus::Failed,
+            ResponseDoneStatus::Incomplete,
+        ];
+        assert_eq!(events.len(), expected.len());
+        for (event, expected_status) in events.iter().zip(expected) {
+            let status = ResponseDoneStatus::from_event(event);
+            assert_eq!(status, expected_status);
+            if matches!(status, ResponseDoneStatus::Failed | ResponseDoneStatus::Incomplete) {
+                let message = response_done_error_message(event, status);
+                assert!(!message.contains("no provider detail"));
+            }
+        }
+    }
+
+    #[test]
+    fn azure_transcription_failure_fixture_replays_through_runtime_parser() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../../provider-modules/azure-openai/fixtures/realtime-transcription-intent-v1.json"
+        ))
+        .expect("Azure transcription fixture JSON");
+        let failed = fixture
+            .pointer("/data/failureVariant")
+            .expect("transcription failure vector");
+        assert_eq!(
+            failed.get("type").and_then(Value::as_str),
+            Some("conversation.item.input_audio_transcription.failed")
+        );
+        let (code, message) = transcription_failed_error(failed);
+        assert_eq!(code, "audio_unintelligible");
+        assert_eq!(message, "<sanitized-transcription-error>");
+        assert_eq!(
+            failed.get("expectedOutcome").and_then(Value::as_str),
+            Some("discard-item-and-reuse-session")
+        );
+        assert_eq!(failed.get("item_id").and_then(Value::as_str), Some("item_transcription_2"));
+        assert_eq!(failed.get("content_index").and_then(Value::as_u64), Some(0));
+    }
+
+    #[test]
+    fn interleaved_response_fixture_cannot_rebind_cancelled_response_to_new_cue() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../../provider-modules/openai/fixtures/realtime-conversation-wire-v1.json"
+        ))
+        .expect("OpenAI conversation fixture JSON");
+        let events = fixture
+            .pointer("/data/interleavedEvents")
+            .and_then(Value::as_array)
+            .expect("interleaved event vector");
+        let mut cue = CueState::new("en-to-zh".to_string(), GlossaryContext::default());
+
+        assert!(cue.matches_or_binds_output(&events[0]));
+        cue.output_text.push_str("old partial");
+        cue.begin_input_item(event_input_item_id(&events[1]), event_content_index(&events[1]));
+        assert_eq!(cue.input_item_id.as_deref(), Some("item_user_new"));
+        assert!(cue.response_id.is_none());
+
+        assert!(!cue.matches_response_terminal(&events[2]));
+        assert!(!cue.matches_or_binds_output(&events[0]));
+        assert!(cue.matches_or_binds_input(&events[3]));
+        assert_eq!(cue.input_item_id.as_deref(), Some("item_user_new"));
+        assert!(cue.output_text.is_empty());
+    }
+
+    #[test]
+    fn azure_transcription_item_and_content_index_are_exact_owners() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../../provider-modules/azure-openai/fixtures/realtime-transcription-intent-v1.json"
+        ))
+        .expect("Azure transcription fixture JSON");
+        let events = fixture
+            .pointer("/data/serverEvents")
+            .and_then(Value::as_array)
+            .expect("server event vector");
+        let delta = &events[2];
+        let mut cue = CueState::new("en-to-zh".to_string(), GlossaryContext::default());
+        assert!(cue.matches_or_binds_input(delta));
+        assert_eq!(cue.input_item_id.as_deref(), Some("item_transcription_1"));
+        assert_eq!(cue.input_content_index, Some(0));
+
+        assert!(!cue.matches_or_binds_input(&json!({
+            "item_id": "item_transcription_1",
+            "content_index": 1
+        })));
+        assert!(!cue.matches_or_binds_input(&json!({
+            "item_id": "item_transcription_2",
+            "content_index": 0
+        })));
     }
 
     #[test]

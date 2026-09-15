@@ -3,7 +3,20 @@
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.StateMachine.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.DesktopLifecycle.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Metrics.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Bridge.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.PlatformOperations.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Configuration.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.PhysicalCapture.psm1') -Force
+
+function Complete-WatchModePhysicalRecorderAfterRun {
+  param(
+    [Parameter(Mandatory = $true)]$Recorder,
+    [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
+    [string]$TerminalAuthorityPath
+  )
+  $terminalExists = -not [string]::IsNullOrWhiteSpace($TerminalAuthorityPath) -and
+    (Test-Path -LiteralPath $TerminalAuthorityPath -PathType Leaf)
+  Complete-PhysicalOutputContentRecorder $Recorder $WorkspaceRoot -TerminalSucceeded:$terminalExists
+}
 
 function Stop-WatchModeRunResources {
   param(
@@ -27,4 +40,4 @@ function Stop-WatchModeRunResources {
   catch { Add-OmniCleanupError -State $State -Code 'watch-mode.cleanup.environment-failed' -Message $_.Exception.Message | Out-Null }
 }
 
-Export-ModuleMember -Function 'Stop-WatchModeRunResources'
+Export-ModuleMember -Function @('Stop-WatchModeRunResources', 'Complete-WatchModePhysicalRecorderAfterRun')

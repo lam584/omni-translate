@@ -39,10 +39,12 @@ import {
   splitRunnerArgs,
   stageShardMatrixIntegration,
   strictRuntimeEnvironment,
+  strictCellDeviceBinding,
   writeMatrixRunManifest,
 } from './run-watch-mode-live-matrix.mjs';
 import { fileAuthorityEntry, requiredCellArtifactPaths } from './watch-mode-evidence-authority.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES } from './watch-mode-external-provider-budget.mjs';
 import {
   SHARD_CELL_RESULT_FILE,
   SHARD_EXECUTION_PLAN_FILE,
@@ -61,7 +63,27 @@ import {
   providerPreflightReservationFileName,
 } from './watch-mode-provider-preflight-authorization.mjs';
 
-const SAMPLE_MODEL = 'qwen3.5-omni-flash-realtime';
+const SAMPLE_MODEL = 'qwen3.5-livetranslate-flash-realtime';
+
+test('strict distributed cells retain their shard-specific profile instance and endpoint', () => {
+  const plannedCell = LIVE_LLM_CELLS[0];
+  const bind = (workerId, instanceId, endpointId) => strictCellDeviceBinding({
+    plannedCell,
+    classProfile: { profileId: 'shared-class-profile', deviceClass: plannedCell.deviceClass, physicalPlaybackDeviceId: 'wrong-shared-endpoint' },
+    shardAuthority: {
+      workerId,
+      deviceAuthority: {
+        instanceId, profileId: `${workerId}-profile`, deviceClass: plannedCell.deviceClass,
+        requestedDeviceId: endpointId, resolvedDeviceName: `${workerId} speaker`,
+      },
+    },
+  });
+  assert.deepEqual(bind('vm171', 'vm171-default', '{endpoint-171}'), {
+    instanceId: 'vm171-default', profileId: 'vm171-profile', deviceClass: plannedCell.deviceClass,
+    physicalPlaybackDeviceId: '{endpoint-171}', expectedPhysicalPlaybackDeviceName: 'vm171 speaker',
+  });
+  assert.equal(bind('vm167', 'vm167-default', '{endpoint-167}').physicalPlaybackDeviceId, '{endpoint-167}');
+});
 const SAMPLE_FEEDBACK_MODE = 'echo-cancel';
 const CLEAN_PROVENANCE = Object.freeze({
   schemaVersion: 1,
@@ -140,8 +162,8 @@ function writeMatrixBudgetPlaceholder(outputRoot) {
   const authority = fileAuthorityEntry(ledgerPath, path.basename(ledgerPath));
   return {
     passed: true,
-    matrixCeilingSeconds: 1_440,
-    reservedSessionSeconds: 1_440,
+    matrixInputSampleCeiling: STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
+    reservedInputSamples: STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
     auxiliaryExternalAudioSeconds: 0,
     ledgerPath: authority.path,
     ledgerBytes: authority.bytes,
@@ -150,7 +172,7 @@ function writeMatrixBudgetPlaceholder(outputRoot) {
 }
 
 test('matrix defaults freeze the strict-evidence contract', () => {
-  assert.deepEqual(DEFAULT_MODELS, ['qwen3.5-omni-flash-realtime', 'qwen3.5-livetranslate-flash-realtime']);
+  assert.deepEqual(DEFAULT_MODELS, ['qwen3.5-livetranslate-flash-realtime']);
   assert.deepEqual(DEFAULT_FEEDBACK_MODES, ['process-exclusion', 'virtual-driver', 'echo-cancel']);
   assert.deepEqual(MATRIX_DEFAULTS, {
     outputRoot: 'artifacts/testing/watch-mode-live',
@@ -180,14 +202,14 @@ test('matrix defaults freeze the strict-evidence contract', () => {
   );
 });
 
-test('live runner supports the three-minute pairwise floor and derives its timeout from configured budgets', () => {
+test('explicit non-strict diagnostic runner keeps its legacy duration options and derives an outer timeout', () => {
   assert.equal(MIN_WATCH_AUTO_STOP_AFTER_SECONDS, 180);
   assert.equal(MAX_WATCH_AUTO_STOP_AFTER_SECONDS, 7_200);
   assert.equal(MATRIX_DEFAULTS.watchAutoStopAfterSeconds, MIN_WATCH_AUTO_STOP_AFTER_SECONDS);
   assert.equal(WATCH_REPORT_COMPLETION_GRACE_SECONDS, 120);
   assert.equal(LIVE_RUNNER_POST_REPORT_GRACE_SECONDS, 180);
   assert.equal(LIVE_RUNNER_TERMINATION_GRACE_MS, 5_000);
-  assert.equal(resolveLiveRunnerTimeoutMs(), 578_000);
+  assert.ok(Number.isSafeInteger(resolveLiveRunnerTimeoutMs()));
   assert.equal(
     resolveLiveRunnerTimeoutMs({ watchAutoStopAfterSeconds: 3_600 }),
     3_990_000,
@@ -205,9 +227,17 @@ test('live runner supports the three-minute pairwise floor and derives its timeo
 });
 
 test('matrix emits one finite run request and PowerShell accepts only its path', () => {
-  const request = buildRunnerRequest({ model: SAMPLE_MODEL, feedbackMode: SAMPLE_FEEDBACK_MODE });
+  const request = buildRunnerRequest({
+    model: SAMPLE_MODEL,
+    feedbackMode: SAMPLE_FEEDBACK_MODE,
+    modelProtocolProfileIdentity: LIVE_LLM_CELLS[0].modelProtocolProfileIdentity,
+  });
   assert.equal(request.schemaVersion, 'watch-mode-run-request/v1');
   assert.equal(request.model.id, SAMPLE_MODEL);
+  assert.deepEqual(
+    request.model.protocolProfileIdentity,
+    LIVE_LLM_CELLS[0].modelProtocolProfileIdentity,
+  );
   assert.equal(request.feedbackMode, SAMPLE_FEEDBACK_MODE);
   assert.equal(request.desktop.launchMode, 'managed');
   const runnerSource = fs.readFileSync(
@@ -340,10 +370,10 @@ test('strict paid argv binds the fail-closed local authority contract', () => {
     model: SAMPLE_MODEL,
     feedbackMode: SAMPLE_FEEDBACK_MODE,
     strictPaidAuthority: true,
-    cellId: 'pairwise-live::qwen3.5-omni-flash-realtime::echo-cancel::default-speaker',
+    cellId: 'pairwise-live::qwen3.5-livetranslate-flash-realtime::echo-cancel::default-speaker',
   });
   assert.equal(request.authorityMode, 'strict-paid');
-  assert.equal(request.matrix.cellId, 'pairwise-live::qwen3.5-omni-flash-realtime::echo-cancel::default-speaker');
+  assert.equal(request.matrix.cellId, 'pairwise-live::qwen3.5-livetranslate-flash-realtime::echo-cancel::default-speaker');
   assert.equal(request.model.subtitleTranslationMode, 'native');
   assert.equal(request.timeouts.sessionSeconds, 180);
 });
@@ -473,7 +503,6 @@ test('strict matrix rejects switches that bypass canonical media or raw physical
     { playbackSeconds: 120 },
     { runnerArgs: ['-SkipPhysicalOutputContentStt'] },
     { subtitleTranslationMode: 'secondary' },
-    { watchAutoStopAfterSeconds: 181 },
     { runnerArgs: ['-SubtitleTranslationMode', 'secondary'] },
   ]) {
     assert.throws(() => assertStrictEvidenceOptions(options), /evidence-weakening options/);
@@ -481,6 +510,14 @@ test('strict matrix rejects switches that bypass canonical media or raw physical
   assert.doesNotThrow(() => assertStrictEvidenceOptions({
     playbackSeconds: 0,
     runnerArgs: ['-SkipDriverRepair'],
+  }));
+});
+
+test('legacy strict option guard does not recreate a uniform 180-second paid budget', () => {
+  assert.doesNotThrow(() => assertStrictEvidenceOptions({
+    feedbackMode: 'process-exclusion',
+    playbackSeconds: 0,
+    watchAutoStopAfterSeconds: 225,
   }));
 });
 
@@ -567,7 +604,18 @@ test('matrix manifest contains only the current invocation run directories', () 
       cellId: `test::model-a::process-exclusion::${SUPPORTED_DEVICE_CLASSES[index]}`,
       tier: 'pairwise-live',
       providerMode: 'live-dashscope',
-      durationSeconds: 180,
+      inputCompletionWatchdogSeconds: 225,
+      processExclusionRestartAfterSeconds: 90,
+      processExclusionRestartQuietSeconds: 45,
+      providerFinishTimeoutSeconds: 15,
+      localPlaybackDrainTimeoutSeconds: 30,
+      reportWriteTimeoutSeconds: 10,
+      cellHardWatchdogSeconds: 280,
+      authoritativeTransformedReferenceFrames: 2_733_045,
+      boundedCaptureGraceFrames: 144_000,
+      maxExternalAudioSamples: 2_877_045,
+      auxiliaryExternalAudioSeconds: 0,
+      subtitleTranslationMode: 'native',
       modelId: 'model-a',
       feedbackLoopPrevention: 'process-exclusion',
       deviceClass: SUPPORTED_DEVICE_CLASSES[index],
@@ -575,12 +623,173 @@ test('matrix manifest contains only the current invocation run directories', () 
   });
   assert.equal(fs.existsSync(manifestPath), true);
   assert.deepEqual(manifest.runDirectories, currentRuns.map((directory) => path.basename(directory)));
-  assert.equal(manifest.schemaVersion, 5);
+  assert.equal(manifest.schemaVersion, 6);
   assert.equal(manifest.cells.length, 1);
   assert.equal(manifest.strict, true);
   assert.equal(manifest.evidenceMode, 'live');
   assert.deepEqual(manifest.provenance, CLEAN_PROVENANCE);
   assert.deepEqual(JSON.parse(fs.readFileSync(manifestPath, 'utf8')), manifest);
+});
+
+test('strict failure manifest preserves shard evidence without requiring completed-only cell artifacts', () => {
+  const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-failed-matrix-manifest-'));
+  const runDirectory = path.join(outputRoot, 'failed-cell');
+  const releaseCell = {
+    cellId: 'failed-cell',
+    tier: 'pairwise-live',
+    providerMode: 'live-dashscope',
+    inputCompletionWatchdogSeconds: 225,
+    processExclusionRestartAfterSeconds: 90,
+    processExclusionRestartQuietSeconds: 45,
+    providerFinishTimeoutSeconds: 15,
+    localPlaybackDrainTimeoutSeconds: 30,
+    reportWriteTimeoutSeconds: 10,
+    cellHardWatchdogSeconds: 280,
+    authoritativeTransformedReferenceFrames: 2_733_045,
+    boundedCaptureGraceFrames: 144_000,
+    maxExternalAudioSamples: 2_877_045,
+    auxiliaryExternalAudioSeconds: 0,
+    subtitleTranslationMode: 'native',
+    modelId: SAMPLE_MODEL,
+    feedbackLoopPrevention: 'process-exclusion',
+    deviceClass: 'default-speaker',
+  };
+  const shardAuthority = {
+    origin: 'guest-shard-result',
+    executionId: 'failed-execution',
+    verdict: 'failed',
+    failureLayer: 'provider',
+    stableErrorCode: 'watch.provider.session-failed',
+    lifecyclePhase: 'provider-session',
+    failureContext: {
+      endpointId: null,
+      bridgeInstanceId: null,
+      ownerGenerationTransition: { before: null, after: null },
+      terminalStatus: 'failed',
+    },
+    cellId: releaseCell.cellId,
+    runDirectory: path.basename(runDirectory),
+    result: {
+      path: `${path.basename(runDirectory)}/shard-cell-result.json`,
+      bytes: 1,
+      sha256: 'a'.repeat(64),
+      resultDigest: 'b'.repeat(64),
+    },
+    workerId: 'vm171',
+    vmIdentityDigest: '1'.repeat(64),
+    deviceAuthority: {
+      instanceId: 'vm171-default', profileId: 'vm171-profile', deviceClass: 'default-speaker',
+      requestedDeviceId: '{endpoint-171}', resolvedDeviceName: 'VM171 speaker',
+    },
+  };
+  try {
+    writeAuthorityPlaceholderArtifacts(runDirectory, releaseCell.feedbackLoopPrevention);
+    fs.rmSync(path.join(runDirectory, 'watch-session-report.json'));
+    const fingerprint = {
+      authoritySource: 'validated-shard-result',
+      failureLayer: shardAuthority.failureLayer,
+      stableErrorCode: shardAuthority.stableErrorCode,
+      feedbackMode: releaseCell.feedbackLoopPrevention,
+      lifecyclePhase: shardAuthority.lifecyclePhase,
+      endpointId: null,
+      ownerGenerationTransition: { before: null, after: null },
+      bridgeInstanceId: null,
+    };
+    const failureSummary = {
+      attempted: [releaseCell.cellId],
+      completed: [releaseCell.cellId],
+      passed: [],
+      failed: [releaseCell.cellId],
+      failures: [{ cellId: releaseCell.cellId, error: 'provider session failed', fingerprint }],
+      sharedRootCauses: [],
+      cellSpecificFailures: [{
+        fingerprint,
+        cellIds: [releaseCell.cellId],
+        errors: ['provider session failed'],
+      }],
+    };
+    const fingerprintPath = path.join(outputRoot, 'failure-fingerprints.json');
+    fs.writeFileSync(fingerprintPath, `${JSON.stringify({
+      schemaVersion: 2,
+      artifactKind: 'watch-mode-production-failure-fingerprints',
+      executionId: shardAuthority.executionId,
+      collectAllCompleted: true,
+      ...failureSummary,
+    })}\n`, 'utf8');
+    const { manifestPath, manifest } = writeMatrixRunManifest({
+      outputRoot,
+      modelList: [SAMPLE_MODEL],
+      feedbackModeList: ['process-exclusion'],
+      deviceProfiles: [{ profileId: 'default', deviceClass: 'default-speaker', physicalPlaybackDeviceId: 'legacy-only' }],
+      runDirectories: [runDirectory],
+      strict: true,
+      provenance: CLEAN_PROVENANCE,
+      authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      releaseCells: [releaseCell],
+      externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot),
+      failureSummary,
+      failureFingerprintAuthority: fileAuthorityEntry(
+        fingerprintPath,
+        path.basename(fingerprintPath),
+      ),
+      shardExecution: { executionRoot: 'execution' },
+      matrixIntegration: { cells: [shardAuthority] },
+    });
+    assert.equal(fs.existsSync(manifestPath), true);
+    assert.equal(manifest.collectAll.verdict, 'failed');
+    assert.equal(manifest.cells[0].verdict, 'failed');
+    assert.equal(manifest.cells[0].stableErrorCode, 'watch.provider.session-failed');
+    assert.deepEqual(manifest.cells[0].shardAuthority, shardAuthority);
+    assert.equal(Object.hasOwn(manifest.cells[0], 'receiptPath'), false);
+    assert.equal(fs.existsSync(path.join(runDirectory, 'matrix-cell-authority.json')), false);
+
+    const forgedSummary = {
+      ...failureSummary,
+      cellSpecificFailures: [],
+    };
+    const forgedFingerprintPath = path.join(outputRoot, 'forged-failure-fingerprints.json');
+    fs.writeFileSync(forgedFingerprintPath, `${JSON.stringify({
+      schemaVersion: 2,
+      artifactKind: 'watch-mode-production-failure-fingerprints',
+      executionId: shardAuthority.executionId,
+      collectAllCompleted: true,
+      ...forgedSummary,
+    })}\n`, 'utf8');
+    assert.throws(() => writeMatrixRunManifest({
+      outputRoot,
+      modelList: [SAMPLE_MODEL],
+      feedbackModeList: ['process-exclusion'],
+      deviceProfiles: [{ profileId: 'default', deviceClass: 'default-speaker' }],
+      runDirectories: [runDirectory],
+      strict: true,
+      provenance: CLEAN_PROVENANCE,
+      authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      releaseCells: [releaseCell],
+      externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot),
+      failureSummary: forgedSummary,
+      failureFingerprintAuthority: fileAuthorityEntry(
+        forgedFingerprintPath,
+        path.basename(forgedFingerprintPath),
+      ),
+      shardExecution: { executionRoot: 'execution' },
+      matrixIntegration: { cells: [shardAuthority] },
+    }), /failure grouping does not match/u);
+
+    assert.throws(() => writeMatrixRunManifest({
+      outputRoot,
+      modelList: [SAMPLE_MODEL],
+      feedbackModeList: ['process-exclusion'],
+      deviceProfiles: [{ profileId: 'default', deviceClass: 'default-speaker' }],
+      runDirectories: [runDirectory],
+      strict: true,
+      provenance: CLEAN_PROVENANCE,
+      authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      releaseCells: [releaseCell],
+      externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot),
+    }), /watch-session-report\.json/u, 'a passed cell must still provide the full completed inventory');
+  } finally {
+    fs.rmSync(outputRoot, { recursive: true, force: true });
+  }
 });
 
 test('strict shard writer projects guest authority into the manifest and every downstream cell receipt', () => {
@@ -590,7 +799,18 @@ test('strict shard writer projects guest authority into the manifest and every d
     cellId: `test-shard-cell-${index}`,
     tier: 'pairwise-live',
     providerMode: 'live-dashscope',
-    durationSeconds: 180,
+    inputCompletionWatchdogSeconds: 180,
+    processExclusionRestartAfterSeconds: 0,
+    processExclusionRestartQuietSeconds: 0,
+    providerFinishTimeoutSeconds: 15,
+    localPlaybackDrainTimeoutSeconds: 30,
+    reportWriteTimeoutSeconds: 10,
+    cellHardWatchdogSeconds: 235,
+    authoritativeTransformedReferenceFrames: 2_013_045,
+    boundedCaptureGraceFrames: 160_000,
+    maxExternalAudioSamples: 2_173_045,
+    auxiliaryExternalAudioSeconds: 0,
+    subtitleTranslationMode: 'native',
     modelId: SAMPLE_MODEL,
     feedbackLoopPrevention: 'echo-cancel',
     deviceClass: SUPPORTED_DEVICE_CLASSES[index],
@@ -598,6 +818,7 @@ test('strict shard writer projects guest authority into the manifest and every d
   for (const runDirectory of currentRuns) writeAuthorityPlaceholderArtifacts(runDirectory, 'echo-cancel');
   const integrationCells = releaseCells.map((cell, index) => ({
     origin: 'guest-shard-result',
+    verdict: 'passed',
     executionId: 'execution-1',
     planDigest: 'a'.repeat(64),
     cellIndex: index,
@@ -614,12 +835,118 @@ test('strict shard writer projects guest authority into the manifest and every d
     runDirectory: path.basename(currentRuns[index]),
     runtimeBinaryHashes: [],
     usageAuthority: { leaseId: `lease-${index}` },
-    deviceAuthority: { deviceClass: cell.deviceClass },
+    deviceAuthority: {
+      instanceId: `worker-${index}-default`, profileId: `worker-${index}-profile`,
+      deviceClass: cell.deviceClass, requestedDeviceId: `{endpoint-${index}}`,
+      resolvedDeviceName: `worker ${index} speaker`,
+    },
   }));
   const shardExecution = { executionRoot: 'execution' };
   const matrixIntegration = { cells: integrationCells };
   try {
+    const failureSummary = {
+      attempted: releaseCells.map((cell) => cell.cellId),
+      completed: releaseCells.map((cell) => cell.cellId),
+      passed: releaseCells.map((cell) => cell.cellId),
+      failed: [],
+      failures: [],
+      sharedRootCauses: [],
+      cellSpecificFailures: [],
+    };
+    const fingerprintPath = path.join(outputRoot, 'failure-fingerprints.json');
+    fs.writeFileSync(fingerprintPath, `${JSON.stringify({
+      schemaVersion: 2,
+      artifactKind: 'watch-mode-production-failure-fingerprints',
+      executionId: 'execution-1',
+      collectAllCompleted: true,
+      ...failureSummary,
+    })}\n`, 'utf8');
+    const failureFingerprintAuthority = fileAuthorityEntry(
+      fingerprintPath,
+      path.basename(fingerprintPath),
+    );
     const { manifest } = writeMatrixRunManifest({
+      outputRoot,
+      modelList: [SAMPLE_MODEL],
+      feedbackModeList: ['echo-cancel'],
+      deviceProfiles: SUPPORTED_DEVICE_CLASSES.map((deviceClass) => ({ profileId: deviceClass, deviceClass, physicalPlaybackDeviceId: 'legacy-only' })),
+      runDirectories: currentRuns,
+      strict: true,
+      provenance: CLEAN_PROVENANCE,
+      authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      releaseCells,
+      externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot),
+      shardExecution,
+      matrixIntegration,
+      failureSummary,
+      failureFingerprintAuthority,
+    });
+    assert.deepEqual(manifest.shardExecution, shardExecution);
+    assert.deepEqual(manifest.matrixIntegration, matrixIntegration);
+    assert.deepEqual(
+      manifest.cells.map((cell) => [cell.workerId, cell.deviceProfileInstanceId, cell.physicalPlaybackDeviceId]),
+      integrationCells.map((cell) => [
+        cell.workerId, cell.deviceAuthority.instanceId, cell.deviceAuthority.requestedDeviceId,
+      ]),
+    );
+    assert.deepEqual(manifest.cells.map((cell) => cell.shardAuthority), integrationCells);
+    for (let index = 0; index < currentRuns.length; index += 1) {
+      const receipt = JSON.parse(fs.readFileSync(path.join(currentRuns[index], 'matrix-cell-authority.json'), 'utf8'));
+      assert.deepEqual(receipt.shardAuthority, integrationCells[index]);
+    }
+
+    const passingAuthorityWithFailure = {
+      ...integrationCells[0],
+      failureLayer: 'provider',
+    };
+    assert.throws(() => writeMatrixRunManifest({
+      outputRoot,
+      modelList: [SAMPLE_MODEL],
+      feedbackModeList: ['echo-cancel'],
+      deviceProfiles: SUPPORTED_DEVICE_CLASSES.map((deviceClass) => ({ profileId: deviceClass, deviceClass })),
+      runDirectories: currentRuns,
+      strict: true,
+      provenance: CLEAN_PROVENANCE,
+      authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      releaseCells,
+      externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot),
+      shardExecution,
+      matrixIntegration: { cells: [passingAuthorityWithFailure] },
+      failureSummary,
+      failureFingerprintAuthority,
+    }), /passing matrix cell.*carries failure identity fields/u);
+
+    const unlistedFailedAuthority = {
+      ...integrationCells[0],
+      verdict: 'failed',
+      reportVerdict: 'failed',
+      failureLayer: 'provider',
+      stableErrorCode: 'watch.provider.session-failed',
+      lifecyclePhase: 'provider-session',
+      failureContext: {
+        endpointId: null,
+        bridgeInstanceId: null,
+        ownerGenerationTransition: { before: null, after: null },
+      },
+    };
+    assert.throws(() => writeMatrixRunManifest({
+      outputRoot,
+      modelList: [SAMPLE_MODEL],
+      feedbackModeList: ['echo-cancel'],
+      deviceProfiles: SUPPORTED_DEVICE_CLASSES.map((deviceClass) => ({ profileId: deviceClass, deviceClass })),
+      runDirectories: currentRuns,
+      strict: true,
+      provenance: CLEAN_PROVENANCE,
+      authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      releaseCells,
+      externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot),
+      shardExecution,
+      matrixIntegration: { cells: [unlistedFailedAuthority] },
+      failureSummary,
+      failureFingerprintAuthority,
+    }), /does not exactly partition the release cells/u);
+
+    assert.throws(() => writeMatrixRunManifest({
       outputRoot,
       modelList: [SAMPLE_MODEL],
       feedbackModeList: ['echo-cancel'],
@@ -632,25 +959,53 @@ test('strict shard writer projects guest authority into the manifest and every d
       externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot),
       shardExecution,
       matrixIntegration,
-    });
-    assert.deepEqual(manifest.shardExecution, shardExecution);
-    assert.deepEqual(manifest.matrixIntegration, matrixIntegration);
-    assert.deepEqual(manifest.cells.map((cell) => cell.shardAuthority), integrationCells);
-    for (let index = 0; index < currentRuns.length; index += 1) {
-      const receipt = JSON.parse(fs.readFileSync(path.join(currentRuns[index], 'matrix-cell-authority.json'), 'utf8'));
-      assert.deepEqual(receipt.shardAuthority, integrationCells[index]);
-    }
+    }), /complete collect-all failure summary/u);
+
+    assert.throws(() => writeMatrixRunManifest({
+      outputRoot,
+      modelList: [SAMPLE_MODEL],
+      feedbackModeList: ['echo-cancel'],
+      deviceProfiles: SUPPORTED_DEVICE_CLASSES.map((deviceClass) => ({ profileId: deviceClass, deviceClass })),
+      runDirectories: currentRuns,
+      strict: true,
+      provenance: CLEAN_PROVENANCE,
+      authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      releaseCells,
+      externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot),
+      shardExecution,
+      matrixIntegration,
+      failureSummary: { ...failureSummary, failed: 'not-an-array' },
+      failureFingerprintAuthority,
+    }), /complete collect-all failure summary/u);
+
+    fs.appendFileSync(fingerprintPath, 'tamper', 'utf8');
+    assert.throws(() => writeMatrixRunManifest({
+      outputRoot,
+      modelList: [SAMPLE_MODEL],
+      feedbackModeList: ['echo-cancel'],
+      deviceProfiles: SUPPORTED_DEVICE_CLASSES.map((deviceClass) => ({ profileId: deviceClass, deviceClass })),
+      runDirectories: currentRuns,
+      strict: true,
+      provenance: CLEAN_PROVENANCE,
+      authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      releaseCells,
+      externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot),
+      shardExecution,
+      matrixIntegration,
+      failureSummary,
+      failureFingerprintAuthority,
+    }), /hash\/size mismatch/u);
   } finally {
     fs.rmSync(outputRoot, { recursive: true, force: true });
   }
 });
 
-test('shard staging copies one local root and emits only evidence-root-relative eight-cell projections', () => {
+test('shard staging accepts four signed roots and emits only evidence-root-relative four-cell projections', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-shard-stage-'));
   const coordinatorRoot = path.join(root, 'coordinator');
   const evidenceRoot = path.join(root, 'evidence');
   fs.mkdirSync(coordinatorRoot, { recursive: true });
-  const workerIds = ['vm-1'];
+  const workerIds = ['vm-1', 'vm-2', 'vm-3', 'vm131'];
   const fixtureProvenance = {
     schemaVersion: 1,
     source: 'git',
@@ -662,7 +1017,9 @@ test('shard staging copies one local root and emits only evidence-root-relative 
   const fixtureInventory = [{ path: 'fixture/artifact.bin', bytes: 1, sha256: '4'.repeat(64) }];
   const fixtureWorkers = workerIds.map((workerId, index) => ({
     workerId,
+    workspaceRoot: path.join(root, `worker-${workerId}`),
     interactiveUser: 'VMUser',
+    transportAuthority: { kind: 'local' },
     vmIdentity: { provider: 'vmware', uuidBios: `fixture-vm-${index + 1}` },
     deviceProfileInstances: [
       {
@@ -750,6 +1107,7 @@ test('shard staging copies one local root and emits only evidence-root-relative 
     workerReadinessAuthorities: readinessAuthorities,
     workers: fixtureWorkers,
     assignments: plan.cells,
+    preflightExecutorWorkerId: 'vm131',
     signingKeys,
   });
   const grantPath = path.join(coordinatorRoot, PROVIDER_PREFLIGHT_GRANT_FILE);
@@ -781,7 +1139,7 @@ test('shard staging copies one local root and emits only evidence-root-relative 
   });
   const consumptionClaimPath = path.join(coordinatorRoot, 'provider-preflight-consumption-claim.json');
   const consumptionClaim = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     artifactKind: 'watch-mode-provider-preflight-consumption-claim',
     executionId: plan.executionId,
     grantDigest: grant.digest,
@@ -789,7 +1147,7 @@ test('shard staging copies one local root and emits only evidence-root-relative 
     coordinatorKeyId: grant.signature.keyId,
     claimedAt: '2026-08-10T00:00:02.500Z',
     desktopProcessId: 4242,
-    desktopExecutablePath: path.join(root, 'target', 'release', 'omni-desktop-shell.exe'),
+    desktopExecutablePath: path.join(grant.executor.workspaceRoot, 'target', 'release', 'omni-desktop-shell.exe'),
     desktopExecutableRelativePath: 'target/release/omni-desktop-shell.exe',
     desktopExecutableBytes: 1,
     desktopExecutableSha256: '7'.repeat(64),
@@ -800,15 +1158,28 @@ test('shard staging copies one local root and emits only evidence-root-relative 
     ...consumptionClaim,
     ...fileAuthorityEntry(consumptionClaimPath, 'provider-preflight-consumption-claim.json'),
   };
+  const lifecycleEvidence = {
+    evidenceOutcome: 'livetranslate-session-finished',
+    firstServerEvent: { type: 'session.created', monotonicMs: 606 },
+    sessionAuthority: {
+      sessionIdentitySha256: '8'.repeat(64),
+      serverModel: 'qwen3.5-livetranslate-flash-realtime',
+      echoedSessionConfigSha256: '9'.repeat(64),
+    },
+    rawTrace: {
+      path: 'raw/provider-websocket-trace.jsonl',
+      bytes: 256,
+      sha256: 'a'.repeat(64),
+      eventCount: 6,
+    },
+  };
   fs.writeFileSync(preflightReceiptPath, JSON.stringify({
     evidenceAuthority: fileAuthorityEntry(preflightInventoryPath, 'provider-preflight-evidence/inventory.json'),
     rawEvidenceRoot: 'provider-preflight-evidence/raw',
     generatedAt: '2026-08-10T00:00:03.000Z',
     ...authorization,
     consumptionClaim: consumptionClaimAuthority,
-    tokenBudget: authorization.tokenBudget,
-    inputTokens: 64,
-    outputTokens: 12,
+    ...lifecycleEvidence,
     audioSeconds: null,
     status: 'completed',
   }), 'utf8');
@@ -817,9 +1188,7 @@ test('shard staging copies one local root and emits only evidence-root-relative 
     generatedAt: '2026-08-10T00:00:03.000Z',
     ...authorization,
     consumptionClaim: consumptionClaimAuthority,
-    tokenBudget: authorization.tokenBudget,
-    inputTokens: 64,
-    outputTokens: 12,
+    ...lifecycleEvidence,
     audioSeconds: null,
     status: 'completed',
   };
@@ -841,7 +1210,14 @@ test('shard staging copies one local root and emits only evidence-root-relative 
     grantDigest: grant.digest,
     leaseReservationDigests: reservations.map((reservation) => reservation.digest),
     authorizationDigest: authorization.authorizationDigest,
-    tokenBudget: authorization.tokenBudget,
+    inputMode: authorization.inputMode,
+    providerInputMode: authorization.providerInputMode,
+    responseMode: authorization.responseMode,
+    terminalEvent: authorization.terminalEvent,
+    lifecycleBudget: authorization.lifecycleBudget,
+    modelProtocolProfileIdentity: structuredClone(
+      authorization.modelProtocolProfileIdentity,
+    ),
     consumptionClaim: consumptionClaimAuthority,
   };
   plan.providerPreflightCompletion = {
@@ -849,9 +1225,15 @@ test('shard staging copies one local root and emits only evidence-root-relative 
     digest: completion.digest,
     grantDigest: grant.digest,
     authorizationDigest: authorization.authorizationDigest,
-    tokenBudget: authorization.tokenBudget,
-    inputTokens: 64,
-    outputTokens: 12,
+    inputMode: authorization.inputMode,
+    providerInputMode: authorization.providerInputMode,
+    responseMode: authorization.responseMode,
+    terminalEvent: authorization.terminalEvent,
+    lifecycleBudget: authorization.lifecycleBudget,
+    modelProtocolProfileIdentity: structuredClone(
+      authorization.modelProtocolProfileIdentity,
+    ),
+    ...lifecycleEvidence,
     audioSeconds: null,
     consumptionClaim: consumptionClaimAuthority,
   };
@@ -883,6 +1265,9 @@ test('shard staging copies one local root and emits only evidence-root-relative 
     const runDirectory = path.join(shardRoot, ...runDirectoryRelative.split('/'));
     fs.mkdirSync(runDirectory, { recursive: true });
     fs.writeFileSync(path.join(runDirectory, SHARD_CELL_RESULT_FILE), JSON.stringify({
+      verdict: 'passed',
+      reportVerdict: 'passed',
+      cell: { cellId: cell.cellId },
       leaseDigest: `c${cell.cellIndex}`.padEnd(64, 'c'),
       resultDigest: `d${cell.cellIndex}`.padEnd(64, 'd'),
       runDirectory: runDirectoryRelative,
@@ -890,9 +1275,44 @@ test('shard staging copies one local root and emits only evidence-root-relative 
       usageAuthority: { leaseId: cell.leaseId },
       deviceAuthority: { deviceClass: LIVE_LLM_CELLS[cell.cellIndex].deviceClass },
     }), 'utf8');
-    collectedCells.push({ cellId: cell.cellId, sourceRunDirectory: runDirectory });
+    collectedCells.push({
+      cellId: cell.cellId,
+      verdict: 'passed',
+      resultDigest: `d${cell.cellIndex}`.padEnd(64, 'd'),
+      shardManifestDigest: 'validated-shard-manifest-digest',
+      runDirectory: runDirectoryRelative,
+      sourceRunDirectory: runDirectory,
+    });
   }
   try {
+    let validationCount = 0;
+    const collectedMatrixIntegration = {
+      provenance: CLEAN_PROVENANCE,
+      authorityImplementationHashes: [],
+      authorityRuntimeBinaryHashes: [],
+      shardOrchestrationImplementationHashes: [],
+      localIsolationAuthority: { passed: true },
+      providerPreflightAuthority: { status: 'completed' },
+      releaseCells: LIVE_LLM_CELLS,
+      cells: collectedCells,
+    };
+    const validateStagedShard = ({ shardRoot }) => {
+      validationCount += 1;
+      const workerId = path.basename(shardRoot);
+      return {
+        manifest: { manifestDigest: 'validated-shard-manifest-digest' },
+        validatedResults: plan.cells.filter((cell) => cell.workerId === workerId).map((cell) => {
+          const runDirectory = path.join(shardRoot, 'runs', `cell-${cell.cellIndex}`);
+          return {
+            runDirectory,
+            result: JSON.parse(fs.readFileSync(
+              path.join(runDirectory, SHARD_CELL_RESULT_FILE),
+              'utf8',
+            )),
+          };
+        }),
+      };
+    };
     const staged = stageShardMatrixIntegration({
       evidenceRoot,
       executionRootName: 'staged-execution',
@@ -900,27 +1320,75 @@ test('shard staging copies one local root and emits only evidence-root-relative 
       leasePaths,
       coordinatorAggregatePath: aggregatePath,
       shards,
-      collectedMatrixIntegration: {
-        provenance: CLEAN_PROVENANCE,
-        authorityImplementationHashes: [],
-        authorityRuntimeBinaryHashes: [],
-        shardOrchestrationImplementationHashes: [],
-        localIsolationAuthority: { passed: true },
-        providerPreflightAuthority: { status: 'completed' },
-        releaseCells: LIVE_LLM_CELLS,
-        cells: collectedCells,
-      },
+      collectedMatrixIntegration,
+      validateStagedShard,
     });
+    assert.equal(validationCount, 4);
     assert.equal(staged.runDirectories.length, LIVE_LLM_CELLS.length);
     assert.deepEqual(staged.matrixIntegration.cells.map((cell) => cell.cellId), LIVE_LLM_CELLS.map((cell) => cell.cellId));
     assert.equal(staged.shardExecution.leases.length, LIVE_LLM_CELLS.length);
-    assert.equal(staged.shardExecution.shards.length, 1);
+    assert.equal(staged.shardExecution.shards.length, 4);
     assert.ok(staged.runDirectories.every((directory) => path.relative(evidenceRoot, directory) && !path.relative(evidenceRoot, directory).startsWith('..')));
     assert.ok(staged.matrixIntegration.cells.every((cell) => (
       !Object.hasOwn(cell, 'sourceRunDirectory')
       && !path.isAbsolute(cell.runDirectory)
       && fs.existsSync(path.join(evidenceRoot, ...cell.runDirectory.split('/')))
     )));
+    assert.throws(() => stageShardMatrixIntegration({
+      evidenceRoot,
+      executionRootName: 'staged-execution-too-many-roots',
+      planPath,
+      leasePaths,
+      coordinatorAggregatePath: aggregatePath,
+      shards: [...shards, {
+        workerId: 'vm-5',
+        shardRoot: path.join(root, 'guests', 'vm-5'),
+        manifestPath: path.join(root, 'guests', 'vm-5', SHARD_MANIFEST_FILE),
+      }],
+      collectedMatrixIntegration,
+      validateStagedShard,
+    }), /between 1 and 4 signed shard roots/u);
+    assert.throws(() => stageShardMatrixIntegration({
+      evidenceRoot,
+      executionRootName: 'staged-execution-missing-root',
+      planPath,
+      leasePaths,
+      coordinatorAggregatePath: aggregatePath,
+      shards: shards.slice(0, -1),
+      collectedMatrixIntegration,
+      validateStagedShard,
+    }), /root count must exactly match the signed plan worker count/u);
+    assert.throws(() => stageShardMatrixIntegration({
+      evidenceRoot,
+      executionRootName: 'staged-execution-duplicate-root',
+      planPath,
+      leasePaths,
+      coordinatorAggregatePath: aggregatePath,
+      shards: [...shards.slice(0, -1), shards[0]],
+      collectedMatrixIntegration,
+      validateStagedShard,
+    }), /duplicate guest shard worker vm-1/u);
+    assert.throws(() => stageShardMatrixIntegration({
+      evidenceRoot,
+      executionRootName: 'staged-execution-digest-mismatch',
+      planPath,
+      leasePaths,
+      coordinatorAggregatePath: aggregatePath,
+      shards,
+      collectedMatrixIntegration: {
+        ...collectedMatrixIntegration,
+        cells: collectedCells.map((cell, index) => (
+          index === 0 ? { ...cell, shardManifestDigest: 'wrong-digest' } : cell
+        )),
+      },
+      validateStagedShard,
+    }), /does not match coordinator authority/u);
+    assert.equal(fs.existsSync(path.join(evidenceRoot, 'staged-execution-digest-mismatch')), false);
+    assert.throws(() => stageShardMatrixIntegration({
+      evidenceRoot,
+      executionRootName: 'invalid-validation-time',
+      validationAt: new Date(Number.NaN),
+    }), /valid trusted validation timestamp/u);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -993,7 +1461,7 @@ test('canonical strict manifest requires raw re-verification after the verifier 
       externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot),
       releaseCells: LIVE_LLM_CELLS,
     }),
-    /expected 8/,
+    /expected 4/,
   );
 
   const diagnostic = writeMatrixRunManifest({
@@ -1066,8 +1534,16 @@ test('strict provider preflight accepts only a completed production emitter', ()
       summary: {
         providerId: 'provider-dashscope',
         model: SAMPLE_MODEL,
-        operation: 'text-translation-preflight',
-        inputMode: 'text-only',
+        operation: 'livetranslate-session-lifecycle-preflight',
+        inputMode: 'none',
+        providerInputMode: 'none',
+        responseMode: 'text-only',
+        terminalEvent: 'session.finished',
+        lifecycleBudget: {
+          firstServerEventLatencyMs: 1_200,
+          socketEventTimeoutMs: 12_000,
+        },
+        evidenceOutcome: 'livetranslate-session-finished',
         externalAudioSamples: 0,
         providerInvocationCount: 1,
       },

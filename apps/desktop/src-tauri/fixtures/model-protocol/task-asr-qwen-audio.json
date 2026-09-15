@@ -1,0 +1,119 @@
+{
+  "schemaVersion": "model-protocol-wire-fixture/v1",
+  "dialectId": "bailian-qwen-audio-asr-task-ws-v1",
+  "checkedAt": "2026-08-30",
+  "sanitized": true,
+  "sources": [
+    { "url": "https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/fun-asr-client-events", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/fun-asr-server-events", "checkedAt": "2026-08-30" },
+    { "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-3-0-asr-flash-streaming", "checkedAt": "2026-08-30" }
+  ],
+  "sequence": [
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "run-task",
+      "wire": {
+        "header": { "action": "run-task", "task_id": "33333333-3333-4333-8333-333333333333", "streaming": "duplex" },
+        "payload": {
+          "task_group": "audio",
+          "task": "asr",
+          "function": "recognition",
+          "model": "qwen-audio-3.0-asr-flash-streaming",
+          "parameters": { "format": "pcm", "sample_rate": 16000 },
+          "input": {}
+        }
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "task-started",
+      "wire": { "header": { "event": "task-started", "task_id": "33333333-3333-4333-8333-333333333333", "attributes": {} }, "payload": {} }
+    },
+    { "direction": "client", "frameKind": "binary", "eventType": "binary.audio", "activeTaskId": "33333333-3333-4333-8333-333333333333" },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "result-generated",
+      "wire": {
+        "header": { "event": "result-generated", "task_id": "33333333-3333-4333-8333-333333333333", "attributes": {} },
+        "payload": { "output": { "sentence": { "sentence_id": 0, "sentence_end": false, "text": "hello" } } }
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "result-generated",
+      "wire": {
+        "header": { "event": "result-generated", "task_id": "33333333-3333-4333-8333-333333333333", "attributes": {} },
+        "payload": { "output": { "sentence": { "sentence_id": 0, "sentence_end": true, "text": "hello world" } } }
+      }
+    },
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "finish-task",
+      "wire": { "header": { "action": "finish-task", "task_id": "33333333-3333-4333-8333-333333333333", "streaming": "duplex" }, "payload": { "input": {} } }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "task-finished",
+      "wire": { "header": { "event": "task-finished", "task_id": "33333333-3333-4333-8333-333333333333", "attributes": {} }, "payload": { "output": {}, "usage": null } }
+    },
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "run-task",
+      "wire": {
+        "header": { "action": "run-task", "task_id": "44444444-4444-4444-8444-444444444444", "streaming": "duplex" },
+        "payload": {
+          "task_group": "audio",
+          "task": "asr",
+          "function": "recognition",
+          "model": "qwen-audio-3.0-asr-flash-streaming",
+          "parameters": { "format": "pcm", "sample_rate": 16000 },
+          "input": {}
+        }
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "task-started",
+      "wire": { "header": { "event": "task-started", "task_id": "44444444-4444-4444-8444-444444444444", "attributes": {} }, "payload": {} }
+    },
+    { "direction": "client", "frameKind": "binary", "eventType": "binary.audio", "activeTaskId": "44444444-4444-4444-8444-444444444444" },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "result-generated",
+      "wire": {
+        "header": { "event": "result-generated", "task_id": "44444444-4444-4444-8444-444444444444", "attributes": {} },
+        "payload": { "output": { "sentence": { "sentence_id": 0, "sentence_end": true, "text": "second task" } } }
+      }
+    },
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "finish-task",
+      "wire": { "header": { "action": "finish-task", "task_id": "44444444-4444-4444-8444-444444444444", "streaming": "duplex" }, "payload": { "input": {} } }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "task-finished",
+      "wire": { "header": { "event": "task-finished", "task_id": "44444444-4444-4444-8444-444444444444", "attributes": {} }, "payload": { "output": {}, "usage": null } }
+    }
+  ],
+  "expect": {
+    "audioReadyAfter": "task-started",
+    "terminalOrder": ["finish-task", "task-finished"],
+    "forbiddenEvents": ["input_audio_buffer.append", "session.finished"],
+    "sameConnectionSequentialReuse": true,
+    "freshTaskIdPerTask": true,
+    "failureInvalidatesConnection": true
+  }
+}

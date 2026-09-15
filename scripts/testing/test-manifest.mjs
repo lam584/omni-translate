@@ -9,6 +9,7 @@ export const coreTestSteps = [
   { name: 'integration-bridge-contract', command: 'npm run test:integration:bridge-contract' },
   { name: 'driver-boundaries', command: 'npm run test:driver-boundaries' },
   { name: 'watch-mode-tooling', command: 'npm run test:watch-mode-report' },
+  { name: 'watch-mode-coordinator-tooling', command: 'npm run test:watch-mode-coordinator-tooling' },
   { name: 'release-tooling', command: 'npm run test:release-lib' },
   { name: 'quality-gate-tooling', command: 'npm run test:quality-gate-tooling' },
   { name: 'startup-tooling', command: 'npm run test:startup-readiness' },

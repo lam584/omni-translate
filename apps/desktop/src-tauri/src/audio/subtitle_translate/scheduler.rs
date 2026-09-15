@@ -126,6 +126,7 @@ impl CueTranslationLedger {
         index
     }
 
+    #[cfg(test)]
     fn reset_for_revision(&mut self) {
         self.revision = self.revision.saturating_add(1);
         self.reset_for_revision_state();

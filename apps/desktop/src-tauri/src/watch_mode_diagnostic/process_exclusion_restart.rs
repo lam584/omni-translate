@@ -1,5 +1,35 @@
 use super::*;
 
+pub(super) fn revoke_process_exclusion_source_and_freeze_baseline(
+    bridge_state: &BridgeStateStore,
+    audio_state: &AudioStateStore,
+    bridge_process_id: u32,
+    bridge_instance_id: &str,
+    session_id: &str,
+    source_generation: u64,
+) -> Option<u64> {
+    let mut accepted_at_revoke = None;
+    bridge_state.update_snapshot(|current| {
+        if current.bridge_process_id == Some(bridge_process_id)
+            && current.bridge_instance_id.as_deref() == Some(bridge_instance_id)
+            && current.session_id.as_deref() == Some(session_id)
+            && current.source_generation == source_generation
+        {
+            // Source-frame acceptance takes the same Bridge snapshot lock and
+            // then records evidence. Freeze the baseline while this lock is
+            // still held so no frame can be accepted between the baseline and
+            // revocation and be misclassified as post-restart leakage.
+            current.source_generation_token = None;
+            accepted_at_revoke = Some(
+                audio_state
+                    .bridge_source_runtime_evidence()
+                    .accepted_for_instance(bridge_instance_id),
+            );
+        }
+    });
+    accepted_at_revoke
+}
+
 pub(super) fn schedule_process_exclusion_restart(
     app: &AppHandle,
     run_marker: &str,
@@ -33,17 +63,23 @@ pub(super) fn schedule_process_exclusion_restart(
         tokio::time::sleep(Duration::from_millis(restart_after_ms)).await;
         let started_at_unix_ms = crate::audio::time_utils::unix_ms();
         let playback_drain_started = Instant::now();
-        loop {
-            if !app
-                .state::<AudioStateStore>()
-                .inbound_speaker_playback_active()
-            {
+        let _restart_barrier = loop {
+            let audio_state = app.state::<AudioStateStore>();
+            let quiescence = audio_state.translation_playback_quiescence();
+            let playback = quiescence.snapshot();
+            if process_exclusion_restart_is_quiescent(
+                audio_state.inbound_speaker_playback_active(),
+                playback,
+            ) {
                 tokio::time::sleep(PROCESS_EXCLUSION_RESTART_PLAYBACK_IDLE_CONFIRMATION).await;
-                if !app
-                    .state::<AudioStateStore>()
-                    .inbound_speaker_playback_active()
-                {
-                    break;
+                let playback = audio_state.translation_playback_quiescence().snapshot();
+                if process_exclusion_restart_is_quiescent(
+                    audio_state.inbound_speaker_playback_active(),
+                    playback,
+                ) {
+                    if let Some(barrier) = quiescence.try_begin_restart_barrier() {
+                        break barrier;
+                    }
                 }
             }
             if playback_drain_started.elapsed()
@@ -52,14 +88,22 @@ pub(super) fn schedule_process_exclusion_restart(
                 log_process_exclusion_restart_failure(
                     &app,
                     &run_marker,
-                    "playback-drain",
+                    "restart-quiescence",
                     started_at_unix_ms,
-                    "translated speaker playback did not reach a stable idle window before the controlled Bridge restart",
+                    &format!(
+                        "restart-quiescence-timeout: translated playback did not reach a stable idle window before the controlled Bridge restart; pendingNativeAudio={} queuedCommands={} activeCommands={} pendingBridgeAcks={} activeBridgeCues={} restartBarrier={}",
+                        playback.pending_native_audio,
+                        playback.queued_commands,
+                        playback.active_commands,
+                        playback.pending_bridge_acks,
+                        playback.active_bridge_cues,
+                        playback.restart_barrier,
+                    ),
                 );
                 return;
             }
             tokio::time::sleep(PROCESS_EXCLUSION_RESTART_POLL).await;
-        }
+        };
         let old = match wait_for_process_exclusion_source(&app, None).await {
             Ok(observation) => observation,
             Err(error) => {
@@ -103,19 +147,14 @@ pub(super) fn schedule_process_exclusion_restart(
         // Revoke the old source identity before declaring the restart trigger.
         // Buffered bytes from the old named pipe must cross this rejection
         // barrier before the old process is terminated.
-        let mut old_identity_revoked = false;
-        app.state::<BridgeStateStore>().update_snapshot(|current| {
-            if current.bridge_process_id == Some(old.frame.bridge_process_id)
-                && current.bridge_instance_id.as_deref()
-                    == Some(old.frame.bridge_instance_id.as_str())
-                && current.session_id.as_deref() == Some(old.frame.session_id.as_str())
-                && current.source_generation == old.frame.source_generation
-            {
-                current.source_generation_token = None;
-                old_identity_revoked = true;
-            }
-        });
-        if !old_identity_revoked {
+        let Some(old_accepted_at_trigger) = revoke_process_exclusion_source_and_freeze_baseline(
+            &app.state::<BridgeStateStore>(),
+            &app.state::<AudioStateStore>(),
+            old.frame.bridge_process_id,
+            &old.frame.bridge_instance_id,
+            &old.frame.session_id,
+            old.frame.source_generation,
+        ) else {
             log_process_exclusion_restart_failure(
                 &app,
                 &run_marker,
@@ -124,7 +163,7 @@ pub(super) fn schedule_process_exclusion_restart(
                 "Bridge source identity changed before the controlled restart barrier",
             );
             return;
-        }
+        };
         let restart_triggered_at_unix_ms = crate::audio::time_utils::unix_ms();
         let _ = append_diagnostics_log(
             &app,
@@ -183,10 +222,6 @@ pub(super) fn schedule_process_exclusion_restart(
                 return;
             }
         };
-        let old_accepted_at_rebind = app
-            .state::<AudioStateStore>()
-            .bridge_source_runtime_evidence()
-            .accepted_for_instance(&old_instance_id);
         if new.bridge.physical_playback_status != "ready"
             || new.bridge.playback_owner_generation <= old.bridge.playback_owner_generation
             || new.bridge.resolved_physical_playback_device_id
@@ -266,7 +301,7 @@ pub(super) fn schedule_process_exclusion_restart(
             .bridge_source_runtime_evidence();
         let old_frames_after_restart = evidence_after
             .accepted_for_instance(&old_instance_id)
-            .saturating_sub(old_accepted_at_rebind);
+            .saturating_sub(old_accepted_at_trigger);
         let old_frame_rejected_count = evidence_after.rejected_for_instance_since(
             &old_instance_id,
             restart_triggered_at_unix_ms,

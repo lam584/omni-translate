@@ -1,0 +1,74 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "zhipu-glm.realtime-terminal",
+  "providerId": "zhipu-glm",
+  "protocolProfileId": "zhipu-glm.realtime-conversation",
+  "protocolProfileVersion": 1,
+  "kind": "smoke",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "zhipu-glm.realtime-guide",
+      "zhipu-glm.realtime-llm-reference"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Synthetic completed and cancelled response terminal paths."
+  },
+  "scenario": "GLM-Realtime uses response.done for every final status",
+  "data": {
+    "completedSequence": [
+      {
+        "type": "response.audio.done",
+        "response_id": "<sanitized-completed-response-id>"
+      },
+      {
+        "type": "response.done",
+        "response": {
+          "id": "<sanitized-completed-response-id>",
+          "object": "realtime.response",
+          "status": "completed",
+          "usage": {
+            "total_tokens": 0
+          }
+        }
+      }
+    ],
+    "cancelledSequence": [
+      {
+        "direction": "client",
+        "type": "response.cancel"
+      },
+      {
+        "direction": "server",
+        "type": "response.cancelled",
+        "response": {
+          "id": "<sanitized-cancelled-response-id>",
+          "object": "realtime.response",
+          "status": "cancelled"
+        }
+      },
+      {
+        "direction": "server",
+        "type": "response.audio.done",
+        "response_id": "<sanitized-cancelled-response-id>"
+      },
+      {
+        "direction": "server",
+        "type": "response.done",
+        "response": {
+          "id": "<sanitized-cancelled-response-id>",
+          "object": "realtime.response",
+          "status": "cancelled"
+        }
+      }
+    ],
+    "assertions": [
+      "response.done is the universal terminal event",
+      "The response.status value decides completed versus cancelled",
+      "Type-local done events can also be emitted for cancelled or incomplete responses",
+      "Ordering is guaranteed within one event type, but different event types must not be assumed to have a total order"
+    ],
+    "implementationStatus": "disabled/not-implemented"
+  }
+}

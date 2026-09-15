@@ -1,0 +1,65 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "google-gemini.live-translation-setup",
+  "providerId": "google-gemini",
+  "protocolProfileId": "google-gemini.live-translation",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "google-gemini.live-translation"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Mirrors the dedicated Live translation guide, including its generationConfig nesting. The adapter remains disabled until the guide/reference discrepancy is resolved by implementation tests."
+  },
+  "scenario": "Dedicated Gemini Live speech-translation setup",
+  "data": {
+    "connection": {
+      "url": "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+      "headers": { "x-goog-api-key": "<redacted-google-api-key>" }
+    },
+    "authContract": {
+      "profileId": "google-gemini.api-key-header",
+      "parameters": [
+        { "location": "header", "name": "x-goog-api-key", "value": "<redacted-google-api-key>" }
+      ]
+    },
+    "clientMessage": {
+      "setup": {
+        "model": "models/gemini-3.5-live-translate-preview",
+        "generationConfig": {
+          "responseModalities": [
+            "AUDIO"
+          ],
+          "inputAudioTranscription": {},
+          "outputAudioTranscription": {},
+          "translationConfig": {
+            "targetLanguageCode": "pl",
+            "echoTargetLanguage": true
+          }
+        }
+      }
+    },
+    "clientMessages": [
+      { "realtimeInput": { "audio": { "mimeType": "audio/pcm;rate=16000", "data": "AAAAAA==" } } },
+      { "realtimeInput": { "audioStreamEnd": true } }
+    ],
+    "serverMessages": [
+      { "setupComplete": {} },
+      { "serverContent": { "outputTranscription": { "text": "<sanitized-translation>" } } },
+      { "serverContent": { "turnComplete": true } }
+    ],
+    "audioContract": {
+      "requestMimeType": "audio/pcm;rate=16000",
+      "response": "PCM signed 16-bit little-endian, mono, 24000 Hz",
+      "fixtureAudio": "AAAAAA== is inert synthetic silence"
+    },
+    "constraints": [
+      "The dedicated translation model is audio-only",
+      "Do not attach tools or general system instructions to this profile",
+      "This profile is native Gemini Live and is unrelated to the OpenAI-compatible chat endpoint"
+    ]
+  }
+}

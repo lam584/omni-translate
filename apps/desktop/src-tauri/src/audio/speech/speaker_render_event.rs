@@ -5,15 +5,17 @@ use std::time::{Duration, Instant};
 /// endpoint padding observed immediately after the device accepted it.
 pub(crate) enum SpeakerRenderEvent<'a> {
     Discontinuity {
-        reason: &'static str,
+        reason: crate::audio::state::EchoRenderBoundary<'a>,
         observed_at: Instant,
     },
     Frame {
+        render_session_id: u64,
         samples: &'a [f32],
         sample_rate_hz: u32,
         channel_count: u16,
         player_position: Duration,
         submitted_frames: u64,
+        submitted_qpc_100ns: Option<u64>,
         endpoint_padding_frames: u32,
         /// Physical silence inserted before this cue's first audible sample.
         /// It comes from the device-bound PCM, not diagnostics.

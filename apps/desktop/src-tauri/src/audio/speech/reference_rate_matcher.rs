@@ -64,8 +64,12 @@ impl CaptureClockReferenceMatcher {
                 &mut self.render_rate_hz,
             );
         }
-        if self.samples.len() / CHANNELS + FRAME_FRAMES > MAX_BUFFERED_FRAMES {
-            return Err("capture-clock reference matcher buffer is full".into());
+        while self.samples.len() / CHANNELS + FRAME_FRAMES > MAX_BUFFERED_FRAMES {
+            let drop_frames = (self.samples.len() / CHANNELS + FRAME_FRAMES - MAX_BUFFERED_FRAMES).min(FRAME_FRAMES);
+            for _ in 0..drop_frames * CHANNELS {
+                let _ = self.samples.pop_front();
+            }
+            self.source_position_frames = (self.source_position_frames - drop_frames as f64).max(0.0);
         }
         self.samples.extend(samples.iter().copied());
         Ok(())

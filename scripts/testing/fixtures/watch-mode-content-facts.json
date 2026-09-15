@@ -49,7 +49,8 @@
       "id": "shipment.distance",
       "category": "number-unit",
       "accepted": [
-        "842英里"
+        "842英里",
+        "八百四十二英里"
       ],
       "forbidden": [
         "800英里"

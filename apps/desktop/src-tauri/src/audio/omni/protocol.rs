@@ -1175,10 +1175,20 @@ const CONTIGUOUS_EMPTY_VAD_SUCCESSOR_ARBITRATION_MS: u64 = 80;
 // short-VAD duration threshold above.
 const CONTIGUOUS_EMPTY_VAD_SERVER_BOUNDARY_TOLERANCE_MS: u64 = 80;
 
-fn is_forward_deferred_empty_vad_boundary(audio_end_ms: u64, audio_start_ms: u64) -> bool {
-    audio_start_ms >= audio_end_ms
-        && audio_start_ms - audio_end_ms
-            <= CONTIGUOUS_EMPTY_VAD_SERVER_BOUNDARY_TOLERANCE_MS
+const CONTIGUOUS_PURE_EMPTY_SHORT_VAD_MAX_MS: u64 = 200;
+const CONTIGUOUS_PURE_EMPTY_SERVER_BOUNDARY_TOLERANCE_MS: u64 = 160;
+
+fn is_forward_deferred_empty_vad_boundary(
+    audio_end_ms: u64,
+    audio_start_ms: u64,
+    pure_empty_short_vad: bool,
+) -> bool {
+    let tolerance = if pure_empty_short_vad {
+        CONTIGUOUS_PURE_EMPTY_SERVER_BOUNDARY_TOLERANCE_MS
+    } else {
+        CONTIGUOUS_EMPTY_VAD_SERVER_BOUNDARY_TOLERANCE_MS
+    };
+    audio_start_ms >= audio_end_ms && audio_start_ms - audio_end_ms <= tolerance
 }
 
 pub(super) fn is_ignored_short_server_vad(duration_ms: Option<u64>) -> bool {
@@ -1277,8 +1287,11 @@ impl OmniEventDiagnostics {
         successor_audio_start_ms: Option<u64>,
     ) -> Option<(DeferredEmptyVadTerminal, bool)> {
         let pending = self.deferred_empty_vad_terminal.take()?;
+        let is_pure_empty_short = pending.source_text.trim().is_empty()
+            && pending.translated_text.trim().is_empty()
+            && pending.audio_end_ms.saturating_sub(pending.audio_start_ms) <= CONTIGUOUS_PURE_EMPTY_SHORT_VAD_MAX_MS;
         let contiguous = successor_audio_start_ms.is_some_and(|start_ms| {
-            is_forward_deferred_empty_vad_boundary(pending.audio_end_ms, start_ms)
+            is_forward_deferred_empty_vad_boundary(pending.audio_end_ms, start_ms, is_pure_empty_short)
         });
         let same_continuity = self.source_continuity_active
             && self.source_continuity_id == pending.continuity_id;
@@ -1302,8 +1315,11 @@ impl OmniEventDiagnostics {
         let Some(pending) = self.deferred_empty_vad_terminal.as_ref() else {
             return false;
         };
+        let is_pure_empty_short = pending.source_text.trim().is_empty()
+            && pending.translated_text.trim().is_empty()
+            && pending.audio_end_ms.saturating_sub(pending.audio_start_ms) <= CONTIGUOUS_PURE_EMPTY_SHORT_VAD_MAX_MS;
         let contiguous = successor_audio_start_ms.is_some_and(|start_ms| {
-            is_forward_deferred_empty_vad_boundary(pending.audio_end_ms, start_ms)
+            is_forward_deferred_empty_vad_boundary(pending.audio_end_ms, start_ms, is_pure_empty_short)
         });
         contiguous && Instant::now() <= pending.successor_arbitration_deadline
     }

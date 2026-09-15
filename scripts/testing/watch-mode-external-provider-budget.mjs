@@ -394,7 +394,10 @@ function validateSendBoundaryAuthority({
     .test(String(ledger.terminalReason ?? ''));
   const nonBudgetFailureTerminal = reconnectRejectedTerminal
     || preProviderTerminal
-    || ledger.terminalReason === 'livetranslate-session-finished-timeout';
+    || ledger.terminalReason === 'livetranslate-session-finished-timeout'
+    || ledger.terminalReason === 'livetranslate-audio-drain-timeout'
+    || ledger.terminalReason === 'socket-poll-failed'
+    || ledger.terminalReason === 'livetranslate-shutdown-poll-failed';
   if (ledger.terminalReason !== 'worker-completed' && !nonBudgetFailureTerminal) {
     violations.push(`send-boundary final ledger terminalReason is not an accepted no-reconnect terminal; got ${ledger.terminalReason ?? 'missing'}`);
   }

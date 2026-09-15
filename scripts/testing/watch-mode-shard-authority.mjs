@@ -1247,7 +1247,9 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
   const nonBudgetFailureTerminal = reconnectRejectedTerminal
     || preProviderTerminal
     || ledger.terminalReason === 'livetranslate-session-finished-timeout'
-    || ledger.terminalReason === 'livetranslate-audio-drain-timeout';
+    || ledger.terminalReason === 'livetranslate-audio-drain-timeout'
+    || ledger.terminalReason === 'socket-poll-failed'
+    || ledger.terminalReason === 'livetranslate-shutdown-poll-failed';
   const expectedInitialConnectAttempts = preProviderTerminal ? 0 : 1;
   if (preProviderTerminal && (
     Number(ledger.sessionGeneration) !== 0
@@ -1308,7 +1310,7 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
   if (journal.at(-1)?.event !== 'finalized' || journal.at(-1)?.finalized !== true || counts.finalized !== 1) {
     throw new Error('provider input budget journal must end with exactly one finalized event');
   }
-  if (ledger.terminalReason === 'livetranslate-audio-drain-timeout') {
+  if (ledger.terminalReason === 'livetranslate-audio-drain-timeout' || ledger.terminalReason === 'socket-poll-failed' || ledger.terminalReason === 'livetranslate-shutdown-poll-failed') {
     if (journal.at(-1).terminalReason !== ledger.terminalReason) {
       throw new Error('provider input budget journal terminal reason does not match the final ledger');
     }

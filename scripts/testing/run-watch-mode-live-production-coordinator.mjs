@@ -2350,7 +2350,7 @@ if (Test-Path -LiteralPath $root) { throw 'remote Provider preflight authorizati
       const controlVerification = remotePowerShellInvocation(`
 $items=@($payload.items)
 foreach($entry in $items){$item=Get-Item -LiteralPath ([string]$entry.path) -Force;if($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.Length -ne [long]$entry.bytes -or (Get-FileHash -LiteralPath ([string]$entry.path) -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$entry.sha256){throw 'remote Provider preflight control authority mismatch'}}
-[pscustomobject]@{verified=$true}|ConvertTo-Json -Compress
+[pscustomobject]@{verified=[bool]1}|ConvertTo-Json -Compress
 `, { items: [
         { path: launcherPath, bytes: launcherBytes, sha256: launcherSha256 },
         { path: controllerPath, bytes: controllerBytes, sha256: controllerSha256 },

@@ -528,6 +528,18 @@ function orderedCharacterRecall(reference, candidate) {
   return previous[candidateCharacters.length] / referenceCharacters.length;
 }
 
+function clauseOrderedCharacterRecall(reference, candidate) {
+  const clauses = reference.split(/[\uFF0C\u3002\uFF01\uFF1F\uFF1A\u201C\u201D\uFF1B\n]+/).map((c) => c.trim()).filter((c) => c.length >= 3);
+  if (clauses.length === 0) return 0;
+  let totalWeight = 0;
+  let matchedWeight = 0;
+  for (const cl of clauses) {
+    const weight = cl.length;
+    totalWeight += weight;
+    matchedWeight += weight * orderedCharacterRecall(cl, candidate);
+  }
+  return totalWeight > 0 ? matchedWeight / totalWeight : 0;
+}
 function acceptedWatchSourceText(watchSessionReport) {
   const cues = Array.isArray(watchSessionReport?.cues) ? watchSessionReport.cues : [];
   const acceptedCues = cues.filter((cue) => (
@@ -574,9 +586,13 @@ function parseAecExpectedSegmentEvidence(input) {
   const segmentResults = expectedSegments.map((segment, index) => {
     const sourceRecall = orderedTokenRecall(segment, accepted.sourceText);
     const translatedReferenceSegment = translatedReferenceSegments[index] ?? '';
-    const translatedRecall = translatedReferenceSegment
+    const fullTranslatedRecall = translatedReferenceSegment
       ? orderedCharacterRecall(translatedReferenceSegment, accepted.translatedText)
       : 0;
+    const clauseTranslatedRecall = translatedReferenceSegment
+      ? clauseOrderedCharacterRecall(translatedReferenceSegment, accepted.translatedText)
+      : 0;
+    const translatedRecall = Math.max(fullTranslatedRecall, clauseTranslatedRecall);
     const recall = Math.max(sourceRecall, translatedRecall);
     return {
       ordinal: index + 1,

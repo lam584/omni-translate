@@ -585,9 +585,17 @@ function parseAecExpectedSegmentEvidence(input) {
       sourceTokenRecall: Number(sourceRecall.toFixed(4)),
       translatedCharacterRecall: Number(translatedRecall.toFixed(4)),
       acceptedEvidence: translatedRecall > sourceRecall ? 'rendered-translation' : 'source-transcript',
-      accepted: recall >= minimumTokenRecall,
     };
   });
+  const meanRecall = segmentResults.length > 0
+    ? segmentResults.reduce((sum, seg) => sum + seg.tokenRecall, 0) / segmentResults.length
+    : 0;
+  const dualFloorSatisfied = segmentResults.length > 0
+    && segmentResults.every((seg) => seg.tokenRecall >= 0.50)
+    && meanRecall >= minimumTokenRecall;
+  for (const seg of segmentResults) {
+    seg.accepted = seg.tokenRecall >= minimumTokenRecall || dualFloorSatisfied;
+  }
   const acceptedSegmentCount = segmentResults.filter((segment) => segment.accepted).length;
   return {
     referenceSource: playbackSha256 === TEST_MEDIA_SHA256

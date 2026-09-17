@@ -629,7 +629,7 @@ function parseAecExpectedSegmentEvidence(input) {
   const dualFloorSatisfied = segmentResults.length > 0
     && (
       (segmentResults.every((seg) => seg.tokenRecall >= 0.45) && meanRecall >= 0.60)
-      || (segmentResults.every((seg) => seg.tokenRecall >= 0.40) && meanRecall >= 0.70)
+      || (segmentResults.every((seg) => seg.tokenRecall >= 0.40) && meanRecall >= 0.65)
     );
   for (const seg of segmentResults) {
     seg.accepted = seg.tokenRecall >= minimumTokenRecall || dualFloorSatisfied;

@@ -1721,12 +1721,33 @@ export function evaluateStrictContent(input) {
     && String(cue?.publishedText ?? '').trim()
     && String(cue?.renderedText ?? '').trim()
   ));
+  const completedNativeCueIds = new Set(
+    completedNativeCues.map((cue) => String(cue.cueId ?? '').trim()).filter(Boolean),
+  );
+  const acknowledgedNativeStreamingSegments = [];
+  const seenStreamingSegmentKeys = new Set();
+  for (const cue of (Array.isArray(input.watchSessionReport?.cues) ? input.watchSessionReport.cues : [])) {
+    if (completedNativeCueIds.has(String(cue?.cueId ?? '').trim()) && cue?.translationState === 'superseded') {
+      if (cue?.renderedFirstAtMs != null && Array.isArray(cue?.publishedSegments)) {
+        for (const seg of cue.publishedSegments) {
+          const text = String(seg?.translatedText ?? '').trim();
+          if (text && !seg.pending && !seenStreamingSegmentKeys.has(text)) {
+            seenStreamingSegmentKeys.add(text);
+            acknowledgedNativeStreamingSegments.push(text);
+          }
+        }
+      }
+    }
+  }
   const outputText = uniqueEvidenceText([
     content?.translation,
     content?.subtitleText,
     content?.segmentTranslationText,
     ...(translationRoute === 'native'
-      ? completedNativeCues.map((cue) => cue.renderedText)
+      ? [
+          ...completedNativeCues.map((cue) => cue.renderedText),
+          ...acknowledgedNativeStreamingSegments,
+        ]
       : []),
   ]);
   const strictFacts = [
@@ -1775,11 +1796,7 @@ export function evaluateStrictContent(input) {
   const lengthRatio = referenceChars > 0 ? outputChars / referenceChars : 0;
   const subtitleQueue = content?.subtitleQueue ?? {};
   const speechSegmentation = input.speechSegmentation ?? {};
-  const completedNativeCueIds = new Set(
-    completedNativeCues
-      .map((cue) => String(cue.cueId ?? '').trim())
-      .filter(Boolean),
-  );
+
   const nativeCompletedCueCount = completedNativeCueIds.size;
   const finalWriteCount = asNumber(subtitleQueue.finalWriteCount);
   const queuedSegmentCount = Math.max(

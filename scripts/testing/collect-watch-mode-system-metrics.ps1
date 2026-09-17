@@ -1,11 +1,7 @@
 param(
-  [Parameter(Mandatory = $true)]
-  [ValidateRange(1, 2147483647)]
-  [int]$RootProcessId,
-  [Parameter(Mandatory = $true)]
-  [string]$OutputPath,
-  [ValidateRange(250, 5000)]
-  [int]$SampleIntervalMs = 1000
+  [Parameter(Mandatory = $true)] [ValidateRange(1, 2147483647)] [int]$RootProcessId,
+  [Parameter(Mandatory = $true)] [string]$OutputPath,
+  [ValidateRange(250, 5000)] [int]$SampleIntervalMs = 1000
 )
 
 $ErrorActionPreference = 'Stop'
@@ -70,8 +66,7 @@ function Get-ProcessTreeSnapshot {
 }
 
 $resolvedOutputPath = [System.IO.Path]::GetFullPath($OutputPath)
-$outputDirectory = Split-Path -Parent $resolvedOutputPath
-New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
+[void](New-Item -ItemType Directory -Force -Path (Split-Path -Parent $resolvedOutputPath))
 $startedAt = [DateTime]::UtcNow
 $samples = New-Object System.Collections.Generic.List[object]
 $collectionErrors = New-Object System.Collections.Generic.List[string]
@@ -98,6 +93,10 @@ try {
           break
         }
         throw 'system metrics process-tree snapshot was empty while the root process was alive'
+      }
+      if (-not ($current.processIds -contains $RootProcessId)) {
+        $completionReason = 'root-process-exited'
+        break
       }
       $elapsedMs = ($current.capturedAt - $previous.capturedAt).TotalMilliseconds
       if ($elapsedMs -le 0) {

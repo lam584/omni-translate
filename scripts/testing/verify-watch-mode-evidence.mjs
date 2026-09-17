@@ -712,6 +712,12 @@ function assertCellIdentity(receiptCell, manifestCell, report, index) {
     feedbackLoopPrevention: manifestCell.feedbackLoopPrevention,
     deviceClass: manifestCell.deviceClass,
     deviceProfileId: manifestCell.deviceProfileId,
+    ...(manifestCell.deviceProfileInstanceId ? {
+      deviceProfileInstanceId: manifestCell.deviceProfileInstanceId,
+      physicalPlaybackDeviceId: manifestCell.physicalPlaybackDeviceId,
+      workerId: manifestCell.workerId,
+      vmIdentityDigest: manifestCell.vmIdentityDigest,
+    } : {}),
   }, `strict matrix cell ${index} receipt identity`);
   if (report.modelId !== manifestCell.modelId) {
     throw new Error(`strict matrix cell ${index} model mismatch: expected ${manifestCell.modelId}; raw report has ${report.modelId ?? 'missing'}`);

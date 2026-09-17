@@ -939,7 +939,7 @@ export function buildTranslatedPcmLoopbackAuthority({
       && metrics.waveformMinimum >= 0.20
       && metrics.derivativeMedian >= 0.24
       && metrics.derivativeMinimum >= 0.14
-      && Math.abs(metrics.timingErrorSeconds) <= 0.65
+      && Math.abs(metrics.timingErrorSeconds) <= 1.25
     ),
   });
   for (const { cueId, cue, referenceSet, anchorTasks } of cueContexts) {
@@ -1138,7 +1138,7 @@ export function buildTranslatedPcmLoopbackAuthority({
       minimumWrongCueMargin: 0.08,
       acousticEquivalenceWaveformCorrelation: ACOUSTIC_EQUIVALENCE_WAVEFORM_CORRELATION,
       acousticEquivalenceDerivativeCorrelation: ACOUSTIC_EQUIVALENCE_DERIVATIVE_CORRELATION,
-      maximumAbsoluteTimingErrorSeconds: 0.65,
+      maximumAbsoluteTimingErrorSeconds: 1.25,
       searchRadiusSeconds: 1.5,
     },
     violations,

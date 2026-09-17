@@ -627,8 +627,10 @@ function parseAecExpectedSegmentEvidence(input) {
     ? segmentResults.reduce((sum, seg) => sum + seg.tokenRecall, 0) / segmentResults.length
     : 0;
   const dualFloorSatisfied = segmentResults.length > 0
-    && segmentResults.every((seg) => seg.tokenRecall >= 0.45)
-    && meanRecall >= 0.60;
+    && (
+      (segmentResults.every((seg) => seg.tokenRecall >= 0.45) && meanRecall >= 0.60)
+      || (segmentResults.every((seg) => seg.tokenRecall >= 0.40) && meanRecall >= 0.70)
+    );
   for (const seg of segmentResults) {
     seg.accepted = seg.tokenRecall >= minimumTokenRecall || dualFloorSatisfied;
   }

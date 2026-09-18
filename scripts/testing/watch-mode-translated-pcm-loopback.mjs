@@ -538,22 +538,26 @@ function aecLiveScenarioStagesByCue(scopedLog) {
 }
 
 function playbackLifecycle(scopedLog, requiredCueIds) {
+  const hasBridgeEvents = /event=translation_playback_status/.test(scopedLog);
   const events = [];
   for (const [index, line] of scopedLog.split(/\r?\n/).entries()) {
     const ts = parseLogTimestamp(line);
-    if (/event=translation_playback_status/.test(line)) {
+    if (hasBridgeEvents) {
+      if (!/event=translation_playback_status/.test(line)) continue;
       const cueId = line.match(/\bcueId=([A-Za-z0-9._:-]+)/)?.[1];
       const status = line.match(/\bstatus=(queued|started|completed)\b/)?.[1];
       if (cueId && status) events.push({ cueId, status, index, occurredAtMs: ts });
-    } else if (/\[AUDIO\]\s+native audio\.done:.*playback_status=queued\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
-      const cueId = line.match(/cue_id=([A-Za-z0-9._:-]+)/)?.[1];
-      if (cueId) events.push({ cueId, status: 'queued', index, occurredAtMs: ts });
-    } else if (/\[AUDIO\]\s+speaker render attempt started:\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
-      const cueId = line.match(/cue_id=([A-Za-z0-9._:-]+)/)?.[1];
-      if (cueId) events.push({ cueId, status: 'started', index, occurredAtMs: ts });
-    } else if (/\[AUDIO\]\s+speaker playback completed:\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
-      const cueId = line.match(/cue_id=([A-Za-z0-9._:-]+)/)?.[1];
-      if (cueId) events.push({ cueId, status: 'completed', index, occurredAtMs: ts });
+    } else {
+      if (/\[AUDIO\]\s+native audio\.done:.*playback_status=queued\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
+        const cueId = line.match(/cue_id=([A-Za-z0-9._:-]+)/)?.[1];
+        if (cueId) events.push({ cueId, status: 'queued', index, occurredAtMs: ts });
+      } else if (/\[AUDIO\]\s+speaker render attempt started:\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
+        const cueId = line.match(/cue_id=([A-Za-z0-9._:-]+)/)?.[1];
+        if (cueId) events.push({ cueId, status: 'started', index, occurredAtMs: ts });
+      } else if (/\[AUDIO\]\s+speaker playback completed:\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
+        const cueId = line.match(/cue_id=([A-Za-z0-9._:-]+)/)?.[1];
+        if (cueId) events.push({ cueId, status: 'completed', index, occurredAtMs: ts });
+      }
     }
   }
   const byCue = new Map();

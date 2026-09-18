@@ -11,21 +11,25 @@ export function deriveTranslatedCuePlaybackAuthority({ watchReport, device, appL
       && String(cue.llmText ?? '').trim() && String(cue.publishedText ?? '').trim()
       && String(cue.renderedText ?? '').trim())
     .map((cue) => String(cue.cueId)))];
+  const hasBridgeEvents = textAfterMarker(appLogText, runMarker).includes('event=translation_playback_status');
   const events = [];
   for (const line of textAfterMarker(appLogText, runMarker).split(/\r?\n/)) {
-    if (line.includes('event=translation_playback_status')) {
+    if (hasBridgeEvents) {
+      if (!line.includes('event=translation_playback_status')) continue;
       const cueId = line.match(/\bcueId=([A-Za-z0-9._:-]+)/)?.[1];
       const status = line.match(/\bstatus=(queued|started|completed)\b/)?.[1];
       if (cueId && status) events.push({ cueId, status, eventIndex: events.length + 1 });
-    } else if (/\[AUDIO\]\s+native audio\.done:.*playback_status=queued\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
-      const cueId = line.match(/cue_id=([A-Za-z0-9._:-]+)/)?.[1];
-      if (cueId) events.push({ cueId, status: 'queued', eventIndex: events.length + 1 });
-    } else if (/\[AUDIO\]\s+speaker render attempt started:\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
-      const cueId = line.match(/cue_id=([A-Za-z0-9._:-]+)/)?.[1];
-      if (cueId) events.push({ cueId, status: 'started', eventIndex: events.length + 1 });
-    } else if (/\[AUDIO\]\s+speaker playback completed:\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
-      const cueId = line.match(/cue_id=([A-Za-z0-9._:-]+)/)?.[1];
-      if (cueId) events.push({ cueId, status: 'completed', eventIndex: events.length + 1 });
+    } else {
+      if (/\[AUDIO\]\s+native audio\.done:.*playback_status=queued\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
+        const cueId = line.match(/cue_id=([A-Za-z0-9._:-]+)/)?.[1];
+        if (cueId) events.push({ cueId, status: 'queued', eventIndex: events.length + 1 });
+      } else if (/\[AUDIO\]\s+speaker render attempt started:\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
+        const cueId = line.match(/cue_id=([A-Za-z0-9._:-]+)/)?.[1];
+        if (cueId) events.push({ cueId, status: 'started', eventIndex: events.length + 1 });
+      } else if (/\[AUDIO\]\s+speaker playback completed:\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
+        const cueId = line.match(/cue_id=([A-Za-z0-9._:-]+)/)?.[1];
+        if (cueId) events.push({ cueId, status: 'completed', eventIndex: events.length + 1 });
+      }
     }
   }
   const matchedCueIds = [];

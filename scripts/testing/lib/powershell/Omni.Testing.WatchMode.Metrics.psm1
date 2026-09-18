@@ -45,7 +45,7 @@ function Complete-WatchModeSystemMetricsSampler {
   }
   $process = Get-Process -Id ([int]$Sampler.pid) -ErrorAction SilentlyContinue
   if ($process -and -not $process.HasExited) {
-    Wait-Process -Id $process.Id -Timeout 15 -ErrorAction SilentlyContinue
+    Wait-Process -Id $process.Id -Timeout 35 -ErrorAction SilentlyContinue
     $process.Refresh()
   }
   if ($process -and -not $process.HasExited) {

@@ -683,15 +683,28 @@ export function readRunManifest(manifestPath, { baseDirectory = process.cwd() } 
   return { manifestPath: resolvedManifestPath, manifest, runDirectories };
 }
 
+function normalizeReferencePathsInReport(obj) {
+  if (!obj || typeof obj !== 'object') return;
+  for (const k of Object.keys(obj)) {
+    if (k === 'referencePath' && typeof obj[k] === 'string') {
+      obj[k] = obj[k].replace(/^[A-Za-z]:\\[^\\]+/, '').replaceAll('\\\\\\\\', '/').replaceAll('\\\\', '/');
+    } else if (typeof obj[k] === 'object') {
+      normalizeReferencePathsInReport(obj[k]);
+    }
+  }
+}
+
 function reportAuthorityProjection(report) {
   if (!report || typeof report !== 'object') return report;
+  const clone = JSON.parse(JSON.stringify(report));
+  normalizeReferencePathsInReport(clone);
   const {
     generatedAt: _generatedAt,
     commit: _commit,
     provenance: _provenance,
     artifacts: _artifacts,
     ...stable
-  } = report;
+  } = clone;
   return stable;
 }
 

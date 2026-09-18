@@ -227,9 +227,11 @@ function factEvidence(fact, outputText) {
   if (matchedForbidden.length > 0) {
     status = 'failed';
     reason = `contradictory or unsupported fact: ${matchedForbidden.join(', ')}`;
-  } else if (fact.relation && !relationMatched) {
-    status = fact.deferMissing === true ? 'inconclusive' : 'failed';
-    reason = `required fact relation was not found: ${fact.id}`;
+  } else if (fact.relation) {
+    if (!relationMatched) {
+      status = fact.deferMissing === true ? "inconclusive" : "failed";
+      reason = "required fact relation was not found: " + fact.id;
+    }
   } else if (fact.required !== false && matchedExpected.length === 0) {
     status = fact.deferMissing === true ? 'inconclusive' : 'failed';
     reason = `required fact was not found: ${fact.id}`;

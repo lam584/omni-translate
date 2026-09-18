@@ -3,11 +3,13 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
 import {
   buildCanonicalReferencePcm,
   buildPhysicalSourceWaveformAuthority,
+  collectRunCanonicalSourceAuthority,
   loadCanonicalFixtureAuthority,
   parseRiffWavePcm16,
   pcm16WaveToInjectorReference,
@@ -529,6 +531,56 @@ test('rejects sparse recordings that copy only three favorable anchors and leave
   assert.equal(authority.passed, false);
   assert.ok(authority.passingCandidateCount < authority.thresholds.minimumPassingCandidateCount, JSON.stringify(authority.candidates));
   assert.match(authority.violations.join('\n'), /source windows passed waveform, derivative, and energy coverage/);
+});
+
+test('preserves complete waveform candidates when combined authority fails', () => {
+  const directory = temporaryDirectory('canonical-failed-evidence');
+  const { fixture, authority } = authorityFixture(directory);
+  const sourceWindowPath = path.join(directory, 'physical-output-recording-source-window-16k-mono.pcm');
+  const physicalRecordingPath = path.join(directory, 'physical-output-recording-16k-mono.pcm');
+  const silentWindow = Buffer.alloc(fixture.referencePcm.bytes);
+  fs.writeFileSync(sourceWindowPath, silentWindow);
+  fs.writeFileSync(physicalRecordingPath, silentWindow);
+
+  const releaseExecutablePath = path.resolve('target/release/omni-benchmark.exe');
+  const releaseExecutableSha256 = crypto.createHash('sha256')
+    .update(fs.readFileSync(releaseExecutablePath)).digest('hex');
+  const analyzerOptions = {
+    releaseExecutablePath,
+    releaseExecutableSha256,
+    noBuild: true,
+    deadlineUtcMs: Date.now() + 30_000,
+  };
+  const combined = collectRunCanonicalSourceAuthority({
+    runDirectory: directory,
+    workspaceRoot,
+    sourceAuthority: authority,
+    ...analyzerOptions,
+  });
+  assert.equal(combined.passed, false);
+  assert.equal(combined.remoteProviderCalls, 0);
+  assert.equal(combined.externalAudioSeconds, 0);
+  assert.equal(combined.physicalSourceWaveform.passed, false);
+  assert.equal(combined.physicalSourceWaveform.candidates.length, 9);
+  assert.equal(combined.physicalSourceWaveform.passingCandidateCount, 0);
+  assert.equal(combined.physicalSourceWaveform.thresholds.minimumPassingCandidateCount, 7);
+  assert.match(combined.error, /only 0\/9 source windows passed/);
+
+  fs.writeFileSync(path.join(directory, 'source-media-transcript.json'), JSON.stringify(authority));
+  const cli = spawnSync(process.execPath, [
+    path.resolve('scripts/testing/watch-mode-canonical-source-authority.mjs'),
+    '--run-directory', directory,
+    '--workspace-root', workspaceRoot,
+    '--preserve-failure-evidence',
+    '--no-build',
+    '--release-executable-path', releaseExecutablePath,
+    '--release-executable-sha256', releaseExecutableSha256,
+  ], { encoding: 'utf8' });
+  assert.equal(cli.status, 0, cli.stderr || cli.stdout);
+  const emitted = JSON.parse(cli.stdout);
+  assert.equal(emitted.passed, false);
+  assert.equal(emitted.physicalSourceWaveform.candidates.length, 9);
+  assert.equal(emitted.physicalSourceWaveform.thresholds.minimumPassingCandidateCount, 7);
 });
 
 test('forbids path or byte-for-byte physical window reuse', () => {

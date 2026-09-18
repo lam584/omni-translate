@@ -51,6 +51,7 @@ import {
 import { generateCoordinatorSigningKeyPair } from './watch-mode-shard-authority.mjs';
 import {
   INCIDENT_REPLAY_PLUS_ID,
+  LEGACY_FINITE_SILENCE_GRACE_POLICY_ID,
   PROVIDER_INPUT_PREFILTER_FILE,
   PROVIDER_INPUT_PREFILTER_MAGIC,
   replayProviderInputPrefilter,
@@ -365,6 +366,7 @@ function writeBudgetArtifacts(runDirectory, cell, lease) {
     replayProviderInputPrefilter({
       filePath: prefilterPath,
       maxSamples: INCIDENT_PLUS_MAX_EXTERNAL_AUDIO_SAMPLES,
+      legacyPolicyId: LEGACY_FINITE_SILENCE_GRACE_POLICY_ID,
     }).expectedProviderPcm,
   );
   writeText(path.join(runDirectory, 'app.log'), [

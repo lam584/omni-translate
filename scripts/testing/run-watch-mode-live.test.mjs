@@ -238,7 +238,11 @@ test('paid failure budget is rebuilt from the final marker-scoped app log saved 
     );
     fs.writeFileSync(
       path.join(runDirectory, 'provider-input-16k-mono.pcm'),
-      replayProviderInputPrefilter({ filePath: prefilterPath, maxSamples }).expectedProviderPcm,
+      replayProviderInputPrefilter({
+        filePath: prefilterPath,
+        maxSamples,
+        modelProtocolProfileIdentity: deriveWatchModelProtocolIdentity('qwen3.5-livetranslate-flash-realtime'),
+      }).expectedProviderPcm,
     );
 
     const identity = {
@@ -591,7 +595,7 @@ test('default-endpoint playback materializes reference PCM without opening a ren
     'exit /b 0',
   ].join('\r\n'));
   try {
-    const command = `${extractedMediaReferenceFunctions()} ` +
+    const command = `${extractedMediaReferenceFunctions()} function global:Get-FileHash { [pscustomobject]@{ Hash = '0000000000000000000000000000000000000000000000000000000000000000' } }; ` +
       `$path = Write-TestMediaReferencePcm ${quotePowerShell(mediaPath)} ${quotePowerShell(tempRoot)} ${quotePowerShell(path.resolve('.'))} 0 ${quotePowerShell(fakeInjector)}; ` +
       `[pscustomobject]@{ path = $path; bytes = (Get-Item -LiteralPath $path).Length } | ConvertTo-Json -Compress`;
     const result = runPowerShell(['-Command', command]);
@@ -607,6 +611,80 @@ test('default-endpoint playback materializes reference PCM without opening a ren
   }
 });
 
+test('WASAPI playback preserves injector render cadence diagnostics', { skip: !isWindows }, () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-playback-result-'));
+  const mediaPath = path.join(tempRoot, 'source.wav');
+  const fakeInjector = path.join(tempRoot, 'fake-injector.cmd');
+  fs.writeFileSync(mediaPath, 'fixture');
+  fs.writeFileSync(fakeInjector, [
+    '@echo off',
+    'echo {"passed":true,"endpointId":"endpoint-1","mediaPath":"source.wav","processId":4321,"startedAtMs":10,"finishedAtMs":20,"renderedFrames":48000,"renderedSeconds":1,"renderSampleRateHz":48000,"bufferFrames":960,"prefillFrames":480,"renderWakeCount":51,"maxRenderWakeIntervalMs":22.5,"zeroPaddingUnderrunCount":3}',
+    'exit /b 0',
+  ].join('\r\n'));
+  try {
+    const command = `${extractedMediaReferenceFunctions()} function global:Get-FileHash { [pscustomobject]@{ Hash = '0000000000000000000000000000000000000000000000000000000000000000' } }; ` +
+      `$result = Start-TestMediaPlayback -PathToMedia ${quotePowerShell(mediaPath)} -PlaybackEndpointId 'endpoint-1' -OutputDirectory ${quotePowerShell(tempRoot)} -WorkspaceRoot ${quotePowerShell(path.resolve('.'))} -PlaybackSeconds 0 -InjectorExecutablePath ${quotePowerShell(fakeInjector)}; ` +
+      '$result | ConvertTo-Json -Depth 12 -Compress';
+    const result = runPowerShell(['-Command', command]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const playback = JSON.parse(result.stdout.trim());
+    assert.deepEqual({
+      bufferFrames: playback.bufferFrames,
+      prefillFrames: playback.prefillFrames,
+      renderWakeCount: playback.renderWakeCount,
+      maxRenderWakeIntervalMs: playback.maxRenderWakeIntervalMs,
+      zeroPaddingUnderrunCount: playback.zeroPaddingUnderrunCount,
+    }, {
+      bufferFrames: 960,
+      prefillFrames: 480,
+      renderWakeCount: 51,
+      maxRenderWakeIntervalMs: 22.5,
+      zeroPaddingUnderrunCount: 3,
+    });
+    assert.equal(playback.passed, true);
+    assert.equal(playback.injectorExitCode, 0);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('WASAPI playback failure retains structured injector evidence', { skip: !isWindows }, () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-playback-failure-'));
+  const mediaPath = path.join(tempRoot, 'source.wav');
+  const fakeInjector = path.join(tempRoot, 'fake-injector.cmd');
+  fs.writeFileSync(mediaPath, 'fixture');
+  fs.writeFileSync(fakeInjector, [
+    '@echo off',
+    'echo {"passed":false,"detail":"render cadence failed","endpointId":"endpoint-2","processId":9876,"bufferFrames":1440,"prefillFrames":720,"renderWakeCount":9,"maxRenderWakeIntervalMs":81.25,"zeroPaddingUnderrunCount":4}',
+    'exit /b 7',
+  ].join('\r\n'));
+  try {
+    const command = `${extractedMediaReferenceFunctions()} function global:Get-FileHash { [pscustomobject]@{ Hash = '0000000000000000000000000000000000000000000000000000000000000000' } }; ` +
+      `try { Start-TestMediaPlayback -PathToMedia ${quotePowerShell(mediaPath)} -PlaybackEndpointId 'endpoint-2' -OutputDirectory ${quotePowerShell(tempRoot)} -WorkspaceRoot ${quotePowerShell(path.resolve('.'))} -PlaybackSeconds 0 -InjectorExecutablePath ${quotePowerShell(fakeInjector)} | Out-Null; exit 2 } catch { Write-Error $_.Exception.Message; exit 0 }`;
+    const result = runPowerShell(['-Command', command]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stderr.replace(/\r?\n/gu, ''), /ExitCode=7/u);
+    const playback = readJsonArtifact(path.join(tempRoot, 'playback.json'));
+    assert.equal(playback.passed, false);
+    assert.equal(playback.injectorExitCode, 7);
+    assert.equal(playback.injectorResult.detail, 'render cadence failed');
+    assert.deepEqual({
+      bufferFrames: playback.bufferFrames,
+      prefillFrames: playback.prefillFrames,
+      renderWakeCount: playback.renderWakeCount,
+      maxRenderWakeIntervalMs: playback.maxRenderWakeIntervalMs,
+      zeroPaddingUnderrunCount: playback.zeroPaddingUnderrunCount,
+    }, {
+      bufferFrames: 1440,
+      prefillFrames: 720,
+      renderWakeCount: 9,
+      maxRenderWakeIntervalMs: 81.25,
+      zeroPaddingUnderrunCount: 4,
+    });
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
 test('strict paid provider selection ignores a preceding alternate and rejects forged canonical identity', { skip: !isWindows }, () => {
   const providers = [{
     providerId: 'provider-alternate',
@@ -837,7 +915,8 @@ function extractedLiveScenarioEnvironmentFunctions() {
 }
 
 function extractedRunnerPolicyFunctions() {
-  return `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.Runner.psm1'))} -Force -DisableNameChecking; `;
+  return `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.Runner.psm1'))} -Force -DisableNameChecking; ` +
+    `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.InputCompletion.psm1'))} -Force -DisableNameChecking; `;
 }
 
 test('run-watch-mode-live.ps1 parses without PowerShell syntax errors', { skip: !isWindows }, () => {
@@ -1078,8 +1157,63 @@ test('input-complete marker is request-path bound, atomically published, and cre
   assert.equal(result.secondFailed, true);
   assert.equal(result.unchanged, true);
   assert.equal(result.marker.signaledAtUnixMs, result.marker.completedAtUnixMs);
+  assert.equal(result.marker.disposition, 'completed');
+  assert.equal(result.marker.authoritativeTransformedReferenceFrames, 2);
+  assert.equal(result.marker.boundedCaptureGraceFrames, 2);
   assert.equal(result.marker.runMarker, 'run-1');
   assert.equal(fs.readdirSync(root).some((name) => name.endsWith('.tmp')), false);
+});
+
+test('failed playback marker preserves failed-incomplete disposition for graceful Provider drain', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-input-failed-'));
+  const referencePath = path.join(root, 'reference.pcm');
+  const markerPath = path.join(root, 'input-complete.json');
+  fs.writeFileSync(referencePath, Buffer.from([1, 0, 2, 0]));
+  fs.writeFileSync(path.join(root, 'playback.json'), JSON.stringify({
+    passed: false,
+    finishedAtMs: 2000,
+    referencePcmPath: referencePath,
+    injectorResult: { detail: 'render underrun' },
+  }), 'utf8');
+  const probe = runPowerShell([
+    '-Command',
+    extractedRunnerPolicyFunctions() +
+      `$env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES = '4'; ` +
+      `Write-WatchModeFailedInputCompleteMarker -Path ${quotePowerShell(markerPath)} ` +
+        `-RunMarker 'run-1' -CellId 'cell-1' -LeaseId 'lease-1' ` +
+        `-OutputDirectory ${quotePowerShell(root)} -FailureReason 'render underrun' | Out-Null; ` +
+      `Get-Content -LiteralPath ${quotePowerShell(markerPath)} -Raw`,
+  ]);
+
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+  const marker = readJsonArtifact(markerPath);
+  assert.equal(marker.disposition, 'failed-incomplete');
+  assert.equal(marker.schemaVersion, 2);
+  assert.equal(marker.failureReason, 'render underrun');
+  assert.equal(marker.mediaPlaybackCompletedAtUnixMs, 2000);
+  assert.equal(marker.authoritativeTransformedReferenceFrames, undefined);
+  assert.equal(marker.boundedCaptureGraceFrames, undefined);
+});
+
+test('failed-input terminal recognition accepts only the exact failed exit contract', { skip: !isWindows }, () => {
+  const uuid = '12345678-1234-1234-1234-123456789abc';
+  const prefix = 'custodied Watch desktop terminal failed:';
+  const valid = `${prefix} exitCode=1 terminalErrorCode=runner-input-failed terminalError=render underrun pid=42 launchId=${uuid}`;
+  const variants = [
+    valid,
+    valid.replace('exitCode=1', 'exitCode=0'),
+    valid.replace('runner-input-failed', 'provider-finish-timeout'),
+    `${valid} secondaryFailure=cleanup`,
+    valid.replace(uuid, 'not-a-uuid'),
+  ];
+  const probe = runPowerShell([
+    '-Command',
+    extractedRunnerPolicyFunctions() +
+      `$messages = ConvertFrom-Json ${quotePowerShell(JSON.stringify(variants))}; ` +
+      `$messages | ForEach-Object { Test-WatchModeExpectedFailedInputTerminalError -Message $_ } | ConvertTo-Json -Compress`,
+  ]);
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+  assert.deepEqual(JSON.parse(probe.stdout.trim().split(/\r?\n/u).at(-1)), [true, false, false, false, false]);
 });
 
 test('strict execution context rejects signed terminal paths outside their canonical directory', { skip: !isWindows }, () => {
@@ -1143,7 +1277,7 @@ test('strict execution context rejects signed terminal paths outside their canon
         `New-WatchModeExecutionContext -Context $context -Request $request | Out-Null`,
     ]);
     assert.notEqual(probe.status, 0, 'forged signed authority path unexpectedly passed');
-    assert.match(`${probe.stderr}\n${probe.stdout}`, /canonical files directly under paths\.outputRoot/i);
+    assert.match(`${probe.stderr}\n${probe.stdout}`, /canonical files directly under paths\.\s*outputRoot/i);
   }
 });
 
@@ -1155,7 +1289,7 @@ test('physical recorder stops immediately on failure but lets terminal success f
       `function New-FakeRecorder([string]$name, [bool]$terminal) { ` +
         `$dir = Join-Path ${quotePowerShell(root)} $name; [void](New-Item -ItemType Directory -Path $dir); ` +
         `$stdout = Join-Path $dir 'stdout.log'; $stderr = Join-Path $dir 'stderr.log'; ` +
-        `$command = if ($terminal) { 'Start-Sleep -Milliseconds 1200; Write-Output ''{"passed":true}''' } else { 'Start-Sleep -Seconds 30' }; ` +
+        `$command = if ($terminal) { 'Start-Sleep -Milliseconds 1200; [pscustomobject]@{ passed=$true; captureTimeline=[pscustomobject]@{ sampleZeroEpochMs=1; sampleZeroTimeAuthority=([string]::new([char[]](102,105,114,115,116,45,99,97,112,116,117,114,101,45,112,97,99,107,101,116,45,113,112,99,45,101,112,111,99,104,45,99,97,108,105,98,114,97,116,105,111,110,45,118,50))) } } | ConvertTo-Json -Compress' } else { 'Start-Sleep -Seconds 30' }; ` +
         `$process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-Command',$command) ` +
           `-RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru; ` +
         `$terminalPath = Join-Path $dir 'evidence-driven-terminal.json'; if ($terminal) { Set-Content -LiteralPath $terminalPath -Value '{}' -Encoding utf8 }; ` +
@@ -1180,6 +1314,45 @@ test('physical recorder stops immediately on failure but lets terminal success f
   assert.equal(result.successExited, true);
   assert.ok(result.successMs >= 1_100, `recorder did not receive time to flush naturally: ${result.successMs}ms`);
   assert.equal(result.successPassed, true, 'recorder JSON was lost before graceful exit');
+});
+
+test('physical recorder persists failed JSON before authority and analysis failures escape', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-recorder-failure-json-'));
+  const cases = [
+    { name: 'missing', stdout: '{}', expected: /no JSON output|sample-zero time authority/u },
+    { name: 'bad', stdout: '{not-json', expected: /invalid JSON/u },
+    { name: 'analysis', stdout: '{"passed":true,"captureTimeline":{"sampleZeroEpochMs":1,"sampleZeroTimeAuthority":"first-capture-packet-qpc-epoch-calibration-v2"}}', analysisError: 'synthetic analysis failed', expected: /analysis failed/u },
+  ];
+  for (const item of cases) {
+    const directory = path.join(root, item.name);
+    fs.mkdirSync(directory);
+    const stdoutPath = path.join(directory, 'stdout.log');
+    const stderrPath = path.join(directory, 'stderr.log');
+    fs.writeFileSync(stdoutPath, item.stdout, 'utf8');
+    fs.writeFileSync(stderrPath, 'recorder stderr', 'utf8');
+    const injectedQuality = item.analysisError
+      ? `-InjectedAudioQualityError ${quotePowerShell(item.analysisError)}`
+      : '-InjectedAudioQuality $null';
+    const probe = runPowerShell([
+      '-Command',
+      extractedPhysicalCaptureFunctions() +
+        `$dir=${quotePowerShell(directory)}; $process=[pscustomobject]@{ Id=4242 }; ` +
+        `$recorder=[pscustomobject]@{ pid=4242; process=$process; startedAtEpochMs=123; recordingPath=(Join-Path $dir 'recording.wav'); transcriptionPcmPath=(Join-Path $dir 'recording.pcm'); stdout=${quotePowerShell(stdoutPath)}; stderr=${quotePowerShell(stderrPath)}; terminalTailSeconds=0; terminalAuthorityPath=(Join-Path $dir 'terminal.json') }; ` +
+        `$failure=$null; try { Complete-PhysicalOutputContentRecorder $recorder ${quotePowerShell(process.cwd())} ${injectedQuality} -InjectedRecorderExited $true | Out-Null } catch { $failure=$_.Exception.Message }; ` +
+        `$artifact=Get-Content -LiteralPath (Join-Path $dir 'physical-output-recording.json') -Raw | ConvertFrom-Json; [pscustomobject]@{ failure=$failure; passed=$artifact.passed; completionError=$artifact.completionError; completionFailures=$artifact.completionFailures; processExited=$artifact.processExited; stderr=$artifact.stderr } | ConvertTo-Json -Depth 5 -Compress`,
+    ]);
+    assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+    const result = JSON.parse(probe.stdout.trim().split(/\r?\n/u).at(-1));
+    assert.equal(result.passed, false);
+    assert.equal(result.processExited, true);
+    assert.match(result.stderr, /recorder stderr/u);
+    assert.ok(result.failure.includes('Diagnostics='));
+    assert.match(result.completionError, item.expected);
+    assert.ok(Array.isArray(result.completionFailures));
+    assert.ok(result.completionFailures.some((failure) => failure.status === 'failed'));
+    if (item.analysisError) assert.ok(result.completionFailures.some((failure) => failure.stage === 'audio-quality'));
+    if (item.name === 'bad') assert.ok(result.completionFailures.some((failure) => failure.stage === 'recorder-json'));
+  }
 });
 
 test('missing playback authority writes a nonempty translated PCM failure artifact', { skip: !isWindows }, () => {
@@ -1830,4 +2003,40 @@ test('matrix runner defaults to the exact release model and preserves explicit d
     verifyArgv[verifyArgv.indexOf('--run-manifest') + 1],
     'E:\\artifacts\\watch-mode-current-manifest.json',
   );
+});
+
+test('strict desktop lifecycle forwards only complete request-bound media-end authority', { skip: !isWindows }, () => {
+  const modulePath = path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.DesktopLifecycle.psm1');
+  const sha = 'c'.repeat(64);
+  const request = {
+    media: { sha256: sha, authoritativeTransformedReferenceFrames: 2013045, inputSampleRateHz: 16000 },
+    matrix: { runMarker: 'run-1', cellId: 'c03', leaseId: 'lease-3' },
+  };
+  const environment = {
+    OMNI_WATCH_MODE_AUTHORITATIVE_TRANSFORMED_REFERENCE_FRAMES: '2013045',
+    OMNI_WATCH_MODE_INPUT_SAMPLE_RATE_HZ: '16000',
+    OMNI_WATCH_MODE_MEDIA_SHA256: sha,
+    OMNI_WATCH_MODE_MEDIA_AUTHORITY_RUN_MARKER: 'run-1',
+    OMNI_WATCH_MODE_MEDIA_AUTHORITY_CELL_ID: 'c03',
+    OMNI_WATCH_MODE_MEDIA_AUTHORITY_LEASE_ID: 'lease-3',
+  };
+  const invoke = (envValue, runMarker = 'run-1') => runPowerShell(['-Command',
+    `$m=Import-Module ${quotePowerShell(modulePath)} -Force -PassThru; `
+      + `$request=${quotePowerShell(JSON.stringify(request))}|ConvertFrom-Json; `
+      + `$rawPrevious=${quotePowerShell(JSON.stringify(envValue))}|ConvertFrom-Json; $previous=@{}; $rawPrevious.psobject.Properties|ForEach-Object { $previous[$_.Name]=$_.Value }; `
+      + `Resolve-StrictWatchModeMediaEndAuthority -Request $request -PreviousEnvironment $previous -RunMarker ${quotePowerShell(runMarker)} -CellId 'c03' -LeaseId 'lease-3' | ConvertTo-Json -Compress`,
+  ]);
+  const passed = invoke(environment);
+  assert.equal(passed.status, 0, passed.stderr || passed.stdout);
+  assert.deepEqual(JSON.parse(passed.stdout), environment);
+
+  for (const key of Object.keys(environment)) {
+    const missing = { ...environment };
+    delete missing[key];
+    const result = invoke(missing);
+    assert.notEqual(result.status, 0, key);
+  }
+  const mismatched = invoke(environment, 'run-other');
+  assert.notEqual(mismatched.status, 0);
+  assert.match(mismatched.stderr, /identity does not match/);
 });

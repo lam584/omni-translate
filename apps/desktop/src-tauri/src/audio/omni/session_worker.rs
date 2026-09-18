@@ -192,6 +192,7 @@ fn run_omni_worker(
     // be exclusively created, before even the first provider connection.
     let mut provider_input_budget =
         ProviderInputBudget::from_env(&provider, &direction, session_generation)?;
+    let mut provider_audio_pacer = audio_pump::ProviderAudioPacer::default();
     let mut provider_input_dump = ProviderInputPcmDump::from_env(
         &app,
         provider_input_budget.max_samples(),
@@ -209,33 +210,39 @@ fn run_omni_worker(
         &direction,
         session_generation,
     )?;
+    let mut trace_call = trace.call("omni.websocket_session");
+    trace_call.fail_on_drop(
+        "omni provider worker exited without an explicit trace terminal result",
+    );
+    let connected = connect_initial_with_trace(&mut trace_call, |trace_call| {
+        OmniConnectionCoordinator::connect_initial(
+            &app,
+            store,
+            &direction,
+            &provider,
+            &voice,
+            &instructions,
+            audio_mode,
+            output_mode,
+            &source_language,
+            &target_language,
+            subtitle_translate_active,
+            speech_config,
+            &provider_input_budget,
+            translated_pcm_authority,
+            trace_call,
+        )
+    });
     let OmniConnectedSession {
-        socket,
+        mut socket,
         session_update,
-        mut trace_call,
         session_started_at,
         mut active_voice,
         mut voice_fallback_applied,
         native_translation_reuse_active,
         playback_tx,
         mut playback_worker,
-    } = OmniConnectionCoordinator::connect_initial(
-        &app,
-        store,
-        &direction,
-        &provider,
-        &voice,
-        &instructions,
-        audio_mode,
-        output_mode,
-        &source_language,
-        &target_language,
-        subtitle_translate_active,
-        speech_config,
-        &provider_input_budget,
-        translated_pcm_authority,
-        trace,
-    )?;
+    } = connected?;
     let OmniSessionRuntime {
         mut current_cue_id,
         mut pending_source_text,
@@ -283,23 +290,84 @@ fn run_omni_worker(
         &provider,
         &provider.model,
     ) {
-        Some(crate::audio::events::authorize_bailian_native_translate(
-            &provider,
-        )?)
+        match crate::audio::events::authorize_bailian_native_translate(&provider) {
+            Ok(authority) => Some(authority),
+            Err(error) => {
+                let error = provider_input_budget.finalize_failure(
+                    "livetranslate-authority-initialization-failed",
+                    error,
+                );
+                let error = finalize_trace_error(
+                    &mut trace_call,
+                    Instant::now() + Duration::from_millis(300),
+                    error,
+                );
+                let socket_result = socket
+                    .close(None)
+                    .map_err(|error| format!("socketTeardown={error}"));
+                let playback_result = playback_worker.shutdown_gracefully();
+                let snapshot_result = emit_audio_snapshot(&app, store);
+                return Err(append_secondary_failure(
+                    error,
+                    combine_all_teardown_results(socket_result, playback_result, snapshot_result)
+                        .err(),
+                ));
+            }
+        }
     } else {
         None
     };
     if let Some(authority) = livetranslate_authority.as_ref() {
-        event_diagnostics
+        if let Err(error) = event_diagnostics
             .livetranslate_server_state
-            .record_client_session_update(authority, &session_update)?;
+            .record_client_session_update(authority, &session_update)
+        {
+            let error = provider_input_budget.finalize_failure(
+                "livetranslate-initial-session-update-authority-invalid",
+                error,
+            );
+            let error = finalize_trace_error(
+                &mut trace_call,
+                Instant::now() + Duration::from_millis(300),
+                error,
+            );
+            let socket_result = socket
+                .close(None)
+                .map_err(|error| format!("socketTeardown={error}"));
+            let playback_result = playback_worker.shutdown_gracefully();
+            let snapshot_result = emit_audio_snapshot(&app, store);
+            return Err(append_secondary_failure(
+                error,
+                combine_all_teardown_results(socket_result, playback_result, snapshot_result).err(),
+            ));
+        }
     }
-    let mut livetranslate_shutdown =
-        LivetranslateShutdown::for_provider(&provider, stop_requested)?;
+    let mut livetranslate_shutdown = match LivetranslateShutdown::for_provider(&provider, stop_requested) {
+        Ok(shutdown) => shutdown,
+        Err(error) => {
+            let error = provider_input_budget.finalize_failure(
+                "livetranslate-shutdown-initialization-failed",
+                error,
+            );
+            let error = finalize_trace_error(
+                &mut trace_call,
+                Instant::now() + Duration::from_millis(300),
+                error,
+            );
+            let socket_result = socket
+                .close(None)
+                .map_err(|error| format!("socketTeardown={error}"));
+            let playback_result = playback_worker.shutdown_gracefully();
+            let snapshot_result = emit_audio_snapshot(&app, store);
+            return Err(append_secondary_failure(
+                error,
+                combine_all_teardown_results(socket_result, playback_result, snapshot_result).err(),
+            ));
+        }
+    };
     let mut audio_input_disconnected = false;
     let mut socket = livetranslate_shutdown.wrap_socket(socket);
     let connector = livetranslate_shutdown.wrap_connector(TungsteniteConnector);
-    let mut shutdown_outcome = OmniWorkerShutdown::Immediate;
     macro_rules! terminalize_livetranslate_shutdown {
         () => {{
             let native_cue_ids = event_diagnostics.unfinished_native_response_cue_ids();
@@ -317,6 +385,62 @@ fn run_omni_worker(
             });
         }};
     }
+    macro_rules! fail_before_teardown {
+        ($error:expr, $teardown:block) => {{
+            let (error, teardown_result) = finalize_trace_error_before_teardown(
+                &mut trace_call,
+                livetranslate_shutdown.failure_evidence_deadline(Instant::now()),
+                $error,
+                || -> Result<(), String> { $teardown },
+            );
+            let secondary = teardown_result.err();
+            let mut combined = append_secondary_failure(error, secondary.clone());
+            if let Some(secondary) = secondary {
+                let persistence = trace_call.persist_terminal_supplement(
+                    "worker_teardown_failure",
+                    json!({ "error": secondary }),
+                    livetranslate_shutdown.failure_evidence_deadline(Instant::now()),
+                );
+                if !persistence.confirmed() {
+                    combined = format!(
+                        "{combined} | teardownTraceEvidenceFinalization={}",
+                        persistence.detail()
+                    );
+                }
+            }
+            return Err(combined);
+        }};
+    }
+    macro_rules! fail_connected {
+        ($reason:expr, $error:expr) => {{
+            let error = provider_input_budget.finalize_failure($reason, $error);
+            fail_before_teardown!(error, {
+                let socket = socket
+                    .close()
+                    .map_err(|error| format!("socketTeardown={error}"));
+                let playback = playback_worker.shutdown_gracefully();
+                let snapshot = emit_audio_snapshot(&app, store);
+                combine_all_teardown_results(socket, playback, snapshot)
+            });
+        }};
+    }
+    macro_rules! complete_before_teardown {
+        ($outcome:expr, $teardown:block) => {{
+            let completion = provider_input_budget
+                .finalize("worker-completed")
+                .map(|()| $outcome);
+            return finalize_worker_trace_before_teardown(
+                &mut trace_call,
+                &livetranslate_shutdown,
+                completion,
+                || -> Result<(), String> {
+                    $teardown
+                    Ok(())
+                },
+            );
+        }};
+    }
+    let worker_result = (|| -> Result<OmniWorkerShutdown, String> {
     loop {
         if stop_rx.try_recv().is_ok() {
             if livetranslate_shutdown.request(Instant::now()) {
@@ -327,7 +451,6 @@ fn run_omni_worker(
                     "event=livetranslate_shutdown action=drain_audio_before_session_finish",
                 );
             } else {
-                let _ = socket.close();
                 store.set_stt_connected(false, buffer_size);
                 let _ = diag_log(
                     &app,
@@ -365,12 +488,28 @@ fn run_omni_worker(
                 if store.is_current_omni_session(&direction, session_generation) {
                     store.discard_uncommitted_subtitle_cues_by_direction(&direction);
                 }
-                playback_worker.shutdown_gracefully()?;
-                emit_audio_snapshot(&app, store)?;
-                break;
+                complete_before_teardown!(OmniWorkerShutdown::Immediate, {
+                    let socket_result = socket
+                        .close()
+                        .map_err(|error| format!("socketTeardown={error}"));
+                    let playback_result = playback_worker.shutdown_gracefully();
+                    let snapshot_result = emit_audio_snapshot(&app, store);
+                    combine_all_teardown_results(
+                        socket_result,
+                        playback_result,
+                        snapshot_result,
+                    )?;
+                });
             }
         }
-        if let Some((reason, error)) = livetranslate_shutdown.deadline_error(Instant::now()) {
+        let now = Instant::now();
+        if livetranslate_shutdown.take_evidence_queue_deadline(now) {
+            trace_call.queue_pending_audio_evidence();
+        }
+        if let Some((reason, error)) = livetranslate_shutdown.deadline_error_with_response_state(
+            now,
+            event_diagnostics.native_response_active(),
+        ) {
             let error = provider_input_budget.finalize_failure(reason, error);
             let _ = diag_log(
                 &app,
@@ -378,11 +517,15 @@ fn run_omni_worker(
                 "error",
                 format!("event=livetranslate_shutdown action=fail_closed reason={reason} error={error}"),
             );
-            terminalize_livetranslate_shutdown!();
-            let _ = socket.close();
-            let _ = playback_worker.shutdown_gracefully();
-            let _ = emit_audio_snapshot(&app, store);
-            return Err(error);
+            fail_before_teardown!(error, {
+                terminalize_livetranslate_shutdown!();
+                let socket_result = socket
+                    .close()
+                    .map_err(|error| format!("socketTeardown={error}"));
+                let playback = playback_worker.shutdown_gracefully();
+                let snapshot = emit_audio_snapshot(&app, store);
+                combine_all_teardown_results(socket_result, playback, snapshot)
+            });
         }
 
         let pump_state = OmniAudioPump::new(OmniAudioPumpState {
@@ -408,6 +551,7 @@ fn run_omni_worker(
             provider_input_prefilter_dump,
             provider_input_dump,
             provider_input_budget,
+            provider_audio_pacer,
             audio_input_disconnected,
             chunks_sent_this_tick: 0,
             socket_reconnected: false,
@@ -433,6 +577,7 @@ fn run_omni_worker(
                 manual_response_pending,
                 livetranslate_shutdown.is_requested(),
             ),
+            livetranslate_shutdown.is_requested(),
         );
         let pump_state = match pump_state {
             Ok(state) => state,
@@ -443,13 +588,20 @@ fn run_omni_worker(
                     "error",
                     "event=livetranslate_shutdown action=fail_closed reason=write_failed",
                 );
-                terminalize_livetranslate_shutdown!();
-                let _ = socket.close();
-                let _ = playback_worker.shutdown_gracefully();
-                let _ = emit_audio_snapshot(&app, store);
-                return Err(format!(
-                    "LiveTranslate fail-closed while draining the existing session: {error}"
-                ));
+                fail_before_teardown!(
+                    format!(
+                        "LiveTranslate fail-closed while draining the existing session: {error}"
+                    ),
+                    {
+                        terminalize_livetranslate_shutdown!();
+                        let socket_result = socket
+                            .close()
+                            .map_err(|error| format!("socketTeardown={error}"));
+                        let playback = playback_worker.shutdown_gracefully();
+                        let snapshot = emit_audio_snapshot(&app, store);
+                        combine_all_teardown_results(socket_result, playback, snapshot)
+                    }
+                );
             }
             Err(error) => return Err(error),
         };
@@ -478,6 +630,7 @@ fn run_omni_worker(
         provider_input_prefilter_dump = pump_state.provider_input_prefilter_dump;
         provider_input_dump = pump_state.provider_input_dump;
         provider_input_budget = pump_state.provider_input_budget;
+        provider_audio_pacer = pump_state.provider_audio_pacer;
         audio_input_disconnected = pump_state.audio_input_disconnected;
         let chunks_sent_this_tick = pump_state.chunks_sent_this_tick;
         let should_send_livetranslate_finish = livetranslate_shutdown.should_send_finish(
@@ -492,11 +645,15 @@ fn run_omni_worker(
                     "livetranslate-session-finished-before-finish",
                     error,
                 );
-                terminalize_livetranslate_shutdown!();
-                let _ = socket.close();
-                let _ = playback_worker.shutdown_gracefully();
-                let _ = emit_audio_snapshot(&app, store);
-                return Err(error);
+                fail_before_teardown!(error, {
+                    terminalize_livetranslate_shutdown!();
+                    let socket = socket
+                        .close()
+                        .map_err(|error| format!("socketTeardown={error}"));
+                    let playback = playback_worker.shutdown_gracefully();
+                    let snapshot = emit_audio_snapshot(&app, store);
+                    combine_all_teardown_results(socket, playback, snapshot)
+                });
             }
         };
         if should_send_livetranslate_finish {
@@ -504,9 +661,24 @@ fn run_omni_worker(
                 "event_session_finish_{}",
                 unix_ms()
             ));
-            event_diagnostics
+            if let Err(error) = event_diagnostics
                 .livetranslate_server_state
-                .record_client_finish()?;
+                .record_client_finish()
+            {
+                let error = provider_input_budget.finalize_failure(
+                    "livetranslate-client-finish-state-invalid",
+                    error,
+                );
+                fail_before_teardown!(error, {
+                    terminalize_livetranslate_shutdown!();
+                    let socket_result = socket
+                        .close()
+                        .map_err(|error| format!("socketTeardown={error}"));
+                    let playback = playback_worker.shutdown_gracefully();
+                    let snapshot = emit_audio_snapshot(&app, store);
+                    combine_all_teardown_results(socket_result, playback, snapshot)
+                });
+            }
             trace_call.record_ws_send("session.finish", finish_event.clone());
             if let Err(error) = socket.send_message(Message::Text(
                 finish_event.to_string().into(),
@@ -525,11 +697,15 @@ fn run_omni_worker(
                         "event=livetranslate_shutdown action=fail_closed reason=session_finish_send_failed error={error}"
                     ),
                 );
-                terminalize_livetranslate_shutdown!();
-                let _ = socket.close();
-                let _ = playback_worker.shutdown_gracefully();
-                let _ = emit_audio_snapshot(&app, store);
-                return Err(error);
+                fail_before_teardown!(error, {
+                    terminalize_livetranslate_shutdown!();
+                    let socket = socket
+                        .close()
+                        .map_err(|error| format!("socketTeardown={error}"));
+                    let playback = playback_worker.shutdown_gracefully();
+                    let snapshot = emit_audio_snapshot(&app, store);
+                    combine_all_teardown_results(socket, playback, snapshot)
+                });
             }
             if direction == "inbound" {
                 if let Err(error) = store.record_strict_watch_session_finish_sent() {
@@ -537,11 +713,15 @@ fn run_omni_worker(
                         "livetranslate-session-finish-authority-invalid",
                         error,
                     );
-                    terminalize_livetranslate_shutdown!();
-                    let _ = socket.close();
-                    let _ = playback_worker.shutdown_gracefully();
-                    let _ = emit_audio_snapshot(&app, store);
-                    return Err(error);
+                    fail_before_teardown!(error, {
+                        terminalize_livetranslate_shutdown!();
+                        let socket = socket
+                            .close()
+                            .map_err(|error| format!("socketTeardown={error}"));
+                        let playback = playback_worker.shutdown_gracefully();
+                        let snapshot = emit_audio_snapshot(&app, store);
+                        combine_all_teardown_results(socket, playback, snapshot)
+                    });
                 }
             }
             livetranslate_shutdown.record_finish_sent(Instant::now());
@@ -610,7 +790,13 @@ fn run_omni_worker(
             }};
         }
         if pump_socket_reconnected {
-            reset_gate_after_reconnect!(pump_reconnected_session_update.as_ref());
+            let reset = (|| -> Result<(), String> {
+                reset_gate_after_reconnect!(pump_reconnected_session_update.as_ref());
+                Ok(())
+            })();
+            if let Err(error) = reset {
+                fail_connected!("reconnect-session-update-invalid", error);
+            }
         }
 
         OmniAudioPump::log_waiting_if_needed(
@@ -727,7 +913,6 @@ fn run_omni_worker(
         let poll = OmniSocketEventProcessor::poll(
             OmniSocketEventState {
                 socket,
-                trace_call,
                 reconnect_count,
                 pending_audio_buffer,
                 active_voice,
@@ -757,6 +942,7 @@ fn run_omni_worker(
                 audio_samples_since_commit,
                 manual_turn_audio_after_response,
             },
+            &mut trace_call,
             OmniSocketEventContext {
                 app: &app,
                 store,
@@ -803,40 +989,48 @@ fn run_omni_worker(
                     "error",
                     "event=livetranslate_shutdown action=fail_closed reason=poll_failed",
                 );
-                if let Some((
-                    native_cue_ids,
-                    shutdown_cue_id,
-                    shutdown_source_text,
-                    shutdown_audio_cue_id,
-                    shutdown_audio_chunk_index,
-                    shutdown_audio_created_at_ms,
-                )) = shutdown_failure_tail.as_ref()
-                {
-                    terminalize_livetranslate_shutdown_failure(
-                        LivetranslateShutdownFailure {
-                            store,
-                            direction: &direction,
-                            current_cue_id: shutdown_cue_id.as_deref(),
-                            pending_source_text: shutdown_source_text,
-                            native_cue_ids,
-                            native_translation_reuse_active,
-                            playback_tx: &playback_tx,
-                            pending_audio_stream_cue_id: shutdown_audio_cue_id.as_deref(),
-                            pending_audio_stream_chunk_index: *shutdown_audio_chunk_index,
-                            pending_audio_stream_created_at_ms: *shutdown_audio_created_at_ms,
-                        },
-                    );
-                }
-                let _ = playback_worker.shutdown_gracefully();
-                let _ = emit_audio_snapshot(&app, store);
-                return Err(error);
+                fail_before_teardown!(error, {
+                    if let Some((
+                        native_cue_ids,
+                        shutdown_cue_id,
+                        shutdown_source_text,
+                        shutdown_audio_cue_id,
+                        shutdown_audio_chunk_index,
+                        shutdown_audio_created_at_ms,
+                    )) = shutdown_failure_tail.as_ref()
+                    {
+                        terminalize_livetranslate_shutdown_failure(
+                            LivetranslateShutdownFailure {
+                                store,
+                                direction: &direction,
+                                current_cue_id: shutdown_cue_id.as_deref(),
+                                pending_source_text: shutdown_source_text,
+                                native_cue_ids,
+                                native_translation_reuse_active,
+                                playback_tx: &playback_tx,
+                                pending_audio_stream_cue_id: shutdown_audio_cue_id.as_deref(),
+                                pending_audio_stream_chunk_index: *shutdown_audio_chunk_index,
+                                pending_audio_stream_created_at_ms: *shutdown_audio_created_at_ms,
+                            },
+                        );
+                    }
+                    let playback = playback_worker.shutdown_gracefully();
+                    let snapshot = emit_audio_snapshot(&app, store);
+                    combine_teardown_results(playback, snapshot)
+                });
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                let error = provider_input_budget.finalize_failure("socket-poll-failed", error);
+                fail_before_teardown!(error, {
+                    let playback = playback_worker.shutdown_gracefully();
+                    let snapshot = emit_audio_snapshot(&app, store);
+                    combine_teardown_results(playback, snapshot)
+                });
+            }
         };
         let poll_socket_reconnected = poll.socket_reconnected;
         let poll_reconnected_session_update = poll.reconnected_session_update;
         socket = poll.state.socket;
-        trace_call = poll.state.trace_call;
         reconnect_count = poll.state.reconnect_count;
         pending_audio_buffer = poll.state.pending_audio_buffer;
         active_voice = poll.state.active_voice;
@@ -866,14 +1060,25 @@ fn run_omni_worker(
         audio_samples_since_commit = poll.state.audio_samples_since_commit;
         manual_turn_audio_after_response = poll.state.manual_turn_audio_after_response;
         if poll_socket_reconnected {
-            provider_input_budget.record_reconnect()?;
-            reset_gate_after_reconnect!(poll_reconnected_session_update.as_ref());
-        }
-        if livetranslate_shutdown.session_finished_received() {
-            if direction == "inbound" {
-                store.record_strict_watch_session_finished_received()?;
+            if let Err(error) = provider_input_budget.record_reconnect() {
+                fail_connected!("provider-input-budget-reconnect-record-failed", error);
             }
-            let _ = socket.close();
+            let reset = (|| -> Result<(), String> {
+                reset_gate_after_reconnect!(poll_reconnected_session_update.as_ref());
+                Ok(())
+            })();
+            if let Err(error) = reset {
+                fail_connected!("reconnect-session-update-invalid", error);
+            }
+        }
+        if livetranslate_shutdown.session_finished_received()
+            && !event_diagnostics.native_response_active()
+        {
+            if direction == "inbound" {
+                if let Err(error) = store.record_strict_watch_session_finished_received() {
+                    fail_connected!("livetranslate-session-finished-authority-invalid", error);
+                }
+            }
             store.set_stt_connected(false, buffer_size);
             let _ = diag_log(
                 &app,
@@ -896,10 +1101,14 @@ fn run_omni_worker(
             // processor above; do not apply the immediate-stop discard policy
             // here, because a final cue may intentionally remain visible as
             // incomplete evidence rather than being silently erased.
-            playback_worker.shutdown_gracefully()?;
-            emit_audio_snapshot(&app, store)?;
-            shutdown_outcome = OmniWorkerShutdown::LivetranslateSessionFinished;
-            break;
+            complete_before_teardown!(OmniWorkerShutdown::LivetranslateSessionFinished, {
+                let socket = socket
+                    .close()
+                    .map_err(|error| format!("socketTeardown={error}"));
+                let playback = playback_worker.shutdown_gracefully();
+                let snapshot = emit_audio_snapshot(&app, store);
+                combine_all_teardown_results(socket, playback, snapshot)?;
+            });
         }
         if poll.stop_worker {
             if livetranslate_shutdown.is_requested() {
@@ -908,13 +1117,16 @@ fn run_omni_worker(
                     "LiveTranslate fail-closed: provider ended the session before session.finished"
                         .to_string(),
                 );
-                terminalize_livetranslate_shutdown!();
-                let _ = socket.close();
-                let _ = playback_worker.shutdown_gracefully();
-                let _ = emit_audio_snapshot(&app, store);
-                return Err(error);
+                fail_before_teardown!(error, {
+                    terminalize_livetranslate_shutdown!();
+                    let socket = socket
+                        .close()
+                        .map_err(|error| format!("socketTeardown={error}"));
+                    let playback = playback_worker.shutdown_gracefully();
+                    let snapshot = emit_audio_snapshot(&app, store);
+                    combine_all_teardown_results(socket, playback, snapshot)
+                });
             }
-            let _ = socket.close();
             store.set_stt_connected(false, buffer_size);
             let _ = diag_log(
                 &app,
@@ -924,9 +1136,14 @@ fn run_omni_worker(
                     "[PRECONNECT] parked Omni worker stopped after provider idle timeout, sentAudioChunks={chunk_count}"
                 ),
             );
-            playback_worker.shutdown_gracefully()?;
-            emit_audio_snapshot(&app, store)?;
-            break;
+            complete_before_teardown!(OmniWorkerShutdown::Immediate, {
+                let socket = socket
+                    .close()
+                    .map_err(|error| format!("socketTeardown={error}"));
+                let playback = playback_worker.shutdown_gracefully();
+                let snapshot = emit_audio_snapshot(&app, store);
+                combine_all_teardown_results(socket, playback, snapshot)?;
+            });
         }
         if poll.skip_tick {
             continue;
@@ -941,12 +1158,505 @@ fn run_omni_worker(
         ) {
             last_vad_event_time = SystemTime::now();
         }
-        emit_audio_snapshot(&app, store)?;
+        if let Err(error) = emit_audio_snapshot(&app, store) {
+            fail_connected!("audio-snapshot-emission-failed", error);
+        }
         livetranslate_shutdown.pace_tick(thread::sleep, thread::yield_now);
     }
 
-    provider_input_budget.finalize("worker-completed")?;
-    Ok(shutdown_outcome)
+    })();
+    finalize_worker_trace(&mut trace_call, &livetranslate_shutdown, worker_result)
+}
+
+fn finalize_worker_trace<R: tauri::Runtime>(
+    trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
+    livetranslate_shutdown: &LivetranslateShutdown,
+    result: Result<OmniWorkerShutdown, String>,
+) -> Result<OmniWorkerShutdown, String> {
+    match result {
+        Ok(outcome) => {
+            let deadline = livetranslate_shutdown.failure_evidence_deadline(Instant::now());
+            let persistence = trace_call.end_and_flush(deadline);
+            if persistence.confirmed() {
+                Ok(outcome)
+            } else {
+                Err(with_trace_evidence_details(
+                    "Omni provider worker completed without confirmed terminal trace evidence"
+                        .to_string(),
+                    persistence,
+                ))
+            }
+        }
+        Err(error) => {
+            let deadline = livetranslate_shutdown.failure_evidence_deadline(Instant::now());
+            Err(finalize_trace_error(trace_call, deadline, error))
+        }
+    }
+}
+
+fn finalize_worker_trace_before_teardown<R: tauri::Runtime>(
+    trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
+    livetranslate_shutdown: &LivetranslateShutdown,
+    result: Result<OmniWorkerShutdown, String>,
+    teardown: impl FnOnce() -> Result<(), String>,
+) -> Result<OmniWorkerShutdown, String> {
+    let completion = finalize_worker_trace(trace_call, livetranslate_shutdown, result);
+    let teardown_result = teardown();
+    let Err(teardown_error) = teardown_result else {
+        return completion;
+    };
+    let persistence = trace_call.persist_terminal_supplement(
+        "worker_teardown_failure",
+        json!({ "error": teardown_error }),
+        livetranslate_shutdown.failure_evidence_deadline(Instant::now()),
+    );
+    let teardown_error = if persistence.confirmed() {
+        teardown_error
+    } else {
+        format!(
+            "{teardown_error} | teardownTraceEvidenceFinalization={}",
+            persistence.detail()
+        )
+    };
+    match completion {
+        Ok(_) => Err(teardown_error),
+        Err(primary) => Err(append_secondary_failure(primary, Some(teardown_error))),
+    }
+}
+
+fn connect_initial_with_trace<R: tauri::Runtime, T>(
+    trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
+    connect: impl FnOnce(
+        &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
+    ) -> Result<T, String>,
+) -> Result<T, String> {
+    connect(trace_call).map_err(|error| {
+        finalize_trace_error(
+            trace_call,
+            Instant::now() + Duration::from_millis(300),
+            error,
+        )
+    })
+}
+
+fn finalize_trace_error<R: tauri::Runtime>(
+    trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
+    deadline: Instant,
+    error: String,
+) -> String {
+    let persistence = trace_call.error_and_flush(error.clone(), deadline);
+    if persistence.confirmed() {
+        error
+    } else {
+        with_trace_evidence_details(error, persistence)
+    }
+}
+
+fn finalize_trace_error_before_teardown<R: tauri::Runtime, T>(
+    trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
+    deadline: Instant,
+    error: String,
+    teardown: impl FnOnce() -> T,
+) -> (String, T) {
+    let error = finalize_trace_error(trace_call, deadline, error);
+    (error, teardown())
+}
+
+fn combine_teardown_results(
+    playback: Result<(), String>,
+    snapshot: Result<(), String>,
+) -> Result<(), String> {
+    match (playback, snapshot) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(playback), Err(snapshot)) => Err(format!(
+            "playbackTeardown={playback}; snapshotTeardown={snapshot}"
+        )),
+    }
+}
+
+fn combine_all_teardown_results(
+    socket: Result<(), String>,
+    playback: Result<(), String>,
+    snapshot: Result<(), String>,
+) -> Result<(), String> {
+    let failures = [socket.err(), playback.err(), snapshot.err()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+fn append_secondary_failure(primary: String, secondary: Option<String>) -> String {
+    let Some(secondary) = secondary else { return primary; };
+    let (message, code, recommended) = super::session_errors::split_error_markers(&primary);
+    let mut combined = format!("{message} | secondaryTeardownFailure={secondary}");
+    if let Some(code) = code {
+        combined.push_str(super::session_errors::SESSION_ERROR_CODE_MARKER);
+        combined.push_str(&code);
+    }
+    if let Some(recommended) = recommended {
+        combined.push_str(super::session_errors::RECOMMENDED_ACTION_MARKER);
+        combined.push_str(&recommended);
+    }
+    combined
+}
+
+fn with_trace_evidence_details(
+    error: String,
+    persistence: crate::diagnostics::model_trace::ModelTracePersistence,
+) -> String {
+    if error.contains("modelTraceEvidenceFinalization=") {
+        return error;
+    }
+    let (message, code, recommended) = super::session_errors::split_error_markers(&error);
+    let mut structured = format!(
+        "{message} | details: modelTraceEvidenceFinalization=unacknowledged {}",
+        persistence.detail()
+    );
+    if let Some(code) = code {
+        structured.push_str(super::session_errors::SESSION_ERROR_CODE_MARKER);
+        structured.push_str(&code);
+    }
+    if let Some(recommended) = recommended {
+        structured.push_str(super::session_errors::RECOMMENDED_ACTION_MARKER);
+        structured.push_str(&recommended);
+    }
+    structured
+}
+
+#[cfg(test)]
+mod trace_finalizer_tests {
+    use std::fs;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+
+    use tauri::Manager;
+
+    use super::*;
+    use crate::diagnostics::model_trace::{ModelTraceContext, ModelTraceRecorder};
+    use crate::diagnostics::state::DiagnosticsStateStore;
+
+    #[test]
+    fn secondary_teardown_failure_preserves_primary_markers() {
+        let primary = format!(
+            "provider failed{}provider-code{}restart",
+            super::super::session_errors::SESSION_ERROR_CODE_MARKER,
+            super::super::session_errors::RECOMMENDED_ACTION_MARKER,
+        );
+        let combined = super::append_secondary_failure(
+            primary,
+            Some("playback join failed".to_string()),
+        );
+        assert!(combined.contains("provider failed"));
+        assert!(combined.contains("secondaryTeardownFailure=playback join failed"));
+        assert!(combined.contains("provider-code"));
+        assert!(combined.contains("restart"));
+    }
+
+    #[test]
+    fn failure_receipt_is_confirmed_before_blocking_teardown_begins() {
+        let root = crate::diagnostics::test_support::temp_dir(
+            "session-worker",
+            "finalizer-before-teardown",
+        );
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(DiagnosticsStateStore::new_with_root(root.to_string_lossy().to_string()));
+        app.state::<DiagnosticsStateStore>().set_min_log_level("debug");
+        let recorder = ModelTraceRecorder::new(
+            app.handle().clone(),
+            ModelTraceContext::new("provider", "model", "omni"),
+        );
+        let mut trace_call = recorder.call("worker.failure.before-teardown");
+        trace_call.fail_on_drop("unexpected exit");
+        trace_call.record_ws_send(
+            "input_audio_buffer.append",
+            serde_json::json!({"type":"input_audio_buffer.append","resampledSamples":320}),
+        );
+        let teardown_started = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&teardown_started);
+        let receipt_returned = Arc::new(AtomicBool::new(false));
+        let receipt_observed = Arc::clone(&receipt_returned);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let deadline = Instant::now() + Duration::from_millis(300);
+        trace_call.set_test_evidence_persister(move |records, actual_deadline| {
+            assert_eq!(actual_deadline, deadline);
+            assert_eq!(records.len(), 2, "real audio and terminal evidence must be generated");
+            assert!(records.iter().any(|record| record.id.ends_with(":end")));
+            let ids = records.iter().map(|record| record.id.clone()).collect();
+            entered_tx.send(()).unwrap();
+            release_rx.recv().expect("controller must release the receipt");
+            receipt_returned.store(true, Ordering::SeqCst);
+            ids
+        });
+        let controller = std::thread::spawn(move || {
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(!observed.load(Ordering::SeqCst), "teardown ran before receipt completion");
+            release_tx.send(()).unwrap();
+        });
+
+        let (error, ()) = finalize_trace_error_before_teardown(
+            &mut trace_call,
+            deadline,
+            "poll failed".to_string(),
+            || {
+                assert!(receipt_observed.load(Ordering::SeqCst));
+                teardown_started.store(true, Ordering::SeqCst);
+            },
+        );
+        controller.join().unwrap();
+        // File visibility is checked separately from the controlled receipt.
+        assert!(app.state::<DiagnosticsStateStore>().flush_logs());
+        let content = fs::read_to_string(root.join("logs").join("app.log")).unwrap();
+        assert!(content.contains("input_audio_buffer.append.summary"));
+        assert!(content.contains("worker.failure.before-teardown end_call"));
+        assert_eq!(error, "poll failed");
+        assert!(teardown_started.load(Ordering::SeqCst));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn success_receipt_is_confirmed_before_blocking_teardown_begins() {
+        let root = crate::diagnostics::test_support::temp_dir(
+            "session-worker",
+            "success-finalizer-before-teardown",
+        );
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(DiagnosticsStateStore::new_with_root(root.to_string_lossy().to_string()));
+        app.state::<DiagnosticsStateStore>().set_min_log_level("debug");
+        let recorder = ModelTraceRecorder::new(
+            app.handle().clone(),
+            ModelTraceContext::new("provider", "model", "omni"),
+        );
+        let mut trace_call = recorder.call("worker.success.before-teardown");
+        trace_call.record_ws_send(
+            "input_audio_buffer.append",
+            serde_json::json!({"type":"input_audio_buffer.append","resampledSamples":320}),
+        );
+        let shutdown = LivetranslateShutdown::with_stop_signal(
+            false,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let teardown_started = Arc::new(AtomicBool::new(false));
+        let teardown_observed = Arc::clone(&teardown_started);
+        let receipt_returned = Arc::new(AtomicBool::new(false));
+        let receipt_observed = Arc::clone(&receipt_returned);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        trace_call.set_test_evidence_persister(move |records, deadline| {
+            assert!(deadline > Instant::now());
+            assert_eq!(records.len(), 2, "real audio and terminal evidence must be generated");
+            assert!(records.iter().any(|record| record.id.ends_with(":end")));
+            let ids = records.iter().map(|record| record.id.clone()).collect();
+            entered_tx.send(()).unwrap();
+            release_rx.recv().expect("controller must release the receipt");
+            receipt_returned.store(true, Ordering::SeqCst);
+            ids
+        });
+        let controller = std::thread::spawn(move || {
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(
+                !teardown_observed.load(Ordering::SeqCst),
+                "success teardown ran before receipt completion",
+            );
+            release_tx.send(()).unwrap();
+        });
+
+        let result = finalize_worker_trace_before_teardown(
+            &mut trace_call,
+            &shutdown,
+            Ok(OmniWorkerShutdown::LivetranslateSessionFinished),
+            || {
+                assert!(receipt_observed.load(Ordering::SeqCst));
+                teardown_started.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        controller.join().unwrap();
+        assert!(matches!(result, Ok(OmniWorkerShutdown::LivetranslateSessionFinished)));
+        assert!(teardown_started.load(Ordering::SeqCst));
+        assert!(app.state::<DiagnosticsStateStore>().flush_logs());
+        let content = fs::read_to_string(root.join("logs").join("app.log")).unwrap();
+        assert!(content.contains("input_audio_buffer.append.summary"));
+        assert!(content.contains("worker.success.before-teardown end_call"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn initialization_failure_is_finalized_by_the_outer_trace_owner() {
+        let root = crate::diagnostics::test_support::temp_dir(
+            "session-worker",
+            "initialization-failure",
+        );
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(DiagnosticsStateStore::new_with_root(root.to_string_lossy().to_string()));
+        app.state::<DiagnosticsStateStore>().set_min_log_level("debug");
+        let recorder = ModelTraceRecorder::new(
+            app.handle().clone(),
+            ModelTraceContext::new("provider", "model", "omni"),
+        );
+        let mut trace_call = recorder.call("worker.initialization");
+        trace_call.set_test_evidence_persister(|records, _| {
+            assert_eq!(records.len(), 1);
+            assert!(records[0].id.ends_with(":end"));
+            assert!(records[0].line.contains("session.update initialization failed"));
+            records.iter().map(|record| record.id.clone()).collect()
+        });
+        trace_call.fail_on_drop("initialization escaped without finalization");
+
+        let result: Result<(), String> = connect_initial_with_trace(&mut trace_call, |_| {
+            Err("session.update initialization failed".to_string())
+        });
+        assert_eq!(result.unwrap_err(), "session.update initialization failed");
+        let snapshot = app.state::<DiagnosticsStateStore>().snapshot_base();
+        assert_eq!(snapshot.model_trace_summary.failed_calls, 1);
+        assert_eq!(snapshot.model_trace_summary.succeeded_calls, 0);
+        assert!(app.state::<DiagnosticsStateStore>().flush_logs());
+        let content = fs::read_to_string(root.join("logs").join("app.log")).unwrap();
+        assert!(content.contains("worker.initialization end_call"));
+        assert!(content.contains("session.update initialization failed"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn partial_receipts_remain_failures_through_initialization_and_teardown() {
+        for (audio_ack, end_ack) in [(false, true), (true, false), (false, false)] {
+            let root = tempfile::tempdir().unwrap();
+            let app = tauri::test::mock_builder()
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .unwrap();
+            app.manage(DiagnosticsStateStore::new_with_root(root.path().to_string_lossy().to_string()));
+            app.state::<DiagnosticsStateStore>().set_min_log_level("debug");
+            let recorder = ModelTraceRecorder::new(
+                app.handle().clone(), ModelTraceContext::new("provider", "model", "omni"),
+            );
+            let mut call = recorder.call("worker.partial-receipt");
+            let receipt_returned = Arc::new(AtomicBool::new(false));
+            let observed = Arc::clone(&receipt_returned);
+            call.set_test_evidence_persister(move |records, _| {
+                assert_eq!(records.len(), 2);
+                observed.store(true, Ordering::SeqCst);
+                records.iter().filter(|record| {
+                    if record.id.ends_with(":end") { end_ack } else { audio_ack }
+                }).map(|record| record.id.clone()).collect()
+            });
+            let primary = "initialization failed | code: session.quota-exceeded | recommended: check-provider-quota";
+            let result: Result<(), String> = connect_initial_with_trace(&mut call, |call| {
+                call.record_ws_send("input_audio_buffer.append", json!({"resampledSamples":320}));
+                Err(primary.to_string())
+            });
+            let expected = format!(
+                "initialization failed | details: modelTraceEvidenceFinalization=unacknowledged traceSelected=true audioConfirmed={audio_ack} endConfirmed={end_ack} audioEvidenceOverflowed=false pendingAudioEvidenceCount={} | code: session.quota-exceeded | recommended: check-provider-quota",
+                usize::from(!audio_ack),
+            );
+            assert_eq!(result.unwrap_err(), expected);
+            call.set_test_evidence_persister(|_, _| panic!("late receipt must not replace first result"));
+            let (error, teardown) = finalize_trace_error_before_teardown(
+                &mut call, Instant::now(), primary.to_string(), || {
+                    assert!(receipt_returned.load(Ordering::SeqCst));
+                    Err::<(), _>("secondary teardown failure")
+                },
+            );
+            assert_eq!(error, expected);
+            assert_eq!(teardown.unwrap_err(), "secondary teardown failure");
+            drop(call);
+            let store = app.state::<DiagnosticsStateStore>();
+            assert_eq!(store.snapshot_base().model_trace_summary.failed_calls, 1);
+            assert_eq!(store.snapshot_base().model_trace_summary.succeeded_calls, 0);
+            assert!(store.flush_logs());
+            let content = fs::read_to_string(root.path().join("logs/app.log")).unwrap();
+            assert!(content.contains("input_audio_buffer.append.summary"));
+            assert!(content.contains("worker.partial-receipt end_call"));
+        }
+    }
+
+    #[test]
+    fn finalizer_failure_is_structured_without_replacing_original_error_markers() {
+        let root = crate::diagnostics::test_support::temp_dir(
+            "session-worker",
+            "unwritable-finalizer",
+        );
+        fs::create_dir_all(&root).unwrap();
+        let blocked_root = root.join("blocked-root");
+        fs::write(&blocked_root, b"not a directory").unwrap();
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(DiagnosticsStateStore::new_with_root(
+            blocked_root.to_string_lossy().to_string(),
+        ));
+        app.state::<DiagnosticsStateStore>().set_min_log_level("debug");
+        let recorder = ModelTraceRecorder::new(
+            app.handle().clone(),
+            ModelTraceContext::new("provider", "model", "omni"),
+        );
+        let mut trace_call = recorder.call("worker.unmanaged-diagnostics");
+        trace_call.fail_on_drop("unexpected exit");
+        let original = "provider failed | code: session.quota-exceeded | recommended: check-provider-quota";
+        let error = finalize_trace_error(
+            &mut trace_call,
+            Instant::now() + Duration::from_millis(20),
+            original.to_string(),
+        );
+        let (message, code, recommended) = super::super::session_errors::split_error_markers(&error);
+        assert!(message.contains("modelTraceEvidenceFinalization=unacknowledged"));
+        assert_eq!(code.as_deref(), Some("session.quota-exceeded"));
+        assert_eq!(recommended.as_deref(), Some("check-provider-quota"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn successful_worker_without_a_terminal_receipt_becomes_a_worker_failure() {
+        let root = crate::diagnostics::test_support::temp_dir(
+            "session-worker",
+            "unwritable-success-terminal",
+        );
+        fs::create_dir_all(&root).unwrap();
+        let blocked_root = root.join("blocked-root");
+        fs::write(&blocked_root, b"not a directory").unwrap();
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(DiagnosticsStateStore::new_with_root(
+            blocked_root.to_string_lossy().to_string(),
+        ));
+        app.state::<DiagnosticsStateStore>().set_min_log_level("debug");
+        let recorder = ModelTraceRecorder::new(
+            app.handle().clone(),
+            ModelTraceContext::new("provider", "model", "omni"),
+        );
+        let mut trace_call = recorder.call("worker.success-without-receipt");
+        let shutdown = LivetranslateShutdown::with_stop_signal(
+            false,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let error = finalize_worker_trace(
+            &mut trace_call,
+            &shutdown,
+            Ok(OmniWorkerShutdown::Immediate),
+        )
+        .unwrap_err();
+        assert!(error.contains("completed without confirmed terminal trace evidence"));
+        assert!(error.contains("modelTraceEvidenceFinalization=unacknowledged"));
+        let snapshot = app.state::<DiagnosticsStateStore>().snapshot_base();
+        assert_eq!(snapshot.model_trace_summary.failed_calls, 1);
+        assert_eq!(snapshot.model_trace_summary.succeeded_calls, 0);
+        let _ = fs::remove_dir_all(root);
+    }
 }
 
 #[cfg(test)]

@@ -39,6 +39,44 @@ function New-WatchModeProviderLeaseReceipt {
   return $receipt
 }
 
+function Resolve-StrictWatchModeMediaEndAuthority {
+  param(
+    [Parameter(Mandatory = $true)]$Request,
+    [Parameter(Mandatory = $true)][hashtable]$PreviousEnvironment,
+    [Parameter(Mandatory = $true)][string]$RunMarker,
+    [Parameter(Mandatory = $true)][string]$CellId,
+    [Parameter(Mandatory = $true)][string]$LeaseId
+  )
+  $frames = [string]$PreviousEnvironment['OMNI_WATCH_MODE_AUTHORITATIVE_TRANSFORMED_REFERENCE_FRAMES']
+  $sampleRate = [string]$PreviousEnvironment['OMNI_WATCH_MODE_INPUT_SAMPLE_RATE_HZ']
+  $mediaSha256 = [string]$PreviousEnvironment['OMNI_WATCH_MODE_MEDIA_SHA256']
+  $authorityRunMarker = [string]$PreviousEnvironment['OMNI_WATCH_MODE_MEDIA_AUTHORITY_RUN_MARKER']
+  $authorityCellId = [string]$PreviousEnvironment['OMNI_WATCH_MODE_MEDIA_AUTHORITY_CELL_ID']
+  $authorityLeaseId = [string]$PreviousEnvironment['OMNI_WATCH_MODE_MEDIA_AUTHORITY_LEASE_ID']
+  if ($frames -notmatch '^[1-9][0-9]*$' -or $sampleRate -notmatch '^[1-9][0-9]*$' -or
+      $mediaSha256 -notmatch '^[0-9a-f]{64}$') {
+    throw 'strict paid Watch Mode requires complete coordinator-signed media-end authority'
+  }
+  if ($authorityRunMarker -cne $RunMarker -or $authorityCellId -cne $CellId -or $authorityLeaseId -cne $LeaseId) {
+    throw 'strict paid Watch Mode media-end authority identity does not match runMarker/cellId/leaseId'
+  }
+  if ($mediaSha256 -cne [string]$Request.media.sha256 -or
+      $frames -cne [string]$Request.media.authoritativeTransformedReferenceFrames -or
+      $sampleRate -cne [string]$Request.media.inputSampleRateHz -or
+      $authorityRunMarker -cne [string]$Request.matrix.runMarker -or
+      $authorityCellId -cne [string]$Request.matrix.cellId -or
+      $authorityLeaseId -cne [string]$Request.matrix.leaseId) {
+    throw 'strict paid Watch Mode media-end authority does not match the request-bound authority'
+  }
+  return [ordered]@{
+    OMNI_WATCH_MODE_AUTHORITATIVE_TRANSFORMED_REFERENCE_FRAMES = $frames
+    OMNI_WATCH_MODE_INPUT_SAMPLE_RATE_HZ = $sampleRate
+    OMNI_WATCH_MODE_MEDIA_SHA256 = $mediaSha256
+    OMNI_WATCH_MODE_MEDIA_AUTHORITY_RUN_MARKER = $authorityRunMarker
+    OMNI_WATCH_MODE_MEDIA_AUTHORITY_CELL_ID = $authorityCellId
+    OMNI_WATCH_MODE_MEDIA_AUTHORITY_LEASE_ID = $authorityLeaseId
+  }
+}
 function Start-WatchModeDesktopShell {
   param(
     [Parameter(Mandatory = $true)]$Context,
@@ -83,6 +121,7 @@ function Start-WatchModeDesktopShell {
   }
   $providerInputPcmPath = Join-Path $OutputDirectory "provider-input-16k-mono.pcm"
   $watchSessionReportPath = Join-Path $OutputDirectory "watch-session-report.json"
+  $incrementalEvidencePath = Join-Path $OutputDirectory "watch-incremental-cues.jsonl"
   $watchReadinessPath = Join-Path $OutputDirectory "watch-runtime-status.json"
   # The provider input ceiling and the desktop lifetime are deliberately
   # separate. Strict runs stop accepting paid input at the coordinator-signed
@@ -104,7 +143,10 @@ function Start-WatchModeDesktopShell {
     "OMNI_WATCH_MODE_INCIDENT_ID", "OMNI_WATCH_MODE_TRANSLATED_PCM_AUTHORITY_DIR", "OMNI_WATCH_MODE_MODEL_ID",
     "OMNI_WATCH_MODE_REALTIME_PROTOCOL", "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID", "OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID",
     "OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION", "OMNI_WATCH_MODE_PROCESS_EXCLUSION_RESTART_AFTER_MS", "OMNI_WATCH_MODE_AEC_LIVE_SCENARIO",
-    "OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS", "OMNI_WATCH_MODE_REPORT_PATH", "OMNI_WATCH_MODE_READINESS_PATH",
+    "OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS", "OMNI_WATCH_MODE_REPORT_PATH", "OMNI_WATCH_MODE_INCREMENTAL_EVIDENCE_PATH", "OMNI_WATCH_MODE_MEDIA_SHA256",
+    "OMNI_WATCH_MODE_AUTHORITATIVE_TRANSFORMED_REFERENCE_FRAMES", "OMNI_WATCH_MODE_INPUT_SAMPLE_RATE_HZ",
+    "OMNI_WATCH_MODE_MEDIA_AUTHORITY_RUN_MARKER", "OMNI_WATCH_MODE_MEDIA_AUTHORITY_CELL_ID", "OMNI_WATCH_MODE_MEDIA_AUTHORITY_LEASE_ID",
+    "OMNI_WATCH_MODE_READINESS_PATH",
     "OMNI_WATCH_MODE_INPUT_COMPLETE_PATH", "OMNI_WATCH_MODE_TERMINAL_AUTHORITY_PATH", "OMNI_WATCH_MODE_INPUT_COMPLETION_WATCHDOG_MS",
     "OMNI_WATCH_MODE_PROVIDER_FINISH_TIMEOUT_MS", "OMNI_WATCH_MODE_LOCAL_PLAYBACK_DRAIN_TIMEOUT_MS", "OMNI_WATCH_MODE_REPORT_WRITE_TIMEOUT_MS",
     "OMNI_WATCH_MODE_EXIT_AFTER_REPORT", "OMNI_WATCH_MODE_LAUNCH_ID", "OMNI_WATCH_MODE_SOURCE_HEAD_COMMIT",
@@ -212,6 +254,20 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_AEC_LIVE_SCENARIO = $liveScenarioEnvironment.aecLiveScenario
     $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS = $liveScenarioEnvironment.autoStopAfterMs
     $env:OMNI_WATCH_MODE_REPORT_PATH = $watchSessionReportPath
+    $env:OMNI_WATCH_MODE_INCREMENTAL_EVIDENCE_PATH = $incrementalEvidencePath
+    if ($StrictPaidAuthority) {
+      $mediaEndAuthority = Resolve-StrictWatchModeMediaEndAuthority `
+        -Request $request -PreviousEnvironment $previousWatchEnvironment `
+        -RunMarker $RunMarker -CellId $MatrixCellId `
+        -LeaseId $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID
+      foreach ($entry in $mediaEndAuthority.GetEnumerator()) {
+        [System.Environment]::SetEnvironmentVariable(
+          [string]$entry.Key, [string]$entry.Value, [System.EnvironmentVariableTarget]::Process
+        )
+      }
+    } else {
+      $env:OMNI_WATCH_MODE_MEDIA_SHA256 = [string]$request.media.sha256
+    }
     $env:OMNI_WATCH_MODE_READINESS_PATH = $watchReadinessPath
     $requestedInputCompletePath = if ($StrictPaidAuthority) {
       [System.IO.Path]::GetFullPath([string]$request.paths.inputComplete)
@@ -359,6 +415,7 @@ function Stop-StaleWatchModeDesktopShell {
 }
 
 Export-ModuleMember -Function @(
+  'Resolve-StrictWatchModeMediaEndAuthority',
   'Start-WatchModeDesktopShell',
   'Stop-WatchModeDesktopShell',
   'Stop-StaleWatchModeDesktopShell'

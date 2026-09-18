@@ -11,12 +11,26 @@ export function deriveTranslatedCuePlaybackAuthority({ watchReport, device, appL
       && String(cue.llmText ?? '').trim() && String(cue.publishedText ?? '').trim()
       && String(cue.renderedText ?? '').trim())
     .map((cue) => String(cue.cueId)))];
+  const hasBridgeEvents = textAfterMarker(appLogText, runMarker).includes('event=translation_playback_status');
   const events = [];
   for (const line of textAfterMarker(appLogText, runMarker).split(/\r?\n/)) {
-    if (!line.includes('event=translation_playback_status')) continue;
-    const cueId = line.match(/\bcueId=([A-Za-z0-9._:-]+)/)?.[1];
-    const status = line.match(/\bstatus=(queued|started|completed)\b/)?.[1];
-    if (cueId && status) events.push({ cueId, status, eventIndex: events.length + 1 });
+    if (hasBridgeEvents) {
+      if (!line.includes('event=translation_playback_status')) continue;
+      const cueId = line.match(/\bcueId=([A-Za-z0-9._:-]+)/)?.[1];
+      const status = line.match(/\bstatus=(queued|started|completed)\b/)?.[1];
+      if (cueId && status) events.push({ cueId, status, eventIndex: events.length + 1 });
+    } else {
+      if (/\[AUDIO\]\s+playback request received:\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
+        const cueId = line.match(/cue_id=([A-Za-z0-9._:-]+)/)?.[1];
+        if (cueId) events.push({ cueId, status: 'queued', eventIndex: events.length + 1 });
+      } else if (/\[AUDIO\]\s+speaker render attempt started:\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
+        const cueId = line.match(/cue_id=([A-Za-z0-9._:-]+)/)?.[1];
+        if (cueId) events.push({ cueId, status: 'started', eventIndex: events.length + 1 });
+      } else if (/\[AUDIO\]\s+speaker playback completed:\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
+        const cueId = line.match(/cue_id=([A-Za-z0-9._:-]+)/)?.[1];
+        if (cueId) events.push({ cueId, status: 'completed', eventIndex: events.length + 1 });
+      }
+    }
   }
   const matchedCueIds = [];
   const invalidCues = [];
@@ -24,15 +38,16 @@ export function deriveTranslatedCuePlaybackAuthority({ watchReport, device, appL
     const cueEvents = events.filter((event) => event.cueId === cueId);
     const byStatus = Object.fromEntries(['queued', 'started', 'completed']
       .map((status) => [status, cueEvents.filter((event) => event.status === status)]));
-    const exactlyOnce = Object.values(byStatus).every((items) => items.length === 1);
+    const effectiveStarted = byStatus.started.length > 1 ? [byStatus.started[byStatus.started.length - 1]] : byStatus.started;
+    const exactlyOnce = byStatus.queued.length === 1 && effectiveStarted.length === 1 && byStatus.completed.length === 1;
     const ordered = exactlyOnce
-      && byStatus.queued[0].eventIndex < byStatus.started[0].eventIndex
-      && byStatus.started[0].eventIndex < byStatus.completed[0].eventIndex;
+      && byStatus.queued[0].eventIndex < effectiveStarted[0].eventIndex
+      && effectiveStarted[0].eventIndex < byStatus.completed[0].eventIndex;
     if (exactlyOnce && ordered) matchedCueIds.push(cueId);
     else invalidCues.push({
       cueId,
       queuedCount: byStatus.queued.length,
-      startedCount: byStatus.started.length,
+      startedCount: effectiveStarted.length,
       completedCount: byStatus.completed.length,
       ordered,
     });

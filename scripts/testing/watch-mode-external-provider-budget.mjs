@@ -19,6 +19,9 @@ export const PROVIDER_SEND_BOUNDARY_JOURNAL_FILE = `${PROVIDER_SEND_BOUNDARY_LED
 export const PROVIDER_BUDGET_LEASE_FILE = 'provider-input-budget-lease.json';
 export const PROVIDER_INPUT_PREFILTER_FILE = 'provider-input-prefilter-48k-stereo.f32le.frames';
 export const PROVIDER_INPUT_PREFILTER_MAGIC = Buffer.from('OMNIPR01', 'ascii');
+export const PROVIDER_INPUT_FORWARDING_POLICY_VERSION = 2;
+export const LIVETRANSLATE_TIMELINE_ADAPTER_ID = 'desktop-livetranslate-session-v1';
+export const LEGACY_FINITE_SILENCE_GRACE_POLICY_ID = 'finite-silence-grace-v1';
 export const PHYSICAL_OUTPUT_RECORDING_PCM_FILE = 'physical-output-recording-16k-mono.pcm';
 export const PHYSICAL_OUTPUT_SOURCE_WINDOW_PCM_FILE =
   'physical-output-recording-source-window-16k-mono.pcm';
@@ -141,10 +144,30 @@ export function readProviderInputPrefilterFrames(filePath) {
   return { bytes, frames };
 }
 
-export function replayProviderInputPrefilter({ filePath, maxSamples }) {
+export function replayProviderInputPrefilter({
+  filePath,
+  maxSamples,
+  modelProtocolProfileIdentity = null,
+  legacyPolicyId = null,
+}) {
   const ceiling = Number(maxSamples);
   if (!Number.isSafeInteger(ceiling) || ceiling <= 0) {
     throw new Error('provider prefilter replay requires a positive safe-integer sample ceiling');
+  }
+  const exactModelId = String(modelProtocolProfileIdentity?.exactModelId ?? '').trim();
+  let authorizedIdentity = null;
+  let preserveLiveTranslateTimeline = false;
+  if (exactModelId) {
+    authorizedIdentity = deriveWatchModelProtocolIdentity(exactModelId);
+    assertWatchModelProtocolIdentity(
+      modelProtocolProfileIdentity,
+      authorizedIdentity,
+      'provider prefilter replay model protocol profile identity',
+    );
+    preserveLiveTranslateTimeline =
+      authorizedIdentity.adapterId === LIVETRANSLATE_TIMELINE_ADAPTER_ID;
+  } else if (legacyPolicyId !== LEGACY_FINITE_SILENCE_GRACE_POLICY_ID) {
+    throw new Error('provider prefilter replay requires an authorized model protocol identity or exact legacy policy');
   }
   const { bytes, frames } = readProviderInputPrefilterFrames(filePath);
   const accepted = [];
@@ -164,9 +187,11 @@ export function replayProviderInputPrefilter({ filePath, maxSamples }) {
     }
     const rms = pcm16ChunkRmsLikeRust(pcm);
     if (rms < 0.002) {
-      if (hasSentAudibleAudio && silenceGraceChunksSent < 40) {
-        silenceGraceChunksSent += 1;
-        silenceGraceChunks += 1;
+      if (hasSentAudibleAudio && (preserveLiveTranslateTimeline || silenceGraceChunksSent < 40)) {
+        if (silenceGraceChunksSent < 40) {
+          silenceGraceChunksSent += 1;
+          silenceGraceChunks += 1;
+        }
       } else {
         skippedSilenceChunks += 1;
         continue;
@@ -201,6 +226,10 @@ export function replayProviderInputPrefilter({ filePath, maxSamples }) {
         providerFormat: 'pcm-s16le-16000-mono',
         resample: 'three-frame-f32-average-v1',
         minimumChunkRms: 0.002,
+        policyVersion: PROVIDER_INPUT_FORWARDING_POLICY_VERSION,
+        ...(authorizedIdentity ? { modelProtocolProfileIdentity: authorizedIdentity } : {}),
+        ...(legacyPolicyId ? { legacyPolicyId } : {}),
+        preserveLiveTranslateTimeline,
         silenceGraceChunks: 40,
         maxSamples: ceiling,
       },
@@ -365,7 +394,10 @@ function validateSendBoundaryAuthority({
     .test(String(ledger.terminalReason ?? ''));
   const nonBudgetFailureTerminal = reconnectRejectedTerminal
     || preProviderTerminal
-    || ledger.terminalReason === 'livetranslate-session-finished-timeout';
+    || ledger.terminalReason === 'livetranslate-session-finished-timeout'
+    || ledger.terminalReason === 'livetranslate-audio-drain-timeout'
+    || ledger.terminalReason === 'socket-poll-failed'
+    || ledger.terminalReason === 'livetranslate-shutdown-poll-failed';
   if (ledger.terminalReason !== 'worker-completed' && !nonBudgetFailureTerminal) {
     violations.push(`send-boundary final ledger terminalReason is not an accepted no-reconnect terminal; got ${ledger.terminalReason ?? 'missing'}`);
   }
@@ -604,10 +636,67 @@ function scopedRunLog(appLogText, runMarker) {
   return appLogText.slice(markerIndex);
 }
 
+const PROVIDER_INPUT_CEILING_PATTERN = /strict provider input ceiling reached cleanly before append:/i;
+
 function providerEvidenceLines(scopedLog) {
   return scopedLog.split(/\r?\n/).filter((line) => (
-    /input_audio_buffer\.append\.summary|\[CONNECT\]|watch_mode\.omni_session_config|watch_mode\.omni_(?:reconnect|retry)|\[RECONNECT\]|\[LLM_CALL\]|speech\.segment_tts_requested|subtitle-translate/i.test(line)
+    /input_audio_buffer\.append\.summary|\[CONNECT\]|watch_mode\.omni_session_config|watch_mode\.omni_(?:reconnect|retry)|\[RECONNECT\]|\[LLM_CALL\]|speech\.segment_tts_requested|subtitle-translate|strict provider input ceiling reached cleanly before append:/i.test(line)
   ));
+}
+
+function parseLocalLogTimestampUnixMs(line) {
+  const match = String(line).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(?=\s)/u);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second, fraction = '0'] = match;
+  const value = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second), Number(fraction.padEnd(3, '0'))).getTime();
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+export function buildProviderInputCompletionEvidence({ scopedLog, inputComplete, rejectedChunks }) {
+  const ceilingLines = String(scopedLog ?? '').split(/\r?\n/u).filter((line) => PROVIDER_INPUT_CEILING_PATTERN.test(line));
+  const observations = ceilingLines.map((line) => ({ observedAtUnixMs: parseLocalLogTimestampUnixMs(line) }));
+  const validTimes = observations.map((entry) => entry.observedAtUnixMs).filter(Number.isSafeInteger);
+  const malformedObservationCount = observations.length - validTimes.length;
+  const mediaPlaybackCompletedAtUnixMs = Number(inputComplete?.mediaPlaybackCompletedAtUnixMs);
+  const identityValid = inputComplete?.schemaVersion === 1 && inputComplete?.artifactKind === 'watch-mode-input-complete';
+  const timestampsValid = Number.isSafeInteger(mediaPlaybackCompletedAtUnixMs)
+    && mediaPlaybackCompletedAtUnixMs > 0
+    && Number.isSafeInteger(Number(inputComplete?.signaledAtUnixMs))
+    && Number(inputComplete.signaledAtUnixMs) >= mediaPlaybackCompletedAtUnixMs
+    && Number.isSafeInteger(Number(inputComplete?.completedAtUnixMs))
+    && Number(inputComplete.completedAtUnixMs) >= Number(inputComplete.signaledAtUnixMs);
+  const firstCeilingObservedAtUnixMs = validTimes.length > 0 ? Math.min(...validTimes) : null;
+  const ceilingBeforeMediaCompletion = Number.isSafeInteger(firstCeilingObservedAtUnixMs)
+    && timestampsValid && firstCeilingObservedAtUnixMs < mediaPlaybackCompletedAtUnixMs;
+  let status = 'passed';
+  let reason = null;
+  if (observations.length === 0 && Number(rejectedChunks) === 0) {
+    status = 'passed';
+  } else if (!identityValid || !timestampsValid) {
+    status = 'inconclusive';
+    reason = 'provider input completion authority is missing or invalid';
+  } else if (malformedObservationCount > 0) {
+    status = 'inconclusive';
+    reason = 'provider input ceiling observation timestamp is missing or invalid';
+  } else if (Number(rejectedChunks) > 0 && observations.length === 0) {
+    status = 'inconclusive';
+    reason = 'provider input ceiling evidence is missing despite rejected input chunks';
+  } else if (ceilingBeforeMediaCompletion) {
+    status = 'failed';
+    reason = 'provider input was truncated before signed media playback completed';
+  }
+  return {
+    status,
+    passed: status === 'passed',
+    stableErrorCode: status === 'passed' ? null : 'watch.provider-input-truncated',
+    lifecyclePhase: status === 'passed' ? null : 'provider-input',
+    reason,
+    observationCount: observations.length,
+    malformedObservationCount,
+    firstCeilingObservedAtUnixMs,
+    mediaPlaybackCompletedAtUnixMs: timestampsValid ? mediaPlaybackCompletedAtUnixMs : null,
+    ceilingBeforeMediaCompletion,
+  };
 }
 
 function countMatches(text, pattern) {
@@ -617,14 +706,49 @@ function countMatches(text, pattern) {
 export function actualProviderInputSamplesFromLog(scopedLog) {
   let samples = 0;
   let summaryCount = 0;
+  const seenEventIds = new Map();
+  const violations = [];
   for (const line of scopedLog.split(/\r?\n/)) {
     if (!/input_audio_buffer\.append\.summary/i.test(line)) continue;
-    const match = line.match(/"resampledSamplesTotal"\s*:\s*(\d+)/i);
-    if (!match) continue;
-    samples += Number(match[1]);
+    const jsonStart = line.indexOf('{');
+    const jsonEnd = line.lastIndexOf('}');
+    let parsed = null;
+    let canonical = null;
+    if (jsonStart >= 0 && jsonEnd > jsonStart) {
+      try {
+        parsed = JSON.parse(line.slice(jsonStart, jsonEnd + 1));
+        canonical = canonicalJson(parsed);
+      } catch {
+        parsed = null;
+      }
+    }
+    const eventIdMatch = line.match(/"eventId"\s*:\s*"([^"\\]+)"/);
+    const eventId = typeof parsed?.eventId === 'string'
+      ? parsed.eventId.trim() || null
+      : eventIdMatch?.[1]?.trim() || null;
+    if (eventId && canonical === null) {
+      violations.push(`malformed model-trace evidence for eventId ${eventId}`);
+      continue;
+    }
+    const parsedSamples = parsed?.payload?.resampledSamplesTotal;
+    const sampleMatch = line.match(/"resampledSamplesTotal"\s*:\s*(\d+)/i);
+    const sampleCount = eventId ? parsedSamples : Number(sampleMatch?.[1]);
+    const hasValidSamples = Number.isSafeInteger(sampleCount) && sampleCount >= 0;
+    if (eventId && !hasValidSamples) {
+      violations.push(`model-trace evidence for eventId ${eventId} is missing valid resampledSamplesTotal`);
+    }
+    if (eventId && seenEventIds.has(eventId)) {
+      if (seenEventIds.get(eventId) !== canonical) {
+        violations.push(`conflicting model-trace evidence for eventId ${eventId}`);
+      }
+      continue;
+    }
+    if (eventId) seenEventIds.set(eventId, canonical);
+    if (!hasValidSamples) continue;
+    samples += sampleCount;
     summaryCount += 1;
   }
-  return { samples, summaryCount };
+  return { samples, summaryCount, violations };
 }
 
 export function reserveStrictPaidCellInputSamples({
@@ -735,6 +859,7 @@ export function buildCellExternalProviderBudget({
     const replay = replayProviderInputPrefilter({
       filePath: path.join(resolvedRunDirectory, PROVIDER_INPUT_PREFILTER_FILE),
       maxSamples: resolvedInputCeilingSamples,
+      modelProtocolProfileIdentity,
     });
     providerInputReplay = replay.authority;
     if (!providerPcmBytes?.equals(replay.expectedProviderPcm)) {
@@ -754,6 +879,14 @@ export function buildCellExternalProviderBudget({
     violations.push(error.message);
   }
   const tracedInput = actualProviderInputSamplesFromLog(scopedLog);
+  violations.push(...tracedInput.violations);
+  let inputComplete = null;
+  try {
+    inputComplete = readJson(path.join(resolvedRunDirectory, 'input-complete.json'), 'input-complete authority');
+    if (inputComplete.runMarker !== runMarker || inputComplete.cellId !== normalizedCellId) {
+      throw new Error('input-complete authority identity mismatch');
+    }
+  } catch {}
   let sendBoundaryAuthority = null;
   try {
     sendBoundaryAuthority = validateSendBoundaryAuthority({
@@ -846,6 +979,15 @@ export function buildCellExternalProviderBudget({
     } catch {}
   }
 
+  const providerInputCompletion = buildProviderInputCompletionEvidence({
+    scopedLog,
+    inputComplete,
+    rejectedChunks: providerInputReplay?.decisions?.budgetRejectedChunks ?? 0,
+  });
+  if (providerInputCompletion.status !== 'passed') {
+    violations.push(`${providerInputCompletion.stableErrorCode}: ${providerInputCompletion.reason}`);
+  }
+
   const actualInputSeconds = roundedSeconds(authoritativeInputSamples);
   return {
     schemaVersion: EXTERNAL_PROVIDER_BUDGET_SCHEMA_VERSION,
@@ -873,6 +1015,7 @@ export function buildCellExternalProviderBudget({
     actualProviderInputSeconds: actualInputSeconds,
     providerInputPcm: providerPcm,
     providerInputReplay,
+    providerInputCompletion,
     providerTrace: {
       audioAppendSummaryCount: tracedInput.summaryCount,
       evidenceLineCount: evidenceLines.length,

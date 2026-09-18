@@ -26,7 +26,7 @@ param(
   [Parameter(Mandatory = $true)]
   [ValidatePattern('^[a-f0-9]{64}$')]
   [string]$VmIdentityDigest,
-  [Parameter(Mandatory = $true)][string]$ExecutionReceiptPath,
+  [Parameter(Mandatory = $true)][string]$ExecutionReceiptPath, [Parameter(Mandatory = $true)][ValidateSet('endpoint-readiness','shard-cell','incident-plus-cell','local-aec-probe')][string]$Mode,
   [switch]$RequireRecorder,
   [ValidateRange(100, 5000)][int]$SampleIntervalMs = 250
 )
@@ -199,9 +199,9 @@ try {
   }
   $executionExitCode = [int]$executionReceipt.exitCode
 } catch { [void]$errors.Add((Format-CollectionError $_)) }
-$requiredRoles = @('shard-node', 'cell-powershell')
+[string[]]$requiredRoles = if ($Mode -eq 'local-aec-probe') { @('shard-node') } else { @('shard-node', 'cell-powershell') }
 if ($executionExitCode -eq 0) {
-  $requiredRoles += @('desktop', 'bridge')
+  $requiredRoles += if ($Mode -eq 'local-aec-probe') { @('desktop') } else { @('desktop', 'bridge') }
   if ($RequireRecorder) { $requiredRoles += 'recorder' }
 }
 foreach ($role in $requiredRoles) {

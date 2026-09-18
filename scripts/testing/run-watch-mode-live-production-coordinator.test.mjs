@@ -8,6 +8,43 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import zlib from 'node:zlib';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
+
+import { sha256Canonical } from './watch-mode-shard-authority.mjs';
+
+const productionCoordinatorSource = fs.readFileSync(
+  new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url),
+  'utf8',
+);
+
+function windowsPathFromGitScpOperand(operand) {
+  return String(operand)
+    .replace(/^\/([a-z])\//iu, (_, drive) => `${drive.toUpperCase()}:/`)
+    .replaceAll('/', '\\');
+}
+
+function signedCredentialHelperFixture(root) {
+  const relativePath = 'target/release/watch-worker-credential.exe';
+  const filePath = path.join(root, ...relativePath.split('/'));
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const bytes = Buffer.from('signed-credential-helper-fixture');
+  fs.writeFileSync(filePath, bytes);
+  return [{
+    path: relativePath,
+    bytes: bytes.length,
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+  }];
+}
+
+test('remote credential provision consumes the helper from signed runtime inventory', () => {
+  assert.doesNotMatch(
+    productionCoordinatorSource,
+    /path\.join\(repoRoot, 'target', 'release', 'watch-worker-credential\.exe'\)/u,
+  );
+  assert.match(productionCoordinatorSource, /target\/release\/watch-worker-credential\.exe/u);
+  assert.match(productionCoordinatorSource, /runtimeBinaryHashes/u);
+  assert.match(productionCoordinatorSource, /actualHelperAuthority.sha256 !== helperAuthority.sha256/u);
+});
 
 test('interactive finalizer binds workspace cwd and preserves complete native failures', { skip: process.platform !== 'win32' }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-finalizer-cwd-'));
@@ -93,6 +130,8 @@ import {
 } from './watch-mode-shard-authority.mjs';
 import {
   assertProductionCoordinatorWaveBudget,
+  assertSafeCollectionArchiveEntries,
+  collectRemoteDirectoryArchive,
   PRODUCTION_WORKER_CONFIG_KIND,
   PRODUCTION_CELL_DOWNLOAD_TIMEOUT_MS,
   PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS,
@@ -124,13 +163,340 @@ import {
   PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS,
   PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS,
   runProductionCoordinator,
+  checkProductionWorkerDisks,
   scpBaseArgs,
   sshBaseArgs,
   validateProductionWorkerConfig,
   windowsPowerShellEnvironment,
   createSshProductionTransport,
+  createSshProviderPreflightTransport,
+  validateProviderPreflightInteractiveTerminal,
+  validateProviderPreflightCleanupReceipt,
+  validateProviderPreflightProcessAuthority,
+  createDeterministicReadinessTransferArchive,
+  REMOTE_PROVIDER_PREFLIGHT_PUBLICATION_BODY,
+  stageProductionReadinessBatch,
 } from './run-watch-mode-live-production-coordinator.mjs';
 
+test('collection archive inventory remains inside the immutable worker root', () => {
+  assert.doesNotThrow(() => assertSafeCollectionArchiveEntries([
+    'vm167/',
+    'vm167/shard-manifest.json',
+    'vm167/runs/c04/report.json',
+  ], 'vm167'));
+  for (const entries of [
+    [],
+    ['../escape'],
+    ['vm167/../../escape'],
+    ['/absolute'],
+    ['C:/absolute'],
+    ['vm167/file:stream'],
+    ['vm167/a', 'vm167/a'],
+    ['vm169/shard-manifest.json'],
+  ]) assert.throws(() => assertSafeCollectionArchiveEntries(entries, 'vm167'));
+});
+
+test('remote directory collection validates a hash-authorized archive before atomic publication', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-cell-archive-'));
+  const finalDirectory = path.join(root, 'validation-shards', 'vm167', 'runs', 'c04');
+  const archiveBytes = Buffer.from('authorized-cell-archive');
+  const sha256 = crypto.createHash('sha256').update(archiveBytes).digest('hex');
+  const remoteDirectory = 'E:\\omni-shards\\execution\\vm167\\runs\\c04';
+  const remoteArchivePath = `${remoteDirectory}.collection-lease-test.tar`;
+  const remoteCalls = [];
+  const attemptEvidencePath = path.join(root, 'collection-attempt.json');
+  let validationObservedFinal = null;
+  try {
+    const result = await collectRemoteDirectoryArchive({
+      worker: { workerId: 'vm167' }, remoteDirectory, localDirectory: finalDirectory,
+      remoteArchivePath, timeoutMs: 30_000, nonce: 'fixture', stagedRelativePath: 'runs/c04',
+      attemptEvidencePath, evidenceBaseDirectory: root,
+      executeRemote: async (_worker, body, payload) => {
+        remoteCalls.push({ body, payload });
+        if (remoteCalls.length === 1) {
+          return { exitCode: 0, stdout: JSON.stringify({ path: remoteArchivePath, bytes: archiveBytes.length, sha256 }), stderr: '' };
+        }
+        return { exitCode: 0, stdout: JSON.stringify({ removed: true }), stderr: '' };
+      },
+      downloadFile: async (_worker, remotePath, localPath) => {
+        assert.equal(remotePath, remoteArchivePath);
+        assert.equal(fs.existsSync(finalDirectory), false);
+        fs.writeFileSync(localPath, archiveBytes);
+      },
+      runLocalProcess: async (_executable, args) => {
+        if (args[0] === '-tf') return { exitCode: 0, signal: null, stdout: 'c04/\nc04/shard-cell-result.json\n', stderr: '' };
+        if (args[0] === '-tvf') return { exitCode: 0, signal: null, stdout: 'd c04/\n- c04/shard-cell-result.json\n', stderr: '' };
+        assert.equal(args[0], '-xf');
+        const extractRoot = args[args.indexOf('-C') + 1];
+        const staged = path.join(extractRoot, 'c04');
+        fs.mkdirSync(staged);
+        fs.writeFileSync(path.join(staged, 'shard-cell-result.json'), '{"fixture":true}\n');
+        return { exitCode: 0, signal: null, stdout: '', stderr: '' };
+      },
+      validateExtracted: async (staged, stagedShardRoot) => {
+        validationObservedFinal = fs.existsSync(finalDirectory);
+        assert.equal(path.relative(stagedShardRoot, staged).replaceAll('\\', '/'), 'runs/c04');
+        assert.equal(path.basename(staged), 'c04');
+        assert.equal(fs.existsSync(path.join(staged, 'shard-cell-result.json')), true);
+      },
+    });
+    assert.equal(validationObservedFinal, false);
+    assert.equal(result.localDirectory, finalDirectory);
+    assert.equal(fs.existsSync(path.join(finalDirectory, 'shard-cell-result.json')), true);
+    assert.equal(remoteCalls.length, 2);
+    assert.equal(remoteCalls[1].payload.archivePath, remoteArchivePath);
+    assert.deepEqual(
+      fs.readdirSync(path.dirname(finalDirectory)).filter((name) => name.startsWith('.incoming-')),
+      [],
+    );
+    const attempt = JSON.parse(fs.readFileSync(attemptEvidencePath, 'utf8'));
+    assert.deepEqual(attempt, {
+      schemaVersion: 1,
+      artifactKind: 'watch-mode-worker-collection-attempt',
+      workerId: 'vm167',
+      executionId: null,
+      status: 'passed',
+      stage: 'published',
+      remoteArchive: { bytes: archiveBytes.length, sha256 },
+      localStagingRelativePath: 'validation-shards/vm167/runs/.incoming-c04-fixture',
+      localArchive: { observed: true, bytes: archiveBytes.length },
+      transport: { exitCode: null, diagnosticClass: null, stderrSha256: null },
+      published: true,
+      cleanup: { attempted: true, succeeded: true, archiveRemoved: true, diagnosticClass: null },
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('remote directory collection persists bounded SCP failure evidence without publishing or retrying', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-cell-archive-transfer-failure-'));
+  const finalDirectory = path.join(root, 'collected-shards', 'vm167');
+  const attemptEvidencePath = path.join(root, 'collection-attempts', 'vm167.json');
+  const remoteDirectory = 'E:\\omni-shards\\execution\\vm167';
+  const remoteArchivePath = `${remoteDirectory}.collection.tar`;
+  const archiveBytes = Buffer.from('sealed-worker-archive');
+  const sha256 = crypto.createHash('sha256').update(archiveBytes).digest('hex');
+  const stderr = 'lost connection: secret-token-must-not-be-persisted';
+  let downloads = 0;
+  let remoteCalls = 0;
+  try {
+    await assert.rejects(collectRemoteDirectoryArchive({
+      worker: { workerId: 'vm167' }, remoteDirectory, localDirectory: finalDirectory,
+      remoteArchivePath, timeoutMs: 30_000, nonce: 'transfer-failure',
+      attemptEvidencePath, evidenceBaseDirectory: root,
+      executeRemote: async () => {
+        remoteCalls += 1;
+        return remoteCalls === 1
+          ? { exitCode: 0, stdout: JSON.stringify({ path: remoteArchivePath, bytes: archiveBytes.length, sha256 }), stderr: '' }
+          : { exitCode: 0, stdout: JSON.stringify({ removed: true }), stderr: '' };
+      },
+      downloadFile: async () => {
+        downloads += 1;
+        const error = new Error(`download failed: ${stderr}`);
+        error.transportExitCode = 1;
+        error.transportStderrSha256 = crypto.createHash('sha256').update(stderr).digest('hex');
+        throw error;
+      },
+      runLocalProcess: async () => { throw new Error('local archive processing must not start'); },
+      validateExtracted: async () => { throw new Error('manifest validation must not start'); },
+    }), /download failed/u);
+    assert.equal(downloads, 1);
+    assert.equal(remoteCalls, 2);
+    assert.equal(fs.existsSync(finalDirectory), false);
+    const attempt = JSON.parse(fs.readFileSync(attemptEvidencePath, 'utf8'));
+    assert.equal(attempt.status, 'failed');
+    assert.equal(attempt.stage, 'archive-download');
+    assert.deepEqual(attempt.remoteArchive, { bytes: archiveBytes.length, sha256 });
+    assert.equal(attempt.localStagingRelativePath, 'collected-shards/.incoming-vm167-transfer-failure');
+    assert.deepEqual(attempt.localArchive, { observed: false, bytes: null });
+    assert.deepEqual(attempt.transport, {
+      exitCode: 1,
+      diagnosticClass: 'connection-terminated',
+      stderrSha256: crypto.createHash('sha256').update(stderr).digest('hex'),
+    });
+    assert.equal(attempt.published, false);
+    assert.deepEqual(attempt.cleanup, {
+      attempted: true, succeeded: true, archiveRemoved: true, diagnosticClass: null,
+    });
+    assert.equal(JSON.stringify(attempt).includes('secret-token'), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('remote directory collection keeps validated publication successful when staging parent cleanup fails', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-cell-archive-cleanup-warning-'));
+  const finalDirectory = path.join(root, 'validation-shards', 'vm167', 'runs', 'c04');
+  const archiveBytes = Buffer.from('valid-cell-archive');
+  const sha256 = crypto.createHash('sha256').update(archiveBytes).digest('hex');
+  const remoteDirectory = 'E:\\omni-shards\\execution\\vm167\\runs\\c04';
+  const remoteArchivePath = `${remoteDirectory}.collection-lease-test.tar`;
+  let remoteCalls = 0;
+  try {
+    const result = await collectRemoteDirectoryArchive({
+      worker: { workerId: 'vm167' }, remoteDirectory, localDirectory: finalDirectory,
+      remoteArchivePath, timeoutMs: 30_000, nonce: 'fixture-cleanup-warning',
+      executeRemote: async () => {
+        remoteCalls += 1;
+        return remoteCalls === 1
+          ? { exitCode: 0, stdout: JSON.stringify({ path: remoteArchivePath, bytes: archiveBytes.length, sha256 }), stderr: '' }
+          : { exitCode: 0, stdout: JSON.stringify({ removed: true }), stderr: '' };
+      },
+      downloadFile: async (_worker, _remotePath, localPath) => fs.writeFileSync(localPath, archiveBytes),
+      runLocalProcess: async (_executable, args) => {
+        if (args[0] === '-tf') return { exitCode: 0, signal: null, stdout: 'c04/\nc04/shard-cell-result.json\n', stderr: '' };
+        if (args[0] === '-tvf') return { exitCode: 0, signal: null, stdout: 'd c04/\n- c04/shard-cell-result.json\n', stderr: '' };
+        const extractRoot = args[args.indexOf('-C') + 1];
+        fs.mkdirSync(path.join(extractRoot, 'c04'));
+        fs.writeFileSync(path.join(extractRoot, 'c04', 'shard-cell-result.json'), '{}\n');
+        return { exitCode: 0, signal: null, stdout: '', stderr: '' };
+      },
+      validateExtracted: async (staged) => {
+        fs.writeFileSync(path.join(path.dirname(staged), 'cleanup-blocker.txt'), 'retain diagnostic\n');
+      },
+    });
+    assert.equal(result.localDirectory, finalDirectory);
+    assert.equal(fs.existsSync(path.join(finalDirectory, 'shard-cell-result.json')), true);
+    assert.equal(remoteCalls, 2);
+    assert.equal(
+      fs.readdirSync(path.dirname(finalDirectory)).some((name) => name.startsWith('.incoming-')),
+      true,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('remote directory collection never publishes validation-shards when staged validation fails', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-cell-archive-reject-'));
+  const finalDirectory = path.join(root, 'validation-shards', 'vm167', 'runs', 'c04');
+  const archiveBytes = Buffer.from('invalid-cell-archive');
+  const sha256 = crypto.createHash('sha256').update(archiveBytes).digest('hex');
+  const remoteDirectory = 'E:\\omni-shards\\execution\\vm167\\runs\\c04';
+  const remoteArchivePath = `${remoteDirectory}.collection-lease-test.tar`;
+  let remoteCalls = 0;
+  try {
+    await assert.rejects(collectRemoteDirectoryArchive({
+      worker: { workerId: 'vm167' }, remoteDirectory, localDirectory: finalDirectory,
+      remoteArchivePath, timeoutMs: 30_000, nonce: 'fixture-reject',
+      executeRemote: async () => {
+        remoteCalls += 1;
+        return remoteCalls === 1
+          ? { exitCode: 0, stdout: JSON.stringify({ path: remoteArchivePath, bytes: archiveBytes.length, sha256 }), stderr: '' }
+          : { exitCode: 0, stdout: JSON.stringify({ removed: true }), stderr: '' };
+      },
+      downloadFile: async (_worker, _remotePath, localPath) => fs.writeFileSync(localPath, archiveBytes),
+      runLocalProcess: async (_executable, args) => {
+        if (args[0] === '-tf') return { exitCode: 0, signal: null, stdout: 'c04/\nc04/shard-cell-result.json\n', stderr: '' };
+        if (args[0] === '-tvf') return { exitCode: 0, signal: null, stdout: 'd c04/\n- c04/shard-cell-result.json\n', stderr: '' };
+        const extractRoot = args[args.indexOf('-C') + 1];
+        fs.mkdirSync(path.join(extractRoot, 'c04'));
+        fs.writeFileSync(path.join(extractRoot, 'c04', 'shard-cell-result.json'), '{}\n');
+        return { exitCode: 0, signal: null, stdout: '', stderr: '' };
+      },
+      validateExtracted: async () => { throw new Error('fixture manifest mismatch'); },
+    }), /fixture manifest mismatch/u);
+    assert.equal(fs.existsSync(finalDirectory), false);
+    assert.equal(remoteCalls, 2);
+    assert.equal(
+      fs.readdirSync(path.dirname(finalDirectory)).some((name) => name.startsWith('.incoming-')),
+      true,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+
+test('readiness batch transport uploads one deterministic archive with the exact signed inventory', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-readiness-batch-'));
+  try {
+    const files = [
+      { path: 'shard-execution-plan.json', targetKind: 'execution', content: 'plan-v1' },
+      { path: 'scripts/testing/worker.mjs', targetKind: 'workspace', content: 'worker-v1' },
+      { path: 'target/release/runtime.exe', targetKind: 'workspace', content: 'runtime-v1' },
+    ];
+    const transferEntries = files.map((entry, index) => {
+      const localPath = path.join(root, 'source-' + index);
+      fs.writeFileSync(localPath, entry.content, 'utf8');
+      const bytes = fs.readFileSync(localPath);
+      return {
+        ...entry, localPath, remotePath: 'C:\\fixture\\' + entry.path.replaceAll('/', '\\'),
+        bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+      };
+    });
+    const worker = { workerId: 'vm169', workspaceRoot: 'C:\\watch-worker' };
+    const uploads = [];
+    const executions = [];
+    const transfer = await stageProductionReadinessBatch({
+      worker, transferEntries, coordinatorExecutionRoot: root,
+      remoteRoot: 'C:\\omni-shards\\execution\\vm169',
+      uploadFile: async (_worker, localPath, remotePath) => { uploads.push({ localPath, remotePath }); },
+      executeRemote: async (_worker, body, payload) => { executions.push({ body, payload }); },
+    });
+    assert.equal(uploads.length, 1);
+    assert.equal(path.basename(uploads[0].localPath), 'readiness-transfer.tar');
+    assert.equal(executions.length, 1);
+    assert.deepEqual(transfer.entries.map((entry) => entry.path), files.map((entry) => entry.path));
+    assert.deepEqual(executions[0].payload.archive.entries.map((entry) => ({
+      memberPath: entry.memberPath, path: entry.path, targetKind: entry.targetKind,
+    })), files.map((entry, index) => ({
+      memberPath: 'payload/' + String(index).padStart(4, '0'), path: entry.path, targetKind: entry.targetKind,
+    })));
+    const tar = process.platform === 'win32' ? path.join(process.env.SystemRoot, 'System32', 'tar.exe') : 'tar';
+    const listed = spawnSync(tar, ['-tf', uploads[0].localPath], { encoding: 'utf8', windowsHide: true });
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.deepEqual(listed.stdout.trim().split(/\r?\n/u), files.map((_, index) => 'payload/' + String(index).padStart(4, '0')));
+    const second = createDeterministicReadinessTransferArchive({
+      archivePath: path.join(root, 'second.tar'), entries: transferEntries,
+    });
+    assert.equal(second.sha256, transfer.sha256);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('readiness batch extraction failure is terminal before any Provider invocation', { skip: process.platform !== 'win32' }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-readiness-batch-failure-'));
+  try {
+    const localPath = path.join(root, 'plan.json');
+    fs.writeFileSync(localPath, '{}\n', 'utf8');
+    const bytes = fs.readFileSync(localPath);
+    const workspaceRoot = path.join(root, 'workspace');
+    const remoteRoot = path.join(root, 'remote');
+    fs.mkdirSync(workspaceRoot);
+    fs.mkdirSync(remoteRoot);
+    let uploads = 0;
+    let providerCalls = 0;
+    await assert.rejects(async () => {
+      await stageProductionReadinessBatch({
+        worker: { workerId: 'vm131', workspaceRoot },
+        transferEntries: [{
+          path: 'shard-execution-plan.json', targetKind: 'execution', localPath,
+          remotePath: 'C:\\omni-shards\\execution\\vm131\\shard-execution-plan.json',
+          bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+        }],
+        coordinatorExecutionRoot: root, remoteRoot,
+        uploadFile: async (_worker, archivePath, remoteArchivePath) => {
+          uploads += 1;
+          fs.copyFileSync(archivePath, remoteArchivePath);
+          fs.appendFileSync(remoteArchivePath, 'corruption');
+        },
+        executeRemote: async (_worker, body, payload) => {
+          const script = path.join(root, 'extract.ps1');
+          fs.writeFileSync(script, remotePowerShellInvocation(body, payload, { mode: 'file-only' }).fileScript, 'utf8');
+          const result = spawnSync('powershell.exe', [
+            '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script,
+          ], { encoding: 'utf8', windowsHide: true, env: windowsPowerShellEnvironment(process.env) });
+          if (result.status !== 0) throw new Error(result.stderr + result.stdout);
+        },
+      });
+      providerCalls += 1;
+    }, /archive hash.*size mismatch/u);
+    assert.equal(uploads, 1);
+    assert.equal(providerCalls, 0);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 test('pre-distributed runtime skips only exact hashes with complete unique inventory', () => {
   const entries = [{path: 'a.exe', bytes: 10, sha256: 'a'.repeat(64)}, {path: 'b.exe', bytes: 20, sha256: 'b'.repeat(64)}];
   const observed = entries.map((entry) => ({...entry, exists: true}));
@@ -427,17 +793,62 @@ test('production failure aggregation reports progress and shared root causes', (
   const summary = aggregateProductionCellFailures({
     plan,
     waveOutcome: {
-      startedCellIds: ['a', 'b', 'c'],
-      completedCellIds: ['a', 'b', 'c'],
-      collectedFailures: [failed('a'), failed('b')],
+      startedCellIds: ['a', 'c', 'b'],
+      completedCellIds: ['c', 'a', 'b'],
+      collectedFailures: [failed('b'), failed('a')],
     },
   });
   assert.deepEqual(summary.attempted, ['a', 'b', 'c']);
+  assert.deepEqual(summary.completed, ['a', 'b', 'c']);
   assert.deepEqual(summary.passed, ['c']);
   assert.deepEqual(summary.failed, ['a', 'b']);
+  assert.deepEqual(summary.failures.map((entry) => entry.cellId), ['a', 'b']);
   assert.equal(summary.sharedRootCauses.length, 1);
   assert.deepEqual(summary.sharedRootCauses[0].cellIds, ['a', 'b']);
   assert.equal(summary.cellSpecificFailures.length, 0);
+});
+
+test('production failure aggregation rejects duplicate and unknown runtime cell IDs', () => {
+  const plan = {
+    cells: [
+      { cellId: 'a', feedbackLoopPrevention: 'process-exclusion' },
+      { cellId: 'b', feedbackLoopPrevention: 'echo-cancel' },
+    ],
+  };
+  const failed = (cellId) => ({
+    cellId,
+    error: 'fixture failure',
+    outcome: {
+      result: {
+        verdict: 'failed',
+        failureLayer: 'provider',
+        stableErrorCode: 'watch.provider.session-failed',
+        lifecyclePhase: 'provider-session',
+        failureContext: {
+          endpointId: '{fixture-endpoint}',
+          bridgeInstanceId: null,
+          ownerGenerationTransition: { before: null, after: null },
+        },
+      },
+    },
+  });
+  const aggregate = (changed) => aggregateProductionCellFailures({
+    plan,
+    waveOutcome: {
+      startedCellIds: ['a', 'b'],
+      completedCellIds: ['a', 'b'],
+      collectedFailures: [failed('a')],
+      ...changed,
+    },
+  });
+  assert.throws(() => aggregate({ startedCellIds: ['a', 'a'] }), /duplicate attempted cell IDs/u);
+  assert.throws(() => aggregate({ completedCellIds: ['a', 'unknown'] }), /unknown completed cell ID: unknown/u);
+  assert.throws(() => aggregate({ collectedFailures: [failed('a'), failed('a')] }), /duplicate failed cell ID: a/u);
+  assert.throws(() => aggregate({ collectedFailures: [failed('unknown')] }), /unknown failed cell ID: unknown/u);
+  assert.throws(() => aggregateProductionCellFailures({
+    plan: { cells: [...plan.cells, plan.cells[0]] },
+    waveOutcome: { startedCellIds: [], completedCellIds: [], collectedFailures: [] },
+  }), /duplicate planned cell IDs/u);
 });
 
 test('failed production cells stop after final staging and retain the staged failure authority', () => {
@@ -601,7 +1012,20 @@ test('worker preparation normalizes and verifies signed implementation bytes bef
     /for \(const entry of implementationEntries\) await upload\(worker, entry\.localPath, entry\.remotePath\)/,
   );
   assert.match(source, /implementation mismatch: \$target/);
+  assert.match(source, /update-index --refresh -- @refreshPaths/u);
+  assert.match(source, /implementation index refresh failed after byte verification/u);
+  assert.match(source, /workspaceRoot: worker\.workspaceRoot,\s*implementationEntries:/u);
   assert.match(source, /implementation verification returned an incomplete inventory/);
+  assert.ok(
+    source.indexOf('implementation mismatch: $target')
+      < source.indexOf('update-index --refresh -- @refreshPaths'),
+    'index refresh must happen only after exact implementation byte verification',
+  );
+  assert.ok(
+    source.indexOf('update-index --refresh -- @refreshPaths')
+      < source.lastIndexOf('await queryWorker(worker)'),
+    'index refresh must happen before the final clean-state guard',
+  );
   assert.ok(
     source.indexOf('implementation verification returned an incomplete inventory')
       < source.lastIndexOf('PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY'),
@@ -612,12 +1036,12 @@ test('worker preparation normalizes and verifies signed implementation bytes bef
     source.indexOf('const readinessTransport = createSshProductionTransport'),
   );
   assert.match(readinessPlan, /authorityImplementationHashes/u);
-  assert.equal(AUTHORITY_IMPLEMENTATION_FILES.length, 60);
+  assert.equal(AUTHORITY_IMPLEMENTATION_FILES.length, 63);
   assert.ok(AUTHORITY_IMPLEMENTATION_FILES.includes('scripts/testing/prepare-watch-release.mjs'));
   assert.ok(AUTHORITY_IMPLEMENTATION_FILES.includes('scripts/testing/distribute-watch-runtime.mjs'));
 });
 
-test('fresh readiness transports all 60 production implementation entries', () => {
+test('fresh readiness transports all 63 production implementation entries', () => {
   const implementationHashes = AUTHORITY_IMPLEMENTATION_FILES.map((entryPath, index) => ({
     path: entryPath,
     bytes: index + 1,
@@ -636,7 +1060,7 @@ test('fresh readiness transports all 60 production implementation entries', () =
       requestDigest: 'c'.repeat(64),
     },
   });
-  assert.equal(plan.authority.implementationHashes.length, 60);
+  assert.equal(plan.authority.implementationHashes.length, 63);
   assert.deepEqual(plan.authority.implementationHashes, implementationHashes);
 });
 
@@ -836,7 +1260,7 @@ test('zero-provider readiness reserves enough time for signed driver reinstall a
     deriveWatchProductionPrepaidCoordinatorBudgetMs()
       + deriveWatchPostReadinessExecutionBudgetMs({ cells: LIVE_LLM_CELLS }),
   );
-  assert.equal(PRODUCTION_COORDINATOR_TIMEOUT_MS, 13_822_000);
+  assert.equal(PRODUCTION_COORDINATOR_TIMEOUT_MS, 14_062_000);
 });
 
 test('production transport applies each formal cell timeout at its actual outer boundary', () => {
@@ -1000,7 +1424,11 @@ for (const [label, receipt] of [['undefined', undefined], ['false', false], ['ne
   });
 }
 
-function rawWorkerConfig(root) {
+function rawWorkerConfig(root, workerIds = ['vm1']) {
+  if (workerIds.length === 4) {
+    fs.writeFileSync(path.join(root, 'vm131-key'), 'fixture-private-key');
+    fs.writeFileSync(path.join(root, 'vm131-hosts'), `vm131 ssh-ed25519 ${Buffer.from('fixture-vm131-host-key').toString('base64')}\n`);
+  }
   const defaultProfile = (workerId) => ({
     instanceId: `${workerId}-default`,
     profileId: 'vmware-hda-default',
@@ -1009,21 +1437,22 @@ function rawWorkerConfig(root) {
     expectedPhysicalPlaybackDeviceName: '扬声器 (High Definition Audio Device)',
   });
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     artifactKind: PRODUCTION_WORKER_CONFIG_KIND,
-    workers: [
-      {
-        workerId: 'vm1', user: 'VMUser',
-        transport: { kind: 'local' },
-        workspaceRoot: 'E:\\watch-worker', guestExecutionRoot: 'E:\\omni-shards',
-        vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-1' },
-        deviceProfileInstances: [defaultProfile('vm1')],
-      },
-    ],
+    providerPreflightExecutor: { workerId: workerIds.at(-1) },
+    workers: workerIds.map((workerId) => ({
+      workerId, user: 'VMUser',
+      transport: workerIds.length === 4 && workerId === 'vm131'
+        ? { kind: 'ssh', host: '192.0.2.131', port: 22, identityFile: path.join(root, 'vm131-key'), knownHostsFile: path.join(root, 'vm131-hosts'), hostKeyAlias: 'vm131' }
+        : { kind: 'local' },
+      workspaceRoot: 'E:\\watch-worker', guestExecutionRoot: 'E:\\omni-shards',
+      vmIdentity: { provider: 'vmware', uuidBios: `56-4d-${workerId}` },
+      deviceProfileInstances: [defaultProfile(workerId)],
+    })),
   };
 }
 
-test('production worker config v2 accepts one local worker and rejects unbound fields', () => {
+test('production worker config v3 accepts one local worker and rejects unbound fields', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-production-config-'));
   try {
     const raw = rawWorkerConfig(root);
@@ -1041,7 +1470,373 @@ test('production worker config v2 accepts one local worker and rejects unbound f
   }
 });
 
-test('production worker config v2 binds three distinct transports, BIOS UUIDs, host keys, and fixed placement', () => {
+test('remote preflight transport runs executor-bound network health before credential pipe, uploads only authorization files, and never retries', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-remote-preflight-'));
+  try {
+    const authorizationRoot = path.join(root, 'authorization');
+    fs.mkdirSync(path.join(authorizationRoot, 'provider-preflight-lease-reservations'), { recursive: true });
+    fs.mkdirSync(path.join(authorizationRoot, 'worker-readiness'), { recursive: true });
+    for (const relative of [
+      'provider-preflight-grant.json', 'worker-readiness-request.json',
+      'provider-preflight-lease-reservations/01-c01.json',
+      'worker-readiness/vm131.json',
+    ]) {
+      const target = path.join(authorizationRoot, ...relative.split('/'));
+      fs.writeFileSync(target, relative === 'worker-readiness/vm131.json' ? JSON.stringify({
+        workerId: 'vm131',
+        interactiveSession: {
+          sessionId: 1,
+          ownerSid: 'S-1-5-21-1000',
+          desktop: 'WinSta0\\Default',
+        },
+      }) : '{}\n', 'utf8');
+    }
+    const localEvidenceDirectory = path.join(root, 'collected', 'final-evidence');
+    const events = [];
+    const executor = {
+      workerId: 'vm131', user: 'VMUser', workspaceRoot: 'E:\\watch-worker',
+      guestExecutionRoot: 'E:\\omni-shards', vmIdentity: { provider: 'vmware', uuidBios: 'fixture' },
+      transport: {
+        kind: 'ssh', hostKeyAlias: 'vm131', hostKeyAlgorithm: 'ssh-ed25519',
+        hostKeySha256: `SHA256:${'A'.repeat(43)}`,
+      }, host: '192.0.2.131', port: 22,
+      identityFile: 'E:\\id_rsa', knownHostsFile: 'E:\\known_hosts', hostKeyAlias: 'vm131',
+    };
+    let providerRuns = 0;
+    let controllerSource = '';
+    let launcherSource = '';
+    let parsedControlScripts = false;
+    let terminalFixture = null;
+    let processAuthorityText = '';
+    let controllerMode = 'success';
+    let publicationSource = '';
+    const runProcess = async (executable, args, options = {}) => {
+      const joined = args.join(' ');
+      const encodedIndex = args.indexOf('-EncodedCommand');
+      const remoteSource = encodedIndex >= 0
+        ? Buffer.from(args[encodedIndex + 1], 'base64').toString('utf16le')
+        : joined;
+      if (executable === 'ssh.exe' && remoteSource.includes('watch-mode-provider-network-health.mjs')) {
+        events.push('network-health');
+        assert.match(remoteSource, /Set-Location -LiteralPath 'E:\\watch-worker'/u);
+        const request = JSON.parse(String(options.input));
+        return { exitCode: 0, stdout: `${JSON.stringify({
+          schemaVersion: 1,
+          artifactKind: 'watch-mode-provider-network-health',
+          executionId: 'remote-preflight-order',
+          providerCalls: 0,
+          verdict: 'passed',
+          executor: request.executor,
+        })}\n`, stderr: '' };
+      }
+      if (executable === 'ssh.exe' && joined.includes('provider-preflight-controller.ps1')) {
+        events.push('provider'); providerRuns += 1;
+        if (!parsedControlScripts) {
+          const parserPath = path.join(root, 'parse-control.ps1');
+          fs.writeFileSync(parserPath, '$tokens=$null;$errors=$null;[Management.Automation.Language.Parser]::ParseFile($args[0],[ref]$tokens,[ref]$errors)|Out-Null;if($errors.Count){$errors|ForEach-Object{$_.ToString()};exit 1}\n', 'utf8');
+          for (const [name, source] of [['controller.ps1', controllerSource], ['launcher.ps1', launcherSource]]) {
+            const scriptPath = path.join(root, name);
+            fs.writeFileSync(scriptPath, source, 'utf8');
+            const parser = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', parserPath, scriptPath],
+            { encoding: 'utf8' });
+            assert.equal(parser.status, 0, `${name}: ${parser.stdout}\n${parser.stderr}`);
+          }
+          parsedControlScripts = true;
+        }
+        assert.match(controllerSource, /New-ScheduledTaskPrincipal[^\n]+-LogonType Interactive -RunLevel Limited/u);
+        assert.match(controllerSource, /interactive Provider preflight terminal authority mismatch/u);
+        assert.match(controllerSource, /Principal\.UserId -cne \$expectedSid/u);
+        assert.match(controllerSource, /provider-preflight-interactive-launcher\.ps1/u);
+        assert.match(controllerSource, /FileMode\]::CreateNew/u);
+        assert.match(controllerSource, /controller authority mismatch/u);
+        assert.match(controllerSource, /launcher authority mismatch/u);
+        assert.match(controllerSource, /sessionId -ne \$expectedSessionId/u);
+        assert.match(controllerSource, /provider-preflight-cleanup/u);
+        assert.match(controllerSource, /Get-Command node\.exe -CommandType Application/u);
+        assert.doesNotMatch(controllerSource, /api.?key|credential|secret/i);
+        assert.equal(args.includes('-EncodedCommand'), false);
+        assert.doesNotMatch(String(options.input), /api.?key|credential|secret/i);
+        const argument = (name) => args[args.indexOf(name) + 1];
+        processAuthorityText = JSON.stringify({
+          schemaVersion: 1, artifactKind: 'watch-mode-provider-preflight-process-authority',
+          executionId: 'remote-preflight-order', workerId: 'vm131', expectedSessionId: 1,
+          expectedOwnerSid: 'S-1-5-21-1000',
+          launcher: { pid: 100, parentPid: 50, imagePath: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', startedAt: new Date().toISOString(), sessionId: 1, ownerSid: 'S-1-5-21-1000' },
+          worker: { pid: 101, parentPid: 100, imagePath: 'C:\\Program Files\\nodejs\\node.exe', startedAt: new Date().toISOString(), sessionId: 1, ownerSid: 'S-1-5-21-1000' },
+          descendants: [{ pid: 102, parentPid: 101, imagePath: 'E:\\watch-worker\\target\\release\\omni-desktop-shell.exe', startedAt: new Date().toISOString(), sessionId: 1, ownerSid: 'S-1-5-21-1000' }],
+        });
+        const processAuthoritySha256 = crypto.createHash('sha256').update(processAuthorityText, 'utf8').digest('hex');
+        terminalFixture = {
+          schemaVersion: 1, artifactKind: 'watch-mode-provider-preflight-interactive-terminal',
+          executionId: 'remote-preflight-order', workerId: 'vm131',
+          authorizationDigest: 'a'.repeat(64), controllerSha256: argument('-ControllerSha256'),
+          launcherSha256: argument('-LauncherSha256'), processAuthoritySha256,
+          requestSha256: crypto.createHash('sha256').update(String(options.input), 'utf8').digest('hex'),
+          taskName: 'OmniPreflight-6bde723257b39bd495a3403f', taskPath: '\\OmniTranslate\\',
+          exitCode: 0, sessionId: 1, ownerSid: 'S-1-5-21-1000', desktop: 'WinSta0\\Default',
+          completedAt: new Date().toISOString(),
+        };
+        if (controllerMode === 'throw') throw new Error('simulated SSH transport termination');
+        return { exitCode: controllerMode === 'nonzero' ? 23 : 0, stdout: 'wrapper framing, not worker JSON\n', stderr: controllerMode === 'nonzero' ? 'wrapper controller failure' : '' };
+      }
+      if (executable === 'ssh.exe' && remoteSource.includes('publication script SHA-256 mismatch')) {
+        events.push('publication-verify');
+        assert.equal(args.includes('-EncodedCommand'), true);
+        assert.ok(joined.length < 4_000, 'publication verification must remain a short remote command');
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      if (executable === 'ssh.exe' && args.includes('-File') && /publish-[a-f0-9]{24}\.ps1/u.test(joined)) {
+        events.push('publication-execute');
+        assert.equal(args.includes('-EncodedCommand'), false);
+        assert.equal(options.input, '');
+        const output = Buffer.from(JSON.stringify({ published: true }), 'utf8').toString('base64');
+        return { exitCode: 0, stdout: `__OMNI_REMOTE_OUTPUT_V1__${output}\n__OMNI_REMOTE_COMPLETE_V1__\n`, stderr: '' };
+      }
+      if (executable === 'ssh.exe' && remoteSource.includes('publication script cleanup did not remove the exact file')) {
+        events.push('publication-cleanup');
+        assert.equal(args.includes('-EncodedCommand'), true);
+        assert.match(remoteSource, /Remove-Item -LiteralPath \$p -Force/u);
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      if (executable === 'ssh.exe') { events.push('mkdir'); return { exitCode: 0, stdout: '{}\n', stderr: '' }; }
+      if (joined.includes('provider-preflight-consumption-claim.json')) {
+        events.push('claim'); fs.writeFileSync(windowsPathFromGitScpOperand(args.at(-1)), '{}\n', 'utf8');
+      } else if (joined.includes('provider-preflight-worker.terminal.json')) {
+        events.push('terminal'); fs.writeFileSync(windowsPathFromGitScpOperand(args.at(-1)), JSON.stringify(terminalFixture), 'utf8');
+      } else if (joined.includes('provider-preflight-process-authority.json')) {
+        events.push('process-authority'); fs.writeFileSync(windowsPathFromGitScpOperand(args.at(-1)), processAuthorityText, 'utf8');
+      } else if (joined.includes('provider-preflight-cleanup.json')) {
+        events.push('cleanup');
+        fs.writeFileSync(windowsPathFromGitScpOperand(args.at(-1)), JSON.stringify({
+          schemaVersion: 1, artifactKind: 'watch-mode-provider-preflight-cleanup',
+          executionId: 'remote-preflight-order', workerId: 'vm131',
+          taskName: 'OmniPreflight-6bde723257b39bd495a3403f', taskPath: '\\OmniTranslate\\',
+          processAuthoritySha256: terminalFixture.processAuthoritySha256,
+          taskAbsent: true, identitiesEnded: true, temporaryFilesAbsent: true, attemptErrors: [], passed: true,
+          completedAt: new Date().toISOString(),
+        }), 'utf8');
+      } else if (joined.includes('provider-preflight-worker.stdout.log')) {
+        events.push('stdout');
+        fs.writeFileSync(windowsPathFromGitScpOperand(args.at(-1)), `${JSON.stringify({
+          status: 'completed', outputDirectory: 'E:\\omni-shards\\provider-preflight-evidence', fields: {},
+        })}\n`, 'utf8');
+      } else if (joined.includes('provider-preflight-worker.stderr.log')) {
+        events.push('stderr');
+        fs.writeFileSync(windowsPathFromGitScpOperand(args.at(-1)), controllerMode === 'success' ? '' : 'collected worker failure', 'utf8');
+      } else if (joined.includes('provider-preflight-evidence')) {
+        events.push('evidence');
+        fs.mkdirSync(path.join(path.dirname(localEvidenceDirectory), 'provider-preflight-evidence'), { recursive: true });
+      } else {
+        assert.doesNotMatch(args.at(-2), /watch-remote-preflight/u, 'authorization uploads must use a short local staging path');
+        const uploadedSource = fs.readFileSync(windowsPathFromGitScpOperand(args.at(-2)), 'utf8');
+        if (/publish-[a-f0-9]{24}\.ps1/u.test(joined)) {
+          publicationSource = uploadedSource;
+          assert.match(publicationSource, /ConvertTo-ExtendedLengthPath/u);
+          assert.match(publicationSource, /__OMNI_REMOTE_OUTPUT_V1__/u);
+        } else if (joined.includes('provider-preflight-controller.ps1')) controllerSource = uploadedSource;
+        else if (joined.includes('provider-preflight-interactive-launcher.ps1')) launcherSource = uploadedSource;
+        else if (!joined.includes('provider-preflight-interactive-launcher.ps1')
+          && !uploadedSource.includes('"interactiveSession"')) assert.equal(uploadedSource, '{}\n');
+        assert.match(args.at(-1), /:E:\/omni-shards\/\.provider-preflight\/[a-f0-9]{20}\//u);
+        assert.ok(args.at(-1).length < 240, 'remote authorization upload must remain below the legacy Windows path ceiling');
+        events.push(`upload:${path.basename(args.at(-2))}`);
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+    const makeTransport = () => createSshProviderPreflightTransport({
+      config: { sshExecutable: 'ssh.exe', scpExecutable: 'scp.exe' }, executor,
+      executionId: 'remote-preflight-order', authorizationRoot, localEvidenceDirectory, runProcess,
+      workspaceRoot: root,
+      runtimeBinaryHashes: signedCredentialHelperFixture(root),
+      verifyExecutor: async () => { events.push('verify'); },
+      signingKeys: generateCoordinatorSigningKeyPair(),
+      provision: async (options) => {
+        events.push('credential');
+        assert.doesNotMatch(JSON.stringify(options), /api.?key|secret/i);
+      },
+    });
+    const readinessAuthority = fileAuthorityEntry(
+      path.join(authorizationRoot, 'worker-readiness', 'vm131.json'), 'worker-readiness/vm131.json',
+    );
+    const grant = { executor: {
+      workerId: 'vm131', interactiveUser: 'VMUser', vmIdentity: executor.vmIdentity,
+      transportAuthority: {
+        kind: 'ssh', hostKeyAlias: 'vm131', hostKeyAlgorithm: 'ssh-ed25519',
+        hostKeySha256: `SHA256:${'A'.repeat(43)}`,
+      },
+      vmIdentityDigest: sha256Canonical(executor.vmIdentity),
+      runtimeBundleDigest: 'b'.repeat(64),
+      readinessAuthority: {
+        ...readinessAuthority, providerCalls: 0, workerId: 'vm131',
+      },
+    } };
+    const transport = makeTransport();
+    const result = await transport.dispatch({ grant, authorizationDigest: 'a'.repeat(64) });
+    assert.deepEqual(events.slice(0, 4), ['verify', 'network-health', 'credential', 'mkdir']);
+    assert.ok(events.slice(4, 8).every((entry) => entry.startsWith('upload:')), JSON.stringify(events));
+    assert.deepEqual(events.slice(8, 12), [
+      'upload:publish-' + events[8].slice('upload:publish-'.length),
+      'publication-verify', 'publication-execute', 'publication-cleanup',
+    ], 'canonical publication must use verified file-only execution and exact cleanup');
+    assert.deepEqual(events.slice(12, 15), [
+      'upload:provider-preflight-interactive-launcher.ps1',
+      'upload:provider-preflight-controller.ps1',
+      'mkdir',
+    ], 'canonical authorization publication must precede control upload: ' + JSON.stringify(events));
+    assert.deepEqual(events.slice(-8), ['provider', 'terminal', 'process-authority', 'cleanup', 'claim', 'stdout', 'stderr', 'evidence']);
+    assert.equal(providerRuns, 1);
+    assert.equal(result.outputDirectory, path.resolve(localEvidenceDirectory));
+    assert.deepEqual(fs.readdirSync(authorizationRoot).sort(), [
+      'provider-preflight-consumption-claim.json',
+      'provider-preflight-grant.json',
+      'provider-preflight-lease-reservations',
+      'worker-readiness',
+      'worker-readiness-request.json',
+    ], 'control receipts must not contaminate the exact signed authorization package');
+    assert.deepEqual(fs.readdirSync(`${authorizationRoot}.control-evidence`).sort(), [
+      'provider-preflight-cleanup.json',
+      'provider-preflight-process-authority.json',
+      'provider-preflight-worker.stderr.log',
+      'provider-preflight-worker.stdout.log',
+      'provider-preflight-worker.terminal.json',
+    ]);
+    await assert.rejects(transport.dispatch({ grant, authorizationDigest: 'a'.repeat(64) }), /single-use/);
+    assert.equal(providerRuns, 1);
+    for (const mode of ['nonzero', 'throw']) {
+      controllerMode = mode;
+      events.length = 0;
+      await assert.rejects(
+        makeTransport().dispatch({ grant, authorizationDigest: 'a'.repeat(64) }),
+        (error) => error instanceof AggregateError
+          && /collect-all evidence recovery/u.test(error.message)
+          && error.errors.some((entry) => mode === 'nonzero'
+            ? /failed with exit 23/u.test(entry.message)
+            : /simulated SSH transport termination/u.test(entry.message)),
+      );
+      assert.deepEqual(events.slice(-8), ['provider', 'terminal', 'process-authority', 'cleanup', 'claim', 'stdout', 'stderr', 'evidence'], `${mode}: ${JSON.stringify(events)}`);
+    }
+    assert.equal(providerRuns, 3);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('provider preflight terminal replay/session substitution and cleanup failure are rejected by coordinator authority validators', () => {
+  const expected = {
+    executionId: 'execution-current', workerId: 'vm131', authorizationDigest: 'a'.repeat(64),
+    controllerSha256: 'b'.repeat(64), launcherSha256: 'c'.repeat(64),
+    processAuthoritySha256: 'e'.repeat(64), requestSha256: 'd'.repeat(64),
+    taskName: 'OmniPreflight-current', sessionId: 1, ownerSid: 'S-1-5-21-1000', desktop: 'WinSta0\\Default',
+  };
+  const terminal = {
+    schemaVersion: 1, artifactKind: 'watch-mode-provider-preflight-interactive-terminal',
+    ...expected, taskPath: '\\OmniTranslate\\', exitCode: 0, completedAt: new Date().toISOString(),
+  };
+  assert.doesNotThrow(() => validateProviderPreflightInteractiveTerminal(terminal, expected));
+  for (const changed of [
+    { executionId: 'execution-replayed' }, { sessionId: 2 }, { requestSha256: 'e'.repeat(64) },
+    { launcherSha256: 'f'.repeat(64) }, { ownerSid: 'S-1-5-21-2000' },
+  ]) assert.throws(() => validateProviderPreflightInteractiveTerminal({ ...terminal, ...changed }, expected), /exact bound authority/u);
+  const cleanupExpected = { executionId: expected.executionId, workerId: expected.workerId, taskName: expected.taskName, processAuthoritySha256: expected.processAuthoritySha256 };
+  const cleanup = {
+    schemaVersion: 1, artifactKind: 'watch-mode-provider-preflight-cleanup', ...cleanupExpected,
+    taskPath: '\\OmniTranslate\\', taskAbsent: true, identitiesEnded: true,
+    temporaryFilesAbsent: true, attemptErrors: [], passed: true, completedAt: new Date().toISOString(),
+  };
+  assert.doesNotThrow(() => validateProviderPreflightCleanupReceipt(cleanup, cleanupExpected));
+  for (const changed of [{ taskAbsent: false }, { identitiesEnded: false }, { temporaryFilesAbsent: false }, { attemptErrors: ['failed'] }, { passed: false }]) {
+    assert.throws(() => validateProviderPreflightCleanupReceipt({ ...cleanup, ...changed }, cleanupExpected), /positive bound authority/u);
+  }
+  const identity = { pid: 100, parentPid: 50, imagePath: 'C:\\Windows\\System32\\cmd.exe', startedAt: new Date().toISOString(), sessionId: 1, ownerSid: expected.ownerSid };
+  const processAuthority = {
+    schemaVersion: 1, artifactKind: 'watch-mode-provider-preflight-process-authority',
+    executionId: expected.executionId, workerId: expected.workerId,
+    expectedSessionId: 1, expectedOwnerSid: expected.ownerSid,
+    launcher: identity, worker: { ...identity, pid: 101, parentPid: 100 },
+    descendants: [{ ...identity, pid: 102, parentPid: 101 }],
+  };
+  assert.doesNotThrow(() => validateProviderPreflightProcessAuthority(processAuthority, expected));
+  assert.throws(() => validateProviderPreflightProcessAuthority({ ...processAuthority, descendants: [{ ...identity, pid: 101 }] }, expected), /duplicate identities/u);
+});
+
+test('provider preflight control authority verification precedes Provider invocation accounting', () => {
+  const source = fs.readFileSync(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url), 'utf8');
+  const verification = source.indexOf("ensureSuccessful(controlVerificationResult, 'remote Provider preflight control authority verification')");
+  const providerStart = source.indexOf('onProviderCallStarted();', verification);
+  assert.ok(verification >= 0 && providerStart > verification);
+  const boundary = source.slice(source.lastIndexOf('const controlVerification =', verification), providerStart);
+  assert.match(boundary, /FileAttributes\]::ReparsePoint/u);
+  assert.match(boundary, /Get-FileHash/u);
+  assert.match(boundary, /entry\.bytes/u);
+  assert.match(source, /launcher self authority mismatch/u);
+  assert.match(source, /sessionId -ne \$expectedSessionId/u);
+  assert.match(source, /FileMode\]::CreateNew/u);
+  assert.match(source, /cleanup receipt is not a positive bound authority/u);
+  assert.match(source, /attemptErrors=@\(\$cleanupErrors\); passed=\$false/u);
+  assert.match(source, /\[IO\.FileMode\]::Create,/u, 'cleanup receipt must be idempotently overwritten with positive or negative state');
+  assert.match(source, /sameStart -and \$sameImage/u, 'PID cleanup must compare captured creation identity before treating a PID as live');
+  const readinessBlock = source.slice(source.indexOf('const readinessPath ='), source.indexOf('const requestText ='));
+  assert.equal((readinessBlock.match(/fs\.readFileSync\(readinessPath\)/gu) ?? []).length, 1);
+  assert.match(readinessBlock, /createHash\('sha256'\)\.update\(readinessBytes\)/u);
+  assert.match(readinessBlock, /JSON\.parse\(readinessBytes\.toString/u);
+});
+
+test('remote executor network health failure is terminal before credential provision and Provider with no fallback', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-remote-network-health-failure-'));
+  try {
+    const authorizationRoot = path.join(root, 'authorization');
+    fs.mkdirSync(path.join(authorizationRoot, 'provider-preflight-lease-reservations'), { recursive: true });
+    fs.mkdirSync(path.join(authorizationRoot, 'worker-readiness'), { recursive: true });
+    const executor = {
+      workerId: 'vm131', user: 'VMUser', workspaceRoot: 'E:\\watch-worker',
+      guestExecutionRoot: 'E:\\omni-shards', vmIdentity: { provider: 'vmware', uuidBios: 'fixture' },
+      transport: { kind: 'ssh' }, host: '192.0.2.131', port: 22,
+      identityFile: 'E:\\id_rsa', knownHostsFile: 'E:\\known_hosts', hostKeyAlias: 'vm131',
+    };
+    let credentialCalls = 0;
+    let providerCalls = 0;
+    let providerCallStarts = 0;
+    const transport = createSshProviderPreflightTransport({
+      config: { sshExecutable: 'ssh.exe', scpExecutable: 'scp.exe' }, executor,
+      executionId: 'remote-health-failure', authorizationRoot,
+      localEvidenceDirectory: path.join(root, 'evidence'),
+      workspaceRoot: root,
+      runtimeBinaryHashes: signedCredentialHelperFixture(root),
+      verifyExecutor: async () => {},
+      signingKeys: generateCoordinatorSigningKeyPair(),
+      provision: async () => { credentialCalls += 1; },
+      onProviderCallStarted: () => { providerCallStarts += 1; },
+      runProcess: async (executable, args) => {
+        const joined = args.join(' ');
+        const encodedIndex = args.indexOf('-EncodedCommand');
+        const remoteSource = encodedIndex >= 0
+          ? Buffer.from(args[encodedIndex + 1], 'base64').toString('utf16le')
+          : joined;
+        if (remoteSource.includes('watch-mode-provider-network-health.mjs')) {
+          return { exitCode: 1, stdout: `${JSON.stringify({
+            schemaVersion: 1,
+            artifactKind: 'watch-mode-provider-network-health',
+            executionId: 'remote-health-failure',
+            providerCalls: 0,
+            verdict: 'failed',
+            executor: grant.executor,
+          })}\n`, stderr: 'provider network health failed before paid preflight authorization' };
+        }
+        if (joined.includes('run-watch-mode-provider-preflight-worker.mjs')) providerCalls += 1;
+        return { exitCode: 0, stdout: '{}\n', stderr: '' };
+      },
+    });
+    const grant = { executor: { workerId: 'vm131', interactiveUser: 'VMUser', vmIdentity: executor.vmIdentity, readinessAuthority: { providerCalls: 0 } } };
+    await assert.rejects(
+      transport.dispatch({ grant, authorizationDigest: 'a'.repeat(64) }),
+      /remote Provider network health.*failed/u,
+    );
+    assert.equal(credentialCalls, 0);
+    assert.equal(providerCalls, 0);
+    assert.equal(providerCallStarts, 0);
+    assert.ok(fs.existsSync(path.join(authorizationRoot, 'provider-network-health-authority.json')));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('production worker config v3 binds three distinct transports, BIOS UUIDs, host keys, and fixed placement', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-production-three-worker-'));
   try {
     const identity = path.join(root, 'id_rsa');
@@ -1062,7 +1857,8 @@ test('production worker config v2 binds three distinct transports, BIOS UUIDs, h
       };
     };
     const config = {
-      schemaVersion: 2, artifactKind: PRODUCTION_WORKER_CONFIG_KIND,
+      schemaVersion: 3, artifactKind: PRODUCTION_WORKER_CONFIG_KIND,
+      providerPreflightExecutor: { workerId: 'vm169' },
       workers: [worker('vm171', '192.168.40.171', 'AAAA'), worker('vm167', '192.168.40.167', 'BBBB'), worker('vm169', '192.168.40.169', 'CCCC')],
     };
     const normalized = validateProductionWorkerConfig(config, { configDirectory: root });
@@ -1073,11 +1869,13 @@ test('production worker config v2 binds three distinct transports, BIOS UUIDs, h
     const fourConfig = structuredClone(config);
     fourConfig.workers[0].transport = { kind: 'local' };
     fourConfig.workers.push(worker('vm131', '192.168.40.131', 'DDDD'));
+    fourConfig.providerPreflightExecutor = { workerId: 'vm167' };
     const four = validateProductionWorkerConfig(fourConfig, { configDirectory: root });
     assert.deepEqual(four.assignments.map(({ workerId, waveIndex }) => [workerId, waveIndex]), [
       ['vm171', 0], ['vm169', 0], ['vm131', 0], ['vm167', 0],
     ]);
     assert.equal(four.workers.filter((entry) => entry.transport.kind === 'ssh').length, 3);
+    assert.equal(four.preflightExecutor.workerId, 'vm167');
     const wrongFourth = structuredClone(fourConfig);
     wrongFourth.workers[3].vmIdentity.uuidBios = wrongFourth.workers[2].vmIdentity.uuidBios;
     assert.throws(() => validateProductionWorkerConfig(wrongFourth, { configDirectory: root }), /reuses a VMware BIOS UUID/);
@@ -1183,6 +1981,7 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
     'invoke-watch-mode-interactive-task.ps1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
+    'lib/powershell/Omni.Testing.WatchMode.InteractiveCustody.psm1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1',
   ].map((relativePath) => fs.readFileSync(path.join(repoRoot, 'scripts/testing', relativePath), 'utf8')).join('\n');
   assert.match(control, /expectedCredentialReference = \[string\]\$payload\.expectedCredentialReference/);
@@ -1197,7 +1996,10 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
   assert.match(control, /@\(\$taskStateBeforeInfo, \$taskStateAfterInfo\)/);
   assert.match(control, /if \(\$taskIsActive\) \{ \$successfulTaskExitObservedAt = \$null \}/);
   assert.match(control, /\.State -in @\('Running', 'Queued'\)/);
-  assert.match(control, /\$lastTaskResult -ne 0/);
+  assert.match(control, /Get-OmniInteractiveScheduledTaskExitDecision/);
+  assert.match(control, /ProcessProperty 'taskProcess'/);
+  assert.match(control, /ProcessProperty 'nodeProcess'/);
+  assert.match(control, /action -eq 'wait-for-terminal-authority'/);
   assert.match(control, /\$terminalVisibilityGraceMilliseconds = 5000/);
   assert.match(control, /completed successfully without publishing terminal authority after the visibility grace period/);
   assert.match(control, /interactive task exited before terminal authority/);
@@ -1366,7 +2168,8 @@ test('interactive shard PowerShell emitters use shard authority schema v2', () =
   assert.match(collector, /\$executionExitCode -eq 0/);
   assert.match(collector, /interactive cell execution receipt identity mismatch/);
   assert.match(launcher, /'-ExecutionReceiptPath'/);
-  assert.match(collector, /\$requiredRoles = @\('shard-node', 'cell-powershell'\)/);
+  assert.match(collector, /\$requiredRoles = if \(\$Mode -eq 'local-aec-probe'\) \{ @\('shard-node'\) \} else \{ @\('shard-node', 'cell-powershell'\) \}/);
+  assert.match(collector, /\$Mode -eq 'local-aec-probe'\) \{ @\('desktop'\) \} else \{ @\('desktop', 'bridge'\) \}/);
 });
 
 test('interactive shard retains redirected process exit status and rejects unknown status', { skip: !isWindows }, () => {
@@ -1459,9 +2262,10 @@ test('interactive control projects readiness and paid-cell fields only inside th
     'invoke-watch-mode-interactive-task.ps1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
+    'lib/powershell/Omni.Testing.WatchMode.InteractiveCustody.psm1',
     'lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1',
   ].map((relativePath) => fs.readFileSync(path.join(repoRoot, 'scripts/testing', relativePath), 'utf8')).join('\n');
-  assert.match(control, /\$mode -notin @\('endpoint-readiness', 'shard-cell', 'incident-plus-cell'\)/);
+  assert.match(control, /\$mode -notin @\('endpoint-readiness', 'shard-cell', 'incident-plus-cell', 'local-aec-probe'\)/);
   const commandStart = control.indexOf('$command = [ordered]@{');
   const commandEnd = control.indexOf('Write-OmniImmutableJson -LiteralPath $commandPath -Value $command');
   assert.ok(commandStart >= 0 && commandEnd > commandStart);
@@ -1518,8 +2322,20 @@ test('production coordinator verifies a prebuilt runtime and never rebuilds it',
   );
   assert.match(source, /verifyStrictRuntimeAuthority/);
   assert.doesNotMatch(source, /buildStrictRuntimeAuthority/);
-  assert.match(source, /PROVIDER_PREFLIGHT_AUTHORIZATION_DIGEST_ENV/);
-  assert.match(source, /PROVIDER_PREFLIGHT_GRANT_PATH_ENV/);
+  assert.match(source, /\$workerExitCode = \[int\]\$worker\.ExitCode[\s\S]*?\$worker\.Dispose\(\)[\s\S]*?\$exitCode = \$workerExitCode/);
+  assert.match(source, /\$workerPid = \[int\]\$worker\.Id[\s\S]*?\$worker\.Dispose\(\)[\s\S]*?\[int\]\$_\.pid -ne \$workerPid/);
+  assert.doesNotMatch(source, /\[int\]\$_\.pid -ne \[int\]\$worker\.Id/);
+  assert.match(source, /try \{ \[IO\.File\]::AppendAllText\([^\n]+\) \} catch \{ \}/);
+  assert.match(source, /remote Provider preflight stdout collection/);
+  assert.match(source, /lastNonEmptyLine\(fs\.readFileSync\(workerStdoutTarget/);
+  const remoteWorker = fs.readFileSync(
+    path.join(repoRoot, 'scripts/testing/run-watch-mode-provider-preflight-worker.mjs'),
+    'utf8',
+  );
+  assert.match(remoteWorker, /OMNI_RELEASE_EVIDENCE_PREFLIGHT_AUTHORIZATION_DIGEST/);
+  assert.match(remoteWorker, /OMNI_RELEASE_EVIDENCE_PREFLIGHT_GRANT_PATH/);
+  assert.match(remoteWorker, /OMNI_RELEASE_EVIDENCE_HEAD_COMMIT: headCommit/);
+  assert.match(remoteWorker, /clean signed Git provenance/);
 });
 
 test('remote PowerShell uses a compressed encoded command without SSH stdin', () => {
@@ -1626,6 +2442,43 @@ test('Windows PowerShell file-only executes oversized incompressible payload wit
   }
 });
 
+test('canonical Provider preflight publication file body preserves extended-length path support', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-preflight-long-path-'));
+  const sourceRoot = path.join(root, 'staging');
+  const targetRoot = path.join(root, 'canonical-' + 'x'.repeat(205));
+  const relative = 'provider-preflight-lease-reservations/lease-' + 'y'.repeat(48) + '.json';
+  const source = path.join(sourceRoot, ...relative.split('/'));
+  const target = path.join(targetRoot, ...relative.split('/'));
+  const bytes = Buffer.from('{"lease":"long-path-authority"}\\n', 'utf8');
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  fs.writeFileSync(source, bytes, { flag: 'wx' });
+  assert.ok(target.length > 260, 'fixture destination must exceed MAX_PATH, got ' + target.length);
+  const invocation = remotePowerShellInvocation(REMOTE_PROVIDER_PREFLIGHT_PUBLICATION_BODY, {
+    sourceRoot,
+    targetRoot,
+    files: [{
+      path: relative,
+      bytes: bytes.byteLength,
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    }],
+  }, { mode: 'file-only' });
+  const scriptPath = path.join(root, 'publish.ps1');
+  try {
+    fs.writeFileSync(scriptPath, invocation.fileScript, 'utf8');
+    const result = spawnSync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
+    ], { encoding: 'utf8', timeout: 30_000, windowsHide: true, env: windowsPowerShellEnvironment(process.env) });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    const decoded = decodeRemotePowerShellFileOutput({ exitCode: result.status, stdout: result.stdout, stderr: result.stderr });
+    const receipt = JSON.parse(decoded.stdout.split(/\r?\n/u)[0]);
+    assert.equal(receipt.published, true);
+    assert.equal(receipt.logicalTargetRoot, path.win32.resolve(targetRoot));
+    assert.equal(fs.readFileSync('\\\\?\\' + target).toString('utf8'), bytes.toString('utf8'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('production runRemote selects file-only for both local and SSH large payloads', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-large-run-remote-'));
   const payload = { inventory: crypto.randomBytes(32_768).toString('base64') };
@@ -1652,7 +2505,7 @@ test('production runRemote selects file-only for both local and SSH large payloa
             assert.deepEqual(args.slice(0, -2), scpBaseArgs(worker));
             assert.equal(args.at(-1), `VMUser@192.0.2.10:C:/Users/VMUser/AppData/Local/Temp/${path.basename(args.at(-2))}`);
             assert.doesNotMatch(args.at(-2), /\\/u, 'Git SCP -O command upload local operand must use slashes (otherwise unexpected filename)');
-            assert.equal(fs.readFileSync(args.at(-2), 'utf8'), fileScript);
+            assert.equal(fs.readFileSync(windowsPathFromGitScpOperand(args.at(-2)), 'utf8'), fileScript);
           }
           if (executable === 'powershell.exe') {
             assert.equal(fs.readFileSync(args[args.indexOf('-File') + 1], 'utf8'), fileScript);
@@ -1699,7 +2552,7 @@ test('Git SCP -O normalizes local operands and preserves host pins and remoteSpe
       ['plan', 'signed plan.json'],
     ]) {
       await t.test(kind + ' upload', async () => {
-        const localPath = 'E:\\omni-translate\\' + relativePath;
+        const localPath = 'E:\\watch-coordinator\\' + relativePath;
         const remotePath = 'C:\\worker root\\' + relativePath;
         await transport.uploadFile(worker, localPath, remotePath);
         const call = calls.at(-1);
@@ -1746,15 +2599,22 @@ test('remote PowerShell hashes files without module auto-loading', { skip: !isWi
   const invocation = remotePowerShellInvocation(
     '$PSModuleAutoLoadingPreference = "None"; (Get-FileHash -LiteralPath ([string]$payload.path) -Algorithm SHA256).Hash.ToLowerInvariant()',
     { path: target },
+    { mode: 'file-only' },
   );
+  // Exercise the same inspectable -File transport used by local and SSH workers.
+  const scriptPath = path.join(root, 'hash.ps1');
+  fs.writeFileSync(scriptPath, invocation.fileScript, 'utf8');
   try {
-    const result = spawnSync(invocation.args[0], invocation.args.slice(1), {
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
       input: invocation.input,
       encoding: 'utf8',
       timeout: 30_000,
+      windowsHide: true,
     });
     assert.equal(result.status, 0, JSON.stringify({ error: result.error?.message, code: result.error?.code, signal: result.signal, stderr: result.stderr }));
-    assert.equal(result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0], expected);
+    const decoded = decodeRemotePowerShellFileOutput({ exitCode: result.status, stdout: result.stdout, stderr: result.stderr });
+    assert.equal(decoded.exitCode, 0);
+    assert.equal(decoded.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0], expected);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1921,7 +2781,7 @@ test('paid scheduler cleanup gates success output and preserves primary failures
   const finallyStart = source.search(/\} finally \{\r?\n    if \(\$registered\)/);
   assert.ok(finallyStart > 0);
   const finalization = source.slice(finallyStart);
-  const paid = finalization.slice(finalization.indexOf("if ($mode -in @('shard-cell', 'incident-plus-cell'))"), finalization.indexOf('} else {'));
+  const paid = finalization.slice(finalization.indexOf("if ($mode -in @('shard-cell', 'incident-plus-cell', 'local-aec-probe'))"), finalization.indexOf('} else {'));
   assert.match(paid, /status = 'cleanup-incomplete'/);
   assert.match(paid, /Stop-OmniInteractiveOwnedProcesses[\s\S]*?-ExpectedBinding \$command/);
   assert.ok(paid.indexOf('Stop-OmniInteractiveOwnedProcesses') < paid.indexOf('Stop-ScheduledTask'));
@@ -1936,15 +2796,15 @@ test('paid scheduler cleanup gates success output and preserves primary failures
   assert.match(finalization, /\} else \{\s*Stop-ScheduledTask[\s\S]*?Stop-GuardedNode \$launchPath/);
 });
 
-test('production coordinator drives four signed serial waves through stage, verify, and publish', async () => {
+test('production coordinator passes four collected signed shard roots through stage, verify, and publish', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-production-orchestrator-'));
-  const config = rawWorkerConfig(root);
+  const config = rawWorkerConfig(root, ['vm171', 'vm167', 'vm169', 'vm131']);
   const normalized = validateProductionWorkerConfig(config, { configDirectory: root });
   const profilesByWorker = new Map(normalized.workers.map((worker) => [
     worker.workerId,
     new Map(worker.deviceProfileInstances.map((profile) => [profile.deviceClass, profile])),
   ]));
-  const placements = LIVE_LLM_CELLS.map((_, index) => ['vm1', index]);
+  const placements = normalized.assignments.map(({ workerId, waveIndex }) => [workerId, waveIndex]);
   const cells = LIVE_LLM_CELLS.map((cell, index) => {
     const [workerId, waveIndex] = placements[index];
     return {
@@ -1962,9 +2822,19 @@ test('production coordinator drives four signed serial waves through stage, veri
     provenance: CLEAN_PROVENANCE,
     authority: { runtimeBinaryHashes: [] },
     localIsolationAuthority: { manifestPath: 'local.json', path: 'local.json', bytes: 1, sha256: 'b'.repeat(64), providerCalls: 0 },
-    workers: normalized.workers.map(({ workerId, vmIdentity, deviceProfileInstances }) => ({ workerId, vmIdentity, deviceProfileInstances })),
+    workers: normalized.workers.map(({ workerId, vmIdentity, deviceProfileInstances, transport }) => ({
+      workerId,
+      vmIdentity,
+      deviceProfileInstances,
+      transportAuthority: transport.kind === 'local' ? { kind: 'local' } : {
+        kind: 'ssh',
+        hostKeyAlias: transport.hostKeyAlias,
+        hostKeyAlgorithm: transport.hostKeyAlgorithm,
+        hostKeySha256: transport.hostKeySha256,
+      },
+    })),
     cells,
-    waves: cells.map((_, waveIndex) => ({
+    waves: [...new Set(cells.map((cell) => cell.waveIndex))].map((waveIndex) => ({
       waveIndex,
       cellIds: cells.filter((cell) => cell.waveIndex === waveIndex).map((cell) => cell.cellId),
     })),
@@ -1996,6 +2866,8 @@ test('production coordinator drives four signed serial waves through stage, veri
       ),
       evidenceOutputRoot: path.join(root, 'evidence'),
       operations: {
+        diskLifecycle: async ({ phase }) => { calls.push(`disk:${phase}`); return { verdict: 'passed' }; },
+        historyRetention: async () => ({ verdict: 'passed' }),
         verifyRuntimeAuthority: async () => ({
           authorityPath: path.join(root, 'strict-runtime-authority.json'),
           authority: {
@@ -2143,7 +3015,12 @@ test('production coordinator drives four signed serial waves through stage, veri
           aggregatePath: path.join(root, 'aggregate.json'),
           matrixIntegration: { cells: [] },
         }),
-        stageShardMatrixIntegration: () => {
+        stageShardMatrixIntegration: ({ shards: stagedShards }) => {
+          calls.push(`stage:${stagedShards.map((shard) => shard.workerId).join(',')}`);
+          assert.deepEqual(
+            stagedShards.map((shard) => shard.workerId),
+            plan.workers.map((worker) => worker.workerId),
+          );
           const finalExecutionRoot = path.join(
             root,
             'evidence',
@@ -2184,15 +3061,22 @@ test('production coordinator drives four signed serial waves through stage, veri
       },
     };
     const result = await runProductionCoordinator(coordinatorOptions);
+    assert.equal(calls[0], 'disk:startup');
+    assert.equal(calls.at(-1), 'disk:finally');
+    assert.ok(calls.indexOf('disk:before-provider') < calls.indexOf('provider-preflight'));
     assert.deepEqual(
       calls.filter((entry) => entry.startsWith('wave:')),
-      LIVE_LLM_CELLS.map((_, index) => `wave:${index}`),
+      plan.waves.map((wave) => `wave:${wave.waveIndex}`),
+    );
+    assert.deepEqual(
+      calls.filter((entry) => entry.startsWith('stage:')),
+      ['stage:vm171,vm167,vm169,vm131'],
     );
     assert.ok(calls.indexOf('zero-provider-readiness') < calls.indexOf('provider-preflight'));
     assert.equal(calls.filter((entry) => entry.startsWith('paid:')).length, LIVE_LLM_CELLS.length);
     assert.ok(calls.indexOf('verify') < calls.indexOf('publish'));
-    assert.equal(result.workerCount, 1);
-    assert.equal(result.waveCount, LIVE_LLM_CELLS.length);
+    assert.equal(result.workerCount, 4);
+    assert.equal(result.waveCount, 1);
 
     calls.length = 0;
     const originalTransport = coordinatorOptions.operations.createTransport;
@@ -2214,6 +3098,7 @@ test('production coordinator drives four signed serial waves through stage, veri
     assert.equal(calls.includes('write-manifest'), false);
     assert.equal(calls.includes('verify'), false);
     assert.equal(calls.includes('publish'), false);
+    assert.equal(calls.at(-1), 'disk:finally');
 
     failCells = true;
     calls.length = 0;
@@ -2227,8 +3112,87 @@ test('production coordinator drives four signed serial waves through stage, veri
     assert.equal(calls.filter((entry) => entry === 'write-manifest').length, 1);
     assert.equal(calls.filter((entry) => entry === 'verify').length, 0);
     assert.equal(calls.filter((entry) => entry === 'publish').length, 0);
+    assert.equal(calls.at(-1), 'disk:finally');
+    calls.length = 0;
+    await assert.rejects(runProductionCoordinator({ ...coordinatorOptions,
+      executionId: `disk-failed-${crypto.randomUUID()}`,
+      operations: { ...coordinatorOptions.operations, diskLifecycle: async ({ phase }) => {
+        calls.push(`disk:${phase}`); throw new Error(`disk floor ${phase}`);
+      } },
+    }), (error) => {
+      assert.equal(error.message, 'disk floor startup');
+      assert.equal(error.diskLifecycleFinallyError.message, 'disk floor finally'); return true;
+    });
+    assert.deepEqual(calls, ['disk:startup', 'disk:finally']);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('disk barrier checks main plus every worker without pruning and settles failed peers', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-disk-barrier-'));
+  t.after(() => { assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir())); fs.rmSync(root, { recursive: true, force: true }); });
+  const config = { sshExecutable: 'ssh.exe', workers: ['vm171', 'vm167', 'vm169', 'vm131'].map((workerId, index) => ({
+    workerId, workspaceRoot: 'E:\\watch-worker', user: 'VMUser', host: `host-${workerId}`, port: 22,
+    identityFile: 'identity', knownHostsFile: 'known-hosts', hostKeyAlias: workerId,
+    transport: { kind: index === 0 ? 'local' : 'ssh' },
+  })) };
+  const valid = { mode: 'check-only', verdict: 'passed', minimumFloorSatisfied: true,
+    volumes: ['C:\\', 'E:\\'].map((samplePath) => ({ samplePath, passed: true, observedFreeBytes: 3 * 1024 ** 3 })) };
+  let calls = 0;
+  const runProcess = async (exe, args, settings) => {
+    calls += 1;
+    assert.equal(settings.timeoutMs, 20000);
+    const body = Buffer.from(args.at(-1), 'base64').toString('utf16le');
+    assert.match(body, /statfsSync/u); assert.match(body, /check-only/u);
+    assert.doesNotMatch(body, /--root|--apply|Remove-Item|rmSync|watch-mode-disk-lifecycle\.mjs/u);
+    if (exe === 'ssh.exe') assert.ok(args.includes('StrictHostKeyChecking=yes'));
+    return { exitCode: 0, stdout: JSON.stringify(valid), stderr: '' };
+  };
+  const options = { config, executionId: 'disk-test', phase: 'startup', receiptDirectory: root,
+    checkLocal: () => valid, runProcess };
+  const receipt = await checkProductionWorkerDisks(options);
+  assert.equal(receipt.hosts.length, 5); assert.equal(calls, 4);
+  let failedCalls = 0;
+  await assert.rejects(checkProductionWorkerDisks({ ...options, phase: 'finally', runProcess: async (...args) => {
+    failedCalls += 1;
+    if (failedCalls === 1) return { exitCode: 1, stdout: '', stderr: 'C: full' };
+    if (failedCalls === 2) return { exitCode: 0, stdout: JSON.stringify({ ...valid, volumes: valid.volumes.slice(0, 1) }) };
+    return runProcess(...args);
+  } }), /disk floor barrier failed/u);
+  assert.equal(failedCalls, 4);
+  const records = fs.readdirSync(root).map((file) => JSON.parse(fs.readFileSync(path.join(root, file), 'utf8')));
+  assert.equal(records.find((entry) => entry.phase === 'finally').hosts.filter((host) => host.status === 'failed').length, 2);
+});
+
+test('disk startup measures independently of absent or stale worker source and rejects unknown volumes', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-disk-bootstrap-'));
+  t.after(() => { assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir())); fs.rmSync(root, { recursive: true, force: true }); });
+  const config = { workers: [{ workerId: 'vm171', workspaceRoot: 'E:\\absent-worker-source', transport: { kind: 'local' } }] };
+  const floor = 3n * 1024n ** 3n;
+  for (const scenario of ['floor', 'low', 'missing', 'negative', 'oversize']) {
+    const options = { config, executionId: `bootstrap-${scenario}`, phase: 'startup', receiptDirectory: root,
+      checkLocal: () => ({ verdict: 'passed' }), runProcess: async (_exe, args) => {
+        const body = Buffer.from(args.at(-1), 'base64').toString('utf16le');
+        assert.doesNotMatch(body, /absent-worker-source|import\(|readFile|unlink|rmSync/u);
+        const code = body.match(/& node\.exe -e '((?:''|[^'])*)';/u)?.[1].replaceAll("''", "'");
+        assert.ok(code);
+        let stdout;
+        const visited = [];
+        runInNewContext(code, { require: (name) => {
+          assert.equal(name, 'node:fs');
+          return { statfsSync: (volume) => {
+            visited.push(volume);
+            if (scenario === 'missing' && volume === 'E:/') throw new Error('missing volume');
+            return { bavail: scenario === 'low' ? floor - 1n : scenario === 'negative' ? -1n
+              : scenario === 'oversize' ? BigInt(Number.MAX_SAFE_INTEGER) + 1n : floor, bsize: 1n };
+          } };
+        }, console: { log: (value) => { stdout = value; } } });
+        assert.deepEqual(visited, ['C:/', 'E:/']);
+        return { exitCode: 0, stdout, stderr: '' };
+      } };
+    if (scenario === 'floor') assert.equal((await checkProductionWorkerDisks(options)).verdict, 'passed');
+    else await assert.rejects(checkProductionWorkerDisks(options), /disk floor barrier failed/u);
   }
 });
 
@@ -2286,6 +3250,101 @@ test('coordinator CLI exposes only the production config, local receipt, and out
   assert.equal(parsed.localIsolationAuthority, 'local-isolation-manifest.json');
   assert.equal(parsed.executionId, 'fixed-execution');
   assert.throws(() => parseProductionCoordinatorCliArgs(['--remote-command', 'whoami']), /Unknown flag/);
+});
+
+test('four-host lightweight history is collect-all, stdin-only and separate from signed evidence', async (t) => {
+  const { recordProductionWorkerHistories } = await import('./run-watch-mode-live-production-coordinator.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-history-transport-'));
+  t.after(() => {
+    assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const config = { sshExecutable: 'fake-ssh.exe', workers: ['vm171', 'vm167', 'vm169', 'vm131'].map((workerId, index) => ({
+    workerId, workspaceRoot: index ? 'E:\\watch-worker' : root, guestExecutionRoot: index ? 'E:\\shards' : root,
+    transport: { kind: index ? 'ssh' : 'local' }, user: 'user', host: 'host', port: 22,
+    knownHostsFile: 'pins', hostKeyAlias: workerId, identityFile: 'key',
+  })) };
+  const seen = [];
+  const preview = (input) => ({ artifactKind: 'watch-history-report-dry-run', mode: 'dry-run', verdict: 'passed',
+    releaseEvidence: false, deletionAuthorized: false, mutationCount: 0, cleanupScope: 'owned-report-files-only',
+    retentionPerWorker: 30, workerId: input.workerId, executionId: input.executionId,
+    historyRoot: input.historyRoot, auditRoot: input.auditRoot, wouldRetire: [] });
+  const successful = (input) => ({ verdict: 'success', workerId: input.workerId, executionId: input.executionId,
+    ok: true, archived: true, releaseEvidence: false,
+    reportRetained: true, reportPath: 'report.json', auditOutcomePath: 'audit.json', auditArchivePath: 'archive.json', rawEvidenceRetired: false });
+  const options = { config, executionId: 'history-fixture', outcome: 'fail', summary: { marker: '不可信文本; $(do-not-execute)' },
+    receiptDirectory: root, previewLocal: (input) => preview(input), recordLocal: (input) => { seen.push(input); return successful(input); },
+    runProcess: async (exe, args, settings) => {
+      assert.equal(exe, 'fake-ssh.exe'); assert.equal(settings.timeoutMs, 30000);
+      const script = Buffer.from(args.at(-1), 'base64').toString('utf16le');
+      assert.ok(script.includes('Get-FileHash')); assert.ok(script.includes('fs.readFileSync(0)'));
+      assert.ok(script.indexOf('previewWatchHistoryReport') < script.indexOf('recordWatchHistoryReport'));
+      assert.ok(!script.includes('do-not-execute'));
+      const input = JSON.parse(settings.input); seen.push(input);
+      if (input.workerId === 'vm167') throw new Error('archive unavailable');
+      return { exitCode: 0, stdout: JSON.stringify({ preview: preview(input), receipt: successful(input) }), stderr: '' };
+    } };
+  await assert.rejects(recordProductionWorkerHistories(options), (error) => {
+    assert.equal(error.code, 'watch.history.failed');
+    const receipt = JSON.parse(fs.readFileSync(error.receiptPath, 'utf8'));
+    assert.equal(receipt.rawEvidenceRetired, false);
+    assert.deepEqual(receipt.workers.map((entry) => entry.status), ['passed', 'failed', 'passed', 'passed']); return true;
+  });
+  assert.equal(seen.length, 4);
+  assert.ok(seen.every((entry) => entry.outcome === 'fail' && entry.report.summary.rawEvidenceRetired === false));
+  assert.deepEqual(seen.map((entry) => entry.workerId).sort(), config.workers.map((entry) => entry.workerId).sort());
+});
+
+test('automatic history transport consumes the real owned-report API without touching original evidence', async (t) => {
+  const { recordProductionWorkerHistories } = await import('./run-watch-mode-live-production-coordinator.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-history-local-'));
+  t.after(() => {
+    assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const raw = path.join(root, 'signed-original.pcm'); fs.writeFileSync(raw, 'signed-original');
+  const config = { workers: [{ workerId: 'vm171', workspaceRoot: root, guestExecutionRoot: path.join(root, 'guest'), transport: { kind: 'local' } }] };
+  const result = await recordProductionWorkerHistories({ config, executionId: 'history-real-api', outcome: 'fail',
+    summary: { originalEvidence: raw }, receiptDirectory: root });
+  assert.equal(result.verdict, 'passed');
+  const worker = result.workers[0].receipt;
+  assert.equal(worker.releaseEvidence, false);
+  assert.equal(worker.dryRun.mode, 'dry-run');
+  assert.equal(worker.dryRun.mutationCount, 0);
+  assert.equal(worker.dryRun.deletionAuthorized, false);
+  assert.equal(worker.counts.retained, 1);
+  assert.ok(fs.existsSync(worker.reportPath)); assert.ok(fs.existsSync(worker.auditOutcomePath));
+  assert.equal(fs.readFileSync(raw, 'utf8'), 'signed-original');
+});
+
+test('remote history command passes UTF-8 stdin through real PowerShell to the owned Node archive', { skip: process.platform !== 'win32' }, async (t) => {
+  const { recordProductionWorkerHistories } = await import('./run-watch-mode-live-production-coordinator.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-history-powershell-'));
+  t.after(() => { assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir())); fs.rmSync(root, { recursive: true, force: true }); });
+  for (const relative of ['scripts/testing/watch-mode-history-reports.mjs', 'scripts/testing/watch-mode-disk-lifecycle.mjs', 'scripts/lib/testing-common.mjs']) {
+    const target = path.join(root, relative); fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(path.join(repoRoot, relative), target);
+  }
+  const worker = { workerId: 'vm167', workspaceRoot: root, guestExecutionRoot: path.join(root, 'guest'),
+    transport: { kind: 'ssh' }, host: 'test-host', user: 'test-user', port: 22,
+    identityFile: 'unused', knownHostsFile: 'unused', hostKeyAlias: 'vm167' };
+  const summary = { text: "中文 $(not-a-command) ; 'quoted' ` data only" };
+  const result = await recordProductionWorkerHistories({ config: { sshExecutable: 'unused', workers: [worker] },
+    executionId: 'history-native-stdin', outcome: 'fail', summary, receiptDirectory: root,
+    runProcess: async (_exe, args, settings) => {
+      // Exercise the exact generated remote command; only the SSH hop is absent.
+      const commandIndex = args.indexOf('powershell.exe'); assert.ok(commandIndex >= 0);
+      const native = spawnSync(args[commandIndex], args.slice(commandIndex + 1), {
+        input: settings.input, env: settings.environment, encoding: 'utf8', timeout: settings.timeoutMs, windowsHide: true,
+      });
+      assert.ifError(native.error);
+      return { exitCode: native.status, stdout: native.stdout, stderr: native.stderr };
+    } });
+  assert.equal(result.verdict, 'passed');
+  assert.equal(result.workers[0].receipt.dryRun.mode, 'dry-run');
+  assert.equal(result.workers[0].receipt.dryRun.mutationCount, 0);
+  const report = JSON.parse(fs.readFileSync(result.workers[0].receipt.reportPath, 'utf8'));
+  assert.equal(report.summary.text, summary.text);
 });
 
 test('prepaid distribution covers every signed shard implementation with exact bytes', async () => {

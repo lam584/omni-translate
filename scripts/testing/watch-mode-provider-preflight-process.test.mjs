@@ -17,11 +17,24 @@ function fakeChild(pid = 4242) {
   return child;
 }
 
+function renameFixtureDirectory(staging, outputDirectory) {
+  const renameDeadline = Date.now() + 2_000;
+  while (true) {
+    try {
+      fs.renameSync(staging, outputDirectory);
+      return;
+    } catch (error) {
+      if (!['EACCES', 'EPERM'].includes(error?.code) || Date.now() >= renameDeadline) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+}
+
 function publishEmitter(outputDirectory, value) {
   const staging = `${outputDirectory}.staging`;
   fs.mkdirSync(staging, { recursive: false });
   fs.writeFileSync(path.join(staging, 'emitter-result.json'), JSON.stringify(value));
-  fs.renameSync(staging, outputDirectory);
+  renameFixtureDirectory(staging, outputDirectory);
 }
 
 const DASH_SCOPE_MODEL = 'qwen3.5-livetranslate-flash-realtime';
@@ -58,10 +71,25 @@ const OFFICIAL_SESSION_UPDATE = {
       language: 'zh',
       corpus: {
         phrases: {
+          'CPU usage dropped by 18 percent.': 'CPU使用率下降了18%。',
+          'Daniel replied that shipment A-17 would leave at 6:30 p.m.': 'Daniel回答说，A-17号货物将于下午6点30分出发。',
+          'Does it preserve a quoted answer?': '它能否保留引用的回答？',
+          'He asked the team to email support at example dot com if the schedule changed.': '他请团队在日程发生变化时发送邮件至support@example.com。',
+          'Is the system accurate when a speaker asks a question?': '当说话者提出问题时，系统是否准确？',
           Mars: '火星',
+          'Please record each sentence clearly': '请清楚记录每个句子',
+          'Version 3.6.2': '3.6.2版本',
           'artificial biosphere': '人工生物圈',
+          'by October 3': '在10月3日前',
+          'endangered species': '濒危物种',
+          'five hundred million dollars': '五亿美元',
+          'flying cars': '飞行汽车',
+          'forty-eight hours': '48小时',
+          'if the schedule changed': '如果日程发生变化',
           'light bulb': '灯泡',
           'one billion': '十亿',
+          'proper names': '专有名称',
+          'reduced average response time from 920 milliseconds to 315 milliseconds': '把平均响应时间从920毫秒降至315毫秒',
         },
       },
     },
@@ -89,7 +117,7 @@ const OFFICIAL_UPGRADE_REQUEST_AUTHORITY_RAW = JSON.stringify(OFFICIAL_UPGRADE_R
 const OFFICIAL_SESSION_ECHO_CANONICAL = '{"input_audio_format":"pcm",'
   + '"input_audio_transcription":{"language":"en","model":"qwen3-asr-flash-realtime"},'
   + '"modalities":["text"],"sample_rate":16000,"translation":{"corpus":{"phrases":'
-  + '{"Mars":"火星","artificial biosphere":"人工生物圈","light bulb":"灯泡","one billion":"十亿"}},'
+  + '{"CPU usage dropped by 18 percent.":"CPU使用率下降了18%。","Daniel replied that shipment A-17 would leave at 6:30 p.m.":"Daniel回答说，A-17号货物将于下午6点30分出发。","Does it preserve a quoted answer?":"它能否保留引用的回答？","He asked the team to email support at example dot com if the schedule changed.":"他请团队在日程发生变化时发送邮件至support@example.com。","Is the system accurate when a speaker asks a question?":"当说话者提出问题时，系统是否准确？","Mars":"火星","Please record each sentence clearly":"请清楚记录每个句子","Version 3.6.2":"3.6.2版本","artificial biosphere":"人工生物圈","by October 3":"在10月3日前","endangered species":"濒危物种","five hundred million dollars":"五亿美元","flying cars":"飞行汽车","forty-eight hours":"48小时","if the schedule changed":"如果日程发生变化","light bulb":"灯泡","one billion":"十亿","proper names":"专有名称","reduced average response time from 920 milliseconds to 315 milliseconds":"把平均响应时间从920毫秒降至315毫秒"}},'
   + '"language":"zh"},'
   + '"turn_detection":{"silence_duration_ms":400,"threshold":0.0,"type":"server_vad"}}';
 const OFFICIAL_SESSION_ECHO_SHA256 = sha256(OFFICIAL_SESSION_ECHO_CANONICAL);
@@ -160,7 +188,7 @@ function publishProbeEvidence(outputDirectory, {
     },
   }));
   fs.writeFileSync(path.join(staging, 'emitter-result.json'), JSON.stringify(emitter));
-  fs.renameSync(staging, outputDirectory);
+  renameFixtureDirectory(staging, outputDirectory);
   return authority;
 }
 

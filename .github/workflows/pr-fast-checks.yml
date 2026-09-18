@@ -52,8 +52,19 @@ jobs:
       # The frontend coverage thresholds previously lived only in local runs,
       # so the gate could rot without anyone noticing. Same thresholds, now on
       # every PR.
-      - name: Frontend coverage gate
+      - name: Frontend and Rust coverage gate
         run: npm run coverage:gate
+
+      - name: Preserve coverage evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/logs/testing/coverage/**/*.json
+            artifacts/logs/testing/coverage/**/*.log
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Verify contracts
         run: npm run test:contracts

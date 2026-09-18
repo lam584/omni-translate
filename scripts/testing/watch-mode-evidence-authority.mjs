@@ -49,11 +49,14 @@ export const AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Stt.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.VirtualDriverCapture.psm1',
   'scripts/testing/watch-mode-report.mjs',
+  'scripts/testing/watch-mode-content-verdict.mjs',
+  'scripts/testing/fixtures/watch-mode-content-facts.json',
   'scripts/testing/verify-watch-mode-evidence.mjs',
   'scripts/testing/watch-mode-evidence-authority.mjs',
   'scripts/testing/watch-mode-balanced-release-plan.mjs',
   'scripts/testing/watch-mode-local-isolation.mjs',
   'scripts/testing/watch-mode-strict-runtime-authority.mjs',
+  'scripts/testing/watch-mode-disk-lifecycle.mjs',
   'scripts/testing/prepare-watch-release.mjs',
   'scripts/testing/distribute-watch-runtime.mjs',
   'scripts/testing/run-frozen-test-funnel.mjs',
@@ -113,6 +116,7 @@ export const AUTHORITY_RUNTIME_BINARY_FILES = Object.freeze([
   'target/release/omni-tone-render-probe.exe',
   'target/release/omni-driver-audio-probe.exe',
   'target/release/omni-virtual-mic-target-capture.exe',
+  'target/release/watch-worker-credential.exe',
   'target/debug/omni-realtime-diagnostic.exe',
   'target/release/omni-benchmark.exe',
   'drivers/windows-virtual-mic/package/omni-virtual-speaker.sys',
@@ -345,11 +349,17 @@ export function writeCellAuthorityReceipt({
 }
 
 export function sameAuthorityInventory(recorded, current) {
-  if (!Array.isArray(recorded) || recorded.length !== current.length) return false;
-  return recorded.every((entry, index) => (
-    entry?.path === current[index].path
-    && entry?.bytes === current[index].bytes
-    && entry?.sha256 === current[index].sha256
+  if (!Array.isArray(recorded) || !Array.isArray(current) || recorded.length !== current.length) {
+    return false;
+  }
+  const sorted = (entries) => [...entries].sort((left, right) =>
+    String(left?.path ?? '').localeCompare(String(right?.path ?? '')));
+  const recordedSorted = sorted(recorded);
+  const currentSorted = sorted(current);
+  return recordedSorted.every((entry, index) => (
+    entry?.path === currentSorted[index]?.path
+    && entry?.bytes === currentSorted[index]?.bytes
+    && entry?.sha256 === currentSorted[index]?.sha256
   ));
 }
 

@@ -23,6 +23,19 @@ const findExecutable = (root, fileName) => {
   return null;
 };
 
+const findOwnedVcpkgTool = (toolsRoot, toolName, fileName) => {
+  if (!existsSync(toolsRoot)) return null;
+  const ownedRoots = readdirSync(toolsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory()
+      && entry.name.toLowerCase().startsWith(`${toolName.toLowerCase()}-`))
+    .map((entry) => path.join(toolsRoot, entry.name));
+  for (const ownedRoot of ownedRoots) {
+    const executable = findExecutable(ownedRoot, fileName);
+    if (executable) return executable;
+  }
+  return null;
+};
+
 const watchModeEnvironmentKeys = [
   'OMNI_WATCH_MODE_AUTOSTART',
   'OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS',
@@ -66,8 +79,9 @@ if (coordinatorKeyId && !/^[a-f0-9]{64}$/.test(coordinatorKeyId)) {
 }
 releaseEnvironment.OMNI_PROVIDER_PREFLIGHT_COORDINATOR_KEY_ID = coordinatorKeyId;
 if (!releaseEnvironment.CMAKE) {
-  const acquiredCmake = findExecutable(
+  const acquiredCmake = findOwnedVcpkgTool(
     path.join(workspaceRoot, 'target', 'aec3-msvc-vcpkg-downloads', 'tools'),
+    'cmake',
     'cmake.exe',
   );
   if (acquiredCmake) releaseEnvironment.CMAKE = acquiredCmake;

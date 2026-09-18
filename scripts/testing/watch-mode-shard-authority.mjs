@@ -5,7 +5,9 @@ import path from 'node:path';
 import { repoRoot } from '../lib/testing-common.mjs';
 import {
   BALANCED_RELEASE_PLAN,
+  CANONICAL_MEDIA_SHA256,
   LIVE_LLM_CELLS,
+  PROVIDER_INPUT_SAMPLE_RATE_HZ,
 } from './watch-mode-balanced-release-plan.mjs';
 import { rebuildReportFromDirectory } from './watch-mode-report.mjs';
 import {
@@ -62,7 +64,8 @@ const SHARD_STRICT_PREFLIGHT_LIFECYCLE_BUDGET = Object.freeze({
   socketEventTimeoutMs: 12_000,
 });
 
-export const SHARD_INPUT_SAMPLE_RATE_HZ = 16_000;
+export const SHARD_INPUT_SAMPLE_RATE_HZ = PROVIDER_INPUT_SAMPLE_RATE_HZ;
+export const SHARD_CANONICAL_MEDIA_SHA256 = CANONICAL_MEDIA_SHA256;
 export const SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES = 2_877_045;
 export const SHARD_MATRIX_CELL_COUNT = 4;
 export const SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES = 10_100_180;
@@ -79,13 +82,17 @@ export const SHARD_ORCHESTRATION_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/run-watch-mode-live-shard.mjs',
   'scripts/testing/run-watch-mode-live-coordinator.mjs',
   'scripts/testing/run-watch-mode-live-production-coordinator.mjs',
+  'scripts/testing/watch-mode-history-reports.mjs',
   'scripts/testing/watch-mode-release-timeout-budget.mjs',
   'scripts/testing/watch-mode-strict-runtime-authority.mjs',
   'scripts/testing/watch-mode-provider-preflight-process.mjs',
+  'scripts/testing/run-watch-mode-provider-preflight-worker.mjs',
+  'scripts/testing/watch-worker-bootstrap.mjs',
   'scripts/testing/watch-mode-provider-network-health.mjs',
   'scripts/testing/invoke-watch-mode-interactive-task.ps1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveCustody.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveFinalizer.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1',
   'scripts/testing/run-watch-mode-interactive-task.ps1',
@@ -380,6 +387,8 @@ function approvedCellProjection(cell) {
     reportWriteTimeoutSeconds: cell.reportWriteTimeoutSeconds,
     cellHardWatchdogSeconds: cell.cellHardWatchdogSeconds,
     authoritativeTransformedReferenceFrames: cell.authoritativeTransformedReferenceFrames,
+    inputSampleRateHz: cell.inputSampleRateHz,
+    mediaSha256: cell.mediaSha256,
     boundedCaptureGraceFrames: cell.boundedCaptureGraceFrames,
     maxExternalAudioSamples: cell.maxExternalAudioSamples,
     auxiliaryExternalAudioSeconds: cell.auxiliaryExternalAudioSeconds ?? 0,
@@ -858,7 +867,6 @@ export function createSignedExecutionPlan({
       deviceProfileInstanceDigest: sha256Canonical(profile),
       leaseId: assignment.leaseId ?? `lease-${randomHex(randomBytes)}`,
       maxExternalAudioSamples: approvedCell.maxExternalAudioSamples,
-      inputSampleRateHz: SHARD_INPUT_SAMPLE_RATE_HZ,
     };
   });
   const waveIndices = [...new Set(plannedCells.map((cell) => cell.waveIndex))].sort((a, b) => a - b);
@@ -1089,7 +1097,9 @@ export function issueCellLeases(plan, privateKeyPem, { issuedAt = new Date() } =
       deviceProfileInstanceDigest: cell.deviceProfileInstanceDigest,
       sourceHeadCommit: plan.provenance.headCommit,
       runtimeBundleDigest: plan.authority.runtimeBundleDigest,
-      inputSampleRateHz: SHARD_INPUT_SAMPLE_RATE_HZ,
+      authoritativeTransformedReferenceFrames: cell.authoritativeTransformedReferenceFrames,
+      inputSampleRateHz: cell.inputSampleRateHz,
+      mediaSha256: cell.mediaSha256,
       maxExternalAudioSamples: cell.maxExternalAudioSamples,
       modelProtocolProfileIdentity: structuredClone(cell.modelProtocolProfileIdentity),
       reclaimPolicy: 'never-within-execution',
@@ -1125,7 +1135,9 @@ export function verifyCellLease(lease, plan, { now = new Date(), checkExpiry = t
     deviceProfileInstanceDigest: cell.deviceProfileInstanceDigest,
     sourceHeadCommit: plan.provenance.headCommit,
     runtimeBundleDigest: plan.authority.runtimeBundleDigest,
-    inputSampleRateHz: SHARD_INPUT_SAMPLE_RATE_HZ,
+    authoritativeTransformedReferenceFrames: cell.authoritativeTransformedReferenceFrames,
+    inputSampleRateHz: cell.inputSampleRateHz,
+    mediaSha256: cell.mediaSha256,
     maxExternalAudioSamples: cell.maxExternalAudioSamples,
     modelProtocolProfileIdentity: cell.modelProtocolProfileIdentity,
     reclaimPolicy: 'never-within-execution',
@@ -1235,7 +1247,9 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
   const nonBudgetFailureTerminal = reconnectRejectedTerminal
     || preProviderTerminal
     || ledger.terminalReason === 'livetranslate-session-finished-timeout'
-    || ledger.terminalReason === 'livetranslate-audio-drain-timeout';
+    || ledger.terminalReason === 'livetranslate-audio-drain-timeout'
+    || ledger.terminalReason === 'socket-poll-failed'
+    || ledger.terminalReason === 'livetranslate-shutdown-poll-failed';
   const expectedInitialConnectAttempts = preProviderTerminal ? 0 : 1;
   if (preProviderTerminal && (
     Number(ledger.sessionGeneration) !== 0
@@ -1296,7 +1310,7 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
   if (journal.at(-1)?.event !== 'finalized' || journal.at(-1)?.finalized !== true || counts.finalized !== 1) {
     throw new Error('provider input budget journal must end with exactly one finalized event');
   }
-  if (ledger.terminalReason === 'livetranslate-audio-drain-timeout') {
+  if (ledger.terminalReason === 'livetranslate-audio-drain-timeout' || ledger.terminalReason === 'socket-poll-failed' || ledger.terminalReason === 'livetranslate-shutdown-poll-failed') {
     if (journal.at(-1).terminalReason !== ledger.terminalReason) {
       throw new Error('provider input budget journal terminal reason does not match the final ledger');
     }

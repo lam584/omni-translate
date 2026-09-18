@@ -15,6 +15,7 @@
 //! - a full channel drops the line and increments `dropped_count` instead of
 //!   ever blocking the sender (audio threads must never wait on log I/O).
 
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -22,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Upper bound of buffered lines. At ~200 bytes per line this is ~1.6MB of
 /// peak memory, enough to absorb multi-thousand-line startup bursts while
@@ -37,11 +38,34 @@ const REFRESH_LEN_EVERY_LINES: u64 = 128;
 enum Command {
     Line(String),
     Flush(SyncSender<()>),
+    Evidence(EvidenceRecord),
+    PersistEvidence {
+        records: Vec<EvidenceRecord>,
+        ack: SyncSender<EvidenceReceipt>,
+    },
     #[cfg(test)]
     Stall {
         entered: SyncSender<()>,
         release: Receiver<()>,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvidenceRecord {
+    pub id: String,
+    pub line: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvidenceReceipt {
+    synced: bool,
+    confirmed: HashSet<String>,
+}
+
+impl EvidenceReceipt {
+    pub fn confirms(&self, id: &str) -> bool {
+        self.synced && self.confirmed.contains(id)
+    }
 }
 
 /// Cloneable handle to the single writer thread of one log file.
@@ -100,10 +124,59 @@ impl LogPipeline {
     /// logging path never calls this.
     pub fn flush_blocking(&self, timeout: Duration) -> bool {
         let (ack_tx, ack_rx) = mpsc::sync_channel(1);
-        if self.sender.send(Command::Flush(ack_tx)).is_err() {
+        let started = Instant::now();
+        if !self.send_until(Command::Flush(ack_tx), started, timeout) {
             return false;
         }
-        ack_rx.recv_timeout(timeout).is_ok()
+        ack_rx
+            .recv_timeout(timeout.saturating_sub(started.elapsed()))
+            .is_ok()
+    }
+
+    pub fn submit_evidence(&self, record: EvidenceRecord) {
+        match self.sender.try_send(Command::Evidence(record)) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                self.dropped_count.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.write_error_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    pub fn persist_evidence(
+        &self,
+        records: Vec<EvidenceRecord>,
+        timeout: Duration,
+    ) -> EvidenceReceipt {
+        let started = Instant::now();
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        if !self.send_until(
+            Command::PersistEvidence { records, ack: ack_tx },
+            started,
+            timeout,
+        ) {
+            return EvidenceReceipt::default();
+        }
+        ack_rx
+            .recv_timeout(timeout.saturating_sub(started.elapsed()))
+            .unwrap_or_default()
+    }
+
+    fn send_until(&self, mut command: Command, started: Instant, timeout: Duration) -> bool {
+        loop {
+            match self.sender.try_send(command) {
+                Ok(()) => return true,
+                Err(TrySendError::Disconnected(_)) => return false,
+                Err(TrySendError::Full(pending)) => command = pending,
+            }
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return false;
+            }
+            thread::sleep(remaining.min(Duration::from_millis(1)));
+        }
     }
 
     pub fn dropped_count(&self) -> u64 {
@@ -146,11 +219,25 @@ impl Writer {
     fn run(mut self, receiver: Receiver<Command>) {
         while let Ok(command) = receiver.recv() {
             match command {
-                Command::Line(line) => self.write_line(&line),
+                Command::Line(line) => {
+                    self.write_line(&line);
+                }
                 Command::Flush(ack) => {
                     // Writes are unbuffered, so reaching this command means
                     // every prior line already hit the file.
                     let _ = ack.send(());
+                }
+                Command::Evidence(record) => {
+                    self.write_evidence(&record);
+                }
+                Command::PersistEvidence { records, ack } => {
+                    let confirmed = records
+                        .iter()
+                        .filter(|record| self.write_evidence(record))
+                        .map(|record| record.id.clone())
+                        .collect();
+                    let synced = self.sync_open_generation();
+                    let _ = ack.send(EvidenceReceipt { synced, confirmed });
                 }
                 #[cfg(test)]
                 Command::Stall { entered, release } => {
@@ -161,7 +248,11 @@ impl Writer {
         }
     }
 
-    fn write_line(&mut self, line: &str) {
+    fn write_evidence(&mut self, record: &EvidenceRecord) -> bool {
+        self.write_line(&record.line)
+    }
+
+    fn write_line(&mut self, line: &str) -> bool {
         if self.lines_since_stat >= REFRESH_LEN_EVERY_LINES {
             self.lines_since_stat = 0;
             if let Ok(metadata) = fs::metadata(&self.log_path) {
@@ -173,18 +264,20 @@ impl Writer {
         }
         if self.file.is_none() && !self.open_handle() {
             self.write_error_count.fetch_add(1, Ordering::Relaxed);
-            return;
+            return false;
         }
         let file = self.file.as_mut().expect("handle opened above");
         match file.write_all(line.as_bytes()) {
             Ok(()) => {
                 self.approx_len += line.len() as u64;
                 self.lines_since_stat += 1;
+                true
             }
             Err(_) => {
                 self.write_error_count.fetch_add(1, Ordering::Relaxed);
                 // Drop the handle so the next line retries a fresh open.
                 self.file = None;
+                false
             }
         }
     }
@@ -225,16 +318,29 @@ impl Writer {
                 return;
             }
         };
+        if !self.sync_open_generation() {
+            return;
+        }
         // Close our handle first so the rename cannot leave us appending to a
         // file that now lives under the `.1.log` name.
         self.file = None;
-        rotate_log_files(&self.log_path, ROTATED_FILES);
+        if rotate_log_files(&self.log_path, ROTATED_FILES).is_err() {
+            self.write_error_count.fetch_add(1, Ordering::Relaxed);
+        }
         self.approx_len = 0;
         self.lines_since_stat = 0;
     }
+
+    fn sync_open_generation(&self) -> bool {
+        let synced = self.file.as_ref().map_or(true, |file| file.sync_data().is_ok());
+        if !synced {
+            self.write_error_count.fetch_add(1, Ordering::Relaxed);
+        }
+        synced
+    }
 }
 
-fn rotate_log_files(path: &Path, rotated_files: u32) {
+fn rotate_log_files(path: &Path, rotated_files: u32) -> std::io::Result<()> {
     for index in (1..=rotated_files).rev() {
         let old_path = if index == 1 {
             path.to_path_buf()
@@ -243,9 +349,13 @@ fn rotate_log_files(path: &Path, rotated_files: u32) {
         };
         let new_path = path.with_extension(format!("{}.log", index));
         if old_path.exists() {
-            let _ = fs::rename(&old_path, &new_path);
+            if new_path.exists() {
+                fs::remove_file(&new_path)?;
+            }
+            fs::rename(&old_path, &new_path)?;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -255,7 +365,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use super::LogPipeline;
+    use super::{EvidenceRecord, LogPipeline};
 
     fn temp_dir(name: &str) -> PathBuf {
         crate::test_support::temp_dir("pipeline", name)
@@ -368,6 +478,87 @@ mod tests {
         assert_eq!(pipeline.dropped_count(), 0);
         assert_eq!(pipeline.write_error_count(), 0);
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retained_evidence_recovers_after_nonblocking_submission_is_dropped() {
+        let root = temp_dir("evidence-recovery");
+        let log_path = root.join("app.log");
+        let pipeline = LogPipeline::with_limits(log_path.clone(), 1, u64::MAX);
+        let release = pipeline.stall_writer();
+        pipeline.submit_line("occupy queue\n".to_string());
+        let record = EvidenceRecord {
+            id: "call:audio:1".to_string(),
+            line: "target evidence\n".to_string(),
+        };
+        pipeline.submit_evidence(record.clone());
+        assert_eq!(pipeline.dropped_count(), 1);
+        release.send(()).unwrap();
+
+        let receipt = pipeline.persist_evidence(vec![record.clone()], Duration::from_secs(5));
+        assert!(receipt.confirms(&record.id));
+        let content = fs::read_to_string(log_path).unwrap();
+        assert_eq!(content.matches("target evidence").count(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn full_queue_cannot_confirm_terminal_evidence() {
+        let root = temp_dir("terminal-evidence-full-queue");
+        let pipeline = LogPipeline::with_limits(root.join("app.log"), 1, u64::MAX);
+        let release = pipeline.stall_writer();
+        pipeline.submit_line("occupy queue\n".to_string());
+        let record = EvidenceRecord {
+            id: "call:end".to_string(),
+            line: "terminal evidence\n".to_string(),
+        };
+
+        let receipt = pipeline.persist_evidence(vec![record.clone()], Duration::from_millis(20));
+        assert!(!receipt.confirms(&record.id));
+        release.send(()).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn final_receipt_rewrites_evidence_after_prior_submission() {
+        let root = temp_dir("evidence-rewrite");
+        let log_path = root.join("app.log");
+        let pipeline = LogPipeline::with_limits(log_path.clone(), 8, u64::MAX);
+        let record = EvidenceRecord {
+            id: "call:audio:100".to_string(),
+            line: "automatic summary\n".to_string(),
+        };
+        pipeline.submit_evidence(record.clone());
+        let receipt = pipeline.persist_evidence(vec![record.clone()], Duration::from_secs(5));
+        assert!(receipt.confirms(&record.id));
+        pipeline.submit_line("unrelated producer\n".to_string());
+        assert!(pipeline.flush_blocking(Duration::from_secs(5)));
+        let content = fs::read_to_string(log_path).unwrap();
+        assert_eq!(content.matches("automatic summary").count(), 2);
+        assert!(content.contains("unrelated producer"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn final_receipt_rewrites_an_id_after_its_old_generation_is_evicted() {
+        let root = temp_dir("evidence-rotation-retention");
+        let log_path = root.join("app.log");
+        let pipeline = LogPipeline::with_limits(log_path.clone(), 64, 32);
+        let record = EvidenceRecord {
+            id: "call:old-generation".to_string(),
+            line: "stable evidence identity\n".to_string(),
+        };
+        pipeline.submit_evidence(record.clone());
+        assert!(pipeline.flush_blocking(Duration::from_secs(5)));
+        for index in 0..20 {
+            pipeline.submit_line(format!("rotation filler {index:02}\n"));
+        }
+        assert!(pipeline.flush_blocking(Duration::from_secs(5)));
+
+        let receipt = pipeline.persist_evidence(vec![record.clone()], Duration::from_secs(5));
+        assert!(receipt.confirms(&record.id));
+        assert!(fs::read_to_string(&log_path).unwrap().contains("stable evidence identity"));
         let _ = fs::remove_dir_all(root);
     }
 

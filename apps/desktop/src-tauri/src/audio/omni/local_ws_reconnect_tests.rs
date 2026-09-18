@@ -159,23 +159,26 @@ fn spawn_session_echo_server(
     })
 }
 
-/// Reads the next Text frame, treating the client's 200ms read timeouts as
-/// normal poll ticks rather than failures.
+/// Reads the next Text frame until an absolute local-fixture deadline. Idle
+/// nonblocking polls yield briefly so the test exercises production semantics
+/// without a CPU-bound retry loop.
 fn read_text_with_retries<S: RealtimeSocket>(socket: &mut S) -> String {
-    for _ in 0..100 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
         match socket.read_message() {
             Ok(Message::Text(text)) => return text.to_string(),
-            Ok(_) => continue,
-            Err(error) => {
-                let text = error.to_string();
-                if text.contains("timed out") || text.contains("WouldBlock") {
-                    continue;
-                }
-                panic!("socket read failed: {error}");
+            Ok(_) if std::time::Instant::now() < deadline => thread::yield_now(),
+            Err(error)
+                if is_retryable_read_poll_error(&error)
+                    && std::time::Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(5));
             }
+            Ok(_) => break,
+            Err(error) => panic!("socket read failed: {error}"),
         }
     }
-    panic!("no text frame arrived within the retry budget");
+    panic!("no text frame arrived before the local fixture deadline");
 }
 
 #[test]
@@ -223,14 +226,10 @@ fn real_client_survives_a_scripted_disconnect_and_replays_session_config() {
                 saw_disconnect = true;
                 break;
             }
-            Err(error) => {
-                let text = error.to_string();
-                // Read timeouts are normal poll ticks; anything else is the
-                // provider-side disconnect surfacing.
-                if !(text.contains("timed out") || text.contains("WouldBlock")) {
-                    saw_disconnect = true;
-                    break;
-                }
+            Err(error) if is_retryable_read_poll_error(&error) => continue,
+            Err(_) => {
+                saw_disconnect = true;
+                break;
             }
             Ok(_) => continue,
         }

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { currentGitProvenance } from './git-provenance.mjs';
@@ -18,6 +19,7 @@ import {
 } from './watch-mode-evidence-authority.mjs';
 import {
   SHARD_CELL_RESULT_FILE,
+  SHARD_CANONICAL_MEDIA_SHA256,
   SHARD_INPUT_SAMPLE_RATE_HZ,
   SHARD_INTERACTIVE_SESSION_AUTHORITY_FILE,
   SHARD_INTERACTIVE_COMMAND_FILE,
@@ -206,6 +208,20 @@ export function buildShardCellExecutionRequest({
     // artifact names unwriteable on otherwise valid Windows guests.
     `c${String(cell.cellIndex + 1).padStart(2, '0')}`,
   );
+  if (!Number.isInteger(cell.authoritativeTransformedReferenceFrames)
+      || cell.authoritativeTransformedReferenceFrames <= 0) {
+    throw new Error('signed cell authoritativeTransformedReferenceFrames must be a positive integer');
+  }
+  if (!Number.isInteger(cell.inputSampleRateHz) || cell.inputSampleRateHz <= 0) {
+    throw new Error('signed cell inputSampleRateHz must be a positive integer');
+  }
+  if (cell.inputSampleRateHz !== SHARD_INPUT_SAMPLE_RATE_HZ) {
+    throw new Error('signed cell inputSampleRateHz does not match the strict shard contract');
+  }
+  if (String(cell.mediaSha256 ?? '').toLowerCase() !== SHARD_CANONICAL_MEDIA_SHA256) {
+    throw new Error('signed cell mediaSha256 does not match the strict canonical media');
+  }
+  const runMarker = `watch_mode_diagnostic.run_id=${crypto.randomUUID().replaceAll('-', '')}`;
   const profile = cell.deviceProfileInstance;
   const protocol = WATCH_PROTOCOLS[cell.modelId];
   if (!protocol) throw new Error(`no production realtime protocol is defined for ${cell.modelId}`);
@@ -248,6 +264,11 @@ export function buildShardCellExecutionRequest({
       strictPaidAuthority: true,
       matrixCellId: cell.cellId,
       readinessReceiptPath: null,
+      runMarker,
+      leaseId: lease.leaseId,
+      authoritativeTransformedReferenceFrames: cell.authoritativeTransformedReferenceFrames,
+      inputSampleRateHz: cell.inputSampleRateHz,
+      mediaSha256: cell.mediaSha256,
     },
     environment: {
       OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY: '1',
@@ -259,6 +280,12 @@ export function buildShardCellExecutionRequest({
         plan.providerIdentity.credentialReference,
       OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID: lease.leaseId,
       OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES: String(cell.maxExternalAudioSamples),
+      OMNI_WATCH_MODE_AUTHORITATIVE_TRANSFORMED_REFERENCE_FRAMES: String(cell.authoritativeTransformedReferenceFrames),
+      OMNI_WATCH_MODE_INPUT_SAMPLE_RATE_HZ: String(cell.inputSampleRateHz),
+      OMNI_WATCH_MODE_MEDIA_SHA256: cell.mediaSha256,
+      OMNI_WATCH_MODE_MEDIA_AUTHORITY_RUN_MARKER: runMarker,
+      OMNI_WATCH_MODE_MEDIA_AUTHORITY_CELL_ID: cell.cellId,
+      OMNI_WATCH_MODE_MEDIA_AUTHORITY_LEASE_ID: lease.leaseId,
       OMNI_WATCH_MODE_MODEL_PROTOCOL_PROFILE_IDENTITY: JSON.stringify(
         cell.modelProtocolProfileIdentity,
       ),

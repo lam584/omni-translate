@@ -12,6 +12,8 @@ import {
 export const BALANCED_RELEASE_PLAN_ID = 'watch-mode-balanced-v12-event-driven-playback-drain';
 export const BALANCED_RELEASE_PLAN_SCHEMA_VERSION = 12;
 export const CANONICAL_PROVIDER_REFERENCE_FRAMES = 2_013_045;
+export const CANONICAL_MEDIA_SHA256 = 'cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f';
+export const PROVIDER_INPUT_SAMPLE_RATE_HZ = 16_000;
 export const PROCESS_EXCLUSION_RESTART_AFTER_SECONDS = 90;
 export const PROCESS_EXCLUSION_RESTART_QUIET_SECONDS = 45;
 export const PROCESS_EXCLUSION_QUIET_FRAMES = PROCESS_EXCLUSION_RESTART_QUIET_SECONDS * 16_000;
@@ -87,6 +89,8 @@ const cell = ({ tier, modelId = null, feedbackLoopPrevention, deviceClass }) => 
     cellHardWatchdogSeconds: RELEASE_CELL_HARD_WATCHDOG_SECONDS[feedbackLoopPrevention],
   } : { durationSeconds: 300 }),
   authoritativeTransformedReferenceFrames,
+  inputSampleRateHz: paid ? PROVIDER_INPUT_SAMPLE_RATE_HZ : 0,
+  mediaSha256: paid ? CANONICAL_MEDIA_SHA256 : null,
   boundedCaptureGraceFrames: captureGraceFrames,
   maxExternalAudioSamples: authoritativeTransformedReferenceFrames + captureGraceFrames,
   auxiliaryExternalAudioSeconds: 0,

@@ -15,6 +15,7 @@ import {
   currentAuthorityImplementationHashes,
   fileAuthorityEntry,
   requiredCellArtifactPaths,
+  sameAuthorityInventory,
   sha256File,
   STRICT_MATRIX_ARTIFACT_KIND,
   STRICT_MATRIX_SCHEMA_VERSION,
@@ -114,6 +115,13 @@ import {
 } from './verify-watch-mode-evidence.mjs';
 
 const AUTHORITY_FIXTURE_SESSION_DURATION_MS = 180_000;
+
+test('authority inventory comparison ignores serialization order but not content', () => {
+  const first = { path: 'target/release/a.exe', bytes: 10, sha256: 'a'.repeat(64) };
+  const second = { path: 'drivers/package/b.sys', bytes: 20, sha256: 'b'.repeat(64) };
+  assert.equal(sameAuthorityInventory([first, second], [second, first]), true);
+  assert.equal(sameAuthorityInventory([first, second], [second, { ...first, bytes: 11 }]), false);
+});
 
 test('strict canonical verifier rejects a staged failed cell before reading completed-only receipts', () => {
   const evidenceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-failed-canonical-verifier-'));
@@ -955,8 +963,10 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
     recordingStartedAtEpochMs,
     transcriptionPcmPath: physicalPcmPath,
     captureTimeline: {
-      schemaVersion: 2,
-      authorityMode: 'wasapi-device-position-qpc-v2',
+      schemaVersion: 4,
+      authorityMode: 'wasapi-device-position-qpc-epoch-calibrated-v4',
+      sampleZeroEpochMs: recordingStartedAtEpochMs,
+      sampleZeroTimeAuthority: 'first-capture-packet-qpc-epoch-calibration-v2',
       sampleRateHz: 48_000,
       channelCount: 2,
       passed: true,
@@ -1352,6 +1362,7 @@ function writeAuthorityRawCell(root, directoryName, {
     replayProviderInputPrefilter({
       filePath: providerPrefilterPath,
       maxSamples: 2_877_045,
+      modelProtocolProfileIdentity: deriveWatchModelProtocolIdentity('qwen3.5-livetranslate-flash-realtime'),
     }).expectedProviderPcm,
   );
   for (const relativePath of requiredCellArtifactPaths(feedbackLoopPrevention)) {
@@ -3412,6 +3423,7 @@ test('strict production verifier rebuilds the staged four-cell authority from on
   });
   const workers = [{
     workerId: 'vm1',
+    workspaceRoot,
     interactiveUser: 'VMUser',
     vmIdentity: { provider: 'vmware', uuidBios: 'verifier-vm-1' },
     deviceProfileInstances: [deviceProfile(
@@ -3676,6 +3688,7 @@ test('strict production verifier rebuilds the staged four-cell authority from on
           expectedPreflightAuthorization.leaseReservationDigests,
         authorizationDigest: expectedPreflightAuthorization.authorizationDigest,
         consumptionClaim: consumptionClaimProjection,
+        executor: structuredClone(expectedPreflightAuthorization.executor),
         ...fixturePreflightLifecycle(),
         externalAudioSamples: 0,
         providerInvocationCount: 1,

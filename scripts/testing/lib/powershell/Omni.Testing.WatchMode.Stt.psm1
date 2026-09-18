@@ -147,7 +147,7 @@ function Parse-OmniRealtimeDiagnosticText {
 function Invoke-CanonicalSourceAuthorityNode {
   param(
     [string]$OutputDirectory,
-    [ValidateSet("Reference", "Source", "Combined")][string]$Mode = "Combined",
+    [ValidateSet("Reference", "Source", "Combined", "CombinedEvidence")][string]$Mode = "Combined",
     [Parameter(Mandatory = $true)][string]$WorkspaceRoot
   )
   $authorityScript = Join-Path $workspaceRoot "scripts/testing/watch-mode-canonical-source-authority.mjs"
@@ -161,6 +161,7 @@ function Invoke-CanonicalSourceAuthorityNode {
   )
   if ($Mode -eq "Reference") { $arguments += "--reference-only" }
   if ($Mode -eq "Source") { $arguments += "--source-only" }
+  if ($Mode -eq "CombinedEvidence") { $arguments += "--preserve-failure-evidence" }
   $output = @(& node @arguments 2>&1 | ForEach-Object { [string]$_ })
   $exitCode = $LASTEXITCODE
   $text = ($output -join "`n").Trim()
@@ -172,8 +173,9 @@ function Invoke-CanonicalSourceAuthorityNode {
   } catch {
     throw "canonical source authority returned invalid JSON ($Mode): $($_.Exception.Message)"
   }
-  if (-not $result -or $result.passed -ne $true -or $result.remoteProviderCalls -ne 0 -or $result.externalAudioSeconds -ne 0) {
-    throw "canonical source authority did not return an exact zero-provider PASS ($Mode)"
+  $allowsFailedEvidence = $Mode -eq "CombinedEvidence"
+  if (-not $result -or (-not $allowsFailedEvidence -and $result.passed -ne $true) -or $result.remoteProviderCalls -ne 0 -or $result.externalAudioSeconds -ne 0) {
+    throw "canonical source authority did not return exact zero-provider evidence ($Mode)"
   }
   return $result
 }

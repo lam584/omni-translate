@@ -478,6 +478,47 @@ fn strict_paid_provider_selection_cannot_be_hijacked_by_an_earlier_dashscope_pro
 }
 
 #[test]
+fn watch_registry_injection_replaces_stable_id_even_when_model_changes() {
+    let mut config = default_watch_config();
+    config["providers"][0]["localModelCapabilityRegistry"] = json!([
+        {
+            "id": "watch-diagnostic-explicit-protocol",
+            "modelId": "stale-watch-model",
+            "capabilities": ["speech-to-text"]
+        },
+        {
+            "id": "unrelated-entry",
+            "modelId": "unrelated-model",
+            "capabilities": ["speech-to-text"]
+        }
+    ]);
+
+    configure_watch_realtime_provider_with_environment(
+        &mut config,
+        "qwen3.5-livetranslate-flash-realtime",
+        "dashscope-livetranslate",
+        strict_watch_environment,
+    )
+    .expect("watch registry injection should replace its stable entry");
+
+    let registry = config["providers"][0]["localModelCapabilityRegistry"]
+        .as_array()
+        .expect("registry should remain an array");
+    let watch_entries = registry
+        .iter()
+        .filter(|entry| entry["id"] == "watch-diagnostic-explicit-protocol")
+        .collect::<Vec<_>>();
+    assert_eq!(watch_entries.len(), 1);
+    assert_eq!(
+        watch_entries[0]["modelId"],
+        "qwen3.5-livetranslate-flash-realtime"
+    );
+    assert!(registry
+        .iter()
+        .any(|entry| entry["id"] == "unrelated-entry"));
+}
+
+#[test]
 fn strict_paid_provider_selection_fails_when_the_expected_provider_is_missing() {
     let mut config = default_watch_config();
     config["providers"][0]["providerId"] = json!("provider-dashscope-alternate");

@@ -1,6 +1,7 @@
 #requires -Version 5.1
 
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.IO.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.InteractiveLocalAec.psm1') -Force
 
 function Get-TextSha256 {
   param([Parameter(Mandatory = $true)][string]$Value)
@@ -50,11 +51,13 @@ function Resolve-OmniInteractiveTaskRequest {
   $launcherPath = Join-Path $workspace 'scripts\testing\run-watch-mode-interactive-task.ps1'
   $collectorPath = Join-Path $workspace 'scripts\testing\collect-watch-mode-interactive-process-authority.ps1'
   $mode = [string]$payload.mode
-  if ($mode -notin @('endpoint-readiness', 'shard-cell', 'incident-plus-cell')) {
+  if ($mode -notin @('endpoint-readiness', 'shard-cell', 'incident-plus-cell', 'local-aec-probe')) {
     throw 'interactive task request mode is unsupported'
   }
   $runnerRelativePath = if ($mode -eq 'incident-plus-cell') {
     'scripts\testing\run-watch-mode-incident-plus-cell.mjs'
+  } elseif ($mode -eq 'local-aec-probe') {
+    'scripts\testing\run-watch-mode-local-aec-probe.mjs'
   } else {
     'scripts\testing\run-watch-mode-live-shard.mjs'
   }
@@ -118,6 +121,8 @@ function Resolve-OmniInteractiveTaskRequest {
         $cellFields['driverReadinessPath'] = [string]$payload.driverReadinessPath
       }
     }
+  } elseif ($mode -eq 'local-aec-probe') {
+    $cellFields = Resolve-OmniInteractiveLocalAecFields -Payload $payload
   } else {
     Assert-RequiredProperties $payload @(
       'readinessRequestDigest', 'profiles', 'probeExecutable', 'bridgeExecutable'
@@ -129,7 +134,7 @@ function Resolve-OmniInteractiveTaskRequest {
       bridgeExecutable = [string]$payload.bridgeExecutable
     }
   }
-  $identity = if ($mode -in @('shard-cell', 'incident-plus-cell')) { $cellFields.leaseId } else { 'readiness' }
+  $identity = if ($mode -in @('shard-cell', 'incident-plus-cell', 'local-aec-probe')) { $cellFields.leaseId } else { 'readiness' }
   $authorityRoot = Join-Path $remoteRoot ('interactive\' + $identity)
   if (Test-Path -LiteralPath $authorityRoot) { throw 'interactive authority root already exists' }
   [void](New-Item -ItemType Directory -Path $authorityRoot)
@@ -187,10 +192,10 @@ function Resolve-OmniInteractiveTaskRequest {
     stdoutPath = $stdoutPath
     stderrPath = $stderrPath
   }
-  if ($mode -in @('shard-cell', 'incident-plus-cell')) {
+  if ($mode -in @('shard-cell', 'incident-plus-cell', 'local-aec-probe')) {
     foreach ($name in $cellFields.Keys) { $command[$name] = $cellFields[$name] }
-    $command['requireRecorder'] = $true
-    if ((Get-OmniSha256 -LiteralPath $command.planPath) -cne $command.planSha256 -or (Get-OmniSha256 -LiteralPath $command.leasePath) -cne $command.leaseSha256) {
+    $command['requireRecorder'] = $mode -in @('shard-cell', 'incident-plus-cell')
+    if ($mode -in @('shard-cell', 'incident-plus-cell') -and ((Get-OmniSha256 -LiteralPath $command.planPath) -cne $command.planSha256 -or (Get-OmniSha256 -LiteralPath $command.leasePath) -cne $command.leaseSha256)) {
       throw 'interactive task plan/lease bytes do not match coordinator authority'
     }
   } else {

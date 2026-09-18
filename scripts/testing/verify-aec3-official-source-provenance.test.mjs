@@ -1,18 +1,66 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 
 import {
   assertPinnedVcpkgWebRtcPort,
   collectAec3SourceProvenanceViolations,
+  OFFICIAL_AEC3_PROVENANCE,
 } from './verify-aec3-official-source-provenance.mjs';
 
 function hash(text) {
   return crypto.createHash('sha256').update(text).digest('hex');
 }
+
+test('autocrlf checkout preserves every official source raw blob hash', (t) => {
+  const workspace = resolve(import.meta.dirname, '..', '..');
+  const root = mkdtempSync(join(tmpdir(), 'omni-aec3-provenance-checkout-'));
+  // Isolate user/system attributes and inherited Git repository/index overrides.
+  const env = Object.fromEntries(Object.entries(process.env)
+    .filter(([key]) => !key.toUpperCase().startsWith('GIT_')));
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  env.GIT_CONFIG_GLOBAL = join(root, 'absent-global-config');
+  const git = (cwd, args, input) => execFileSync('git', [
+    '-c', 'core.attributesFile=', ...args,
+  ], { cwd, env, input, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.diagnostic(`checkout evidence retained at ${root}`);
+  git(root, ['init', '--quiet']);
+  git(root, ['config', 'core.autocrlf', 'true']);
+  git(root, ['config', 'core.eol', 'crlf']);
+  const stageRaw = (path, bytes) => {
+    // Bypass clean filters: the index must contain the actual HEAD blob bytes.
+    const oid = git(root, ['hash-object', '-w', '--stdin'], bytes).toString().trim();
+    git(root, ['update-index', '--add', '--cacheinfo', '100644', oid, path]);
+  };
+  const attributes = readFileSync(join(workspace, '.gitattributes'));
+  writeFileSync(join(root, '.gitattributes'), attributes);
+  stageRaw('.gitattributes', attributes);
+  stageRaw('autocrlf-control.txt', Buffer.from('control\n'));
+  const sources = OFFICIAL_AEC3_PROVENANCE.sources.map((source) => {
+    const path = `crates/omni-webrtc-aec3/ffi/${source.vendoredPath}`;
+    const blob = git(workspace, ['cat-file', 'blob', `HEAD:${path}`]);
+    assert.equal(hash(blob), source.sha256, `HEAD raw blob: ${path}`);
+    stageRaw(path, blob);
+    return { ...source, path, blob };
+  });
+  // Exercise Git's checkout conversion, not a simulated LF/CRLF replacement.
+  git(root, ['checkout-index', '--all', '--force']);
+  assert.equal(readFileSync(join(root, 'autocrlf-control.txt'), 'utf8'), 'control\r\n');
+  const mismatches = [];
+  for (const { path, blob, sha256 } of sources) {
+    const checkedOut = readFileSync(join(root, path));
+    const actual = hash(checkedOut);
+    t.diagnostic(`${path} expected=${sha256} actual=${actual}`);
+    if (!checkedOut.equals(blob) || actual !== sha256) {
+      mismatches.push(`${path} expected=${sha256} actual=${actual}`);
+    }
+  }
+  assert.deepEqual(mismatches, [], 'checkout must preserve all official raw bytes');
+});
 
 function write(root, relativePath, contents) {
   const path = join(root, ...relativePath.split('/'));

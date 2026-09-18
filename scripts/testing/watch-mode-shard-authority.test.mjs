@@ -41,8 +41,8 @@ test('strict report authority normalizes only cross-workspace fixture reference 
     unrelated: { referencePath: 'E:\\watch-worker\\artifacts\\raw.wav' },
   };
   const coordinator = {
-    diagnostics: { referencePath: 'E:\\omni-translate\\scripts\\testing\\fixtures\\watch-mode-en-original.txt' },
-    strictContent: { referencePath: 'E:\\omni-translate\\scripts\\testing\\fixtures\\watch-mode-en-original.zh-CN.txt' },
+    diagnostics: { referencePath: 'E:\\watch-coordinator\\scripts\\testing\\fixtures\\watch-mode-en-original.txt' },
+    strictContent: { referencePath: 'E:\\watch-coordinator\\scripts\\testing\\fixtures\\watch-mode-en-original.zh-CN.txt' },
     unrelated: { referencePath: 'E:\\watch-worker\\artifacts\\raw.wav' },
   };
   assert.deepEqual(
@@ -50,7 +50,7 @@ test('strict report authority normalizes only cross-workspace fixture reference 
     strictReportAuthorityProjection(coordinator),
   );
 
-  coordinator.strictContent.referencePath = 'E:\\omni-translate\\scripts\\testing\\fixtures\\different.zh-CN.txt';
+  coordinator.strictContent.referencePath = 'E:\\watch-coordinator\\scripts\\testing\\fixtures\\different.zh-CN.txt';
   assert.notDeepEqual(
     strictReportAuthorityProjection(remote),
     strictReportAuthorityProjection(coordinator),
@@ -58,7 +58,7 @@ test('strict report authority normalizes only cross-workspace fixture reference 
   );
 
   coordinator.strictContent.referencePath = remote.strictContent.referencePath;
-  coordinator.unrelated.referencePath = 'E:\\omni-translate\\artifacts\\raw.wav';
+  coordinator.unrelated.referencePath = 'E:\\watch-coordinator\\artifacts\\raw.wav';
   assert.notDeepEqual(
     strictReportAuthorityProjection(remote),
     strictReportAuthorityProjection(coordinator),
@@ -715,6 +715,21 @@ function writeRawBridgeFailureAuthority(runDirectory, cell) {
   return writeRawReportAuthority(runDirectory, cell, { bridgeDroppedFrameCount: 1 });
 }
 
+function resignAuthority(value, digestField, privateKeyPem) {
+  const candidate = structuredClone(value);
+  const signature = candidate.signature;
+  delete candidate.signature;
+  delete candidate[digestField];
+  candidate[digestField] = sha256Canonical(candidate);
+  candidate.signature = {
+    ...signature,
+    valueBase64: crypto.sign(
+      null, Buffer.from(canonicalJson(candidate), 'utf8'), privateKeyPem,
+    ).toString('base64'),
+  };
+  return candidate;
+}
+
 test('shard orchestration inventory is independent from local/matrix implementation authority', () => {
   assert.deepEqual(SHARD_ORCHESTRATION_IMPLEMENTATION_FILES, [
     'scripts/testing/watch-mode-four-worker-plan.mjs',
@@ -722,13 +737,17 @@ test('shard orchestration inventory is independent from local/matrix implementat
     'scripts/testing/run-watch-mode-live-shard.mjs',
     'scripts/testing/run-watch-mode-live-coordinator.mjs',
     'scripts/testing/run-watch-mode-live-production-coordinator.mjs',
+    'scripts/testing/watch-mode-history-reports.mjs',
     'scripts/testing/watch-mode-release-timeout-budget.mjs',
     'scripts/testing/watch-mode-strict-runtime-authority.mjs',
     'scripts/testing/watch-mode-provider-preflight-process.mjs',
+    'scripts/testing/run-watch-mode-provider-preflight-worker.mjs',
+    'scripts/testing/watch-worker-bootstrap.mjs',
     'scripts/testing/watch-mode-provider-network-health.mjs',
     'scripts/testing/invoke-watch-mode-interactive-task.ps1',
     'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveRequest.psm1',
     'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
+    'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveCustody.psm1',
     'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveFinalizer.psm1',
     'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1',
     'scripts/testing/run-watch-mode-interactive-task.ps1',
@@ -761,7 +780,11 @@ test('signed plan and leases bind exact four cells, serial waves, identities and
     SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
   );
   for (const lease of fixture.leases) {
-    assert.equal(verifyCellLease(lease, fixture.plan, { now: fixture.now }).cellId, lease.cellId);
+    const cell = verifyCellLease(lease, fixture.plan, { now: fixture.now });
+    assert.equal(cell.cellId, lease.cellId);
+    assert.equal(lease.authoritativeTransformedReferenceFrames, cell.authoritativeTransformedReferenceFrames);
+    assert.equal(lease.inputSampleRateHz, cell.inputSampleRateHz);
+    assert.equal(lease.mediaSha256, cell.mediaSha256);
   }
   assert.equal(
     fixture.plan.authority.runtimeBundleDigest,
@@ -786,6 +809,36 @@ test('signed plan and leases bind exact four cells, serial waves, identities and
   const tamperedLease = structuredClone(fixture.leases[0]);
   tamperedLease.maxExternalAudioSamples += 1;
   assert.throws(() => verifyCellLease(tamperedLease, fixture.plan, { now: fixture.now }), /digest mismatch/);
+
+  const tamperedMediaLease = structuredClone(fixture.leases[0]);
+  tamperedMediaLease.mediaSha256 = 'f'.repeat(64);
+  assert.throws(() => verifyCellLease(tamperedMediaLease, fixture.plan, { now: fixture.now }), /digest mismatch/);
+
+  const signedNonCanonicalPlanSource = structuredClone(fixture.plan);
+  signedNonCanonicalPlanSource.cells[0].mediaSha256 = 'f'.repeat(64);
+  const signedNonCanonicalPlan = resignAuthority(
+    signedNonCanonicalPlanSource, 'planDigest', fixture.signingKeys.privateKeyPem,
+  );
+  assert.throws(
+    () => verifySignedExecutionPlan(signedNonCanonicalPlan, { now: fixture.now }),
+    /does not match the fixed paid release cell/,
+  );
+
+  for (const mutate of [
+    (lease) => { lease.mediaSha256 = 'f'.repeat(64); },
+    (lease) => { lease.authoritativeTransformedReferenceFrames += 1; },
+    (lease) => { lease.inputSampleRateHz = 8_000; },
+  ]) {
+    const mismatchedLeaseSource = structuredClone(fixture.leases[0]);
+    mutate(mismatchedLeaseSource);
+    const mismatchedLease = resignAuthority(
+      mismatchedLeaseSource, 'leaseDigest', fixture.signingKeys.privateKeyPem,
+    );
+    assert.throws(
+      () => verifyCellLease(mismatchedLease, fixture.plan, { now: fixture.now }),
+      /does not match the execution plan/,
+    );
+  }
 
   assert.throws(
     () => verifySignedExecutionPlan(fixture.plan, {

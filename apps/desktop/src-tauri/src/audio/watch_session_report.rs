@@ -13,8 +13,10 @@ use super::contracts::{
 use super::time_utils::{ms_marker, unix_ms};
 
 mod lifecycle;
+mod incremental_evidence;
 mod model_recording;
 mod snapshot;
+use incremental_evidence::IncrementalEvidenceWriter;
 use snapshot::{build_snapshot, correlation_text, empty_cue, sanitize_error, truncate_chars};
 #[cfg(test)]
 use snapshot::normalize_comparison_text;
@@ -36,6 +38,7 @@ fn is_internal_status_cue(cue_id: &str) -> bool {
 
 pub(crate) struct WatchSessionReportStore {
     inner: Mutex<Option<WatchSession>>,
+    incremental_evidence: IncrementalEvidenceWriter,
 }
 
 struct WatchSession {
@@ -317,6 +320,36 @@ impl WatchSession {
 }
 
 impl WatchSessionReportStore {
+    fn emit_incremental_cue(&self, session: &WatchSession, cue_index: usize, stage: &str) {
+        self.incremental_evidence.emit_cue(
+            &session.session_id,
+            session.next_event_id,
+            stage,
+            &session.cues[cue_index],
+        );
+    }
+
+    pub(crate) fn discard_ignored_provider_cue(&self, cue_id: &str) {
+        let mut guard = self.inner.lock().expect("watch session report poisoned");
+        let Some(session) = guard.as_mut() else {
+            return;
+        };
+        let removed_revisions = session
+            .cues
+            .iter()
+            .filter(|cue| cue.cue_id == cue_id)
+            .map(|cue| cue.revision)
+            .collect::<Vec<_>>();
+        session.cues.retain(|cue| cue.cue_id != cue_id);
+        for revision in removed_revisions {
+            session
+                .adopted_segments
+                .remove(&WatchSession::cue_revision_key(cue_id, revision));
+        }
+    }
+}
+
+impl WatchSessionReportStore {
 
     pub(crate) fn stage_manual_audio_origin(&self, started_at_ms: u64) {
         let mut guard = self.inner.lock().expect("watch session report poisoned");
@@ -442,6 +475,7 @@ impl WatchSessionReportStore {
         session.push_cue_event(index, event);
         if final_event {
             session.inherit_latest_equivalent_final_receipt(index);
+            self.emit_incremental_cue(session, index, "publish-final");
         }
     }
 
@@ -492,9 +526,20 @@ impl WatchSessionReportStore {
         // newer revision's first-render timestamp backwards.
         let rendered_signature = correlation_text(&receipt.translated_text);
         let source_signature = correlation_text(&receipt.source_text);
+        let published_before_receipt = |cue: &WatchCueComparisonRuntime| {
+            !rendered_signature.is_empty()
+                && ((correlation_text(&cue.published_text) == rendered_signature
+                    && cue.published_first_at_ms.is_some_and(|published| published <= elapsed))
+                    || cue.events.iter().any(|event| {
+                        event.stage == "publish"
+                            && event.elapsed_ms <= elapsed
+                            && correlation_text(&event.text) == rendered_signature
+                    }))
+        };
         let source_match = (!source_signature.is_empty()).then(|| {
             session.cues.iter().rposition(|cue| {
                 cue.cue_id == receipt.cue_id
+                    && published_before_receipt(cue)
                     && (correlation_text(&cue.source_text) == source_signature
                         || cue.events.iter().any(|event| {
                             event.stage == "source"
@@ -502,15 +547,10 @@ impl WatchSessionReportStore {
                         }))
             })
         }).flatten();
-        let content_match = source_signature.is_empty().then(|| session.cues.iter().rposition(|cue| {
+        let content_match = session.cues.iter().rposition(|cue| {
             cue.cue_id == receipt.cue_id
-                && !rendered_signature.is_empty()
-                && (correlation_text(&cue.published_text) == rendered_signature
-                    || cue.events.iter().any(|event| {
-                        event.stage == "publish"
-                            && correlation_text(&event.text) == rendered_signature
-                    }))
-        })).flatten();
+                && published_before_receipt(cue)
+        });
         let cue_match = source_match.or(content_match).or_else(|| {
             session
                 .cues
@@ -581,6 +621,9 @@ impl WatchSessionReportStore {
             None,
         );
         session.push_cue_event(index, event);
+        if receipt.committed && receipt.visible {
+            self.emit_incremental_cue(session, index, "render-final");
+        }
     }
 
     pub(crate) fn record_milestone_with_detail(&self, name: &str, detail: Option<String>) {

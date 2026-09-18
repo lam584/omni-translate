@@ -45,11 +45,11 @@ function Write-TestMediaReferencePcm {
   return $referencePcmPath
 }
 function Start-TestMediaPlayback {
-  param([string]$PathToMedia, [string]$PlaybackEndpointId, [string]$OutputDirectory, [Parameter(Mandatory = $true)][string]$WorkspaceRoot, [Parameter(Mandatory = $true)][int]$PlaybackSeconds, [int]$RestartQuietWindowAfterSeconds = 0, [int]$RestartQuietWindowSeconds = 0)
+  param([string]$PathToMedia, [string]$PlaybackEndpointId, [string]$OutputDirectory, [Parameter(Mandatory = $true)][string]$WorkspaceRoot, [Parameter(Mandatory = $true)][int]$PlaybackSeconds, [int]$RestartQuietWindowAfterSeconds = 0, [int]$RestartQuietWindowSeconds = 0, [string]$InjectorExecutablePath)
   if (-not (Test-Path -LiteralPath $PathToMedia -PathType Leaf)) {
     throw "Test media file not found: $PathToMedia"
   }
-  $injectorExe = Join-Path $WorkspaceRoot 'target/release/omni-watch-media-injector.exe'
+  $injectorExe = if ($InjectorExecutablePath) { $InjectorExecutablePath } else { Join-Path $WorkspaceRoot 'target/release/omni-watch-media-injector.exe' }
   if (Test-Path -LiteralPath $injectorExe -PathType Leaf) {
     $resolvedMediaPath = (Resolve-Path -LiteralPath $PathToMedia).Path
     $mediaSha256 = (Get-FileHash -LiteralPath $resolvedMediaPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -76,30 +76,28 @@ function Start-TestMediaPlayback {
     $output = & $injectorExe @args
     $playbackFinishedAtMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0 -or -not $output) {
-      throw "watch media injector failed. ExitCode=$exitCode Output=$output"
-    }
-    $result = ($output -join [Environment]::NewLine) | ConvertFrom-Json
-    if (-not $result.passed) {
-      throw "watch media injector failed: $($result.detail)"
-    }
-    return [pscustomobject]@{
-      playbackMode = "wasapi-media-injector"
-      endpointId = $result.endpointId
-      mediaPath = $result.mediaPath
-      mediaSha256 = $mediaSha256
-      injectorProcessId = $result.processId
-      startedAtMs = if ($result.startedAtMs) { $result.startedAtMs } else { $playbackStartedAtMs }
-      finishedAtMs = if ($result.finishedAtMs) { $result.finishedAtMs } else { $playbackFinishedAtMs }
-      renderedFrames = $result.renderedFrames
-      renderedSeconds = $result.renderedSeconds
-      renderSampleRateHz = $result.renderSampleRateHz
+    $result = $null; $parseError = $null
+    if ($output) { try { $result = ($output -join [Environment]::NewLine) | ConvertFrom-Json } catch { $parseError = $_.Exception.Message } }
+    $playbackResult = [pscustomobject][ordered]@{
+      playbackMode = "wasapi-media-injector"; endpointId = if ($result) { $result.endpointId } else { $PlaybackEndpointId }
+      mediaPath = if ($result -and $result.mediaPath) { $result.mediaPath } else { $resolvedMediaPath }; mediaSha256 = $mediaSha256
+      injectorProcessId = $result.processId; startedAtMs = if ($result.startedAtMs) { $result.startedAtMs } else { $playbackStartedAtMs }
+      finishedAtMs = if ($result.finishedAtMs) { $result.finishedAtMs } else { $playbackFinishedAtMs }; renderedFrames = $result.renderedFrames
+      renderedSeconds = $result.renderedSeconds; renderSampleRateHz = $result.renderSampleRateHz
+      bufferFrames = $result.bufferFrames; prefillFrames = $result.prefillFrames; renderWakeCount = $result.renderWakeCount
+      maxRenderWakeIntervalMs = $result.maxRenderWakeIntervalMs; zeroPaddingUnderrunCount = $result.zeroPaddingUnderrunCount
       restartQuietWindowAfterSeconds = $result.restartQuietWindowAfterSeconds; restartQuietWindowFrames = $result.restartQuietWindowFrames; restartQuietWindowSeconds = $result.restartQuietWindowSeconds
-      sourceGainDb = $result.sourceGainDb
-      postrollSilenceFrames = $result.postrollSilenceFrames
-      postrollSilenceSeconds = $result.postrollSilenceSeconds
-      referencePcmPath = $referencePcmPath
+      sourceGainDb = $result.sourceGainDb; postrollSilenceFrames = $result.postrollSilenceFrames; postrollSilenceSeconds = $result.postrollSilenceSeconds
+      referencePcmPath = $referencePcmPath; passed = [bool]($exitCode -eq 0 -and $result -and $result.passed); injectorExitCode = $exitCode
+      injectorResult = $result; injectorJsonParseError = $parseError; injectorOutput = if ($result) { $null } else { $output -join [Environment]::NewLine }
     }
+    if (-not $playbackResult.passed) {
+      $artifactPath = if ($OutputDirectory) { Join-Path $OutputDirectory 'playback.json' } else { $null }
+      if ($artifactPath) { $playbackResult | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $artifactPath -Encoding UTF8 }
+      $detail = if ($result) { $result.detail } elseif ($parseError) { "invalid injector JSON: $parseError" } else { 'injector produced no output' }
+      throw "watch media injector failed. ExitCode=$exitCode Detail=$detail Evidence=$artifactPath"
+    }
+    return $playbackResult
   }
 
   throw "watch media injector was not built: $injectorExe. Run npm run build:bridge-service-native first."

@@ -25,6 +25,8 @@ function fixture(t, fail) {
     return value;
   };
   const operations = {
+    diskLifecycle: async () => ({ verdict: 'passed', mode: 'check-only' }),
+    historyRetention: async () => ({ verdict: 'passed' }),
     provenance: step('clean', { captureStatus: 'captured', headCommit: head, worktreeClean: true, dirtyEntryCount: 0 }),
     preflight: step('preflight', { schemaVersion: 1, verified: true, workers: [{ workerId: 'one', verified: true, headCommit: head }] }),
     prepareStrictRuntimeAuthority: step('build', { authorityPath }),
@@ -49,6 +51,33 @@ test('awaits clean/preflight/build/distribute; passes exact paths and preserves 
   for (const entry of [record, ...record.stages]) {
     assert.ok(entry.started); assert.ok(entry.completed); assert.ok(entry.durationMs >= 0);
   }
+});
+
+for (const failure of [null, 'build']) test(`automatic history runs after ${failure ?? 'successful'} preparation`, async (t) => {
+  const f = fixture(t, failure); const archived = [];
+  f.operations.historyRetention = async (context) => { archived.push(context); return { verdict: 'passed' }; };
+  if (failure) await assert.rejects(f.run(), /build failure/u); else await f.run();
+  assert.equal(archived.length, 1);
+  assert.equal(archived[0].outcome, failure ? 'fail' : 'success');
+  assert.equal(archived[0].summary.releaseEligible, false);
+  assert.equal(archived[0].summary.providerInvocations, 0);
+  assert.ok(archived[0].completedAt.endsWith('Z'));
+});
+
+test('history still runs after disk-finally failure and cannot replace the primary build error', async (t) => {
+  const f = fixture(t, 'build'); let archived;
+  f.operations.diskLifecycle = async ({ phase }) => { if (phase === 'finally') throw new Error('disk-finally fixture'); return {}; };
+  f.operations.historyRetention = async (context) => { archived = context; throw new Error('archive fixture'); };
+  await assert.rejects(f.run(), (error) => {
+    assert.equal(error.message, 'build failure');
+    assert.equal(error.diskLifecycleFinallyError.message, 'disk-finally fixture');
+    assert.equal(error.historyRetentionError.message, 'archive fixture');
+    const record = JSON.parse(fs.readFileSync(error.recordPath, 'utf8'));
+    assert.equal(record.outcome, 'failed');
+    assert.deepEqual(record.failures.slice(-2).map((entry) => entry.stage), ['disk-finally', 'history-retention']);
+    return true;
+  });
+  assert.equal(archived.outcome, 'fail');
 });
 
 for (const [failure, order] of [
@@ -106,9 +135,40 @@ test('CLI requires config and accepts only the three supported flags', () => {
     { workersConfig: 'a', runtimeAuthorityPath: 'b', releaseId: 'c' });
 });
 
-test('schema2 local native copy plus two parallel pinned SSH probes; failures retained per worker', async (t) => {
+test('disk lifecycle barriers precede distribution and finally runs after success and failure', async (t) => {
+  for (const failure of [undefined, 'build', 'distribute']) {
+    const f = fixture(t, failure); const phases = [];
+    f.operations.diskLifecycle = async ({ phase }) => { phases.push(phase); return { verdict: 'passed' }; };
+    if (failure) await assert.rejects(f.run(), /failure/u);
+    else await f.run();
+    assert.deepEqual(phases, failure === 'build' ? ['startup', 'finally'] : ['startup', 'before-distribution', 'finally']);
+  }
+});
+
+test('disk floor failures block build/distribution and finally failure cannot hide a primary failure', async (t) => {
+  const f = fixture(t); const phases = [];
+  f.operations.diskLifecycle = async ({ phase }) => { phases.push(phase); throw new Error(`disk ${phase}`); };
+  await assert.rejects(f.run(), (error) => {
+    assert.equal(error.message, 'disk startup');
+    assert.equal(error.diskLifecycleFinallyError.message, 'disk finally');
+    assert.equal(JSON.parse(fs.readFileSync(error.recordPath, 'utf8')).outcome, 'failed');
+    return true;
+  });
+  assert.deepEqual(phases, ['startup', 'finally']); assert.equal(f.calls.length, 0);
+  const g = fixture(t);
+  g.operations.diskLifecycle = async ({ phase }) => { if (phase === 'before-distribution') throw new Error('E: below floor'); };
+  await assert.rejects(g.run(), /below floor/u);
+  assert.equal(g.calls.some((call) => call.name === 'distribute'), false);
+  const h = fixture(t);
+  h.operations.diskLifecycle = async ({ phase }) => { if (phase === 'finally') throw new Error('final disk failure'); };
+  await assert.rejects(h.run(), (error) => {
+    assert.equal(JSON.parse(fs.readFileSync(error.recordPath, 'utf8')).outcome, 'failed'); return true;
+  });
+});
+
+test('schema3 local native copy plus two parallel pinned SSH probes; failures retained per worker', async (t) => {
   const f = fixture(t);
-  const config = { schemaVersion: 2, artifactKind: 'watch-mode-production-shard-workers', workers: ['vm171', 'vm167', 'vm169'].map((workerId, index) => {
+  const config = { schemaVersion: 3, artifactKind: 'watch-mode-production-shard-workers', providerPreflightExecutor: { workerId: 'vm169' }, workers: ['vm171', 'vm167', 'vm169'].map((workerId, index) => {
     fs.writeFileSync(path.join(f.root, `${workerId}.key`), 'fixture');
     fs.writeFileSync(path.join(f.root, `${workerId}.hosts`), `${workerId} ssh-ed25519 ${Buffer.from(`key-${index}`).toString('base64')}\n`);
     return { workerId, user: 'VMUser', workspaceRoot: f.root, guestExecutionRoot: path.join(f.root, workerId),
@@ -187,7 +247,15 @@ test('local runner discovers commands in native Windows PowerShell under inherit
     else process.env.PSModulePath = originalModules;
   });
   const workerId = 'vm171';
-  const config = { schemaVersion: 2, artifactKind: 'watch-mode-production-shard-workers', workers: [{
+  const lifecycleScript = path.join(f.root, 'scripts', 'testing', 'watch-mode-disk-lifecycle.mjs');
+  fs.mkdirSync(path.dirname(lifecycleScript), { recursive: true });
+  fs.copyFileSync(path.resolve('scripts/testing/watch-mode-disk-lifecycle.mjs'), lifecycleScript);
+  const testingCommon = path.join(f.root, 'scripts', 'lib', 'testing-common.mjs');
+  fs.mkdirSync(path.dirname(testingCommon), { recursive: true });
+  fs.copyFileSync(path.resolve('scripts/lib/testing-common.mjs'), testingCommon);
+  fs.mkdirSync(path.join(f.root, 'artifacts', 'testing', 'frozen-funnel-workers'), { recursive: true });
+  fs.mkdirSync(path.join(f.root, 'artifacts', 'testing', 'watch-release-preflight'), { recursive: true });
+  const config = { schemaVersion: 3, artifactKind: 'watch-mode-production-shard-workers', providerPreflightExecutor: { workerId: 'vm171' }, workers: [{
     workerId, user: 'VMUser', workspaceRoot: f.root, guestExecutionRoot: path.join(f.root, 'guest'),
     transport: { kind: 'local' }, vmIdentity: { provider: 'vmware', uuidBios: '564d0000-0000-0000-0000-000000000000' },
     deviceProfileInstances: [{ instanceId: `${workerId}-default`, profileId: `${workerId}-speaker`, deviceClass: 'default-speaker',

@@ -10,6 +10,7 @@ import {
 } from './watch-mode-test-receipts.mjs';
 import { verifyStrictRuntimeAuthority } from './watch-mode-strict-runtime-authority.mjs';
 import { fileAuthorityEntry } from './watch-mode-evidence-authority.mjs';
+import { runDefaultLocalWatchDiskLifecycle } from './watch-mode-disk-lifecycle.mjs';
 import {
   collectFrozenFunnelWorkers, createFrozenFunnelAuthority, createFrozenFunnelPlan,
   createFrozenFunnelTransport, frozenFunnelFile, verifyFrozenFunnelAuthority,
@@ -57,13 +58,19 @@ export function runFrozenTestCommand(step, logPath, { spawnCommand = spawn } = {
 }
 
 export async function runFrozenTestFunnel({ workspaceRoot = repoRoot, runtimeAuthorityPath, workersConfig } = {}) {
+  const stamp = compactTimestamp();
+  runDefaultLocalWatchDiskLifecycle({
+    workspaceRoot,
+    activeExecutionIds: [stamp],
+    receiptPath: path.resolve(workspaceRoot, 'artifacts', 'testing', 'disk-lifecycle', `funnel-${stamp}.json`),
+  });
   const provenance = currentGitProvenance({ cwd: workspaceRoot });
   if (provenance.worktreeClean !== true || Number(provenance.dirtyEntryCount) !== 0) {
     throw new Error('frozen test funnel requires the exact clean HEAD');
   }
   if (!runtimeAuthorityPath) throw new Error('frozen test funnel requires --runtime-authority');
   const frozenRuntime = verifyStrictRuntimeAuthority(runtimeAuthorityPath, { workspaceRoot, provenance });
-  const root = path.resolve(workspaceRoot, 'artifacts', 'testing', 'test-receipts', compactTimestamp());
+  const root = path.resolve(workspaceRoot, 'artifacts', 'testing', 'test-receipts', stamp);
   fs.mkdirSync(path.dirname(root), { recursive: true });
   fs.mkdirSync(root, { recursive: false });
   let results; let distributedAuthority;

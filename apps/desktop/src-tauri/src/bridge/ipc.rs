@@ -903,6 +903,47 @@ mod tests {
     }
 
     #[test]
+    fn managed_pid_authority_is_claimed_only_for_the_owned_child() {
+        let root = std::env::temp_dir().join(format!("omni-managed-pid-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let root_text = root.to_string_lossy();
+        let pid_path = bridge_pid_path(&root_text);
+
+        fs::write(&pid_path, "42\n").unwrap();
+        assert!(ManagedBridgePidAuthority::claim(&root_text, 41)
+            .unwrap()
+            .is_none());
+        assert_eq!(fs::read_to_string(&pid_path).unwrap(), "42\n");
+
+        let authority = ManagedBridgePidAuthority::claim(&root_text, 42)
+            .unwrap()
+            .expect("owned PID authority should be claimed before child teardown");
+        assert!(!pid_path.exists());
+
+        fs::write(&pid_path, "43\n").unwrap();
+        authority.release().unwrap();
+        assert_eq!(fs::read_to_string(&pid_path).unwrap(), "43\n");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn managed_pid_authority_restores_only_without_a_replacement_authority() {
+        let root = std::env::temp_dir().join(format!("omni-managed-pid-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let root_text = root.to_string_lossy();
+        let pid_path = bridge_pid_path(&root_text);
+
+        fs::write(&pid_path, "42\n").unwrap();
+        let authority = ManagedBridgePidAuthority::claim(&root_text, 42)
+            .unwrap()
+            .unwrap();
+        authority.restore().unwrap();
+        assert_eq!(fs::read_to_string(&pid_path).unwrap(), "42\n");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn stale_bridge_recovery_decision_is_exact_and_bounded() {
         let expected = Path::new(r"C:\Omni\omni-bridge-service.exe");
 

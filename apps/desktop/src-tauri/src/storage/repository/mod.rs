@@ -857,6 +857,83 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn save_config_deduplicates_and_compacts_repeated_provider_capabilities() {
+        let (_temp_dir, repository) = initialized_repository();
+        let mut config = default_config_value().expect("default config should parse");
+        config["providers"][0]["localModelCapabilityRegistry"] = json!([{
+            "id": "duplicate-capabilities",
+            "modelId": "qwen-duplicate-test",
+            "capabilities": ["speech-to-text", "speech-to-speech", "speech-to-text"]
+        }]);
+        config["providers"][0]["modelCatalogCache"] = json!({
+            "signature": "duplicate-capabilities",
+            "models": [{
+                "id": "catalog-duplicate-test",
+                "capabilities": ["speech-to-text", "speech-to-text", "speech-to-speech"]
+            }]
+        });
+
+        repository
+            .save_config(&config)
+            .expect("duplicate capability declarations should persist once");
+
+        let connection = repository
+            .open_connection()
+            .expect("connection should open");
+        let registry_positions: String = connection
+            .query_row(
+                "SELECT group_concat(position, ',') FROM (SELECT position FROM provider_model_capabilities WHERE entry_id = 'duplicate-capabilities' ORDER BY position)",
+                [],
+                |row| row.get(0),
+            )
+            .expect("registry capability positions should read");
+        let catalog_positions: String = connection
+            .query_row(
+                "SELECT group_concat(position, ',') FROM (SELECT position FROM provider_model_catalog_item_capabilities WHERE item_id = 'catalog-duplicate-test' ORDER BY position)",
+                [],
+                |row| row.get(0),
+            )
+            .expect("catalog capability positions should read");
+        assert_eq!(registry_positions, "0,1");
+        assert_eq!(catalog_positions, "0,1");
+    }
+
+    #[test]
+    fn save_config_is_idempotent_for_repeated_provider_capability_entries() {
+        let (_temp_dir, repository) = initialized_repository();
+        let mut config = default_config_value().expect("default config should parse");
+        config["providers"][0]["localModelCapabilityRegistry"] = json!([
+            {
+                "id": "repeated-entry",
+                "modelId": "qwen-repeated-test",
+                "capabilities": ["speech-to-text", "speech-to-speech"]
+            },
+            {
+                "id": "repeated-entry",
+                "modelId": "qwen-repeated-test",
+                "capabilities": ["speech-to-text", "speech-to-speech"]
+            }
+        ]);
+
+        repository
+            .save_config(&config)
+            .expect("repeated registry entries should persist idempotently");
+
+        let connection = repository
+            .open_connection()
+            .expect("connection should open");
+        let capability_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM provider_model_capabilities WHERE entry_id = 'repeated-entry'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("registry capability count should read");
+        assert_eq!(capability_count, 2);
+    }
+
     #[test]
     fn saves_audio_route_outputs_and_preferences() {
         let (_temp_dir, repository) = test_repository();

@@ -35,6 +35,7 @@ import {
 import {
   PROVIDER_PREFLIGHT_MODEL,
   PROVIDER_PREFLIGHT_PROTOCOL,
+  claimProviderPreflightDispatchAuthorization,
   verifyProviderPreflightGrant,
 } from './watch-mode-provider-preflight-authorization.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
@@ -189,6 +190,7 @@ function workers() {
   return [
     {
       workerId: 'vm1', vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-1' },
+      workspaceRoot: 'E:\\worker',
       deviceProfileInstances: [{
         instanceId: 'vm1-default', profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
         physicalPlaybackDeviceId: 'default', expectedPhysicalPlaybackDeviceName: '',
@@ -602,7 +604,8 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
       local: 0,
     };
     const config = validateProductionWorkerConfig({
-      schemaVersion: 2, artifactKind: PRODUCTION_WORKER_CONFIG_KIND,
+      schemaVersion: 3, artifactKind: PRODUCTION_WORKER_CONFIG_KIND,
+      providerPreflightExecutor: { workerId: 'vm169' },
       workers: ['vm171', 'vm167', 'vm169'].map((workerId, index) => {
         fs.writeFileSync(path.join(outputRoot, `${workerId}-key`), 'fixture-only-private-key');
         fs.writeFileSync(path.join(outputRoot, `${workerId}-hosts`), `${workerId} ssh-ed25519 ${Buffer.from(`fixture-host-key-${index}`).toString('base64')}\n`);
@@ -614,8 +617,8 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
         };
       }),
     }, { configDirectory: outputRoot });
-    const productionWorkers = config.workers.map(({ workerId, user, vmIdentity, deviceProfileInstances, transport }) => ({
-      workerId, interactiveUser: user, vmIdentity, deviceProfileInstances,
+    const productionWorkers = config.workers.map(({ workerId, user, workspaceRoot, vmIdentity, deviceProfileInstances, transport }) => ({
+      workerId, interactiveUser: user, workspaceRoot, vmIdentity, deviceProfileInstances,
       transportAuthority: transport.kind === 'local' ? { kind: 'local' } : {
         kind: 'ssh', hostKeyAlias: transport.hostKeyAlias, hostKeyAlgorithm: transport.hostKeyAlgorithm, hostKeySha256: transport.hostKeySha256,
       },
@@ -629,6 +632,7 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
       executionId: 'watch-shard-atomic-test',
       workers: productionWorkers,
       assignments: config.assignments,
+      preflightExecutorWorkerId: config.preflightExecutor.workerId,
       signingKeys: resultSigningKeys,
       generatedAt,
       expiresAt: new Date(generatedAt.getTime() + 3_600_000),
@@ -688,7 +692,7 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
           coordinatorKeyId: grant.signature.keyId,
           claimedAt: new Date(Math.max(...authorization.reservationIssuedAts.map(Date.parse)) + 1).toISOString(),
           desktopProcessId: 4242,
-          desktopExecutablePath: path.join(outputRoot, 'target', 'release', 'omni-desktop-shell.exe'),
+          desktopExecutablePath: path.join(grant.executor.workspaceRoot, 'target', 'release', 'omni-desktop-shell.exe'),
           desktopExecutableRelativePath: 'target/release/omni-desktop-shell.exe',
           desktopExecutableBytes: desktop.bytes,
           desktopExecutableSha256: desktop.sha256,
@@ -697,6 +701,7 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
         return {
           ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
           providerInvocationCount: PREFLIGHT_LIFECYCLE_AUTHORITY.invocationCount,
+          executor: structuredClone(authorization.executor),
           evidenceDirectory: preflightEvidenceDirectory,
         };
       },
@@ -717,10 +722,28 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
           leaseReservationDigests: expectedAuthorization.leaseReservationDigests,
           authorizationDigest: expectedAuthorization.authorizationDigest,
           consumptionClaim: expectedAuthorization.consumptionClaim,
+          executor: structuredClone(expectedAuthorization.executor),
           lifecycleBudget: structuredClone(expectedAuthorization.lifecycleBudget),
         },
       }),
     });
+    const authorizationRoot = path.join(outputRoot, 'watch-shard-atomic-test.preflight-authorization');
+    const grantPath = path.join(authorizationRoot, 'provider-preflight-grant.json');
+    const reservationDirectory = path.join(authorizationRoot, 'provider-preflight-lease-reservations');
+    const dispatchGrant = JSON.parse(fs.readFileSync(grantPath, 'utf8'));
+    const attempts = await Promise.allSettled([1, 2].map(() => Promise.resolve().then(() => (
+      claimProviderPreflightDispatchAuthorization({
+        grantPath,
+        reservationDirectory,
+      })
+    ))));
+    assert.equal(attempts.filter((entry) => entry.status === 'fulfilled').length, 1);
+    assert.equal(attempts.filter((entry) => entry.status === 'rejected').length, 1);
+    assert.match(attempts.find((entry) => entry.status === 'rejected').reason.message, /already consumed/);
+    const dispatchClaimPath = path.join(outputRoot, 'watch-shard-atomic-test.preflight-authorization.provider-preflight-dispatch-claim.json');
+    const dispatchClaim = JSON.parse(fs.readFileSync(dispatchClaimPath, 'utf8'));
+    assert.equal(dispatchClaim.grantDigest, dispatchGrant.digest);
+    assert.equal(dispatchClaim.executor.workerId, 'vm169');
     assert.deepEqual(calls, {
       provenance: 3,
       build: 1,

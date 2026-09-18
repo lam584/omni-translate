@@ -605,7 +605,15 @@
 
         #[test]
         fn process_exclusion_result_serializes_gap_and_unreliable_evidence() {
-            let mut metrics = CaptureMetrics::default();
+            let mut metrics = CaptureMetrics {
+                qpc_epoch_calibration: Ok(QpcEpochCalibration {
+                    qpc_position_100ns: 10_000,
+                    epoch_position_100ns: 1_700_000_000_000u128
+                        * HUNDRED_NS_PER_MILLISECOND,
+                    uncertainty_100ns: 10,
+                }),
+                ..CaptureMetrics::default()
+            };
             let payload = (0..2 * CHANNELS)
                 .flat_map(|_| 0.25_f32.to_le_bytes()).collect::<Vec<_>>();
             for (position, discontinuity) in [(100, false), (104, true)] {

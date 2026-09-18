@@ -20,7 +20,8 @@ use super::contracts::{
 };
 use super::events::AUDIO_RUNTIME_SNAPSHOT_EVENT;
 use super::state::{
-    AudioRouteHandle, AudioStateStore, BridgeSourceFrameIdentity, CapturedSegmentAudio,
+    AecCaptureFrameMetadata, AudioRouteHandle, AudioStateStore, BridgeSourceFrameIdentity,
+    CapturedSegmentAudio,
     RouteInputCompletionEvidence, RouteInputCompletionRequest,
 };
 use super::time_utils::{ms_marker, now_unix_millis_marker, unix_ms};
@@ -36,7 +37,7 @@ mod retry;
 mod samples;
 mod device_catalog;
 mod device_initializer;
-mod aec_timing;
+pub(crate) mod aec_timing;
 mod bridge_source_io;
 mod bridge_playback_ack;
 mod bridge_source_startup;

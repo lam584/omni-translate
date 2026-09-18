@@ -174,6 +174,42 @@ fn parse_bridge_pid(raw: &str) -> Result<u32, String> {
         .map_err(|error| format!("bridge.stale-pid-invalid: {error}"))
 }
 
+pub(crate) struct ManagedBridgePidAuthority {
+    path: PathBuf,
+    claimed_path: PathBuf,
+}
+
+impl ManagedBridgePidAuthority {
+    pub(crate) fn claim(runtime_root: &str, managed_pid: u32) -> Result<Option<Self>, String> {
+        let path = bridge_pid_path(runtime_root);
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.to_string()),
+        };
+        if parse_bridge_pid(&raw)? != managed_pid {
+            return Ok(None);
+        }
+        let claimed_path = path.with_extension(format!("pid.managed-stop-{managed_pid}"));
+        fs::rename(&path, &claimed_path)
+            .map_err(|error| format!("bridge.managed-pid-authority-claim-failed: {error}"))?;
+        Ok(Some(Self { path, claimed_path }))
+    }
+
+    pub(crate) fn release(self) -> Result<(), String> {
+        fs::remove_file(&self.claimed_path)
+            .map_err(|error| format!("bridge.managed-pid-authority-release-failed: {error}"))
+    }
+
+    pub(crate) fn restore(self) -> Result<(), String> {
+        if self.path.exists() {
+            return Err("bridge.managed-pid-authority-restore-conflict".to_string());
+        }
+        fs::rename(&self.claimed_path, &self.path)
+            .map_err(|error| format!("bridge.managed-pid-authority-restore-failed: {error}"))
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum StaleBridgeProcessAction {
     RemovePidFile,

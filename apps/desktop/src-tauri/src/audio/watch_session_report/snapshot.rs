@@ -332,20 +332,33 @@ fn normalize_final_pipeline_timestamps(cue: &mut WatchCueComparisonRuntime) {
     }
     if !published.is_empty() && published == rendered {
         // An equivalent final revision can inherit a committed visible receipt
-        // from a superseded revision. The donor keeps the real render event and
-        // its original timestamp; the selected final revision has no local
-        // render event of its own. Anchor that revision's first-stage pipeline
-        // at publication confirmation so its derived stage order remains
-        // monotonic without rewriting the authoritative donor evidence.
-        let inherited_render_receipt = cue.rendered_first_at_ms.is_some()
-            && !cue.events.iter().any(|event| event.stage == "render");
-        if inherited_render_receipt {
-            if let Some(published_first) = cue.published_first_at_ms {
-                cue.rendered_first_at_ms = Some(
-                    cue.rendered_first_at_ms
-                        .unwrap_or(published_first)
-                        .max(published_first),
-                );
+        // from a superseded revision. Keep the donor's authoritative event and
+        // timestamp untouched, but do not let that inherited timestamp precede
+        // the active revision's source/publish stages. If this revision has its
+        // own visible render event, prefer its first event at or after the active
+        // pipeline floor; otherwise anchor the inherited receipt at that floor.
+        let active_pipeline_floor = cue
+            .source_at_ms
+            .into_iter()
+            .chain(cue.published_first_at_ms)
+            .max();
+        if let (Some(rendered_first), Some(active_pipeline_floor)) =
+            (cue.rendered_first_at_ms, active_pipeline_floor)
+        {
+            if rendered_first < active_pipeline_floor {
+                let active_rendered_first = cue
+                    .events
+                    .iter()
+                    .filter(|event| {
+                        event.stage == "render"
+                            && event.accepted
+                            && event.visible == Some(true)
+                            && event.elapsed_ms >= active_pipeline_floor
+                    })
+                    .map(|event| event.elapsed_ms)
+                    .min();
+                cue.rendered_first_at_ms =
+                    Some(active_rendered_first.unwrap_or(active_pipeline_floor));
             }
         }
         if let Some(published_final) = cue.published_final_at_ms {

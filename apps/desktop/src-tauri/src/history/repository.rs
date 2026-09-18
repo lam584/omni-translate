@@ -123,6 +123,17 @@ pub(super) struct AudioCueSegmentRead {
 }
 
 impl HistoryRepository {
+    pub(super) fn delete_cue(&self, session_id: &str, cue_id: &str) -> Result<(), String> {
+        let connection = self.open()?;
+        connection
+            .execute(
+                "DELETE FROM subtitle_cues WHERE session_id = ?1 AND cue_id = ?2",
+                params![session_id, cue_id],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
     pub(super) fn ended_session_count_at(database_path: &Path) -> Result<i64, String> {
         if !database_path.exists() {
             return Ok(0);

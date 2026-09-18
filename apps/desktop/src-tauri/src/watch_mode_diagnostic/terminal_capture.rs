@@ -1,8 +1,10 @@
 use super::*;
 
 mod immutable_json;
+mod report_writer;
 
 pub(super) use immutable_json::write_json_immutable;
+pub(super) use report_writer::write_report_atomic;
 pub(super) fn start_diagnostic_audio_route(
     app: &AppHandle,
     run_marker: &str,
@@ -386,42 +388,6 @@ async fn wait_for_input_complete_marker(
     }
 }
 
-fn provider_terminal_phase_reached(state: &AudioStateStore) -> Result<bool, String> {
-    state.strict_watch_session_finished_received()
-}
-
-#[cfg(test)]
-mod provider_terminal_phase_tests {
-    use super::*;
-    use crate::audio::state::RouteInputCompletionEvidence;
-
-    #[test]
-    fn session_finished_completes_provider_phase_before_playback_owner_join() {
-        let state = AudioStateStore::new();
-        state
-            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
-            .unwrap();
-        state.record_strict_watch_test_session_updated().unwrap();
-        state.record_strict_watch_provider_append(320).unwrap();
-        state.record_strict_watch_provider_input_closed().unwrap();
-        state.record_strict_watch_session_finish_sent().unwrap();
-        state
-            .record_strict_watch_response_audio_done("response")
-            .unwrap();
-        state
-            .record_strict_watch_session_finished_received()
-            .unwrap();
-        let (_owner_result_tx, owner_result_rx) =
-            std::sync::mpsc::sync_channel::<Result<RouteInputCompletionEvidence, String>>(1);
-
-        assert!(provider_terminal_phase_reached(&state).unwrap());
-        assert!(matches!(
-            owner_result_rx.try_recv(),
-            Err(std::sync::mpsc::TryRecvError::Empty)
-        ));
-    }
-}
-
 async fn run_evidence_driven_capture(
     app: AppHandle,
     config: &StrictPaidTerminalConfig,
@@ -454,10 +420,16 @@ async fn run_evidence_driven_capture(
         ));
     };
     recorder.push(
-        "mediaPlaybackCompleted",
+        if marker.disposition == "completed" {
+            "mediaPlaybackCompleted"
+        } else {
+            "mediaPlaybackFailed"
+        },
         media_playback_completed_at_unix_ms,
         json!({
             "authority": "runner-input-complete-marker",
+            "disposition": marker.disposition,
+            "failureReason": marker.failure_reason,
             "authoritativeTransformedReferenceFrames": marker.authoritative_transformed_reference_frames,
             "boundedCaptureGraceFrames": marker.bounded_capture_grace_frames,
             "maxExternalAudioSamples": marker.max_external_audio_samples,
@@ -471,6 +443,7 @@ async fn run_evidence_driven_capture(
             "markerCompletedAtUnixMs": marker.completed_at_unix_ms,
         }),
     );
+    let runner_failure = marker.failure_reason.clone();
     let provider_app = app.clone();
     let (provider_result_tx, provider_result_rx) = std::sync::mpsc::sync_channel(1);
     let provider_task = tauri::async_runtime::spawn_blocking(move || {
@@ -478,11 +451,13 @@ async fn run_evidence_driven_capture(
         let result = finish_strict_watch_provider_after_input_complete(&provider_app, &state);
         let _ = provider_result_tx.send(result);
     });
-    let provider_phase_cap = config
-        .provider_shutdown_timeout
-        .saturating_add(PROVIDER_FINISH_OBSERVATION_GRACE);
     let mut input_completion = None;
     let provider_phase_started = Instant::now();
+    let mut provider_observer = super::provider_terminal_observer::ProviderTerminalObserver::new(
+        provider_phase_started,
+        config.provider_shutdown_timeout,
+        PROVIDER_FINISH_OBSERVATION_GRACE,
+    );
     loop {
         match provider_result_rx.try_recv() {
             Ok(Ok(evidence)) => {
@@ -502,26 +477,19 @@ async fn run_evidence_driven_capture(
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
-        match provider_terminal_phase_reached(&app.state::<AudioStateStore>()) {
+        match provider_observer.observe_with(Instant::now(), || super::provider_terminal_observer::terminal_phase(&app.state::<AudioStateStore>())) {
             Ok(true) => break,
             Ok(false) => {}
-            Err(error) => {
-                return Err(strict_capture_failure(
-                    recorder,
-                    "provider-finish-authority-invalid",
-                    error,
-                ));
-            }
-        }
-        if provider_phase_started.elapsed() >= provider_phase_cap {
-            return Err(strict_capture_failure(
+            Err(super::provider_terminal_observer::ProviderTerminalObservationError::Timeout(phase)) => return Err(strict_capture_failure(
                 recorder,
                 "provider-finish-timeout",
                 format!(
-                    "Provider session.finished authority was not observed within {}ms",
-                    provider_phase_cap.as_millis()
+                    "Provider terminal {phase} phase did not complete within {}ms",
+                    config.provider_shutdown_timeout.saturating_add(PROVIDER_FINISH_OBSERVATION_GRACE).as_millis()
                 ),
-            ));
+            )),
+            Err(super::provider_terminal_observer::ProviderTerminalObservationError::Authority(error)) => return Err(strict_capture_failure(recorder, "provider-finish-authority-invalid", error)),
+            Err(super::provider_terminal_observer::ProviderTerminalObservationError::ProtocolOrder) => return Err(strict_capture_failure(recorder, "provider-finish-protocol-order-invalid", "session.finished authority was observed before session.finish")),
         }
         tokio::time::sleep(INPUT_COMPLETE_POLL).await;
     }
@@ -715,7 +683,21 @@ async fn run_evidence_driven_capture(
             "sha256": report_receipt.sha256,
         }),
     );
-    Ok(recorder)
+    finish_capture_for_runner_disposition(recorder, runner_failure)
+}
+
+pub(super) fn finish_capture_for_runner_disposition(
+    recorder: TerminalAuthorityRecorder,
+    runner_failure: Option<String>,
+) -> Result<TerminalAuthorityRecorder, StrictCaptureFailure> {
+    match runner_failure {
+        Some(reason) => Err(strict_capture_failure(
+            recorder,
+            "runner-input-failed",
+            format!("runner declared input failed/incomplete after graceful Provider drain: {reason}"),
+        )),
+        None => Ok(recorder),
+    }
 }
 
 async fn await_provider_owner_after_playback_drain(
@@ -896,35 +878,4 @@ pub(super) fn write_terminal_authority_immutable(
     write_json_immutable(authority_path, "Terminal authority", authority)
         .map(|_| ())
         .map_err(|error| error.to_string())
-}
-
-pub(super) fn write_report_atomic(
-    report_path: &str,
-    report: &crate::audio::contracts::WatchSessionReportRuntime,
-) -> Result<(), String> {
-    let path = std::path::PathBuf::from(report_path);
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("Watch report path has no file name: {report_path}"))?;
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let temporary_path = path.with_file_name(format!(
-        ".{file_name}.{}.tmp",
-        Uuid::new_v4().simple()
-    ));
-    let result = (|| -> Result<(), String> {
-        let json = serde_json::to_vec_pretty(report).map_err(|error| error.to_string())?;
-        std::fs::write(&temporary_path, json).map_err(|error| error.to_string())?;
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|error| error.to_string())?;
-        }
-        std::fs::rename(&temporary_path, &path).map_err(|error| error.to_string())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary_path);
-    }
-    result
 }

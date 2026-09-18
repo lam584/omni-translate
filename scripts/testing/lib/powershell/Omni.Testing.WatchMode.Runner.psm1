@@ -22,6 +22,7 @@ Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.PlatformOperation
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.EvidenceCollection.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.ExecutionContext.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.RunLifecycle.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.InputCompletion.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.PreDesktopPhase.psm1') -Force -DisableNameChecking
 function Invoke-Step {
   param(
@@ -52,36 +53,6 @@ function Get-WatchModeRestartQuietWindow {
     afterSeconds = if ($enabled) { $RestartAfterSeconds } else { 0 }
     durationSeconds = if ($enabled) { $RestartQuietSeconds } else { 0 }
   }
-}
-function Write-WatchModeInputCompleteMarker {
-  param(
-    [Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$RunMarker,
-    [Parameter(Mandatory = $true)][string]$CellId, [Parameter(Mandatory = $true)][string]$LeaseId,
-    [Parameter(Mandatory = $true)]$Playback
-  )
-  $referencePath = [string]$Playback.referencePcmPath
-  if (-not (Test-Path -LiteralPath $referencePath -PathType Leaf)) { throw "input-complete requires the authoritative transformed reference PCM: $referencePath" }
-  $referenceBytes = (Get-Item -LiteralPath $referencePath).Length
-  if ($referenceBytes -le 0 -or ($referenceBytes % 2) -ne 0) { throw "input-complete reference PCM is not whole non-empty 16-bit mono frames: $referencePath" }
-  $referenceFrames = [int64]($referenceBytes / 2)
-  $maxSamples = [int64]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES
-  $captureGraceFrames = $maxSamples - $referenceFrames
-  if ($captureGraceFrames -lt 0) { throw "input-complete reference frames exceed the signed Provider sample lease" }
-  $completedAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-  Write-OmniImmutableJson -LiteralPath $Path -Value ([pscustomobject]@{
-    schemaVersion = 1
-    artifactKind = 'watch-mode-input-complete'
-    runMarker = $RunMarker
-    cellId = $CellId
-    leaseId = $LeaseId
-    mediaPlaybackCompletedAtUnixMs = [int64]$Playback.finishedAtMs
-    signaledAtUnixMs = $completedAtUnixMs
-    completedAtUnixMs = $completedAtUnixMs
-    authoritativeTransformedReferenceFrames = $referenceFrames
-    boundedCaptureGraceFrames = $captureGraceFrames
-    maxExternalAudioSamples = $maxSamples
-  })
-  return $completedAtUnixMs
 }
 function Invoke-WatchModeRun {
   param(
@@ -192,6 +163,28 @@ function Invoke-WatchModeRun {
           }
           if ($StrictPaidAuthority) {
             if ($playbackStep.status -ne 'passed') {
+              Invoke-Step -State $state "signal identity-bound failed input completion" -Phase playback {
+                Write-WatchModeFailedInputCompleteMarker -Path $InputCompletePath -RunMarker $runMarker `
+                  -CellId $MatrixCellId -LeaseId ([string]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID) `
+                  -OutputDirectory $outputDir -FailureReason ([string]$playbackStep.error.message)
+              } | Out-Null
+              $failedReportPath = Join-Path $outputDir 'watch-session-report.json'
+              $failedReportDeadlineUtc = Get-WatchSessionReportDeadlineUtc `
+                -LaunchedAtUtc ([DateTime]$desktopProcess.data.launchedAtUtc) `
+                -ReadyTimeoutSeconds $SessionReadyTimeoutSeconds `
+                -AutoStopAfterSeconds $CellHardWatchdogSeconds `
+                -CompletionGraceSeconds 30
+              try {
+                Wait-WatchSessionReportAndDesktopExit -Path $failedReportPath `
+                  -ProcessLease $desktopProcess.data.processLease -DeadlineUtc $failedReportDeadlineUtc `
+                  -TerminalAuthorityPath $TerminalAuthorityPath -RunMarker $runMarker -CellId $MatrixCellId `
+                  -LeaseId ([string]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID) `
+                  -SourceHeadCommit ([string]$env:OMNI_WATCH_MODE_SOURCE_HEAD_COMMIT) `
+                  -RuntimeBundleDigest ([string]$env:OMNI_WATCH_MODE_RUNTIME_BUNDLE_DIGEST) | Out-Null
+                throw 'failed input unexpectedly produced a successful terminal authority'
+              } catch {
+                if (-not (Test-WatchModeExpectedFailedInputTerminalError -Message $_.Exception.Message)) { throw }
+              }
               throw "input-complete cannot be signaled because media playback failed"
             }
             Invoke-Step -State $state "signal identity-bound input completion" -Phase playback {
@@ -358,4 +351,4 @@ function Invoke-WatchModeRun {
   Write-Output $outputDir
   if ($runException) { throw $runException }
 }
-Export-ModuleMember -Function @('Invoke-WatchModeRun', 'Get-WatchModeRestartQuietWindow', 'Write-WatchModeInputCompleteMarker')
+Export-ModuleMember -Function @('Invoke-WatchModeRun', 'Get-WatchModeRestartQuietWindow')

@@ -16,6 +16,7 @@ import {
   assertMatrixExternalProviderBudget,
   buildCellExternalProviderBudget,
   buildMatrixExternalProviderBudget,
+  buildProviderInputCompletionEvidence,
   isAbsoluteEvidencePathForFixedFile,
   reserveStrictPaidCellInputSamples,
   replayProviderInputPrefilter,
@@ -173,6 +174,7 @@ function writePrefilterFixture(runDirectory, samples, amplitude = 0.25) {
   const replay = replayProviderInputPrefilter({
     filePath: path.join(runDirectory, PROVIDER_INPUT_PREFILTER_FILE),
     maxSamples: inputCeilingSamplesForMode('process-exclusion'),
+    modelProtocolProfileIdentity: MODEL_PROTOCOL_PROFILE_IDENTITY,
   });
   fs.writeFileSync(
     path.join(runDirectory, 'provider-input-16k-mono.pcm'),
@@ -274,6 +276,16 @@ function createRunDirectory({
     finalized: true,
     terminalReason: 'worker-completed',
   };
+  fs.writeFileSync(path.join(runDirectory, 'input-complete.json'), JSON.stringify({
+    schemaVersion: 1,
+    artifactKind: 'watch-mode-input-complete',
+    runMarker: MARKER,
+    cellId: CELL_ID,
+    leaseId: identity.leaseId,
+    mediaPlaybackCompletedAtUnixMs: new Date(2026, 7, 13, 1, 2, 5, 0).getTime(),
+    signaledAtUnixMs: new Date(2026, 7, 13, 1, 2, 5, 100).getTime(),
+    completedAtUnixMs: new Date(2026, 7, 13, 1, 2, 5, 200).getTime(),
+  }), 'utf8');
   fs.writeFileSync(
     path.join(runDirectory, 'provider-input-budget-ledger.json'),
     `${JSON.stringify(finalized)}\n`,
@@ -419,10 +431,148 @@ test('actual provider input uses sent-sample trace summaries instead of the 90-s
   assert.deepEqual(actualProviderInputSamplesFromLog(log), {
     samples: 2_016_000,
     summaryCount: 2,
+    violations: [],
   });
 });
 
-test('prefilter replay reproduces f32 resampling, RMS gating, and exactly 40 silence-grace chunks', () => {
+test('rewritten trace evidence is deduplicated by stable eventId without changing legacy lines', () => {
+  const unique = Array.from({ length: 67 }, (_, index) => ({
+    eventId: 'call:audio:' + (index + 1),
+    samples: 32_000,
+  }));
+  unique.push({ eventId: 'call:audio:68', samples: 28_800 });
+  const rewritten = unique.flatMap(({ eventId, samples }) => {
+    const line = JSON.stringify({
+      eventId,
+      event: 'ws.send.input_audio_buffer.append.summary',
+      payload: { resampledSamplesTotal: samples },
+    });
+    return [line, `2026-09-07 19:00:00.000 [DEBUG] [model-trace] source - summary | ${line}  (42ms) sid=test`];
+  });
+  assert.deepEqual(actualProviderInputSamplesFromLog(rewritten.join('\n')), {
+    samples: 2_172_800,
+    summaryCount: 68,
+    violations: [],
+  });
+
+  const legacy = '{"event":"ws.send.input_audio_buffer.append.summary","payload":{"resampledSamplesTotal":320}}';
+  assert.deepEqual(actualProviderInputSamplesFromLog([legacy, legacy].join('\n')), {
+    samples: 640,
+    summaryCount: 2,
+    violations: [],
+  });
+});
+
+test('conflicting rewritten trace evidence fails closed', () => {
+  const first = JSON.stringify({
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: { resampledSamplesTotal: 32_000 },
+  });
+  const conflicting = JSON.stringify({
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: { resampledSamplesTotal: 1 },
+  });
+  assert.deepEqual(actualProviderInputSamplesFromLog([first, conflicting].join('\n')), {
+    samples: 32_000,
+    summaryCount: 1,
+    violations: ['conflicting model-trace evidence for eventId call-1:audio:1'],
+  });
+});
+
+test('same-sample rewrites with conflicting batch content fail closed', () => {
+  const base = {
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: {
+      resampledSamplesTotal: 32_000,
+      rawBytesTotal: 64_000,
+      chunks: { count: 100, firstChunkCount: 1, lastChunkCount: 100 },
+    },
+  };
+  const conflicting = structuredClone(base);
+  conflicting.payload.rawBytesTotal = 1;
+  conflicting.payload.chunks = { count: 100, firstChunkCount: 900, lastChunkCount: 999 };
+  const result = actualProviderInputSamplesFromLog(
+    [JSON.stringify(base), JSON.stringify(conflicting)].join('\n'),
+  );
+  assert.deepEqual(result.violations, [
+    'conflicting model-trace evidence for eventId call-1:audio:1',
+  ]);
+});
+
+test('duplicate eventId evidence missing samples fails closed instead of being skipped', () => {
+  const first = {
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: { resampledSamplesTotal: 32_000 },
+  };
+  const missingSamples = {
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: { rawBytesTotal: 1 },
+  };
+  const result = actualProviderInputSamplesFromLog(
+    [JSON.stringify(first), JSON.stringify(missingSamples)].join('\n'),
+  );
+  assert.equal(result.samples, 32_000);
+  assert.equal(result.summaryCount, 1);
+  assert.deepEqual(result.violations, [
+    'model-trace evidence for eventId call-1:audio:1 is missing valid resampledSamplesTotal',
+    'conflicting model-trace evidence for eventId call-1:audio:1',
+  ]);
+});
+
+test('semantic duplicate evidence ignores JSON object field order', () => {
+  const first = {
+    eventId: 'call-1:audio:1',
+    callId: 'call-1',
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: {
+      resampledSamplesTotal: 32_000,
+      rawBytesTotal: 64_000,
+      chunks: { count: 100, firstChunkCount: 1, lastChunkCount: 100 },
+    },
+  };
+  const reordered = {
+    payload: {
+      chunks: { lastChunkCount: 100, firstChunkCount: 1, count: 100 },
+      rawBytesTotal: 64_000,
+      resampledSamplesTotal: 32_000,
+    },
+    event: 'ws.send.input_audio_buffer.append.summary',
+    callId: 'call-1',
+    eventId: 'call-1:audio:1',
+  };
+  assert.deepEqual(
+    actualProviderInputSamplesFromLog(
+      [JSON.stringify(first), JSON.stringify(reordered)].join('\n'),
+    ),
+    { samples: 32_000, summaryCount: 1, violations: [] },
+  );
+});
+
+test('stable evidence ids remain distinct across calls', () => {
+  const lines = ['call-1', 'call-2'].map((callId) => JSON.stringify({
+    eventId: callId + ':audio:1',
+    callId,
+    event: 'ws.send.input_audio_buffer.append.summary',
+    payload: { resampledSamplesTotal: 32_000 },
+  }));
+  assert.deepEqual(actualProviderInputSamplesFromLog(lines.join('\n')), {
+    samples: 64_000,
+    summaryCount: 2,
+    violations: [],
+  });
+});
+
+test('prefilter replay reproduces f32 resampling and preserves the LiveTranslate timeline after first audible chunk', () => {
   const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-prefilter-replay-'));
   try {
     const chunks = [0, 0.25, ...Array(41).fill(0)].map((amplitude) => {
@@ -437,19 +587,23 @@ test('prefilter replay reproduces f32 resampling, RMS gating, and exactly 40 sil
     });
     const filePath = path.join(runDirectory, PROVIDER_INPUT_PREFILTER_FILE);
     fs.writeFileSync(filePath, Buffer.concat([PROVIDER_INPUT_PREFILTER_MAGIC, ...chunks]));
-    const replay = replayProviderInputPrefilter({ filePath, maxSamples: 100_000 });
+    const replay = replayProviderInputPrefilter({
+      filePath,
+      maxSamples: 100_000,
+      modelProtocolProfileIdentity: MODEL_PROTOCOL_PROFILE_IDENTITY,
+    });
     assert.equal(replay.authority.rawInput.chunkCount, 43);
     assert.deepEqual(replay.authority.decisions, {
       audibleChunks: 1,
       silenceGraceChunks: 40,
-      skippedSilenceChunks: 2,
+      skippedSilenceChunks: 1,
       emptyResampleChunks: 0,
       budgetRejectedChunks: 0,
-      acceptedChunks: 41,
-      acceptedSamples: 13_120,
+      acceptedChunks: 42,
+      acceptedSamples: 13_440,
     });
     assert.equal(replay.expectedProviderPcm.readInt16LE(0), 8191);
-    assert.equal(replay.expectedProviderPcm.length, 13_120 * 2);
+    assert.equal(replay.expectedProviderPcm.length, 13_440 * 2);
   } finally {
     fs.rmSync(runDirectory, { recursive: true, force: true });
   }
@@ -888,4 +1042,80 @@ test('matrix ledger binds four cells, actual samples, and zero auxiliary calls',
   const duplicateLeaseRejected = buildMatrixExternalProviderBudget(duplicateLease);
   assert.equal(duplicateLeaseRejected.passed, false);
   assert.match(duplicateLeaseRejected.violations.join('; '), /duplicate provider leaseId/);
+});
+
+
+test('provider input completion fails closed when the first ceiling precedes media completion', () => {
+  const runDirectory = createRunDirectory({ extraLog: '2026-08-13 01:02:04.500 [WARN] [omni] - - [AUDIO] strict provider input ceiling reached cleanly before append: nextSamples=320 shutdownRequested=false discardedQueuedChunks=0 inputDisconnected=false' });
+  try {
+    const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
+    assert.equal(budget.passed, false);
+    assert.equal(budget.providerInputCompletion.status, 'failed');
+    assert.equal(budget.providerInputCompletion.stableErrorCode, 'watch.provider-input-truncated');
+    assert.equal(budget.providerInputCompletion.ceilingBeforeMediaCompletion, true);
+  } finally { fs.rmSync(runDirectory, { recursive: true, force: true }); }
+});
+
+test('provider input completion accepts a ceiling at or after media completion', () => {
+  for (const timestamp of ['01:02:05.000', '01:02:05.001']) {
+    const runDirectory = createRunDirectory({ extraLog: `2026-08-13 ${timestamp} [WARN] [omni] - - [AUDIO] strict provider input ceiling reached cleanly before append: nextSamples=320` });
+    try {
+      const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
+      assert.equal(budget.providerInputCompletion.status, 'passed', budget.violations.join('; '));
+    } finally { fs.rmSync(runDirectory, { recursive: true, force: true }); }
+  }
+});
+
+test('provider input completion rejects malformed ceiling timestamps and missing input-complete authority', () => {
+  for (const mutate of [
+    (runDirectory) => fs.appendFileSync(path.join(runDirectory, 'app.log'), '\nnot-a-time [AUDIO] strict provider input ceiling reached cleanly before append: nextSamples=320', 'utf8'),
+    (runDirectory) => {
+      fs.appendFileSync(path.join(runDirectory, 'app.log'), '\n2026-08-13 01:02:04.500 [AUDIO] strict provider input ceiling reached cleanly before append: nextSamples=320', 'utf8');
+      fs.rmSync(path.join(runDirectory, 'input-complete.json'));
+    },
+  ]) {
+    const runDirectory = createRunDirectory();
+    try {
+      mutate(runDirectory);
+      const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
+      assert.equal(budget.passed, false);
+      assert.equal(budget.providerInputCompletion.status, 'inconclusive');
+      assert.equal(budget.providerInputCompletion.stableErrorCode, 'watch.provider-input-truncated');
+    } finally { fs.rmSync(runDirectory, { recursive: true, force: true }); }
+  }
+});
+
+test('provider input completion is marker scoped and preserves earliest duplicate ceiling observation', () => {
+  const runDirectory = createRunDirectory({ extraLog: [
+    '2026-08-13 01:02:06.500 [WARN] [omni] - - [AUDIO] strict provider input ceiling reached cleanly before append: nextSamples=320',
+    '2026-08-13 01:02:05.500 [WARN] [omni] - - [AUDIO] strict provider input ceiling reached cleanly before append: nextSamples=320',
+  ].join('\n') });
+  try {
+    fs.writeFileSync(path.join(runDirectory, 'app.log'), [
+      '2026-08-13 00:00:00.000 [AUDIO] strict provider input ceiling reached cleanly before append: nextSamples=320',
+      fs.readFileSync(path.join(runDirectory, 'app.log'), 'utf8'),
+    ].join('\n'), 'utf8');
+    const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
+    assert.equal(budget.providerInputCompletion.status, 'passed');
+    assert.equal(budget.providerInputCompletion.observationCount, 2);
+    assert.equal(budget.providerInputCompletion.firstCeilingObservedAtUnixMs, new Date(2026, 7, 13, 1, 2, 5, 500).getTime());
+  } finally { fs.rmSync(runDirectory, { recursive: true, force: true }); }
+});
+
+
+test('provider input completion does not pass rejected chunks when the ceiling log is truncated', () => {
+  const evidence = buildProviderInputCompletionEvidence({
+    scopedLog: '',
+    inputComplete: {
+      schemaVersion: 1,
+      artifactKind: 'watch-mode-input-complete',
+      mediaPlaybackCompletedAtUnixMs: 1000,
+      signaledAtUnixMs: 1001,
+      completedAtUnixMs: 1002,
+    },
+    rejectedChunks: 1,
+  });
+  assert.equal(evidence.status, 'inconclusive');
+  assert.equal(evidence.passed, false);
+  assert.equal(evidence.stableErrorCode, 'watch.provider-input-truncated');
 });

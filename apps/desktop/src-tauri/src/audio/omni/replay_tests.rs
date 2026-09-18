@@ -133,6 +133,8 @@ struct ReplayHarness {
     shared: Arc<Mutex<ScriptedSharedState>>,
     connector: ScriptedConnector,
     provider: ProviderDraftInput,
+    provider_input_budget: ProviderInputBudget,
+    _authority_tempdir: Option<tempfile::TempDir>,
     audio_mode: RealtimeAudioMode,
     output_mode: OmniOutputMode,
     subtitle_translate_active: bool,
@@ -163,6 +165,8 @@ impl ReplayHarness {
             },
             shared,
             provider: fixture_provider(),
+            provider_input_budget: ProviderInputBudget::disabled_for_test(),
+            _authority_tempdir: None,
             audio_mode,
             output_mode: OmniOutputMode::TextAndAudio,
             subtitle_translate_active: false,
@@ -173,6 +177,44 @@ impl ReplayHarness {
             _readiness_rx: readiness_rx,
             app,
         }
+    }
+
+    fn new_with_strict_media_end_authority(
+        audio_mode: RealtimeAudioMode,
+        authoritative_reference_frames: u64,
+        input_sample_rate_hz: u32,
+        media_sha256: &str,
+    ) -> Self {
+        let mut harness = Self::new(audio_mode, Vec::new());
+        let authority_tempdir = tempfile::tempdir().expect("strict media-end tempdir");
+        let provider = ProviderInputBudget::strict_provider_for_test();
+        let provider_input_budget = ProviderInputBudget::strict_with_media_end_for_test(
+            &provider,
+            &authority_tempdir.path().join("provider-input-ledger.json"),
+            authoritative_reference_frames,
+            input_sample_rate_hz,
+            media_sha256,
+        )
+        .expect("strict media-end authority must parse through production path");
+        harness.provider = provider;
+        harness.provider_input_budget = provider_input_budget;
+        harness._authority_tempdir = Some(authority_tempdir);
+        harness
+    }
+
+    fn new_with_strict_missing_media_end_authority(audio_mode: RealtimeAudioMode) -> Self {
+        let mut harness = Self::new(audio_mode, Vec::new());
+        let authority_tempdir = tempfile::tempdir().expect("strict missing media-end tempdir");
+        let provider = ProviderInputBudget::strict_provider_for_test();
+        let provider_input_budget = ProviderInputBudget::strict_for_test(
+            &provider,
+            &authority_tempdir.path().join("provider-input-ledger.json"),
+        )
+        .expect("strict budget without media-end authority must parse through production path");
+        harness.provider = provider;
+        harness.provider_input_budget = provider_input_budget;
+        harness._authority_tempdir = Some(authority_tempdir);
+        harness
     }
 
     fn handle(&self) -> MockHandle {
@@ -289,11 +331,9 @@ impl ReplayHarness {
         );
 
         let glossary = GlossaryContext::default();
-        let provider_input_budget = ProviderInputBudget::disabled_for_test();
         let poll = OmniSocketEventProcessor::poll(
             OmniSocketEventState {
                 socket,
-                trace_call,
                 reconnect_count: slice.reconnect_count,
                 pending_audio_buffer: std::mem::take(&mut slice.pending_audio_buffer),
                 active_voice: slice.active_voice.clone(),
@@ -323,6 +363,7 @@ impl ReplayHarness {
                 audio_samples_since_commit: slice.audio_samples_since_commit,
                 manual_turn_audio_after_response: slice.manual_turn_audio_after_response,
             },
+            &mut trace_call,
             OmniSocketEventContext {
                 app: &app,
                 store: &store,
@@ -340,7 +381,7 @@ impl ReplayHarness {
                 readiness_sent: &self.readiness_sent,
                 readiness_tx: &self.readiness_tx,
                 provider: &self.provider,
-                provider_input_budget: &provider_input_budget,
+                provider_input_budget: &self.provider_input_budget,
                 instructions: "",
                 glossary: &glossary,
                 audio_mode: self.audio_mode,

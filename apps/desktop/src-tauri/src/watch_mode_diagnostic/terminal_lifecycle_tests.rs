@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use super::{
+    finish_capture_for_runner_disposition,
     local_playback_drain_authority, local_playback_drain_estimate, parse_input_complete_marker,
     strict_paid_terminal_config_with_environment, ExpectedInputCompleteIdentity,
     PlaybackDrainConfirmation,
@@ -96,6 +97,7 @@ fn input_complete_marker_accepts_only_exact_run_cell_and_lease_identity() {
     )
     .expect("exact marker should be accepted");
     assert_eq!(accepted.completed_at_unix_ms, 1_777_777_777_777);
+    assert_eq!(accepted.disposition, "completed");
 
     for field in ["runMarker", "cellId", "leaseId"] {
         let mut mismatched = marker.clone();
@@ -107,6 +109,69 @@ fn input_complete_marker_accepts_only_exact_run_cell_and_lease_identity() {
         .expect_err("identity mismatch must fail closed");
         assert!(error.contains(field));
     }
+
+    let mut failed = marker.clone();
+    failed["schemaVersion"] = json!(2);
+    failed["disposition"] = json!("failed-incomplete");
+    failed["failureReason"] = json!("render underrun");
+    let accepted_failed = parse_input_complete_marker(
+        serde_json::to_string(&failed).unwrap().as_bytes(),
+        &identity,
+    )
+    .expect("identity-bound failed input must remain eligible for graceful terminal drain");
+    assert_eq!(accepted_failed.disposition, "failed-incomplete");
+    assert_eq!(accepted_failed.failure_reason.as_deref(), Some("render underrun"));
+
+    failed["failureReason"] = json!("");
+    assert!(parse_input_complete_marker(
+        serde_json::to_string(&failed).unwrap().as_bytes(),
+        &identity,
+    )
+    .expect_err("failed marker without a reason must fail closed")
+    .contains("requires failureReason"));
+
+    let mut version_confused = marker.clone();
+    version_confused["disposition"] = json!("failed-incomplete");
+    version_confused["failureReason"] = json!("render underrun");
+    assert!(parse_input_complete_marker(
+        serde_json::to_string(&version_confused).unwrap().as_bytes(),
+        &identity,
+    )
+    .expect_err("v1 readers must never admit the new failed-incomplete disposition")
+    .contains("unsupported input-complete schema/disposition"));
+}
+
+#[test]
+fn failed_input_can_only_become_runner_failed_after_the_shared_terminal_drain_path() {
+    use super::terminal_authority::{TerminalAuthorityRecorder, TerminalProducerIdentity};
+
+    let identity = ExpectedInputCompleteIdentity {
+        run_marker: "run-1".to_string(),
+        cell_id: "cell-1".to_string(),
+        lease_id: "lease-1".to_string(),
+    };
+    let producer = TerminalProducerIdentity {
+        process_id: 7,
+        start_time_utc_ticks: 8,
+        started_at_unix_ms: 9,
+        executable_sha256: "a".repeat(64),
+        source_head_commit: "b".repeat(40),
+        runtime_bundle_digest: "c".repeat(64),
+        launch_id: "12345678-1234-1234-1234-123456789abc".to_string(),
+    };
+    let recorder = TerminalAuthorityRecorder::new(identity, producer, 10);
+    let (recorder, code, error) = match finish_capture_for_runner_disposition(
+        recorder,
+        Some("render underrun".to_string()),
+    ) {
+        Err(failure) => failure,
+        Ok(_) => panic!("failed-incomplete may never return the completed recorder"),
+    };
+    assert_eq!(code, "runner-input-failed");
+    assert!(error.contains("after graceful Provider drain"));
+    let authority = recorder.fail(11, code, error);
+    assert_eq!(authority.status, "failed");
+    assert_eq!(authority.error_code.as_deref(), Some("runner-input-failed"));
 }
 
 #[test]

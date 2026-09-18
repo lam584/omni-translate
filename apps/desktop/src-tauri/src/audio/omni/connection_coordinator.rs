@@ -368,13 +368,10 @@ impl OmniConnectionCoordinator {
         error: tungstenite::Error,
         provider_input_budget: &ProviderInputBudget,
     ) -> Result<OmniReconnectState<C::Socket>, String> {
-        let err_str = error.to_string();
-        if err_str.contains("timed out")
-            || err_str.contains("WouldBlock")
-            || err_str.contains("10060")
-        {
+        if is_retryable_read_poll_error(&error) {
             return Ok(state);
         }
+        let err_str = error.to_string();
         store.watch_session_report.record_session_issue(
             "model",
             "provider-websocket-read-failed",
@@ -1391,7 +1388,6 @@ pub(super) struct OmniConnectedSession {
     /// The exact JSON value admitted and written to this socket. Consumers
     /// bind server `session.updated` to this value, never to a reconstruction.
     pub(super) session_update: Value,
-    pub(super) trace_call: crate::diagnostics::model_trace::ModelTraceCall,
     pub(super) session_started_at: SystemTime,
     pub(super) active_voice: String,
     pub(super) voice_fallback_applied: bool,
@@ -1417,9 +1413,8 @@ impl OmniConnectionCoordinator {
         speech_config: OmniSpeechConfig,
         provider_input_budget: &ProviderInputBudget,
         translated_pcm_authority: TranslatedPcmAuthority,
-        trace: ModelTraceRecorder,
+        trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall,
     ) -> Result<OmniConnectedSession, String> {
-        let mut trace_call = trace.call("omni.websocket_session");
         trace_call.input(
             "connect",
             json!({
@@ -1600,7 +1595,6 @@ impl OmniConnectionCoordinator {
         Ok(OmniConnectedSession {
             socket,
             session_update: session_cfg,
-            trace_call,
             session_started_at,
             active_voice,
             voice_fallback_applied,

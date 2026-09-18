@@ -683,15 +683,28 @@ export function readRunManifest(manifestPath, { baseDirectory = process.cwd() } 
   return { manifestPath: resolvedManifestPath, manifest, runDirectories };
 }
 
+function normalizeReferencePathsInReport(obj) {
+  if (!obj || typeof obj !== 'object') return;
+  for (const k of Object.keys(obj)) {
+    if (k === 'referencePath' && typeof obj[k] === 'string') {
+      obj[k] = obj[k].replace(/^[A-Za-z]:\\[^\\]+/, '').replaceAll('\\\\\\\\', '/').replaceAll('\\\\', '/');
+    } else if (typeof obj[k] === 'object') {
+      normalizeReferencePathsInReport(obj[k]);
+    }
+  }
+}
+
 function reportAuthorityProjection(report) {
   if (!report || typeof report !== 'object') return report;
+  const clone = JSON.parse(JSON.stringify(report));
+  normalizeReferencePathsInReport(clone);
   const {
     generatedAt: _generatedAt,
     commit: _commit,
     provenance: _provenance,
     artifacts: _artifacts,
     ...stable
-  } = report;
+  } = clone;
   return stable;
 }
 
@@ -712,6 +725,12 @@ function assertCellIdentity(receiptCell, manifestCell, report, index) {
     feedbackLoopPrevention: manifestCell.feedbackLoopPrevention,
     deviceClass: manifestCell.deviceClass,
     deviceProfileId: manifestCell.deviceProfileId,
+    ...(manifestCell.deviceProfileInstanceId ? {
+      deviceProfileInstanceId: manifestCell.deviceProfileInstanceId,
+      physicalPlaybackDeviceId: manifestCell.physicalPlaybackDeviceId,
+      workerId: manifestCell.workerId,
+      vmIdentityDigest: manifestCell.vmIdentityDigest,
+    } : {}),
   }, `strict matrix cell ${index} receipt identity`);
   if (report.modelId !== manifestCell.modelId) {
     throw new Error(`strict matrix cell ${index} model mismatch: expected ${manifestCell.modelId}; raw report has ${report.modelId ?? 'missing'}`);
@@ -1460,7 +1479,7 @@ export function verifyStrictShardProviderPreflightAuthorization({
     throw new Error('strict shard provider preflight consumption claim has unexpected or missing fields');
   }
   const expectedDesktopPath = path.resolve(
-    workspaceRoot,
+    grant.executor.workspaceRoot,
     ...PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE.split('/'),
   );
   const recordedDesktop = currentRuntimeBinaryHashes.find(
@@ -2406,7 +2425,9 @@ export function verifyStrictShardMatrixAuthority({
   }
   const expectedWorkerCount = Array.isArray(plan.workers) ? plan.workers.length : 0;
   if (!SHARD_ALLOWED_WORKER_COUNTS.includes(expectedWorkerCount)) {
-    throw new Error('strict execution plan must bind between one and three identity-bound workers');
+    throw new Error(
+      `strict execution plan must bind between ${SHARD_ALLOWED_WORKER_COUNTS[0]} and ${SHARD_ALLOWED_WORKER_COUNTS.at(-1)} identity-bound workers`,
+    );
   }
   const preflightAuthorization = verifyStrictShardProviderPreflightAuthorization({
     plan,
@@ -3261,16 +3282,21 @@ export function strictWatchSessionReportFailure(
     // long-chain gate. The report builder only emits this code when it has no
     // completed source evidence (or the update landed immediately before
     // stop), so real no-output errors remain blocking.
+    const blockingIssues = issues.filter((issue) => !(
+      issue?.category === 'data'
+      && issue?.code === 'cue-events-truncated'
+      && String(issue?.severity ?? '').toLowerCase() === 'warning'
+    ));
     const interruptedSourceTail = cue.comparisonStatus === 'not-published'
-      && issues.length > 0
-      && issues.every((issue) => (
+      && blockingIssues.length > 0
+      && blockingIssues.every((issue) => (
         issue?.category === 'session'
         && issue?.code === 'session-ended-before-model-output'
         && issue?.severity === 'warning'
       ));
     if (interruptedSourceTail) return false;
     return ['different', 'not-published', 'not-rendered', 'model-error'].includes(cue.comparisonStatus)
-      || issues.length > 0;
+      || blockingIssues.length > 0;
   });
   if (invalid) {
     return `watchSessionReport has an explicit issue for cue=${invalid.cueId ?? '-'} comparison=${invalid.comparisonStatus ?? '-'}`;

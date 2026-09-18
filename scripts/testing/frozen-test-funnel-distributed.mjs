@@ -6,6 +6,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { isMain, repoRoot } from '../lib/testing-common.mjs';
 import { currentGitProvenance } from './git-provenance.mjs';
 import { createVm3TestEnvironment } from './run-with-vm3-test-environment.mjs';
+import { runDefaultLocalWatchDiskLifecycle } from './watch-mode-disk-lifecycle.mjs';
 import { buildStrictSshArgs, verifyPinnedKnownHost } from './watch-worker-bootstrap.mjs';
 import {
   canonicalJson, sha256Canonical, signCoordinatorAuthority, verifyCoordinatorAuthority,
@@ -241,6 +242,11 @@ export async function runFrozenFunnelWorker({ plan, workerId, publicKeyPem, work
   fs.mkdirSync(path.dirname(outputRoot), { recursive: true });
   fs.mkdirSync(outputRoot, { recursive: false });
   write(path.join(outputRoot, 'execution-claim.json'), { executionId: plan.executionId, planDigest: plan.digest, workerId });
+  runDefaultLocalWatchDiskLifecycle({
+    workspaceRoot,
+    activeExecutionIds: [plan.executionId],
+    receiptPath: path.join(outputRoot, 'disk-lifecycle.json'),
+  });
   const results = []; const deadline = Date.now() + plan.workerTimeoutMs;
   for (const step of plan.steps.filter((entry) => entry.workerId === workerId)) {
     const remaining = deadline - Date.now();

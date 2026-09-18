@@ -9,16 +9,33 @@ import { repoRoot } from '../lib/testing-common.mjs';
 import { writeLocalIsolationFailureManifest, runLocalIsolationCell, rebaseLocalIsolationResults } from './watch-mode-local-isolation.mjs';
 
 import {
+  collectLocalIsolationDistributionFiles,
   createDistributedLocalIsolationAssignments,
   createLocalIsolationWorkerRequest,
   createLocalIsolationWorkerResultEnvelope,
   distributeLocalIsolationRuntime,
   executeDistributedLocalIsolationCell,
+  localIsolationFailureDetails,
   revalidateDistributionForWorkerRequest,
   runLocalIsolationProcess,
   runDistributedLocalIsolationCells,
   validateLocalIsolationWorkerRequest,
 } from './watch-mode-local-isolation-distributed.mjs';
+
+test('distribution freezes zero-Provider probe entrypoints and filesystem-only dependencies', () => {
+  const files = new Map(collectLocalIsolationDistributionFiles({ workspaceRoot: repoRoot, runtimeBinaryHashes: [] })
+    .map((entry) => [entry.path, entry]));
+  for (const name of ['scripts/testing/run-watch-mode-local-aec-probe.mjs',
+    'scripts/testing/watch-mode-aec-tap-evidence.mjs', 'scripts/testing/watch-mode-physical-source-probe.mjs',
+    'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveFinalizer.psm1',
+    'scripts/testing/lib/powershell/Omni.Testing.WatchMode.AudioPlayback.psm1',
+    'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Bridge.psm1',
+    'scripts/installer/virtual-speaker-device.ps1', 'scripts/testing/fixtures/watch-mode-en-original.wav',
+    'scripts/testing/fixtures/watch-mode-en-original.sha256', 'scripts/testing/fixtures/watch-mode-audio-fixtures.json']) {
+    assert.ok(files.has(name), `missing frozen dependency: ${name}`);
+    assert.equal(files.get(name).sha256, crypto.createHash('sha256').update(fs.readFileSync(path.join(repoRoot, name))).digest('hex'));
+  }
+});
 
 test('remote directory creation uses encoded Windows PowerShell compatible syntax', () => {
   const source = fs.readFileSync(new URL('./watch-mode-local-isolation-distributed.mjs', import.meta.url), 'utf8');
@@ -27,6 +44,64 @@ test('remote directory creation uses encoded Windows PowerShell compatible synta
   assert.doesNotMatch(source, /New-Item -ItemType Directory -Force -LiteralPath/);
 });
 
+test('SCP failure records safe stage diagnostics without paths or stderr contents', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-li-scp-failure-'));
+  const source = path.join(root, 'source-secret');
+  const entry = path.join(source, 'scripts/testing/watch-mode-local-isolation.mjs');
+  fs.mkdirSync(path.dirname(entry), { recursive: true });
+  fs.writeFileSync(entry, '// transport fixture');
+  const baseWorker = worker('vm167', 'uuid-167');
+  const remoteWorker = {
+    ...baseWorker,
+    transport: { kind: 'ssh' },
+    user: 'worker',
+    host: '192.168.40.129',
+    port: 22,
+    identityFile: 'E:\\id_rsa',
+    knownHostsFile: 'E:\\known_hosts',
+    hostKeyAlias: 'vm167',
+    guestExecutionRoot: 'E:\\li',
+  };
+  const configured = [remoteWorker];
+  const secret = 'sensitive remote transport detail';
+  const run = async (command, args) => {
+    if (command !== 'scp.exe') return { exitCode: 0, stdout: '', stderr: '' };
+    assert.ok(args.includes('LogLevel=ERROR'));
+    assert.ok(!args.includes('-q'));
+    const error = new Error('raw transport failure');
+    Object.assign(error, { exitCode: 1, signal: null, stdout: '', stderr: `scp: ${secret}: No such file or directory` });
+    throw error;
+  };
+  let failure;
+  try {
+    await distributeLocalIsolationRuntime({
+      workers: configured,
+      workspaceRoot: source,
+      runtimeBinaryHashes: [],
+      stagingRoot: path.join(root, 'stage'),
+      run,
+    });
+  } catch (error) {
+    failure = localIsolationFailureDetails(error);
+  }
+  assert.equal(failure.message, `local isolation SCP distribution-file-upload failed for ${remoteWorker.workerId} (path-not-found)`);
+  assert.deepEqual(failure.scp, {
+    stage: 'distribution-file-upload',
+    workerId: remoteWorker.workerId,
+    direction: 'upload',
+    source: { pathId: failure.scp.source.pathId, pathBytes: entry.length },
+    destination: { pathId: failure.scp.destination.pathId, pathBytes: failure.scp.destination.pathBytes },
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    stderrBytes: Buffer.byteLength(`scp: ${secret}: No such file or directory`),
+    stderrSha256: crypto.createHash('sha256').update(`scp: ${secret}: No such file or directory`).digest('hex'),
+    stdoutBytes: 0,
+    classification: 'path-not-found',
+  });
+  const serialized = JSON.stringify(failure);
+  assert.doesNotMatch(serialized, /source-secret|sensitive remote transport detail|192\.168\./u);
+});
 test('worker cell creates its nested phase output root before the exclusive cell directory', () => {
   const source = fs.readFileSync(new URL('./watch-mode-local-isolation.mjs', import.meta.url), 'utf8');
   assert.match(source, /fs\.mkdirSync\(request\.outputRoot, \{ recursive: true \}\);\s+const result = await runLocalIsolationCell/);
@@ -491,12 +566,14 @@ test('one/two worker transports isolate every cell and invocation while rejectin
         } else if (command === 'scp.exe') {
           assert.equal(options.timeoutMs ?? 120_000, 120_000);
           assert.ok(args.includes('-O'));
+          assert.ok(args.includes('LogLevel=ERROR'));
+          assert.ok(!args.includes('-q'));
           assert.ok(args.includes('StrictHostKeyChecking=yes'));
           assert.ok(!args.includes('-T'));
           const [from, to] = args.slice(-2);
           const localOperand = from.startsWith('worker@') ? to : from;
           if (localOperand.includes('\\')) throw new Error(`scp: error: unexpected filename: ${localOperand}`);
-          assert.ok(localOperand.includes(' '), 'space stays within one argv operand');
+          if (!args.includes('-r')) assert.ok(localOperand.includes(' '), 'space stays within one argv operand');
           assert.ok(!localOperand.includes('"'), 'spawn arguments need no shell quotes');
           transfers.push([from, to]);
           if (args.includes('-r')) {
@@ -635,12 +712,19 @@ test('directory SCP waits for envelope/receipt integrity and actual source/desti
     let workerTimeout;
     const artifact = scenario === 'source-path' ? `${'deep/'.repeat(40)}leaf.wav` : 'iterations/0001/runtime/probe.wav';
     const receipt = JSON.stringify({ artifacts: [{ path: artifact }] });
-    await assert.rejects(executeDistributedLocalIsolationCell({
+    const execution = executeDistributedLocalIsolationCell({
       request, requestRoot: path.join(root, 'invocation', 'requests'), workerWorkspaceRoot: 'E:\\runtime',
       localOutputRoot: scenario === 'destination-path' ? path.join(root, 'long-output'.repeat(11)) : path.join(root, 'out'),
       run: async (command, args, options = {}) => {
         if (command === 'scp.exe') {
-          if (args.includes('-r')) { directoryCopies += 1; return; }
+          if (args.includes('-r')) {
+            directoryCopies += 1;
+            const [from, to] = args.slice(-2);
+            const destination = path.join(to, path.posix.basename(from));
+            fs.mkdirSync(destination, { recursive: true });
+            fs.writeFileSync(path.join(destination, 'cell-authority.json'), receipt);
+            return;
+          }
           const [from, to] = args.slice(-2);
           if (from.endsWith('-request.json')) checked = JSON.parse(fs.readFileSync(from, 'utf8'));
           else if (from.endsWith('-result.json')) {
@@ -654,8 +738,10 @@ test('directory SCP waits for envelope/receipt integrity and actual source/desti
           workerTimeout = options.timeoutMs;
         }
       },
-    }), /tampered|legacy SCP path budget exceeded/);
+    });
+    if (scenario === 'destination-path') await execution;
+    else await assert.rejects(execution, /tampered|legacy SCP path budget exceeded/);
     assert.equal(workerTimeout, 680_000, '500-second formal run must not receive the 120-second SCP deadline');
-    assert.equal(directoryCopies, 0, scenario);
+    assert.equal(directoryCopies, scenario === 'destination-path' ? 1 : 0, scenario);
   }
 });

@@ -2,6 +2,9 @@ use super::connection_coordinator::{
     is_idle_preconnect_session, is_released_empty_audio_commit_error, provider_error_code, provider_error_message,
 };
 use super::session_errors::is_provider_idle_timeout_error;
+use super::protocol::{
+    flush_arbitration_expired_deferred_empty_vad, flush_expired_deferred_empty_vad,
+};
 use super::*;
 use crate::audio::glossary::GlossaryContext;
 use crate::audio::bailian_protocol::LiveTranslateServerMutation;
@@ -25,6 +28,30 @@ mod state;
 pub(super) use state::{OmniSocketEventContext, OmniSocketEventState, OmniSocketPollResult};
 
 pub(super) struct OmniSocketEventProcessor;
+
+fn skip_tick_after_read_error(error: &tungstenite::Error) -> bool {
+    !is_retryable_read_poll_error(error)
+}
+
+#[cfg(test)]
+mod read_poll_scheduling_tests {
+    use super::*;
+
+    #[test]
+    fn idle_poll_preserves_pacing_while_fatal_error_skips_tick() {
+        let idle = tungstenite::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "idle",
+        ));
+        assert!(!skip_tick_after_read_error(&idle));
+
+        let fatal = tungstenite::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "fatal",
+        ));
+        assert!(skip_tick_after_read_error(&fatal));
+    }
+}
 
 fn bailian_provider(provider: &ProviderDraftInput) -> bool {
     provider.kind == "dashscope"
@@ -457,13 +484,13 @@ mod empty_commit_tests;
 
 impl OmniSocketEventProcessor {
     pub(super) fn poll<C: RealtimeSocketConnector, R: tauri::Runtime>(
-        state: OmniSocketEventState<C::Socket, R>,
+        state: OmniSocketEventState<C::Socket>,
+        trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
         context: OmniSocketEventContext<'_, R>,
         connector: &C,
-    ) -> Result<OmniSocketPollResult<C::Socket, R>, String> {
+    ) -> Result<OmniSocketPollResult<C::Socket>, String> {
         let OmniSocketEventState {
             mut socket,
-            mut trace_call,
             mut reconnect_count,
             mut pending_audio_buffer,
             mut active_voice,
@@ -523,6 +550,9 @@ impl OmniSocketEventProcessor {
             echo_guard_enabled,
         } = context;
         event_diagnostics.set_response_ledger_generation(session_generation);
+        event_diagnostics.set_strict_media_end_authority(
+            provider_input_budget.strict_media_end_authority(session_generation),
+        );
         let mut socket_reconnected = false;
         let mut reconnected_session_update = None;
         let mut stop_worker = false;
@@ -534,7 +564,6 @@ impl OmniSocketEventProcessor {
                 Ok(OmniSocketPollResult {
                     state: OmniSocketEventState {
                         socket,
-                        trace_call,
                         reconnect_count,
                         pending_audio_buffer,
                         active_voice,
@@ -594,16 +623,55 @@ impl OmniSocketEventProcessor {
                         format!("{failure} raw={text}"),
                     );
                     trace_call.error(failure.clone());
+                    flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
                     return Err(failure);
                 }
             };
                 let event_type = crate::audio::realtime_ws::server_event_type(&evt, "(unknown)").to_string();
-                let mutation = admit_bailian_server_event(
+                let prioritize_deferred_successor = event_type == "input_audio_buffer.speech_started"
+                    && event_diagnostics.can_prioritize_deferred_empty_vad_successor(
+                        evt["audio_start_ms"].as_u64(),
+                    );
+                let deferred_asr_candidate = bailian_provider(provider)
+                    && matches!(
+                        event_type.as_str(),
+                        "conversation.item.input_audio_transcription.delta"
+                            | "conversation.item.input_audio_transcription.text"
+                            | "conversation.item.input_audio_transcription.completed"
+                    );
+                let deferred_asr_owner_matches = deferred_asr_candidate
+                    && event_diagnostics.deferred_empty_vad_matches_asr_owner(
+                        event_type.as_str(),
+                        evt["item_id"].as_str(),
+                    );
+                if !prioritize_deferred_successor && !deferred_asr_owner_matches {
+                    flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
+                }
+                let mutation = match admit_bailian_server_event(
                     provider,
                     &mut event_diagnostics,
                     &evt,
                     ModelProtocolFrameKind::Json,
-                )?;
+                ) {
+                    Ok(mutation) => mutation,
+                    Err(error) => {
+                        // A raw frame that merely resembles a contiguous speech start
+                        // or matching ASR owner has no authority to suppress an
+                        // expired terminal. Typed admission must succeed before
+                        // the narrow dispatch ordering can affect expiry.
+                        flush_expired_deferred_empty_vad(
+                            &app,
+                            store,
+                            &mut event_diagnostics,
+                        );
+                        return Err(error);
+                    }
+                };
+                // Admission has now succeeded. A readable ASR frame may
+                // dispatch ahead of local expiry only when its raw identity
+                // already matched the exact deferred input item above. The
+                // common post-dispatch flush below still runs immediately, so
+                // this ordering grants no extra time.
                 if let Some(session_updated) = mutation.session_updated.as_ref() {
                     store.record_strict_watch_session_updated_received(
                         &session_updated.session_identity_sha256,
@@ -803,7 +871,7 @@ impl OmniSocketEventProcessor {
                                     ManualResponseDecision::Create => {
                                         manual_response_requested = send_manual_response_create(
                                             &mut socket,
-                                            &mut trace_call,
+                                            trace_call,
                                             &mut event_diagnostics,
                                             ManualResponseCreateContext {
                                                 app,
@@ -1089,6 +1157,7 @@ impl OmniSocketEventProcessor {
                     "input_audio_buffer.speech_stopped" => {
                         last_vad_event_time = SystemTime::now();
                         vad_event_count += 1;
+                        event_diagnostics.current_vad_audio_end_ms = evt["audio_end_ms"].as_u64();
                         if let Some(cue_id) = current_cue_id.clone() {
                             // Subtitle translation still has a native response
                             // stream whose output must remain attached to the
@@ -1145,8 +1214,9 @@ impl OmniSocketEventProcessor {
                         handle_response_done(
                             &app,
                             store,
-                            &mut trace_call,
+                            trace_call,
                             &direction,
+                            source_language,
                             &mut current_cue_id,
                             &mut pending_source_text,
                             &mut pending_translated_text,
@@ -1314,7 +1384,7 @@ impl OmniSocketEventProcessor {
                                     &target_language,
                                     buffer_size,
                                     provider_input_budget,
-                                    &mut trace_call,
+                                    trace_call,
                                     &evt,
                                     &text,
                             )?;
@@ -1334,6 +1404,7 @@ impl OmniSocketEventProcessor {
                 }
         }
         Message::Close(_) => {
+            flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
             let reconnect_state = OmniConnectionCoordinator::reconnect_after_close(
                 OmniReconnectState {
                     socket,
@@ -1366,6 +1437,7 @@ impl OmniSocketEventProcessor {
             return poll_result!(true);
         }
         Message::Binary(_) => {
+            flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
             admit_bailian_server_event(
                 provider,
                 &mut event_diagnostics,
@@ -1373,9 +1445,22 @@ impl OmniSocketEventProcessor {
                 ModelProtocolFrameKind::Binary,
             )?;
         }
-        _ => {}
+        _ => {
+            flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
+        }
             },
             Err(error) => {
+        // An idle read is not proof that a server boundary will not become
+        // readable on the next scheduling turn. Preserve only the dedicated
+        // hard arbitration window here. Successful non-speech frames still
+        // flush at the ordinary deadline above and therefore cannot starve
+        // the terminal.
+        flush_arbitration_expired_deferred_empty_vad(
+            &app,
+            store,
+            &mut event_diagnostics,
+        );
+        let skip_tick = skip_tick_after_read_error(&error);
         let reconnect_state = OmniConnectionCoordinator::recover_read_error(
             OmniReconnectState {
                 socket,
@@ -1406,9 +1491,15 @@ impl OmniSocketEventProcessor {
         voice_fallback_applied = reconnect_state.voice_fallback_applied;
         socket_reconnected = reconnect_state.socket_reconnected;
         reconnected_session_update = reconnect_state.reconnected_session_update;
-        return poll_result!(true);
+        return poll_result!(skip_tick);
             }
         }
+
+        // Give the provider event already returned by read_message priority
+        // over the local empty-VAD expiry. In particular, speech_started may
+        // consume a same-continuity, equal-boundary deferred fragment before
+        // this fallback terminalizes anything still pending.
+        flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
 
         let stall = maintain_response_lifecycle(
             ResponseStallReconnectState {
@@ -1418,7 +1509,7 @@ impl OmniSocketEventProcessor {
                 active_voice,
                 voice_fallback_applied,
             },
-            &mut trace_call,
+            trace_call,
             &mut event_diagnostics,
             ResponseStallContext {
                 app,

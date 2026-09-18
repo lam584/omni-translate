@@ -142,6 +142,9 @@ impl WatchSessionReportStore {
             attempt_id.map(str::to_string),
         );
         session.push_cue_event(index, event);
+        if accepted && !text.is_empty() {
+            self.emit_incremental_cue(session, index, "model-final");
+        }
     }
 
     /// Records one adopted sentence from the secondary translation pipeline.
@@ -338,6 +341,96 @@ impl WatchSessionReportStore {
         );
     }
 
+    pub(crate) fn record_ignorable_discourse_omission(
+        &self,
+        cue_id: &str,
+        translation_path: &str,
+        source_text: &str,
+        response_id: &str,
+        response_status: &str,
+        vad_duration_ms: u64,
+    ) {
+        let mut guard = self.inner.lock().expect("watch session report poisoned");
+        let Some(session) = guard.as_mut() else {
+            return;
+        };
+        let elapsed = session.elapsed_ms();
+        let detail = sanitize_error(&format!(
+            "classification=ignorable-discourse-omission cueId={cue_id} path={translation_path} responseId={response_id} responseStatus={response_status} vadDurationMs={vad_duration_ms}"
+        ));
+        let event = session.event(
+            "model",
+            "ignorable-discourse-omission",
+            elapsed,
+            source_text,
+            Some(detail),
+            true,
+            true,
+            None,
+            None,
+            None,
+        );
+        session.push_session_event(event);
+        session.push_issue_once(WatchIssueRuntime {
+            category: "model".to_string(),
+            code: "ignorable-discourse-omission".to_string(),
+            severity: "warning".to_string(),
+            message: "已封定的非语义话语确认在 completed 响应中没有可用译文；按显式闭集忽略，未放宽其他非空源 cue。".to_string(),
+            cue_id: Some(cue_id.to_string()),
+            elapsed_ms: Some(elapsed),
+            occurrence_count: 1,
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_strict_media_end_empty_tail_omission(
+        &self,
+        cue_id: &str,
+        response_id: &str,
+        response_status: &str,
+        audio_start_ms: u64,
+        media_end_ms: u64,
+        authoritative_reference_frames: u64,
+        input_sample_rate_hz: u32,
+        media_sha256: &str,
+        run_marker: &str,
+        cell_id: &str,
+        lease_id: &str,
+        provider_input_max_samples: u64,
+        session_generation: u64,
+    ) {
+        let mut guard = self.inner.lock().expect("watch session report poisoned");
+        let Some(session) = guard.as_mut() else {
+            return;
+        };
+        let elapsed = session.elapsed_ms();
+        let detail = sanitize_error(&format!(
+            "classification=strict-post-reference-empty-response-omission cueId={cue_id} responseId={response_id} responseStatus={response_status} audioStartMs={audio_start_ms} mediaEndMs={media_end_ms} authoritativeReferenceFrames={authoritative_reference_frames} inputSampleRateHz={input_sample_rate_hz} mediaSha256={media_sha256} runMarker={run_marker} cellId={cell_id} leaseId={lease_id} providerInputMaxSamples={provider_input_max_samples} sessionGeneration={session_generation}"
+        ));
+        let event = session.event(
+            "model",
+            "strict-post-reference-empty-response-omission",
+            elapsed,
+            "",
+            Some(detail),
+            true,
+            true,
+            None,
+            None,
+            None,
+        );
+        session.push_session_event(event);
+        session.push_issue_once(WatchIssueRuntime {
+            category: "model".to_string(),
+            code: "strict-post-reference-empty-response-omission".to_string(),
+            severity: "warning".to_string(),
+            message: "严格媒体终点权威证明该 completed 空响应始于认证源媒体终点之后；保留审计证据并忽略该尾部 cue。".to_string(),
+            cue_id: Some(cue_id.to_string()),
+            elapsed_ms: Some(elapsed),
+            occurrence_count: 1,
+        });
+    }
+
     /// Records the original provider error at the narrow parsing boundary.
     /// A provider can emit an error after `response.done`, when the active cue
     /// has already been released. In that case the error still belongs to the
@@ -422,4 +515,3 @@ impl WatchSessionReportStore {
         });
     }
 }
-

@@ -139,6 +139,7 @@ function Invoke-BridgeSourceProbe {
   $frame = $null
   $audioProbeProcess = $null
   $phase = "init"
+  $primaryFailure = $false
   try {
     Start-Sleep -Milliseconds 600
     $phase = "init"
@@ -232,6 +233,7 @@ function Invoke-BridgeSourceProbe {
       stderr = $stderr
     }
   } catch {
+    $primaryFailure = $true
     $errorMessage = $_.Exception.Message
     $stateQueryError = $null
     if ($init -and -not $state) {
@@ -272,11 +274,27 @@ function Invoke-BridgeSourceProbe {
     } | ConvertTo-Json -Depth 12 | Set-Content -Path $diagnosticsPath -Encoding UTF8
     throw "bridge source probe failed during ${phase}: $errorMessage Diagnostics=$diagnosticsPath"
   } finally {
-    if ($audioProbeProcess -and -not $audioProbeProcess.HasExited) {
-      Stop-OmniManagedProcessHandle -Process $audioProbeProcess | Out-Null
+    $cleanupErrors = @()
+    foreach ($cleanupTarget in @(
+      [pscustomobject]@{ name = 'audioProbe'; process = $audioProbeProcess },
+      [pscustomobject]@{ name = 'bridge'; process = $process }
+    )) {
+      if (-not $cleanupTarget.process) { continue }
+      try {
+        Stop-OmniManagedProcessHandle -Process $cleanupTarget.process | Out-Null
+      } catch {
+        $cleanupErrors += "$($cleanupTarget.name): $($_.Exception.Message)"
+      }
     }
-    if (-not $process.HasExited) {
-      Stop-OmniManagedProcessHandle -Process $process | Out-Null
+    if ($cleanupErrors.Count -gt 0 -and (Test-Path -LiteralPath $diagnosticsPath -PathType Leaf)) {
+      try {
+        $cleanupDiagnostics = Get-Content -LiteralPath $diagnosticsPath -Raw | ConvertFrom-Json
+        $cleanupDiagnostics | Add-Member -NotePropertyName cleanupErrors -NotePropertyValue @($cleanupErrors) -Force
+        $cleanupDiagnostics | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $diagnosticsPath -Encoding UTF8
+      } catch {}
+    }
+    if ($cleanupErrors.Count -gt 0 -and -not $primaryFailure) {
+      throw "bridge source probe cleanup failed: $($cleanupErrors -join '; ')"
     }
   }
 }

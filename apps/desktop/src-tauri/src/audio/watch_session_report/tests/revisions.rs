@@ -165,6 +165,189 @@ use std::time::Duration;
     }
 
     #[test]
+    fn receipt_does_not_attach_to_a_source_revision_that_has_not_published_it() {
+        let store = WatchSessionReportStore::new();
+        let session_id =
+            store.begin_or_reuse("test", "qwen3.5-livetranslate-flash-realtime");
+        let started = {
+            let guard = store.inner.lock().expect("report");
+            guard.as_ref().expect("session").started_unix_ms
+        };
+
+        store.record_source_runtime(
+            "cue-live",
+            "inbound",
+            "那",
+            false,
+            1,
+            1,
+            Some(SubtitleTranslationStateRuntime::Streaming),
+        );
+        store.record_model_snapshot_for_cue(
+            "cue-live",
+            "dashscope-native-realtime",
+            "分钟",
+            true,
+            None,
+            None,
+        );
+        store.record_publish_runtime(
+            "cue-live",
+            "inbound",
+            "那",
+            "分钟",
+            &[],
+            false,
+            1,
+            2,
+            Some(SubtitleTranslationStateRuntime::Streaming),
+        );
+        store.record_source_runtime(
+            "cue-live",
+            "inbound",
+            "那。",
+            true,
+            1,
+            3,
+            Some(SubtitleTranslationStateRuntime::Streaming),
+        );
+
+        let mut rendered = receipt(&session_id, "cue-live", started.saturating_add(10));
+        rendered.source_text = "那。".to_string();
+        rendered.translated_text = "分钟".to_string();
+        rendered.committed = true;
+        store.record_overlay_receipt(rendered);
+
+        {
+            let mut guard = store.inner.lock().expect("report");
+            guard.as_mut().expect("session").started_instant =
+                Instant::now() - Duration::from_millis(20);
+        }
+        store.record_model_final_for_cue(
+            "cue-live",
+            "dashscope-native-realtime",
+            "分钟  ",
+            true,
+            None,
+            None,
+        );
+        store.record_publish_runtime(
+            "cue-live",
+            "inbound",
+            "那。",
+            "分钟",
+            &[],
+            true,
+            1,
+            4,
+            Some(SubtitleTranslationStateRuntime::Final),
+        );
+        store.complete();
+
+        let report = store.snapshot().expect("report");
+        assert_eq!(report.cues.len(), 2);
+        let donor = &report.cues[0];
+        let selected = &report.cues[1];
+        assert!(donor.events.iter().any(|event| {
+            event.stage == "render" && event.elapsed_ms == 10 && event.text == "分钟"
+        }));
+        assert!(!selected.events.iter().any(|event| event.stage == "render"));
+        assert_eq!(selected.comparison_status, "formatting-only");
+        assert_eq!(selected.rendered_first_at_ms, selected.published_first_at_ms);
+        assert!(!selected
+            .issues
+            .iter()
+            .any(|issue| issue.code == "invalid-stage-order"));
+    }
+
+    #[test]
+    fn empty_source_event_anchors_source_before_native_model_output() {
+        let store = WatchSessionReportStore::new();
+        store.begin_or_reuse("test", "qwen3.5-livetranslate-flash-realtime");
+
+        {
+            let mut guard = store.inner.lock().expect("report");
+            guard.as_mut().expect("session").started_instant =
+                Instant::now() - Duration::from_millis(10);
+        }
+        store.record_source_runtime(
+            "cue-live",
+            "inbound",
+            "",
+            false,
+            1,
+            1,
+            Some(SubtitleTranslationStateRuntime::Streaming),
+        );
+
+        {
+            let mut guard = store.inner.lock().expect("report");
+            guard.as_mut().expect("session").started_instant =
+                Instant::now() - Duration::from_millis(20);
+        }
+        store.record_model_snapshot_for_cue(
+            "cue-live",
+            "dashscope-native-realtime",
+            "嗯。",
+            true,
+            None,
+            None,
+        );
+
+        {
+            let mut guard = store.inner.lock().expect("report");
+            guard.as_mut().expect("session").started_instant =
+                Instant::now() - Duration::from_millis(30);
+        }
+        store.record_source_runtime(
+            "cue-live",
+            "inbound",
+            "嗯。",
+            true,
+            1,
+            2,
+            Some(SubtitleTranslationStateRuntime::Streaming),
+        );
+        store.record_model_final_for_cue(
+            "cue-live",
+            "dashscope-native-realtime",
+            "嗯。",
+            true,
+            None,
+            None,
+        );
+        store.record_publish_runtime(
+            "cue-live",
+            "inbound",
+            "嗯。",
+            "嗯。",
+            &[],
+            true,
+            1,
+            3,
+            Some(SubtitleTranslationStateRuntime::Final),
+        );
+        store.complete();
+
+        let report = store.snapshot().expect("report");
+        let cue = &report.cues[0];
+        let first_source_event = cue
+            .events
+            .iter()
+            .find(|event| event.stage == "source")
+            .expect("source event");
+        assert!(first_source_event.text.is_empty());
+        assert_eq!(cue.source_at_ms, Some(first_source_event.elapsed_ms));
+        assert!(cue.source_at_ms < cue.llm_first_at_ms);
+        assert_eq!(cue.source_text, "嗯。");
+        assert!(cue.source_stable_at_ms > cue.source_at_ms);
+        assert!(!cue
+            .issues
+            .iter()
+            .any(|issue| issue.code == "invalid-stage-order"));
+    }
+
+    #[test]
     fn livetranslate_cumulative_revisions_attach_final_render_to_latest_content() {
         let store = WatchSessionReportStore::new();
         let session_id =
@@ -554,6 +737,8 @@ use std::time::Duration;
             .iter()
             .any(|issue| issue.code == "invalid-stage-order"));
     }
+
+    mod active_render_timing;
 
     #[test]
     fn invalidated_or_uncommitted_receipts_are_not_inherited_by_a_later_revision() {

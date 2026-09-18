@@ -81,7 +81,7 @@ test('runtime distribution automatically visits all three remote workers', async
   assert.deepEqual(f.calls.filter((call) => call.phase === 'inspect').map((call) => call.workerId), ['vm167', 'vm169', 'vm131']);
 });
 
-test('unchanged: zero runtime uploads, full fourteen-entry reused proofs, parallel workers', async (t) => {
+test('unchanged: zero runtime uploads, full signed-inventory reused proofs, parallel workers', async (t) => {
   const f = fixture(t);
   const result = await f.run();
   assert.equal(f.uploads.length, 0);
@@ -90,7 +90,7 @@ test('unchanged: zero runtime uploads, full fourteen-entry reused proofs, parall
   assert.deepEqual(f.calls.slice(0, 2).map((c) => c.phase), ['inspect', 'inspect']);
   assert.equal(result.status, 'success');
   for (const worker of result.workers) {
-    assert.equal(worker.entries.length, 14);
+    assert.equal(worker.entries.length, AUTHORITY_RUNTIME_BINARY_FILES.length);
     assert.ok(worker.entries.every((e) => e.status === 'reused'));
     assert.equal(worker.uploadedBytes, 0);
     assert.ok(worker.timings.totalMs >= 0);
@@ -299,7 +299,7 @@ test('default transport local worker uses only local PowerShell and proves all r
   };
   const receipt = await f.run();
   assert.deepEqual(executables, ['powershell.exe', 'powershell.exe']);
-  assert.equal(receipt.workers[0].entries.length, 14);
+  assert.equal(receipt.workers[0].entries.length, AUTHORITY_RUNTIME_BINARY_FILES.length);
   assert.ok(receipt.workers[0].entries.every((e) => e.status === 'reused'));
   assert.equal(receipt.workers[0].uploadedBytes, 0);
   assert.equal(f.verifies(), 2);

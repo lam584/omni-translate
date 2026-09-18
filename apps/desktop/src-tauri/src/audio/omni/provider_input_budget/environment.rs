@@ -382,6 +382,15 @@ impl ProviderInputBudget {
     );
     }
     }
+    let strict_media_end_authority = StrictMediaEndAuthority::from_environment(
+        &read_env,
+        strict_paid_authority,
+        &run_marker,
+        &cell_id,
+        &lease_id,
+        max_samples,
+        session_generation,
+    )?;
     let final_ledger = OpenOptions::new()
     .write(true)
     .create_new(true)
@@ -404,7 +413,11 @@ impl ProviderInputBudget {
     let budget = Self {
     enabled: Some(EnabledProviderInputBudget {
     final_ledger: Mutex::new(final_ledger),
-    journal: Mutex::new(journal),
+    journal: Mutex::new(ProviderInputBudgetJournal {
+        file: journal,
+        next_sequence: 1,
+        last_occurred_at_ms: 0,
+    }),
     cell_id,
     lease_id,
     run_marker,
@@ -424,13 +437,13 @@ impl ProviderInputBudget {
     model: model.to_string(),
     protocol: protocol.to_string(),
     model_protocol_profile_identity,
+    strict_media_end_authority,
     max_samples,
     total_attempted_samples: AtomicU64::new(0),
     append_attempts: AtomicU64::new(0),
     send_failures: AtomicU64::new(0),
     initial_connect_attempts: AtomicU64::new(0),
     reconnect_count: AtomicU64::new(0),
-    sequence: AtomicU64::new(0),
     budget_exceeded: AtomicBool::new(false),
     finalized: AtomicBool::new(false),
     terminal_reason: Mutex::new(None),

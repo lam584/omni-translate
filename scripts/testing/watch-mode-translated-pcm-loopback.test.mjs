@@ -99,6 +99,9 @@ function createFixture({
   cueSeconds = [2.6, 2.6],
   playbackOwnerGenerations = [10, 20],
   feedbackLoopPrevention = 'process-exclusion',
+  duplicateCueFromIndices = [],
+  renderedCueSourceIndices = [],
+  dropMiddleAnchorCueIndex = null,
 } = {}) {
   const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'translated-loopback-'));
   const authorityDirectory = path.join(runDirectory, 'translated-cue-pcm');
@@ -119,10 +122,19 @@ function createFixture({
     16_000,
     renderUsingAcceptedChunkSchedule ? Math.max(32, requiredRecordingSeconds) : requiredRecordingSeconds,
   );
+  const cueSamples = cueIds.map((_, index) => {
+    const duplicateSourceIndex = duplicateCueFromIndices[index];
+    if (Number.isInteger(duplicateSourceIndex)) {
+      return Float32Array.from(deterministicCue(11 + duplicateSourceIndex * 19, {
+        seconds: cueSeconds[duplicateSourceIndex],
+      }));
+    }
+    return deterministicCue(11 + index * 19, { seconds: cueSeconds[index] });
+  });
   const acceptedCues = [];
   for (let index = 0; index < cueIds.length; index += 1) {
     const cueSeed = 11 + index * 19;
-    const samples = deterministicCue(cueSeed, { seconds: cueSeconds[index] });
+    const samples = cueSamples[index];
     if (interfereWithDominantLateAnchor && index === cueIds.length - 1) {
       const regionStart = Math.floor(samples.length * 2 / 3);
       const dominantEnd = Math.min(samples.length, regionStart + Math.ceil(24_000 * 0.4));
@@ -133,11 +145,14 @@ function createFixture({
     const bytes = pcmBuffer(samples);
     const relativePath = `cue-pcm/${index + 1}.pcm`;
     fs.writeFileSync(path.join(authorityDirectory, relativePath), bytes);
-    const renderedSamples = recordingMode === 'same-frequency-same-envelope-different-waveform'
-      ? deterministicCue(cueSeed, { waveformSeed: cueSeed + 10_000 })
-      : recordingMode === 'tone-only'
-        ? deterministicCue(cueSeed, { noiseScale: 0 })
-        : samples;
+    const renderedSourceIndex = renderedCueSourceIndices[index];
+    const renderedSamples = Number.isInteger(renderedSourceIndex)
+      ? cueSamples[renderedSourceIndex]
+      : recordingMode === 'same-frequency-same-envelope-different-waveform'
+        ? deterministicCue(cueSeed, { waveformSeed: cueSeed + 10_000 })
+        : recordingMode === 'tone-only'
+          ? deterministicCue(cueSeed, { noiseScale: 0 })
+          : samples;
     const chunkLength = streamChunkGapSeconds > 0 ? Math.ceil(samples.length / 3) : samples.length;
     const chunks = [];
     let priorRenderedChunkEndSeconds = renderedPlaybackOffsetsSeconds[index];
@@ -209,6 +224,17 @@ function createFixture({
       }),
       physicalPlaybackDeviceId: '{hda-test-endpoint}',
     });
+    if (dropMiddleAnchorCueIndex === index) {
+      const middleStart = Math.floor(samples.length / 3);
+      const middleEnd = Math.floor(samples.length * 2 / 3);
+      const recordingStart = Math.round(
+        (renderedPlaybackOffsetsSeconds[index] + middleStart / 24_000) * 16_000,
+      );
+      const recordingEnd = Math.round(
+        (renderedPlaybackOffsetsSeconds[index] + middleEnd / 24_000) * 16_000,
+      );
+      recording.fill(0, recordingStart, recordingEnd);
+    }
     if (interfereWithStrongestMiddleAnchor && index === 0) {
       const windowFrames = Math.ceil(24_000 * 0.4);
       const regionStart = Math.floor(samples.length / 3);
@@ -352,8 +378,10 @@ function writeCaptureTimelineAuthority(fixture, gaps = [], unreliableWindows = [
       passed: true,
       capturedFrames,
       captureTimeline: {
-        schemaVersion: 2,
-        authorityMode: 'wasapi-device-position-qpc-v2',
+        schemaVersion: 4,
+        authorityMode: 'wasapi-device-position-qpc-epoch-calibrated-v4',
+        sampleZeroEpochMs: fixture.recordingStartedAtEpochMs,
+        sampleZeroTimeAuthority: 'first-capture-packet-qpc-epoch-calibration-v2',
         sampleRateHz: 48_000,
         channelCount: 2,
         passed: true,
@@ -493,6 +521,43 @@ test('fails closed when a physical recording authority omits its capture timelin
       'physical loopback recording capture timeline authority is missing or invalid',
     ));
     assert.equal(authority.captureTimelineAuthority, null);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fails closed when capture timeline uses process launch instead of first-packet time', () => {
+  const fixture = createFixture();
+  try {
+    writeCaptureTimelineAuthority(fixture);
+    const authorityPath = path.join(fixture.runDirectory, 'physical-output-recording.json');
+    const recordingAuthority = JSON.parse(fs.readFileSync(authorityPath, 'utf8'));
+    recordingAuthority.captureTimeline.sampleZeroTimeAuthority = 'process-launch';
+    fs.writeFileSync(authorityPath, JSON.stringify(recordingAuthority), 'utf8');
+
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    assert.ok(authority.violations.includes(
+      'physical loopback recording capture timeline authority is missing or invalid',
+    ));
+    assert.equal(authority.captureTimelineAuthority, null);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fails closed when the CLI recording epoch diverges from capture sample zero', () => {
+  const fixture = createFixture();
+  try {
+    writeCaptureTimelineAuthority(fixture);
+    const authority = build({
+      ...fixture,
+      recordingStartedAtEpochMs: fixture.recordingStartedAtEpochMs - 870,
+    });
+    assert.equal(authority.passed, false);
+    assert.ok(authority.violations.includes(
+      'physical loopback recording start epoch does not match capture timeline sample-zero authority',
+    ));
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
   }
@@ -684,6 +749,57 @@ test('maps anchors through accepted chunk gaps after the physical stream drains'
   }
 });
 
+test('groups acoustically equivalent retained PCM references without weakening physical gates', () => {
+  const fixture = createFixture({ duplicateCueFromIndices: [null, 0] });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, true, JSON.stringify(authority.matches));
+    assert.equal(authority.matches.length, 2);
+    assert.ok(authority.matches.every((match) => match.matchedAnchorCount === 3));
+    assert.ok(authority.matches.every((match) => (
+      match.anchorMatches.every((anchor) => anchor.identityMargin >= 0.08)
+    )));
+    assert.ok(authority.matches.every((match) => (
+      match.anchorMatches.every((anchor) => anchor.equivalentWrongCandidateCount > 0)
+    )));
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('still rejects distinguishable wrong-cue playback', () => {
+  const fixture = createFixture({ renderedCueSourceIndices: [1, 1] });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    const wrongPlayback = authority.matches[0];
+    assert.equal(wrongPlayback.passed, false);
+    assert.ok(wrongPlayback.anchorMatches.some((anchor) => (
+      anchor.score < 0.32 || anchor.identityMargin < 0.08
+    )));
+    assert.match(authority.violations.join('; '), /did not correlate three ordered/);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('r90-style low-correlation middle anchor remains fail-closed', () => {
+  const fixture = createFixture({ dropMiddleAnchorCueIndex: 0 });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, false);
+    const damaged = authority.matches[0];
+    assert.equal(damaged.requiredAnchorMatches, 3);
+    assert.equal(damaged.matchedAnchorCount, 2);
+    assert.equal(damaged.anchorMatches[0].passed, true);
+    assert.equal(damaged.anchorMatches[1].passed, false);
+    assert.equal(damaged.anchorMatches[2].passed, true);
+    assert.ok(damaged.anchorMatches[1].score < 0.32);
+    assert.match(authority.violations.join('; '), /did not correlate three ordered/);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
 test('uses another independent high-energy window when the strongest window is masked by source audio', () => {
   const fixture = createFixture({
     interfereWithStrongestMiddleAnchor: true,

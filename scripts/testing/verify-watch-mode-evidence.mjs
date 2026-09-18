@@ -3282,16 +3282,21 @@ export function strictWatchSessionReportFailure(
     // long-chain gate. The report builder only emits this code when it has no
     // completed source evidence (or the update landed immediately before
     // stop), so real no-output errors remain blocking.
+    const blockingIssues = issues.filter((issue) => !(
+      issue?.category === 'data'
+      && issue?.code === 'cue-events-truncated'
+      && String(issue?.severity ?? '').toLowerCase() === 'warning'
+    ));
     const interruptedSourceTail = cue.comparisonStatus === 'not-published'
-      && issues.length > 0
-      && issues.every((issue) => (
+      && blockingIssues.length > 0
+      && blockingIssues.every((issue) => (
         issue?.category === 'session'
         && issue?.code === 'session-ended-before-model-output'
         && issue?.severity === 'warning'
       ));
     if (interruptedSourceTail) return false;
     return ['different', 'not-published', 'not-rendered', 'model-error'].includes(cue.comparisonStatus)
-      || issues.length > 0;
+      || blockingIssues.length > 0;
   });
   if (invalid) {
     return `watchSessionReport has an explicit issue for cue=${invalid.cueId ?? '-'} comparison=${invalid.comparisonStatus ?? '-'}`;

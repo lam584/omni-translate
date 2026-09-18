@@ -20,7 +20,7 @@ export function deriveTranslatedCuePlaybackAuthority({ watchReport, device, appL
       const status = line.match(/\bstatus=(queued|started|completed)\b/)?.[1];
       if (cueId && status) events.push({ cueId, status, eventIndex: events.length + 1 });
     } else {
-      if (/\[AUDIO\]\s+native audio\.done:.*playback_status=queued\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
+      if (/\[AUDIO\]\s+playback request received:\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {
         const cueId = line.match(/cue_id=([A-Za-z0-9._:-]+)/)?.[1];
         if (cueId) events.push({ cueId, status: 'queued', eventIndex: events.length + 1 });
       } else if (/\[AUDIO\]\s+speaker render attempt started:\s+cue_id=([A-Za-z0-9._:-]+)/.test(line)) {

@@ -158,7 +158,6 @@ pub(crate) struct LiveTranslateClientPlan {
     session_update: Value,
     session_finish: Value,
 }
-#[cfg(test)]
 pub(crate) fn preflight_livetranslate_client_plan(
     model: &str,
     base_url: &str,
@@ -185,7 +184,6 @@ pub(crate) fn preflight_bound_plan(model: &str, base_url: &str, binding: Option<
     LiveTranslateLifecycle::new(authority.clone(), model, &session_update)?;
     Ok(LiveTranslateClientPlan { authority, session_update, session_finish })
 }
-#[cfg(test)]
 fn preflight_from_registry(
     registry: &Value,
     model: &str,

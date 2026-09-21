@@ -668,15 +668,19 @@ impl ProviderPreflightAuthorization {
         let endpoint_host = endpoint
             .host_str()
             .ok_or_else(|| "authorized provider baseUrl has no endpoint host".to_string())?;
-        if endpoint.scheme() != "https"
-            || endpoint_host != release_selection(&self.grant)?.1
-            || endpoint.port().is_some()
-            || !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-        {
+        let (_, selected_host, _) = release_selection(&self.grant)?;
+        let is_valid_endpoint = endpoint.scheme() == "https"
+            && (endpoint_host == selected_host || endpoint_host == PROVIDER_ENDPOINT_HOST)
+            && endpoint.port().is_none()
+            && endpoint.username().is_empty()
+            && endpoint.password().is_none();
+        if !is_valid_endpoint {
             return Err(format!(
-                "authorized provider endpoint must be canonical TLS origin https://{PROVIDER_ENDPOINT_HOST} with no explicit port or userinfo"
+                "authorized provider endpoint must be canonical TLS origin https://{PROVIDER_ENDPOINT_HOST} or signed release endpoint with no explicit port or userinfo"
             ));
+        }
+        if endpoint_host != selected_host {
+            provider.base_url = format!("https://{selected_host}/api/v1");
         }
         provider.model.clone_from(&self.model);
         provider.template_realtime_protocol = Some(self.protocol.clone());

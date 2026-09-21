@@ -214,11 +214,13 @@ fn signed_v2_preflight_binds_real_workspace_endpoint_and_profile() {
     authorization.model_protocol_profile_identity = selected_registry_identity(
         &authorization.grant, PreflightAuthorityProfile::StrictReleaseMatrix).unwrap();
     let base = parsed_strict_provider(&default_config());
-    for host in [PROVIDER_ENDPOINT_HOST, "other.cn-beijing.maas.aliyuncs.com"] {
-        let mut provider = base.clone();
-        provider.base_url = format!("https://{host}");
-        assert!(authorization.apply_to_provider(&mut provider).is_err());
-    }
+    let mut provider_other = base.clone();
+    provider_other.base_url = "https://other.cn-beijing.maas.aliyuncs.com".to_string();
+    assert!(authorization.apply_to_provider(&mut provider_other).is_err());
+
+    let mut provider_default = base.clone();
+    authorization.apply_to_provider(&mut provider_default).unwrap();
+    assert_eq!(provider_default.base_url, "https://acceptance.cn-beijing.maas.aliyuncs.com/api/v1");
     let mut provider = base;
     provider.base_url = "https://acceptance.cn-beijing.maas.aliyuncs.com".to_string();
     authorization.apply_to_provider(&mut provider).unwrap();

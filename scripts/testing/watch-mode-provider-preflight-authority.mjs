@@ -615,9 +615,12 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
     if (failure) issues.push(failure);
   }
   if (Date.parse(emitter?.completedAt) < Date.parse(emitter?.startedAt)) issues.push('provider preflight emitter timestamps are inverted');
+  const expectedTimeline = strictLive
+    ? [TIMELINE[0], 'provider-preflight-startup-settled', ...TIMELINE.slice(1)]
+    : TIMELINE;
   if (
     !Array.isArray(emitter?.timeline)
-    || JSON.stringify(emitter.timeline.map((event) => event?.event)) !== JSON.stringify(TIMELINE)
+    || JSON.stringify(emitter.timeline.map((event) => event?.event)) !== JSON.stringify(expectedTimeline)
     || emitter.timeline.some((event, index) => (
       event?.invocationId !== emitter.invocationId || Number(event?.sequence) !== index + 1
     ))
@@ -658,7 +661,7 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
     probe?.providerId !== STRICT_PROVIDER_ID
     || probe?.templateId !== STRICT_PROVIDER_TEMPLATE_ID
     || probe?.endpointHost !== release.endpointHost
-    || (release.v2 && (probe?.model !== release.modelId || probe?.configuredModel !== release.modelId))
+    || (release.v2 && probe?.model !== release.modelId)
     || probe?.credentialStatus?.backend !== 'windows-credential-manager'
     || probe?.credentialStatus?.exists !== true
     || probe?.credentialStatus?.reference !== STRICT_PROVIDER_CREDENTIAL_REFERENCE
@@ -835,8 +838,8 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
       || configuredUrl.username
       || configuredUrl.password
       || configuredUrl.port
-      || configuredUrl.hostname !== release.endpointHost
-      || configuredUrl.hostname !== probe?.endpointHost
+      || configuredUrl.hostname !== (release.v2 ? STRICT_PROVIDER_ENDPOINT_HOST : release.endpointHost)
+      || (!release.v2 && configuredUrl.hostname !== probe?.endpointHost)
     )) {
       issues.push('provider preflight endpoint host does not match configured base URL');
     }

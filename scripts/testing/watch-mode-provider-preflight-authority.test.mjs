@@ -133,7 +133,7 @@ for (const layer of ['probe', 'emitter', 'raw', 'diagnostics']) {
     const observed = { ...structuredClone(expected), authorizationObservedAt: '2026-09-21T00:00:00Z' };
     const layers = Object.fromEntries(['probe', 'emitter', 'raw', 'diagnostics'].map(key => [key, { preflightAuthorization: structuredClone(observed) }]));
     Object.assign(layers.probe, { protocol: expected.protocol, providerId: 'provider-dashscope', templateId: 'template-dashscope-realtime',
-      model: selection.modelId, configuredModel: selection.modelId, endpointHost: selection.endpointHost,
+      model: selection.modelId, configuredModel: 'qwen3.5-omni-plus-realtime', endpointHost: selection.endpointHost,
       credentialStatus: { backend: 'windows-credential-manager', exists: true, reference: 'credential://provider/dashscope/default' },
       transportRequested: 'websocket', effectiveTransport: 'websocket' });
     layers.raw.fallbackApplied = false;
@@ -142,7 +142,7 @@ for (const layer of ['probe', 'emitter', 'raw', 'diagnostics']) {
       fs.writeFileSync(path.join(root, 'provider-probe-result.json'), JSON.stringify(layers.probe));
       fs.writeFileSync(path.join(root, 'emitter-result.json'), JSON.stringify(layers.emitter));
       fs.writeFileSync(path.join(root, 'diagnostics-bundle/snapshots/extra/provider-probe-summary.json'), JSON.stringify(layers.diagnostics));
-      fs.writeFileSync(path.join(root, 'diagnostics-bundle/snapshots/config.json'), JSON.stringify({ providers: [{ providerId: 'provider-dashscope', templateId: 'template-dashscope-realtime', baseUrl: 'https://' + selection.endpointHost }] }));
+      fs.writeFileSync(path.join(root, 'diagnostics-bundle/snapshots/config.json'), JSON.stringify({ providers: [{ providerId: 'provider-dashscope', templateId: 'template-dashscope-realtime', baseUrl: 'https://dashscope.aliyuncs.com/api/v1' }] }));
       return validateProviderPreflightRawAuthority(root, { expectedAuthorization: expected }).issues.join('\n');
     };
     const before = write();

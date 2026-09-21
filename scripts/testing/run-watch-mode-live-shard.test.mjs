@@ -22,7 +22,7 @@ import {
   terminatePowerShellShardChild,
 } from './run-watch-mode-live-shard.mjs';
 import { defaultSingleWorkerAssignments } from './run-watch-mode-live-coordinator.mjs';
-import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { LIVE_LLM_CELLS, createBalancedReleasePlan, liveCellsForReleasePlan } from './watch-mode-balanced-release-plan.mjs';
 import {
   WATCH_RUNNER_READINESS_TIMEOUT_SECONDS,
   WATCH_SHARD_POST_REPORT_ENVELOPE_MS,
@@ -71,7 +71,8 @@ const PROVENANCE = Object.freeze({
 
 const inventory = (name, sha) => [{ path: `${name}/binary`, bytes: 11, sha256: sha }];
 
-function fixture() {
+function fixture(releaseSelection) {
+  const selectedCell = liveCellsForReleasePlan(createBalancedReleasePlan(releaseSelection))[0];
   const now = new Date();
   const generatedAt = new Date(now.getTime() - 1_000);
   const workers = [{
@@ -90,6 +91,7 @@ function fixture() {
     shardOrchestrationImplementationHashes: inventory('shard', SHA_A),
   };
   const plan = createSignedExecutionPlan({
+    releaseSelection,
     executionId: 'watch-shard-worker-test',
     generatedAt,
     expiresAt: new Date(now.getTime() + 3_600_000),
@@ -99,10 +101,10 @@ function fixture() {
     providerPreflightAuthority: {
       path: 'preflight.json', bytes: 1, sha256: SHA_B, status: 'completed',
       providerId: 'provider-dashscope',
-      model: 'qwen3.5-livetranslate-flash-realtime',
+      model: selectedCell.modelId,
       protocol: 'dashscope-livetranslate',
       operation: 'livetranslate-session-lifecycle-preflight',
-      modelProtocolProfileIdentity: MODEL_PROTOCOL_PROFILE_IDENTITY,
+      modelProtocolProfileIdentity: selectedCell.modelProtocolProfileIdentity,
       inputMode: 'none',
       providerInputMode: 'none',
       responseMode: 'text-only',
@@ -117,7 +119,7 @@ function fixture() {
       firstServerEvent: { type: 'session.created', monotonicMs: 606 },
       sessionAuthority: {
         sessionIdentitySha256: SHA_A,
-        serverModel: 'qwen3.5-livetranslate-flash-realtime',
+        serverModel: selectedCell.modelId,
         echoedSessionConfigSha256: SHA_B,
       },
       rawTrace: {
@@ -129,7 +131,7 @@ function fixture() {
       audioSeconds: null,
     },
     workers,
-    assignments: defaultSingleWorkerAssignments(workers),
+    assignments: defaultSingleWorkerAssignments(workers, releaseSelection),
     ...keys,
   });
   return {
@@ -544,5 +546,21 @@ test('worker discards a paid result when runtime hashes change during the cell',
     );
   } finally {
     fs.rmSync(shardRoot, { recursive: true, force: true });
+  }
+});
+
+import { buildLiveWatchModeRunRequest } from './watch-mode-run-request.mjs';
+
+test('signed 3.8 shard reaches the actual run-request builder with its workspace and four routes', () => {
+  const selection = { modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'acceptance.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing' };
+  const f = fixture(selection);
+  for (const lease of f.leases) {
+    const request = buildShardCellExecutionRequest({ plan: f.plan, lease, workerId: f.workers[0].workerId, vmIdentity: f.workers[0].vmIdentity, shardRoot: path.join(os.tmpdir(), 'signed-38-builder'), now: f.now });
+    const runRequest = buildLiveWatchModeRunRequest(request.runnerOptions, { authorityMode: 'strict-paid' });
+    assert.equal(runRequest.model.id, selection.modelId);
+    assert.equal(runRequest.model.protocol, 'dashscope-livetranslate');
+    assert.equal(request.environment.OMNI_WATCH_MODE_EXPECTED_PROVIDER_ENDPOINT_HOST, selection.endpointHost);
+    assert.equal(runRequest.matrix.cellId, request.cell.cellId);
+    assert.throws(() => buildLiveWatchModeRunRequest({ ...request.runnerOptions, model: 'qwen3.9-livetranslate-flash-realtime' }, { authorityMode: 'strict-paid' }), /strict-paid/);
   }
 });

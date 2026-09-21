@@ -1,3 +1,4 @@
+import ProviderWorkspaceEndpointHint from './ProviderWorkspaceEndpointHint';
 import { useTranslation } from 'react-i18next';
 import AppIcon from '../../components/icons/AppIcon';
 import ModalDialog from '../../components/ModalDialog';
@@ -36,6 +37,7 @@ export default function ProviderAdvancedSettingsDialog(props: Props) {
         <label className="field-stack"><span>{t('providers.advanced.temperature')}</span><input className="text-input" max={2} min={0} onChange={(event) => draft({ temperature: Number(event.target.value) || 0 })} step={0.1} type="number" value={props.provider.temperature} /></label>
         <label className="field-stack"><span>{t('providers.advanced.maxOutputTokens')}</span><input className="text-input" min={1} onChange={(event) => draft({ maxOutputTokens: Number(event.target.value) || 1 })} step={1} type="number" value={props.provider.maxOutputTokens} /></label>
         {typeof props.provider.region === 'string' ? <label className="field-stack"><span>{t('providers.advanced.region')}</span><input className="text-input" onChange={(event) => draft({ region: event.target.value })} value={props.provider.region} /></label> : null}
+        <ProviderWorkspaceEndpointHint provider={props.provider} />
         <label className="field-stack field-span-full"><span>{t('providers.advanced.sampleText')}</span><textarea className="text-area provider-compact-textarea" onChange={(event) => props.onSampleTextChange(event.target.value)} rows={3} value={props.sampleText} /></label>
         <div className="field-stack field-span-full"><span>{t('providers.advanced.responseModalities')}</span><div className="provider-scenario-switcher">{(['text', 'audio'] as ProviderResponseModality[]).map((modality) => <button className={props.provider.responseModalities.includes(modality) ? 'provider-scenario-pill provider-scenario-pill-active' : 'provider-scenario-pill'} key={modality} onClick={() => props.onResponseModalityToggle(modality)} type="button">{modality === 'text' ? t('providers.common.text') : t('providers.common.audio')}</button>)}</div></div>
       </div>

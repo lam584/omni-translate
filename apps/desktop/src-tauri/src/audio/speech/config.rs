@@ -294,7 +294,7 @@ fn is_livetranslate_model_reference(config: &Value, model_id: &str) -> bool {
                 .ok()
                 .is_some_and(|profiles| {
                     profiles.len() == 1
-                        && profiles[0].wire_dialect == "bailian-livetranslate-session-ws-v1"
+                        && matches!(profiles[0].wire_dialect.as_str(), "bailian-livetranslate-session-ws-v1" | "bailian-livetranslate-session-ws-v2")
                 })
             })
         })

@@ -1,0 +1,181 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "bailian.livetranslate.realtime.ws.fixture.v1",
+  "providerId": "bailian",
+  "protocolProfileId": "bailian.livetranslate.realtime.ws",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "bailian.docs.1"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Generated documentation fixture projection from apps/desktop/src-tauri/fixtures/model-protocol/livetranslate-session.json; never authorizes paid calls."
+  },
+  "scenario": "Exact bailian.livetranslate.realtime.ws protocol replay",
+  "data": {
+    "endpointStatus": "verified",
+    "networkAuthorized": false,
+    "connectionUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+    "authContract": {
+      "profileId": "bailian.auth.bearer",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "value": "Bearer <redacted>"
+        }
+      ]
+    },
+    "audioContract": {
+      "input": {
+        "required": true,
+        "codecs": [
+          "pcm16",
+          "opus"
+        ],
+        "sampleRatesHz": [
+          8000,
+          16000
+        ],
+        "channels": [
+          1
+        ]
+      },
+      "output": {
+        "required": false,
+        "codecs": [
+          "pcm16"
+        ],
+        "sampleRatesHz": [
+          24000
+        ],
+        "channels": [
+          1
+        ]
+      }
+    },
+    "events": [
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "session.created",
+        "type": "session.created"
+      },
+      {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "session.update",
+        "payload": {
+          "session": {
+            "translation": {
+              "language": "zh",
+              "corpus": {
+                "phrases": {
+                  "Mars": "火星",
+                  "artificial biosphere": "人工生物圈",
+                  "light bulb": "灯泡",
+                  "one billion": "十亿"
+                }
+              }
+            }
+          }
+        },
+        "type": "session.update"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "session.updated",
+        "type": "session.updated"
+      },
+      {
+        "direction": "client",
+        "frameKind": "json-base64",
+        "eventType": "input_audio_buffer.append",
+        "type": "input_audio_buffer.append",
+        "audio": "<redacted>"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.created",
+        "type": "response.created"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.output_item.added",
+        "type": "response.output_item.added"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.content_part.added",
+        "type": "response.content_part.added"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.text.text",
+        "payload": {
+          "text": "你",
+          "stash": "好"
+        },
+        "type": "response.text.text"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.text.text",
+        "payload": {
+          "text": "你好",
+          "stash": "啊"
+        },
+        "type": "response.text.text"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.text.done",
+        "payload": {
+          "text": "你好啊"
+        },
+        "type": "response.text.done"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.content_part.done",
+        "type": "response.content_part.done"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.output_item.done",
+        "type": "response.output_item.done"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.done",
+        "type": "response.done"
+      },
+      {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "session.finish",
+        "type": "session.finish"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "session.finished",
+        "type": "session.finished",
+        "terminal": true
+      }
+    ]
+  }
+}

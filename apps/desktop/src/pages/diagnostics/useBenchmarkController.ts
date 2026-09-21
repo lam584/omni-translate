@@ -144,7 +144,7 @@ export function useBenchmarkController(
       });
       latestReport = nextReport;
       setReport(nextReport);
-      setProgress((current) => ({ status: 'completed', phase: 'completed', message: current!.message || i18n.t('diagnostics.benchmark.completed'), audioChunksSent: current!.audioChunksSent, totalAudioChunks: current!.totalAudioChunks, error: null }));
+      setProgress((current) => ({ status: 'completed', phase: 'completed', message: current!.phase === 'starting' ? i18n.t('diagnostics.benchmark.completed') : current!.message || i18n.t('diagnostics.benchmark.completed'), audioChunksSent: current!.audioChunksSent, totalAudioChunks: current!.totalAudioChunks, error: null }));
       try {
         await lifecycle.onCompleted?.({ runId, report: nextReport });
       } catch (persistenceError) {

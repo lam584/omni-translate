@@ -1036,12 +1036,12 @@ test('worker preparation normalizes and verifies signed implementation bytes bef
     source.indexOf('const readinessTransport = createSshProductionTransport'),
   );
   assert.match(readinessPlan, /authorityImplementationHashes/u);
-  assert.equal(AUTHORITY_IMPLEMENTATION_FILES.length, 63);
+  assert.equal(AUTHORITY_IMPLEMENTATION_FILES.length, 64);
   assert.ok(AUTHORITY_IMPLEMENTATION_FILES.includes('scripts/testing/prepare-watch-release.mjs'));
   assert.ok(AUTHORITY_IMPLEMENTATION_FILES.includes('scripts/testing/distribute-watch-runtime.mjs'));
 });
 
-test('fresh readiness transports all 63 production implementation entries', () => {
+test('fresh readiness transports all 64 production implementation entries', () => {
   const implementationHashes = AUTHORITY_IMPLEMENTATION_FILES.map((entryPath, index) => ({
     path: entryPath,
     bytes: index + 1,
@@ -1060,7 +1060,7 @@ test('fresh readiness transports all 63 production implementation entries', () =
       requestDigest: 'c'.repeat(64),
     },
   });
-  assert.equal(plan.authority.implementationHashes.length, 63);
+  assert.equal(plan.authority.implementationHashes.length, 64);
   assert.deepEqual(plan.authority.implementationHashes, implementationHashes);
 });
 
@@ -1260,7 +1260,9 @@ test('zero-provider readiness reserves enough time for signed driver reinstall a
     deriveWatchProductionPrepaidCoordinatorBudgetMs()
       + deriveWatchPostReadinessExecutionBudgetMs({ cells: LIVE_LLM_CELLS }),
   );
-  assert.equal(PRODUCTION_COORDINATOR_TIMEOUT_MS, 14_062_000);
+  // One additional signed provider-environment module adds only its existing upload allowance.
+  // Paid cell deadlines and audio sample ceilings above remain unchanged.
+  assert.equal(PRODUCTION_COORDINATOR_TIMEOUT_MS, 14_122_000);
 });
 
 test('production transport applies each formal cell timeout at its actual outer boundary', () => {
@@ -1870,6 +1872,12 @@ test('production worker config v3 binds three distinct transports, BIOS UUIDs, h
     fourConfig.workers[0].transport = { kind: 'local' };
     fourConfig.workers.push(worker('vm131', '192.168.40.131', 'DDDD'));
     fourConfig.providerPreflightExecutor = { workerId: 'vm167' };
+    const releaseSelection = { modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'test-workspace.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing' };
+    for (const selectedConfig of [config, fourConfig]) {
+      const selected = validateProductionWorkerConfig(selectedConfig, { configDirectory: root, releaseSelection });
+      assert.equal(selected.assignments.length, 4);
+      assert.ok(selected.assignments.every(({ cellId }) => cellId.includes(releaseSelection.modelId)));
+    }
     const four = validateProductionWorkerConfig(fourConfig, { configDirectory: root });
     assert.deepEqual(four.assignments.map(({ workerId, waveIndex }) => [workerId, waveIndex]), [
       ['vm171', 0], ['vm169', 0], ['vm131', 0], ['vm167', 0],
@@ -2796,16 +2804,21 @@ test('paid scheduler cleanup gates success output and preserves primary failures
   assert.match(finalization, /\} else \{\s*Stop-ScheduledTask[\s\S]*?Stop-GuardedNode \$launchPath/);
 });
 
-test('production coordinator passes four collected signed shard roots through stage, verify, and publish', async () => {
+for (const releaseSelection of [undefined, { modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'test-workspace.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing' }]) {
+test('production coordinator passes four collected signed shard roots through stage, verify, and publish: ' + (releaseSelection?.modelId ?? 'default'), async () => {
+  const { createBalancedReleasePlan, liveCellsForReleasePlan } = await import('./watch-mode-balanced-release-plan.mjs');
+  const { STRICT_PAID_PROVIDER_IDENTITY } = await import('./watch-mode-external-provider-budget.mjs');
+  const selectedPlan = createBalancedReleasePlan(releaseSelection);
+  const selectedCells = liveCellsForReleasePlan(selectedPlan);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-production-orchestrator-'));
   const config = rawWorkerConfig(root, ['vm171', 'vm167', 'vm169', 'vm131']);
-  const normalized = validateProductionWorkerConfig(config, { configDirectory: root });
+  const normalized = validateProductionWorkerConfig(config, { configDirectory: root, releaseSelection });
   const profilesByWorker = new Map(normalized.workers.map((worker) => [
     worker.workerId,
     new Map(worker.deviceProfileInstances.map((profile) => [profile.deviceClass, profile])),
   ]));
   const placements = normalized.assignments.map(({ workerId, waveIndex }) => [workerId, waveIndex]);
-  const cells = LIVE_LLM_CELLS.map((cell, index) => {
+  const cells = selectedCells.map((cell, index) => {
     const [workerId, waveIndex] = placements[index];
     return {
       ...cell,
@@ -2818,6 +2831,8 @@ test('production coordinator passes four collected signed shard roots through st
     };
   });
   const plan = {
+    ...(releaseSelection ? { releaseSelection } : {}),
+    providerIdentity: { ...STRICT_PAID_PROVIDER_IDENTITY, ...(releaseSelection ? { endpointHost: releaseSelection.endpointHost } : {}) },
     executionId: 'production-test-execution',
     provenance: CLEAN_PROVENANCE,
     authority: { runtimeBinaryHashes: [] },
@@ -2856,6 +2871,7 @@ test('production coordinator passes four collected signed shard roots through st
   try {
     const coordinatorOptions = {
       workerConfig: config,
+      ...(releaseSelection ? { releaseSelection } : {}),
       runtimeAuthority: 'runtime.json',
       localIsolationAuthority: 'local.json',
       coordinatorOutputRoot: path.join(
@@ -2884,6 +2900,7 @@ test('production coordinator passes four collected signed shard roots through st
         }),
         runZeroProviderWorkerReadiness: async (context) => {
           calls.push('zero-provider-readiness');
+          assert.deepEqual(context.releaseSelection, releaseSelection);
           fs.mkdirSync(context.executionRoot, { recursive: true });
           const workerReadinessRequest = createWorkerReadinessRequest(context);
           const requestPath = path.join(context.executionRoot, 'worker-readiness-request.json');
@@ -2930,15 +2947,18 @@ test('production coordinator passes four collected signed shard roots through st
           preparationRun += 1;
           const executionRoot = path.join(root, `execution-${preparationRun}`);
           calls.push('prepare');
+          assert.deepEqual(options.releaseSelection, releaseSelection);
+          assert.deepEqual(options.assignments, normalized.assignments);
           assert.deepEqual(options.signingKeys, signingKeys);
           assert.equal(typeof options.buildRuntimeAuthority, 'function');
           assert.equal(typeof options.runProviderPreflight, 'function');
           assert.equal(typeof options.runZeroProviderWorkerReadiness, 'function');
           assert.equal(
             options.minimumRemainingExecutionMs,
-            deriveWatchPostReadinessExecutionBudgetMs({ cells: LIVE_LLM_CELLS }),
+            deriveWatchPostReadinessExecutionBudgetMs({ cells: selectedCells }),
           );
           const workerReadiness = await options.runZeroProviderWorkerReadiness({
+            ...(releaseSelection ? { releaseSelection } : {}),
             executionId: plan.executionId,
             executionRoot,
             generatedAt: new Date(),
@@ -3034,7 +3054,11 @@ test('production coordinator passes four collected signed shard roots through st
             finalExecutionRoot,
           };
         },
-        assertCellExternalProviderBudget: (_directory, expected) => ({
+        assertCellExternalProviderBudget: (_directory, expected) => {
+          assert.deepEqual(expected.approvedModels, selectedPlan.models);
+          assert.deepEqual(expected.providerIdentity, plan.providerIdentity);
+          assert.deepEqual(expected.modelProtocolProfileIdentity, selectedCells.find(cell => cell.cellId === expected.cellId).modelProtocolProfileIdentity);
+          return ({
           passed: true,
           cellId: expected.cellId,
           modelId: expected.modelId,
@@ -3042,18 +3066,22 @@ test('production coordinator passes four collected signed shard roots through st
           actualProviderInputSamples: 1,
           providerSendBoundary: { leaseId: cells.find((cell) => cell.cellId === expected.cellId).leaseId },
           calls: { sourceTranscript: 0, physicalOutputStt: 0, secondaryTranslation: 0, secondaryTts: 0 },
-        }),
-        writeMatrixExternalProviderBudget: (outputRoot) => {
+        }); },
+        writeMatrixExternalProviderBudget: (outputRoot, _ledgers, options) => {
+          assert.deepEqual(options.expectedCells, selectedCells);
           fs.mkdirSync(outputRoot, { recursive: true });
           const filePath = path.join(outputRoot, 'budget.json');
           fs.writeFileSync(filePath, '{"passed":true}\n', 'utf8');
           return { filePath, ledger: { passed: true } };
         },
-        writeMatrixRunManifest: () => {
+        writeMatrixRunManifest: (options) => {
+          assert.deepEqual(options.releaseSelection, releaseSelection);
+          assert.deepEqual(options.modelList, selectedPlan.models);
+          assert.deepEqual(options.releaseCells, selectedCells);
           calls.push('write-manifest');
           return { manifestPath: path.join(root, 'manifest.json') };
         },
-        runVerifier: async () => { calls.push('verify'); return { status: 0 }; },
+        runVerifier: async (options) => { assert.deepEqual(options.releaseSelection, releaseSelection); calls.push('verify'); return { status: 0 }; },
         publishSuccessfulStrictMatrixManifest: () => {
           calls.push('publish');
           return { canonicalPath: path.join(root, 'canonical.json') };
@@ -3073,7 +3101,7 @@ test('production coordinator passes four collected signed shard roots through st
       ['stage:vm171,vm167,vm169,vm131'],
     );
     assert.ok(calls.indexOf('zero-provider-readiness') < calls.indexOf('provider-preflight'));
-    assert.equal(calls.filter((entry) => entry.startsWith('paid:')).length, LIVE_LLM_CELLS.length);
+    assert.equal(calls.filter((entry) => entry.startsWith('paid:')).length, selectedCells.length);
     assert.ok(calls.indexOf('verify') < calls.indexOf('publish'));
     assert.equal(result.workerCount, 4);
     assert.equal(result.waveCount, 1);
@@ -3128,6 +3156,7 @@ test('production coordinator passes four collected signed shard roots through st
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+}
 
 test('disk barrier checks main plus every worker without pruning and settles failed peers', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-disk-barrier-'));
@@ -3379,4 +3408,43 @@ test('prepaid distribution covers every signed shard implementation with exact b
   const source = fs.readFileSync(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url), 'utf8');
   assert.match(source, /const implementationEntries = productionImplementationDistributionEntries\(plan\.authority\)/);
   assert.match(source, /for \(const entry of implementationEntries\) await upload\(worker, entry\.localPath, entry\.remotePath\)/);
+});
+
+const SELECTED_RELEASE = Object.freeze({ modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'test-workspace.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing' });
+
+test('production CLI selects exactly one workspace-bound release and preserves historical default', () => {
+  assert.equal(parseProductionCoordinatorCliArgs([]).releaseSelection, undefined);
+  assert.equal(parseProductionCoordinatorCliArgs(['--model', 'qwen3.5-livetranslate-flash-realtime', '--endpoint-host', 'dashscope.aliyuncs.com']).releaseSelection, undefined);
+  assert.deepEqual(parseProductionCoordinatorCliArgs(['--model', SELECTED_RELEASE.modelId, '--endpoint-host', SELECTED_RELEASE.endpointHost, '--region', SELECTED_RELEASE.region]).releaseSelection, SELECTED_RELEASE);
+  for (const argv of [
+    ['--model', SELECTED_RELEASE.modelId],
+    ['--model', SELECTED_RELEASE.modelId, '--endpoint-host', 'dashscope.aliyuncs.com'],
+    ['--model', SELECTED_RELEASE.modelId, '--endpoint-host', 'cn-beijing.maas.aliyuncs.com'],
+    ['--model', SELECTED_RELEASE.modelId, '--endpoint-host', SELECTED_RELEASE.endpointHost, '--region', 'us-east-1'],
+    ['--model', 'qwen3.5-livetranslate-flash-realtime', '--endpoint-host', SELECTED_RELEASE.endpointHost],
+    ['--endpoint-host', SELECTED_RELEASE.endpointHost],
+    ['--model', 'unknown'],
+  ]) assert.throws(() => parseProductionCoordinatorCliArgs(argv));
+});
+
+test('production selected verifier uses only selected model before any subprocess invocation', async () => {
+  const { runProductionEvidenceVerifier } = await import('./run-watch-mode-live-production-coordinator.mjs');
+  let calls = 0;
+  const runProcess = async (_exe, argv) => {
+    calls += 1;
+    assert.ok(argv.includes(SELECTED_RELEASE.modelId));
+    assert.ok(!argv.includes('qwen3.5-livetranslate-flash-realtime'));
+    return { exitCode: 0 };
+  };
+  await runProductionEvidenceVerifier({ evidenceOutputRoot: 'unused', manifestPath: 'unused.json', releaseSelection: SELECTED_RELEASE, runProcess });
+  await assert.rejects(runProductionEvidenceVerifier({ releaseSelection: { ...SELECTED_RELEASE, endpointHost: 'dashscope.aliyuncs.com' }, runProcess }));
+  assert.equal(calls, 1);
+});
+
+test('production readiness transport retains the selected request identity', () => {
+  const request = { releaseSelection: SELECTED_RELEASE, workers: [], assignments: [], runtimeBinaryHashes: [], runtimeBundleDigest: 'digest', requestDigest: 'request' };
+  const plan = createProductionWorkerReadinessTransportPlan({ executionId: 'selected', workerReadinessRequest: request });
+  assert.deepEqual(plan.releaseSelection, SELECTED_RELEASE);
+  assert.equal(plan.planDigest, request.requestDigest);
+  assert.equal(createProductionWorkerReadinessTransportPlan({ workerReadinessRequest: { ...request, releaseSelection: undefined } }).releaseSelection, undefined);
 });

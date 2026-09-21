@@ -1,3 +1,5 @@
+import { useAppStore } from '../../stores/app-store';
+import { resetModelCapabilityOverride } from '../../utils/provider-model-capabilities-registry';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import AppIcon from '../../components/icons/AppIcon';
@@ -33,13 +35,18 @@ const MODEL_ID_DATALIST_ID = 'provider-capability-registry-model-ids';
 
 export default function ProviderCapabilityRegistryDialog(props: Props) {
   const { t } = useTranslation();
+  const restoreInheritance = (modelId: string) => {
+    const state = useAppStore.getState();
+    const provider = state.configDraft.providers.find((item) => item.templateId === state.configDraft.activeProviderTemplateId);
+    if (provider) state.updateActiveProviderDraft(resetModelCapabilityOverride(provider, modelId));
+  };
   // Only the first entry for a model id wins at resolve time, so surface later
   // duplicates inline instead of silently ignoring them.
   const duplicateEntryIds = useMemo(() => {
     const seen = new Set<string>();
     const duplicates = new Set<string>();
     for (const entry of props.entries) {
-      const key = entry.modelId.trim().toLowerCase();
+      const key = entry.modelId;
       if (!key) continue;
       if (seen.has(key)) duplicates.add(entry.id);
       else seen.add(key);
@@ -60,7 +67,9 @@ export default function ProviderCapabilityRegistryDialog(props: Props) {
         {props.entries.map((entry) => <div className="provider-capability-registry-item" key={entry.id}>
         <div className="provider-capability-registry-model-cell">
           <input aria-label={t('providers.capabilityRegistry.modelIdLabel')} className="text-input" list={MODEL_ID_DATALIST_ID} onChange={(event) => props.onChange(entry.id, { modelId: event.target.value })} placeholder={t('providers.capabilityRegistry.modelIdPlaceholder')} value={entry.modelId} />
-          {duplicateEntryIds.has(entry.id) ? <p className="provider-capability-registry-duplicate">{t('providers.capabilityRegistry.duplicateModelId')}</p> : null}
+          <p className="provider-setting-footnote">{t('audioRouting.chainSource')}: {entry.source ?? 'manual'} · {t('customProvider.fieldTransport')}: {entry.profileId ? entry.profileId + '@' + entry.profileVersion : t('sceneReadiness.providerNotVerified')}</p>
+          {entry.modelProtocolProfile?.adapterStatus !== undefined && entry.modelProtocolProfile.adapterStatus !== 'enabled' ? <p>{t('providerProbe.verdictUnavailable')} · {t('providers.common.disabled')}</p> : null}
+          {(duplicateEntryIds.has(entry.id) || entry.registryDiagnostics?.includes('duplicate-model-id')) ? <p className="provider-capability-registry-duplicate">{t('providers.capabilityRegistry.duplicateModelId')}</p> : null}
         </div>
         <div className="provider-scenario-switcher provider-capability-registry-pills">{providerCapabilityOrder.map((capability) => <button className={entry.capabilities.includes(capability) ? 'provider-scenario-pill provider-scenario-pill-active' : 'provider-scenario-pill'} key={capability} onClick={() => props.onCapabilityToggle(entry.id, capability)} title={t(providerCapabilityHintKey(capability))} type="button">{t(providerCapabilityLabelKey(capability))}</button>)}</div>
         <select className="select-input provider-capability-mode-select" onChange={(event) => props.onChange(entry.id, { realtimeAudioMode: isRealtimeAudioMode(event.target.value) ? event.target.value : 'server_vad' })} title={t('providers.pendingModel.realtimeAudioMode')} value={entry.realtimeAudioMode ?? 'server_vad'}>{realtimeAudioModeOrder.map((mode) => <option key={mode} value={mode}>{t(`${realtimeAudioModeHelpKey(mode)}.name`)}</option>)}</select>
@@ -68,6 +77,8 @@ export default function ProviderCapabilityRegistryDialog(props: Props) {
           <span className="provider-capability-group-label">{t(providerInteractionCapabilityGroupLabelKey(group.id))}</span>
           <div className="provider-scenario-switcher provider-capability-registry-pills">{group.capabilities.map((capability) => <button className={(entry.interactionCapabilities ?? []).includes(capability) ? 'provider-scenario-pill provider-scenario-pill-active' : 'provider-scenario-pill'} key={capability} onClick={() => props.onInteractionToggle(entry.id, capability)} title={t(providerInteractionCapabilityHintKey(capability))} type="button">{t(providerInteractionCapabilityLabelKey(capability))}</button>)}</div>
         </div>)}</div>
+<label><input type="checkbox" checked={entry.hidden ?? false} onChange={(event) => props.onChange(entry.id, { hidden: event.target.checked })} />{t('watchReport.hidden')}</label>
+        <button type="button" onClick={() => restoreInheritance(entry.modelId)}>{t('audioRouting.restoreDefaults')} ({t('common.delete')})</button>
         <button className="provider-header-icon provider-header-icon-danger" onClick={() => props.onRemove(entry.id)} title={t('providers.capabilityRegistry.deleteEntry')} type="button"><AppIcon name="trash" size={13} /></button>
       </div>)}
       </> : <div className="provider-directory-empty provider-scene-empty"><strong>{t('providers.capabilityRegistry.emptyTitle')}</strong><p>{t('providers.capabilityRegistry.emptyDescription')}</p></div>}</div>

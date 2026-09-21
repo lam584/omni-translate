@@ -28,7 +28,7 @@ pub(super) fn bailian_protocol_from_authority(
     authority: &AuthorizedModelProtocolProfile,
 ) -> Option<RealtimeProtocol> {
     match authority.wire_dialect.as_str() {
-        "bailian-livetranslate-session-ws-v1" => {
+        "bailian-livetranslate-session-ws-v1" | "bailian-livetranslate-session-ws-v2" => {
             Some(RealtimeProtocol::DashscopeLivetranslate)
         }
         _ => None,
@@ -40,7 +40,19 @@ pub(super) fn resolve_bailian_model_protocol_authority(
     model: &str,
     operation: &str,
 ) -> Result<AuthorizedModelProtocolProfile, String> {
-    let entry = selected_registry_entry(provider, model);
+    let bindings = provider.model_protocol_bindings.iter()
+        .filter(|binding| binding.model_id == model && crate::provider::model_protocol_profile::binding_operation_matches(&binding.operation, operation))
+        .collect::<Vec<_>>();
+    if bindings.len() > 1 {
+        return Err("model_protocol.profile_ambiguous: multiple explicit bindings for model and operation".to_string());
+    }
+    let binding = bindings.first().copied();
+    if binding.is_some() && provider.model_registry_version != Some(2)
+        && lookup_model_protocol_profiles_for_inspection(model).map_err(|error| error.to_string())?.is_empty() {
+        return Err("model_protocol.profile_declaration_missing: custom bindings require modelRegistryVersion 2".to_string());
+    }
+    let entry = if provider.model_registry_version == Some(2) || binding.is_some() { None }
+        else { selected_registry_entry(provider, model) };
     let registry_version = match entry {
         Some(entry) => Some(
             entry
@@ -77,6 +89,13 @@ pub(super) fn resolve_bailian_model_protocol_authority(
         })?),
         None => None,
     };
+    // A selected v1 row is an explicit declaration: preserve its missing-field
+    // error before model lookup. Gateway preflight independently rejects unknown
+    // voice identities before transport. V2 advisory projections never enter here.
+    if binding.is_none() && lookup_model_protocol_profiles_for_inspection(model)
+        .map_err(|error| error.to_string())?.is_empty() {
+        return Err("model_protocol.model_not_registered: model has no built-in authority or explicit binding".to_string());
+    }
     let region = provider.region.as_deref().unwrap_or("");
     let endpoint_host = url::Url::parse(provider.base_url.trim())
         .ok()
@@ -87,7 +106,7 @@ pub(super) fn resolve_bailian_model_protocol_authority(
             )
         })?;
     let authorize = |audio_input, audio_output| {
-        authorize_model_protocol_invocation(ModelProtocolAuthorizationRequest {
+        crate::provider::model_protocol_profile::authorize_model_protocol_invocation_with_binding(ModelProtocolAuthorizationRequest {
             exact_model_id: model,
             operation,
             transport: &provider.transport,
@@ -101,11 +120,11 @@ pub(super) fn resolve_bailian_model_protocol_authority(
             declared_wire_dialect: None,
             declared_endpoint_family: None,
             declared_terminal_lifecycle: None,
-        })
+        }, binding)
         .map_err(|error| {
             format!(
                 "{}: Bailian model '{}' is not authorized for operation={} transport={} region={} endpointHost={}",
-                error.code(), model, operation, provider.transport, region, endpoint_host
+                error, model, operation, provider.transport, region, endpoint_host
             )
         })
     };
@@ -113,7 +132,7 @@ pub(super) fn resolve_bailian_model_protocol_authority(
     // may then supply its audited production media contract; model-name or UI
     // capability metadata never selects these values.
     let inspected_authority = authorize(None, None)?;
-    let authority = if inspected_authority.adapter_id == "desktop-livetranslate-session-v1" {
+    let authority = if crate::audio::bailian_protocol::is_supported_authority(&inspected_authority) {
         authorize(
             Some(ModelProtocolRequestedAudio {
                 codec: "pcm16",
@@ -129,6 +148,14 @@ pub(super) fn resolve_bailian_model_protocol_authority(
     } else {
         inspected_authority
     };
+    if binding.is_some() {
+        let endpoint = url::Url::parse(provider.base_url.trim()).map_err(|_| "model_protocol.endpoint_host_required".to_string())?;
+        let path = endpoint.path().trim_end_matches('/');
+        if !matches!(endpoint.scheme(), "https" | "wss") || !endpoint.username().is_empty() || endpoint.password().is_some()
+            || !["", "/api/v1", "/compatible-mode/v1", authority.endpoint_path.as_str()].contains(&path) {
+            return Err("model_protocol.endpoint_family_mismatch: explicit binding requires an official secure endpoint path".to_string());
+        }
+    }
     if bailian_protocol_from_authority(&authority).is_none() {
         return Err(format!(
             "model_protocol.adapter_unavailable: authorized wire dialect '{}' has no Desktop route adapter",

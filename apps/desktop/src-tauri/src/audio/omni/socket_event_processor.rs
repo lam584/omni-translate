@@ -681,6 +681,9 @@ impl OmniSocketEventProcessor {
                 }
                 let response_completed = mutation.response_completed;
                 let response_terminal_status = mutation.response_terminal_status.clone();
+                let normalized_delta_snapshot = mutation.normalized_text.as_ref()
+                    .filter(|_| matches!(event_type.as_str(), "response.text.delta" | "response.audio_transcript.delta"))
+                    .cloned();
                 if let Some(normalized_text) = mutation.normalized_text {
                     evt["text"] = Value::String(normalized_text);
                     evt["stash"] = Value::String(String::new());
@@ -1023,6 +1026,7 @@ impl OmniSocketEventProcessor {
                             event_type,
                             subtitle_translate_active,
                             native_translation_reuse_active,
+                            normalized_delta_snapshot.as_deref(),
                         );
                         current_cue_id = output.current_cue_id;
                         pending_source_text = output.pending_source_text;

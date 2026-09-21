@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::bailian_contract::authorize_enabled_livetranslate;
+use crate::bailian_contract::{authorize_livetranslate, ProtocolBinding};
 use crate::protocol::BenchmarkProtocol;
 
 // ──────────────────────────────── Constants ────────────────────────────────
@@ -27,6 +27,7 @@ pub struct BatchArgs {
 // ──────────────────────────────── CLI Config ────────────────────────────────
 
 pub struct Config {
+    pub protocol_binding: Option<ProtocolBinding>,
     pub api_key: String,
     pub audio_path: PathBuf,
     pub model: String,
@@ -57,6 +58,7 @@ Single model mode:
   --mp3 <path>               Deprecated alias for --audio
 
 Options:
+  --protocol-binding <file> Explicit unknown-model profileId/profileVersion/region JSON
   --model <model>            Model name (default: {DEFAULT_MODEL})
   --protocol <dialect>       Protocol dialect (default: dashscope-livetranslate)
                              Supported: dashscope-omni, dashscope-livetranslate,
@@ -193,12 +195,18 @@ fn parse_single_args(args: &[String]) -> Result<Config, String> {
     let mut auth_header_name: Option<String> = None;
     let mut auth_scheme: Option<String> = None;
     let mut credential_ref: Option<String> = None;
+    let mut protocol_binding: Option<ProtocolBinding> = None;
 
     let mut args = args.iter().cloned();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--audio" => audio_path = Some(PathBuf::from(next_val(&mut args, "--audio")?)),
             "--mp3" => audio_path = Some(PathBuf::from(next_val(&mut args, "--mp3")?)),
+            "--protocol-binding" => {
+                let path = next_val(&mut args, "--protocol-binding")?;
+                let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+                protocol_binding = Some(serde_json::from_str(&content).map_err(|e| format!("invalid protocol binding: {e}"))?);
+            }
             "--model" => model = next_val(&mut args, "--model")?,
             "--protocol" => protocol = parse_protocol(&next_val(&mut args, "--protocol")?)?,
             "--base-url" => base_url = Some(next_val(&mut args, "--base-url")?),
@@ -234,6 +242,9 @@ fn parse_single_args(args: &[String]) -> Result<Config, String> {
     }
 
     let final_base_url = base_url.unwrap_or_else(|| protocol.default_base_url().to_string());
+    if protocol_binding.is_some() && protocol != BenchmarkProtocol::DashscopeLiveTranslate {
+        return Err("model_protocol.not_authorized: binding requires LiveTranslate".to_string());
+    }
     if protocol.is_dashscope_family() {
         if protocol != BenchmarkProtocol::DashscopeLiveTranslate || manual {
             return Err(
@@ -241,7 +252,7 @@ fn parse_single_args(args: &[String]) -> Result<Config, String> {
                     .to_string(),
             );
         }
-        authorize_enabled_livetranslate(&model, &final_base_url)?;
+        authorize_livetranslate(&model, &final_base_url, protocol_binding.as_ref())?;
     }
 
     // 解析 API key：CLI > 环境变量 > Credential Manager
@@ -270,7 +281,8 @@ fn parse_single_args(args: &[String]) -> Result<Config, String> {
     let final_auth_header = auth_header_name.unwrap_or_else(|| protocol.default_auth_header().to_string());
     let final_auth_scheme = auth_scheme.unwrap_or_else(|| protocol.default_auth_scheme().to_string());
 
-    Ok(Config {
+    let config = Config {
+        protocol_binding,
         api_key: final_key,
         audio_path,
         model,
@@ -285,7 +297,9 @@ fn parse_single_args(args: &[String]) -> Result<Config, String> {
         protocol,
         auth_header_name: final_auth_header,
         auth_scheme: final_auth_scheme,
-    })
+    };
+    if config.protocol.is_dashscope_family() { crate::dashscope::prepare_client_plan(&config)?; }
+    Ok(config)
 }
 
 fn parse_protocol(value: &str) -> Result<BenchmarkProtocol, String> {
@@ -342,4 +356,22 @@ mod tests {
             assert!(!error.contains("API key"), "authority must run before credentials");
         }
     }
+    #[test]
+    fn binding_file_parses_without_changing_default_model_or_dialect() {
+        let path = std::env::temp_dir().join(format!("omni-binding-{}.json", std::process::id()));
+        std::fs::write(&path, r#"{"profileId":"bailian.livetranslate.3_8.realtime.ws","profileVersion":1,"region":"cn-beijing"}"#).unwrap();
+        let args: Vec<String> = ["--audio", path.to_str().unwrap(), "--api-key", "offline-test", "--model", "custom", "--protocol-binding", path.to_str().unwrap(), "--base-url", "wss://workspace-test.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime"].into_iter().map(str::to_string).collect();
+        let config = parse_single_args(&args).unwrap();
+        assert_eq!(config.model, "custom");
+        assert_eq!(config.protocol_binding.unwrap().profile_version, 1);
+        let defaults = parse_single_args(&args[..4]).unwrap();
+        assert_eq!(defaults.model, DEFAULT_MODEL);
+        assert!(defaults.protocol_binding.is_none());
+        let mut wrong = args.clone(); wrong.extend(["--protocol".into(),"openai-flat".into()]);
+        assert!(parse_single_args(&wrong).is_err());
+        std::fs::write(&path, r#"{"profileId":"x","profileVersion":1,"region":"cn-beijing","operation":"dialogue"}"#).unwrap();
+        assert!(parse_single_args(&args).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
 }

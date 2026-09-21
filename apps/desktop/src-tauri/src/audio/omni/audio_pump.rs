@@ -76,6 +76,8 @@ impl ProviderAudioPacer {
 }
 
 pub(super) struct OmniAudioPumpState {
+    #[cfg(test)]
+    pub(super) consumed_capture_bytes: u64,
     pub(super) buffer_size: u64,
     pub(super) reconnect_count: usize,
     pub(super) chunk_count: u64,
@@ -303,8 +305,8 @@ fn reconnect_after_audio_send_failure<C: RealtimeSocketConnector, R: tauri::Runt
 }
 
 impl OmniAudioPump {
-    pub(super) fn log_waiting_if_needed(
-        app: &AppHandle,
+    pub(super) fn log_waiting_if_needed<R: tauri::Runtime>(
+        app: &AppHandle<R>,
         chunk_count: u64,
         chunks_sent_this_tick: usize,
         last_waiting_log_chunk_count: &mut u64,
@@ -349,6 +351,8 @@ impl OmniAudioPump {
         livetranslate_shutdown_requested: bool,
     ) -> Result<OmniAudioPumpState, String> {
         let OmniAudioPumpState {
+            #[cfg(test)]
+            mut consumed_capture_bytes,
             mut buffer_size,
             mut reconnect_count,
             mut chunk_count,
@@ -430,6 +434,11 @@ impl OmniAudioPump {
             };
             if let Some(dump) = provider_input_prefilter_dump.as_mut() {
                 dump.append_chunk(app, &raw_chunk)?;
+            }
+            #[cfg(test)]
+            {
+                // Consumption includes valid input intentionally dropped by RMS gating.
+                consumed_capture_bytes += raw_chunk.len() as u64;
             }
             let asr_chunk = resample_48k_stereo_to_16k_mono(&raw_chunk);
             if asr_chunk.is_empty() {
@@ -643,6 +652,8 @@ impl OmniAudioPump {
             }
         }
         Ok(OmniAudioPumpState {
+            #[cfg(test)]
+            consumed_capture_bytes,
             buffer_size,
             reconnect_count,
             chunk_count,
@@ -991,6 +1002,7 @@ mod tests {
         audio_tx.send(raw_chunk).expect("audible chunk");
 
         let result = OmniAudioPump::new(OmniAudioPumpState {
+            consumed_capture_bytes: 0,
             buffer_size: 0,
             reconnect_count: 0,
             chunk_count: 0,

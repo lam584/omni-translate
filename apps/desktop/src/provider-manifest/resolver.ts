@@ -1,3 +1,4 @@
+import { authorizeModelProtocolInvocation, lookupModelProtocolProfiles, MODEL_PROTOCOL_REGISTRY, type ModelProtocolOperation, type ModelProtocolRegion, type ModelProtocolTransport } from '../model-protocol/profile-registry';
 import type {
   AuthorizedProviderProtocol,
   ProviderManifest,
@@ -22,6 +23,8 @@ export type ProviderProtocolResolutionRequest = {
   authHeaderName?: string;
   authScheme?: 'bearer' | 'api-key';
   customProvider?: boolean;
+  modelRegistryVersion?: number;
+  region?: string;
 };
 
 export type ProviderProtocolResolutionErrorCode =
@@ -44,7 +47,8 @@ export type ProviderProtocolResolutionErrorCode =
   | 'custom-endpoint-invalid'
   | 'transport-mismatch'
   | 'auth-shape-mismatch'
-  | 'provider-manifest-invalid';
+  | 'provider-manifest-invalid'
+  | 'bailian-protocol-rejected';
 
 export class ProviderProtocolResolutionError extends Error {
   constructor(public readonly code: ProviderProtocolResolutionErrorCode, message: string) {
@@ -129,6 +133,7 @@ function authorize(
     );
   }
 
+  if (manifest.provider.id === 'bailian') validateBailianSelection(profile, request);
   return {
     manifestVersion: manifest.manifestVersion,
     providerId: runtimeProviderId,
@@ -207,10 +212,57 @@ function validateCustomConnectionShape(
   }
 }
 
+function validateBailianSelection(profile: ProviderManifestProtocolProfile, request: ProviderProtocolResolutionRequest) {
+  // Consume the same generated, lossless Bailian authority as runtime preflight.
+  const operations: Partial<Record<ProviderManifestOperation, ModelProtocolOperation>> = {
+    'realtime-translation': 'native_translate', 'realtime-conversation': 'dialogue',
+    'realtime-transcription': 'asr', asr: 'asr', tts: 'tts', 'voice-clone': 'voice_clone',
+  };
+  const operation = operations[request.operation];
+  const selected = MODEL_PROTOCOL_REGISTRY.profiles.find((candidate) => candidate.profileId === profile.id && candidate.profileVersion === profile.version);
+  if (!operation || !selected) throw new ProviderProtocolResolutionError('bailian-protocol-rejected', 'model_protocol.profile_id_mismatch');
+  let endpoint: URL;
+  try {
+    endpoint = new URL(request.baseUrl ?? '');
+    if (!['https:', 'wss:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.hash || endpoint.search || endpoint.port) throw new Error('endpoint');
+    const dialect = MODEL_PROTOCOL_REGISTRY.dialects.find((candidate) => candidate.dialectId === selected.dialectId);
+    if (!['', '/', '/api/v1', '/compatible-mode/v1', dialect?.endpointPath].includes(endpoint.pathname.replace(/\/$/, '') || '/')) throw new Error('path');
+  } catch { throw new ProviderProtocolResolutionError('custom-endpoint-invalid', 'Invalid Bailian endpoint.'); }
+  const known = lookupModelProtocolProfiles(request.modelId).length > 0;
+  if (!known && request.modelRegistryVersion !== 2) throw new ProviderProtocolResolutionError('model-not-found', 'Explicit v2 binding required.');
+  const result = authorizeModelProtocolInvocation({ exactModelId: request.modelId, operation,
+    transport: request.transport as ModelProtocolTransport, region: request.region as ModelProtocolRegion,
+    endpointHost: endpoint.hostname, declaredProfileId: profile.id, declaredProfileVersion: profile.version,
+  }, known ? MODEL_PROTOCOL_REGISTRY : { ...MODEL_PROTOCOL_REGISTRY, profiles: [{ ...selected, exactModelIds: [request.modelId] }] });
+  if (!result.ok) throw new ProviderProtocolResolutionError('bailian-protocol-rejected', result.message ? `${result.errorCode}: ${result.message}` : result.errorCode);
+}
+
+function validateExplicitBuiltinEndpoint(manifest: ProviderManifest, profile: ProviderManifestProtocolProfile, request: ProviderProtocolResolutionRequest) {
+  if (manifest.provider.id === 'bailian') { validateBailianSelection(profile, request); return; }
+  const family = requiredById(manifest.apiFamilies, profile.apiFamilyId, 'API family');
+  const transport = requiredById(manifest.transports, profile.transportId, 'transport');
+  if (request.transport !== expectedProviderTransport(transport.kind)) {
+    throw new ProviderProtocolResolutionError('transport-mismatch', 'Explicit binding cannot change transport.');
+  }
+  try {
+    const actual = new URL(request.baseUrl ?? '');
+    const base = new URL(family.baseUrlTemplate);
+    const endpoint = family.endpointTemplate ? new URL(family.endpointTemplate, base) : base;
+    const sameOrigin = actual.hostname === base.hostname && actual.port === base.port
+      && (actual.protocol === base.protocol || (transport.kind === 'websocket' && actual.protocol === 'wss:' && base.protocol === 'https:'));
+    const path = actual.pathname.replace(/\/$/, '');
+    if (!sameOrigin || actual.username || actual.password || actual.hash || actual.search
+      || ![base.pathname.replace(/\/$/, ''), endpoint.pathname.replace(/\/$/, '')].includes(path)) throw new Error('endpoint');
+  } catch {
+    throw new ProviderProtocolResolutionError('custom-endpoint-invalid', 'Explicit binding must retain its registered endpoint.');
+  }
+}
+
 export function resolveProviderProtocol(
   manifests: ProviderManifest[],
   request: ProviderProtocolResolutionRequest,
 ): AuthorizedProviderProtocol {
+  if (!request.modelId || request.modelId !== request.modelId.trim()) throw new ProviderProtocolResolutionError('model-not-found', 'An exact non-empty model ID is required.');
   // Custom instances never enter the built-in owner path, even if their
   // persisted template id happens to name a registered provider. Reuse is
   // authorized only by the selected profile's explicit custom policy.
@@ -278,6 +330,17 @@ export function resolveProviderProtocol(
   }
 
   const model = manifest.models.find((candidate) => candidate.id === request.modelId);
+  if (!model && request.modelRegistryVersion === 2 && request.declaredProfileId
+    && request.declaredProfileVersion !== undefined && request.declaredManifestVersion !== undefined) {
+    if (manifest.manifestVersion !== request.declaredManifestVersion) {
+      throw new ProviderProtocolResolutionError('provider-manifest-version-mismatch', 'Explicit binding manifest version does not match.');
+    }
+    const profile = manifest.protocolProfiles.find((candidate) => candidate.id === request.declaredProfileId
+      && candidate.version === request.declaredProfileVersion);
+    if (!profile) throw new ProviderProtocolResolutionError('protocol-profile-not-found', 'Explicit profile is not owned by this provider.');
+    validateExplicitBuiltinEndpoint(manifest, profile, request);
+    return authorize(manifest, request.providerId, request.modelId, request.operation, profile, request, request.declaredProfileVersion);
+  }
   if (!model) {
     throw new ProviderProtocolResolutionError(
       'model-not-found',

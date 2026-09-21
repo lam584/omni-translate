@@ -1,3 +1,5 @@
+import { invalidateChangedProvider, reconcilePersistedProviderVerification } from '../utils/provider-draft-verification';
+import { migrateProviderModelRegistry } from '../utils/provider-model-capabilities-registry';
 import { create } from 'zustand';
 import { audioRuntimeSnapshotMock } from '../defaults/audio-runtime';
 import { appConfigDraftMock } from '../defaults/app-config';
@@ -187,7 +189,9 @@ function mergeConfigDraftWithDefaults(configDraft: AppConfigDraft): AppConfigDra
     ...appConfigDraftMock,
     ...configDraft,
     providers: (configDraft.providers ?? appConfigDraftMock.providers)
-      .map(hydrateLegacyProviderManifestAuthority),
+      .map(hydrateLegacyProviderManifestAuthority)
+      .map(migrateProviderModelRegistry)
+      .map(reconcilePersistedProviderVerification),
     activeProviderTemplateId: configDraft.activeProviderTemplateId ?? appConfigDraftMock.activeProviderTemplateId,
     devices: {
       ...appConfigDraftMock.devices,
@@ -260,7 +264,7 @@ export const appStoreTestHelpers = {
 export const useAppStore = create<AppStoreState>((set) => ({
   activePageId: defaultPageId,
   activePresetId: defaultPresetId,
-  configDraft: appConfigDraftMock,
+  configDraft: mergeConfigDraftWithDefaults(appConfigDraftMock),
   runtimeSnapshot: runtimeSnapshotMock,
   audioRuntimeSnapshot: audioRuntimeSnapshotMock,
   subtitleCueById: initialSubtitleIndex.cueById,
@@ -284,8 +288,9 @@ export const useAppStore = create<AppStoreState>((set) => ({
       },
     })),
   setConfigDraft: (configDraft) =>
-    set(() => {
+    set((state) => {
       const mergedConfigDraft = mergeConfigDraftWithDefaults(configDraft);
+      if (JSON.stringify(mergedConfigDraft) === JSON.stringify(state.configDraft)) return state;
 
       return {
         configDraft: mergedConfigDraft,
@@ -423,7 +428,7 @@ export const useAppStore = create<AppStoreState>((set) => ({
     set((state) => {
       const templateId = state.configDraft.activeProviderTemplateId;
       const providers = state.configDraft.providers.map((p) =>
-        p.templateId === templateId ? { ...p, ...patch } : p,
+        p.templateId === templateId ? invalidateChangedProvider(p, { ...p, ...patch }) : p,
       );
       return {
         configDraft: { ...state.configDraft, providers },
@@ -510,7 +515,10 @@ export const useAppStore = create<AppStoreState>((set) => ({
     set((state) => ({
       configDraft: {
         ...state.configDraft,
-        providers,
+        providers: providers.map((provider) => {
+          const previous = state.configDraft.providers.find((candidate) => candidate.providerId === provider.providerId && candidate.templateId === provider.templateId);
+          return previous ? invalidateChangedProvider(previous, provider) : provider;
+        }),
       },
     })),
 }));

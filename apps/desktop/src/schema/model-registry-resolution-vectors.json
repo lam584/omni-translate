@@ -1,0 +1,130 @@
+[
+  {
+    "name": "inherit",
+    "modelId": "Exact",
+    "inherited": {
+      "id": "seed",
+      "modelId": "Exact",
+      "capabilities": [
+        "speech-to-text"
+      ]
+    },
+    "overrides": [],
+    "expected": {
+      "id": "seed",
+      "modelId": "Exact",
+      "capabilities": [
+        "speech-to-text"
+      ]
+    }
+  },
+  {
+    "name": "clear",
+    "modelId": "Exact",
+    "inherited": {
+      "id": "seed",
+      "modelId": "Exact",
+      "capabilities": [
+        "speech-to-text"
+      ]
+    },
+    "overrides": [
+      {
+        "modelId": "Exact",
+        "capabilities": []
+      }
+    ],
+    "expected": {
+      "id": "seed",
+      "modelId": "Exact",
+      "capabilities": []
+    }
+  },
+  {
+    "name": "case sensitive",
+    "modelId": "exact",
+    "inherited": null,
+    "overrides": [
+      {
+        "modelId": "Exact",
+        "capabilities": []
+      }
+    ],
+    "expected": null
+  },
+  {
+    "name": "unknown retained",
+    "modelId": "custom",
+    "inherited": null,
+    "overrides": [
+      {
+        "modelId": "custom",
+        "future": 1
+      }
+    ],
+    "expected": {
+      "modelId": "custom"
+    }
+  },
+  {
+    "name": "duplicate",
+    "modelId": "Exact",
+    "inherited": {
+      "id": "seed",
+      "modelId": "Exact",
+      "capabilities": [
+        "speech-to-text"
+      ]
+    },
+    "overrides": [
+      {
+        "modelId": "Exact"
+      },
+      {
+        "modelId": "Exact"
+      }
+    ],
+    "duplicate": true,
+    "expected": {
+      "id": "seed",
+      "modelId": "Exact",
+      "capabilities": [
+        "speech-to-text"
+      ]
+    }
+  },
+  {
+    "name": "explicit user beats legacy and protocol injection ignored",
+    "modelId": "Exact",
+    "inherited": {
+      "id": "seed",
+      "modelId": "Exact",
+      "capabilities": [
+        "speech-to-text"
+      ]
+    },
+    "overrides": [
+      {
+        "modelId": "Exact",
+        "source": "legacy",
+        "capabilities": []
+      },
+      {
+        "modelId": "Exact",
+        "capabilities": [
+          "text-generation"
+        ],
+        "profileId": "injected",
+        "registryVersion": "wrong"
+      }
+    ],
+    "duplicate": true,
+    "expected": {
+      "id": "seed",
+      "modelId": "Exact",
+      "capabilities": [
+        "text-generation"
+      ]
+    }
+  }
+]

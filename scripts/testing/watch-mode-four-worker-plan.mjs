@@ -1,23 +1,25 @@
-import { LIVE_LLM_CELLS, LOCAL_ISOLATION_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { BALANCED_RELEASE_PLAN, liveCellsForReleasePlan, LIVE_LLM_CELLS, LOCAL_ISOLATION_CELLS } from './watch-mode-balanced-release-plan.mjs';
 
 // Canonical paid cell order is distinct from dispatch order.
 export const FOUR_WORKER_CELL_IDS = Object.freeze(['vm171', 'vm169', 'vm131', 'vm167']);
-export const FOUR_WORKER_DISPATCH_SCHEDULE = Object.freeze(
-  [0, 3, 1, 2].map((cellIndex, index) => Object.freeze({
-    cellId: LIVE_LLM_CELLS[cellIndex].cellId,
+export function fourWorkerDispatchSchedule(plan = BALANCED_RELEASE_PLAN) {
+  const cells = liveCellsForReleasePlan(plan);
+  return Object.freeze([0, 3, 1, 2].map((cellIndex, index) => Object.freeze({
+    cellId: cells[cellIndex].cellId,
     workerId: FOUR_WORKER_CELL_IDS[cellIndex],
     startOffsetMs: index * 3_000,
-  })),
-);
+  })));
+}
+export const FOUR_WORKER_DISPATCH_SCHEDULE = fourWorkerDispatchSchedule();
 
-export function fixedFourWorkerAssignments(workers) {
+export function fixedFourWorkerAssignments(workers, plan = BALANCED_RELEASE_PLAN) {
   if (!Array.isArray(workers)) throw new Error('fixed four-worker placement requires an array');
   const byId = new Map(workers.map((worker) => [worker.workerId, worker]));
   if (workers.length !== 4 || byId.size !== 4
       || FOUR_WORKER_CELL_IDS.some((id) => !byId.has(id))) {
     throw new Error('fixed four-worker placement requires vm171, vm167, vm169 and vm131 exactly once');
   }
-  return LIVE_LLM_CELLS.map((cell, index) => {
+  return liveCellsForReleasePlan(plan).map((cell, index) => {
     const workerId = FOUR_WORKER_CELL_IDS[index];
     const profiles = byId.get(workerId).deviceProfileInstances?.filter((profile) => profile.deviceClass === cell.deviceClass) ?? [];
     if (profiles.length !== 1) throw new Error('worker ' + workerId + ' must have exactly one ' + cell.deviceClass + ' profile');

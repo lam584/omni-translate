@@ -176,7 +176,7 @@ export function validateWatchModeRunRequest(input) {
     const expectedRestartAfterSeconds = request.feedbackMode === 'process-exclusion' ? 90 : 0;
     const expectedRestartQuietSeconds = request.feedbackMode === 'process-exclusion' ? 45 : 0;
     if (
-      request.model.id !== 'qwen3.5-livetranslate-flash-realtime'
+      !['qwen3.5-livetranslate-flash-realtime', 'qwen3.8-livetranslate-flash-realtime'].includes(request.model.id)
       || request.model.protocol !== 'dashscope-livetranslate'
       || !request.paths.inputComplete
       || !request.paths.terminalAuthority

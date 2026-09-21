@@ -8,6 +8,7 @@ use super::contracts::{ConfigExportArtifact, ConfigSnapshotRecord};
 use crate::common::MapErrToString;
 
 mod json_merge;
+mod model_registry;
 mod benchmark_history;
 mod persisters;
 mod persistence_methods;
@@ -88,6 +89,7 @@ impl ConfigRepository {
 
         let defaults = default_config_value()?;
         let mut root = defaults.clone();
+        model_registry::initialize_defaults(&mut root);
         let persisted: Option<String> = connection
             .query_row(
                 "SELECT config_json FROM config_documents WHERE id = 1",
@@ -103,6 +105,8 @@ impl ConfigRepository {
             enforce_current_driver_contract(&mut root, &defaults);
         }
 
+        model_registry::migrate_config(&mut root);
+        super::credential_verification::reconcile_config(&mut root);
         Ok(root)
     }
 
@@ -133,6 +137,9 @@ impl ConfigRepository {
         timestamp: &str,
         fail_on_step: Option<&str>,
     ) -> Result<(), String> {
+        let mut reconciled = config.clone();
+        super::credential_verification::reconcile_config(&mut reconciled);
+        let config = &reconciled;
         let check = |step: &str| -> Result<(), String> {
             if fail_on_step == Some(step) {
                 return Err(format!("failpoint triggered at {step}"));
@@ -176,7 +183,8 @@ impl ConfigRepository {
     }
 
     pub(crate) fn reset_config(&self) -> Result<Value, String> {
-        let default_config = default_config_value()?;
+        let mut default_config = default_config_value()?;
+        model_registry::initialize_defaults(&mut default_config);
         self.save_config(&default_config)?;
         Ok(default_config)
     }

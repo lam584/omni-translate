@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "omni-benchmark explicit LiveTranslate binding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "profileId",
+    "profileVersion",
+    "region"
+  ],
+  "properties": {
+    "profileId": {
+      "enum": [
+        "bailian.livetranslate.realtime.ws",
+        "bailian.livetranslate.3_8.realtime.ws"
+      ]
+    },
+    "profileVersion": {
+      "const": 1
+    },
+    "region": {
+      "enum": [
+        "cn-beijing",
+        "ap-southeast-1"
+      ]
+    }
+  }
+}

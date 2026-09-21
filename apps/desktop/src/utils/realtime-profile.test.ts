@@ -541,3 +541,46 @@ describe('resolveRealtimeProfile', () => {
     });
   });
 });
+import { PROVIDER_MANIFEST_REGISTRY } from '../provider-manifest/bundle';
+describe('registry v2 explicit realtime bindings', () => {
+  function explicitProvider(modelId = 'custom.Exact') {
+    const provider = providerFor(modelId);
+    provider.baseUrl = 'https://workspace-test.cn-beijing.maas.aliyuncs.com/api/v1';
+    provider.modelRegistryVersion = 2;
+    provider.modelCapabilityOverrides = [];
+    const manifest = PROVIDER_MANIFEST_REGISTRY.findByTemplateId(provider.templateId)!;
+    provider.modelProtocolBindings = [{ modelId: 'different-model', operation: 'asr', profileOwnerProviderId: 'bailian', manifestVersion: manifest.manifestVersion, profileId: 'unused', profileVersion: 1 }, {
+      modelId, operation: 'realtime-translation', profileOwnerProviderId: 'bailian', manifestVersion: manifest.manifestVersion,
+      profileId: 'bailian.livetranslate.3_8.realtime.ws', profileVersion: 1,
+    }];
+    return provider;
+  }
+  it('authorizes only the selected profile for an exact unknown model without guessing its name', () => {
+    const provider = explicitProvider();
+    expect(resolveRealtimeProfile(configWith(provider), provider.model)).toMatchObject({routeKind: 'omni', protocolDialect: 'dashscope-livetranslate', source: 'manifest', nativeAudioOutput: true});
+    provider.modelRegistryVersion = undefined;
+    expectProtocolError(() => resolveRealtimeProfile(configWith(provider), provider.model), 'model_protocol.model_not_registered');
+  });
+  it.each(['custom.Exact', 'qwen3.8-livetranslate-flash-realtime'])('rejects generic endpoints for known/custom %s without changing the URL', (modelId) => {
+    const provider = explicitProvider(modelId);
+    provider.baseUrl = 'https://dashscope.aliyuncs.com/api/v1';
+    expect(() => resolveRealtimeProfile(configWith(provider), provider.model)).toThrow('workspace_required');
+    expect(provider.baseUrl).toBe('https://dashscope.aliyuncs.com/api/v1');
+  });
+  it('retains known 3.8 immutable authority and rejects a mismatched profile owner', () => {
+    const provider = explicitProvider('qwen3.8-livetranslate-flash-realtime');
+    expect(resolveRealtimeProfile(configWith(provider), provider.model).protocolDialect).toBe('dashscope-livetranslate');
+    provider.modelProtocolBindings![1].profileOwnerProviderId = 'untrusted';
+    expectProtocolError(() => resolveRealtimeProfile(configWith(provider), provider.model), 'model_protocol.authorization_identity_mismatch');
+  });
+  it.each(['dialogue', 'asr', 'tts', 'voice_clone'] as const)('cannot reuse a translation binding for %s', (operation) => {
+    const provider = explicitProvider();
+    expectProtocolError(() => resolveRealtimeProfile(configWith(provider), provider.model, {operation}), 'model_protocol.model_not_registered');
+  });
+  it('does not authorize a registered non-realtime model as a realtime route', () => {
+    const provider = providerFor('gpt-5.4-mini', 'openai-compatible', 'template-openai-compatible-realtime');
+    expect(resolveRealtimeProfile(configWith(provider), provider.model)).toMatchObject({protocolDialect: null, routeKind: 'local-vad', source: 'manifest'});
+    provider.model = 'not-in-openai-module';
+    expect(resolveRealtimeProfile(configWith(provider), provider.model).protocolDialect).toBeNull();
+  });
+});

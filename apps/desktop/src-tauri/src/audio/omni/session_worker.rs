@@ -9,21 +9,25 @@ use self::shutdown_failure::{
 #[path = "session_worker/start.rs"]
 mod start;
 pub(crate) use start::{start_omni, OmniHandle};
+#[cfg(test)]
+pub(super) use start::start_omni_impl;
 #[path = "session_worker/shutdown_failure.rs"]
 mod shutdown_failure;
 #[path = "session_worker/reconnect_reset.rs"]
 mod reconnect_reset;
 pub(super) use reconnect_reset::reset_manual_gate_after_reconnect;
 
-struct OmniSessionWorker {
-    app: AppHandle,
+struct OmniSessionWorker<R: tauri::Runtime> {
+    app: AppHandle<R>,
     config: OmniSessionConfig,
     readiness_tx: mpsc::Sender<Result<u64, String>>,
     readiness_sent: Arc<AtomicBool>,
-    trace: ModelTraceRecorder,
+    trace: ModelTraceRecorder<R>,
     audio_rx: mpsc::Receiver<Vec<u8>>,
     stop_rx: mpsc::Receiver<()>,
     stop_requested: Arc<AtomicBool>,
+    #[cfg(test)]
+    headless: Option<Arc<super::headless_tests::HeadlessHooks>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -138,7 +142,7 @@ impl OmniSessionRuntime {
     }
 }
 
-impl OmniSessionWorker {
+impl<R: tauri::Runtime> OmniSessionWorker<R> {
     fn run(self, store: &AudioStateStore) -> Result<OmniWorkerShutdown, String> {
         run_omni_worker(
             self.app,
@@ -161,12 +165,14 @@ impl OmniSessionWorker {
             self.audio_rx,
             self.stop_rx,
             self.stop_requested,
+            #[cfg(test)]
+            self.headless,
         )
     }
 }
 
-fn run_omni_worker(
-    app: AppHandle,
+fn run_omni_worker<R: tauri::Runtime>(
+    app: AppHandle<R>,
     store: &AudioStateStore,
     direction: String,
     session_generation: u64,
@@ -182,10 +188,11 @@ fn run_omni_worker(
     target_language: String,
     subtitle_translate_active: bool,
     speech_config: OmniSpeechConfig,
-    trace: ModelTraceRecorder,
+    trace: ModelTraceRecorder<R>,
     audio_rx: mpsc::Receiver<Vec<u8>>,
     stop_rx: mpsc::Receiver<()>,
     stop_requested: Arc<AtomicBool>,
+    #[cfg(test)] headless: Option<Arc<super::headless_tests::HeadlessHooks>>,
 ) -> Result<OmniWorkerShutdown, String> {
     let echo_guard_enabled = speech_config.echo_guard_enabled();
     // Strict diagnostic budget binding must be validated, and its ledger must
@@ -205,10 +212,16 @@ fn run_omni_worker(
     // Create the translated-PCM evidence directory before connecting to the
     // paid provider. A missing, stale, or non-exclusive authority path must
     // fail without consuming any provider input.
+    #[cfg(test)]
+    let translated_pcm_authority = if headless.is_some() {
+        // Software PCM consumption has no hardware-render authority.
+        TranslatedPcmAuthority::disabled()
+    } else {
+        TranslatedPcmAuthority::from_env(&provider, &direction, session_generation)?
+    };
+    #[cfg(not(test))]
     let translated_pcm_authority = TranslatedPcmAuthority::from_env(
-        &provider,
-        &direction,
-        session_generation,
+        &provider, &direction, session_generation,
     )?;
     let mut trace_call = trace.call("omni.websocket_session");
     trace_call.fail_on_drop(
@@ -231,6 +244,8 @@ fn run_omni_worker(
             &provider_input_budget,
             translated_pcm_authority,
             trace_call,
+            #[cfg(test)]
+            headless.as_deref(),
         )
     });
     let OmniConnectedSession {
@@ -365,6 +380,8 @@ fn run_omni_worker(
             ));
         }
     };
+    #[cfg(test)]
+    let mut consumed_capture_bytes = 0;
     let mut audio_input_disconnected = false;
     let mut socket = livetranslate_shutdown.wrap_socket(socket);
     let connector = livetranslate_shutdown.wrap_connector(TungsteniteConnector);
@@ -529,6 +546,8 @@ fn run_omni_worker(
         }
 
         let pump_state = OmniAudioPump::new(OmniAudioPumpState {
+            #[cfg(test)]
+            consumed_capture_bytes,
             buffer_size,
             reconnect_count,
             chunk_count,
@@ -633,6 +652,19 @@ fn run_omni_worker(
         provider_audio_pacer = pump_state.provider_audio_pacer;
         audio_input_disconnected = pump_state.audio_input_disconnected;
         let chunks_sent_this_tick = pump_state.chunks_sent_this_tick;
+        #[cfg(test)]
+        {
+            consumed_capture_bytes = pump_state.consumed_capture_bytes;
+            if let Some(hooks) = headless.as_ref() {
+                let _ = hooks.processed_capture_bytes.send(super::headless_tests::CaptureProgress {
+                    consumed_bytes: consumed_capture_bytes,
+                    sent_bytes: buffer_size,
+                    skipped_silence_chunks: if has_sent_audible_audio {
+                        total_silence_skipped_before_first_audible
+                    } else { silence_chunks_skipped },
+                });
+            }
+        }
         let should_send_livetranslate_finish = livetranslate_shutdown.should_send_finish(
             chunks_sent_this_tick,
             pre_session_audio_queue.is_empty(),

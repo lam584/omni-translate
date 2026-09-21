@@ -169,6 +169,7 @@ function publishProbeEvidence(outputDirectory, {
   emitter = { status: 'completed' },
   rawProbeResult,
   trace,
+  model = DASH_SCOPE_MODEL,
 }) {
   const staging = `${outputDirectory}.staging`;
   const rawDirectory = path.join(staging, 'raw');
@@ -178,10 +179,10 @@ function publishProbeEvidence(outputDirectory, {
   fs.writeFileSync(path.join(staging, 'provider-probe-result.json'), JSON.stringify({
     schemaVersion: 1,
     artifactKind: 'provider-production-probe-result',
-    model: DASH_SCOPE_MODEL,
+    model,
     verdict: emitter.status === 'completed' ? 'available' : 'unavailable',
     rawProbeResult: {
-      modelId: DASH_SCOPE_MODEL,
+      modelId: model,
       latencyBudgetMs: REALTIME_LATENCY_BUDGET_MS,
       ...rawProbeResult,
       rawTrace: authority,
@@ -655,6 +656,8 @@ function managedScenario({
   emitter = { status: 'completed' },
   trace,
   childPid = 4545,
+  environment = {},
+  model = DASH_SCOPE_MODEL,
 }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-preflight-wire-evidence-'));
   const executablePath = path.join(root, 'desktop.exe');
@@ -663,7 +666,7 @@ function managedScenario({
   const child = fakeChild(childPid);
   let authority;
   setTimeout(() => {
-    authority = publishProbeEvidence(outputDirectory, { emitter, rawProbeResult, trace });
+    authority = publishProbeEvidence(outputDirectory, { emitter, rawProbeResult, trace, model });
     child.emit('exit', 0);
   }, 5);
   return {
@@ -673,7 +676,7 @@ function managedScenario({
     promise: runManagedProviderPreflight({
       executablePath,
       outputDirectory,
-      environment: {},
+      environment,
       executionId: 'watch-wire-evidence-test',
       providerId: 'provider-dashscope',
       spawnProcess: () => child,
@@ -1802,4 +1805,139 @@ test('child exit before an emitter is not mislabeled as an emitter timeout', asy
     assert.equal(error.failure.termination.exitCode, 17);
     return true;
   });
+});
+
+const V2_SELECTION = { modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'process-test.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing' };
+
+async function signedProcessEnvironment(t, releaseSelection = V2_SELECTION) {
+  releaseSelection ??= undefined;
+  const { createBalancedReleasePlan, liveCellsForReleasePlan } = await import('./watch-mode-balanced-release-plan.mjs');
+  const { createWorkerReadinessRequest, generateCoordinatorSigningKeyPair } = await import('./watch-mode-shard-authority.mjs');
+  const { createProviderPreflightGrant, createProviderPreflightLeaseReservations, providerPreflightAuthorizationDigest,
+    providerPreflightReservationFileName, PROVIDER_PREFLIGHT_GRANT_FILE } = await import('./watch-mode-provider-preflight-authorization.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-process-signed-'));
+  t.after(() => { assert.equal(path.dirname(root), path.resolve(os.tmpdir())); fs.rmSync(root, { recursive: true, force: true }); });
+  const authority = file => ({ path: file, bytes: 17, sha256: 'a'.repeat(64) });
+  const workers = [{ workerId: 'local', workspaceRoot: 'E:/fixture', transportAuthority: { kind: 'local' }, interactiveUser: 'tester', vmIdentity: { provider: 'vmware', uuidBios: 'fixture-vm' }, deviceProfileInstances: [{ instanceId: 'local-default', profileId: 'vmware-hda-default', deviceClass: 'default-speaker', physicalPlaybackDeviceId: 'default', expectedPhysicalPlaybackDeviceName: '' }] }];
+  const assignments = liveCellsForReleasePlan(createBalancedReleasePlan(releaseSelection)).map((cell, index) => ({ cellId: cell.cellId, workerId: 'local', waveIndex: index, deviceProfileInstanceId: 'local-default', leaseId: `lease-${index}` }));
+  const generatedAt = new Date();
+  const signingKeys = generateCoordinatorSigningKeyPair();
+  const common = { executionId: 'watch-wire-evidence-test', generatedAt, releaseSelection, workers, assignments,
+    provenance: { schemaVersion: 1, source: 'git', captureStatus: 'captured', headCommit: '1'.repeat(40), worktreeClean: true, dirtyEntryCount: 0 },
+    runtimeBinaryHashes: [authority('runtime/fixture.exe')] };
+  const grant = createProviderPreflightGrant({ ...common, expiresAt: new Date(generatedAt.getTime() + 3600000), authorityImplementationHashes: [authority('matrix/fixture.mjs')], shardOrchestrationImplementationHashes: [authority('shard/fixture.mjs')], localIsolationAuthority: { ...authority('local/isolation.json'), providerCalls: 0 }, workerReadinessRequest: createWorkerReadinessRequest(common), workerReadinessRequestAuthority: authority('worker-readiness-request.json'), workerReadinessAuthorities: [{ ...authority('worker-readiness/local.json'), workerId: 'local', providerCalls: 0 }], signingKeys });
+  const leaseReservations = createProviderPreflightLeaseReservations({ grant, signingKeys, issuedAt: new Date(generatedAt.getTime() + 1) });
+  const grantPath = path.join(root, PROVIDER_PREFLIGHT_GRANT_FILE);
+  const reservationDirectory = path.join(root, 'reservations');
+  fs.mkdirSync(reservationDirectory);
+  fs.writeFileSync(grantPath, JSON.stringify(grant));
+  leaseReservations.forEach((reservation, index) => fs.writeFileSync(path.join(reservationDirectory, providerPreflightReservationFileName(grant.cells[index])), JSON.stringify(reservation)));
+  return {
+    OMNI_RELEASE_EVIDENCE_PREFLIGHT_GRANT_PATH: grantPath,
+    OMNI_RELEASE_EVIDENCE_PREFLIGHT_RESERVATION_DIRECTORY: reservationDirectory,
+    OMNI_RELEASE_EVIDENCE_PREFLIGHT_AUTHORIZATION_DIGEST: providerPreflightAuthorizationDigest({ grant, leaseReservations }),
+  };
+}
+
+function v2ProcessEvidence(mutate = () => {}) {
+  const entries = parseRawTrace(successfulLivetranslateTrace());
+  const payloads = entries.map(entry => JSON.parse(entry.rawRedactedPayload));
+  const session = {
+    audio: { input: { turn_detection: { type: 'server_vad' } } },
+    output_modalities: ['text'],
+    translation: structuredClone(OFFICIAL_SESSION_UPDATE.session.translation),
+  };
+  payloads[0].host = V2_SELECTION.endpointHost;
+  payloads[0].query.model = V2_SELECTION.modelId;
+  payloads[1].session.model = V2_SELECTION.modelId;
+  payloads[2].session = session;
+  payloads[3].session = { id: SESSION_IDENTITY_SHA256, model: V2_SELECTION.modelId, ...structuredClone(session) };
+  const raw = successfulLivetranslateRaw();
+  raw.sessionAuthority.serverModel = V2_SELECTION.modelId;
+  // Rust serde_json serializes sorted object keys; v2 contains no floating-point threshold.
+  const sorted = value => Array.isArray(value) ? value.map(sorted) : value && typeof value === 'object'
+    ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
+  raw.sessionAuthority.echoedSessionConfigSha256 = sha256(JSON.stringify(sorted(session)));
+  mutate(payloads, raw);
+  entries.forEach((entry, index) => {
+    entry.rawRedactedPayload = JSON.stringify(payloads[index]);
+    entry.sha256 = sha256(entry.rawRedactedPayload);
+  });
+  return { rawProbeResult: raw, trace: serializeRawTrace(entries), model: V2_SELECTION.modelId };
+}
+
+function cleanupScenario(t, scenario) {
+  t.after(() => {
+    const root = path.dirname(scenario.outputDirectory);
+    assert.equal(path.dirname(root), path.resolve(os.tmpdir()));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+}
+
+test('production process collector admits 3.8 only through verified signed workspace selection', async t => {
+  const environment = await signedProcessEnvironment(t);
+  const scenario = managedScenario({ ...v2ProcessEvidence(), environment });
+  cleanupScenario(t, scenario);
+  const result = await scenario.promise;
+  assert.equal(result.fields.modelId, V2_SELECTION.modelId);
+  assert.equal(result.fields.sessionAuthority.serverModel, V2_SELECTION.modelId);
+  assert.equal(result.fields.evidenceOutcome, 'livetranslate-session-finished');
+});
+
+for (const [name, mutate] of [
+  ['generic endpoint', payloads => { payloads[0].host = 'dashscope.aliyuncs.com'; }],
+  ['workspace substitution', payloads => { payloads[0].host = 'other.cn-beijing.maas.aliyuncs.com'; }],
+  ['upgrade model downgrade', payloads => { payloads[0].query.model = DASH_SCOPE_MODEL; }],
+  ['created model downgrade', payloads => { payloads[1].session.model = DASH_SCOPE_MODEL; }],
+  ['v1 session', payloads => { payloads[2].session = structuredClone(OFFICIAL_SESSION_UPDATE.session); }],
+  ['arbitrary v2 session', payloads => { payloads[2].session.output_modalities = ['text', 'audio']; }],
+  ['echo tamper', payloads => { payloads[3].session.translation.language = 'en'; }],
+  ['digest tamper', (_payloads, raw) => { raw.sessionAuthority.echoedSessionConfigSha256 = 'f'.repeat(64); }],
+]) test('production process collector rejects signed 3.8 ' + name, async t => {
+  const environment = await signedProcessEnvironment(t);
+  const scenario = managedScenario({ ...v2ProcessEvidence(mutate), environment });
+  cleanupScenario(t, scenario);
+  await assert.rejects(scenario.promise, /wire evidence/);
+});
+
+test('observed 3.8 cannot bypass wire collection without signed authorization', async t => {
+  const scenario = managedScenario(v2ProcessEvidence());
+  cleanupScenario(t, scenario);
+  await assert.rejects(scenario.promise, /signed-selection-mismatch/);
+});
+
+test('3.8 signed grant cannot consume 3.5 process evidence', async t => {
+  const environment = await signedProcessEnvironment(t);
+  const scenario = managedScenario({ rawProbeResult: successfulLivetranslateRaw(), trace: successfulLivetranslateTrace(), environment });
+  cleanupScenario(t, scenario);
+  await assert.rejects(scenario.promise, /signed-selection-mismatch/);
+});
+
+test('signed grant signature and digest are checked before spawning the desktop process', async t => {
+  const environment = await signedProcessEnvironment(t);
+  let calls = 0;
+  const run = env => runManagedProviderPreflight({ executablePath: 'unused.exe', outputDirectory: 'unused', executionId: 'watch-wire-evidence-test', environment: env,
+    spawnProcess: () => { calls++; throw new Error('must not spawn'); } });
+  await assert.rejects(run({ ...environment, OMNI_RELEASE_EVIDENCE_PREFLIGHT_AUTHORIZATION_DIGEST: '0'.repeat(64) }), /digest mismatch/);
+  const changed = JSON.parse(fs.readFileSync(environment.OMNI_RELEASE_EVIDENCE_PREFLIGHT_GRANT_PATH, 'utf8'));
+  changed.releaseSelection.endpointHost = 'other.cn-beijing.maas.aliyuncs.com';
+  fs.writeFileSync(environment.OMNI_RELEASE_EVIDENCE_PREFLIGHT_GRANT_PATH, JSON.stringify(changed));
+  await assert.rejects(run(environment));
+  await assert.rejects(run({ OMNI_RELEASE_EVIDENCE_PREFLIGHT_GRANT_PATH: 'unused' }), /complete signed authorization/);
+  assert.equal(calls, 0);
+});
+
+test('signed historical 3.5 keeps its original process collector path', async t => {
+  const environment = await signedProcessEnvironment(t, null);
+  const scenario = managedScenario({ rawProbeResult: successfulLivetranslateRaw(), trace: successfulLivetranslateTrace(), environment });
+  cleanupScenario(t, scenario);
+  const result = await scenario.promise;
+  assert.equal(result.fields.sessionAuthority.serverModel, DASH_SCOPE_MODEL);
+});
+
+test('signed historical 3.5 cannot authorize observed 3.8', async t => {
+  const environment = await signedProcessEnvironment(t, null);
+  const scenario = managedScenario({ ...v2ProcessEvidence(), environment });
+  cleanupScenario(t, scenario);
+  await assert.rejects(scenario.promise, /signed-selection-mismatch/);
 });

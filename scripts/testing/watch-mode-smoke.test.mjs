@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { readRunManifest } from './verify-watch-mode-evidence.mjs';
 import {
@@ -116,6 +117,96 @@ test('smoke retains partial failures, does not retry, and writes a non-authorita
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+// Inject at the filesystem boundary so these tests exercise the production
+// checkpoint writer and retry policy, not a replacement coordinator adapter.
+for (const stage of ['before-paid-dispatch', 'after-paid-outcome']) {
+  for (const persistent of [false, true]) {
+    test(`smoke publication ${stage} handles ${persistent ? 'persistent' : 'transient'} locks without redispatch`, async (t) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-rename-'));
+      const executionId = 'smoke-rename-test';
+      const manifestPath = path.join(root, executionId, 'smoke-manifest.json');
+      const selected = [SMOKE_PLUS_CELLS[0].cellId, SMOKE_PLUS_CELLS[1].cellId];
+      const calls = [];
+      const renameSync = fs.renameSync;
+      const failure = Object.assign(new Error('injected publication lock'), { code: 'EPERM' });
+      let attempts = 0;
+      let priorText;
+      let stagingPath;
+      let stagingText;
+      let published = false;
+      const renameMock = t.mock.method(fs, 'renameSync', (source, destination) => {
+        if (destination === manifestPath) {
+          const nextText = fs.readFileSync(source, 'utf8');
+          const next = JSON.parse(nextText);
+          const targeted = stage === 'before-paid-dispatch'
+            ? next.activeCellId === selected[0]
+            : next.outcomes.length === 1 && !next.activeCellId;
+          if (targeted) {
+            attempts += 1;
+            const currentText = fs.readFileSync(destination, 'utf8');
+            if (attempts === 1) {
+              priorText = currentText;
+              stagingPath = source;
+              stagingText = nextText;
+            }
+            assert.equal(currentText, priorText, 'failed publication must preserve the prior manifest');
+            assert.equal(source, stagingPath, 'retry must publish the same staging file');
+            assert.equal(nextText, stagingText);
+            assert.deepEqual(calls, stage === 'before-paid-dispatch' ? [] : [selected[0]]);
+            if (persistent || attempts <= 2) throw failure;
+            renameSync(source, destination);
+            published = true;
+            return;
+          }
+        }
+        renameSync(source, destination);
+      });
+      try {
+        const running = runWatchModeSmoke({
+          executionId, workerCapabilities: workers, outputRoot: root,
+          cellIds: selected, selectionReason: 'offline publication fault injection',
+          runCell: async ({ cell }) => {
+            const checkpoint = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+            assert.equal(checkpoint.activeCellId, cell.cellId);
+            assert.equal(checkpoint.dispatch.active.providerCalls, 1);
+            assert.equal(checkpoint.providerCalls, calls.length + 1);
+            assert.equal(checkpoint.dispatch.completedCount, calls.length);
+            if (stage === 'before-paid-dispatch' || calls.length > 0) assert.equal(published, true);
+            calls.push(cell.cellId);
+            // Simulated paid accounting only: no provider or live adapter is invoked.
+            return { passed: true, providerCalls: 1 };
+          },
+        });
+        if (persistent) {
+          await assert.rejects(running, (error) => error === failure);
+          assert.equal(attempts, 8);
+          assert.equal(published, false);
+          assert.equal(fs.readFileSync(manifestPath, 'utf8'), priorText);
+          const prior = JSON.parse(priorText);
+          assert.equal(prior.executionStatus, 'in-progress');
+          assert.equal(prior.blocksAuthoritativeRun, true);
+          assert.equal(prior.providerCalls, stage === 'before-paid-dispatch' ? 0 : 1);
+          assert.deepEqual(calls, stage === 'before-paid-dispatch' ? [] : [selected[0]]);
+        } else {
+          const result = await running;
+          assert.equal(attempts, 3);
+          assert.equal(result.manifest.passed, true);
+          assert.equal(result.manifest.providerCalls, 2);
+          assert.equal(result.manifest.dispatch.completedCount, 2);
+          assert.deepEqual(result.manifest.dispatch.duplicateCellIds, []);
+          assert.deepEqual(calls, selected);
+          assert.deepEqual(JSON.parse(fs.readFileSync(manifestPath, 'utf8')), result.manifest);
+          assert.equal(fs.existsSync(stagingPath), false);
+        }
+      } finally {
+        renameMock.mock.restore();
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+}
 
 test('smoke records a failed or paid preflight before any cell dispatch', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-'));
@@ -887,9 +978,77 @@ test('smoke adapter classifies provider 50002 cue evidence as external even when
   }), 'provider-external');
 });
 
-test('Windows timebox terminates its owned child process tree', { skip: process.platform !== 'win32' }, () => {
+// Retry the whole directory operation, including a Windows root-directory EPERM.
+// Keep the existing 10 * (100..1000ms) cleanup budget, but yield between attempts.
+// A persistent lock remains a test failure; this is not a deferred-cleanup waiver.
+async function removeTimeboxFixture(root) {
+  const resolved = path.resolve(root);
+  assert.equal(path.dirname(resolved), path.resolve(os.tmpdir()), 'cleanup must stay in the test temp root');
+  assert.ok(path.basename(resolved).startsWith('watch-mode-smoke-timebox-'));
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 0 });
+      return;
+    } catch (error) {
+      if (!['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(error.code) || attempt === 10) throw error;
+      await delay((attempt + 1) * 100);
+    }
+  }
+}
+
+function preserveTimeboxFailure(root, diagnostics, error) {
+  const evidenceRoot = path.resolve('artifacts/testing/timebox-failures', path.basename(root));
+  fs.mkdirSync(evidenceRoot, { recursive: true });
+  // In-memory diagnostics survive partial recursive deletion (including deleted outcome.json).
+  fs.writeFileSync(path.join(evidenceRoot, 'failure.json'), JSON.stringify({
+    diagnostics,
+    error: { message: error.message, code: error.code, path: error.path, stack: error.stack },
+  }, null, 2), 'utf8');
+  if (fs.existsSync(root)) fs.cpSync(root, path.join(evidenceRoot, 'remaining'), { recursive: true });
+  console.error('timebox failure evidence: ' + evidenceRoot);
+}
+
+for (const code of ['EPERM', 'EBUSY', 'ENOTEMPTY', 'EACCES']) {
+  test('timebox cleanup retains failures and bounds whole-root retries: ' + code, async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-timebox-cleanup-'));
+    const originalRm = fs.rmSync;
+    const error = Object.assign(new Error('injected root lock'), { code, path: root });
+    let attempts = 0;
+    let persistent = false;
+    const mock = t.mock.method(fs, 'rmSync', (target, options) => {
+      if (target !== root) return originalRm(target, options);
+      attempts += 1;
+      if (persistent || attempts < 3) throw error;
+      return originalRm(target, options);
+    });
+    try {
+      if (code === 'EACCES') {
+        await assert.rejects(removeTimeboxFixture(root), (caught) => caught === error);
+        assert.equal(attempts, 1, 'non-transient permissions must not be retried');
+      } else {
+        await removeTimeboxFixture(root);
+        assert.equal(attempts, 3);
+        assert.equal(fs.existsSync(root), false);
+        // Only EPERM needs the full exhaustion clock; all retryable codes use this loop.
+        if (code === 'EPERM') {
+          fs.mkdirSync(root);
+          persistent = true; attempts = 0;
+          await assert.rejects(removeTimeboxFixture(root), (caught) => caught === error);
+          assert.equal(attempts, 11);
+          assert.equal(fs.existsSync(root), true, 'persistent failure cannot masquerade as removal');
+        }
+      }
+    } finally {
+      mock.mock.restore();
+      originalRm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test('Windows timebox terminates its owned child process tree', { skip: process.platform !== 'win32' }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-timebox-'));
-  let passed = false;
+  let diagnostics = null;
+  let failure = null;
   try {
     const outcomePath = path.join(root, 'outcome.json');
     const payload = Buffer.from(JSON.stringify({
@@ -912,7 +1071,7 @@ test('Windows timebox terminates its owned child process tree', { skip: process.
     // own 500 ms child deadline; this outer bound only prevents the harness
     // from killing the wrapper while it is closing redirected handles.
     ], { encoding: 'utf8', timeout: 30_000, windowsHide: true });
-    const diagnostics = {
+    diagnostics = {
       status: result.status, signal: result.signal, error: result.error?.message ?? null,
       stdout: result.stdout, stderr: result.stderr,
       outcome: fs.existsSync(outcomePath) ? fs.readFileSync(outcomePath, 'utf8') : null,
@@ -927,18 +1086,30 @@ test('Windows timebox terminates its owned child process tree', { skip: process.
     assert.equal(outcome.trigger, null);
     assert.equal(outcome.minimumCFreeBytes, null);
     assert.deepEqual(outcome.samples, []);
-    passed = true;
-  } finally {
-    if (!passed) {
-      // The VM3 harness removes its temporary root even on failure. Preserve
-      // diagnostic evidence outside that root before its cleanup runs.
-      const evidenceRoot = path.resolve('artifacts/testing/timebox-failures', path.basename(root));
-      fs.mkdirSync(path.dirname(evidenceRoot), { recursive: true });
-      fs.cpSync(root, evidenceRoot, { recursive: true, errorOnExist: true, force: false });
-      console.error('timebox failure evidence: ' + evidenceRoot);
-    }
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    assert.ok(Number.isInteger(outcome.childProcessId) && outcome.childProcessId > 0);
+    const probe = spawnSync('powershell.exe', [
+      '-NoProfile', '-Command',
+      `if (Get-Process -Id ${outcome.childProcessId} -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }`,
+    ], { encoding: 'utf8', timeout: 5_000, windowsHide: true });
+    diagnostics.childExitProbe = { status: probe.status, error: probe.error?.message ?? null, stderr: probe.stderr };
+    assert.equal(probe.error, undefined);
+    assert.equal(probe.status, 0, 'owned child must be gone before fixture cleanup');
+  } catch (error) {
+    failure = error;
   }
+  // Assertions and cleanup are separate outcomes: neither may mask the other.
+  // Save evidence before cleanup for assertion failures, and after cleanup errors
+  // even when every behavior assertion passed (the original lost-evidence case).
+  try {
+    if (failure) preserveTimeboxFailure(root, diagnostics, failure);
+    await removeTimeboxFixture(root);
+  } catch (error) {
+    const cleanupFailure = failure ? new AggregateError([failure, error], 'timebox behavior and cleanup failed') : error;
+    try { preserveTimeboxFailure(root, diagnostics, cleanupFailure); }
+    catch (evidenceError) { throw new AggregateError([cleanupFailure, evidenceError], 'timebox failure evidence could not be saved'); }
+    throw cleanupFailure;
+  }
+  if (failure) throw failure;
 });
 
 test('Windows timebox records a disk-floor receipt and removes its descendant process', { skip: process.platform !== 'win32' }, () => {

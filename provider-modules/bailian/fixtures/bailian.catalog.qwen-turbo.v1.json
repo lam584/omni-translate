@@ -1,0 +1,37 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "bailian.catalog.qwen-turbo.fixture.v1",
+  "providerId": "bailian",
+  "protocolProfileId": "bailian.catalog.qwen-turbo",
+  "protocolProfileVersion": 1,
+  "kind": "error",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "bailian.docs.48"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Catalog admission denial, not an invented protocol replay."
+  },
+  "scenario": "Catalog discovery cannot authorize network I/O",
+  "data": {
+    "endpointStatus": "unresolved",
+    "networkAuthorized": false,
+    "unknowns": [
+      "executableProtocol",
+      "regionalEndpoint",
+      "streamingSemantics"
+    ],
+    "authContract": {
+      "profileId": "bailian.auth.bearer",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "value": "Bearer <redacted>"
+        }
+      ]
+    }
+  }
+}

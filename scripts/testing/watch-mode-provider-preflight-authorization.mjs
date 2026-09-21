@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { LIVE_LLM_CELLS, RELEASE_MODELS } from './watch-mode-balanced-release-plan.mjs';
+import { createBalancedReleasePlan, liveCellsForReleasePlan, normalizeReleaseSelection, SUPPORTED_RELEASE_MODELS, RELEASE_MODELS } from './watch-mode-balanced-release-plan.mjs';
 import {
   assertWatchModelProtocolIdentity,
   deriveWatchModelProtocolIdentity,
@@ -84,7 +84,7 @@ export const providerPreflightReservationFileName = (cell, cellIndex = cell.cell
 );
 
 const protocolForModel = (modelId) => {
-  if (modelId === 'qwen3.5-livetranslate-flash-realtime') return 'dashscope-livetranslate';
+  if (SUPPORTED_RELEASE_MODELS.includes(modelId)) return 'dashscope-livetranslate';
   throw new Error(`formal provider preflight rejected unapproved model ${modelId}`);
 };
 
@@ -133,8 +133,8 @@ function normalizedGrantWorkers(workers) {
   }));
 }
 
-function grantCells(assignments) {
-  return LIVE_LLM_CELLS.map((cell, cellIndex) => ({
+function grantCells(assignments, plan) {
+  return liveCellsForReleasePlan(plan).map((cell, cellIndex) => ({
     cellIndex,
     cellId: cell.cellId,
     providerId: PROVIDER_PREFLIGHT_PROVIDER_ID,
@@ -156,6 +156,7 @@ export function providerPreflightAuthorizationDigest({ grant, leaseReservations 
     schemaVersion: SHARD_AUTHORITY_SCHEMA_VERSION,
     artifactKind: PROVIDER_PREFLIGHT_AUTHORIZATION_SET_KIND,
     executionId: grant.executionId,
+    ...(grant.releaseSelection ? { releaseSelection: structuredClone(grant.releaseSelection) } : {}),
     grantDigest: grant.digest,
     leaseReservationDigests: leaseReservations.map((reservation) => reservation.digest),
   });
@@ -166,6 +167,7 @@ export function providerPreflightAuthorizationConsumption({ grant, leaseReservat
   return {
     schemaVersion: SHARD_AUTHORITY_SCHEMA_VERSION,
     artifactKind: PROVIDER_PREFLIGHT_CONSUMPTION_KIND,
+    ...(grant.releaseSelection ? { releaseSelection: structuredClone(grant.releaseSelection) } : {}),
     executionId: grant.executionId,
     grantDigest: grant.digest,
     leaseReservationDigests: leaseReservations.map((reservation) => reservation.digest),
@@ -307,12 +309,15 @@ export function createProviderPreflightGrant({
   workers,
   assignments,
   preflightExecutorWorkerId,
+  releaseSelection,
   signingKeys,
 }) {
   if (!Array.isArray(assignments) || assignments.length !== SHARD_MATRIX_CELL_COUNT) {
     throw new Error(`provider preflight grant requires all ${SHARD_MATRIX_CELL_COUNT} paid assignments`);
   }
-  const cells = grantCells(assignments);
+  const selection = normalizeReleaseSelection(releaseSelection);
+  const releasePlan = createBalancedReleasePlan(selection);
+  const cells = grantCells(assignments, releasePlan);
   if (
     new Set(cells.map((cell) => cell.leaseId)).size !== SHARD_MATRIX_CELL_COUNT
     || cells.some((cell) => !String(cell.leaseId ?? '').trim())
@@ -335,6 +340,7 @@ export function createProviderPreflightGrant({
   const core = {
     schemaVersion: SHARD_AUTHORITY_SCHEMA_VERSION,
     artifactKind: PROVIDER_PREFLIGHT_GRANT_KIND,
+    ...(selection ? {releaseSelection: selection} : {}),
     generatedAt: generatedAt instanceof Date ? generatedAt.toISOString() : String(generatedAt),
     expiresAt: expiresAt instanceof Date ? expiresAt.toISOString() : String(expiresAt),
     executionId,
@@ -368,7 +374,7 @@ export function createProviderPreflightGrant({
     },
     authorization: {
       providerId: PROVIDER_PREFLIGHT_PROVIDER_ID,
-      model: PROVIDER_PREFLIGHT_MODEL,
+      model: releasePlan.models[0],
       protocol: PROVIDER_PREFLIGHT_PROTOCOL,
       operation: PROVIDER_PREFLIGHT_OPERATION,
       inputMode: PROVIDER_PREFLIGHT_INPUT_MODE,
@@ -384,7 +390,7 @@ export function createProviderPreflightGrant({
       temperature: PROVIDER_PREFLIGHT_TEMPERATURE,
       lifecycleBudget: structuredClone(PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET),
       modelProtocolProfileIdentity: structuredClone(
-        deriveWatchModelProtocolIdentity(PROVIDER_PREFLIGHT_MODEL),
+        deriveWatchModelProtocolIdentity(releasePlan.models[0], selection),
       ),
     },
     coordinator: { publicKeyPem: signingKeys.publicKeyPem },
@@ -395,6 +401,16 @@ export function createProviderPreflightGrant({
 
 export function verifyProviderPreflightGrant(grant, expected = {}) {
   verifyCoordinatorAuthority(grant, grant?.coordinator?.publicKeyPem, 'provider preflight grant');
+  const selection = normalizeReleaseSelection(grant.releaseSelection);
+  const releasePlan = createBalancedReleasePlan(selection);
+  const approvedCells = liveCellsForReleasePlan(releasePlan);
+  if (canonicalJson(grant.releaseSelection) !== canonicalJson(selection)) {
+    throw new Error('provider preflight grant releaseSelection is not canonical');
+  }
+  if (Object.hasOwn(expected, 'releaseSelection')
+      && canonicalJson(selection) !== canonicalJson(normalizeReleaseSelection(expected.releaseSelection))) {
+    throw new Error('provider preflight grant releaseSelection mismatch');
+  }
   const generatedAt = isoMs(grant.generatedAt, 'provider preflight grant generatedAt');
   const expiresAt = isoMs(grant.expiresAt, 'provider preflight grant expiresAt');
   if (
@@ -431,6 +447,7 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
     runtimeBinaryHashes: grant.runtimeBinaryHashes,
     workers: grant.workers,
     assignments: grant.cells,
+    releaseSelection: selection,
   });
   if (!Array.isArray(grant.workerReadinessAuthorities)
     || grant.workerReadinessAuthorities.length !== grant.workers.length) {
@@ -471,7 +488,7 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
   const slots = new Set();
   const leases = new Set();
   grant.cells.forEach((cell, index) => {
-    const approved = LIVE_LLM_CELLS[index];
+    const approved = approvedCells[index];
     const expectedCell = {
       cellIndex: index,
       cellId: approved.cellId,
@@ -515,7 +532,7 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
     || grant.budget?.reclaimPolicy !== 'never-within-execution'
     || grant.budget?.retryPolicy !== 'new-execution-required'
     || grant.authorization?.providerId !== PROVIDER_PREFLIGHT_PROVIDER_ID
-    || grant.authorization?.model !== PROVIDER_PREFLIGHT_MODEL
+    || grant.authorization?.model !== releasePlan.models[0]
     || grant.authorization?.protocol !== PROVIDER_PREFLIGHT_PROTOCOL
     || grant.authorization?.operation !== PROVIDER_PREFLIGHT_OPERATION
     || grant.authorization?.inputMode !== PROVIDER_PREFLIGHT_INPUT_MODE
@@ -536,7 +553,7 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
   ) throw new Error('provider preflight grant is not the fixed zero-audio LiveTranslate lifecycle authorization');
   assertWatchModelProtocolIdentity(
     grant.authorization?.modelProtocolProfileIdentity,
-    deriveWatchModelProtocolIdentity(PROVIDER_PREFLIGHT_MODEL),
+    deriveWatchModelProtocolIdentity(releasePlan.models[0], selection),
     'provider preflight grant authorization model protocol profile identity',
   );
   if (expected.executionId && grant.executionId !== expected.executionId) {

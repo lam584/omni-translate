@@ -5,7 +5,7 @@ use crate::diagnostics::events::append_diagnostics_log;
 use crate::provider::contracts::{ProviderDraftInput, ProviderModelCapabilityRegistryEntryInput};
 use crate::provider::adapter_registry::{realtime_route, RealtimeAdapterRoute};
 use crate::provider::model_protocol_profile::{
-    authorize_model_protocol_invocation, lookup_model_protocol_profiles_for_inspection,
+    lookup_model_protocol_profiles_for_inspection,
     AuthorizedModelProtocolProfile,
     ModelProtocolAuthorizationRequest, ModelProtocolRequestedAudio,
 };
@@ -116,6 +116,7 @@ pub(crate) struct ResolvedRealtimeProfile {
     pub(crate) route_kind: ResolvedRouteKind,
     pub(crate) protocol_dialect: Option<RealtimeProtocol>,
     pub(crate) realtime_audio_mode: String,
+    pub(crate) interaction_capabilities: Vec<String>,
     pub(crate) input_format: String,
     pub(crate) output_format: Option<String>,
     pub(crate) sample_rate: u32,
@@ -285,6 +286,7 @@ impl ResolvedRoutePlan {
                         .to_string()
                 })
                 .and_then(|authority| {
+                    crate::audio::bailian_protocol::validate_audio_mode(authority, &effective_audio_mode)?;
                     session_contract::resolve_livetranslate_contract(
                         authority,
                         &source_language,
@@ -487,7 +489,7 @@ pub(crate) fn resolve_realtime_profile(
     provider: &ProviderDraftInput,
     model: &str,
 ) -> ResolvedRealtimeProfile {
-    let manifest_realtime = authorize_realtime_provider(provider);
+    let manifest_realtime = if is_dashscope_provider(provider) { Ok(None) } else { authorize_realtime_provider(provider) };
     let (manifest_protocol, manifest_route_kind, manifest_authority, manifest_error) = match manifest_realtime {
         Ok(Some(authority)) => {
             let route = realtime_route(&authority.adapter_id, &authority.operation);
@@ -522,8 +524,8 @@ pub(crate) fn resolve_realtime_profile(
         .iter()
         .filter(|entry| entry.model_id.trim().eq_ignore_ascii_case(model.trim()))
         .collect::<Vec<_>>();
-    let registry_entry = selected_registry_entry(provider, model);
-    let diagnostics = if registry_matches.len() > 1 {
+    let registry_entry = if provider.model_registry_version == Some(2) { None } else { selected_registry_entry(provider, model) };
+    let mut diagnostics = if provider.model_registry_version != Some(2) && registry_matches.len() > 1 {
         vec![format!(
             "duplicate realtime registry entries for '{model}'; selected entry '{}' is effective",
             registry_entry
@@ -604,6 +606,33 @@ pub(crate) fn resolve_realtime_profile(
             Some(RealtimeProtocol::GeminiLive) => "gemini_auto_activity".to_string(),
             _ => "server_vad".to_string(),
         });
+    let inherited_interaction = registry_entry.map(|entry| entry.interaction_capabilities.clone())
+        .unwrap_or_else(|| match realtime_audio_mode.as_str() {
+            "server_vad" | "semantic_vad" => vec!["auto_vad".to_string()],
+            "manual" => vec!["manual_commit".to_string()],
+            _ => Vec::new(),
+        });
+    let mut inherited = serde_json::json!({"realtimeAudioMode":realtime_audio_mode,"interactionCapabilities":inherited_interaction});
+    if provider.model_registry_version == Some(2) {
+        match crate::provider::provider_manifest::manifest_model_capability_metadata(provider, model, model_protocol_authority.as_ref()) {
+            Ok(Some(metadata)) => inherited = metadata,
+            Ok(None) => {},
+            Err(error) => diagnostics.push(error),
+        }
+    }
+    let effective = if provider.model_registry_version == Some(2) {
+        let registry = crate::provider::contracts::ProviderModelRegistryInput {
+            model_registry_version: provider.model_registry_version,
+            model_capability_overrides: provider.model_capability_overrides.clone(),
+        };
+        let (resolved, issues) = registry.resolve(model, Some(&inherited));
+        diagnostics.extend(issues.into_iter().map(str::to_string));
+        resolved.unwrap_or(inherited)
+    } else { inherited };
+    let realtime_audio_mode = effective.get("realtimeAudioMode").and_then(Value::as_str)
+        .unwrap_or(&realtime_audio_mode).to_string();
+    let interaction_capabilities = effective.get("interactionCapabilities").and_then(Value::as_array)
+        .map(|values| values.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
     let route_kind = manifest_route_kind.unwrap_or_else(|| match protocol_dialect {
         Some(RealtimeProtocol::DashscopeOmni | RealtimeProtocol::DashscopeLivetranslate) => {
             ResolvedRouteKind::Omni
@@ -683,6 +712,7 @@ pub(crate) fn resolve_realtime_profile(
         route_kind,
         protocol_dialect,
         realtime_audio_mode,
+        interaction_capabilities,
         input_format: input_format.to_string(),
         output_format: native_audio_output
             .then(|| if dashscope_realtime { "pcm" } else { "pcm16" }.to_string()),

@@ -875,6 +875,22 @@
   "models": [
     {
       "id": "glm-realtime-flash",
+      "capabilityMetadata": {
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ],
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "apiModes": [
+          "live-websocket"
+        ],
+        "releasedAt": "unknown"
+      },
       "displayName": "GLM-Realtime-Flash",
       "capabilities": [
         "speech-to-text",
@@ -908,6 +924,22 @@
     },
     {
       "id": "glm-realtime-air",
+      "capabilityMetadata": {
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ],
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "apiModes": [
+          "live-websocket"
+        ],
+        "releasedAt": "unknown"
+      },
       "displayName": "GLM-Realtime-Air",
       "capabilities": [
         "speech-to-text",

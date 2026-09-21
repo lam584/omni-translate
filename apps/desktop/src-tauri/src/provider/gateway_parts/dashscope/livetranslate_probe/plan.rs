@@ -67,6 +67,7 @@ pub(super) fn prepare_livetranslate_probe_plan(
     .map_err(|error| ProviderRuntimeError::new("protocol.client-payload-invalid", error))?;
     let requested_config = normalized_livetranslate_probe_config(
         session_update.pointer("/session").unwrap_or(&Value::Null),
+        crate::audio::bailian_protocol::is_v2(&protocol_authority),
     );
 
     Ok(PreparedLiveTranslateProbePlan {

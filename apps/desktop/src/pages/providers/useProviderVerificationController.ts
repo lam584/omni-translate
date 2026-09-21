@@ -1,5 +1,7 @@
+import { beginCredentialVerificationChange, credentialVerificationPending, credentialVerificationRevision, subscribeCredentialVerification } from '../../utils/provider-credential-verification';
+import { providerVerificationIdentity } from '../../utils/provider-draft-verification';
 import type { TFunction } from 'i18next';
-import { useEffect, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useRef, useSyncExternalStore, type Dispatch, type SetStateAction } from 'react';
 import { fetchProviderModels, getProviderSecretStatus, readProviderSecret, runProviderProbe, runProviderSmoke, saveProviderSecret } from '../../runtime/provider-runtime';
 import type { ProviderDraft, ProviderModelCapabilityRegistryEntry } from '../../schema/config';
 import type { ProviderProbeProfileRuntime, ProviderSmokeResult } from '../../schema/provider-runtime';
@@ -39,9 +41,28 @@ export function useProviderVerificationController(params: Params) {
   const { activeProvider, activeTemplate, localModelCapabilityRegistry, modelCatalogSignature,
     providerRuntimeBlocked, providerRuntimeStatusMessage, setModelCatalog, setSecretDraft,
     setSecretStatusMessage, setSecretStored, setSecretVisible, t } = params;
-  const updateActiveProviderDraft = useAppStore((state) => state.updateActiveProviderDraft);
+  const credentialRevision = useSyncExternalStore(subscribeCredentialVerification, () => credentialVerificationRevision(activeProvider.authRef.reference));
+  const verificationIdentity = providerVerificationIdentity(activeProvider);
+  const mountedIdentity = useRef<string | null>(verificationIdentity);
+  useEffect(() => {
+    mountedIdentity.current = verificationIdentity;
+    return () => { mountedIdentity.current = null; };
+  }, [verificationIdentity]);
+  const { setProbeResult, setSmokeResult } = params;
+  useEffect(() => {
+    queueMicrotask(() => { setProbeResult(null); setSmokeResult(null); });
+  }, [verificationIdentity, credentialRevision, setProbeResult, setSmokeResult]);
+  const verificationStillCurrent = () => {
+    const current = useAppStore.getState().configDraft.providers.find((provider) => provider.providerId === activeProvider.providerId && provider.templateId === activeProvider.templateId);
+    return mountedIdentity.current === verificationIdentity && !credentialVerificationPending(activeProvider.authRef.reference) && credentialVerificationRevision(activeProvider.authRef.reference) === credentialRevision && current !== undefined && providerVerificationIdentity(current) === verificationIdentity;
+  };
+  const updateActiveProviderDraft = (patch: Partial<ProviderDraft>) => {
+    const state = useAppStore.getState();
+    state.updateProviders(state.configDraft.providers.map((provider) =>
+      provider.providerId === activeProvider.providerId && provider.templateId === activeProvider.templateId
+        ? { ...provider, ...patch } : provider));
+  };
   const updateDiagnosticsDraft = useAppStore((state) => state.updateDiagnosticsDraft);
-  const updateProviders = useAppStore((state) => state.updateProviders);
   const blockedMessage = (action: string) => params.providerRuntimeStatusMessage
     ?? params.t('providers.messages.storageBlockedAction', { action });
 
@@ -95,7 +116,7 @@ export function useProviderVerificationController(params: Params) {
   const syncProbeState = (result: ProviderProbeProfileRuntime) => {
     const patch = buildProviderVerificationPatch(result);
     params.setProbeResult(result);
-    updateActiveProviderDraft(patch);
+    updateActiveProviderDraft({ ...patch, probe: { ...patch.probe, configurationSignature: result.id?.startsWith('credential-proof:') ? verificationIdentity : undefined } });
     updateDiagnosticsDraft({ providerStatus: patch.status });
   };
 
@@ -142,13 +163,6 @@ export function useProviderVerificationController(params: Params) {
         params.activeProvider.displayName,
       );
       updateActiveProviderDraft({ modelCatalogCache: cache });
-      const nextProvider = { ...providersPageHelpers.getActiveProviderFromState(), modelCatalogCache: cache } as ProviderDraft;
-      const providers = [...useAppStore.getState().configDraft.providers];
-      const index = providers.findIndex((provider) => provider.templateId === nextProvider.templateId);
-      if (index >= 0) {
-        providers[index] = nextProvider;
-        updateProviders(providers);
-      }
       params.setModelCatalog({
         signature: params.modelCatalogSignature,
         status: error ? 'error' : 'ready',
@@ -177,8 +191,10 @@ export function useProviderVerificationController(params: Params) {
     }
 
     params.setBusyAction('secret');
+    let finishCredentialChange: (() => void) | undefined;
     try {
       if (params.secretDraft.trim()) {
+        finishCredentialChange = beginCredentialVerificationChange(params.activeProvider.authRef.reference);
         await saveProviderSecret(params.activeProvider.authRef.reference, params.secretDraft.trim());
         params.setSecretStored(true);
         params.setSecretDraft('');
@@ -196,8 +212,10 @@ export function useProviderVerificationController(params: Params) {
         params.t('providers.messages.secretWriteFailed'),
         error,
       ));
-      setVerificationStatus('warning');
+      if (verificationStillCurrent()) setVerificationStatus('warning');
     } finally {
+      // A timeout does not prove the vault write did not happen.
+      finishCredentialChange?.();
       params.setBusyAction(null);
     }
   };
@@ -245,9 +263,11 @@ export function useProviderVerificationController(params: Params) {
       return;
     }
 
+    if (!verificationStillCurrent()) return;
     params.setBusyAction('verify');
     try {
       const probe = await runProviderProbe(params.activeProvider);
+      if (!verificationStillCurrent()) return;
       syncProbeState(probe);
       if (probe.error) {
         params.setSmokeResult(null);
@@ -261,15 +281,17 @@ export function useProviderVerificationController(params: Params) {
         params.sourceLanguage,
         params.targetLanguage,
       );
+      if (!verificationStillCurrent()) return;
       params.setSmokeResult(result);
       setVerificationStatus(result.error || !result.streamObserved ? 'warning' : 'ready');
       params.setVerificationModalOpen(true);
     } catch (error) {
+      if (!verificationStillCurrent()) return;
       params.setSecretStatusMessage(providersPageHelpers.formatRuntimeErrorMessage(
         params.t('providers.messages.verifyFailed'),
         error,
       ));
-      setVerificationStatus('warning');
+      if (verificationStillCurrent()) setVerificationStatus('warning');
     } finally {
       params.setBusyAction(null);
     }

@@ -36,6 +36,8 @@ const WIRE_PARSER_FILES = [
   // Shared realtime event envelope parser used by production, benchmarks,
   // and provider smoke paths.
   'src-tauri/src/audio/realtime_ws.rs',
+  // Versioned LiveTranslate client payload validation/projection, not app configuration.
+  'src-tauri/src/audio/bailian_protocol/v2.rs',
   'src-tauri/src/audio/omni/',
   'src-tauri/src/provider/gateway_parts/',
   'src-tauri/src/benchmark/',
@@ -57,6 +59,10 @@ const WIRE_PREFIXES = [
   '/model', '/modalities', '/response', '/sample_rate', '/serverContent',
   '/session', '/setup', '/text', '/transcript', '/translation', '/type',
   '/usage', '/artifactKind',
+  // Signed readiness model/workspace binding; not persisted app configuration.
+  '/workerReadinessRequest/releaseSelection',
+  // LiveTranslate v2 nested wire configuration and legacy v1 projection input.
+  '/audio/input/turn_detection', '/turn_detection',
 ];
 
 // Reads of config sections the schema does not have: they always fall through

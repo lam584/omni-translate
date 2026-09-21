@@ -636,6 +636,20 @@
   "models": [
     {
       "id": "hunyuan-translation-lite",
+      "capabilityMetadata": {
+        "capabilities": [
+          "speech-to-text"
+        ],
+        "interactionCapabilities": [
+          "streaming",
+          "pipeline_asr_mt_tts"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "apiModes": [
+          "live-websocket"
+        ],
+        "releasedAt": "unknown"
+      },
       "displayName": "Hunyuan Translation Lite",
       "capabilities": ["speech-translation", "realtime-transcription", "text-translation"],
       "maturity": "unspecified",
@@ -647,6 +661,20 @@
     },
     {
       "id": "hunyuan-translation",
+      "capabilityMetadata": {
+        "capabilities": [
+          "speech-to-text"
+        ],
+        "interactionCapabilities": [
+          "streaming",
+          "pipeline_asr_mt_tts"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "apiModes": [
+          "live-websocket"
+        ],
+        "releasedAt": "unknown"
+      },
       "displayName": "Hunyuan Translation",
       "capabilities": ["speech-translation", "realtime-transcription", "text-translation"],
       "maturity": "unspecified",

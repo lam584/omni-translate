@@ -341,6 +341,8 @@ pub fn truncate_path(path: &std::path::PathBuf, max: usize) -> String {
 /// 单个模型在批量对比中的结果
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<serde_json::Value>,
     pub model_id: String,
     pub protocol: String,
     pub provider: String,
@@ -611,4 +613,22 @@ pub fn save_comparison_report(report: &ComparisonReport, path: &str) -> Result<(
         .map_err(|e| format!("序列化对比报告失败: {e}"))?;
     std::fs::write(path, json)
         .map_err(|e| format!("写入报告文件 '{}': {e}", path))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct RunFailure {
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<serde_json::Value>,
+}
+impl From<String> for RunFailure {
+    fn from(message: String) -> Self { Self { message, diagnostic: None } }
+}
+impl std::fmt::Display for RunFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.message.fmt(f) }
+}
+
+pub(crate) fn failure_document(model: &str, run_index: usize, completed_runs: &[RunResult], failure: &RunFailure) -> serde_json::Value {
+    serde_json::json!({"schemaVersion":"omni-benchmark-failure/v1", "status":"failed", "model":model,
+        "run_index":run_index, "completed_runs":completed_runs, "failure":failure})
 }

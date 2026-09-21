@@ -639,7 +639,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     expect(container.textContent).toContain('部分输出');
     // …and the run is presented as failed, with the backend's terminal phase.
     expect(container.querySelector('.benchmark-progress-card')?.className).toContain('benchmark-progress-error');
-    expect(container.querySelector('.benchmark-progress-head strong')?.textContent).toBe('failed');
+    expect(container.querySelector('.benchmark-progress-head strong')?.textContent).toBe('失败阶段：failed');
     expect(container.querySelector('.diagnostics-benchmark-error')?.textContent).toContain('network failed');
     expect(container.querySelector('.diagnostics-benchmark-error')?.textContent).toContain('runtime.operation-failed');
   });

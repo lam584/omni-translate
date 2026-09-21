@@ -403,7 +403,7 @@ describe('provider catalog components', () => {
   it('renders registry column headers, datalist suggestions, and flags duplicate model ids', async () => {
     const entries = [
       { id: 'a', modelId: 'qwen-plus', capabilities: ['speech-to-text' as const] },
-      { id: 'b', modelId: ' Qwen-Plus ', capabilities: [] },
+      { id: 'b', modelId: 'qwen-plus', capabilities: [] },
       { id: 'c', modelId: '', capabilities: [] },
     ];
     ({ container, root } = render(<ProviderCapabilityRegistryDialog

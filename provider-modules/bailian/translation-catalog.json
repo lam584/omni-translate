@@ -1,0 +1,270 @@
+{
+  "schemaVersion": "bailian-translation-catalog/v1",
+  "checkedAt": "2026-09-20",
+  "models": [
+    {
+      "id": "qwen-mt-plus",
+      "regions": [
+        "cn-beijing",
+        "ap-southeast-1",
+        "us-east-1"
+      ],
+      "streamingSemantics": "replaceable-snapshot",
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-mt-plus",
+          "checkedAt": "2026-09-20"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-mt-api",
+          "checkedAt": "2026-09-20"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/machine-translation",
+          "checkedAt": "2026-09-20"
+        }
+      ]
+    },
+    {
+      "id": "qwen-mt-flash",
+      "regions": [
+        "cn-beijing",
+        "ap-southeast-1",
+        "us-east-1"
+      ],
+      "streamingSemantics": "append-delta",
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-mt-flash",
+          "checkedAt": "2026-09-20"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-mt-api",
+          "checkedAt": "2026-09-20"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/machine-translation",
+          "checkedAt": "2026-09-20"
+        }
+      ]
+    },
+    {
+      "id": "qwen-mt-lite",
+      "regions": [
+        "cn-beijing",
+        "ap-southeast-1",
+        "us-east-1"
+      ],
+      "streamingSemantics": "append-delta",
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-mt-lite",
+          "checkedAt": "2026-09-20"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-mt-api",
+          "checkedAt": "2026-09-20"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/machine-translation",
+          "checkedAt": "2026-09-20"
+        }
+      ]
+    },
+    {
+      "id": "qwen-mt-turbo",
+      "regions": [
+        "cn-beijing",
+        "ap-southeast-1"
+      ],
+      "streamingSemantics": "replaceable-snapshot",
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-mt-turbo",
+          "checkedAt": "2026-09-20"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-mt-api",
+          "checkedAt": "2026-09-20"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/machine-translation",
+          "checkedAt": "2026-09-20"
+        }
+      ]
+    }
+  ],
+  "discoveryModels": [
+    {
+      "id": "qwen3.8-max",
+      "capability": "text-generation",
+      "regions": [
+        "cn-beijing",
+        "ap-southeast-1",
+        "eu-central-1",
+        "us-east-1",
+        "ap-northeast-1",
+        "cn-hongkong"
+      ],
+      "verification": "official-catalog-only",
+      "unknowns": [
+        "executableProtocol",
+        "regionalEndpoint",
+        "streamingSemantics"
+      ],
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
+          "checkedAt": "2026-09-20"
+        }
+      ]
+    },
+    {
+      "id": "qwen3.8-max-0902",
+      "capability": "text-generation",
+      "regions": [],
+      "verification": "official-catalog-only",
+      "unknowns": [
+        "executableProtocol",
+        "regionalEndpoint",
+        "snapshotRegionalAvailability",
+        "streamingSemantics"
+      ],
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
+          "checkedAt": "2026-09-20"
+        }
+      ]
+    },
+    {
+      "id": "qwen3.8-max-2026-09-02",
+      "capability": "text-generation",
+      "regions": [],
+      "verification": "official-catalog-only",
+      "unknowns": [
+        "executableProtocol",
+        "regionalEndpoint",
+        "snapshotRegionalAvailability",
+        "streamingSemantics"
+      ],
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
+          "checkedAt": "2026-09-20"
+        }
+      ]
+    },
+    {
+      "id": "qwen3.8-flash",
+      "capability": "text-generation",
+      "regions": [
+        "cn-beijing",
+        "ap-southeast-1",
+        "eu-central-1",
+        "us-east-1",
+        "ap-northeast-1",
+        "cn-hongkong"
+      ],
+      "verification": "official-catalog-only",
+      "unknowns": [
+        "executableProtocol",
+        "regionalEndpoint",
+        "streamingSemantics"
+      ],
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen3-8-flash",
+          "checkedAt": "2026-09-20"
+        }
+      ]
+    },
+    {
+      "id": "qwen-audio-3.1-tts-flash",
+      "capability": "text-to-speech",
+      "regions": [
+        "cn-beijing"
+      ],
+      "verification": "official-catalog-only",
+      "unknowns": [
+        "executableProtocol",
+        "regionalEndpoint",
+        "transport",
+        "audioFormat",
+        "sampleRate"
+      ],
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-3-1-tts-flash",
+          "checkedAt": "2026-09-20"
+        }
+      ]
+    },
+    {
+      "id": "qwen-plus",
+      "capability": "text-generation",
+      "legacyPreset": true,
+      "regions": [
+        "cn-beijing",
+        "ap-southeast-1",
+        "eu-central-1",
+        "us-east-1",
+        "cn-hongkong"
+      ],
+      "verification": "official-catalog-only",
+      "unknowns": [
+        "executableProtocol",
+        "regionalEndpoint",
+        "streamingSemantics"
+      ],
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-plus",
+          "checkedAt": "2026-09-20"
+        }
+      ]
+    },
+    {
+      "id": "qwen-max",
+      "capability": "text-generation",
+      "legacyPreset": true,
+      "regions": [
+        "cn-beijing",
+        "ap-southeast-1"
+      ],
+      "verification": "official-catalog-only",
+      "unknowns": [
+        "executableProtocol",
+        "regionalEndpoint",
+        "streamingSemantics"
+      ],
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-max",
+          "checkedAt": "2026-09-20"
+        }
+      ]
+    },
+    {
+      "id": "qwen-turbo",
+      "capability": "text-generation",
+      "legacyPreset": true,
+      "regions": [
+        "cn-beijing",
+        "ap-southeast-1"
+      ],
+      "verification": "official-catalog-only",
+      "unknowns": [
+        "executableProtocol",
+        "regionalEndpoint",
+        "streamingSemantics"
+      ],
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-turbo",
+          "checkedAt": "2026-09-20"
+        }
+      ]
+    }
+  ]
+}

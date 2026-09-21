@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   deriveWatchModelProtocolIdentity,
   watchModelProtocolIdentityFailure,
@@ -23,6 +24,14 @@ export const PROCESS_EXCLUSION_CAPTURE_GRACE_FRAMES = 9 * 16_000;
 export const RELEASE_MODELS = Object.freeze([
   'qwen3.5-livetranslate-flash-realtime',
 ]);
+
+// Supported selection is separate from the historical/default v12 plan.
+// Adding a model must not silently double the paid cells or rewrite 3.5 evidence.
+export const SUPPORTED_RELEASE_MODELS = Object.freeze([
+  ...RELEASE_MODELS, 'qwen3.8-livetranslate-flash-realtime',
+]);
+export const SELECTABLE_RELEASE_PLAN_SCHEMA_VERSION = 13;
+export const SELECTABLE_RELEASE_PLAN_ID = 'watch-mode-balanced-v13-explicit-model-endpoint';
 
 export const RELEASE_FEEDBACK_MODES = Object.freeze([
   'process-exclusion',
@@ -196,10 +205,67 @@ export const BALANCED_RELEASE_PLAN = Object.freeze({
   }),
 });
 
-export const expectedBalancedCellIds = () => BALANCED_RELEASE_CELLS.map(({ cellId }) => cellId);
+/** A selection authorizes exactly four cells for one model, never an implicit eight-cell run. */
+export function createBalancedReleasePlan({ modelId = RELEASE_MODELS[0], endpointHost, region = 'cn-beijing' } = {}) {
+  if (!SUPPORTED_RELEASE_MODELS.includes(modelId)) throw new Error('unsupported exact release model');
+  if (region !== 'cn-beijing') throw new Error('release plan requires the validated cn-beijing region');
+  if (modelId === RELEASE_MODELS[0]) {
+    if (endpointHost !== undefined && endpointHost !== 'dashscope.aliyuncs.com') {
+      throw new Error('historical 3.5 release endpoint must remain dashscope.aliyuncs.com');
+    }
+    return BALANCED_RELEASE_PLAN;
+  }
+  if (typeof endpointHost !== 'string' || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.cn-beijing\.maas\.aliyuncs\.com$/.test(endpointHost)) {
+    throw new Error('3.8 release plan requires an explicit Beijing workspace endpoint host');
+  }
+  const identity = deriveWatchModelProtocolIdentity(modelId, { endpointHost, region });
+  const paidCells = LIVE_LLM_CELLS.map((entry) => Object.freeze({
+    ...entry,
+    cellId: [entry.tier, modelId, entry.feedbackLoopPrevention, entry.deviceClass].join('::'),
+    modelId,
+    modelProtocolProfileIdentity: identity,
+  }));
+  return Object.freeze({
+    ...BALANCED_RELEASE_PLAN,
+    schemaVersion: SELECTABLE_RELEASE_PLAN_SCHEMA_VERSION,
+    planId: SELECTABLE_RELEASE_PLAN_ID,
+    models: Object.freeze([modelId]),
+    providerEndpoint: Object.freeze({ region, endpointHost }),
+    cells: Object.freeze([...LOCAL_ISOLATION_CELLS, ...paidCells]),
+  });
+}
+
+// The serialized selection is optional only for the legacy/default plan.
+export function normalizeReleaseSelection(selection) {
+  if (selection === undefined) return undefined;
+  if (!selection || typeof selection !== 'object' || Array.isArray(selection)
+      || Object.keys(selection).some(key => !['modelId', 'endpointHost', 'region'].includes(key))
+      || selection.modelId !== SUPPORTED_RELEASE_MODELS[1]) {
+    throw new Error('releaseSelection must explicitly select the supported 3.8 model');
+  }
+  const plan = createBalancedReleasePlan(selection);
+  return Object.freeze({modelId: plan.models[0], ...plan.providerEndpoint});
+}
+
+export function liveCellsForReleasePlan(plan = BALANCED_RELEASE_PLAN) {
+  const failure = balancedReleasePlanFailure(plan);
+  if (failure) throw new Error(failure);
+  return plan.cells.filter((entry) => entry.providerMode !== 'disabled');
+}
+
+export const expectedBalancedCellIds = (plan = BALANCED_RELEASE_PLAN) => plan.cells.map(({ cellId }) => cellId);
 
 export function balancedReleasePlanFailure(plan) {
   if (!plan || typeof plan !== 'object') return 'balanced release validation plan is missing';
+  if (plan.schemaVersion === SELECTABLE_RELEASE_PLAN_SCHEMA_VERSION) {
+    try {
+      if (!Array.isArray(plan.models) || plan.models.length !== 1 || plan.models[0] !== SUPPORTED_RELEASE_MODELS[1]) {
+        return 'v13 release plan requires one exact 3.8 model';
+      }
+      const expected = createBalancedReleasePlan({ modelId: plan.models[0], ...plan.providerEndpoint });
+      return isDeepStrictEqual(plan, expected) ? null : 'selected release plan differs from exact model/endpoint/budget contract';
+    } catch (error) { return error.message; }
+  }
   if (plan.schemaVersion !== BALANCED_RELEASE_PLAN_SCHEMA_VERSION) {
     return `balanced release validation plan schema must be ${BALANCED_RELEASE_PLAN_SCHEMA_VERSION}`;
   }

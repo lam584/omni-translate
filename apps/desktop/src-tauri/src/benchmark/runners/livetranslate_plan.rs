@@ -62,8 +62,7 @@ fn prepare_livetranslate_benchmark_plan_inner(
                 .to_string(),
         );
     }
-    if authority.adapter_id != crate::audio::bailian_protocol::LIVETRANSLATE_ADAPTER_ID
-        || authority.wire_dialect != crate::audio::bailian_protocol::LIVETRANSLATE_DIALECT_ID
+    if !crate::audio::bailian_protocol::is_supported_authority(&authority)
         || authority.terminal_lifecycle != "session.finish->session.finished"
         || config.protocol_dialect
             != Some(crate::audio::events::RealtimeProtocol::DashscopeLivetranslate)
@@ -74,6 +73,7 @@ fn prepare_livetranslate_benchmark_plan_inner(
         ));
     }
 
+    crate::audio::bailian_protocol::validate_audio_mode(&authority, config.audio_mode.as_str())?;
     let audio_appends = samples
         .chunks(CHUNK_SAMPLES)
         .map(|chunk| {
@@ -90,6 +90,7 @@ fn prepare_livetranslate_benchmark_plan_inner(
             "type": "session.finish"
         }),
     };
+    crate::audio::bailian_protocol::apply_session_dialect(&mut values.session_update, &authority);
     mutate(&mut values);
 
     let mut server_state = crate::audio::bailian_protocol::LiveTranslateServerState::default();
@@ -116,6 +117,10 @@ fn prepare_livetranslate_benchmark_plan_inner(
 }
 
 impl PreparedLiveTranslateBenchmarkPlan {
+    pub(super) fn is_incremental_text(&self) -> bool {
+        crate::audio::bailian_protocol::is_v2(&self.authority)
+    }
+
     pub(super) fn session_update(&self) -> &Value {
         &self.session_update
     }

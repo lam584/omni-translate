@@ -57,7 +57,8 @@ fn provider_declares_bailian_voice_protocol(
     // Provider/template defaults are not bound to the selected exact model.
     // Only an exact registry row may opt an otherwise unknown model into the
     // voice-protocol fail-closed boundary.
-    provider
+    provider.model_protocol_bindings.iter().any(|binding| binding.model_id == exact_model_id)
+        || provider
         .local_model_capability_registry
         .iter()
         .filter(|entry| entry.model_id.trim().eq_ignore_ascii_case(exact_model_id.trim()))
@@ -105,7 +106,13 @@ pub(crate) fn authorize_bailian_model_operation_before_provider_access(
     })?;
     let explicit_bailian_voice_protocol =
         provider_declares_bailian_voice_protocol(provider, exact_model_id);
-    if profiles.is_empty() && !explicit_bailian_voice_protocol {
+    // A requested WebSocket is only a preference for explicitly declared text
+    // models; keep the established HTTP fallback without granting voice authority.
+    let declared_text_http = resolve_transport(provider).0 == "http"
+        && provider.local_model_capability_registry.iter().any(|entry|
+            entry.model_id == exact_model_id && entry.capabilities.iter().any(|capability| capability == "text-generation"));
+    if profiles.is_empty() && !explicit_bailian_voice_protocol
+        && !(provider.kind == "dashscope" && provider.transport == "websocket" && operation == "native_translate" && !declared_text_http) {
         return Ok(None);
     }
     if !provider.model.trim().eq_ignore_ascii_case(exact_model_id.trim()) {
@@ -117,14 +124,11 @@ pub(crate) fn authorize_bailian_model_operation_before_provider_access(
             ),
         ));
     }
-    if profiles.is_empty() {
-        return Err(ProviderRuntimeError::new(
-            "model_protocol.model_not_registered",
-            format!(
-                "model_protocol.model_not_registered: explicitly declared Bailian voice model '{}' has no exact manifest profile",
-                exact_model_id
-            ),
-        ));
+    if profiles.is_empty() && !provider.model_protocol_bindings.iter().any(|binding|
+        binding.model_id == exact_model_id
+            && crate::provider::model_protocol_profile::binding_operation_matches(&binding.operation, operation)) {
+        return Err(ProviderRuntimeError::new("model_protocol.model_not_registered",
+            "model_protocol.model_not_registered: voice model has no built-in authority or explicit binding"));
     }
     if provider.kind != "dashscope" {
         return Err(ProviderRuntimeError::new(
@@ -286,6 +290,7 @@ impl ProviderGateway {
         provider: ProviderDraftInput,
         strict_livetranslate_authority: bool,
     ) -> ProviderProbeProfileRuntime {
+        let credential_scope = crate::storage::credential_verification::ProbeCredentialScope::begin();
         let mut discard_delta = discard_provider_delta;
         let (source_text, source_language, target_language) =
             if strict_livetranslate_authority {
@@ -303,7 +308,9 @@ impl ProviderGateway {
             strict_livetranslate_authority,
             &mut discard_delta,
         );
-        self.probe_service.evaluate(provider, smoke)
+        let mut result = self.probe_service.evaluate(provider.clone(), smoke);
+        credential_scope.attest(&provider, &mut result);
+        result
     }
 
     pub(crate) fn execute_smoke(
@@ -346,10 +353,14 @@ impl ProviderGateway {
             &provider.model,
             "native_translate",
         );
-        let manifest_authorization = crate::provider::provider_manifest::authorize_provider_operation(
+        // Bailian voice has its own typed authorizer; HTTP text fallback retains
+        // the exact text-generation declaration check in the DashScope adapter.
+        let manifest_authorization = if provider.kind == "dashscope" || matches!(&bailian_authorization, Ok(Some(_))) {
+            Ok(None)
+        } else { crate::provider::provider_manifest::authorize_provider_operation(
             &provider,
             "text-translation",
-        )
+        ) }
         .map_err(provider_manifest_runtime_error)
         .and_then(|authority| match authority {
             Some(authority) if authority.adapter_id == "openai-compatible-http" => Ok(Some(authority)),
@@ -588,6 +599,8 @@ mod tests {
             custom_headers: vec![],
             scene_model_assignments: vec![],
             model_protocol_bindings: vec![],
+            model_registry_version: None,
+            model_capability_overrides: Vec::new(),
             local_model_capability_registry: vec![],
             model_catalog_cache: Default::default(),
         }
@@ -2555,6 +2568,8 @@ mod tests {
             custom_headers: vec![],
             scene_model_assignments: vec![],
             model_protocol_bindings: vec![],
+            model_registry_version: None,
+            model_capability_overrides: Vec::new(),
             local_model_capability_registry: vec![],
             model_catalog_cache: Default::default(),
         }

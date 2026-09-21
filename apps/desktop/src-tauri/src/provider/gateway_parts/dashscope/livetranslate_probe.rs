@@ -619,7 +619,7 @@ fn validate_livetranslate_session_updated(
             "DashScope LiveTranslate session.updated identity does not match session.created.",
         ));
     }
-    let normalized = normalized_livetranslate_probe_config(session);
+    let normalized = normalized_livetranslate_probe_config(session, requested_config.get("output_modalities").is_some());
     if &normalized != requested_config {
         return Err(ProviderRuntimeError::new(
             "protocol.config-mismatch",
@@ -629,7 +629,16 @@ fn validate_livetranslate_session_updated(
     Ok(normalized)
 }
 
-fn normalized_livetranslate_probe_config(session: &Value) -> Value {
+fn normalized_livetranslate_probe_config(session: &Value, v2: bool) -> Value {
+    if v2 {
+        return json!({
+            "output_modalities": session["output_modalities"],
+            "translation": session["translation"],
+            "audio": {"input": {"turn_detection": {
+                "type": session.pointer("/audio/input/turn_detection/type").cloned().unwrap_or(Value::Null)
+            }}}
+        });
+    }
     let turn_detection = session.get("turn_detection").unwrap_or(&Value::Null);
     let mut translation = json!({
         "language": session

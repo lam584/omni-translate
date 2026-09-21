@@ -458,3 +458,40 @@ test('Omni terminal ambiguity remains fail-closed and never invents session.fini
   assert.ok(omni.forbiddenServerEventTypes.includes('session.finished'));
   assert.ok(!omni.serverEventTypes.includes('session.finished'));
 });
+
+test('3.8 requires the registry workspace host rule and rejects profile spoofing', () => {
+  const registry = loadModelProtocolRegistry(workspaceRoot);
+  const request = {
+    exactModelId: 'qwen3.8-livetranslate-flash-realtime',
+    operation: 'native_translate',
+    transport: 'websocket',
+    region: 'cn-beijing',
+    endpointHost: 'dashscope.aliyuncs.com',
+  };
+  const generic = authorizeModelProtocolInvocation(request, registry);
+  assert.equal(generic.ok, false);
+  assert.equal(generic.errorCode, 'model_protocol.endpoint_host_region_mismatch');
+  assert.match(generic.message, /workspace_required/);
+  // Caller metadata cannot relax the compiled profile's endpoint requirement.
+  assert.deepEqual(authorizeModelProtocolInvocation({
+    ...request, endpointRequirements: { workspaceScoped: false }, workspaceScoped: true,
+  }, registry), generic);
+  const accepted = authorizeModelProtocolInvocation({
+    ...request, endpointHost: 'synthetic-test-workspace.cn-beijing.maas.aliyuncs.com',
+  }, registry);
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.authorization.profileId, 'bailian.livetranslate.3_8.realtime.ws');
+  assert.equal(accepted.authorization.endpointHostFamilyId, 'maas-cn-beijing-workspace');
+  assert.equal(accepted.authorization.wireDialectVersion, 2);
+  assert.equal(authorizeModelProtocolInvocation({
+    ...request, endpointHost: 'synthetic-test-workspace.ap-southeast-1.maas.aliyuncs.com',
+  }, registry).errorCode, 'model_protocol.endpoint_host_region_mismatch');
+  assert.equal(authorizeModelProtocolInvocation({
+    ...request, declaredProfileId: 'bailian.livetranslate.realtime.ws',
+  }, registry).errorCode, 'model_protocol.profile_id_mismatch');
+  const legacy = authorizeModelProtocolInvocation({
+    ...request, exactModelId: 'qwen3.5-livetranslate-flash-realtime',
+  }, registry);
+  assert.equal(legacy.ok, true);
+  assert.equal(legacy.authorization.endpointHostFamilyId, 'dashscope-cn-beijing-generic');
+});

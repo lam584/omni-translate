@@ -1,3 +1,4 @@
+import type { ProviderModelCapabilityRegistryEntry } from '../schema/config';
 import type { ProviderCapability } from '../schema/provider-contract';
 
 export type ProviderManifestMaturity =
@@ -176,6 +177,9 @@ export type ProviderManifestProtocolProfile = {
 };
 
 export type ProviderManifestModel = {
+  /** Advisory compatibility metadata; never endpoint/adapter/operation authority. */
+  capabilityMetadata?: Partial<Pick<ProviderModelCapabilityRegistryEntry,
+    'capabilities' | 'interactionCapabilities' | 'realtimeAudioMode' | 'apiModes' | 'releasedAt'>>;
   id: string;
   displayName: string;
   aliases?: string[];

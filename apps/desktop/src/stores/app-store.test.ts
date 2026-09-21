@@ -114,6 +114,8 @@ describe('app store', () => {
     legacyDraft.providers[0].providerId = 'provider-openai-compatible';
     delete legacyDraft.providers[0].manifestProviderId;
     delete legacyDraft.providers[0].modelProtocolBindings;
+    delete legacyDraft.providers[0].modelRegistryVersion;
+    delete legacyDraft.providers[0].modelCapabilityOverrides;
 
     const merged = appStoreTestHelpers.mergeConfigDraftWithDefaults(legacyDraft);
     const provider = merged.providers[0];

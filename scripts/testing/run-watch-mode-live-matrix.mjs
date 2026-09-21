@@ -3,6 +3,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isMain, isWindows, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
+import { renameWithTransientRetrySync } from '../lib/atomic-rename.mjs';
+
+export { renameWithTransientRetrySync } from '../lib/atomic-rename.mjs';
 import {
   currentGitProvenance,
   exactGitProvenanceFailure,
@@ -31,7 +34,9 @@ import {
   verifyStrictMatrixAuthority,
 } from './verify-watch-mode-evidence.mjs';
 import {
-  BALANCED_RELEASE_PLAN,
+  createBalancedReleasePlan,
+  liveCellsForReleasePlan,
+  normalizeReleaseSelection,
   LIVE_LLM_CELLS,
   RELEASE_DEVICE_CLASSES,
   RELEASE_FEEDBACK_MODES,
@@ -41,6 +46,7 @@ import {
 import { runLocalIsolationMatrix, verifyLocalIsolationManifest } from './watch-mode-local-isolation.mjs';
 import {
   STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
+  STRICT_PAID_PROVIDER_IDENTITY,
   assertCellExternalProviderBudget,
   assertMatrixExternalProviderBudget,
   reserveStrictPaidCellInputSamples,
@@ -72,6 +78,7 @@ export const WATCH_MODEL_PROTOCOLS = Object.freeze({
   'qwen3.5-omni-plus-realtime': 'dashscope-omni',
   'qwen3.5-omni-flash-realtime': 'dashscope-omni',
   'qwen3.5-livetranslate-flash-realtime': 'dashscope-livetranslate',
+  'qwen3.8-livetranslate-flash-realtime': 'dashscope-livetranslate',
 });
 export const DEFAULT_FEEDBACK_MODES = RELEASE_FEEDBACK_MODES;
 export const SUPPORTED_FEEDBACK_MODES = RELEASE_FEEDBACK_MODES;
@@ -79,39 +86,15 @@ export const SUPPORTED_DEVICE_CLASSES = RELEASE_DEVICE_CLASSES;
 export const MIN_WATCH_AUTO_STOP_AFTER_SECONDS = 180;
 export const MAX_WATCH_AUTO_STOP_AFTER_SECONDS = 7_200;
 export const CANONICAL_STRICT_MATRIX_MANIFEST = 'latest-successful-watch-mode-strict-matrix.json';
+export function canonicalStrictMatrixManifestName(releaseSelection) {
+  const selection = normalizeReleaseSelection(releaseSelection);
+  return selection ? `latest-successful-watch-mode-strict-matrix-${selection.modelId}.json` : CANONICAL_STRICT_MATRIX_MANIFEST;
+}
 export const STRICT_RUNTIME_BUILD_COMMANDS = Object.freeze([
   Object.freeze(['run', 'build:tauri', '--workspace', '@omni/desktop']),
   Object.freeze(['run', 'build:bridge-service-native']),
   Object.freeze(['run', 'driver:build-sysvad']),
 ]);
-const TRANSIENT_RENAME_ERROR_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
-const renameRetryWaitBuffer = new Int32Array(new SharedArrayBuffer(4));
-
-export function renameWithTransientRetrySync(
-  sourcePath,
-  destinationPath,
-  {
-    renameSync = fs.renameSync,
-    sleepSync = (delayMs) => Atomics.wait(renameRetryWaitBuffer, 0, 0, delayMs),
-    maxAttempts = 8,
-    initialDelayMs = 20,
-  } = {},
-) {
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      renameSync(sourcePath, destinationPath);
-      return { attempts: attempt };
-    } catch (error) {
-      if (
-        !TRANSIENT_RENAME_ERROR_CODES.has(error?.code)
-        || attempt === maxAttempts
-      ) throw error;
-      sleepSync(Math.min(initialDelayMs * (2 ** (attempt - 1)), 200));
-    }
-  }
-  throw new Error('atomic rename retry loop ended unexpectedly');
-}
-
 export const MATRIX_DEFAULTS = {
   outputRoot: 'artifacts/testing/watch-mode-live',
   mediaPath: 'scripts/testing/fixtures/watch-mode-en-original.wav',
@@ -914,10 +897,11 @@ export function stageShardMatrixIntegration({
     const integrationByCell = new Map(
       (collectedMatrixIntegration?.cells ?? []).map((cell) => [cell.cellId, cell]),
     );
+    const selectedReleaseCells = liveCellsForReleasePlan(createBalancedReleasePlan(normalizeReleaseSelection(plan.releaseSelection)));
     const projections = [];
     const runDirectories = [];
     for (const [index, planCell] of plan.cells.entries()) {
-      if (planCell.cellId !== LIVE_LLM_CELLS[index]?.cellId) {
+      if (planCell.cellId !== selectedReleaseCells[index]?.cellId) {
         throw new Error(`staged shard plan cell ${index} is not in fixed release order`);
       }
       const collected = integrationByCell.get(planCell.cellId);
@@ -1140,7 +1124,8 @@ export function stageShardMatrixIntegration({
       providerPreflightCompletion: stagedPreflightCompletionAuthority,
       workerReadinessRequest: stagedWorkerReadinessRequestAuthority,
       workerReadiness: stagedWorkerReadinessAuthorities,
-      releaseCells: collectedMatrixIntegration.releaseCells,
+      ...(plan.releaseSelection ? { releaseSelection: structuredClone(plan.releaseSelection) } : {}),
+      releaseCells: selectedReleaseCells,
       coordinatorAggregateDigest: aggregate.aggregateDigest,
       cells: projections,
       externalProviderBudget: aggregate.budget,
@@ -1306,7 +1291,10 @@ export const writeMatrixRunManifest = ({
   failureFingerprintAuthority = null,
   shardExecution = null,
   matrixIntegration = null,
+  releaseSelection = matrixIntegration?.releaseSelection,
 }) => {
+  const selection = normalizeReleaseSelection(releaseSelection);
+  const selectedReleasePlan = createBalancedReleasePlan(selection);
   if (strict) assertStrictMatrixProvenance(provenance);
   const resolvedOutputRoot = path.resolve(repoRoot, outputRoot);
   fs.mkdirSync(resolvedOutputRoot, { recursive: true });
@@ -1315,7 +1303,13 @@ export const writeMatrixRunManifest = ({
     resolvedOutputRoot,
     `watch-mode-live-matrix-${timestamp}-${process.pid}.json`,
   );
-  const plannedLiveCells = strict ? (releaseCells ?? LIVE_LLM_CELLS) : null;
+  const plannedLiveCells = strict ? (releaseCells ?? liveCellsForReleasePlan(selectedReleasePlan)) : null;
+  if (strict && selection && releaseCells && JSON.stringify(releaseCells) !== JSON.stringify(liveCellsForReleasePlan(selectedReleasePlan))) {
+    throw new Error('strict matrix release cells differ from the selected model plan');
+  }
+  if (strict && selection && JSON.stringify(modelList) !== JSON.stringify(selectedReleasePlan.models)) {
+    throw new Error('strict matrix models differ from the selected model plan');
+  }
   if (strict && externalProviderBudget?.passed !== true) {
     throw new Error('strict matrix manifest requires a passed external provider budget ledger');
   }
@@ -1460,7 +1454,8 @@ export const writeMatrixRunManifest = ({
     runDirectories: scopedRunDirectories,
     ...(strict
       ? {
-          validationPlan: BALANCED_RELEASE_PLAN,
+          ...(selection ? { releaseSelection: selection } : {}),
+          validationPlan: selectedReleasePlan,
           localIsolation: localIsolationAuthority,
           externalProviderBudget,
           ...(failureSummary ? {
@@ -1512,6 +1507,13 @@ export const publishSuccessfulStrictMatrixManifest = ({
   currentRuntimeBinaryHashes: providedRuntimeBinaryHashes,
 }) => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
+  const selection = normalizeReleaseSelection(manifest.releaseSelection);
+  const selectedReleasePlan = createBalancedReleasePlan(selection);
+  const selectedReleaseCells = liveCellsForReleasePlan(selectedReleasePlan);
+  if (JSON.stringify(manifest.validationPlan) !== JSON.stringify(selectedReleasePlan)) {
+    throw new Error('canonical matrix balanced release plan does not match release selection');
+  }
+  const providerIdentity = { ...STRICT_PAID_PROVIDER_IDENTITY, ...(selection ? { endpointHost: selection.endpointHost } : {}) };
   const provenanceFailure = exactGitProvenanceFailure(
     manifest.provenance,
     currentProvenance,
@@ -1539,7 +1541,7 @@ export const publishSuccessfulStrictMatrixManifest = ({
       manifest.collectAll.verdict === 'passed'
       && Array.isArray(manifest.collectAll.failed)
       && manifest.collectAll.failed.length === 0
-      && manifest.collectAll.completed?.length === LIVE_LLM_CELLS.length
+      && manifest.collectAll.completed?.length === selectedReleaseCells.length
     ))
     && Number(manifest.externalProviderBudget?.matrixInputSampleCeiling)
       === STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES
@@ -1549,9 +1551,9 @@ export const publishSuccessfulStrictMatrixManifest = ({
     && manifest.externalProviderBudget?.ledgerPath
     && manifest.externalProviderBudget?.ledgerSha256
     && Number(manifest.externalProviderBudget?.ledgerBytes) > 0
-    && JSON.stringify(manifest.models) === JSON.stringify(DEFAULT_MODELS)
+    && JSON.stringify(manifest.models) === JSON.stringify(selectedReleasePlan.models)
     && JSON.stringify(manifest.feedbackLoopPreventionModes) === JSON.stringify(DEFAULT_FEEDBACK_MODES)
-    && manifest.runDirectories?.length === LIVE_LLM_CELLS.length
+    && manifest.runDirectories?.length === selectedReleaseCells.length
     && manifest.cells?.length === manifest.runDirectories?.length
     && profileClasses.length === SUPPORTED_DEVICE_CLASSES.length
     && SUPPORTED_DEVICE_CLASSES.every((deviceClass) => (
@@ -1577,10 +1579,12 @@ export const publishSuccessfulStrictMatrixManifest = ({
     assertCellExternalProviderBudget(
       resolveAuthorityPath(resolvedOutputRoot, cell.runDirectory, `strict matrix cell ${index} run directory`),
       {
-        cellId: LIVE_LLM_CELLS[index]?.cellId,
-        modelId: LIVE_LLM_CELLS[index]?.modelId,
-        feedbackLoopPrevention: LIVE_LLM_CELLS[index]?.feedbackLoopPrevention,
-        inputCeilingSamples: LIVE_LLM_CELLS[index]?.maxExternalAudioSamples,
+        approvedModels: selectedReleasePlan.models,
+        providerIdentity,
+        cellId: selectedReleaseCells[index]?.cellId,
+        modelId: selectedReleaseCells[index]?.modelId,
+        feedbackLoopPrevention: selectedReleaseCells[index]?.feedbackLoopPrevention,
+        inputCeilingSamples: selectedReleaseCells[index]?.maxExternalAudioSamples,
       },
     )
   ));
@@ -1589,7 +1593,7 @@ export const publishSuccessfulStrictMatrixManifest = ({
     manifest.externalProviderBudget.ledgerPath,
     'strict matrix external provider budget ledger',
   );
-  const rebuiltMatrixBudget = assertMatrixExternalProviderBudget(matrixBudgetPath, rawCellBudgets);
+  const rebuiltMatrixBudget = assertMatrixExternalProviderBudget(matrixBudgetPath, rawCellBudgets, { expectedCells: selectedReleaseCells });
   const manifestBudget = { ...manifest.externalProviderBudget };
   delete manifestBudget.ledgerPath;
   delete manifestBudget.ledgerBytes;
@@ -1674,10 +1678,10 @@ export const publishSuccessfulStrictMatrixManifest = ({
   const evidence = findWatchModeEvidence({
     root: resolvedOutputRoot,
     strict: true,
-    models: DEFAULT_MODELS,
+    models: selectedReleasePlan.models,
     feedbackModes: DEFAULT_FEEDBACK_MODES,
     deviceClasses: SUPPORTED_DEVICE_CLASSES,
-    releaseCells: LIVE_LLM_CELLS,
+    releaseCells: selectedReleaseCells,
     runDirectories: verifiedAuthority.runDirectories,
     authorizedReports: verifiedAuthority.authorizedReports,
     currentProvenance,
@@ -1688,7 +1692,7 @@ export const publishSuccessfulStrictMatrixManifest = ({
       `refusing to publish canonical strict manifest: raw authority re-verification failed: ${evidence.reason ?? 'unknown strict matrix failure'}`,
     );
   }
-  const canonicalPath = path.join(resolvedOutputRoot, CANONICAL_STRICT_MATRIX_MANIFEST);
+  const canonicalPath = path.join(resolvedOutputRoot, canonicalStrictMatrixManifestName(selection));
   const sourceManifestAuthority = fileAuthorityEntry(
     path.resolve(manifestPath),
     path.basename(manifestPath),

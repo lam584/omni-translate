@@ -1,3 +1,5 @@
+import { PROVIDER_MANIFEST_REGISTRY } from '../provider-manifest/bundle';
+import { uiCapabilities } from '../provider-manifest/template-projection';
 import type {
   ProviderModelCapabilityRegistryEntry,
   ProviderModelProtocolProfileDeclaration,
@@ -371,10 +373,6 @@ const seedRegistryEntries: SeedRegistryEntry[] = [
   { id: 'seed-deepseek-chat', modelId: 'deepseek-chat', capabilities: ['text-generation'], interactionCapabilities: ['text_only_backend'], source: 'preset' },
 ];
 
-function normalizeModelKey(value: string) {
-  return value.trim().toLowerCase();
-}
-
 function uniqueOrdered<T extends string>(values: Iterable<T>, order: readonly T[]) {
   const valueSet = new Set(values);
   return order.filter((item) => valueSet.has(item));
@@ -443,8 +441,8 @@ function manifestDeclarationForSeed(
   };
 }
 
-export function createDefaultLocalModelCapabilityRegistry(): ProviderModelCapabilityRegistryEntry[] {
-  return seedRegistryEntries.map((entry) => ({
+export function createDefaultLocalModelCapabilityRegistry(templateId?: string): ProviderModelCapabilityRegistryEntry[] {
+  const legacy = seedRegistryEntries.map((entry) => ({
     ...entry,
     ...manifestDeclarationForSeed(entry.modelId),
     capabilities: normalizeProviderCapabilityList(entry.capabilities),
@@ -453,6 +451,33 @@ export function createDefaultLocalModelCapabilityRegistry(): ProviderModelCapabi
       entry.interactionCapabilities,
     ),
   }));
+  const owner = templateId ? PROVIDER_MANIFEST_REGISTRY.findByTemplateId(templateId) : null;
+  const projected: ProviderModelCapabilityRegistryEntry[] = (owner ? [owner] : PROVIDER_MANIFEST_REGISTRY.all()).flatMap((manifest) => manifest.models.map((model) => {
+    const profiles = model.protocolBindings.map((binding) => manifest.protocolProfiles.find((profile) => profile.id === binding.protocolProfileId && profile.version === binding.protocolProfileVersion));
+    const lifecycles = profiles.flatMap((profile) => profile ? manifest.lifecycleProfiles.filter((lifecycle) => lifecycle.id === profile.lifecycleProfileId) : []);
+    const modes = lifecycles.flatMap((lifecycle) => lifecycle.vadModes);
+    // Some generated lifecycles declare segmentation through exact wire events.
+    if (lifecycles.some((lifecycle) => lifecycle.serverEvents.includes('input_audio_buffer.speech_started')) && !modes.includes('server-vad')) modes.push('server-vad');
+    if (lifecycles.some((lifecycle) => lifecycle.clientEvents.includes('input_audio_buffer.commit')) && !modes.includes('manual')) modes.push('manual');
+    const interactions: ProviderInteractionCapability[] = [];
+    if (modes.includes('server-vad') || modes.includes('semantic-vad')) interactions.push('auto_vad');
+    if (modes.includes('manual')) interactions.push('manual_commit', 'push_to_talk');
+    if (modes.includes('client-activity')) interactions.push('client_activity', 'auto_vad');
+    if (profiles.some((profile) => profile && manifest.transports.some((transport) => transport.id === profile.transportId && transport.kind === 'websocket'))) interactions.push('streaming');
+    const mode: RealtimeAudioMode = modes.includes('client-activity') ? 'gemini_auto_activity' : modes.includes('server-vad') ? 'server_vad' : modes.includes('semantic-vad') ? 'semantic_vad' : 'manual';
+    return {
+      id: 'manifest-' + manifest.provider.id + '-' + model.id, modelId: model.id,
+      capabilities: uiCapabilities(model), realtimeAudioMode: model.capabilityMetadata?.realtimeAudioMode ?? mode,
+      interactionCapabilities: model.capabilityMetadata?.interactionCapabilities !== undefined
+        ? [...model.capabilityMetadata.interactionCapabilities] : normalizeProviderInteractionCapabilityList(interactions),
+      ...(model.capabilityMetadata?.apiModes !== undefined ? {apiModes: [...model.capabilityMetadata.apiModes]} : {}),
+      ...(model.capabilityMetadata?.releasedAt !== undefined ? {releasedAt: model.capabilityMetadata.releasedAt} : {}),
+      source: 'official' as const,
+      ...manifestDeclarationForSeed(model.id),
+    };
+  }));
+  const ownedIds = new Set(projected.map((entry) => entry.modelId));
+  return owner ? projected : [...projected, ...legacy.filter((entry) => !ownedIds.has(entry.modelId))];
 }
 
 export function isRealtimeAudioMode(value: string): value is RealtimeAudioMode {
@@ -595,8 +620,7 @@ export function resolveLocalRegistryEntry(
   modelId: string,
   registry: ProviderModelCapabilityRegistryEntry[],
 ): ProviderModelCapabilityRegistryEntry | null {
-  const normalizedModelId = normalizeModelKey(modelId);
-  return registry.find((entry) => normalizeModelKey(entry.modelId) === normalizedModelId) ?? null;
+  return registry.find((entry) => entry.modelId === modelId) ?? null;
 }
 
 export function resolveLocalRegistryCapabilities(
@@ -604,7 +628,7 @@ export function resolveLocalRegistryCapabilities(
   registry: ProviderModelCapabilityRegistryEntry[],
 ): ProviderCapability[] | null {
   const match = resolveLocalRegistryEntry(modelId, registry);
-  return match ? normalizeProviderCapabilityList(match.capabilities) : null;
+  return match && !match.inheritUpstreamCapabilities ? normalizeProviderCapabilityList(match.capabilities) : null;
 }
 
 export function resolveInteractionCapabilities(
@@ -613,7 +637,7 @@ export function resolveInteractionCapabilities(
   _displayName?: string,
 ): ProviderInteractionCapability[] {
   const match = resolveLocalRegistryEntry(modelId, registry);
-  if (match?.interactionCapabilities && match.interactionCapabilities.length > 0) {
+  if (match?.interactionCapabilities !== undefined) {
     return normalizeProviderInteractionCapabilityList(match.interactionCapabilities);
   }
   if (match?.realtimeAudioMode === 'manual') return ['manual_commit', 'push_to_talk'];
@@ -648,7 +672,7 @@ export function resolveProviderModelCapabilities(
 ) {
   const local = resolveLocalRegistryCapabilities(model.id, registry);
 
-  if (local && local.length > 0) {
+  if (local !== null) {
     return local;
   }
 
@@ -661,6 +685,7 @@ export function normalizeProviderModel(
 ): ProviderModelRuntime {
   return {
     ...model,
+    displayName: resolveLocalRegistryEntry(model.id, registry)?.displayName ?? model.displayName,
     capabilities: resolveProviderModelCapabilities(model, registry),
   };
 }
@@ -669,5 +694,6 @@ export function normalizeProviderModels(
   models: ProviderModelRuntime[],
   registry: ProviderModelCapabilityRegistryEntry[],
 ): ProviderModelRuntime[] {
-  return models.map((model) => normalizeProviderModel(model, registry));
+  return models.filter((model) => !resolveLocalRegistryEntry(model.id, registry)?.hidden)
+    .map((model) => normalizeProviderModel(model, registry));
 }

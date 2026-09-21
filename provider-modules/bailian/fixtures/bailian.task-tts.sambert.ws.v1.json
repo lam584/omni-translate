@@ -1,0 +1,225 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "bailian.task-tts.sambert.ws.fixture.v1",
+  "providerId": "bailian",
+  "protocolProfileId": "bailian.task-tts.sambert.ws",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "bailian.docs.22"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Generated documentation fixture projection from apps/desktop/src-tauri/fixtures/model-protocol/task-tts-sambert.json; never authorizes paid calls."
+  },
+  "scenario": "Exact bailian.task-tts.sambert.ws protocol replay",
+  "data": {
+    "endpointStatus": "verified",
+    "networkAuthorized": false,
+    "connectionUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+    "authContract": {
+      "profileId": "bailian.auth.bearer",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "value": "Bearer <redacted>"
+        }
+      ]
+    },
+    "audioContract": {
+      "input": {
+        "required": false,
+        "codecs": [],
+        "sampleRatesHz": [],
+        "channels": []
+      },
+      "output": {
+        "required": true,
+        "codecs": [
+          "pcm16",
+          "wav",
+          "mp3"
+        ],
+        "sampleRatesHz": [
+          16000
+        ],
+        "channels": [
+          1
+        ]
+      }
+    },
+    "events": [
+      {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "run-task",
+        "wire": {
+          "header": {
+            "action": "run-task",
+            "task_id": "99999999-9999-4999-8999-999999999999",
+            "streaming": "out"
+          },
+          "payload": {
+            "task_group": "audio",
+            "task": "tts",
+            "function": "SpeechSynthesizer",
+            "model": "sambert-zhichu-v1",
+            "parameters": {
+              "text_type": "PlainText",
+              "format": "pcm",
+              "sample_rate": 16000
+            },
+            "input": {
+              "text": "hello"
+            }
+          }
+        },
+        "type": "run-task"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "task-started",
+        "wire": {
+          "header": {
+            "event": "task-started",
+            "task_id": "99999999-9999-4999-8999-999999999999",
+            "attributes": {}
+          },
+          "payload": {}
+        },
+        "type": "task-started"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "result-generated",
+        "wire": {
+          "header": {
+            "event": "result-generated",
+            "task_id": "99999999-9999-4999-8999-999999999999",
+            "attributes": {}
+          },
+          "payload": {
+            "output": {}
+          }
+        },
+        "type": "result-generated"
+      },
+      {
+        "direction": "server",
+        "frameKind": "binary",
+        "eventType": "binary.audio",
+        "activeTaskId": "99999999-9999-4999-8999-999999999999",
+        "type": "binary.audio",
+        "frameType": "binary",
+        "payloadOmitted": true
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "task-finished",
+        "wire": {
+          "header": {
+            "event": "task-finished",
+            "task_id": "99999999-9999-4999-8999-999999999999",
+            "attributes": {}
+          },
+          "payload": {
+            "output": {},
+            "usage": null
+          }
+        },
+        "type": "task-finished"
+      },
+      {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "run-task",
+        "wire": {
+          "header": {
+            "action": "run-task",
+            "task_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "streaming": "out"
+          },
+          "payload": {
+            "task_group": "audio",
+            "task": "tts",
+            "function": "SpeechSynthesizer",
+            "model": "sambert-zhichu-v1",
+            "parameters": {
+              "text_type": "PlainText",
+              "format": "pcm",
+              "sample_rate": 16000
+            },
+            "input": {
+              "text": "second task"
+            }
+          }
+        },
+        "type": "run-task"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "task-started",
+        "wire": {
+          "header": {
+            "event": "task-started",
+            "task_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "attributes": {}
+          },
+          "payload": {}
+        },
+        "type": "task-started"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "result-generated",
+        "wire": {
+          "header": {
+            "event": "result-generated",
+            "task_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "attributes": {}
+          },
+          "payload": {
+            "output": {}
+          }
+        },
+        "type": "result-generated"
+      },
+      {
+        "direction": "server",
+        "frameKind": "binary",
+        "eventType": "binary.audio",
+        "activeTaskId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "type": "binary.audio",
+        "frameType": "binary",
+        "payloadOmitted": true
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "task-finished",
+        "wire": {
+          "header": {
+            "event": "task-finished",
+            "task_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "attributes": {}
+          },
+          "payload": {
+            "output": {},
+            "usage": null
+          }
+        },
+        "type": "task-finished",
+        "terminal": true
+      }
+    ],
+    "audio": "<redacted>"
+  }
+}

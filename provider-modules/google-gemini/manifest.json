@@ -992,6 +992,23 @@
     },
     {
       "id": "gemini-3.1-flash-live-preview",
+      "capabilityMetadata": {
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ],
+        "interactionCapabilities": [
+          "auto_vad",
+          "client_activity",
+          "streaming",
+          "push_to_talk"
+        ],
+        "realtimeAudioMode": "gemini_auto_activity",
+        "apiModes": [
+          "live-websocket"
+        ],
+        "releasedAt": "unknown"
+      },
       "displayName": "Gemini 3.1 Flash Live Preview",
       "capabilities": [
         "speech-to-text",
@@ -1013,6 +1030,24 @@
     },
     {
       "id": "gemini-2.5-flash-native-audio-preview-12-2025",
+      "capabilityMetadata": {
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ],
+        "interactionCapabilities": [
+          "auto_vad",
+          "client_activity",
+          "streaming",
+          "push_to_talk"
+        ],
+        "realtimeAudioMode": "gemini_auto_activity",
+        "apiModes": [
+          "live-websocket"
+        ],
+        "releasedAt": "2025-12-12"
+      },
       "displayName": "Gemini 2.5 Flash Native Audio Preview 12-2025",
       "capabilities": [
         "speech-to-text",
@@ -1095,6 +1130,20 @@
     },
     {
       "id": "gemini-3.1-flash-tts-preview",
+      "capabilityMetadata": {
+        "capabilities": [
+          "text-to-speech"
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "apiModes": [
+          "generate-content",
+          "batch"
+        ],
+        "releasedAt": "2026-04-28"
+      },
       "displayName": "Gemini 3.1 Flash TTS Preview",
       "capabilities": [
         "text-to-speech"

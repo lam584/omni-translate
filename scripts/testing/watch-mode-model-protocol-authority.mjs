@@ -51,7 +51,7 @@ export function authorizeWatchModelProtocolIdentity({
 }
 
 export function deriveWatchModelProtocolIdentity(exactModelId, options = {}) {
-  const result = authorizeWatchModelProtocolIdentity({ exactModelId, ...options });
+  const result = authorizeWatchModelProtocolIdentity({ ...options, exactModelId });
   if (!result.ok) {
     throw new Error(
       `Watch model protocol identity authorization failed for ${exactModelId || '(missing)'}: ${result.errorCode}`,

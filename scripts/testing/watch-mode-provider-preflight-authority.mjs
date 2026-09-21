@@ -1,6 +1,38 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { normalizeReleaseSelection } from './watch-mode-balanced-release-plan.mjs';
+import { deriveWatchModelProtocolIdentity, watchModelProtocolIdentityFailure } from './watch-mode-model-protocol-authority.mjs';
+
+// The caller supplies verified signed-grant consumption; never infer v2 from observed evidence.
+function strictRelease(expectedAuthorization, issues) {
+  const legacy = { modelId: 'qwen3.5-livetranslate-flash-realtime', endpointHost: 'dashscope.aliyuncs.com', v2: false };
+  try {
+    const selection = normalizeReleaseSelection(expectedAuthorization?.releaseSelection);
+    if (!selection) return legacy;
+    if (!sameCanonical(selection, expectedAuthorization.releaseSelection)) throw new Error('releaseSelection is not canonical');
+    const identity = deriveWatchModelProtocolIdentity(selection.modelId, selection);
+    const failure = watchModelProtocolIdentityFailure(expectedAuthorization.modelProtocolProfileIdentity, identity);
+    if (failure) throw new Error(failure);
+    if (expectedAuthorization.model !== selection.modelId || expectedAuthorization.protocol !== 'dashscope-livetranslate'
+        || identity.adapterId !== 'desktop-livetranslate-session-v2'
+        || identity.wireDialect !== 'bailian-livetranslate-session-ws-v2' || identity.wireDialectVersion !== 2) {
+      throw new Error('selected preflight requires the exact registered 3.8/v2 authorization');
+    }
+    return { ...selection, v2: true };
+  } catch (error) {
+    issues.push('provider preflight signed release selection is invalid: ' + error.message);
+    return legacy;
+  }
+}
+
+function strictV2SessionConfig() {
+  return {
+    audio: { input: { turn_detection: { type: 'server_vad' } } },
+    output_modalities: ['text'],
+    translation: { corpus: { phrases: STRICT_EN_ZH_CORPUS }, language: 'zh' },
+  };
+}
 
 export const PROVIDER_PREFLIGHT_SCENARIO_ID = 'E2E-PROVIDER-PROBE';
 export const PROVIDER_PREFLIGHT_OPERATION = 'livetranslate-session-lifecycle-preflight';
@@ -97,6 +129,8 @@ function validateObservedAuthorization(value, expected, label, issues) {
   } else {
     exactFields.push('tokenBudget');
   }
+  exactFields.push('releaseSelection');
+  if (expected.releaseSelection) exactFields.push('modelProtocolProfileIdentity');
   if (Object.hasOwn(expected, 'incidentId')) exactFields.push('incidentId');
   for (const field of exactFields) {
     if (!sameCanonical(observed[field], expected[field])) {
@@ -128,7 +162,15 @@ function verifiedTracePayload(entry) {
   try { return JSON.parse(payload); } catch { return null; }
 }
 
-function strictSessionUpdate(entry) {
+function strictSessionUpdate(entry, release) {
+  if (release.v2) {
+    const payload = verifiedTracePayload(entry);
+    return entry?.direction === 'client-to-server' && entry?.type === 'session.update'
+      && exactObjectKeys(payload, ['event_id', 'session', 'type'])
+      && payload.type === 'session.update'
+      && /^evt_[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(String(payload.event_id ?? ''))
+      && sameCanonical(payload.session, strictV2SessionConfig()) ? payload : null;
+  }
   const payload = verifiedTracePayload(entry);
   if (
     entry?.direction !== 'client-to-server'
@@ -166,7 +208,7 @@ function strictSessionUpdate(entry) {
   return payload;
 }
 
-function strictUpgrade(entry) {
+function strictUpgrade(entry, release) {
   const payload = verifiedTracePayload(entry);
   if (
     entry?.direction !== 'transport'
@@ -174,10 +216,10 @@ function strictUpgrade(entry) {
     || entry?.status !== 101
     || !exactObjectKeys(payload, ['host', 'path', 'query', 'requestHeaderNames', 'scheme'])
     || payload.scheme !== 'wss'
-    || payload.host !== 'dashscope.aliyuncs.com'
+    || payload.host !== release.endpointHost
     || payload.path !== '/api-ws/v1/realtime'
     || !exactObjectKeys(payload.query, ['model'])
-    || payload.query.model !== 'qwen3.5-livetranslate-flash-realtime'
+    || payload.query.model !== release.modelId
     || typeof payload.host !== 'string'
     || !payload.host
     || !Array.isArray(payload.requestHeaderNames)
@@ -186,13 +228,19 @@ function strictUpgrade(entry) {
   return true;
 }
 
-function strictSessionAuthority(raw, createdEntry, updatedEntry, update) {
+function strictSessionAuthority(raw, createdEntry, updatedEntry, update, release) {
   const created = verifiedTracePayload(createdEntry);
   const updated = verifiedTracePayload(updatedEntry);
   const createdSession = created?.session;
   const updatedSession = updated?.session;
   const updatedTurnDetection = updatedSession?.turn_detection;
-  const updatedConfig = updatedSession && {
+  // Match Rust normalized_livetranslate_probe_config: project the server echo,
+  // while the client request above must equal the complete fixed preflight config.
+  const updatedConfig = release.v2 ? {
+    audio: { input: { turn_detection: { type: updatedSession?.audio?.input?.turn_detection?.type } } },
+    output_modalities: updatedSession?.output_modalities,
+    translation: updatedSession?.translation,
+  } : updatedSession && {
     input_audio_format: updatedSession.input_audio_format,
     input_audio_transcription: updatedSession.input_audio_transcription,
     modalities: updatedSession.modalities,
@@ -208,7 +256,7 @@ function strictSessionAuthority(raw, createdEntry, updatedEntry, update) {
   // `0.0` in the session-authority digest, while parsed JS represents it as
   // numeric zero. Keep the exact cross-runtime digest framing explicit and
   // derive the evolving corpus body from the same strict map used above.
-  const canonicalConfig = '{"input_audio_format":"pcm",'
+  const canonicalConfig = release.v2 ? JSON.stringify(canonical(strictV2SessionConfig())) : '{"input_audio_format":"pcm",'
     + '"input_audio_transcription":{"language":"en","model":"qwen3-asr-flash-realtime"},'
     + '"modalities":["text"],"sample_rate":16000,"translation":{"corpus":{"phrases":'
     + JSON.stringify(canonical(STRICT_EN_ZH_CORPUS)) + '},'
@@ -220,15 +268,18 @@ function strictSessionAuthority(raw, createdEntry, updatedEntry, update) {
     && updated?.type === 'session.updated'
     && SHA256.test(String(createdSession?.id ?? ''))
     && createdSession.id === updatedSession?.id
-    && createdSession.model === 'qwen3.5-livetranslate-flash-realtime'
+    && createdSession.model === release.modelId
     && updatedSession?.model === createdSession.model
-    && sameCanonical(updatedTurnDetection, {
+    && (release.v2 ? ![
+      'modalities', 'sample_rate', 'input_audio_format',
+      'input_audio_transcription', 'turn_detection', 'voice',
+    ].some((field) => Object.hasOwn(updatedSession, field)) : sameCanonical(updatedTurnDetection, {
       create_response: true,
       interrupt_response: true,
       silence_duration_ms: 400,
       threshold: 0,
       type: 'server_vad',
-    })
+    }))
     && sameCanonical(updatedConfig, update.session)
     && exactObjectKeys(authority, [
       'echoedSessionConfigSha256',
@@ -240,7 +291,8 @@ function strictSessionAuthority(raw, createdEntry, updatedEntry, update) {
     && authority.echoedSessionConfigSha256 === configDigest;
 }
 
-function validateLiveTranslateWireEvidence(root, probe, raw, issues) {
+export function validateLiveTranslateWireEvidence(root, probe, raw, issues, expectedAuthorization = null) {
+  const release = strictRelease(expectedAuthorization, issues);
   const authority = raw?.rawTrace;
   if (
     authority?.path !== 'raw/provider-websocket-trace.jsonl'
@@ -317,9 +369,9 @@ function validateLiveTranslateWireEvidence(root, probe, raw, issues) {
       || entry.monotonicMs < 0
       || (index > 0 && entry.monotonicMs <= entries[index - 1]?.monotonicMs)
     ))
-    || !strictUpgrade(entries[0])
+    || !strictUpgrade(entries[0], release)
   ) issues.push('provider preflight raw WebSocket trace is not the exact ordered LiveTranslate lifecycle');
-  const sessionUpdate = strictSessionUpdate(entries[2]);
+  const sessionUpdate = strictSessionUpdate(entries[2], release);
   const finishPayload = verifiedTracePayload(entries[4]);
   const finishedPayload = verifiedTracePayload(entries[5]);
   if (
@@ -350,7 +402,7 @@ function validateLiveTranslateWireEvidence(root, probe, raw, issues) {
     || raw?.timeoutPhase != null
     || raw?.timeoutBudgetMs != null
     || !sessionUpdate
-    || !strictSessionAuthority(raw, entries[1], entries[3], sessionUpdate)
+    || !strictSessionAuthority(raw, entries[1], entries[3], sessionUpdate, release)
     || !exactObjectKeys(finishPayload, ['event_id', 'type'])
     || finishPayload?.type !== 'session.finish'
     || !/^evt_[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(String(finishPayload?.event_id ?? ''))
@@ -506,6 +558,7 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
   const emitter = readJson(path.join(root, 'emitter-result.json'), issues, 'provider preflight emitter result');
   const probe = readJson(path.join(root, 'provider-probe-result.json'), issues, 'provider preflight probe result');
   const strictLive = (expectedAuthorization?.protocol ?? probe?.protocol) === 'dashscope-livetranslate';
+  const release = strictLive ? strictRelease(expectedAuthorization, issues) : { endpointHost: STRICT_PROVIDER_ENDPOINT_HOST };
   const expectedRootEntries = [
     ...BASE_ROOT_ENTRIES,
     ...(strictLive ? ['raw'] : []),
@@ -597,7 +650,8 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
   if (
     probe?.providerId !== STRICT_PROVIDER_ID
     || probe?.templateId !== STRICT_PROVIDER_TEMPLATE_ID
-    || probe?.endpointHost !== STRICT_PROVIDER_ENDPOINT_HOST
+    || probe?.endpointHost !== release.endpointHost
+    || (release.v2 && (probe?.model !== release.modelId || probe?.configuredModel !== release.modelId))
     || probe?.credentialStatus?.backend !== 'windows-credential-manager'
     || probe?.credentialStatus?.exists !== true
     || probe?.credentialStatus?.reference !== STRICT_PROVIDER_CREDENTIAL_REFERENCE
@@ -722,7 +776,7 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
       )
     : null;
   const wireEvidence = strictLive
-    ? validateLiveTranslateWireEvidence(root, probe, raw, issues)
+    ? validateLiveTranslateWireEvidence(root, probe, raw, issues, expectedAuthorization)
     : null;
   const rawUsage = strictLive
     ? validateZeroInputUsage(raw, 'provider preflight raw result', issues)
@@ -774,7 +828,7 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
       || configuredUrl.username
       || configuredUrl.password
       || configuredUrl.port
-      || configuredUrl.hostname !== STRICT_PROVIDER_ENDPOINT_HOST
+      || configuredUrl.hostname !== release.endpointHost
       || configuredUrl.hostname !== probe?.endpointHost
     )) {
       issues.push('provider preflight endpoint host does not match configured base URL');

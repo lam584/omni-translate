@@ -4,6 +4,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { fileAuthorityEntry } from './watch-mode-evidence-authority.mjs';
+import { loadProviderPreflightAuthorizationPackage } from './watch-mode-provider-preflight-authorization.mjs';
+import { validateLiveTranslateWireEvidence } from './watch-mode-provider-preflight-authority.mjs';
+
+function expectedPreflightAuthorization(environment, executionId) {
+  const grantPath = environment?.OMNI_RELEASE_EVIDENCE_PREFLIGHT_GRANT_PATH;
+  const reservationDirectory = environment?.OMNI_RELEASE_EVIDENCE_PREFLIGHT_RESERVATION_DIRECTORY;
+  const expectedAuthorizationDigest = environment?.OMNI_RELEASE_EVIDENCE_PREFLIGHT_AUTHORIZATION_DIGEST;
+  if ([grantPath, reservationDirectory, expectedAuthorizationDigest].every(value => value === undefined)) return null;
+  if (![grantPath, reservationDirectory, expectedAuthorizationDigest].every(value => typeof value === 'string' && value.trim())
+      || !/^[a-f0-9]{64}$/u.test(expectedAuthorizationDigest)) {
+    throw new Error('provider preflight requires a complete signed authorization package');
+  }
+  // Read-only verification, not a second dispatch claim or credential lookup.
+  return loadProviderPreflightAuthorizationPackage({
+    grantPath, reservationDirectory, expectedAuthorizationDigest, expected: { executionId },
+  }).consumption;
+}
 
 export const PROVIDER_PREFLIGHT_EMITTER_TIMEOUT_MS = 300_000;
 export const PROVIDER_PREFLIGHT_EXIT_GRACE_MS = 5_000;
@@ -478,7 +495,7 @@ function traceTerminalClassification(raw, traceEntries) {
   return { kind: expectedOutcome, passed: false };
 }
 
-function classifyProviderWireEvidence(raw, traceEntries) {
+function classifyProviderWireEvidence(raw, traceEntries, { outputDirectory, expectedAuthorization } = {}) {
   if (traceContainsForbiddenInput(traceEntries)) {
     return { kind: 'forbidden-livetranslate-input', passed: false };
   }
@@ -492,6 +509,13 @@ function classifyProviderWireEvidence(raw, traceEntries) {
   }
   const terminal = traceTerminalClassification(raw, traceEntries);
   if (terminal) return terminal;
+  if (expectedAuthorization?.releaseSelection) {
+    const issues = [];
+    validateLiveTranslateWireEvidence(outputDirectory, raw, raw, issues, expectedAuthorization);
+    return issues.length === 0
+      ? { kind: 'livetranslate-session-finished', passed: true }
+      : { kind: 'versioned-lifecycle-authority-invalid', passed: false };
+  }
 
   const first = raw?.firstServerEvent;
 
@@ -584,11 +608,14 @@ function classifyProviderWireEvidence(raw, traceEntries) {
   return { kind: 'livetranslate-session-finished', passed: true };
 }
 
-function probeEvidence(outputDirectory, emitter, providerId) {
+function probeEvidence(outputDirectory, emitter, providerId, expectedAuthorization) {
   const probe = readJson(path.join(outputDirectory, 'provider-probe-result.json'));
   const raw = probe?.value?.rawProbeResult ?? probe?.rawProbeResult ?? probe?.value ?? probe;
-  const isLiveTranslate = [raw?.modelId, raw?.model, probe?.model]
-    .some((value) => value === 'qwen3.5-livetranslate-flash-realtime');
+  const observedModels = [raw?.modelId, raw?.model, probe?.model];
+  // Observed 3.8 can trigger rejection, never grant permission to use v2.
+  const observedV2 = observedModels.includes('qwen3.8-livetranslate-flash-realtime');
+  const isLiveTranslate = expectedAuthorization?.protocol === 'dashscope-livetranslate'
+    || observedModels.includes('qwen3.5-livetranslate-flash-realtime') || observedV2;
   const fields = {
     modelId: raw?.modelId ?? probe?.modelId ?? null,
     verdict: raw?.verdict ?? probe?.value?.verdict ?? probe?.verdict
@@ -652,11 +679,16 @@ function probeEvidence(outputDirectory, emitter, providerId) {
   if (!isLiveTranslate) {
     return { present: false, fields, classification: null, traceError: null };
   }
+  if ((observedV2 && !expectedAuthorization?.releaseSelection)
+      || (expectedAuthorization?.protocol === 'dashscope-livetranslate'
+        && observedModels.some(model => model != null && model !== expectedAuthorization.model))) {
+    return { present: true, fields, classification: { kind: 'signed-selection-mismatch', passed: false }, traceError: null };
+  }
   const checkedTrace = verifyRawTraceAuthority(outputDirectory, raw?.rawTrace);
   if (checkedTrace.error) {
     return { present: true, fields, classification: null, traceError: checkedTrace.error };
   }
-  const classification = classifyProviderWireEvidence(raw, checkedTrace.entries);
+  const classification = classifyProviderWireEvidence(raw, checkedTrace.entries, { outputDirectory, expectedAuthorization });
   if (classification.kind !== raw?.evidenceOutcome) {
     return {
       present: true,
@@ -719,6 +751,8 @@ function stableEvidenceErrorCode(kind) {
     case 'timeout:websocket-upgrade': return 'provider.preflight.websocket-upgrade-timeout';
     case 'transport-connect-error': return 'provider.preflight.connect-failed';
     case 'transport-upgrade-error': return 'provider.preflight.upgrade-failed';
+    case 'signed-selection-mismatch':
+    case 'versioned-lifecycle-authority-invalid':
     case 'terminal-trace-mismatch':
     case 'evidence-outcome-mismatch':
       return 'provider.preflight.raw-trace-invalid';
@@ -752,6 +786,7 @@ export async function runManagedProviderPreflight({
   closeOwnedProcess = requestClose,
   forceOwnedProcess = forceOwnedProcessTree,
 } = {}) {
+  const expectedAuthorization = expectedPreflightAuthorization(environment ?? process.env, executionId);
   fs.mkdirSync(path.dirname(outputDirectory), { recursive: true });
   if (fs.existsSync(outputDirectory)) {
     throw new Error(`provider preflight output directory already exists: ${outputDirectory}`);
@@ -826,7 +861,7 @@ export async function runManagedProviderPreflight({
   }
   termination.exited = exited;
   termination.exitCode = exitCode;
-  const observedProbe = probeEvidence(outputDirectory, emitter, providerId);
+  const observedProbe = probeEvidence(outputDirectory, emitter, providerId, expectedAuthorization);
   const fields = observedProbe.fields;
   if (observedProbe.present && observedProbe.traceError) {
     primaryError = new Error(observedProbe.traceError);

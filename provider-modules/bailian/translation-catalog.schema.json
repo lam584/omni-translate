@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "checkedAt",
+    "models",
+    "discoveryModels"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "bailian-translation-catalog/v1"
+    },
+    "checkedAt": {
+      "const": "2026-09-20"
+    },
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "regions",
+          "streamingSemantics",
+          "sources"
+        ],
+        "properties": {
+          "id": {
+            "enum": [
+              "qwen-mt-plus",
+              "qwen-mt-flash",
+              "qwen-mt-lite",
+              "qwen-mt-turbo"
+            ]
+          },
+          "regions": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "cn-beijing",
+                "ap-southeast-1",
+                "us-east-1"
+              ]
+            }
+          },
+          "streamingSemantics": {
+            "enum": [
+              "append-delta",
+              "replaceable-snapshot"
+            ]
+          },
+          "sources": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "url",
+                "checkedAt"
+              ],
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "pattern": "^https://help\\.aliyun\\.com/zh/model-studio/[a-z0-9-]+$"
+                },
+                "checkedAt": {
+                  "const": "2026-09-20"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "discoveryModels": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "capability",
+          "regions",
+          "verification",
+          "unknowns",
+          "sources"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9.-]+$"
+          },
+          "capability": {
+            "enum": [
+              "text-generation",
+              "text-to-speech"
+            ]
+          },
+          "regions": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "cn-beijing",
+                "ap-southeast-1",
+                "eu-central-1",
+                "us-east-1",
+                "ap-northeast-1",
+                "cn-hongkong"
+              ]
+            }
+          },
+          "verification": {
+            "const": "official-catalog-only"
+          },
+          "unknowns": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "executableProtocol",
+                "regionalEndpoint",
+                "snapshotRegionalAvailability",
+                "transport",
+                "audioFormat",
+                "sampleRate",
+                "streamingSemantics"
+              ]
+            }
+          },
+          "sources": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "url",
+                "checkedAt"
+              ],
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "pattern": "^https://help\\.aliyun\\.com/zh/model-studio/[a-z0-9-]+$"
+                },
+                "checkedAt": {
+                  "const": "2026-09-20"
+                }
+              }
+            }
+          },
+          "legacyPreset": {
+            "const": true
+          }
+        }
+      }
+    }
+  }
+}

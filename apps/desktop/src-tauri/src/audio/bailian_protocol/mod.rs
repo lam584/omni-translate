@@ -8,10 +8,12 @@ use crate::provider::model_protocol_profile::{
     ModelProtocolEventAdmissionRequest, ModelProtocolEventDirection, ModelProtocolFrameKind,
 };
 mod client_event;
+mod v2;
+pub(crate) use v2::{is_v2, is_supported_authority, apply_session_dialect, validate_audio_mode};
 mod server_event_fields;
 mod session_state;
 
-use server_event_fields::{response_id, snapshot_identity, snapshot_text, validate_error_object};
+use server_event_fields::{response_id, snapshot_identity, snapshot_text, validate_error_object, validate_language_emotion};
 
 pub(crate) use client_event::{
     admit_livetranslate_client_event, admit_livetranslate_client_event_for_provider,
@@ -82,9 +84,7 @@ fn admit_event_type(
     direction: ModelProtocolEventDirection,
     event_type: &str,
 ) -> Result<(), String> {
-    if authority.adapter_id != LIVETRANSLATE_ADAPTER_ID
-        || authority.wire_dialect != LIVETRANSLATE_DIALECT_ID
-        || authority.wire_dialect_version != 1
+    if !is_supported_authority(authority)
     {
         return Err(format!(
             "model_protocol.adapter_unavailable: typed LiveTranslate adapter is not authorized (adapterId={} wireDialect={} wireDialectVersion={})",
@@ -134,6 +134,7 @@ pub(crate) struct LiveTranslateServerState {
     active_speech_items: BTreeMap<String, u64>,
     declared_speech_items: BTreeSet<String>,
     snapshots: BTreeMap<String, String>,
+    v2_terminal_text: BTreeSet<String>,
     committed_by_response: BTreeMap<String, String>,
 }
 
@@ -317,6 +318,9 @@ impl LiveTranslateServerState {
                 }
                 self.active_content_parts.remove(&key);
             }
+            "response.text.delta" | "response.audio_transcript.delta" if is_v2(authority) => {
+                return self.admit_v2_text_delta(event_type, event);
+            }
             "response.text.text" | "response.audio_transcript.text" => {
                 self.require_active(event_type)?;
                 let identity = snapshot_identity(event_type, event)?;
@@ -337,11 +341,17 @@ impl LiveTranslateServerState {
                 let response_id = response_id(event)?;
                 self.require_active_response(response_id)?;
                 self.require_content_identity(event, if event_type == "response.text.done" { "text" } else { "audio" })?;
+                if is_v2(authority) && !self.v2_terminal_text.insert(identity.clone()) {
+                    return Err("model_protocol.event_order_invalid: duplicate text terminal".to_string());
+                }
                 let final_field = if event_type == "response.audio_transcript.done" {
                     "transcript"
                 } else {
                     "text"
                 };
+                if is_v2(authority) && event.get(final_field).is_some_and(|v| !v.is_string()) {
+                    return Err("model_protocol.payload_invalid: final text must be a string".to_string());
+                }
                 let text = event
                     .get(final_field)
                     .and_then(Value::as_str)
@@ -363,6 +373,9 @@ impl LiveTranslateServerState {
             }
             "response.done" => {
                 return self.admit_response_done(event);
+            }
+            "conversation.item.input_audio_transcription.delta" if is_v2(authority) => {
+                return self.admit_v2_asr_delta(event_type, event);
             }
             "conversation.item.input_audio_transcription.text" => {
                 self.require_active(event_type)?;
@@ -386,7 +399,8 @@ impl LiveTranslateServerState {
                 let transcription = transcription_identity(event)?;
                 self.require_conversation_item(&transcription.0)?;
                 required_string(event, "transcript")?;
-                validate_language_emotion(event, true)?;
+                if is_v2(authority) { v2::validate_optional_transcription_metadata(event)?; }
+                else { validate_language_emotion(event, true)?; }
                 if self.terminal_transcriptions.contains(&transcription) {
                     return Err("model_protocol.event_order_invalid: duplicate transcription terminal event".to_string());
                 }
@@ -907,24 +921,6 @@ fn transcription_identity(event: &Value) -> Result<(String, u64), String> {
     ))
 }
 
-fn validate_language_emotion(event: &Value, allow_empty_language: bool) -> Result<(), String> {
-    if allow_empty_language {
-        required_string(event, "language")?;
-    } else {
-        required_nonempty_string(event, "language")?;
-    }
-    let emotion = required_string(event, "emotion")?;
-    if emotion.is_empty()
-        || matches!(
-            emotion,
-            "surprised" | "neutral" | "happy" | "sad" | "disgusted" | "angry" | "fearful"
-        )
-    {
-        Ok(())
-    } else {
-        Err("model_protocol.payload_invalid: unsupported transcription emotion".to_string())
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -2394,3 +2390,6 @@ mod tests {
             .expect("the official failed-event field table does not require error.param");
     }
 }
+
+#[cfg(test)]
+mod tests_v2;

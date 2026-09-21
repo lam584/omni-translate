@@ -1,5 +1,6 @@
 pub(crate) mod contracts;
 pub(crate) mod credential;
+pub(crate) mod credential_verification;
 pub(crate) mod events;
 pub(crate) mod repository;
 pub(crate) mod service;

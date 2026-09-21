@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { appConfigDraftMock } from '../mocks/app-config';
+import { appConfigDraftMock as productionConfigFixture } from '../defaults/app-config';
 import committedFixtureRaw from '../../src-tauri/fixtures/desktop-api-v2-commands.json?raw';
 import { DesktopApiV2, type InvokeFn } from './desktop-api-v2';
 
@@ -302,8 +302,10 @@ async function collectEmittedCommands(): Promise<FixtureEntry[]> {
     return Promise.resolve({ data: undefined, warnings: [] } as T);
   };
   const api = new DesktopApiV2(recordingInvoke);
-  const config = structuredClone(appConfigDraftMock);
-  const provider = structuredClone(appConfigDraftMock.providers[0]);
+  const config = structuredClone(productionConfigFixture);
+  // Pin the v2 override envelope rather than expanding a legacy seed copy.
+  config.providers[0].modelCapabilityOverrides = [{ modelId: config.providers[0].model, interactionCapabilities: [], source: 'user' }];
+  const provider = structuredClone(config.providers[0]);
 
   const calls: Array<[string, () => Promise<unknown>]> = [
     ['provider.resolveRealtimeProfile', () => api.provider.resolveRealtimeProfile(config, config.devices.inboundVoiceModelId)],

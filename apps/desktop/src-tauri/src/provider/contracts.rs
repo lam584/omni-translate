@@ -13,7 +13,7 @@ fn default_provider_response_modalities() -> Vec<String> {
     vec!["text".to_string()]
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProviderAuthRefInput {
     pub kind: String,
@@ -22,7 +22,7 @@ pub(crate) struct ProviderAuthRefInput {
     pub scheme: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProviderCustomHeaderInput {
     pub name: String,
@@ -30,7 +30,7 @@ pub(crate) struct ProviderCustomHeaderInput {
     pub enabled: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProviderSceneModelAssignmentInput {
     #[allow(dead_code, reason = "scenario is preserved for renderer contract deserialization and diagnostics")]
@@ -50,7 +50,7 @@ pub(crate) struct ProviderModelProtocolBindingInput {
     pub auth_profile_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code, reason = "capability registry fields are deserialized for route planning and forward compatibility")]
 pub(crate) struct ProviderModelCapabilityRegistryEntryInput {
@@ -77,7 +77,7 @@ pub(crate) struct ProviderModelCapabilityRegistryEntryInput {
     pub notes: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code, reason = "catalog cache item schema is preserved for persisted renderer contracts")]
 pub(crate) struct ProviderModelCatalogCacheItemInput {
@@ -90,7 +90,7 @@ pub(crate) struct ProviderModelCatalogCacheItemInput {
     pub provider_template_name: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Default)]
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code, reason = "catalog cache schema is preserved for persisted renderer contracts")]
 pub(crate) struct ProviderModelCatalogCacheInput {
@@ -98,7 +98,7 @@ pub(crate) struct ProviderModelCatalogCacheInput {
     pub models: Vec<ProviderModelCatalogCacheItemInput>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProviderDraftInput {
     pub template_id: String,
@@ -133,6 +133,12 @@ pub(crate) struct ProviderDraftInput {
     pub scene_model_assignments: Vec<ProviderSceneModelAssignmentInput>,
     #[serde(default)]
     pub model_protocol_bindings: Vec<ProviderModelProtocolBindingInput>,
+    #[serde(default)]
+    #[allow(dead_code, reason = "v2 registry version gates explicit unknown-model bindings")]
+    pub model_registry_version: Option<u32>,
+    #[serde(default)]
+    #[allow(dead_code, reason = "advisory registry overrides are resolved separately from protocol authority")]
+    pub model_capability_overrides: Vec<serde_json::Value>,
     #[allow(dead_code, reason = "registry payload is retained for route planning and contract round trips")]
     #[serde(default)]
     pub local_model_capability_registry: Vec<ProviderModelCapabilityRegistryEntryInput>,
@@ -474,4 +480,50 @@ pub(crate) struct TtsSynthesisResult {
     pub audio_seconds: f64,
     pub audio: TtsAudioChunk,
     pub event_log: Vec<ProviderStreamEventRecord>,
+}
+/// Instance-local registry envelope. Kept separately so existing runtime draft
+/// constructors remain source-compatible; deserialize from the same provider JSON.
+#[derive(Clone, Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code, reason = "v2 registry envelope is consumed during runtime integration")]
+pub(crate) struct ProviderModelRegistryInput {
+    #[serde(default)]
+    pub model_registry_version: Option<u32>,
+    #[serde(default)]
+    pub model_capability_overrides: Vec<serde_json::Value>,
+}
+
+#[allow(dead_code, reason = "v2 registry resolver is an integration entry point")]
+impl ProviderModelRegistryInput {
+    /// Advisory only: this result must never bypass manifest authorization.
+    pub(crate) fn resolve(&self, model_id: &str, inherited: Option<&serde_json::Value>) -> (Option<serde_json::Value>, Vec<&'static str>) {
+        let rows: Vec<_> = self.model_capability_overrides.iter()
+            .filter(|row| row.get("modelId").and_then(serde_json::Value::as_str) == Some(model_id)).collect();
+        let diagnostics = if rows.len() > 1 { vec!["duplicate-model-id"] } else { vec![] };
+        let Some(row) = rows.iter().find(|row| row.get("source").and_then(serde_json::Value::as_str) != Some("legacy")).or_else(|| rows.first()) else { return (inherited.cloned(), diagnostics); };
+        let mut result = inherited.cloned().unwrap_or_else(|| serde_json::json!({}));
+        if let (Some(target), Some(patch)) = (result.as_object_mut(), row.as_object()) {
+            for field in ["modelId", "capabilities", "interactionCapabilities", "apiModes", "realtimeAudioMode", "notes", "hidden", "displayName"] {
+                if let Some(value) = patch.get(field) { target.insert(field.into(), value.clone()); }
+            }
+        }
+        (Some(result), diagnostics)
+    }
+}
+
+#[cfg(test)]
+mod model_registry_v2_tests {
+    use super::ProviderModelRegistryInput;
+    use serde_json::{json, Value};
+    #[test]
+    fn shared_resolution_vectors() {
+        let vectors: Vec<Value> = serde_json::from_str(include_str!("../../../src/schema/model-registry-resolution-vectors.json")).unwrap();
+        for vector in vectors {
+            let registry: ProviderModelRegistryInput = serde_json::from_value(json!({"modelRegistryVersion": 2, "modelCapabilityOverrides": vector["overrides"]})).unwrap();
+            let inherited = (!vector["inherited"].is_null()).then_some(&vector["inherited"]);
+            let result = registry.resolve(vector["modelId"].as_str().unwrap(), inherited);
+            assert_eq!(result.0.unwrap_or(Value::Null), vector["expected"], "{}", vector["name"]);
+            assert_eq!(!result.1.is_empty(), vector["duplicate"] == true);
+        }
+    }
 }

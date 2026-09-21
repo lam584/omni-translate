@@ -124,8 +124,8 @@ fn start_provider_input_relay(
     Ok((source_tx, provider_rx, relay))
 }
 
-pub(crate) fn start_omni(
-    app: AppHandle,
+pub(crate) fn start_omni<R: tauri::Runtime>(
+    app: AppHandle<R>,
     store: &AudioStateStore,
     direction: String,
     session_generation: u64,
@@ -139,6 +139,35 @@ pub(crate) fn start_omni(
     target_language: String,
     subtitle_translate_active: bool,
     speech_config: OmniSpeechConfig,
+) -> Result<
+    (
+        mpsc::Sender<Vec<u8>>,
+        OmniHandle,
+        mpsc::Receiver<Result<u64, String>>,
+    ),
+    String,
+> {
+    start_omni_impl(app, store, direction, session_generation, provider, voice, instructions,
+        glossary, audio_mode, output_mode, source_language, target_language,
+        subtitle_translate_active, speech_config, #[cfg(test)] None)
+}
+
+pub(in crate::audio::omni) fn start_omni_impl<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    store: &AudioStateStore,
+    direction: String,
+    session_generation: u64,
+    provider: ProviderDraftInput,
+    voice: String,
+    instructions: String,
+    glossary: GlossaryContext,
+    audio_mode: RealtimeAudioMode,
+    output_mode: OmniOutputMode,
+    source_language: String,
+    target_language: String,
+    subtitle_translate_active: bool,
+    speech_config: OmniSpeechConfig,
+    #[cfg(test)] headless: Option<Arc<super::super::headless_tests::HeadlessHooks>>,
 ) -> Result<
     (
         mpsc::Sender<Vec<u8>>,
@@ -207,6 +236,8 @@ pub(crate) fn start_omni(
                 audio_rx,
                 stop_rx,
                 stop_requested: stop_requested_for_worker,
+                #[cfg(test)]
+                headless,
             };
             let result = worker.run(&audio_state);
             let completion = finish_worker(

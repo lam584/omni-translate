@@ -23,7 +23,9 @@
     "smokes",
     "fixtures"
   ],
+  "allOf": [{ "if": { "required": ["bailianModelProtocolRegistry"], "properties": { "bailianModelProtocolRegistry": {} } }, "then": { "properties": { "provider": { "type": "object", "properties": { "id": { "const": "bailian" } } } } } }],
   "properties": {
+    "bailianModelProtocolRegistry": { "$ref": "./model-protocol-profiles.schema.json" },
     "$schema": {
       "type": "string",
       "const": "../../contracts/provider-manifest.schema.json"
@@ -101,7 +103,7 @@
   "$defs": {
     "id": {
       "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9.-]*$"
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
     },
     "maturity": {
       "enum": [
@@ -552,6 +554,70 @@
         "protocolProfileVersion": { "type": "integer", "minimum": 1 }
       }
     },
+    "capabilityMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Advisory legacy seed metadata only. Never authorizes an adapter, endpoint, operation or protocol binding. Preserve absent fields and explicit empty arrays.",
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "speech-to-text",
+              "text-to-speech",
+              "speech-to-speech",
+              "text-generation"
+            ]
+          }
+        },
+        "interactionCapabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "auto_vad",
+              "manual_commit",
+              "client_activity",
+              "streaming",
+              "chunked_http_audio",
+              "push_to_talk",
+              "server_commit_tts",
+              "commit_tts",
+              "text_only_backend",
+              "pipeline_asr_mt_tts"
+            ]
+          }
+        },
+        "realtimeAudioMode": {
+          "enum": [
+            "server_vad",
+            "manual",
+            "gemini_auto_activity",
+            "semantic_vad"
+          ]
+        },
+        "apiModes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "releasedAt": {
+          "anyOf": [
+            {
+              "const": "unknown"
+            },
+            {
+              "type": "string",
+              "format": "date"
+            }
+          ]
+        }
+      }
+    },
     "model": {
       "type": "object",
       "additionalProperties": false,
@@ -564,6 +630,7 @@
         "documentationIds"
       ],
       "properties": {
+        "capabilityMetadata": { "$ref": "#/$defs/capabilityMetadata" },
         "id": { "type": "string", "minLength": 1 },
         "displayName": { "type": "string", "minLength": 1 },
         "aliases": {

@@ -151,6 +151,12 @@ export type ProviderModelProtocolProfileDeclaration = {
 };
 
 export type ProviderModelCapabilityRegistryEntry = {
+  /** Read-only resolution diagnostics; not an override field. */
+  registryDiagnostics?: string[];
+  /** Projection-only: no capability declaration exists, so discovery may supply it. */
+  inheritUpstreamCapabilities?: boolean;
+  hidden?: boolean;
+  displayName?: string;
   id: string;
   modelId: string;
   capabilities: ProviderCapability[];
@@ -176,6 +182,20 @@ export type ProviderModelCapabilityRegistryEntry = {
   releasedAt?: string;
   source?: 'official' | 'runtime' | 'preset' | 'inferred' | 'manual';
   notes?: string;
+};
+
+/** Instance-local advisory overrides. Absent fields inherit; empty arrays clear. */
+export type ProviderModelCapabilityOverride = {
+  modelId: string;
+  capabilities?: ProviderCapability[];
+  interactionCapabilities?: ProviderInteractionCapability[];
+  apiModes?: string[];
+  realtimeAudioMode?: RealtimeAudioMode;
+  notes?: string;
+  hidden?: boolean;
+  displayName?: string;
+  /** Missing source means an explicit user override. */
+  source?: 'user' | 'legacy';
 };
 
 export type RealtimeAudioMode = 'manual' | 'server_vad' | 'semantic_vad' | 'gemini_auto_activity' | 'gemini_manual_activity';
@@ -249,6 +269,8 @@ export type ProviderDraft = {
   customHeaders: ProviderCustomHeaderDraft[];
   sceneModelAssignments: ProviderSceneModelAssignment[];
   modelProtocolBindings?: ProviderModelProtocolBinding[];
+  modelRegistryVersion?: 2;
+  modelCapabilityOverrides?: ProviderModelCapabilityOverride[];
   localModelCapabilityRegistry: ProviderModelCapabilityRegistryEntry[];
   modelCatalogCache: ProviderModelCatalogCache;
   probe: ProviderProbeSnapshot;

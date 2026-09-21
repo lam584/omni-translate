@@ -276,3 +276,38 @@ describe('resolveProviderProtocol', () => {
     });
   });
 });
+describe('v2 unknown exact model binding', () => {
+  const request = {
+    providerId: 'fixture-provider', modelId: 'user.Exact', operation: 'realtime-conversation' as const,
+    modelRegistryVersion: 2, declaredManifestVersion: 1, declaredProfileId: 'fixture.realtime.ws', declaredProfileVersion: 3,
+    baseUrl: 'https://example.com', transport: 'websocket' as const,
+  };
+  it('requires an explicit v2 binding and preserves exact identity', () => {
+    expect(resolveProviderProtocol([manifest], request).modelId).toBe('user.Exact');
+    expectCode(() => resolveProviderProtocol([manifest], { ...request, modelRegistryVersion: undefined }), 'model-not-found');
+  });
+  it('does not permit endpoint, operation or disabled adapter bypass', () => {
+    expectCode(() => resolveProviderProtocol([manifest], { ...request, baseUrl: 'https://other.example' }), 'custom-endpoint-invalid');
+    expectCode(() => resolveProviderProtocol([manifest], { ...request, operation: 'tts' }), 'protocol-profile-operation-mismatch');
+    const disabled = structuredClone(manifest);
+    disabled.protocolProfiles[0].adapter.status = 'disabled';
+    expectCode(() => resolveProviderProtocol([disabled], request), 'protocol-adapter-unavailable');
+  });
+  it('does not permit a known model rebind', () => {
+    expectCode(() => resolveProviderProtocol([manifest], { ...request, modelId: 'voice-model', declaredProfileId: 'another' }), 'protocol-profile-model-mismatch');
+  });
+});
+import { PROVIDER_MANIFEST_REGISTRY } from './bundle';
+describe('Bailian UI preflight uses lossless runtime authority', () => {
+  const request = {
+    providerId: 'provider-dashscope', templateId: 'template-dashscope-realtime',
+    modelId: 'qwen3.5-livetranslate-flash-realtime', operation: 'realtime-translation' as const,
+    baseUrl: 'https://dashscope.aliyuncs.com/api/v1', transport: 'websocket' as const, region: 'cn-beijing',
+  };
+  it('reports endpoint and regional rejection for known models without provider I/O', () => {
+    const manifests = [...PROVIDER_MANIFEST_REGISTRY.all()];
+    expect(resolveProviderProtocol(manifests, request).protocolProfile.id).toBe('bailian.livetranslate.realtime.ws');
+    expectCode(() => resolveProviderProtocol(manifests, { ...request, baseUrl: 'https://untrusted.example/api/v1' }), 'bailian-protocol-rejected');
+    expectCode(() => resolveProviderProtocol(manifests, { ...request, region: 'ap-southeast-1' }), 'bailian-protocol-rejected');
+  });
+});

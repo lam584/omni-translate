@@ -1,3 +1,6 @@
+import { effectiveProviderModelRegistry } from './provider-model-capabilities-registry';
+import { resolveProviderProtocol } from '../provider-manifest/resolver';
+import type { ProviderManifestOperation } from '../provider-manifest/types';
 import type {
   AppConfigDraft,
   ProviderDraft,
@@ -7,6 +10,7 @@ import type {
 } from '../schema/config';
 import {
   authorizeModelProtocolInvocation,
+  MODEL_PROTOCOL_REGISTRY,
   lookupModelProtocolProfiles,
   type AuthorizedModelProtocolProfile,
   type ModelProtocolAuthorizationErrorCode,
@@ -28,8 +32,9 @@ export class RealtimeProfileAuthorizationError extends Error {
   constructor(
     public readonly code: ModelProtocolAuthorizationErrorCode,
     public readonly modelId: string,
+    message?: string,
   ) {
-    super(code);
+    super(message ? `${code}: ${message}` : code);
     this.name = 'RealtimeProfileAuthorizationError';
   }
 }
@@ -58,13 +63,9 @@ type ProviderMatch = { provider: ProviderDraft; modelId: string };
 type RealtimeProfileConfig = Pick<AppConfigDraft, 'providers'>
   & Partial<Pick<AppConfigDraft, 'activeProviderTemplateId'>>;
 
-function normalized(value: string) {
-  return value.trim().toLowerCase();
-}
-
 function registryMatches(provider: ProviderDraft, modelId: string) {
-  const key = normalized(modelId);
-  return provider.localModelCapabilityRegistry.filter((entry) => normalized(entry.modelId) === key);
+  const entries = provider.modelRegistryVersion === 2 ? effectiveProviderModelRegistry(provider) : provider.localModelCapabilityRegistry;
+  return entries.filter((entry) => entry.modelId === modelId);
 }
 
 function findProvider(config: RealtimeProfileConfig, modelReference: string): ProviderMatch | null {
@@ -119,8 +120,9 @@ function protocolFromExactRegistry(
 function rejectModelProtocol(
   code: ModelProtocolAuthorizationErrorCode,
   modelId: string,
+  message?: string,
 ): never {
-  throw new RealtimeProfileAuthorizationError(code, modelId);
+  throw new RealtimeProfileAuthorizationError(code, modelId, message);
 }
 
 function providerEndpointHost(provider: ProviderDraft): string {
@@ -137,6 +139,28 @@ function authorizeDashScopeProfile(
   modelId: string,
   operation: ModelProtocolOperation,
 ): AuthorizedModelProtocolProfile {
+  const boundOperation: ProviderManifestOperation = operation === 'native_translate' ? 'realtime-translation' : operation === 'dialogue' ? 'realtime-conversation' : operation === 'asr' ? 'asr' : operation === 'tts' ? 'tts' : 'voice-clone';
+  const explicit = provider.modelProtocolBindings?.find((binding) => binding.modelId === modelId && binding.operation === boundOperation);
+  if (provider.modelRegistryVersion === 2 && explicit) {
+    const authority = resolveProviderProtocol([...PROVIDER_MANIFEST_REGISTRY.all()], {
+      providerId: provider.providerId, templateId: provider.templateId, modelId,
+      operation: boundOperation, modelRegistryVersion: 2,
+      declaredProfileId: explicit.profileId, declaredProfileVersion: explicit.profileVersion,
+      declaredManifestVersion: explicit.manifestVersion,
+      baseUrl: provider.baseUrl, transport: provider.transport, region: provider.region,
+    });
+    if (authority.profileOwnerProviderId !== explicit.profileOwnerProviderId) return rejectModelProtocol('model_protocol.authorization_identity_mismatch', modelId);
+    if (lookupModelProtocolProfiles(modelId).length === 0) {
+      const profile = MODEL_PROTOCOL_REGISTRY.profiles.find((candidate) => candidate.profileId === explicit.profileId && candidate.profileVersion === explicit.profileVersion);
+      if (!profile) return rejectModelProtocol('model_protocol.profile_id_mismatch', modelId);
+      const result = authorizeModelProtocolInvocation({ exactModelId: modelId, operation,
+        transport: provider.transport as ModelProtocolTransport, region: provider.region as ModelProtocolRegion,
+        endpointHost: providerEndpointHost(provider), declaredProfileId: explicit.profileId, declaredProfileVersion: explicit.profileVersion,
+      }, { ...MODEL_PROTOCOL_REGISTRY, profiles: [{ ...profile, exactModelIds: [modelId] }] });
+      if (!result.ok) return rejectModelProtocol(result.errorCode, modelId, result.message);
+      return result.authorization;
+    }
+  }
   if (entry && (
     entry.registryVersion === undefined
     || entry.profileId === undefined
@@ -155,7 +179,7 @@ function authorizeDashScopeProfile(
     declaredProfileId: entry?.profileId,
     declaredProfileVersion: entry?.profileVersion,
   });
-  if (!result.ok) return rejectModelProtocol(result.errorCode, modelId);
+  if (!result.ok) return rejectModelProtocol(result.errorCode, modelId, result.message);
   return result.authorization;
 }
 
@@ -164,6 +188,7 @@ function protocolFromDashScopeAuthorization(
 ): RealtimeProtocol {
   switch (authorization.wireDialect) {
     case 'bailian-livetranslate-session-ws-v1':
+    case 'bailian-livetranslate-session-ws-v2':
       return 'dashscope-livetranslate';
     default:
       // Do not project newly enabled task, TTS, or dialogue products into the

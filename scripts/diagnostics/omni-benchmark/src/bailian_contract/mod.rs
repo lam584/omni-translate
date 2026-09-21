@@ -4,15 +4,18 @@ use tungstenite::client::IntoClientRequest;
 const REGISTRY: &str = include_str!("../../../../../contracts/model-protocol-profiles.v1.json");
 const REGISTRY_VERSION: &str = "bailian-model-protocol-registry/v1";
 const PROFILE_ID: &str = "bailian.livetranslate.realtime.ws";
+const PROFILE_ID_V2: &str = "bailian.livetranslate.3_8.realtime.ws";
+const ADAPTER_ID_V2: &str = "desktop-livetranslate-session-v2";
+const DIALECT_V2: &str = "bailian-livetranslate-session-ws-v2";
 const PROFILE_VERSION: u64 = 1;
 const ADAPTER_ID: &str = "desktop-livetranslate-session-v1";
 const LIVETRANSLATE_DIALECT: &str = "bailian-livetranslate-session-ws-v1";
 const DIALECT_VERSION: u64 = 1;
-const MODEL: &str = "qwen3.5-livetranslate-flash-realtime";
 const TERMINAL_LIFECYCLE: &str = "session.finish->session.finished";
 
 #[derive(Clone, Debug)]
 pub(crate) struct LiveTranslateAuthority {
+    pub(crate) incremental_text: bool,
     allowed_server_events: HashSet<String>,
     allowed_client_events: HashSet<String>,
     client_json_base64_events: HashSet<String>,
@@ -26,32 +29,41 @@ pub(crate) fn authorize_enabled_livetranslate(
         .map_err(|error| format!("model protocol registry is invalid: {error}"))?;
     authorize_from_registry(&registry, model, base_url)
 }
+mod binding;
+use binding::authorize_endpoint;
+pub(crate) use binding::{ProtocolBinding, authorize_livetranslate};
+
 fn authorize_from_registry(
     registry: &Value,
     model: &str,
     base_url: &str,
 ) -> Result<LiveTranslateAuthority, String> {
+    authorize_from_registry_binding(registry, model, base_url, None)
+}
+fn authorize_from_registry_binding(registry: &Value, model: &str, base_url: &str, binding: Option<&ProtocolBinding>) -> Result<LiveTranslateAuthority, String> {
     if registry.get("registryVersion").and_then(Value::as_str) != Some(REGISTRY_VERSION) {
         return Err("model_protocol.not_authorized: registryVersion mismatch".to_string());
     }
-    if model != MODEL {
-        return Err(format!(
-            "model_protocol.not_authorized: model '{model}' is not the exact enabled LiveTranslate model"
-        ));
-    }
-    let profiles = registry
-        .get("profiles")
-        .and_then(Value::as_array)
+    let profiles = registry.get("profiles").and_then(Value::as_array)
         .ok_or_else(|| "model protocol registry has no profiles array".to_string())?;
-    let profile = profiles
-        .iter()
-        .find(|profile| profile.get("profileId").and_then(Value::as_str) == Some(PROFILE_ID))
-        .ok_or_else(|| format!("model_protocol.not_authorized: profile '{PROFILE_ID}' is missing"))?;
-    let exact_models = profile
-        .get("exactModelIds")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "model_protocol.not_authorized: exactModelIds is missing".to_string())?;
-    let exact_model_identity = exact_models.len() == 1 && exact_models[0].as_str() == Some(MODEL);
+    let candidates: Vec<_> = profiles.iter().filter(|profile| {
+        profile.get("exactModelIds").and_then(Value::as_array)
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(model)))
+    }).collect();
+    if binding.is_none() && candidates.len() != 1 {
+        return Err(format!("model_protocol.not_authorized: model '{model}' has no unique exact profile"));
+    }
+    let profile = if let Some(binding) = binding {
+        binding::select_profile(registry, model, base_url, binding)?
+    } else { candidates[0] };
+    let (adapter_id, dialect_id, incremental_text) =
+        match profile.get("profileId").and_then(Value::as_str) {
+            Some(PROFILE_ID) => (ADAPTER_ID, LIVETRANSLATE_DIALECT, false),
+            Some(PROFILE_ID_V2) => (ADAPTER_ID_V2, DIALECT_V2, true),
+            _ => return Err("model_protocol.not_authorized: unsupported LiveTranslate profile".to_string()),
+        };
+    let exact_model_identity = profile.get("exactModelIds").and_then(Value::as_array)
+        .is_some_and(|ids| ids.len() == 1 && ids[0].as_str() == Some(model));
     let enabled = profile.pointer("/adapter/status").and_then(Value::as_str) == Some("enabled");
     let supports_native_translate = profile
         .get("operations")
@@ -62,9 +74,9 @@ fn authorize_from_registry(
                 .any(|operation| operation.as_str() == Some("native_translate"))
         });
     if profile.get("profileVersion").and_then(Value::as_u64) != Some(PROFILE_VERSION)
-        || profile.pointer("/adapter/adapterId").and_then(Value::as_str) != Some(ADAPTER_ID)
-        || profile.get("dialectId").and_then(Value::as_str) != Some(LIVETRANSLATE_DIALECT)
-        || !exact_model_identity
+        || profile.pointer("/adapter/adapterId").and_then(Value::as_str) != Some(adapter_id)
+        || profile.get("dialectId").and_then(Value::as_str) != Some(dialect_id)
+        || (binding.is_none() && !exact_model_identity)
         || !enabled
         || !supports_native_translate
     {
@@ -73,18 +85,18 @@ fn authorize_from_registry(
                 .to_string(),
         );
     }
-    authorize_endpoint(&registry, base_url, LIVETRANSLATE_DIALECT)?;
+    authorize_endpoint(registry, base_url, profile)?;
     let dialect = registry
         .get("dialects")
         .and_then(Value::as_array)
         .and_then(|dialects| {
             dialects.iter().find(|dialect| {
                 dialect.get("dialectId").and_then(Value::as_str)
-                    == Some(LIVETRANSLATE_DIALECT)
+                    == Some(dialect_id)
             })
         })
-        .ok_or_else(|| format!("registry dialect '{LIVETRANSLATE_DIALECT}' is missing"))?;
-    if dialect.get("dialectVersion").and_then(Value::as_u64) != Some(DIALECT_VERSION)
+        .ok_or_else(|| format!("registry dialect '{dialect_id}' is missing"))?;
+    if dialect.get("dialectVersion").and_then(Value::as_u64) != Some(if incremental_text { 2 } else { DIALECT_VERSION })
         || dialect.get("transport").and_then(Value::as_str) != Some("websocket")
         || dialect.get("endpointFamily").and_then(Value::as_str) != Some("dashscope-realtime-v1")
         || dialect.get("modelPlacement").and_then(Value::as_str) != Some("query")
@@ -120,6 +132,7 @@ fn authorize_from_registry(
         );
     }
     Ok(LiveTranslateAuthority {
+        incremental_text,
         allowed_server_events,
         allowed_client_events,
         client_json_base64_events,
@@ -140,62 +153,12 @@ fn string_set(object: &Value, key: &str) -> Result<HashSet<String>, String> {
         })
         .collect()
 }
-fn authorize_endpoint(registry: &Value, base_url: &str, dialect_id: &str) -> Result<(), String> {
-    let request = base_url
-        .into_client_request()
-        .map_err(|error| format!("invalid DashScope WebSocket base URL: {error}"))?;
-    let uri = request.uri();
-    if uri.scheme_str() != Some("wss") {
-        return Err("model_protocol.endpoint_not_authorized: endpoint must use wss".to_string());
-    }
-    let host = uri
-        .host()
-        .ok_or_else(|| "model_protocol.endpoint_not_authorized: endpoint has no host".to_string())?;
-    let path = uri.path();
-    let dialect_path = registry
-        .get("dialects")
-        .and_then(Value::as_array)
-        .and_then(|dialects| {
-            dialects.iter().find(|dialect| {
-                dialect.get("dialectId").and_then(Value::as_str) == Some(dialect_id)
-            })
-        })
-        .and_then(|dialect| dialect.get("endpointPath"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("registry dialect '{dialect_id}' has no endpointPath"))?;
-    if path != dialect_path || uri.query().is_some() {
-        return Err(format!(
-            "model_protocol.endpoint_not_authorized: expected endpoint path '{dialect_path}' without a query"
-        ));
-    }
-    let generic_host_authorized = registry
-        .get("endpointHostPolicies")
-        .and_then(Value::as_array)
-        .is_some_and(|policies| {
-            policies.iter().any(|policy| {
-                policy
-                    .get("allowedHostFamilies")
-                    .and_then(Value::as_array)
-                    .is_some_and(|families| {
-                        families.iter().any(|family| {
-                            family.get("workspaceScoped").and_then(Value::as_bool) == Some(false)
-                                && family.get("hostPattern").and_then(Value::as_str) == Some(host)
-                        })
-                    })
-            })
-        });
-    if !generic_host_authorized {
-        return Err(format!(
-            "model_protocol.endpoint_not_authorized: host '{host}' is not an explicit non-workspace registry host"
-        ));
-    }
-    Ok(())
-}
 pub(crate) struct LiveTranslateClientPlan {
     authority: LiveTranslateAuthority,
     session_update: Value,
     session_finish: Value,
 }
+#[cfg(test)]
 pub(crate) fn preflight_livetranslate_client_plan(
     model: &str,
     base_url: &str,
@@ -214,6 +177,15 @@ pub(crate) fn preflight_livetranslate_client_plan(
         session_finish,
     )
 }
+pub(crate) fn preflight_bound_plan(model: &str, base_url: &str, binding: Option<&ProtocolBinding>, session_update: Value, audio_append_template: &Value, session_finish: Value) -> Result<LiveTranslateClientPlan, String> {
+    let authority = authorize_livetranslate(model, base_url, binding)?;
+    admit_client_event(&authority, &session_update)?;
+    admit_client_event(&authority, audio_append_template)?;
+    admit_client_event(&authority, &session_finish)?;
+    LiveTranslateLifecycle::new(authority.clone(), model, &session_update)?;
+    Ok(LiveTranslateClientPlan { authority, session_update, session_finish })
+}
+#[cfg(test)]
 fn preflight_from_registry(
     registry: &Value,
     model: &str,
@@ -265,6 +237,7 @@ fn admit_client_event(authority: &LiveTranslateAuthority, event: &Value) -> Resu
         ));
     }
     match event_type {
+        "session.update" if authority.incremental_text => validate_session_update_v2(object),
         "session.update" => validate_session_update(object),
         "input_audio_buffer.append" => {
             if !authority.client_json_base64_events.contains(event_type) {
@@ -290,6 +263,24 @@ fn admit_client_event(authority: &LiveTranslateAuthority, event: &Value) -> Resu
             "model_protocol.client_event_not_implemented: '{other}' is outside this diagnostic plan"
         )),
     }
+}
+fn validate_session_update_v2(event: &serde_json::Map<String, Value>) -> Result<(), String> {
+    require_exact_keys(event, &["event_id", "type", "session"], "session.update")?;
+    required_nonempty_string(event, "event_id", "session.update")?;
+    let session = event.get("session").and_then(Value::as_object)
+        .ok_or_else(|| "LiveTranslate 3.8 requires session".to_string())?;
+    require_exact_keys(session, &["output_modalities", "audio", "translation"], "session.update.session")?;
+    if session.get("output_modalities") != Some(&serde_json::json!(["text"]))
+        || session.get("audio") != Some(&serde_json::json!({"input": {
+            "turn_detection": {"type": "server_vad"}
+        }})) {
+        return Err("LiveTranslate 3.8 diagnostic audio/modalities identity mismatch".to_string());
+    }
+    let translation = session.get("translation").and_then(Value::as_object)
+        .ok_or_else(|| "LiveTranslate 3.8 requires translation".to_string())?;
+    require_exact_keys(translation, &["language"], "translation")?;
+    required_nonempty_string(translation, "language", "translation")?;
+    Ok(())
 }
 fn validate_session_update(
     event: &serde_json::Map<String, Value>,
@@ -385,6 +376,15 @@ fn validate_session_update(
     }
     Ok(())
 }
+fn validate_v2_transcription_metadata(event: &Value) -> Result<(), String> {
+    let mut metadata = event.clone();
+    for field in ["language", "emotion"] {
+        if metadata.get(field).is_none() { metadata[field] = serde_json::json!(""); }
+    }
+    let language = metadata.get("language").and_then(Value::as_str)
+        .ok_or_else(|| "model_protocol.payload_invalid: transcription language must be a string".to_string())?;
+    validate_transcription_language_emotion(&metadata, language, true)
+}
 fn require_exact_keys(
     object: &serde_json::Map<String, Value>,
     expected: &[&str],
@@ -435,6 +435,9 @@ pub(crate) struct LiveTranslateLifecycle {
     active_output_items: HashMap<(String, u64), String>,
     completed_output_items: HashMap<(String, u64), String>,
     translation_by_response: HashMap<String, String>,
+    terminal_text_responses: HashSet<String>,
+    text_snapshots: HashMap<String, String>,
+    asr_snapshots: HashMap<(String, u64), String>,
     completed_response_count: u32,
     source_language: String,
     conversation_items: HashSet<String>,
@@ -445,6 +448,13 @@ pub(crate) struct LiveTranslateLifecycle {
     terminal_transcriptions: HashSet<(String, u64)>,
 }
 impl LiveTranslateLifecycle {
+    pub(crate) fn normalized_text(&self, event_type: &str, event: &Value) -> Option<&str> {
+        if event_type.starts_with("conversation.item.input_audio_transcription.") {
+            self.asr_snapshots.get(&(event["item_id"].as_str()?.to_string(), event["content_index"].as_u64()?)).map(String::as_str)
+        } else { self.text_snapshots.get(&text_identity(event_type, event)).map(String::as_str) }
+    }
+    pub(crate) fn incremental_text(&self) -> bool { self.authority.incremental_text }
+
     pub(crate) fn new(
         authority: LiveTranslateAuthority,
         model: &str,
@@ -459,6 +469,7 @@ impl LiveTranslateLifecycle {
             .pointer("/input_audio_transcription/language")
             .and_then(Value::as_str)
             .filter(|language| !language.trim().is_empty())
+            .or_else(|| authority.incremental_text.then_some(""))
             .ok_or_else(|| "session.update is missing source language".to_string())?
             .to_string();
         let target_language = requested_session
@@ -485,6 +496,9 @@ impl LiveTranslateLifecycle {
             active_output_items: HashMap::new(),
             completed_output_items: HashMap::new(),
             translation_by_response: HashMap::new(),
+            terminal_text_responses: HashSet::new(),
+            text_snapshots: HashMap::new(),
+            asr_snapshots: HashMap::new(),
             completed_response_count: 0,
             source_language,
             conversation_items: HashSet::new(),
@@ -535,6 +549,7 @@ impl LiveTranslateLifecycle {
                         "LiveTranslate session.created event identity was not retained".to_string()
                     })?,
                     &self.requested_session,
+                    self.authority.incremental_text,
                 )?;
                 self.phase = Phase::Streaming;
                 Ok(ServerAction::Ready)
@@ -542,16 +557,14 @@ impl LiveTranslateLifecycle {
             Phase::AwaitCreated | Phase::AwaitUpdated => Err(format!(
                 "model_protocol.event_out_of_order: received '{event_type}' during LiveTranslate handshake"
             )),
-            Phase::Streaming => Err(format!(
-                "model_protocol.event_out_of_order: received '{event_type}' before session.finish"
-            )),
-            Phase::AwaitFinished if event_type == "input_audio_buffer.speech_started" => {
+
+            Phase::Streaming | Phase::AwaitFinished if event_type == "input_audio_buffer.speech_started" => {
                 self.admit_speech_started(event)
             }
-            Phase::AwaitFinished if event_type == "input_audio_buffer.speech_stopped" => {
+            Phase::Streaming | Phase::AwaitFinished if event_type == "input_audio_buffer.speech_stopped" => {
                 self.admit_speech_stopped(event)
             }
-            Phase::AwaitFinished if event_type == "conversation.item.created" => {
+            Phase::Streaming | Phase::AwaitFinished if event_type == "conversation.item.created" => {
                 let candidate_item_id = event
                     .pointer("/item/id")
                     .and_then(Value::as_str)
@@ -584,8 +597,8 @@ impl LiveTranslateLifecycle {
                 }
                 Ok(ServerAction::Continue)
             }
-            Phase::AwaitFinished
-                if event_type == "conversation.item.input_audio_transcription.text" =>
+            Phase::Streaming | Phase::AwaitFinished
+                if matches!(event_type, "conversation.item.input_audio_transcription.text" | "conversation.item.input_audio_transcription.delta") =>
             {
                 let identity = validate_transcription_identity(event)?;
                 if !self.conversation_items.contains(&identity.0)
@@ -596,12 +609,24 @@ impl LiveTranslateLifecycle {
                             .to_string(),
                     );
                 }
-                validate_transcription_language_emotion(event, &self.source_language, false)?;
-                snapshot_text(event)?;
+                if self.authority.incremental_text {
+                    validate_v2_transcription_metadata(event)?;
+                } else {
+                    validate_transcription_language_emotion(event, &self.source_language, false)?;
+                }
+                if self.authority.incremental_text {
+                    event.get("delta").and_then(Value::as_str)
+                        .ok_or_else(|| "model_protocol.payload_invalid: transcription delta requires delta".to_string())?;
+                } else {
+                    snapshot_text(event)?;
+                }
+                if self.authority.incremental_text {
+                    self.asr_snapshots.entry(identity.clone()).or_default().push_str(event["delta"].as_str().unwrap());
+                }
                 self.active_transcriptions.insert(identity);
                 Ok(ServerAction::Continue)
             }
-            Phase::AwaitFinished
+            Phase::Streaming | Phase::AwaitFinished
                 if event_type == "conversation.item.input_audio_transcription.completed" =>
             {
                 let identity = validate_transcription_identity(event)?;
@@ -613,7 +638,11 @@ impl LiveTranslateLifecycle {
                             .to_string(),
                     );
                 }
-                validate_transcription_language_emotion(event, &self.source_language, true)?;
+                if self.authority.incremental_text {
+                    validate_v2_transcription_metadata(event)?;
+                } else {
+                    validate_transcription_language_emotion(event, &self.source_language, true)?;
+                }
                 event
                     .get("transcript")
                     .and_then(Value::as_str)
@@ -625,7 +654,7 @@ impl LiveTranslateLifecycle {
                 self.terminal_transcriptions.insert(identity);
                 Ok(ServerAction::Continue)
             }
-            Phase::AwaitFinished
+            Phase::Streaming | Phase::AwaitFinished
                 if event_type == "conversation.item.input_audio_transcription.failed" =>
             {
                 let identity = validate_transcription_identity(event)?;
@@ -642,14 +671,14 @@ impl LiveTranslateLifecycle {
                 self.terminal_transcriptions.insert(identity);
                 Ok(ServerAction::Continue)
             }
-            Phase::AwaitFinished if event_type == "response.created" => {
+            Phase::Streaming | Phase::AwaitFinished if event_type == "response.created" => {
                 let response_id = validate_response_created(event)?;
                 if !self.active_responses.insert(response_id.to_string()) {
                     return Err("model_protocol.event_order_invalid: duplicate response.created".to_string());
                 }
                 Ok(ServerAction::Continue)
             }
-            Phase::AwaitFinished if event_type == "response.output_item.added" => {
+            Phase::Streaming | Phase::AwaitFinished if event_type == "response.output_item.added" => {
                 let (response_id, index, item_id) = validate_output_item(event, false)?;
                 if !self.active_responses.contains(response_id)
                     || self.active_output_items.insert(
@@ -661,7 +690,7 @@ impl LiveTranslateLifecycle {
                 }
                 Ok(ServerAction::Continue)
             }
-            Phase::AwaitFinished if event_type == "response.output_item.done" => {
+            Phase::Streaming | Phase::AwaitFinished if event_type == "response.output_item.done" => {
                 let (response_id, index, item_id) = validate_output_item(event, true)?;
                 let key = (response_id.to_string(), index);
                 if self.active_output_items.get(&key).map(String::as_str) != Some(item_id) {
@@ -671,17 +700,27 @@ impl LiveTranslateLifecycle {
                 self.completed_output_items.insert(key, item_id.to_string());
                 Ok(ServerAction::Continue)
             }
-            Phase::AwaitFinished
+            Phase::Streaming | Phase::AwaitFinished
                 if matches!(
                     event_type,
                     "response.text.text"
+                        | "response.text.delta"
+                        | "response.audio_transcript.delta"
                         | "response.text.done"
                         | "response.audio_transcript.text"
                         | "response.audio_transcript.done"
                 ) =>
             {
+                let key = text_identity(event_type, event);
+                let mut normalized = event.clone();
+                if self.authority.incremental_text && event_type.ends_with(".done") {
+                    let field = if event_type == "response.text.done" { "text" } else { "transcript" };
+                    if normalized.get(field).is_none() {
+                        if let Some(text) = self.text_snapshots.get(&key) { normalized[field] = Value::String(text.clone()); }
+                    }
+                }
                 let (response_id, output_index, item_id, translation) =
-                    validate_translation_event(event_type, event)?;
+                    validate_translation_event(event_type, &normalized)?;
                 if !self.active_responses.contains(response_id)
                     || self
                         .active_output_items
@@ -694,11 +733,26 @@ impl LiveTranslateLifecycle {
                             .to_string(),
                     );
                 }
-                self.translation_by_response
-                    .insert(response_id.to_string(), translation);
+                if self.authority.incremental_text {
+                    if self.terminal_text_responses.contains(response_id) {
+                        return Err("model_protocol.event_order_invalid: translation event after text terminal".to_string());
+                    }
+                    if event_type.ends_with(".done") {
+                        self.terminal_text_responses.insert(response_id.to_string());
+                    }
+                }
+                if self.authority.incremental_text {
+                    let snapshot = self.text_snapshots.entry(key).or_default();
+                    if event_type.ends_with(".delta") { snapshot.push_str(&translation); } else { *snapshot = translation.clone(); }
+                }
+                if self.authority.incremental_text && event_type.ends_with(".delta") {
+                    self.translation_by_response.entry(response_id.to_string()).or_default().push_str(&translation);
+                } else {
+                    self.translation_by_response.insert(response_id.to_string(), translation);
+                }
                 Ok(ServerAction::Continue)
             }
-            Phase::AwaitFinished if event_type == "response.done" => {
+            Phase::Streaming | Phase::AwaitFinished if event_type == "response.done" => {
                 let (response_id, output_items, terminal_translation) =
                     validate_response_done(event)?;
                 if !self.active_responses.contains(response_id)
@@ -717,6 +771,9 @@ impl LiveTranslateLifecycle {
                     != Some(terminal_translation.as_str())
                 {
                     return Err("model_protocol.identity_mismatch: completed response output does not match a nonempty identity-bound translation".to_string());
+                }
+                if self.authority.incremental_text && !self.terminal_text_responses.remove(response_id) {
+                    return Err("model_protocol.event_order_invalid: response.done before text terminal".to_string());
                 }
                 self.active_responses.remove(response_id);
                 self.completed_output_items.retain(|(id, _), _| id != response_id);
@@ -737,14 +794,15 @@ impl LiveTranslateLifecycle {
                 self.phase = Phase::Finished;
                 Ok(ServerAction::Finished)
             }
-            Phase::AwaitFinished
+            Phase::Streaming | Phase::AwaitFinished
                 if matches!(event_type, "session.created" | "session.updated") =>
             {
                 Err(format!(
                     "model_protocol.event_out_of_order: received '{event_type}' after session.finish"
                 ))
             }
-            Phase::AwaitFinished => Ok(ServerAction::Continue),
+            Phase::Streaming if event_type == "session.finished" => Err("model_protocol.event_out_of_order: session.finished before session.finish".to_string()),
+            Phase::Streaming | Phase::AwaitFinished => Ok(ServerAction::Continue),
             Phase::Finished => Err(format!(
                 "model_protocol.event_out_of_order: received '{event_type}' after session.finished"
             )),

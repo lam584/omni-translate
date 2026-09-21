@@ -5,6 +5,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement } from 'react';
 import { describe, expect, it } from 'vitest';
+import i18n from '../i18n/config';
 import { benchmarkReport } from '../test-utils/diagnostics-page-fixtures';
 import { diagnosticsPageHelpers } from './DiagnosticsPage';
 import { AudioFileInfoSection } from './diagnostics/DiagnosticsDetails';
@@ -234,7 +235,7 @@ describe('diagnostics page helpers', () => {
       },
     }));
     expect(defaultProgress).toContain('benchmark-progress-running');
-    expect(defaultProgress).toContain('starting');
+    expect(defaultProgress).toContain(i18n.t('diagnostics.benchmark.startingPhase'));
     expect(defaultProgress).toContain('0%');
 
     const overSent = renderToStaticMarkup(createElement(diagnosticsPageHelpers.BenchmarkProgressBanner, {
@@ -446,5 +447,45 @@ describe('diagnostics page helpers', () => {
     expect(text).toContain('Stability deductions:');
     expect(text).toContain('Audio File Info');
     expect(text).toContain('2.0 KB');
+  });
+});
+
+
+describe('benchmark terminal empty-state matrix', () => {
+  it.each(['failed', 'completed', 'running'] as const)('renders %s empty states without losing the score card', (state) => {
+    const status = state === 'failed' ? 'error' : state;
+    const progress = { status, phase: 'starting', message: '', audioChunksSent: 0, totalAudioChunks: 0, error: state === 'failed' ? 'model not registered' : null } as const;
+    const banner = renderToStaticMarkup(createElement(diagnosticsPageHelpers.BenchmarkProgressBanner, { error: null, progress }));
+    const prefix = 'diagnostics.benchmark.';
+    expect(banner).toContain(i18n.t(prefix + (state === 'running' ? 'waitingAudioChunks' : state + 'NoAudioChunks')));
+    if (state === 'failed') {
+      expect(banner).toContain('model not registered');
+      expect(banner).toContain(i18n.t(prefix + 'failedPhase', { phase: i18n.t(prefix + 'startingPhase') }));
+    }
+    const report = diagnosticsPageHelpers.createEmptyBenchmarkReport('unregistered', 'sample.mp3');
+    const empty = renderToStaticMarkup(createElement(diagnosticsPageHelpers.BenchmarkReportDetail, { report, benchmarkState: state }));
+    expect(empty).toContain('benchmark-result-score-v1');
+    expect(empty).toContain(i18n.t(prefix + (state === 'running' ? 'waitingFirstData' : state + 'NoData')));
+    const detail = renderToStaticMarkup(createElement(diagnosticsPageHelpers.BenchmarkReportDetail, { report: benchmarkReport(), benchmarkState: state }));
+    expect(detail).toContain(i18n.t(prefix + (state === 'running' ? 'waitingOutput' : state + 'NoOutput')));
+    if (state !== 'running') {
+      expect(banner).not.toContain(i18n.t(prefix + 'waitingAudioChunks'));
+      expect(empty).not.toContain(i18n.t(prefix + 'waitingFirstData'));
+      expect(detail).not.toContain(i18n.t(prefix + 'waitingOutput'));
+    }
+  });
+
+  it('retains partial output, score card and the factual failure phase', () => {
+    const detail = renderToStaticMarkup(createElement(diagnosticsPageHelpers.BenchmarkReportDetail, {
+      report: benchmarkReport({ run: { translationFinal: 'partial translation' } }), benchmarkState: 'failed',
+    }));
+    expect(detail).toContain('partial translation');
+    expect(detail).toContain('benchmark-result-score-v1');
+    const banner = renderToStaticMarkup(createElement(diagnosticsPageHelpers.BenchmarkProgressBanner, {
+      error: 'connection lost', progress: { status: 'error', phase: 'streaming', message: '', audioChunksSent: 2, totalAudioChunks: 8, error: 'connection lost' },
+    }));
+    expect(banner).toContain(i18n.t('diagnostics.benchmark.failedPhase', { phase: 'streaming' }));
+    expect(banner).toContain('connection lost');
+    expect(banner).toContain('2 / 8 chunks');
   });
 });

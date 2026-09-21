@@ -10,7 +10,7 @@ use super::{admit_event_type, event_type};
 
 const PAYLOAD_INVALID: &str = "model_protocol.payload_invalid";
 
-fn reject_unknown_fields(
+pub(super) fn reject_unknown_fields(
     object: &Map<String, Value>,
     allowed: &[&str],
     context: &str,
@@ -35,7 +35,7 @@ fn require_non_empty_string<'a>(
         .ok_or_else(|| format!("{PAYLOAD_INVALID}: {context}.{field} must be a non-empty string"))
 }
 
-fn validate_optional_event_id(object: &Map<String, Value>, context: &str) -> Result<(), String> {
+pub(super) fn validate_optional_event_id(object: &Map<String, Value>, context: &str) -> Result<(), String> {
     if object.contains_key("event_id") {
         require_non_empty_string(object, "event_id", context)?;
     }
@@ -128,7 +128,7 @@ fn validate_input_transcription(session: &Map<String, Value>) -> Result<(), Stri
     Ok(())
 }
 
-fn validate_translation(session: &Map<String, Value>) -> Result<(), String> {
+pub(super) fn validate_translation(session: &Map<String, Value>) -> Result<(), String> {
     let object = session
         .get("translation")
         .and_then(Value::as_object)
@@ -236,6 +236,7 @@ pub(crate) fn admit_livetranslate_client_event(
         format!("{PAYLOAD_INVALID}: client event must be a JSON object")
     })?;
     match event_type {
+        "session.update" if super::is_v2(authority) => super::v2::validate_session_update(event),
         "session.update" => validate_session_update(event, object),
         "input_audio_buffer.append" => {
             reject_unknown_fields(object, &["type", "event_id", "audio"], event_type)?;
@@ -253,6 +254,7 @@ pub(crate) fn admit_livetranslate_client_event(
             }
             Ok(())
         }
+        "input_audio_buffer.commit" if super::is_v2(authority) => Err(format!("{PAYLOAD_INVALID}: v2 manual commit is not supported")),
         "input_audio_buffer.commit" | "input_audio_buffer.clear" => {
             validate_simple_client_event(object, event_type)
         }

@@ -177,7 +177,7 @@ where
     }
     let model = required_environment_value(&read_env, "OMNI_WATCH_MODE_MODEL_ID")?;
     let protocol = required_environment_value(&read_env, "OMNI_WATCH_MODE_REALTIME_PROTOCOL")?;
-    if model != STRICT_LIVETRANSLATE_MODEL || protocol != STRICT_LIVETRANSLATE_PROTOCOL {
+    if !matches!(model.as_str(), STRICT_LIVETRANSLATE_MODEL | "qwen3.8-livetranslate-flash-realtime") || protocol != STRICT_LIVETRANSLATE_PROTOCOL {
         return Err(format!(
             "strict paid terminal authority requires model={STRICT_LIVETRANSLATE_MODEL} protocol={STRICT_LIVETRANSLATE_PROTOCOL}; observed model={model} protocol={protocol}"
         ));

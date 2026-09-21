@@ -83,3 +83,47 @@ test('paid authority hash inventory binds the profile registry and authorizers',
     assert.equal(paths.has(requiredPath), true, `missing paid authority hash: ${requiredPath}`);
   }
 });
+
+const WORKSPACE_MODEL = 'qwen3.8-livetranslate-flash-realtime';
+const SYNTHETIC_WORKSPACE_HOST = 'synthetic-test-workspace.cn-beijing.maas.aliyuncs.com';
+
+test('3.8 Watch identity requires an explicit matching workspace endpoint', () => {
+  for (const options of [{}, { endpointHost: 'dashscope.aliyuncs.com' }]) {
+    const rejected = authorizeWatchModelProtocolIdentity({ exactModelId: WORKSPACE_MODEL, ...options });
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.errorCode, 'model_protocol.endpoint_host_region_mismatch');
+    assert.match(rejected.message, /workspace_required/);
+    assert.throws(() => deriveWatchModelProtocolIdentity(WORKSPACE_MODEL, options), /endpoint_host_region_mismatch/);
+  }
+  const identity = deriveWatchModelProtocolIdentity(WORKSPACE_MODEL, {
+    endpointHost: SYNTHETIC_WORKSPACE_HOST,
+  });
+  assert.equal(identity.profileId, 'bailian.livetranslate.3_8.realtime.ws');
+  assert.equal(identity.exactModelId, WORKSPACE_MODEL);
+  assert.equal(identity.region, 'cn-beijing');
+  assert.equal(identity.wireDialectVersion, 2);
+  assert.equal(Object.isFrozen(identity), true);
+  assert.deepEqual(Object.keys(identity), [...WATCH_MODEL_PROTOCOL_IDENTITY_FIELDS]);
+  for (const options of [
+    { endpointHost: 'synthetic-test-workspace.ap-southeast-1.maas.aliyuncs.com' },
+    { endpointHost: SYNTHETIC_WORKSPACE_HOST, region: 'ap-southeast-1' },
+  ]) {
+    assert.throws(() => deriveWatchModelProtocolIdentity(WORKSPACE_MODEL, options), /endpoint_host_region_mismatch/);
+  }
+});
+
+test('Watch callers cannot spoof 3.8 identity with a 3.5 model or profile', () => {
+  assert.throws(() => deriveWatchModelProtocolIdentity(WORKSPACE_MODEL, {
+    exactModelId: LIVETRANSLATE_MODEL,
+  }), /endpoint_host_region_mismatch/);
+  const expected = deriveWatchModelProtocolIdentity(WORKSPACE_MODEL, {
+    endpointHost: SYNTHETIC_WORKSPACE_HOST,
+  });
+  assert.throws(() => assertWatchModelProtocolIdentity({
+    ...expected, profileId: 'bailian.livetranslate.realtime.ws',
+  }, expected), /profileId mismatch/);
+  assert.equal(deriveWatchModelProtocolIdentity(WORKSPACE_MODEL, {
+    endpointHost: SYNTHETIC_WORKSPACE_HOST,
+    exactModelId: LIVETRANSLATE_MODEL,
+  }).exactModelId, WORKSPACE_MODEL);
+});

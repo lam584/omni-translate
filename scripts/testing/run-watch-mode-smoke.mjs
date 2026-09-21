@@ -3,6 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { isMain, repoRoot } from '../lib/testing-common.mjs';
+import { renameWithTransientRetrySync } from '../lib/atomic-rename.mjs';
 import {
   WATCH_MODE_SMOKE_ARTIFACT_KIND,
   WATCH_MODE_SMOKE_BUDGET_SECONDS,
@@ -20,7 +21,7 @@ export const SMOKE_FAILURE_CLASSES = Object.freeze([
 function atomicWriteJson(filePath, value) {
   const temporary = `${filePath}.${process.pid}.tmp`;
   fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-  fs.renameSync(temporary, filePath);
+  renameWithTransientRetrySync(temporary, filePath);
 }
 
 function selectWorker(cell, workers, occupied) {

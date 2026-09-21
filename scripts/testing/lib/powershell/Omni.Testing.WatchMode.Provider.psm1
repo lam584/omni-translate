@@ -1,4 +1,5 @@
 #requires -Version 5.1
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.ProviderEnvironment.psm1') -DisableNameChecking
 
 function Ensure-ObjectProperty {
   param($Object, [string]$Name)
@@ -12,63 +13,6 @@ function Ensure-ValueProperty {
   param($Object, [string]$Name)
   if (-not $Object.PSObject.Properties[$Name]) {
     $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $null
-  }
-}
-
-function Enter-StrictPaidProviderEnvironment {
-  param(
-    [bool]$Enabled,
-    [bool]$IncidentReplay = $false,
-    [bool]$LocalSingleSession = $false
-  )
-  $fixed = [ordered]@{
-    OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID = "provider-dashscope"
-    OMNI_WATCH_MODE_EXPECTED_PROVIDER_TEMPLATE_ID = "template-dashscope-realtime"
-    OMNI_WATCH_MODE_EXPECTED_PROVIDER_KIND = "dashscope"
-    OMNI_WATCH_MODE_EXPECTED_PROVIDER_ENDPOINT_HOST = "dashscope.aliyuncs.com"
-    OMNI_WATCH_MODE_EXPECTED_PROVIDER_CREDENTIAL_REFERENCE = "credential://provider/dashscope/default"
-  }
-  if ($Enabled) {
-    $fixed.OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY = "1"
-  }
-  if ($IncidentReplay) {
-    $fixed.OMNI_WATCH_MODE_INCIDENT_REPLAY_AUTHORITY = "1"
-    $fixed.OMNI_WATCH_MODE_INCIDENT_ID = "watch-mode-loss-incident-plus-v1"
-  }
-  if ($LocalSingleSession) {
-    $fixed.OMNI_WATCH_MODE_LOCAL_SINGLE_SESSION_AUTHORITY = "1"
-  }
-  $previous = [ordered]@{}
-  foreach ($entry in $fixed.GetEnumerator()) {
-    $previous[$entry.Key] = [Environment]::GetEnvironmentVariable(
-      $entry.Key,
-      [EnvironmentVariableTarget]::Process
-    )
-    if ($Enabled -or $IncidentReplay -or $LocalSingleSession) {
-      [Environment]::SetEnvironmentVariable(
-        $entry.Key,
-        [string]$entry.Value,
-        [EnvironmentVariableTarget]::Process
-      )
-    }
-  }
-  return [pscustomobject]@{
-    enabled = $Enabled -or $IncidentReplay -or $LocalSingleSession
-    names = @($fixed.Keys)
-    values = $fixed
-    previous = $previous
-  }
-}
-
-function Exit-StrictPaidProviderEnvironment {
-  param($State)
-  if (-not $State) { return }
-  foreach ($name in @($State.names)) {
-    [Environment]::SetEnvironmentVariable(
-      [string]$name,
-      $State.previous[[string]$name],
-      [EnvironmentVariableTarget]::Process
-    )
   }
 }
 
@@ -108,6 +52,7 @@ function Set-WatchModelOnConfig {
         throw "Strict paid Watch provider requires exactly one provider-dashscope/template-dashscope-realtime entry."
       }
       $provider = $strictProviders[0]
+      $expectedHost = Resolve-WatchModeReleaseEndpointHost $resolvedModelId
       $providerUri = $null
       if (-not [Uri]::TryCreate([string]$provider.baseUrl, [UriKind]::Absolute, [ref]$providerUri)) {
         throw "Strict paid Watch provider baseUrl is not an absolute URI."
@@ -117,7 +62,7 @@ function Set-WatchModelOnConfig {
         $providerUri.Scheme -cne "https" -or
         -not [string]::IsNullOrEmpty($providerUri.UserInfo) -or
         -not $providerUri.IsDefaultPort -or
-        $providerUri.Host -cne "dashscope.aliyuncs.com" -or
+        $providerUri.Host -cne $expectedHost -or
         $provider.streamEnabled -ne $true -or
         $provider.authRef.kind -cne "credential-ref" -or
         $provider.authRef.reference -cne "credential://provider/dashscope/default" -or

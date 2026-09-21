@@ -4,8 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { repoRoot } from '../lib/testing-common.mjs';
+import { renameWithTransientRetrySync as sharedRename } from '../lib/atomic-rename.mjs';
 import {
   CANONICAL_STRICT_MATRIX_MANIFEST,
+  canonicalStrictMatrixManifestName,
   DEFAULT_FEEDBACK_MODES,
   DEFAULT_MODELS,
   LIVE_RUNNER_POST_REPORT_GRACE_SECONDS,
@@ -94,6 +96,31 @@ const CLEAN_PROVENANCE = Object.freeze({
   dirtyEntryCount: 0,
 });
 const TEST_RUNTIME_BINARY_HASHES = Object.freeze([]);
+
+test('matrix preserves the shared atomic rename export and bounded failure policy', () => {
+  assert.equal(renameWithTransientRetrySync, sharedRename);
+  for (const code of ['EPERM', 'EBUSY', 'EACCES', 'ENOENT', 'EEXIST']) {
+    const error = Object.assign(new Error(code), { code });
+    const waits = [];
+    let attempts = 0;
+    assert.throws(() => sharedRename('staging', 'final', {
+      renameSync: (source, destination) => {
+        assert.equal(source, 'staging');
+        assert.equal(destination, 'final');
+        attempts += 1;
+        throw error;
+      },
+      sleepSync: (delayMs) => waits.push(delayMs),
+    }), (thrown) => thrown === error);
+    const retryable = ['EPERM', 'EBUSY', 'EACCES'].includes(code);
+    assert.equal(attempts, retryable ? 8 : 1);
+    assert.deepEqual(waits, retryable ? [20, 40, 80, 160, 200, 200, 200] : []);
+  }
+  assert.deepEqual(sharedRename('staging', 'final', {
+    renameSync: () => {},
+    sleepSync: () => assert.fail('successful rename must not sleep'),
+  }), { attempts: 1 });
+});
 
 test('atomic evidence rename retries only transient filesystem lock failures', () => {
   const waits = [];
@@ -1552,4 +1579,32 @@ test('strict provider preflight accepts only a completed production emitter', ()
   });
   assert.equal(result.providerId, 'provider-dashscope');
   assert.match(result.emitterPath, /emitter-result\.json$/);
+});
+
+import { createBalancedReleasePlan, liveCellsForReleasePlan } from './watch-mode-balanced-release-plan.mjs';
+
+test('3.8 matrix carries its exact plan and has a separate canonical publication name', t => {
+  const releaseSelection = { modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'acceptance.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing' };
+  const plan = createBalancedReleasePlan(releaseSelection);
+  const releaseCells = liveCellsForReleasePlan(plan);
+  const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-matrix-38-'));
+  t.after(() => fs.rmSync(outputRoot, { recursive: true, force: true }));
+  const runDirectories = releaseCells.map((cell, index) => {
+    const directory = path.join(outputRoot, 'cell-' + index);
+    writeAuthorityPlaceholderArtifacts(directory, cell.feedbackLoopPrevention);
+    return directory;
+  });
+  const options = { outputRoot, modelList: plan.models, feedbackModeList: DEFAULT_FEEDBACK_MODES,
+    deviceProfiles: SUPPORTED_DEVICE_CLASSES.map(deviceClass => ({ profileId: deviceClass, deviceClass })),
+    runDirectories, strict: true, provenance: CLEAN_PROVENANCE, authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot), releaseSelection, releaseCells };
+  const { manifest } = writeMatrixRunManifest(options);
+  assert.deepEqual(manifest.releaseSelection, releaseSelection);
+  assert.deepEqual(manifest.validationPlan, plan);
+  assert.equal(manifest.cells.length, 4);
+  assert.ok(manifest.cells.every(cell => cell.modelId === releaseSelection.modelId));
+  assert.equal(canonicalStrictMatrixManifestName(), CANONICAL_STRICT_MATRIX_MANIFEST);
+  assert.notEqual(canonicalStrictMatrixManifestName(releaseSelection), CANONICAL_STRICT_MATRIX_MANIFEST);
+  assert.throws(() => writeMatrixRunManifest({ ...options, releaseCells: LIVE_LLM_CELLS }), /release cells differ/);
+  assert.throws(() => writeMatrixRunManifest({ ...options, modelList: DEFAULT_MODELS }), /models differ/);
 });

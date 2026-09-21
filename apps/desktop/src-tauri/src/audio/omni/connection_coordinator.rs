@@ -1398,8 +1398,8 @@ pub(super) struct OmniConnectedSession {
 
 impl OmniConnectionCoordinator {
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn connect_initial(
-        app: &AppHandle,
+    pub(super) fn connect_initial<R: tauri::Runtime>(
+        app: &AppHandle<R>,
         store: &AudioStateStore,
         direction: &str,
         provider: &ProviderDraftInput,
@@ -1413,7 +1413,8 @@ impl OmniConnectionCoordinator {
         speech_config: OmniSpeechConfig,
         provider_input_budget: &ProviderInputBudget,
         translated_pcm_authority: TranslatedPcmAuthority,
-        trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall,
+        trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
+        #[cfg(test)] headless: Option<&super::headless_tests::HeadlessHooks>,
     ) -> Result<OmniConnectedSession, String> {
         trace_call.input(
             "connect",
@@ -1437,6 +1438,20 @@ impl OmniConnectionCoordinator {
                 provider.kind, provider.provider_id
             ));
         }
+        #[cfg(test)]
+        let request = match headless.and_then(|hooks| hooks.local_request.as_ref()) {
+            Some(request) => {
+                if request.uri().scheme_str() != Some("ws")
+                    || request.uri().host() != Some("127.0.0.1")
+                    || request.headers().contains_key("Authorization")
+                {
+                    return Err("headless mock override must be unauthenticated loopback".to_string());
+                }
+                request.clone() // Loopback fixture only; never resolves a credential.
+            },
+            None => build_dashscope_ws_request(provider)?,
+        };
+        #[cfg(not(test))]
         let request = build_dashscope_ws_request(provider)?;
         let active_voice = voice.to_string();
         let session_cfg = build_omni_session_update_for_provider_with_output_mode(
@@ -1586,6 +1601,15 @@ impl OmniConnectionCoordinator {
         // during the session update it in place, and the playback thread
         // re-reads it for every Play command.
         let shared_speech_config = store.register_omni_speech_config(speech_config);
+        #[cfg(test)]
+        let (playback_tx, playback_worker) = if let Some(hooks) = headless {
+            protocol::start_omni_headless_playback(app.clone(), shared_speech_config,
+                direction.to_string(), translated_pcm_authority, hooks.sink.clone())
+        } else {
+            start_omni_playback(app.clone(), shared_speech_config,
+                direction.to_string(), translated_pcm_authority)
+        };
+        #[cfg(not(test))]
         let (playback_tx, playback_worker) = start_omni_playback(
             app.clone(),
             shared_speech_config,

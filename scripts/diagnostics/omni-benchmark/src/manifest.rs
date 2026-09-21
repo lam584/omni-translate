@@ -12,6 +12,8 @@ pub struct Manifest {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManifestEntry {
+    #[serde(default)]
+    pub protocol_binding: Option<crate::bailian_contract::ProtocolBinding>,
     pub model_id: String,
     pub provider: String,
     pub protocol: String,

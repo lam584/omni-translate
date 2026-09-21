@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import Ajv2020 from 'ajv/dist/2020.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,6 +17,27 @@ const FIRST_BATCH_PROVIDER_IDS = new Set([
 
 function fail(message) {
   throw new Error(`provider-manifest: ${message}`);
+}
+
+let validateAdvisoryMetadata;
+
+export function validateModelCapabilityMetadata(metadata, label) {
+  if (!validateAdvisoryMetadata) {
+    const ajv = new Ajv2020({ strict: true, allErrors: true });
+    ajv.addFormat('date', {
+      type: 'string',
+      validate(value) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+        const parsed = new Date(value + 'T00:00:00.000Z');
+        return Number.isFinite(parsed.valueOf()) && parsed.toISOString().startsWith(value);
+      },
+    });
+    const schema = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'contracts/provider-manifest.schema.json'), 'utf8'));
+    validateAdvisoryMetadata = ajv.compile(schema.$defs.capabilityMetadata);
+  }
+  if (!validateAdvisoryMetadata(metadata)) {
+    fail(label + ': invalid advisory capabilityMetadata: ' + JSON.stringify(validateAdvisoryMetadata.errors));
+  }
 }
 
 function requiredString(value, label) {
@@ -146,7 +168,7 @@ function resolveInside(root, declaredPath, label) {
 function assertNoSecretLikeMaterial(document, label) {
   const serialized = JSON.stringify(document);
   const secretPatterns = [
-    /sk-[A-Za-z0-9_-]{16,}/,
+    /\bsk-[A-Za-z0-9_-]{16,}/,
     /AKID[A-Za-z0-9]{12,}/,
     /AKLT[A-Za-z0-9]{12,}/,
     /AIza[A-Za-z0-9_-]{20,}/,
@@ -383,6 +405,12 @@ function validateManifest(manifest, manifestPath) {
 
   const provider = manifest?.provider;
   const providerId = requiredString(provider?.id, `${relativePath}.provider.id`);
+  if (manifest.bailianModelProtocolRegistry !== undefined) {
+    const ajv = new Ajv2020({ strict: true, allErrors: true, validateFormats: false });
+    ajv.addSchema(readJson(path.join(repositoryRoot, 'contracts/model-protocol-profiles.schema.json')));
+    const validate = ajv.compile(readJson(path.join(repositoryRoot, 'contracts/provider-manifest.schema.json')));
+    if (!validate(manifest)) fail(ajv.errorsText(validate.errors));
+  }
   const documentation = idMap(manifest.documentation, `${relativePath}.documentation`);
   const credentials = idMap(manifest.credentials, `${relativePath}.credentials`);
   const authProfiles = idMap(manifest.authProfiles, `${relativePath}.authProfiles`);
@@ -528,6 +556,9 @@ function validateManifest(manifest, manifestPath) {
   }
 
   for (const [id, model] of models) {
+    if (Object.hasOwn(model, 'capabilityMetadata')) {
+      validateModelCapabilityMetadata(model.capabilityMetadata, `${relativePath}.models.${id}`);
+    }
     requireReferences(documentation, model.documentationIds, `${relativePath}.models.${id}.documentationIds`);
     const boundOperations = new Set();
     for (const binding of array(model.protocolBindings, `${relativePath}.models.${id}.protocolBindings`)) {

@@ -8,6 +8,7 @@ import { Worker } from 'node:worker_threads';
 
 import {
   STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
+  strictPaidBudgetOptionsForModel,
   PROVIDER_INPUT_PREFILTER_FILE,
   PROVIDER_INPUT_PREFILTER_MAGIC,
   PROVIDER_SEND_BOUNDARY_JOURNAL_FILE,
@@ -23,7 +24,7 @@ import {
   writePreProviderTerminalAuthority,
   writeCellExternalProviderBudget,
 } from './watch-mode-external-provider-budget.mjs';
-import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { LIVE_LLM_CELLS, createBalancedReleasePlan, liveCellsForReleasePlan } from './watch-mode-balanced-release-plan.mjs';
 import {
   buildPhysicalSourceWaveformAuthority,
   loadCanonicalFixtureAuthority,
@@ -604,6 +605,13 @@ test('prefilter replay reproduces f32 resampling and preserves the LiveTranslate
     });
     assert.equal(replay.expectedProviderPcm.readInt16LE(0), 8191);
     assert.equal(replay.expectedProviderPcm.length, 13_440 * 2);
+    const endpointHost = 'acceptance.cn-beijing.maas.aliyuncs.com';
+    const profile38 = liveCellsForReleasePlan(createBalancedReleasePlan({ modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost }))[0].modelProtocolProfileIdentity;
+    const replay38 = replayProviderInputPrefilter({ filePath, maxSamples: 100_000, modelProtocolProfileIdentity: profile38, endpointHost });
+    assert.deepEqual(replay38.expectedProviderPcm, replay.expectedProviderPcm);
+    assert.deepEqual(replay38.authority.decisions, replay.authority.decisions);
+    assert.throws(() => replayProviderInputPrefilter({ filePath, maxSamples: 100_000, modelProtocolProfileIdentity: profile38 }), /endpoint|workspace/);
+    assert.throws(() => replayProviderInputPrefilter({ filePath, maxSamples: 100_000, modelProtocolProfileIdentity: profile38, endpointHost: 'dashscope.aliyuncs.com' }), /endpoint|workspace/);
   } finally {
     fs.rmSync(runDirectory, { recursive: true, force: true });
   }
@@ -1118,4 +1126,16 @@ test('provider input completion does not pass rejected chunks when the ceiling l
   assert.equal(evidence.status, 'inconclusive');
   assert.equal(evidence.passed, false);
   assert.equal(evidence.stableErrorCode, 'watch.provider-input-truncated');
+});
+
+test('strict budget CLI selection requires explicit workspace and preserves default identity', () => {
+  assert.deepEqual(strictPaidBudgetOptionsForModel(MODEL).approvedModels, [MODEL]);
+  assert.equal(strictPaidBudgetOptionsForModel(MODEL).providerIdentity.endpointHost, 'dashscope.aliyuncs.com');
+  const model38 = 'qwen3.8-livetranslate-flash-realtime';
+  const endpointHost = 'acceptance.cn-beijing.maas.aliyuncs.com';
+  assert.deepEqual(strictPaidBudgetOptionsForModel(model38, endpointHost).approvedModels, [model38]);
+  assert.equal(strictPaidBudgetOptionsForModel(model38, endpointHost).providerIdentity.endpointHost, endpointHost);
+  assert.throws(() => strictPaidBudgetOptionsForModel(model38));
+  assert.throws(() => strictPaidBudgetOptionsForModel(model38, 'dashscope.aliyuncs.com'));
+  assert.throws(() => strictPaidBudgetOptionsForModel(MODEL, endpointHost));
 });

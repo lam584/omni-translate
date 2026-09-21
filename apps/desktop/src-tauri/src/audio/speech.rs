@@ -368,6 +368,8 @@ mod tests {
             custom_headers: vec![],
             scene_model_assignments: vec![],
             model_protocol_bindings: vec![],
+            model_registry_version: None,
+            model_capability_overrides: Vec::new(),
             local_model_capability_registry: vec![],
             model_catalog_cache: Default::default(),
         }

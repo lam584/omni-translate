@@ -26,209 +26,244 @@ pub(crate) async fn run_model_benchmark(
 ) -> Result<String, String> {
     crate::watch_mode_diagnostic::local_aec_probe::ensure_provider_work_allowed()?;
     tauri::async_runtime::spawn_blocking(move || {
-        let requested_provider_kind = provider_kind
-            .as_deref()
-            .or_else(|| provider.as_ref().map(|provider| provider.kind.as_str()))
-            .unwrap_or("dashscope")
-            .to_string();
-        let model_protocol_authority =
-            authorize_bailian_model_operation_for_benchmark_invocation(
-                &model,
-                &requested_provider_kind,
-                provider.as_ref(),
-                base_url.as_deref(),
-                auth_header_name.as_deref(),
-                auth_scheme.as_deref(),
-            )?;
-        let provider_manifest_authority = match provider.as_ref() {
-            Some(provider) if provider.model != model => {
-                return Err(format!(
-                    "provider_manifest.model_identity_mismatch: benchmark model '{}' differs from provider model '{}'",
-                    model, provider.model
-                ));
-            }
-            Some(provider) => crate::provider::provider_manifest::authorize_realtime_provider(provider)?,
-            None => None,
-        };
-        if let Some(authority) = provider_manifest_authority.as_ref() {
-            if !matches!(
-                authority.adapter_id.as_str(),
-                "openai-realtime-websocket" | "azure-openai-realtime-websocket" | "gemini-live"
-            ) {
-                return Err(format!(
-                    "provider_manifest.adapter_mismatch: benchmark cannot execute adapter '{}'",
-                    authority.adapter_id
-                ));
-            }
-        }
-        let resolved_profile = provider
-            .as_ref()
-            .map(|provider| crate::audio::events::resolve_realtime_profile(provider, &model));
-        if let Some(authority) = model_protocol_authority.as_ref() {
-            let resolved_authority = resolved_profile
-                .as_ref()
-                .and_then(|profile| profile.model_protocol_authority.as_ref());
-            if resolved_authority != Some(authority) {
-                return Err(
-                    "model_protocol.authorization_identity_mismatch: benchmark route resolution does not match the pre-connect invocation authority"
-                        .to_string(),
-                );
-            }
-        }
-        let resolved_mode = resolved_profile
-            .as_ref()
-            .map(|profile| profile.realtime_audio_mode.as_str())
-            .or(realtime_audio_mode.as_deref());
-        let audio_mode = RealtimeAudioMode::from_frontend(resolved_mode, &model)?;
-        let config = BenchmarkConfig {
-            api_key,
-            mp3_path: PathBuf::from(&mp3_path),
-            model: provider_manifest_authority
-                .as_ref()
-                .map(|authority| authority.wire_model_id().to_string())
-                .unwrap_or_else(|| model.clone()),
-            audio_mode,
-            interaction_capabilities: interaction_capabilities.unwrap_or_default(),
-            provider_kind: requested_provider_kind,
-            base_url: base_url
-                .filter(|value| !value.trim().is_empty())
-                .or_else(|| provider.as_ref().map(|provider| provider.base_url.clone()))
-                .unwrap_or_else(|| DEFAULT_WS_BASE_URL.to_string()),
-            auth_header_name: auth_header_name
-                .filter(|value| !value.trim().is_empty())
-                .or_else(|| provider_manifest_authority.as_ref()
-                    .and_then(|authority| authority.canonical_auth_header_name.clone()))
-                .or_else(|| {
-                    provider
-                        .as_ref()
-                        .map(|provider| provider.auth_ref.header_name.clone())
-                })
-                .unwrap_or_else(|| "Authorization".to_string()),
-            auth_scheme: auth_scheme
-                .filter(|value| !value.trim().is_empty())
-                .or_else(|| provider_manifest_authority.as_ref()
-                    .and_then(|authority| authority.canonical_auth_scheme.clone()))
-                .or_else(|| {
-                    provider
-                        .as_ref()
-                        .map(|provider| provider.auth_ref.scheme.clone())
-                })
-                .unwrap_or_else(|| "bearer".to_string()),
-            voice: "Ethan".to_string(),
-            target_language: "zh".to_string(),
-            protocol_dialect: resolved_profile.and_then(|profile| profile.protocol_dialect),
-            model_protocol_authority,
-        };
-
-        if !config.mp3_path.exists() {
-            return Err(format!("Audio file not found: {}", config.mp3_path.display()));
-        }
-
-        let decode_result = read_audio_samples_with_info(&config.mp3_path)?;
-        let samples = decode_result.samples;
-        let audio_duration = samples.len() as f64 / 16_000.0;
-        let total_audio_chunks = samples.chunks(CHUNK_SAMPLES).count();
-
-        let file_name = config.mp3_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| config.mp3_path.display().to_string());
-        let format = config.mp3_path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or("unknown")
-            .to_ascii_lowercase();
-        let audio_info = AudioFileInfo {
-            file_name,
-            format,
-            file_size_bytes: decode_result.file_size_bytes,
-            original_sample_rate: decode_result.original_sample_rate,
-            channels: decode_result.channels,
-            decoded_samples: samples.len(),
-            duration_secs: audio_duration,
-        };
-
-        let mut progress = BenchmarkProgressState::new(
-            app.clone(),
-            run_id.clone(),
-            model.clone(),
-            mp3_path.clone(),
-            config.audio_mode,
-            config.interaction_capabilities.clone(),
-            audio_duration,
-            total_audio_chunks,
-        );
-        progress.audio_info = Some(audio_info.clone());
-        progress.emit(
-            "running",
-            "audio-decoded",
-            format!("音频已解码，音频时长 {:.1}s", audio_duration),
-            None,
-        );
-
-        let result = match run_single_benchmark(0, &config, &samples, audio_duration, &mut progress)
-        {
-            Ok(result) => result,
-            Err(error) => {
-                progress.emit("error", "failed", error.clone(), Some(error.clone()));
-                return Err(error);
-            }
-        };
-
-        let output_delta_count = result.raw.output_deltas.len();
-        let total_output_duration_ms = total_output_duration_from(
-            result.raw.response_done_ms,
-            result.raw.first_output_ms,
-            result.raw.response_created_ms,
-        );
-
-        let run_result = RunResult {
-            run_index: 0,
-            model: model.clone(),
-            connect_ms: result.connect_ms,
-            session_ready_ms: result.session_ready_ms,
-            audio_send_ms: result.audio_send_ms,
-            audio_chunks_sent: result.audio_chunks_sent,
-            audio_duration_secs: audio_duration,
-            first_asr_ms: result.raw.first_asr_ms,
-            asr_deltas: result.raw.asr_deltas,
-            asr_final: result.raw.asr_final,
-            first_output_ms: result.raw.first_output_ms,
-            first_committed_ms: result.raw.first_committed_ms,
-            output_deltas: result.raw.output_deltas,
-            translation_final: result.raw.translation_final,
-            response_created_ms: result.raw.response_created_ms,
-            response_done_ms: result.raw.response_done_ms,
-            response_done_audio_chunks_sent: result.raw.response_done_audio_chunks_sent,
-            response_done_audio_sent_secs: result.raw.response_done_audio_sent_secs,
-            response_count: result.raw.response_count,
-            speech_started_ms: result.raw.speech_started_ms,
-            speech_stopped_ms: result.raw.speech_stopped_ms,
-            time_to_first_token_ms: result.raw.first_output_ms,
-            time_to_first_committed_ms: result.raw.first_committed_ms,
-            total_output_duration_ms,
-            output_delta_count,
-        };
-
-        let summary = compute_summary(&[run_result.clone()], audio_duration);
-        let report = BenchmarkReport {
-            model,
-            realtime_audio_mode: config.audio_mode.as_str().to_string(),
-            interaction_capabilities: config.interaction_capabilities.clone(),
-            audio_file: mp3_path,
-            audio_duration_secs: audio_duration,
-            audio_info: Some(audio_info),
-            runs: vec![run_result],
-            summary,
-        };
-
-        progress.run = report.runs[0].clone();
-        progress.emit("completed", "completed", "基准测试完成", None);
-
-        serde_json::to_string(&report).map_err(|e| format!("JSON serialize failed: {e}"))
+        run_model_benchmark_with_sink(
+            Box::new(move |payload| { let _ = app.emit(BENCHMARK_PROGRESS_EVENT, payload); }),
+            BenchmarkExecutionPolicy::Production,
+            model, api_key, mp3_path, run_id, realtime_audio_mode,
+            interaction_capabilities, provider_kind, base_url, auth_header_name,
+            auth_scheme, provider,
+        )
     })
     .await
     .map_err(|e| format!("spawn_blocking join error: {e}"))?
+}
+
+// The ignored headless entry and the desktop wrapper execute this same runner.
+// No storage repository, alternate parser, or alternate report builder is used.
+fn run_model_benchmark_with_sink(
+    sink: BenchmarkProgressSink,
+    policy: BenchmarkExecutionPolicy,
+    model: String,
+    api_key: String,
+    mp3_path: String,
+    run_id: String,
+    realtime_audio_mode: Option<String>,
+    interaction_capabilities: Option<Vec<String>>,
+    provider_kind: Option<String>,
+    base_url: Option<String>,
+    auth_header_name: Option<String>,
+    auth_scheme: Option<String>,
+    provider: Option<crate::provider::contracts::ProviderDraftInput>,
+) -> Result<String, String> {
+    crate::watch_mode_diagnostic::local_aec_probe::ensure_provider_work_allowed()?;
+    let requested_provider_kind = provider_kind
+        .as_deref()
+        .or_else(|| provider.as_ref().map(|provider| provider.kind.as_str()))
+        .unwrap_or("dashscope")
+        .to_string();
+    let model_protocol_authority =
+        authorize_bailian_model_operation_for_benchmark_invocation(
+            &model,
+            &requested_provider_kind,
+            provider.as_ref(),
+            base_url.as_deref(),
+            auth_header_name.as_deref(),
+            auth_scheme.as_deref(),
+        )?;
+    let provider_manifest_authority = match provider.as_ref() {
+        Some(provider) if provider.model != model => {
+            return Err(format!(
+                "provider_manifest.model_identity_mismatch: benchmark model '{}' differs from provider model '{}'",
+                model, provider.model
+            ));
+        }
+        Some(provider) if provider.kind == "dashscope" => None,
+        Some(provider) => crate::provider::provider_manifest::authorize_realtime_provider(provider)?,
+        None => None,
+    };
+    if let Some(authority) = provider_manifest_authority.as_ref() {
+        if !matches!(
+            authority.adapter_id.as_str(),
+            "openai-realtime-websocket" | "azure-openai-realtime-websocket" | "gemini-live"
+        ) {
+            return Err(format!(
+                "provider_manifest.adapter_mismatch: benchmark cannot execute adapter '{}'",
+                authority.adapter_id
+            ));
+        }
+    }
+    let resolved_profile = provider
+        .as_ref()
+        .map(|provider| crate::audio::events::resolve_realtime_profile(provider, &model));
+    if let Some(authority) = model_protocol_authority.as_ref() {
+        let resolved_authority = resolved_profile
+            .as_ref()
+            .and_then(|profile| profile.model_protocol_authority.as_ref());
+        if resolved_authority != Some(authority) {
+            return Err(
+                "model_protocol.authorization_identity_mismatch: benchmark route resolution does not match the pre-connect invocation authority"
+                    .to_string(),
+            );
+        }
+    }
+    let resolved_mode = resolved_profile
+        .as_ref()
+        .map(|profile| profile.realtime_audio_mode.as_str())
+        .or(realtime_audio_mode.as_deref());
+    let audio_mode = RealtimeAudioMode::from_frontend(resolved_mode, &model)?;
+    let config = BenchmarkConfig {
+        api_key,
+        mp3_path: PathBuf::from(&mp3_path),
+        model: provider_manifest_authority
+            .as_ref()
+            .map(|authority| authority.wire_model_id().to_string())
+            .unwrap_or_else(|| model.clone()),
+        audio_mode,
+        interaction_capabilities: if provider.as_ref().is_some_and(|provider| provider.model_registry_version == Some(2)) {
+            resolved_profile.as_ref().map(|profile| profile.interaction_capabilities.clone()).unwrap_or_default()
+        } else { interaction_capabilities.unwrap_or_default() },
+        provider_kind: requested_provider_kind,
+        base_url: base_url
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| provider.as_ref().map(|provider| provider.base_url.clone()))
+            .unwrap_or_else(|| DEFAULT_WS_BASE_URL.to_string()),
+        auth_header_name: auth_header_name
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| provider_manifest_authority.as_ref()
+                .and_then(|authority| authority.canonical_auth_header_name.clone()))
+            .or_else(|| {
+                provider
+                    .as_ref()
+                    .map(|provider| provider.auth_ref.header_name.clone())
+            })
+            .unwrap_or_else(|| "Authorization".to_string()),
+        auth_scheme: auth_scheme
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| provider_manifest_authority.as_ref()
+                .and_then(|authority| authority.canonical_auth_scheme.clone()))
+            .or_else(|| {
+                provider
+                    .as_ref()
+                    .map(|provider| provider.auth_ref.scheme.clone())
+            })
+            .unwrap_or_else(|| "bearer".to_string()),
+        voice: "Ethan".to_string(),
+        target_language: "zh".to_string(),
+        protocol_dialect: resolved_profile.and_then(|profile| profile.protocol_dialect),
+        model_protocol_authority,
+    };
+
+    if !config.mp3_path.exists() {
+        return Err(format!("Audio file not found: {}", config.mp3_path.display()));
+    }
+
+    let decode_result = read_audio_samples_with_info(&config.mp3_path)?;
+    let samples = decode_result.samples;
+    #[cfg(test)]
+    let samples = if matches!(policy, BenchmarkExecutionPolicy::Bounded { .. }) {
+        samples.into_iter().take(16_000 * 12).collect::<Vec<_>>()
+    } else { samples };
+    let audio_duration = samples.len() as f64 / 16_000.0;
+    let total_audio_chunks = samples.chunks(CHUNK_SAMPLES).count();
+
+    let file_name = config.mp3_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| config.mp3_path.display().to_string());
+    let format = config.mp3_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("unknown")
+        .to_ascii_lowercase();
+    let audio_info = AudioFileInfo {
+        file_name,
+        format,
+        file_size_bytes: decode_result.file_size_bytes,
+        original_sample_rate: decode_result.original_sample_rate,
+        channels: decode_result.channels,
+        decoded_samples: samples.len(),
+        duration_secs: audio_duration,
+    };
+
+    let mut progress = BenchmarkProgressState::new(
+        sink,
+        policy,
+        run_id.clone(),
+        model.clone(),
+        mp3_path.clone(),
+        config.audio_mode,
+        config.interaction_capabilities.clone(),
+        audio_duration,
+        total_audio_chunks,
+    );
+    progress.audio_info = Some(audio_info.clone());
+    progress.emit(
+        "running",
+        "audio-decoded",
+        format!("音频已解码，音频时长 {:.1}s", audio_duration),
+        None,
+    );
+
+    let result = match run_single_benchmark(0, &config, &samples, audio_duration, &mut progress)
+    {
+        Ok(result) => result,
+        Err(error) => {
+            progress.emit("error", "failed", error.clone(), Some(error.clone()));
+            return Err(error);
+        }
+    };
+
+    let output_delta_count = result.raw.output_deltas.len();
+    let total_output_duration_ms = total_output_duration_from(
+        result.raw.response_done_ms,
+        result.raw.first_output_ms,
+        result.raw.response_created_ms,
+    );
+
+    let run_result = RunResult {
+        run_index: 0,
+        model: model.clone(),
+        connect_ms: result.connect_ms,
+        session_ready_ms: result.session_ready_ms,
+        audio_send_ms: result.audio_send_ms,
+        audio_chunks_sent: result.audio_chunks_sent,
+        audio_duration_secs: audio_duration,
+        first_asr_ms: result.raw.first_asr_ms,
+        asr_deltas: result.raw.asr_deltas,
+        asr_final: result.raw.asr_final,
+        first_output_ms: result.raw.first_output_ms,
+        first_committed_ms: result.raw.first_committed_ms,
+        output_deltas: result.raw.output_deltas,
+        translation_final: result.raw.translation_final,
+        response_created_ms: result.raw.response_created_ms,
+        response_done_ms: result.raw.response_done_ms,
+        response_done_audio_chunks_sent: result.raw.response_done_audio_chunks_sent,
+        response_done_audio_sent_secs: result.raw.response_done_audio_sent_secs,
+        response_count: result.raw.response_count,
+        speech_started_ms: result.raw.speech_started_ms,
+        speech_stopped_ms: result.raw.speech_stopped_ms,
+        time_to_first_token_ms: result.raw.first_output_ms,
+        time_to_first_committed_ms: result.raw.first_committed_ms,
+        total_output_duration_ms,
+        output_delta_count,
+    };
+
+    let summary = compute_summary(&[run_result.clone()], audio_duration);
+    let report = BenchmarkReport {
+        model,
+        realtime_audio_mode: config.audio_mode.as_str().to_string(),
+        interaction_capabilities: config.interaction_capabilities.clone(),
+        audio_file: mp3_path,
+        audio_duration_secs: audio_duration,
+        audio_info: Some(audio_info),
+        runs: vec![run_result],
+        summary,
+    };
+
+    progress.run = report.runs[0].clone();
+    progress.emit("completed", "completed", "基准测试完成", None);
+
+    serde_json::to_string(&report).map_err(|e| format!("JSON serialize failed: {e}"))
 }
 
 // ──────────────────────────────── Single Run ────────────────────────────────
@@ -295,14 +330,14 @@ fn run_single_benchmark(
             || {
                 let connect_start = Instant::now();
                 let (socket, _) =
-                    connect_benchmark_websocket(config, request, "connect failed")?;
+                    connect_benchmark_websocket(config, progress.policy, request, "connect failed")?;
                 Ok((socket, elapsed_ms(&connect_start)))
             },
         )?;
         (Some(plan), socket, connect_ms)
     } else {
         let connect_start = Instant::now();
-        let (socket, _) = connect_benchmark_websocket(config, request, "connect failed")?;
+        let (socket, _) = connect_benchmark_websocket(config, progress.policy, request, "connect failed")?;
         (None, socket, elapsed_ms(&connect_start))
     };
     progress.run.connect_ms = connect_ms;
@@ -412,7 +447,7 @@ fn run_single_benchmark(
             chunks.len()
         ));
     }
-    let audio_send_ms = finish_audio_send(progress, &audio_start, chunks.len());
+    let audio_send_ms = progress.finish_audio_send(&audio_start, chunks.len());
     if manual_response {
         let commit = raw
             .live_translate_plan
@@ -510,7 +545,7 @@ fn run_single_openai_benchmark(
     apply_benchmark_auth(request.headers_mut(), config)?;
 
     let (mut socket, _) =
-        connect_benchmark_websocket(config, request, "OpenAI connect failed")?;
+        connect_benchmark_websocket(config, progress.policy, request, "OpenAI connect failed")?;
     let connect_ms = elapsed_ms(&connect_start);
     progress.run.connect_ms = connect_ms;
     progress.emit(
@@ -573,7 +608,7 @@ fn run_single_openai_benchmark(
         )?;
     }
 
-    let audio_send_ms = finish_audio_send(progress, &audio_start, chunks.len());
+    let audio_send_ms = progress.finish_audio_send(&audio_start, chunks.len());
     if manual_response {
         for msg in crate::audio::openai_realtime::manual_commit_messages(dialect, false) {
             socket
@@ -625,7 +660,7 @@ fn run_single_gemini_benchmark(
     apply_benchmark_auth(request.headers_mut(), config)?;
 
     let (mut socket, _) =
-        connect_benchmark_websocket(config, request, "Gemini connect failed")?;
+        connect_benchmark_websocket(config, progress.policy, request, "Gemini connect failed")?;
     let connect_ms = elapsed_ms(&connect_start);
     progress.run.connect_ms = connect_ms;
     progress.emit("running", "connected", "Gemini Live WebSocket 已连接", None);
@@ -690,7 +725,7 @@ fn run_single_gemini_benchmark(
         )?;
     }
 
-    let audio_send_ms = finish_audio_send(progress, &audio_start, chunks.len());
+    let audio_send_ms = progress.finish_audio_send(&audio_start, chunks.len());
     let end_msg = if manual_activity {
         json!({ "realtimeInput": { "activityEnd": {} } })
     } else {
@@ -732,18 +767,6 @@ type DrainEventsFn = fn(
     &mut BenchmarkProgressState,
     Option<&crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile>,
 ) -> Result<(), String>;
-
-/// Marks the audio-send phase complete and returns its duration.
-fn finish_audio_send(
-    progress: &mut BenchmarkProgressState,
-    audio_start: &Instant,
-    total_chunks: usize,
-) -> f64 {
-    let audio_send_ms = elapsed_ms(audio_start);
-    progress.run.audio_send_ms = audio_send_ms;
-    progress.run.audio_chunks_sent = total_chunks;
-    audio_send_ms
-}
 
 /// Polls server events until `deadline`, sleeping in short slices so the next
 /// audio chunk still goes out on schedule.

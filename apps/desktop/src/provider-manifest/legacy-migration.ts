@@ -79,6 +79,12 @@ export function migrateLegacyProviderProtocolBinding(
 export function hydrateLegacyProviderManifestAuthority(provider: ProviderDraft): ProviderDraft {
   const manifest = PROVIDER_MANIFEST_REGISTRY.findByTemplateId(provider.templateId);
   if (!manifest) return provider;
+  // V2 IDs are exact and built-in bindings inherit from the module. Never
+  // reinterpret an explicit unknown ID as a case-insensitive legacy alias.
+  if (provider.modelRegistryVersion === 2) return {
+    ...provider, manifestProviderId: manifest.provider.id,
+    modelProtocolBindings: provider.modelProtocolBindings ?? [],
+  };
 
   const bindings = provider.modelProtocolBindings;
   const normalizedModelId = provider.model.trim().toLowerCase();

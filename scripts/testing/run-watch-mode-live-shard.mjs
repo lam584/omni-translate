@@ -50,6 +50,7 @@ const SHARD_LIVE_RUNNER_ENTRY = path.join(repoRoot, 'scripts', 'testing', 'run-w
 
 const WATCH_PROTOCOLS = Object.freeze({
   'qwen3.5-livetranslate-flash-realtime': 'dashscope-livetranslate',
+  'qwen3.8-livetranslate-flash-realtime': 'dashscope-livetranslate',
 });
 
 const sanitizeCellId = (cellId) => String(cellId).replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '');

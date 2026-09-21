@@ -70,6 +70,7 @@ describe('useBenchmarkController', () => {
     await act(async () => controller.run());
 
     expect(controller.progress).toMatchObject({ status: 'completed', phase: 'completed', audioChunksSent: 0, totalAudioChunks: 0 });
+    expect(controller.progress?.message).toBe(i18n.t('diagnostics.benchmark.completed'));
     expect(controller.modalOpen).toBe(true);
     await act(async () => controller.setModalOpen(false));
     expect(controller.modalOpen).toBe(false);
@@ -144,6 +145,22 @@ describe('useBenchmarkController', () => {
     expect(failed.mock.calls[0]?.[0].runId).toBe(started.mock.calls[0]?.[0].runId);
     expect(failed.mock.calls[0]?.[0].report.runs).toEqual([]);
     expect(controller.modalOpen).toBe(true);
+  });
+
+  it('preserves starting and an empty report when an unregistered model rejects without progress', async () => {
+    const failed = vi.fn();
+    lifecycle = { onFailed: failed };
+    runtime.readProviderSecret.mockResolvedValue({ secret: 'key' });
+    runtime.runModelBenchmark.mockRejectedValue({ code: 'model.not_registered', message: 'Model is not registered', retriable: false });
+    await mount();
+    await act(async () => controller.run());
+    expect(runtime.runModelBenchmark).toHaveBeenCalledOnce();
+    expect(controller.running).toBe(false);
+    expect(controller.modalOpen).toBe(true);
+    expect(controller.report?.runs).toEqual([]);
+    expect(controller.error).toContain('Model is not registered');
+    expect(controller.progress).toMatchObject({ status: 'error', phase: 'starting', audioChunksSent: 0, totalAudioChunks: 0, error: controller.error, message: controller.error });
+    expect(failed).toHaveBeenCalledWith(expect.objectContaining({ report: controller.report, error: controller.error }));
   });
 
   it('classifies common benchmark failures and preserves technical details', () => {

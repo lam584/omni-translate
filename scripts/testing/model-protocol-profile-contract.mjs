@@ -16,7 +16,9 @@ const EXPECTED_SCHEMA_VERSION = 'model-protocol-profiles/v1';
 const EXPECTED_REGISTRY_VERSION = 'bailian-model-protocol-registry/v1';
 const EXPECTED_CHECKED_AT = '2026-08-30';
 const OFFICIAL_SOURCE_PREFIX = 'https://help.aliyun.com/zh/model-studio/';
+const sourceDateFor = (item) => ((item.dialectId === 'bailian-livetranslate-session-ws-v2' || item.profileId === 'bailian.qwen-audio.3_1.realtime.ws') ? '2026-09-20' : EXPECTED_CHECKED_AT);
 const APPROVED_ENABLED_ADAPTERS = new Map([
+  ['desktop-livetranslate-session-v2', { profileId: 'bailian.livetranslate.3_8.realtime.ws', dialectId: 'bailian-livetranslate-session-ws-v2', terminalLifecycle: 'session.finish->session.finished' }],
   [
     'desktop-livetranslate-session-v1',
     {
@@ -88,7 +90,7 @@ function resolveEndpointHostFamily(registry, region, endpointHost) {
   const policy = registry.endpointHostPolicies?.find((candidate) => candidate.region === region);
   const rule = policy?.allowedHostFamilies?.find((candidate) =>
     hostMatchesPattern(normalized, candidate.hostPattern));
-  return rule ? { endpointHost: normalized, endpointHostFamilyId: rule.hostFamilyId } : null;
+  return rule ? { endpointHost: normalized, endpointHostFamilyId: rule.hostFamilyId, workspaceScoped: rule.workspaceScoped } : null;
 }
 
 function materializeAudioConstraint(profileConstraint, dialectDirection) {
@@ -341,6 +343,13 @@ export function authorizeModelProtocolInvocation(request, registry) {
     request.endpointHost,
   );
   if (!endpointAuthority) return rejected(AUTHORIZATION_ERRORS.endpointHostRegionMismatch);
+  if (profile.endpointRequirements?.workspaceScoped && !endpointAuthority.workspaceScoped) {
+    return {
+      ok: false,
+      errorCode: AUTHORIZATION_ERRORS.endpointHostRegionMismatch,
+      message: 'workspace_required: this model requires a Workspace endpoint.',
+    };
+  }
 
   const audioInputConstraint = materializeAudioConstraint(
     profile.modelAudio?.input,
@@ -583,8 +592,8 @@ export function validateModelProtocolRegistry({
       }
     }
     for (const source of profile.sources ?? []) {
-      if (!source.url?.startsWith(OFFICIAL_SOURCE_PREFIX) || source.checkedAt !== EXPECTED_CHECKED_AT) {
-        failures.push(`${profile.profileId}: source must be official and checkedAt=${EXPECTED_CHECKED_AT}`);
+      if (!source.url?.startsWith(OFFICIAL_SOURCE_PREFIX) || source.checkedAt !== sourceDateFor(profile)) {
+        failures.push(`${profile.profileId}: source must be official and checkedAt=${sourceDateFor(profile)}`);
       }
     }
     if (profile.adapter?.status === 'enabled') {
@@ -908,8 +917,8 @@ export function validateModelProtocolRegistry({
       }
     }
     for (const source of dialect.sources ?? []) {
-      if (!source.url?.startsWith(OFFICIAL_SOURCE_PREFIX) || source.checkedAt !== EXPECTED_CHECKED_AT) {
-        failures.push(`${dialect.dialectId}: source must be official and checkedAt=${EXPECTED_CHECKED_AT}`);
+      if (!source.url?.startsWith(OFFICIAL_SOURCE_PREFIX) || source.checkedAt !== sourceDateFor(dialect)) {
+        failures.push(`${dialect.dialectId}: source must be official and checkedAt=${sourceDateFor(dialect)}`);
       }
     }
 
@@ -933,7 +942,7 @@ export function validateModelProtocolRegistry({
     if (
       fixture.schemaVersion !== 'model-protocol-wire-fixture/v1'
       || fixture.dialectId !== dialect.dialectId
-      || fixture.checkedAt !== EXPECTED_CHECKED_AT
+      || fixture.checkedAt !== sourceDateFor(dialect)
       || fixture.sanitized !== true
     ) {
       failures.push(`${dialect.dialectId}: fixture identity/check date/sanitization does not match`);
@@ -944,7 +953,7 @@ export function validateModelProtocolRegistry({
       || fixture.sources.some((source) =>
         typeof source !== 'object'
         || !source.url?.startsWith(OFFICIAL_SOURCE_PREFIX)
-        || source.checkedAt !== EXPECTED_CHECKED_AT)
+        || source.checkedAt !== sourceDateFor(dialect))
     ) {
       failures.push(`${dialect.dialectId}: fixture sources must pin official URL + checkedAt`);
     }

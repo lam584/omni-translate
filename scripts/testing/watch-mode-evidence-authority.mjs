@@ -41,6 +41,7 @@ export const AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.PreDesktopPhase.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Preflight.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Provider.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.ProviderEnvironment.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.RawContent.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Readiness.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Report.psm1',

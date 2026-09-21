@@ -29,11 +29,11 @@
     },
     "providerId": {
       "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9.-]*$"
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
     },
     "protocolProfileId": {
       "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9.-]*$"
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
     },
     "protocolProfileVersion": {
       "type": "integer",
@@ -53,7 +53,7 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "pattern": "^[a-z0-9][a-z0-9.-]*$"
+            "pattern": "^[a-z0-9][a-z0-9._-]*$"
           }
         },
         "capturedFromLive": { "type": "boolean" },

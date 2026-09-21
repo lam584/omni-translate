@@ -88,19 +88,21 @@ export function BenchmarkProgressBanner({
   const total = progress?.totalAudioChunks ?? 0;
   const sent = progress?.audioChunksSent ?? 0;
   const percent = total > 0 ? Math.min(100, Math.max(0, (sent / total) * 100)) : 0;
-  const status = error ? 'error' : progress?.status ?? 'running';
+  const status = error || progress?.error ? 'error' : progress?.status ?? 'running';
+  const phase = progress?.phase ?? 'starting';
+  const phaseLabel = phase === 'starting' ? i18n.t('diagnostics.benchmark.startingPhase') : phase;
 
   return (
     <div className={`benchmark-progress-card benchmark-progress-${status}`}>
       <div className="benchmark-progress-head">
         <span>{status === 'completed' ? i18n.t('diagnostics.status.completed') : status === 'error' ? i18n.t('diagnostics.status.failed') : i18n.t('diagnostics.status.running')}</span>
-        <strong>{progress?.phase ?? 'starting'}</strong>
+        <strong>{status === 'error' ? i18n.t('diagnostics.benchmark.failedPhase', { phase: phaseLabel }) : phaseLabel}</strong>
       </div>
-      <p>{error || progress?.message || i18n.t('diagnostics.benchmark.waitingProgress')}</p>
+      <p>{error || progress?.error || progress?.message || i18n.t(status === 'running' ? 'diagnostics.benchmark.waitingProgress' : status === 'error' ? 'diagnostics.status.failed' : 'diagnostics.benchmark.completed')}</p>
       <div className="benchmark-progress-track" aria-label="benchmark progress">
         <div className="benchmark-progress-fill" style={{ width: `${percent}%` }} />
       </div>
-      <small>{total > 0 ? `${sent} / ${total} chunks` : i18n.t('diagnostics.benchmark.waitingAudioChunks')}</small>
+      <small>{total > 0 ? `${sent} / ${total} chunks` : i18n.t(status === 'running' ? 'diagnostics.benchmark.waitingAudioChunks' : status === 'error' ? 'diagnostics.benchmark.failedNoAudioChunks' : 'diagnostics.benchmark.completedNoAudioChunks')}</small>
     </div>
   );
 }
@@ -451,7 +453,7 @@ export function BenchmarkReportDetail({
     return (
       <div className="benchmark-detail">
         <BenchmarkScoreCard score={benchmarkScore} />
-        <div className="benchmark-empty">{i18n.t('diagnostics.benchmark.waitingFirstData')}</div>
+        <div className="benchmark-empty">{i18n.t(benchmarkState === 'failed' ? 'diagnostics.benchmark.failedNoData' : benchmarkState === 'running' ? 'diagnostics.benchmark.waitingFirstData' : 'diagnostics.benchmark.completedNoData')}</div>
       </div>
     );
   }
@@ -602,7 +604,7 @@ export function BenchmarkReportDetail({
 
       <div className="benchmark-section">
         <h4>{i18n.t('diagnostics.benchmark.liveAndFinalOutput', { count: translationChars })}</h4>
-        <div className="benchmark-translation">{fullTranslation || i18n.t('diagnostics.benchmark.waitingOutput')}</div>
+        <div className="benchmark-translation">{fullTranslation || i18n.t(benchmarkState === 'failed' ? 'diagnostics.benchmark.failedNoOutput' : benchmarkState === 'running' ? 'diagnostics.benchmark.waitingOutput' : 'diagnostics.benchmark.completedNoOutput')}</div>
       </div>
       {outputSegments.length > 0 ? (
         <div className="benchmark-section">

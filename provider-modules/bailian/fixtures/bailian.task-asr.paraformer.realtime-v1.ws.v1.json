@@ -1,0 +1,292 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "bailian.task-asr.paraformer.realtime-v1.ws.fixture.v1",
+  "providerId": "bailian",
+  "protocolProfileId": "bailian.task-asr.paraformer.realtime-v1.ws",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "bailian.docs.18"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Generated documentation fixture projection from apps/desktop/src-tauri/fixtures/model-protocol/task-asr-paraformer.json; never authorizes paid calls."
+  },
+  "scenario": "Exact bailian.task-asr.paraformer.realtime-v1.ws protocol replay",
+  "data": {
+    "endpointStatus": "verified",
+    "networkAuthorized": false,
+    "connectionUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+    "authContract": {
+      "profileId": "bailian.auth.bearer",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "value": "Bearer <redacted>"
+        }
+      ]
+    },
+    "audioContract": {
+      "input": {
+        "required": true,
+        "codecs": [
+          "pcm16",
+          "wav",
+          "mp3",
+          "opus",
+          "speex",
+          "aac",
+          "amr"
+        ],
+        "sampleRatesHz": [
+          8000,
+          16000
+        ],
+        "channels": [
+          1
+        ]
+      },
+      "output": {
+        "required": false,
+        "codecs": [],
+        "sampleRatesHz": [],
+        "channels": []
+      }
+    },
+    "events": [
+      {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "run-task",
+        "wire": {
+          "header": {
+            "action": "run-task",
+            "task_id": "33333333-3333-4333-8333-333333333333",
+            "streaming": "duplex"
+          },
+          "payload": {
+            "task_group": "audio",
+            "task": "asr",
+            "function": "recognition",
+            "model": "paraformer-realtime-v2",
+            "parameters": {
+              "format": "pcm",
+              "sample_rate": 44100
+            },
+            "input": {}
+          }
+        },
+        "type": "run-task"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "task-started",
+        "wire": {
+          "header": {
+            "event": "task-started",
+            "task_id": "33333333-3333-4333-8333-333333333333",
+            "attributes": {}
+          },
+          "payload": {}
+        },
+        "type": "task-started"
+      },
+      {
+        "direction": "client",
+        "frameKind": "binary",
+        "eventType": "binary.audio",
+        "activeTaskId": "33333333-3333-4333-8333-333333333333",
+        "type": "binary.audio",
+        "frameType": "binary",
+        "payloadOmitted": true
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "result-generated",
+        "wire": {
+          "header": {
+            "event": "result-generated",
+            "task_id": "33333333-3333-4333-8333-333333333333",
+            "attributes": {}
+          },
+          "payload": {
+            "output": {
+              "sentence": {
+                "begin_time": 0,
+                "end_time": null,
+                "sentence_end": false,
+                "text": "好"
+              }
+            }
+          }
+        },
+        "type": "result-generated"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "result-generated",
+        "wire": {
+          "header": {
+            "event": "result-generated",
+            "task_id": "33333333-3333-4333-8333-333333333333",
+            "attributes": {}
+          },
+          "payload": {
+            "output": {
+              "sentence": {
+                "begin_time": 0,
+                "end_time": 1480,
+                "sentence_end": true,
+                "text": "好，我知道了"
+              }
+            }
+          }
+        },
+        "type": "result-generated"
+      },
+      {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "finish-task",
+        "wire": {
+          "header": {
+            "action": "finish-task",
+            "task_id": "33333333-3333-4333-8333-333333333333",
+            "streaming": "duplex"
+          },
+          "payload": {
+            "input": {}
+          }
+        },
+        "type": "finish-task"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "task-finished",
+        "wire": {
+          "header": {
+            "event": "task-finished",
+            "task_id": "33333333-3333-4333-8333-333333333333",
+            "attributes": {}
+          },
+          "payload": {
+            "output": {},
+            "usage": null
+          }
+        },
+        "type": "task-finished"
+      },
+      {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "run-task",
+        "wire": {
+          "header": {
+            "action": "run-task",
+            "task_id": "44444444-4444-4444-8444-444444444444",
+            "streaming": "duplex"
+          },
+          "payload": {
+            "task_group": "audio",
+            "task": "asr",
+            "function": "recognition",
+            "model": "paraformer-realtime-v2",
+            "parameters": {
+              "format": "pcm",
+              "sample_rate": 22050
+            },
+            "input": {}
+          }
+        },
+        "type": "run-task"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "task-started",
+        "wire": {
+          "header": {
+            "event": "task-started",
+            "task_id": "44444444-4444-4444-8444-444444444444",
+            "attributes": {}
+          },
+          "payload": {}
+        },
+        "type": "task-started"
+      },
+      {
+        "direction": "client",
+        "frameKind": "binary",
+        "eventType": "binary.audio",
+        "activeTaskId": "44444444-4444-4444-8444-444444444444",
+        "type": "binary.audio",
+        "frameType": "binary",
+        "payloadOmitted": true
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "result-generated",
+        "wire": {
+          "header": {
+            "event": "result-generated",
+            "task_id": "44444444-4444-4444-8444-444444444444",
+            "attributes": {}
+          },
+          "payload": {
+            "output": {
+              "sentence": {
+                "begin_time": 0,
+                "end_time": 820,
+                "sentence_end": true,
+                "text": "第二个任务"
+              }
+            }
+          }
+        },
+        "type": "result-generated"
+      },
+      {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "finish-task",
+        "wire": {
+          "header": {
+            "action": "finish-task",
+            "task_id": "44444444-4444-4444-8444-444444444444",
+            "streaming": "duplex"
+          },
+          "payload": {
+            "input": {}
+          }
+        },
+        "type": "finish-task"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "task-finished",
+        "wire": {
+          "header": {
+            "event": "task-finished",
+            "task_id": "44444444-4444-4444-8444-444444444444",
+            "attributes": {}
+          },
+          "payload": {
+            "output": {},
+            "usage": null
+          }
+        },
+        "type": "task-finished",
+        "terminal": true
+      }
+    ]
+  }
+}

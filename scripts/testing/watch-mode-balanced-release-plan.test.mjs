@@ -1,8 +1,12 @@
+import crypto from 'node:crypto';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 
 import {
+  createBalancedReleasePlan,
+  liveCellsForReleasePlan,
+  SUPPORTED_RELEASE_MODELS,
   BALANCED_RELEASE_CELLS,
   BALANCED_RELEASE_PLAN,
   LIVE_LLM_CELLS,
@@ -164,4 +168,47 @@ test('formal Watch documentation stays aligned with the LiveTranslate-only relea
 
   assert.match(fixtureGuide, /evidence-driven terminal/u);
   assert.doesNotMatch(fixtureGuide, /180-second Watch capture budget/u);
+});
+
+const workspaceHost = 'workspace-test.cn-beijing.maas.aliyuncs.com';
+test('explicit selection preserves the complete historical 3.5 plan byte for byte', () => {
+  assert.equal(createBalancedReleasePlan(), BALANCED_RELEASE_PLAN);
+  assert.equal(crypto.createHash('sha256').update(JSON.stringify(BALANCED_RELEASE_PLAN)).digest('hex'),
+    '4ff47c8caf07299b60c6ba20147a5897f4b22c13a917b51663f032da679671f8');
+  assert.equal(SUPPORTED_RELEASE_MODELS.length, 2);
+});
+test('3.8 selection creates four independent v2 cells with the same strict sample budgets', () => {
+  const plan = createBalancedReleasePlan({ modelId: SUPPORTED_RELEASE_MODELS[1], endpointHost: workspaceHost });
+  assert.equal(balancedReleasePlanFailure(plan), null);
+  assert.equal(plan.schemaVersion, 13);
+  assert.deepEqual(plan.models, ['qwen3.8-livetranslate-flash-realtime']);
+  const cells = liveCellsForReleasePlan(plan);
+  assert.equal(cells.length, 4);
+  assert.equal(plan.paidProviderInputSampleCeiling, 10_100_180);
+  assert.deepEqual(cells.map(c => c.maxExternalAudioSamples), LIVE_LLM_CELLS.map(c => c.maxExternalAudioSamples));
+  assert.ok(cells.every(c => c.modelProtocolProfileIdentity.wireDialectVersion === 2));
+  assert.ok(cells.every(c => !LIVE_LLM_CELLS.some(old => old.cellId === c.cellId)));
+  assert.equal(createBalancedReleasePlan(), BALANCED_RELEASE_PLAN, 'no mutable global selection');
+});
+test('selection rejects unknown models, wrong regions, generic hosts and mismatched profiles', () => {
+  for (const endpointHost of [undefined, '', 'dashscope.aliyuncs.com', 'workspace-test.ap-southeast-1.maas.aliyuncs.com',
+    workspaceHost + '.evil.test', 'https://' + workspaceHost]) {
+    assert.throws(() => createBalancedReleasePlan({modelId: SUPPORTED_RELEASE_MODELS[1], endpointHost}));
+  }
+  assert.throws(() => createBalancedReleasePlan({modelId: 'unregistered'}));
+  assert.throws(() => createBalancedReleasePlan({region: 'ap-southeast-1'}));
+  assert.throws(() => createBalancedReleasePlan({endpointHost: workspaceHost}));
+  const original = createBalancedReleasePlan({modelId: SUPPORTED_RELEASE_MODELS[1], endpointHost: workspaceHost});
+  for (const mutate of [
+    p => p.models.push(SUPPORTED_RELEASE_MODELS[0]),
+    p => p.cells[3].modelProtocolProfileIdentity = LIVE_LLM_CELLS[0].modelProtocolProfileIdentity,
+    p => p.cells[3].maxExternalAudioSamples++,
+    p => p.cells[3].modelId = SUPPORTED_RELEASE_MODELS[0],
+    p => p.providerEndpoint.endpointHost = 'dashscope.aliyuncs.com',
+    p => p.providerEndpoint.extra = 'not authorized',
+    p => p.paidProviderInputSampleCeiling++,
+  ]) {
+    const changed = structuredClone(original); mutate(changed);
+    assert.ok(balancedReleasePlanFailure(changed));
+  }
 });

@@ -1,5 +1,4 @@
 import type { AppConfigDraft } from '../schema/config';
-import { createDefaultLocalModelCapabilityRegistry } from '../utils/provider-model-capabilities';
 
 export const appConfigDraftMock: AppConfigDraft = {
   activeProviderTemplateId: 'template-dashscope-realtime',
@@ -46,7 +45,9 @@ export const appConfigDraftMock: AppConfigDraft = {
         modelIds: [],
       },
     ],
-    localModelCapabilityRegistry: createDefaultLocalModelCapabilityRegistry(),
+    modelRegistryVersion: 2,
+    modelCapabilityOverrides: [],
+    localModelCapabilityRegistry: [],
     modelCatalogCache: {
       signature: '',
       source: 'preset',

@@ -5,6 +5,9 @@ import path from 'node:path';
 import { repoRoot } from '../lib/testing-common.mjs';
 import {
   BALANCED_RELEASE_PLAN,
+  createBalancedReleasePlan,
+  liveCellsForReleasePlan,
+  normalizeReleaseSelection,
   CANONICAL_MEDIA_SHA256,
   LIVE_LLM_CELLS,
   PROVIDER_INPUT_SAMPLE_RATE_HZ,
@@ -58,6 +61,7 @@ export const SHARD_STRICT_PAID_PROVIDER_IDENTITY = Object.freeze({
 });
 export const SHARD_STRICT_PAID_MODEL_PROTOCOLS = Object.freeze({
   'qwen3.5-livetranslate-flash-realtime': 'dashscope-livetranslate',
+  'qwen3.8-livetranslate-flash-realtime': 'dashscope-livetranslate',
 });
 const SHARD_STRICT_PREFLIGHT_LIFECYCLE_BUDGET = Object.freeze({
   firstServerEventLatencyMs: 1_200,
@@ -107,17 +111,17 @@ export const SHARD_ORCHESTRATION_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/watch-mode-provider-preflight-authorization.mjs',
 ]);
 
-import { fixedFourWorkerAssignments, FOUR_WORKER_DISPATCH_SCHEDULE } from './watch-mode-four-worker-plan.mjs';
+import { fixedFourWorkerAssignments, fourWorkerDispatchSchedule } from './watch-mode-four-worker-plan.mjs';
 
 function assertFourWorkerPlan(plan) {
   if (plan.workers.length !== 4) return;
-  const expected = fixedFourWorkerAssignments(plan.workers);
+  const expected = fixedFourWorkerAssignments(plan.workers, createBalancedReleasePlan(plan.releaseSelection));
   const actual = plan.cells.map((cell) => ({
     cellId: cell.cellId, workerId: cell.workerId, waveIndex: cell.waveIndex,
     deviceProfileInstanceId: cell.deviceProfileInstance.instanceId,
   }));
   if (canonicalJson(actual) !== canonicalJson(expected)
-      || canonicalJson(plan.dispatchSchedule) !== canonicalJson(FOUR_WORKER_DISPATCH_SCHEDULE)) {
+      || canonicalJson(plan.dispatchSchedule) !== canonicalJson(fourWorkerDispatchSchedule(createBalancedReleasePlan(plan.releaseSelection)))) {
     throw new Error('four-worker plan requires fixed placement and signed 0/3/6/9 second dispatch schedule');
   }
 }
@@ -400,12 +404,13 @@ function approvedCellProjection(cell) {
   };
 }
 
-function assertExactPaidCells(cells) {
-  if (!Array.isArray(cells) || cells.length !== SHARD_MATRIX_CELL_COUNT || LIVE_LLM_CELLS.length !== SHARD_MATRIX_CELL_COUNT) {
+function assertExactPaidCells(cells, releasePlan = BALANCED_RELEASE_PLAN) {
+  const approvedCells = liveCellsForReleasePlan(releasePlan);
+  if (!Array.isArray(cells) || cells.length !== SHARD_MATRIX_CELL_COUNT || approvedCells.length !== SHARD_MATRIX_CELL_COUNT) {
     throw new Error(`shard execution plan requires exactly ${SHARD_MATRIX_CELL_COUNT} paid cells`);
   }
-  for (let index = 0; index < LIVE_LLM_CELLS.length; index += 1) {
-    if (canonicalJson(approvedCellProjection(cells[index])) !== canonicalJson(approvedCellProjection(LIVE_LLM_CELLS[index]))) {
+  for (let index = 0; index < approvedCells.length; index += 1) {
+    if (canonicalJson(approvedCellProjection(cells[index])) !== canonicalJson(approvedCellProjection(approvedCells[index]))) {
       throw new Error(`shard execution cell ${index} does not match the fixed paid release cell`);
     }
   }
@@ -505,7 +510,10 @@ function opaqueAuthority(value, label, extraAssertions) {
 }
 
 function assertBoundPrerequisites(plan) {
-  if (canonicalJson(plan.providerIdentity) !== canonicalJson(SHARD_STRICT_PAID_PROVIDER_IDENTITY)) {
+  const approvedCells = liveCellsForReleasePlan(createBalancedReleasePlan(plan.releaseSelection));
+  const expectedProviderIdentity = { ...SHARD_STRICT_PAID_PROVIDER_IDENTITY,
+    ...(plan.releaseSelection ? {endpointHost: plan.releaseSelection.endpointHost} : {}) };
+  if (canonicalJson(plan.providerIdentity) !== canonicalJson(expectedProviderIdentity)) {
     throw new Error('execution plan strict paid provider identity is missing or forged');
   }
   opaqueAuthority(plan.localIsolationAuthority, 'local isolation authority', (value) => {
@@ -513,7 +521,9 @@ function assertBoundPrerequisites(plan) {
   });
   opaqueAuthority(plan.providerPreflightAuthority, 'provider preflight authority', (value) => {
     if (
-      value.status !== 'completed'
+      value.model !== approvedCells[0].modelId
+      || value.sessionAuthority?.serverModel !== approvedCells[0].modelId
+      || value.status !== 'completed'
       || value.operation !== 'livetranslate-session-lifecycle-preflight'
       || value.inputMode !== 'none'
       || value.providerInputMode !== 'none'
@@ -540,7 +550,7 @@ function assertBoundPrerequisites(plan) {
     }
     assertWatchModelProtocolIdentity(
       value.modelProtocolProfileIdentity,
-      LIVE_LLM_CELLS[0].modelProtocolProfileIdentity,
+      approvedCells[0].modelProtocolProfileIdentity,
       'provider preflight authority model protocol profile identity',
     );
   });
@@ -563,13 +573,13 @@ function assertBoundPrerequisites(plan) {
     plan.providerPreflightLeaseReservations.forEach((entry, index) => {
       opaqueAuthority(entry, `provider preflight lease reservation authority ${index}`, (value) => {
         if (
-          value.cellId !== LIVE_LLM_CELLS[index].cellId
+          value.cellId !== approvedCells[index].cellId
           || value.leaseId !== plan.cells[index].leaseId
           || !SHA256_PATTERN.test(String(value.digest ?? ''))
         ) throw new Error(`provider preflight lease reservation authority ${index} is invalid`);
         assertWatchModelProtocolIdentity(
           value.modelProtocolProfileIdentity,
-          LIVE_LLM_CELLS[index].modelProtocolProfileIdentity,
+          approvedCells[index].modelProtocolProfileIdentity,
           `provider preflight lease reservation authority ${index} model protocol profile identity`,
         );
       });
@@ -606,7 +616,7 @@ function assertBoundPrerequisites(plan) {
     ) throw new Error('execution plan provider preflight authorization set is invalid');
     assertWatchModelProtocolIdentity(
       plan.providerPreflightAuthorization.modelProtocolProfileIdentity,
-      LIVE_LLM_CELLS[0].modelProtocolProfileIdentity,
+      approvedCells[0].modelProtocolProfileIdentity,
       'execution plan provider preflight authorization model protocol profile identity',
     );
     opaqueAuthority(plan.providerPreflightCompletion, 'provider preflight completion authority', (value) => {
@@ -633,7 +643,7 @@ function assertBoundPrerequisites(plan) {
       ) throw new Error('provider preflight completion authority is invalid');
       assertWatchModelProtocolIdentity(
         value.modelProtocolProfileIdentity,
-        LIVE_LLM_CELLS[0].modelProtocolProfileIdentity,
+        approvedCells[0].modelProtocolProfileIdentity,
         'provider preflight completion authority model protocol profile identity',
       );
     });
@@ -675,18 +685,21 @@ export function createWorkerReadinessRequest({
   runtimeBinaryHashes,
   workers,
   assignments,
+  releaseSelection,
 }) {
+  const selection = normalizeReleaseSelection(releaseSelection);
+  const approvedCells = liveCellsForReleasePlan(createBalancedReleasePlan(selection));
   assertExecutionId(executionId);
   assertCleanProvenance(provenance);
   assertAuthorityInventory(runtimeBinaryHashes, 'worker readiness runtime authority');
   const normalizedWorkers = normalizeWorkers(workers ?? []);
   for (const worker of normalizedWorkers) worker.vmIdentityDigest = sha256Canonical(worker.vmIdentity);
   assertWorkers(normalizedWorkers);
-  if (!Array.isArray(assignments) || assignments.length !== LIVE_LLM_CELLS.length) {
+  if (!Array.isArray(assignments) || assignments.length !== approvedCells.length) {
     throw new Error(`worker readiness request requires all ${SHARD_MATRIX_CELL_COUNT} fixed cell assignments`);
   }
   const assigned = assignments.map((assignment, cellIndex) => {
-    const approved = LIVE_LLM_CELLS[cellIndex];
+    const approved = approvedCells[cellIndex];
     if (assignment.cellId !== approved.cellId) {
       throw new Error(`worker readiness assignment ${cellIndex} does not match ${approved.cellId}`);
     }
@@ -704,6 +717,7 @@ export function createWorkerReadinessRequest({
     artifactKind: SHARD_WORKER_READINESS_REQUEST_KIND,
     generatedAt: generatedAt instanceof Date ? generatedAt.toISOString() : String(generatedAt),
     executionId,
+    ...(selection ? {releaseSelection: selection} : {}),
     provenance: structuredClone(provenance),
     runtimeBinaryHashes: sortedInventory(runtimeBinaryHashes),
     runtimeBundleDigest: authorityInventoryDigest(runtimeBinaryHashes),
@@ -721,6 +735,12 @@ export function createWorkerReadinessRequest({
 
 export function validateWorkerReadinessRequest(request, expected = {}) {
   assertObject(request, 'worker readiness request');
+  const selection = normalizeReleaseSelection(request.releaseSelection);
+  const approvedCells = liveCellsForReleasePlan(createBalancedReleasePlan(selection));
+  if (canonicalJson(request.releaseSelection) !== canonicalJson(selection)) throw new Error('worker readiness release selection is not canonical');
+  if (Object.hasOwn(expected, 'releaseSelection') && canonicalJson(selection) !== canonicalJson(expected.releaseSelection)) {
+    throw new Error('worker readiness release selection mismatch');
+  }
   if (
     request.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
     || request.artifactKind !== SHARD_WORKER_READINESS_REQUEST_KIND
@@ -766,10 +786,10 @@ export function validateWorkerReadinessRequest(request, expected = {}) {
   }
   if (expected.assignments) {
     const projected = expected.assignments.map((assignment, cellIndex) => ({
-      cellId: LIVE_LLM_CELLS[cellIndex].cellId,
+      cellId: approvedCells[cellIndex].cellId,
       workerId: assignment.workerId,
-      feedbackLoopPrevention: LIVE_LLM_CELLS[cellIndex].feedbackLoopPrevention,
-      deviceClass: LIVE_LLM_CELLS[cellIndex].deviceClass,
+      feedbackLoopPrevention: approvedCells[cellIndex].feedbackLoopPrevention,
+      deviceClass: approvedCells[cellIndex].deviceClass,
     }));
     if (canonicalJson(request.assignments) !== canonicalJson(projected)) {
       throw new Error('worker readiness request cell assignment mismatch');
@@ -795,10 +815,14 @@ export function createSignedExecutionPlan({
   workerReadinessRequest = null,
   workers,
   assignments,
+  releaseSelection,
   publicKeyPem,
   privateKeyPem,
   randomBytes = crypto.randomBytes,
 }) {
+  const selection = normalizeReleaseSelection(releaseSelection);
+  const releasePlan = createBalancedReleasePlan(selection);
+  const approvedCells = liveCellsForReleasePlan(releasePlan);
   assertExecutionId(executionId);
   assertCleanProvenance(provenance);
   assertAuthorityInventory(authorityImplementationHashes, 'matrix implementation authority');
@@ -814,6 +838,7 @@ export function createSignedExecutionPlan({
       runtimeBinaryHashes,
       workers: normalizedWorkers,
       assignments,
+      releaseSelection: selection,
     });
     const requestGeneratedAt = assertIsoDate(
       workerReadinessRequest.generatedAt,
@@ -824,8 +849,8 @@ export function createSignedExecutionPlan({
       throw new Error('worker readiness request must precede the signed execution plan');
     }
   }
-  if (!Array.isArray(assignments) || assignments.length !== LIVE_LLM_CELLS.length) {
-    throw new Error(`shard assignments must contain exactly ${LIVE_LLM_CELLS.length} cells`);
+  if (!Array.isArray(assignments) || assignments.length !== approvedCells.length) {
+    throw new Error(`shard assignments must contain exactly ${approvedCells.length} cells`);
   }
   if (!publicKeyPem || !privateKeyPem) throw new Error('coordinator signing key pair is required');
   const derivedPublic = crypto.createPublicKey(crypto.createPrivateKey(privateKeyPem))
@@ -836,7 +861,7 @@ export function createSignedExecutionPlan({
   const workerById = new Map(normalizedWorkers.map((worker) => [worker.workerId, worker]));
   const assignedIds = new Set();
   const workerWaveSlots = new Set();
-  const plannedCells = LIVE_LLM_CELLS.map((approvedCell, cellIndex) => {
+  const plannedCells = approvedCells.map((approvedCell, cellIndex) => {
     const assignment = assignments[cellIndex];
     if (assignment?.cellId !== approvedCell.cellId) {
       throw new Error(`shard assignment ${cellIndex} must be for ${approvedCell.cellId}`);
@@ -886,14 +911,15 @@ export function createSignedExecutionPlan({
   const core = {
     schemaVersion: SHARD_AUTHORITY_SCHEMA_VERSION,
     artifactKind: SHARD_EXECUTION_PLAN_KIND,
+    ...(selection ? {releaseSelection: selection} : {}),
     executionId,
     generatedAt: generatedAtIso,
     expiresAt: expiresAtIso,
     provenance: structuredClone(provenance),
     validationPlan: {
-      schemaVersion: BALANCED_RELEASE_PLAN.schemaVersion,
-      planId: BALANCED_RELEASE_PLAN.planId,
-      sha256: sha256Canonical(BALANCED_RELEASE_PLAN),
+      schemaVersion: releasePlan.schemaVersion,
+      planId: releasePlan.planId,
+      sha256: sha256Canonical(releasePlan),
     },
     authority: {
       implementationHashes: sortedInventory(authorityImplementationHashes),
@@ -904,7 +930,8 @@ export function createSignedExecutionPlan({
     },
     localIsolationAuthority: structuredClone(localIsolationAuthority),
     providerPreflightAuthority: structuredClone(providerPreflightAuthority),
-    providerIdentity: structuredClone(SHARD_STRICT_PAID_PROVIDER_IDENTITY),
+    providerIdentity: { ...SHARD_STRICT_PAID_PROVIDER_IDENTITY,
+      ...(selection ? {endpointHost: selection.endpointHost} : {}) },
     ...(providerPreflightGrant
       ? { providerPreflightGrant: structuredClone(providerPreflightGrant) }
       : {}),
@@ -934,7 +961,7 @@ export function createSignedExecutionPlan({
       reclaimPolicy: 'never-within-execution',
       retryPolicy: 'new-execution-required',
     },
-    ...(normalizedWorkers.length === 4 ? { dispatchSchedule: structuredClone(FOUR_WORKER_DISPATCH_SCHEDULE) } : {}),
+    ...(normalizedWorkers.length === 4 ? { dispatchSchedule: structuredClone(fourWorkerDispatchSchedule(releasePlan)) } : {}),
     workers: normalizedWorkers,
     waves,
     cells: plannedCells,
@@ -955,15 +982,19 @@ export function verifySignedExecutionPlan(plan, {
   currentShardImplementationHashes = null,
 } = {}) {
   assertObject(plan, 'shard execution plan');
+  const selection = normalizeReleaseSelection(plan.releaseSelection);
+  if (canonicalJson(plan.releaseSelection) !== canonicalJson(selection)) throw new Error('execution release selection is not canonical');
+  const releasePlan = createBalancedReleasePlan(selection);
+  const approvedCells = liveCellsForReleasePlan(releasePlan);
   if (plan.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION || plan.artifactKind !== SHARD_EXECUTION_PLAN_KIND) {
     throw new Error('unsupported shard execution plan schema/kind');
   }
   assertExecutionId(plan.executionId);
   assertCleanProvenance(plan.provenance);
   if (
-    plan.validationPlan?.schemaVersion !== BALANCED_RELEASE_PLAN.schemaVersion
-    || plan.validationPlan?.planId !== BALANCED_RELEASE_PLAN.planId
-    || plan.validationPlan?.sha256 !== sha256Canonical(BALANCED_RELEASE_PLAN)
+    plan.validationPlan?.schemaVersion !== releasePlan.schemaVersion
+    || plan.validationPlan?.planId !== releasePlan.planId
+    || plan.validationPlan?.sha256 !== sha256Canonical(releasePlan)
   ) throw new Error('shard execution plan does not bind the current exact balanced release plan');
   const { signature, planDigest, ...core } = plan;
   if (!SHA256_PATTERN.test(String(planDigest ?? '')) || planDigest !== sha256Canonical(core)) {
@@ -980,7 +1011,7 @@ export function verifySignedExecutionPlan(plan, {
     throw new Error('shard execution plan has expired');
   }
   assertWorkers(plan.workers);
-  assertExactPaidCells(plan.cells);
+  assertExactPaidCells(plan.cells, releasePlan);
   assertFourWorkerPlan(plan);
   const workerById = new Map(plan.workers.map((worker) => [worker.workerId, worker]));
   const cellIds = new Set();
@@ -1003,7 +1034,7 @@ export function verifySignedExecutionPlan(plan, {
       || profile.deviceClass !== cell.deviceClass
     ) throw new Error(`shard cell ${index} device profile binding mismatch`);
     if (
-      Number(cell.maxExternalAudioSamples) !== Number(LIVE_LLM_CELLS[index].maxExternalAudioSamples)
+      Number(cell.maxExternalAudioSamples) !== Number(approvedCells[index].maxExternalAudioSamples)
       || Number(cell.inputSampleRateHz) !== SHARD_INPUT_SAMPLE_RATE_HZ
     ) {
       throw new Error(`shard cell ${index} does not have its mode-derived external audio lease`);
@@ -1038,6 +1069,7 @@ export function verifySignedExecutionPlan(plan, {
       runtimeBinaryHashes: plan.authority.runtimeBinaryHashes,
       workers: plan.workers,
       assignments: plan.cells,
+      releaseSelection: selection,
     });
     if (Date.parse(plan.workerReadinessRequest.generatedAt) > generatedAtMs) {
       throw new Error('worker readiness request timestamp is later than the signed execution plan');
@@ -1196,7 +1228,10 @@ function assertProviderIdentity(value, expected, label) {
   }
 }
 
-export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
+export function validateProviderUsageAuthority(runDirectory, { cell, lease, releaseSelection }) {
+  const selection = normalizeReleaseSelection(releaseSelection);
+  const selectedPlan = createBalancedReleasePlan(selection);
+  if (cell.modelId !== selectedPlan.models[0]) throw new Error('provider usage model differs from signed release selection');
   const resolvedRunDirectory = path.resolve(runDirectory);
   const ledgerPath = path.join(resolvedRunDirectory, PROVIDER_INPUT_BUDGET_LEDGER_FILE);
   const journalPath = path.join(resolvedRunDirectory, PROVIDER_INPUT_BUDGET_JOURNAL_FILE);
@@ -1214,6 +1249,7 @@ export function validateProviderUsageAuthority(runDirectory, { cell, lease }) {
     protocol: SHARD_STRICT_PAID_MODEL_PROTOCOLS[cell.modelId],
     modelProtocolProfileIdentity: cell.modelProtocolProfileIdentity,
     ...SHARD_STRICT_PAID_PROVIDER_IDENTITY,
+    ...(selection ? { endpointHost: selection.endpointHost } : {}),
   };
   assertProviderIdentity(ledger, expectedIdentity, 'provider input budget ledger');
   if (!String(ledger.runMarker ?? '').trim()) throw new Error('provider input budget ledger runMarker is missing');
@@ -2180,7 +2216,7 @@ export function buildShardCellResult({
     && !interactiveExecutionExitMatchesReport(interactiveExecution.exitCode, report.verdict)) {
     throw new Error('interactive cell execution exit code does not match the strict report verdict');
   }
-  const usageAuthority = validateProviderUsageAuthority(resolvedRunDirectory, { cell, lease });
+  const usageAuthority = validateProviderUsageAuthority(resolvedRunDirectory, { cell, lease, releaseSelection: plan.releaseSelection });
   const deviceAuthority = readDeviceAuthority(resolvedRunDirectory, cell);
   const workerReadinessAuthority = plan.workerReadinessRequest
     ? validateWorkerZeroProviderReadinessAuthority({
@@ -2379,7 +2415,7 @@ export function validateShardCellResult({
     }
   }
   assertStoredReportMatchesRawEvidence(runDirectory, report, plan.provenance);
-  const usage = validateProviderUsageAuthority(runDirectory, { cell: plannedCell, lease });
+  const usage = validateProviderUsageAuthority(runDirectory, { cell: plannedCell, lease, releaseSelection: plan.releaseSelection });
   if (canonicalJson(usage) !== canonicalJson(result.usageAuthority)) throw new Error('shard cell result usage authority mismatch');
   const device = readDeviceAuthority(runDirectory, plannedCell);
   if (canonicalJson(device) !== canonicalJson(result.deviceAuthority)) throw new Error('shard cell result device authority mismatch');

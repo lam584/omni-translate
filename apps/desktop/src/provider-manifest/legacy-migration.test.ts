@@ -25,3 +25,11 @@ describe('legacy provider manifest hydration', () => {
     expect(hydrated.model).toBe('bigmodel');
   });
 });
+
+import { appConfigDraftMock } from '../defaults/app-config';
+it('does not canonicalize v2 exact IDs or persist inherited module bindings', () => {
+  const provider = {...appConfigDraftMock.providers[0], model: 'QWEN3.5-LIVETRANSLATE-FLASH-REALTIME'};
+  const hydrated = hydrateLegacyProviderManifestAuthority(provider);
+  expect(hydrated.model).toBe(provider.model);
+  expect(hydrated.modelProtocolBindings).toEqual([]);
+});

@@ -788,3 +788,85 @@ fn speech_stop_requires_a_matching_start_and_non_decreasing_timestamp() {
         }))
         .is_err());
 }
+
+fn update_v2() -> Value {
+    json!({"event_id":"evt-update", "type":"session.update", "session": {
+        "output_modalities":["text"],
+        "audio":{"input":{"turn_detection":{"type":"server_vad"}}},
+        "translation":{"language":"zh"}
+    }})
+}
+
+#[test]
+fn v2_authority_and_client_shape_do_not_change_v1() {
+    let model = "qwen3.8-livetranslate-flash-realtime";
+    let v2 = authorize_enabled_livetranslate(model, "wss://workspace-test.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime").unwrap();
+    assert!(v2.incremental_text);
+    assert!(admit_client_event(&v2, &update_v2()).is_ok());
+    assert!(admit_client_event(&v2, &update()).is_err());
+    let v1 = authorize_enabled_livetranslate(MODEL, URL).unwrap();
+    assert!(!v1.incremental_text);
+    assert!(admit_client_event(&v1, &update()).is_ok());
+    assert!(admit_client_event(&v1, &update_v2()).is_err());
+    assert!(!v1.allowed_server_events.contains("response.text.delta"));
+    assert!(!v2.allowed_server_events.contains("response.text.text"));
+    assert!(authorize_enabled_livetranslate(model,
+        "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime").is_ok());
+    assert!(authorize_enabled_livetranslate(model,
+        "wss://nested.workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime").is_err());
+}
+
+#[test]
+fn v2_deltas_accumulate_and_terminal_drains_without_v1_snapshots() {
+    let model = "qwen3.8-livetranslate-flash-realtime";
+    let authority = authorize_enabled_livetranslate(model, "wss://workspace-test.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime").unwrap();
+    let request = update_v2();
+    let mut lifecycle = LiveTranslateLifecycle::new(authority, model, &request).unwrap();
+    let mut created = created(); created["session"]["model"] = json!(model);
+    lifecycle.admit_server_event(&created).unwrap();
+    let mut session = request["session"].clone();
+    session["id"] = json!("session-1"); session["object"] = json!("realtime.session"); session["model"] = json!(model);
+    lifecycle.admit_server_event(&json!({"type":"session.updated","event_id":"evt-ready","session":session})).unwrap();
+    lifecycle.record_finish_sent().unwrap();
+    lifecycle.admit_server_event(&json!({"type":"response.created","event_id":"evt-response",
+        "response":{"id":"r","object":"realtime.response","status":"in_progress"}})).unwrap();
+    lifecycle.admit_server_event(&json!({"type":"response.output_item.added","event_id":"evt-item",
+        "response_id":"r","output_index":0,"item":{"id":"i","object":"realtime.item","type":"message",
+        "role":"assistant","status":"in_progress","content":[]}})).unwrap();
+    for (index, text) in ["hello", " world"].iter().enumerate() {
+        lifecycle.admit_server_event(&json!({"type":"response.text.delta","event_id":format!("evt-delta-{index}"),
+            "response_id":"r","item_id":"i","output_index":0,"content_index":0,"delta":text})).unwrap();
+    }
+    assert_eq!(lifecycle.translation_by_response.get("r").map(String::as_str), Some("hello world"));
+    assert!(lifecycle.admit_server_event(&json!({"type":"response.text.text","event_id":"evt-wrong",
+        "response_id":"r","item_id":"i","output_index":0,"content_index":0,"text":"bad","stash":""})).is_err());
+    assert!(lifecycle.admit_server_event(&json!({"type":"session.finished","event_id":"evt-early"})).is_err());
+    lifecycle.admit_server_event(&json!({"type":"response.text.done","event_id":"evt-text-done",
+        "response_id":"r","item_id":"i","output_index":0,"content_index":0,"text":"hello world"})).unwrap();
+    lifecycle.admit_server_event(&json!({"type":"response.output_item.done","event_id":"evt-item-done",
+        "response_id":"r","output_index":0,"item":{"id":"i","object":"realtime.item","type":"message",
+        "role":"assistant","status":"completed","content":[]}})).unwrap();
+    lifecycle.admit_server_event(&json!({"type":"response.done","event_id":"evt-done",
+        "response":{"id":"r","object":"realtime.response","status":"completed","modalities":["text"],
+        "output":[{"id":"i","object":"realtime.item","type":"message","role":"assistant","status":"completed",
+        "content":[{"type":"text","text":"hello world"}]}]}})).unwrap();
+    assert_eq!(lifecycle.admit_server_event(&json!({"type":"session.finished","event_id":"evt-finished"})).unwrap(), ServerAction::Finished);
+    lifecycle.record_transport_closed().unwrap();
+}
+
+#[test]
+fn v2_updated_accepts_nested_defaults_but_rejects_changed_requested_values() {
+    let model = "qwen3.8-livetranslate-flash-realtime";
+    let request = update_v2();
+    let mut session = request["session"].clone();
+    session["id"] = json!("session-1");
+    session["object"] = json!("realtime.session");
+    session["model"] = json!(model);
+    session["audio"]["input"]["format"] = json!({"type":"pcm","sample_rate":16000});
+    session["audio"]["input"]["turn_detection"]["threshold"] = json!(0.5);
+    let mut echo = json!({"type":"session.updated","event_id":"evt-ready","session":session});
+    assert!(validate_updated(&echo, model, "session-1", "evt-created", &request["session"], true).is_ok());
+    assert!(validate_updated(&echo, model, "session-1", "evt-created", &request["session"], false).is_err());
+    echo["session"]["audio"]["input"]["turn_detection"]["type"] = json!("speaker_detection");
+    assert!(validate_updated(&echo, model, "session-1", "evt-created", &request["session"], true).is_err());
+}

@@ -924,6 +924,8 @@ mod tests {
                 custom_headers: Vec::new(),
                 scene_model_assignments: Vec::new(),
                 model_protocol_bindings: Vec::new(),
+                model_registry_version: None,
+                model_capability_overrides: Vec::new(),
                 local_model_capability_registry: Vec::new(),
                 model_catalog_cache: Default::default(),
             },

@@ -28,13 +28,14 @@ test('real signed plan: archive bypasses only present-day expiry, not original l
     runtimeBinaryHashes: inventory, shardOrchestrationImplementationHashes: inventory,
     localIsolationAuthority: { path: 'local.json', bytes: 17, sha256: sha, providerCalls: 0 },
     providerPreflightAuthority: { path: 'provider-preflight-receipt.json', bytes: 17, sha256: sha,
+      model: LIVE_LLM_CELLS[0].modelId,
       status: 'completed', operation: 'livetranslate-session-lifecycle-preflight', inputMode: 'none',
       providerInputMode: 'none', responseMode: 'text-only', terminalEvent: 'session.finished',
       invocationCount: 1, externalAudioSamples: 0,
       modelProtocolProfileIdentity: LIVE_LLM_CELLS[0].modelProtocolProfileIdentity,
       lifecycleBudget: { firstServerEventLatencyMs: 1200, socketEventTimeoutMs: 12000 },
       evidenceOutcome: 'livetranslate-session-finished', firstServerEvent: { type: 'session.created', monotonicMs: 500 },
-      sessionAuthority: { sessionIdentitySha256: sha }, rawTrace: { path: 'trace.jsonl', bytes: 17, sha256: sha }, audioSeconds: null },
+      sessionAuthority: { sessionIdentitySha256: sha, serverModel: LIVE_LLM_CELLS[0].modelId }, rawTrace: { path: 'trace.jsonl', bytes: 17, sha256: sha }, audioSeconds: null },
     workers, assignments: coordinator.defaultSingleWorkerAssignments(workers), ...keys });
   assert.throws(() => shard.verifySignedExecutionPlan(realPlan, { now }), /expired/u);
   assert.doesNotThrow(() => shard.verifySignedExecutionPlan(realPlan, { now, checkExpiry: false, currentProvenance: clean }));

@@ -723,10 +723,10 @@ test('strict paid provider selection ignores a preceding alternate and rejects f
     responseModalities: ['text'],
     localModelCapabilityRegistry: [],
   }];
-  const run = (strict, mutate = '') => {
-    const model = strict
+  const run = (strict, mutate = '', selectedModel) => {
+    const model = selectedModel ?? (strict
       ? 'qwen3.5-livetranslate-flash-realtime'
-      : 'qwen3.5-omni-flash-realtime';
+      : 'qwen3.5-omni-flash-realtime');
     const protocol = strict ? 'dashscope-livetranslate' : 'dashscope-omni';
     const command = `${extractedStrictPaidProviderFunctions()} ` +
       `$config = ${quotePowerShell(JSON.stringify({ providers }))} | ConvertFrom-Json; ` +
@@ -741,6 +741,15 @@ test('strict paid provider selection ignores a preceding alternate and rejects f
   assert.equal(strictConfig.providers[0].model, 'alternate-before-canonical');
   assert.equal(strictConfig.providers[1].model, 'qwen3.5-livetranslate-flash-realtime');
 
+  const workspace = 'acceptance.cn-beijing.maas.aliyuncs.com';
+  const select38 = "$env:OMNI_WATCH_MODE_EXPECTED_PROVIDER_ENDPOINT_HOST = '" + workspace + "'; $config.providers[1].baseUrl = 'https://" + workspace + "/api-ws/v1/realtime';";
+  const selected38 = run(true, select38, 'qwen3.8-livetranslate-flash-realtime');
+  assert.equal(selected38.status, 0, selected38.stderr || selected38.stdout);
+  const config38 = JSON.parse(selected38.stdout.trim());
+  assert.equal(config38.providers[1].model, 'qwen3.8-livetranslate-flash-realtime');
+  assert.equal(config38.providers[1].baseUrl, 'https://' + workspace + '/api-ws/v1/realtime');
+  assert.notEqual(run(true, "$env:OMNI_WATCH_MODE_EXPECTED_PROVIDER_ENDPOINT_HOST = 'dashscope.aliyuncs.com';", 'qwen3.8-livetranslate-flash-realtime').status, 0);
+  assert.notEqual(run(true, select38).status, 0, '3.5 must not silently inherit the 3.8 workspace endpoint');
   const legacy = run(false);
   assert.equal(legacy.status, 0, legacy.stderr || legacy.stdout);
   const legacyConfig = JSON.parse(legacy.stdout.trim());
@@ -2039,4 +2048,17 @@ test('strict desktop lifecycle forwards only complete request-bound media-end au
   const mismatched = invoke(environment, 'run-other');
   assert.notEqual(mismatched.status, 0);
   assert.match(mismatched.stderr, /identity does not match/);
+});
+
+test('3.8 paid environment preserves the selected workspace and rejects the generic host', { skip: !isWindows }, () => {
+  const command = extractedStrictPaidProviderFunctions() +
+    "$env:OMNI_WATCH_MODE_EXPECTED_PROVIDER_ENDPOINT_HOST = 'acceptance.cn-beijing.maas.aliyuncs.com'; " +
+    "$state = Enter-StrictPaidProviderEnvironment -Enabled $true -ModelId 'qwen3.8-livetranslate-flash-realtime'; " +
+    "$actual = $env:OMNI_WATCH_MODE_EXPECTED_PROVIDER_ENDPOINT_HOST; Exit-StrictPaidProviderEnvironment $state; " +
+    "[pscustomobject]@{ actual=$actual; restored=$env:OMNI_WATCH_MODE_EXPECTED_PROVIDER_ENDPOINT_HOST } | ConvertTo-Json -Compress";
+  const result = runPowerShell(['-Command', command]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.deepEqual(JSON.parse(result.stdout.trim()), { actual: 'acceptance.cn-beijing.maas.aliyuncs.com', restored: 'acceptance.cn-beijing.maas.aliyuncs.com' });
+  const rejected = runPowerShell(['-Command', command.replaceAll('acceptance.cn-beijing.maas.aliyuncs.com', 'dashscope.aliyuncs.com')]);
+  assert.notEqual(rejected.status, 0);
 });

@@ -1,3 +1,4 @@
+import { modelRegistryEditorPatch, resetModelCapabilityOverride } from '../../utils/provider-model-capabilities-registry';
 import type { TFunction } from 'i18next';
 import type { Dispatch, SetStateAction } from 'react';
 import type {
@@ -79,7 +80,7 @@ export function useProviderModelEditorController(params: Params) {
   };
 
   const hasCapabilityRegistryEntry = (modelId: string) => params.localModelCapabilityRegistry
-    .some((entry) => entry.modelId.trim().toLowerCase() === modelId.trim().toLowerCase());
+    .some((entry) => entry.modelId === modelId);
 
   const isModelAddedToScenario = (scenario: ModelCatalogScenarioFilter, modelId: string) => scenario === 'all'
     ? params.sceneAssignments.some((item) => item.modelIds.includes(modelId))
@@ -133,7 +134,7 @@ export function useProviderModelEditorController(params: Params) {
         entry.interactionCapabilities ?? [],
       ),
     }));
-    updateActiveProviderDraft({ localModelCapabilityRegistry: normalized, status: 'draft' });
+    updateActiveProviderDraft({ ...modelRegistryEditorPatch(params.activeProvider, normalized, params.localModelCapabilityRegistry), status: 'draft' });
     params.setModelCatalog((current) => ({ ...current, models: normalizeProviderModels(current.models, normalized) }));
   };
 
@@ -178,7 +179,7 @@ export function useProviderModelEditorController(params: Params) {
         pending.realtimeAudioMode,
         pending.interactionCapabilities,
       ),
-      ...params.localModelCapabilityRegistry.filter((entry) => entry.modelId.trim().toLowerCase() !== pending.model.id.trim().toLowerCase()),
+      ...params.localModelCapabilityRegistry.filter((entry) => entry.modelId !== pending.model.id),
     ]);
     updateSceneModelAssignments(
       providersPageHelpers.addSceneModel(params.sceneAssignments, pending.scenario, pending.model.id),
@@ -251,9 +252,10 @@ export function useProviderModelEditorController(params: Params) {
       ? current.filter((item) => item !== capability)
       : [...current, capability] });
   };
-  const handleCapabilityRegistryEntryRemove = (entryId: string) => applyLocalModelCapabilityRegistry(
-    params.localModelCapabilityRegistry.filter((entry) => entry.id !== entryId),
-  );
+  const handleCapabilityRegistryEntryRemove = (entryId: string) => {
+    const entry = params.localModelCapabilityRegistry.find((candidate) => candidate.id === entryId);
+    if (entry) updateActiveProviderDraft(resetModelCapabilityOverride(params.activeProvider, entry.modelId));
+  };
   const handleResponseModalityToggle = (modality: ProviderResponseModality) => updateActiveProviderDraft({
     responseModalities: providersPageHelpers.toggleResponseModalities(params.activeProvider.responseModalities, modality),
     status: 'draft',

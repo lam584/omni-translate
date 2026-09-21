@@ -217,10 +217,13 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     const bootstrapPromise = bootstrapDesktopRuntimeBridge();
 
     await vi.advanceTimersByTimeAsync(1000);
-    await bootstrapPromise;
+    const cleanup = await bootstrapPromise;
 
     expect(invokeMock).not.toHaveBeenCalled();
     expect(useAppStore.getState().runtimeSnapshot.bridgeStatus).toBe('browser-preview');
+    // Dispose the preview subscription/late-heal task before the next test
+    // resets the store to a legacy fixture.
+    cleanup();
   });
 
   it('replays already-emitted steps to a late second subscriber so it converges', async () => {

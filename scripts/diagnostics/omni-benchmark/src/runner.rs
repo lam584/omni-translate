@@ -52,26 +52,13 @@ pub fn run_benchmark(config: Config) -> Result<(), String> {
         println!();
     }
 
-    let mut results: Vec<RunResult> = Vec::new();
-
-    for run_idx in 0..config.runs {
-        if !config.json_output {
-            println!("── Run {}/{} ──", run_idx + 1, config.runs);
-        }
-
-        let result = run_single(run_idx, &config, &samples, audio_duration)?;
-
-        if !config.json_output {
-            print_run_summary(&result);
-        }
-
-        results.push(result);
-
-        // Brief pause between runs
-        if run_idx + 1 < config.runs {
-            thread::sleep(Duration::from_secs(1));
-        }
-    }
+    let results = run_attempts(&config,
+        |run_idx| run_single(run_idx, &config, &samples, audio_duration),
+        |document| {
+            if config.json_output { write_failure_document(&mut std::io::stdout().lock(), document) }
+            else { write_failure_document(&mut std::io::stderr().lock(), document) }
+        },
+    )?;
 
     let summary = compute_summary(&results, audio_duration);
     let report = BenchmarkReport {
@@ -103,7 +90,7 @@ pub(crate) fn run_single(
     config: &Config,
     samples: &[i16],
     audio_duration: f64,
-) -> Result<RunResult, String> {
+) -> Result<RunResult, crate::reporting::RunFailure> {
     match config.protocol {
         // DashScope 系列
         p if p.is_dashscope_family() => {
@@ -111,13 +98,80 @@ pub(crate) fn run_single(
         }
         // OpenAI 系列
         p if p.is_openai_family() => {
-            openai::run_openai_benchmark(run_idx, config, samples, audio_duration)
+            openai::run_openai_benchmark(run_idx, config, samples, audio_duration).map_err(Into::into)
         }
         // Gemini 系列
         BenchmarkProtocol::GeminiLive => {
-            gemini::run_gemini_benchmark(run_idx, config, samples, audio_duration)
+            gemini::run_gemini_benchmark(run_idx, config, samples, audio_duration).map_err(Into::into)
         }
         // 未知协议
-        other => Err(format!("unsupported protocol: {:?}", other)),
+        other => Err(format!("unsupported protocol: {:?}", other).into()),
+    }
+}
+
+fn write_failure_document(output: &mut impl std::io::Write, document: &serde_json::Value) -> Result<(), String> {
+    serde_json::to_writer_pretty(&mut *output, document).map_err(|e| e.to_string())?;
+    output.write_all(b"\n").map_err(|e| e.to_string())?;
+    output.flush().map_err(|e| e.to_string())
+}
+
+fn run_attempts(config: &Config, mut execute: impl FnMut(usize) -> Result<RunResult, crate::reporting::RunFailure>, mut write_failure: impl FnMut(&serde_json::Value) -> Result<(), String>) -> Result<Vec<RunResult>, String> {
+    let mut results: Vec<RunResult> = Vec::new();
+
+    for run_idx in 0..config.runs {
+        if !config.json_output {
+            println!("── Run {}/{} ──", run_idx + 1, config.runs);
+        }
+
+        let result = match execute(run_idx) {
+            Ok(result) => result,
+            Err(failure) => {
+                let document = crate::reporting::failure_document(&config.model, run_idx, &results, &failure);
+                write_failure(&document)?;
+                // Failure is terminal for this invocation: do not advance to the next configured run.
+                return Err(failure.message);
+            }
+        };
+
+        if !config.json_output {
+            print_run_summary(&result);
+        }
+
+        results.push(result);
+
+        // Brief pause between runs
+        if run_idx + 1 < config.runs {
+            thread::sleep(Duration::from_secs(1));
+        }
+    }
+
+
+    Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn failed_attempt_writes_json_partial_and_never_retries_or_advances_runs() {
+        let config = Config {
+            protocol_binding:None,api_key:"not-to-be-printed".into(),audio_path:"unused".into(),
+            model:"qwen3.8-livetranslate-flash-realtime".into(),base_url:"unused".into(),runs:3,
+            voice:"unused".into(),target_language:"zh".into(),source_language:"en".into(),
+            json_output:true,limit_seconds:None,manual:false,protocol:BenchmarkProtocol::DashscopeLiveTranslate,
+            auth_header_name:"Authorization".into(),auth_scheme:"Bearer".into(),
+        };
+        let mut attempts = 0;
+        let mut output = Vec::new();
+        let result = run_attempts(&config, |_| {
+            attempts += 1;
+            Err(crate::reporting::RunFailure { message:"local error".into(), diagnostic:Some(serde_json::json!({"partial":{"translation_final":"already received"},"wire":{"session_finished":false}})) })
+        }, |document| write_failure_document(&mut output, document));
+        assert_eq!(attempts, 1);
+        assert!(result.is_err());
+        let document: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(document["status"], "failed");
+        assert_eq!(document["failure"]["diagnostic"]["partial"]["translation_final"], "already received");
+        assert!(!String::from_utf8(output).unwrap().contains("not-to-be-printed"));
     }
 }

@@ -2,7 +2,6 @@ import type { ConfigStatus, ProviderDraft, ProviderSceneModelAssignment } from '
 import { PENDING_PROBE_CHECKED_AT } from '../schema/provider-probe';
 import type { ProviderProbeProfileRuntime } from '../schema/provider-runtime';
 import type { ProviderTemplate } from '../schema/provider-template';
-import { createDefaultLocalModelCapabilityRegistry } from './provider-model-capabilities';
 import { protocolBindingsForTemplate } from '../provider-manifest/template-projection';
 
 export function mapProbeVerdictToConfigStatus(verdict: 'available' | 'realtime-risk' | 'unavailable'): ConfigStatus {
@@ -150,7 +149,9 @@ export function buildProviderDraftPatchFromTemplate(
     modelProtocolBindings: template.source === 'custom'
       ? template.defaultDraft.modelProtocolBindings ?? []
       : protocolBindingsForTemplate(template.id),
-    localModelCapabilityRegistry: createDefaultLocalModelCapabilityRegistry(),
+    modelRegistryVersion: 2,
+    modelCapabilityOverrides: [],
+    localModelCapabilityRegistry: [],
     modelCatalogCache: {
       signature: '',
       source: 'preset',

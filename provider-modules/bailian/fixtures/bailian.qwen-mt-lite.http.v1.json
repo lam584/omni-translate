@@ -1,0 +1,67 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "bailian.qwen-mt-lite.http.fixture.v1",
+  "providerId": "bailian",
+  "protocolProfileId": "bailian.qwen-mt-lite.http",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "bailian.docs.41",
+      "bailian.docs.38",
+      "bailian.docs.39"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Documentation-derived non-streaming request/response shape; not a live result."
+  },
+  "scenario": "Qwen-MT dedicated translation_options request, disabled before network I/O",
+  "data": {
+    "endpointStatus": "verified",
+    "networkAuthorized": false,
+    "authContract": {
+      "profileId": "bailian.auth.bearer",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "value": "Bearer <redacted>"
+        }
+      ]
+    },
+    "request": {
+      "type": "http.request",
+      "method": "POST",
+      "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "body": {
+        "model": "qwen-mt-lite",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hello"
+          }
+        ],
+        "stream": false,
+        "translation_options": {
+          "source_lang": "English",
+          "target_lang": "Chinese"
+        }
+      }
+    },
+    "response": {
+      "type": "http.response",
+      "terminal": true,
+      "body": {
+        "choices": [
+          {
+            "message": {
+              "role": "assistant",
+              "content": "你好"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -24,7 +24,7 @@ fn admit_benchmark_server_event(
     authority: &crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile,
     event: &Value,
 ) -> Result<(), String> {
-    if authority.adapter_id == crate::audio::bailian_protocol::LIVETRANSLATE_ADAPTER_ID {
+    if crate::audio::bailian_protocol::is_supported_authority(authority) {
         return Err(
             "model_protocol.event_order_invalid: LiveTranslate benchmark events require the stateful typed reducer"
                 .to_string(),
@@ -174,7 +174,7 @@ fn apply_livetranslate_event_to_raw(
         }
         "input_audio_buffer.speech_started" => r.speech_started_ms = Some(ms),
         "input_audio_buffer.speech_stopped" => r.speech_stopped_ms = Some(ms),
-        "conversation.item.input_audio_transcription.text" => {
+        "conversation.item.input_audio_transcription.text" | "conversation.item.input_audio_transcription.delta" => {
             let text = mutation.normalized_text.ok_or_else(|| {
                 "model_protocol.payload_invalid: admitted input transcription has no normalized snapshot"
                     .to_string()
@@ -207,19 +207,20 @@ fn apply_livetranslate_event_to_raw(
                 r.response_created_ms = Some(ms);
             }
         }
-        "response.text.text" | "response.audio_transcript.text" => {
+        "response.text.text" | "response.audio_transcript.text"
+        | "response.text.delta" | "response.audio_transcript.delta" => {
             let text = mutation.normalized_text.ok_or_else(|| {
                 "model_protocol.payload_invalid: admitted LiveTranslate text event has no normalized snapshot"
                     .to_string()
             })?;
-            record_authorized_output(r, ms, event_type, text, false);
+            record_authorized_output(r, ms, event, text, false);
         }
         "response.text.done" | "response.audio_transcript.done" => {
             let text = mutation.normalized_text.ok_or_else(|| {
                 "model_protocol.payload_invalid: admitted LiveTranslate text terminal has no normalized text"
                     .to_string()
             })?;
-            record_authorized_output(r, ms, event_type, text, true);
+            record_authorized_output(r, ms, event, text, true);
         }
         "response.done" => {
             if !mutation.response_completed {
@@ -235,7 +236,7 @@ fn apply_livetranslate_event_to_raw(
                     "model_protocol.identity_mismatch: completed response.done has no text bound to its response ledger"
                         .to_string()
                 })?;
-            record_authorized_output(r, ms, event_type, text, true);
+            record_authorized_output(r, ms, event, text, true);
             record_authorized_response_done(r, ms, audio_chunks_sent);
         }
         "session.finished" => {
@@ -261,17 +262,35 @@ fn apply_livetranslate_event_to_raw(
 fn record_authorized_output(
     r: &mut RawResult,
     ms: f64,
-    event_type: &str,
+    event: &Value,
     text: String,
     committed: bool,
 ) {
+    let event_type = crate::audio::realtime_ws::server_event_type(event, "?");
     if r.first_output_ms.is_none() {
         r.first_output_ms = Some(ms);
     }
     if committed && r.first_committed_ms.is_none() {
         r.first_committed_ms = Some(ms);
     }
-    r.translation_final = text.clone();
+    if r.live_translate_plan.as_ref().is_some_and(|plan| plan.is_incremental_text()) {
+        // The typed reducer admitted this response identity. Never let a new
+        // response-local delta overwrite translations from earlier VAD turns.
+        let response_id = if event_type == "response.done" {
+            event.get("response").and_then(|response| response.get("id"))
+        } else {
+            event.get("response_id")
+        }.and_then(Value::as_str).expect("admitted translation has response identity");
+        if let Some((_, previous)) = r.live_translate_response_texts.iter_mut().find(|(id, _)| id == response_id) {
+            *previous = text.clone();
+        } else {
+            r.live_translate_response_texts.push((response_id.to_string(), text.clone()));
+        }
+        r.translation_final = r.live_translate_response_texts.iter().map(|(_, text)| text.as_str())
+            .filter(|text| !text.is_empty()).collect::<Vec<_>>().join("\n");
+    } else {
+        r.translation_final = text.clone();
+    }
     r.output_deltas.push(OutputDelta {
         elapsed_ms: ms,
         event_type: event_type.to_string(),
@@ -1284,4 +1303,56 @@ mod protocol_regression_tests {
         };
         assert!(zero_response.contains("provider-output-missing"), "{zero_response}");
     }
+#[test]
+fn v2_benchmark_preserves_prior_turns_while_next_response_streams() {
+    use crate::provider::model_protocol_profile::*;
+    let mut cfg = config();
+    cfg.model = "qwen3.8-livetranslate-flash-realtime".to_string();
+    cfg.model_protocol_authority = Some(authorize_model_protocol_invocation(ModelProtocolAuthorizationRequest {
+        exact_model_id: &cfg.model, operation: "native_translate", transport: "websocket", region: "cn-beijing",
+        endpoint_host: "workspace-test.cn-beijing.maas.aliyuncs.com",
+        audio_input: Some(ModelProtocolRequestedAudio { codec: "pcm16", sample_rate_hz: 16_000, channels: 1 }),
+        audio_output: Some(ModelProtocolRequestedAudio { codec: "pcm16", sample_rate_hz: 24_000, channels: 1 }),
+        declared_registry_version: None, declared_profile_id: None, declared_profile_version: None,
+        declared_wire_dialect: None, declared_endpoint_family: None, declared_terminal_lifecycle: None,
+    }).unwrap());
+    let mut raw = RawResult {
+        live_translate_plan: Some(livetranslate_plan::prepare_livetranslate_benchmark_plan(&cfg, &[1; CHUNK_SAMPLES]).unwrap()),
+        ..Default::default()
+    };
+    let mut session = raw.live_translate_plan.as_ref().unwrap().session_update()["session"].clone();
+    session["id"] = json!("session-v2"); session["object"] = json!("realtime.session"); session["model"] = json!(cfg.model);
+    for kind in ["session.created", "session.updated"] {
+        apply_livetranslate_event_to_raw(&mut raw, 1.0, 0, &event(kind, json!({"type":kind,"session":session}))).unwrap();
+    }
+    raw.live_translate_plan.as_mut().unwrap().take_session_finish().unwrap();
+    for (index, text) in ["first long sentence", "short"].iter().enumerate() {
+        for mut wire in completed_response_sequence() {
+            let serialized = wire.to_string().replace("response-1", &format!("response-{index}"))
+                .replace("item-1", &format!("item-{index}"));
+            wire = serde_json::from_str(&serialized).unwrap();
+            wire["event_id"] = json!(format!("{index}-{}", wire["event_id"].as_str().unwrap()));
+            match wire["type"].as_str().unwrap() {
+                "response.text.text" => {
+                    wire["type"] = json!("response.text.delta");
+                    wire.as_object_mut().unwrap().remove("text");
+                    wire.as_object_mut().unwrap().remove("stash");
+                    wire["delta"] = json!(text);
+                }
+                "response.text.done" => wire["text"] = json!(text),
+                "response.content_part.done" => wire["part"]["text"] = json!(text),
+                _ => {}
+            }
+            apply_livetranslate_event_to_raw(&mut raw, 10.0 + index as f64, 1, &wire).unwrap();
+            if index == 1 && wire["type"] == "response.text.delta" {
+                assert_eq!(raw.translation_final, "first long sentence\nshort");
+            }
+        }
+    }
+    apply_livetranslate_event_to_raw(&mut raw, 30.0, 1, &event("finished", json!({"type":"session.finished"}))).unwrap();
+    assert!(raw.session_finished);
+    assert_eq!(raw.response_count, 2);
+    assert_eq!(raw.translation_final, "first long sentence\nshort");
+}
+
 }

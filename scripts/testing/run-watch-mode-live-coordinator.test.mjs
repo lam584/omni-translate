@@ -31,6 +31,7 @@ import {
   runCoordinatorWaves,
   validateCoordinatorAggregate,
   validateCoordinatorExecutionAuthority,
+  writeCoordinatorProviderPreflightReceipt,
 } from './run-watch-mode-live-coordinator.mjs';
 import {
   PROVIDER_PREFLIGHT_MODEL,
@@ -38,7 +39,7 @@ import {
   claimProviderPreflightDispatchAuthorization,
   verifyProviderPreflightGrant,
 } from './watch-mode-provider-preflight-authorization.mjs';
-import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { LIVE_LLM_CELLS, createBalancedReleasePlan, liveCellsForReleasePlan, normalizeReleaseSelection } from './watch-mode-balanced-release-plan.mjs';
 import { fixedFourWorkerAssignments } from './watch-mode-four-worker-plan.mjs';
 
 const SHA_A = 'a'.repeat(64);
@@ -199,11 +200,13 @@ function workers() {
   ];
 }
 
-function signedFixture(workerList = workers()) {
+function signedFixture(workerList = workers(), releaseSelection) {
+  const selectedCells = liveCellsForReleasePlan(createBalancedReleasePlan(releaseSelection));
   const now = new Date();
   const generatedAt = new Date(now.getTime() - 1_000);
   const keys = generateCoordinatorSigningKeyPair();
   const plan = createSignedExecutionPlan({
+    releaseSelection,
     executionId: 'watch-shard-coordinator-test',
     generatedAt,
     expiresAt: new Date(now.getTime() + 3_600_000),
@@ -215,10 +218,13 @@ function signedFixture(workerList = workers()) {
     providerPreflightAuthority: {
        path: 'preflight.json', bytes: 10, sha256: SHA_B, providerId: 'provider-dashscope',
        ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
+       model: selectedCells[0].modelId,
+       modelProtocolProfileIdentity: selectedCells[0].modelProtocolProfileIdentity,
+       sessionAuthority: { ...PREFLIGHT_LIFECYCLE_AUTHORITY.sessionAuthority, serverModel: selectedCells[0].modelId },
      },
     workers: workerList,
     assignments: workerList.length === 4 ? fixedFourWorkerAssignments(workerList)
-      : workerList.length === 3 ? fixedThreeWorkerAssignments(workerList) : defaultSingleWorkerAssignments(workerList),
+      : workerList.length === 3 ? fixedThreeWorkerAssignments(workerList) : defaultSingleWorkerAssignments(workerList, releaseSelection),
     ...keys,
   });
   return {
@@ -587,7 +593,13 @@ for (const [firstWaveStaggerMs, synchronousAdvanceMs] of [[0, 0], [7_000, 0], [7
   });
 }
 
-test('production three-worker local/SSH pins survive readiness, grant, signed plan, and final authorization verification', async () => {
+for (const releaseSelection of [undefined, { modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'workspace.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing' }]) {
+test(`production readiness/grant/plan preserves ${releaseSelection?.modelId ?? 'default 3.5'}`, async () => {
+  const selectedCells = liveCellsForReleasePlan(createBalancedReleasePlan(releaseSelection));
+  const selectedIdentity = selectedCells[0].modelProtocolProfileIdentity;
+  const selectedPreflight = { ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
+    model: selectedCells[0].modelId, modelProtocolProfileIdentity: selectedIdentity,
+    sessionAuthority: { ...PREFLIGHT_LIFECYCLE_AUTHORITY.sessionAuthority, serverModel: selectedCells[0].modelId } };
   const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-coordinator-prepare-'));
   try {
     const preflightEvidenceDirectory = path.join(outputRoot, 'preflight-raw');
@@ -630,8 +642,9 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
       outputRoot,
       workspaceRoot: outputRoot,
       executionId: 'watch-shard-atomic-test',
+      releaseSelection,
       workers: productionWorkers,
-      assignments: config.assignments,
+      assignments: config.assignments.map((entry, index) => ({ ...entry, cellId: selectedCells[index].cellId })),
       preflightExecutorWorkerId: config.preflightExecutor.workerId,
       signingKeys: resultSigningKeys,
       generatedAt,
@@ -646,6 +659,7 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
       captureAuthorityImplementationHashes: async () => { calls.implementation += 1; return inventory('matrix', SHA_A); },
       captureShardImplementationHashes: async () => { calls.shardImplementation += 1; return inventory('shard', SHA_A); },
       runZeroProviderWorkerReadiness: async (context) => {
+        assert.deepEqual(context.releaseSelection, normalizeReleaseSelection(releaseSelection));
         calls.readiness += 1;
         return writeReadinessFixture(context);
       },
@@ -672,15 +686,15 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
         assert.equal(new Set(grant.cells.map((cell) => cell.leaseId)).size, SHARD_MATRIX_CELL_COUNT);
         assert.deepEqual(
           grant.authorization.modelProtocolProfileIdentity,
-          MODEL_PROTOCOL_PROFILE_IDENTITY,
+          selectedIdentity,
         );
         assert.ok(grant.cells.every((cell) => (
           JSON.stringify(cell.modelProtocolProfileIdentity)
-            === JSON.stringify(MODEL_PROTOCOL_PROFILE_IDENTITY)
+            === JSON.stringify(selectedIdentity)
         )));
         assert.ok(authorization.leaseReservations.every((reservation) => (
           JSON.stringify(reservation.modelProtocolProfileIdentity)
-            === JSON.stringify(MODEL_PROTOCOL_PROFILE_IDENTITY)
+            === JSON.stringify(selectedIdentity)
         )));
         const desktop = runtimeAuthority.find((entry) => entry.path === 'target/release/omni-desktop-shell.exe');
         fs.writeFileSync(path.join(path.dirname(grantPath), 'provider-preflight-consumption-claim.json'), `${JSON.stringify({
@@ -699,7 +713,7 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
           retryPolicy: 'new-execution-required',
         }, null, 2)}\n`, 'utf8');
         return {
-          ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
+          ...structuredClone(selectedPreflight),
           providerInvocationCount: PREFLIGHT_LIFECYCLE_AUTHORITY.invocationCount,
           executor: structuredClone(authorization.executor),
           evidenceDirectory: preflightEvidenceDirectory,
@@ -715,7 +729,7 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
           Math.max(...expectedAuthorization.reservationIssuedAts.map(Date.parse)) + 1,
         ).toISOString()],
         summary: {
-          ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
+          ...structuredClone(selectedPreflight),
           providerInvocationCount: PREFLIGHT_LIFECYCLE_AUTHORITY.invocationCount,
           executionId: expectedAuthorization.executionId,
           grantDigest: expectedAuthorization.grantDigest,
@@ -727,6 +741,8 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
         },
       }),
     });
+    assert.deepEqual(result.plan.releaseSelection, normalizeReleaseSelection(releaseSelection));
+    assert.equal(result.plan.cells.length, 4);
     const authorizationRoot = path.join(outputRoot, 'watch-shard-atomic-test.preflight-authorization');
     const grantPath = path.join(authorizationRoot, 'provider-preflight-grant.json');
     const reservationDirectory = path.join(authorizationRoot, 'provider-preflight-lease-reservations');
@@ -780,14 +796,19 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
       shardExecution: projection, matrixIntegration: projection, currentImplementationHashes: inventory('matrix', SHA_A),
       currentRuntimeBinaryHashes: runtimeAuthority, currentShardImplementationHashes: inventory('shard', SHA_A), validationAt: new Date(),
     };
-    const verifiedAuthorization = verifyStrictShardProviderPreflightAuthorization(finalOptions);
-    assert.deepEqual(verifiedAuthorization.grant.workers.map((worker) => worker.transportAuthority), productionWorkers.map((worker) => worker.transportAuthority));
-    for (const mutation of ['drop', 'change-pin']) {
-      const tamperedPlan = structuredClone(result.plan);
-      if (mutation === 'drop') delete tamperedPlan.workers[1].transportAuthority;
-      else tamperedPlan.workers[1].transportAuthority.hostKeySha256 = `SHA256:${'b'.repeat(43)}`;
-      assert.throws(() => verifyStrictShardProviderPreflightAuthorization({ ...finalOptions, plan: tamperedPlan }), /grant workers/);
+    // The external strict evidence verifier is owned by the integration task;
+    // retain its historical 3.5 assertions without claiming 3.8 support there.
+    if (!releaseSelection) {
+      const verifiedAuthorization = verifyStrictShardProviderPreflightAuthorization(finalOptions);
+      assert.deepEqual(verifiedAuthorization.grant.workers.map((worker) => worker.transportAuthority), productionWorkers.map((worker) => worker.transportAuthority));
+      for (const mutation of ['drop', 'change-pin']) {
+        const tamperedPlan = structuredClone(result.plan);
+        if (mutation === 'drop') delete tamperedPlan.workers[1].transportAuthority;
+        else tamperedPlan.workers[1].transportAuthority.hostKeySha256 = `SHA256:${'b'.repeat(43)}`;
+        assert.throws(() => verifyStrictShardProviderPreflightAuthorization({ ...finalOptions, plan: tamperedPlan }), /grant workers/);
+      }
     }
+    verifySignedExecutionPlan(result.plan);
     for (const lease of result.leases) verifyCellLease(lease, result.plan);
     const preflight = JSON.parse(fs.readFileSync(
       path.join(result.executionRoot, COORDINATOR_PROVIDER_PREFLIGHT_FILE),
@@ -799,10 +820,10 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
     assert.equal(preflight.providerInputMode, 'none');
     assert.equal(preflight.responseMode, 'text-only');
     assert.equal(preflight.terminalEvent, 'session.finished');
-    assert.equal(preflight.model, PROVIDER_PREFLIGHT_MODEL);
+    assert.equal(preflight.model, selectedCells[0].modelId);
     assert.deepEqual(
       preflight.modelProtocolProfileIdentity,
-      MODEL_PROTOCOL_PROFILE_IDENTITY,
+      selectedIdentity,
     );
     assert.equal(preflight.externalAudioSamples, 0);
     const publishedText = fs.readdirSync(result.executionRoot, { recursive: true, encoding: 'utf8' })
@@ -825,6 +846,8 @@ test('production three-worker local/SSH pins survive readiness, grant, signed pl
     fs.rmSync(outputRoot, { recursive: true, force: true });
   }
 });
+
+}
 
 test('a failed preflight leaves a durable execution reservation and cannot be repeated after restart', async () => {
   const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-coordinator-preflight-fail-'));
@@ -1198,8 +1221,9 @@ function fakeValidatedShard(plan, leases, worker, { duplicateCellId = null } = {
   };
 }
 
-test('coordinator aggregate canonicalizes arrival order and binds every cell to one unique lease', () => {
-  const value = signedFixture();
+for (const releaseSelection of [undefined, { modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'workspace.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing' }]) {
+test(`coordinator aggregate canonicalizes ${releaseSelection?.modelId ?? 'default 3.5'} and rejects mixed authority`, () => {
+  const value = signedFixture(workers(), releaseSelection);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-coordinator-aggregate-'));
   try {
     const executionRoot = path.join(root, 'execution');
@@ -1290,10 +1314,28 @@ test('coordinator aggregate canonicalizes arrival order and binds every cell to 
     assert.equal(result.matrixIntegration.cells.length, SHARD_MATRIX_CELL_COUNT);
     assert.ok(result.matrixIntegration.cells.every((cell) => path.isAbsolute(cell.sourceRunDirectory)));
     assert.equal(validateCoordinatorAggregate(result.aggregate), result.aggregate);
+    assert.deepEqual(result.aggregate.releaseSelection, normalizeReleaseSelection(releaseSelection));
+    assert.deepEqual(result.matrixIntegration.releaseCells, liveCellsForReleasePlan(createBalancedReleasePlan(releaseSelection)));
+    for (const mutation of ['model', 'identity', 'selection', 'cell']) {
+      const { aggregateDigest: _digest, ...core } = structuredClone(result.aggregate);
+      const otherSelection = releaseSelection ? undefined : { modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'workspace.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing' };
+      const other = liveCellsForReleasePlan(createBalancedReleasePlan(otherSelection))[0];
+      if (mutation === 'model') core.cells[0].modelId = other.modelId;
+      if (mutation === 'identity') core.cells[0].modelProtocolProfileIdentity = other.modelProtocolProfileIdentity;
+      if (mutation === 'cell') core.cells[0].cellId = other.cellId;
+      if (mutation === 'selection') {
+        if (otherSelection) core.releaseSelection = otherSelection;
+        else delete core.releaseSelection;
+      }
+      assert.throws(() => validateCoordinatorAggregate({ ...core, aggregateDigest: sha256Canonical(core) }),
+        /model mismatch|model protocol identity|canonical paid-plan order/);
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+}
 
 test('coordinator aggregate rejects cross-worker cell substitution even with valid-looking shard hashes', () => {
   const value = signedFixture();
@@ -1363,4 +1405,34 @@ test('coordinator execution authority rejects dispatching a later wave before th
   } finally {
     fs.rmSync(executionRoot, { recursive: true, force: true });
   }
+});
+
+for (const mutation of ['legacy-model', 'wrong-endpoint', 'legacy-server-model']) {
+  test(`3.8 raw preflight rejects ${mutation} before publishing evidence`, () => {
+    const releaseSelection = { modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'workspace.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing' };
+    const identity = liveCellsForReleasePlan(createBalancedReleasePlan(releaseSelection))[0].modelProtocolProfileIdentity;
+    const summary = { ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY), model: releaseSelection.modelId };
+    if (mutation === 'legacy-model') summary.model = PROVIDER_PREFLIGHT_MODEL;
+    const expectedAuthorization = {
+      releaseSelection: mutation === 'wrong-endpoint' ? { ...releaseSelection, endpointHost: 'other.cn-beijing.maas.aliyuncs.com' } : releaseSelection,
+      modelProtocolProfileIdentity: identity,
+      grantGeneratedAt: '2026-01-01T00:00:00Z', reservationIssuedAts: ['2026-01-01T00:00:01Z'],
+    };
+    assert.throws(() => writeCoordinatorProviderPreflightReceipt({
+      executionRoot: os.tmpdir(), executionId: 'unused-rejected-raw',
+      preflight: { ...PREFLIGHT_LIFECYCLE_AUTHORITY, evidenceDirectory: os.tmpdir() },
+      expectedAuthorization,
+      validateEvidence: () => ({ issues: [], evidenceTimes: ['2026-01-01T00:00:02Z'], summary }),
+    }), /model protocol profile identity|zero-input LiveTranslate lifecycle/);
+  });
+}
+
+test('3.8 default placement stays four cells with the historical sample ceiling', () => {
+  const selection = { modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'workspace.cn-beijing.maas.aliyuncs.com' };
+  const cells = liveCellsForReleasePlan(createBalancedReleasePlan(selection));
+  const assignments = defaultSingleWorkerAssignments(workers(), selection);
+  assert.deepEqual(assignments.map(cell => cell.cellId), cells.map(cell => cell.cellId));
+  assert.equal(assignments.length, 4);
+  assert.equal(cells.reduce((total, cell) => total + cell.maxExternalAudioSamples, 0), SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES);
+  assert.throws(() => defaultSingleWorkerAssignments(workers(), { modelId: selection.modelId }), /explicit Beijing workspace endpoint/);
 });

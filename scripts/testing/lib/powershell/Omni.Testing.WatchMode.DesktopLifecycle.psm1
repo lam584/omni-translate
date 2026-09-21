@@ -163,7 +163,7 @@ function Start-WatchModeDesktopShell {
     $strictPaidProviderEnvironment = Enter-StrictPaidProviderEnvironment `
       -Enabled $StrictPaidAuthority `
       -IncidentReplay $IncidentReplayAuthority `
-      -LocalSingleSession $LocalCanonicalContentAuthority
+      -LocalSingleSession $LocalCanonicalContentAuthority -ModelId $WatchModelId
     $env:OMNI_WATCH_MODE_AUTOSTART = "1"
     $env:OMNI_WATCH_MODE_RUN_MARKER = $RunMarker
     $env:OMNI_WATCH_MODE_LAUNCH_ID = $launchId

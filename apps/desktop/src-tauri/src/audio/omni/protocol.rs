@@ -2875,6 +2875,11 @@ pub(crate) fn resolve_livetranslate_language(
             "bailian-livetranslate-session-ws-v1",
         ) => LIVETRANSLATE_LANGUAGE_TABLE_V2026_07_08,
         (
+            "bailian.livetranslate.3_8.realtime.ws",
+            1,
+            "bailian-livetranslate-session-ws-v2",
+        ) => LIVETRANSLATE_LANGUAGE_TABLE_V2026_07_08,
+        (
             "bailian.livetranslate.realtime.ws.snapshots",
             1,
             "bailian-livetranslate-session-ws-v1",
@@ -2902,8 +2907,15 @@ pub(crate) fn resolve_livetranslate_output_mode(
     requested: OmniOutputMode,
 ) -> Result<OmniOutputMode, String> {
     let target = resolve_livetranslate_language(authority, target_language, "zh")?;
+    // The current 3.8 documentation lists Icelandic audio and Cantonese text-only.
+    // Keep the frozen 3.5 release contract unchanged.
+    let supports_audio = if crate::audio::bailian_protocol::is_v2(authority) {
+        target == "is" || (target != "yue" && LIVETRANSLATE_AUDIO_OUTPUT_LANGUAGES.contains(&target.as_str()))
+    } else {
+        LIVETRANSLATE_AUDIO_OUTPUT_LANGUAGES.contains(&target.as_str())
+    };
     Ok(if requested == OmniOutputMode::TextAndAudio
-        && !LIVETRANSLATE_AUDIO_OUTPUT_LANGUAGES.contains(&target.as_str())
+        && !supports_audio
     {
         OmniOutputMode::TextOnly
     } else {
@@ -3336,6 +3348,9 @@ pub(crate) fn build_omni_session_update_for_provider_with_output_mode(
         realtime_profile.model_protocol_authority.as_ref(),
         audio_mode,
     );
+    if let Some(authority) = realtime_profile.model_protocol_authority.as_ref() {
+        crate::audio::bailian_protocol::apply_session_dialect(&mut session_update, authority);
+    }
     session_update
 }
 
@@ -4967,6 +4982,7 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
     playback_worker_queue: OmniPlaybackQueue,
     mut translated_pcm_authority: TranslatedPcmAuthority,
     native_speaker_renderer: NativeSpeakerRenderer<R>,
+    #[cfg(test)] headless_sink: Option<Arc<super::headless_tests::HeadlessSink>>,
 ) {
     let audio_state = app.state::<AudioStateStore>(); let mut active_stream_instances = std::collections::HashMap::new();
     loop {
@@ -4996,6 +5012,13 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
                     "realtime-budget-before-start",
                 );
                 let _active_guard = OmniPlaybackActiveGuard(&playback_worker_queue);
+                #[cfg(test)]
+                if let Some(sink) = headless_sink.as_ref() {
+                    // Consume the production queue's actual PCM, never manufacture a
+                    // hardware receipt, bridge acknowledgement or speaker authority.
+                    sink.consume(cmd);
+                    continue;
+                }
                 match cmd {
                     command @ OmniPlaybackCommand::Stream { .. } => {
                         process_omni_stream_playback_command(
@@ -5300,6 +5323,30 @@ fn start_omni_playback_with_renderer<R: tauri::Runtime>(
     translated_pcm_authority: TranslatedPcmAuthority,
     native_speaker_renderer: NativeSpeakerRenderer<R>,
 ) -> (OmniPlaybackQueue, OmniPlaybackWorker) {
+    start_omni_playback_with_sink(app, speech_config, route_direction,
+        translated_pcm_authority, native_speaker_renderer, #[cfg(test)] None)
+}
+
+#[cfg(test)]
+pub(super) fn start_omni_headless_playback<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    speech_config: Arc<std::sync::RwLock<OmniSpeechConfig>>,
+    route_direction: String,
+    translated_pcm_authority: TranslatedPcmAuthority,
+    sink: Arc<super::headless_tests::HeadlessSink>,
+) -> (OmniPlaybackQueue, OmniPlaybackWorker) {
+    start_omni_playback_with_sink(app, speech_config, route_direction,
+        translated_pcm_authority, play_native_translation_to_speaker::<R>, Some(sink))
+}
+
+fn start_omni_playback_with_sink<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    speech_config: Arc<std::sync::RwLock<OmniSpeechConfig>>,
+    route_direction: String,
+    translated_pcm_authority: TranslatedPcmAuthority,
+    native_speaker_renderer: NativeSpeakerRenderer<R>,
+    #[cfg(test)] headless_sink: Option<Arc<super::headless_tests::HeadlessSink>>,
+) -> (OmniPlaybackQueue, OmniPlaybackWorker) {
     let quiescence = app
         .state::<AudioStateStore>()
         .translation_playback_quiescence();
@@ -5318,6 +5365,8 @@ fn start_omni_playback_with_renderer<R: tauri::Runtime>(
                 playback_worker_queue,
                 translated_pcm_authority,
                 native_speaker_renderer,
+                #[cfg(test)]
+                headless_sink,
             );
         })
         .expect("failed to spawn omni-playback thread");

@@ -46,7 +46,10 @@
           "response.content_part.done"
         ]
       },
-      "framingPseudoEventTypes": { "client": [], "server": [] }
+      "framingPseudoEventTypes": {
+        "client": [],
+        "server": []
+      }
     },
     {
       "dialectId": "bailian-omni-realtime-ws-v1",
@@ -95,7 +98,10 @@
           "response.content_part.done"
         ]
       },
-      "framingPseudoEventTypes": { "client": [], "server": [] }
+      "framingPseudoEventTypes": {
+        "client": [],
+        "server": []
+      }
     },
     {
       "dialectId": "bailian-qwen-audio-chat-realtime-ws-v1",
@@ -152,7 +158,10 @@
           "voiceprint_audio_list.failed"
         ]
       },
-      "framingPseudoEventTypes": { "client": [], "server": [] }
+      "framingPseudoEventTypes": {
+        "client": [],
+        "server": []
+      }
     },
     {
       "dialectId": "bailian-qwen-asr-session-ws-v1",
@@ -183,91 +192,174 @@
           "session.finished"
         ]
       },
-      "framingPseudoEventTypes": { "client": [], "server": [] }
+      "framingPseudoEventTypes": {
+        "client": [],
+        "server": []
+      }
     },
     {
       "dialectId": "bailian-qwen-audio-asr-task-ws-v1",
       "client": {
         "catalogKind": "event-page-h2",
         "sourceUrl": "https://help.aliyun.com/zh/model-studio/fun-asr-client-events",
-        "eventTypes": ["run-task", "continue-task", "finish-task"]
+        "eventTypes": [
+          "run-task",
+          "continue-task",
+          "finish-task"
+        ]
       },
       "server": {
         "catalogKind": "event-page-h2",
         "sourceUrl": "https://help.aliyun.com/zh/model-studio/fun-asr-server-events",
-        "eventTypes": ["task-started", "result-generated", "task-finished", "task-failed"]
+        "eventTypes": [
+          "task-started",
+          "result-generated",
+          "task-finished",
+          "task-failed"
+        ]
       },
-      "framingPseudoEventTypes": { "client": ["binary.audio"], "server": [] }
+      "framingPseudoEventTypes": {
+        "client": [
+          "binary.audio"
+        ],
+        "server": []
+      }
     },
     {
       "dialectId": "bailian-fun-asr-task-ws-v1",
       "client": {
         "catalogKind": "event-page-h2",
         "sourceUrl": "https://help.aliyun.com/zh/model-studio/fun-asr-client-events",
-        "eventTypes": ["run-task", "continue-task", "finish-task"]
+        "eventTypes": [
+          "run-task",
+          "continue-task",
+          "finish-task"
+        ]
       },
       "server": {
         "catalogKind": "event-page-h2",
         "sourceUrl": "https://help.aliyun.com/zh/model-studio/fun-asr-server-events",
-        "eventTypes": ["task-started", "result-generated", "task-finished", "task-failed"]
+        "eventTypes": [
+          "task-started",
+          "result-generated",
+          "task-finished",
+          "task-failed"
+        ]
       },
-      "framingPseudoEventTypes": { "client": ["binary.audio"], "server": [] }
+      "framingPseudoEventTypes": {
+        "client": [
+          "binary.audio"
+        ],
+        "server": []
+      }
     },
     {
       "dialectId": "bailian-paraformer-task-ws-v1",
       "client": {
         "catalogKind": "event-page-h2",
         "sourceUrl": "https://help.aliyun.com/zh/model-studio/paraformer-client-events",
-        "eventTypes": ["run-task", "finish-task"]
+        "eventTypes": [
+          "run-task",
+          "finish-task"
+        ]
       },
       "server": {
         "catalogKind": "event-page-h2",
         "sourceUrl": "https://help.aliyun.com/zh/model-studio/paraformer-server-events",
-        "eventTypes": ["task-started", "result-generated", "task-finished", "task-failed"]
+        "eventTypes": [
+          "task-started",
+          "result-generated",
+          "task-finished",
+          "task-failed"
+        ]
       },
-      "framingPseudoEventTypes": { "client": ["binary.audio"], "server": [] }
+      "framingPseudoEventTypes": {
+        "client": [
+          "binary.audio"
+        ],
+        "server": []
+      }
     },
     {
       "dialectId": "bailian-gummy-task-ws-v1",
       "client": {
         "catalogKind": "protocol-wire-tokens",
         "sourceUrl": "https://help.aliyun.com/zh/model-studio/real-time-websocket-api-1",
-        "eventTypes": ["run-task", "finish-task"]
+        "eventTypes": [
+          "run-task",
+          "finish-task"
+        ]
       },
       "server": {
         "catalogKind": "protocol-wire-tokens",
         "sourceUrl": "https://help.aliyun.com/zh/model-studio/real-time-websocket-api-1",
-        "eventTypes": ["task-started", "result-generated", "task-finished", "task-failed"]
+        "eventTypes": [
+          "task-started",
+          "result-generated",
+          "task-finished",
+          "task-failed"
+        ]
       },
-      "framingPseudoEventTypes": { "client": ["binary.audio"], "server": [] }
+      "framingPseudoEventTypes": {
+        "client": [
+          "binary.audio"
+        ],
+        "server": []
+      }
     },
     {
       "dialectId": "bailian-speech-synthesizer-duplex-task-ws-v1",
       "client": {
         "catalogKind": "event-page-h2",
         "sourceUrl": "https://help.aliyun.com/zh/model-studio/cosyvoice-client-events",
-        "eventTypes": ["run-task", "continue-task", "finish-task"]
+        "eventTypes": [
+          "run-task",
+          "continue-task",
+          "finish-task"
+        ]
       },
       "server": {
         "catalogKind": "event-page-h2",
         "sourceUrl": "https://help.aliyun.com/zh/model-studio/cosyvoice-server-events",
-        "eventTypes": ["task-started", "result-generated", "task-finished", "task-failed"]
+        "eventTypes": [
+          "task-started",
+          "result-generated",
+          "task-finished",
+          "task-failed"
+        ]
       },
-      "framingPseudoEventTypes": { "client": [], "server": ["binary.audio"] }
+      "framingPseudoEventTypes": {
+        "client": [],
+        "server": [
+          "binary.audio"
+        ]
+      }
     },
     {
       "dialectId": "bailian-sambert-one-shot-task-ws-v1",
       "client": {
         "catalogKind": "event-page-h2",
         "sourceUrl": "https://help.aliyun.com/zh/model-studio/sambert-client-events",
-        "eventTypes": ["run-task"]
+        "eventTypes": [
+          "run-task"
+        ]
       },
       "server": {
         "catalogKind": "event-page-h2",
         "sourceUrl": "https://help.aliyun.com/zh/model-studio/sambert-server-events",
-        "eventTypes": ["task-started", "result-generated", "task-finished", "task-failed"]
+        "eventTypes": [
+          "task-started",
+          "result-generated",
+          "task-finished",
+          "task-failed"
+        ]
       },
-      "framingPseudoEventTypes": { "client": [], "server": ["binary.audio"] }
+      "framingPseudoEventTypes": {
+        "client": [],
+        "server": [
+          "binary.audio"
+        ]
+      }
     },
     {
       "dialectId": "bailian-qwen-tts-session-ws-v1",
@@ -302,14 +394,21 @@
           "session.finished"
         ]
       },
-      "framingPseudoEventTypes": { "client": [], "server": [] }
+      "framingPseudoEventTypes": {
+        "client": [],
+        "server": []
+      }
     },
     {
       "dialectId": "bailian-multimodal-dialog-task-ws-v1",
       "client": {
         "catalogKind": "layered-task-envelope",
         "sourceUrl": "https://help.aliyun.com/zh/model-studio/multimodal-interaction-protocol",
-        "eventTypes": ["run-task", "continue-task", "finish-task"],
+        "eventTypes": [
+          "run-task",
+          "continue-task",
+          "finish-task"
+        ],
         "innerEventField": "payload.input.directive",
         "innerEventTypes": [
           "Start",
@@ -328,7 +427,9 @@
       "server": {
         "catalogKind": "layered-task-envelope",
         "sourceUrl": "https://help.aliyun.com/zh/model-studio/multimodal-interaction-protocol",
-        "eventTypes": ["result-generated"],
+        "eventTypes": [
+          "result-generated"
+        ],
         "innerEventField": "payload.output.event",
         "innerEventTypes": [
           "Started",
@@ -345,7 +446,61 @@
           "Error"
         ]
       },
-      "framingPseudoEventTypes": { "client": ["binary.audio"], "server": ["binary.audio"] }
+      "framingPseudoEventTypes": {
+        "client": [
+          "binary.audio"
+        ],
+        "server": [
+          "binary.audio"
+        ]
+      }
+    },
+    {
+      "dialectId": "bailian-livetranslate-session-ws-v2",
+      "client": {
+        "catalogKind": "event-page-h2",
+        "sourceUrl": "https://help.aliyun.com/zh/model-studio/live-translator-client-events",
+        "eventTypes": [
+          "session.update",
+          "input_audio_buffer.append",
+          "input_image_buffer.append",
+          "session.finish"
+        ]
+      },
+      "server": {
+        "catalogKind": "event-page-h2",
+        "sourceUrl": "https://help.aliyun.com/zh/model-studio/live-translator-server-events",
+        "eventTypes": [
+          "session.created",
+          "session.updated",
+          "input_audio_buffer.speech_started",
+          "input_audio_buffer.speech_stopped",
+          "input_audio_buffer.committed",
+          "input_audio_buffer.cleared",
+          "conversation.item.created",
+          "conversation.item.input_audio_transcription.delta",
+          "conversation.item.input_audio_transcription.completed",
+          "conversation.item.input_audio_transcription.failed",
+          "response.created",
+          "response.text.delta",
+          "response.text.done",
+          "response.audio_transcript.delta",
+          "response.audio_transcript.done",
+          "response.audio.delta",
+          "response.audio.done",
+          "response.output_item.added",
+          "response.output_item.done",
+          "response.content_part.added",
+          "response.content_part.done",
+          "response.done",
+          "session.finished",
+          "error"
+        ]
+      },
+      "framingPseudoEventTypes": {
+        "client": [],
+        "server": []
+      }
     }
   ]
 }

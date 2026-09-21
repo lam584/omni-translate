@@ -48,11 +48,13 @@ impl CredentialVault for KeyringCredentialVault {
     fn upsert_secret(&self, reference: &str, secret: &str) -> Result<(), String> {
         ensure_public_credential_reference(reference)?;
         let normalized_reference = normalize_reference(reference);
+        let write = super::credential_verification::CredentialWrite::begin(reference)?;
 
         #[cfg(target_os = "windows")]
         {
             let secret = secret.to_string();
             run_credential_operation("写入 API Key", move || {
+                let _write = write;
                 write_windows_credential(
                     PUBLIC_CREDENTIAL_SERVICE,
                     &normalized_reference,
@@ -66,6 +68,7 @@ impl CredentialVault for KeyringCredentialVault {
             let secret = secret.to_string();
 
             run_credential_operation("写入 API Key", move || {
+                let _write = write;
                 let entry = Entry::new(PUBLIC_CREDENTIAL_SERVICE, &normalized_reference)
                     .map_err(|error| error.to_string())?;
                 entry
@@ -86,6 +89,12 @@ impl CredentialVault for KeyringCredentialVault {
         ensure_public_credential_reference(reference)?;
         let normalized_reference = normalize_reference(reference);
 
+        super::credential_verification::read_with_revision(reference, || self.read_public_secret(normalized_reference))
+    }
+}
+
+impl KeyringCredentialVault {
+    fn read_public_secret(&self, normalized_reference: String) -> Result<Option<String>, String> {
         #[cfg(target_os = "windows")]
         {
             run_credential_operation("读取 API Key", move || {
@@ -432,7 +441,7 @@ impl CredentialVault for MemoryCredentialVault {
     }
 }
 
-fn normalize_reference(reference: &str) -> String {
+pub(super) fn normalize_reference(reference: &str) -> String {
     reference
         .chars()
         .map(|character| match character {

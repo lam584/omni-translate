@@ -35,7 +35,16 @@ body:not(:has(.subtitle-overlay-root)) .provider-directory-title {
 body:not(:has(.subtitle-overlay-root)) .provider-directory-search {
   background:#f8fafc !important;
   border-color:#d9e0e7 !important;
-  border-radius:10px !important
+  border-radius:10px !important;
+  color:#52606a !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-directory-search-input {
+  color:#101820 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-directory-search-input::placeholder {
+  color:#7b8792 !important
 }
 
 body:not(:has(.subtitle-overlay-root)) .provider-directory-list {
@@ -277,3 +286,146 @@ body:not(:has(.subtitle-overlay-root)) .provider-scene-model-actions>.provider-h
   margin-left:2px
 }
 
+
+/* Model catalog modal compact layout optimization: fit more items, tighter paddings */
+body:not(:has(.subtitle-overlay-root)) .provider-model-modal {
+  width: min(980px, 94vw) !important;
+  max-height: calc(100vh - 48px) !important;
+  gap: 10px !important;
+  padding: 14px 16px !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal {
+  max-height: min(62vh, 660px) !important;
+  display: grid;
+  gap: 8px !important;
+  padding-right: 4px;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-capability-section {
+  padding: 8px 10px !important;
+  border-radius: 10px !important;
+  gap: 6px !important;
+  border: 1px solid #e2e8f0 !important;
+  background: #fbfcfd !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-capability-section-header {
+  gap: 6px !important;
+  align-items: center !important;
+  flex-direction: row !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-capability-section-header strong {
+  font-size: 0.85rem !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-capability-section-header p {
+  margin: 0 !important;
+  font-size: 0.74rem !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-capability-badge {
+  width: 24px !important;
+  height: 24px !important;
+  border-radius: 6px !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-capability-badge svg {
+  width: 12px !important;
+  height: 12px !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-capability-section-list {
+  display: grid !important;
+  grid-template-columns: 1fr !important;
+  gap: 4px !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-model-item-compact {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 6px 10px !important;
+  border-radius: 8px !important;
+  gap: 8px !important;
+  border: 1px solid #e2e8f0 !important;
+  background: #ffffff !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-model-item-leading {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-model-item-icon {
+  width: 22px !important;
+  height: 22px !important;
+  border-radius: 6px !important;
+  flex: 0 0 22px !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-model-item-icon svg {
+  width: 12px !important;
+  height: 12px !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-model-item-copy {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-model-item-copy strong {
+  font-size: 0.84rem !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-model-item-copy span {
+  font-size: 0.74rem !important;
+  color: #64748b !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-model-item-meta {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  flex: 0 0 auto !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-meta-chip {
+  padding: 2px 6px !important;
+  font-size: 0.72rem !important;
+  border-radius: 6px !important;
+  gap: 4px !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-meta-chip svg {
+  width: 11px !important;
+  height: 11px !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-row-action {
+  min-width: 54px !important;
+  height: 26px !important;
+  padding: 0 8px !important;
+  font-size: 0.76rem !important;
+  border-radius: 6px !important;
+  gap: 4px !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-row-action svg {
+  width: 12px !important;
+  height: 12px !important;
+}

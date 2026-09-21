@@ -83,7 +83,7 @@ fn verify_fixture(core: Value, profile: PreflightAuthorityProfile) -> Result<(),
     let parsed: Value = serde_json::from_slice(&bytes).unwrap();
     let public_key = required_str(&parsed, "/coordinator/publicKeyPem", "test key")?;
     verify_signed_authority(&parsed, Some(public_key), "signed worker fixture")?;
-    let identity = profile.model_protocol_profile_identity()?;
+    let identity = selected_registry_identity(&parsed, profile)?;
     validate_grant(&parsed, HEAD, profile, identity.as_ref())
 }
 
@@ -140,4 +140,68 @@ fn signed_transport_fields_survive_roundtrip_and_tampering_breaks_signature() {
     core.remove("digest");
     parsed["digest"] = json!(sha256_canonical(&Value::Object(core)).unwrap());
     assert!(verify_signed_authority(&parsed, Some(&public_key), "transport rehash").unwrap_err().contains("signature verification failed"));
+}
+
+fn v2_grant_fixture() -> Value {
+    let mut grant = grant_fixture(PreflightAuthorityProfile::StrictReleaseMatrix, 1);
+    grant["releaseSelection"] = json!({ "modelId": PREFLIGHT_MODEL_V2,
+        "endpointHost": "acceptance.cn-beijing.maas.aliyuncs.com", "region": "cn-beijing" });
+    grant["workerReadinessRequest"] = json!({"releaseSelection": grant["releaseSelection"].clone()});
+    let identity = selected_registry_identity(&grant, PreflightAuthorityProfile::StrictReleaseMatrix)
+        .unwrap().unwrap();
+    grant["authorization"]["model"] = json!(PREFLIGHT_MODEL_V2);
+    grant["authorization"]["modelProtocolProfileIdentity"] = json!(identity);
+    for cell in grant["cells"].as_array_mut().unwrap() {
+        cell["cellId"] = json!(cell["cellId"].as_str().unwrap().replace(PREFLIGHT_MODEL, PREFLIGHT_MODEL_V2));
+        cell["modelId"] = json!(PREFLIGHT_MODEL_V2);
+        cell["modelProtocolProfileIdentity"] = json!(identity);
+    }
+    grant
+}
+
+#[test]
+fn signed_v2_release_is_exactly_four_cells_and_registry_authorized() {
+    let grant = v2_grant_fixture();
+    assert_eq!(grant["cells"].as_array().unwrap().len(), 4);
+    assert_eq!(grant["budget"]["matrixMaxExternalAudioSamples"], 10_100_180);
+    verify_fixture(grant, PreflightAuthorityProfile::StrictReleaseMatrix).unwrap();
+}
+
+#[test]
+fn signed_v2_release_rejects_generic_missing_selection_and_mixed_cells() {
+    let profile = PreflightAuthorityProfile::StrictReleaseMatrix;
+    let original = v2_grant_fixture();
+    for pointer in ["/releaseSelection/endpointHost", "/releaseSelection/region",
+        "/authorization/model", "/cells/0/modelId", "/cells/1/modelProtocolProfileIdentity/exactModelId",
+        "/cells/2/modelProtocolProfileIdentity/wireDialect", "/cells/3/leaseId"] {
+        let mut grant = original.clone();
+        *grant.pointer_mut(pointer).unwrap() = json!(match pointer {
+            "/releaseSelection/endpointHost" => PROVIDER_ENDPOINT_HOST,
+            "/releaseSelection/region" => "ap-southeast-1",
+            "/cells/2/modelProtocolProfileIdentity/wireDialect" => "bailian-livetranslate-session-ws-v1",
+            "/cells/3/leaseId" => "lease-0",
+            _ => PREFLIGHT_MODEL,
+        });
+        assert!(verify_fixture(grant, profile).is_err(), "{pointer}");
+    }
+    let mut missing = original;
+    missing.as_object_mut().unwrap().remove("releaseSelection");
+    assert!(verify_fixture(missing, profile).is_err());
+}
+
+#[test]
+fn resigned_v2_grant_cannot_substitute_readiness_selection() {
+    let profile = PreflightAuthorityProfile::StrictReleaseMatrix;
+    let valid = v2_grant_fixture();
+    for field in ["modelId", "endpointHost", "region"] {
+        let mut changed = valid.clone();
+        changed["workerReadinessRequest"]["releaseSelection"][field] = json!("substituted");
+        assert!(verify_fixture(changed, profile).unwrap_err().contains("readiness releaseSelection"));
+    }
+    let mut missing = valid.clone();
+    missing.as_object_mut().unwrap().remove("workerReadinessRequest");
+    assert!(verify_fixture(missing, profile).unwrap_err().contains("readiness releaseSelection"));
+    let mut downgraded = valid;
+    downgraded.as_object_mut().unwrap().remove("releaseSelection");
+    assert!(verify_fixture(downgraded, profile).unwrap_err().contains("readiness releaseSelection"));
 }

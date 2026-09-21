@@ -32,6 +32,9 @@ import {
 } from './watch-mode-external-provider-budget.mjs';
 import {
   BALANCED_RELEASE_PLAN,
+  createBalancedReleasePlan,
+  liveCellsForReleasePlan,
+  normalizeReleaseSelection,
   LIVE_LLM_CELLS,
   RELEASE_MODELS,
 } from './watch-mode-balanced-release-plan.mjs';
@@ -50,6 +53,7 @@ import {
   SHARD_WORKER_READINESS_KIND,
   SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
   authorityInventoryDigest,
+  canonicalJson,
   createWorkerReadinessRequest,
   currentShardOrchestrationImplementationHashes,
   createSignedExecutionPlan,
@@ -3377,7 +3381,12 @@ test('strict shard preflight rejects a self-consistent model outside the paid re
   );
 });
 
-test('strict production verifier rebuilds the staged four-cell authority from one local manifest', () => {
+for (const releaseSelection of [undefined, { modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'workspace.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing' }]) {
+test(`strict production verifier replays signed coordinator ${releaseSelection?.modelId ?? 'default 3.5'}`, () => {
+  const selectedPlan = createBalancedReleasePlan(releaseSelection);
+  const LIVE_LLM_CELLS = liveCellsForReleasePlan(selectedPlan);
+  const PROVIDER_PREFLIGHT_MODEL = selectedPlan.models[0];
+  const selectedEndpoint = releaseSelection?.endpointHost ?? STRICT_PAID_PROVIDER_IDENTITY.endpointHost;
   const root = makeTempRoot();
   const evidenceRoot = path.join(root, 'evidence');
   const coordinatorRoot = path.join(root, 'coordinator-source');
@@ -3440,11 +3449,12 @@ test('strict production verifier rebuilds the staged four-cell authority from on
     const signingKeys = generateCoordinatorSigningKeyPair();
     const implementationHashes = currentAuthorityImplementationHashes({ workspaceRoot });
     const shardImplementationHashes = currentShardOrchestrationImplementationHashes({ workspaceRoot });
-    const assignments = defaultThreeVmAssignments(workers).map((assignment, index) => ({
+    const assignments = defaultThreeVmAssignments(workers, releaseSelection).map((assignment, index) => ({
       ...assignment,
       leaseId: `verifier-paid-lease-${index + 1}`,
     }));
     const workerReadinessRequest = createWorkerReadinessRequest({
+      releaseSelection,
       executionId,
       generatedAt: new Date(baseMs - 10_000),
       provenance: shardProvenance,
@@ -3566,6 +3576,7 @@ test('strict production verifier rebuilds the staged four-cell authority from on
       providerCalls: 0,
     };
     const preflightGrant = createProviderPreflightGrant({
+      releaseSelection,
       executionId,
       generatedAt: new Date(baseMs - 8_000),
       expiresAt: new Date(baseMs + 86_400_000),
@@ -3689,7 +3700,7 @@ test('strict production verifier rebuilds the staged four-cell authority from on
         authorizationDigest: expectedPreflightAuthorization.authorizationDigest,
         consumptionClaim: consumptionClaimProjection,
         executor: structuredClone(expectedPreflightAuthorization.executor),
-        ...fixturePreflightLifecycle(),
+        ...fixturePreflightLifecycle(PROVIDER_PREFLIGHT_MODEL),
         externalAudioSamples: 0,
         providerInvocationCount: 1,
         connectionAttempts: 1,
@@ -3738,7 +3749,7 @@ test('strict production verifier rebuilds the staged four-cell authority from on
         providerConnectStartedAt,
         providerConnectCompletedAt,
         checkedAt: providerCheckedAt,
-        endpointHost: 'dashscope.aliyuncs.com',
+        endpointHost: selectedEndpoint,
         transportRequested: 'websocket',
         effectiveTransport: 'websocket',
         credentialStatus: {
@@ -3746,7 +3757,7 @@ test('strict production verifier rebuilds the staged four-cell authority from on
           exists: true,
           reference: 'credential://provider/dashscope/default',
         },
-        ...fixturePreflightLifecycle(),
+        ...fixturePreflightLifecycle(PROVIDER_PREFLIGHT_MODEL),
         externalAudioSamples: 0,
         providerInvocationCount: 1,
         inputTokens: null,
@@ -3759,7 +3770,7 @@ test('strict production verifier rebuilds the staged four-cell authority from on
         connectionOwner: `preflight:${observedPreflightAuthorization.executionId}`,
         connectionGeneration: 1,
         rawProbeResult: {
-          ...fixturePreflightLifecycle(),
+          ...fixturePreflightLifecycle(PROVIDER_PREFLIGHT_MODEL),
           productionMode: true,
           latencyBudgetMs: 1_200,
           measuredLatencyMs: 606,
@@ -3799,7 +3810,7 @@ test('strict production verifier rebuilds the staged four-cell authority from on
           templateId: 'template-dashscope-realtime',
           kind: 'dashscope',
           model: configuredModel,
-          baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
+          baseUrl: `https://${selectedEndpoint}/api/v1`,
           transport: 'websocket',
           streamEnabled: true,
           systemPromptTemplate: 'game-live-translation-cn',
@@ -3845,7 +3856,7 @@ test('strict production verifier rebuilds the staged four-cell authority from on
       executionId,
       preflight: {
         providerId: PROVIDER_PREFLIGHT_PROVIDER_ID,
-        ...fixturePreflightLifecycle(),
+        ...fixturePreflightLifecycle(PROVIDER_PREFLIGHT_MODEL),
         status: 'completed',
         externalAudioSamples: 0,
         providerInvocationCount: 1,
@@ -3875,6 +3886,7 @@ test('strict production verifier rebuilds the staged four-cell authority from on
       'utf8',
     );
     const plan = createSignedExecutionPlan({
+      releaseSelection,
       executionId,
       generatedAt: new Date(baseMs - 2_000),
       expiresAt: new Date(baseMs + 86_400_000),
@@ -3929,6 +3941,66 @@ test('strict production verifier rebuilds the staged four-cell authority from on
       assignments,
       ...signingKeys,
     });
+    if (releaseSelection) {
+      const projection = {
+        providerPreflightGrant: plan.providerPreflightGrant,
+        providerPreflightLeaseReservations: plan.providerPreflightLeaseReservations.map(({ cellIndex: _index, ...entry }) => entry),
+        providerPreflightAuthorization: plan.providerPreflightAuthorization,
+        providerPreflightCompletion: plan.providerPreflightCompletion,
+        workerReadinessRequest: fileAuthorityEntry(readinessRequestPath, 'worker-readiness-request.json'),
+        workerReadiness: preflightGrant.workerReadinessAuthorities,
+      };
+      const options = {
+        plan, executionRoot: coordinatorRoot, executionRootRelative: '', evidenceRoot: coordinatorRoot,
+        workspaceRoot, shardExecution: projection, matrixIntegration: projection,
+        currentImplementationHashes: implementationHashes, currentRuntimeBinaryHashes: runtimeBinaryHashes,
+        currentShardImplementationHashes: shardImplementationHashes, validationAt: new Date(baseMs),
+      };
+      const validated = verifyStrictShardProviderPreflightAuthorization(options);
+      assert.deepEqual(validated.grant.releaseSelection, normalizeReleaseSelection(releaseSelection));
+      assert.equal(validated.grant.cells.length, 4);
+      verifyStrictShardProviderPreflightAuthority({ ...options, currentProvenance: shardProvenance,
+        authorization: validated, validateEvidence: validateFixturePreflight });
+      for (const mutation of ['model', 'profile', 'endpoint', 'budget', 'signature']) {
+        const candidate = structuredClone(plan);
+        if (mutation === 'model') candidate.cells[0].modelId = 'qwen3.5-livetranslate-flash-realtime';
+        if (mutation === 'profile') candidate.cells[0].modelProtocolProfileIdentity = deriveWatchModelProtocolIdentity('qwen3.5-livetranslate-flash-realtime');
+        if (mutation === 'endpoint') candidate.releaseSelection.endpointHost = 'other.cn-beijing.maas.aliyuncs.com';
+        if (mutation === 'budget') candidate.cells[0].maxExternalAudioSamples += 16000;
+        const { signature, planDigest: _digest, ...core } = candidate;
+        const signed = { ...core, planDigest: sha256Canonical(core) };
+        const resign = { ...signed, signature: { ...signature,
+          valueBase64: mutation === 'signature' ? Buffer.alloc(64).toString('base64')
+            : crypto.sign(null, Buffer.from(canonicalJson(signed)), signingKeys.privateKeyPem).toString('base64') } };
+        assert.throws(() => verifyStrictShardProviderPreflightAuthorization({ ...options, plan: resign }));
+      }
+      const selectedPlanPath = path.join(coordinatorRoot, SHARD_EXECUTION_PLAN_FILE);
+      fs.writeFileSync(selectedPlanPath, JSON.stringify(plan), 'utf8');
+      const manifest = {
+        schemaVersion: STRICT_MATRIX_SCHEMA_VERSION, artifactKind: STRICT_MATRIX_ARTIFACT_KIND,
+        generatedAt: new Date(baseMs).toISOString(), releaseSelection: normalizeReleaseSelection(releaseSelection),
+        validationPlan: selectedPlan,
+        shardExecution: { executionRoot: '', plan: fileAuthorityEntry(selectedPlanPath, SHARD_EXECUTION_PLAN_FILE) },
+        matrixIntegration: { releaseSelection: normalizeReleaseSelection(releaseSelection) },
+      };
+      const verifyManifest = candidate => verifyProductionStrictMatrixAuthority({
+        manifestPath: path.join(coordinatorRoot, 'matrix.json'), manifest: candidate, evidenceRoot: coordinatorRoot,
+        currentProvenance: shardProvenance, workspaceRoot, currentRuntimeBinaryHashes: runtimeBinaryHashes,
+        requireLocalIsolation: false, now: baseMs,
+      });
+      for (const mutation of ['legacy-plan', 'different-endpoint', 'missing-selection', 'integration-selection']) {
+        const candidate = structuredClone(manifest);
+        if (mutation === 'legacy-plan') candidate.validationPlan = BALANCED_RELEASE_PLAN;
+        if (mutation === 'different-endpoint') {
+          candidate.releaseSelection.endpointHost = 'other.cn-beijing.maas.aliyuncs.com';
+          candidate.validationPlan = createBalancedReleasePlan(candidate.releaseSelection);
+        }
+        if (mutation === 'missing-selection') delete candidate.releaseSelection;
+        if (mutation === 'integration-selection') delete candidate.matrixIntegration.releaseSelection;
+        assert.throws(() => verifyManifest(candidate), /selected validation plan|signed release selection/);
+      }
+      return; // Other agents own matrix staging and the external budget integration.
+    }
     const planPath = path.join(coordinatorRoot, SHARD_EXECUTION_PLAN_FILE);
     fs.writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`, 'utf8');
     const leases = issueCellLeases(plan, signingKeys.privateKeyPem, {
@@ -4273,6 +4345,8 @@ test('strict production verifier rebuilds the staged four-cell authority from on
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+}
 
 test('strict authority rejects duplicate Rust provider lease IDs across cells', () => {
   const root = makeTempRoot();

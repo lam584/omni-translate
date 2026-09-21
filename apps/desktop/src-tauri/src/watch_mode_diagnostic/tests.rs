@@ -701,3 +701,25 @@ fn diagnostic_ipc_gate_times_out_without_readiness_signal() {
     assert!(started.elapsed() >= Duration::from_millis(10));
     assert!(started.elapsed() < Duration::from_secs(1));
 }
+
+#[test]
+fn strict_v2_watch_route_uses_registry_dialect_and_requires_workspace() {
+    for (host, allowed) in [("acceptance.cn-beijing.maas.aliyuncs.com", true),
+        ("dashscope.aliyuncs.com", false)] {
+        let mut config = default_watch_config();
+        config["providers"][0]["baseUrl"] = json!(format!("https://{host}"));
+        let effective = configure_watch_realtime_provider_with_environment(
+            &mut config, "qwen3.8-livetranslate-flash-realtime", "dashscope-livetranslate",
+            strict_watch_environment).unwrap();
+        let provider = crate::audio::events::resolve_model_provider_from_config_value(
+            &config, &effective).unwrap();
+        let profile = crate::audio::events::resolve_realtime_profile(&provider, &provider.model);
+        assert_eq!(profile.preconnect_allowed, allowed);
+        if allowed {
+            assert_eq!(profile.model_protocol_authority.unwrap().wire_dialect,
+                "bailian-livetranslate-session-ws-v2");
+        } else {
+            assert!(profile.model_protocol_error.is_some());
+        }
+    }
+}

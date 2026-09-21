@@ -807,6 +807,22 @@
   "models": [
     {
       "id": "gpt-realtime",
+      "capabilityMetadata": {
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ],
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "apiModes": [
+          "live-websocket"
+        ],
+        "releasedAt": "2025-08-28"
+      },
       "displayName": "GPT-Realtime",
       "capabilities": ["speech-to-text", "speech-to-speech"],
       "maturity": "ga",
@@ -822,6 +838,26 @@
     },
     {
       "id": "gpt-realtime-2",
+      "capabilityMetadata": {
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ],
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming",
+          "push_to_talk"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "apiModes": [
+          "websocket",
+          "webrtc",
+          "sip"
+        ],
+        "releasedAt": "2026-05-07"
+      },
       "displayName": "GPT-Realtime-2",
       "capabilities": ["speech-to-text", "speech-to-speech"],
       "maturity": "unspecified",
@@ -837,6 +873,22 @@
     },
     {
       "id": "gpt-realtime-2.1",
+      "capabilityMetadata": {
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ],
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "apiModes": [
+          "live-websocket"
+        ],
+        "releasedAt": "unknown"
+      },
       "displayName": "GPT-Realtime-2.1",
       "capabilities": ["speech-to-text", "speech-to-speech"],
       "maturity": "preview",
@@ -852,6 +904,22 @@
     },
     {
       "id": "gpt-realtime-2.1-mini",
+      "capabilityMetadata": {
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ],
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "apiModes": [
+          "live-websocket"
+        ],
+        "releasedAt": "unknown"
+      },
       "displayName": "GPT-Realtime-2.1 Mini",
       "capabilities": ["speech-to-text", "speech-to-speech"],
       "maturity": "preview",
@@ -867,6 +935,21 @@
     },
     {
       "id": "gpt-realtime-translate",
+      "capabilityMetadata": {
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ],
+        "interactionCapabilities": [
+          "streaming",
+          "pipeline_asr_mt_tts"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "apiModes": [
+          "live-websocket"
+        ],
+        "releasedAt": "2026-05-07"
+      },
       "displayName": "GPT-Realtime-Translate",
       "capabilities": ["speech-to-text", "speech-to-speech", "speech-translation"],
       "maturity": "unspecified",
@@ -897,6 +980,21 @@
     },
     {
       "id": "gpt-realtime-whisper",
+      "capabilityMetadata": {
+        "capabilities": [
+          "speech-to-text"
+        ],
+        "interactionCapabilities": [
+          "manual_commit",
+          "streaming"
+        ],
+        "realtimeAudioMode": "manual",
+        "apiModes": [
+          "realtime",
+          "audio"
+        ],
+        "releasedAt": "2026-05-07"
+      },
       "displayName": "GPT-Realtime-Whisper",
       "capabilities": ["speech-to-text", "realtime-transcription"],
       "maturity": "unspecified",

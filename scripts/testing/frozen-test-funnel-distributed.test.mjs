@@ -360,9 +360,16 @@ test('step timeout settles without child close when inherited pipes remain open'
   let kills = 0; let unrefs = 0;
   child.kill = () => { kills += 1; return true; };
   child.unref = () => { unrefs += 1; };
+  let outputClosed;
+  let logStream;
   const started = Date.now();
   const result = await runFrozenFunnelStep({ ...FROZEN_FUNNEL_STEPS[0], workerId: 'vm1' }, path.join(root, 'timeout.log'), {
     workspaceRoot: root, timeoutMs: 15, spawnCommand: () => child,
+    createOutputStream: (file, options) => {
+      logStream = fs.createWriteStream(file, options);
+      outputClosed = new Promise((resolve) => logStream.once('close', resolve));
+      return logStream;
+    },
   });
   assert.ok(Date.now() - started < 1500, 'timeout cannot await a close event that never arrives');
   assert.equal(result.verdict, 'failed'); assert.equal(result.cleanupComplete, false);
@@ -371,7 +378,12 @@ test('step timeout settles without child close when inherited pipes remain open'
   assert.equal(child.stdout.destroyed, true); assert.equal(child.stderr.destroyed, true);
   child.emit('close', 0, null);
   assert.equal(result.verdict, 'failed', 'late successful close cannot overwrite timeout');
-  await new Promise((resolve) => setImmediate(resolve));
+  // Timeout deliberately resolves with cleanupComplete=false. destroy() may
+  // still be awaiting the asynchronous file open/close on Windows; deleting
+  // the fixture directory before close races that operation (ENOTEMPTY).
+  // Keep the bounded-settlement assertion above; await only fixture teardown.
+  await outputClosed;
+  assert.equal(logStream.closed, true);
 });
 
 test('successful child close cannot hang forever when final log flush never calls back', { timeout: 3000 }, async (t) => {

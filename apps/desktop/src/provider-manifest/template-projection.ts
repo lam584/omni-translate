@@ -5,7 +5,8 @@ import type { ProviderModelProtocolBinding } from '../schema/config';
 import { PROVIDER_MANIFEST_REGISTRY } from './bundle';
 import type { ProviderManifest, ProviderManifestModel } from './types';
 
-function uiCapabilities(model: ProviderManifestModel): ProviderCapability[] {
+export function uiCapabilities(model: ProviderManifestModel): ProviderCapability[] {
+  if (model.capabilityMetadata?.capabilities !== undefined) return [...model.capabilityMetadata.capabilities];
   const capabilities = new Set<ProviderCapability>();
   for (const capability of model.capabilities) {
     if (capability === 'text-generation' || capability === 'text-translation') {
@@ -56,7 +57,7 @@ function presetForModel(
   ))?.adapter.verification);
   const fixtureOnlyCount = verification.filter((status) => status === 'fixture-only').length;
   const verificationNote = fixtureOnlyCount > 0
-    ? `【fixture-only ${fixtureOnlyCount}/${verification.length}；对应操作未保留 live provider 证据】`
+    ? `【fixture-only ${fixtureOnlyCount}/${verification.length}；对应操作未保留本次构建的可移植 live provider 证据】`
     : '';
   return {
     id: existing?.id ?? `${template.id.replace(/^template-/, '')}-${model.id}`,
@@ -66,6 +67,9 @@ function presetForModel(
     description: [
       existing?.description ?? model.availability ?? `${model.displayName}（由 Provider Manifest 管理）`,
       verificationNote,
+      manifest.provider.id === 'bailian' && model.id === 'qwen3.5-livetranslate-flash-realtime'
+        ? '3.5历史四机实测已通过；本次改动尚未重新实测。历史结果不代表本次构建或3.8已经 live-verified。'
+        : '',
     ].filter(Boolean).join(' '),
   };
 }
@@ -129,26 +133,29 @@ export function projectTemplateFromProviderManifest(template: ProviderTemplate):
     }]
     : [];
 
+  const preserveConnectionDefaults = manifest.provider.kind === 'dashscope';
   return {
     ...template,
     manifestProviderId: manifest.provider.id,
     defaultDraft: {
       ...template.defaultDraft,
       manifestProviderId: manifest.provider.id,
-      model: defaultModel?.id ?? template.defaultDraft.model,
-      baseUrl: projectedBaseUrl,
+      model: preserveConnectionDefaults ? template.defaultDraft.model : defaultModel?.id ?? template.defaultDraft.model,
+      baseUrl: preserveConnectionDefaults ? template.defaultDraft.baseUrl : projectedBaseUrl,
       deploymentId: requiresDeployment ? '' : undefined,
-      transport: providerTransport,
+      transport: preserveConnectionDefaults ? template.defaultDraft.transport : providerTransport,
       auth: {
         ...template.defaultDraft.auth,
-        headerName: credentialHeader?.name ?? template.defaultDraft.auth.headerName,
-        scheme: authScheme,
+        headerName: preserveConnectionDefaults ? template.defaultDraft.auth.headerName : credentialHeader?.name ?? template.defaultDraft.auth.headerName,
+        scheme: preserveConnectionDefaults ? template.defaultDraft.auth.scheme : authScheme,
       },
     },
     fieldGroups: template.fieldGroups.map((group, index) => index === 0 && deploymentField.length > 0
       ? { ...group, fields: [...group.fields, ...deploymentField] }
       : group),
-    presetModels: enabledModels.map((model) => presetForModel(template, manifest, model)),
+    // Discovery metadata is not execution authority. Disabled profiles remain
+    // visible; resolver checks the adapter before any connection.
+    presetModels: (preserveConnectionDefaults ? manifest.models : enabledModels).map((model) => presetForModel(template, manifest, model)),
   };
 }
 

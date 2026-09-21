@@ -1,4 +1,6 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
+#[cfg(test)]
+use std::time::Duration;
 
 mod production;
 pub(crate) use production::{create_production_echo_canceller, ProductionEchoCanceller};
@@ -168,6 +170,7 @@ impl EchoCanceller {
         self.push_render_at(samples, sample_rate_hz, channel_count, Instant::now())
     }
 
+    #[cfg(test)]
     fn push_render_at(
         &mut self,
         samples: &[f32],
@@ -224,6 +227,7 @@ impl EchoCanceller {
             .process_capture_10ms(captured, delay_samples, capture_time)
     }
 
+    #[cfg(test)]
     pub(crate) fn process_capture(
         &mut self,
         captured: &[f32],
@@ -232,6 +236,7 @@ impl EchoCanceller {
         self.process_capture_at(captured, delay_samples, Instant::now())
     }
 
+    #[cfg(test)]
     fn process_capture_at(
         &mut self,
         captured: &[f32],

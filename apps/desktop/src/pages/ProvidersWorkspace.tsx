@@ -1,3 +1,4 @@
+import { effectiveProviderModelRegistry } from '../utils/provider-model-capabilities-registry';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { StatusTone } from '../components/page/StatusBadge';
@@ -94,8 +95,8 @@ function ProvidersPage() {
   const latestRuntimeError = runtimeNotifications.find((item) => item.level === 'error');
   const modelCatalogSignature = useMemo(() => buildModelCatalogSignature(activeProvider), [activeProvider]);
   const localModelCapabilityRegistry = useMemo(
-    () => activeProvider.localModelCapabilityRegistry ?? [],
-    [activeProvider.localModelCapabilityRegistry],
+    () => activeProvider.modelRegistryVersion === 2 ? effectiveProviderModelRegistry(activeProvider) : activeProvider.localModelCapabilityRegistry ?? [],
+    [activeProvider],
   );
   const sceneAssignments = useMemo(
     () => ensureSceneAssignments(activeProvider.sceneModelAssignments),

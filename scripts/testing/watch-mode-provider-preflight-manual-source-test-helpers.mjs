@@ -189,7 +189,7 @@ export async function createProviderPreflightManualSourceTestFixture(mock) {
       localIsolationAuthority: plan.localIsolationAuthority,
       budget: { reservedExternalAudioSamples: shard.SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
         actualExternalAudioSamples: 100, preflightExternalAudioSamples: 0 },
-      cells: LIVE_LLM_CELLS.map((cell, i) => ({ cellId: cell.cellId, leaseId: 'lease-' + i, verdict: 'passed' })) };
+      cells: LIVE_LLM_CELLS.map((cell, i) => ({ cellId: cell.cellId, modelId: cell.modelId, modelProtocolProfileIdentity: cell.modelProtocolProfileIdentity, leaseId: 'lease-' + i, verdict: 'passed' })) };
     aggregate = { ...aggregateCore, aggregateDigest: shard.sha256Canonical(aggregateCore) };
     manifest = { schemaVersion: evidence.STRICT_MATRIX_SCHEMA_VERSION, artifactKind: evidence.STRICT_MATRIX_ARTIFACT_KIND,
       generatedAt: at(-1500),

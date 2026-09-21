@@ -64,3 +64,22 @@ pub(super) fn snapshot_text(event: &Value) -> Result<String, String> {
     }
     Ok(format!("{text}{stash}"))
 }
+
+pub(super) fn validate_language_emotion(event: &Value, allow_empty_language: bool) -> Result<(), String> {
+    if allow_empty_language {
+        super::required_string(event, "language")?;
+    } else {
+        required_nonempty_string(event, "language")?;
+    }
+    let emotion = super::required_string(event, "emotion")?;
+    if emotion.is_empty()
+        || matches!(
+            emotion,
+            "surprised" | "neutral" | "happy" | "sad" | "disgusted" | "angry" | "fearful"
+        )
+    {
+        Ok(())
+    } else {
+        Err("model_protocol.payload_invalid: unsupported transcription emotion".to_string())
+    }
+}

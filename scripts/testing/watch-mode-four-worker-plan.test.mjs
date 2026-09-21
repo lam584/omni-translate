@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { SHARD_ALLOWED_WORKER_COUNTS } from './watch-mode-shard-authority.mjs';
-import { fixedFourWorkerAssignments, FOUR_WORKER_DISPATCH_SCHEDULE, FOUR_WORKER_ISOLATION_CELLS } from './watch-mode-four-worker-plan.mjs';
-import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { fourWorkerDispatchSchedule, fixedFourWorkerAssignments, FOUR_WORKER_DISPATCH_SCHEDULE, FOUR_WORKER_ISOLATION_CELLS } from './watch-mode-four-worker-plan.mjs';
+import { createBalancedReleasePlan, LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
 test('four-worker authority schema accepts four identity-bound workers', () => {
   assert.deepEqual(SHARD_ALLOWED_WORKER_COUNTS, [1, 2, 3, 4]);
 });
@@ -24,4 +24,17 @@ test('four-worker mapping is permutation-independent and schedules c01/c04/c02/c
   const absent = structuredClone(workers);
   absent[0].deviceProfileInstances = [];
   assert.throws(() => fixedFourWorkerAssignments(absent), /exactly one/);
+});
+
+test('3.8 runs exactly four cells on the same four pinned workers without changing default placement', () => {
+  const workers = ['vm171','vm169','vm131','vm167'].map(workerId => ({workerId,
+    deviceProfileInstances:[{instanceId:workerId+'-speaker',deviceClass:'default-speaker'}]}));
+  const plan = createBalancedReleasePlan({modelId:'qwen3.8-livetranslate-flash-realtime',
+    endpointHost:'workspace-test.cn-beijing.maas.aliyuncs.com'});
+  const assignments = fixedFourWorkerAssignments(workers, plan);
+  assert.deepEqual(assignments.map(c=>c.workerId), ['vm171','vm169','vm131','vm167']);
+  assert.ok(assignments.every(c=>c.cellId.includes('qwen3.8-livetranslate-flash-realtime')));
+  assert.deepEqual(fourWorkerDispatchSchedule(plan).map(c=>c.startOffsetMs), [0,3000,6000,9000]);
+  assert.ok(fixedFourWorkerAssignments(workers).every(c=>c.cellId.includes('qwen3.5-livetranslate-flash-realtime')));
+  assert.deepEqual(fourWorkerDispatchSchedule(), FOUR_WORKER_DISPATCH_SCHEDULE);
 });

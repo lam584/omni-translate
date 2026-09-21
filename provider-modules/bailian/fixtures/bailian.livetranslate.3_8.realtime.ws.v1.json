@@ -1,0 +1,216 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "bailian.livetranslate.3_8.realtime.ws.fixture.v1",
+  "providerId": "bailian",
+  "protocolProfileId": "bailian.livetranslate.3_8.realtime.ws",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "bailian.docs.32"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Generated documentation fixture projection from provider-modules/bailian/fixtures/livetranslate-session-v2.json; never authorizes paid calls."
+  },
+  "scenario": "Exact bailian.livetranslate.3_8.realtime.ws protocol replay",
+  "data": {
+    "endpointStatus": "verified",
+    "networkAuthorized": false,
+    "connectionUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+    "authContract": {
+      "profileId": "bailian.auth.bearer",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "value": "Bearer <redacted>"
+        }
+      ]
+    },
+    "audioContract": {
+      "input": {
+        "required": true,
+        "codecs": [
+          "pcm16"
+        ],
+        "sampleRatesHz": [
+          16000
+        ],
+        "channels": [
+          1
+        ]
+      },
+      "output": {
+        "required": false,
+        "codecs": [
+          "pcm16"
+        ],
+        "sampleRatesHz": [
+          24000
+        ],
+        "channels": [
+          1
+        ]
+      }
+    },
+    "events": [
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "session.created",
+        "type": "session.created"
+      },
+      {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "session.update",
+        "payload": {
+          "session": {
+            "output_modalities": [
+              "text",
+              "audio"
+            ],
+            "translation": {
+              "language": "zh"
+            },
+            "audio": {
+              "input": {
+                "turn_detection": {
+                  "type": "speaker_detection"
+                }
+              }
+            }
+          }
+        },
+        "type": "session.update"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "session.updated",
+        "type": "session.updated"
+      },
+      {
+        "direction": "client",
+        "frameKind": "json-base64",
+        "eventType": "input_audio_buffer.append",
+        "type": "input_audio_buffer.append",
+        "audio": "<redacted>"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "conversation.item.input_audio_transcription.delta",
+        "payload": {
+          "delta": "Hello"
+        },
+        "type": "conversation.item.input_audio_transcription.delta"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "conversation.item.input_audio_transcription.completed",
+        "payload": {
+          "transcript": "Hello"
+        },
+        "type": "conversation.item.input_audio_transcription.completed"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.created",
+        "type": "response.created"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.output_item.added",
+        "type": "response.output_item.added"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.content_part.added",
+        "type": "response.content_part.added"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.text.delta",
+        "payload": {
+          "delta": "你好"
+        },
+        "type": "response.text.delta"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.text.delta",
+        "payload": {
+          "delta": "啊"
+        },
+        "type": "response.text.delta"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.text.done",
+        "payload": {
+          "text": "你好啊"
+        },
+        "type": "response.text.done"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.content_part.done",
+        "type": "response.content_part.done"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.output_item.done",
+        "type": "response.output_item.done"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.done",
+        "type": "response.done"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.audio_transcript.delta",
+        "payload": {
+          "delta": "你好"
+        },
+        "type": "response.audio_transcript.delta"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.audio_transcript.done",
+        "payload": {
+          "transcript": "你好"
+        },
+        "type": "response.audio_transcript.done"
+      },
+      {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "session.finish",
+        "type": "session.finish"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "session.finished",
+        "type": "session.finished",
+        "terminal": true
+      }
+    ]
+  }
+}

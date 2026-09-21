@@ -1371,7 +1371,8 @@ describe('ProvidersPage', () => {
     await inputText(secretInput(container)!, 'new-secret');
     await click(container.querySelector<HTMLButtonElement>('.provider-auth-entry-actions .action-button'));
     expect(container.textContent).toContain('save unavailable');
-    expect(useAppStore.getState().configDraft.providers[0].status).toBe('warning');
+    expect(useAppStore.getState().configDraft.providers[0].status).toBe('draft');
+    expect(useAppStore.getState().configDraft.providers[0].probe.checkedAt).toBe('pending-probe');
 
     await click(revealSecretButton(container));
     expect(secretInput(container)?.type).toBe('text');
@@ -1631,7 +1632,9 @@ describe('ProvidersPage', () => {
 
     const registryEntry = useAppStore.getState().configDraft.providers[0].localModelCapabilityRegistry.find((item) => item.modelId === 'interaction-model');
     expect(registryEntry?.realtimeAudioMode).toBe('gemini_auto_activity');
-    expect(registryEntry?.interactionCapabilities).toEqual([]);
+    // Two toggles restore the original value. An explicit [] no longer
+    // synthesizes auto_vad from the audio mode between toggles.
+    expect(registryEntry?.interactionCapabilities).toEqual(['auto_vad']);
 
     await click(dialog.querySelectorAll<HTMLButtonElement>('.provider-model-toolbar .provider-header-icon')[0]);
     const helpDialog = Array.from(container.querySelectorAll<HTMLElement>('.provider-advanced-modal')).find((item) =>
@@ -1718,7 +1721,7 @@ describe('ProvidersPage', () => {
     expect(useAppStore.getState().configDraft.providers[0].sceneModelAssignments[0]?.modelIds[0]).toBe('second-drag-model');
   });
 
-  it('renders capability registry fallback values and empty state after removals', async () => {
+  it('renders registry fallback values and preserves inherited module rows after deleting user overrides', async () => {
     const state = cloneStoreState();
     state.configDraft.providers[0].localModelCapabilityRegistry = [
       { id: 'fallback-audio', modelId: 'qwen-omni-realtime', capabilities: ['speech-to-speech'] },
@@ -1741,7 +1744,8 @@ describe('ProvidersPage', () => {
     }
 
     expect(useAppStore.getState().configDraft.providers[0].localModelCapabilityRegistry).toHaveLength(0);
-    expect(dialog.querySelector('.provider-directory-empty.provider-scene-empty')).not.toBeNull();
+    expect(dialog.querySelector('.provider-capability-registry-item')).not.toBeNull();
+    expect(useAppStore.getState().configDraft.providers[0].modelCapabilityOverrides).toEqual([]);
   });
 
   it('adds a catalog model to a non-active scene without replacing the active model', async () => {
@@ -1761,7 +1765,7 @@ describe('ProvidersPage', () => {
     let row: HTMLElement | undefined;
     await waitForExpectation(() => {
       row = Array.from(modelCatalogDialog(container)!.querySelectorAll<HTMLElement>('.provider-model-item')).find((item) =>
-        item.textContent?.includes('qwen3.5-omni-plus-realtime'),
+        item.textContent?.includes('qwen-audio-3.0-tts-plus'),
       );
       expect(row, modelCatalogDialog(container)?.textContent ?? '').toBeInstanceOf(HTMLElement);
     });
@@ -1769,7 +1773,7 @@ describe('ProvidersPage', () => {
     await click(row!.querySelector<HTMLButtonElement>('.provider-row-action'));
 
     const provider = useAppStore.getState().configDraft.providers[0];
-    expect(provider.sceneModelAssignments.find((item) => item.scenario === 'game')?.modelIds).toContain('qwen3.5-omni-plus-realtime');
+    expect(provider.sceneModelAssignments.find((item) => item.scenario === 'game')?.modelIds).toContain('qwen-audio-3.0-tts-plus');
     expect(provider.model).toBe('qwen3.5-omni-plus-realtime');
   });
 

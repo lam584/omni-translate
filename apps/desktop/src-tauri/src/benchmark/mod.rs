@@ -234,8 +234,21 @@ struct BenchmarkProgressEvent {
     total_audio_chunks: usize,
 }
 
+// Keep UI delivery separate from the production runner and its protocol state.
+type BenchmarkProgressSink = Box<dyn Fn(BenchmarkProgressEvent) + Send>;
+
+#[derive(Clone, Copy, Default)]
+enum BenchmarkExecutionPolicy {
+    #[default]
+    Production,
+    // Only the explicitly opted-in test supervisor may select this policy.
+    #[cfg(test)]
+    Bounded { loopback: Option<std::net::SocketAddr> },
+}
+
 struct BenchmarkProgressState {
-    app: AppHandle,
+    sink: BenchmarkProgressSink,
+    policy: BenchmarkExecutionPolicy,
     run_id: String,
     model: String,
     audio_file: String,
@@ -250,7 +263,8 @@ struct BenchmarkProgressState {
 
 impl BenchmarkProgressState {
     fn new(
-        app: AppHandle,
+        sink: BenchmarkProgressSink,
+        policy: BenchmarkExecutionPolicy,
         run_id: String,
         model: String,
         audio_file: String,
@@ -260,7 +274,8 @@ impl BenchmarkProgressState {
         total_audio_chunks: usize,
     ) -> Self {
         Self {
-            app,
+            sink,
+            policy,
             run_id,
             model: model.clone(),
             audio_file,
@@ -272,6 +287,18 @@ impl BenchmarkProgressState {
             run: empty_run_result(0, model, audio_duration_secs),
             last_audio_progress_emit: Instant::now() - Duration::from_secs(1),
         }
+    }
+
+    /// Marks the audio-send phase complete and returns its duration.
+    fn finish_audio_send(
+        &mut self,
+        audio_start: &Instant,
+        total_chunks: usize,
+    ) -> f64 {
+        let audio_send_ms = elapsed_ms(audio_start);
+        self.run.audio_send_ms = audio_send_ms;
+        self.run.audio_chunks_sent = total_chunks;
+        audio_send_ms
     }
 
     fn report(&self) -> BenchmarkReport {
@@ -299,7 +326,7 @@ impl BenchmarkProgressState {
             audio_chunks_sent: self.run.audio_chunks_sent,
             total_audio_chunks: self.total_audio_chunks,
         };
-        let _ = self.app.emit(BENCHMARK_PROGRESS_EVENT, payload);
+        (self.sink)(payload);
     }
 
     fn emit_audio_progress(&mut self, force: bool) {
@@ -323,6 +350,8 @@ impl BenchmarkProgressState {
 include!("runners.rs");
 include!("event_parsing.rs");
 include!("reporting.rs");
+#[cfg(test)]
+mod bounded_live_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

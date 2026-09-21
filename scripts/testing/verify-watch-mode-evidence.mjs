@@ -31,13 +31,15 @@ import {
   validateFileAuthorityEntry,
 } from './watch-mode-evidence-authority.mjs';
 import {
-  BALANCED_RELEASE_PLAN,
   LIVE_LLM_CELLS,
   PROCESS_EXCLUSION_RESTART_AFTER_SECONDS,
   PROCESS_EXCLUSION_RESTART_QUIET_SECONDS,
   RELEASE_DEVICE_CLASSES,
   RELEASE_MODELS,
   balancedReleasePlanFailure,
+  createBalancedReleasePlan,
+  normalizeReleaseSelection,
+  liveCellsForReleasePlan,
 } from './watch-mode-balanced-release-plan.mjs';
 import {
   deriveWatchModelProtocolIdentity,
@@ -94,7 +96,6 @@ import {
   PROVIDER_PREFLIGHT_INPUT_MODE,
   PROVIDER_PREFLIGHT_LEASE_RESERVATION_DIRECTORY,
   PROVIDER_PREFLIGHT_LIFECYCLE_BUDGET,
-  PROVIDER_PREFLIGHT_MODEL,
   PROVIDER_PREFLIGHT_OPERATION,
   PROVIDER_PREFLIGHT_PROTOCOL,
   PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE,
@@ -1438,12 +1439,16 @@ export function verifyStrictShardProviderPreflightAuthorization({
   currentShardImplementationHashes,
   validationAt,
 }) {
+  const selection = normalizeReleaseSelection(plan.releaseSelection);
+  const selectedPlan = createBalancedReleasePlan(selection);
+  const selectedCells = liveCellsForReleasePlan(selectedPlan);
   const authorization = validateProviderPreflightAuthorizationAuthorities({
     root: executionRoot,
     grantAuthority: plan.providerPreflightGrant,
     leaseReservationAuthorities: plan.providerPreflightLeaseReservations,
     authorizationDigest: plan.providerPreflightAuthorization?.authorizationDigest,
     expected: {
+      releaseSelection: selection,
       executionId: plan.executionId,
       provenance: plan.provenance,
       authorityImplementationHashes: currentImplementationHashes,
@@ -1565,13 +1570,15 @@ export function verifyStrictShardProviderPreflightAuthorization({
     expectedGrantWorkers,
     'strict shard provider preflight grant workers',
   );
-  const expectedGrantCells = plan.cells.map((cell) => ({
+  // Preserve worker-binding diagnostics, but never consume selected cells before signature validation.
+  verifySignedExecutionPlan(plan, { now: validationAt });
+  const expectedGrantCells = plan.cells.map((cell, index) => ({
     cellIndex: cell.cellIndex,
     cellId: cell.cellId,
     providerId: PROVIDER_PREFLIGHT_PROVIDER_ID,
-    modelId: cell.modelId,
-    protocol: STRICT_PAID_MODEL_PROTOCOLS[cell.modelId],
-    modelProtocolProfileIdentity: structuredClone(cell.modelProtocolProfileIdentity),
+    modelId: selectedCells[index].modelId,
+    protocol: PROVIDER_PREFLIGHT_PROTOCOL,
+    modelProtocolProfileIdentity: structuredClone(selectedCells[index].modelProtocolProfileIdentity),
     feedbackLoopPrevention: cell.feedbackLoopPrevention,
     deviceClass: cell.deviceClass,
     workerId: cell.workerId,
@@ -1594,6 +1601,7 @@ export function verifyStrictShardProviderPreflightAuthorization({
   );
   const request = readJson(requestPath);
   validateWorkerReadinessRequest(request, {
+    releaseSelection: selection,
     executionId: plan.executionId,
     provenance: plan.provenance,
     runtimeBinaryHashes: currentRuntimeBinaryHashes,
@@ -1839,6 +1847,10 @@ export function verifyStrictShardProviderPreflightAuthority({
   authorization,
   validateEvidence = validateProviderPreflightRawAuthority,
 }) {
+  verifySignedExecutionPlan(plan, { now: validationAt });
+  const selection = normalizeReleaseSelection(plan.releaseSelection);
+  const selectedPlan = createBalancedReleasePlan(selection);
+  const endpointHost = selection?.endpointHost ?? STRICT_PAID_PROVIDER_IDENTITY.endpointHost;
   if (typeof validateEvidence !== 'function') {
     throw new Error('strict shard provider preflight requires an independent raw evidence validator');
   }
@@ -1849,6 +1861,7 @@ export function verifyStrictShardProviderPreflightAuthority({
   }
   const expectedAuthorization = {
     ...validatedConsumption,
+    ...(selection ? { releaseSelection: selection } : {}),
     consumptionClaim: expectedClaim,
   };
   const expectedReceiptPath = portableAuthorityPath(
@@ -1949,7 +1962,10 @@ export function verifyStrictShardProviderPreflightAuthority({
     || Number(receipt.externalAudioSamples) !== 0
     || receipt.providerId !== PROVIDER_PREFLIGHT_PROVIDER_ID
     || receipt.providerId !== expectedAuthorization.providerId
-    || receipt.model !== PROVIDER_PREFLIGHT_MODEL
+    || canonicalJson(receipt.modelProtocolProfileIdentity)
+      !== canonicalJson(deriveWatchModelProtocolIdentity(selectedPlan.models[0], selection))
+    || receipt.model !== selectedPlan.models[0]
+    || receipt.sessionAuthority?.serverModel !== selectedPlan.models[0]
     || receipt.model !== expectedAuthorization.model
     || receipt.protocol !== PROVIDER_PREFLIGHT_PROTOCOL
     || receipt.protocol !== expectedAuthorization.protocol
@@ -2065,7 +2081,7 @@ export function verifyStrictShardProviderPreflightAuthority({
     || configuredProvider?.authRef?.reference
       !== STRICT_PAID_PROVIDER_IDENTITY.credentialReference
     || providerProbeResult.templateId !== STRICT_PAID_PROVIDER_IDENTITY.templateId
-    || providerProbeResult.endpointHost !== STRICT_PAID_PROVIDER_IDENTITY.endpointHost
+    || providerProbeResult.endpointHost !== endpointHost
     || providerProbeResult.transportRequested !== 'websocket'
     || providerProbeResult.effectiveTransport !== 'websocket'
     || rawProbeResult?.transportRequested !== 'websocket'
@@ -2096,7 +2112,7 @@ export function verifyStrictShardProviderPreflightAuthority({
     const configuredEndpoint = new URL(configuredProvider.baseUrl);
     if (
       configuredEndpoint.protocol !== 'https:'
-      || configuredEndpoint.hostname !== STRICT_PAID_PROVIDER_IDENTITY.endpointHost
+      || configuredEndpoint.hostname !== endpointHost
       || configuredEndpoint.port
       || configuredEndpoint.username
       || configuredEndpoint.password
@@ -2214,6 +2230,7 @@ export function verifyStrictShardProviderPreflightAuthority({
     'evidenceOutcome',
     'firstServerEvent',
     'sessionAuthority',
+    'modelProtocolProfileIdentity',
     'rawTrace',
     'audioSeconds',
     'generatedAt',
@@ -2429,6 +2446,12 @@ export function verifyStrictShardMatrixAuthority({
       `strict execution plan must bind between ${SHARD_ALLOWED_WORKER_COUNTS[0]} and ${SHARD_ALLOWED_WORKER_COUNTS.at(-1)} identity-bound workers`,
     );
   }
+  const selection = normalizeReleaseSelection(plan.releaseSelection);
+  const selectedPlan = createBalancedReleasePlan(selection);
+  assertExactObject(manifest.releaseSelection, selection, 'strict manifest signed release selection');
+  assertExactObject(matrixIntegration.releaseSelection, selection, 'strict integration signed release selection');
+  assertExactObject(manifest.validationPlan, selectedPlan, 'strict signed validation plan');
+  assertExactObject(releaseCells, liveCellsForReleasePlan(selectedPlan), 'strict signed release cells');
   const preflightAuthorization = verifyStrictShardProviderPreflightAuthorization({
     plan,
     executionRoot,
@@ -2501,6 +2524,7 @@ export function verifyStrictShardMatrixAuthority({
     'strict shard coordinator aggregate',
   );
   const aggregate = validateCoordinatorAggregate(readJson(aggregatePath));
+  assertExactObject(aggregate.releaseSelection, plan.releaseSelection, 'strict aggregate signed release selection');
   const validationAtMs = Number(validationAt instanceof Date ? validationAt.getTime() : validationAt);
   if (!Number.isFinite(validationAtMs)) {
     throw new Error('strict shard validationAt is missing or invalid');
@@ -2744,7 +2768,7 @@ export function verifyStrictMatrixAuthority({
   now = Date.now(),
   maxAgeDays = DEFAULT_MAX_EVIDENCE_AGE_DAYS,
   currentRuntimeBinaryHashes = currentAuthorityRuntimeBinaryHashes({ workspaceRoot }),
-  releaseCells = LIVE_LLM_CELLS,
+  releaseCells,
   requireLocalIsolation = true,
   validatePreflightEvidence = validateProviderPreflightRawAuthority,
 }) {
@@ -2761,6 +2785,24 @@ export function verifyStrictMatrixAuthority({
   }
   const planFailure = balancedReleasePlanFailure(manifest.validationPlan);
   if (planFailure) throw new Error(planFailure);
+  const selection = normalizeReleaseSelection(manifest.releaseSelection);
+  const selectedPlan = createBalancedReleasePlan(selection);
+  assertExactObject(manifest.validationPlan, selectedPlan, 'strict manifest selected validation plan');
+  if (selection) {
+    // Only the signed factory-bounded plan may authorize a non-default selection.
+    const executionRootRelative = String(manifest.shardExecution?.executionRoot ?? '').replaceAll('\\', '/');
+    const planPath = validateFileAuthorityEntry(resolvedRoot, manifest.shardExecution?.plan,
+      portableAuthorityPath(executionRootRelative, SHARD_EXECUTION_PLAN_FILE), 'strict selected signed plan');
+    const signedPlan = readJson(planPath);
+    verifySignedExecutionPlan(signedPlan, { now: new Date(manifest.generatedAt), currentProvenance });
+    assertExactObject(signedPlan.releaseSelection, selection, 'strict manifest signed release selection');
+    assertExactObject(manifest.matrixIntegration?.releaseSelection, selection, 'strict integration signed release selection');
+    const selectedCells = liveCellsForReleasePlan(selectedPlan);
+    if (releaseCells !== undefined) assertExactObject(releaseCells, selectedCells, 'strict selected release cells');
+    releaseCells = selectedCells;
+  } else {
+    releaseCells ??= LIVE_LLM_CELLS;
+  }
   if (requireLocalIsolation && (!manifest.localIsolation || typeof manifest.localIsolation !== 'object')) {
     throw new Error('strict evidence requires the zero-LLM local isolation authority');
   }
@@ -2795,9 +2837,9 @@ export function verifyStrictMatrixAuthority({
       || !Array.isArray(manifest.collectAll.completed)
       || !Array.isArray(manifest.collectAll.passed)
       || !Array.isArray(manifest.collectAll.failed)
-      || manifest.collectAll.attempted.length !== LIVE_LLM_CELLS.length
-      || manifest.collectAll.completed.length !== LIVE_LLM_CELLS.length
-      || manifest.collectAll.passed.length !== LIVE_LLM_CELLS.length
+      || manifest.collectAll.attempted.length !== releaseCells.length
+      || manifest.collectAll.completed.length !== releaseCells.length
+      || manifest.collectAll.passed.length !== releaseCells.length
       || manifest.collectAll.failed.length !== 0
     )
   ) throw new Error('strict collect-all matrix contains failed or incomplete cells');
@@ -2837,7 +2879,7 @@ export function verifyStrictMatrixAuthority({
   }
   const requiresShardAuthority = releaseCells.length === SHARD_MATRIX_CELL_COUNT
     && canonicalJson(releaseCells.map((cell) => cell.cellId))
-      === canonicalJson(LIVE_LLM_CELLS.map((cell) => cell.cellId));
+      === canonicalJson(liveCellsForReleasePlan(selectedPlan).map((cell) => cell.cellId));
   if (requiresShardAuthority && !manifest.collectAll) {
     throw new Error('strict shard matrix requires collect-all completion authority');
   }
@@ -2999,6 +3041,11 @@ export function verifyStrictMatrixAuthority({
     try {
       cellExternalProviderBudget = assertCellExternalProviderBudget(runDirectory, {
         cellId: plannedCell.cellId,
+        ...(selection ? {
+          approvedModels: selectedPlan.models,
+          modelProtocols: { [selectedPlan.models[0]]: PROVIDER_PREFLIGHT_PROTOCOL },
+          providerIdentity: { ...STRICT_PAID_PROVIDER_IDENTITY, endpointHost: selection.endpointHost },
+        } : {}),
         modelId: plannedCell.modelId,
         modelProtocolProfileIdentity: plannedCell.modelProtocolProfileIdentity,
         feedbackLoopPrevention: plannedCell.feedbackLoopPrevention,
@@ -3007,7 +3054,7 @@ export function verifyStrictMatrixAuthority({
     } catch (error) {
       throw new Error(`strict matrix cell ${index} external provider budget authority failed: ${error.message}`);
     }
-    const expectedProtocol = STRICT_PAID_MODEL_PROTOCOLS[plannedCell.modelId];
+    const expectedProtocol = selection ? PROVIDER_PREFLIGHT_PROTOCOL : STRICT_PAID_MODEL_PROTOCOLS[plannedCell.modelId];
     const leaseId = cellExternalProviderBudget.providerSendBoundary?.leaseId;
     const cellSampleCap = Number(plannedCell.maxExternalAudioSamples);
     if (
@@ -3150,6 +3197,7 @@ export function verifyStrictMatrixAuthority({
     runtimeBinaryHashes: currentRuntimeBinaryHashes,
     externalProviderBudget,
     translatedPcmLoopbackAuthorities,
+    releaseCells,
     shardAuthority,
   };
 }
@@ -4512,7 +4560,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     deviceClasses,
     runDirectories,
     authorizedReports,
-    releaseCells: strict ? LIVE_LLM_CELLS : null,
+    releaseCells: strict ? (verifiedAuthority?.releaseCells ?? LIVE_LLM_CELLS) : null,
     currentProvenance,
     maxAgeDays: args['max-age-days'],
     latencyThresholds,

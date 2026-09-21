@@ -28,6 +28,8 @@ export type ProviderProbeProfile = {
 };
 
 export type ProviderProbeSnapshot = {
+  /** Exact provider/model/binding/connection snapshot; never protocol-wide proof. */
+  configurationSignature?: string;
   profileId: string;
   verdict: ProviderProbeVerdict;
   checkedAt: string;

@@ -208,6 +208,9 @@ export async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Pro
       'configuration_v2.load',
     );
     useAppStore.getState().setConfigDraft(persistedConfig);
+    // Hydration performs deterministic migrations; persistence/sync must use
+    // the canonical in-memory document, not the pre-migration transport value.
+    persistedConfig = useAppStore.getState().configDraft;
     markStep(onStep, 'load-config', 'done');
   } catch (configError) {
     configLoadFailed = true;

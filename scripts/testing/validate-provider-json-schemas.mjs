@@ -40,6 +40,7 @@ export function validateProviderJsonSchemas() {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   ajv.addFormat('date', { type: 'string', validate: dateFormat });
   ajv.addFormat('uri', { type: 'string', validate: uriFormat });
+  ajv.addSchema(readJson('contracts/model-protocol-profiles.schema.json'));
   ajv.addSchema(manifestSchema);
   ajv.addSchema(fixtureSchema);
   ajv.addSchema(bundleSchema);

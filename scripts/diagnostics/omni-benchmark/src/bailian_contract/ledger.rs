@@ -31,6 +31,7 @@ pub(super) fn validate_updated(
     session_id: &str,
     created_event_id: &str,
     requested_session: &Value,
+    incremental_text: bool,
 ) -> Result<(), String> {
     let updated_event_id = required_event_id(event, "session.updated")?;
     if updated_event_id == created_event_id {
@@ -52,13 +53,27 @@ pub(super) fn validate_updated(
         .as_object()
         .ok_or_else(|| "requested LiveTranslate session is not an object".to_string())?;
     for (key, expected) in requested {
-        if session.get(key) != Some(expected) {
+        let matches = session.get(key).is_some_and(|actual| {
+            if incremental_text { echoes_requested_fields(actual, expected) } else { actual == expected }
+        });
+        if !matches {
             return Err(format!(
                 "LiveTranslate session.updated did not echo requested session field '{key}'"
             ));
         }
     }
     Ok(())
+}
+// V2 echoes include server defaults inside nested audio objects. Only requested
+// fields are authoritative; arrays and scalar values still require exact equality.
+fn echoes_requested_fields(actual: &Value, expected: &Value) -> bool {
+    match expected {
+        Value::Object(fields) => actual.as_object().is_some_and(|object| {
+            fields.iter().all(|(key, value)| object.get(key)
+                .is_some_and(|actual| echoes_requested_fields(actual, value)))
+        }),
+        _ => actual == expected,
+    }
 }
 pub(super) fn validate_response_created(event: &Value) -> Result<&str, String> {
     let response = event.get("response").and_then(Value::as_object)
@@ -330,6 +345,7 @@ pub(super) fn validate_translation_event<'a>(
         ));
     }
     let translation = match event_type {
+        "response.text.delta" | "response.audio_transcript.delta" => event.get("delta").and_then(Value::as_str).map(str::to_string),
         "response.text.text" | "response.audio_transcript.text" => {
             let text = event.get("text").and_then(Value::as_str).unwrap_or("");
             let stash = event.get("stash").and_then(Value::as_str).unwrap_or("");
@@ -351,4 +367,8 @@ pub(super) fn validate_translation_event<'a>(
             "model_protocol.payload_invalid: {event_type} lacks typed translation text"
         ))?;
     Ok((response_id, output_index, item_id, translation))
+}
+
+pub(super) fn text_identity(event_type: &str, event: &Value) -> String {
+    serde_json::json!([event_type.trim_end_matches(".delta").trim_end_matches(".done"), event["response_id"], event["item_id"], event["output_index"], event["content_index"]]).to_string()
 }

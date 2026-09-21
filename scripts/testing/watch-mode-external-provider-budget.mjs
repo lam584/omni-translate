@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
-import { LIVE_LLM_CELLS, RELEASE_MODELS } from './watch-mode-balanced-release-plan.mjs';
+import { LIVE_LLM_CELLS, RELEASE_MODELS, createBalancedReleasePlan } from './watch-mode-balanced-release-plan.mjs';
 import {
   assertWatchModelProtocolIdentity,
   deriveWatchModelProtocolIdentity,
@@ -31,6 +31,7 @@ export const STRICT_PAID_CELL_MAX_INPUT_SAMPLES = 2_877_045;
 export const STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES = 10_100_180;
 export const STRICT_PAID_MODEL_PROTOCOLS = Object.freeze({
   'qwen3.5-livetranslate-flash-realtime': 'dashscope-livetranslate',
+  'qwen3.8-livetranslate-flash-realtime': 'dashscope-livetranslate',
 });
 export const INCIDENT_REPLAY_PLUS_MODEL = 'qwen3.5-omni-plus-realtime';
 export const INCIDENT_REPLAY_PLUS_ID = 'watch-mode-loss-incident-plus-v1';
@@ -54,6 +55,15 @@ export const INCIDENT_REPLAY_PLUS_PROVIDER_IDENTITY = Object.freeze({
   incidentReplayAuthority: true,
   incidentId: INCIDENT_REPLAY_PLUS_ID,
 });
+
+export function strictPaidBudgetOptionsForModel(modelId, endpointHost) {
+  const plan = createBalancedReleasePlan({ modelId, ...(endpointHost ? { endpointHost } : {}) });
+  return {
+    approvedModels: [...plan.models],
+    modelProtocols: STRICT_PAID_MODEL_PROTOCOLS,
+    providerIdentity: { ...STRICT_PAID_PROVIDER_IDENTITY, ...(plan.providerEndpoint ? { endpointHost: plan.providerEndpoint.endpointHost } : {}) },
+  };
+}
 
 export const PRE_PROVIDER_TERMINAL_REASON = 'runner-failed-before-provider-session';
 
@@ -149,6 +159,7 @@ export function replayProviderInputPrefilter({
   maxSamples,
   modelProtocolProfileIdentity = null,
   legacyPolicyId = null,
+  endpointHost,
 }) {
   const ceiling = Number(maxSamples);
   if (!Number.isSafeInteger(ceiling) || ceiling <= 0) {
@@ -158,14 +169,14 @@ export function replayProviderInputPrefilter({
   let authorizedIdentity = null;
   let preserveLiveTranslateTimeline = false;
   if (exactModelId) {
-    authorizedIdentity = deriveWatchModelProtocolIdentity(exactModelId);
+    authorizedIdentity = deriveWatchModelProtocolIdentity(exactModelId, { endpointHost });
     assertWatchModelProtocolIdentity(
       modelProtocolProfileIdentity,
       authorizedIdentity,
       'provider prefilter replay model protocol profile identity',
     );
     preserveLiveTranslateTimeline =
-      authorizedIdentity.adapterId === LIVETRANSLATE_TIMELINE_ADAPTER_ID;
+      [LIVETRANSLATE_TIMELINE_ADAPTER_ID, 'desktop-livetranslate-session-v2'].includes(authorizedIdentity.adapterId);
   } else if (legacyPolicyId !== LEGACY_FINITE_SILENCE_GRACE_POLICY_ID) {
     throw new Error('provider prefilter replay requires an authorized model protocol identity or exact legacy policy');
   }
@@ -541,7 +552,7 @@ export function writePreProviderTerminalAuthority({
   const resolvedRunDirectory = path.resolve(runDirectory);
   const protocol = modelProtocols[modelId];
   if (!protocol) throw new Error(`model ${modelId || '(missing)'} has no approved strict-paid realtime protocol`);
-  const modelProtocolProfileIdentity = deriveWatchModelProtocolIdentity(modelId);
+  const modelProtocolProfileIdentity = deriveWatchModelProtocolIdentity(modelId, { endpointHost: providerIdentity.endpointHost });
   for (const [label, value] of Object.entries({ runMarker, cellId, leaseId, modelId })) {
     if (!String(value ?? '').trim()) throw new Error(`pre-provider terminal ${label} is missing`);
   }
@@ -802,7 +813,7 @@ export function buildCellExternalProviderBudget({
   let modelProtocolProfileIdentity = null;
   if (authorityMode === 'strict-paid') {
     try {
-      modelProtocolProfileIdentity = deriveWatchModelProtocolIdentity(normalizedModel);
+      modelProtocolProfileIdentity = deriveWatchModelProtocolIdentity(normalizedModel, { endpointHost: providerIdentity.endpointHost });
       if (expectedModelProtocolProfileIdentity) {
         assertWatchModelProtocolIdentity(
           expectedModelProtocolProfileIdentity,
@@ -857,6 +868,7 @@ export function buildCellExternalProviderBudget({
 
   try {
     const replay = replayProviderInputPrefilter({
+      endpointHost: providerIdentity.endpointHost,
       filePath: path.join(resolvedRunDirectory, PROVIDER_INPUT_PREFILTER_FILE),
       maxSamples: resolvedInputCeilingSamples,
       modelProtocolProfileIdentity,
@@ -1248,6 +1260,7 @@ if (isMain(import.meta.url)) {
         runMarker: '',
         cellId: '',
         modelId: '',
+        endpointHost: '',
         feedbackMode: '',
         translationMode: 'native',
         authorityMode: 'strict-paid',
@@ -1271,9 +1284,11 @@ if (isMain(import.meta.url)) {
     if (!['strict-paid', 'incident-replay-plus'].includes(authorityMode)) {
       throw new Error(`unsupported provider budget authority mode: ${authorityMode || '(missing)'}`);
     }
+    const selectedBudgetOptions = incidentReplay ? {} : strictPaidBudgetOptionsForModel(options.modelId, options.endpointHost);
     if (String(options.writePreProviderTerminal).toLowerCase() === 'true') {
       if (authorityMode !== 'strict-paid') throw new Error('pre-provider terminal is only valid for strict-paid authority');
       writePreProviderTerminalAuthority({
+        ...selectedBudgetOptions,
         runDirectory: options.runDirectory,
         runMarker: options.runMarker,
         cellId: options.cellId,
@@ -1285,6 +1300,7 @@ if (isMain(import.meta.url)) {
       });
     }
     const { filePath, ledger } = writeCellExternalProviderBudget({
+      ...selectedBudgetOptions,
       runDirectory: options.runDirectory,
       appLogPath: options.appLog,
       runMarker: options.runMarker,

@@ -18,6 +18,8 @@ import {
   canonicalJson,
   buildShardCellResult,
   createSignedExecutionPlan,
+  createWorkerReadinessRequest,
+  validateWorkerReadinessRequest,
   fileAuthorityEntry,
   generateCoordinatorSigningKeyPair,
   issueCellLeases,
@@ -69,8 +71,8 @@ import {
   defaultSingleWorkerAssignments,
   fixedThreeWorkerAssignments,
 } from './run-watch-mode-live-coordinator.mjs';
-import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
-import { fixedFourWorkerAssignments, FOUR_WORKER_DISPATCH_SCHEDULE } from './watch-mode-four-worker-plan.mjs';
+import { LIVE_LLM_CELLS, createBalancedReleasePlan, liveCellsForReleasePlan } from './watch-mode-balanced-release-plan.mjs';
+import { fixedFourWorkerAssignments, fourWorkerDispatchSchedule, FOUR_WORKER_DISPATCH_SCHEDULE } from './watch-mode-four-worker-plan.mjs';
 import { rebuildReportFromDirectory } from './watch-mode-report.mjs';
 import {
   healthyApp,
@@ -476,7 +478,8 @@ function testWorkers() {
   ];
 }
 
-function createFixture({ providerPreflightOverrides = {} } = {}) {
+function createFixture({ providerPreflightOverrides = {}, releaseSelection } = {}) {
+  const selectedCells = liveCellsForReleasePlan(createBalancedReleasePlan(releaseSelection));
   const now = new Date();
   const generatedAt = new Date(now.getTime() - 1_000);
   const expiresAt = new Date(now.getTime() + 3_600_000);
@@ -493,6 +496,7 @@ function createFixture({ providerPreflightOverrides = {} } = {}) {
   ];
   const shardOrchestrationImplementationHashes = inventory('shard');
   const plan = createSignedExecutionPlan({
+    releaseSelection,
     executionId: 'watch-shard-test-0001',
     generatedAt,
     expiresAt,
@@ -506,10 +510,11 @@ function createFixture({ providerPreflightOverrides = {} } = {}) {
     providerPreflightAuthority: {
       path: 'provider-preflight-receipt.json', bytes: 88, sha256: SHA_B,
        ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
+       ...(releaseSelection ? { model: releaseSelection.modelId, modelProtocolProfileIdentity: selectedCells[0].modelProtocolProfileIdentity, sessionAuthority: { ...PREFLIGHT_LIFECYCLE_AUTHORITY.sessionAuthority, serverModel: releaseSelection.modelId } } : {}),
        ...providerPreflightOverrides,
      },
     workers,
-    assignments: defaultSingleWorkerAssignments(workers),
+    assignments: defaultSingleWorkerAssignments(workers).map((assignment, index) => ({ ...assignment, cellId: selectedCells[index].cellId })),
     ...signingKeys,
   });
   const leases = issueCellLeases(plan, signingKeys.privateKeyPem, { issuedAt: generatedAt });
@@ -851,7 +856,8 @@ test('signed plan and leases bind exact four cells, serial waves, identities and
 
 test('signed plan accepts one or three workers and binds unique multi-worker transports', () => {
   const fixture = createFixture();
-  const createWithWorkers = (workers) => createSignedExecutionPlan({
+  const createWithWorkers = (workers, releaseSelection) => createSignedExecutionPlan({
+    releaseSelection,
     executionId: `watch-worker-count-${workers.length}`,
     generatedAt: fixture.generatedAt,
     expiresAt: new Date(fixture.now.getTime() + 3_600_000),
@@ -865,13 +871,14 @@ test('signed plan accepts one or three workers and binds unique multi-worker tra
     providerPreflightAuthority: {
       path: 'provider-preflight-receipt.json', bytes: 88, sha256: SHA_B,
        ...structuredClone(PREFLIGHT_LIFECYCLE_AUTHORITY),
+       ...(releaseSelection ? { model: releaseSelection.modelId, modelProtocolProfileIdentity: liveCellsForReleasePlan(createBalancedReleasePlan(releaseSelection))[0].modelProtocolProfileIdentity, sessionAuthority: { ...PREFLIGHT_LIFECYCLE_AUTHORITY.sessionAuthority, serverModel: releaseSelection.modelId } } : {}),
      },
     workers,
     assignments: workers.length === 1
       ? defaultSingleWorkerAssignments(workers)
       : workers.length === 3
         ? fixedThreeWorkerAssignments(workers)
-        : workers.length === 4 ? fixedFourWorkerAssignments(workers) : [],
+        : workers.length === 4 ? fixedFourWorkerAssignments(workers, createBalancedReleasePlan(releaseSelection)) : [],
     ...fixture.signingKeys,
   });
   const oneWorkerPlan = createWithWorkers(testWorkers());
@@ -930,6 +937,12 @@ test('signed plan accepts one or three workers and binds unique multi-worker tra
     } };
     assert.throws(() => verifySignedExecutionPlan(resigned, { now: fixture.now }), /four-worker plan requires/);
   }
+  const fourWorker38Plan = createWithWorkers([...threeWorkers, fourth], SELECTED_38);
+  verifySignedExecutionPlan(fourWorker38Plan, { now: fixture.now });
+  assert.deepEqual(fourWorker38Plan.cells.map(cell => cell.workerId), ['vm171', 'vm169', 'vm131', 'vm167']);
+  assert.deepEqual(fourWorker38Plan.dispatchSchedule, fourWorkerDispatchSchedule(createBalancedReleasePlan(SELECTED_38)));
+  assert.deepEqual(fourWorker38Plan.budget, fourWorkerPlan.budget);
+  assert.ok(fourWorker38Plan.cells.every(cell => cell.modelId === SELECTED_38.modelId));
   const duplicateFourKey = [...threeWorkers, structuredClone(fourth)];
   duplicateFourKey[3].transportAuthority.hostKeySha256 = threeWorkers[1].transportAuthority.hostKeySha256;
   assert.throws(() => createWithWorkers(duplicateFourKey), /reuses a signed SSH host key/);
@@ -1656,4 +1669,75 @@ test('result builder refuses a mismatched VM even when the source/runtime hashes
   } finally {
     fs.rmSync(shardRoot, { recursive: true, force: true });
   }
+});
+
+const SELECTED_38 = Object.freeze({
+  modelId: 'qwen3.8-livetranslate-flash-realtime',
+  endpointHost: 'acceptance.cn-beijing.maas.aliyuncs.com',
+  region: 'cn-beijing',
+});
+test('signed 3.8 plan binds workspace and four leases without changing the sample ceiling', () => {
+  const fixture = createFixture({ releaseSelection: SELECTED_38 });
+  verifySignedExecutionPlan(fixture.plan, { now: fixture.now });
+  assert.equal(fixture.plan.providerIdentity.endpointHost, SELECTED_38.endpointHost);
+  assert.equal(fixture.leases.length, 4);
+  assert.equal(fixture.leases.reduce((total, lease) => total + lease.maxExternalAudioSamples, 0), SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES);
+  for (const lease of fixture.leases) verifyCellLease(lease, fixture.plan, { now: fixture.now });
+});
+test('even re-signed 3.8 plans cannot mix legacy cells, workspace, profile or budget', () => {
+  const fixture = createFixture({ releaseSelection: SELECTED_38 });
+  for (const mutate of [
+    plan => { delete plan.releaseSelection; },
+    plan => { plan.releaseSelection.endpointHost = 'other.cn-beijing.maas.aliyuncs.com'; },
+    plan => { plan.providerIdentity.endpointHost = 'dashscope.aliyuncs.com'; },
+    plan => { plan.cells[0].modelId = LIVE_LLM_CELLS[0].modelId; },
+    plan => { plan.cells[0].maxExternalAudioSamples += 1; },
+    plan => { plan.providerPreflightAuthority.model = LIVE_LLM_CELLS[0].modelId; },
+    plan => { plan.providerPreflightAuthority.sessionAuthority.serverModel = LIVE_LLM_CELLS[0].modelId; },
+    plan => { plan.providerPreflightAuthority.modelProtocolProfileIdentity = MODEL_PROTOCOL_PROFILE_IDENTITY; },
+  ]) {
+    const changed = structuredClone(fixture.plan);
+    mutate(changed);
+    const signed = resignAuthority(changed, 'planDigest', fixture.signingKeys.privateKeyPem);
+    assert.throws(() => verifySignedExecutionPlan(signed, { now: fixture.now }));
+  }
+});
+
+test('3.8 readiness is bound to the selected workspace and cannot authorize a legacy run', () => {
+  const fixture = createFixture({ releaseSelection: SELECTED_38 });
+  const request = createWorkerReadinessRequest({
+    executionId: fixture.plan.executionId,
+    provenance: PROVENANCE,
+    runtimeBinaryHashes: fixture.snapshot.runtimeBinaryHashes,
+    workers: fixture.workers,
+    assignments: fixture.plan.cells,
+    releaseSelection: SELECTED_38,
+  });
+  assert.doesNotThrow(() => validateWorkerReadinessRequest(request, { releaseSelection: SELECTED_38 }));
+  assert.throws(() => validateWorkerReadinessRequest(request, { releaseSelection: undefined }), /release selection/);
+  assert.throws(() => validateWorkerReadinessRequest(request, {
+    releaseSelection: { ...SELECTED_38, endpointHost: 'other.cn-beijing.maas.aliyuncs.com' },
+  }), /release selection/);
+});
+
+test('3.8 send-boundary usage binds the signed workspace rather than generic or ledger-selected host', t => {
+  const fixture = createFixture({ releaseSelection: SELECTED_38 });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-shard-usage38-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const cell = fixture.plan.cells[0], lease = fixture.leases[0];
+  writeSuccessfulRun(root, cell, lease);
+  const ledgerPath = path.join(root, PROVIDER_INPUT_BUDGET_LEDGER_FILE);
+  const journalPath = path.join(root, PROVIDER_INPUT_BUDGET_JOURNAL_FILE);
+  const setHost = host => {
+    const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    ledger.endpointHost = host;
+    writeJson(ledgerPath, ledger);
+    const entries = fs.readFileSync(journalPath, 'utf8').trim().split(/\r?\n/).map(line => ({ ...JSON.parse(line), endpointHost: host }));
+    fs.writeFileSync(journalPath, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n');
+  };
+  setHost(SELECTED_38.endpointHost);
+  assert.equal(validateProviderUsageAuthority(root, { cell, lease, releaseSelection: SELECTED_38 }).actualExternalAudioSamples, 32000);
+  assert.throws(() => validateProviderUsageAuthority(root, { cell, lease }), /signed release selection/);
+  setHost('other.cn-beijing.maas.aliyuncs.com');
+  assert.throws(() => validateProviderUsageAuthority(root, { cell, lease, releaseSelection: SELECTED_38 }), /endpointHost mismatch/);
 });

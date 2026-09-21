@@ -1,0 +1,121 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "bailian.qwen-audio-chat.realtime.ws.fixture.v1",
+  "providerId": "bailian",
+  "protocolProfileId": "bailian.qwen-audio-chat.realtime.ws",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "bailian.docs.7"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Generated documentation fixture projection from apps/desktop/src-tauri/fixtures/model-protocol/qwen-audio-chat-session.json; never authorizes paid calls."
+  },
+  "scenario": "Exact bailian.qwen-audio-chat.realtime.ws protocol replay",
+  "data": {
+    "endpointStatus": "verified",
+    "networkAuthorized": false,
+    "connectionUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+    "authContract": {
+      "profileId": "bailian.auth.bearer",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "value": "Bearer <redacted>"
+        }
+      ]
+    },
+    "audioContract": {
+      "input": {
+        "required": true,
+        "codecs": [
+          "pcm16"
+        ],
+        "sampleRatesHz": [
+          16000
+        ],
+        "channels": [
+          1
+        ]
+      },
+      "output": {
+        "required": true,
+        "codecs": [
+          "pcm16"
+        ],
+        "sampleRatesHz": [
+          24000
+        ],
+        "channels": [
+          1
+        ]
+      }
+    },
+    "events": [
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "session.created",
+        "type": "session.created"
+      },
+      {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "session.update",
+        "type": "session.update"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "session.updated",
+        "type": "session.updated"
+      },
+      {
+        "direction": "client",
+        "frameKind": "json-base64",
+        "eventType": "input_audio_buffer.append",
+        "type": "input_audio_buffer.append",
+        "audio": "<redacted>"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "conversation.item.ambient_audio_transcription.delta",
+        "payload": {
+          "text": "嗯",
+          "stash": ""
+        },
+        "type": "conversation.item.ambient_audio_transcription.delta"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "conversation.item.ambient_audio_transcription.completed",
+        "payload": {
+          "transcript": "嗯"
+        },
+        "type": "conversation.item.ambient_audio_transcription.completed"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "input_audio_buffer.speech_stopped",
+        "payload": {
+          "reason": "turn_invalid"
+        },
+        "type": "input_audio_buffer.speech_stopped"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.done",
+        "type": "response.done",
+        "terminal": true
+      }
+    ]
+  }
+}

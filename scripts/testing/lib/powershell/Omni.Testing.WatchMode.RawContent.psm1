@@ -77,7 +77,7 @@ function Get-TranslatedPcmLoopbackAuthority {
   $lease = Get-Content -LiteralPath $leasePath -Raw -Encoding UTF8 | ConvertFrom-Json
   $protocol = if ($WatchRealtimeProtocol) {
     $WatchRealtimeProtocol
-  } elseif ($WatchModelId -eq "qwen3.5-livetranslate-flash-realtime") {
+  } elseif ($WatchModelId -in @("qwen3.5-livetranslate-flash-realtime", "qwen3.8-livetranslate-flash-realtime")) {
     "dashscope-livetranslate"
   } else {
     "dashscope-omni"

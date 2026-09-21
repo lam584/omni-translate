@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::audio::read_audio_samples;
-use crate::bailian_contract::authorize_enabled_livetranslate;
+use crate::bailian_contract::authorize_livetranslate;
 use crate::config::Config;
 use crate::credential;
 use crate::manifest::{self, ManifestEntry};
@@ -61,6 +61,8 @@ fn provider_order(provider: &str) -> usize {
 pub fn run_batch(cfg: BatchConfig) -> Result<(), String> {
     // 1. 加载清单
     let manifest = manifest::load_manifest(&cfg.manifest_path)?;
+    // Validate every entry before any worker can access credentials or the network.
+    for entry in &manifest.models { preflight_entry(entry)?; }
     let total = manifest.models.len();
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║       Omni Benchmark — Batch Comparison Mode           ║");
@@ -187,6 +189,7 @@ fn run_provider_group(
                 Err(err) => {
                     if err.contains("凭据") || err.contains("Credential") || err.contains("API key") {
                         ModelResult {
+                            diagnostic: None,
                             model_id: entry.model_id.clone(),
                             protocol: entry.protocol.clone(),
                             provider: entry.provider.clone(),
@@ -200,6 +203,7 @@ fn run_provider_group(
                         }
                     } else {
                         ModelResult {
+                            diagnostic: None,
                             model_id: entry.model_id.clone(),
                             protocol: entry.protocol.clone(),
                             provider: entry.provider.clone(),
@@ -251,48 +255,14 @@ fn run_single_model(
     samples: &[i16],
     audio_duration: f64,
 ) -> Result<ModelResult, String> {
-    // 解析协议
-    let protocol = parse_protocol_str(&entry.protocol)?;
-
-    let manual = matches!(
-        entry.audio_mode.as_str(),
-        "manual" | "gemini_manual_activity"
-    );
-    if protocol.is_dashscope_family() {
-        if protocol != BenchmarkProtocol::DashscopeLiveTranslate || manual {
-            return Err(
-                "model_protocol.not_authorized: manifest entry is not the enabled LiveTranslate server_vad adapter"
-                    .to_string(),
-            );
-        }
-        authorize_enabled_livetranslate(&entry.model_id, &entry.base_url)?;
-    }
-
-    // 解析 API key
-    let api_key = resolve_api_key(&entry.env_fallback, &entry.credential_ref)?;
-
-    // 判断 manual 模式
-
-    // 构建 Config
-    let config = Config {
-        api_key,
-        audio_path: std::path::PathBuf::from("__batch__"),
-        model: entry.model_id.clone(),
-        base_url: entry.base_url.clone(),
-        runs: 1,
-        voice: entry.voice.clone(),
-        target_language: entry.target_language.clone(),
-        source_language: entry.source_language.clone(),
-        json_output: true, // 批量模式静默各 runner 输出
-        limit_seconds: None,
-        manual,
-        protocol,
-        auth_header_name: entry.auth_header.clone(),
-        auth_scheme: entry.auth_scheme.clone(),
-    };
+    let mut config = preflight_entry(entry)?;
+    config.api_key = resolve_api_key(&entry.env_fallback, &entry.credential_ref)?;
 
     // 调用协议分派器
-    let run_result = runner::run_single(0, &config, samples, audio_duration)?;
+    let run_result = match runner::run_single(0, &config, samples, audio_duration) {
+        Ok(result) => result,
+        Err(failure) => return Ok(failed_run_result(entry, failure)),
+    };
 
     // 提取关键指标
     let ttft = run_result.time_to_first_token_ms;
@@ -313,6 +283,7 @@ fn run_single_model(
     };
 
     Ok(ModelResult {
+        diagnostic: None,
         model_id: entry.model_id.clone(),
         protocol: entry.protocol.clone(),
         provider: entry.provider.clone(),
@@ -368,6 +339,7 @@ mod tests {
 
     fn dashscope_entry(model_id: &str, protocol: &str, audio_mode: &str) -> ManifestEntry {
         ManifestEntry {
+            protocol_binding: None,
             model_id: model_id.to_string(),
             provider: "dashscope".to_string(),
             protocol: protocol.to_string(),
@@ -402,5 +374,92 @@ mod tests {
             assert!(error.contains("model_protocol.not_authorized"), "{error}");
             assert!(!error.contains("Credential"), "authority must run first");
         }
+    }
+    #[test]
+    fn explicit_binding_and_batch_modes_cannot_bypass_preflight() {
+        let mut entry = dashscope_entry("custom", "dashscope-livetranslate", "server_vad");
+        entry.protocol_binding = Some(crate::bailian_contract::ProtocolBinding {
+            profile_id: "bailian.livetranslate.3_8.realtime.ws".into(), profile_version: 1, region: "cn-beijing".into(),
+        });
+        assert!(preflight_entry(&entry).err().unwrap().contains("workspace_required"));
+        entry.base_url = "wss://workspace-test.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime".into();
+        assert_eq!(preflight_entry(&entry).unwrap().model, "custom");
+        for mode in ["manual", "semantic_vad", "typo"] {
+            entry.audio_mode = mode.into();
+            assert!(preflight_entry(&entry).is_err());
+        }
+        entry.audio_mode = "server_vad".into();
+        entry.protocol = "openai-flat".into();
+        assert!(preflight_entry(&entry).is_err());
+        entry.protocol = "dashscope-livetranslate".into();
+        entry.target_language.clear();
+        assert!(preflight_entry(&entry).is_err());
+    }
+
+    #[test]
+    fn invalid_last_manifest_entry_aborts_before_audio_or_any_worker() {
+        let path = std::env::temp_dir().join(format!("omni-preflight-{}.json", std::process::id()));
+        let entry = serde_json::json!({"modelId":"qwen3.5-livetranslate-flash-realtime", "provider":"dashscope", "protocol":"dashscope-livetranslate", "audioMode":"server_vad", "baseUrl":"wss://dashscope.aliyuncs.com/api-ws/v1/realtime", "credentialRef":"must-not-read", "envFallback":"must-not-read", "authHeader":"Authorization", "authScheme":"Bearer"});
+        let mut invalid = entry.clone();
+        invalid["modelId"] = serde_json::json!("unknown-unbound");
+        std::fs::write(&path, serde_json::json!({"models":[entry,invalid]}).to_string()).unwrap();
+        let result = run_batch(BatchConfig {manifest_path:path.to_str().unwrap().into(),audio_path:"must-not-read-audio".into(),concurrency:2,limit_seconds:None,output_path:"must-not-write".into()});
+        std::fs::remove_file(path).unwrap();
+        let error = result.unwrap_err();
+        assert!(error.contains("model_protocol.not_authorized"), "{error}");
+    }
+
+    #[test]
+    fn batch_failure_retains_diagnostic_without_creating_success_report() {
+        let entry = dashscope_entry("qwen3.8-livetranslate-flash-realtime", "dashscope-livetranslate", "server_vad");
+        let result = failed_run_result(&entry, crate::reporting::RunFailure {
+            message:"local rejection".into(), diagnostic:Some(serde_json::json!({"exchange":{"partial":{"translation_final":"kept"},"wire":{"session_finished":false}}})),
+        });
+        let json = serde_json::to_value(result).unwrap();
+        assert_eq!(json["status"], "failed");
+        assert!(json["report"].is_null());
+        assert_eq!(json["diagnostic"]["exchange"]["partial"]["translation_final"], "kept");
+    }
+
+}
+
+fn preflight_entry(entry: &ManifestEntry) -> Result<Config, String> {
+    let protocol = parse_protocol_str(&entry.protocol)?;
+    if entry.protocol_binding.is_some() && protocol != BenchmarkProtocol::DashscopeLiveTranslate {
+        return Err("model_protocol.not_authorized: binding requires LiveTranslate".to_string());
+    }
+    if protocol.is_dashscope_family() {
+        if protocol != BenchmarkProtocol::DashscopeLiveTranslate || entry.audio_mode != "server_vad" {
+            return Err("model_protocol.not_authorized: only LiveTranslate server_vad is supported".to_string());
+        }
+        authorize_livetranslate(&entry.model_id, &entry.base_url, entry.protocol_binding.as_ref())?;
+    }
+    let manual = matches!(entry.audio_mode.as_str(), "manual" | "gemini_manual_activity");
+    let config = Config {
+        protocol_binding: entry.protocol_binding.clone(),
+        api_key: String::new(),
+        audio_path: std::path::PathBuf::from("__batch__"),
+        model: entry.model_id.clone(),
+        base_url: entry.base_url.clone(),
+        runs: 1,
+        voice: entry.voice.clone(),
+        target_language: entry.target_language.clone(),
+        source_language: entry.source_language.clone(),
+        json_output: true, // 批量模式静默各 runner 输出
+        limit_seconds: None,
+        manual,
+        protocol,
+        auth_header_name: entry.auth_header.clone(),
+        auth_scheme: entry.auth_scheme.clone(),
+    };
+
+    if protocol.is_dashscope_family() { crate::dashscope::prepare_client_plan(&config)?; }
+    Ok(config)
+}
+fn failed_run_result(entry: &ManifestEntry, failure: crate::reporting::RunFailure) -> ModelResult {
+    ModelResult {
+        model_id:entry.model_id.clone(), protocol:entry.protocol.clone(), provider:entry.provider.clone(),
+        status:"failed".into(), error:Some(failure.message), diagnostic:failure.diagnostic, report:None,
+        connect_ms:0.0, session_ready_ms:0.0, time_to_first_token_ms:None, time_to_first_committed_ms:None,
     }
 }

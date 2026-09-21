@@ -204,3 +204,25 @@ fn duplicate_exact_model_declarations_fail_before_connect() {
         .expect_err("duplicate exact-model declarations must fail before Provider connection");
     assert!(error.contains("exactly one signed registry-derived"));
 }
+
+#[test]
+fn signed_v2_preflight_binds_real_workspace_endpoint_and_profile() {
+    let mut authorization = strict_authorization();
+    authorization.grant["releaseSelection"] = json!({"modelId": PREFLIGHT_MODEL_V2,
+        "endpointHost": "acceptance.cn-beijing.maas.aliyuncs.com", "region": "cn-beijing"});
+    authorization.model = PREFLIGHT_MODEL_V2.to_string();
+    authorization.model_protocol_profile_identity = selected_registry_identity(
+        &authorization.grant, PreflightAuthorityProfile::StrictReleaseMatrix).unwrap();
+    let base = parsed_strict_provider(&default_config());
+    for host in [PROVIDER_ENDPOINT_HOST, "other.cn-beijing.maas.aliyuncs.com"] {
+        let mut provider = base.clone();
+        provider.base_url = format!("https://{host}");
+        assert!(authorization.apply_to_provider(&mut provider).is_err());
+    }
+    let mut provider = base;
+    provider.base_url = "https://acceptance.cn-beijing.maas.aliyuncs.com".to_string();
+    authorization.apply_to_provider(&mut provider).unwrap();
+    assert_eq!(provider.model, PREFLIGHT_MODEL_V2);
+    assert_eq!(authorization.model_protocol_profile_identity.unwrap().wire_dialect,
+        "bailian-livetranslate-session-ws-v2");
+}

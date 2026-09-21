@@ -37,6 +37,7 @@ impl RenderSubmitTracker {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn new_with_reference_at(
         total_frames: usize,
         total_reference_frames: usize,

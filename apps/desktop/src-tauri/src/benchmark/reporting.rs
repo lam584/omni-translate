@@ -18,6 +18,8 @@ struct RawResult {
     response_done_audio_sent_secs: Option<f64>,
     session_finished: bool,
     live_translate_plan: Option<PreparedLiveTranslateBenchmarkPlan>,
+    // V2 response-local previews/finals, retained in first-output order.
+    live_translate_response_texts: Vec<(String, String)>,
 }
 
 fn empty_run_result(run_index: usize, model: String, audio_duration_secs: f64) -> RunResult {

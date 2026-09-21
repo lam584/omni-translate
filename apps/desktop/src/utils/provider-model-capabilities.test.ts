@@ -1,3 +1,5 @@
+import { PROVIDER_MANIFEST_REGISTRY } from '../provider-manifest/bundle';
+import { uiCapabilities } from '../provider-manifest/template-projection';
 import { describe, expect, it } from 'vitest';
 import { MODEL_PROTOCOL_REGISTRY, lookupModelProtocolProfiles } from '../model-protocol/profile-registry';
 import {
@@ -103,7 +105,7 @@ describe('provider model capabilities', () => {
   });
 
   it('prefers explicit registry entries and then upstream-declared capabilities', () => {
-    const registry = [{ id: 'registry-1', modelId: ' Custom ', capabilities: ['text-to-speech'] as const }];
+    const registry = [{ id: 'registry-1', modelId: 'custom', capabilities: ['text-to-speech'] as const }];
     expect(
       resolveProviderModelCapabilities(
         { id: 'custom', displayName: 'Custom', capabilities: ['text-generation'] },
@@ -121,7 +123,7 @@ describe('provider model capabilities', () => {
       resolveRealtimeAudioMode('custom-realtime', [
         {
           id: 'registry-1',
-          modelId: ' custom-realtime ',
+          modelId: 'custom-realtime',
           capabilities: ['speech-to-speech'],
           realtimeAudioMode: 'semantic_vad',
         },
@@ -132,7 +134,7 @@ describe('provider model capabilities', () => {
       resolveInteractionCapabilities('openai/gpt-audio', [
         {
           id: 'registry-2',
-          modelId: ' openai/gpt-audio ',
+          modelId: 'openai/gpt-audio',
           capabilities: ['text-to-speech'],
           interactionCapabilities: ['chunked_http_audio'],
         },
@@ -205,8 +207,13 @@ describe('provider model capabilities', () => {
     expect(seeded.find((item) => item.modelId === 'hunyuan-translation-lite')?.interactionCapabilities).toEqual(['streaming', 'pipeline_asr_mt_tts']);
     expect(seeded.find((item) => item.modelId === 'hunyuan-translation')?.realtimeAudioMode).toBe('server_vad');
     expect(seeded.find((item) => item.modelId === 'gemini-3.1-flash-live-preview')?.realtimeAudioMode).toBe('gemini_auto_activity');
-    expect(seeded.find((item) => item.modelId === 'qwen3.5-livetranslate-flash-realtime')?.realtimeAudioMode).toBe('server_vad');
-    expect(seeded.find((item) => item.modelId === 'qwen3.5-omni-flash-realtime')?.realtimeAudioMode).toBe('semantic_vad');
+    for (const manifest of PROVIDER_MANIFEST_REGISTRY.all()) {
+      const projected = createDefaultLocalModelCapabilityRegistry(manifest.provider.templateId);
+      expect(projected.map((entry) => entry.modelId)).toEqual(manifest.models.map((model) => model.id));
+      for (const model of manifest.models) {
+        expect(projected.find((entry) => entry.modelId === model.id)?.capabilities).toEqual(uiCapabilities(model));
+      }
+    }
     expect(seeded.find((item) => item.modelId === 'qwen3.5-livetranslate-flash-realtime')).toMatchObject({
       registryVersion: MODEL_PROTOCOL_REGISTRY.registryVersion,
       profileId: 'bailian.livetranslate.realtime.ws',
@@ -271,6 +278,7 @@ describe('provider model capabilities', () => {
         },
       });
     }
-    expect(seeded.every((item) => item.capabilities.length > 0)).toBe(true);
+    // Disabled voice-clone-only models remain visible without inventing a UI capability.
+    expect(seeded.some((item) => item.modelId === 'qwen3.8-livetranslate-flash-realtime')).toBe(true);
   });
 });

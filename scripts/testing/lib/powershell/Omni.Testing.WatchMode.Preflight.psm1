@@ -26,7 +26,7 @@ function Assert-WatchModeAuthorityRequest {
   if ($localContentAuthorityEnabled) {
       if ($DryRun) { throw "$providerAuthorityMode authority is only valid for a live cell" }
       $approvedAuthorityModels = if ($StrictPaidAuthority) {
-        @("qwen3.5-livetranslate-flash-realtime")
+        @("qwen3.5-livetranslate-flash-realtime", "qwen3.8-livetranslate-flash-realtime")
       } elseif ($IncidentReplayAuthority) {
         @("qwen3.5-omni-plus-realtime")
       } else {
@@ -47,7 +47,7 @@ function Assert-WatchModeAuthorityRequest {
       )) {
         throw "$providerAuthorityMode refuses ambient production authority sentinels"
       }
-      $approvedAuthorityProtocol = if ($WatchModelId -eq "qwen3.5-livetranslate-flash-realtime") {
+      $approvedAuthorityProtocol = if ($WatchModelId -in @("qwen3.5-livetranslate-flash-realtime", "qwen3.8-livetranslate-flash-realtime")) {
         "dashscope-livetranslate"
       } else {
         "dashscope-omni"

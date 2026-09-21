@@ -159,6 +159,78 @@ fn resolve_model_protocol_identity(
     Ok(identity)
 }
 
+// Keep the diagnostic allowance independent of the signed release/incident
+// branches. Formal model authorization remains the workspace authority.
+fn validate_local_single_session(
+    provider: &ProviderDraftInput,
+    endpoint: &Url,
+    session_generation: u64,
+    max_samples: u64,
+    runtime_pair: (&str, &str),
+    read_env: &impl Fn(&str) -> Option<String>,
+) -> Result<(), String> {
+    let (model, protocol) = runtime_pair;
+    let required = |name: &str, value: Option<String>| -> Result<String, String> {
+        value.map(|entry| entry.trim().to_string()).filter(|entry| !entry.is_empty())
+            .ok_or_else(|| format!("strict provider input budget requires {name}"))
+    };
+    if session_generation == 0 {
+        return Err(
+            "local single-session provider authority requires a non-zero session generation"
+                .to_string(),
+        );
+    }
+    required(PCM_PATH_ENV, read_env(PCM_PATH_ENV))?;
+    let expected_model = required(MODEL_ENV, read_env(MODEL_ENV))?;
+    let expected_protocol = required(PROTOCOL_ENV, read_env(PROTOCOL_ENV))?;
+    // Local software-path diagnostics are separate from signed 3.5 release leases.
+    // Exact 3.8 only; reuse the formal authorizer for workspace/region/dialect rules.
+    let local_v2 = expected_model == "qwen3.8-livetranslate-flash-realtime"
+        && expected_protocol == STRICT_LIVETRANSLATE_PROTOCOL;
+    if local_v2 {
+        if max_samples > 192_000 {
+            return Err("local 3.8 software-path authority is capped at 192000 samples".to_string());
+        }
+        crate::audio::events::authorize_bailian_native_translate(provider)?;
+    }
+    if !local_v2 && !matches!(
+        (expected_model.as_str(), expected_protocol.as_str()),
+        (STRICT_OMNI_MODEL, STRICT_OMNI_PROTOCOL)
+            | (STRICT_LIVETRANSLATE_MODEL, STRICT_LIVETRANSLATE_PROTOCOL)
+            | (INCIDENT_PLUS_MODEL, INCIDENT_PLUS_PROTOCOL)
+    ) {
+        return Err(format!(
+            "local single-session provider authority rejected model/protocol pair {expected_model}/{expected_protocol}"
+        ));
+    }
+    if model != expected_model || protocol != expected_protocol {
+        return Err(format!(
+            "local single-session provider authority runtime pair mismatch: expected={expected_model}/{expected_protocol} actual={model}/{protocol}"
+        ));
+    }
+    let endpoint_host = endpoint.host_str().unwrap_or_default().to_ascii_lowercase();
+    if provider.provider_id.trim() != STRICT_PROVIDER_ID
+        || provider.template_id.trim() != STRICT_TEMPLATE_ID
+        || provider.kind.trim() != STRICT_PROVIDER_KIND
+        || (!local_v2 && endpoint_host != STRICT_ENDPOINT_HOST)
+        || provider.auth_ref.kind != "credential-ref"
+        || provider.auth_ref.reference.trim() != STRICT_CREDENTIAL_REFERENCE
+        || provider.auth_ref.header_name.trim() != "Authorization"
+        || provider.auth_ref.scheme.trim() != "bearer"
+        || !provider.custom_headers.is_empty()
+        || provider.transport != "websocket"
+        || !matches!(endpoint.scheme(), "https" | "wss")
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.port().is_some()
+    {
+        return Err(
+            "local single-session provider authority requires the canonical DashScope TLS websocket provider and credential reference".to_string(),
+        );
+    }
+    Ok(())
+}
+
 impl ProviderInputBudget {
     pub(super) fn from_environment(
     provider: &ProviderDraftInput,
@@ -239,49 +311,8 @@ impl ProviderInputBudget {
     None
     };
     if local_single_session_authority {
-    if session_generation == 0 {
-    return Err(
-    "local single-session provider authority requires a non-zero session generation"
-    .to_string(),
-    );
-    }
-    required(PCM_PATH_ENV, read_env(PCM_PATH_ENV))?;
-    let expected_model = required(MODEL_ENV, read_env(MODEL_ENV))?;
-    let expected_protocol = required(PROTOCOL_ENV, read_env(PROTOCOL_ENV))?;
-    if !matches!(
-    (expected_model.as_str(), expected_protocol.as_str()),
-    (STRICT_OMNI_MODEL, STRICT_OMNI_PROTOCOL)
-    | (STRICT_LIVETRANSLATE_MODEL, STRICT_LIVETRANSLATE_PROTOCOL)
-    | (INCIDENT_PLUS_MODEL, INCIDENT_PLUS_PROTOCOL)
-    ) {
-    return Err(format!(
-    "local single-session provider authority rejected model/protocol pair {expected_model}/{expected_protocol}"
-    ));
-    }
-    if model != expected_model || protocol != expected_protocol {
-    return Err(format!(
-    "local single-session provider authority runtime pair mismatch: expected={expected_model}/{expected_protocol} actual={model}/{protocol}"
-    ));
-    }
-    if provider_id != STRICT_PROVIDER_ID
-    || template_id != STRICT_TEMPLATE_ID
-    || provider_kind != STRICT_PROVIDER_KIND
-    || endpoint_host != STRICT_ENDPOINT_HOST
-    || provider.auth_ref.kind != "credential-ref"
-    || credential_reference != STRICT_CREDENTIAL_REFERENCE
-    || auth_header_name != "Authorization"
-    || auth_scheme != "bearer"
-    || custom_header_count != 0
-    || provider.transport != "websocket"
-    || !matches!(endpoint.scheme(), "https" | "wss")
-    || !endpoint.username().is_empty()
-    || endpoint.password().is_some()
-    || endpoint.port().is_some()
-    {
-    return Err(
-    "local single-session provider authority requires the canonical DashScope TLS websocket provider and credential reference".to_string(),
-    );
-    }
+        validate_local_single_session(provider, &endpoint, session_generation,
+            max_samples, (model, protocol), &read_env)?;
     }
     if strict_paid_authority || incident_replay_authority {
     if session_generation == 0 {
@@ -315,7 +346,7 @@ impl ProviderInputBudget {
     let approved_pair = if strict_paid_authority {
     matches!(
     (expected_model.as_str(), expected_protocol.as_str()),
-    (STRICT_LIVETRANSLATE_MODEL, STRICT_LIVETRANSLATE_PROTOCOL)
+    (STRICT_LIVETRANSLATE_MODEL | STRICT_LIVETRANSLATE_MODEL_V2, STRICT_LIVETRANSLATE_PROTOCOL)
     )
     } else {
     matches!(
@@ -328,6 +359,14 @@ impl ProviderInputBudget {
     "provider authority rejected model/protocol pair {expected_model}/{expected_protocol}"
     ));
     }
+    if strict_paid_authority && cell_id.split("::").nth(1) != Some(model) {
+        return Err("strict paid provider model does not match the authorized cell/lease".to_string());
+    }
+    // The real endpoint is reauthorized by resolve_model_protocol_identity above.
+    // Registry authorization rejects generic hosts for v2.
+    let fixed_endpoint_host = if strict_paid_authority && model == STRICT_LIVETRANSLATE_MODEL_V2 {
+        expected_endpoint_host.as_str()
+    } else { STRICT_ENDPOINT_HOST };
     for (label, actual, expected, fixed) in [
     ("providerId", provider_id, expected_provider_id.as_str(), STRICT_PROVIDER_ID),
     ("templateId", template_id, expected_template_id.as_str(), STRICT_TEMPLATE_ID),
@@ -336,7 +375,7 @@ impl ProviderInputBudget {
     "endpointHost",
     endpoint_host.as_str(),
     expected_endpoint_host.as_str(),
-    STRICT_ENDPOINT_HOST,
+    fixed_endpoint_host,
     ),
     (
     "credentialReference",

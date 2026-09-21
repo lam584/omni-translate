@@ -46,6 +46,7 @@ impl ProductionEchoCanceller {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn process_capture(
         &mut self,
         captured: &[f32],

@@ -59,6 +59,14 @@ fn strict_paid_terminal_config_requires_marker_and_exact_livetranslate_identity(
     assert_eq!(config.local_playback_drain_timeout, Duration::from_secs(120));
     assert_eq!(config.report_write_timeout, Duration::from_secs(10));
 
+    strict_paid_terminal_config_with_environment(|name| {
+        if name == "OMNI_WATCH_MODE_MODEL_ID" {
+            Some("qwen3.8-livetranslate-flash-realtime".to_string())
+        } else {
+            read_env(name)
+        }
+    }).expect("v2 terminal lifecycle must retain the same required receipt authorities");
+
     let error = strict_paid_terminal_config_with_environment(|name| {
         if name == "OMNI_WATCH_MODE_INPUT_COMPLETE_PATH" {
             None

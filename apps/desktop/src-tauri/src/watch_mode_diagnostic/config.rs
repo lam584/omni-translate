@@ -64,7 +64,7 @@ fn watch_protocol_matches_provider(provider: &Value, protocol: &str) -> bool {
 
 fn legacy_protocol_for_wire_dialect(wire_dialect: &str) -> Option<&'static str> {
     match wire_dialect {
-        "bailian-livetranslate-session-ws-v1" => Some("dashscope-livetranslate"),
+        "bailian-livetranslate-session-ws-v1" | "bailian-livetranslate-session-ws-v2" => Some("dashscope-livetranslate"),
         "bailian-omni-realtime-ws-v1" => Some("dashscope-omni"),
         "bailian-qwen-asr-session-ws-v1" => Some("dashscope-asr"),
         _ => None,
@@ -205,7 +205,7 @@ pub(super) fn configure_watch_realtime_provider_with_environment(
         .map(|(template_id, model_id)| (Some(template_id), model_id))
         .unwrap_or((None, requested_model_id));
     if strict_expected_provider_id.is_some()
-        && (resolved_model_id != STRICT_MODEL_ID || realtime_protocol != STRICT_REALTIME_PROTOCOL)
+        && (!matches!(resolved_model_id, STRICT_MODEL_ID | "qwen3.8-livetranslate-flash-realtime") || realtime_protocol != STRICT_REALTIME_PROTOCOL)
     {
         return Err(format!(
             "strict paid Watch authority requires model={STRICT_MODEL_ID} protocol={STRICT_REALTIME_PROTOCOL}; observed model={resolved_model_id} protocol={realtime_protocol}"

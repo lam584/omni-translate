@@ -2,6 +2,8 @@ use std::fmt;
 use std::sync::OnceLock;
 
 use serde::Deserialize;
+mod bindings;
+pub(crate) use bindings::{authorize_model_protocol_invocation_with_binding, binding_operation_matches};
 
 const REGISTRY_JSON: &str = include_str!(
     "../../../../../contracts/model-protocol-profiles.v1.json"
@@ -29,6 +31,7 @@ struct ModelProtocolEndpointHostPolicy {
 struct ModelProtocolEndpointHostRule {
     host_family_id: String,
     host_pattern: String,
+    workspace_scoped: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -91,7 +94,14 @@ struct ModelProtocolProfile {
     dialect_id: String,
     regions: Vec<String>,
     model_audio: Option<ModelProtocolProfileAudio>,
+    endpoint_requirements: Option<ModelProtocolEndpointRequirements>,
     adapter: ModelProtocolAdapter,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct ModelProtocolEndpointRequirements {
+    workspace_scoped: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -165,6 +175,7 @@ pub(crate) enum ModelProtocolAuthorizationError {
     RegionNotSupported,
     EndpointHostRequired,
     EndpointHostRegionMismatch,
+    EndpointWorkspaceRequired,
     AudioInputCodecNotSupported,
     AudioInputSampleRateNotSupported,
     AudioInputChannelsNotSupported,
@@ -194,7 +205,7 @@ impl ModelProtocolAuthorizationError {
             Self::TerminalLifecycleMismatch => "model_protocol.terminal_lifecycle_mismatch",
             Self::RegionNotSupported => "model_protocol.region_not_supported",
             Self::EndpointHostRequired => "model_protocol.endpoint_host_required",
-            Self::EndpointHostRegionMismatch => {
+            Self::EndpointHostRegionMismatch | Self::EndpointWorkspaceRequired => {
                 "model_protocol.endpoint_host_region_mismatch"
             }
             Self::AudioInputCodecNotSupported => {
@@ -227,6 +238,9 @@ impl ModelProtocolAuthorizationError {
 
 impl fmt::Display for ModelProtocolAuthorizationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if *self == Self::EndpointWorkspaceRequired {
+            return write!(formatter, "{}: workspace_required: this model requires a Workspace endpoint.", self.code());
+        }
         formatter.write_str(self.code())
     }
 }
@@ -252,6 +266,7 @@ pub(crate) struct ModelProtocolAuthorizationRequest<'a> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AuthorizedModelProtocolProfile {
+    binding_provenance: Option<bindings::ExplicitBindingProvenance>,
     pub(crate) registry_version: String,
     pub(crate) registry_checked_at: String,
     pub(crate) provider_family: &'static str,
@@ -406,6 +421,7 @@ fn resolve_endpoint_host_family<'a>(
     registry: &'a ModelProtocolRegistry,
     region: &str,
     endpoint_host: &str,
+    profile: &ModelProtocolProfile,
 ) -> Result<(String, &'a str), ModelProtocolAuthorizationError> {
     let endpoint_host = endpoint_host.trim().to_ascii_lowercase();
     if endpoint_host.is_empty() {
@@ -427,6 +443,11 @@ fn resolve_endpoint_host_family<'a>(
             })
         })
         .ok_or(ModelProtocolAuthorizationError::EndpointHostRegionMismatch)?;
+    if profile.endpoint_requirements.as_ref().is_some_and(|requirements| requirements.workspace_scoped)
+        && !rule.workspace_scoped
+    {
+        return Err(ModelProtocolAuthorizationError::EndpointWorkspaceRequired);
+    }
     Ok((endpoint_host, &rule.host_family_id))
 }
 
@@ -535,6 +556,13 @@ pub(crate) fn lookup_model_protocol_profiles_for_inspection(
 pub(crate) fn authorize_model_protocol_invocation(
     request: ModelProtocolAuthorizationRequest<'_>,
 ) -> Result<AuthorizedModelProtocolProfile, ModelProtocolAuthorizationError> {
+    authorize_model_protocol_invocation_with_binding(request, None)
+}
+
+fn authorize_model_protocol_invocation_inner(
+    request: ModelProtocolAuthorizationRequest<'_>,
+    binding: Option<&crate::provider::contracts::ProviderModelProtocolBindingInput>,
+) -> Result<AuthorizedModelProtocolProfile, ModelProtocolAuthorizationError> {
     let registry = registry()?;
     if request
         .declared_registry_version
@@ -543,20 +571,7 @@ pub(crate) fn authorize_model_protocol_invocation(
         return Err(ModelProtocolAuthorizationError::RegistryVersionMismatch);
     }
 
-    let candidates = profiles_for_model(registry, request.exact_model_id);
-    if candidates.is_empty() {
-        return Err(ModelProtocolAuthorizationError::ModelNotRegistered);
-    }
-    let profile = if let Some(declared_profile_id) = request.declared_profile_id {
-        candidates
-            .into_iter()
-            .find(|profile| profile.profile_id == declared_profile_id)
-            .ok_or(ModelProtocolAuthorizationError::ProfileIdMismatch)?
-    } else if candidates.len() == 1 {
-        candidates[0]
-    } else {
-        return Err(ModelProtocolAuthorizationError::ProfileAmbiguous);
-    };
+    let (profile, binding_provenance) = bindings::select_profile(registry, &request, binding)?;
 
     if request
         .declared_profile_version
@@ -604,6 +619,7 @@ pub(crate) fn authorize_model_protocol_invocation(
         registry,
         request.region,
         request.endpoint_host,
+        profile,
     )?;
     let audio_input_constraint = materialize_audio_constraint(
         profile.model_audio.as_ref().map(|audio| &audio.input),
@@ -638,6 +654,7 @@ pub(crate) fn authorize_model_protocol_invocation(
         .ok_or(ModelProtocolAuthorizationError::AdapterUnavailable)?;
 
     Ok(AuthorizedModelProtocolProfile {
+        binding_provenance,
         registry_version: registry.registry_version.clone(),
         registry_checked_at: registry.checked_at.clone(),
         provider_family: "bailian",
@@ -717,10 +734,7 @@ pub(crate) fn admit_model_protocol_event(
     let profile = registry.profiles.iter().find(|profile| {
         profile.profile_id == authorization.profile_id
             && profile.profile_version == authorization.profile_version
-            && profile
-                .exact_model_ids
-                .iter()
-                .any(|model_id| model_id == &authorization.exact_model_id)
+            && bindings::identity_matches(registry, profile, authorization)
     });
     let dialect = registry
         .dialects
@@ -733,6 +747,7 @@ pub(crate) fn admit_model_protocol_event(
         registry,
         &authorization.region,
         &authorization.endpoint_host,
+        profile,
     )
     .map_err(|_| ModelProtocolAuthorizationError::AuthorizationIdentityMismatch)?;
     let expected_audio_input_constraint = materialize_audio_constraint(
@@ -744,7 +759,7 @@ pub(crate) fn admit_model_protocol_event(
         &dialect.audio_output,
     );
     let expected_adapter_audio = match authorization.adapter_id.as_str() {
-        "desktop-livetranslate-session-v1" => Some((
+        "desktop-livetranslate-session-v1" | "desktop-livetranslate-session-v2" => Some((
             AuthorizedModelProtocolAudioSpec {
                 codec: "pcm16".to_string(),
                 sample_rate_hz: 16_000,

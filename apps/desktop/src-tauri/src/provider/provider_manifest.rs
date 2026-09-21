@@ -4,6 +4,8 @@ use serde::Deserialize;
 use url::Url;
 
 use super::contracts::ProviderDraftInput;
+mod capability_metadata;
+pub(crate) use capability_metadata::manifest_model_capability_metadata;
 
 const BUNDLE_JSON: &str = include_str!(
     "../../../../../contracts/provider-manifests.compiled.v1.json"
@@ -119,6 +121,10 @@ struct Adapter {
 struct LifecycleProfile {
     id: String,
     vad_modes: Vec<String>,
+    #[serde(default)]
+    client_events: Vec<String>,
+    #[serde(default)]
+    server_events: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,7 +132,14 @@ struct LifecycleProfile {
 struct Model {
     id: String,
     capabilities: Vec<String>,
+    #[serde(default)]
+    capability_metadata: Option<serde_json::Value>,
     protocol_bindings: Vec<ModelBinding>,
+}
+
+pub(crate) fn is_builtin_bailian_model(model_id: &str) -> Result<bool, String> {
+    Ok(bundle()?.manifests.iter().filter(|manifest| manifest.provider.id == "bailian")
+        .any(|manifest| manifest.models.iter().any(|model| model.id == model_id)))
 }
 
 pub(crate) fn manifest_model_capabilities(

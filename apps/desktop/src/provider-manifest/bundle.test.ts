@@ -8,13 +8,14 @@ describe('compiled provider manifest bundle', () => {
     expect(PROVIDER_MANIFEST_BUNDLE.schemaVersion).toBe('provider-manifest-bundle/v1');
     expect(PROVIDER_MANIFEST_BUNDLE.sources.map((source) => source.providerId)).toEqual([
       'azure-openai',
+      'bailian',
       'google-gemini',
       'openai',
       'tencent-cloud',
       'volcengine-doubao',
       'zhipu-glm',
     ]);
-    expect(PROVIDER_MANIFEST_REGISTRY.all()).toHaveLength(6);
+    expect(PROVIDER_MANIFEST_REGISTRY.all()).toHaveLength(7);
   });
 
   it('indexes exact provider and template identities from the same generated source', () => {

@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
-import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { renameWithTransientRetrySync } from '../lib/atomic-rename.mjs';
+import { createBalancedReleasePlan, normalizeReleaseSelection, liveCellsForReleasePlan } from './watch-mode-balanced-release-plan.mjs';
 import {
   assertWatchModelProtocolIdentity,
   deriveWatchModelProtocolIdentity,
@@ -125,7 +126,8 @@ export function assertCoordinatorExecutionRoot({ executionRoot, plan }) {
   return { root, planPath };
 }
 
-export function defaultSingleWorkerAssignments(workers) {
+export function defaultSingleWorkerAssignments(workers, releaseSelection) {
+  const releaseCells = liveCellsForReleasePlan(createBalancedReleasePlan(normalizeReleaseSelection(releaseSelection)));
   if (!Array.isArray(workers) || workers.length !== 1) {
     throw new Error('default strict placement requires exactly one local worker');
   }
@@ -136,7 +138,7 @@ export function defaultSingleWorkerAssignments(workers) {
   if (profiles.length !== 1) {
     throw new Error(`worker ${worker.workerId} must have exactly one default-speaker profile`);
   }
-  return LIVE_LLM_CELLS.map((cell, cellIndex) => {
+  return releaseCells.map((cell, cellIndex) => {
     return {
       cellId: cell.cellId,
       workerId: worker.workerId,
@@ -150,7 +152,8 @@ export function defaultSingleWorkerAssignments(workers) {
 // call sites use the single-worker name and accept no multi-worker placement.
 export const defaultThreeVmAssignments = defaultSingleWorkerAssignments;
 
-export function fixedThreeWorkerAssignments(workers) {
+export function fixedThreeWorkerAssignments(workers, releaseSelection) {
+  const releaseCells = liveCellsForReleasePlan(createBalancedReleasePlan(normalizeReleaseSelection(releaseSelection)));
   if (!Array.isArray(workers) || workers.length !== 3) {
     throw new Error('fixed three-worker placement requires exactly three workers');
   }
@@ -159,7 +162,7 @@ export function fixedThreeWorkerAssignments(workers) {
     [0, 'vm171', 0], [1, 'vm169', 0], [2, 'vm169', 1], [3, 'vm167', 0],
   ];
   return placement.map(([cellIndex, workerId, waveIndex]) => {
-    const cell = LIVE_LLM_CELLS[cellIndex];
+    const cell = releaseCells[cellIndex];
     const worker = byId.get(workerId);
     if (!cell || !worker) throw new Error(`fixed three-worker placement requires worker ${workerId} for c0${cellIndex + 1}`);
     const profiles = worker.deviceProfileInstances?.filter((profile) => profile.deviceClass === cell.deviceClass) ?? [];
@@ -168,14 +171,15 @@ export function fixedThreeWorkerAssignments(workers) {
   });
 }
 
-export function defaultTwoWorkerAssignments(workers) {
+export function defaultTwoWorkerAssignments(workers, releaseSelection) {
+  const releaseCells = liveCellsForReleasePlan(createBalancedReleasePlan(normalizeReleaseSelection(releaseSelection)));
   if (!Array.isArray(workers) || workers.length !== 2) {
     throw new Error('two-worker placement requires exactly two workers');
   }
   const placement = [
     [workers[0], 0], [workers[1], 0], [workers[1], 1], [workers[0], 1],
   ];
-  return LIVE_LLM_CELLS.map((cell, index) => {
+  return releaseCells.map((cell, index) => {
     const [worker, waveIndex] = placement[index];
     const profiles = worker.deviceProfileInstances?.filter((profile) => profile.deviceClass === cell.deviceClass) ?? [];
     if (profiles.length !== 1) throw new Error(`worker ${worker.workerId} must have exactly one ${cell.deviceClass} profile for ${cell.cellId}`);
@@ -284,7 +288,7 @@ export function writeCoordinatorProviderPreflightReceipt({
     || Math.min(...evidenceTimes.map((value) => Date.parse(String(value)))) <= authorizationPublishedAt
   ) throw new Error('provider preflight raw evidence did not start after signed authorization publication');
   const summary = validation.summary;
-  const modelProtocolProfileIdentity = deriveWatchModelProtocolIdentity(summary.model);
+  const modelProtocolProfileIdentity = deriveWatchModelProtocolIdentity(summary.model, expectedAuthorization?.releaseSelection);
   assertWatchModelProtocolIdentity(
     expectedAuthorization?.modelProtocolProfileIdentity,
     modelProtocolProfileIdentity,
@@ -294,7 +298,8 @@ export function writeCoordinatorProviderPreflightReceipt({
   const lifecycleBudget = expectedAuthorization?.lifecycleBudget;
   if (
     summary.providerId !== checked.providerId
-    || !String(summary.model ?? '').trim()
+    || summary.model !== createBalancedReleasePlan(normalizeReleaseSelection(expectedAuthorization?.releaseSelection)).models[0]
+    || summary.sessionAuthority?.serverModel !== summary.model
     || summary.operation !== PROVIDER_PREFLIGHT_OPERATION
     || summary.inputMode !== PROVIDER_PREFLIGHT_INPUT_MODE
     || summary.providerInputMode !== PROVIDER_PREFLIGHT_PROVIDER_INPUT_MODE
@@ -475,7 +480,8 @@ export async function prepareCoordinatorExecution({
   workspaceRoot = repoRoot,
   executionId = `watch-shard-${crypto.randomUUID()}`,
   workers,
-  assignments = defaultSingleWorkerAssignments(workers),
+  releaseSelection,
+  assignments = defaultSingleWorkerAssignments(workers, releaseSelection),
   preflightExecutorWorkerId,
   generatedAt = new Date(),
   expiresAt = new Date(generatedAt.getTime() + 86_400_000),
@@ -491,6 +497,7 @@ export async function prepareCoordinatorExecution({
   validateProviderPreflightEvidence = validateProviderPreflightRawAuthority,
   minimumRemainingExecutionMs = 0,
 }) {
+  const selection = normalizeReleaseSelection(releaseSelection);
   if (!EXECUTION_ID_PATTERN.test(String(executionId ?? ''))) {
     throw new Error('coordinator executionId must be a portable 8-128 character identifier');
   }
@@ -544,6 +551,7 @@ export async function prepareCoordinatorExecution({
     // driver package and assigned endpoint profiles before the one paid text
     // preflight is permitted to run.
     const workerReadiness = await runZeroProviderWorkerReadiness({
+      ...(selection ? { releaseSelection: selection } : {}),
       executionId,
       executionRoot: stagingRoot,
       generatedAt,
@@ -597,6 +605,7 @@ export async function prepareCoordinatorExecution({
     }));
     const grantGeneratedAt = strictlyLaterDate(now, generatedAt);
     const preflightGrant = createProviderPreflightGrant({
+      ...(selection ? { releaseSelection: selection } : {}),
       executionId,
       generatedAt: grantGeneratedAt,
       expiresAt,
@@ -653,7 +662,7 @@ export async function prepareCoordinatorExecution({
       path.join(reservationRoot, providerPreflightReservationFileName(reservation, index)),
       reservation,
     ));
-    fs.renameSync(authorizationStagingRoot, authorizationFinalRoot);
+    renameWithTransientRetrySync(authorizationStagingRoot, authorizationFinalRoot);
     const publishedGrantPath = path.join(authorizationFinalRoot, COORDINATOR_PREFLIGHT_GRANT_FILE);
     const publishedReservationDirectory = path.join(
       authorizationFinalRoot,
@@ -686,6 +695,7 @@ export async function prepareCoordinatorExecution({
     }
     const expectedPreflightAuthorization = {
       ...authorizationPackage.consumption,
+      ...(selection ? { releaseSelection: selection } : {}),
     };
     const stagedReservationDirectory = path.join(
       stagingRoot,
@@ -765,6 +775,7 @@ export async function prepareCoordinatorExecution({
       path: `${PROVIDER_PREFLIGHT_LEASE_RESERVATION_DIRECTORY}/${path.basename(entry.path)}`,
     }));
     const plan = createSignedExecutionPlan({
+      ...(selection ? { releaseSelection: selection } : {}),
       executionId,
       generatedAt: planGeneratedAt,
       expiresAt,
@@ -1501,6 +1512,7 @@ export function collectCoordinatorAggregation({
     generatedAt: generatedAt instanceof Date ? generatedAt.toISOString() : String(generatedAt),
     verdict: canonicalCells.every((cell) => cell.verdict === 'passed') ? 'passed' : 'failed',
     executionId: plan.executionId,
+    ...(plan.releaseSelection ? { releaseSelection: structuredClone(plan.releaseSelection) } : {}),
     planDigest: plan.planDigest,
     provenance: structuredClone(plan.provenance),
     authority: structuredClone(plan.authority),
@@ -1530,7 +1542,8 @@ export function collectCoordinatorAggregation({
       shardOrchestrationImplementationHashes: plan.authority.shardOrchestrationImplementationHashes,
       localIsolationAuthority: plan.localIsolationAuthority,
       providerPreflightAuthority: plan.providerPreflightAuthority,
-      releaseCells: LIVE_LLM_CELLS,
+      ...(plan.releaseSelection ? { releaseSelection: structuredClone(plan.releaseSelection) } : {}),
+      releaseCells: liveCellsForReleasePlan(createBalancedReleasePlan(normalizeReleaseSelection(plan.releaseSelection))),
       cells: canonicalCells,
       externalProviderBudget: aggregate.budget,
     },
@@ -1558,7 +1571,18 @@ export function validateCoordinatorAggregate(aggregate) {
     || Number(aggregate.budget?.actualExternalAudioSamples) > SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES
     || Number(aggregate.budget?.preflightExternalAudioSamples) !== 0
   ) throw new Error('coordinator aggregate is invalid or exceeds the fixed authority budget');
-  const expectedIds = LIVE_LLM_CELLS.map((cell) => cell.cellId);
+  const selection = normalizeReleaseSelection(aggregate.releaseSelection);
+  if (canonicalJson(aggregate.releaseSelection) !== canonicalJson(selection)) {
+    throw new Error('coordinator aggregate release selection is not canonical');
+  }
+  const releaseCells = liveCellsForReleasePlan(createBalancedReleasePlan(selection));
+  for (const [index, cell] of aggregate.cells.entries()) {
+    const expected = releaseCells[index];
+    if (cell.modelId !== expected.modelId) throw new Error('coordinator aggregate model mismatch');
+    assertWatchModelProtocolIdentity(cell.modelProtocolProfileIdentity, expected.modelProtocolProfileIdentity,
+      'coordinator aggregate model protocol identity');
+  }
+  const expectedIds = releaseCells.map((cell) => cell.cellId);
   if (canonicalJson(aggregate.cells.map((cell) => cell.cellId)) !== canonicalJson(expectedIds)) {
     throw new Error('coordinator aggregate cells are not in canonical paid-plan order');
   }

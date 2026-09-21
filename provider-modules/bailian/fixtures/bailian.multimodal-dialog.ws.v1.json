@@ -1,0 +1,204 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "bailian.multimodal-dialog.ws.fixture.v1",
+  "providerId": "bailian",
+  "protocolProfileId": "bailian.multimodal-dialog.ws",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "bailian.docs.31"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Generated documentation fixture projection from apps/desktop/src-tauri/fixtures/model-protocol/multimodal-dialog.json; never authorizes paid calls."
+  },
+  "scenario": "Exact bailian.multimodal-dialog.ws protocol replay",
+  "data": {
+    "endpointStatus": "verified",
+    "networkAuthorized": false,
+    "connectionUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+    "authContract": {
+      "profileId": "bailian.auth.bearer",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "value": "Bearer <redacted>"
+        }
+      ]
+    },
+    "audioContract": {
+      "input": {
+        "required": true,
+        "codecs": [
+          "pcm16"
+        ],
+        "sampleRatesHz": [
+          16000
+        ],
+        "channels": [
+          1
+        ]
+      },
+      "output": {
+        "required": true,
+        "codecs": [
+          "pcm16"
+        ],
+        "sampleRatesHz": [
+          24000
+        ],
+        "channels": [
+          1
+        ]
+      }
+    },
+    "events": [
+      {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "run-task",
+        "innerEventType": "Start",
+        "wire": {
+          "header": {
+            "action": "run-task",
+            "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "streaming": "duplex"
+          },
+          "payload": {
+            "task_group": "aigc",
+            "task": "multimodal-generation",
+            "function": "generation",
+            "model": "multimodal-dialog",
+            "input": {
+              "directive": "Start",
+              "workspace_id": "llm-sanitized",
+              "app_id": "app-sanitized"
+            },
+            "parameters": {}
+          }
+        },
+        "type": "run-task"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "result-generated",
+        "innerEventType": "Started",
+        "wire": {
+          "header": {
+            "event": "result-generated",
+            "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+          },
+          "payload": {
+            "output": {
+              "event": "Started",
+              "dialog_id": "dialog-sanitized"
+            }
+          }
+        },
+        "type": "result-generated"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "result-generated",
+        "innerEventType": "DialogStateChanged",
+        "wire": {
+          "header": {
+            "event": "result-generated",
+            "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+          },
+          "payload": {
+            "output": {
+              "event": "DialogStateChanged",
+              "state": "Listening",
+              "dialog_id": "dialog-sanitized"
+            }
+          }
+        },
+        "type": "result-generated"
+      },
+      {
+        "direction": "client",
+        "frameKind": "binary",
+        "eventType": "binary.audio",
+        "activeTaskId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "type": "binary.audio",
+        "frameType": "binary",
+        "payloadOmitted": true
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "result-generated",
+        "innerEventType": "DialogStateChanged",
+        "wire": {
+          "header": {
+            "event": "result-generated",
+            "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+          },
+          "payload": {
+            "output": {
+              "event": "DialogStateChanged",
+              "state": "Responding",
+              "dialog_id": "dialog-sanitized"
+            }
+          }
+        },
+        "type": "result-generated"
+      },
+      {
+        "direction": "server",
+        "frameKind": "binary",
+        "eventType": "binary.audio",
+        "activeTaskId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "type": "binary.audio",
+        "frameType": "binary",
+        "payloadOmitted": true
+      },
+      {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "finish-task",
+        "innerEventType": "Stop",
+        "wire": {
+          "header": {
+            "action": "finish-task",
+            "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "streaming": "duplex"
+          },
+          "payload": {
+            "input": {
+              "directive": "Stop",
+              "dialog_id": "dialog-sanitized"
+            }
+          }
+        },
+        "type": "finish-task"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "result-generated",
+        "innerEventType": "Stopped",
+        "wire": {
+          "header": {
+            "event": "result-generated",
+            "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+          },
+          "payload": {
+            "output": {
+              "event": "Stopped",
+              "dialog_id": "dialog-sanitized"
+            }
+          }
+        },
+        "type": "result-generated",
+        "terminal": true
+      }
+    ]
+  }
+}

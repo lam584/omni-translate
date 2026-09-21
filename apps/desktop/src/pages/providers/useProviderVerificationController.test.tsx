@@ -150,4 +150,100 @@ describe('useProviderVerificationController', () => {
     await act(async () => Promise.resolve());
     expect(nextState).toBe(current);
   });
+  it('discards a late verification result after a registry edit', async () => {
+    let finish!: (value: unknown) => void;
+    runtime.probe.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await render();
+    vi.mocked(params.setProbeResult).mockClear();
+    let pending!: Promise<void>;
+    await act(async () => { pending = controller.handleVerificationRun(); await Promise.resolve(); });
+    act(() => useAppStore.getState().updateActiveProviderDraft({ modelRegistryVersion: 2, modelCapabilityOverrides: [{ modelId: params.activeProvider.model, capabilities: [] }] }));
+    await act(async () => { finish({ verdict: 'available', error: null }); await pending; });
+    expect(params.setProbeResult).not.toHaveBeenCalled();
+    expect(runtime.smoke).not.toHaveBeenCalled();
+    expect(useAppStore.getState().configDraft.providers[0].probe.checkedAt).toBe('pending-probe');
+  });
+
+  it.each(['resolve', 'reject'] as const)('discards a stale smoke %s after binding changes', async (settlement) => {
+    runtime.probe.mockResolvedValueOnce({ verdict: 'available', error: null });
+    let finish!: (value: unknown) => void;
+    let fail!: (reason: unknown) => void;
+    runtime.smoke.mockImplementationOnce(() => new Promise((resolve, reject) => { finish = resolve; fail = reject; }));
+    await render();
+    let pending!: Promise<void>;
+    await act(async () => { pending = controller.handleVerificationRun(); await Promise.resolve(); });
+    expect(runtime.smoke).toHaveBeenCalledTimes(1);
+    vi.mocked(params.setSmokeResult).mockClear();
+    vi.mocked(params.setSecretStatusMessage).mockClear();
+    act(() => useAppStore.getState().updateActiveProviderDraft({ modelProtocolBindings: [{modelId: params.activeProvider.model, operation:'realtime-translation',profileOwnerProviderId:'bailian',manifestVersion:1,profileId:'changed',profileVersion:2}] }));
+    await act(async () => { if (settlement === 'resolve') finish({error: null, streamObserved: true}); else fail(new Error('obsolete failure')); await pending; });
+    expect(params.setSmokeResult).not.toHaveBeenCalled();
+    expect(params.setSecretStatusMessage).not.toHaveBeenCalled();
+    expect(useAppStore.getState().configDraft.providers[0].status).toBe('draft');
+  });
+
+  it.each(['probe', 'smoke'] as const)('invalidates shared credentials and discards old %s after saving', async (stage) => {
+    const original = params.activeProvider;
+    const shared = { ...structuredClone(original), providerId: 'shared-instance' };
+    const unrelated = { ...structuredClone(original), providerId: 'other-instance', authRef: { ...original.authRef, reference: 'credential://other' } };
+    useAppStore.getState().updateProviders([original, shared, unrelated]);
+    const unrelatedBefore = useAppStore.getState().configDraft.providers[2];
+    let finish!: (value: unknown) => void;
+    runtime.probe.mockResolvedValue({ verdict: 'available', error: null });
+    runtime[stage].mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await render();
+    let pending!: Promise<void>;
+    await act(async () => { pending = controller.handleVerificationRun(); await Promise.resolve(); });
+    params = { ...params, secretDraft: 'replacement-test-value' };
+    runtime.saveSecret.mockResolvedValueOnce(undefined);
+    await render();
+    await act(async () => controller.handleSecretSave());
+    vi.mocked(params.setProbeResult).mockClear();
+    vi.mocked(params.setSmokeResult).mockClear();
+    await act(async () => { finish({ verdict: 'available', error: null, streamObserved: true }); await pending; });
+    const providers = useAppStore.getState().configDraft.providers;
+    expect(providers.slice(0, 2).every((provider) => provider.status === 'draft' && provider.probe.checkedAt === 'pending-probe')).toBe(true);
+    expect(providers[2]).toEqual(unrelatedBefore);
+    expect(params.setProbeResult).not.toHaveBeenCalled();
+    expect(params.setSmokeResult).not.toHaveBeenCalled();
+    expect(JSON.stringify(providers)).not.toContain('replacement-test-value');
+  });
+
+  it('keeps failed credential writes invalidated and blocks verification during a write', async () => {
+    params = { ...params, secretDraft: 'replacement-test-value' };
+    let fail!: (reason: unknown) => void;
+    runtime.saveSecret.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+    await render();
+    let pending!: Promise<void>;
+    await act(async () => { pending = controller.handleSecretSave(); await Promise.resolve(); });
+    await act(async () => controller.handleVerificationRun());
+    expect(runtime.probe).not.toHaveBeenCalled();
+    await act(async () => { fail(new Error('timeout')); await pending; });
+    expect(useAppStore.getState().configDraft.providers[0].status).toBe('draft');
+    expect(useAppStore.getState().configDraft.providers[0].probe.checkedAt).toBe('pending-probe');
+  });
+
+  it('notifies another mounted controller sharing authRef while isolating instance result writes', async () => {
+    const first = params.activeProvider;
+    const second = { ...structuredClone(first), providerId: 'second-instance' };
+    useAppStore.getState().updateProviders([first, second]);
+    const otherParams = { ...params, activeProvider: second, setProbeResult: vi.fn(), setSmokeResult: vi.fn() };
+    let otherController!: ReturnType<typeof useProviderVerificationController>;
+    function OtherHarness() { otherController = useProviderVerificationController(otherParams); return null; }
+    params = { ...params, secretDraft: 'replacement-test-value' };
+    await act(async () => { view.root.render(<><Harness /><OtherHarness /></>); await Promise.resolve(); });
+    runtime.probe.mockResolvedValueOnce({ verdict: 'available', checkedAt: 'verified', error: null });
+    runtime.smoke.mockResolvedValueOnce({ error: null, streamObserved: true });
+    await act(async () => otherController.handleVerificationRun());
+    expect(useAppStore.getState().configDraft.providers[0]).toEqual(first);
+    expect(useAppStore.getState().configDraft.providers[1].status).toBe('ready');
+    otherParams.setProbeResult.mockClear();
+    otherParams.setSmokeResult.mockClear();
+    runtime.saveSecret.mockResolvedValueOnce(undefined);
+    await act(async () => controller.handleSecretSave());
+    expect(otherParams.setProbeResult).toHaveBeenCalledWith(null);
+    expect(otherParams.setSmokeResult).toHaveBeenCalledWith(null);
+    expect(useAppStore.getState().configDraft.providers.every((provider) => provider.probe.checkedAt === 'pending-probe')).toBe(true);
+  });
+
 });

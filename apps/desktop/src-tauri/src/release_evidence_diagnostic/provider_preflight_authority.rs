@@ -23,6 +23,8 @@ use crate::provider::model_protocol_profile::{
 mod provider_preflight_protocol_tests;
 #[cfg(test)]
 mod provider_preflight_worker_tests;
+#[cfg(test)]
+mod provider_preflight_selection_tests;
 
 const GRANT_PATH_ENV: &str = "OMNI_RELEASE_EVIDENCE_PREFLIGHT_GRANT_PATH";
 const RESERVATION_DIRECTORY_ENV: &str =
@@ -68,6 +70,7 @@ const PROVIDER_KIND: &str = "dashscope";
 const PROVIDER_ENDPOINT_HOST: &str = "dashscope.aliyuncs.com";
 const PROVIDER_CREDENTIAL_REFERENCE: &str = "credential://provider/dashscope/default";
 const PREFLIGHT_MODEL: &str = "qwen3.5-livetranslate-flash-realtime";
+const PREFLIGHT_MODEL_V2: &str = "qwen3.8-livetranslate-flash-realtime";
 const PREFLIGHT_PROTOCOL: &str = "dashscope-livetranslate";
 const INCIDENT_PREFLIGHT_MODEL: &str = "qwen3.5-omni-plus-realtime";
 const INCIDENT_PREFLIGHT_PROTOCOL: &str = "dashscope-omni";
@@ -97,12 +100,6 @@ const MODEL_PROTOCOL_PROFILE_IDENTITY_FIELDS: [&str; 15] = [
     "exactModelId",
 ];
 
-const CELL_MODELS: [&str; 4] = [
-    PREFLIGHT_MODEL,
-    PREFLIGHT_MODEL,
-    PREFLIGHT_MODEL,
-    PREFLIGHT_MODEL,
-];
 const CELL_FEEDBACK_MODES: [&str; 4] = [
     "process-exclusion",
     "virtual-driver",
@@ -186,6 +183,7 @@ impl PreflightAuthorityProfile {
         }
     }
 
+    #[cfg(test)]
     fn preflight_model(self) -> &'static str {
         match self {
             Self::StrictReleaseMatrix => PREFLIGHT_MODEL,
@@ -214,6 +212,7 @@ impl PreflightAuthorityProfile {
         }
     }
 
+    #[cfg(test)]
     fn model_protocol_profile_identity(
         self,
     ) -> Result<Option<ModelProtocolProfileIdentityRuntime>, String> {
@@ -278,6 +277,83 @@ impl PreflightAuthorityProfile {
     }
 }
 
+// Omission preserves the legacy signed 3.5 layout; v2 is an explicit selection.
+fn release_selection(grant: &Value) -> Result<(&str, &str, &str), String> {
+    let Some(selection) = grant.get("releaseSelection") else {
+        return Ok((PREFLIGHT_MODEL, PROVIDER_ENDPOINT_HOST, STRICT_MODEL_PROTOCOL_REGION));
+    };
+    if selection.as_object().map(|object| object.len()) != Some(3) {
+        return Err("releaseSelection must contain exactly modelId, endpointHost, region".to_string());
+    }
+    let model = required_str(selection, "/modelId", "release selection model")?;
+    let host = required_str(selection, "/endpointHost", "release selection endpoint")?;
+    let region = required_str(selection, "/region", "release selection region")?;
+    if model != PREFLIGHT_MODEL_V2 || region != STRICT_MODEL_PROTOCOL_REGION
+        || host != host.to_ascii_lowercase() || host.trim() != host
+    {
+        return Err("releaseSelection requires exact 3.8 model and canonical cn-beijing workspace host".to_string());
+    }
+    Ok((model, host, region))
+}
+
+fn copy_release_selection(grant: &Value, target: &mut serde_json::Map<String, Value>) {
+    if let Some(selection) = grant.get("releaseSelection") {
+        target.insert("releaseSelection".to_string(), selection.clone());
+    }
+}
+
+fn preflight_authorization_digest(
+    grant: &Value,
+    reservation_digests: &[Value],
+    profile: PreflightAuthorityProfile,
+) -> Result<String, String> {
+    let mut authority = json!({
+        "schemaVersion": profile.signed_authority_schema_version(),
+        "artifactKind": profile.authorization_set_kind(),
+        "executionId": required_str(grant, "/executionId", "grant executionId")?,
+        "grantDigest": required_str(grant, "/digest", "grant digest")?,
+        "leaseReservationDigests": reservation_digests,
+    }).as_object().cloned().expect("authorization set is an object");
+    copy_release_selection(grant, &mut authority);
+    sha256_canonical(&Value::Object(authority))
+}
+
+fn validate_readiness_selection(grant: &Value) -> Result<(), String> {
+    if grant.get("releaseSelection") != grant.pointer("/workerReadinessRequest/releaseSelection") {
+        return Err("provider preflight readiness releaseSelection does not match its signed grant".to_string());
+    }
+    Ok(())
+}
+
+fn selected_registry_identity(
+    grant: &Value,
+    profile: PreflightAuthorityProfile,
+) -> Result<Option<ModelProtocolProfileIdentityRuntime>, String> {
+    if profile == PreflightAuthorityProfile::IncidentPlusReplay {
+        if grant.get("releaseSelection").is_some() {
+            return Err("incident authority cannot carry releaseSelection".to_string());
+        }
+        return Ok(None);
+    }
+    let (model, host, region) = release_selection(grant)?;
+    authorize_model_protocol_invocation(ModelProtocolAuthorizationRequest {
+        exact_model_id: model,
+        operation: STRICT_MODEL_PROTOCOL_OPERATION,
+        transport: STRICT_MODEL_PROTOCOL_TRANSPORT,
+        region,
+        endpoint_host: host,
+        audio_input: None,
+        audio_output: None,
+        declared_registry_version: None,
+        declared_profile_id: None,
+        declared_profile_version: None,
+        declared_wire_dialect: None,
+        declared_endpoint_family: None,
+        declared_terminal_lifecycle: None,
+    }).map(|authority| Some(ModelProtocolProfileIdentityRuntime::from(&authority)))
+        .map_err(|error| format!("strict selected registry authorization failed: {error}"))
+}
+
 pub(super) struct ProviderPreflightAuthorization {
     pub(super) authority: Value,
     pub(super) model: String,
@@ -320,7 +396,10 @@ impl ProviderPreflightAuthorization {
             return Err("provider preflight authority paths must use the canonical grant filename".to_string());
         }
         verify_signed_authority(&grant, None, "provider preflight grant")?;
-        let model_protocol_profile_identity = profile.model_protocol_profile_identity()?;
+        let model_protocol_profile_identity = selected_registry_identity(&grant, profile)?;
+        let selected_model = model_protocol_profile_identity.as_ref()
+            .map(|identity| identity.exact_model_id.as_str())
+            .unwrap_or(INCIDENT_PREFLIGHT_MODEL);
         validate_grant(
             &grant,
             source_head_commit,
@@ -451,13 +530,7 @@ impl ProviderPreflightAuthorization {
             reservations.push(Value::Object(projected_reservation));
         }
 
-        let authorization_digest = sha256_canonical(&json!({
-            "schemaVersion": profile.signed_authority_schema_version(),
-            "artifactKind": profile.authorization_set_kind(),
-            "executionId": required_str(&grant, "/executionId", "grant executionId")?,
-            "grantDigest": required_str(&grant, "/digest", "grant digest")?,
-            "leaseReservationDigests": reservation_digests,
-        }))?;
+        let authorization_digest = preflight_authorization_digest(&grant, &reservation_digests, profile)?;
         if !is_sha256(expected_authorization_digest)
             || authorization_digest != expected_authorization_digest
         {
@@ -471,7 +544,7 @@ impl ProviderPreflightAuthorization {
             "leaseReservationDigests": reservation_digests,
             "authorizationDigest": authorization_digest,
             "providerId": PROVIDER_ID,
-            "model": profile.preflight_model(),
+            "model": selected_model,
             "protocol": profile.preflight_protocol(),
             "operation": profile.operation(),
             "inputMode": if profile == PreflightAuthorityProfile::StrictReleaseMatrix {
@@ -516,10 +589,11 @@ impl ProviderPreflightAuthorization {
                 }),
             );
         }
+        copy_release_selection(&grant, &mut authority);
         let authority = Value::Object(authority);
         Ok(Self {
             authority,
-            model: profile.preflight_model().to_string(),
+            model: selected_model.to_string(),
             protocol: profile.preflight_protocol().to_string(),
             authorization_root,
             grant,
@@ -595,7 +669,7 @@ impl ProviderPreflightAuthorization {
             .host_str()
             .ok_or_else(|| "authorized provider baseUrl has no endpoint host".to_string())?;
         if endpoint.scheme() != "https"
-            || endpoint_host != PROVIDER_ENDPOINT_HOST
+            || endpoint_host != release_selection(&self.grant)?.1
             || endpoint.port().is_some()
             || !endpoint.username().is_empty()
             || endpoint.password().is_some()
@@ -1023,6 +1097,14 @@ fn validate_grant(
     {
         return Err("provider preflight grant schema is unsupported".to_string());
     }
+    validate_readiness_selection(grant)?;
+    let selected_identity = selected_registry_identity(grant, profile)?;
+    if selected_identity.as_ref() != model_protocol_profile_identity {
+        return Err("grant selected model/profile/endpoint authority mismatch".to_string());
+    }
+    let selected_model = selected_identity.as_ref()
+        .map(|identity| identity.exact_model_id.as_str())
+        .unwrap_or(INCIDENT_PREFLIGHT_MODEL);
     if required_str(grant, "/provenance/source", "grant provenance source")? != "git"
         || required_str(grant, "/provenance/captureStatus", "grant capture status")? != "captured"
         || grant
@@ -1064,7 +1146,7 @@ fn validate_grant(
     };
     for (pointer, expected) in [
         ("/authorization/providerId", PROVIDER_ID),
-        ("/authorization/model", profile.preflight_model()),
+        ("/authorization/model", selected_model),
         ("/authorization/protocol", profile.preflight_protocol()),
         ("/authorization/operation", profile.operation()),
         ("/authorization/inputMode", expected_input_mode),
@@ -1185,9 +1267,9 @@ fn validate_grant(
                     (
                         format!(
                             "{tier}::{}::{}::{}",
-                            CELL_MODELS[index], CELL_FEEDBACK_MODES[index], CELL_DEVICE_CLASSES[index]
+                            selected_model, CELL_FEEDBACK_MODES[index], CELL_DEVICE_CLASSES[index]
                         ),
-                        CELL_MODELS[index],
+                        selected_model,
                         PREFLIGHT_PROTOCOL,
                         CELL_FEEDBACK_MODES[index],
                         CELL_DEVICE_CLASSES[index],

@@ -1,4 +1,5 @@
 #requires -Version 5.1
+Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.ProviderEnvironment.psm1') -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.IO.psm1')
 Import-Module (Join-Path $PSScriptRoot 'Omni.Testing.WatchMode.Report.psm1') -DisableNameChecking
 function Copy-IfExists {
@@ -171,6 +172,7 @@ function Write-StrictPaidCellBudget {
       '--write-pre-provider-terminal', 'true',
       '--lease-id', $leaseId
     )
+    $terminalArguments += @(Get-WatchModeBudgetEndpointArguments)
     $terminalOutput = @(& node @terminalArguments 2>&1 | ForEach-Object { "$_" })
     if ($LASTEXITCODE -ne 0) {
       throw "strict paid pre-provider terminal creation failed: $($terminalOutput -join ' ')"
@@ -188,6 +190,7 @@ function Write-StrictPaidCellBudget {
     "--input-ceiling-samples", "$env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES",
     "--authority-mode", $providerAuthorityMode
   )
+  $arguments += @(Get-WatchModeBudgetEndpointArguments)
   $output = @(& node @arguments 2>&1 | ForEach-Object { "$_" })
   $exitCode = $LASTEXITCODE
   if ($exitCode -ne 0) {

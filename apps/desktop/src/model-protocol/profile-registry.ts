@@ -127,6 +127,7 @@ export interface ModelProtocolProfile {
   operations: ModelProtocolOperation[];
   dialectId: string;
   regions: ModelProtocolRegion[];
+  endpointRequirements?: { workspaceScoped: true };
   modelAudio?: {
     input: ModelProtocolProfileAudioDirection;
     output: ModelProtocolProfileAudioDirection;
@@ -217,7 +218,7 @@ export interface AuthorizedModelProtocolProfile {
 
 export type ModelProtocolAuthorizationResult =
   | { ok: true; authorization: AuthorizedModelProtocolProfile }
-  | { ok: false; errorCode: ModelProtocolAuthorizationErrorCode };
+  | { ok: false; errorCode: ModelProtocolAuthorizationErrorCode; message?: string };
 
 export type ModelProtocolEventDirection = 'client' | 'server';
 export type ModelProtocolFrameKind = 'json' | 'json-base64' | 'binary' | 'http-body' | 'sse';
@@ -275,7 +276,7 @@ function resolveEndpointHostFamily(
   registry: ModelProtocolRegistry,
   region: ModelProtocolRegion,
   endpointHost: string,
-): { endpointHost: string; endpointHostFamilyId: string } | null {
+): { endpointHost: string; endpointHostFamilyId: string; workspaceScoped: boolean } | null {
   const normalizedHost = endpointHost.trim().toLowerCase();
   if (!normalizedHost || !/^[a-z0-9.-]+$/.test(normalizedHost)) return null;
   const policy = registry.endpointHostPolicies.find((candidate) => candidate.region === region);
@@ -283,7 +284,7 @@ function resolveEndpointHostFamily(
     hostMatchesPattern(normalizedHost, candidate.hostPattern)
   ));
   return rule
-    ? { endpointHost: normalizedHost, endpointHostFamilyId: rule.hostFamilyId }
+    ? { endpointHost: normalizedHost, endpointHostFamilyId: rule.hostFamilyId, workspaceScoped: rule.workspaceScoped }
     : null;
 }
 
@@ -399,6 +400,9 @@ export function authorizeModelProtocolInvocation(
   if (!request.endpointHost) return rejected('model_protocol.endpoint_host_required');
   const endpointAuthority = resolveEndpointHostFamily(registry, request.region, request.endpointHost);
   if (!endpointAuthority) return rejected('model_protocol.endpoint_host_region_mismatch');
+  if (profile.endpointRequirements?.workspaceScoped && !endpointAuthority.workspaceScoped) {
+    return { ok: false, errorCode: 'model_protocol.endpoint_host_region_mismatch', message: 'workspace_required: this model requires a Workspace endpoint.' };
+  }
   const audioInputConstraint = materializeAudioConstraint(
     profile.modelAudio?.input,
     dialect.audioInput,
@@ -535,6 +539,7 @@ export function admitModelProtocolEvent(
     || dialect.endpointFamily !== authorization.endpointFamily
     || dialect.terminalLifecycle !== authorization.terminalLifecycle
     || !endpointAuthority
+    || (profile.endpointRequirements?.workspaceScoped && !endpointAuthority.workspaceScoped)
     || endpointAuthority.endpointHost !== authorization.endpointHost
     || endpointAuthority.endpointHostFamilyId !== authorization.endpointHostFamilyId
     || JSON.stringify(expectedAudioInputConstraint) !== JSON.stringify(authorization.audioInputConstraint)

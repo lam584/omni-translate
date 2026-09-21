@@ -56,6 +56,7 @@ const STRICT_CREDENTIAL_REFERENCE: &str = "credential://provider/dashscope/defau
 const STRICT_OMNI_MODEL: &str = "qwen3.5-omni-flash-realtime";
 const STRICT_OMNI_PROTOCOL: &str = "dashscope-omni";
 const STRICT_LIVETRANSLATE_MODEL: &str = "qwen3.5-livetranslate-flash-realtime";
+const STRICT_LIVETRANSLATE_MODEL_V2: &str = "qwen3.8-livetranslate-flash-realtime";
 const STRICT_LIVETRANSLATE_PROTOCOL: &str = "dashscope-livetranslate";
 const INCIDENT_PLUS_MODEL: &str = "qwen3.5-omni-plus-realtime";
 const INCIDENT_PLUS_PROTOCOL: &str = "dashscope-omni";
@@ -68,7 +69,7 @@ fn strict_release_cell_max_samples(cell_id: &str) -> Result<u64, String> {
             "strict paid Provider input cellId is not a formal four-part release cell: {cell_id}"
         ));
     };
-    if *model != STRICT_LIVETRANSLATE_MODEL || *device_class != "default-speaker" {
+    if !matches!(*model, STRICT_LIVETRANSLATE_MODEL | STRICT_LIVETRANSLATE_MODEL_V2) || *device_class != "default-speaker" {
         return Err(format!(
             "strict paid Provider input cellId is outside the formal LiveTranslate release authority: {cell_id}"
         ));
@@ -405,6 +406,15 @@ impl ProviderInputBudget {
                 _ => None,
             },
         )
+    }
+
+    #[cfg(test)]
+    pub(super) fn headless_local_environment_for_test(
+        provider: &ProviderDraftInput,
+        environment: &std::collections::HashMap<String, String>,
+    ) -> Result<Self, String> {
+        Self::from_environment(provider, "inbound", 1, &provider.model,
+            STRICT_LIVETRANSLATE_PROTOCOL, |key| environment.get(key).cloned())
     }
 
     #[cfg(test)]
@@ -747,6 +757,8 @@ mod tests {
             custom_headers: Vec::new(),
             scene_model_assignments: Vec::new(),
             model_protocol_bindings: Vec::new(),
+            model_registry_version: None,
+            model_capability_overrides: Vec::new(),
             local_model_capability_registry: Vec::new(),
             model_catalog_cache: Default::default(),
         }
@@ -883,6 +895,44 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str(line).expect("journal line is JSON"))
             .collect()
+    }
+
+    #[test]
+    fn strict_v2_budget_reauthorizes_workspace_and_binds_cell_model() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("v2-ledger.json");
+        let mut environment = strict_environment(&path, "virtual-driver");
+        let mut selected = provider(STRICT_PROVIDER_ID);
+        selected.model = STRICT_LIVETRANSLATE_MODEL_V2.to_string();
+        selected.base_url = "https://acceptance.cn-beijing.maas.aliyuncs.com".to_string();
+        let authority = crate::audio::events::authorize_bailian_native_translate(&selected).unwrap();
+        environment.insert(MODEL_ENV.to_string(), selected.model.clone());
+        environment.insert(EXPECTED_ENDPOINT_HOST_ENV.to_string(), "acceptance.cn-beijing.maas.aliyuncs.com".to_string());
+        environment.insert(MODEL_PROTOCOL_PROFILE_IDENTITY_ENV.to_string(),
+            serde_json::to_string(&ModelProtocolProfileIdentityRuntime::from(&authority)).unwrap());
+        // A valid profile must not authorize a lease for a different model.
+        assert!(budget_from_map_with_provider(&environment, &selected).unwrap_err().contains("cell/lease"));
+        environment.insert(CELL_ID_ENV.to_string(), format!("pairwise-live::{STRICT_LIVETRANSLATE_MODEL_V2}::virtual-driver::default-speaker"));
+        let mut generic = selected.clone();
+        generic.base_url = format!("https://{STRICT_ENDPOINT_HOST}");
+        assert!(budget_from_map_with_provider(&environment, &generic).is_err());
+        environment.insert(EXPECTED_ENDPOINT_HOST_ENV.to_string(), "other.cn-beijing.maas.aliyuncs.com".to_string());
+        assert!(budget_from_map_with_provider(&environment, &selected).unwrap_err().contains("endpointHost mismatch"));
+        environment.insert(EXPECTED_ENDPOINT_HOST_ENV.to_string(), "acceptance.cn-beijing.maas.aliyuncs.com".to_string());
+        assert!(!path.exists());
+        budget_from_map_with_provider(&environment, &selected).unwrap();
+    }
+
+    #[test]
+    fn both_release_models_keep_the_exact_four_cell_budgets() {
+        for model in [STRICT_LIVETRANSLATE_MODEL, STRICT_LIVETRANSLATE_MODEL_V2] {
+            let mut total = 0;
+            for (tier, mode) in [("pairwise-live", "process-exclusion"), ("pairwise-live", "virtual-driver"),
+                ("pairwise-live", "echo-cancel"), ("model-stability", "process-exclusion")] {
+                total += strict_release_cell_max_samples(&format!("{tier}::{model}::{mode}::default-speaker")).unwrap();
+            }
+            assert_eq!(total, 10_100_180);
+        }
     }
 
     #[test]

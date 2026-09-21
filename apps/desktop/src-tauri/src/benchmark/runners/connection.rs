@@ -144,6 +144,7 @@ fn validate_benchmark_connection_authority(
 /// retries bounded so a genuinely unavailable endpoint still fails quickly.
 pub(super) fn connect_benchmark_websocket(
     config: &BenchmarkConfig,
+    policy: BenchmarkExecutionPolicy,
     request: tungstenite::handshake::client::Request,
     error_context: &str,
 ) -> Result<
@@ -154,6 +155,29 @@ pub(super) fn connect_benchmark_websocket(
     String,
 > {
     validate_benchmark_connection_authority(config, &request)?;
+    // Authority is checked against the original production request in all modes.
+    // The loopback transport exists only in tests, cannot be selected by live config,
+    // and does not rewrite the authorized URI, Host, model, or protocol profile.
+    match policy {
+        BenchmarkExecutionPolicy::Production => {}
+        #[cfg(test)]
+        BenchmarkExecutionPolicy::Bounded { loopback } => {
+            return if let Some(address) = loopback {
+                if !address.ip().is_loopback() {
+                    return Err("bounded fixture transport must be loopback".to_string());
+                }
+                let stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
+                    .map_err(|_| format!("{error_context}: bounded fixture TCP connect failed"))?;
+                stream.set_read_timeout(Some(Duration::from_secs(2))).map_err(|e| e.to_string())?;
+                stream.set_write_timeout(Some(Duration::from_secs(2))).map_err(|e| e.to_string())?;
+                tungstenite::client(request, MaybeTlsStream::Plain(stream))
+                    .map_err(|e| format!("{error_context}: single attempt: {e}"))
+            } else {
+                tungstenite::client::connect_with_config(request, None, 0)
+                    .map_err(|e| format!("{error_context}: single attempt: {e}"))
+            };
+        }
+    }
     let mut last_error = None;
     for attempt in 1..=BENCHMARK_CONNECT_MAX_ATTEMPTS {
         match connect(request.clone()) {
@@ -264,7 +288,7 @@ mod tests {
             .as_str()
             .into_client_request()
             .expect("loopback request should build");
-        let error = connect_benchmark_websocket(&config, request, "unexpected connect")
+        let error = connect_benchmark_websocket(&config, BenchmarkExecutionPolicy::Production, request, "unexpected connect")
             .expect_err("Bailian benchmark boundary must fail closed");
         stop.store(true, Ordering::SeqCst);
         server.join().expect("loopback connector should stop");
@@ -291,4 +315,38 @@ mod tests {
         ));
         assert!(error.contains("model_protocol.authorization_identity_mismatch"));
     }
+    #[test]
+    fn bounded_connection_one_attempt_default_retains_four() {
+        for (policy, expected) in [
+            (BenchmarkExecutionPolicy::Production, 4),
+            (BenchmarkExecutionPolicy::Bounded { loopback: None }, 1),
+        ] {
+            let (url, attempts, stop, server) = counted_loopback_connector();
+            let config = connector_config("local-fixture-model", "openai-compatible", None);
+            assert!(connect_benchmark_websocket(&config, policy, url.as_str().into_client_request().unwrap(), "fixture").is_err());
+            stop.store(true, Ordering::SeqCst); server.join().unwrap();
+            assert_eq!(attempts.load(Ordering::SeqCst), expected);
+        }
+    }
+
+    #[test]
+    fn bounded_connection_does_not_follow_redirect() {
+        use std::io::{Read, Write};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("ws://{}/realtime", listener.local_addr().unwrap());
+        let (target, attempts, stop, target_server) = counted_loopback_connector();
+        let redirect = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut request = [0; 4096]; let _ = stream.read(&mut request).unwrap();
+            write!(stream, "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\n\r\n").unwrap();
+        });
+        let config = connector_config("local-fixture-model", "openai-compatible", None);
+        let result = connect_benchmark_websocket(&config, BenchmarkExecutionPolicy::Bounded { loopback: None },
+            url.as_str().into_client_request().unwrap(), "fixture");
+        assert!(result.is_err()); redirect.join().unwrap();
+        stop.store(true, Ordering::SeqCst); target_server.join().unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+    }
+
 }

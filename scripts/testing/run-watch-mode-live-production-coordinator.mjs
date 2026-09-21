@@ -13,7 +13,6 @@ import { checkWatchDiskSpace, verifyWatchDiskSpaceReceipt, writeWatchDiskReceipt
 import { previewWatchHistoryReport, recordWatchHistoryReport, WATCH_HISTORY_REPORTS_PER_WORKER } from './watch-mode-history-reports.mjs';
 import {
   DEFAULT_FEEDBACK_MODES,
-  DEFAULT_MODELS,
   MATRIX_DEFAULTS,
   SUPPORTED_DEVICE_CLASSES,
   buildVerifyArgv,
@@ -35,7 +34,7 @@ import {
   assertCellExternalProviderBudget,
   writeMatrixExternalProviderBudget,
 } from './watch-mode-external-provider-budget.mjs';
-import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { LIVE_LLM_CELLS, createBalancedReleasePlan, normalizeReleaseSelection, liveCellsForReleasePlan } from './watch-mode-balanced-release-plan.mjs';
 import {
   SHARD_CELL_RESULT_FILE,
   SHARD_EXECUTION_PLAN_FILE,
@@ -1018,7 +1017,9 @@ function validateProfile(profile, workerId, index) {
   return structuredClone(profile);
 }
 
-export function validateProductionWorkerConfig(config, { configDirectory = repoRoot } = {}) {
+export function validateProductionWorkerConfig(config, { configDirectory = repoRoot, releaseSelection } = {}) {
+  const selection = normalizeReleaseSelection(releaseSelection);
+  const releasePlan = createBalancedReleasePlan(selection);
   exactKeys(config, [
     'schemaVersion',
     'artifactKind',
@@ -1104,10 +1105,10 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     };
   });
   const assignments = workers.length === 1
-    ? defaultSingleWorkerAssignments(workers)
+    ? defaultSingleWorkerAssignments(workers, selection)
     : workers.length === 2
-      ? defaultTwoWorkerAssignments(workers)
-      : workers.length === 4 ? fixedFourWorkerAssignments(workers) : fixedThreeWorkerAssignments(workers);
+      ? defaultTwoWorkerAssignments(workers, selection)
+      : workers.length === 4 ? fixedFourWorkerAssignments(workers, releasePlan) : fixedThreeWorkerAssignments(workers, selection);
   const workersById = new Map(workers.map((worker) => [worker.workerId, worker]));
   const assignedProfiles = assignments.map((assignment) => {
     const worker = workersById.get(assignment.workerId);
@@ -1119,7 +1120,7 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
     }
     return profile;
   });
-  if (assignedProfiles.length !== LIVE_LLM_CELLS.length) {
+  if (assignedProfiles.length !== liveCellsForReleasePlan(releasePlan).length) {
     throw new Error('production worker assignments must bind every fixed cell to one profile');
   }
   const preflightExecutor = workers.find((worker) => worker.workerId === config.providerPreflightExecutor.workerId);
@@ -1137,7 +1138,7 @@ export function verifyProductionLocalIsolationManifest({ workers, assignments, .
   return verifyLocalIsolationManifest({ ...verification, expectedWorkers: workers, expectedAssignments: assignments });
 }
 
-export function readProductionWorkerConfig(configPath) {
+export function readProductionWorkerConfig(configPath, { releaseSelection } = {}) {
   const resolved = regularFile(configPath, 'production worker config');
   let parsed;
   try {
@@ -1145,7 +1146,7 @@ export function readProductionWorkerConfig(configPath) {
   } catch (error) {
     throw new Error(`production worker config is not valid UTF-8 JSON: ${error.message}`);
   }
-  return validateProductionWorkerConfig(parsed, { configDirectory: path.dirname(resolved) });
+  return validateProductionWorkerConfig(parsed, { configDirectory: path.dirname(resolved), releaseSelection });
 }
 
 /** Bounded disk-only barrier, shared with release preparation. Never prunes. */
@@ -1468,6 +1469,7 @@ async function runCoordinatorChildStage({
 export async function runProductionEvidenceVerifier({
   evidenceOutputRoot,
   manifestPath,
+  releaseSelection,
   timeoutMs = WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
   runProcess = runChildProcess,
   spawnProcess,
@@ -1477,7 +1479,7 @@ export async function runProductionEvidenceVerifier({
     process.execPath,
     buildVerifyArgv(
       evidenceOutputRoot,
-      DEFAULT_MODELS,
+      createBalancedReleasePlan(normalizeReleaseSelection(releaseSelection)).models,
       DEFAULT_FEEDBACK_MODES,
       SUPPORTED_DEVICE_CLASSES,
       manifestPath,
@@ -1506,6 +1508,9 @@ export async function runProductionEvidenceVerifier({
 }
 
 function performFinalEvidenceStaging(payload, operations = {}) {
+  const releaseSelection = normalizeReleaseSelection(payload.plan.releaseSelection);
+  const releasePlan = createBalancedReleasePlan(releaseSelection);
+  const releaseCells = liveCellsForReleasePlan(releasePlan);
   const generatedAt = new Date(payload.generatedAt);
   if (Number.isNaN(generatedAt.getTime())) {
     throw new Error('final evidence staging requires a valid generatedAt timestamp');
@@ -1550,16 +1555,20 @@ function performFinalEvidenceStaging(payload, operations = {}) {
   const rawBudgets = staged.runDirectories.map((runDirectory, index) => assertBudget(
     runDirectory,
     {
-      cellId: LIVE_LLM_CELLS[index].cellId,
-      modelId: LIVE_LLM_CELLS[index].modelId,
-      feedbackLoopPrevention: LIVE_LLM_CELLS[index].feedbackLoopPrevention,
-      inputCeilingSamples: LIVE_LLM_CELLS[index].maxExternalAudioSamples,
+      cellId: releaseCells[index].cellId,
+      modelId: releaseCells[index].modelId,
+      feedbackLoopPrevention: releaseCells[index].feedbackLoopPrevention,
+      inputCeilingSamples: releaseCells[index].maxExternalAudioSamples,
+      approvedModels: releasePlan.models,
+      modelProtocolProfileIdentity: releaseCells[index].modelProtocolProfileIdentity,
+      providerIdentity: payload.plan.providerIdentity,
     },
   ));
   const matrixBudget = (
     operations.writeMatrixExternalProviderBudget ?? writeMatrixExternalProviderBudget
   )(payload.evidenceOutputRoot, rawBudgets, {
     fileName: `watch-mode-external-provider-budget-${payload.plan.executionId}.json`,
+    expectedCells: releaseCells,
   });
   const budgetAuthority = fileAuthorityEntry(
     matrixBudget.filePath,
@@ -1573,7 +1582,7 @@ function performFinalEvidenceStaging(payload, operations = {}) {
   };
   const manifestResult = (operations.writeMatrixRunManifest ?? writeMatrixRunManifest)({
     outputRoot: payload.evidenceOutputRoot,
-    modelList: DEFAULT_MODELS,
+    modelList: releasePlan.models,
     feedbackModeList: DEFAULT_FEEDBACK_MODES,
     deviceProfiles: productionDeviceProfiles(payload.plan),
     runDirectories: staged.runDirectories,
@@ -1581,7 +1590,8 @@ function performFinalEvidenceStaging(payload, operations = {}) {
     now: generatedAt,
     provenance: payload.plan.provenance,
     authorityRuntimeBinaryHashes: payload.plan.authority.runtimeBinaryHashes,
-    releaseCells: LIVE_LLM_CELLS,
+    releaseCells,
+    ...(releaseSelection ? { releaseSelection } : {}),
     localIsolationAuthority: payload.plan.localIsolationAuthority,
     externalProviderBudget,
     failureSummary: payload.failureSummary,
@@ -1666,6 +1676,7 @@ export function createProductionWorkerReadinessTransportPlan({
   return {
     executionId,
     provenance,
+    ...(workerReadinessRequest.releaseSelection ? { releaseSelection: workerReadinessRequest.releaseSelection } : {}),
     authority: {
       implementationHashes: authorityImplementationHashes,
       runtimeBinaryHashes: workerReadinessRequest.runtimeBinaryHashes,
@@ -3706,6 +3717,7 @@ export function aggregateProductionCellFailures({ plan, waveOutcome }) {
 
 async function runProductionCoordinatorCore({
   workerConfig,
+  releaseSelection,
   runtimeAuthority,
   localIsolationAuthority,
   coordinatorOutputRoot = path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-live-coordinator'),
@@ -3729,9 +3741,11 @@ async function runProductionCoordinatorCore({
   ) {
     throw new Error('production provider preflight requires the canonical coordinator authorization root');
   }
+  const selection = normalizeReleaseSelection(releaseSelection);
+  const releaseCells = liveCellsForReleasePlan(createBalancedReleasePlan(selection));
   const config = typeof workerConfig === 'string'
-    ? readProductionWorkerConfig(workerConfig)
-    : validateProductionWorkerConfig(workerConfig, { configDirectory: repoRoot });
+    ? readProductionWorkerConfig(workerConfig, { releaseSelection: selection })
+    : validateProductionWorkerConfig(workerConfig, { configDirectory: repoRoot, releaseSelection: selection });
   if (!String(localIsolationAuthority ?? '').trim()) {
     throw new Error('production coordinator requires --local-isolation-authority before readiness/preflight/provider launch');
   }
@@ -3930,6 +3944,7 @@ async function runProductionCoordinatorCore({
       shardOrchestrationImplementationHashes,
       workers,
       assignments,
+      releaseSelection: readinessSelection,
     }) => {
       const workerReadinessRequest = createWorkerReadinessRequest({
         executionId: readinessExecutionId,
@@ -3938,6 +3953,7 @@ async function runProductionCoordinatorCore({
         runtimeBinaryHashes,
         workers,
         assignments,
+        ...(readinessSelection ? { releaseSelection: readinessSelection } : {}),
       });
       const requestPath = path.join(executionRoot, 'worker-readiness-request.json');
       atomicWriteJson(requestPath, workerReadinessRequest);
@@ -4028,6 +4044,7 @@ async function runProductionCoordinatorCore({
       executionId,
       workers: productionWorkers,
       assignments: productionAssignments,
+      ...(selection ? { releaseSelection: selection } : {}),
       preflightExecutorWorkerId: config.preflightExecutor.workerId,
       generatedAt,
       expiresAt: new Date(generatedAt.getTime() + 6 * 60 * 60 * 1_000),
@@ -4039,7 +4056,7 @@ async function runProductionCoordinatorCore({
       runProviderPreflight,
       obtainLocalIsolationAuthority,
       minimumRemainingExecutionMs: deriveWatchPostReadinessExecutionBudgetMs({
-        cells: LIVE_LLM_CELLS,
+        cells: releaseCells,
         workerCount: productionWorkers.length,
       }),
       signingKeys,
@@ -4187,6 +4204,7 @@ async function runProductionCoordinatorCore({
     ? await runBoundedCoordinatorStageWithinDeadline({
         operation: () => operations.runVerifier({
           manifestPath: manifestResult.manifestPath,
+          ...(selection ? { releaseSelection: selection } : {}),
           evidenceOutputRoot,
         }),
         label: 'strict-evidence-verifier',
@@ -4197,6 +4215,7 @@ async function runProductionCoordinatorCore({
     : await runProductionEvidenceVerifier({
         evidenceOutputRoot,
         manifestPath: manifestResult.manifestPath,
+        ...(selection ? { releaseSelection: selection } : {}),
         timeoutMs: Math.min(
           WATCH_PRODUCTION_FINAL_EVIDENCE_ENVELOPE_MS,
           remainingVerifierDeadlineMs,
@@ -4387,8 +4406,11 @@ export async function runProductionCoordinator(options) {
 }
 
 export function parseProductionCoordinatorCliArgs(argv) {
-  return parseCliArgs(argv, {
+  const options = parseCliArgs(argv, {
     defaults: {
+      model: '',
+      endpointHost: '',
+      region: '',
       workersConfig: '',
       runtimeAuthority: '',
       localIsolationAuthority: '',
@@ -4397,6 +4419,19 @@ export function parseProductionCoordinatorCliArgs(argv) {
       executionId: '',
     },
   });
+  const explicitSelection = ['model', 'endpointHost', 'region'].some((key) => options[key] !== '');
+  if (explicitSelection) {
+    if (!options.model) throw new Error('--model is required with endpoint/region selection');
+    const plan = createBalancedReleasePlan({
+      modelId: options.model,
+      ...(options.endpointHost ? { endpointHost: options.endpointHost } : {}),
+      ...(options.region ? { region: options.region } : {}),
+    });
+    if (options.model === 'qwen3.8-livetranslate-flash-realtime') {
+      options.releaseSelection = normalizeReleaseSelection({ modelId: options.model, ...plan.providerEndpoint });
+    }
+  }
+  return options;
 }
 
 async function readCoordinatorChildRequest() {
@@ -4446,6 +4481,7 @@ if (isMain(import.meta.url)) {
       if (options.executionId && !SAFE_ID.test(options.executionId)) throw new Error('--execution-id is not portable');
       const result = await runProductionCoordinator({
         workerConfig: path.resolve(repoRoot, options.workersConfig),
+        ...(options.releaseSelection ? { releaseSelection: options.releaseSelection } : {}),
         runtimeAuthority: path.resolve(repoRoot, options.runtimeAuthority),
         localIsolationAuthority: options.localIsolationAuthority,
         coordinatorOutputRoot: path.resolve(repoRoot, options.coordinatorOutputRoot),

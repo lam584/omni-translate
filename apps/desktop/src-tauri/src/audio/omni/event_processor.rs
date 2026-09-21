@@ -652,6 +652,7 @@ impl OmniEventProcessor {
         event_type: &str,
         subtitle_translate_active: bool,
         _native_translation_reuse_active: bool,
+        normalized_delta_snapshot: Option<&str>,
     ) -> OmniSubtitleEventState {
         let OmniSubtitleEventState {
             current_cue_id,
@@ -660,7 +661,12 @@ impl OmniEventProcessor {
             mut st_skip_logged,
             mut event_diagnostics,
         } = state;
-        let delta = if matches!(
+        let delta = if let Some(snapshot) = normalized_delta_snapshot {
+            // The typed v2 reducer accumulates by response/item/content identity.
+            // Do not concatenate a previous response's preview into this one.
+            pending_translated_text = snapshot.to_string();
+            evt["delta"].as_str().unwrap_or("")
+        } else if matches!(
             event_type,
             "response.audio_transcript.text"
                 | "response.output_audio_transcript.text"
@@ -1200,6 +1206,7 @@ mod audio_done_tests {
             "response.output_text.delta",
             true,
             false,
+            None,
         );
         let done = OmniEventProcessor::process_transcript_done(
             delta,
@@ -1232,4 +1239,27 @@ mod audio_done_tests {
         );
         assert!(next.llm_text.is_empty(), "next ASR cue must not receive prior response output");
     }
+
+    #[test]
+    fn v2_normalized_delta_replaces_previous_response_preview_without_double_append() {
+        let app = app();
+        let handle = app.handle().clone();
+        let store = handle.state::<AudioStateStore>();
+        let mut state = OmniSubtitleEventState {
+            current_cue_id: None,
+            pending_source_text: String::new(),
+            pending_translated_text: "old response".to_string(),
+            st_skip_logged: false,
+            event_diagnostics: OmniEventDiagnostics::default(),
+        };
+        for (delta, snapshot) in [("你", "你"), ("好", "你好")] {
+            state = OmniEventProcessor::process_transcript_delta(
+                state, &handle, &store, "inbound",
+                &json!({"type":"response.text.delta", "response_id":"new-response", "delta":delta}),
+                "response.text.delta", true, false, Some(snapshot),
+            );
+            assert_eq!(state.pending_translated_text, snapshot);
+        }
+    }
+
 }

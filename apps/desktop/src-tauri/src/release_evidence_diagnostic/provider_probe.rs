@@ -379,6 +379,18 @@ pub(super) async fn collect_provider_probe(
         );
         result_object.insert("responseCreateCount".to_string(), json!(0));
         result_object.insert(
+            "measuredLatencyMs".to_string(),
+            json!(probe.measured_latency_ms),
+        );
+        result_object.insert(
+            "sessionAuthority".to_string(),
+            wire_evidence
+                .as_ref()
+                .and_then(|value| value.get("sessionAuthority"))
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        result_object.insert(
             "lifecycleBudget".to_string(),
             json!({
                 "firstServerEventLatencyMs": 1_200,

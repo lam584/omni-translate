@@ -119,6 +119,7 @@ impl WebSocketTransport {
         apply_ws_auth(provider, request.headers_mut())?;
         apply_ws_custom_headers(provider, request.headers_mut())?;
 
+        let phase_started = Instant::now();
         let host = connect_url.host_str().ok_or_else(|| {
             ProviderRuntimeError::new("transport.unavailable", "WebSocket URL 缺少主机名。")
         })?;
@@ -126,8 +127,14 @@ impl WebSocketTransport {
             ProviderRuntimeError::new("transport.unavailable", "WebSocket URL 缺少端口。")
         })?;
         let addresses = resolve_addresses_before(host, port, deadline)?;
+        log::info!(
+            "[omni][provider-transport] websocket phase=dns elapsedMs={} host={}",
+            phase_started.elapsed().as_millis(),
+            host
+        );
         let mut last_connect_error = None;
         let mut stream = None;
+        let tcp_started = Instant::now();
         for address in addresses {
             let remaining = connect_remaining_before(deadline, "WebSocket TCP 建链")?;
             match TcpStream::connect_timeout(&address, remaining) {
@@ -153,6 +160,11 @@ impl WebSocketTransport {
                 )
             }
         })?;
+        log::info!(
+            "[omni][provider-transport] websocket phase=tcp elapsedMs={} host={}",
+            tcp_started.elapsed().as_millis(),
+            host
+        );
         stream.set_nodelay(true).map_err(|error| {
             ProviderRuntimeError::new(
                 "transport.unavailable",
@@ -163,6 +175,7 @@ impl WebSocketTransport {
             &mut stream,
             upgrade_remaining_before(deadline, "WebSocket TLS/upgrade")?,
         )?;
+        let upgrade_started = Instant::now();
         let (mut socket, _) = tungstenite::client_tls_with_config(request, stream, None, None)
             .map_err(|error| {
                 let socket_timed_out = matches!(
@@ -179,6 +192,12 @@ impl WebSocketTransport {
                     )
                 }
             })?;
+        log::info!(
+            "[omni][provider-transport] websocket phase=tls-upgrade elapsedMs={} host={} totalElapsedMs={}",
+            upgrade_started.elapsed().as_millis(),
+            host,
+            phase_started.elapsed().as_millis()
+        );
         let remaining = upgrade_remaining_before(deadline, "WebSocket TLS/upgrade")?;
         apply_websocket_timeouts(&mut socket, remaining.min(timeout))?;
         Ok((socket, timeout))

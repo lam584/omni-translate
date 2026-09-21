@@ -1,6 +1,5 @@
 use std::io::ErrorKind;
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use reqwest::blocking::{Client, Response};
@@ -259,30 +258,26 @@ fn resolve_addresses_before(
     port: u16,
     deadline: Instant,
 ) -> Result<Vec<std::net::SocketAddr>, ProviderRuntimeError> {
-    let host = host.to_string();
-    let (sender, receiver) = mpsc::sync_channel(1);
-    std::thread::spawn(move || {
-        let result = (host.as_str(), port)
-            .to_socket_addrs()
-            .map(|addresses| addresses.collect::<Vec<_>>());
-        let _ = sender.send(result);
-    });
-    let mut addresses = match receiver.recv_timeout(connect_remaining_before(deadline, "WebSocket DNS")?) {
-        Ok(Ok(addresses)) if !addresses.is_empty() => addresses,
-        Ok(Ok(_)) => return Err(ProviderRuntimeError::new(
-            "transport.connect-failed",
-            "WebSocket DNS 未返回可用地址。",
-        )),
-        Ok(Err(error)) => return Err(ProviderRuntimeError::new(
-            "transport.connect-failed",
-            format!("WebSocket DNS 解析失败: {error}"),
-        )),
-        Err(mpsc::RecvTimeoutError::Timeout) => return Err(connect_timeout_error("WebSocket DNS")),
-        Err(mpsc::RecvTimeoutError::Disconnected) => return Err(ProviderRuntimeError::new(
-            "transport.connect-failed",
-            "WebSocket DNS 解析工作线程异常退出。",
-        )),
+    connect_remaining_before(deadline, "WebSocket DNS")?;
+    let mut addresses = match (host, port).to_socket_addrs() {
+        Ok(addrs) => {
+            let list: Vec<_> = addrs.collect();
+            if list.is_empty() {
+                return Err(ProviderRuntimeError::new(
+                    "transport.connect-failed",
+                    "WebSocket DNS 未返回可用地址。",
+                ));
+            }
+            list
+        }
+        Err(error) => {
+            return Err(ProviderRuntimeError::new(
+                "transport.connect-failed",
+                format!("WebSocket DNS 解析失败: {error}"),
+            ));
+        }
     };
+    connect_remaining_before(deadline, "WebSocket DNS")?;
     addresses.sort_by_key(|addr| if addr.is_ipv4() { 0 } else { 1 });
     Ok(addresses)
 }

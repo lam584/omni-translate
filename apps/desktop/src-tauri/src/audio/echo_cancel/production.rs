@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "webrtc-aec3")]
+use std::time::Duration;
 
 /// The public echo-cancel pipeline has exactly one backend: verified WebRTC
 /// AEC3. No secondary canceller runs beside it and no alternate PCM or

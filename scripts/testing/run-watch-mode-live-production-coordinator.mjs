@@ -4011,6 +4011,7 @@ async function runProductionCoordinatorCore({
     }) => {
       const manifestPath = resolveLocalIsolationAuthorityPath(localIsolationAuthority, { workspaceRoot: repoRoot });
       verifyProductionLocalIsolationManifest({
+        releaseSelection: selection,
         manifestPath,
         workers: productionWorkers,
         assignments: productionAssignments,

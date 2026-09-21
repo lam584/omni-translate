@@ -126,6 +126,18 @@ pub(super) async fn collect_provider_probe(
             credential.reference
         ));
     }
+    // The release-evidence emitter starts while the frontend is still completing
+    // its one-time audio/window bootstrap. Let that unrelated startup work drain
+    // before measuring the cold Provider connection; otherwise the single-use
+    // preflight records scheduler/startup contention as upstream latency.
+    const PROVIDER_PREFLIGHT_STARTUP_SETTLE: Duration = Duration::from_secs(2);
+    tokio::time::sleep(PROVIDER_PREFLIGHT_STARTUP_SETTLE).await;
+    push_timeline(
+        timeline,
+        "provider-preflight-startup-settled",
+        invocation_id,
+        Some(json!({ "durationMs": PROVIDER_PREFLIGHT_STARTUP_SETTLE.as_millis() })),
+    );
     authorization.claim_before_connect()?;
     push_timeline(
         timeline,

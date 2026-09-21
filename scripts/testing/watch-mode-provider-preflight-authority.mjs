@@ -270,10 +270,17 @@ function strictSessionAuthority(raw, createdEntry, updatedEntry, update, release
     && createdSession.id === updatedSession?.id
     && createdSession.model === release.modelId
     && updatedSession?.model === createdSession.model
-    && (release.v2 ? ![
-      'modalities', 'sample_rate', 'input_audio_format',
-      'input_audio_transcription', 'turn_detection', 'voice',
-    ].some((field) => Object.hasOwn(updatedSession, field)) : sameCanonical(updatedTurnDetection, {
+    && (release.v2 ? (
+      ![
+        'modalities', 'sample_rate', 'input_audio_format',
+        'input_audio_transcription', 'voice',
+      ].some((field) => Object.hasOwn(updatedSession, field))
+      && sameCanonical(updatedTurnDetection, {
+        create_response: true,
+        interrupt_response: true,
+        type: 'server_vad',
+      })
+    ) : sameCanonical(updatedTurnDetection, {
       create_response: true,
       interrupt_response: true,
       silence_duration_ms: 400,

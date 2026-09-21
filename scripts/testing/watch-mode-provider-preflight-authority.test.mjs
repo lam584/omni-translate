@@ -27,7 +27,11 @@ function fixture(v2 = true) {
   };
   const sessionId = hash('synthetic-session');
   const echo = structuredClone(session);
-  if (!v2) Object.assign(echo.turn_detection, { create_response: true, interrupt_response: true });
+  if (v2) {
+    echo.turn_detection = { create_response: true, interrupt_response: true, type: 'server_vad' };
+  } else {
+    Object.assign(echo.turn_detection, { create_response: true, interrupt_response: true });
+  }
   const payloads = [
     { host: v2 ? selection.endpointHost : 'dashscope.aliyuncs.com', path: '/api-ws/v1/realtime', query: { model }, requestHeaderNames: ['authorization'], scheme: 'wss' },
     { type: 'session.created', event_id: 'created', session: { id: sessionId, model } },
@@ -89,6 +93,7 @@ const mutations = {
   'missing corpus': f => { delete f.payloads[2].session.translation.corpus; },
   'echo translation changed': f => { f.payloads[3].session.translation.language = 'en'; },
   'echo audio mode changed': f => { f.payloads[3].session.audio.input.turn_detection.type = 'semantic_vad'; },
+  'echo top-level turn detection changed': f => { f.payloads[3].session.turn_detection.type = 'semantic_vad'; },
   'digest changed': f => { f.raw.sessionAuthority.echoedSessionConfigSha256 = 'f'.repeat(64); },
   'audio input': f => { f.raw.externalAudioSamples = 1; },
   'missing signed selection': f => { delete f.expected.releaseSelection; },

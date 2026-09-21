@@ -1851,7 +1851,12 @@ function v2ProcessEvidence(mutate = () => {}) {
   payloads[0].query.model = V2_SELECTION.modelId;
   payloads[1].session.model = V2_SELECTION.modelId;
   payloads[2].session = session;
-  payloads[3].session = { id: SESSION_IDENTITY_SHA256, model: V2_SELECTION.modelId, ...structuredClone(session) };
+  payloads[3].session = {
+    id: SESSION_IDENTITY_SHA256,
+    model: V2_SELECTION.modelId,
+    ...structuredClone(session),
+    turn_detection: { create_response: true, interrupt_response: true, type: 'server_vad' },
+  };
   const raw = successfulLivetranslateRaw();
   raw.sessionAuthority.serverModel = V2_SELECTION.modelId;
   // Rust serde_json serializes sorted object keys; v2 contains no floating-point threshold.
@@ -1892,6 +1897,7 @@ for (const [name, mutate] of [
   ['v1 session', payloads => { payloads[2].session = structuredClone(OFFICIAL_SESSION_UPDATE.session); }],
   ['arbitrary v2 session', payloads => { payloads[2].session.output_modalities = ['text', 'audio']; }],
   ['echo tamper', payloads => { payloads[3].session.translation.language = 'en'; }],
+  ['echo top-level turn detection tamper', payloads => { payloads[3].session.turn_detection.type = 'semantic_vad'; }],
   ['digest tamper', (_payloads, raw) => { raw.sessionAuthority.echoedSessionConfigSha256 = 'f'.repeat(64); }],
 ]) test('production process collector rejects signed 3.8 ' + name, async t => {
   const environment = await signedProcessEnvironment(t);

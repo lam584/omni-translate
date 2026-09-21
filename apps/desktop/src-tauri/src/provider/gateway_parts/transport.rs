@@ -267,22 +267,24 @@ fn resolve_addresses_before(
             .map(|addresses| addresses.collect::<Vec<_>>());
         let _ = sender.send(result);
     });
-    match receiver.recv_timeout(connect_remaining_before(deadline, "WebSocket DNS")?) {
-        Ok(Ok(addresses)) if !addresses.is_empty() => Ok(addresses),
-        Ok(Ok(_)) => Err(ProviderRuntimeError::new(
+    let mut addresses = match receiver.recv_timeout(connect_remaining_before(deadline, "WebSocket DNS")?) {
+        Ok(Ok(addresses)) if !addresses.is_empty() => addresses,
+        Ok(Ok(_)) => return Err(ProviderRuntimeError::new(
             "transport.connect-failed",
             "WebSocket DNS 未返回可用地址。",
         )),
-        Ok(Err(error)) => Err(ProviderRuntimeError::new(
+        Ok(Err(error)) => return Err(ProviderRuntimeError::new(
             "transport.connect-failed",
             format!("WebSocket DNS 解析失败: {error}"),
         )),
-        Err(mpsc::RecvTimeoutError::Timeout) => Err(connect_timeout_error("WebSocket DNS")),
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(ProviderRuntimeError::new(
+        Err(mpsc::RecvTimeoutError::Timeout) => return Err(connect_timeout_error("WebSocket DNS")),
+        Err(mpsc::RecvTimeoutError::Disconnected) => return Err(ProviderRuntimeError::new(
             "transport.connect-failed",
             "WebSocket DNS 解析工作线程异常退出。",
         )),
-    }
+    };
+    addresses.sort_by_key(|addr| if addr.is_ipv4() { 0 } else { 1 });
+    Ok(addresses)
 }
 
 fn connect_remaining_before(

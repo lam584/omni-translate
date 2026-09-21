@@ -1131,11 +1131,11 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
   return { workers, assignments, preflightExecutor, sshExecutable: 'ssh.exe', scpExecutable: 'scp.exe' };
 }
 
-export function verifyProductionLocalIsolationManifest({ workers, assignments, ...verification }) {
+export function verifyProductionLocalIsolationManifest({ workers, assignments, releaseSelection = null, ...verification }) {
   if (!Array.isArray(workers) || !Array.isArray(assignments)) {
     throw new Error('production local isolation requires current workers and paid assignments');
   }
-  return verifyLocalIsolationManifest({ ...verification, expectedWorkers: workers, expectedAssignments: assignments });
+  return verifyLocalIsolationManifest({ ...verification, expectedWorkers: workers, expectedAssignments: assignments, releaseSelection });
 }
 
 export function readProductionWorkerConfig(configPath, { releaseSelection } = {}) {

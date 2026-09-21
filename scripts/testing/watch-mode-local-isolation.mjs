@@ -18,6 +18,8 @@ import {
   BALANCED_RELEASE_PLAN_ID,
   LOCAL_ISOLATION_CELLS,
   LIVE_LLM_CELLS,
+  createBalancedReleasePlan,
+  liveCellsForReleasePlan,
   RELEASE_DEVICE_CLASSES,
 } from './watch-mode-balanced-release-plan.mjs';
 import { verifyStrictRuntimeAuthority } from './watch-mode-strict-runtime-authority.mjs';
@@ -382,7 +384,7 @@ export async function runLocalIsolationCell({
   };
 }
 
-export function verifyLocalIsolationManifest({
+export function verifyLocalIsolationManifest({ releaseSelection = null,
   manifestPath,
   workspaceRoot = repoRoot,
   provenance = currentGitProvenance({ cwd: workspaceRoot }),
@@ -609,15 +611,18 @@ export function verifyLocalIsolationManifest({
     throw new Error('local isolation cells do not match the signed worker runtime distributions');
   }
   if (expectedWorkers !== null || expectedAssignments !== null) {
-    verifyLocalIsolationPaidBindings(manifest, expectedWorkers, expectedAssignments);
+    verifyLocalIsolationPaidBindings(manifest, expectedWorkers, expectedAssignments, { releaseSelection });
   }
   return manifest;
 }
 
-function verifyLocalIsolationPaidBindings(manifest, workers, assignments) {
+function verifyLocalIsolationPaidBindings(manifest, workers, assignments, { releaseSelection = null } = {}) {
+  const targetCells = releaseSelection
+    ? liveCellsForReleasePlan(createBalancedReleasePlan(releaseSelection))
+    : LIVE_LLM_CELLS;
   const fail = () => { throw new Error('local isolation does not cover the current paid assignment worker/VM/route/profile'); };
   if (!Array.isArray(workers) || !workers.length || !Array.isArray(assignments)
-      || assignments.length !== LIVE_LLM_CELLS.length) fail();
+      || assignments.length !== targetCells.length) fail();
   const byId = new Map(workers.map((worker) => [worker.workerId, worker]));
   if (byId.size !== workers.length || manifest.workerRuntimeDistributions.length !== workers.length) fail();
   for (const worker of workers) {
@@ -626,7 +631,7 @@ function verifyLocalIsolationPaidBindings(manifest, workers, assignments) {
     if (!worker.vmIdentity || !distribution || distribution.vmIdentityDigest !== vmDigest
         || (worker.vmIdentityDigest && worker.vmIdentityDigest !== vmDigest)) fail();
   }
-  for (const [index, paid] of LIVE_LLM_CELLS.entries()) {
+  for (const [index, paid] of targetCells.entries()) {
     const assignment = assignments[index];
     const worker = byId.get(assignment?.workerId);
     const profiles = worker?.deviceProfileInstances?.filter((profile) => profile.instanceId === assignment.deviceProfileInstanceId) ?? [];

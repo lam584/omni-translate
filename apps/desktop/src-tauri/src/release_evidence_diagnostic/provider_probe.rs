@@ -372,6 +372,19 @@ pub(super) async fn collect_provider_probe(
         result_object.insert("providerInputMode".to_string(), json!("none"));
         result_object.insert("responseMode".to_string(), json!("text-only"));
         result_object.insert("terminalEvent".to_string(), json!("session.finished"));
+        result_object.insert("inputAudioBufferCommitCount".to_string(), json!(0));
+        result_object.insert(
+            "conversationItemCreateInputTextCount".to_string(),
+            json!(0),
+        );
+        result_object.insert("responseCreateCount".to_string(), json!(0));
+        result_object.insert(
+            "lifecycleBudget".to_string(),
+            json!({
+                "firstServerEventLatencyMs": 1_200,
+                "socketEventTimeoutMs": 12_000,
+            }),
+        );
         result_object.insert(
             "evidenceOutcome".to_string(),
             wire_evidence
@@ -380,13 +393,19 @@ pub(super) async fn collect_provider_probe(
                 .cloned()
                 .unwrap_or_else(|| json!("unknown")),
         );
+        let first_server_event = wire_evidence
+            .as_ref()
+            .and_then(|value| value.get("firstServerEvent"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let first_server_event_latency_ms = first_server_event
+            .get("monotonicMs")
+            .cloned()
+            .unwrap_or(Value::Null);
+        result_object.insert("firstServerEvent".to_string(), first_server_event);
         result_object.insert(
-            "firstServerEvent".to_string(),
-            wire_evidence
-                .as_ref()
-                .and_then(|value| value.get("firstServerEvent"))
-                .cloned()
-                .unwrap_or(Value::Null),
+            "firstServerEventLatencyMs".to_string(),
+            first_server_event_latency_ms,
         );
         result_object.insert(
             "rawTrace".to_string(),

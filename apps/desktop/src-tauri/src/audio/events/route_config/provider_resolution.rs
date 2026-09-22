@@ -23,7 +23,8 @@ pub(crate) fn resolve_model_provider_from_config(
         None,
     );
 
-    let resolved = resolve_model_provider_from_config_value(config, composite_model_id);
+    let resolved = resolve_model_provider_from_config_value(config, composite_model_id)
+        .map(apply_strict_watch_endpoint_override);
     match &resolved {
         Some(provider) => {
             let _ = append_diagnostics_log(
@@ -62,6 +63,30 @@ pub(crate) fn resolve_model_provider_from_config(
         }
     }
     resolved
+}
+
+fn apply_strict_watch_endpoint_override(mut provider: ProviderDraftInput) -> ProviderDraftInput {
+    if std::env::var("OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY")
+        .ok()
+        .as_deref()
+        != Some("1")
+        || provider.model != "qwen3.8-livetranslate-flash-realtime"
+        || provider.provider_id != "provider-dashscope"
+        || provider.template_id != "template-dashscope-realtime"
+    {
+        return provider;
+    }
+    let host = std::env::var("OMNI_WATCH_MODE_EXPECTED_PROVIDER_ENDPOINT_HOST").unwrap_or_default();
+    let valid_host = host.ends_with(".cn-beijing.maas.aliyuncs.com")
+        && !host.contains('/')
+        && !host.contains(':')
+        && host.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'.'
+        });
+    if valid_host {
+        provider.base_url = format!("https://{host}/api/v1");
+    }
+    provider
 }
 
 /// Resolves a `templateId::modelId` composite against the provider array,

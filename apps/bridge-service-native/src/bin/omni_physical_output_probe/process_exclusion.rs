@@ -321,19 +321,21 @@
         let dropped_frame_count_delta =
             dropped_frame_count_after.saturating_sub(dropped_frame_count_before);
         let physical_samples = first_channel_samples(&physical_metrics.samples);
-        let physical_translation_evidence = isolated_component_amplitude(
-            &physical_samples,
-            PROCESS_TRANSLATION_FINGERPRINT_HZ,
-        );
+        let coherent_translation_component = isolated_component_amplitude(
+            &physical_samples, PROCESS_TRANSLATION_FINGERPRINT_HZ).isolated;
+        let coherent_child_component = component_amplitude(
+            &physical_samples, PROCESS_CHILD_FINGERPRINT_HZ);
+        let (physical_translation_evidence, physical_translation_reference_external_component) =
+            physical_translation_window_evidence(&physical_samples, args.physical_playback_level);
         let physical_translation_component = physical_translation_evidence.isolated;
-        let physical_external_component = component_amplitude(
+        let physical_external_component = physical_fingerprint_evidence(
             &physical_samples,
             PROCESS_EXTERNAL_FINGERPRINT_HZ,
-        );
-        let physical_bridge_child_component = component_amplitude(
+        ).isolated;
+        let physical_bridge_child_component = physical_fingerprint_evidence(
             &physical_samples,
             PROCESS_CHILD_FINGERPRINT_HZ,
-        );
+        ).isolated;
         let empty_component_evidence = IsolatedComponentAmplitude {
             raw: 0.0,
             local_noise_floor: 0.0,
@@ -361,12 +363,12 @@
             .iter()
             .filter(|chunk| chunk.len() >= CHANNELS)
             .count();
-        let source_to_physical_translation_ratio = source_translation_component
-            / physical_translation_component.max(f32::EPSILON);
+        let source_to_physical_translation_ratio = conservative_physical_leakage_ratio(
+            source_translation_component, coherent_translation_component, physical_translation_component);
         let source_translation_to_external_ratio = source_translation_component
             / source_external_component.max(f32::EPSILON);
-        let source_to_physical_bridge_child_ratio = source_bridge_child_component
-            / physical_bridge_child_component.max(f32::EPSILON);
+        let source_to_physical_bridge_child_ratio = conservative_physical_leakage_ratio(
+            source_bridge_child_component, coherent_child_component, physical_bridge_child_component);
         let physical_translation_noise_margin = (physical_translation_evidence.raw
             - physical_translation_evidence.local_noise_floor)
             .max(0.0);
@@ -375,7 +377,7 @@
                 .local_noise_floor
                 .max(f32::EPSILON);
         let physical_translation_to_external_ratio = physical_translation_component
-            / physical_external_component.max(f32::EPSILON);
+            / physical_translation_reference_external_component.max(f32::EPSILON);
         let minimum_physical_translation_to_external_ratio =
             args.physical_playback_level.min(100) as f32 / 100.0
                 * MIN_CONFIGURED_TRANSLATION_GAIN_FRACTION;
@@ -427,9 +429,10 @@
                 "Bridge capture telemetry did not advance during the fingerprint window: before={source_frames_captured_before} after={source_frames_captured_after}"
             ));
         }
-        if !physical_translation_is_detectable(
+        if physical_translation_reference_external_component < MIN_PROCESS_FINGERPRINT_COMPONENT
+            || !physical_translation_is_detectable(
             &physical_translation_evidence,
-            physical_external_component,
+            physical_translation_reference_external_component,
             args.physical_playback_level,
         ) {
             failures.push(format!(
@@ -517,11 +520,14 @@
             external_frequency_hz: PROCESS_EXTERNAL_FINGERPRINT_HZ,
             bridge_child_frequency_hz: PROCESS_CHILD_FINGERPRINT_HZ,
             physical_translation_component,
+            physical_translation_coherent_component: coherent_translation_component,
+            physical_bridge_child_coherent_component: coherent_child_component,
             physical_translation_raw_component: physical_translation_evidence.raw,
             physical_translation_local_noise_floor: physical_translation_evidence.local_noise_floor,
             physical_translation_noise_margin,
             physical_translation_snr_ratio,
             physical_translation_to_external_ratio,
+            physical_translation_reference_external_component,
             minimum_physical_translation_to_external_ratio,
             physical_external_component,
             physical_bridge_child_component,

@@ -15,13 +15,20 @@ pub(super) struct ProcessExclusionFingerprintEvidence {
     translation_frequency_hz: f32,
     external_frequency_hz: f32,
     bridge_child_frequency_hz: f32,
+    // Selected 50th qualifying 20ms translation witness (same-window gain).
     physical_translation_component: f32,
+    // Retained old estimates cap leakage denominators; presence uses local windows.
+    physical_translation_coherent_component: f32,
+    physical_bridge_child_coherent_component: f32,
     physical_translation_raw_component: f32,
     physical_translation_local_noise_floor: f32,
     physical_translation_noise_margin: f32,
     physical_translation_snr_ratio: f32,
     physical_translation_to_external_ratio: f32,
+    // Raw external amplitude in the selected sustained translation witness window.
+    physical_translation_reference_external_component: f32,
     minimum_physical_translation_to_external_ratio: f32,
+    // 50th strongest isolated component across complete nonoverlapping windows.
     physical_external_component: f32,
     physical_bridge_child_component: f32,
     source_translation_component: f32,
@@ -31,6 +38,7 @@ pub(super) struct ProcessExclusionFingerprintEvidence {
     source_bridge_child_component: f32,
     source_bridge_child_raw_component: f32,
     source_bridge_child_local_noise_floor: f32,
+    // Source / max(epsilon, min(coherent physical, sustained physical)).
     source_to_physical_translation_ratio: f32,
     source_translation_to_external_ratio: f32,
     source_to_physical_bridge_child_ratio: f32,

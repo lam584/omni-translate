@@ -85,6 +85,51 @@ fn sustained_isolated_component_amplitude(
     Some(components[REQUIRED_SUSTAINED_FINGERPRINT_CHUNKS - 1])
 }
 
+const PHYSICAL_FINGERPRINT_WINDOW_FRAMES: usize = SAMPLE_RATE / 50;
+
+fn empty_physical_evidence() -> IsolatedComponentAmplitude {
+    IsolatedComponentAmplitude { raw: 0.0, local_noise_floor: 0.0, isolated: 0.0 }
+}
+
+// Fifty complete, nonoverlapping 20ms windows establish one cumulative second
+// of local presence, not a spike/max or a claim of uninterrupted playback.
+// Never coherently sum windows: a render/capture phase jump can cancel a tone.
+fn physical_fingerprint_evidence(samples: &[f32], frequency_hz: f32) -> IsolatedComponentAmplitude {
+    let mut windows = samples.chunks_exact(PHYSICAL_FINGERPRINT_WINDOW_FRAMES)
+        .map(|window| payload_window_isolated_component_amplitude(window, frequency_hz))
+        .collect::<Vec<_>>();
+    windows.sort_by(|a, b| b.isolated.total_cmp(&a.isolated));
+    windows.get(REQUIRED_SUSTAINED_FINGERPRINT_CHUNKS - 1)
+        .copied().unwrap_or_else(empty_physical_evidence)
+}
+
+// Gain authority must be witnessed in the SAME windows as the external tone.
+// Rank passing windows first, then isolated amplitude. The 50th witness passes
+// iff at least 50 windows independently meet all existing gain/noise criteria.
+fn physical_translation_window_evidence(
+    samples: &[f32], level: u64,
+) -> (IsolatedComponentAmplitude, f32) {
+    let mut windows = samples.chunks_exact(PHYSICAL_FINGERPRINT_WINDOW_FRAMES)
+        .map(|window| {
+            let translation = payload_window_isolated_component_amplitude(
+                window, PROCESS_TRANSLATION_FINGERPRINT_HZ);
+            // Raw external amplitude is a conservative gain denominator.
+            let external = payload_window_component_amplitude(window, PROCESS_EXTERNAL_FINGERPRINT_HZ);
+            let passed = external >= MIN_PROCESS_FINGERPRINT_COMPONENT
+                && physical_translation_is_detectable(&translation, external, level);
+            (passed, translation, external)
+        }).collect::<Vec<_>>();
+    windows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.isolated.total_cmp(&a.1.isolated)));
+    windows.get(REQUIRED_SUSTAINED_FINGERPRINT_CHUNKS - 1)
+        .map(|(_, evidence, external)| (*evidence, *external))
+        .unwrap_or_else(|| (empty_physical_evidence(), 0.0))
+}
+
+// Changing presence estimation must never relax excluded/physical leakage.
+fn conservative_physical_leakage_ratio(source: f32, coherent: f32, sustained: f32) -> f32 {
+    source / coherent.min(sustained).max(f32::EPSILON)
+}
+
 #[cfg(test)]
 mod process_exclusion_detectability_tests {
     use super::*;

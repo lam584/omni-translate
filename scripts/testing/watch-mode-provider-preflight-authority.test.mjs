@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { STRICT_EN_ZH_CORPUS, STRICT_V2_EN_ZH_CORPUS, validateLiveTranslateWireEvidence, validateProviderPreflightRawAuthority } from './watch-mode-provider-preflight-authority.mjs';
+import { STRICT_EN_ZH_CORPUS, STRICT_V2_EN_ZH_CORPUS, validateLiveTranslateWireEvidence, validateLiveTranslateWireStructure, validateProviderPreflightRawAuthority } from './watch-mode-provider-preflight-authority.mjs';
 import { deriveWatchModelProtocolIdentity } from './watch-mode-model-protocol-authority.mjs';
 
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -54,7 +54,7 @@ function fixture(v2 = true) {
   return { payloads, raw, expected: v2 ? authorization() : null };
 }
 
-function check(t, value, mutateEntries = () => {}) {
+function check(t, value, mutateEntries = () => {}, validate = validateLiveTranslateWireEvidence) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-authority-'));
   t.after(() => { assert.equal(path.dirname(root), path.resolve(os.tmpdir())); fs.rmSync(root, { recursive: true, force: true }); });
   fs.mkdirSync(path.join(root, 'raw'));
@@ -70,13 +70,31 @@ function check(t, value, mutateEntries = () => {}) {
   value.raw.rawTrace = { path: 'raw/provider-websocket-trace.jsonl', bytes: Buffer.byteLength(bytes), sha256: hash(bytes), eventCount: entries.length };
   const probe = { rawTrace: value.raw.rawTrace, evidenceOutcome: value.raw.evidenceOutcome, firstServerEvent: value.raw.firstServerEvent };
   const issues = [];
-  validateLiveTranslateWireEvidence(root, probe, value.raw, issues, value.expected);
+  validate(root, probe, value.raw, issues, value.expected);
   return issues;
 }
 
 for (const v2 of [false, true]) test('exact zero-audio trace is accepted: ' + (v2 ? 'signed 3.8 workspace v2' : 'historical 3.5 v1'), t => {
   assert.deepEqual(check(t, fixture(v2)), []);
 });
+
+for (const v2 of [false, true]) {
+  for (const latencyMs of [1_200, 1_201, 3_463]) {
+    for (const outcome of ['livetranslate-session-finished', 'latency-budget-exceeded']) {
+      test('strict success policy stays mandatory: v2=' + v2 + ' latency=' + latencyMs + ' outcome=' + outcome, t => {
+        const value = fixture(v2);
+        Object.assign(value.raw, { evidenceOutcome: outcome,
+          firstServerEvent: { type: 'session.created', monotonicMs: latencyMs },
+          measuredLatencyMs: latencyMs, firstServerEventLatencyMs: latencyMs });
+        const shift = entries => { for (const entry of entries.slice(1)) entry.monotonicMs += latencyMs - 100; };
+        assert.deepEqual(check(t, value, shift, validateLiveTranslateWireStructure), []);
+        const issues = check(t, value, shift);
+        if (latencyMs <= 1_200 && outcome === 'livetranslate-session-finished') assert.deepEqual(issues, []);
+        else assert.notDeepEqual(issues, []);
+      });
+    }
+  }
+}
 
 const mutations = {
   'generic endpoint': f => { f.payloads[0].host = 'dashscope.aliyuncs.com'; },
@@ -107,6 +125,16 @@ const mutations = {
 };
 for (const [name, mutate] of Object.entries(mutations)) test('rejects 3.8 ' + name + ' even with recomputed trace hashes', t => {
   const value = fixture(); mutate(value); assert.notDeepEqual(check(t, value), []);
+});
+for (const [name, mutate] of Object.entries(mutations)) test('late 3.8 structural authority rejects ' + name, t => {
+  const value = fixture();
+  Object.assign(value.raw, { evidenceOutcome: 'latency-budget-exceeded',
+    firstServerEvent: { type: 'session.created', monotonicMs: 3_463 },
+    measuredLatencyMs: 3_463, firstServerEventLatencyMs: 3_463 });
+  mutate(value);
+  assert.notDeepEqual(check(t, value, entries => {
+    for (const entry of entries.slice(1)) entry.monotonicMs += 3_363;
+  }, validateLiveTranslateWireStructure), []);
 });
 test('default 3.5 authorization cannot consume a v2 session', t => {
   const value = fixture(false); value.payloads[2].session = fixture().payloads[2].session;

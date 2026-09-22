@@ -303,7 +303,9 @@ function strictSessionAuthority(raw, createdEntry, updatedEntry, update, release
     && authority.echoedSessionConfigSha256 === configDigest;
 }
 
-export function validateLiveTranslateWireEvidence(root, probe, raw, issues, expectedAuthorization = null) {
+// Structural authority alone is not release eligibility. Diagnostic callers must
+// apply outcome/latency policy only after checking that no issues were reported.
+export function validateLiveTranslateWireStructure(root, probe, raw, issues, expectedAuthorization = null) {
   const release = strictRelease(expectedAuthorization, issues);
   const authority = raw?.rawTrace;
   if (
@@ -387,11 +389,9 @@ export function validateLiveTranslateWireEvidence(root, probe, raw, issues, expe
   const finishPayload = verifiedTracePayload(entries[4]);
   const finishedPayload = verifiedTracePayload(entries[5]);
   if (
-    raw?.evidenceOutcome !== 'livetranslate-session-finished'
-    || raw?.firstServerEvent?.type !== 'session.created'
+    raw?.firstServerEvent?.type !== 'session.created'
     || !Number.isSafeInteger(raw?.firstServerEvent?.monotonicMs)
     || raw.firstServerEvent.monotonicMs < 0
-    || raw.firstServerEvent.monotonicMs > 1_200
     || raw.firstServerEvent.monotonicMs !== entries[1]?.monotonicMs
     || raw?.providerInputMode !== 'none'
     || raw?.responseMode !== 'text-only'
@@ -433,6 +433,16 @@ export function validateLiveTranslateWireEvidence(root, probe, raw, issues, expe
     sessionAuthority: raw?.sessionAuthority ?? null,
     rawTrace: authority,
   };
+}
+
+// Preserve the strict success contract for all existing release validators.
+export function validateLiveTranslateWireEvidence(root, probe, raw, issues, expectedAuthorization = null) {
+  const evidence = validateLiveTranslateWireStructure(root, probe, raw, issues, expectedAuthorization);
+  if (evidence && (
+    raw?.evidenceOutcome !== 'livetranslate-session-finished'
+    || raw?.firstServerEvent?.monotonicMs > 1_200
+  )) issues.push('provider preflight raw result is not a zero-audio session.finished terminal');
+  return evidence;
 }
 
 function validateTextOnlyTokenUsage(value, tokenBudget, label, issues) {

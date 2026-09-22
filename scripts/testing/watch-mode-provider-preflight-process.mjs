@@ -5,7 +5,7 @@ import path from 'node:path';
 
 import { fileAuthorityEntry } from './watch-mode-evidence-authority.mjs';
 import { loadProviderPreflightAuthorizationPackage } from './watch-mode-provider-preflight-authorization.mjs';
-import { validateLiveTranslateWireEvidence } from './watch-mode-provider-preflight-authority.mjs';
+import { validateLiveTranslateWireStructure } from './watch-mode-provider-preflight-authority.mjs';
 
 function expectedPreflightAuthorization(environment, executionId) {
   const grantPath = environment?.OMNI_RELEASE_EVIDENCE_PREFLIGHT_GRANT_PATH;
@@ -511,10 +511,13 @@ function classifyProviderWireEvidence(raw, traceEntries, { outputDirectory, expe
   if (terminal) return terminal;
   if (expectedAuthorization?.releaseSelection) {
     const issues = [];
-    validateLiveTranslateWireEvidence(outputDirectory, raw, raw, issues, expectedAuthorization);
-    return issues.length === 0
-      ? { kind: 'livetranslate-session-finished', passed: true }
-      : { kind: 'versioned-lifecycle-authority-invalid', passed: false };
+    validateLiveTranslateWireStructure(outputDirectory, raw, raw, issues, expectedAuthorization);
+    if (issues.length > 0) return { kind: 'versioned-lifecycle-authority-invalid', passed: false };
+    // Never let a latency diagnosis hide invalid signed wire authority.
+    if (raw.firstServerEvent.monotonicMs > 1_200) {
+      return { kind: 'latency-budget-exceeded', passed: false };
+    }
+    return { kind: 'livetranslate-session-finished', passed: true };
   }
 
   const first = raw?.firstServerEvent;

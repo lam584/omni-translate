@@ -1891,6 +1891,60 @@ test('production process collector admits 3.8 only through verified signed works
   assert.equal(result.fields.evidenceOutcome, 'livetranslate-session-finished');
 });
 
+function lateV2ProcessEvidence(mutate = () => {}) {
+  const evidence = v2ProcessEvidence(mutate);
+  const entries = parseRawTrace(evidence.trace);
+  const latencyMs = 3_463;
+  const shiftMs = latencyMs - entries[1].monotonicMs;
+  for (const entry of entries.slice(1)) entry.monotonicMs += shiftMs;
+  evidence.trace = serializeRawTrace(entries);
+  Object.assign(evidence.rawProbeResult, {
+    firstServerEvent: { type: 'session.created', monotonicMs: latencyMs },
+    firstServerEventLatencyMs: latencyMs,
+    measuredLatencyMs: latencyMs,
+    evidenceOutcome: 'latency-budget-exceeded',
+    verdict: 'realtime-risk',
+  });
+  return evidence;
+}
+
+for (const status of ['completed', 'failed']) test('signed 3.8 valid late lifecycle is latency-budget-exceeded with emitter ' + status, async t => {
+  const environment = await signedProcessEnvironment(t);
+  // Even a completed emitter must not turn authenticated late evidence into success.
+  const scenario = managedScenario({ ...lateV2ProcessEvidence(), environment,
+    emitter: { status, ...(status === 'failed' ? { error: 'latency 3463ms exceeds 1200ms' } : {}) } });
+  cleanupScenario(t, scenario);
+  await assert.rejects(scenario.promise, error => {
+    assert.equal(error.failure.stableErrorCode, 'provider.preflight.latency-budget-exceeded');
+    assert.equal(error.failure.evidenceOutcome, 'latency-budget-exceeded');
+    assert.equal(error.failure.firstServerEvent.monotonicMs, 3_463);
+    assert.equal(error.failure.measuredLatencyMs, 3_463);
+    assert.equal(error.failure.latencyBudgetMs, REALTIME_LATENCY_BUDGET_MS);
+    return true;
+  });
+});
+
+for (const [name, mutate, mutateEntries = () => {}] of [
+  ['echo tamper', payloads => { payloads[3].session.translation.language = 'en'; }],
+  ['authority digest tamper', (_payloads, raw) => { raw.sessionAuthority.echoedSessionConfigSha256 = 'f'.repeat(64); }],
+  ['payload hash tamper', undefined, entries => { entries[3].sha256 = '0'.repeat(64); }],
+  ['lifecycle order tamper', undefined, entries => { [entries[2], entries[4]] = [entries[4], entries[2]]; }],
+  ['budget tamper', (_payloads, raw) => { raw.latencyBudgetMs = 4_000; }],
+]) test('signed 3.8 late ' + name + ' cannot be hidden by latency diagnosis', async t => {
+  const environment = await signedProcessEnvironment(t);
+  const evidence = lateV2ProcessEvidence(mutate);
+  const entries = parseRawTrace(evidence.trace);
+  mutateEntries(entries);
+  evidence.trace = serializeRawTrace(entries);
+  const scenario = managedScenario({ ...evidence, environment });
+  cleanupScenario(t, scenario);
+  await assert.rejects(scenario.promise, error => {
+    assert.equal(error.failure.stableErrorCode, 'provider.preflight.raw-trace-invalid');
+    assert.match(error.message, /evidence-outcome-mismatch/);
+    return true;
+  });
+});
+
 for (const [name, mutate] of [
   ['generic endpoint', payloads => { payloads[0].host = 'dashscope.aliyuncs.com'; }],
   ['workspace substitution', payloads => { payloads[0].host = 'other.cn-beijing.maas.aliyuncs.com'; }],

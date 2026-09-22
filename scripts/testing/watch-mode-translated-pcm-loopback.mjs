@@ -798,6 +798,11 @@ export function buildTranslatedPcmLoopbackAuthority({
   modelId,
   protocol,
   feedbackLoopPrevention,
+  workspaceRoot = path.resolve('.'),
+  releaseExecutablePath,
+  releaseExecutableSha256,
+  noBuild = false,
+  deadlineUtcMs,
 }) {
   const violations = [];
   const resolvedRunDirectory = path.resolve(runDirectory);
@@ -912,7 +917,8 @@ export function buildTranslatedPcmLoopbackAuthority({
   let diagonalMetrics = new Map();
   if (diagonalRequests.length > 0) {
     try {
-      diagonalMetrics = matchTranslatedLoopbackBatchWithRust({ recordingPath, requests: diagonalRequests });
+      diagonalMetrics = matchTranslatedLoopbackBatchWithRust({ recordingPath, requests: diagonalRequests, workspaceRoot,
+        releaseExecutablePath, releaseExecutableSha256, noBuild, deadlineUtcMs });
     } catch (error) {
       violations.push(error.message);
     }
@@ -957,7 +963,8 @@ export function buildTranslatedPcmLoopbackAuthority({
   let wrongMetrics = new Map();
   if (wrongRequests.length > 0) {
     try {
-      wrongMetrics = matchTranslatedLoopbackBatchWithRust({ recordingPath, requests: wrongRequests });
+      wrongMetrics = matchTranslatedLoopbackBatchWithRust({ recordingPath, requests: wrongRequests, workspaceRoot,
+        releaseExecutablePath, releaseExecutableSha256, noBuild, deadlineUtcMs });
     } catch (error) {
       violations.push(error.message);
     }
@@ -1179,6 +1186,7 @@ export function buildTranslatedPcmLoopbackAuthority({
 if (isMain(import.meta.url)) {
   try {
     const options = parseCliArgs(process.argv.slice(2), {
+      booleans: ['no-build'],
       defaults: {
         runDirectory: '',
         appLog: '',
@@ -1189,6 +1197,11 @@ if (isMain(import.meta.url)) {
         modelId: '',
         protocol: '',
         feedbackLoopPrevention: '',
+        workspaceRoot: '',
+        releaseExecutablePath: '',
+        releaseExecutableSha256: '',
+        noBuild: false,
+        deadlineUtcMs: '',
       },
     });
     const authority = buildTranslatedPcmLoopbackAuthority({
@@ -1201,6 +1214,11 @@ if (isMain(import.meta.url)) {
       modelId: options.modelId,
       protocol: options.protocol,
       feedbackLoopPrevention: options.feedbackLoopPrevention,
+      ...(options.workspaceRoot ? { workspaceRoot: options.workspaceRoot } : {}),
+      ...(options.releaseExecutablePath ? { releaseExecutablePath: options.releaseExecutablePath } : {}),
+      ...(options.releaseExecutableSha256 ? { releaseExecutableSha256: options.releaseExecutableSha256 } : {}),
+      noBuild: options.noBuild === true,
+      ...(options.deadlineUtcMs ? { deadlineUtcMs: Number(options.deadlineUtcMs) } : {}),
     });
     process.stdout.write(`${JSON.stringify(authority)}\n`);
     if (!authority.passed) process.exitCode = 1;

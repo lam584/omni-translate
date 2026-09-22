@@ -222,6 +222,12 @@ export function buildShardCellExecutionRequest({
   if (String(cell.mediaSha256 ?? '').toLowerCase() !== SHARD_CANONICAL_MEDIA_SHA256) {
     throw new Error('signed cell mediaSha256 does not match the strict canonical media');
   }
+  const analyzerAuthority = plan.authority.runtimeBinaryHashes.find(
+    (entry) => entry.path === 'target/release/omni-benchmark.exe',
+  );
+  if (!analyzerAuthority || !/^[a-f0-9]{64}$/u.test(analyzerAuthority.sha256)) {
+    throw new Error('signed runtime authority is missing the pinned release omni-benchmark SHA-256');
+  }
   const runMarker = `watch_mode_diagnostic.run_id=${crypto.randomUUID().replaceAll('-', '')}`;
   const profile = cell.deviceProfileInstance;
   const protocol = WATCH_PROTOCOLS[cell.modelId];
@@ -273,6 +279,10 @@ export function buildShardCellExecutionRequest({
     },
     environment: {
       OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY: '1',
+      OMNI_WATCH_MODE_AUDIO_ANALYZER_PATH: path.join(
+        process.cwd(), 'target', 'release', process.platform === 'win32' ? 'omni-benchmark.exe' : 'omni-benchmark',
+      ),
+      OMNI_WATCH_MODE_AUDIO_ANALYZER_SHA256: analyzerAuthority.sha256,
       OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID: plan.providerIdentity.providerId,
       OMNI_WATCH_MODE_EXPECTED_PROVIDER_TEMPLATE_ID: plan.providerIdentity.templateId,
       OMNI_WATCH_MODE_EXPECTED_PROVIDER_KIND: plan.providerIdentity.providerKind,

@@ -94,6 +94,20 @@ function Get-TranslatedPcmLoopbackAuthority {
     "--protocol", $protocol,
     "--feedback-loop-prevention", $FeedbackLoopPrevention
   )
+  if ([string]$Context.authorityMode -eq 'strict-paid') {
+    $analyzerPath = [string]$env:OMNI_WATCH_MODE_AUDIO_ANALYZER_PATH
+    $analyzerSha256 = [string]$env:OMNI_WATCH_MODE_AUDIO_ANALYZER_SHA256
+    if ([string]::IsNullOrWhiteSpace($analyzerPath) -or $analyzerSha256 -notmatch '^[a-f0-9]{64}$') {
+      throw 'strict paid translated PCM analysis requires the pinned release omni-benchmark path and SHA-256'
+    }
+    $arguments += @(
+      '--workspace-root', $workspaceRoot,
+      '--release-executable-path', $analyzerPath,
+      '--release-executable-sha256', $analyzerSha256,
+      '--no-build',
+      '--deadline-utc-ms', ([string]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + 30000))
+    )
+  }
   $process = Start-Process -FilePath "node" -ArgumentList $arguments -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -WindowStyle Hidden -Wait -PassThru
   if (-not (Test-Path -LiteralPath $stdoutPath -PathType Leaf)) {
     return [pscustomobject]@{ passed = $false; authorityMode = "translated-pcm-loopback-correlation-v1"; error = "translated PCM matcher returned no JSON"; exitCode = $process.ExitCode }

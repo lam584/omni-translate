@@ -74,17 +74,32 @@ export function analyzeAudioWithRust({
   profile = 'watch-physical-output/v1',
   frequencies = [],
   workspaceRoot = path.resolve('.'),
+  releaseExecutablePath,
+  releaseExecutableSha256,
+  noBuild = false,
+  deadlineUtcMs,
 }) {
-  const executable = ensureRustAudioAnalyzer({ workspaceRoot });
+  if (noBuild && format === 'auto') {
+    throw new Error('pinned release audio analysis requires an explicit input format');
+  }
+  const deadline = noBuild ? (deadlineUtcMs ?? Date.now() + 30_000) : null;
+  if (noBuild && (!Number.isFinite(deadline) || deadline <= Date.now())) {
+    throw new Error('pinned release audio analyzer deadline has expired');
+  }
+  const executable = ensureRustAudioAnalyzer({ workspaceRoot, releaseExecutablePath, releaseExecutableSha256, noBuild });
   const args = [
     'audio', 'analyze', '--input', path.resolve(inputPath), '--format', format, '--profile', profile,
     ...frequencies.flatMap((frequency) => ['--frequency', String(frequency)]),
   ];
   if (sampleRateHz !== undefined) args.push('--sample-rate', String(sampleRateHz));
-  const result = spawnSync(executable, args, { cwd: workspaceRoot, encoding: 'utf8', windowsHide: true });
+  const remaining = deadline === null ? null : Math.ceil(deadline - Date.now());
+  if (remaining !== null && remaining <= 0) throw new Error('pinned release audio analyzer deadline expired during verification');
+  const result = spawnSync(executable, args, { cwd: workspaceRoot, encoding: 'utf8', windowsHide: true,
+    ...(remaining === null ? {} : { timeout: remaining, killSignal: 'SIGKILL' }) });
   if (result.status !== 0) throw new Error(`Rust audio analysis failed: ${result.stderr || result.stdout}`);
   const parsed = JSON.parse(result.stdout.trim());
-  if (parsed.schemaVersion !== 'omni-audio-analysis/v1' || parsed.profile !== profile) {
+  if (parsed.schemaVersion !== 'omni-audio-analysis/v1' || parsed.profile !== profile
+      || (noBuild && (parsed.operation !== 'analyze' || parsed.inputFormat !== format))) {
     throw new Error(`Rust audio analysis returned an unexpected schema/profile: ${result.stdout}`);
   }
   return parsed;
@@ -165,11 +180,21 @@ export function matchTranslatedLoopbackBatchWithRust({
   recordingPath,
   requests,
   workspaceRoot = path.resolve('.'),
+  releaseExecutablePath,
+  releaseExecutableSha256,
+  noBuild = false,
+  deadlineUtcMs,
 }) {
   if (!Array.isArray(requests) || requests.length === 0) {
     throw new Error('Rust translated loopback batch requires at least one request');
   }
-  const executable = ensureRustAudioAnalyzer({ workspaceRoot });
+  const deadline = noBuild ? (deadlineUtcMs ?? Date.now() + 30_000) : null;
+  if (noBuild && (!Number.isFinite(deadline) || deadline <= Date.now())) {
+    throw new Error('pinned release audio analyzer deadline has expired');
+  }
+  const executable = ensureRustAudioAnalyzer({ workspaceRoot, releaseExecutablePath, releaseExecutableSha256, noBuild });
+  const remaining = deadline === null ? null : Math.ceil(deadline - Date.now());
+  if (remaining !== null && remaining <= 0) throw new Error('pinned release audio analyzer deadline expired during verification');
   const result = spawnSync(executable, [
     'audio', 'translated-loopback-batch',
     '--recorded', path.resolve(recordingPath),
@@ -184,6 +209,7 @@ export function matchTranslatedLoopbackBatchWithRust({
       referencePath: path.resolve(request.referencePath),
     }))),
     maxBuffer: 64 * 1024 * 1024,
+    ...(remaining === null ? {} : { timeout: remaining, killSignal: 'SIGKILL' }),
   });
   if (result.status !== 0) {
     throw new Error(`Rust translated loopback batch analysis failed: ${result.stderr || result.stdout}`);

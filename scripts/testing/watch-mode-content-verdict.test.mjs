@@ -509,3 +509,17 @@ test('missing deferred facts produce inconclusive rather than pass', () => {
   assert.equal(result.status, 'inconclusive');
   assert.equal(result.passed, false);
 });
+
+
+test('df9ba0e2 observed date substitution and question-to-negation stay failed', () => {
+  for (const [id, outputText] of [
+    ['meeting.datetime', '时间是9月3日星期二上午8点45分。Maya Chen主持了一场规划会议。'],
+    ['numeric.contrast-pairs', '它无法区分15和50，也无法区分13和30。'],
+  ]) {
+    const fact = retainedFacts.find((entry) => entry.id === id);
+    assert.ok(fact, id);
+    const result = evaluateLayeredWatchContent({ referenceText: 'audited fixture', outputText, facts: [fact] });
+    assert.equal(result.status, 'failed', id);
+    assert.equal(result.dimensions.facts[0].status, 'failed', id);
+  }
+});

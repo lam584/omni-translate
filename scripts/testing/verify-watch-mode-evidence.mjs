@@ -970,9 +970,24 @@ function assertSystemMetricsAuthority(
   }
 }
 
-function readPcm16Wav(filePath, frequencies = []) {
+function pinnedAudioAnalyzerAuthority(runtimeBinaryHashes, workspaceRoot) {
+  const authority = runtimeBinaryHashes.find(
+    (entry) => entry.path === 'target/release/omni-benchmark.exe',
+  );
+  if (!authority || typeof authority.sha256 !== 'string') {
+    throw new Error('strict runtime authority is missing target/release/omni-benchmark.exe');
+  }
+  return {
+    workspaceRoot,
+    releaseExecutablePath: path.join(workspaceRoot, ...authority.path.split('/')),
+    releaseExecutableSha256: authority.sha256,
+    noBuild: true,
+  };
+}
+
+function readPcm16Wav(filePath, frequencies = [], analyzer = {}) {
   const profile = frequencies.length > 0 ? 'fingerprint-components-v1' : 'watch-physical-output/v1';
-  const metrics = analyzeAudioWithRust({ inputPath: filePath, format: 'wav', profile, frequencies });
+  const metrics = analyzeAudioWithRust({ inputPath: filePath, format: 'wav', profile, frequencies, ...analyzer });
   return {
     sampleRate: metrics.sampleRateHz,
     frames: metrics.sampleCount,
@@ -983,8 +998,8 @@ function readPcm16Wav(filePath, frequencies = []) {
   };
 }
 
-function assertPhysicalRecordingAuthority(runDirectory, index) {
-  const wav = readPcm16Wav(path.join(runDirectory, 'physical-output-recording.wav'));
+function assertPhysicalRecordingAuthority(runDirectory, index, analyzer) {
+  const wav = readPcm16Wav(path.join(runDirectory, 'physical-output-recording.wav'), [], analyzer);
   if (wav.durationSeconds < 60 || wav.rms <= 0.0001 || wav.peak <= 0.001) {
     throw new Error(`strict matrix cell ${index} physical-output WAV is too short or silent`);
   }
@@ -1009,7 +1024,7 @@ function assertPhysicalRecordingAuthority(runDirectory, index) {
   }
 }
 
-function assertProcessExclusionAudioAuthority(runDirectory, index) {
+function assertProcessExclusionAudioAuthority(runDirectory, index, analyzer) {
   const probe = readJson(path.join(runDirectory, 'physical-output-probe.json'));
   const evidence = probe.processExclusionFingerprint ?? probe.process_exclusion_fingerprint;
   if (!evidence || typeof evidence !== 'object') {
@@ -1019,10 +1034,12 @@ function assertProcessExclusionAudioAuthority(runDirectory, index) {
   const physical = readPcm16Wav(
     path.join(runDirectory, 'physical-output-probe-runtime', 'process-exclusion-physical-output.wav'),
     frequencies,
+    analyzer,
   );
   const source = readPcm16Wav(
     path.join(runDirectory, 'physical-output-probe-runtime', 'process-exclusion-source-pipe.wav'),
     frequencies,
+    analyzer,
   );
   if (
     physical.sampleRate !== 48_000
@@ -1258,6 +1275,7 @@ export function assertStrictTranslatedPcmLoopbackAuthority({
   cellExternalProviderBudget,
   index,
   evidenceDrivenTerminal = null,
+  analyzer = {},
 }) {
   const recordingAuthority = readJson(path.join(runDirectory, 'physical-output-recording.json'));
   const rebuilt = buildTranslatedPcmLoopbackAuthority({
@@ -1270,6 +1288,7 @@ export function assertStrictTranslatedPcmLoopbackAuthority({
     modelId: cell.modelId,
     protocol: cellExternalProviderBudget.providerSendBoundary?.protocol,
     feedbackLoopPrevention: cell.feedbackLoopPrevention,
+    ...analyzer,
   });
   if (rebuilt.passed !== true) {
     throw new Error(
@@ -2927,6 +2946,7 @@ export function verifyStrictMatrixAuthority({
   const cellAuthorityReceipts = [];
   const runDirectories = [];
   const seenDirectories = new Set();
+  const analyzer = pinnedAudioAnalyzerAuthority(currentRuntimeBinaryHashes, workspaceRoot);
   const seenProviderLeaseIds = new Set();
   for (let index = 0; index < manifest.cells.length; index += 1) {
     const cell = manifest.cells[index];
@@ -3112,6 +3132,7 @@ export function verifyStrictMatrixAuthority({
       cellExternalProviderBudget,
       index,
       evidenceDrivenTerminal,
+      analyzer,
     }));
     cellAuthorityReceipts.push(receipt);
     const rebuiltReport = rebuildReportFromDirectory(runDirectory, {
@@ -3130,9 +3151,9 @@ export function verifyStrictMatrixAuthority({
     if (cell.feedbackLoopPrevention === 'virtual-driver') {
       assertVirtualDriverBinaryAuthority(runDirectory, currentRuntimeBinaryHashes, index);
     }
-    assertPhysicalRecordingAuthority(runDirectory, index);
+    assertPhysicalRecordingAuthority(runDirectory, index, analyzer);
     if (cell.feedbackLoopPrevention === 'process-exclusion') {
-      assertProcessExclusionAudioAuthority(runDirectory, index);
+      assertProcessExclusionAudioAuthority(runDirectory, index, analyzer);
     }
     const storedReport = readJson(path.join(runDirectory, 'report.json'));
     assertExactObject(

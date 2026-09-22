@@ -7,7 +7,7 @@ import path from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import test from 'node:test';
 
-import { compareAudioWithRust, ensureRustAudioAnalyzer } from './watch-mode-rust-audio-analysis.mjs';
+import { analyzeAudioWithRust, compareAudioWithRust, ensureRustAudioAnalyzer, matchTranslatedLoopbackBatchWithRust } from './watch-mode-rust-audio-analysis.mjs';
 import { buildPhysicalSourceWaveformAuthority } from './watch-mode-canonical-source-authority.mjs';
 
 const realSpawnSync = childProcess.spawnSync;
@@ -173,4 +173,53 @@ test('pinned mode rejects mismatched or malformed release responses without buil
     assert.throws(() => compare(f), /unexpected schema\/profile|JSON|Unexpected token/);
   }
   assert.equal(spy.mock.callCount(), 5);
+});
+
+
+test('strict analyze and translated batch use only the hash-pinned release analyzer', (t) => {
+  const f = fixture(t);
+  const calls = [];
+  const spy = interceptSpawn(t, (command, args, options) => {
+    calls.push({ command, args, options });
+    assert.equal(command, f.options.releaseExecutablePath);
+    assert.ok(options.timeout > 0);
+    if (args[1] === 'analyze') {
+      return { status: 0, stdout: JSON.stringify({
+        schemaVersion: 'omni-audio-analysis/v1', profile: 'watch-physical-output/v1',
+        operation: 'analyze', inputFormat: 'wav', sampleRateHz: 48_000, sampleCount: 1,
+        durationSeconds: 1, rms: 0.1, peak: 0.2, components: [],
+      }) };
+    }
+    assert.deepEqual(args.slice(0, 2), ['audio', 'translated-loopback-batch']);
+    return { status: 0, stdout: JSON.stringify({
+      schemaVersion: 'omni-audio-analysis/v1', profile: 'translated-loopback-v1',
+      operation: 'translated-loopback-batch', results: [{ requestId: 'r1', metrics: { score: 1 } }],
+    }) };
+  });
+  const analyzed = analyzeAudioWithRust({ ...f.options, inputPath: f.recordedPath, format: 'wav' });
+  assert.equal(analyzed.operation, 'analyze');
+  const batch = matchTranslatedLoopbackBatchWithRust({ ...f.options, recordingPath: f.recordedPath,
+    requests: [{ requestId: 'r1', referencePath: f.referencePath, referenceSampleRateHz: 16_000,
+      referenceChannels: 1, expectedStartSamples: 0 }] });
+  assert.equal(batch.get('r1').score, 1);
+  assert.equal(spy.mock.callCount(), 2);
+  assert.ok(calls.every((call) => call.command !== 'cargo'));
+});
+
+test('strict analyze rejects auto format before process launch while explicit wav remains pinned', (t) => {
+  const f = fixture(t);
+  const spy = interceptSpawn(t, () => assert.fail('auto format must fail before analyzer or Cargo launch'));
+  assert.throws(() => analyzeAudioWithRust({ ...f.options, inputPath: f.recordedPath }),
+    /explicit input format/);
+  assert.equal(spy.mock.callCount(), 0);
+});
+
+test('strict analyze and translated batch reject hash mismatch before process launch', (t) => {
+  const f = fixture(t);
+  const spy = interceptSpawn(t, () => assert.fail('hash mismatch must not launch Cargo or analyzer'));
+  assert.throws(() => analyzeAudioWithRust({ ...f.options, inputPath: f.recordedPath, format: 'wav',
+    releaseExecutableSha256: 'f'.repeat(64) }), /SHA-256/);
+  assert.throws(() => matchTranslatedLoopbackBatchWithRust({ ...f.options, recordingPath: f.recordedPath,
+    releaseExecutableSha256: 'f'.repeat(64), requests: [{ requestId: 'r1', referencePath: f.referencePath }] }), /SHA-256/);
+  assert.equal(spy.mock.callCount(), 0);
 });

@@ -87,7 +87,9 @@ function fixture(releaseSelection) {
   const snapshot = {
     provenance: PROVENANCE,
     authorityImplementationHashes: inventory('matrix', SHA_A),
-    runtimeBinaryHashes: inventory('runtime', SHA_B),
+    runtimeBinaryHashes: [...inventory('runtime', SHA_B), {
+      path: 'target/release/omni-benchmark.exe', bytes: 12, sha256: SHA_B,
+    }],
     shardOrchestrationImplementationHashes: inventory('shard', SHA_A),
   };
   const plan = createSignedExecutionPlan({
@@ -289,6 +291,11 @@ test('worker request carries only its signed paid cell and never contains build/
   });
   assert.equal(request.leaseId, lease.leaseId);
   assert.equal(request.environment.OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID, lease.leaseId);
+  assert.equal(
+    request.environment.OMNI_WATCH_MODE_AUDIO_ANALYZER_PATH,
+    path.join(process.cwd(), 'target', 'release', process.platform === 'win32' ? 'omni-benchmark.exe' : 'omni-benchmark'),
+  );
+  assert.equal(request.environment.OMNI_WATCH_MODE_AUDIO_ANALYZER_SHA256, SHA_B);
   assert.deepEqual({
     strict: request.environment.OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY,
     providerId: request.environment.OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID,
@@ -520,7 +527,9 @@ test('worker discards a paid result when runtime hashes change during the cell',
     const worker = value.plan.workers.find((entry) => entry.workerId === cell.workerId);
     const changedSnapshot = {
       ...value.snapshot,
-      runtimeBinaryHashes: inventory('runtime', SHA_A),
+      runtimeBinaryHashes: [...inventory('runtime', SHA_A), {
+        path: 'target/release/omni-benchmark.exe', bytes: 12, sha256: SHA_A,
+      }],
     };
     await assert.rejects(
       runLeasedShardCell({

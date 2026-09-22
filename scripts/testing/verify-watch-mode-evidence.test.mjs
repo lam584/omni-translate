@@ -12,6 +12,8 @@ import {
 } from './run-watch-mode-live-matrix.mjs';
 import { writeReport as writeDirectoryReport } from './watch-mode-report.mjs';
 import {
+  AUTHORITY_IMPLEMENTATION_FILES,
+  PAID_AUTHORITY_IMPLEMENTATION_FILES,
   currentAuthorityImplementationHashes,
   fileAuthorityEntry,
   requiredCellArtifactPaths,
@@ -90,6 +92,7 @@ import {
 import {
   buildTranslatedPcmLoopbackAuthority,
 } from './watch-mode-translated-pcm-loopback.mjs';
+import { ensureRustAudioAnalyzer } from './watch-mode-rust-audio-analysis.mjs';
 import {
   buildPhysicalSourceWaveformAuthority,
   loadCanonicalFixtureAuthority,
@@ -564,7 +567,49 @@ const fixturePreflightLifecycle = (model = PROVIDER_PREFLIGHT_MODEL) => ({
     eventCount: 6,
   },
 });
-const TEST_RUNTIME_BINARY_HASHES = Object.freeze([]);
+const TEST_ANALYZER_RELATIVE_PATH = 'target/release/omni-benchmark.exe';
+let testAnalyzerFixture = null;
+function prepareTestAnalyzerFixture() {
+  if (testAnalyzerFixture) return testAnalyzerFixture;
+  if (process.platform !== 'win32') {
+    throw new Error('strict Watch evidence analyzer fixtures require the Windows release authority layout');
+  }
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-verify-analyzer-'));
+  const releasePath = path.join(workspaceRoot, ...TEST_ANALYZER_RELATIVE_PATH.split('/'));
+  fs.mkdirSync(path.dirname(releasePath), { recursive: true });
+  fs.copyFileSync(
+    ensureRustAudioAnalyzer({ workspaceRoot: path.resolve('.') }),
+    releasePath,
+    fs.constants.COPYFILE_EXCL,
+  );
+  fs.cpSync(path.resolve('scripts/testing/fixtures'), path.join(workspaceRoot, 'scripts/testing/fixtures'), { recursive: true });
+  fs.cpSync(path.resolve('contracts'), path.join(workspaceRoot, 'contracts'), { recursive: true });
+  for (const relativeDirectory of ['scripts/diagnostics/omni-benchmark', 'crates/omni-benchmark-core']) {
+    fs.cpSync(path.resolve(relativeDirectory), path.join(workspaceRoot, ...relativeDirectory.split('/')), {
+      recursive: true,
+      filter: (source) => !source.split(path.sep).includes('target'),
+    });
+  }
+  const implementationFiles = [...new Set([
+    ...AUTHORITY_IMPLEMENTATION_FILES,
+    ...PAID_AUTHORITY_IMPLEMENTATION_FILES,
+  ])];
+  for (const relativePath of implementationFiles) {
+    const entry = fileAuthorityEntry(path.resolve(relativePath), relativePath);
+    const destination = path.join(workspaceRoot, ...entry.path.split('/'));
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(path.resolve(entry.path), destination);
+  }
+  testAnalyzerFixture = {
+    workspaceRoot,
+    runtimeBinaryHashes: Object.freeze([fileAuthorityEntry(releasePath, TEST_ANALYZER_RELATIVE_PATH)]),
+  };
+  process.once('exit', () => fs.rmSync(workspaceRoot, { recursive: true, force: true }));
+  return testAnalyzerFixture;
+}
+const preparedAnalyzerFixture = prepareTestAnalyzerFixture();
+const TEST_ANALYZER_WORKSPACE = preparedAnalyzerFixture.workspaceRoot;
+const TEST_RUNTIME_BINARY_HASHES = preparedAnalyzerFixture.runtimeBinaryHashes;
 const TEST_RUNTIME_BUNDLE_DIGEST = sha256Canonical(TEST_RUNTIME_BINARY_HASHES);
 const provenanceOk = { now: FIXTURE_NOW, currentProvenance: CLEAN_CURRENT_PROVENANCE };
 const WATCH_MODEL_PROTOCOL_PROFILE_IDENTITY = deriveWatchModelProtocolIdentity(RELEASE_MODELS[0]);
@@ -2849,7 +2894,7 @@ test('strict authority rebuilds report evidence from the fixed raw inventory', (
     manifest,
     evidenceRoot: root,
     currentProvenance: CLEAN_CURRENT_PROVENANCE,
-    workspaceRoot: path.resolve('.'),
+    workspaceRoot: TEST_ANALYZER_WORKSPACE,
     now: Date.now() + 2_000,
     currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
   });
@@ -2868,6 +2913,27 @@ test('strict authority rebuilds report evidence from the fixed raw inventory', (
     verified.externalProviderBudget.cells[0].leaseId,
     manifest.externalProviderBudget.cells[0].leaseId,
   );
+});
+
+test('strict authority fixture rejects a missing pinned analyzer without repairing explicit runtime options', () => {
+  const root = makeTempRoot();
+  const runDirectory = writeAuthorityRawCell(root, 'authority-missing-analyzer', { runtimeBinaryHashes: [] });
+  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, { runtimeBinaryHashes: [] });
+  assert.throws(() => verifyStrictMatrixAuthority({
+    manifestPath, manifest, evidenceRoot: root, currentProvenance: CLEAN_CURRENT_PROVENANCE,
+    workspaceRoot: TEST_ANALYZER_WORKSPACE, currentRuntimeBinaryHashes: [], now: Date.now() + 2_000,
+  }), /strict runtime authority is missing target\/release\/omni-benchmark\.exe/);
+});
+
+test('strict authority fixture rejects an explicitly wrong analyzer pin without substituting the valid fixture hash', () => {
+  const root = makeTempRoot();
+  const wrongRuntime = TEST_RUNTIME_BINARY_HASHES.map((entry) => ({ ...entry, sha256: 'f'.repeat(64) }));
+  const runDirectory = writeAuthorityRawCell(root, 'authority-wrong-analyzer-pin', { runtimeBinaryHashes: wrongRuntime });
+  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, { runtimeBinaryHashes: wrongRuntime });
+  assert.throws(() => verifyStrictMatrixAuthority({
+    manifestPath, manifest, evidenceRoot: root, currentProvenance: CLEAN_CURRENT_PROVENANCE,
+    workspaceRoot: TEST_ANALYZER_WORKSPACE, currentRuntimeBinaryHashes: wrongRuntime, now: Date.now() + 2_000,
+  }), /pinned release analyzer SHA-256 mismatch/);
 });
 
 test('strict authority rejects a rehashed WAV truncated by half a second despite self-consistent RIFF metadata', () => {
@@ -2895,7 +2961,7 @@ test('strict authority rejects a rehashed WAV truncated by half a second despite
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       now: Date.now() + 2_000,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
@@ -2920,7 +2986,7 @@ test('strict authority rejects media playback without the fixed VAD-closing post
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
     /playback\.json is not a completed production media-injector timeline/,
@@ -2948,7 +3014,7 @@ test('strict process-exclusion authority rejects playback without the midpoint r
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
     /restart quiet-window authority is invalid/,
@@ -2975,7 +3041,7 @@ test('strict process-exclusion authority binds quiet-window frames to the render
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
     /restart quiet-window authority is invalid/,
@@ -3003,7 +3069,7 @@ test('strict non-process authority rejects any injected restart quiet window', (
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
     /restart quiet-window authority is invalid/,
@@ -3027,7 +3093,7 @@ test('strict authority rejects a placeholder paid-cell ledger even when its rece
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
     /paid-cell budget ledger has an unsupported schema\/kind/,
@@ -3046,7 +3112,7 @@ test('strict authority rejects a missing Rust send-boundary ledger', () => {
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
     /provider-input-budget-ledger\.json.*missing|authority artifact.*missing/,
@@ -3069,7 +3135,7 @@ test('strict authority rejects a self-consistently rehashed paid-cell JS ledger 
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
     /paid-cell budget ledger does not match current raw artifacts/,
@@ -3104,7 +3170,7 @@ test('strict authority rejects a wrong Rust model-protocol pair after all hashes
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
     /protocol mismatch/,
@@ -3130,7 +3196,7 @@ test('strict authority independently rejects a tampered matrix aggregate above t
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
     /paid-matrix budget ledger does not match rebuilt cell authorities/,
@@ -3148,7 +3214,7 @@ test('production strict authority requires all four fixed paid cells', () => {
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
       requireLocalIsolation: false,
     }),
@@ -3169,7 +3235,7 @@ test('strict shard parser fails closed when guest shardExecution authority is mi
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       currentImplementationHashes: [],
       currentRuntimeBinaryHashes: [],
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
     }),
     /missing shardExecution guest authority/,
   );
@@ -3188,7 +3254,7 @@ test('strict shard parser fails closed when coordinator omits matrixIntegration 
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       currentImplementationHashes: [],
       currentRuntimeBinaryHashes: [],
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
     }),
     /missing shard matrixIntegration authority/,
   );
@@ -3415,7 +3481,11 @@ test(`strict production verifier replays signed coordinator ${releaseSelection?.
     path: PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE,
     bytes: 456,
     sha256: 'd'.repeat(64),
-  }];
+  }, ...TEST_RUNTIME_BINARY_HASHES];
+  const driverSysAuthority = runtimeBinaryHashes.find((entry) => entry.path.endsWith('/omni-virtual-speaker.sys'));
+  const driverCatAuthority = runtimeBinaryHashes.find((entry) => entry.path.endsWith('/omni-virtual-speaker.cat'));
+  const driverInfAuthority = runtimeBinaryHashes.find((entry) => entry.path.endsWith('/omni-virtual-speaker.inf'));
+  assert.ok(driverSysAuthority && driverCatAuthority && driverInfAuthority);
   const deviceProfile = (
     workerId,
     suffix,
@@ -3469,9 +3539,9 @@ test(`strict production verifier replays signed coordinator ${releaseSelection?.
       'utf8',
     );
     const packageDriver = {
-      packageSysSha256: runtimeBinaryHashes[0].sha256,
-      packageCatSha256: runtimeBinaryHashes[1].sha256,
-      packageInfSha256: runtimeBinaryHashes[2].sha256,
+      packageSysSha256: driverSysAuthority.sha256,
+      packageCatSha256: driverCatAuthority.sha256,
+      packageInfSha256: driverInfAuthority.sha256,
     };
     const readinessReceipts = new Map();
     const readinessAuthorities = workerReadinessRequest.workers.map((readinessWorker, index) => {
@@ -3519,7 +3589,7 @@ test(`strict production verifier replays signed coordinator ${releaseSelection?.
           ? {
               ...packageDriver,
               installedServiceState: 'Running',
-              installedSysSha256: runtimeBinaryHashes[0].sha256,
+              installedSysSha256: driverSysAuthority.sha256,
               installedSysSignatureStatus: 'Valid',
               packageCatalogSignatureStatus: 'Valid',
             }
@@ -4416,7 +4486,7 @@ test('strict authority rejects duplicate Rust provider lease IDs across cells', 
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
     /reuses Rust provider leaseId/,
@@ -4451,7 +4521,7 @@ test('strict authority rejects reordered matrix budget cells after the ledger ha
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
     /paid-matrix budget ledger does not match rebuilt cell authorities/,
@@ -4468,7 +4538,7 @@ test('canonical strict authority round-trips the complete verifier receipt cell 
     manifest,
     evidenceRoot: root,
     currentProvenance: CLEAN_CURRENT_PROVENANCE,
-    workspaceRoot: path.resolve('.'),
+    workspaceRoot: TEST_ANALYZER_WORKSPACE,
     now: verificationNow.getTime(),
     currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
   });
@@ -4504,7 +4574,7 @@ test('canonical strict authority round-trips the complete verifier receipt cell 
     manifest: JSON.parse(fs.readFileSync(canonicalPath, 'utf8')),
     evidenceRoot: root,
     currentProvenance: CLEAN_CURRENT_PROVENANCE,
-    workspaceRoot: path.resolve('.'),
+    workspaceRoot: TEST_ANALYZER_WORKSPACE,
     now: verificationNow.getTime() + 1_000,
     currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
   });
@@ -4565,7 +4635,7 @@ test('canonical strict authority round-trips the complete verifier receipt cell 
       },
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       now: verificationNow.getTime() + 1_000,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
@@ -4599,7 +4669,7 @@ test('canonical strict authority round-trips the complete verifier receipt cell 
       manifest: incompleteCanonical,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       now: verificationNow.getTime() + 1_000,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
@@ -4622,7 +4692,7 @@ test('strict authority binds the metrics tree to the Desktop PID launched by the
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       now: Date.now() + 2_000,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
@@ -4644,7 +4714,7 @@ test('strict process-exclusion authority independently recomputes the three-tone
     manifest,
     evidenceRoot: root,
     currentProvenance: CLEAN_CURRENT_PROVENANCE,
-    workspaceRoot: path.resolve('.'),
+    workspaceRoot: TEST_ANALYZER_WORKSPACE,
     currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     now: Date.now() + 2_000,
   });
@@ -4867,7 +4937,7 @@ test('strict virtual-driver authority binds the running SYS and signature identi
     path: 'drivers/windows-virtual-mic/package/omni-virtual-speaker.inf',
     bytes: 123,
     sha256: 'c'.repeat(64),
-  }];
+  }, ...TEST_RUNTIME_BINARY_HASHES];
   const options = {
     feedbackLoopPrevention: 'virtual-driver',
     modelId: 'qwen3.5-livetranslate-flash-realtime',
@@ -4881,7 +4951,7 @@ test('strict virtual-driver authority binds the running SYS and signature identi
     manifest,
     evidenceRoot: root,
     currentProvenance: CLEAN_CURRENT_PROVENANCE,
-    workspaceRoot: path.resolve('.'),
+    workspaceRoot: TEST_ANALYZER_WORKSPACE,
     currentRuntimeBinaryHashes: runtimeBinaryHashes,
     now: Date.now() + 2_000,
   });
@@ -4914,7 +4984,7 @@ test('strict authority rejects a report-only schema-v1 matrix even when all 18 s
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
     /requires watch-mode-strict-matrix-authority schemaVersion=6/,
@@ -4949,7 +5019,7 @@ test('strict authority rejects an artifact changed after the runner receipt was 
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
     /hash\/size mismatch for app\.log/,
@@ -4972,7 +5042,7 @@ test('strict authority rejects swapping a manifest cell to a copied run director
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
     /receipt runDirectory mismatch/,
@@ -4995,7 +5065,7 @@ test('strict authority rejects a self-consistently rehashed summary that disagre
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
     /report\.json does not match the independently rebuilt raw evidence/,
@@ -5014,7 +5084,7 @@ test('strict authority rejects an old receipt and cannot refresh evidence age du
       manifest,
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
-      workspaceRoot: path.resolve('.'),
+      workspaceRoot: TEST_ANALYZER_WORKSPACE,
       now: Date.parse('2026-08-10T00:00:00.000Z'),
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),

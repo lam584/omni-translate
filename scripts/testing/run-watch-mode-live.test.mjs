@@ -381,6 +381,43 @@ function extractedCuePlaybackAuthorityFunctions() {
   return `Import-Module ${quotePowerShell(path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.RawContent.psm1'))} -Force -DisableNameChecking; `;
 }
 
+test('strict RawContent uses the real run context and inherited pinned analyzer environment', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-raw-content-pin-'));
+  const output = path.join(root, 'run');
+  fs.mkdirSync(output);
+  const capture = path.join(root, 'captured.json');
+  fs.writeFileSync(path.join(output, 'provider-input-budget-lease.json'), JSON.stringify({ leaseId: 'lease-test' }));
+  const requestPath = path.resolve('scripts/testing/fixtures/watch-mode-run-request-dry-run.json');
+  const configModule = path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.Config.psm1');
+  const rawModule = path.resolve('scripts/testing/lib/powershell/Omni.Testing.WatchMode.RawContent.psm1');
+  const workspaceRoot = path.resolve('.');
+  const analyzerPath = path.join(workspaceRoot, 'target', 'release', 'omni-benchmark.exe');
+  const analyzerSha256 = 'a'.repeat(64);
+  try {
+    const command =
+      `function global:Start-Process { param($FilePath,$ArgumentList,$RedirectStandardOutput,$RedirectStandardError,$WindowStyle,[switch]$Wait,[switch]$PassThru); ` +
+      `[IO.File]::WriteAllText(${quotePowerShell(capture)}, ([pscustomobject]@{ filePath=$FilePath; arguments=@($ArgumentList); analyzerPath=$env:OMNI_WATCH_MODE_AUDIO_ANALYZER_PATH; analyzerSha256=$env:OMNI_WATCH_MODE_AUDIO_ANALYZER_SHA256 } | ConvertTo-Json -Depth 4 -Compress)); ` +
+      `[IO.File]::WriteAllText($RedirectStandardOutput, '{\"passed\":true}'); [IO.File]::WriteAllText($RedirectStandardError, ''); return [pscustomobject]@{ ExitCode=0 } }; ` +
+      `Import-Module ${quotePowerShell(configModule)} -Force; Import-Module ${quotePowerShell(rawModule)} -Force -DisableNameChecking; ` +
+      `$request=Get-Content -LiteralPath ${quotePowerShell(requestPath)} -Raw -Encoding UTF8 | ConvertFrom-Json; $request.authorityMode='strict-paid'; ` +
+      `$request.paths.outputRoot=${quotePowerShell(output)}; $context=New-OmniWatchModeContext -Request $request -WorkspaceRoot ${quotePowerShell(workspaceRoot)}; ` +
+      `$result=Get-TranslatedPcmLoopbackAuthority ${quotePowerShell(output)} ([pscustomobject]@{recordingStartedAtEpochMs=123}) ([pscustomobject]@{passed=$true}) ${quotePowerShell(path.join(output, 'app.log'))} 'run-marker' $context; ` +
+      `[pscustomobject]@{ authorityMode=$context.authorityMode; requestAuthorityMode=$context.request.authorityMode; passed=$result.passed } | ConvertTo-Json -Compress`;
+    const result = runPowerShell(['-Command', command], { env: {
+      OMNI_WATCH_MODE_AUDIO_ANALYZER_PATH: analyzerPath,
+      OMNI_WATCH_MODE_AUDIO_ANALYZER_SHA256: analyzerSha256,
+    } });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout.trim()), { authorityMode: 'strict-paid', requestAuthorityMode: 'strict-paid', passed: true });
+    const captured = JSON.parse(fs.readFileSync(capture, 'utf8'));
+    assert.equal(captured.analyzerPath, analyzerPath);
+    assert.equal(captured.analyzerSha256, analyzerSha256);
+    assert.ok(captured.arguments.includes('--no-build'));
+    assert.equal(captured.arguments[captured.arguments.indexOf('--release-executable-path') + 1], analyzerPath);
+    assert.equal(captured.arguments[captured.arguments.indexOf('--release-executable-sha256') + 1], analyzerSha256);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('native Bridge queued and started statuses count as physical speech evidence', { skip: !isWindows }, () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-native-speech-evidence-'));
   const logPath = path.join(tempRoot, 'app.log');

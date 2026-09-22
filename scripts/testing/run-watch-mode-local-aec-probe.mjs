@@ -27,6 +27,7 @@ export const AEC_PROBE_INTERACTIVE_FILES = Object.freeze([
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveScheduler.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveCustody.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveJob.psm1',
   AEC_PROBE_JOB_HELPER,
   'scripts/testing/run-watch-mode-local-aec-probe.mjs',
 ]);

@@ -263,7 +263,9 @@ test('multi-worker safety failure fences pending dispatch before cleanup and ret
         assert.equal(pendingSignals.length, 2);
         assert.ok(pendingSignals.every((signal) => signal.aborted), 'all pending pipelines are fenced before cancellation');
         releaseWait();
-        throw new Error('fixture cleanup failed');
+        const failure = new Error('fixture cleanup failed');
+        failure.transportFailure = { exitCode: null, exitSignal: 'SIGTERM', terminationReason: 'timeout', elapsedMs: 15000, timedOut: true, command: 'secret fixture command' };
+        throw failure;
       },
     }), (error) => {
       assert.ok(error instanceof CoordinatorWaveFailure);
@@ -271,6 +273,8 @@ test('multi-worker safety failure fences pending dispatch before cleanup and ret
       assert.equal(error.cleanupErrors.length, 1);
       assert.equal(error.cleanupErrors[0].code, 'coordinator.cleanup.cell-failed');
       assert.equal(error.cleanupErrors[0].cellId, dispatched[0]);
+      assert.deepEqual(error.cleanupErrors[0].details, { outcome: 'rejected', errorName: 'Error', transportFailure: { exitCode: null, exitSignal: 'SIGTERM', terminationReason: 'timeout', elapsedMs: 15000, timedOut: true } });
+      assert.ok(!JSON.stringify(error.cleanupErrors).includes('secret fixture'));
       return true;
     });
     assert.equal(dispatched.length, 1, 'neither staggered peers nor c03 may start');
@@ -394,6 +398,7 @@ test('verified ordinary failed outcomes remain collect-all rather than stopAll',
 for (const [label, receipt] of [
   ['missing receipt', undefined],
   ['negative receipt', { passed: false, status: 'authority-invalid' }],
+  ['untrusted diagnostic text', { passed: false, status: 'secret fixture status', processCleanup: { status: 'secret fixture process', commandLine: 'secret fixture arguments' } }],
   ['contradictory receipt', { passed: true, status: 'cleanup-incomplete' }],
   ['failed process cleanup', { passed: true, processCleanup: { passed: false } }],
   ['failed task cleanup', { passed: true, taskCleanupPassed: false }],
@@ -419,6 +424,13 @@ for (const [label, receipt] of [
         assert.equal(error.cause.message, 'provider budget exceeded');
         assert.equal(error.cleanupErrors.length, label === 'confirmed receipt' ? 0 : 1);
         assert.deepEqual(error.startedCellIds, [plan.cells[0].cellId]);
+        if (label === 'negative receipt') assert.deepEqual(error.cleanupErrors[0].details, { outcome: 'unconfirmed', receiptStatus: 'authority-invalid' });
+        if (label === 'untrusted diagnostic text') {
+          assert.deepEqual(error.cleanupErrors[0].details, { outcome: 'unconfirmed', receiptStatus: 'unrecognized', processCleanupStatus: 'unrecognized' });
+          assert.ok(!JSON.stringify(error.cleanupErrors).includes('secret fixture'));
+        }
+        if (label === 'failed task cleanup') assert.equal(error.cleanupErrors[0].details.taskCleanupPassed, false);
+        if (label === 'synchronous cleanup exception') assert.deepEqual(error.cleanupErrors[0].details, { outcome: 'rejected', errorName: 'Error' });
         return true;
       });
       assert.deepEqual(cancelled, [plan.cells[0].cellId]);

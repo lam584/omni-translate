@@ -1301,6 +1301,7 @@ export function runChildProcess(executable, args, {
   spawnProcess = spawn,
 } = {}) {
   return new Promise((resolve, reject) => {
+    const startedAt = performance.now();
     const child = spawnProcess(executable, args, {
       cwd,
       env: environment,
@@ -1312,64 +1313,152 @@ export function runChildProcess(executable, args, {
     let stderr = '';
     let settled = false;
     let timer;
+    let exited = false;
+    let closed = false;
+    let rawExitCode = null;
+    let exitSignal = null;
+    let aborted = false;
+    let timedOut = false;
+    let markerObserved = false;
+    let markerKillAccepted = false;
+    let inputStopped = false;
+    let releaseDrain = null;
+    let stdinFailure = null;
+    const ownedMarkerExit = () => markerKillAccepted && rawExitCode === null && exitSignal === 'SIGTERM';
+    const result = (diagnosticsComplete) => ({
+      // A known native status always outranks the marker. Only our accepted
+      // marker-triggered SIGTERM can substitute for an absent native exit code.
+      exitCode: timedOut ? 124 : aborted ? (rawExitCode || 1) : (rawExitCode ?? (ownedMarkerExit() ? 0 : 1)),
+      rawExitCode,
+      signal: exitSignal,
+      elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      aborted,
+      timedOut,
+      terminationReason: timedOut ? 'timeout' : aborted ? 'abort' : ownedMarkerExit() ? 'completion-marker' : rawExitCode !== null ? 'exit' : exitSignal ? 'signal' : 'exit',
+      diagnosticsComplete,
+      stdout,
+      stderr,
+    });
+    const stopInput = () => {
+      inputStopped = true;
+      releaseDrain?.();
+      child.stdin.destroy();
+    };
+    const ignoreReleasedStreamError = () => {};
+    const releaseStream = (stream, onData, onError) => {
+      if (onData) stream.removeListener('data', onData);
+      if (stream.closed) {
+        stream.removeListener('error', onError);
+        return;
+      }
+      // Keep a bounded teardown error listener until the owned pipe closes;
+      // destroying a pending pipe can itself deliver an asynchronous error.
+      stream.once('close', () => stream.removeListener('error', onError));
+      stream.destroy();
+    };
     const finish = (callback) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', abort);
+      stopInput();
+      child.stdout.on('error', ignoreReleasedStreamError);
+      child.stderr.on('error', ignoreReleasedStreamError);
+      releaseStream(child.stdin, null, onStdinError);
+      releaseStream(child.stdout, onStdout, ignoreReleasedStreamError);
+      releaseStream(child.stderr, onStderr, ignoreReleasedStreamError);
       callback();
     };
-    const abort = () => child.kill('SIGKILL');
+    const abort = () => {
+      if (settled) return;
+      aborted = true;
+      stopInput();
+      // The existing deadline still bounds draining if a killed child never closes.
+      if (!exited) child.kill('SIGKILL');
+    };
+    const onStdout = (chunk) => {
+      if (settled) return;
+      stdout += chunk;
+      if (!markerObserved && completionMarker && stdout.includes(completionMarker)) {
+        markerObserved = true;
+        stopInput();
+        if (!exited && !closed && !aborted) markerKillAccepted = child.kill('SIGTERM') === true;
+      }
+    };
+    const onStderr = (chunk) => {
+      if (!settled) stderr += chunk;
+    };
+    const onStdinError = (error) => {
+      if (settled) return;
+      // A pipe reset is secondary to a native failure, including when its error
+      // event arrives before exit. Preserve it only if close otherwise succeeds.
+      if (error.code !== 'EPIPE') stdinFailure ??= error;
+      stopInput();
+    };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk;
-      if (completionMarker && stdout.includes(completionMarker)) {
-        finish(() => resolve({ exitCode: 0, stdout, stderr }));
-        child.kill('SIGTERM');
-      }
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-    });
-    child.stdin.once('error', (error) => {
-      // A remote process can fail and close stdin before ssh has consumed the
-      // entire script. Its exit code/stderr remain the useful failure signal.
-      if (error.code !== 'EPIPE') finish(() => reject(error));
-    });
+    child.stdout.on('data', onStdout);
+    child.stderr.on('data', onStderr);
+    child.stdin.on('error', onStdinError);
     child.once('error', (error) => finish(() => reject(error)));
-    child.once('exit', (exitCode) => finish(() => resolve({
-      exitCode: exitCode ?? 1,
-      stdout,
-      stderr,
-    })));
+    child.once('exit', (exitCode, signal) => {
+      if (settled) return;
+      exited = true;
+      rawExitCode = exitCode ?? null;
+      exitSignal = signal ?? null;
+      stopInput();
+    });
+    // exit can precede trailing pipe data. close is the process/stdio boundary.
+    child.once('close', (exitCode, signal) => {
+      closed = true;
+      if (!exited) {
+        rawExitCode = exitCode ?? null;
+        exitSignal = signal ?? null;
+      }
+      stopInput();
+      // An injected kill may emit close inline: let kill return its acceptance
+      // before deciding whether this was our marker-triggered termination.
+      queueMicrotask(() => {
+        if (stdinFailure && !timedOut && !aborted && !ownedMarkerExit()
+          && (rawExitCode === 0 || (rawExitCode === null && exitSignal === null))) {
+          finish(() => reject(stdinFailure));
+        } else finish(() => resolve(result(true)));
+      });
+    });
     timer = setTimeout(() => {
-      const timeoutDetail = `child process timed out after ${timeoutMs}ms`;
-      child.kill('SIGKILL');
-      // OpenSSH for Windows can reap a killed remote PowerShell child without
-      // delivering an observable exit event to Node.  Settle at the timeout
-      // boundary instead of leaving the coordinator Promise pending forever.
-      finish(() => resolve({
-        exitCode: 124,
-        stdout,
-        stderr: [stderr, timeoutDetail].filter(Boolean).join('\n'),
-      }));
+      timedOut = true;
+      stopInput();
+      stderr = [stderr, `child process timed out after ${timeoutMs}ms`].filter(Boolean).join('\n');
+      // Keep the original hard deadline even if killed OpenSSH emits no close.
+      // Set timeout state first: injected kill handlers may emit close inline.
+      if (!exited) child.kill('SIGKILL');
+      finish(() => resolve(result(closed)));
     }, timeoutMs);
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
     void (async () => {
       try {
+        if (inputStopped) return;
         const bytes = Buffer.from(String(input), 'utf8');
         for (let offset = 0; offset < bytes.length; offset += 16 * 1024) {
+          if (inputStopped) return;
           const chunk = bytes.subarray(offset, Math.min(offset + 16 * 1024, bytes.length));
           if (!child.stdin.write(chunk)) {
-            await new Promise((drain) => child.stdin.once('drain', drain));
+            await new Promise((resolveDrain) => {
+              const done = () => {
+                child.stdin.removeListener('drain', done);
+                releaseDrain = null;
+                resolveDrain();
+              };
+              releaseDrain = done;
+              child.stdin.once('drain', done);
+              if (inputStopped) done();
+            });
           }
         }
-        child.stdin.end();
+        if (!inputStopped) child.stdin.end();
       } catch (error) {
-        child.kill('SIGKILL');
-        finish(() => reject(error));
+        onStdinError(error);
       }
     })();
   });
@@ -1833,11 +1922,63 @@ function remoteSpec(worker, remotePath) {
   return `${worker.user}@${worker.host}:${pathForScp(remotePath)}`;
 }
 
+// Only fixed process metadata may be attached to persisted errors. Never copy
+// arguments, environment, input, raw streams, or arbitrary abort/exception text.
+function processFailureMetadata(result) {
+  const metadata = {};
+  for (const field of ['exitCode', 'rawExitCode']) {
+    if (result?.[field] === null || Number.isSafeInteger(result?.[field])) metadata[field] = result[field];
+  }
+  if (result?.signal === null || Object.hasOwn(os.constants.signals, result?.signal ?? '')) {
+    metadata.exitSignal = result.signal;
+  }
+  if (Number.isSafeInteger(result?.elapsedMs) && result.elapsedMs >= 0) metadata.elapsedMs = result.elapsedMs;
+  for (const field of ['aborted', 'timedOut', 'diagnosticsComplete']) {
+    if (typeof result?.[field] === 'boolean') metadata[field] = result[field];
+  }
+  if (['exit', 'signal', 'abort', 'timeout', 'completion-marker'].includes(result?.terminationReason)) {
+    metadata.terminationReason = result.terminationReason;
+  }
+  return metadata;
+}
+
+function processDiagnosticClass(result) {
+  const diagnostic = [result?.stderr, result?.stdout].filter(Boolean).join('\n');
+  if (!diagnostic.trim()) return 'no-diagnostics';
+  if (/timed?\s*out|timeout|deadline/iu.test(diagnostic)) return 'timeout';
+  if (/connection.*(reset|closed|abort)|broken pipe|lost connection/iu.test(diagnostic)) return 'connection-terminated';
+  if (/permission denied|access is denied/iu.test(diagnostic)) return 'access-denied';
+  if (/no such file|cannot find|not found/iu.test(diagnostic)) return 'not-found';
+  if (/host key|hash mismatch|authority|signature|identity/iu.test(diagnostic)) return 'authority-rejected';
+  return 'transport-failed';
+}
+
+function attachCommandCleanupFailure(primary, cleanupError) {
+  if (!primary) throw cleanupError;
+  // No arbitrary cleanup exception text or receipt fields cross this boundary.
+  primary.cleanupErrors = [...(primary.cleanupErrors ?? []), {
+    code: 'coordinator.transport.command-cleanup-failed',
+    message: 'Command script cleanup did not complete.',
+    ...processFailureMetadata({ ...cleanupError.transportFailure, signal: cleanupError.transportFailure?.exitSignal }),
+  }];
+}
+
 function ensureSuccessful(result, label) {
   if (Number(result?.exitCode) !== 0) {
     const stderr = String(result?.stderr ?? '').trim();
     const stdout = String(result?.stdout ?? '').trim();
-    throw new Error(`${label} failed with exit ${result?.exitCode ?? 'unknown'}: ${stderr || stdout || 'remote command produced no diagnostics'}`);
+    const metadata = processFailureMetadata(result);
+    const context = Object.entries(metadata).filter(([key]) => key !== 'exitCode')
+      .map(([key, value]) => `${key}=${value}`).join(', ');
+    // Newly captured trailing data may contain command payloads or credentials.
+    // For child-process/command failures export a fixed class, not raw text.
+    const detail = typeof result?.diagnosticsComplete === 'boolean' || /^command (upload|cleanup) /u.test(label)
+      ? processDiagnosticClass(result)
+      : (stderr || stdout || 'remote command produced no diagnostics').slice(0, 2_000);
+    const error = new Error(`${label} failed with exit ${result?.exitCode ?? 'unknown'}${context ? ` (${context})` : ''}: ${detail}`);
+    error.transportFailure = metadata;
+    if (result?.cleanupErrors) error.cleanupErrors = result.cleanupErrors;
+    throw error;
   }
   return result;
 }
@@ -2531,6 +2672,7 @@ export function failedCellEvidencePaths(cell, lease) {
       'provider-input-budget-ledger.json', 'provider-input-budget-ledger.json.journal.jsonl',
       'run-collection.json', 'run-metadata.json'].map((name) => `${run}/${name}`),
     ...['execution.json', 'terminal.json', 'task-terminal.json', 'process-authority.json',
+      'launch.json', 'cancel-request.json', 'cleanup.job.json',
       'cleanup.scheduler.json', 'stderr.log', 'stdout.log'].map((name) => `interactive/${lease.leaseId}/${name}`),
   ];
 }
@@ -2718,6 +2860,8 @@ export function createSshProductionTransport({
         `local-command-${crypto.randomBytes(12).toString('hex')}.ps1`,
       );
       fs.writeFileSync(localScriptPath, invocation.fileScript, 'utf8');
+      let localFailure = null;
+      let failedLocalResult = null;
       try {
         const localResult = await runProcess('powershell.exe', [
           '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
@@ -2728,12 +2872,18 @@ export function createSshProductionTransport({
           input: '',
           completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
         }));
-        if (deadlineNow() > stageDeadlineMs) {
+        const decoded = decodeRemotePowerShellFileOutput(localResult);
+        if (Number(decoded.exitCode) !== 0) failedLocalResult = decoded;
+        if (!failedLocalResult && deadlineNow() > stageDeadlineMs) {
           throw new Error('remote command shared deadline expired during local PowerShell execution');
         }
-        return decodeRemotePowerShellFileOutput(localResult);
+        return decoded;
+      } catch (error) {
+        localFailure = error;
+        throw error;
       } finally {
-        fs.rmSync(localScriptPath, { force: true });
+        try { fs.rmSync(localScriptPath, { force: true }); }
+        catch (cleanupError) { attachCommandCleanupFailure(localFailure ?? failedLocalResult, cleanupError); }
       }
     }
     const transportRoot = path.join(coordinatorExecutionRoot, '.transport', worker.workerId);
@@ -2750,6 +2900,7 @@ export function createSshProductionTransport({
     fs.writeFileSync(localScriptPath, invocation.fileScript, 'utf8');
     let uploaded = false;
     let primaryError = null;
+    let primaryResult = null;
     try {
       if (isCoordinatorLocalWorker(worker)) {
         fs.copyFileSync(localScriptPath, remoteScriptPath);
@@ -2771,35 +2922,42 @@ export function createSshProductionTransport({
         input: '',
         completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
       }));
-      if (deadlineNow() > stageDeadlineMs) {
+      const decoded = decodeRemotePowerShellFileOutput(remoteResult);
+      if (Number(decoded.exitCode) !== 0) primaryResult = decoded;
+      if (!primaryResult && deadlineNow() > stageDeadlineMs) {
         throw new Error('remote command shared deadline expired during SSH execution');
       }
-      return decodeRemotePowerShellFileOutput(remoteResult);
+      return decoded;
     } catch (error) {
       primaryError = error;
       throw error;
     } finally {
-      fs.rmSync(localScriptPath, { force: true });
-      if (uploaded) {
-        if (isCoordinatorLocalWorker(worker)) {
-          fs.rmSync(remoteScriptPath, { force: true });
-        } else {
-          const cleanupRemainingMs = Math.ceil(stageDeadlineMs - deadlineNow());
-          if (cleanupRemainingMs > 0) {
-            const cleanupResult = await runProcess(config.sshExecutable, [
-              ...sshBaseArgs(worker),
-              `${worker.user}@${worker.host}`,
-              'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
-              `Remove-Item -LiteralPath '${remoteScriptPath}' -Force -ErrorAction SilentlyContinue`,
-            ], stageProcessOptions('remote script cleanup', {}, 30_000));
-            ensureSuccessful(cleanupResult, `command cleanup on ${worker.workerId}`);
-            if (deadlineNow() > stageDeadlineMs && !primaryError) {
-              throw new Error('remote command shared deadline expired during remote script cleanup');
+      try {
+        fs.rmSync(localScriptPath, { force: true });
+        if (uploaded) {
+          if (isCoordinatorLocalWorker(worker)) {
+            fs.rmSync(remoteScriptPath, { force: true });
+          } else {
+            const cleanupRemainingMs = Math.ceil(stageDeadlineMs - deadlineNow());
+            if (cleanupRemainingMs > 0) {
+              const cleanupResult = await runProcess(config.sshExecutable, [
+                ...sshBaseArgs(worker),
+                `${worker.user}@${worker.host}`,
+                'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+                `Remove-Item -LiteralPath '${remoteScriptPath}' -Force -ErrorAction SilentlyContinue`,
+              ], stageProcessOptions('remote script cleanup', {}, 30_000));
+              ensureSuccessful(cleanupResult, `command cleanup on ${worker.workerId}`);
+              if (deadlineNow() > stageDeadlineMs) {
+                throw new Error('remote command shared deadline expired during remote script cleanup');
+              }
+            } else {
+              throw new Error('remote command shared deadline expired before remote script cleanup');
             }
-          } else if (!primaryError) {
-            throw new Error('remote command shared deadline expired before remote script cleanup');
           }
         }
+      } catch (cleanupError) {
+        // Preserve both thrown failures and the existing nonzero-result API.
+        attachCommandCleanupFailure(primaryError ?? primaryResult, cleanupError);
       }
     }
   };
@@ -3336,12 +3494,24 @@ $payload.binding | Add-Member -NotePropertyName expectedUserSid -NotePropertyVal
 $receipt = Stop-OmniInteractiveOwnedProcesses -LaunchPath (Join-Path $authorityRoot 'launch.json') -ProcessAuthorityPath (Join-Path $authorityRoot 'process-authority.json') -ExpectedBinding $payload.binding -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(10))
 $receiptPath = Join-Path $authorityRoot ('cleanup.cancel-' + [guid]::NewGuid().ToString('N') + '.json')
 Write-OmniImmutableJson -LiteralPath $receiptPath -Value $receipt
-$taskPath = '\\OmniTranslate\\'
-if (Get-ScheduledTask -TaskPath $taskPath -TaskName ([string]$payload.taskName) -ErrorAction SilentlyContinue) {
-  Stop-ScheduledTask -TaskPath $taskPath -TaskName ([string]$payload.taskName) -ErrorAction Stop
-  Unregister-ScheduledTask -TaskPath $taskPath -TaskName ([string]$payload.taskName) -Confirm:$false -ErrorAction Stop
+if ($receipt.passed -ne $true) {
+  $status = [string]$receipt.status
+  if ($status -notin @('authority-invalid', 'identity-unavailable', 'identity-mismatch', 'timeout', 'cleanup-incomplete')) { $status = 'cleanup-incomplete' }
+  throw ('__OMNI_CLEANUP_STATUS_V1__' + $status + '__END__')
 }
-if (-not $receipt.passed) { throw 'worker cancellation could not confirm complete owned-process cleanup' }
+$taskPath = '\\OmniTranslate\\'
+try {
+  $matchingTasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskPath -eq $taskPath -and $_.TaskName -eq [string]$payload.taskName })
+  if ($matchingTasks.Count -gt 0) {
+    Stop-ScheduledTask -TaskPath $taskPath -TaskName ([string]$payload.taskName) -ErrorAction Stop
+    Unregister-ScheduledTask -TaskPath $taskPath -TaskName ([string]$payload.taskName) -Confirm:$false -ErrorAction Stop
+  }
+} catch {
+  # The scheduler may remove the same task after both owners see the job ack.
+  # A successful fresh enumeration proves absence; query failure is not absence.
+  $remainingTasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskPath -eq $taskPath -and $_.TaskName -eq [string]$payload.taskName })
+  if ($remainingTasks.Count -gt 0) { throw }
+}
 `, {
       remoteRoot, workspaceRoot: worker.workspaceRoot, user: worker.user, cleanupHash, taskName,
       binding: {
@@ -3351,7 +3521,17 @@ if (-not $receipt.passed) { throw 'worker cancellation could not confirm complet
         expectedVmUuidBios: worker.vmIdentity.uuidBios, expectedSessionId: 1,
       },
     }, { timeoutMs: 15_000 });
-    ensureSuccessful(cancellation, `worker cancellation ${cell.cellId}`);
+    if (Number(cancellation?.exitCode) !== 0) {
+      const marker = [cancellation?.stderr, cancellation?.stdout].filter(Boolean).join('\n')
+        .match(/__OMNI_CLEANUP_STATUS_V1__([a-z-]+)__END__/u);
+      const status = ['authority-invalid', 'identity-unavailable', 'identity-mismatch', 'timeout', 'cleanup-incomplete']
+        .includes(marker?.[1]) ? marker[1] : 'cleanup-incomplete';
+      const error = new Error(`worker cancellation ${cell.cellId} did not confirm owned-process cleanup: ${status}`);
+      error.cleanupStatus = status;
+      error.transportFailure = processFailureMetadata(cancellation);
+      if (cancellation.cleanupErrors) error.cleanupErrors = cancellation.cleanupErrors;
+      throw error;
+    }
     return { passed: true, status: 'cleanup-completed' };
   }
 

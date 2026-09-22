@@ -99,6 +99,7 @@ export const SHARD_ORCHESTRATION_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveCustody.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveFinalizer.psm1',
   'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveJob.psm1',
   'scripts/testing/run-watch-mode-interactive-task.ps1',
   'scripts/testing/collect-watch-mode-interactive-process-authority.ps1',
   'scripts/testing/release-manual-collector.mjs',

@@ -28,6 +28,7 @@ test('distribution freezes zero-Provider probe entrypoints and filesystem-only d
   for (const name of ['scripts/testing/run-watch-mode-local-aec-probe.mjs',
     'scripts/testing/watch-mode-aec-tap-evidence.mjs', 'scripts/testing/watch-mode-physical-source-probe.mjs',
     'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveFinalizer.psm1',
+  'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveJob.psm1',
     'scripts/testing/lib/powershell/Omni.Testing.WatchMode.AudioPlayback.psm1',
     'scripts/testing/lib/powershell/Omni.Testing.WatchMode.Bridge.psm1',
     'scripts/installer/virtual-speaker-device.ps1', 'scripts/testing/fixtures/watch-mode-en-original.wav',

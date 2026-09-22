@@ -1901,6 +1901,7 @@ export function currentIncidentPlusImplementationHashes({ workspaceRoot = repoRo
     'scripts/testing/invoke-watch-mode-interactive-task.ps1',
     'scripts/testing/run-watch-mode-interactive-task.ps1',
     'scripts/testing/collect-watch-mode-interactive-process-authority.ps1',
+    'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveJob.psm1',
     // Endpoint readiness never launches a paid shard, but the immutable
     // InteractiveToken controller still hashes this legacy runner before it
     // permits the readiness task.  Bind that exact byte sequence here rather

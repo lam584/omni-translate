@@ -97,6 +97,7 @@ function Get-Role {
 }
 $startedAt = [DateTime]::UtcNow
 $observed = @{}
+$readyPublished = $false
 $errors = New-Object Collections.Generic.List[string]
 try {
   $rootProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$RootProcessId" -ErrorAction SilentlyContinue
@@ -175,6 +176,19 @@ try {
           if ($failedProcess -and (Get-ProcessGenerationKey $failedProcess) -ceq $key) { throw }
         }
       }
+      if (-not $readyPublished -and $observed.ContainsKey($rootGenerationKey)) {
+        $ready = [ordered]@{
+          schemaVersion = 1; artifactKind = 'watch-mode-interactive-collector-ready'
+          executionId = $ExecutionId; planDigest = $PlanDigest; leaseId = $LeaseId; leaseDigest = $LeaseDigest
+          cellId = $CellId; workerId = $WorkerId; vmIdentityDigest = $VmIdentityDigest
+          rootProcessId = $RootProcessId; rootStartedAt = [string]$observed[$rootGenerationKey].startedAt
+          expectedOwnerSid = $ExpectedOwnerSid; expectedSessionId = $ExpectedSessionId
+        }
+        # Observation readiness is NOT a partial cleanup authority. Terminal
+        # process-authority.json is still published only after root exit.
+        Write-OmniImmutableJson -LiteralPath (Join-Path ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($OutputPath))) 'collector-ready.json') -Value $ready
+        $readyPublished = $true
+      }
     } catch {
       [void]$errors.Add((Format-CollectionError $_))
     }
@@ -220,16 +234,5 @@ $payload = [ordered]@{
   processCount = $processes.Count; processes = $processes; errors = $errors.ToArray()
   passed = $errors.Count -eq 0
 }
-$resolvedOutputPath = [IO.Path]::GetFullPath($OutputPath)
-[void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($resolvedOutputPath))
-$encoding = New-Object Text.UTF8Encoding($false)
-$bytes = $encoding.GetBytes((($payload | ConvertTo-Json -Depth 12) + "`n"))
-$stream = New-Object IO.FileStream($resolvedOutputPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
-  [IO.FileShare]::Read, 4096, [IO.FileOptions]::WriteThrough)
-try {
-  $stream.Write($bytes, 0, $bytes.Length)
-  $stream.Flush($true)
-} finally {
-  $stream.Dispose()
-}
+Write-OmniImmutableJson -LiteralPath ([IO.Path]::GetFullPath($OutputPath)) -Value $payload -Depth 12
 if (-not $payload.passed) { exit 1 }

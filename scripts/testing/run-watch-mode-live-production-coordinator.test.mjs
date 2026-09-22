@@ -740,6 +740,44 @@ test('failed finalizer file preservation is allowlisted, byte/hash verified and 
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+
+test('failed custody evidence keeps launch request and acknowledgment without inventing paid success', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-failed-custody-'));
+  const plan = { executionId: 'fixture-execution', planDigest: 'a'.repeat(64) };
+  const cell = { cellIndex: 2, cellId: 'c03', workerId: 'vm131' };
+  const lease = { leaseId: 'lease-fixture', leaseDigest: 'b'.repeat(64) };
+  const names = ['launch.json', 'cancel-request.json', 'cleanup.job.json'];
+  const paths = names.map((name) => 'interactive/lease-fixture/' + name);
+  try {
+    const allowed = failedCellEvidencePaths(cell, lease);
+    for (const name of paths) assert.ok(allowed.includes(name), name);
+    assert.equal(allowed.includes('interactive/lease-fixture/command.json'), false, 'command payload is not a diagnostic artifact');
+    const absent = await preserveFailedCellEvidence({ plan, cell, lease, directory: path.join(root, 'absent'),
+      inventory: [], download: () => assert.fail('no launch/ack means nothing to download'),
+    });
+    const missing = JSON.parse(fs.readFileSync(absent.manifestPath, 'utf8'));
+    assert.equal(missing.status, 'diagnostics-only');
+    assert.equal(missing.verdict, undefined);
+    assert.equal(missing.passed, undefined);
+    assert.deepEqual(missing.files, []);
+    for (const name of paths) assert.ok(missing.missing.includes(name));
+    const contents = new Map(paths.map((name) => [name, Buffer.from(JSON.stringify({
+      artifactKind: name.endsWith('cleanup.job.json') ? 'watch-mode-interactive-job-cleanup' : 'fixture-authority',
+      passed: true, notStarted: true,
+    }))]));
+    const inventory = [...contents].map(([name, bytes]) => ({ path: name, bytes: bytes.length,
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex') }));
+    const collected = await preserveFailedCellEvidence({ plan, cell, lease, directory: path.join(root, 'collected'), inventory,
+      download: (name, destination) => fs.writeFileSync(destination, contents.get(name)),
+    });
+    const saved = JSON.parse(fs.readFileSync(collected.manifestPath, 'utf8'));
+    assert.equal(saved.status, 'diagnostics-only');
+    assert.equal(saved.verdict, undefined, 'even a positive no-start cleanup ack is not paid-cell success');
+    assert.deepEqual(saved.files.map(({ path: name }) => name), paths);
+    for (const name of paths) assert.equal(saved.missing.includes(name), false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('production cell failures stop only for safety boundaries and collect ordinary verdicts', () => {
   assert.equal(productionCellFailureDisposition({
     error: new Error('runtime hash mismatch before evidence collection'),
@@ -976,6 +1014,460 @@ test('remote runtime verification has a bounded slow-disk timeout', () => {
   );
   assert.match(source, /attempts:\s*WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_ATTEMPTS/u);
   assert.match(source, /delayMs:\s*WATCH_PRODUCTION_REMOTE_RUNTIME_VERIFICATION_RETRY_DELAY_MS/u);
+});
+
+
+function diagnosticChildFixture() {
+  const child = new EventEmitter();
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.kills = [];
+  child.kill = (signal) => { child.kills.push(signal); return true; };
+  return child;
+}
+
+test('transport counterexample marker never overrides a known nonzero exit', async (t) => {
+  for (const order of ['exit-before-marker', 'marker-before-exit']) {
+    await t.test(order, async () => {
+      const child = diagnosticChildFixture();
+      const pending = runChildProcess('fixture-ssh', [], { timeoutMs: 1_000, completionMarker: 'DONE', spawnProcess: () => child });
+      if (order === 'exit-before-marker') child.emit('exit', 7, null);
+      child.stdout.write('DONE');
+      if (order === 'marker-before-exit') child.emit('exit', 7, null);
+      child.emit('close', 7, null);
+      const result = await pending;
+      assert.equal(result.exitCode, 7);
+      assert.equal(result.rawExitCode, 7);
+      assert.equal(result.terminationReason, 'exit');
+    });
+  }
+});
+
+test('transport counterexample marker cannot claim an unowned signal termination', async (t) => {
+  for (const mode of ['already-exited', 'kill-rejected', 'other-signal', 'owned-sigterm']) {
+    await t.test(mode, async () => {
+      const child = diagnosticChildFixture();
+      if (mode === 'kill-rejected') child.kill = () => false;
+      const pending = runChildProcess('fixture-ssh', [], { timeoutMs: 1_000, completionMarker: 'DONE', spawnProcess: () => child });
+      const signal = mode === 'other-signal' ? 'SIGKILL' : 'SIGTERM';
+      if (mode === 'already-exited') child.emit('exit', null, signal);
+      child.stdout.write('DONE');
+      if (mode !== 'already-exited') child.emit('exit', null, signal);
+      child.emit('close', null, signal);
+      const result = await pending;
+      assert.equal(result.exitCode, mode === 'owned-sigterm' ? 0 : 1);
+      assert.equal(result.rawExitCode, null);
+      assert.equal(result.signal, signal);
+      assert.equal(result.terminationReason, mode === 'owned-sigterm' ? 'completion-marker' : 'signal');
+    });
+  }
+});
+
+test('transport counterexample inline marker kill retains only its owned signal success', async (t) => {
+  for (const exitCode of [null, 0, 7]) {
+    await t.test(String(exitCode), async () => {
+      const child = diagnosticChildFixture();
+      child.kill = (signal) => {
+        child.emit('exit', exitCode, exitCode === null ? signal : null);
+        child.emit('close', exitCode, exitCode === null ? signal : null);
+        return true;
+      };
+      const pending = runChildProcess('fixture', [], { timeoutMs: 1_000, completionMarker: 'DONE', spawnProcess: () => child });
+      child.stdout.write('DONE');
+      const result = await pending;
+      assert.equal(result.exitCode, exitCode ?? 0);
+      assert.equal(result.rawExitCode, exitCode);
+      assert.equal(result.terminationReason, exitCode === null ? 'completion-marker' : 'exit');
+    });
+  }
+});
+
+test('transport counterexample stdin failure waits for native authority without fabricating success', async (t) => {
+  for (const exitCode of [0, 7]) {
+    await t.test(String(exitCode), async () => {
+      const child = diagnosticChildFixture();
+      const pending = runChildProcess('fixture', [], { timeoutMs: 1_000, spawnProcess: () => child });
+      const failure = Object.assign(new Error('fixture stdin reset'), { code: 'ECONNRESET' });
+      child.stdin.emit('error', failure);
+      child.emit('exit', exitCode, null);
+      child.stderr.write('native diagnostic');
+      child.emit('close', exitCode, null);
+      if (exitCode === 0) await assert.rejects(pending, (error) => error === failure);
+      else {
+        const result = await pending;
+        assert.equal(result.exitCode, 7);
+        assert.equal(result.stderr, 'native diagnostic');
+      }
+    });
+  }
+});
+
+test('transport counterexample healthy drain still delivers the entire input once', async () => {
+  const child = diagnosticChildFixture();
+  const writes = [];
+  let ends = 0;
+  child.stdin.write = (chunk) => { writes.push(Buffer.from(chunk)); return writes.length !== 1; };
+  child.stdin.end = () => { ends += 1; };
+  const input = 'x'.repeat(40 * 1024);
+  const pending = runChildProcess('fixture', [], { timeoutMs: 1_000, input, spawnProcess: () => child });
+  child.stdin.emit('drain');
+  await Promise.resolve();
+  assert.equal(Buffer.concat(writes).toString('utf8'), input);
+  assert.equal(writes.length, 3);
+  assert.equal(ends, 1);
+  assert.equal(child.stdin.listenerCount('drain'), 0);
+  child.emit('exit', 0, null);
+  child.emit('close', 0, null);
+  assert.equal((await pending).exitCode, 0);
+});
+
+test('transport counterexample late stdin reset cannot replace exited child failure', async () => {
+  const child = diagnosticChildFixture();
+  const pending = runChildProcess('fixture-scp', [], { timeoutMs: 1_000, spawnProcess: () => child });
+  child.emit('exit', 7, null);
+  child.stderr.write('primary SCP failure');
+  child.stdin.emit('error', Object.assign(new Error('secondary stdin reset'), { code: 'ECONNRESET' }));
+  child.stderr.write('; drained diagnostic');
+  child.emit('close', 7, null);
+  const result = await pending;
+  assert.equal(result.exitCode, 7);
+  assert.equal(result.rawExitCode, 7);
+  assert.equal(result.stderr, 'primary SCP failure; drained diagnostic');
+  assert.equal(result.diagnosticsComplete, true);
+});
+
+test('transport counterexample settlement cancels a backpressured input writer', async (t) => {
+  for (const mode of ['timeout', 'abort', 'close']) {
+    await t.test(mode, async () => {
+      const child = diagnosticChildFixture();
+      const controller = new AbortController();
+      const writes = [];
+      let ends = 0;
+      child.stdin.write = (chunk) => { writes.push(Buffer.from(chunk)); return writes.length !== 1; };
+      child.stdin.end = () => { ends += 1; };
+      const pending = runChildProcess('fixture', [], {
+        timeoutMs: mode === 'close' ? 1_000 : 5, input: 'x'.repeat(40 * 1024),
+        signal: controller.signal, spawnProcess: () => child,
+      });
+      assert.equal(writes.length, 1);
+      if (mode === 'abort') controller.abort(new Error('fixture abort'));
+      if (mode === 'close') { child.emit('exit', 7, null); child.emit('close', 7, null); }
+      const result = await pending;
+      assert.equal(result.exitCode, mode === 'close' ? 7 : 124);
+      const drainsAfterSettlement = child.stdin.listenerCount('drain');
+      child.stdin.emit('drain');
+      await Promise.resolve();
+      await Promise.resolve();
+      assert.equal(writes.length, 1, 'late drain must not deliver either remaining input chunk');
+      assert.equal(ends, 0, 'late drain must not call end after settlement');
+      assert.equal(drainsAfterSettlement, 0, 'owned backpressure listener must be released');
+      for (const stream of [child.stdin, child.stdout, child.stderr]) assert.equal(stream.destroyed, true);
+      assert.equal(child.stdout.listenerCount('data'), 0);
+      assert.equal(child.stderr.listenerCount('data'), 0);
+    });
+  }
+});
+
+test('transport counterexample deadline preserves decoded nonzero result before classifying lateness', async (t) => {
+  for (const kind of ['local', 'ssh']) {
+    for (const exitCode of [23, 0]) {
+      await t.test(kind + '-' + exitCode, async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-late-transport-'));
+        try {
+          const worker = { workerId: 'deadline-fixture', transport: { kind }, workspaceRoot: root, guestExecutionRoot: root,
+            user: 'fixture', host: '192.0.2.10', port: 22, identityFile: 'unused', knownHostsFile: 'unused', hostKeyAlias: 'fixture' };
+          let now = 0;
+          const calls = [];
+          const frame = '__OMNI_REMOTE_OUTPUT_V1__' + Buffer.from('decoded primary diagnostic').toString('base64');
+          const transport = createSshProductionTransport({
+            config: { workers: [worker], scpExecutable: 'fixture-scp', sshExecutable: 'fixture-ssh' },
+            plan: { executionId: 'late-result' }, planPath: path.join(root, 'unused.json'), leasePaths: [],
+            coordinatorExecutionRoot: root, workspaceRoot: root, deadlineNow: () => now,
+            runProcess: async (executable) => {
+              calls.push(executable);
+              if (executable === 'fixture-scp') return { exitCode: 0, stdout: '', stderr: '' };
+              now = 101;
+              return { exitCode, rawExitCode: exitCode, signal: null, elapsedMs: 101, terminationReason: 'exit',
+                timedOut: false, diagnosticsComplete: true, stdout: frame + '\n__OMNI_REMOTE_COMPLETE_V1__\n', stderr: 'primary stderr' };
+            },
+          });
+          const execute = () => transport.executeRemote(worker, 'Write-Output fixture', {}, { timeoutMs: 100 });
+          if (exitCode === 0) await assert.rejects(execute, /shared deadline expired/u);
+          else {
+            const result = await execute();
+            assert.equal(result.exitCode, 23);
+            assert.equal(result.rawExitCode, 23);
+            assert.equal(result.signal, null);
+            assert.equal(result.elapsedMs, 101);
+            assert.equal(result.terminationReason, 'exit');
+            assert.equal(result.timedOut, false);
+            assert.equal(result.stderr, 'primary stderr');
+            assert.match(result.stdout, /^decoded primary diagnostic\n/u);
+          }
+          assert.equal(calls.length, kind === 'local' ? 1 : 2, 'an exhausted deadline must not launch script cleanup');
+        } finally { fs.rmSync(root, { recursive: true, force: true }); }
+      });
+    }
+  }
+});
+
+test('child diagnostics wait for close and retain stderr arriving after exit', async () => {
+  const child = diagnosticChildFixture();
+  let settled = false;
+  const pending = runChildProcess('fixture-scp', [], { timeoutMs: 1_000, spawnProcess: () => child });
+  void pending.then(() => { settled = true; });
+  child.emit('exit', 7, null);
+  await Promise.resolve();
+  assert.equal(settled, false, 'exit is not a stream-drain boundary');
+  child.stderr.write('late SCP permission denied');
+  child.stdout.write('late transport context');
+  child.emit('close', 7, null);
+  const result = await pending;
+  assert.equal(result.exitCode, 7);
+  assert.equal(result.rawExitCode, 7);
+  assert.equal(result.signal, null);
+  assert.equal(result.stderr, 'late SCP permission denied');
+  assert.equal(result.stdout, 'late transport context');
+  assert.equal(result.diagnosticsComplete, true);
+});
+
+test('child diagnostics distinguish signal termination from an ordinary exit one', async () => {
+  const child = diagnosticChildFixture();
+  const pending = runChildProcess('fixture-scp', [], { timeoutMs: 1_000, spawnProcess: () => child });
+  child.emit('exit', null, 'SIGTERM');
+  child.emit('close', null, 'SIGTERM');
+  const result = await pending;
+  assert.equal(result.exitCode, 1, 'retain the numeric failure API');
+  assert.equal(result.rawExitCode, null);
+  assert.equal(result.signal, 'SIGTERM');
+  assert.equal(result.terminationReason, 'signal');
+});
+
+test('child diagnostics bound missing close without losing the observed exit', async () => {
+  const child = diagnosticChildFixture();
+  const pending = runChildProcess('fixture-scp', [], { timeoutMs: 5, spawnProcess: () => child });
+  child.emit('exit', 7, null);
+  child.stderr.write('partial failure');
+  const result = await pending;
+  assert.equal(result.exitCode, 124);
+  assert.equal(result.rawExitCode, 7);
+  assert.equal(result.timedOut, true);
+  assert.equal(result.diagnosticsComplete, false);
+  assert.match(result.stderr, /partial failure[\s\S]*timed out after 5ms/u);
+  assert.deepEqual(child.kills, [], 'do not signal a child that has already exited');
+});
+
+test('child diagnostics preserve abort classification and trailing output through close', async () => {
+  const child = diagnosticChildFixture();
+  const controller = new AbortController();
+  const pending = runChildProcess('fixture-scp', [], {
+    timeoutMs: 1_000, signal: controller.signal, spawnProcess: () => child,
+  });
+  controller.abort(new Error('peer fixture failed'));
+  child.emit('exit', null, 'SIGKILL');
+  child.stderr.write('late cancellation detail');
+  child.emit('close', null, 'SIGKILL');
+  const result = await pending;
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.aborted, true);
+  assert.equal(Object.hasOwn(result, 'abortReason'), false, 'arbitrary abort text must not be exported');
+  assert.equal(result.terminationReason, 'abort');
+  assert.equal(result.signal, 'SIGKILL');
+  assert.equal(result.stderr, 'late cancellation detail');
+  assert.deepEqual(child.kills, ['SIGKILL']);
+});
+
+test('child diagnostics bound abort when the killed child emits no exit or close', async () => {
+  const child = diagnosticChildFixture();
+  const controller = new AbortController();
+  const pending = runChildProcess('fixture-scp', [], {
+    timeoutMs: 5, signal: controller.signal, spawnProcess: () => child,
+  });
+  controller.abort(new Error('stop fixture'));
+  const result = await pending;
+  assert.equal(result.exitCode, 124);
+  assert.equal(result.aborted, true);
+  assert.equal(Object.hasOwn(result, 'abortReason'), false);
+  assert.equal(result.timedOut, true);
+  assert.equal(result.diagnosticsComplete, false);
+});
+
+test('child diagnostics completion marker drains output and retains the actual exit signal', async () => {
+  const child = diagnosticChildFixture();
+  const pending = runChildProcess('fixture-ssh', [], {
+    timeoutMs: 1_000, completionMarker: 'DONE', spawnProcess: () => child,
+  });
+  child.stdout.write('DONE');
+  child.emit('exit', null, 'SIGTERM');
+  child.stderr.write('late observer detail');
+  child.emit('close', null, 'SIGTERM');
+  const result = await pending;
+  assert.equal(result.exitCode, 0, 'a completion marker remains the successful protocol boundary');
+  assert.equal(result.rawExitCode, null);
+  assert.equal(result.signal, 'SIGTERM');
+  assert.equal(result.stderr, 'late observer detail');
+  assert.equal(result.diagnosticsComplete, true);
+  assert.deepEqual(child.kills, ['SIGTERM']);
+});
+
+
+test('child diagnostics keep success and cancellation distinct while draining', async () => {
+  for (const aborted of [false, true]) {
+    const child = diagnosticChildFixture();
+    const controller = new AbortController();
+    const pending = runChildProcess('fixture', ['secret-argument'], {
+      timeoutMs: 1_000, signal: controller.signal, environment: { SECRET: 'secret-environment' },
+      input: 'secret-input', spawnProcess: () => child,
+    });
+    child.emit('exit', 0, null);
+    if (aborted) controller.abort(new Error('secret-abort-reason'));
+    child.stdout.write('final output');
+    child.emit('close', 0, null);
+    const result = await pending;
+    assert.equal(result.exitCode, aborted ? 1 : 0);
+    assert.equal(result.rawExitCode, 0);
+    assert.equal(result.aborted, aborted);
+    assert.equal(result.stdout, 'final output');
+    assert.equal(result.diagnosticsComplete, true);
+    assert.deepEqual(child.kills, []);
+    assert.doesNotMatch(JSON.stringify(result), /secret-/u);
+  }
+});
+
+test('child diagnostics marker without close still reaches the original deadline', async () => {
+  const child = diagnosticChildFixture();
+  const pending = runChildProcess('fixture', [], {
+    timeoutMs: 5, completionMarker: 'DONE', spawnProcess: () => child,
+  });
+  child.stdout.write('DONE');
+  const result = await pending;
+  assert.equal(result.exitCode, 124);
+  assert.equal(result.timedOut, true);
+  assert.equal(result.diagnosticsComplete, false);
+  assert.deepEqual(child.kills, ['SIGTERM', 'SIGKILL']);
+});
+
+test('child diagnostics timeout cannot be overwritten by inline kill exit and close', async () => {
+  const child = diagnosticChildFixture();
+  child.kill = (signal) => {
+    child.emit('exit', null, signal);
+    child.emit('close', null, signal);
+    return true;
+  };
+  const result = await runChildProcess('fixture', [], { timeoutMs: 5, spawnProcess: () => child });
+  assert.equal(result.exitCode, 124);
+  assert.equal(result.rawExitCode, null);
+  assert.equal(result.signal, 'SIGKILL');
+  assert.equal(result.timedOut, true);
+  assert.equal(result.diagnosticsComplete, true);
+});
+
+test('local transport diagnostics preserve primary failure when script removal throws', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-local-cleanup-diagnostics-'));
+  const originalRm = fs.rmSync;
+  try {
+    const worker = { workerId: 'local-fixture', transport: { kind: 'local' }, workspaceRoot: root, guestExecutionRoot: root };
+    const primary = new Error('local execution failure');
+    const transport = createSshProductionTransport({
+      config: { workers: [worker] }, plan: { executionId: 'local-cleanup-fixture' }, planPath: path.join(root, 'unused.json'),
+      leasePaths: [], coordinatorExecutionRoot: root, workspaceRoot: root,
+      runProcess: async () => { throw primary; },
+    });
+    t.mock.method(fs, 'rmSync', (target, options) => {
+      if (path.dirname(target) === path.join(root, '.transport', worker.workerId)) throw new Error('secret-cleanup-payload');
+      return originalRm(target, options);
+    });
+    await assert.rejects(() => transport.executeRemote(worker, 'Write-Output fixture', {}, { timeoutMs: 1_000 }), (error) => {
+      assert.equal(error, primary);
+      assert.deepEqual(error.cleanupErrors, [{ code: 'coordinator.transport.command-cleanup-failed', message: 'Command script cleanup did not complete.' }]);
+      assert.doesNotMatch(JSON.stringify(error), /secret-cleanup-payload/u);
+      return true;
+    });
+  } finally {
+    t.mock.restoreAll();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('transport diagnostics preserve upload and execution failures across cleanup', async (t) => {
+  for (const mode of ['upload-exit', 'upload-signal', 'execution-result', 'execution-throw', 'cleanup-throw', 'cleanup-only']) {
+    await t.test(mode, async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-transport-diagnostics-'));
+      try {
+        const worker = {
+          workerId: 'fixture-worker', transport: { kind: 'ssh' }, workspaceRoot: root,
+          guestExecutionRoot: root, user: 'fixture', host: '192.0.2.10', port: 22,
+          identityFile: path.join(root, 'identity'), knownHostsFile: path.join(root, 'known-hosts'),
+          hostKeyAlias: 'fixture-worker',
+        };
+        const calls = [];
+        const primary = new Error('primary SSH spawn failure');
+        const transport = createSshProductionTransport({
+          config: { workers: [worker], scpExecutable: 'fixture-scp', sshExecutable: 'fixture-ssh' },
+          plan: { executionId: 'diagnostics-only' }, planPath: path.join(root, 'unused.json'),
+          leasePaths: [], coordinatorExecutionRoot: root, workspaceRoot: root,
+          runProcess: async (executable, args) => {
+            calls.push({ executable, args });
+            if (executable === 'fixture-scp') {
+              if (mode.startsWith('upload-')) {
+                const child = diagnosticChildFixture();
+                const pending = runChildProcess(executable, args, { timeoutMs: 1_000, spawnProcess: () => child });
+                const signal = mode === 'upload-signal' ? 'SIGTERM' : null;
+                const code = signal ? null : 9;
+                child.emit('exit', code, signal);
+                if (!signal) child.stderr.write('late upload permission denied; Bearer secret-token; {rawPayload:true}');
+                child.emit('close', code, signal);
+                return pending;
+              }
+              return { exitCode: 0, stdout: '', stderr: '' };
+            }
+            if (args.includes('-File')) {
+              if (['execution-throw', 'cleanup-throw'].includes(mode)) throw primary;
+              return { exitCode: mode === 'execution-result' ? 23 : 0, stdout: '', stderr: 'primary SSH diagnostic' };
+            }
+            if (mode === 'cleanup-throw') {
+              const error = new Error('secret-cleanup-payload');
+              error.transportFailure = { exitCode: 31, args: ['secret-argument'], stderr: 'secret-output',
+                terminationReason: 'secret-reason', exitSignal: 'secret-signal' };
+              throw error;
+            }
+            return { exitCode: 31, stdout: '', stderr: 'secondary cleanup denied' };
+          },
+        });
+        const execute = () => transport.executeRemote(worker, 'Write-Output fixture', {}, { timeoutMs: 1_000 });
+        if (mode.startsWith('upload-')) {
+          await assert.rejects(execute, (error) => {
+            assert.match(error.message, /command upload to fixture-worker/u);
+            assert.match(error.message, mode === 'upload-signal' ? /SIGTERM/u : /access-denied/u);
+            assert.equal(error.transportFailure.rawExitCode, mode === 'upload-signal' ? null : 9);
+            assert.ok(Number.isSafeInteger(error.transportFailure.elapsedMs));
+            assert.doesNotMatch(error.message + JSON.stringify(error), /secret-token|rawPayload/u);
+            assert.deepEqual(Object.keys(error.transportFailure).sort(), [
+              'exitCode', 'rawExitCode', 'exitSignal', 'elapsedMs', 'aborted', 'timedOut', 'diagnosticsComplete', 'terminationReason',
+            ].sort());
+            return true;
+          });
+          assert.equal(calls.length, 1, 'failed SCP must not execute SSH or remote cleanup');
+        } else if (mode === 'execution-result') {
+          const result = await execute();
+          assert.equal(result.exitCode, 23, 'retain the existing nonzero-result API');
+          assert.equal(result.stderr, 'primary SSH diagnostic');
+          assert.deepEqual(result.cleanupErrors, [{ code: 'coordinator.transport.command-cleanup-failed', message: 'Command script cleanup did not complete.', exitCode: 31 }]);
+        } else {
+          await assert.rejects(execute, (error) => {
+            if (['execution-throw', 'cleanup-throw'].includes(mode)) {
+              assert.equal(error, primary);
+              assert.deepEqual(error.cleanupErrors, [{ code: 'coordinator.transport.command-cleanup-failed', message: 'Command script cleanup did not complete.', exitCode: 31 }]);
+            } else assert.match(error.message, /command cleanup[\s\S]*transport-failed/u);
+            return true;
+          });
+        }
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
 test('a stuck guest finalizer settles the injected remote child timeout without an exit event', async () => {
@@ -2182,41 +2674,73 @@ test('interactive shard PowerShell emitters use shard authority schema v2', () =
 
 test('interactive shard retains redirected process exit status and rejects unknown status', { skip: !isWindows }, () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-shard-exit-'));
-  const launcher = fs.readFileSync(path.join(repoRoot, 'scripts/testing/run-watch-mode-interactive-task.ps1'), 'utf8');
-  const launch = launcher.slice(launcher.indexOf('$node = Start-Process'), launcher.indexOf('$nodeIdentity = Get-ProcessIdentity $node.Id'));
-  const wait = launcher.slice(launcher.indexOf('$node.WaitForExit()'), launcher.indexOf('$trace.WaitForExit(30000)'));
-  assert.match(launch, /\$nodeHandle = \$node.Handle/);
-  assert.doesNotMatch(wait, /\.Refresh\(/);
-  const emitterPath = path.join(tempRoot, 'exit.mjs');
-  fs.writeFileSync(emitterPath, 'setTimeout(() => { console.log("stdout"); console.error("stderr"); process.exit(Number(process.argv[2])); }, 200);\n', 'utf8');
-  const command = [
-    "$ErrorActionPreference = 'Stop'",
-    `$request = @{ nodeExecutable = ${quotePowerShell(process.execPath)}; workspaceRoot = ${quotePowerShell(tempRoot)}; stdoutPath = ''; stderrPath = '' }`,
-    '$results = @()',
-    'foreach ($delay in @(0, 1200)) { foreach ($expected in @(0, 23)) {',
-    `$request.stdoutPath = Join-Path ${quotePowerShell(tempRoot)} "$delay-$expected.out"`,
-    `$request.stderrPath = Join-Path ${quotePowerShell(tempRoot)} "$delay-$expected.err"`,
-    `$arguments = @(${quotePowerShell(`"${emitterPath}"`)}, [string]$expected)`,
-    launch,
-    'Start-Sleep -Milliseconds $delay',
-    wait,
-    '$results += @{ expected = $expected; actual = $nodeExitCode; delay = $delay }',
-    '}}',
-    '$node = [pscustomobject]@{ ExitCode = $null }',
-    '$node | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value {}',
-    '$rejectedUnknown = $false',
-    'try {', wait,
-    '} catch { $rejectedUnknown = $_.Exception.Message -eq "interactive shard Node exit code is unavailable" }',
-    '@{ results = $results; rejectedUnknown = $rejectedUnknown } | ConvertTo-Json -Depth 5 -Compress',
-  ].join('\n');
   try {
-    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], {
+    const launcher = fs.readFileSync(path.join(repoRoot, 'scripts/testing/run-watch-mode-interactive-task.ps1'), 'utf8');
+    const launchStart = launcher.indexOf('$node = New-OmniInteractiveJob');
+    const launchEnd = launcher.indexOf('$nodeIdentity = Get-ProcessIdentity $node.Id', launchStart);
+    const exitStart = launcher.indexOf("if ($null -eq $node.ExitCode) { throw 'interactive shard Node exit code is unavailable' }");
+    const exitEnd = launcher.indexOf('$trace.WaitForExit(30000)', exitStart);
+    assert.ok(launchStart >= 0 && launchEnd > launchStart, 'native Job launch must be extracted from the real launcher');
+    assert.ok(exitStart >= 0 && exitEnd > exitStart, 'retain the production unknown-exit guard and exit-code projection');
+    const launch = launcher.slice(launchStart, launchEnd);
+    const readExit = launcher.slice(exitStart, exitEnd);
+    assert.match(launch, /\$nodeHandle = \$node.Handle/);
+    assert.match(launch, /\$node\.Resume\(\)/);
+    assert.doesNotMatch(readExit, /\.Refresh\(/);
+    const emitterPath = path.join(tempRoot, 'exit.mjs');
+    fs.writeFileSync(emitterPath, 'setTimeout(() => { console.log("stdout"); console.error("stderr"); process.exit(Number(process.argv[2])); }, Number(process.argv[3]));\n', 'utf8');
+    const command = [
+      "$ErrorActionPreference = 'Stop'",
+      `Import-Module ${quotePowerShell(path.join(repoRoot, 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveJob.psm1'))} -Force`,
+      `$request = @{ nodeExecutable = ${quotePowerShell(process.execPath)}; workspaceRoot = ${quotePowerShell(tempRoot)}; stdoutPath = ''; stderrPath = '' }`,
+      '$results = @()',
+      'foreach ($exitDelay in @(0, 1)) { foreach ($delay in @(0, 1200)) { foreach ($expected in @(0, 1, 23)) {',
+      `$request.stdoutPath = Join-Path ${quotePowerShell(tempRoot)} "$exitDelay-$delay-$expected.out"`,
+      `$request.stderrPath = Join-Path ${quotePowerShell(tempRoot)} "$exitDelay-$delay-$expected.err"`,
+      // The native helper quotes argv itself; prequoting a path is rejected.
+      `$arguments = @(${quotePowerShell(emitterPath)}, [string]$expected, [string]$exitDelay)`,
+      '$node = $null',
+      'try {',
+      launch,
+      "if ($node.GetType().FullName -cne 'OmniInteractiveShardJob' -or $nodeHandle -eq [IntPtr]::Zero) { throw 'real retained native custody is required' }",
+      'Start-Sleep -Milliseconds $delay',
+      '$deadline = [DateTime]::UtcNow.AddSeconds(5)',
+      'while ($node.ActiveProcesses -ne 0 -or -not $node.HasExited) {',
+      "  if ([DateTime]::UtcNow -ge $deadline) { throw 'fixture native exit deadline exceeded' }",
+      '  Start-Sleep -Milliseconds 1',
+      '}',
+      readExit,
+      '$firstExitCode = $nodeExitCode',
+      'Start-Sleep -Milliseconds 1',
+      readExit,
+      '$results += @{ expected = $expected; actual = $nodeExitCode; firstActual = $firstExitCode; delay = $delay; exitDelay = $exitDelay; retainedHandle = ($node.Handle -eq $nodeHandle); activeProcesses = $node.ActiveProcesses }',
+      '} finally { if ($null -ne $node) { $node.Dispose() } }',
+      '}}}',
+      // Only the negative unknown-status guard uses an invalid synthetic value.
+      // Every successful/nonzero execution above uses the real native Job handle.
+      '$node = [pscustomobject]@{ ExitCode = $null }',
+      '$rejectedUnknown = $false',
+      'try {', readExit,
+      '} catch { $rejectedUnknown = $_.Exception.Message -eq "interactive shard Node exit code is unavailable" }',
+      '@{ results = $results; rejectedUnknown = $rejectedUnknown } | ConvertTo-Json -Depth 5 -Compress',
+    ].join('\n');
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], {
       encoding: 'utf8', timeout: 30_000,
     });
     assert.equal(result.status, 0, result.stderr);
     const evidence = JSON.parse(result.stdout.trim());
-    assert.equal(evidence.results.length, 4);
-    for (const entry of evidence.results) assert.equal(entry.actual, entry.expected, `delay=${entry.delay}`);
+    assert.equal(evidence.results.length, 12);
+    assert.equal(new Set(evidence.results.map(({ exitDelay, delay, expected }) => `${exitDelay}-${delay}-${expected}`)).size, 12);
+    for (const entry of evidence.results) {
+      const context = `exitDelay=${entry.exitDelay}, delay=${entry.delay}, expected=${entry.expected}`;
+      assert.equal(entry.actual, entry.expected, context);
+      assert.equal(entry.firstActual, entry.expected, context);
+      assert.equal(entry.retainedHandle, true, context);
+      assert.equal(entry.activeProcesses, 0, context);
+      const stem = `${entry.exitDelay}-${entry.delay}-${entry.expected}`;
+      assert.equal(fs.readFileSync(path.join(tempRoot, `${stem}.out`), 'utf8'), 'stdout\n', context);
+      assert.equal(fs.readFileSync(path.join(tempRoot, `${stem}.err`), 'utf8'), 'stderr\n', context);
+    }
     assert.equal(evidence.rejectedUnknown, true);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -2722,6 +3246,75 @@ test('interactive remote wrapper accepts a successful PowerShell control with no
   }
 });
 
+
+test('coordinator scheduler removal confirms concurrent absence but not query failure', { skip: !isWindows }, () => {
+  const source = fs.readFileSync(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url), 'utf8');
+  const cancel = source.slice(source.indexOf('async function cancelCell('), source.indexOf('async function collectWorker('));
+  const removal = cancel.slice(cancel.indexOf('$taskPath = '), cancel.indexOf('\n\x60, {')).replaceAll('\\\\', '\\');
+  assert.ok(removal.includes('Unregister-ScheduledTask'));
+  const script = [
+    "$ErrorActionPreference='Stop'; $payload=@{taskName='fixture'}",
+    'function Get-ScheduledTask { [CmdletBinding()] param([string]$TaskPath,[string]$TaskName); if($state.queryFailure){throw "query denied"}; if($state.exists){[pscustomobject]@{TaskName="fixture";TaskPath="\\OmniTranslate\\"}} }',
+    'function Stop-ScheduledTask { [CmdletBinding()] param([string]$TaskPath,[string]$TaskName); if($state.scenario -eq "stop-race"){$state.exists=$false;throw "already absent"}; if($state.scenario -eq "query-failure"){$state.queryFailure=$true;throw "denied"} }',
+    'function Unregister-ScheduledTask { [CmdletBinding()] param([string]$TaskPath,[string]$TaskName,[switch]$Confirm); if($state.scenario -eq "unregister-race"){$state.exists=$false;throw "already absent"}; if($state.scenario -eq "still-present"){throw "access denied"}; $state.exists=$false }',
+    '$results=@(); foreach($scenario in @("normal","stop-race","unregister-race","still-present","query-failure")) {',
+    '$state=@{scenario=$scenario;exists=$true;queryFailure=$false}; $failed=$false; try {',
+    removal,
+    '} catch {$failed=$true}; $results+=[pscustomobject]@{scenario=$scenario;failed=$failed;exists=$state.exists} }; ConvertTo-Json -InputObject $results -Compress',
+  ].join('\n');
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr);
+  for (const row of JSON.parse(result.stdout.trim())) {
+    assert.equal(row.failed, ['still-present','query-failure'].includes(row.scenario), row.scenario);
+    if (!row.failed) assert.equal(row.exists, false, row.scenario);
+  }
+});
+
+test('cancellation diagnostics gate scheduler teardown and export only known receipt status', async () => {
+  const source = fs.readFileSync(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url), 'utf8');
+  const cancel = source.slice(source.indexOf('async function cancelCell('), source.indexOf('async function collectWorker('));
+  const gate = cancel.indexOf('if ($receipt.passed -ne $true)');
+  assert.ok(gate >= 0 && gate < cancel.indexOf('Stop-ScheduledTask'), 'a negative receipt must retain scheduler supervision');
+  assert.ok(gate < cancel.indexOf('Unregister-ScheduledTask'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-cancel-diagnostics-'));
+  try {
+    const worker = {
+      workerId: 'fixture-worker', workspaceRoot: root, guestExecutionRoot: root,
+      user: 'fixture', host: '192.0.2.10', port: 22, identityFile: 'unused', knownHostsFile: 'unused',
+      hostKeyAlias: 'fixture-worker', vmIdentity: { uuidBios: 'fixture-bios' },
+    };
+    let status = 'authority-invalid';
+    const transport = createSshProductionTransport({
+      config: { workers: [worker], scpExecutable: 'fixture-scp', sshExecutable: 'fixture-ssh' },
+      plan: { executionId: 'cancel-fixture', workers: [{ ...worker, vmIdentityDigest: 'a'.repeat(64) }],
+        authority: { shardOrchestrationImplementationHashes: [{
+          path: 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1', sha256: 'a'.repeat(64),
+        }] } },
+      planPath: path.join(root, 'unused.json'), leasePaths: [], coordinatorExecutionRoot: root,
+      runProcess: async (executable, args) => executable === 'fixture-ssh' && args.includes('-File')
+        ? { exitCode: 1, stdout: '', stderr: '__OMNI_CLEANUP_STATUS_V1__' + status + '__END__\nsecret-token raw receipt' }
+        : { exitCode: 0, stdout: '', stderr: '' },
+    });
+    const cancelFixture = () => transport.cancelCell({ cell: { workerId: worker.workerId, cellId: 'cell-fixture' },
+      lease: { leaseId: 'lease-fixture', leaseDigest: 'b'.repeat(64) } });
+    await assert.rejects(cancelFixture, (error) => {
+      assert.equal(error.cleanupStatus, 'authority-invalid');
+      assert.match(error.message, /authority-invalid/u);
+      assert.equal(error.transportFailure.exitCode, 1);
+      assert.doesNotMatch(JSON.stringify(error), /secret-token|raw receipt/u);
+      assert.doesNotMatch(error.message, /secret-token|raw receipt/u);
+      return true;
+    });
+    status = 'secret-token';
+    await assert.rejects(cancelFixture, (error) => {
+      assert.equal(error.cleanupStatus, 'cleanup-incomplete');
+      assert.doesNotMatch(JSON.stringify(error), /secret-token|raw receipt/u);
+      assert.doesNotMatch(error.message, /secret-token|raw receipt/u);
+      return true;
+    });
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('SSH transport finalizes manifests in the guest and cancellation is task/launch-authority bound', () => {
   const source = fs.readFileSync(
     path.join(repoRoot, 'scripts/testing/run-watch-mode-live-production-coordinator.mjs'),
@@ -2768,11 +3361,13 @@ test('SSH transport finalizes manifests in the guest and cancellation is task/la
     assert.match(cancel, new RegExp(`${field}:`));
   }
   assert.match(cancel, /expectedUserSid[\s\S]*?Translate\(\[Security\.Principal\.SecurityIdentifier\]\)/);
-  for (const verb of ['Get', 'Stop', 'Unregister']) {
+  assert.equal((cancel.match(/Get-ScheduledTask -ErrorAction Stop \| Where-Object/g) ?? []).length, 2,
+    'initial and post-race task queries must both fail closed');
+  for (const verb of ['Stop', 'Unregister']) {
     assert.match(cancel, new RegExp(`${verb}-ScheduledTask -TaskPath \\$taskPath -TaskName \\(\\[string\\]\\$payload\\.taskName\\)`));
   }
   assert.match(cancel, /Write-OmniImmutableJson -LiteralPath \$receiptPath -Value \$receipt/);
-  assert.match(cancel, /if \(-not \$receipt\.passed\) \{ throw/);
+  assert.match(cancel, /if \(\$receipt\.passed -ne \$true\)/);
   assert.doesNotMatch(cancel, /taskkill|Stop-Process|Stop-OmniOwnedProcessTree|\.catch\s*\(/);
   assert.match(cleanup, /\$launch\.schemaVersion -ne 2/);
   assert.match(cleanup, /Get-OmniCleanupGeneration \$launch\.nodeProcess/);

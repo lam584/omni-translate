@@ -8,6 +8,8 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.IO.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.WatchMode.InteractiveJob.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.WatchMode.InteractiveCleanup.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'lib/powershell/Omni.Testing.WatchMode.InteractiveDesktopIdentity.psm1') -Force
 function Invoke-Utf8JsonProcess {
   param(
@@ -326,7 +328,7 @@ if ($request.mode -notin @('shard-cell', 'incident-plus-cell', 'local-aec-probe'
 }; if ((Get-OmniSha256 -LiteralPath ([string]$request.shardRunnerPath)) -cne [string]$request.shardRunnerSha256) {
   throw 'interactive task shard runner hash mismatch'
 }
-if ($request.mode -eq 'local-aec-probe') { $arguments = @(('"' + [string]$request.shardRunnerPath + '"'), '--execute-interactive-request', ('"' + $resolvedRequestPath + '"')) } else {
+if ($request.mode -eq 'local-aec-probe') { $arguments = @([string]$request.shardRunnerPath, '--execute-interactive-request', $resolvedRequestPath) } else {
   $env:OMNI_SHARD_ZERO_PROVIDER_READINESS_PATH = [string]$request.readinessPath
   $env:OMNI_SHARD_INTERACTIVE_COMMAND_PATH = $resolvedRequestPath
   $env:OMNI_SHARD_INTERACTIVE_LAUNCH_AUTHORITY_PATH = [string]$request.launchPath
@@ -350,27 +352,37 @@ if ($request.mode -eq 'incident-plus-cell') {
 } elseif ($request.mode -eq 'shard-cell') {
   $arguments += @('--shard-root', [string]$request.shardRoot)
 }
-$node = Start-Process -FilePath ([string]$request.nodeExecutable) `
-  -ArgumentList $arguments `
-  -WorkingDirectory ([string]$request.workspaceRoot) `
-  -RedirectStandardOutput ([string]$request.stdoutPath) `
-  -RedirectStandardError ([string]$request.stderrPath) `
-  -WindowStyle Hidden `
-  -PassThru
+# The outer finally covers every post-launch setup/identity/publication failure.
+# Native Create itself closes/terminates suspended custody on partial failure.
+$node = $null
+$jobBinding = $null
+$jobCleanupAcknowledged = $false
+$launcherFailure = $null
+$jobCleanupFailure = $null
+try {
+$cancellationBinding = Get-OmniInteractiveCancellationBinding -LaunchPath ([string]$request.launchPath) -ExpectedBinding $request
+if (Test-OmniInteractiveCancellationIntent -LaunchPath ([string]$request.launchPath) -Binding $cancellationBinding) {
+  Write-OmniInteractiveNotStartedAcknowledgment -LaunchPath ([string]$request.launchPath) -Binding $cancellationBinding
+  throw 'interactive launch cancelled before Node creation'
+}
+$node = New-OmniInteractiveJob -Executable ([string]$request.nodeExecutable) -Arguments $arguments `
+  -WorkingDirectory ([string]$request.workspaceRoot) -StdoutPath ([string]$request.stdoutPath) -StderrPath ([string]$request.stderrPath)
 $nodeHandle = $node.Handle
+$node.Resume()
 $nodeIdentity = Get-ProcessIdentity $node.Id
-if ($nodeIdentity.sessionId -ne $activeConsoleSessionId -or $nodeIdentity.ownerSid -cne $windowsIdentity.User.Value) { Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue; throw 'interactive shard Node did not inherit the console session identity' }
+if ($nodeIdentity.sessionId -ne $activeConsoleSessionId -or $nodeIdentity.ownerSid -cne $windowsIdentity.User.Value) { $node.Cancel(); throw 'interactive shard Node did not inherit the console session identity' }
 $desktopReceipt = $null
 if ($request.mode -eq 'local-aec-probe') {
   $limit=[DateTime]::UtcNow.AddSeconds(15); while(-not (Test-Path -LiteralPath ([string]$request.nodeDesktopAuthorityPath) -PathType Leaf) -and [DateTime]::UtcNow -lt $limit -and -not $node.HasExited){Start-Sleep -Milliseconds 50}
-  if(-not (Test-Path -LiteralPath ([string]$request.nodeDesktopAuthorityPath) -PathType Leaf)){Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue; throw 'target Node desktop identity receipt is missing'}
+  if(-not (Test-Path -LiteralPath ([string]$request.nodeDesktopAuthorityPath) -PathType Leaf)){$node.Cancel(); throw 'target Node desktop identity receipt is missing'}
   $desktopReceipt=Get-Content -LiteralPath ([string]$request.nodeDesktopAuthorityPath) -Raw -Encoding UTF8 | ConvertFrom-Json
-  $parent=$desktopReceipt.parentProcess; if($desktopReceipt.schemaVersion -ne 1 -or $desktopReceipt.artifactKind -cne 'watch-mode-process-desktop-identity' -or $desktopReceipt.executionId -cne $common.executionId -or $desktopReceipt.planDigest -cne $request.planDigest -or $desktopReceipt.leaseId -cne $request.leaseId -or $desktopReceipt.leaseDigest -cne $request.leaseDigest -or $desktopReceipt.cellId -cne $request.cellId -or $desktopReceipt.workerId -cne $common.workerId -or $desktopReceipt.vmIdentityDigest -cne $common.vmIdentityDigest -or $desktopReceipt.reporterParentPid -ne $node.Id -or $parent.pid -ne $nodeIdentity.pid -or $parent.startedAt -cne $nodeIdentity.startedAt -or ([IO.Path]::GetFullPath([string]$parent.imagePath)) -cne ([IO.Path]::GetFullPath([string]$nodeIdentity.imagePath)) -or $parent.imageSha256 -cne $nodeIdentity.imageSha256 -or $desktopReceipt.sessionId -ne $activeConsoleSessionId -or $desktopReceipt.ownerSid -cne $windowsIdentity.User.Value -or $desktopReceipt.desktop -cne $common.desktop){Stop-Process -Id $node.Id -Force -ErrorAction SilentlyContinue; throw 'target Node desktop identity receipt does not match interactive authority'}
+  $parent=$desktopReceipt.parentProcess; if($desktopReceipt.schemaVersion -ne 1 -or $desktopReceipt.artifactKind -cne 'watch-mode-process-desktop-identity' -or $desktopReceipt.executionId -cne $common.executionId -or $desktopReceipt.planDigest -cne $request.planDigest -or $desktopReceipt.leaseId -cne $request.leaseId -or $desktopReceipt.leaseDigest -cne $request.leaseDigest -or $desktopReceipt.cellId -cne $request.cellId -or $desktopReceipt.workerId -cne $common.workerId -or $desktopReceipt.vmIdentityDigest -cne $common.vmIdentityDigest -or $desktopReceipt.reporterParentPid -ne $node.Id -or $parent.pid -ne $nodeIdentity.pid -or $parent.startedAt -cne $nodeIdentity.startedAt -or ([IO.Path]::GetFullPath([string]$parent.imagePath)) -cne ([IO.Path]::GetFullPath([string]$nodeIdentity.imagePath)) -or $parent.imageSha256 -cne $nodeIdentity.imageSha256 -or $desktopReceipt.sessionId -ne $activeConsoleSessionId -or $desktopReceipt.ownerSid -cne $windowsIdentity.User.Value -or $desktopReceipt.desktop -cne $common.desktop){$node.Cancel(); throw 'target Node desktop identity receipt does not match interactive authority'}
 }
 $nodeDesktop = if($desktopReceipt){[string]$desktopReceipt.desktop}else{[string]$common.desktop}
 $launch = [ordered]@{
   schemaVersion = 2
   artifactKind = 'watch-mode-interactive-shard-launch-authority'
+  jobCustody = [ordered]@{ schemaVersion = 1; kind = 'unnamed-kill-on-close-job'; custodyId = [guid]::NewGuid().ToString('N') }
   launchedAt = [DateTime]::UtcNow.ToString('o')
   executionId = $common.executionId
   planDigest = [string]$request.planDigest
@@ -396,6 +408,7 @@ $launch = [ordered]@{
   shardRunnerSha256 = [string]$request.shardRunnerSha256
 }
 Write-OmniImmutableJson -LiteralPath ([string]$request.launchPath) -Value $launch
+$jobBinding = Get-OmniInteractiveJobBinding -LaunchPath ([string]$request.launchPath) -ExpectedBinding $request
 $release = [ordered]@{
   schemaVersion = 2
   artifactKind = 'watch-mode-interactive-shard-claim-release'
@@ -413,7 +426,6 @@ $release = [ordered]@{
   ownerSid = $common.ownerSid
   releasedAt = [DateTime]::UtcNow.ToString('o')
 }
-Write-OmniImmutableJson -LiteralPath ([string]$request.releasePath) -Value $release
 $traceArguments = @(
     '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-File', ('"' + [string]$request.processAuthorityCollectorPath + '"'),
@@ -436,11 +448,42 @@ $trace = Start-Process -FilePath 'powershell.exe' `
   -ArgumentList $traceArguments `
   -WindowStyle Hidden `
   -PassThru
-$node.WaitForExit()
+$null = $trace.Handle
+# The collector is deliberately a sibling outside the workload job. It may
+# complete evidence after cancellation, but never authorizes cancellation.
+$cancelled = Receive-OmniInteractiveJobCancellation -Job $node -LaunchPath ([string]$request.launchPath) -Binding $jobBinding
+$collectorReadyPath = Join-Path ([IO.Path]::GetDirectoryName([string]$request.launchPath)) 'collector-ready.json'
+# Readiness consumes the existing 15-second claim-authority window; no timeout
+# extension. Cancellation stays serviceable during collection startup.
+$collectorReadyDeadline = ([DateTimeOffset]::Parse([string]$nodeIdentity.startedAt)).UtcDateTime.AddSeconds(15)
+while (-not $cancelled -and -not (Test-Path -LiteralPath $collectorReadyPath -PathType Leaf)) {
+  $cancelled = Receive-OmniInteractiveJobCancellation -Job $node -LaunchPath ([string]$request.launchPath) -Binding $jobBinding
+  if ($cancelled) { break }
+  if ($trace.HasExited -or $node.HasExited -or [DateTime]::UtcNow -ge $collectorReadyDeadline) { throw 'collector did not establish pre-release observation' }
+  Start-Sleep -Milliseconds 25
+}
+if (-not $cancelled) {
+  $ready = Get-Content -LiteralPath $collectorReadyPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ($ready.schemaVersion -ne 1 -or $ready.artifactKind -cne 'watch-mode-interactive-collector-ready' -or
+    $ready.rootProcessId -ne $node.Id -or $ready.rootStartedAt -cne $nodeIdentity.startedAt -or
+    $ready.expectedOwnerSid -cne $request.expectedUserSid -or $ready.expectedSessionId -ne $request.expectedSessionId) { throw 'invalid collector readiness' }
+  foreach ($field in @('executionId','planDigest','leaseId','leaseDigest','cellId','workerId','vmIdentityDigest')) {
+    if ([string]$ready.$field -cne [string]$request.$field) { throw 'collector readiness binding mismatch' }
+  }
+  $cancelled = Receive-OmniInteractiveJobCancellation -Job $node -LaunchPath ([string]$request.launchPath) -Binding $jobBinding
+  if (-not $cancelled) { Write-OmniImmutableJson -LiteralPath ([string]$request.releasePath) -Value $release }
+}
+while ($node.ActiveProcesses -ne 0 -or -not $node.HasExited) {
+  if (Receive-OmniInteractiveJobCancellation -Job $node -LaunchPath ([string]$request.launchPath) -Binding $jobBinding) { $cancelled = $true }
+  Start-Sleep -Milliseconds 25
+}
+# Job-empty proof precedes terminal collector waits, including on cancellation.
+Write-OmniInteractiveJobAcknowledgment -Job $node -LaunchPath ([string]$request.launchPath) -Binding $jobBinding -Cancelled $cancelled
+$jobCleanupAcknowledged = $true
 if ($null -eq $node.ExitCode) { throw 'interactive shard Node exit code is unavailable' }
 $nodeExitCode = [int]$node.ExitCode
 $trace.WaitForExit(30000) | Out-Null
-if (-not $trace.HasExited) { Stop-Process -Id $trace.Id -Force -ErrorAction SilentlyContinue }
+if (-not $trace.HasExited) { $trace.Kill() }
 $executionReceiptObserved = $false
 if ($nodeExitCode -eq 0 -and (Test-Path -LiteralPath ([string]$request.executionReceiptPath) -PathType Leaf)) {
   $executionReceiptObserved = $true
@@ -469,4 +512,29 @@ $terminal = [ordered]@{
   completedAt = [DateTime]::UtcNow.ToString('o')
 }
 Write-OmniImmutableJson -LiteralPath ([string]$request.terminalPath) -Value $terminal
+} catch {
+  $launcherFailure = $_
+} finally {
+  if ($null -ne $node) {
+    try {
+      # Exceptions after publication (including collector startup/readiness) must
+      # leave a reconcilable custody proof, not only a closed job handle.
+      if (-not $jobCleanupAcknowledged) {
+        Complete-OmniInteractiveJobCleanup -Job $node -LaunchPath ([string]$request.launchPath) -Binding $jobBinding -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(3)) -ExpectedBinding $request
+      }
+    } catch { $jobCleanupFailure = $_ }
+    finally {
+      try { $node.Dispose() }
+      catch { if ($null -eq $jobCleanupFailure) { $jobCleanupFailure = $_ } }
+    }
+  }
+}
+if ($null -ne $jobCleanupFailure) {
+  # Keep the original ErrorRecord/message. Cleanup remains independently failed;
+  # neither an exception nor handle closure can stand in for a positive proof.
+  if ($null -ne $launcherFailure) { $launcherFailure.Exception.Data['interactiveJobCleanupStatus'] = 'incomplete' }
+  Write-Warning 'interactive job cleanup incomplete; positive custody proof is not confirmed' -WarningAction Continue
+}
+if ($null -ne $launcherFailure) { throw $launcherFailure }
+if ($null -ne $jobCleanupFailure) { throw $jobCleanupFailure }
 exit $nodeExitCode

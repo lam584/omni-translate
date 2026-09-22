@@ -45,16 +45,25 @@ function Invoke-OmniInteractiveScheduledTask {
   }
   Write-OmniImmutableJson -LiteralPath $commandPath -Value $command
   $commandSha256 = Get-OmniSha256 -LiteralPath $commandPath
+  $cancellationBinding = $null
+  if ($mode -in @('shard-cell','incident-plus-cell','local-aec-probe')) {
+    $cancellationBinding = Get-OmniInteractiveCancellationBinding -LaunchPath $launchPath -ExpectedBinding $command
+    if (Test-OmniInteractiveCancellationIntent -LaunchPath $launchPath -Binding $cancellationBinding) {
+      Write-OmniInteractiveNotStartedAcknowledgment -LaunchPath $launchPath -Binding $cancellationBinding
+      throw 'interactive task cancelled before registration'
+    }
+  }
   $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$launcherPath`" -RequestPath `"$commandPath`" -ExpectedRequestSha256 $commandSha256"
   $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments
     $principal = New-ScheduledTaskPrincipal -UserId $command.expectedUserId -LogonType Interactive -RunLevel Limited
   $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 12) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
   $registered = $false
+  $startAttempted = $false
   $primaryError = $null
   $cleanupError = $null
   $resultJson = $null
   try {
-    if (Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue) {
+    if (@(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskPath -ceq $taskPath -and $_.TaskName -ceq $taskName }).Count -gt 0) {
       throw 'interactive scheduled task name already exists'
     }
     Register-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null
@@ -72,6 +81,12 @@ function Invoke-OmniInteractiveScheduledTask {
       [string]$recordedXml.Task.Principals.Principal.LogonType -cne 'InteractiveToken'
     ) { throw 'registered interactive task does not match the immutable action/principal' }
     $taskInfoBeforeStart = Get-ScheduledTaskInfo -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop
+    if ($null -ne $cancellationBinding -and (Test-OmniInteractiveCancellationIntent -LaunchPath $launchPath -Binding $cancellationBinding)) {
+      Write-OmniInteractiveNotStartedAcknowledgment -LaunchPath $launchPath -Binding $cancellationBinding
+      throw 'interactive task cancelled before start'
+    }
+    # Set BEFORE the call: a throwing start can still have launched the task.
+    $startAttempted = $true
     Start-ScheduledTask -TaskPath $taskPath -TaskName $taskName
     $deadline = [DateTime]::UtcNow.AddMilliseconds([int]$payload.timeoutMs)
     $taskObservedRunning = $false
@@ -220,17 +235,41 @@ function Invoke-OmniInteractiveScheduledTask {
           passed = $false; status = 'cleanup-incomplete'; processCleanup = $null; taskCleanupPassed = $false
         }
         try {
-          # Only a completed collector authority can authorize orphan termination.
-          # Missing/failed authority is not an excuse for a PID-tree fallback.
+          if (-not $startAttempted) {
+            # This scheduler owns the registered task and never attempted Start.
+            # Publish a shared intent/proof so later cancellation reconciles too.
+            Request-OmniInteractiveJobCancellation -LaunchPath $launchPath -Binding $cancellationBinding
+            Write-OmniInteractiveNotStartedAcknowledgment -LaunchPath $launchPath -Binding $cancellationBinding
+          }
+          # Request the launch owner to drain its private job. Terminal collector
+          # evidence is neither required nor used as a partial-ledger fallback.
           $cleanupReceipt.processCleanup = Stop-OmniInteractiveOwnedProcesses -LaunchPath $launchPath `
             -ProcessAuthorityPath $processAuthorityPath -ExpectedBinding $command -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(30))
           if ($cleanupReceipt.processCleanup.passed -ne $true) { $cleanupError = 'interactive process cleanup incomplete' }
         } catch { $cleanupError = 'interactive process cleanup incomplete' }
-        try {
-          Stop-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop
-          Unregister-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Confirm:$false -ErrorAction Stop
-          $cleanupReceipt.taskCleanupPassed = $true
-        } catch { $cleanupError = 'interactive scheduled task cleanup incomplete' }
+        # Never destroy supervision while its owned job is unconfirmed. Another
+        # cancellation caller can remove the same task after the shared proof;
+        # already absent is success, not a second cleanup failure.
+        if ($null -ne $cleanupReceipt.processCleanup -and $cleanupReceipt.processCleanup.passed -eq $true) {
+          try {
+            $tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskPath -ceq $taskPath -and $_.TaskName -ceq $taskName })
+            if ($tasks.Count -gt 0) {
+              Stop-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop
+              Unregister-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Confirm:$false -ErrorAction Stop
+            }
+            $remaining = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskPath -ceq $taskPath -and $_.TaskName -ceq $taskName })
+            if ($remaining.Count -ne 0) { throw 'scheduled task remains registered' }
+            $cleanupReceipt.taskCleanupPassed = $true
+          } catch {
+            try {
+              # A successful fresh enumeration is proof of absence. An access
+              # or provider error must remain unknown, never become success.
+              $remaining = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskPath -ceq $taskPath -and $_.TaskName -ceq $taskName })
+              if ($remaining.Count -eq 0) { $cleanupReceipt.taskCleanupPassed = $true }
+              else { $cleanupError = 'interactive scheduled task cleanup incomplete' }
+            } catch { $cleanupError = 'interactive scheduled task cleanup unconfirmed' }
+          }
+        }
         $cleanupReceipt.passed = $null -eq $cleanupError
         if ($cleanupReceipt.passed) { $cleanupReceipt.status = 'completed' }
         try {

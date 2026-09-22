@@ -476,10 +476,32 @@ test('interactive launcher binds process authority collection to the request mod
   assert.ok(source.includes(`'-Mode', ('\"' + [string]$request.mode + '\"')`));
 });
 
-test('local AEC interactive argv quotes runner and request paths containing spaces', () => {
+test('local AEC interactive argv delegates raw paths to the native job quoting boundary', () => {
   const source = fs.readFileSync(path.join(repoRoot, 'scripts/testing/run-watch-mode-interactive-task.ps1'), 'utf8');
-  assert.ok(source.includes(`('\"' + [string]$request.shardRunnerPath + '\"')`));
-  assert.ok(source.includes(`('\"' + $resolvedRequestPath + '\"')`));
+  assert.match(source, /\$arguments = @\(\[string\]\$request\.shardRunnerPath, '--execute-interactive-request', \$resolvedRequestPath\)/u);
+  assert.match(source, /New-OmniInteractiveJob[\s\S]*?-Arguments \$arguments/u);
+});
+
+test('native local AEC argv preserves runner and request paths containing spaces', { skip: process.platform !== 'win32' }, (t) => {
+  const root = path.join(temporary(t), 'paths with spaces'); fs.mkdirSync(root);
+  const runner = path.join(root, 'runner with spaces.mjs'); const requestPath = path.join(root, 'request with spaces.json');
+  const stdout = path.join(root, 'stdout.log'); const stderr = path.join(root, 'stderr.log');
+  fs.writeFileSync(runner, 'console.log(JSON.stringify(process.argv.slice(2)));\n', 'utf8');
+  const quote = (value) => "'" + value.replaceAll("'", "''") + "'";
+  const source = fs.readFileSync(path.join(repoRoot, 'scripts/testing/run-watch-mode-interactive-task.ps1'), 'utf8');
+  const assignment = source.match(/\$arguments = @\(\[string\]\$request\.shardRunnerPath, '--execute-interactive-request', \$resolvedRequestPath\)/u)?.[0];
+  assert.ok(assignment);
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    'Import-Module ' + quote(path.join(repoRoot, 'scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveJob.psm1')) + ' -Force',
+    '$request=@{shardRunnerPath=' + quote(runner) + '}; $resolvedRequestPath=' + quote(requestPath), assignment,
+    '$job=New-OmniInteractiveJob -Executable ' + quote(process.execPath) + ' -Arguments $arguments -WorkingDirectory ' + quote(root) + ' -StdoutPath ' + quote(stdout) + ' -StderrPath ' + quote(stderr),
+    'try {$job.Resume();$deadline=[DateTime]::UtcNow.AddSeconds(5);while((-not $job.HasExited -or $job.ActiveProcesses -ne 0) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 10};if(-not $job.HasExited -or $job.ExitCode -ne 0 -or $job.ActiveProcesses -ne 0){throw ("native argv fixture failed: exited="+$job.HasExited+" active="+$job.ActiveProcesses+" exit="+$(if($job.HasExited){$job.ExitCode}else{"pending"}))}}finally{$job.Dispose()}',
+  ].join('\n');
+  const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',script],{encoding:'utf8',windowsHide:true,timeout:10000});
+  assert.equal(result.status,0,JSON.stringify({error:result.error?.message,stdout:result.stdout,stderr:result.stderr,childStdout:fs.existsSync(stdout)?fs.readFileSync(stdout,'utf8'):null,childStderr:fs.existsSync(stderr)?fs.readFileSync(stderr,'utf8'):null}));
+  assert.deepEqual(JSON.parse(fs.readFileSync(stdout,'utf8').trim()),['--execute-interactive-request',requestPath]);
+  assert.equal(fs.readFileSync(stderr,'utf8'),'');
 });
 
 test('interactive Desktop executor keeps Provider isolation and native finalizer custody', () => {

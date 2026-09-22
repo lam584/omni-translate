@@ -20,8 +20,9 @@ test('worker bootstrap and generation collector registrations retain exact budge
   const expected = [
     ['scripts/testing/bootstrap-watch-worker.ps1', 105, ['elevation', 'fileDeletion']],
     ['scripts/testing/request-watch-worker-bootstrap-elevated.ps1', 17, ['elevation']],
-    ['scripts/testing/collect-watch-mode-interactive-process-authority.ps1', 235, []],
+    ['scripts/testing/collect-watch-mode-interactive-process-authority.ps1', 238, []],
     ['scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveFinalizer.psm1', 151, ['processTermination']],
+    ['scripts/testing/lib/powershell/Omni.Testing.WatchMode.InteractiveJob.psm1', 120, ['processTermination']],
   ];
   for (const [file, maxLines, capabilities] of expected) {
     assert.equal(policy.scripts[file].maxLines, maxLines);

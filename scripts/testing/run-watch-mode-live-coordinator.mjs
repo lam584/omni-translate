@@ -904,6 +904,37 @@ async function collectRejectedCellEvidence(cell, error, failedCellEvidence) {
   });
 }
 
+// Cleanup diagnostics are evidence, not arbitrary exception/receipt serialization.
+// Never persist command arguments, environment, or authority payloads here.
+function cleanupFailureDetails(settlement, receipt) {
+  const details = { outcome: settlement.status === 'rejected' ? 'rejected' : 'unconfirmed' };
+  const statuses = new Set(['completed', 'cleanup-completed', 'cleanup-incomplete', 'authority-invalid',
+    'authority-pending', 'authority-missing', 'identity-unavailable', 'identity-mismatch', 'timeout']);
+  if (typeof receipt?.status === 'string') details.receiptStatus = statuses.has(receipt.status) ? receipt.status : 'unrecognized';
+  if (typeof receipt?.processCleanup?.status === 'string') details.processCleanupStatus = statuses.has(receipt.processCleanup.status) ? receipt.processCleanup.status : 'unrecognized';
+  if (typeof receipt?.taskCleanupPassed === 'boolean') details.taskCleanupPassed = receipt.taskCleanupPassed;
+  if (settlement.status === 'rejected') {
+    const reason = settlement.reason;
+    details.errorName = ['Error', 'TypeError', 'RangeError', 'AggregateError', 'AbortError', 'TimeoutError'].includes(reason?.name) ? reason.name : 'UnknownError';
+    if (statuses.has(reason?.cleanupStatus)) details.cleanupStatus = reason.cleanupStatus;
+    const source = reason?.transportFailure;
+    if (source && typeof source === 'object') {
+      const transport = {};
+      for (const field of ['exitCode', 'rawExitCode']) {
+        if (source[field] === null || Number.isSafeInteger(source[field])) transport[field] = source[field];
+      }
+      if (source.exitSignal === null || ['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGABRT', 'SIGSEGV', 'SIGHUP'].includes(source.exitSignal)) transport.exitSignal = source.exitSignal;
+      if (['timeout', 'abort', 'aborted', 'completion-marker', 'exit', 'signal', 'spawn-error'].includes(source.terminationReason)) transport.terminationReason = source.terminationReason;
+      if (Number.isFinite(source.elapsedMs) && source.elapsedMs >= 0) transport.elapsedMs = source.elapsedMs;
+      for (const field of ['timedOut', 'aborted', 'diagnosticsComplete']) {
+        if (typeof source[field] === 'boolean') transport[field] = source[field];
+      }
+      if (Object.keys(transport).length) details.transportFailure = transport;
+    }
+  }
+  return details;
+}
+
 function coordinatorCleanupErrors(targets, settlements) {
   return settlements.flatMap((settlement, index) => {
     const receipt = settlement.status === 'fulfilled' ? settlement.value : null;
@@ -919,6 +950,7 @@ function coordinatorCleanupErrors(targets, settlements) {
       workerId: targets[index].cell.workerId,
       cellId: targets[index].cell.cellId,
       message: 'Worker cancellation did not confirm owned-process cleanup.',
+      details: cleanupFailureDetails(settlement, receipt),
     }];
   });
 }

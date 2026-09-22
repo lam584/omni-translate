@@ -369,63 +369,72 @@ pub(super) async fn collect_provider_probe(
         result_object.insert(key.to_string(), value);
     }
     if strict_livetranslate {
-        result_object.insert("providerInputMode".to_string(), json!("none"));
-        result_object.insert("responseMode".to_string(), json!("text-only"));
-        result_object.insert("terminalEvent".to_string(), json!("session.finished"));
-        result_object.insert("inputAudioBufferCommitCount".to_string(), json!(0));
-        result_object.insert(
-            "conversationItemCreateInputTextCount".to_string(),
-            json!(0),
-        );
-        result_object.insert("responseCreateCount".to_string(), json!(0));
-        result_object.insert(
-            "measuredLatencyMs".to_string(),
-            json!(probe.measured_latency_ms),
-        );
-        result_object.insert(
-            "sessionAuthority".to_string(),
-            wire_evidence
-                .as_ref()
-                .and_then(|value| value.get("sessionAuthority"))
-                .cloned()
-                .unwrap_or(Value::Null),
-        );
-        result_object.insert(
-            "lifecycleBudget".to_string(),
-            json!({
-                "firstServerEventLatencyMs": 1_200,
-                "socketEventTimeoutMs": 12_000,
-            }),
-        );
-        result_object.insert(
-            "evidenceOutcome".to_string(),
-            wire_evidence
-                .as_ref()
-                .and_then(|value| value.get("evidenceOutcome"))
-                .cloned()
-                .unwrap_or_else(|| json!("unknown")),
-        );
-        let first_server_event = wire_evidence
-            .as_ref()
-            .and_then(|value| value.get("firstServerEvent"))
-            .cloned()
-            .unwrap_or(Value::Null);
-        let first_server_event_latency_ms = first_server_event
-            .get("monotonicMs")
-            .cloned()
-            .unwrap_or(Value::Null);
-        result_object.insert("firstServerEvent".to_string(), first_server_event);
-        result_object.insert(
-            "firstServerEventLatencyMs".to_string(),
-            first_server_event_latency_ms,
-        );
-        result_object.insert(
-            "rawTrace".to_string(),
-            raw_trace.unwrap_or(Value::Null),
-        );
+        append_strict_lifecycle_result(result_object, &wire_evidence, raw_trace, json!(probe.measured_latency_ms));
     }
     write_json(&staging.join("provider-probe-result.json"), &result)?;
     Ok(diagnostics)
+}
+
+fn append_strict_lifecycle_result(
+    result_object: &mut serde_json::Map<String, Value>,
+    wire_evidence: &Option<Value>,
+    raw_trace: Option<Value>,
+    measured_latency: Value,
+) {
+    result_object.insert("providerInputMode".to_string(), json!("none"));
+    result_object.insert("responseMode".to_string(), json!("text-only"));
+    result_object.insert("terminalEvent".to_string(), json!("session.finished"));
+    result_object.insert("inputAudioBufferCommitCount".to_string(), json!(0));
+    result_object.insert(
+        "conversationItemCreateInputTextCount".to_string(),
+        json!(0),
+    );
+    result_object.insert("responseCreateCount".to_string(), json!(0));
+    result_object.insert(
+        "measuredLatencyMs".to_string(),
+        measured_latency,
+    );
+    result_object.insert(
+        "sessionAuthority".to_string(),
+        wire_evidence
+            .as_ref()
+            .and_then(|value| value.get("sessionAuthority"))
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    result_object.insert(
+        "lifecycleBudget".to_string(),
+        json!({
+            "firstServerEventLatencyMs": 1_200,
+            "socketEventTimeoutMs": 12_000,
+        }),
+    );
+    result_object.insert(
+        "evidenceOutcome".to_string(),
+        wire_evidence
+            .as_ref()
+            .and_then(|value| value.get("evidenceOutcome"))
+            .cloned()
+            .unwrap_or_else(|| json!("unknown")),
+    );
+    let first_server_event = wire_evidence
+        .as_ref()
+        .and_then(|value| value.get("firstServerEvent"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let first_server_event_latency_ms = first_server_event
+        .get("monotonicMs")
+        .cloned()
+        .unwrap_or(Value::Null);
+    result_object.insert("firstServerEvent".to_string(), first_server_event);
+    result_object.insert(
+        "firstServerEventLatencyMs".to_string(),
+        first_server_event_latency_ms,
+    );
+    result_object.insert(
+        "rawTrace".to_string(),
+        raw_trace.unwrap_or(Value::Null),
+    );
 }
 
 fn classify_preflight_latency(wire_evidence: &mut Option<Value>) {
@@ -454,6 +463,42 @@ fn classify_preflight_latency(wire_evidence: &mut Option<Value>) {
 #[cfg(test)]
 mod preflight_latency_tests {
     use super::*;
+
+    #[test]
+    fn strict_result_projection_preserves_wire_evidence_and_unknowns() {
+        for wire in [None, Some(json!({
+            "sessionAuthority": {"identity": "unchanged"},
+            "evidenceOutcome": "provider-error-frame",
+            "firstServerEvent": {"type": "session.created", "monotonicMs": 1234}
+        }))] {
+            let mut result = serde_json::Map::new();
+            result.insert("existing".to_string(), json!(true));
+            let trace = json!({"path": "raw/provider-websocket-trace.jsonl", "eventCount": 6});
+            append_strict_lifecycle_result(&mut result, &wire, Some(trace.clone()), json!(1234));
+            let value = Value::Object(result);
+            assert_eq!(value["existing"], true);
+            assert_eq!(value["providerInputMode"], "none");
+            assert_eq!(value["responseMode"], "text-only");
+            assert_eq!(value["terminalEvent"], "session.finished");
+            for key in ["inputAudioBufferCommitCount", "conversationItemCreateInputTextCount", "responseCreateCount"] {
+                assert_eq!(value[key], 0);
+            }
+            assert_eq!(value["lifecycleBudget"], json!({"firstServerEventLatencyMs":1200,"socketEventTimeoutMs":12000}));
+            assert_eq!(value["measuredLatencyMs"], 1234);
+            assert_eq!(value["rawTrace"], trace);
+            if let Some(wire) = wire {
+                assert_eq!(value["sessionAuthority"], wire["sessionAuthority"]);
+                assert_eq!(value["evidenceOutcome"], wire["evidenceOutcome"]);
+                assert_eq!(value["firstServerEvent"], wire["firstServerEvent"]);
+                assert_eq!(value["firstServerEventLatencyMs"], 1234);
+            } else {
+                assert_eq!(value["evidenceOutcome"], "unknown");
+                assert!(value["sessionAuthority"].is_null());
+                assert!(value["firstServerEvent"].is_null());
+                assert!(value["firstServerEventLatencyMs"].is_null());
+            }
+        }
+    }
 
     #[test]
     fn classifies_completed_lifecycle_at_exact_latency_boundary() {

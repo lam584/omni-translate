@@ -111,6 +111,9 @@ fn admit_bailian_server_event(
         .map(|_| LiveTranslateServerMutation::default())
         .map_err(|error| error.code().to_string())
     };
+    if result.is_ok() {
+        event_diagnostics.bind_trailing_empty_vad_protocol(&authority);
+    }
     result.map_err(|error| {
         format!(
             "unexpected_event: {error} profileId={} profileVersion={} wireDialect={} eventType={event_type}",

@@ -536,5 +536,4 @@ fn replay_deadline_expired_malformed_same_owner_asr_flushes_before_error() {
     assert_native_empty_response(&report);
 }
 
-#[path = "trailing_empty_vad.rs"]
 mod trailing_empty_vad;

@@ -61,6 +61,62 @@ fn replay_model(previous: Vec<ScriptStep>, tail: Vec<ScriptStep>, v2: bool) -> (
     (harness, slice)
 }
 
+fn observed_vm131_previous_steps() -> Vec<ScriptStep> {
+    previous_steps().into_iter().map(|step| {
+        let ScriptStep::Event(mut value) = step else { unreachable!() };
+        if value["type"] == "input_audio_buffer.speech_stopped" {
+            value["audio_end_ms"] = json!(95_620);
+        }
+        ScriptStep::Event(value)
+    }).collect()
+}
+
+fn observed_vm131_assistant_input_tail_steps() -> Vec<ScriptStep> {
+    let mut steps = completed_empty_tail_steps(95_620, true);
+    for step in &mut steps {
+        let ScriptStep::Event(value) = step else { unreachable!() };
+        let serialized = value.to_string()
+            .replace("item-strict-tail", "item_Sv5nJPZZl5xWn6JyoFHVm")
+            .replace("resp-strict-tail", "resp_Osp_observed")
+            .replace("output-strict-tail", "output_Osp_observed");
+        *value = serde_json::from_str(&serialized).unwrap();
+        match value["type"].as_str().unwrap() {
+            "conversation.item.created" => {
+                value["item"]["role"] = json!("assistant");
+                value["item"]["content"] = json!([{ "type": "input_audio" }]);
+            }
+            "input_audio_buffer.speech_stopped" => value["audio_end_ms"] = json!(96_900),
+            _ => {}
+        }
+    }
+    let response_created = steps.iter().position(|step| matches!(step,
+        ScriptStep::Event(value) if value["type"] == "response.created")).unwrap();
+    let response_created = steps.remove(response_created);
+    let speech_stopped = steps.iter().position(|step| matches!(step,
+        ScriptStep::Event(value) if value["type"] == "input_audio_buffer.speech_stopped")).unwrap();
+    steps.insert(speech_stopped, response_created);
+    steps
+}
+
+fn replay_vm131_with_preexisting_input_fence(tail: Vec<ScriptStep>) -> (ReplayHarness, WorkerSlice) {
+    let mut harness = ReplayHarness::new_with_strict_missing_media_end_authority(RealtimeAudioMode::ServerVad);
+    harness.provider.model = "qwen3.8-livetranslate-flash-realtime".to_string();
+    harness.provider.base_url = "https://workspace-test.cn-beijing.maas.aliyuncs.com/api/v1".to_string();
+    harness.provider_input_budget = ProviderInputBudget::disabled_for_test();
+    harness.store().watch_session_report.begin_or_reuse("dashscope", &harness.provider.model);
+    let (mut slice, mut activation) = activate_strict_livetranslate(&mut harness);
+    for step in &mut activation {
+        if let ScriptStep::Event(value) = step {
+            value["session"]["model"] = json!("qwen3.8-livetranslate-flash-realtime");
+        }
+    }
+    activation.extend(observed_vm131_previous_steps());
+    dispatch(&harness, &mut slice, activation);
+    input_fence(&harness, &mut slice);
+    dispatch(&harness, &mut slice, tail);
+    (harness, slice)
+}
+
 fn idle_after_old_deadline(harness: &ReplayHarness, slice: &mut WorkerSlice) {
     std::thread::sleep(Duration::from_millis(205));
     let socket = ScriptedRealtimeSocket::new(vec![ScriptStep::Idle], harness.shared.clone());
@@ -398,5 +454,203 @@ fn replay_trailing_empty_vad_current_visible_output_cancels_candidate() {
     harness.store().update_subtitle_cue_translation(&current, "Visible partial output".to_string(), false);
     input_fence(&harness, &mut slice);
     assert_failed_tail(&harness);
+    assert_previous_final(&harness);
+}
+
+#[test]
+fn replay_vm131_c03_assistant_input_item_exact_lineage_discards_at_existing_fence() {
+    let (harness, _) = replay_vm131_with_preexisting_input_fence(
+        observed_vm131_assistant_input_tail_steps(),
+    );
+    assert_no_terminal_error(&harness);
+    assert_previous_final(&harness);
+    assert_eq!(harness.store().snapshot().subtitle_overlay.recent_cues.len(), 1);
+    assert_eq!(omission_count(&harness), 1);
+}
+
+fn assistant_created_event(id: &str, content: Value) -> Value {
+    json!({
+        "type": "conversation.item.created",
+        "item": {
+            "id": id,
+            "object": "realtime.item",
+            "type": "message",
+            "status": "in_progress",
+            "role": "assistant",
+            "content": content
+        }
+    })
+}
+
+fn speech_started_event(id: &str) -> Value {
+    json!({
+        "type": "input_audio_buffer.speech_started",
+        "item_id": id,
+        "audio_start_ms": 95_620
+    })
+}
+
+#[test]
+fn replay_assistant_input_item_with_mismatched_speech_lineage_fails_closed() {
+    let (_, slice) = replay_vm131_with_preexisting_input_fence(Vec::new());
+    let mut diagnostics = slice.event_diagnostics;
+    diagnostics.observe_trailing_empty_vad_event(&speech_started_event("speech-lineage"));
+    diagnostics.observe_trailing_empty_vad_event(&assistant_created_event(
+        "different-item",
+        json!([{ "type": "input_audio" }]),
+    ));
+    assert!(!diagnostics.trailing_input_created_for_test("speech-lineage"));
+    assert!(!diagnostics.trailing_input_created_for_test("different-item"));
+}
+
+#[test]
+fn replay_assistant_input_item_without_explicit_input_audio_fails_closed() {
+    for content in [json!([]), json!([{ "type": "audio" }]), json!([{ "type": "text", "text": "" }])] {
+        let (_, slice) = replay_vm131_with_preexisting_input_fence(Vec::new());
+        let mut diagnostics = slice.event_diagnostics;
+        diagnostics.observe_trailing_empty_vad_event(&speech_started_event("speech-lineage"));
+        diagnostics.observe_trailing_empty_vad_event(&assistant_created_event(
+            "speech-lineage",
+            content,
+        ));
+        assert!(!diagnostics.trailing_input_created_for_test("speech-lineage"));
+    }
+}
+
+#[test]
+fn replay_assistant_output_item_never_authorizes_input_creation() {
+    let (_, slice) = replay_vm131_with_preexisting_input_fence(Vec::new());
+    let mut diagnostics = slice.event_diagnostics;
+    diagnostics.observe_trailing_empty_vad_event(&speech_started_event("speech-lineage"));
+    diagnostics.observe_trailing_empty_vad_event(&assistant_created_event(
+        "assistant-output-item",
+        json!([{ "type": "audio", "audio": "provider-output" }]),
+    ));
+    assert!(!diagnostics.trailing_input_created_for_test("speech-lineage"));
+    assert!(!diagnostics.trailing_input_created_for_test("assistant-output-item"));
+}
+
+#[test]
+fn replay_assistant_input_item_before_speech_started_does_not_create_lineage() {
+    let (_, slice) = replay_vm131_with_preexisting_input_fence(Vec::new());
+    let mut diagnostics = slice.event_diagnostics;
+    diagnostics.observe_trailing_empty_vad_event(&assistant_created_event(
+        "speech-lineage",
+        json!([{ "type": "input_audio" }]),
+    ));
+    diagnostics.observe_trailing_empty_vad_event(&speech_started_event("speech-lineage"));
+    assert!(!diagnostics.trailing_input_created_for_test("speech-lineage"));
+}
+
+
+#[test]
+fn replay_created_nonempty_content_is_sticky_through_empty_final() {
+    for role in ["assistant", "user"] {
+        for content in [
+            json!([{ "type": "input_audio", "transcript": "Real source." }]),
+            json!([{ "type": "input_audio", "text": "Real source." }]),
+            json!([{ "type": "input_audio", "audio": "cGNt" }]),
+            json!([{ "type": "input_audio" }, { "type": "text", "text": "Real source." }]),
+        ] {
+            let mut tail = observed_vm131_assistant_input_tail_steps();
+            for step in &mut tail {
+                if let ScriptStep::Event(value) = step {
+                    if value["type"] == "conversation.item.created" {
+                        value["item"]["role"] = json!(role);
+                        value["item"]["content"] = content.clone();
+                    }
+                }
+            }
+            // The later empty transcription.completed must not erase created content.
+            let (harness, _) = replay_vm131_with_preexisting_input_fence(tail);
+            assert_failed_tail(&harness);
+            assert_previous_final(&harness);
+        }
+    }
+}
+
+#[test]
+fn replay_created_conflicting_ids_never_authorize_either_input() {
+    for conflicting_id in [json!("unannounced-item"), json!(""), Value::Null, json!(42)] {
+        let mut tail = observed_vm131_assistant_input_tail_steps();
+        for step in &mut tail {
+            if let ScriptStep::Event(value) = step {
+                if value["type"] == "conversation.item.created" {
+                    value["item_id"] = conflicting_id.clone();
+                }
+            }
+        }
+        let (harness, mut slice) = replay_vm131_with_preexisting_input_fence(tail);
+        assert!(!slice.event_diagnostics.trailing_input_created_for_test("unannounced-item"));
+        assert!(!slice.event_diagnostics.trailing_input_created_for_test("item_Sv5nJPZZl5xWn6JyoFHVm"));
+        idle_after_old_deadline(&harness, &mut slice);
+        assert_failed_tail(&harness);
+        assert_previous_final(&harness);
+    }
+}
+
+#[test]
+fn replay_created_matching_dual_ids_preserve_v2_empty_tail() {
+    let mut tail = observed_vm131_assistant_input_tail_steps();
+    for step in &mut tail {
+        if let ScriptStep::Event(value) = step {
+            if value["type"] == "conversation.item.created" {
+                value["item_id"] = value["item"]["id"].clone();
+            }
+        }
+    }
+    let (harness, _) = replay_vm131_with_preexisting_input_fence(tail);
+    assert_no_terminal_error(&harness);
+    assert_eq!(omission_count(&harness), 1);
+    assert_previous_final(&harness);
+}
+
+#[test]
+fn replay_created_assistant_input_does_not_extend_v1_admission() {
+    let mut tail = tail_steps();
+    for step in &mut tail {
+        if let ScriptStep::Event(value) = step {
+            if value["type"] == "conversation.item.created" {
+                value["item"]["role"] = json!("assistant");
+                value["item"]["content"] = json!([{ "type": "input_audio" }]);
+            }
+        }
+    }
+    let (harness, mut slice) = replay(previous_steps(), tail);
+    assert!(!slice.event_diagnostics.trailing_input_created_for_test("item-strict-tail"));
+    idle_after_old_deadline(&harness, &mut slice);
+    input_fence(&harness, &mut slice);
+    assert_failed_tail(&harness);
+    assert_previous_final(&harness);
+}
+
+#[test]
+fn replay_created_assistant_input_requires_authorized_protocol_identity() {
+    let mut diagnostics = OmniEventDiagnostics::default();
+    diagnostics.observe_trailing_empty_vad_event(&speech_started_event("speech-lineage"));
+    diagnostics.observe_trailing_empty_vad_event(&assistant_created_event(
+        "speech-lineage", json!([{ "type": "input_audio" }]),
+    ));
+    assert!(!diagnostics.trailing_input_created_for_test("speech-lineage"));
+}
+
+
+#[test]
+fn replay_created_dual_id_conflict_invalidates_existing_candidate() {
+    let (harness, mut slice) = replay_model(previous_steps(), tail_steps(), true);
+    assert_no_terminal_error(&harness);
+    dispatch(&harness, &mut slice, vec![ScriptStep::Event(event("conflicting-created", json!({
+        "type": "conversation.item.created",
+        "item_id": "item-strict-tail",
+        "previous_item_id": "item-strict-tail",
+        "item": {
+            "id": "unannounced-item", "object": "realtime.item", "type": "message",
+            "status": "in_progress", "role": "assistant", "content": [{ "type": "input_audio" }]
+        }
+    })))]);
+    // A preexisting created proof must not hide a later ownership contradiction.
+    input_fence(&harness, &mut slice);
+    assert_failed_tail(&harness);
+    assert!(!slice.event_diagnostics.trailing_input_created_for_test("unannounced-item"));
     assert_previous_final(&harness);
 }

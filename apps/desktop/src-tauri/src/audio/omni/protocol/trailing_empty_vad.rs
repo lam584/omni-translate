@@ -37,6 +37,7 @@ pub(super) struct TrailingEmptyVadState {
     pub(super) previous_success: Option<SuccessfulNativeOwner>,
     pub(super) ownership_contradiction: bool,
     input_fenced: bool,
+    assistant_input_created_authorized: bool,
 }
 
 fn contains_content(value: &Value) -> bool {
@@ -51,16 +52,62 @@ fn contains_content(value: &Value) -> bool {
     }
 }
 
+fn item_has_explicit_input_audio(event: &Value) -> bool {
+    event["item"]["content"]
+        .as_array()
+        .is_some_and(|content| {
+            content
+                .iter()
+                .any(|part| part["type"].as_str() == Some("input_audio"))
+        })
+}
+
 impl OmniEventDiagnostics {
+    /// Bind only the typed authority of an admitted frame, never a server model label.
+    pub(in crate::audio::omni) fn bind_trailing_empty_vad_protocol(
+        &mut self,
+        authority: &crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile,
+    ) {
+        self.trailing_empty_vad.assistant_input_created_authorized =
+            crate::audio::bailian_protocol::is_v2(authority);
+    }
+
     /// Called after typed admission but BEFORE normalization/final text replacement.
     pub(in crate::audio::omni) fn observe_trailing_empty_vad_event(&mut self, event: &Value) {
         let kind = event["type"].as_str().unwrap_or_default();
         let state = &mut self.trailing_empty_vad;
-        if kind.starts_with("input_audio_buffer.speech_")
-            || kind.starts_with("conversation.item.input_audio_transcription.")
-            || (kind == "conversation.item.created" && event["item"]["role"] == "user")
+        let input_event = kind.starts_with("input_audio_buffer.speech_")
+            || kind.starts_with("conversation.item.input_audio_transcription.");
+        let created_id = (kind == "conversation.item.created")
+            .then(|| event["item"]["id"].as_str())
+            .flatten()
+            .filter(|id| !id.trim().is_empty());
+        // item.id is the protocol identity for created. A redundant top-level ID
+        // must agree; never redirect evidence or create lineage from that field.
+        if kind == "conversation.item.created"
+            && event.get("item_id").is_some_and(|id| {
+                id.as_str().is_none() || id.as_str() != created_id
+            })
         {
-            let id = event["item_id"].as_str().or_else(|| event["item"]["id"].as_str());
+            state.ownership_contradiction = true;
+            return;
+        }
+        let admitted_input_created = created_id.is_some_and(|id| {
+            event["item"]["role"] == "user"
+                || (state.assistant_input_created_authorized
+                    && event["item"]["role"] == "assistant"
+                    && item_has_explicit_input_audio(event)
+                    && state
+                        .inputs
+                        .iter()
+                        .any(|input| input.id == id && input.start_ms.is_some()))
+        });
+        if input_event || admitted_input_created {
+            let id = if kind == "conversation.item.created" {
+                created_id
+            } else {
+                event["item_id"].as_str()
+            };
             if let Some(id) = id.filter(|id| !id.trim().is_empty()) {
                 let index = state.inputs.iter().position(|input| input.id == id).unwrap_or_else(|| {
                     state.inputs.push_back(InputEvidence { id: id.to_string(), ..Default::default() });
@@ -68,7 +115,11 @@ impl OmniEventDiagnostics {
                 });
                 let input = &mut state.inputs[index];
                 match kind {
-                    "conversation.item.created" => input.created = true,
+                    "conversation.item.created" => {
+                        input.created = true;
+                        // A later empty ASR final cannot erase content already received.
+                        input.nonempty_asr |= contains_content(event);
+                    }
                     "input_audio_buffer.speech_started" => {
                         let start = event["audio_start_ms"].as_u64();
                         state.ownership_contradiction |= input.start_ms.is_some() && input.start_ms != start;
@@ -108,6 +159,14 @@ impl OmniEventDiagnostics {
             }
             while state.outputs.len() > MAX_ASR_CUE_OWNERS { state.outputs.pop_front(); }
         }
+    }
+
+    #[cfg(test)]
+    pub(in crate::audio::omni) fn trailing_input_created_for_test(&self, id: &str) -> bool {
+        self.trailing_empty_vad
+            .inputs
+            .iter()
+            .any(|input| input.id == id && input.created)
     }
 
     pub(in crate::audio::omni) fn reject_trailing_empty_vad_authority(&mut self) {

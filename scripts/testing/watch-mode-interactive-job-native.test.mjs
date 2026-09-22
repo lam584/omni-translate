@@ -45,6 +45,18 @@ function Identity($id,$parent,$imagePath) {
   return [pscustomobject]@{pid=$id;parentPid=$parent;startedAt=$p.StartTime.ToUniversalTime().ToString('o');sessionId=$p.SessionId;ownerSid=$sid.Sid;imagePath=$imagePath;imageSha256=(Get-FileHash -LiteralPath $imagePath -Algorithm SHA256).Hash.ToLowerInvariant()}
 }
 `;
+test('production launcher keeps shared IO commands visible after nested Force imports', { skip: process.platform !== 'win32', timeout: 35000 }, async () => {
+  const launcher = fs.readFileSync(path.join(here, 'run-watch-mode-interactive-task.ps1'), 'utf8');
+  const imports = launcher.split(/\r?\n/u).filter((line) => line.startsWith('Import-Module ')).slice(0, 4)
+    .map((line) => line.replaceAll('$PSScriptRoot', quote(here)));
+  assert.match(imports.at(-1), /Omni\.Testing\.IO\.psm1/u);
+  const result = await powershell(`${imports.join('; ')}; [ordered]@{
+    sha=[bool](Get-Command Get-OmniSha256 -ErrorAction SilentlyContinue)
+    json=[bool](Get-Command Write-OmniJsonAtomic -ErrorAction SilentlyContinue)
+  } | ConvertTo-Json -Compress`).done;
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout.split(/\r?\n/u).at(-1)), { sha: true, json: true });
+});
 async function fixture(mode) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-job-native-'));
   const file = (name) => path.join(directory, name);

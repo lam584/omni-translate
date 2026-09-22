@@ -306,6 +306,7 @@ test('audited contrast-pair question accepts 还是 without weakening numeric fa
   for (const [outputText, expectedMatch] of [
     ['它能区分十五和五十，还是十三和三十？', '区分十五和五十还是十三和三十'],
     ['它能区分15和50，还是13和30？', '区分15和50还是13和30'],
+    ['它能区分15和50吗？还是13和30？', '区分15和50吗还是13和30'],
     ['它能区分十五和五十吗，或者十三和三十？', '区分十五和五十吗或者十三和三十'],
   ]) {
     const result = evaluateLayeredWatchContent({ referenceText: 'audited fixture', outputText, facts: [fact] });

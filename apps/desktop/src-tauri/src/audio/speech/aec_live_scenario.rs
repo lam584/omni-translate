@@ -153,8 +153,9 @@ pub(super) struct AecLiveScenarioRender {
 
 impl AecLiveScenarioRender {
     /// Partition one cue, rather than replaying the entire cue for every phase.
-    /// All ranges are frame-aligned, consecutive and exhaustive. Reject a cue
-    /// that cannot supply one complete render-reference window to each phase.
+    /// All ranges are aligned to committed 10 ms stereo reference blocks,
+    /// consecutive and exhaustive. Reject short cues and partial blocks before
+    /// physical rendering; never truncate, repeat or pad translated PCM.
     pub(super) fn build_program(
         assignments: &[AecLiveScenarioAssignment],
         reference_samples: &[f32],
@@ -171,22 +172,35 @@ impl AecLiveScenarioRender {
             return Err("AEC live scenario requires all three ordered phases".to_string());
         }
         let channels = usize::from(channel_count);
-        if sample_rate_hz == 0 || channels == 0 || reference_samples.len() % channels != 0 {
-            return Err("AEC live scenario requires frame-aligned PCM and non-zero rate/channels".to_string());
+        if sample_rate_hz != super::SPEAKER_SAMPLE_RATE_HZ
+            || channel_count != super::SPEAKER_CHANNEL_COUNT
+            || reference_samples.len() % channels != 0
+        {
+            return Err("AEC live scenario requires frame-aligned 48 kHz stereo PCM".to_string());
         }
+        // The capture-clock matcher accepts exactly 480 frames / 960 samples.
+        // Split whole reference blocks, not individual stereo frames: otherwise
+        // every phase can end with a physically committed but inadmissible tail.
+        let reference_block_frames = sample_rate_hz as usize
+            * super::RENDER_REFERENCE_FRAME_MS as usize / 1_000;
         let total_frames = reference_samples.len() / channels;
-        let minimum_phase_frames = (u64::from(sample_rate_hz)
-            * super::RENDER_REFERENCE_FRAME_MS).div_ceil(1_000).max(1) as usize;
-        if total_frames / assignments.len() < minimum_phase_frames {
+        let total_blocks = total_frames / reference_block_frames;
+        if total_blocks < assignments.len() {
             return Err(format!(
-                "AEC live scenario cue too short for three real phases: frames={total_frames} minimumPhaseFrames={minimum_phase_frames}"
+                "AEC live scenario cue too short for three real phases: frames={total_frames} minimumPhaseFrames={reference_block_frames}"
             ));
         }
-        let frames_per_phase = total_frames / assignments.len();
-        let remainder = total_frames % assignments.len();
+        if total_frames % reference_block_frames != 0 {
+            return Err(format!(
+                "AEC live scenario requires complete 10 ms reference blocks: frames={total_frames} blockFrames={reference_block_frames}"
+            ));
+        }
+        let blocks_per_phase = total_blocks / assignments.len();
+        let remainder_blocks = total_blocks % assignments.len();
         let mut start_frame = 0;
         Ok(assignments.iter().enumerate().map(|(index, assignment)| {
-            let end_frame = start_frame + frames_per_phase + usize::from(index < remainder);
+            let phase_blocks = blocks_per_phase + usize::from(index < remainder_blocks);
+            let end_frame = start_frame + phase_blocks * reference_block_frames;
             let range = start_frame * channels..end_frame * channels;
             let mut render = Self::build(
                 *assignment, &reference_samples[range.clone()], sample_rate_hz, channel_count,
@@ -357,9 +371,9 @@ mod tests {
     }
 
     #[test]
-    fn partition_keeps_remainder_frames_once_and_in_order() {
+    fn partition_keeps_remainder_blocks_once_and_in_order() {
         let assignments = AecLiveScenarioAssignments::default().assignments_for_cue("cue");
-        for total_frames in [1_440, 1_441, 1_442] {
+        for total_frames in [1_440, 1_920, 2_400, 2_880] {
             let samples = (0..total_frames * 2).map(|sample| sample as f32).collect::<Vec<_>>();
             let program = AecLiveScenarioRender::build_program(
                 &assignments, &samples, SPEAKER_SAMPLE_RATE_HZ, SPEAKER_CHANNEL_COUNT,
@@ -369,11 +383,27 @@ mod tests {
             }).collect::<Vec<_>>();
             assert_eq!(reconstructed, samples);
             for render in &program {
-                assert_eq!(render.reference_sample_range.start % 2, 0);
-                assert_eq!(render.reference_sample_range.end % 2, 0);
+                assert_eq!(render.reference_sample_range.start % 960, 0);
+                assert_eq!(render.reference_sample_range.end % 960, 0);
                 assert!(render.reference_frames(&samples, 2) >= 480);
             }
         }
+    }
+
+    #[test]
+    fn partial_reference_block_fails_before_render_program_without_completing_phases() {
+        let mut state = AecLiveScenarioAssignments::default();
+        let assignments = state.assignments_for_cue("partial");
+        for frames in [1_441, 1_442, 1_919, 2_284_801] {
+            let error = AecLiveScenarioRender::build_program(
+                &assignments, &vec![0.2; frames * 2],
+                SPEAKER_SAMPLE_RATE_HZ, SPEAKER_CHANNEL_COUNT,
+            ).err().expect("partial reference block must fail before rendering");
+            assert!(error.contains("complete 10 ms reference blocks"));
+        }
+        state.finish_cue("partial", false);
+        assert!(!state.completed);
+        assert_eq!(state.assignments_for_cue("next"), assignments);
     }
 
     #[test]
@@ -401,7 +431,10 @@ mod tests {
         for invalid in [&assignments[..2], &reordered[..]] {
             assert!(AecLiveScenarioRender::build_program(invalid, &samples, 48_000, 2).is_err());
         }
-        for (rate, channels, length) in [(0, 2, 2_880), (48_000, 0, 2_880), (48_000, 2, 2_879)] {
+        for (rate, channels, length) in [
+            (0, 2, 2_880), (48_000, 0, 2_880), (48_000, 2, 2_879),
+            (24_000, 2, 2_880), (48_000, 1, 2_880),
+        ] {
             assert!(AecLiveScenarioRender::build_program(
                 &assignments, &samples[..length], rate, channels,
             ).is_err());

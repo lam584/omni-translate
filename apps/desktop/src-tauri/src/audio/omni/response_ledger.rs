@@ -162,6 +162,15 @@ impl ResponseLedger {
         self.prune_completed_lineages();
     }
 
+    pub(super) fn has_complete_lineage(&self, cue_id: &str, source_item_id: &str, response_id: &str) -> bool {
+        self.lineages.iter().any(|lineage| {
+            lineage.completed && lineage.cue_id == cue_id
+                && lineage.source_item_id.as_deref() == Some(source_item_id)
+                && lineage.response_id.as_deref() == Some(response_id)
+                && !source_item_id.trim().is_empty() && !response_id.trim().is_empty()
+        })
+    }
+
     pub(super) fn clear(&mut self) {
         self.lineages.clear();
     }

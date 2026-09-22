@@ -1,4 +1,9 @@
 use super::*;
+
+#[path = "protocol/trailing_empty_vad.rs"]
+mod trailing_empty_vad;
+use trailing_empty_vad::{SuccessfulNativeOwner, TrailingEmptyVadState, refresh_trailing_empty_vad, resolve_trailing_empty_vad_boundary};
+pub(super) use trailing_empty_vad::resolve_trailing_empty_vad_on_input_fence;
 use super::realtime_socket::ReconnectedRealtimeSocket;
 
 use crate::audio::glossary::GlossaryContext;
@@ -257,6 +262,7 @@ pub(super) struct OmniEventDiagnostics {
     completed_native_response_owners: VecDeque<NativeResponseOwner>,
     ignored_native_response_owners: VecDeque<IgnoredNativeResponseOwner>,
     deferred_empty_vad_terminal: Option<DeferredEmptyVadTerminal>,
+    trailing_empty_vad: TrailingEmptyVadState,
     strict_media_end_authority: Option<StrictMediaEndAuthority>,
     response_ledger: ResponseLedger,
     response_lifecycle: ResponseLifecycle,
@@ -523,6 +529,8 @@ struct DeferredEmptyVadTerminal {
     cross_continuity_zero_gap_eligible: bool,
     expires_at: Instant,
     successor_arbitration_deadline: Instant,
+    trailing_predecessor: Option<SuccessfulNativeOwner>,
+    trailing_candidate: bool,
 }
 
 impl OmniEventDiagnostics {
@@ -711,6 +719,7 @@ impl OmniEventDiagnostics {
             fallback_cue_id,
         );
         if has_provider_lineage && ledger_owner.is_none() {
+            self.trailing_empty_vad.ownership_contradiction = true;
             log::warn!(
                 "event=response_lineage_mismatch response_id={} source_item_id={} translation_item_id={}",
                 response_id.unwrap_or("(none)"),
@@ -888,6 +897,7 @@ impl OmniEventDiagnostics {
         self.completed_native_response_owners.clear();
         self.ignored_native_response_owners.clear();
         self.deferred_empty_vad_terminal = None;
+        self.trailing_empty_vad = TrailingEmptyVadState::default();
         self.response_ledger.clear();
         self.response_lifecycle.clear();
     }
@@ -1270,6 +1280,8 @@ impl OmniEventDiagnostics {
             response_cue_exists,
             response_metadata,
             st_flag: st_flag.to_string(),
+            trailing_predecessor: self.trailing_predecessor(audio_start_ms),
+            trailing_candidate: false,
             audio_start_ms,
             audio_end_ms,
             continuity_id,
@@ -1464,6 +1476,14 @@ pub(super) fn resolve_deferred_empty_vad_on_speech_started<R: tauri::Runtime>(
     event_diagnostics: &mut OmniEventDiagnostics,
     successor_audio_start_ms: Option<u64>,
 ) {
+    if refresh_trailing_empty_vad(app, store, event_diagnostics) {
+        let switched = event_diagnostics.deferred_empty_vad_terminal.as_ref()
+            .is_some_and(|pending| pending.continuity_id != event_diagnostics.source_continuity_id);
+        if switched {
+            resolve_trailing_empty_vad_boundary(app, store, event_diagnostics, "continuity-switch");
+        }
+        return;
+    }
     let Some((pending, is_contiguous_same_source)) = event_diagnostics
         .take_deferred_empty_vad_for_successor(successor_audio_start_ms)
     else { return; };
@@ -1505,6 +1525,7 @@ pub(super) fn flush_expired_deferred_empty_vad<R: tauri::Runtime>(
     store: &AudioStateStore,
     event_diagnostics: &mut OmniEventDiagnostics,
 ) {
+    if refresh_trailing_empty_vad(app, store, event_diagnostics) { return; }
     if let Some(pending) = event_diagnostics.take_expired_deferred_empty_vad() {
         terminalize_deferred_empty_vad(app, store, event_diagnostics, &pending);
     }
@@ -1515,6 +1536,7 @@ pub(super) fn flush_arbitration_expired_deferred_empty_vad<R: tauri::Runtime>(
     store: &AudioStateStore,
     event_diagnostics: &mut OmniEventDiagnostics,
 ) {
+    if refresh_trailing_empty_vad(app, store, event_diagnostics) { return; }
     if let Some(pending) = event_diagnostics.take_arbitration_expired_deferred_empty_vad() {
         terminalize_deferred_empty_vad(app, store, event_diagnostics, &pending);
     }
@@ -1541,7 +1563,11 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
     glossary: &GlossaryContext,
 ) {
     if let Some(previous_pending) = event_diagnostics.take_deferred_empty_vad() {
-        terminalize_deferred_empty_vad(app, store, event_diagnostics, &previous_pending);
+        if previous_pending.trailing_candidate {
+            trailing_empty_vad::fail_trailing(app, store, &previous_pending);
+        } else {
+            terminalize_deferred_empty_vad(app, store, event_diagnostics, &previous_pending);
+        }
     }
     let response_metadata = ResponseDoneMetadata::from_event(response_event);
     let final_output_allowed = response_metadata.allows_final_output(require_completed_status);
@@ -1774,6 +1800,7 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
             event_diagnostics,
         );
     }
+    event_diagnostics.record_trailing_predecessor(store, &response_metadata);
     event_diagnostics.complete_native_response_owner();
 }
 

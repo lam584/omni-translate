@@ -655,6 +655,7 @@ impl OmniSocketEventProcessor {
                 ) {
                     Ok(mutation) => mutation,
                     Err(error) => {
+                        event_diagnostics.reject_trailing_empty_vad_authority();
                         // A raw frame that merely resembles a contiguous speech start
                         // or matching ASR owner has no authority to suppress an
                         // expired terminal. Typed admission must succeed before
@@ -679,6 +680,7 @@ impl OmniSocketEventProcessor {
                         &session_updated.echoed_session_config_sha256,
                     )?;
                 }
+                event_diagnostics.observe_trailing_empty_vad_event(&evt);
                 let response_completed = mutation.response_completed;
                 let response_terminal_status = mutation.response_terminal_status.clone();
                 let normalized_delta_snapshot = mutation.normalized_text.as_ref()

@@ -665,6 +665,9 @@ fn run_omni_worker<R: tauri::Runtime>(
                 });
             }
         }
+        if audio_input_disconnected && pre_session_audio_queue.is_empty() && chunks_sent_this_tick == 0 {
+            super::protocol::resolve_trailing_empty_vad_on_input_fence(&app, store, &mut event_diagnostics);
+        }
         let should_send_livetranslate_finish = livetranslate_shutdown.should_send_finish(
             chunks_sent_this_tick,
             pre_session_audio_queue.is_empty(),

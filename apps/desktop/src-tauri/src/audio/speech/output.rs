@@ -996,43 +996,59 @@ mod render_reference_pacer_tests {
             AecLiveScenarioAssignment { ordinal: 2, phase: AecLiveScenarioPhase::DynamicDelay },
             AecLiveScenarioAssignment { ordinal: 3, phase: AecLiveScenarioPhase::Nonlinear },
         ];
-        // Same 24 kHz mono -> 48 kHz stereo conversion as the production failure.
-        let source = vec![8_000_i16; 1_409_280]; // 58.72s, not three copies of it.
-        let samples = speaker_pcm_48k_stereo(&source, 24_000, 1, 100);
-        let program = AecLiveScenarioRender::build_program(
-            &assignments, &samples, SPEAKER_SAMPLE_RATE_HZ, SPEAKER_CHANNEL_COUNT,
-        ).unwrap();
-        let mut submitted_frame_base = 0;
-        let mut rendered_source_frames = 0;
-        let mut reference = Vec::new();
-        let mut previous_played = 0;
-        for scenario in &program {
-            let stage_reference = scenario.reference_samples(&samples);
-            let mut tracker = RenderSubmitTracker::new_with_reference_at_and_prefix(
-                scenario.physical_frames(SPEAKER_CHANNEL_COUNT) as usize,
-                stage_reference.len() / 2, 480,
-                scenario.physical_prefix_offset_frames() as usize, submitted_frame_base,
-            );
-            while !tracker.is_complete() {
-                let written = tracker.next_write_frames(480);
-                assert!(written > 0);
-                if let Some(window) = tracker.record_write(written, 0).unwrap() {
-                    assert!(window.played_frames >= previous_played);
-                    previous_played = window.played_frames;
-                    reference.extend_from_slice(
-                        &stage_reference[window.start_frame * 2..window.end_frame * 2],
-                    );
+        // Exercise the real tracker -> matcher contract for both production failures.
+        // Frame conservation alone misses partial 10 ms blocks at phase boundaries.
+        for duration_ms in [47_600_usize, 4_000, 32_800, 20_480, 58_720, 45_680, 6_640] {
+            let source = (0..duration_ms * 24).map(|index| {
+                (index % 16_001) as i16 - 8_000
+            }).collect::<Vec<_>>();
+            let samples = speaker_pcm_48k_stereo(&source, 24_000, 1, 100);
+            let program = AecLiveScenarioRender::build_program(
+                &assignments, &samples, SPEAKER_SAMPLE_RATE_HZ, SPEAKER_CHANNEL_COUNT,
+            ).unwrap();
+            assert_eq!(program.len(), 3);
+            let mut matcher = CaptureClockReferenceMatcher::default();
+            let mut submitted_frame_base = 0;
+            let mut rendered_source_frames = 0;
+            let mut reference = Vec::new();
+            let mut previous_played = 0;
+            let mut committed_blocks = 0;
+            for scenario in &program {
+                let stage_reference = scenario.reference_samples(&samples);
+                let mut tracker = RenderSubmitTracker::new_with_reference_at_and_prefix(
+                    scenario.physical_frames(SPEAKER_CHANNEL_COUNT) as usize,
+                    stage_reference.len() / 2, 480,
+                    scenario.physical_prefix_offset_frames() as usize, submitted_frame_base,
+                );
+                while !tracker.is_complete() {
+                    let written = tracker.next_write_frames(480);
+                    assert!(written > 0);
+                    if let Some(window) = tracker.record_write(written, 0).unwrap() {
+                        assert!(window.played_frames >= previous_played);
+                        previous_played = window.played_frames;
+                        let committed = &stage_reference[window.start_frame * 2..window.end_frame * 2];
+                        matcher.enqueue_committed(1, window.submitted_frames, None, committed)
+                            .unwrap_or_else(|error| panic!(
+                                "cue {duration_ms}ms phase {}: {error}", scenario.assignment.ordinal,
+                            ));
+                        assert_eq!(committed.len(), 960);
+                        committed_blocks += 1;
+                        reference.extend_from_slice(committed);
+                        // Consume capture-paced output so this test never relies on buffer eviction.
+                        while matcher.take_10ms(1).is_some() {}
+                    }
                 }
+                assert_eq!(tracker.submitted_frames as u64, scenario.physical_frames(2));
+                submitted_frame_base += tracker.submitted_frames as u64;
+                rendered_source_frames += scenario.reference_frames(&samples, SPEAKER_CHANNEL_COUNT);
             }
-            assert_eq!(tracker.submitted_frames as u64, scenario.physical_frames(2));
-            submitted_frame_base += tracker.submitted_frames as u64;
-            rendered_source_frames += scenario.reference_frames(&samples, SPEAKER_CHANNEL_COUNT);
+            assert_eq!(rendered_source_frames, duration_ms as u64 * 48);
+            assert_eq!(rendered_source_frames * 24_000, source.len() as u64 * 48_000);
+            assert_eq!(committed_blocks * 480, rendered_source_frames);
+            assert_eq!(reference, samples); // No duplicate, skipped or out-of-order source frame.
+            // Only actual 80ms + 160ms physical delay prefixes, not translated PCM.
+            assert_eq!(submitted_frame_base, rendered_source_frames + 11_520);
         }
-        assert_eq!(rendered_source_frames, 2_818_560);
-        assert_eq!(rendered_source_frames * 24_000, source.len() as u64 * 48_000);
-        assert_eq!(reference, samples); // No duplicate, skipped or out-of-order source frame.
-        assert_eq!(submitted_frame_base, 2_830_080); // Actual PCM includes 80ms + 160ms silence.
-        assert_eq!(submitted_frame_base, samples.len() as u64 / 2 + 11_520);
     }
 
     fn collect_paced_reference(submitted: &[f32]) -> Vec<f32> {

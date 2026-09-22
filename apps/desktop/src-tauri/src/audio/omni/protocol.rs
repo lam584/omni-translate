@@ -266,6 +266,7 @@ pub(super) struct OmniEventDiagnostics {
     strict_media_end_authority: Option<StrictMediaEndAuthority>,
     response_ledger: ResponseLedger,
     response_lifecycle: ResponseLifecycle,
+    server_vad_speech_active: bool,
     pub(super) last_asr_delta_text: String,
     pub(super) last_asr_delta_at_ms: Option<u64>,
     pub(super) last_asr_delta_item_id: Option<String>,
@@ -307,6 +308,17 @@ impl OmniEventDiagnostics {
         self.response_lifecycle.begin(response_id, Instant::now());
     }
 
+    pub(super) fn begin_native_response_lifecycle_for_active_input(
+        &mut self,
+        response_id: Option<&str>,
+    ) {
+        self.response_lifecycle.begin_with_input_state(
+            response_id,
+            Instant::now(),
+            self.server_vad_speech_active,
+        );
+    }
+
     pub(super) fn note_native_response_progress(&mut self, response_id: Option<&str>) {
         self.response_lifecycle
             .progress(response_id, Instant::now());
@@ -323,6 +335,14 @@ impl OmniEventDiagnostics {
             ResponseDeadlineBudget::from_provider_timeout_ms(provider_timeout_ms),
             allow_cancel,
         )
+    }
+
+    pub(super) fn note_server_vad_speech_state(&mut self, active: bool) {
+        self.server_vad_speech_active = active;
+        if !active {
+            self.response_lifecycle
+                .release_deferred_first_output(Instant::now());
+        }
     }
 
     pub(super) fn mark_native_response_cancel_sent(&mut self, now: Instant) {

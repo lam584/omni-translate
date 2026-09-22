@@ -155,9 +155,24 @@ fn track_response_lifecycle_for_server_event(
     event_type: &str,
     event: &Value,
 ) {
+    let is_qwen38_livetranslate =
+        provider.model.trim() == "qwen3.8-livetranslate-flash-realtime";
     match event_type {
+        "input_audio_buffer.speech_started" => {
+            event_diagnostics.note_server_vad_speech_state(true)
+        }
+        "input_audio_buffer.speech_stopped" => {
+            event_diagnostics.note_server_vad_speech_state(false)
+        }
+        _ => {}
+    }
+    match event_type {
+        "response.created" if is_qwen38_livetranslate => event_diagnostics
+            .begin_native_response_lifecycle_for_active_input(native_response_id_from_event(event)),
         "response.created" => event_diagnostics
             .begin_native_response_lifecycle(native_response_id_from_event(event)),
+        "response.output_item.added" | "response.content_part.added"
+            if is_qwen38_livetranslate => {}
         response_event
             if response_event.starts_with("response.") && response_event != "response.done" =>
         {
@@ -458,7 +473,7 @@ mod legacy_reducer_fixture_authority_tests {
     }
 
     #[test]
-    fn livetranslate_real_response_owner_still_enforces_first_output_deadline() {
+    fn qwen35_livetranslate_real_response_owner_keeps_existing_first_output_deadline() {
         let provider = livetranslate_provider();
         let mut diagnostics = OmniEventDiagnostics::default();
         track_response_lifecycle_for_server_event(
@@ -473,6 +488,62 @@ mod legacy_reducer_fixture_authority_tests {
         assert_eq!(
             diagnostics.native_response_stall_action(
                 std::time::Instant::now() + std::time::Duration::from_secs(45),
+                provider.timeout_ms,
+                false,
+            ),
+            ResponseStallAction::Reconnect
+        );
+    }
+
+    #[test]
+    fn qwen38_livetranslate_defers_first_output_deadline_until_server_vad_stops() {
+        let mut provider = livetranslate_provider();
+        provider.model = "qwen3.8-livetranslate-flash-realtime".to_string();
+        let mut diagnostics = OmniEventDiagnostics::default();
+        track_response_lifecycle_for_server_event(
+            &mut diagnostics,
+            &provider,
+            "input_audio_buffer.speech_started",
+            &json!({"type": "input_audio_buffer.speech_started", "item_id": "input-live"}),
+        );
+        track_response_lifecycle_for_server_event(
+            &mut diagnostics,
+            &provider,
+            "response.output_item.added",
+            &json!({
+                "type": "response.output_item.added",
+                "response_id": "response-live",
+                "item": { "id": "output-live", "status": "in_progress" }
+            }),
+        );
+        track_response_lifecycle_for_server_event(
+            &mut diagnostics,
+            &provider,
+            "response.created",
+            &json!({
+                "type": "response.created",
+                "response": { "id": "response-live" }
+            }),
+        );
+        let now = std::time::Instant::now();
+        assert_eq!(
+            diagnostics.native_response_stall_action(
+                now + std::time::Duration::from_secs(45),
+                provider.timeout_ms,
+                false,
+            ),
+            ResponseStallAction::None
+        );
+
+        track_response_lifecycle_for_server_event(
+            &mut diagnostics,
+            &provider,
+            "input_audio_buffer.speech_stopped",
+            &json!({"type": "input_audio_buffer.speech_stopped", "item_id": "input-live"}),
+        );
+        assert_eq!(
+            diagnostics.native_response_stall_action(
+                now + std::time::Duration::from_secs(51),
                 provider.timeout_ms,
                 false,
             ),

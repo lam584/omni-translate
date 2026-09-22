@@ -38,6 +38,7 @@ pub(super) struct ResponseLifecycle {
     started_at: Option<Instant>,
     last_progress_at: Option<Instant>,
     output_observed: bool,
+    first_output_deferred_until_input_stopped: bool,
     cancel_sent_at: Option<Instant>,
 }
 
@@ -47,6 +48,15 @@ impl ResponseLifecycle {
     }
 
     pub(super) fn begin(&mut self, response_id: Option<&str>, now: Instant) {
+        self.begin_with_input_state(response_id, now, false);
+    }
+
+    pub(super) fn begin_with_input_state(
+        &mut self,
+        response_id: Option<&str>,
+        now: Instant,
+        defer_first_output_until_input_stopped: bool,
+    ) {
         let response_id = normalized_id(response_id);
         if self.active {
             if self.response_id.is_none() {
@@ -59,13 +69,23 @@ impl ResponseLifecycle {
         self.started_at = Some(now);
         self.last_progress_at = None;
         self.output_observed = false;
+        self.first_output_deferred_until_input_stopped =
+            defer_first_output_until_input_stopped;
         self.cancel_sent_at = None;
     }
 
     pub(super) fn progress(&mut self, response_id: Option<&str>, now: Instant) {
         self.begin(response_id, now);
         self.output_observed = true;
+        self.first_output_deferred_until_input_stopped = false;
         self.last_progress_at = Some(now);
+    }
+
+    pub(super) fn release_deferred_first_output(&mut self, now: Instant) {
+        if self.active && !self.output_observed && self.first_output_deferred_until_input_stopped {
+            self.first_output_deferred_until_input_stopped = false;
+            self.started_at = Some(now);
+        }
     }
 
     pub(super) fn complete(&mut self, response_id: Option<&str>) {
@@ -98,6 +118,9 @@ impl ResponseLifecycle {
         let Some(started_at) = self.started_at else {
             return ResponseStallAction::None;
         };
+        if !self.output_observed && self.first_output_deferred_until_input_stopped {
+            return ResponseStallAction::None;
+        }
         let progress_expired = if self.output_observed {
             self.last_progress_at.is_some_and(|progress_at| {
                 now.saturating_duration_since(progress_at) >= budget.no_progress
@@ -221,6 +244,28 @@ mod tests {
         assert_eq!(
             lifecycle.action(now + Duration::from_secs(31), budget, false),
             ResponseStallAction::None
+        );
+    }
+
+    #[test]
+    fn livetranslate_first_output_deadline_begins_after_active_input_turn() {
+        let now = Instant::now();
+        let budget = ResponseDeadlineBudget::from_provider_timeout_ms(5_000);
+        let mut lifecycle = ResponseLifecycle::default();
+        lifecycle.begin_with_input_state(Some("response-live"), now, true);
+
+        assert_eq!(
+            lifecycle.action(now + Duration::from_secs(12), budget, false),
+            ResponseStallAction::None
+        );
+        lifecycle.release_deferred_first_output(now + Duration::from_secs(12));
+        assert_eq!(
+            lifecycle.action(now + Duration::from_secs(16), budget, false),
+            ResponseStallAction::None
+        );
+        assert_eq!(
+            lifecycle.action(now + Duration::from_secs(17), budget, false),
+            ResponseStallAction::Reconnect
         );
     }
 }

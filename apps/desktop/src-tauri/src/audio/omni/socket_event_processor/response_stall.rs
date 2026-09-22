@@ -63,11 +63,11 @@ where
     C: RealtimeSocketConnector,
     R: tauri::Runtime,
 {
-    let protocol = crate::audio::events::resolve_realtime_profile(
+    let profile = crate::audio::events::resolve_realtime_profile(
         context.provider,
         &context.provider.model,
-    )
-    .protocol_dialect;
+    );
+    let protocol = profile.protocol_dialect;
     let allow_cancel = protocol == Some(crate::audio::events::RealtimeProtocol::DashscopeOmni);
     let action = event_diagnostics.native_response_stall_action(
         Instant::now(),

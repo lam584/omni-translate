@@ -108,20 +108,20 @@
     }
 
     #[test]
-    fn injector_event_buffer_is_fixed_to_the_audited_500ms_tolerance() {
-        assert_eq!(INJECTOR_EVENT_BUFFER_DURATION_HNS, 500 * 10_000);
-        assert_eq!(injector_event_buffer_frames(48_000), 24_000);
-        assert_eq!(injector_event_buffer_frames(44_100), 22_050);
+    fn injector_event_buffer_is_fixed_to_the_audited_two_second_reserve() {
+        assert_eq!(INJECTOR_EVENT_BUFFER_DURATION_HNS, 2_000 * 10_000);
+        assert_eq!(injector_event_buffer_frames(48_000), 96_000);
+        assert_eq!(injector_event_buffer_frames(44_100), 88_200);
     }
 
     #[test]
     fn actual_event_buffer_must_cover_the_requested_scheduler_tolerance() {
-        validate_injector_event_buffer_frames(24_000, 48_000).unwrap();
-        validate_injector_event_buffer_frames(24_001, 48_000).unwrap();
-        let error = validate_injector_event_buffer_frames(23_999, 48_000).unwrap_err();
-        assert!(error.contains("bufferFrames=23999"));
-        assert!(error.contains("requiredBufferFrames=24000"));
-        assert!(validate_injector_event_buffer_frames(24_000, 0).is_err());
+        validate_injector_event_buffer_frames(96_000, 48_000).unwrap();
+        validate_injector_event_buffer_frames(96_001, 48_000).unwrap();
+        let error = validate_injector_event_buffer_frames(95_999, 48_000).unwrap_err();
+        assert!(error.contains("bufferFrames=95999"));
+        assert!(error.contains("requiredBufferFrames=96000"));
+        assert!(validate_injector_event_buffer_frames(96_000, 0).is_err());
     }
 
     #[test]
@@ -190,7 +190,7 @@
     fn injector_buffer_still_fails_closed_after_scheduler_delay_exceeds_capacity() {
         let sample_rate_hz = 48_000_usize;
         let buffer_frames = injector_event_buffer_frames(sample_rate_hz as u32);
-        let delay_ms = 501_usize;
+        let delay_ms = 2_001_usize;
         let consumed_frames = sample_rate_hz * delay_ms / 1_000;
         let padding_frames = buffer_frames.saturating_sub(consumed_frames);
         assert_eq!(padding_frames, 0);

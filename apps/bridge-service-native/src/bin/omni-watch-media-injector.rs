@@ -34,11 +34,12 @@ mod injector {
     const BYTES_PER_FRAME: usize = TARGET_CHANNELS * BYTES_PER_SAMPLE;
     const RENDER_STALL_TIMEOUT: Duration = Duration::from_secs(15);
     const RENDER_ABSOLUTE_EXTRA_TIMEOUT: Duration = Duration::from_secs(120);
-    // Injector-only scheduling tolerance. The 2026-09-22 four-worker production run
-    // observed 259 ms and 382 ms scheduler delays. A 500 ms buffer covers the
-    // measured maximum with about 118 ms of headroom without changing underrun
-    // detection or any other render consumer.
-    const INJECTOR_EVENT_BUFFER_DURATION_HNS: i64 = 5_000_000;
+    // Injector-only scheduling reserve. A four-worker production run observed a
+    // 1,159 ms wake delay while Windows was starting the paid desktop workload.
+    // Keep two seconds of submitted media in WASAPI so that a transient scheduler
+    // pause does not create an actual zero-padding underrun. Underrun detection
+    // remains fail-closed once this real buffer is exhausted.
+    const INJECTOR_EVENT_BUFFER_DURATION_HNS: i64 = 20_000_000;
     const HUNDRED_NANOSECONDS_PER_SECOND: u64 = 10_000_000;
 
     #[derive(Serialize)]

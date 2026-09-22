@@ -1847,6 +1847,7 @@ function v2ProcessEvidence(mutate = () => {}) {
     output_modalities: ['text'],
     translation: structuredClone(OFFICIAL_SESSION_UPDATE.session.translation),
   };
+  session.translation.corpus.phrases['one billion'] = '十亿美元';
   payloads[0].host = V2_SELECTION.endpointHost;
   payloads[0].query.model = V2_SELECTION.modelId;
   payloads[1].session.model = V2_SELECTION.modelId;

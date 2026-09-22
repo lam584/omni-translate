@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { STRICT_EN_ZH_CORPUS, validateLiveTranslateWireEvidence, validateProviderPreflightRawAuthority } from './watch-mode-provider-preflight-authority.mjs';
+import { STRICT_EN_ZH_CORPUS, STRICT_V2_EN_ZH_CORPUS, validateLiveTranslateWireEvidence, validateProviderPreflightRawAuthority } from './watch-mode-provider-preflight-authority.mjs';
 import { deriveWatchModelProtocolIdentity } from './watch-mode-model-protocol-authority.mjs';
 
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -17,7 +17,7 @@ const authorization = () => ({ releaseSelection: structuredClone(selection), mod
 function fixture(v2 = true) {
   const model = v2 ? selection.modelId : 'qwen3.5-livetranslate-flash-realtime';
   const session = v2 ? {
-    output_modalities: ['text'], translation: { language: 'zh', corpus: { phrases: STRICT_EN_ZH_CORPUS } },
+    output_modalities: ['text'], translation: { language: 'zh', corpus: { phrases: STRICT_V2_EN_ZH_CORPUS } },
     audio: { input: { turn_detection: { type: 'server_vad' } } },
   } : {
     modalities: ['text'], input_audio_format: 'pcm', sample_rate: 16000,

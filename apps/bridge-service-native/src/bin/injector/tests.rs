@@ -108,38 +108,38 @@
     }
 
     #[test]
-    fn injector_event_buffer_is_fixed_to_the_audited_250ms_tolerance() {
-        assert_eq!(INJECTOR_EVENT_BUFFER_DURATION_HNS, 250 * 10_000);
-        assert_eq!(injector_event_buffer_frames(48_000), 12_000);
-        assert_eq!(injector_event_buffer_frames(44_100), 11_025);
+    fn injector_event_buffer_is_fixed_to_the_audited_500ms_tolerance() {
+        assert_eq!(INJECTOR_EVENT_BUFFER_DURATION_HNS, 500 * 10_000);
+        assert_eq!(injector_event_buffer_frames(48_000), 24_000);
+        assert_eq!(injector_event_buffer_frames(44_100), 22_050);
     }
 
     #[test]
     fn actual_event_buffer_must_cover_the_requested_scheduler_tolerance() {
-        validate_injector_event_buffer_frames(12_000, 48_000).unwrap();
-        validate_injector_event_buffer_frames(12_001, 48_000).unwrap();
-        let error = validate_injector_event_buffer_frames(11_999, 48_000).unwrap_err();
-        assert!(error.contains("bufferFrames=11999"));
-        assert!(error.contains("requiredBufferFrames=12000"));
-        assert!(validate_injector_event_buffer_frames(12_000, 0).is_err());
+        validate_injector_event_buffer_frames(24_000, 48_000).unwrap();
+        validate_injector_event_buffer_frames(24_001, 48_000).unwrap();
+        let error = validate_injector_event_buffer_frames(23_999, 48_000).unwrap_err();
+        assert!(error.contains("bufferFrames=23999"));
+        assert!(error.contains("requiredBufferFrames=24000"));
+        assert!(validate_injector_event_buffer_frames(24_000, 0).is_err());
     }
 
     #[test]
     fn failed_result_preserves_known_render_telemetry() {
         let mut authority = RenderPacingAuthority::default();
         authority
-            .record_prefill(12_000, 12_000, 12_000, 6_183_136)
+            .record_prefill(24_000, 24_000, 24_000, 6_183_136)
             .unwrap();
         authority.record_started();
         let detail = authority
-            .observe_refill_wake(0, 6_183_136, Duration::from_millis(251))
+            .observe_refill_wake(0, 6_183_136, Duration::from_millis(501))
             .unwrap_err();
-        let failure = InjectorError::with_render(detail, 12_000, 12_000, &authority);
+        let failure = InjectorError::with_render(detail, 24_000, 24_000, &authority);
         let json = serde_json::to_value(InjectorResult::failed(failure)).unwrap();
-        assert_eq!(json["bufferFrames"], 12_000);
-        assert_eq!(json["prefillFrames"], 12_000);
+        assert_eq!(json["bufferFrames"], 24_000);
+        assert_eq!(json["prefillFrames"], 24_000);
         assert_eq!(json["renderWakeCount"], 1);
-        assert_eq!(json["maxRenderWakeIntervalMs"], 251);
+        assert_eq!(json["maxRenderWakeIntervalMs"], 501);
         assert_eq!(json["zeroPaddingUnderrunCount"], 1);
         assert!(json["detail"]
             .as_str()
@@ -157,10 +157,10 @@
     }
 
     #[test]
-    fn injector_buffer_tolerates_observed_30ms_and_114ms_scheduler_delays() {
+    fn injector_buffer_tolerates_observed_production_scheduler_delays() {
         let sample_rate_hz = 48_000_usize;
         let buffer_frames = injector_event_buffer_frames(sample_rate_hz as u32);
-        for delay_ms in [30_usize, 114] {
+        for delay_ms in [30_usize, 114, 259, 382] {
             let consumed_frames = sample_rate_hz * delay_ms / 1_000;
             let padding_frames = buffer_frames.saturating_sub(consumed_frames);
             assert!(padding_frames > 0, "delay {delay_ms} ms exhausted buffer");
@@ -190,7 +190,7 @@
     fn injector_buffer_still_fails_closed_after_scheduler_delay_exceeds_capacity() {
         let sample_rate_hz = 48_000_usize;
         let buffer_frames = injector_event_buffer_frames(sample_rate_hz as u32);
-        let delay_ms = 251_usize;
+        let delay_ms = 501_usize;
         let consumed_frames = sample_rate_hz * delay_ms / 1_000;
         let padding_frames = buffer_frames.saturating_sub(consumed_frames);
         assert_eq!(padding_frames, 0);
@@ -220,9 +220,9 @@
     fn prefill_requires_the_entire_actual_buffer_for_long_media() {
         let mut authority = RenderPacingAuthority::default();
         let error = authority
-            .record_prefill(480, 480, 12_000, 6_183_136)
+            .record_prefill(480, 480, 24_000, 6_183_136)
             .unwrap_err();
-        assert!(error.contains("expectedPrefillFrames=12000"));
+        assert!(error.contains("expectedPrefillFrames=24000"));
         assert!(error.contains("writtenFrames=480"));
         assert_eq!(authority.prefill_frames, 0);
     }
@@ -231,7 +231,7 @@
     fn prefill_accepts_all_short_media_when_it_is_smaller_than_the_buffer() {
         let mut authority = RenderPacingAuthority::default();
         authority
-            .record_prefill(6_000, 6_000, 12_000, 6_000)
+            .record_prefill(6_000, 6_000, 24_000, 6_000)
             .unwrap();
         assert_eq!(authority.prefill_frames, 6_000);
         assert_eq!(authority.submitted_frames, 6_000);

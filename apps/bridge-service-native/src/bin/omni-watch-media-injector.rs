@@ -34,9 +34,11 @@ mod injector {
     const BYTES_PER_FRAME: usize = TARGET_CHANNELS * BYTES_PER_SAMPLE;
     const RENDER_STALL_TIMEOUT: Duration = Duration::from_secs(15);
     const RENDER_ABSOLUTE_EXTRA_TIMEOUT: Duration = Duration::from_secs(120);
-    // Injector-only scheduling tolerance. r92 observed a 114 ms processing spike; 250 ms
-    // covers more than twice that measured delay without changing any other render consumer.
-    const INJECTOR_EVENT_BUFFER_DURATION_HNS: i64 = 2_500_000;
+    // Injector-only scheduling tolerance. The 2026-09-22 four-worker production run
+    // observed 259 ms and 382 ms scheduler delays. A 500 ms buffer covers the
+    // measured maximum with about 118 ms of headroom without changing underrun
+    // detection or any other render consumer.
+    const INJECTOR_EVENT_BUFFER_DURATION_HNS: i64 = 5_000_000;
     const HUNDRED_NANOSECONDS_PER_SECOND: u64 = 10_000_000;
 
     #[derive(Serialize)]

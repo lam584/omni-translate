@@ -44,6 +44,7 @@ pub(super) fn prepare_livetranslate_probe_plan(
     crate::audio::omni::apply_watch_release_livetranslate_corpus(
         &mut session_update,
         context.strict_livetranslate_authority,
+        crate::audio::bailian_protocol::is_v2(&protocol_authority),
         &source_language,
         &target_language,
     );

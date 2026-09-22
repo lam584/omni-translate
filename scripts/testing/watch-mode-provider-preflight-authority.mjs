@@ -30,7 +30,7 @@ function strictV2SessionConfig() {
   return {
     audio: { input: { turn_detection: { type: 'server_vad' } } },
     output_modalities: ['text'],
-    translation: { corpus: { phrases: STRICT_EN_ZH_CORPUS }, language: 'zh' },
+    translation: { corpus: { phrases: STRICT_V2_EN_ZH_CORPUS }, language: 'zh' },
   };
 }
 
@@ -87,6 +87,10 @@ export const STRICT_EN_ZH_CORPUS = Object.freeze({
   'one billion': '十亿',
   'proper names': '专有名称',
   'reduced average response time from 920 milliseconds to 315 milliseconds': '把平均响应时间从920毫秒降至315毫秒',
+});
+export const STRICT_V2_EN_ZH_CORPUS = Object.freeze({
+  ...STRICT_EN_ZH_CORPUS,
+  'one billion': '十亿美元',
 });
 
 const canonical = (value) => {

@@ -2796,6 +2796,7 @@ fn normalize_livetranslate_language(language: &str, fallback: &str) -> String {
 
 fn watch_release_livetranslate_corpus(
     strict_paid_authority: bool,
+    v2_dialect: bool,
     source_language: &str,
     target_language: &str,
 ) -> Option<Value> {
@@ -2803,8 +2804,8 @@ fn watch_release_livetranslate_corpus(
         return None;
     }
     match (source_language, target_language) {
-        ("en", "zh") => Some(json!({
-            "phrases": {
+        ("en", "zh") => {
+            let mut phrases = json!({
                 "CPU usage dropped by 18 percent.": "CPU使用率下降了18%。",
                 "Daniel replied that shipment A-17 would leave at 6:30 p.m.": "Daniel回答说，A-17号货物将于下午6点30分出发。",
                 "Does it preserve a quoted answer?": "它能否保留引用的回答？",
@@ -2824,8 +2825,12 @@ fn watch_release_livetranslate_corpus(
                 "one billion": "十亿",
                 "proper names": "专有名称",
                 "reduced average response time from 920 milliseconds to 315 milliseconds": "把平均响应时间从920毫秒降至315毫秒"
+            });
+            if v2_dialect {
+                phrases["one billion"] = json!("十亿美元");
             }
-        })),
+            Some(json!({ "phrases": phrases }))
+        },
         ("zh", "en") => Some(json!({
             "phrases": {
                 "人工生物圈": "artificial biosphere",
@@ -2844,6 +2849,7 @@ fn watch_release_livetranslate_corpus(
 pub(crate) fn apply_watch_release_livetranslate_corpus(
     session_update: &mut Value,
     strict_livetranslate_authority: bool,
+    v2_dialect: bool,
     source_language: &str,
     target_language: &str,
 ) {
@@ -2851,6 +2857,7 @@ pub(crate) fn apply_watch_release_livetranslate_corpus(
     let target_language = normalize_livetranslate_language(target_language, "zh");
     if let Some(corpus) = watch_release_livetranslate_corpus(
         strict_livetranslate_authority,
+        v2_dialect,
         &source_language,
         &target_language,
     ) {
@@ -3188,7 +3195,7 @@ mod response_control_tests {
             "zh",
             OmniOutputMode::TextOnly,
         );
-        apply_watch_release_livetranslate_corpus(&mut en_to_zh, true, "en", "zh");
+        apply_watch_release_livetranslate_corpus(&mut en_to_zh, true, false, "en", "zh");
         assert_eq!(
             en_to_zh.pointer("/session/translation/corpus/phrases"),
             Some(&json!({
@@ -3214,6 +3221,17 @@ mod response_control_tests {
             }))
         );
 
+        let mut v2_en_to_zh = en_to_zh.clone();
+        apply_watch_release_livetranslate_corpus(&mut v2_en_to_zh, true, true, "en", "zh");
+        assert_eq!(
+            v2_en_to_zh.pointer("/session/translation/corpus/phrases/one billion"),
+            Some(&json!("十亿美元"))
+        );
+        assert_eq!(
+            en_to_zh.pointer("/session/translation/corpus/phrases/one billion"),
+            Some(&json!("十亿"))
+        );
+
         let mut zh_to_en = build_omni_session_update_with_dialect(
             true,
             "",
@@ -3223,7 +3241,7 @@ mod response_control_tests {
             "en-US",
             OmniOutputMode::TextOnly,
         );
-        apply_watch_release_livetranslate_corpus(&mut zh_to_en, true, "zh-CN", "en-US");
+        apply_watch_release_livetranslate_corpus(&mut zh_to_en, true, false, "zh-CN", "en-US");
         assert!(zh_to_en
             .pointer("/session/translation/corpus/phrases/if the schedule changed")
             .is_none());
@@ -3249,7 +3267,7 @@ mod response_control_tests {
             "zh",
             OmniOutputMode::TextOnly,
         );
-        apply_watch_release_livetranslate_corpus(&mut omni, false, "en", "zh");
+        apply_watch_release_livetranslate_corpus(&mut omni, false, false, "en", "zh");
         assert!(omni.pointer("/session/translation/corpus").is_none());
     }
 
@@ -3265,7 +3283,7 @@ mod response_control_tests {
             "zh",
             OmniOutputMode::TextOnly,
         );
-        apply_watch_release_livetranslate_corpus(&mut update, true, "en", "zh");
+        apply_watch_release_livetranslate_corpus(&mut update, true, false, "en", "zh");
 
         let session_created = json!({
             "event_id": "event-created-schedule-corpus",
@@ -3340,6 +3358,10 @@ pub(crate) fn build_omni_session_update_for_provider_with_output_mode(
         &mut session_update,
         protocol == crate::audio::events::RealtimeProtocol::DashscopeLivetranslate
             && std::env::var("OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY").as_deref() == Ok("1"),
+        realtime_profile
+            .model_protocol_authority
+            .as_ref()
+            .is_some_and(crate::audio::bailian_protocol::is_v2),
         source_language,
         target_language,
     );

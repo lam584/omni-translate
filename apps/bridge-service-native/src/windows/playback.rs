@@ -75,19 +75,15 @@ fn handle_source_subscriber(
             );
             break;
         }
-        let payload = {
-            let source_rx = source_rx.lock().unwrap();
-            let current = state.lock().unwrap();
-            if !source_subscription_is_owner(&current, my_generation) {
-                drop(current);
-                drop(source_rx);
-                append_bridge_service_log(
-                    runtime_root,
-                    &format!("source subscriber handoff: generation={my_generation}"),
-                );
-                break;
-            }
-            source_rx.recv_timeout(Duration::from_millis(25))
+        let Some(payload) = source_delivery::receive_owned_source_payload(
+            state, source_rx, my_generation,
+            |receiver| receiver.recv_timeout(Duration::from_millis(25)),
+        ) else {
+            append_bridge_service_log(
+                runtime_root,
+                &format!("source subscriber handoff: generation={my_generation}"),
+            );
+            break;
         };
         let (event_type, payload) = match payload {
             Ok(payload) => ("bridge.source.frame", payload),

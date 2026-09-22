@@ -45,6 +45,7 @@ use windows_sys::Win32::System::IO::DeviceIoControl;
 use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
 
 mod capture_process;
+mod source_delivery;
 mod audio_client;
 mod virtual_mic;
 mod win32;

@@ -793,7 +793,17 @@ const validateDesktopEmitter = (root, scenarioId, options) => {
   if (!Number.isFinite(startedAt) || !Number.isFinite(completedAt) || completedAt < startedAt) {
     issues.push('desktop emitter startedAt/completedAt ordering is invalid');
   }
-  orderedTimeline(issues, result?.timeline, spec.timeline, 'desktop emitter timeline');
+  const probe = scenarioId === 'E2E-PROVIDER-PROBE'
+    ? readJson(path.join(root, 'provider-probe-result.json')) : null;
+  const expectedAuthorization = options?.expectedAuthorization ?? probe?.preflightAuthorization;
+  const strictLive = scenarioId === 'E2E-PROVIDER-PROBE'
+    && (expectedAuthorization?.protocol ?? probe?.protocol) === 'dashscope-livetranslate';
+  // LiveTranslate settles startup before connecting; other protocols retain
+  // their exact original lifecycle. Do not accept either sequence interchangeably.
+  const expectedTimeline = strictLive
+    ? [spec.timeline[0], 'provider-preflight-startup-settled', ...spec.timeline.slice(1)]
+    : spec.timeline;
+  orderedTimeline(issues, result?.timeline, expectedTimeline, 'desktop emitter timeline');
   if (
     !Array.isArray(result?.timeline)
     || result.timeline.some((event, index) => (
@@ -801,9 +811,6 @@ const validateDesktopEmitter = (root, scenarioId, options) => {
     ))
   ) issues.push('desktop emitter timeline must bind every ordered event to its invocationId');
 
-  const strictLive = scenarioId === 'E2E-PROVIDER-PROBE'
-    && readJson(path.join(root, 'provider-probe-result.json'))?.protocol
-      === 'dashscope-livetranslate';
   const payloadPaths = [
     ...spec.payloadPaths,
     ...(strictLive ? ['raw'] : []),

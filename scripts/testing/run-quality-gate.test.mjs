@@ -916,7 +916,11 @@ const writeDesktopEmitterFixture = (
        outputTokens: payload.outputTokens,
        audioSeconds: payload.audioSeconds,
     } : {}),
-    timeline: DESKTOP_FIXTURE_TIMELINES[scenarioId].map((event, index) => ({
+    timeline: DESKTOP_FIXTURE_TIMELINES[scenarioId].flatMap((event, index) => (
+      scenarioId === 'E2E-PROVIDER-PROBE'
+        && payload.protocol === 'dashscope-livetranslate' && index === 0
+        ? [event, 'provider-preflight-startup-settled'] : [event]
+    )).map((event, index) => ({
       event,
       invocationId,
       observedAt: new Date(TEST_NOW.getTime() - 900 + (index * 10)).toISOString(),
@@ -1230,7 +1234,7 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
         },
         rawTrace,
       };
-      writeDesktopEmitterFixture(rawDirectory, scenarioId, 'provider-probe-result.json', {
+      const probePayload = {
         schemaVersion: 1,
         artifactKind: 'provider-production-probe-result',
         source: 'desktop-api-v2',
@@ -1326,7 +1330,36 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
           },
           error: null,
         },
-      }, { ...fixtureOptions, desktopExecutable: providerProbeDesktopExecutable });
+      };
+      if (fixtureOptions.protocol === 'dashscope-realtime') {
+        // Legacy text-only probes have token usage and no zero-input wire trace.
+        Object.assign(preflightAuthorization, {
+          model: 'qwen3.5-omni-plus-realtime',
+          protocol: 'dashscope-realtime',
+          operation: 'text-translation-preflight',
+          inputMode: 'text-only',
+          tokenBudget: { maxInputTokens: 4096, maxOutputTokens: 256 },
+        });
+        for (const key of ['providerInputMode', 'responseMode', 'terminalEvent', 'lifecycleBudget']) {
+          delete preflightAuthorization[key];
+        }
+        for (const layer of [probePayload, probePayload.rawProbeResult]) {
+          Object.assign(layer, {
+            model: preflightAuthorization.model,
+            protocol: preflightAuthorization.protocol,
+            operation: preflightAuthorization.operation,
+            inputMode: preflightAuthorization.inputMode,
+            inputTokens: 24,
+            outputTokens: 12,
+          });
+          for (const key of Object.keys(lifecycleEvidence)) delete layer[key];
+        }
+        probePayload.rawProbeResult.checks.find((check) => check.key === 'response-shape').summary
+          = '已完整得到 translation.completed 与 response.completed。';
+        fs.rmSync(traceDirectory, { recursive: true, force: true });
+      }
+      writeDesktopEmitterFixture(rawDirectory, scenarioId, 'provider-probe-result.json',
+        probePayload, { ...fixtureOptions, desktopExecutable: providerProbeDesktopExecutable });
       break;
     }
     case 'E2E-REAL-DEVICE-AUDIO': {
@@ -3042,6 +3075,66 @@ test('Provider probe validator cross-checks raw result, top-level fields, and di
     } finally {
       fs.rmSync(rawDirectory, { recursive: true, force: true });
     }
+  }
+});
+
+test('provider preflight fixture requires the startup-settled event in lifecycle order', () => {
+  const rawDirectory = makeTempDir();
+  try {
+    writeScenarioRawEvidence(rawDirectory, 'E2E-PROVIDER-PROBE');
+    const emitterPath = path.join(rawDirectory, 'emitter-result.json');
+    const emitter = readJson(emitterPath);
+    const validate = () => validateRawReleaseManualEvidence(rawDirectory, 'E2E-PROVIDER-PROBE', {
+      now: TEST_NOW.getTime(),
+      currentProvenance: TEST_PROVENANCE,
+    });
+    assert.deepEqual(validate().issues, []);
+    assert.equal(emitter.timeline[1].event, 'provider-preflight-startup-settled');
+    const missing = emitter.timeline.filter((entry) => entry.event !== 'provider-preflight-startup-settled');
+    const reordered = [...emitter.timeline];
+    [reordered[1], reordered[2]] = [reordered[2], reordered[1]];
+    for (const timeline of [missing, reordered]) {
+      writeJson(emitterPath, {
+        ...emitter,
+        timeline: timeline.map((entry, index) => ({ ...entry, sequence: index + 1 })),
+      });
+      const issues = validate().issues;
+      assert.ok(issues.includes('provider preflight emitter timeline is not the fixed ordered lifecycle'));
+      assert.ok(issues.some((issue) => issue.startsWith('desktop emitter timeline')));
+    }
+  } finally {
+    fs.rmSync(rawDirectory, { recursive: true, force: true });
+  }
+});
+
+test('text-only provider preflight preserves its exact six-event lifecycle', () => {
+  const rawDirectory = makeTempDir();
+  try {
+    writeScenarioRawEvidence(rawDirectory, 'E2E-PROVIDER-PROBE', { protocol: 'dashscope-realtime' });
+    const emitterPath = path.join(rawDirectory, 'emitter-result.json');
+    const emitter = readJson(emitterPath);
+    const validate = () => validateRawReleaseManualEvidence(rawDirectory, 'E2E-PROVIDER-PROBE', {
+      now: TEST_NOW.getTime(),
+      currentProvenance: TEST_PROVENANCE,
+    });
+    assert.deepEqual(validate().issues, []);
+    assert.deepEqual(emitter.timeline.map((entry) => entry.event), DESKTOP_FIXTURE_TIMELINES['E2E-PROVIDER-PROBE']);
+    const reordered = [...emitter.timeline];
+    [reordered[1], reordered[2]] = [reordered[2], reordered[1]];
+    const withLiveTranslateEvent = [emitter.timeline[0], {
+      ...emitter.timeline[0], event: 'provider-preflight-startup-settled',
+    }, ...emitter.timeline.slice(1)];
+    for (const timeline of [emitter.timeline.filter((_, index) => index !== 1), reordered, withLiveTranslateEvent]) {
+      writeJson(emitterPath, {
+        ...emitter,
+        timeline: timeline.map((entry, index) => ({ ...entry, sequence: index + 1 })),
+      });
+      const issues = validate().issues;
+      assert.ok(issues.includes('provider preflight emitter timeline is not the fixed ordered lifecycle'));
+      assert.ok(issues.some((issue) => issue.startsWith('desktop emitter timeline')));
+    }
+  } finally {
+    fs.rmSync(rawDirectory, { recursive: true, force: true });
   }
 });
 

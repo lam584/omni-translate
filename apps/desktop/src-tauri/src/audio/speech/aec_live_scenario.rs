@@ -148,10 +148,60 @@ pub(super) struct AecLiveScenarioRender {
     pub(super) changed_samples: usize,
     pub(super) changed_ratio: f64,
     pub(super) physical_samples: Vec<f32>,
+    reference_sample_range: std::ops::Range<usize>,
 }
 
 impl AecLiveScenarioRender {
-    pub(super) fn build(
+    /// Partition one cue, rather than replaying the entire cue for every phase.
+    /// All ranges are frame-aligned, consecutive and exhaustive. Reject a cue
+    /// that cannot supply one complete render-reference window to each phase.
+    pub(super) fn build_program(
+        assignments: &[AecLiveScenarioAssignment],
+        reference_samples: &[f32],
+        sample_rate_hz: u32,
+        channel_count: u16,
+    ) -> Result<Vec<Self>, String> {
+        if assignments.is_empty() {
+            return Ok(Vec::new());
+        }
+        if assignments.len() != 3 || assignments.iter().enumerate().any(|(index, entry)| {
+            entry.ordinal != index as u64 + 1
+                || entry.phase != AecLiveScenarioPhase::for_ordinal(index as u64 + 1)
+        }) {
+            return Err("AEC live scenario requires all three ordered phases".to_string());
+        }
+        let channels = usize::from(channel_count);
+        if sample_rate_hz == 0 || channels == 0 || reference_samples.len() % channels != 0 {
+            return Err("AEC live scenario requires frame-aligned PCM and non-zero rate/channels".to_string());
+        }
+        let total_frames = reference_samples.len() / channels;
+        let minimum_phase_frames = (u64::from(sample_rate_hz)
+            * super::RENDER_REFERENCE_FRAME_MS).div_ceil(1_000).max(1) as usize;
+        if total_frames / assignments.len() < minimum_phase_frames {
+            return Err(format!(
+                "AEC live scenario cue too short for three real phases: frames={total_frames} minimumPhaseFrames={minimum_phase_frames}"
+            ));
+        }
+        let frames_per_phase = total_frames / assignments.len();
+        let remainder = total_frames % assignments.len();
+        let mut start_frame = 0;
+        Ok(assignments.iter().enumerate().map(|(index, assignment)| {
+            let end_frame = start_frame + frames_per_phase + usize::from(index < remainder);
+            let range = start_frame * channels..end_frame * channels;
+            let mut render = Self::build(
+                *assignment, &reference_samples[range.clone()], sample_rate_hz, channel_count,
+            );
+            render.reference_sample_range = range;
+            start_frame = end_frame;
+            render
+        }).collect())
+    }
+
+    pub(super) fn reference_samples<'a>(&self, samples: &'a [f32]) -> &'a [f32] {
+        &samples[self.reference_sample_range.clone()]
+    }
+
+    fn build(
         assignment: AecLiveScenarioAssignment,
         reference_samples: &[f32],
         sample_rate_hz: u32,
@@ -187,6 +237,7 @@ impl AecLiveScenarioRender {
             changed_samples,
             changed_ratio,
             physical_samples,
+            reference_sample_range: 0..reference_samples.len(),
         }
     }
 
@@ -195,7 +246,7 @@ impl AecLiveScenarioRender {
         reference_samples: &[f32],
         channel_count: u16,
     ) -> u64 {
-        (reference_samples.len() / channel_count as usize) as u64
+        (self.reference_samples(reference_samples).len() / channel_count as usize) as u64
     }
 
     pub(super) fn physical_frames(&self, channel_count: u16) -> u64 {
@@ -257,6 +308,104 @@ mod tests {
 
         assert!(assignments.assignments_for_cue("cue-a").is_empty());
         assert!(assignments.assignments_for_cue("cue-b").is_empty());
+    }
+
+    #[test]
+    fn long_cue_program_conserves_source_frames_and_does_not_repeat_later_cues() {
+        let mut assignments = AecLiveScenarioAssignments::default();
+        let mut reference_total = 0_u64;
+        let mut physical_total = 0_u64;
+        for (index, duration_ms) in [58_720_usize, 45_680, 6_640].into_iter().enumerate() {
+            let cue_id = format!("long-cue-{index}");
+            let frames = duration_ms * SPEAKER_SAMPLE_RATE_HZ as usize / 1_000;
+            let samples = (0..frames).flat_map(|frame| {
+                let sample = (frame % 997 + 1) as f32 / 2_000.0;
+                [sample, -sample]
+            }).collect::<Vec<_>>();
+            let program = AecLiveScenarioRender::build_program(
+                &assignments.assignments_for_cue(&cue_id), &samples,
+                SPEAKER_SAMPLE_RATE_HZ, SPEAKER_CHANNEL_COUNT,
+            ).unwrap();
+            if index == 0 {
+                assert_eq!(program.len(), 3);
+                let mut end = 0;
+                for (phase, render) in program.iter().enumerate() {
+                    assert_eq!(render.reference_sample_range.start, end);
+                    end = render.reference_sample_range.end;
+                    assert_eq!(render.assignment.ordinal, phase as u64 + 1);
+                    let reference = render.reference_samples(&samples);
+                    let physical = &render.physical_samples[render.delay_frames * 2..];
+                    assert_eq!(reference.len(), physical.len());
+                    for (&source, &played) in reference.iter().zip(physical) {
+                        assert_eq!(played, render.assignment.phase.physical_sample(source));
+                    }
+                    reference_total += render.reference_frames(&samples, SPEAKER_CHANNEL_COUNT);
+                    physical_total += render.physical_frames(SPEAKER_CHANNEL_COUNT);
+                }
+                assert_eq!(end, samples.len());
+                assert_eq!(reference_total, 2_818_560);
+                assert_eq!(physical_total, 2_818_560 + 3_840 + 7_680);
+                assignments.finish_cue(&cue_id, true);
+            } else {
+                assert!(program.is_empty(), "completed phases must not replay subsequent cues");
+                reference_total += frames as u64;
+                physical_total += frames as u64;
+            }
+        }
+        assert_eq!(reference_total, 5_329_920); // 111.04 seconds, not 228.48.
+        assert_eq!(physical_total, reference_total + 11_520); // Only real delay prefixes added.
+    }
+
+    #[test]
+    fn partition_keeps_remainder_frames_once_and_in_order() {
+        let assignments = AecLiveScenarioAssignments::default().assignments_for_cue("cue");
+        for total_frames in [1_440, 1_441, 1_442] {
+            let samples = (0..total_frames * 2).map(|sample| sample as f32).collect::<Vec<_>>();
+            let program = AecLiveScenarioRender::build_program(
+                &assignments, &samples, SPEAKER_SAMPLE_RATE_HZ, SPEAKER_CHANNEL_COUNT,
+            ).unwrap();
+            let reconstructed = program.iter().flat_map(|render| {
+                render.reference_samples(&samples).iter().copied()
+            }).collect::<Vec<_>>();
+            assert_eq!(reconstructed, samples);
+            for render in &program {
+                assert_eq!(render.reference_sample_range.start % 2, 0);
+                assert_eq!(render.reference_sample_range.end % 2, 0);
+                assert!(render.reference_frames(&samples, 2) >= 480);
+            }
+        }
+    }
+
+    #[test]
+    fn short_cue_fails_closed_without_completing_or_skipping_any_phase() {
+        let mut state = AecLiveScenarioAssignments::default();
+        let assignments = state.assignments_for_cue("short");
+        for frames in [0, 1, 479, 480, 1_439] {
+            let error = AecLiveScenarioRender::build_program(
+                &assignments, &vec![0.2; frames * 2],
+                SPEAKER_SAMPLE_RATE_HZ, SPEAKER_CHANNEL_COUNT,
+            ).err().expect("short cue must fail before rendering");
+            assert!(error.contains("too short"));
+        }
+        state.finish_cue("short", false);
+        assert!(!state.completed);
+        assert_eq!(state.assignments_for_cue("next"), assignments);
+    }
+
+    #[test]
+    fn program_rejects_incomplete_phases_and_invalid_pcm() {
+        let assignments = AecLiveScenarioAssignments::default().assignments_for_cue("cue");
+        let samples = vec![0.2; 2_880];
+        let mut reordered = assignments.clone();
+        reordered.swap(0, 1);
+        for invalid in [&assignments[..2], &reordered[..]] {
+            assert!(AecLiveScenarioRender::build_program(invalid, &samples, 48_000, 2).is_err());
+        }
+        for (rate, channels, length) in [(0, 2, 2_880), (48_000, 0, 2_880), (48_000, 2, 2_879)] {
+            assert!(AecLiveScenarioRender::build_program(
+                &assignments, &samples[..length], rate, channels,
+            ).is_err());
+        }
     }
 
     #[test]

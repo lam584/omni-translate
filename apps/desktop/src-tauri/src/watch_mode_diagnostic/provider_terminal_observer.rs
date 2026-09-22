@@ -13,16 +13,16 @@ pub(super) enum ProviderTerminalObservationError {
 }
 
 pub(super) struct ProviderTerminalObserver {
-    phase_started: Instant,
+    finish_phase_started: Option<Instant>,
     timeout: Duration,
     grace: Duration,
     finish_observed: bool,
 }
 
 impl ProviderTerminalObserver {
-    pub(super) fn new(started: Instant, timeout: Duration, grace: Duration) -> Self {
+    pub(super) fn new(_started: Instant, timeout: Duration, grace: Duration) -> Self {
         Self {
-            phase_started: started,
+            finish_phase_started: None,
             timeout,
             grace,
             finish_observed: false,
@@ -43,19 +43,20 @@ impl ProviderTerminalObserver {
         }
         if session_finish_sent && !self.finish_observed {
             self.finish_observed = true;
-            self.phase_started = now;
+            self.finish_phase_started = Some(now);
         }
-        let deadline = self
-            .phase_started
+        let Some(finish_phase_started) = self.finish_phase_started else {
+            // input-complete first fences local input, drains the already
+            // admitted send queue, and disconnects the subscription. That
+            // local work precedes the bounded Provider finish phase.
+            return Ok(false);
+        };
+        let deadline = finish_phase_started
             .checked_add(self.timeout)
             .and_then(|value| value.checked_add(self.grace))
-            .unwrap_or(self.phase_started);
+            .unwrap_or(finish_phase_started);
         if now >= deadline {
-            return Err(ProviderTerminalObservationError::Timeout(if self.finish_observed {
-                "post-finish"
-            } else {
-                "pre-finish"
-            }));
+            return Err(ProviderTerminalObservationError::Timeout("post-finish"));
         }
         Ok(false)
     }
@@ -128,15 +129,18 @@ mod tests {
     }
 
     #[test]
-    fn pre_finish_phase_cannot_consume_the_post_finish_budget() {
+    fn local_backlog_drain_cannot_consume_the_post_finish_budget() {
         let started = Instant::now();
         let mut observer = ProviderTerminalObserver::new(
             started,
             Duration::from_secs(15),
             Duration::from_millis(250),
         );
-        assert!(matches!(observer.observe(started + Duration::from_millis(15_249), false, false), Ok(false)));
-        assert!(matches!(observer.observe(started + Duration::from_millis(15_250), false, false), Err(ProviderTerminalObservationError::Timeout("pre-finish"))));
+        let finish_seen = started + Duration::from_secs(60);
+        assert!(matches!(observer.observe(finish_seen, false, false), Ok(false)));
+        assert!(matches!(observer.observe(finish_seen, true, false), Ok(false)));
+        assert!(matches!(observer.observe(finish_seen + Duration::from_millis(15_249), true, false), Ok(false)));
+        assert!(matches!(observer.observe(finish_seen + Duration::from_millis(15_250), true, false), Err(ProviderTerminalObservationError::Timeout("post-finish"))));
     }
 
     #[test]

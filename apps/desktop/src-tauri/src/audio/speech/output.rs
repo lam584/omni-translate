@@ -383,18 +383,16 @@ where
             channel_count,
             output_level,
         );
-        let live_scenarios = active_aec_live_scenario_assignments(cue_id)?
-            .into_iter()
-            .map(|assignment| {
-                AecLiveScenarioRender::build(
-                    assignment,
-                    &final_samples,
-                    SPEAKER_SAMPLE_RATE_HZ,
-                    SPEAKER_CHANNEL_COUNT,
-                )
-            })
-            .collect::<Vec<_>>();
-        live_scenario_reserved = !live_scenarios.is_empty();
+        let assignments = active_aec_live_scenario_assignments(cue_id)?;
+        // Mark ownership before construction: a short/invalid cue must release
+        // its reservation as failed, never mark unrendered phases complete.
+        live_scenario_reserved = !assignments.is_empty();
+        let live_scenarios = AecLiveScenarioRender::build_program(
+            &assignments,
+            &final_samples,
+            SPEAKER_SAMPLE_RATE_HZ,
+            SPEAKER_CHANNEL_COUNT,
+        )?;
         let prepared_render = prepared_render_or_open(prepared_render, || {
                 let com_apartment = WasapiComApartment::enter()
                     .map_err(|error| speaker_render_stage_error("com-initialize", error))?;
@@ -472,6 +470,7 @@ where
         }
 
         let mut submitted_frame_base = 0_u64;
+        let mut rendered_source_frames = 0_u64;
         for scenario in &live_scenarios {
             let started_at_ms = crate::shared::time::now_unix_millis();
             on_render_event(SpeakerRenderEvent::AecLiveScenarioStage {
@@ -491,7 +490,7 @@ where
             let render_result = render_wasapi_frames(
                 audio_client,
                 render_client,
-                &final_samples,
+                scenario.reference_samples(&final_samples),
                 &scenario.physical_samples,
                 scenario.physical_prefix_offset_frames(),
                 submitted_frame_base,
@@ -523,11 +522,15 @@ where
                 completed_at_ms,
             })?;
             render_result?;
+            rendered_source_frames += scenario.reference_frames(&final_samples, SPEAKER_CHANNEL_COUNT);
             submitted_frame_base = submitted_frame_base
                 .saturating_add(scenario.physical_frames(SPEAKER_CHANNEL_COUNT));
         }
+        // Receipt counts successfully played source PCM, as on the ordinary path.
+        // AEC delay-prefix silence is accounted in each stage's physicalFrames and
+        // the cumulative physical submit clock, not as additional translated audio.
         Ok((
-            (total_audio_frames as u64).saturating_mul(live_scenarios.len() as u64),
+            rendered_source_frames,
             physical_playback_device_id,
         ))
     });
@@ -983,6 +986,53 @@ mod render_reference_pacer_tests {
         assert_eq!(first.played_frames, 360);
         assert_eq!(second.submitted_frames, 960);
         assert_eq!(second.played_frames, 840);
+    }
+
+    #[test]
+    fn partitioned_aec_render_keeps_reference_and_physical_receipt_frame_counts_exact() {
+        use super::aec_live_scenario::{AecLiveScenarioAssignment, AecLiveScenarioPhase};
+        let assignments = [
+            AecLiveScenarioAssignment { ordinal: 1, phase: AecLiveScenarioPhase::DoubleTalk },
+            AecLiveScenarioAssignment { ordinal: 2, phase: AecLiveScenarioPhase::DynamicDelay },
+            AecLiveScenarioAssignment { ordinal: 3, phase: AecLiveScenarioPhase::Nonlinear },
+        ];
+        // Same 24 kHz mono -> 48 kHz stereo conversion as the production failure.
+        let source = vec![8_000_i16; 1_409_280]; // 58.72s, not three copies of it.
+        let samples = speaker_pcm_48k_stereo(&source, 24_000, 1, 100);
+        let program = AecLiveScenarioRender::build_program(
+            &assignments, &samples, SPEAKER_SAMPLE_RATE_HZ, SPEAKER_CHANNEL_COUNT,
+        ).unwrap();
+        let mut submitted_frame_base = 0;
+        let mut rendered_source_frames = 0;
+        let mut reference = Vec::new();
+        let mut previous_played = 0;
+        for scenario in &program {
+            let stage_reference = scenario.reference_samples(&samples);
+            let mut tracker = RenderSubmitTracker::new_with_reference_at_and_prefix(
+                scenario.physical_frames(SPEAKER_CHANNEL_COUNT) as usize,
+                stage_reference.len() / 2, 480,
+                scenario.physical_prefix_offset_frames() as usize, submitted_frame_base,
+            );
+            while !tracker.is_complete() {
+                let written = tracker.next_write_frames(480);
+                assert!(written > 0);
+                if let Some(window) = tracker.record_write(written, 0).unwrap() {
+                    assert!(window.played_frames >= previous_played);
+                    previous_played = window.played_frames;
+                    reference.extend_from_slice(
+                        &stage_reference[window.start_frame * 2..window.end_frame * 2],
+                    );
+                }
+            }
+            assert_eq!(tracker.submitted_frames as u64, scenario.physical_frames(2));
+            submitted_frame_base += tracker.submitted_frames as u64;
+            rendered_source_frames += scenario.reference_frames(&samples, SPEAKER_CHANNEL_COUNT);
+        }
+        assert_eq!(rendered_source_frames, 2_818_560);
+        assert_eq!(rendered_source_frames * 24_000, source.len() as u64 * 48_000);
+        assert_eq!(reference, samples); // No duplicate, skipped or out-of-order source frame.
+        assert_eq!(submitted_frame_base, 2_830_080); // Actual PCM includes 80ms + 160ms silence.
+        assert_eq!(submitted_frame_base, samples.len() as u64 / 2 + 11_520);
     }
 
     fn collect_paced_reference(submitted: &[f32]) -> Vec<f32> {

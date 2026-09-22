@@ -1848,6 +1848,7 @@ function v2ProcessEvidence(mutate = () => {}) {
     translation: structuredClone(OFFICIAL_SESSION_UPDATE.session.translation),
   };
   session.translation.corpus.phrases['one billion'] = '十亿美元';
+  session.translation.corpus.phrases['During the test, the outside temperature fell from 21 degrees Celsius to minus 4, but every sensor stayed online.'] = '测试期间，室外温度从21摄氏度降至零下4摄氏度，但所有传感器始终在线。';
   payloads[0].host = V2_SELECTION.endpointHost;
   payloads[0].query.model = V2_SELECTION.modelId;
   payloads[1].session.model = V2_SELECTION.modelId;

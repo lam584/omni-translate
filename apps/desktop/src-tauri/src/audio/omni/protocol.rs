@@ -2828,6 +2828,9 @@ fn watch_release_livetranslate_corpus(
             });
             if v2_dialect {
                 phrases["one billion"] = json!("十亿美元");
+                phrases["During the test, the outside temperature fell from 21 degrees Celsius to minus 4, but every sensor stayed online."] = json!(
+                    "测试期间，室外温度从21摄氏度降至零下4摄氏度，但所有传感器始终在线。"
+                );
             }
             Some(json!({ "phrases": phrases }))
         },
@@ -3226,6 +3229,14 @@ mod response_control_tests {
         assert_eq!(
             v2_en_to_zh.pointer("/session/translation/corpus/phrases/one billion"),
             Some(&json!("十亿美元"))
+        );
+        assert_eq!(
+            v2_en_to_zh.pointer(
+                "/session/translation/corpus/phrases/During the test, the outside temperature fell from 21 degrees Celsius to minus 4, but every sensor stayed online."
+            ),
+            Some(&json!(
+                "测试期间，室外温度从21摄氏度降至零下4摄氏度，但所有传感器始终在线。"
+            ))
         );
         assert_eq!(
             en_to_zh.pointer("/session/translation/corpus/phrases/one billion"),

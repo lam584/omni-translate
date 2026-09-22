@@ -133,7 +133,11 @@ impl LivetranslateShutdown {
     }
 
     pub(super) fn deadlines(&self) -> Option<LivetranslateShutdownDeadlines> {
-        let phase_started_at = self.finish_sent_at.or(self.requested_at)?;
+        // The Provider finish budget starts only after the local input fence is
+        // complete and session.finish has been written. Draining audio already
+        // admitted before input-complete is local teardown work and must not
+        // consume the Provider's terminal acknowledgement budget.
+        let phase_started_at = self.finish_sent_at?;
         let hard_deadline = phase_started_at + LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT;
         Some(LivetranslateShutdownDeadlines {
             queue_evidence_at: hard_deadline - LIVETRANSLATE_EVIDENCE_QUEUE_RESERVE,
@@ -298,11 +302,7 @@ impl LivetranslateShutdown {
             return None;
         }
         let finish_sent = self.shared.session_finish_sent.load(Ordering::SeqCst);
-        let reason = if finish_sent {
-            "livetranslate-session-finished-timeout"
-        } else {
-            "livetranslate-audio-drain-timeout"
-        };
+        let reason = "livetranslate-session-finished-timeout";
         // These inputs describe the last predicate evaluation, not live queue state.
         let observation = match self.last_finish_observation {
             Some((chunks, empty, disconnected)) => format!(
@@ -318,11 +318,7 @@ impl LivetranslateShutdown {
             format!(
                 "LiveTranslate fail-closed: shutdown did not complete within {} seconds of the {} boundary, including evidence finalization and terminal reserves (session.finish sent={finish_sent}) {observation} currentIdleReadCount={idle_reads} currentDrainBarrier={barrier}",
                 LIVETRANSLATE_TOTAL_SHUTDOWN_TIMEOUT.as_secs(),
-                if finish_sent {
-                    "session.finish send"
-                } else {
-                    "stop request"
-                },
+                "session.finish send",
             ),
         ))
     }
@@ -1058,15 +1054,16 @@ mod tests {
     }
 
     #[test]
-    fn input_predicates_block_finish_and_recover_after_a_fresh_stable_iteration() {
+    fn input_predicates_block_finish_without_consuming_provider_finish_budget() {
         for (chunks, empty, disconnected) in [(1, true, true), (0, false, true), (0, true, false)] {
             let now = Instant::now();
             let mut shutdown = LivetranslateShutdown::new(true);
             shutdown.request(now);
             assert!(!shutdown.should_send_finish(chunks, empty, disconnected).unwrap());
-            let (_, error) = shutdown.deadline_error(now + Duration::from_secs(15)).unwrap();
-            assert!(error.contains(&format!("lastObservedChunksSent={chunks} lastObservedPrequeueEmpty={empty} lastObservedInputDisconnected={disconnected}")));
-            assert!(error.contains("currentDrainBarrier=none"));
+            assert!(shutdown.deadlines().is_none());
+            assert!(shutdown
+                .deadline_error_with_response_state(now + Duration::from_secs(60), true)
+                .is_none());
             assert!(!shutdown.should_send_finish(0, true, true).unwrap());
             assert!(shutdown.should_send_finish(0, true, true).unwrap());
         }
@@ -1077,8 +1074,7 @@ mod tests {
         let now = Instant::now();
         let mut shutdown = LivetranslateShutdown::new(true);
         shutdown.request(now);
-        let (_, error) = shutdown.deadline_error(now + Duration::from_secs(15)).unwrap();
-        assert!(error.contains("lastObservedChunksSent=unknown lastObservedPrequeueEmpty=unknown lastObservedInputDisconnected=unknown"));
+        assert!(shutdown.deadline_error(now + Duration::from_secs(60)).is_none());
         assert!(!shutdown.should_send_finish(0, true, true).unwrap());
         assert!(!shutdown.should_send_finish(1, true, true).unwrap());
         assert!(!shutdown.should_send_finish(0, true, true).unwrap());
@@ -1086,19 +1082,34 @@ mod tests {
     }
 
     #[test]
-    fn pre_finish_audio_drain_retains_its_own_bounded_deadline() {
-        let now = Instant::now();
+    fn backlog_and_active_response_do_not_start_finish_budget_before_session_finish() {
+        let requested_at = Instant::now();
         let mut shutdown = LivetranslateShutdown::new(true);
-        shutdown.request(now);
+        shutdown.request(requested_at);
 
-        let deadlines = shutdown.deadlines().unwrap();
-        assert_eq!(deadlines.hard_deadline, now + Duration::from_secs(15));
-        assert_eq!(deadlines.evidence_deadline, deadlines.hard_deadline - Duration::from_millis(100));
-        assert!(shutdown.deadline_error(deadlines.fail_at - Duration::from_millis(1)).is_none());
-        let (reason, _) = shutdown
-            .deadline_error(deadlines.fail_at)
-            .expect("pre-finish audio drain remains bounded");
-        assert_eq!(reason, "livetranslate-audio-drain-timeout");
+        assert!(!shutdown.should_send_finish(8, false, false).unwrap());
+        assert!(shutdown
+            .deadline_error_with_response_state(requested_at + Duration::from_secs(60), true)
+            .is_none());
+        assert!(shutdown.deadlines().is_none());
+
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        assert!(shutdown.should_send_finish(0, true, true).unwrap());
+        let finish_sent_at = requested_at + Duration::from_secs(61);
+        shutdown.record_finish_sent(finish_sent_at);
+
+        assert!(!shutdown.should_send_finish(0, true, true).unwrap());
+        let deadlines = shutdown.deadlines().expect("post-finish deadlines");
+        assert_eq!(deadlines.hard_deadline, finish_sent_at + Duration::from_secs(15));
+        assert!(shutdown
+            .deadline_error_with_response_state(deadlines.fail_at - Duration::from_millis(1), true)
+            .is_none());
+        let (reason, error) = shutdown
+            .deadline_error_with_response_state(deadlines.fail_at, true)
+            .expect("active Provider response remains fail-closed after the finish budget");
+        assert_eq!(reason, "livetranslate-session-finished-timeout");
+        assert!(error.contains("session.finish sent=true"));
+        assert!(error.contains("providerResponseActive=true"));
     }
 
     #[test]
@@ -1106,6 +1117,8 @@ mod tests {
         let now = Instant::now();
         let mut shutdown = LivetranslateShutdown::new(true);
         shutdown.request(now);
+        assert!(shutdown.deadlines().is_none());
+        shutdown.record_finish_sent(now);
         let deadlines = shutdown.deadlines().unwrap();
 
         assert!(!shutdown.take_evidence_queue_deadline(deadlines.queue_evidence_at - Duration::from_millis(1)));

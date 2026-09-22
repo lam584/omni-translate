@@ -91,6 +91,7 @@ export const STRICT_EN_ZH_CORPUS = Object.freeze({
 export const STRICT_V2_EN_ZH_CORPUS = Object.freeze({
   ...STRICT_EN_ZH_CORPUS,
   'one billion': '十亿美元',
+  'During the test, the outside temperature fell from 21 degrees Celsius to minus 4, but every sensor stayed online.': '测试期间，室外温度从21摄氏度降至零下4摄氏度，但所有传感器始终在线。',
 });
 
 const canonical = (value) => {

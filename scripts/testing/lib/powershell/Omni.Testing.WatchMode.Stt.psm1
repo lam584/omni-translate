@@ -157,7 +157,8 @@ function Invoke-CanonicalSourceAuthorityNode {
   $arguments = @(
     $authorityScript,
     "--run-directory", $OutputDirectory,
-    "--workspace-root", $workspaceRoot
+    "--workspace-root", $workspaceRoot,
+    "--no-build"
   )
   if ($Mode -eq "Reference") { $arguments += "--reference-only" }
   if ($Mode -eq "Source") { $arguments += "--source-only" }

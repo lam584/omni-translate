@@ -18,7 +18,8 @@ concurrency:
 jobs:
   startup-stress:
     name: Release shell build + startup IPC stress plan
-    runs-on: windows-latest
+    # The release builder defaults to the Visual Studio 17 2022 generator.
+    runs-on: windows-2022
     timeout-minutes: 90
 
     steps:
@@ -47,6 +48,13 @@ jobs:
       - name: Startup orchestration unit tests
         run: npm run test:startup-readiness
 
+      - name: Nightly workflow regression tests
+        run: node --test scripts/testing/nightly-startup-workflow.test.mjs
+
+      # Rust's artifact cache does not provision the pinned native AEC3 dependencies.
+      - name: Provision and test AEC3 MSVC dependencies
+        run: npm run test:aec3-msvc
+
       - name: Build the release desktop shell
         run: npm run build:desktop-shell
 
@@ -63,7 +71,7 @@ jobs:
       #
       # The stress launches the packaged shell 10 times and waits for the
       # WebView2 renderer to reach `debug_ipc_ping`. A GitHub-hosted
-      # windows-latest runner cannot honestly reproduce that: the app opens a
+      # windows-2022 runner cannot honestly reproduce that: the app opens a
       # WebView2 window in a session with no interactive desktop guarantee, and
       # it opens WASAPI capture/render endpoints at startup on a runner that has
       # no audio device installed. A green run here would therefore prove

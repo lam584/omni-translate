@@ -41,7 +41,7 @@ export const runCoverageStep = (outputDir, name, command) => {
   const exitCode = runLoggedStep(command, logPath);
   echoLogTail(logPath);
   if (exitCode !== 0) {
-    throw new Error(`Coverage gate step failed: ${name}`);
+    throw new Error(`Coverage gate step failed: ${name} (exit code ${exitCode}; log: ${logPath})`);
   }
 };
 
@@ -115,6 +115,13 @@ export const runCoverageGate = ({ outputRoot = defaultOutputRoot, full = false }
   return outputDir;
 };
 
+// Publish the actionable failure as a check annotation as well as console output.
+// Escape workflow-command data so multiline errors cannot inject commands.
+export const formatCoverageFailure = (message) => {
+  const escaped = String(message).replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
+  return '::error title=Coverage gate failed::' + escaped;
+};
+
 if (isMain(import.meta.url)) {
   try {
     const args = parseCliArgs(process.argv.slice(2), {
@@ -124,6 +131,9 @@ if (isMain(import.meta.url)) {
     console.log(runCoverageGate(args));
   } catch (error) {
     console.error(error.message);
+    if (process.env.GITHUB_ACTIONS === 'true') {
+      console.error(formatCoverageFailure(error.message));
+    }
     process.exit(1);
   }
 }

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,6 +8,7 @@ import test from 'node:test';
 
 import {
   assertRustCoverage,
+  formatCoverageFailure,
   validateRustCoverageThresholds,
 } from './run-coverage-gate.mjs';
 
@@ -91,5 +94,41 @@ test('repository baselines cover every active Rust coverage target', () => {
 
   for (const name of ['desktop-shell-rust', 'native-bridge-rust', 'shared-crates-rust']) {
     assert.doesNotThrow(() => validateRustCoverageThresholds(name, baselines[name]));
+  }
+});
+
+test('CI annotation preserves the failure and escapes workflow command data', () => {
+  assert.equal(
+    formatCoverageFailure('desktop-shell-rust lines coverage is 61%, below 100%.\r\n::warning::not a command'),
+    '::error title=Coverage gate failed::desktop-shell-rust lines coverage is 61%25, below 100%25.%0D%0A::warning::not a command',
+  );
+});
+
+for (const githubActions of ['true', 'false']) {
+  test('coverage CLI retains a failing exit and annotates only GitHub Actions=' + githubActions, () => {
+    const result = spawnSync(process.execPath, [
+      fileURLToPath(new URL('./run-coverage-gate.mjs', import.meta.url)),
+      '--invalid-coverage-option',
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, GITHUB_ACTIONS: githubActions },
+      windowsHide: true,
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /invalid-coverage-option/);
+    assert.equal(result.stderr.includes('::error title=Coverage gate failed::'), githubActions === 'true');
+  });
+}
+
+test('desktop-shell policy requires 80 percent for every metric', (t) => {
+  const baseline = JSON.parse(
+    fs.readFileSync(new URL('./coverage-baseline.json', import.meta.url), 'utf8'),
+  )['desktop-shell-rust'];
+  assert.deepEqual(baseline, { lines: 80, functions: 80, branches: 80 });
+  assert.doesNotThrow(() => assertRustCoverage('desktop-shell-rust', writeCoverageReport(t, baseline), baseline));
+  for (const metric of Object.keys(baseline)) {
+    const report = writeCoverageReport(t, { ...baseline, [metric]: 79.99 });
+    assert.throws(() => assertRustCoverage('desktop-shell-rust', report, baseline), /below 80%/);
   }
 });

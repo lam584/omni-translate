@@ -1205,7 +1205,7 @@ function assertStrictMatrixExternalProviderBudget({
       bytes: manifest.externalProviderBudget.ledgerBytes,
       sha256: manifest.externalProviderBudget.ledgerSha256,
     },
-    MATRIX_EXTERNAL_PROVIDER_BUDGET_FILE,
+    (manifest.externalProviderBudget.ledgerPath || MATRIX_EXTERNAL_PROVIDER_BUDGET_FILE),
     'strict matrix external provider budget ledger',
   );
   let recorded;

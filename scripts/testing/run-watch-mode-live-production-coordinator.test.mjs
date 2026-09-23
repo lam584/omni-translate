@@ -176,8 +176,38 @@ import {
   createDeterministicReadinessTransferArchive,
   REMOTE_PROVIDER_PREFLIGHT_PUBLICATION_BODY,
   stageProductionReadinessBatch,
+  preserveProductionReadinessReceipt,
 } from './run-watch-mode-live-production-coordinator.mjs';
 
+test('pre-provider readiness signs worker bytes, not parsed JSON reserialization', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-readiness-bytes-'));
+  try {
+    const source = path.join(root, 'source.json');
+    const destination = path.join(root, 'worker-readiness.json');
+    const raw = Buffer.from('{\r\n    "workerId":  "vm171",\r\n    "providerCalls":  0\r\n}\r\n');
+    fs.writeFileSync(source, raw);
+    const authority = await preserveProductionReadinessReceipt({
+      entry: { workerId: 'vm171', remoteRoot: 'E:\\remote', readiness: JSON.parse(raw.toString()) },
+      worker: { workerId: 'vm171' },
+      receiptPath: destination,
+      downloadFile: async (_worker, remotePath, localPath) => {
+        assert.equal(remotePath, path.win32.join('E:\\remote', 'readiness', 'zero-provider-readiness.json'));
+        fs.copyFileSync(source, localPath);
+      },
+    });
+    assert.equal(authority.bytes, raw.length);
+    assert.equal(authority.sha256, crypto.createHash('sha256').update(raw).digest('hex'));
+    assert.deepEqual(fs.readFileSync(destination), raw);
+    await assert.rejects(() => preserveProductionReadinessReceipt({
+      entry: { workerId: 'vm171', remoteRoot: 'E:\\remote', readiness: { workerId: 'vm169' } },
+      worker: { workerId: 'vm171' },
+      receiptPath: path.join(root, 'invalid.json'),
+      downloadFile: async (_worker, _remote, localPath) => fs.copyFileSync(source, localPath),
+    }), /readiness bytes disagree/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 test('collection archive inventory remains inside the immutable worker root', () => {
   assert.doesNotThrow(() => assertSafeCollectionArchiveEntries([
     'vm167/',

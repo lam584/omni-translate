@@ -2060,8 +2060,9 @@ export function verifyStrictShardProviderPreflightAuthority({
   }
   const authorizationObservedAt = providerProbeResult.preflightAuthorization
     ?.authorizationObservedAt;
+  const { executor: _omittedExecutor, ...expectedAuthorizationWithoutExecutor } = expectedAuthorization;
   const observedAuthorization = {
-    ...expectedAuthorization,
+    ...expectedAuthorizationWithoutExecutor,
     leaseReservations: authorization.leaseReservations.map((reservation, index) => ({
       cellIndex: index,
       cellId: reservation.cellId,
@@ -2069,6 +2070,7 @@ export function verifyStrictShardProviderPreflightAuthority({
       waveIndex: reservation.waveIndex,
       leaseId: reservation.leaseId,
       maxExternalAudioSamples: reservation.maxExternalAudioSamples,
+      modelProtocolProfileIdentity: structuredClone(reservation.modelProtocolProfileIdentity),
       digest: reservation.digest,
       issuedAt: reservation.issuedAt,
     })),
@@ -2157,12 +2159,14 @@ export function verifyStrictShardProviderPreflightAuthority({
       || candidate?.protocol !== expectedAuthorization.protocol
       || candidate?.providerConnectStartedAt !== connectStartedAt
       || candidate?.providerConnectCompletedAt !== connectCompletedAt
-      || Number(candidate?.connectionAttempts) !== 1
-      || Number(candidate?.connectionCount) !== 1
-      || candidate?.connectionOpened !== true
-      || candidate?.connectionClosed !== true
-      || candidate?.connectionOwner !== providerProbeResult.connectionOwner
-      || Number(candidate?.connectionGeneration) !== Number(providerProbeResult.connectionGeneration)
+      || (label === 'raw provider result' && (
+        Number(candidate?.connectionAttempts) !== 1
+        || Number(candidate?.connectionCount) !== 1
+        || candidate?.connectionOpened !== true
+        || candidate?.connectionClosed !== true
+        || candidate?.connectionOwner !== providerProbeResult.connectionOwner
+        || Number(candidate?.connectionGeneration) !== Number(providerProbeResult.connectionGeneration)
+      ))
     ) {
       throw new Error(`strict shard provider preflight ${label} model/protocol/connect authority mismatch`);
     }

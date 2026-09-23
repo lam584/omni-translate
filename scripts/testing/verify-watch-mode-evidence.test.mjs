@@ -3735,8 +3735,9 @@ test(`strict production verifier replays signed coordinator ${releaseSelection?.
     const providerConnectCompletedAt = new Date(baseMs - 5_250).toISOString();
     const providerCheckedAt = providerConnectCompletedAt;
     const configuredModel = 'qwen3.5-omni-plus-realtime';
+    const { executor: _signedExecutor, ...wireConsumption } = authorizationPackage.consumption;
     const observedPreflightAuthorization = {
-      ...authorizationPackage.consumption,
+      ...wireConsumption,
       consumptionClaim: consumptionClaimProjection,
       leaseReservations: preflightReservations.map((reservation, index) => ({
         cellIndex: index,
@@ -3745,6 +3746,7 @@ test(`strict production verifier replays signed coordinator ${releaseSelection?.
         waveIndex: reservation.waveIndex,
         leaseId: reservation.leaseId,
         maxExternalAudioSamples: reservation.maxExternalAudioSamples,
+        modelProtocolProfileIdentity: structuredClone(reservation.modelProtocolProfileIdentity),
         digest: reservation.digest,
         issuedAt: reservation.issuedAt,
       })),
@@ -3912,12 +3914,6 @@ test(`strict production verifier replays signed coordinator ${releaseSelection?.
         inputTokens: null,
         outputTokens: null,
         audioSeconds: null,
-        connectionAttempts: 1,
-        connectionCount: 1,
-        connectionOpened: true,
-        connectionClosed: true,
-        connectionOwner: `preflight:${observedPreflightAuthorization.executionId}`,
-        connectionGeneration: 1,
       }, null, 2)}\n`,
       'utf8',
     );

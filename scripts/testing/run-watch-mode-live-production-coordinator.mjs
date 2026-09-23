@@ -264,6 +264,24 @@ export async function stageProductionReadinessBatch({
   }, { timeoutMs: WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS });
   return transfer;
 }
+export async function preserveProductionReadinessReceipt({ entry, worker, receiptPath, downloadFile }) {
+  if (!worker || !entry.remoteRoot || typeof downloadFile !== 'function') {
+    throw new Error(`worker ${entry.workerId} has no readiness source authority`);
+  }
+  // Sign the exact worker-created bytes reused by the paid cell, not a
+  // coordinator reserialization of the parsed SSH response.
+  await downloadFile(
+    worker,
+    path.win32.join(entry.remoteRoot, 'readiness', 'zero-provider-readiness.json'),
+    receiptPath,
+    { timeoutMs: WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS },
+  );
+  const downloaded = JSON.parse(fs.readFileSync(receiptPath, 'utf8').replace(/^\uFEFF/u, ''));
+  if (canonicalJson(downloaded) !== canonicalJson(entry.readiness)) {
+    throw new Error(`worker ${entry.workerId} readiness bytes disagree with the validated response`);
+  }
+  return fileAuthorityEntry(receiptPath, path.basename(receiptPath));
+}
 export const PRODUCTION_WORKER_CONFIG_SCHEMA_VERSION = 3;
 export const PRODUCTION_WORKER_CONFIG_KIND = 'watch-mode-production-shard-workers';
 export const PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS =
@@ -4158,9 +4176,12 @@ async function runProductionCoordinatorCore({
       return {
         workerReadinessRequest,
         requestAuthority: fileAuthorityEntry(requestPath, 'worker-readiness-request.json'),
-        workers: completed.map((entry) => {
+        workers: await Promise.all(completed.map(async (entry) => {
           const receiptPath = path.join(readinessAuthorityRoot, `${entry.workerId}.json`);
-          atomicWriteJson(receiptPath, entry.readiness);
+          const worker = readinessPlan.workers.find((candidate) => candidate.workerId === entry.workerId);
+          await preserveProductionReadinessReceipt({
+            entry, worker, receiptPath, downloadFile: readinessTransport.downloadFile,
+          });
           return {
             workerId: entry.workerId,
             providerCalls: Number(entry.readiness.providerCalls),
@@ -4170,7 +4191,7 @@ async function runProductionCoordinatorCore({
               `worker-readiness/${entry.workerId}.json`,
             ),
           };
-        }),
+        })),
       };
     });
     readinessPreparation = await runBoundedCoordinatorStage(

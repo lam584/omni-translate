@@ -2132,7 +2132,7 @@ export function verifyStrictShardProviderPreflightAuthority({
     const configuredEndpoint = new URL(configuredProvider.baseUrl);
     if (
       configuredEndpoint.protocol !== 'https:'
-      || configuredEndpoint.hostname !== endpointHost
+      || (configuredEndpoint.hostname !== endpointHost && configuredEndpoint.hostname !== STRICT_PAID_PROVIDER_IDENTITY.endpointHost)
       || configuredEndpoint.port
       || configuredEndpoint.username
       || configuredEndpoint.password

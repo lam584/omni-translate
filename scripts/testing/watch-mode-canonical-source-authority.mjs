@@ -640,11 +640,16 @@ function parseCliArgs(argv) {
   if (preserveFailureEvidence && (referenceOnly || sourceOnly)) {
     throw new Error('--preserve-failure-evidence is available only for combined authority');
   }
+  const releaseExecutablePath = values['release-executable-path']
+    || (values['no-build'] === true ? process.env.OMNI_WATCH_MODE_AUDIO_ANALYZER_PATH : undefined);
+  const releaseExecutableSha256 = values['release-executable-sha256']
+    || (values['no-build'] === true ? process.env.OMNI_WATCH_MODE_AUDIO_ANALYZER_SHA256 : undefined);
+
   return {
     runDirectory: values['run-directory'],
     ...(values['workspace-root'] ? { workspaceRoot: values['workspace-root'] } : {}),
-    ...(values['release-executable-path'] ? { releaseExecutablePath: values['release-executable-path'] } : {}),
-    ...(values['release-executable-sha256'] ? { releaseExecutableSha256: values['release-executable-sha256'] } : {}),
+    ...(releaseExecutablePath ? { releaseExecutablePath } : {}),
+    ...(releaseExecutableSha256 ? { releaseExecutableSha256 } : {}),
     noBuild: values['no-build'] === true,
     referenceOnly,
     sourceOnly,

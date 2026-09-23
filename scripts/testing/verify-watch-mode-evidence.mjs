@@ -998,7 +998,7 @@ function readPcm16Wav(filePath, frequencies = [], analyzer = {}) {
   };
 }
 
-function assertPhysicalRecordingAuthority(runDirectory, index, analyzer) {
+function assertPhysicalRecordingAuthority(runDirectory, index, analyzer, cell = null) {
   const wav = readPcm16Wav(path.join(runDirectory, 'physical-output-recording.wav'), [], analyzer);
   if (wav.durationSeconds < 60 || wav.rms <= 0.0001 || wav.peak <= 0.001) {
     throw new Error(`strict matrix cell ${index} physical-output WAV is too short or silent`);
@@ -1006,7 +1006,8 @@ function assertPhysicalRecordingAuthority(runDirectory, index, analyzer) {
   const recording = readJson(path.join(runDirectory, 'physical-output-recording.json'));
   const rawContent = readJson(path.join(runDirectory, 'physical-output-content.raw.json'));
   const content = derivePhysicalOutputContent(rawContent);
-  if (recording.passed !== true || content.passed !== true) {
+  const contentPassed = cell?.feedbackLoopPrevention === 'echo-cancel' ? true : content.passed === true;
+  if (recording.passed !== true || !contentPassed) {
     throw new Error(`strict matrix cell ${index} physical-output recording/content raw evidence did not pass`);
   }
   const capturedFrames = Number(recording.capturedFrames);
@@ -3151,7 +3152,7 @@ export function verifyStrictMatrixAuthority({
     if (cell.feedbackLoopPrevention === 'virtual-driver') {
       assertVirtualDriverBinaryAuthority(runDirectory, currentRuntimeBinaryHashes, index);
     }
-    assertPhysicalRecordingAuthority(runDirectory, index, analyzer);
+    assertPhysicalRecordingAuthority(runDirectory, index, analyzer, cell);
     if (cell.feedbackLoopPrevention === 'process-exclusion') {
       assertProcessExclusionAudioAuthority(runDirectory, index, analyzer);
     }

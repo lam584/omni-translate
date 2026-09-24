@@ -7,11 +7,15 @@ use super::{diag_log, elapsed_ms_since, AudioStateStore, OmniEventDiagnostics};
 pub(super) fn resolve_audio_origin(
     provider_offset_ms: Option<u64>,
     provider_event_ms: u64,
+    first_audio_sent_ms: Option<u64>,
     vad_event_count: u64,
     first_audible_chunk_ms: Option<u64>,
 ) -> (u64, &'static str) {
     if let Some(offset_ms) = provider_offset_ms {
-        return (offset_ms, "provider-offset");
+        let origin_ms = first_audio_sent_ms
+            .map(|sent_ms| sent_ms.saturating_add(offset_ms))
+            .unwrap_or(provider_event_ms);
+        return (origin_ms, "provider-offset");
     }
     if vad_event_count == 1 {
         return first_audible_chunk_ms
@@ -27,12 +31,14 @@ pub(super) fn record_provider_audio_origin(
     direction: &str,
     provider_offset_ms: Option<u64>,
     provider_event_ms: u64,
+    first_audio_sent_ms: Option<u64>,
     vad_event_count: u64,
     first_audible_chunk_ms: Option<u64>,
 ) {
     let (started_at_ms, origin) = resolve_audio_origin(
         provider_offset_ms,
         provider_event_ms,
+        first_audio_sent_ms,
         vad_event_count,
         first_audible_chunk_ms,
     );
@@ -99,9 +105,10 @@ mod tests {
 
     #[test]
     fn provider_offset_precedes_local_rms_and_event_fallback() {
-        assert_eq!(resolve_audio_origin(Some(120), 100, 1, Some(90)), (120, "provider-offset"));
-        assert_eq!(resolve_audio_origin(None, 100, 1, Some(90)), (90, "local-rms"));
-        assert_eq!(resolve_audio_origin(None, 100, 2, Some(90)), (100, "provider-event"));
+        assert_eq!(resolve_audio_origin(Some(120), 100, Some(50), 1, Some(90)), (170, "provider-offset"));
+        assert_eq!(resolve_audio_origin(Some(120), 100, None, 1, Some(90)), (100, "provider-offset"));
+        assert_eq!(resolve_audio_origin(None, 100, Some(50), 1, Some(90)), (90, "local-rms"));
+        assert_eq!(resolve_audio_origin(None, 100, Some(50), 2, Some(90)), (100, "provider-event"));
     }
 
     #[test]

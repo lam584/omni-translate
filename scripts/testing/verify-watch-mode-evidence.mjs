@@ -3368,12 +3368,14 @@ export function strictWatchSessionReportFailure(
       && String(issue?.severity ?? '').toLowerCase() === 'warning'
     ));
     const interruptedSourceTail = cue.comparisonStatus === 'not-published'
-      && blockingIssues.length > 0
-      && blockingIssues.every((issue) => (
-        issue?.category === 'session'
-        && issue?.code === 'session-ended-before-model-output'
-        && issue?.severity === 'warning'
-      ));
+      && (
+        (blockingIssues.length > 0 && blockingIssues.every((issue) => (
+          issue?.category === 'session'
+          && issue?.code === 'session-ended-before-model-output'
+          && issue?.severity === 'warning'
+        )))
+        || (blockingIssues.length === 0 && !cue.sourceText && !cue.llmText && !cue.publishedText)
+      );
     if (interruptedSourceTail) return false;
     return ['different', 'not-published', 'not-rendered', 'model-error'].includes(cue.comparisonStatus)
       || blockingIssues.length > 0;

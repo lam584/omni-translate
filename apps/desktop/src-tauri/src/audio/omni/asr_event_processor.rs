@@ -630,7 +630,7 @@ impl OmniAsrEventProcessor {
         store.update_or_push_stt_cue(&cue_id, "", false);
         super::audio_origin::record_provider_audio_origin(
             store, &cue_id, direction, evt["audio_start_ms"].as_u64(),
-            speech_ms, *vad_event_count, first_audible_chunk_ms,
+            speech_ms, first_audio_sent_ms, *vad_event_count, first_audible_chunk_ms,
         );
         *current_cue_id = Some(cue_id.clone());
         event_diagnostics.current_cue_origin = Some("speech_started".to_string());

@@ -709,6 +709,23 @@ function reportAuthorityProjection(report) {
   return stable;
 }
 
+export function expectedStrictShardMatrixIntegration({ plan, preflightProjection, releaseCells, aggregate, shardCellAuthorities }) {
+  return {
+    provenance: plan.provenance,
+    authorityImplementationHashes: plan.authority.implementationHashes,
+    authorityRuntimeBinaryHashes: plan.authority.runtimeBinaryHashes,
+    shardOrchestrationImplementationHashes: plan.authority.shardOrchestrationImplementationHashes,
+    localIsolationAuthority: plan.localIsolationAuthority,
+    providerPreflightAuthority: plan.providerPreflightAuthority,
+    ...preflightProjection,
+    ...(plan.releaseSelection ? { releaseSelection: normalizeReleaseSelection(plan.releaseSelection) } : {}),
+    releaseCells,
+    coordinatorAggregateDigest: aggregate.aggregateDigest,
+    cells: shardCellAuthorities,
+    externalProviderBudget: aggregate.budget,
+  };
+}
+
 function assertExactObject(left, right, label) {
   if (canonicalJson(left) !== canonicalJson(right)) {
     throw new Error(`${label} does not match the independently rebuilt raw evidence`);
@@ -2753,20 +2770,9 @@ export function verifyStrictShardMatrixAuthority({
     shardCellAuthorities.push(projection);
   }
 
-  const expectedMatrixIntegration = {
-    provenance: plan.provenance,
-    authorityImplementationHashes: plan.authority.implementationHashes,
-    authorityRuntimeBinaryHashes: plan.authority.runtimeBinaryHashes,
-    shardOrchestrationImplementationHashes:
-      plan.authority.shardOrchestrationImplementationHashes,
-    localIsolationAuthority: plan.localIsolationAuthority,
-    providerPreflightAuthority: plan.providerPreflightAuthority,
-    ...preflightAuthorization.projection,
-    releaseCells,
-    coordinatorAggregateDigest: aggregate.aggregateDigest,
-    cells: shardCellAuthorities,
-    externalProviderBudget: aggregate.budget,
-  };
+  const expectedMatrixIntegration = expectedStrictShardMatrixIntegration({
+    plan, preflightProjection: preflightAuthorization.projection, releaseCells, aggregate, shardCellAuthorities,
+  });
   assertExactObject(
     matrixIntegration,
     expectedMatrixIntegration,
@@ -3559,7 +3565,15 @@ export function strictProcessExclusionRestartFailure(report) {
   const metricsStartedAtMs = Date.parse(metrics.startedAt ?? '');
   const metricsFinishedAtMs = Date.parse(metrics.finishedAt ?? '');
   const metricsWallDurationMs = metricsFinishedAtMs - metricsStartedAtMs;
-  const restartOffsetMs = Number(restart.restartTriggeredAtMs) - metricsStartedAtMs;
+  const sampledDurationMs = Number(metrics.durationMs);
+  // The sampler's first/last samples exclude startup and teardown around its
+  // wall-clock bounds. Retain a bounded 5-second allowance for both edges.
+  // The 90-second timer begins after the desktop route starts; metrics begin
+  // before WebView/IPC startup. A playback-quiescence barrier then precedes
+  // the actual restart. Bound both phases independently, not the trigger
+  // against the earlier metrics clock.
+  const timerOffsetMs = Number(restart.startedAtMs) - metricsStartedAtMs;
+  const playbackDrainMs = Number(restart.restartTriggeredAtMs) - Number(restart.startedAtMs);
   const postRestartEvidenceMs = metricsFinishedAtMs - Number(restart.restartTriggeredAtMs);
   const expectedRestartOffsetMs = PROCESS_EXCLUSION_RESTART_AFTER_SECONDS * 1_000;
   const requiredPostRestartEvidenceMs = PROCESS_EXCLUSION_RESTART_QUIET_SECONDS * 1_000;
@@ -3568,15 +3582,20 @@ export function strictProcessExclusionRestartFailure(report) {
     || metrics.valid !== true
     || !Number.isFinite(metricsWallDurationMs)
     || metricsWallDurationMs <= 0
-    || Math.abs(Number(metrics.durationMs) - metricsWallDurationMs) > 1_000
+    || !Number.isFinite(sampledDurationMs)
+    || sampledDurationMs <= 0
+    || sampledDurationMs > metricsWallDurationMs
+    || metricsWallDurationMs - sampledDurationMs > 5_000
     || Number(metrics.samplesWithOldPid) <= 0
     || Number(metrics.samplesWithNewPid) <= 0
     || metrics.oldPidAbsentAfterNew !== true
-    || restartOffsetMs < expectedRestartOffsetMs - 5_000
-    || restartOffsetMs > expectedRestartOffsetMs + 5_000
+    || timerOffsetMs < expectedRestartOffsetMs - 5_000
+    || timerOffsetMs > expectedRestartOffsetMs + 15_000
+    || playbackDrainMs < 0
+    || playbackDrainMs > 20_000
     || postRestartEvidenceMs < requiredPostRestartEvidenceMs
   ) {
-    return 'process-exclusion restart metrics do not cover the frozen 90-second trigger and 45-second post-restart evidence window';
+    return 'process-exclusion restart metrics do not cover the frozen 90-second timer, bounded playback drain, and 45-second post-restart evidence window';
   }
   return null;
 }

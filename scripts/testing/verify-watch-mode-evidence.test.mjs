@@ -117,11 +117,32 @@ import {
   verifyStrictShardProviderPreflightAuthority,
   verifyStrictShardProviderPreflightAuthorization,
   verifyStrictShardMatrixAuthority,
+  expectedStrictShardMatrixIntegration,
   verifyStrictMatrixAuthority as verifyProductionStrictMatrixAuthority,
   writeStrictMatrixVerificationReceipt,
 } from './verify-watch-mode-evidence.mjs';
 
 const AUTHORITY_FIXTURE_SESSION_DURATION_MS = 180_000;
+
+test('strict matrix integration projection binds an explicit 3.8 selection without changing legacy 3.5', () => {
+  const common = {
+    provenance: { headCommit: 'a'.repeat(40) },
+    authority: { implementationHashes: [], runtimeBinaryHashes: [], shardOrchestrationImplementationHashes: [] },
+    localIsolationAuthority: { sha256: 'b'.repeat(64) },
+    providerPreflightAuthority: { sha256: 'c'.repeat(64) },
+  };
+  const options = { preflightProjection: { workerReadiness: [] }, releaseCells: [],
+    aggregate: { aggregateDigest: 'd'.repeat(64), budget: {} }, shardCellAuthorities: [] };
+  const legacy = expectedStrictShardMatrixIntegration({ ...options, plan: common });
+  assert.equal(Object.hasOwn(legacy, 'releaseSelection'), false);
+  const releaseSelection = { modelId: 'qwen3.8-livetranslate-flash-realtime',
+    endpointHost: 'workspace.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing' };
+  const selected = expectedStrictShardMatrixIntegration({ ...options,
+    plan: { ...common, releaseSelection } });
+  assert.deepEqual(selected.releaseSelection, normalizeReleaseSelection(releaseSelection));
+  const { releaseSelection: _selected, ...rest } = selected;
+  assert.deepEqual(rest, legacy);
+});
 
 test('authority inventory comparison ignores serialization order but not content', () => {
   const first = { path: 'target/release/a.exe', bytes: 10, sha256: 'a'.repeat(64) };
@@ -728,13 +749,13 @@ const healthyProcessRestartData = {
   newPhysicalPlaybackDeviceId: '{hda-test-endpoint}',
   physicalPlaybackStatus: 'ready',
   physicalPlaybackRebindDurationMs: 250,
-  oldLastFrameTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 89_000,
-  oldLastFrameReadTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 89_100,
-  newFirstFrameTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 91_000,
-  newFirstFrameReadTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 91_100,
-  startedAtMs: PROCESS_METRICS_STARTED_AT_MS,
-  restartTriggeredAtMs: PROCESS_METRICS_STARTED_AT_MS + 90_000,
-  recoveredAtMs: PROCESS_METRICS_STARTED_AT_MS + 92_000,
+  oldLastFrameTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 91_000,
+  oldLastFrameReadTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 91_100,
+  newFirstFrameTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 93_000,
+  newFirstFrameReadTimestampMs: PROCESS_METRICS_STARTED_AT_MS + 93_100,
+  startedAtMs: PROCESS_METRICS_STARTED_AT_MS + 90_000,
+  restartTriggeredAtMs: PROCESS_METRICS_STARTED_AT_MS + 92_000,
+  recoveredAtMs: PROCESS_METRICS_STARTED_AT_MS + 94_000,
   downtimeMs: 2_000,
   sourceFramesBefore: 43_200_000,
   sourceFramesAfter: 43_296_000,
@@ -5273,6 +5294,33 @@ test('strict process-exclusion evidence binds the frozen 90s restart and 45s qui
     },
   };
   assert.equal(strictProcessExclusionRestartFailure(healthyReport), null);
+
+  const realPlaybackDrain = structuredClone(healthyReport);
+  const drained = realPlaybackDrain.layers.bridge.data.processExclusionRestart;
+  drained.startedAtMs = PROCESS_METRICS_STARTED_AT_MS + 102_000;
+  drained.restartTriggeredAtMs = PROCESS_METRICS_STARTED_AT_MS + 115_000;
+  drained.oldLastFrameReadTimestampMs = PROCESS_METRICS_STARTED_AT_MS + 112_000;
+  drained.newFirstFrameReadTimestampMs = PROCESS_METRICS_STARTED_AT_MS + 116_000;
+  drained.recoveredAtMs = PROCESS_METRICS_STARTED_AT_MS + 117_000;
+  assert.equal(strictProcessExclusionRestartFailure(realPlaybackDrain), null);
+
+  const lateTimer = structuredClone(realPlaybackDrain);
+  lateTimer.layers.bridge.data.processExclusionRestart.startedAtMs = PROCESS_METRICS_STARTED_AT_MS + 106_000;
+  assert.match(strictProcessExclusionRestartFailure(lateTimer), /bounded playback drain/);
+
+  const excessiveDrain = structuredClone(realPlaybackDrain);
+  excessiveDrain.layers.bridge.data.processExclusionRestart.restartTriggeredAtMs = PROCESS_METRICS_STARTED_AT_MS + 123_000;
+  excessiveDrain.layers.bridge.data.processExclusionRestart.newFirstFrameReadTimestampMs = PROCESS_METRICS_STARTED_AT_MS + 124_000;
+  excessiveDrain.layers.bridge.data.processExclusionRestart.recoveredAtMs = PROCESS_METRICS_STARTED_AT_MS + 125_000;
+  assert.match(strictProcessExclusionRestartFailure(excessiveDrain), /bounded playback drain/);
+
+  const samplerEdge = structuredClone(realPlaybackDrain);
+  samplerEdge.layers.bridge.data.processExclusionRestart.systemMetrics.durationMs =
+    174_000 - 2_500;
+  assert.equal(strictProcessExclusionRestartFailure(samplerEdge), null);
+  samplerEdge.layers.bridge.data.processExclusionRestart.systemMetrics.durationMs =
+    174_000 - 5_001;
+  assert.match(strictProcessExclusionRestartFailure(samplerEdge), /bounded playback drain/);
 
   const shortPostRestartWindow = structuredClone(healthyReport);
   const evidence = shortPostRestartWindow.layers.bridge.data.processExclusionRestart;

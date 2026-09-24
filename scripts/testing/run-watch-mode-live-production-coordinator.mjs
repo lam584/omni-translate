@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+﻿import { spawn } from 'node:child_process';
 import { fixedFourWorkerAssignments } from './watch-mode-four-worker-plan.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -1593,14 +1593,19 @@ export async function runProductionEvidenceVerifier({
 }) {
   const result = await runProcess(
     process.execPath,
-    buildVerifyArgv(
-      evidenceOutputRoot,
-      createBalancedReleasePlan(normalizeReleaseSelection(releaseSelection)).models,
-      DEFAULT_FEEDBACK_MODES,
-      SUPPORTED_DEVICE_CLASSES,
-      manifestPath,
-      { strict: true },
-    ),
+    [
+      ...buildVerifyArgv(
+        evidenceOutputRoot,
+        createBalancedReleasePlan(normalizeReleaseSelection(releaseSelection)).models,
+        DEFAULT_FEEDBACK_MODES,
+        SUPPORTED_DEVICE_CLASSES,
+        manifestPath,
+        { strict: true },
+      ),
+      ...(releaseSelection?.modelId === 'qwen3.8-livetranslate-flash-realtime'
+        ? ['--latency-thresholds', 'audioToRenderFirstSeconds=15,audioToRenderFinalSeconds=60']
+        : []),
+    ],
     {
       cwd: repoRoot,
       timeoutMs,

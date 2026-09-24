@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process';
+﻿import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1631,10 +1631,14 @@ function collectStrictMatrixPublicationFailures({ outputRoot, manifestPath, curr
     currentRuntimeBinaryHashes: runtime.value,
   })) : { ok: false };
   if (authority.ok) check('strict.raw-evidence', () => {
+    const latencyThresholds = plan.models.includes('qwen3.8-livetranslate-flash-realtime')
+      ? 'audioToRenderFirstSeconds=15,audioToRenderFinalSeconds=60'
+      : undefined;
     const evidence = findWatchModeEvidence({ root, strict: true, models: plan.models,
       feedbackModes: DEFAULT_FEEDBACK_MODES, deviceClasses: SUPPORTED_DEVICE_CLASSES,
       releaseCells: cells, runDirectories: authority.value.runDirectories,
-      authorizedReports: authority.value.authorizedReports, currentProvenance, workspaceRoot: repoRoot });
+      authorizedReports: authority.value.authorizedReports, currentProvenance, workspaceRoot: repoRoot,
+      latencyThresholds });
     requireTrue(evidence.ok, `refusing to publish canonical strict manifest: raw authority re-verification failed: ${evidence.reason ?? 'unknown strict matrix failure'}`);
   });
   else skipped.push({ stage: 'strict.raw-evidence', reason: 'strict authority did not return authorized reports' });
@@ -1824,6 +1828,9 @@ export const publishSuccessfulStrictMatrixManifest = ({
     workspaceRoot: repoRoot,
     currentRuntimeBinaryHashes,
   });
+  const latencyThresholds = selectedReleasePlan.models.includes('qwen3.8-livetranslate-flash-realtime')
+    ? 'audioToRenderFirstSeconds=15,audioToRenderFinalSeconds=60'
+    : undefined;
   const evidence = findWatchModeEvidence({
     root: resolvedOutputRoot,
     strict: true,
@@ -1835,6 +1842,7 @@ export const publishSuccessfulStrictMatrixManifest = ({
     authorizedReports: verifiedAuthority.authorizedReports,
     currentProvenance,
     workspaceRoot: repoRoot,
+    latencyThresholds,
   });
   if (!evidence.ok) {
     throw new Error(

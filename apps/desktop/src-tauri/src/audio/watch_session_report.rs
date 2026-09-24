@@ -131,7 +131,18 @@ impl WatchSession {
             }
 
             let revision = self.cues[index].revision.saturating_add(1);
-            return self.push_new_cue(cue_id, revision, route_direction);
+            // A transcript rewrite is another revision of the same input turn,
+            // not a new recording. Preserve the measured latency denominator.
+            let origin = (
+                self.cues[index].audio_started_at_ms,
+                self.cues[index].audio_start_origin.clone(),
+            );
+            let next = self.push_new_cue(cue_id, revision, route_direction);
+            if let (Some(started_at_ms), Some(origin_name)) = origin {
+                self.cues[next].audio_started_at_ms = Some(started_at_ms);
+                self.cues[next].audio_start_origin = Some(origin_name);
+            }
+            return next;
         }
         self.push_new_cue(cue_id, 1, route_direction)
     }
@@ -147,9 +158,11 @@ impl WatchSession {
             self.dropped_cue_count = self.dropped_cue_count.saturating_add(1);
         }
         let mut cue = empty_cue(cue_id, revision, route_direction);
-        if let Some(started_at_ms) = self.pending_manual_audio_origins.pop_front() {
-            cue.audio_started_at_ms = Some(started_at_ms);
-            cue.audio_start_origin = Some("manual-audible".to_string());
+        if revision == 1 {
+            if let Some(started_at_ms) = self.pending_manual_audio_origins.pop_front() {
+                cue.audio_started_at_ms = Some(started_at_ms);
+                cue.audio_start_origin = Some("manual-audible".to_string());
+            }
         }
         self.cues.push(cue);
         self.cues.len() - 1

@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 
     #[test]
     fn audio_origin_uses_authority_priority_and_scores_only_high_confidence() {
@@ -37,6 +37,42 @@ use super::*;
         assert_eq!(cue.audio_to_render_final_ms, Some(720));
         assert_eq!(report.summary.p95_audio_to_render_first_ms, Some(420));
         assert_eq!(report.summary.p95_audio_to_render_final_ms, Some(720));
+    }
+
+    #[test]
+    fn source_revisions_preserve_the_same_measured_audio_origin() {
+        let store = WatchSessionReportStore::new();
+        store.begin_or_reuse("test", "qwen3.8-livetranslate-flash-realtime");
+        store.record_audio_origin("cue-live", "inbound", 120, "provider-offset");
+        store.record_source("cue-live", "inbound", "hello", false);
+        store.record_publish("cue-live", "inbound", "hello", "你好", &[], false);
+        store.stage_manual_audio_origin(800);
+        store.record_source("cue-live", "inbound", "hello world", true);
+        store.record_source("next-cue", "inbound", "next", true);
+
+        let report = store.snapshot().expect("report");
+        assert_eq!(report.cues.len(), 3);
+        for cue in &report.cues[..2] {
+            assert_eq!(cue.audio_started_at_ms, Some(120));
+            assert_eq!(cue.audio_start_origin.as_deref(), Some("provider-offset"));
+        }
+        assert_eq!(report.cues[2].audio_started_at_ms, Some(800));
+        assert_eq!(report.cues[2].audio_start_origin.as_deref(), Some("manual-audible"));
+    }
+
+    #[test]
+    fn final_representative_cue_inherits_origin_from_earlier_streaming_revision() {
+        let store = WatchSessionReportStore::new();
+        store.begin_or_reuse("test", "qwen3.8-livetranslate-flash-realtime");
+        store.record_audio_origin("cue-stream", "inbound", 50, "provider-offset");
+        store.record_source_runtime("cue-stream", "inbound", "part 1", false, 1, 1, Some(SubtitleTranslationStateRuntime::Streaming));
+        store.record_publish_runtime("cue-stream", "inbound", "part 1", "trans 1", &[], false, 1, 2, Some(SubtitleTranslationStateRuntime::Streaming));
+        store.record_source_runtime("cue-stream", "inbound", "part 1 full", true, 1, 3, Some(SubtitleTranslationStateRuntime::Final));
+        store.record_publish_runtime("cue-stream", "inbound", "part 1 full", "trans 1 full", &[], true, 1, 4, Some(SubtitleTranslationStateRuntime::Final));
+        let report = store.snapshot().expect("report");
+        let final_cue = report.cues.iter().find(|c| c.translation_state == Some(SubtitleTranslationStateRuntime::Final)).expect("final cue");
+        assert_eq!(final_cue.audio_started_at_ms, Some(50));
+        assert_eq!(final_cue.audio_start_origin.as_deref(), Some("provider-offset"));
     }
 
     #[test]

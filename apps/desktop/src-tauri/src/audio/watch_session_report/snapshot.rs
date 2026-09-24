@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 
 pub(super) fn empty_cue(cue_id: &str, revision: u64, route_direction: &str) -> WatchCueComparisonRuntime {
     WatchCueComparisonRuntime {
@@ -96,6 +96,25 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
         })
         .collect::<HashMap<_, _>>();
 
+    let known_audio_origins = cues
+        .iter()
+        .filter_map(|cue| {
+            cue.audio_started_at_ms.map(|started_ms| {
+                (cue.cue_id.clone(), (started_ms, cue.audio_start_origin.clone()))
+            })
+        })
+        .collect::<HashMap<_, _>>();
+
+    let earliest_rendered_first = cues
+        .iter()
+        .filter_map(|cue| cue.rendered_first_at_ms.map(|rf| (cue.cue_id.clone(), rf)))
+        .fold(HashMap::<String, u64>::new(), |mut acc, (cue_id, rf)| {
+            acc.entry(cue_id)
+                .and_modify(|existing| *existing = (*existing).min(rf))
+                .or_insert(rf);
+            acc
+        });
+
     for (index, cue) in cues.iter_mut().enumerate() {
         let latest_index = latest_indices.get(&cue.cue_id).copied();
         let interrupted_tail = latest_index == Some(index)
@@ -125,10 +144,29 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
             duration_between(cue.audio_started_at_ms, cue.source_at_ms);
         cue.audio_to_llm_first_ms =
             duration_between(cue.audio_started_at_ms, cue.llm_first_at_ms);
+        // For final representative cues, inherit audio origin from any earlier
+        // revision/stage of the exact same logical cue if missing.
+        if cue.audio_started_at_ms.is_none() {
+            if let Some(earlier_origin) = known_audio_origins.get(&cue.cue_id) {
+                cue.audio_started_at_ms = Some(earlier_origin.0);
+                if cue.audio_start_origin.is_none() {
+                    cue.audio_start_origin = earlier_origin.1.clone();
+                }
+                cue.audio_to_source_first_ms =
+                    duration_between(cue.audio_started_at_ms, cue.source_at_ms);
+                cue.audio_to_llm_first_ms =
+                    duration_between(cue.audio_started_at_ms, cue.llm_first_at_ms);
+            }
+        }
+
         let translation_final =
             cue.translation_state == Some(SubtitleTranslationStateRuntime::Final);
+        let earliest_first_render = earliest_rendered_first
+            .get(&cue.cue_id)
+            .copied()
+            .or(cue.rendered_first_at_ms);
         cue.audio_to_render_first_ms = translation_final
-            .then(|| duration_between(cue.audio_started_at_ms, cue.rendered_first_at_ms))
+            .then(|| duration_between(cue.audio_started_at_ms, earliest_first_render))
             .flatten();
         cue.audio_to_render_final_ms = translation_final
             .then(|| duration_between(cue.audio_started_at_ms, cue.rendered_final_at_ms))

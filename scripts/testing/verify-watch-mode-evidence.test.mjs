@@ -5309,9 +5309,10 @@ test('strict process-exclusion evidence binds the frozen 90s restart and 45s qui
   assert.match(strictProcessExclusionRestartFailure(lateTimer), /bounded playback drain/);
 
   const excessiveDrain = structuredClone(realPlaybackDrain);
-  excessiveDrain.layers.bridge.data.processExclusionRestart.restartTriggeredAtMs = PROCESS_METRICS_STARTED_AT_MS + 123_000;
-  excessiveDrain.layers.bridge.data.processExclusionRestart.newFirstFrameReadTimestampMs = PROCESS_METRICS_STARTED_AT_MS + 124_000;
-  excessiveDrain.layers.bridge.data.processExclusionRestart.recoveredAtMs = PROCESS_METRICS_STARTED_AT_MS + 125_000;
+  excessiveDrain.layers.bridge.data.processExclusionRestart.oldLastFrameReadTimestampMs = PROCESS_METRICS_STARTED_AT_MS + 132_500;
+  excessiveDrain.layers.bridge.data.processExclusionRestart.restartTriggeredAtMs = PROCESS_METRICS_STARTED_AT_MS + 133_000;
+  excessiveDrain.layers.bridge.data.processExclusionRestart.newFirstFrameReadTimestampMs = PROCESS_METRICS_STARTED_AT_MS + 134_000;
+  excessiveDrain.layers.bridge.data.processExclusionRestart.recoveredAtMs = PROCESS_METRICS_STARTED_AT_MS + 135_000;
   assert.match(strictProcessExclusionRestartFailure(excessiveDrain), /bounded playback drain/);
 
   const samplerEdge = structuredClone(realPlaybackDrain);

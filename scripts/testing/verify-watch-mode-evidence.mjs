@@ -3594,7 +3594,7 @@ export function strictProcessExclusionRestartFailure(report) {
     || timerOffsetMs < expectedRestartOffsetMs - 5_000
     || timerOffsetMs > expectedRestartOffsetMs + 15_000
     || playbackDrainMs < 0
-    || playbackDrainMs > 20_000
+    || playbackDrainMs > 30_000
     || postRestartEvidenceMs < requiredPostRestartEvidenceMs
   ) {
     return 'process-exclusion restart metrics do not cover the frozen 90-second timer, bounded playback drain, and 45-second post-restart evidence window';

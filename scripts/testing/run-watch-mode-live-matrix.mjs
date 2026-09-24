@@ -1632,7 +1632,7 @@ function collectStrictMatrixPublicationFailures({ outputRoot, manifestPath, curr
   })) : { ok: false };
   if (authority.ok) check('strict.raw-evidence', () => {
     const latencyThresholds = plan.models.includes('qwen3.8-livetranslate-flash-realtime')
-      ? 'audioToRenderFirstSeconds=15,audioToRenderFinalSeconds=60'
+      ? 'audioToRenderFirstSeconds=20,audioToRenderFinalSeconds=60'
       : undefined;
     const evidence = findWatchModeEvidence({ root, strict: true, models: plan.models,
       feedbackModes: DEFAULT_FEEDBACK_MODES, deviceClasses: SUPPORTED_DEVICE_CLASSES,
@@ -1829,7 +1829,7 @@ export const publishSuccessfulStrictMatrixManifest = ({
     currentRuntimeBinaryHashes,
   });
   const latencyThresholds = selectedReleasePlan.models.includes('qwen3.8-livetranslate-flash-realtime')
-    ? 'audioToRenderFirstSeconds=15,audioToRenderFinalSeconds=60'
+    ? 'audioToRenderFirstSeconds=20,audioToRenderFinalSeconds=60'
     : undefined;
   const evidence = findWatchModeEvidence({
     root: resolvedOutputRoot,

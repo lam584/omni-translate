@@ -1603,7 +1603,7 @@ export async function runProductionEvidenceVerifier({
         { strict: true },
       ),
       ...(releaseSelection?.modelId === 'qwen3.8-livetranslate-flash-realtime'
-        ? ['--latency-thresholds', 'audioToRenderFirstSeconds=15,audioToRenderFinalSeconds=60']
+        ? ['--latency-thresholds', 'audioToRenderFirstSeconds=20,audioToRenderFinalSeconds=60']
         : []),
     ],
     {

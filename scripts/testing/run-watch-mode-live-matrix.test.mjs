@@ -1460,6 +1460,23 @@ test('canonical strict manifest requires raw re-verification after the verifier 
   );
   const canonicalPath = path.join(outputRoot, CANONICAL_STRICT_MATRIX_MANIFEST);
   assert.equal(fs.existsSync(canonicalPath), false);
+  const previousCollect = process.env.WATCH_STRICT_COLLECT_ALL;
+  try {
+    process.env.WATCH_STRICT_COLLECT_ALL = '1';
+    const diagnostic = publishSuccessfulStrictMatrixManifest({
+      outputRoot, manifestPath,
+      currentProvenance: { ...CLEAN_PROVENANCE, headCommit: 'fixture-newer-head' },
+      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    });
+    assert.equal(diagnostic.mode, 'dry-run-collect-all');
+    assert.equal(diagnostic.passed, false);
+    assert.ok(diagnostic.failures.some((failure) => failure.stage === 'provenance'));
+    assert.ok(diagnostic.failures.some((failure) => failure.stage === 'release.shape'));
+    assert.equal(fs.existsSync(canonicalPath), false, 'collect mode never publishes');
+  } finally {
+    if (previousCollect === undefined) delete process.env.WATCH_STRICT_COLLECT_ALL;
+    else process.env.WATCH_STRICT_COLLECT_ALL = previousCollect;
+  }
 
   assert.throws(
     () => publishSuccessfulStrictMatrixManifest({

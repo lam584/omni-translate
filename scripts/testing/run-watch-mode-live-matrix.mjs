@@ -1499,6 +1499,152 @@ export function strictCellDeviceBinding({ plannedCell, shardAuthority, classProf
   };
 }
 
+// Diagnostic only: preserve the fail-fast publication path and never write a
+// canonical manifest when collecting failures from immutable existing evidence.
+function collectStrictMatrixPublicationFailures({ outputRoot, manifestPath, currentProvenance, providedRuntimeBinaryHashes }) {
+  const failures = [];
+  const skipped = [];
+  const check = (stage, action) => {
+    try { return { ok: true, value: action() }; }
+    catch (error) {
+      failures.push({ stage, message: error instanceof Error ? error.message : String(error), stack: error?.stack });
+      return { ok: false };
+    }
+  };
+  const requireTrue = (condition, message) => { if (!condition) throw new Error(message); };
+  const manifestResult = check('manifest.parse', () => JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/u, '')));
+  if (!manifestResult.ok) return { mode: 'dry-run-collect-all', failures, skipped, passed: false };
+  const manifest = manifestResult.value;
+  const selectionResult = check('release.selection', () => normalizeReleaseSelection(manifest.releaseSelection));
+  if (!selectionResult.ok) return { mode: 'dry-run-collect-all', failures, skipped, passed: false };
+  const selection = selectionResult.value;
+  const planResult = check('release.plan', () => createBalancedReleasePlan(selection));
+  if (!planResult.ok) return { mode: 'dry-run-collect-all', failures, skipped, passed: false };
+  const plan = planResult.value;
+  const cells = liveCellsForReleasePlan(plan);
+  const root = path.resolve(repoRoot, outputRoot);
+  const providerIdentity = { ...STRICT_PAID_PROVIDER_IDENTITY, ...(selection ? { endpointHost: selection.endpointHost } : {}) };
+  check('release.plan-match', () => requireTrue(JSON.stringify(manifest.validationPlan) === JSON.stringify(plan),
+    'canonical matrix balanced release plan does not match release selection'));
+  check('provenance', () => {
+    const reason = exactGitProvenanceFailure(manifest.provenance, currentProvenance, {
+      recordedSubject: 'verified matrix manifest provenance', currentSubject: 'canonical publish checkout provenance',
+    });
+    requireTrue(!reason, `refusing to publish canonical strict manifest: ${reason}`);
+  });
+  check('release.shape', () => {
+    const profiles = Array.isArray(manifest.deviceProfiles) ? manifest.deviceProfiles.map((p) => p.deviceClass) : [];
+    requireTrue(manifest.strict === true && manifest.schemaVersion === STRICT_MATRIX_SCHEMA_VERSION
+      && manifest.artifactKind === STRICT_MATRIX_ARTIFACT_KIND && manifest.evidenceMode === 'live'
+      && balancedReleasePlanFailure(manifest.validationPlan) === null
+      && !!manifest.localIsolation?.manifestPath && !!manifest.localIsolation?.sha256
+      && Number(manifest.localIsolation?.bytes) > 0
+      && manifest.externalProviderBudget?.passed === true
+      && (!manifest.collectAll || (manifest.collectAll.verdict === 'passed'
+        && Array.isArray(manifest.collectAll.failed) && manifest.collectAll.failed.length === 0
+        && manifest.collectAll.completed?.length === cells.length))
+      && Number(manifest.externalProviderBudget?.matrixInputSampleCeiling) === STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES
+      && Number(manifest.externalProviderBudget?.reservedInputSamples) === STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES
+      && Number(manifest.externalProviderBudget?.auxiliaryExternalAudioSeconds) === 0
+      && !!manifest.externalProviderBudget?.ledgerPath && !!manifest.externalProviderBudget?.ledgerSha256
+      && Number(manifest.externalProviderBudget?.ledgerBytes) > 0
+      && JSON.stringify(manifest.models) === JSON.stringify(plan.models)
+      && JSON.stringify(manifest.feedbackLoopPreventionModes) === JSON.stringify(DEFAULT_FEEDBACK_MODES)
+      && manifest.runDirectories?.length === cells.length && manifest.cells?.length === manifest.runDirectories?.length
+      && profiles.length === SUPPORTED_DEVICE_CLASSES.length
+      && SUPPORTED_DEVICE_CLASSES.every((deviceClass) => profiles.filter((value) => value === deviceClass).length === 1),
+    'refusing to publish canonical strict manifest: verified matrix is not the exact budget-approved balanced release plan');
+  });
+  if (manifest.externalProviderBudget?.ledgerPath) {
+    check('budget.ledger-authority', () => validateFileAuthorityEntry(root, {
+      path: manifest.externalProviderBudget.ledgerPath, bytes: manifest.externalProviderBudget.ledgerBytes,
+      sha256: manifest.externalProviderBudget.ledgerSha256,
+    }, manifest.externalProviderBudget.ledgerPath, 'strict matrix external provider budget ledger'));
+  } else skipped.push({ stage: 'budget.ledger-authority', reason: 'missing ledger path' });
+  const diagnosticCells = Array.isArray(manifest.cells) ? manifest.cells : [];
+  check('release.cells-list', () => requireTrue(Array.isArray(manifest.cells), 'strict matrix cells must be an array'));
+  const rawBudgets = [];
+  for (const [index, cell] of diagnosticCells.entries()) {
+    const result = check(`budget.cell.${index}`, () => assertCellExternalProviderBudget(
+      resolveAuthorityPath(root, cell.runDirectory, `strict matrix cell ${index} run directory`), {
+        approvedModels: plan.models, providerIdentity, cellId: cells[index]?.cellId,
+        modelId: cells[index]?.modelId, feedbackLoopPrevention: cells[index]?.feedbackLoopPrevention,
+        inputCeilingSamples: cells[index]?.maxExternalAudioSamples,
+      }));
+    if (result.ok) rawBudgets[index] = result.value;
+  }
+  if (manifest.externalProviderBudget?.ledgerPath && rawBudgets.length === cells.length && rawBudgets.every(Boolean)) {
+    check('budget.matrix', () => {
+      const ledger = resolveAuthorityPath(root, manifest.externalProviderBudget.ledgerPath, 'strict matrix external provider budget ledger');
+      const rebuilt = assertMatrixExternalProviderBudget(ledger, rawBudgets, { expectedCells: cells });
+      const recorded = { ...manifest.externalProviderBudget };
+      delete recorded.ledgerPath; delete recorded.ledgerBytes; delete recorded.ledgerSha256;
+      requireTrue(JSON.stringify(rebuilt) === JSON.stringify(recorded),
+        'refusing to publish canonical strict manifest: external provider budget does not match rebuilt raw ledgers');
+    });
+  } else skipped.push({ stage: 'budget.matrix', reason: 'missing prerequisite cell budget or ledger' });
+  check('run-directories.unique', () => {
+    requireTrue(Array.isArray(manifest.runDirectories), 'runDirectories are missing');
+    const unique = new Set(manifest.runDirectories.map((d) => process.platform === 'win32' ? String(d).toLowerCase() : String(d)));
+    requireTrue(unique.size === manifest.runDirectories.length,
+      'refusing to publish canonical strict manifest: runDirectories are not unique');
+  });
+  const impl = check('current.implementation-hashes', () => currentAuthorityImplementationHashes());
+  const paid = check('current.paid-implementation-hashes', () => currentPaidAuthorityImplementationHashes());
+  const runtime = check('current.runtime-binary-hashes', () => providedRuntimeBinaryHashes ?? currentAuthorityRuntimeBinaryHashes());
+  if (impl.ok && paid.ok) check('authority.implementation', () => requireTrue(
+    manifest.authority?.runner === MATRIX_RUNNER_ID && manifest.authority?.collector === LIVE_RUN_COLLECTOR_ID
+      && sameAuthorityInventory(manifest.authority?.implementationHashes, impl.value)
+      && sameAuthorityInventory(manifest.authority?.paidImplementationHashes, paid.value),
+    'refusing to publish canonical strict manifest: runner/collector implementation authority does not match the current checkout'));
+  if (runtime.ok) check('authority.runtime', () => requireTrue(
+    sameAuthorityInventory(manifest.authority?.runtimeBinaryHashes, runtime.value),
+    'refusing to publish canonical strict manifest: runtime binary authority does not match the current release build'));
+  for (const [index, cell] of diagnosticCells.entries()) {
+    check(`cell.${index}.directory`, () => requireTrue(cell.runDirectory === manifest.runDirectories?.[index],
+      `refusing to publish canonical strict manifest: cell ${index} runDirectory does not match runDirectories`));
+    if (!cell || typeof cell !== 'object') {
+      skipped.push({ stage: `cell.${index}.receipt-authority`, reason: 'cell is not an object' });
+      continue;
+    }
+    const receiptPath = `${cell.runDirectory}/${CELL_AUTHORITY_FILE}`;
+    const receiptAuthority = check(`cell.${index}.receipt-authority`, () => validateFileAuthorityEntry(root,
+      { path: cell.receiptPath, bytes: cell.receiptBytes, sha256: cell.receiptSha256 }, receiptPath,
+      `strict matrix cell ${index} receipt`));
+    if (!receiptAuthority.ok) { skipped.push({ stage: `cell.${index}.receipt-content`, reason: 'invalid receipt authority' }); continue; }
+    const receipt = check(`cell.${index}.receipt-content`, () => JSON.parse(fs.readFileSync(resolveAuthorityPath(root, receiptPath), 'utf8').replace(/^\uFEFF/u, '')));
+    if (!receipt.ok) continue;
+    if (impl.ok) check(`cell.${index}.implementation`, () => requireTrue(sameAuthorityInventory(receipt.value.implementationHashes, impl.value),
+      `refusing to publish canonical strict manifest: cell ${index} implementation hashes do not match the current checkout`));
+    if (paid.ok) check(`cell.${index}.paid-implementation`, () => requireTrue(sameAuthorityInventory(receipt.value.paidImplementationHashes, paid.value),
+      `refusing to publish canonical strict manifest: cell ${index} paid implementation hashes do not match the current checkout`));
+    if (runtime.ok) check(`cell.${index}.runtime`, () => requireTrue(sameAuthorityInventory(receipt.value.runtimeBinaryHashes, runtime.value),
+      `refusing to publish canonical strict manifest: cell ${index} runtime binaries do not match the current release build`));
+  }
+  const verificationPath = strictMatrixVerificationReceiptPath(manifestPath);
+  if (impl.ok && runtime.ok) check('verification.receipt', () => validateStrictMatrixVerificationReceipt({
+    receiptPath: verificationPath, manifestPath, manifest, currentProvenance,
+    implementationHashes: impl.value, runtimeBinaryHashes: runtime.value,
+  }));
+  const authority = runtime.ok ? check('strict.authority', () => verifyStrictMatrixAuthority({
+    manifestPath, manifest, evidenceRoot: root, currentProvenance, workspaceRoot: repoRoot,
+    currentRuntimeBinaryHashes: runtime.value,
+  })) : { ok: false };
+  if (authority.ok) check('strict.raw-evidence', () => {
+    const evidence = findWatchModeEvidence({ root, strict: true, models: plan.models,
+      feedbackModes: DEFAULT_FEEDBACK_MODES, deviceClasses: SUPPORTED_DEVICE_CLASSES,
+      releaseCells: cells, runDirectories: authority.value.runDirectories,
+      authorizedReports: authority.value.authorizedReports, currentProvenance, workspaceRoot: repoRoot });
+    requireTrue(evidence.ok, `refusing to publish canonical strict manifest: raw authority re-verification failed: ${evidence.reason ?? 'unknown strict matrix failure'}`);
+  });
+  else skipped.push({ stage: 'strict.raw-evidence', reason: 'strict authority did not return authorized reports' });
+  check('canonical.path-and-source', () => {
+    canonicalStrictMatrixManifestName(selection);
+    fileAuthorityEntry(path.resolve(manifestPath), path.basename(manifestPath));
+  });
+  return { mode: 'dry-run-collect-all', passed: failures.length === 0 && skipped.length === 0, failures, skipped };
+}
+
 export const publishSuccessfulStrictMatrixManifest = ({
   outputRoot,
   manifestPath,
@@ -1506,6 +1652,9 @@ export const publishSuccessfulStrictMatrixManifest = ({
   currentProvenance = currentGitProvenance({ cwd: repoRoot }),
   currentRuntimeBinaryHashes: providedRuntimeBinaryHashes,
 }) => {
+  if (process.env.WATCH_STRICT_COLLECT_ALL === '1') {
+    return collectStrictMatrixPublicationFailures({ outputRoot, manifestPath, currentProvenance, providedRuntimeBinaryHashes });
+  }
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
   const selection = normalizeReleaseSelection(manifest.releaseSelection);
   const selectedReleasePlan = createBalancedReleasePlan(selection);

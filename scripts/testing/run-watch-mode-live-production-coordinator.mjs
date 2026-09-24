@@ -264,6 +264,15 @@ export async function stageProductionReadinessBatch({
   }, { timeoutMs: WATCH_PRODUCTION_REMOTE_COMMAND_TIMEOUT_MS });
   return transfer;
 }
+export function configuredReadinessTransportWorker(configWorkers, signedWorkers, workerId) {
+  const signed = signedWorkers.filter((worker) => worker.workerId === workerId);
+  const configured = configWorkers.filter((worker) => worker.workerId === workerId);
+  if (signed.length !== 1 || configured.length !== 1
+      || !configured[0].workspaceRoot || !configured[0].transport?.kind) {
+    throw new Error(`worker ${workerId} has no unique configured readiness transport`);
+  }
+  return configured[0];
+}
 export async function preserveProductionReadinessReceipt({ entry, worker, receiptPath, downloadFile }) {
   if (!worker || !entry.remoteRoot || typeof downloadFile !== 'function') {
     throw new Error(`worker ${entry.workerId} has no readiness source authority`);
@@ -4178,7 +4187,7 @@ async function runProductionCoordinatorCore({
         requestAuthority: fileAuthorityEntry(requestPath, 'worker-readiness-request.json'),
         workers: await Promise.all(completed.map(async (entry) => {
           const receiptPath = path.join(readinessAuthorityRoot, `${entry.workerId}.json`);
-          const worker = readinessPlan.workers.find((candidate) => candidate.workerId === entry.workerId);
+          const worker = configuredReadinessTransportWorker(config.workers, readinessPlan.workers, entry.workerId);
           await preserveProductionReadinessReceipt({
             entry, worker, receiptPath, downloadFile: readinessTransport.downloadFile,
           });

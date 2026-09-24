@@ -177,8 +177,21 @@ import {
   REMOTE_PROVIDER_PREFLIGHT_PUBLICATION_BODY,
   stageProductionReadinessBatch,
   preserveProductionReadinessReceipt,
+  configuredReadinessTransportWorker,
 } from './run-watch-mode-live-production-coordinator.mjs';
 
+test('readiness receipt download uses configured local or SSH transport, not signed identity projection', () => {
+  const configured = [
+    { workerId: 'vm171', workspaceRoot: 'E:\\ow6', transport: { kind: 'local' } },
+    { workerId: 'vm167', workspaceRoot: 'E:\\watch-worker', transport: { kind: 'ssh', host: 'example.test' } },
+  ];
+  const signed = [{ workerId: 'vm171', transportAuthority: { kind: 'local' } },
+    { workerId: 'vm167', transportAuthority: { kind: 'ssh' } }];
+  assert.strictEqual(configuredReadinessTransportWorker(configured, signed, 'vm171'), configured[0]);
+  assert.strictEqual(configuredReadinessTransportWorker(configured, signed, 'vm167'), configured[1]);
+  assert.throws(() => configuredReadinessTransportWorker([], signed, 'vm171'), /configured readiness transport/);
+  assert.throws(() => configuredReadinessTransportWorker(configured, [], 'vm171'), /configured readiness transport/);
+});
 test('pre-provider readiness signs worker bytes, not parsed JSON reserialization', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-readiness-bytes-'));
   try {

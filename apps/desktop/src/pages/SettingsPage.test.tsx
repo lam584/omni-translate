@@ -182,4 +182,23 @@ describe('SettingsPage driver management', () => {
     expect(container.textContent).not.toContain('settings.resetProvidersDone');
     expect(container.textContent).not.toContain('settings.resetWelcomeDone');
   });
+
+  it("updates outbound target language preference", async () => {
+    await renderSettings();
+    const selects = container.querySelectorAll<HTMLSelectElement>("select");
+    const outboundSelect = selects[2];
+    expect(outboundSelect).not.toBeNull();
+
+    await act(async () => {
+      outboundSelect.value = "en";
+      outboundSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(useAppStore.getState().configDraft.subtitles.outboundTargetLanguage).toBe("en");
+
+    await act(async () => {
+      outboundSelect.value = "__auto__";
+      outboundSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(useAppStore.getState().configDraft.subtitles.outboundTargetLanguage).toBe("");
+  });
 });

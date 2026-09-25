@@ -22,8 +22,8 @@ describe('diagnostics page helpers', () => {
       .toEqual(['采集中', '缓冲中', '待命', '静音', '空闲']);
     expect(['running', 'version-mismatch', 'damaged', 'not-installed'].map(diagnosticsPageHelpers.formatDriverHealthLabel))
       .toEqual(['运行正常', '版本不匹配', '已损坏', '未安装']);
-    expect(['wasapi-process-exclusion', 'driver-virtual-speaker', 'wasapi-endpoint-loopback', 'none'].map(diagnosticsPageHelpers.formatCaptureBackendLabel))
-      .toEqual(['WASAPI 进程级排除', '虚拟扬声器驱动', '物理端点回环', '未启用采集后端']);
+    expect(['wasapi-process-exclusion', 'driver-virtual-speaker', 'wasapi-endpoint-loopback', 'none', '', 'custom-backend'].map(diagnosticsPageHelpers.formatCaptureBackendLabel))
+      .toEqual(['WASAPI 进程级排除', '虚拟扬声器驱动', '物理端点回环', '未启用采集后端', '未启用采集后端', 'custom-backend']);
     expect(['ready', 'probing', 'unsupported', 'failed', 'unknown'].map(diagnosticsPageHelpers.formatProcessLoopbackStatusLabel))
       .toEqual(['进程级排除已就绪', '进程级排除探测中', '不支持进程级排除', '进程级排除失败', '未知']);
     expect(['risk', 'unsupported', 'warning', 'pending', 'draft', 'unknown', 'ready'].map((tone) => diagnosticsPageHelpers.getIssueToneRank(tone as never)))

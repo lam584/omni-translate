@@ -524,4 +524,101 @@ describe('app store', () => {
     expect(state.configDraft.activeProviderTemplateId).toBe('template-deepseek');
     expect(state.configDraft.providers).toEqual(providers);
   });
+
+  it("covers removing activeCue when previousActiveId exists but index has no recent cues", () => {
+    const testCue = cue("target-cue");
+    useAppStore.setState({
+      subtitleCueById: { "target-cue": testCue },
+      subtitleOrderedCueIds: ["target-cue"],
+      subtitleStreamId: "stream-rem",
+      subtitleGeneration: 1,
+      subtitleSeq: 1,
+      audioRuntimeSnapshot: {
+        ...useAppStore.getState().audioRuntimeSnapshot,
+        subtitleOverlay: {
+          ...useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay,
+          streamId: "stream-rem",
+          generation: 1,
+          seq: 1,
+          recentCues: [testCue],
+          activeCue: testCue,
+        },
+      },
+    });
+
+    const res = useAppStore.getState().applySubtitleDelta({
+      streamId: "stream-rem",
+      generation: 1,
+      seq: 2,
+      operation: "remove",
+      cue: testCue,
+    });
+    expect(res).toBe("applied");
+    expect(useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay.activeCue).toBeNull();
+  });
+
+  it("covers removing non-active cue keeping previousActiveId active", () => {
+    const activeCue = cue("cue-1");
+    const otherCue = cue("cue-2");
+    useAppStore.setState({
+      subtitleCueById: { "cue-1": activeCue, "cue-2": otherCue },
+      subtitleOrderedCueIds: ["cue-1", "cue-2"],
+      subtitleStreamId: "stream-rem2",
+      subtitleGeneration: 1,
+      subtitleSeq: 1,
+      audioRuntimeSnapshot: {
+        ...useAppStore.getState().audioRuntimeSnapshot,
+        subtitleOverlay: {
+          ...useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay,
+          streamId: "stream-rem2",
+          generation: 1,
+          seq: 1,
+          recentCues: [otherCue, activeCue],
+          activeCue: activeCue,
+        },
+      },
+    });
+
+    const res = useAppStore.getState().applySubtitleDelta({
+      streamId: "stream-rem2",
+      generation: 1,
+      seq: 2,
+      operation: "remove",
+      cue: otherCue,
+    });
+    expect(res).toBe("applied");
+    expect(useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay.activeCue?.cueId).toBe("cue-1");
+  });
+
+  it("covers removing activeCue when previousActiveId was undefined and index has recent cues", () => {
+    const cue1 = cue("cue-1");
+    useAppStore.setState({
+      subtitleCueById: { "cue-1": cue1 },
+      subtitleOrderedCueIds: ["cue-1"],
+      subtitleStreamId: "stream-rem3",
+      subtitleGeneration: 1,
+      subtitleSeq: 1,
+      audioRuntimeSnapshot: {
+        ...useAppStore.getState().audioRuntimeSnapshot,
+        subtitleOverlay: {
+          ...useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay,
+          streamId: "stream-rem3",
+          generation: 1,
+          seq: 1,
+          recentCues: [cue1],
+          activeCue: undefined as never,
+        },
+      },
+    });
+
+    const res = useAppStore.getState().applySubtitleDelta({
+      streamId: "stream-rem3",
+      generation: 1,
+      seq: 2,
+      operation: "remove",
+      cue: cue("absent-cue"),
+    });
+    expect(res).toBe("applied");
+    expect(useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay.activeCue?.cueId).toBe("cue-1");
+  });
 });

@@ -1008,20 +1008,16 @@ describe('AudioRoutingPage', () => {
     vi.useRealTimers();
   });
 
-  it('warns about unsupported native audio when both per-card toggles are off and the TTS model cannot do speech-to-speech', async () => {
+  it('warns about unsupported native audio when in native subtitle mode and inbound model cannot do speech-to-speech', async () => {
     useAppStore.setState((state) => ({
       configDraft: {
         ...state.configDraft,
         devices: {
           ...state.configDraft.devices,
-          textToSpeechModelId: 'template-dashscope-realtime::tts-model',
+          inboundVoiceModelId: 'template-dashscope-realtime::stt-model',
           subtitleTranslationMode: 'native',
           outputSubtitlesEnabled: false,
           outputSpeechEnabled: false,
-        },
-        speech: {
-          ...state.configDraft.speech,
-          textToSpeechModelId: 'template-dashscope-realtime::tts-model',
         },
       },
     }));
@@ -1449,6 +1445,121 @@ describe('AudioRoutingPage', () => {
     const optionTexts = Array.from(card.querySelectorAll('.scenario-card-option')).map((option) => option.textContent ?? '');
     expect(optionTexts.some((text) => text.includes('Fallback Provider'))).toBe(true);
     expect(optionTexts.some((text) => text.includes('DashScope'))).toBe(false);
+  });
+
+  it('projects v2 manifest capabilities when the saved Workspace provider has no cached or local model rows', async () => {
+    useAppStore.setState((state) => {
+      const workspace = {
+        ...state.configDraft.providers[1]!,
+        templateId: 'template-dashscope-workspace',
+        displayName: 'Workspace DashScope',
+        model: 'qwen3.8-livetranslate-flash-realtime',
+        baseUrl: 'wss://llm-test.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime',
+        modelRegistryVersion: 2 as const,
+        localModelCapabilityRegistry: [],
+        modelCatalogCache: { ...state.configDraft.providers[1]!.modelCatalogCache, models: [] },
+        sceneModelAssignments: [
+          { scenario: 'watch' as const, modelIds: ['qwen3.8-livetranslate-flash-realtime'] },
+          { scenario: 'voice-room' as const, modelIds: ['qwen3.8-livetranslate-flash-realtime'] },
+          { scenario: 'subtitle-translate' as const, modelIds: ['qwen3.8-flash'] },
+        ],
+      };
+      return { ...state, configDraft: { ...state.configDraft, providers: [workspace] } };
+    });
+    await renderPage();
+    expect((await scenarioOptionTexts(container, '听对方')).join(' ')).toContain('qwen3.8-livetranslate-flash-realtime');
+    expect((await scenarioOptionTexts(container, '字幕翻译')).join(' ')).toContain('qwen3.8-flash');
+  });
+
+  it('restores all applicable route choices from a saved model catalog when scene assignments were cleared', async () => {
+    useAppStore.setState((state) => {
+      const provider = {
+        ...state.configDraft.providers[1]!,
+        modelRegistryVersion: 2 as const,
+        localModelCapabilityRegistry: [],
+        sceneModelAssignments: [],
+        modelCatalogCache: {
+          ...state.configDraft.providers[1]!.modelCatalogCache,
+          models: state.configDraft.providers[1]!.modelCatalogCache.models.filter((model) =>
+            ['qwen3.5-omni-plus-realtime', 'qwen3.6-flash-2026-04-16'].includes(model.id)),
+        },
+      };
+      return { ...state, configDraft: { ...state.configDraft, providers: [provider] } };
+    });
+    await renderPage();
+    expect((await scenarioOptionTexts(container, '听对方')).join(' ')).toContain('Qwen Omni');
+    expect((await scenarioOptionTexts(container, '说给对方')).join(' ')).toContain('Qwen Omni');
+    expect((await scenarioOptionTexts(container, '打字 TTS')).join(' ')).toContain('Qwen Omni');
+    expect((await scenarioOptionTexts(container, '听对方 · 二次语音识别')).join(' ')).toContain('Qwen Omni');
+    expect((await scenarioOptionTexts(container, '字幕翻译')).join(' ')).not.toContain('Qwen3.6 Flash');
+  });
+
+  it('migrates a stale generic-host Workspace model route to the authorized same-credential provider', async () => {
+    useAppStore.setState((state) => {
+      const generic = state.configDraft.providers[1]!;
+      const workspace = {
+        ...generic,
+        templateId: 'template-dashscope-workspace',
+        model: 'qwen3.8-livetranslate-flash-realtime',
+        baseUrl: 'wss://llm-test.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime',
+        modelRegistryVersion: 2 as const,
+        localModelCapabilityRegistry: [],
+        modelCatalogCache: { ...generic.modelCatalogCache, models: [] },
+        sceneModelAssignments: [
+          { scenario: 'watch' as const, modelIds: ['qwen3.8-livetranslate-flash-realtime'] },
+        ],
+      };
+      return {
+        ...state,
+        configDraft: {
+          ...state.configDraft,
+          providers: [generic, workspace],
+          devices: {
+            ...state.configDraft.devices,
+            inboundVoiceModelId: 'template-dashscope-realtime::qwen3.8-livetranslate-flash-realtime',
+          },
+        },
+      };
+    });
+    await renderPage();
+    expect(useAppStore.getState().configDraft.devices.inboundVoiceModelId)
+      .toBe('template-dashscope-workspace::qwen3.8-livetranslate-flash-realtime');
+  });
+
+  it('does not silently reroute a Workspace model to a different credential', async () => {
+    useAppStore.setState((state) => {
+      const generic = {
+        ...state.configDraft.providers[1]!,
+        sceneModelAssignments: [{ scenario: 'watch' as const, modelIds: ['qwen3.8-livetranslate-flash-realtime'] }],
+      };
+      const workspace = {
+        ...generic,
+        templateId: 'template-dashscope-workspace',
+        baseUrl: 'wss://llm-test.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime',
+        authRef: { ...generic.authRef, reference: 'credential://other-workspace' },
+        modelRegistryVersion: 2 as const,
+        localModelCapabilityRegistry: [],
+        modelCatalogCache: { ...generic.modelCatalogCache, models: [] },
+      };
+      return {
+        ...state,
+        configDraft: {
+          ...state.configDraft,
+          providers: [generic, workspace],
+          devices: {
+            ...state.configDraft.devices,
+            inboundVoiceModelId: 'template-dashscope-realtime::qwen3.8-livetranslate-flash-realtime',
+          },
+        },
+      };
+    });
+    await renderPage();
+    expect(useAppStore.getState().configDraft.devices.inboundVoiceModelId)
+      .toBe('template-dashscope-realtime::qwen3.8-livetranslate-flash-realtime');
+    const card = await openScenarioSelect(container, '听对方');
+    const options = Array.from(card.querySelectorAll<HTMLElement>('.scenario-card-option'));
+    expect(options.some((option) => option.dataset.value === 'template-dashscope-realtime::qwen3.8-livetranslate-flash-realtime')).toBe(false);
+    expect(options.some((option) => option.dataset.value === 'template-dashscope-workspace::qwen3.8-livetranslate-flash-realtime')).toBe(true);
   });
 
   it('shows an empty model selector state when no provider models are available', async () => {

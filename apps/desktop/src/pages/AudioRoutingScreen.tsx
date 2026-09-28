@@ -30,6 +30,9 @@ import { buildAudioRuntimeBadges } from '../utils/audio-runtime-badges';
 import { resolveAecCapability } from '../utils/aec-capability';
 import { readCustomProviderTemplates } from '../utils/custom-provider-templates';
 import { resolveProviderModelCapabilities } from '../utils/provider-model-capabilities';
+import { effectiveProviderModelRegistry } from '../utils/provider-model-capabilities-registry';
+import { resolveRealtimeProfile } from '../utils/realtime-profile';
+import { lookupModelProtocolProfiles } from '../model-protocol/profile-registry';
 import { collectProviderModelOptions } from '../utils/provider-model-options';
 import { PROVIDER_TEMPLATE_CATALOG_UPDATED_EVENT, buildProviderTemplateCatalogEntries, readProviderTemplateCatalogPreferences } from '../utils/provider-template-catalog';
 import {
@@ -132,8 +135,24 @@ function AudioRoutingPage() {
     [templateCatalogEntries],
   );
 
-  const allModelOptions = useMemo<RoutingModelOption[]>(
-    () => collectProviderModelOptions(configDraft.providers, {
+  const allModelOptions = useMemo<RoutingModelOption[]>(() => {
+    const registryByTemplateId = new Map(configDraft.providers.map((provider) => [
+      provider.templateId, effectiveProviderModelRegistry(provider),
+    ] as const));
+    const sources = configDraft.providers.map((provider) => {
+      const declaredIds = new Set((registryByTemplateId.get(provider.templateId) ?? [])
+        .filter((entry) => !entry.hidden && entry.capabilities.length > 0).map((entry) => entry.modelId));
+      const cachedIds = (provider.modelCatalogCache?.models ?? [])
+        .filter((model) => declaredIds.has(model.id)).map((model) => model.id);
+      return {
+        ...provider,
+        sceneModelAssignments: [
+          ...(provider.sceneModelAssignments ?? []),
+          { scenario: 'watch' as const, modelIds: cachedIds },
+        ],
+      };
+    });
+    return collectProviderModelOptions(sources, {
       templateFilter: enabledProviderTemplateIds,
       dedupeKey: 'provider-model',
       project: ({ templateId, modelId, provider }) => {
@@ -148,18 +167,49 @@ function AudioRoutingPage() {
           id: key,
           model: key,
           displayName: `${provider.displayName}: ${baseModel.displayName}`,
-          capabilities: resolveProviderModelCapabilities(baseModel, provider.localModelCapabilityRegistry ?? []),
+          capabilities: resolveProviderModelCapabilities(baseModel, registryByTemplateId.get(provider.templateId) ?? []),
           description: cachedModel?.ownedBy ?? provider.displayName,
           providerTemplateId: templateId,
           rawModelId: modelId,
         };
       },
-    }),
-    [configDraft, enabledProviderTemplateIds],
-  );
+    }).filter((option) => {
+      if (!lookupModelProtocolProfiles(option.rawModelId).some((profile) => profile.endpointRequirements?.workspaceScoped)) return true;
+      try {
+        return resolveRealtimeProfile(configDraft, option.model).preconnectPolicy === 'allowed';
+      } catch {
+        return false;
+      }
+    });
+  }, [configDraft, enabledProviderTemplateIds]);
 
   const voiceModelOptions = useMemo(() => allModelOptions.filter(isVoiceModel), [allModelOptions]);
   const inboundModelOptions = useMemo(() => voiceModelOptions.filter((model) => supportsRoutingScenario(model, 'inbound')), [voiceModelOptions]);
+  // Older assignments may point a Workspace-only model at the generic
+  // DashScope endpoint. Migrate only when the same credential owns an
+  // explicitly configured, protocol-authorized Workspace provider.
+  useEffect(() => {
+    const selected = configDraft.devices.inboundVoiceModelId;
+    const prefix = 'template-dashscope-realtime::';
+    if (!selected.startsWith(prefix)) return;
+    const modelId = selected.slice(prefix.length);
+    if (!lookupModelProtocolProfiles(modelId).some((profile) => profile.endpointRequirements?.workspaceScoped)) return;
+    try {
+      if (resolveRealtimeProfile(configDraft, selected).preconnectPolicy === 'allowed') return;
+    } catch { /* The generic endpoint is not authorized for this Workspace model. */ }
+    const target = inboundModelOptions.find((model) => model.model === `template-dashscope-workspace::${modelId}`);
+    const genericProvider = configDraft.providers.find((provider) => provider.templateId === 'template-dashscope-realtime');
+    const workspaceProvider = configDraft.providers.find((provider) => provider.templateId === 'template-dashscope-workspace');
+    if (!target || !genericProvider || !workspaceProvider
+      || genericProvider.providerId !== workspaceProvider.providerId
+      || genericProvider.authRef.reference !== workspaceProvider.authRef.reference) return;
+    try {
+      if (resolveRealtimeProfile(configDraft, target.model).preconnectPolicy === 'allowed') {
+        updateDeviceDraft({ inboundVoiceModelId: target.model });
+      }
+    } catch { /* Keep an invalid route visible for explicit correction, never bypass authority. */ }
+  }, [configDraft, inboundModelOptions, updateDeviceDraft]);
+
   const outboundModelOptions = useMemo(() => voiceModelOptions.filter((model) => supportsRoutingScenario(model, 'outbound')), [voiceModelOptions]);
   const secondarySttModelOptions = useMemo(() => voiceModelOptions.filter((model) => supportsRoutingScenario(model, 'inboundSecondary')), [voiceModelOptions]);
   const ttsModelOptions = useMemo(() => voiceModelOptions.filter((model) => supportsRoutingScenario(model, 'tts')), [voiceModelOptions]);
@@ -210,7 +260,7 @@ function AudioRoutingPage() {
   const mutedHint = tWithDefault(t, 'audioRouting.cardDisabledHint');
   const nativeAudioUnsupported =
     isNativeSubtitle
-    && !resolveSelectedModel(ttsModelOptions, configDraft.devices.textToSpeechModelId || configDraft.speech.textToSpeechModelId || configDraft.devices.outboundVoiceModelId)?.capabilities.includes('speech-to-speech');
+    && !inboundModelOption?.capabilities.includes('speech-to-speech');
 
   const runtimeBadges = useMemo(() => buildAudioRuntimeBadges(
     audioRuntimeSnapshot,
@@ -245,7 +295,7 @@ function AudioRoutingPage() {
         missing: tWithDefault(t, 'audioRouting.status.missing'),
       },
     },
-  ), [audioRuntimeSnapshot, inboundModelOption, outboundModelOption, t]);
+  ), [audioRuntimeSnapshot, inboundModelOption, outboundModelOption, t]); // eslint-disable-line react-hooks/preserve-manual-memoization
 
   const patchDeviceConfig = (patch: Partial<DeviceDraft>) => {
     updateDeviceDraft({ ...patch, status: 'ready' });
